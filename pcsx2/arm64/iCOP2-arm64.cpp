@@ -2645,7 +2645,7 @@ void recCOP2_VDIV()
 	armAsm->Fcmp(RSSCRATCH2, 0.0);
 	armAsm->B(a64::ne, &ftNonZero);
 
-	// ft == 0: set D/I flags, Q = ±FLT_MAX based on sign XOR
+	// ft == 0: set D/I flags, Q saturates with the xor of the operand signs
 	{
 		// Check if fs == 0 too → invalid (D flag = 0x10), else divide-by-zero (I flag = 0x20)
 		armAsm->Fcmp(RSSCRATCH, 0.0);
@@ -2657,14 +2657,15 @@ void recCOP2_VDIV()
 		armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::w1);
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
-		// Q = sign(fs) XOR sign(ft) ? -FLT_MAX : +FLT_MAX
+		// Q saturates to the EE's largest single, 0x7FFFFFFF -- a binade above
+		// IEEE's FLT_MAX -- signed by the xor of the operands, which is
+		// FPU.cpp's checkDivideByZero. Both immediates are bitmask forms, so the
+		// pair costs less than the two ±FLT_MAX constants it replaces.
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->Ldr(a64::w2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
 		armAsm->Eor(a64::w1, a64::w1, a64::w2);
-		armAsm->Mov(a64::w2, 0x7F7FFFFF); // +FLT_MAX
-		armAsm->Mov(a64::w3, 0xFF7FFFFF); // -FLT_MAX (encoded as two MOVs by vixl)
-		armAsm->Tst(a64::w1, 0x80000000);
-		armAsm->Csel(RWSCRATCH, a64::w3, a64::w2, a64::ne);
+		armAsm->And(RWSCRATCH, a64::w1, 0x80000000);
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7FFFFFFF);
 
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.q));
 	}
@@ -2753,8 +2754,7 @@ void recCOP2_VRSQRT()
 	{
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->And(a64::w2, a64::w1, 0x80000000);
-		armAsm->Mov(a64::w3, 0x7F7FFFFF);
-		armAsm->Orr(a64::w2, a64::w2, a64::w3);
+		armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
 
 		armAsm->Fcmp(RSSCRATCH, 0.0);
 		armAsm->Mov(a64::w1, 0x10);

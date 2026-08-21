@@ -7,8 +7,9 @@
 // operand grid; this is the readable form, and it names which engine had each
 // case wrong.
 //
-// Q is the console's word. The recompilers saturate a binade low of it, which
-// RecompilerQ() below states once and VuDivUnitConsole scores in full.
+// Q is the console's word. microVU still saturates a binade low of it, which
+// MicroQ() below states once and VuDivUnitConsole scores in full; the macro
+// recompiler reaches the console's ceiling and is asserted on it directly.
 
 #include <gtest/gtest.h>
 
@@ -51,13 +52,13 @@ struct Row
 	u32 q;  // the console's
 };
 
-// A saturated quotient reads back as FLT_MAX from either recompiler -- their
-// clamp is the VU mode's ceiling, not the EE range's. Nothing else moves, so
-// the rows below stay the console's and this is the only place the deficit is
+// A saturated quotient reads back as FLT_MAX from microVU -- its ceiling is the
+// clamp constant mVUglob.maxvals, not the EE range's. Nothing else moves, so the
+// rows below stay the console's and this is the only place the deficit is
 // spelled.
 constexpr bool Saturated(u32 q) { return (q & 0x7FFFFFFFu) == 0x7FFFFFFFu; }
-constexpr u32 RecompilerQ(u32 q) { return Saturated(q) ? ((q & 0x80000000u) | 0x7F7FFFFFu) : q; }
-constexpr const char* kWhyCeiling = "micro Q: the recompiler's ceiling is FLT_MAX, the interpreter's is 0x7FFFFFFF";
+constexpr u32 MicroQ(u32 q) { return Saturated(q) ? ((q & 0x80000000u) | 0x7F7FFFFFu) : q; }
+constexpr const char* kWhyCeiling = "micro Q: microVU's ceiling is FLT_MAX, the interpreter's is 0x7FFFFFFF";
 
 // Every row is checked on all four engines. 0/0 goes to its own test below.
 constexpr Row kRows[] = {
@@ -151,7 +152,7 @@ TEST(VuRsqrtDivisorSign, QuotientSignIsTheDividendsAlone)
 		EeRecTestHarness hj;
 		BuildMacro(hj, r.fs, r.ft);
 		hj.RunJitNoDiff();
-		EXPECT_EQ(hj.GetGprJit(kRQ), RecompilerQ(r.q)) << "[macro jit] Q";
+		EXPECT_EQ(hj.GetGprJit(kRQ), r.q) << "[macro jit] Q";
 
 		EeRecTestHarness hi;
 		BuildMacro(hi, r.fs, r.ft);
@@ -164,7 +165,7 @@ TEST(VuRsqrtDivisorSign, QuotientSignIsTheDividendsAlone)
 			m.RunRequiringDivergence(kWhyCeiling);
 		else
 			m.Run();
-		EXPECT_EQ(m.GetViJit(REG_Q), RecompilerQ(r.q)) << "[micro jit] Q";
+		EXPECT_EQ(m.GetViJit(REG_Q), MicroQ(r.q)) << "[micro jit] Q";
 		EXPECT_EQ(m.GetViInterp(REG_Q), r.q) << "[micro interp] Q";
 
 		EXPECT_EQ(r.q & 0x80000000u, r.fs & 0x80000000u) << "quotient sign is the dividend's";
@@ -180,8 +181,7 @@ TEST(VuRsqrtDivisorSign, MatchesTheConsoleRowForOneOverNegativeZero)
 	h.RunJitNoDiff();
 	EXPECT_EQ(h.GetGprJit(kRStatus) & kDiMask, 0xC30u);
 	EXPECT_EQ(h.GetGprJit(kRQ) & 0x80000000u, 0x00000000u);
-	EXPECT_EQ(h.GetGprJit(kRQ), 0x7F7FFFFFu)
-		<< "console returned 0x7FFFFFFF; the magnitude is the VU clamp mode, the sign is not";
+	EXPECT_EQ(h.GetGprJit(kRQ), 0x7FFFFFFFu);
 }
 
 // Three of the four engines used to raise both causes here and return ±0.
@@ -202,7 +202,7 @@ TEST(VuRsqrtDivisorSign, ZeroOverZeroRaisesInvalidWithoutDivideByZero)
 		BuildMacro(hj, r.fs, r.ft);
 		hj.RunJitNoDiff();
 		EXPECT_EQ(hj.GetGprJit(kRStatus) & kDiMask, kI) << "[macro jit] STATUS";
-		EXPECT_EQ(hj.GetGprJit(kRQ), RecompilerQ(r.q)) << "[macro jit] Q";
+		EXPECT_EQ(hj.GetGprJit(kRQ), r.q) << "[macro jit] Q";
 
 		EeRecTestHarness hi;
 		BuildMacro(hi, r.fs, r.ft);
@@ -214,7 +214,7 @@ TEST(VuRsqrtDivisorSign, ZeroOverZeroRaisesInvalidWithoutDivideByZero)
 		BuildMicro(m, r.fs, r.ft);
 		m.RunRequiringDivergence(kWhyCeiling);
 		EXPECT_EQ(m.GetViJit(REG_STATUS_FLAG) & kDiMask, kI) << "[micro jit] STATUS";
-		EXPECT_EQ(m.GetViJit(REG_Q), RecompilerQ(r.q)) << "[micro jit] Q";
+		EXPECT_EQ(m.GetViJit(REG_Q), MicroQ(r.q)) << "[micro jit] Q";
 		EXPECT_EQ(m.GetViInterp(REG_STATUS_FLAG) & kDiMask, kI) << "[micro interp] STATUS";
 		EXPECT_EQ(m.GetViInterp(REG_Q), r.q) << "[micro interp] Q";
 	}
