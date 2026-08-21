@@ -3,6 +3,7 @@
 
 #include "GSRendererTileGpu.h"
 
+#include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/GSLocalMemory.h"
 
@@ -147,6 +148,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 	m_surface_texels.clear();
+	m_surface_version.clear();
 	// The source caches key on the model's write generations, which the reset just rewound, and
 	// the probe's window record on the same. Both die with it or a replay reaching equal counts
 	// under different bytes would look current.
@@ -467,6 +469,7 @@ void GSRendererTileGpu::PurgeTextureCache(bool sources, bool targets, bool hash_
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 	m_surface_texels.clear();
+	m_surface_version.clear();
 }
 
 GSVector4i GSRendererTileGpu::ComputeDrawRect() const
@@ -869,6 +872,18 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// answer, taken before the build could refuse anything -- so this is the honest one.
 	const double sampled = (tdraws.mean > 0.0) ? (binds.mean + sserved.mean) * 100.0 / tdraws.mean : 0.0;
 
+	// The donor road: rule 3's build taken off the owning target instead of off the ring. Its served
+	// draws are inside src_served above -- the ROAD a draw takes is SOURCE either way -- so these
+	// columns are about what did not have to happen for them, not about a different road.
+	const auto delig = stat([](const MF& f) { return f.src_donor_eligible; });
+	const auto dserved = stat([](const MF& f) { return f.src_donor_served; });
+	const auto dbuild = stat([](const MF& f) { return f.src_donor_builds; });
+	const auto dhit = stat([](const MF& f) { return f.src_donor_hits; });
+	const auto dresc = stat([](const MF& f) { return f.src_donor_rescued; });
+	const auto dref = stat([](const MF& f) { return f.src_donor_refused; });
+	const auto dbreak = stat([](const MF& f) { return f.src_donor_breaks; });
+	const auto ddirect = stat([](const MF& f) { return f.src_donor_direct; });
+
 	const auto pdraws = stat([](const MF& f) { return f.src_pal_draws; });
 	const auto pmiss = stat([](const MF& f) { return f.src_pal_missing; });
 	const auto ehit = stat([](const MF& f) { return f.src_expand_hits; });
@@ -902,6 +917,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 		stamp_total > 0.0 ? (skept.mean + srescued.mean) * 100.0 / stamp_total : 0.0);
 	Console.WriteLn("  materialised: builds %.2f / %-4u  cache hits %.2f / %-4u  same-bytes rescues %.2f / %u",
 		sbuild.mean, sbuild.p50, schit.mean, schit.p50, scresc.mean, scresc.p50);
+	Console.WriteLn("  donor (built off the owning target, no compose): eligible %.2f / %-4u  served %.2f / %-4u  "
+					"builds %.2f / %-4u  hits %.2f / %-4u  target-identity rescues %.2f / %-4u  refused %.2f/%u  "
+					"pass breaks %.2f/%u   (direct-colour windows a copy leg would serve %.2f/%u)",
+		delig.mean, delig.p50, dserved.mean, dserved.p50, dbuild.mean, dbuild.p50, dhit.mean, dhit.p50, dresc.mean,
+		dresc.p50, dref.mean, dref.p50, dbreak.mean, dbreak.p50, ddirect.mean, ddirect.p50);
 	Console.WriteLn("  paletted second stage: draws %.2f / %-4u  expansion hits %.2f / %-4u  passes %.2f / %-4u  "
 					"deferred at build %.2f / %-4u  (palette missing %.2f/%u, capacity %.2f/%u, failed %.2f/%u)",
 		pdraws.mean, pdraws.p50, ehit.mean, ehit.p50, ebuild.mean, ebuild.p50, edefer.mean, edefer.p50, pmiss.mean,
@@ -936,6 +956,10 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 		id = m_vram_model.Create(layout, rect, handle);
 		m_vram_model.GrowResidency(id, pages);
 		Texels(id) = {}; // a fresh texture holds nothing; see the member's note
+		// A fresh allocation holds whatever the pool left there, and this id may be a slot some
+		// earlier surface used: a donor source cached under the old surface's version must not be
+		// served for the new one.
+		BumpSurfaceVersion(id);
 		NoteTextureGeometry(id, height);
 		return id;
 	}
@@ -943,10 +967,33 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 	// Growth copies the texture's content into a taller one on the device now -- before any of
 	// this frame's passes are recorded (the plan is built at VSync), so it moves last frame's
 	// pixels and every draw of this frame lands in the grown texture.
+	const int old_height = Texels(id).height;
 	if (!m_target_pool.EnsureHeight(m_vram_model.Get(id).pool_handle, height))
 		return kGSTileNoSurface;
+	if (old_height != height)
+		BumpSurfaceVersion(id); // a re-allocated texture is a different image, whatever it copied
 	NoteTextureGeometry(id, height);
 	return id;
+}
+
+// "This surface's texels changed." The donor road's whole content identity rests on this counter,
+// so what bumps it is the specification: every write of a pool texture and nothing else. Those are
+// a draw rendering into the surface, a seed filling it out of the ring, and the pool allocating or
+// growing it -- three call sites, all in this file. Globally monotonic rather than per-surface, so
+// a surface id coming back out of the model's free list cannot reproduce a version its predecessor
+// already filed under the same window key.
+void GSRendererTileGpu::BumpSurfaceVersion(GSTileSurfaceId id)
+{
+	if (id == kGSTileNoSurface)
+		return;
+	if (m_surface_version.size() <= id)
+		m_surface_version.resize(id + 1, 0);
+	m_surface_version[id] = ++m_surface_version_counter;
+}
+
+u64 GSRendererTileGpu::SurfaceVersion(GSTileSurfaceId id) const
+{
+	return (id != kGSTileNoSurface && m_surface_version.size() > id) ? m_surface_version[id] : 0;
 }
 
 // The page set the surface's texture rectangle spans, refreshed when the pool grows it. Growth
@@ -1042,6 +1089,104 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 	return src;
 }
 
+// Rule 3's DONOR build road: can one live target serve this window whole, by reinterpretation?
+//
+// This is the class rule 2 refuses by construction. Rule 2 binds a target only where the READ's own
+// layout is the target's, and a palettised read of a colour surface never is -- the game is reading
+// the target's BYTES as indices, at a different page geometry, usually at an offset into it. The
+// byte road serves it by writing the whole target back into the frame's ring and unswizzling those
+// bytes into an index image: two GPU passes and a megabyte of ring slots for bytes that were on the
+// GPU the entire time. The device can rearrange them in place instead (GSTileSwizzleForms, the same
+// arithmetic ps_tile_reinterpret_index performs), and then the window also has an IDENTITY -- its
+// owner's -- where a page fingerprint had nothing to say about it.
+//
+// Every clause is a proof, because a wrong donor is silent wrong output:
+//
+//  - every page GPU-newest and NOT SYNCED, which is the clause the corpus had to teach and the one
+//    the block below explains at length.
+//  - ONE owner for EVERY plane of every page of the window, at whole-page granularity. All planes,
+//    not just colour: the reinterpretation reads any byte of the owner's RGBA cell, so the alpha
+//    byte has to be the owner's too.
+//  - not the draw's own colour or depth target -- that is the feedback road, and this stage has none.
+//  - a page-aligned CT32/CT24 colour layout (HasByteRoad), which is what makes the owner's pixel
+//    space the guest layout: pool textures are linear from the base page.
+//  - the owner's texture actually holding texels on those pages. The model tracks BYTES, and a page
+//    whose bytes the surface owns but whose rows nothing has written yet is in perfect order by the
+//    model and allocator leftovers to a sampler. Rule 2's own clause, for the same reason.
+//  - the window starting at or after the owner's base. The shader computes `blk - dst_bp` unsigned;
+//    the page proof implies this, and it is asserted here rather than trusted.
+//  - a format the swizzle forms express as an index (PSMT8/PSMT4 here -- the alpha-byte views are in
+//    the table but no TileGpu draw samples them yet).
+bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+	GSTileSurfaceId fb_id, GSTileSurfaceId z_id, DonorPlan& out)
+{
+	out = DonorPlan{};
+	if (tex_pages.empty())
+		return false;
+
+	// ⚠️ Every page has to be truth the owner's TEXTURE actually holds -- GPU-newest and NOT synced.
+	// A synced page is one the model says the byte store already has an equal copy of, and on two
+	// roads it says that without having moved a byte (the alias steal and the road-less steal, both
+	// rowed in the deferred-accuracy ledger). On those pages the target's pixels and the ring's bytes
+	// legitimately disagree, so a donor build and the byte road would produce different texels for
+	// the same window -- measured on R&C UYA, where it moved both dumps away from the software
+	// golden. The Tile renderer's own donor asks the identical question (its `sync_tex` is
+	// ReadbackNeeded over the window, and it only reaches the donor when that set is non-empty).
+	const GSPageBitmap need = m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
+	if (!tex_pages.andnot(need).empty())
+		return false;
+
+	const GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(tex_pages, kGSTilePlanesAll);
+	if (owner == kGSTileNoSurface || owner == fb_id || owner == z_id)
+		return false;
+
+	const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+	if (!surf.alive || !surf.pool_handle || !HasByteRoad(surf.layout))
+		return false;
+	if (!surf.residency.contains(tex_pages))
+		return false;
+	if (m_surface_texels.size() <= owner || !tex_pages.andnot(m_surface_texels[owner].filled).empty())
+		return false;
+	if (tex0.TBP0 < surf.layout.bp)
+		return false;
+
+	const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(tex0.PSM);
+	if (idx_fmt < 0)
+	{
+		// A direct-colour window one target owns whole that rule 2 did NOT take -- an offset into
+		// the target, or a different stride, or a CT32 read of a CT24 owner. Serving it needs a copy
+		// leg this road does not have (the reinterpretation only produces index formats), so it
+		// keeps the byte road. Counted so the size of that population is a measurement rather than a
+		// guess when someone asks whether the leg is worth building.
+		m_frame.src_donor_direct++;
+		return false;
+	}
+
+	out.owner = owner;
+	out.src_bp = tex0.TBP0;
+	// Pages per texture row, spelled exactly as the byte road and the materialise spell it -- a
+	// paletted page is 128 texels wide, so it is TBW >> 1 (GSOffset's bw >> (pageShiftX - 6)). The
+	// two roads have to agree here or the same window addresses two different sets of bytes.
+	out.src_bwpg = tex0.TBW >> 1;
+	out.owner_bp = surf.layout.bp;
+	out.owner_bwpg = surf.layout.bw;
+	out.psm = tex0.PSM;
+	return true;
+}
+
+// A donor build reads an IMAGE, so unlike a materialise it is not free to hoist: it runs at the head
+// of its draw's pass, ahead of every draw already in that pass, and one of those may be what wrote
+// the pixels it is about to read. The writeback's test, narrowed -- a donor rewrites no ring slot,
+// so the slot half of WritebackHoistCollides has nothing to say about it.
+bool GSRendererTileGpu::DonorHoistCollides(GSTileSurfaceId owner, const GSPageBitmap& pages) const
+{
+	if (owner == m_open_color && pages.intersects(m_open_color_written))
+		return true;
+	if (m_open_z_used && owner == m_open_z && pages.intersects(m_open_z_written))
+		return true;
+	return false;
+}
+
 // Rule 3 of the same texel road -- the cache of materialised texture sources -- asked and
 // deliberately not taken. The road itself is not built yet; what is built here is the question it
 // will ask, run against the live stream so the answer is measured instead of assumed: for every
@@ -1060,7 +1205,7 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 // have had -- churn that then propagated into every identity derived from it, which is what made
 // the palette-admission column read as a wall rather than as a first frame.
 u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
-	bool paletted, bool mip_active)
+	bool paletted, bool mip_active, const GSTileTextureSource::ContentToken& donor_token)
 {
 	const GSDrawingContext* ctx = m_context;
 
@@ -1114,23 +1259,32 @@ u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& 
 	// rewritten with the bytes it already held is hashed once per frame however many windows read
 	// it. This is the tier Lookup runs as RebuildsSamePages (97.7% of GT4's rebuilds), modelled
 	// here rather than assumed away.
-	u64 content = 0;
-	bool content_taken = false;
-	const auto ContentStamp = [&]() -> u64 {
+	//
+	// ...unless a DONOR serves the window, in which case the fingerprint is not the tier at all. The
+	// bytes under a window whose truth is a rendered target are not in the CPU shadow, so the
+	// fingerprint declines and returns nothing, having first hashed nothing useful; what identifies
+	// that window is the owning target and its version, and the caller has already worked that out.
+	// Taking it here rather than falling back to the declining tier is what retires the whole
+	// "unprovable rebuild" class -- 18.4 of SotC's 24.5 believed rebuilds a frame, and all of
+	// GT4-OPB's -- and it removes an 8 KB-per-moved-page hash on the way.
+	GSTileTextureSource::ContentToken content = donor_token;
+	bool content_taken = donor_token.Known();
+	const auto ContentStamp = [&]() -> GSTileTextureSource::ContentToken {
 		if (!content_taken)
 		{
-			content = m_tex_source.ProbePageContent(m_mem, m_vram_model, tex_pages);
+			const u64 h = m_tex_source.ProbePageContent(m_mem, m_vram_model, tex_pages);
+			content = GSTileTextureSource::ContentToken{
+				h != 0 ? GSTileTextureSource::ContentToken::Source::Pages :
+						 GSTileTextureSource::ContentToken::Source::None,
+				h};
 			content_taken = true;
 		}
 		return content;
 	};
-	// Does the window still hold the bytes this record was taken under? A zero on either side is
-	// "cannot say" -- the fingerprint was declined because GPU-side truth sits under the window --
-	// and cannot-say is never same-bytes.
-	const auto SameBytes = [&](const ProbedWindow& p) {
-		const u64 c = ContentStamp();
-		return c != 0 && p.content != 0 && c == p.content;
-	};
+	// Does the window still hold the content this record was taken under? An unknown token on either
+	// side is "cannot say" -- the fingerprint declined and no donor answers for it -- and cannot-say
+	// is never the same content, which ContentToken's own equality already says.
+	const auto SameBytes = [&](const ProbedWindow& p) { return ContentStamp() == p.content; };
 
 	// This frame's record of the window, if some earlier draw already probed it.
 	u32 wi = 0;
@@ -1201,7 +1355,7 @@ u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& 
 			{
 				m_frame.src_stamp_moved++;
 				w.content = ContentStamp();
-				if (w.content == 0)
+				if (!w.content.Known())
 				{
 					// GPU-side truth under the window: the CPU bytes here are not the bytes
 					// anything would build from, so the move stands as a rebuild -- believed, not
@@ -1252,7 +1406,16 @@ u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& 
 		// once. High deferrals beside high hits is the healthy shape, not a fault.
 		const u32 pal_entries = GSLocalMemory::m_psm[tex0.PSM].pal;
 		const u64 pal_id = GSTilePaletteCache::ContentId(m_plan_palettes.data() + pd.pal_offset, pal_entries);
-		if (m_expand_cache.ProbeAdmit(w.build_id, pal_id) == GSTileExpandedCache::Admission::Deferred)
+		// ...except for a window a DONOR serves, where the wait cannot ever end and is measuring the
+		// wrong alternative anyway: the index image is the owner target's own pixels, which change
+		// every frame by definition, so no pair over it survives a frame boundary -- and the other
+		// road is not "expand in the shader", it is "write the whole target back into the ring and
+		// unswizzle it again, then expand in the shader". Those draws admit on first sight. The probe
+		// and the build must agree, so the same answer goes to both.
+		const GSTileExpandedCache::AdmitWhen when = donor_token.Known() ?
+														GSTileExpandedCache::AdmitWhen::FirstSight :
+														GSTileExpandedCache::AdmitWhen::SecondSight;
+		if (m_expand_cache.ProbeAdmit(w.build_id, pal_id, when) == GSTileExpandedCache::Admission::Deferred)
 		{
 			m_frame.src_ref_palette++;
 			return kNoSourceSlot;
@@ -1322,34 +1485,38 @@ u32 GSRendererTileGpu::SourceSlotFor(GSTexture* tex, u8 sampler)
 	return static_cast<u32>(m_plan_sources.size() - 1);
 }
 
-// Rule 3's build, and the point where the draw changes road. The window has been admitted and its
-// bytes composed into the ring, so the source can be materialised out of them: the cache decides
-// whether this window already has an image and whether that image is still current, and on a build
-// it hands the texture to the materialiser, which queues the pass that fills it. With an image in
-// hand the draw takes a bind slot, its state row names the source, and its fragment stage samples
-// that image instead of decoding ring bytes.
+// Rule 3's build, and the point where the draw changes road. The cache decides whether this window
+// already has an image and whether that image is still current, and on a build it hands the texture
+// to the builder, which queues the pass that fills it. With an image in hand the draw takes a bind
+// slot, its state row names the source, and its fragment stage samples that image instead of
+// decoding ring bytes.
 //
-// Direct colour only at this chunk. Every refusal leaves the draw exactly where the caller put it --
-// on the byte road, with its window already composed into the ring -- so a refusal costs a wasted
-// compose and nothing else. Never a dropped draw.
+// TWO build roads reach here and the difference is where the texels come from. Without a donor the
+// window's bytes have already been composed into the frame's ring and the source is unswizzled out
+// of them. WITH one, the window's pages belong to a live target and the source is reinterpreted
+// straight out of that target's texture -- and the caller has NOT composed anything, because not
+// composing is the entire point of that road. The cache is told neither: what it sees is a builder
+// and a content token, and the token is what keeps the two identities from meeting.
+//
+// Every refusal leaves the draw exactly where the caller put it -- on the byte road -- so a refusal
+// costs at most a wasted compose. Never a dropped draw. ⚠️ On the donor road the caller must compose
+// the window itself when this returns false, since it skipped the compose to get here.
 bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const GIFRegTEX0& tex0,
-	const GSPageBitmap& tex_pages, u32 epoch)
+	const GSPageBitmap& tex_pages, u32 epoch, const DonorPlan* donor)
 {
 	const ProbedWindow& w = m_probe_windows[window];
 
-	// The content identity the cache decides rebuilds by, and where it came from. The probe took
-	// this fingerprint BEFORE the window was composed, which is the only moment it is honest: after
-	// the compose, the pages carry bytes a writeback has already superseded. Zero is "cannot say"
-	// (some page under the window holds GPU-side truth) and never matches anything, so an unprovable
-	// window rebuilds rather than serving stale texels.
-	const GSTileTextureSource::ContentToken token{
-		w.content != 0 ? GSTileTextureSource::ContentToken::Source::Pages :
-						 GSTileTextureSource::ContentToken::Source::None,
-		w.content};
+	// The content identity the cache decides rebuilds by. The probe took it BEFORE the window was
+	// composed, which is the only moment a page fingerprint is honest -- after the compose those
+	// pages carry bytes a writeback has superseded -- and for a donor window it is the owner's
+	// identity, which no compose can disturb. Unknown never matches anything, so a window nothing
+	// can vouch for rebuilds rather than serving stale texels.
+	const GSTileTextureSource::ContentToken token = w.content;
 
 	SourceMaterialiser builder;
 	builder.r = this;
 	builder.epoch = epoch;
+	builder.donor = donor;
 
 	GSTileTextureSource::BuiltOutcome outcome = GSTileTextureSource::BuiltOutcome::Failed;
 	u64 build_id = 0;
@@ -1357,15 +1524,23 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 		m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, &build_id, &outcome);
 	switch (outcome)
 	{
-		case GSTileTextureSource::BuiltOutcome::Hit: m_frame.src_cache_hits++; break;
-		case GSTileTextureSource::BuiltOutcome::Rescued: m_frame.src_cache_rescued++; break;
-		case GSTileTextureSource::BuiltOutcome::Built: break; // counted by EmitMaterialiseOp
+		case GSTileTextureSource::BuiltOutcome::Hit:
+			(donor ? m_frame.src_donor_hits : m_frame.src_cache_hits)++;
+			break;
+		case GSTileTextureSource::BuiltOutcome::Rescued:
+			(donor ? m_frame.src_donor_rescued : m_frame.src_cache_rescued)++;
+			break;
+		case GSTileTextureSource::BuiltOutcome::Built: break; // counted by the emitter
 		case GSTileTextureSource::BuiltOutcome::RefusedPinned: m_frame.src_pin_refusals++; break;
 		case GSTileTextureSource::BuiltOutcome::RefusedCapacity: m_frame.src_cap_refusals++; break;
 		case GSTileTextureSource::BuiltOutcome::Failed: m_frame.src_build_failed++; break;
 	}
 	if (!tex)
+	{
+		if (donor)
+			m_frame.src_donor_refused++;
 		return false;
+	}
 
 	// Stage two, for a paletted window. What the cache just handed back is an INDEX image -- the
 	// palette is not in its key, which is the whole reason one build serves every palette the game
@@ -1388,13 +1563,23 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 		if (!pal || pal_id == 0 || build_id == 0)
 		{
 			m_frame.src_pal_missing++;
+			if (donor)
+				m_frame.src_donor_refused++;
 			return false;
 		}
 
 		SourceExpander expander;
 		expander.r = this;
 		GSTileExpandedCache::BuiltOutcome eo = GSTileExpandedCache::BuiltOutcome::Failed;
-		GSTexture* const expanded = m_expand_cache.LookupBuilt(tex, build_id, pal, pal_id, expander, &eo);
+		// Keyed on the TOKEN, not on whether a donor was handed in: the probe asked the same question
+		// off the same token, and the two must give the same answer or a pair the probe admitted
+		// defers at the build and the draw is refused for nothing. They differ exactly when a donor
+		// was offered and the build then fell back to the ring.
+		GSTexture* const expanded = m_expand_cache.LookupBuilt(tex, build_id, pal, pal_id, expander,
+			(w.content.source == GSTileTextureSource::ContentToken::Source::Target) ?
+				GSTileExpandedCache::AdmitWhen::FirstSight :
+				GSTileExpandedCache::AdmitWhen::SecondSight,
+			&eo);
 		switch (eo)
 		{
 			case GSTileExpandedCache::BuiltOutcome::Hit: m_frame.src_expand_hits++; break;
@@ -1404,14 +1589,22 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 			case GSTileExpandedCache::BuiltOutcome::Failed: m_frame.src_expand_failed++; break;
 		}
 		if (!expanded)
+		{
+			if (donor)
+				m_frame.src_donor_refused++;
 			return false;
+		}
 		// From here the draw samples an ordinary RGBA8 image and the road knows nothing about palettes.
 		tex = expanded;
 	}
 
 	const u32 slot = SourceSlotFor(tex, SourceSamplerKey(pd.wms, pd.wmt, pd.ltf));
 	if (slot == kNoSourceSlot)
+	{
+		if (donor)
+			m_frame.src_donor_refused++;
 		return false;
+	}
 
 	// On the road. The byte road's bit comes off: this draw's fragment stage reads no ring word, so a
 	// pass made only of draws like it compiles no byte road at all -- which is where the instruction
@@ -1419,12 +1612,19 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 	pd.src_slot = slot;
 	pd.road_mask = GSDevice::kGSTileGpuRoadSource;
 	m_frame.src_served++;
+	if (donor)
+		m_frame.src_donor_served++;
 	return true;
 }
 
 bool GSRendererTileGpu::SourceMaterialiser::BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0,
 	const GIFRegTEXA& TEXA)
 {
+	// The donor road reads the owner target's texture and no ring word at all, so it goes through
+	// neither the epoch nor the page table -- which is also why its op survives a frame that composed
+	// nothing (the executor's byte-road gate is a union for exactly that reason).
+	if (donor)
+		return r->EmitDonorOp(tex, TEX0, *donor);
 	return r->EmitMaterialiseOp(tex, TEX0, TEXA, epoch);
 }
 
@@ -1484,6 +1684,30 @@ bool GSRendererTileGpu::EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0
 	op.texa = (tex0.PSM == PSMCT24) ? (1u | (texa.AEM ? 2u : 0u) | (static_cast<u32>(texa.TA0) << 8)) : 0u;
 	m_plan_prep_ops.push_back(op);
 	m_frame.src_builds++;
+	return true;
+}
+
+// The donor build's op. It names TWO lists -- its destination in prep_textures (a source is nothing's
+// render target) and its owner in the frame's target list -- which is why the op carries both indices
+// and why PlanTargetIndex is called here: an owner no draw of this frame rendered into would
+// otherwise not be in the target list at all, and the executor resolves the op through it.
+//
+// No epoch, no page entries, no TEXA. The reinterpretation reads the owner's texels and writes
+// indices; a paletted window's TEXA rides in the CLUT expansion, exactly as it does for a
+// materialised index image.
+bool GSRendererTileGpu::EmitDonorOp(GSTexture* tex, const GIFRegTEX0& tex0, const DonorPlan& donor)
+{
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = GSDevice::GSTileGpuPrepKind::Donor;
+	op.target = PrepTextureIndex(tex);
+	op.donor_target = PlanTargetIndex(donor.owner);
+	op.bp = donor.src_bp;
+	op.bw = donor.src_bwpg;
+	op.psm = donor.psm;
+	op.owner_bp = donor.owner_bp;
+	op.owner_bwpg = donor.owner_bwpg;
+	m_plan_prep_ops.push_back(op);
+	m_frame.src_donor_builds++;
 	return true;
 }
 
@@ -1612,6 +1836,8 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	{
 		m_frame.seed_ops++;
 		m_frame.seed_pages += op.page_entry_count;
+		// A seed writes the surface's texture, so anything cached under its identity is stale.
+		BumpSurfaceVersion(id);
 	}
 }
 
@@ -1997,6 +2223,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.index_format = 0;
 	pd.pal_offset = 0;
 	GSPageBitmap tex_pages;
+	// Did this draw's read window get composed into the ring? Rule 2 and the donor road both leave it
+	// uncomposed -- they read an image, not bytes -- and the open pass's read set has to say so, or a
+	// later writeback would test itself against a slot nothing read.
+	bool composed_tex = false;
 	if (PRIM->TME)
 	{
 		const bool mip = IsMipMapActive();
@@ -2073,23 +2303,68 @@ void GSRendererTileGpu::AccumulateDraw()
 			else
 			{
 				pd.road_mask = GSDevice::kGSTileGpuRoadByte;
-				// Rule 3's admission question, asked BEFORE the compose and answered against the
-				// bytes as they stand -- which is the only moment the window's content fingerprint
-				// is honest, since composing supersedes exactly the bytes it would hash.
-				const u32 src_window =
-					m_bindless_targets ? ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip) : kNoSourceSlot;
-				ComposeForPendingDraw(tex_pages, pd);
-				pd.epoch = m_epoch;
-				// ...and the build, after it. The materialise reads the ring at this draw's epoch, so
-				// the window's slots have to exist and any writeback composing them has to be queued
-				// first: prep ops run at the pass head in array order, and the compose above emitted
-				// its writebacks before this line. The compose happens either way -- the materialise
-				// is what reads it -- so this is not yet where rule 2's structural saving lives; what
-				// changes is what the FRAGMENT stage does, which is where the 10x per-sample gap is.
-				// A paletted window goes the same way in two stages -- index image, then the palette
-				// expansion on top of it -- and both ops are queued from in there, in that order.
-				if (src_window != kNoSourceSlot)
-					MaterialiseSourceRoad(pd, src_window, tex0, tex_pages, pd.epoch);
+
+				// Rule 3, and the DONOR question comes first because it changes what the rest of this
+				// block does. A window whose pages one live target owns whole can be reinterpreted
+				// straight out of that target's texture, and then nothing has to be composed for it
+				// at all -- no writeback of a megabyte of pixels into ring slots only this read would
+				// have consumed, and no ring slots. It also supplies the window's content identity,
+				// which a page fingerprint cannot: those bytes are not in the CPU shadow.
+				DonorPlan donor;
+				const bool donor_ok =
+					m_bindless_targets && DonorForTextureRead(tex0, tex_pages, fb_id, z_id, donor);
+				const GSTileTextureSource::ContentToken donor_token =
+					donor_ok ? GSTileTextureSource::TargetToken(donor.owner, SurfaceVersion(donor.owner)) :
+							   GSTileTextureSource::ContentToken{};
+				// Counted here rather than after the admission question, deliberately: this is the
+				// population ONE live target could serve whole, and every later refusal (region wrap,
+				// an unadmitted palette pair, the pin) is a separate fact about the same draw. Folding
+				// them together would report the road as unavailable when it is merely not reached.
+				if (donor_ok)
+					m_frame.src_donor_eligible++;
+
+				// The admission question, asked BEFORE the compose and answered against the bytes as
+				// they stand -- which is the only moment a page fingerprint is honest, since composing
+				// supersedes exactly the bytes it would hash.
+				const u32 src_window = m_bindless_targets ?
+										   ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip, donor_token) :
+										   kNoSourceSlot;
+
+				// The donor build, tried before the compose because skipping the compose IS the win.
+				// It reads the owner's image rather than the ring, so unlike a materialise it is not
+				// free to hoist to the pass head: a draw already in the open pass may be what wrote
+				// the pixels it is about to read, and then this draw opens its own pass -- the
+				// writeback's own test and the same precedent.
+				const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
+				const bool served_by_donor = donor_ok && src_window != kNoSourceSlot &&
+											 MaterialiseSourceRoad(pd, src_window, tex0, tex_pages, m_epoch, &donor);
+				if (served_by_donor)
+				{
+					pd.epoch = m_epoch;
+					if (m_plan_prep_ops.size() != ops_before && DonorHoistCollides(donor.owner, tex_pages))
+					{
+						pd.break_before = true;
+						m_frame.src_donor_breaks++;
+						BreakOpenPass();
+					}
+				}
+				else
+				{
+					// The byte road, and rule 3 off the ring on top of it. The materialise reads the
+					// ring at this draw's epoch, so the window's slots have to exist and any writeback
+					// composing them has to be queued first: prep ops run at the pass head in array
+					// order, and the compose below emits its writebacks before the build. A donor that
+					// was offered and then refused downstream lands here too, which is why the compose
+					// is on this side of the branch and not above it.
+					ComposeForPendingDraw(tex_pages, pd);
+					composed_tex = true;
+					pd.epoch = m_epoch;
+					// A paletted window goes the same way in two stages -- index image, then the
+					// palette expansion on top of it -- and both ops are queued from in there, in that
+					// order.
+					if (src_window != kNoSourceSlot)
+						MaterialiseSourceRoad(pd, src_window, tex0, tex_pages, pd.epoch);
+				}
 			}
 		}
 		else
@@ -2194,7 +2469,13 @@ void GSRendererTileGpu::AccumulateDraw()
 	// The claims: this draw's target textures now hold the newest bytes of its footprint. A
 	// depth-only draw writes no colour and claims none.
 	if (color_written)
+	{
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, fb_claims);
+		// This draw's pixels land in the surface's texture, so a donor source cached off it is
+		// stale from here. Deliberately whole-surface rather than per-page: the identity names the
+		// image, and an over-eager bump costs a rebuild where an under-eager one costs a wrong texel.
+		BumpSurfaceVersion(fb_id);
+	}
 	if (z_write)
 	{
 		// The depth claim is asked what it steals HERE, between the two claims, and not with the
@@ -2221,6 +2502,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// the pages it names, before the claims.
 		AliasSteal(m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, z_claims));
 		m_vram_model.OnNativeDraw(z_id, z_pages, z_claims);
+		BumpSurfaceVersion(z_id);
 	}
 
 	// A DATE draw reads the pass snapshot; if the run of draws into this surface since the last
@@ -2289,12 +2571,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_open_color_written |= fb_pages;
 	if (z_write)
 		m_open_z_written |= z_pages;
-	if (pd.tex_enable && pd.tex_source == kGSTileNoSurface)
+	if (pd.tex_enable && composed_tex)
 	{
 		// ComposeRingPages gave every page of the read window a live slot, and nothing between
 		// there and here closes one (only an upload does, and uploads do not land mid-draw), so
-		// m_ring_live still names the slot this draw's shader will read. A rule-2 draw reads no
-		// slot at all, so it constrains no later writeback.
+		// m_ring_live still names the slot this draw's shader will read. A rule-2 draw and a
+		// donor-served one read no slot at all, so they constrain no later writeback.
 		m_open_read |= tex_pages;
 		tex_pages.forEachSetPage([&](u32 page) { m_open_read_slot[page] = m_ring_live[page]; });
 	}

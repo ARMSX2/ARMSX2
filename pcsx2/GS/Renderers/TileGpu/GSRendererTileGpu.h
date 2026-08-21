@@ -337,6 +337,59 @@ private:
 	// discipline in the first place.
 	void AdvanceSourcePinFrame();
 
+	// Rule 3's DONOR build road: the window's texels read straight out of the ONE live target that
+	// owns its pages, through the GS swizzle, instead of out of the frame's byte ring. It is what
+	// removes the round trip the byte road pays for exactly these windows -- a writeback compute
+	// pass reswizzling the target into ring slots, then a materialise unswizzling them back -- for
+	// bytes that never leave the GPU. It also gives them an IDENTITY: a window over a rendered
+	// target has no honest page fingerprint (the CPU shadow does not hold those bytes), so every
+	// moved gen stamp read as a rebuild and every identity derived from it churned with it.
+	//
+	// Serves PALETTED windows (PSMT8/PSMT4) over a page-aligned CT32/CT24 colour target, which is
+	// the class rule 2 refuses by construction -- rule 2 binds a target only where the read's own
+	// layout IS the target's, and a palettised read of a colour surface never is. A direct-colour
+	// window at the target's own base and stride is rule 2's already; one at an offset or a
+	// different stride would need a copy leg this road does not have, and is counted rather than
+	// served (src_donor_direct).
+	struct DonorPlan
+	{
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		u32 src_bp = 0;     ///< the window's TBP0 (blocks)
+		u32 src_bwpg = 0;   ///< the window's width in pages, as the byte road computes it
+		u32 owner_bp = 0;   ///< the owner's base (page-aligned blocks)
+		u32 owner_bwpg = 0; ///< the owner's width in pages
+		u32 psm = 0;        ///< the window's TEX0.PSM, which picks the index format
+	};
+
+	// Can one live target serve this window whole, as a donor? Every clause is a proof, in the
+	// shape rule 2's are: one owner for EVERY plane of every page at whole-page granularity (the
+	// reinterpretation reads any byte of the owner's cell, alpha included), a page-aligned CT32/CT24
+	// colour layout so the owner's pixel space is the guest layout, its texture actually holding
+	// texels on those pages, the window starting at or after the owner's base, and a format the
+	// swizzle forms express. Anything short of that keeps the byte road, which is always correct.
+	// The draw's own targets are excluded here rather than checked later: sampling what the pass
+	// renders into is the feedback road, and this stage does not have one.
+	bool DonorForTextureRead(const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id,
+		GSTileSurfaceId z_id, DonorPlan& out);
+
+	// "The owner's texels changed", as a monotonic counter, and the whole of the donor road's
+	// content identity (GSTileTextureSource::TargetToken). It is the renderer's own because the page
+	// model tracks BYTES: a page's write generation moves when anything claims the page, including a
+	// depth draw aliasing a colour target's pages, which changes no colour texel at all. The counter
+	// is bumped by the three things that write a pool texture -- a draw rendering into it, a seed
+	// filling it, and the pool allocating or growing it -- and by nothing else, so it is exactly as
+	// strict as it must be and no stricter. Globally monotonic, never per-surface: a surface id is a
+	// recycled slot, and a per-surface counter would let a new surface reproduce its predecessor's
+	// version.
+	//
+	// ⚠️ Being over-eager here can only cost a rebuild, never a wrong serve: the cache consults the
+	// token ONLY when the gen stamp has already moved, so a version that bumps for nothing loses a
+	// rescue and cannot gain a stale one.
+	std::vector<u64> m_surface_version;
+	u64 m_surface_version_counter = 0;
+	void BumpSurfaceVersion(GSTileSurfaceId id);
+	u64 SurfaceVersion(GSTileSurfaceId id) const;
+
 	// The emission half of rule 3's build. The cache owns what to build, the identity it is
 	// filed under and when it dies; this owns how the texels get there -- a materialise pass
 	// queued into the frame's prep-op stream, executed at the head of the emitting draw's pass.
@@ -346,8 +399,21 @@ private:
 	{
 		GSRendererTileGpu* r = nullptr;
 		u32 epoch = 0; ///< the page-table epoch the emitting draw reads through
+		const DonorPlan* donor = nullptr; ///< non-null: build off the owner target, not off the ring
 		bool BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA) override;
 	};
+
+	// Queue the pass that fills `tex` with the window's texels read out of the donor's owner target.
+	// Unlike a materialise this reads an IMAGE, so it is only safe at the head of a pass none of
+	// whose already-recorded draws has written that image -- the caller runs DonorHoistCollides and
+	// breaks the pass when it has, exactly as a writeback does.
+	bool EmitDonorOp(GSTexture* tex, const GIFRegTEX0& tex0, const DonorPlan& donor);
+
+	// Would a donor build queued for the draw being accumulated read pixels a draw already in the
+	// open pass has written? Then it cannot run at that pass's head and its draw opens its own.
+	// The writeback's own test, narrowed to the one hazard a donor has (it rewrites no ring slot,
+	// so the read half of WritebackHoistCollides has nothing to say about it).
+	bool DonorHoistCollides(GSTileSurfaceId owner, const GSPageBitmap& pages) const;
 
 	// Queue the pass that fills `tex` with the window at tex0/texa, reading the ring at `epoch`.
 	// Emitted AFTER the window's composition ops so array order puts it behind them at the pass
@@ -384,8 +450,12 @@ private:
 	// cycles through it. `window` indexes m_probe_windows. Returns false on every refusal, and a
 	// refusal is not an error: the caller has already put the draw on the byte road and that road is
 	// correct on its own.
+	//
+	// `donor`, when given, builds the source off the owner target named there instead of off the
+	// ring, and files it under that target's identity rather than under a page fingerprint. The
+	// caller takes that road BEFORE composing the window -- not composing it is the point.
 	bool MaterialiseSourceRoad(PendingDraw& pd, u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
-		u32 epoch);
+		u32 epoch, const DonorPlan* donor = nullptr);
 
 	// This frame's slot for the (image, sampler) pair, appending it to m_plan_sources on first sight.
 	// kNoSourceSlot once the frame's table is full -- a hard bound, not a hope, and counted.
@@ -408,8 +478,14 @@ private:
 	{
 		GSTileTextureSource::WindowKey key;
 		u64 stamp = 0;     ///< GSTileTextureSource::GenStamp of the window's pages at first sight
-		u64 content = 0;   ///< GSTileTextureSource::ProbePageContent of the same pages (0 = not asked / declined)
-		u64 build_id = 0;  ///< content identity: carried over while the BYTES hold, stamp or no stamp
+		/// What this window's CONTENT is, and where that answer came from. Two different windows'
+		/// truth lives in two different places and the numbering spaces must not meet: a window the
+		/// CPU shadow holds gets a fingerprint of its page bytes, and one whose truth is a rendered
+		/// target gets the owning target's id and version (the donor road's identity), which is why
+		/// this is a tagged pair and not a bare number. Unknown -- the tier declined and no donor
+		/// serves it -- is never equal to anything, including another unknown.
+		GSTileTextureSource::ContentToken content;
+		u64 build_id = 0;  ///< content identity: carried over while the CONTENT holds, stamp or no stamp
 		bool admitted = false;     ///< a draw of THIS frame has been admitted on this window. It is the
 		                           ///< pin's marker (a rebuild under it would land in the same texture an
 		                           ///< already-recorded draw names) and the frame's distinct-source census.
@@ -432,8 +508,13 @@ private:
 	// the BUILD is a separate act, after the window's bytes have been composed, and it is the build
 	// that puts the draw on the road. Returns the admitted window's index in m_probe_windows, or
 	// kNoSourceSlot.
+	//
+	// `donor_token`, when Known, is the window's content identity taken from the target that owns
+	// its pages -- and it replaces the page-fingerprint tier outright rather than joining it, both
+	// because the fingerprint cannot answer for GPU-side bytes (it declines and returns nothing) and
+	// because it costs an 8 KB hash per moved page to decline.
 	u32 ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
-		bool mip_active);
+		bool mip_active, const GSTileTextureSource::ContentToken& donor_token);
 
 	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
 	// by it a page the surface owns no truth for is in perfect order -- its bytes are in the CPU
@@ -630,6 +711,21 @@ private:
 		u32 src_expand_defer = 0;   // the pair was first-sighted at BUILD time: refused for one frame
 		u32 src_expand_cap = 0;     // ...refused because every expansion entry is pinned by this frame
 		u32 src_expand_failed = 0;  // allocation failed, or the op could not be queued
+
+		// The DONOR road: rule 3's build taken off the owner target instead of off the ring. Its
+		// draws are counted in src_served beside the ring-built ones -- the road a draw takes is
+		// still SOURCE either way, and what changes is where the image came from and what did NOT
+		// have to happen for it (no writeback, no ring slots, no page fingerprint).
+		u32 src_donor_eligible = 0;  // admitted windows one live target could serve whole
+		u32 src_donor_served = 0;    // ...that actually took it: no compose, no ring traffic
+		u32 src_donor_builds = 0;    // reinterpretation passes emitted
+		u32 src_donor_hits = 0;      // served by an entry whose gen stamp was still current
+		u32 src_donor_rescued = 0;   // ...whose stamp had moved but whose TARGET identity had not
+		u32 src_donor_refused = 0;   // eligible, then refused downstream (pin, capacity, palette, build)
+		u32 src_donor_breaks = 0;    // draws that opened a pass because the build could not hoist
+		u32 src_donor_direct = 0;    // direct-colour windows a sole owner holds that rule 2 did not
+		                             // take: the population a donor COPY leg would serve, measured
+		                             // rather than assumed (this road reinterprets, it does not copy)
 
 		u32 src_extra_calls = 0;   // extra indirect calls the sampled-binding split actually cost
 		u32 src_stamp_kept = 0;    // windows also probed last frame whose gen stamp held

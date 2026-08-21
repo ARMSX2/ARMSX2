@@ -143,17 +143,18 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 // Everything the immediate road decides is decided identically here -- the split is only WHEN the
 // texels arrive, which is the caller's problem and not this class's.
 GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTexture* palette,
-	u64 palette_id, GSTileExpandBuilder& builder, BuiltOutcome* outcome)
+	u64 palette_id, GSTileExpandBuilder& builder, AdmitWhen when, BuiltOutcome* outcome)
 {
 	const auto done = [&](BuiltOutcome o, GSTexture* tex) -> GSTexture* {
 		if (outcome)
 			*outcome = o;
 		return tex;
 	};
+	const bool admit_now = (when == AdmitWhen::FirstSight);
 
 	const u64 hash = GSTileSlotHash(index_id, palette_id);
-	const u16 slot = FindEntry(hash, index_id, palette_id);
-	Entry* const found = (slot != SlotIndex::kNil) ? &m_entries[slot] : nullptr;
+	u16 slot = FindEntry(hash, index_id, palette_id);
+	Entry* found = (slot != SlotIndex::kNil) ? &m_entries[slot] : nullptr;
 
 	if (found && found->tex)
 	{
@@ -166,13 +167,17 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 
 	if (!found)
 	{
-		if (AdmitSlot(hash, index_id, palette_id) == SlotIndex::kNil)
+		slot = AdmitSlot(hash, index_id, palette_id);
+		if (slot == SlotIndex::kNil)
 			return done(BuiltOutcome::RefusedCapacity, nullptr);
-		m_deferrals++;
-		return done(BuiltOutcome::Deferred, nullptr);
+		if (!admit_now)
+		{
+			m_deferrals++;
+			return done(BuiltOutcome::Deferred, nullptr);
+		}
+		found = &m_entries[slot];
 	}
-
-	if (found->seen_frame == m_frame)
+	else if (found->seen_frame == m_frame && !admit_now)
 	{
 		found->last_use = ++m_use_counter;
 		m_index.Touch(slot);
@@ -202,8 +207,9 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 	return done(BuiltOutcome::Built, tex);
 }
 
-GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64 palette_id)
+GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64 palette_id, AdmitWhen when)
 {
+	const bool admit_now = (when == AdmitWhen::FirstSight);
 	// The lookup Lookup runs, with the build legs removed. A pair already carrying a texture is a
 	// hit and therefore served; a pair whose marker predates this frame is what Lookup would build
 	// now, which is also served from the caller's viewpoint.
@@ -214,9 +220,10 @@ GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64
 	{
 		// Recording a marker takes a slot, and taking a slot can recycle the texture in it — so
 		// this leg is under the pin discipline exactly as Lookup's is, and refuses the same way
-		// when the whole cache is held down. Either way the verdict is a deferral.
-		AdmitSlot(hash, index_id, palette_id);
-		return Admission::Deferred;
+		// when the whole cache is held down.
+		if (AdmitSlot(hash, index_id, palette_id) == SlotIndex::kNil)
+			return Admission::Deferred;
+		return admit_now ? Admission::Served : Admission::Deferred;
 	}
 
 	Entry& found = m_entries[slot];
@@ -224,7 +231,9 @@ GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64
 	m_index.Touch(slot);
 	if (found.tex)
 		found.pinned_frame = m_pin_frame;
-	return (found.tex == nullptr && found.seen_frame == m_frame) ? Admission::Deferred : Admission::Served;
+	if (found.tex == nullptr && found.seen_frame == m_frame)
+		return admit_now ? Admission::Served : Admission::Deferred;
+	return Admission::Served;
 }
 
 void GSTileExpandedCache::Clear()

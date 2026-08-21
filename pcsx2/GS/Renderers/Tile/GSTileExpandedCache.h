@@ -86,12 +86,32 @@ public:
 	/// have left, and a later Lookup on the pair picks up from it unchanged. Serves()
 	/// is not consulted (nothing is asked of the device) and no counter moves; a caller
 	/// probing rather than building keeps its own.
+	///
+	/// `when` = FirstSight waives the second-sight wait for callers whose ALTERNATIVE is not the
+	/// one the filter was calibrated against. The wait is a cost heuristic — "an expansion
+	/// pass versus the in-shader palette path" — and it is right whenever the index image
+	/// is already in hand for free. It is not right for an index built off a live render
+	/// target, where the other road first has to write that target back into the caller's
+	/// byte store and unswizzle it again: the pair is measuring the wrong alternative, and
+	/// waiting for a second sight it can never get (a target's content changes every frame
+	/// by definition) refuses the road outright. The caller states which case it is in;
+	/// the filter is unchanged for every other caller, and Tile never passes it at all.
 	enum class Admission
 	{
 		Deferred, ///< first sight of the pair, in this frame or a marker recorded this frame
 		Served,   ///< the pair survived a frame boundary: an expansion is earned
 	};
-	Admission ProbeAdmit(u64 index_id, u64 palette_id);
+
+	/// Which admission rule a caller is asking for. A named type rather than a bool on purpose: the
+	/// two functions that take it also take an out-pointer, and a pointer converts to bool silently,
+	/// so a bool here would let a caller passing only its outcome pointer land on the wrong rule with
+	/// nothing to catch it. (It did, immediately, in the cache's own equivalence test.)
+	enum class AdmitWhen
+	{
+		SecondSight = 0, ///< the default filter: a pair earns its expansion by surviving a frame
+		FirstSight = 1,  ///< build straight away -- for callers whose other road is not the cheap one
+	};
+	Admission ProbeAdmit(u64 index_id, u64 palette_id, AdmitWhen when = AdmitWhen::SecondSight);
 
 	/// What LookupBuilt did, so a caller can count the road rather than infer it from a pointer.
 	enum class BuiltOutcome
@@ -111,8 +131,12 @@ public:
 	/// Returns null on a deferral, a refusal and a failure alike; `outcome` says which, and the
 	/// caller counts it. A deferral is the designed shape, not an error: the pair is recorded and
 	/// the caller's other road carries the draw for one frame.
+	///
+	/// `when` waives the second-sight wait — see ProbeAdmit for when that is legitimate and when it
+	/// is not. A caller must pass the SAME answer to both or the probe refuses a pair the build would
+	/// have served.
 	GSTexture* LookupBuilt(GSTexture* index, u64 index_id, GSTexture* palette, u64 palette_id,
-		GSTileExpandBuilder& builder, BuiltOutcome* outcome = nullptr);
+		GSTileExpandBuilder& builder, AdmitWhen when = AdmitWhen::SecondSight, BuiltOutcome* outcome = nullptr);
 
 	/// Frame boundary, for the admission filter's clock. Call once per VSync.
 	void NextFrame() { m_frame++; }

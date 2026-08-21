@@ -125,6 +125,19 @@ public:
 		bool operator==(const ContentToken& o) const { return Known() && source == o.source && value == o.value; }
 	};
 
+	/// The Target token's value, spelled once so the donor road and its tests cannot disagree about
+	/// it. `version` is the caller's own counter for "this owner's texels changed", and it has to be
+	/// globally monotonic across surfaces rather than per-surface: a surface id is a recycled slot,
+	/// so a per-surface counter would let a new surface at an old id reproduce a version its
+	/// predecessor had already filed under the same window key. The id rides along anyway, so a
+	/// caller whose counter is coarser than one surface still cannot mix two owners' identities.
+	/// The +1 keeps surface 0 at version 0 off the zero value, which ContentToken reads as
+	/// "cannot say".
+	static ContentToken TargetToken(u32 owner_id, u64 version)
+	{
+		return ContentToken{ContentToken::Source::Target, (version << 16) ^ (static_cast<u64>(owner_id) + 1)};
+	}
+
 	/// The register-side identity of a texture window: everything an entry is keyed on
 	/// except the content stamp. Exposed so a caller can group draws by the source they
 	/// WOULD take without asking for one to be built.

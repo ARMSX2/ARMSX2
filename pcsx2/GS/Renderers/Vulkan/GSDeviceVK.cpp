@@ -6830,6 +6830,85 @@ bool GSDeviceVK::CompileTileGpuExpandPipeline()
 	return true;
 }
 
+// A resident target -> an index image: rule 3's DONOR build, the road for a window whose pages one
+// live target solely owns. Same arithmetic as ps_tile_reinterpret_index, recorded raw rather than
+// through GSDevice::TileReinterpretIndex -- see tilegpu_reinterpret.glsl's header for why that
+// distinction is load-bearing. Its own one-sampler descriptor layout and its own four-word push
+// range, so it depends on no other road's compile.
+bool GSDeviceVK::CompileTileGpuDonorPipeline(u32 idx_fmt)
+{
+	pxAssert(idx_fmt < kTileGpuIdxFormats);
+	m_tilegpu_donor_tried[idx_fmt] = true;
+	// The arithmetic IS the fitted forms; without them there are no constants to compile.
+	if (TileFormDefines().empty())
+		return false;
+
+	if (m_tilegpu_donor_pipeline_layout == VK_NULL_HANDLE)
+	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		if (m_use_push_descriptors)
+			dslb.SetPushFlag();
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_donor_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_donor_ds_layout, "TileGpu donor DS layout");
+
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddDescriptorSet(m_tilegpu_donor_ds_layout);
+		plb.AddPushConstants(VK_SHADER_STAGE_FRAGMENT_BIT, 0, kTileGpuDonorPushWords * sizeof(u32));
+		if ((m_tilegpu_donor_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_donor_pipeline_layout, "TileGpu donor pipeline layout");
+	}
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_reinterpret.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_reinterpret.glsl.");
+		return false;
+	}
+	const std::string full_source = TileFormDefines() + fmt::format("#define TILE_IDX_FMT {}\n", idx_fmt) + *source;
+
+	VkShaderModule vs = GetUtilityVertexShader(full_source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(full_source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetPipelineLayout(m_tilegpu_donor_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetNoDepthTestState();
+	gpb.SetNoStencilState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(fs);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+					  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_LOAD,
+					  VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE),
+		0);
+	gpb.SetColorWriteMask(0,
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (pipe == VK_NULL_HANDLE)
+	{
+		// Say it once per format: without this the sources are allocated and never filled, which
+		// looks like a texture-cache bug at every level above here rather than a missing pipeline.
+		Console.Error("VK: TileGpu donor pipeline (index format %u) failed to build -- rule 3's "
+					  "target-derived sources will not be filled.",
+			idx_fmt);
+		return false;
+	}
+	m_tilegpu_donor_pipeline[idx_fmt] = pipe;
+	Vulkan::SetObjectName(m_device, pipe, "TileGpu donor pipeline (idx fmt %u)", idx_fmt);
+	return true;
+}
+
 bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 {
 	if (!m_optional_extensions.tilegpu_device_capable)
@@ -7051,17 +7130,33 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// out of finished targets (compute), seeds fill targets out of ring slots (a fragment pass
 		// each). Both are the byte model's traffic between the resident images and the byte store,
 		// and both are gated on the byte road being live.
-		if (can_texture && pass.prep_op_count > 0)
-		{
-			if (!m_tilegpu_writeback_tried)
-				CompileTileGpuWritebackPipeline();
-			if (!m_tilegpu_seed_tried)
-				CompileTileGpuSeedPipeline();
+		//
+		// The DONOR build is not: it reads an owner target's texture and writes a source image,
+		// touching no ring slot and no page table, so a frame that composes nothing must still run
+		// it or the draws it serves sample an image nobody wrote. That is why the gate below is a
+		// union and every other kind re-checks `can_texture` inside the loop -- which leaves the
+		// byte-road kinds behaving exactly as they did.
+		const u32 op_end = std::min<u32>(pass.first_prep_op + pass.prep_op_count,
+			static_cast<u32>(plan.prep_ops.size()));
+		bool pass_has_donor = false;
+		for (u32 o = pass.first_prep_op; o < op_end; o++)
+			pass_has_donor |= (plan.prep_ops[o].kind == GSTileGpuPrepKind::Donor);
 
-			const u32 op_end = pass.first_prep_op + pass.prep_op_count;
+		if ((can_texture || pass_has_donor) && pass.prep_op_count > 0)
+		{
+			if (can_texture)
+			{
+				if (!m_tilegpu_writeback_tried)
+					CompileTileGpuWritebackPipeline();
+				if (!m_tilegpu_seed_tried)
+					CompileTileGpuSeedPipeline();
+			}
+
 			for (u32 o = pass.first_prep_op; o < op_end; o++)
 			{
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
+				if (op.kind != GSTileGpuPrepKind::Donor && !can_texture)
+					continue;
 
 				// Indices + palette -> the colour image a paletted draw samples. It names three prep
 				// textures and no target, and it MUST follow the materialise that filled its index --
@@ -7162,6 +7257,100 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// Back to shader-read, which is what set 2's descriptors were written promising
 					// (see the layout note above the set write); the transition is also the execution
 					// dependency ordering this build ahead of every pass that samples it.
+					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					continue;
+				}
+
+				// A resident target -> an index image, with no byte store in between. Two lists at
+				// once: the DESTINATION is a prep texture (a source is nothing's render target) and
+				// the OWNER is one of the frame's targets, which is why the op carries both indices.
+				// Recorded raw for the same reason the expand is; see tilegpu_reinterpret.glsl.
+				if (op.kind == GSTileGpuPrepKind::Donor)
+				{
+					if (op.target >= plan.prep_textures.size() || !plan.prep_textures[op.target] ||
+						op.donor_target >= plan.targets.size() || !plan.targets[op.donor_target])
+						continue;
+					const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(op.psm);
+					if (idx_fmt < 0 || static_cast<u32>(idx_fmt) >= kTileGpuIdxFormats)
+						continue;
+					if (!m_tilegpu_donor_tried[idx_fmt])
+						CompileTileGpuDonorPipeline(static_cast<u32>(idx_fmt));
+					if (m_tilegpu_donor_pipeline[idx_fmt] == VK_NULL_HANDLE)
+						continue;
+
+					GSTextureVK* const dst = static_cast<GSTextureVK*>(plan.prep_textures[op.target]);
+					GSTextureVK* const owner = static_cast<GSTextureVK*>(plan.targets[op.donor_target]);
+					pxAssertMsg(owner != rt && owner != ds,
+						"TileGpu donor reads this pass's own attachment -- the planner must have broken the pass");
+					EndRenderPass();
+					// The read first, and its transition is also the execution dependency that orders
+					// whatever earlier pass rendered into the owner ahead of this build.
+					owner->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+
+					// The whole image, one fragment per texel: a source is exactly its window.
+					const GSVector2i dsize = dst->GetSize();
+					const GSVector4i darea = GSVector4i::loadh(dsize);
+					OMSetRenderTargets(dst, nullptr, darea);
+					const VkAttachmentLoadOp dload = GetLoadOpForTexture(dst);
+					const VkRenderPass drp = GetRenderPass(LookupNativeFormat(dst->GetFormat()), VK_FORMAT_UNDEFINED,
+						dload, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					if (drp == VK_NULL_HANDLE)
+						return false;
+					if (dload == VK_ATTACHMENT_LOAD_OP_CLEAR)
+					{
+						VkClearValue cv = {};
+						cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+						BeginClearRenderPass(drp, darea, &cv, 1);
+					}
+					else
+					{
+						BeginRenderPass(drp, darea);
+					}
+
+					const VkViewport dvp{
+						0.0f, 0.0f, static_cast<float>(dsize.x), static_cast<float>(dsize.y), 0.0f, 1.0f};
+					vkCmdSetViewport(cmd, 0, 1, &dvp);
+					const VkRect2D dsc{{0, 0}, {static_cast<u32>(dsize.x), static_cast<u32>(dsize.y)}};
+					vkCmdSetScissor(cmd, 0, 1, &dsc);
+					{
+						// This road's own layout, and the passes around it re-establish their own sets
+						// before their draws -- the whole reason it is recorded here.
+						Vulkan::DescriptorSetUpdateBuilder dsub;
+						if (m_use_push_descriptors)
+						{
+							dsub.AddCombinedImageSamplerDescriptorWrite(
+								VK_NULL_HANDLE, 0, owner->GetView(), m_point_sampler, owner->GetVkLayout());
+							dsub.PushUpdate(
+								cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_donor_pipeline_layout, 0, false);
+						}
+						else
+						{
+							VkDescriptorSet dset = AllocateDescriptorSetFromFramePool(m_tilegpu_donor_ds_layout);
+							if (dset == VK_NULL_HANDLE) [[unlikely]]
+							{
+								// A few dozen a frame at most; exhaustion is implausible and the fallback
+								// is a source nobody wrote, so leave it unbuilt rather than draw with no set.
+								EndRenderPass();
+								continue;
+							}
+							dsub.AddCombinedImageSamplerDescriptorWrite(
+								dset, 0, owner->GetView(), m_point_sampler, owner->GetVkLayout());
+							dsub.Update(m_device);
+							vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+								m_tilegpu_donor_pipeline_layout, 0, 1, &dset, 0, nullptr);
+						}
+					}
+					const u32 dpush[kTileGpuDonorPushWords] = {op.bp, op.bw, op.owner_bp, op.owner_bwpg};
+					vkCmdPushConstants(cmd, m_tilegpu_donor_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+						sizeof(dpush), dpush);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_donor_pipeline[idx_fmt]);
+					vkCmdDraw(cmd, 3, 1, 0, 0);
+					EndRenderPass();
+					dst->SetState(GSTexture::State::Dirty);
+					// Back to shader-read, which is what set 2's descriptors were written promising, and
+					// the dependency that orders this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
 					continue;
 				}
@@ -8615,6 +8804,23 @@ void GSDeviceVK::DestroyResources()
 		m_tilegpu_expand_ds_layout = VK_NULL_HANDLE;
 	}
 	m_tilegpu_expand_tried = false;
+	for (u32 f = 0; f < kTileGpuIdxFormats; f++)
+	{
+		if (m_tilegpu_donor_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_donor_pipeline[f], nullptr);
+		m_tilegpu_donor_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_donor_tried[f] = false;
+	}
+	if (m_tilegpu_donor_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_tilegpu_donor_pipeline_layout, nullptr);
+		m_tilegpu_donor_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_donor_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_donor_ds_layout, nullptr);
+		m_tilegpu_donor_ds_layout = VK_NULL_HANDLE;
+	}
 	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline, nullptr);

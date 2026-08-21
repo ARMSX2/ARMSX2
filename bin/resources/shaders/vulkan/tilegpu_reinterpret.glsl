@@ -1,0 +1,173 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+// TileGpu donor: a resident target read straight into a texture source. Rule 3's build road for a
+// window whose pages ONE live target solely owns.
+//
+// The byte road serves that window by writing the target back into the frame's ring (a compute pass
+// reswizzling a megabyte of pixels into bytes) and then unswizzling those bytes into an index image
+// (tilegpu_materialise.glsl) -- two passes and a round trip through a byte store, for bytes that
+// never leave the GPU. This shader is the same result in one pass: the index window's texels read
+// out of the owner's texture through the GS swizzle, one fragment per texel.
+//
+// ⚠️ The arithmetic below is ps_tile_reinterpret_index's (tile_convert.glsl) verbatim -- same block
+// decomposition, same inverse forms, same byte and nibble extraction. It exists as a separate
+// program only because of HOW it must be issued, exactly as tilegpu_expand.glsl does: the Tile
+// renderer draws immediately and can call GSDevice::TileReinterpretIndex, while this renderer
+// records draws and executes them at VSync, so the build has to be one more op in the stream it
+// will eventually run, recorded with raw commands beside the materialise, the expand and the seed.
+// Calling a device utility path from inside that recording is not a style preference: it binds
+// descriptors through the device's own state cache and its own pipeline layout, which invalidates
+// the set bindings the surrounding passes established (measured at C5: 20 draw-time validation
+// errors on one SotC frame).
+//
+// A full-viewport triangle from the vertex index, no attributes, no varyings -- the fragment stage
+// addresses by gl_FragCoord, so the two stages share no interface. The destination is an RGBA8
+// render target the size of the window (tw x th), holding the INDEX replicated into all four
+// channels, which is the convention tilegpu_expand.glsl's `.a` read and ps_tile_reinterpret_index
+// both already use.
+//
+// TILE_IDX_FMT (injected with the pipeline): 0 PSMT8, 1 PSMT4, 2 PSMT8H, 3 PSMT4HL, 4 PSMT4HH.
+// The TILE_SWZ_* constants are fitted from GSTables.cpp at runtime and injected too, so this shader
+// and the CPU readers cannot disagree about one; GSTileSwizzleForms::Locate is the same computation
+// on the CPU and the unit suite pins it against GSOffset::pa on every texel of ten windows.
+
+#ifdef VERTEX_SHADER
+
+void main()
+{
+	// Full-viewport triangle from the vertex index; no attributes.
+	const vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+	gl_Position = vec4(p * 2.0f - 1.0f, 0.0f, 1.0f);
+}
+
+#endif
+
+#ifdef FRAGMENT_SHADER
+
+layout(location = 0) out vec4 o_color;
+
+layout(set = 0, binding = 0) uniform sampler2D samp0; // the owner target's texture
+
+layout(push_constant) uniform cb0
+{
+	uint src_bp;   // the index window's TBP0 (blocks)
+	uint src_bwpg; // the window's width in pages, exactly as GSOffset computes it (bw >> (pageShiftX - 6))
+	uint dst_bp;   // the owner surface's base (page-aligned blocks)
+	uint dst_bwpg; // the owner's width in pages
+};
+
+// Broadcast bit b of v across mask m: m if the bit is set, 0 if not.
+#define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
+
+// blockTable32 == blockTable8: (bx 0..7, by 0..3) -> block in page 0..31.
+uint tile_b48(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B48_X0) ^ XB(x, 1u, TILE_SWZ_B48_X1) ^ XB(x, 2u, TILE_SWZ_B48_X2)
+	     ^ XB(y, 0u, TILE_SWZ_B48_Y0) ^ XB(y, 1u, TILE_SWZ_B48_Y1);
+}
+
+// blockTable4: (bx 0..3, by 0..7) -> block in page 0..31.
+uint tile_b84(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
+}
+
+// columnTable32: (x 0..7, y 0..7) -> word in block 0..63.
+uint tile_c32(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C32_X0) ^ XB(x, 1u, TILE_SWZ_C32_X1) ^ XB(x, 2u, TILE_SWZ_C32_X2)
+	     ^ XB(y, 0u, TILE_SWZ_C32_Y0) ^ XB(y, 1u, TILE_SWZ_C32_Y1) ^ XB(y, 2u, TILE_SWZ_C32_Y2);
+}
+
+// columnTable8: (x 0..15, y 0..15) -> byte in block 0..255.
+uint tile_c8(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C8_X0) ^ XB(x, 1u, TILE_SWZ_C8_X1) ^ XB(x, 2u, TILE_SWZ_C8_X2) ^ XB(x, 3u, TILE_SWZ_C8_X3)
+	     ^ XB(y, 0u, TILE_SWZ_C8_Y0) ^ XB(y, 1u, TILE_SWZ_C8_Y1) ^ XB(y, 2u, TILE_SWZ_C8_Y2) ^ XB(y, 3u, TILE_SWZ_C8_Y3);
+}
+
+// columnTable4: (x 0..31, y 0..15) -> nibble in block 0..511.
+uint tile_c4(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C4_X0) ^ XB(x, 1u, TILE_SWZ_C4_X1) ^ XB(x, 2u, TILE_SWZ_C4_X2) ^ XB(x, 3u, TILE_SWZ_C4_X3) ^ XB(x, 4u, TILE_SWZ_C4_X4)
+	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
+}
+
+// Inverse of tile_b48: block in page 0..31 -> bx | (by << 3).
+uint tile_ib48(uint v)
+{
+	return XB(v, 0u, TILE_SWZ_IB48_0) ^ XB(v, 1u, TILE_SWZ_IB48_1) ^ XB(v, 2u, TILE_SWZ_IB48_2)
+	     ^ XB(v, 3u, TILE_SWZ_IB48_3) ^ XB(v, 4u, TILE_SWZ_IB48_4);
+}
+
+// Inverse of tile_c32: word in block 0..63 -> cx | (cy << 3).
+uint tile_ic32(uint v)
+{
+	return XB(v, 0u, TILE_SWZ_IC32_0) ^ XB(v, 1u, TILE_SWZ_IC32_1) ^ XB(v, 2u, TILE_SWZ_IC32_2)
+	     ^ XB(v, 3u, TILE_SWZ_IC32_3) ^ XB(v, 4u, TILE_SWZ_IC32_4) ^ XB(v, 5u, TILE_SWZ_IC32_5);
+}
+
+void main()
+{
+	uvec2 uv = uvec2(gl_FragCoord.xy);
+	uint u = uv.x;
+	uint v = uv.y;
+
+	uint blk;
+	uint byte_in_block;
+	uint nibble;
+#if TILE_IDX_FMT == 0
+	// PSMT8: 128x64 pages, 16x16 blocks, one byte per texel.
+	uint page = (v >> 6u) * src_bwpg + (u >> 7u);
+	blk = src_bp + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	byte_in_block = tile_c8(u & 15u, v & 15u);
+	nibble = 0u;
+#elif TILE_IDX_FMT == 1
+	// PSMT4: 128x128 pages, 32x16 blocks, one nibble per texel (even = low).
+	uint page = (v >> 7u) * src_bwpg + (u >> 7u);
+	blk = src_bp + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	uint nib = tile_c4(u & 31u, v & 15u);
+	byte_in_block = nib >> 1u;
+	nibble = nib & 1u;
+#else
+	// The alpha-byte views over the CT32 layout: 64x32 pages, 8x8 blocks, one word per texel, the
+	// index in byte 3.
+	uint page = (v >> 5u) * src_bwpg + (u >> 6u);
+	blk = src_bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
+	byte_in_block = tile_c32(u & 7u, v & 7u) * 4u + 3u;
+	nibble = (TILE_IDX_FMT == 4) ? 1u : 0u;
+#endif
+
+	// Owner side. The caller proved the whole window lies inside the owner (its pages are the
+	// owner's, at whole-page granularity), so blk >= dst_bp; the clamp below only keeps a texelFetch
+	// in bounds if that proof were ever wrong.
+	uint rel = blk - dst_bp;
+	uint pg = rel >> 5u;
+	uint bip = rel & 31u;
+	uint bpk = tile_ib48(bip);
+	uint word = byte_in_block >> 2u;
+	uint ch = byte_in_block & 3u;
+	uint cpk = tile_ic32(word);
+	uint bwpg = max(dst_bwpg, 1u);
+	ivec2 xy = ivec2(int((pg % bwpg) * 64u + (bpk & 7u) * 8u + (cpk & 7u)),
+	                 int((pg / bwpg) * 32u + (bpk >> 3u) * 8u + (cpk >> 3u)));
+	xy = clamp(xy, ivec2(0), textureSize(samp0, 0) - 1);
+
+	// UNORM8 back to the byte, exactly: k/255 * 255 lands within an ulp of k.
+	uvec4 bytes = uvec4(texelFetch(samp0, xy, 0) * 255.0f + 0.5f);
+	uint b = (ch == 0u) ? bytes.r : (ch == 1u) ? bytes.g : (ch == 2u) ? bytes.b : bytes.a;
+#if TILE_IDX_FMT == 0 || TILE_IDX_FMT == 2
+	uint idx = b;
+#else
+	// bitfieldExtract, not shift-and-mask: the latter is shape-dependently miscompiled by honeykrisp
+	// (M2/Asahi) on sub-word extracts.
+	uint idx = bitfieldExtract(b, int(nibble * 4u), 4);
+#endif
+	// The index replicated into all four channels, which is what a materialised index image holds
+	// and what the expand's `.a` read expects.
+	o_color = vec4(float(idx) / 255.0f);
+}
+
+#endif

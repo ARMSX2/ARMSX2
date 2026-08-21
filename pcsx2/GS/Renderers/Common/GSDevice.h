@@ -2065,6 +2065,20 @@ public:
 		/// after the Materialise that fills its index (array order is execution order at the pass
 		/// head), which the renderer gets for free by queueing them in that order for the same draw.
 		Expand = 3,
+		/// A resident target -> a texture source, with no byte store in between: the window's texels
+		/// are read straight out of the owner surface's texture through the GS swizzle, one fragment
+		/// per texel. The road for a window whose pages ONE live target solely owns, which is the
+		/// case the byte road serves by writing the target back into the ring and unswizzling it
+		/// again — two passes and a megabyte of ring traffic for bytes that never leave the GPU.
+		/// `target` indexes `prep_textures` (the destination index image, as a Materialise does),
+		/// `donor_target` indexes the frame's `targets` (the owner), `bp`/`bw` are the WINDOW's
+		/// TBP0 and pages-per-row, `psm` its TEX0.PSM, and `owner_bp`/`owner_bwpg` the owner's
+		/// layout — the four numbers GSDevice::TileReinterpretParams carries. The page list, the
+		/// epoch and texa are unused: this road reads no bytes, so it goes through no page table.
+		/// Like a Materialise it produces an INDEX image and takes an Expand after it; unlike one it
+		/// reads an image an earlier draw may still be writing, so the renderer breaks the pass when
+		/// the owner is under the open pass's brush (the WritebackHoistCollides precedent).
+		Donor = 4,
 	};
 
 	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise or an
@@ -2094,6 +2108,16 @@ public:
 		/// Expand only: the index image and the N x 1 palette, both indices into `prep_textures`.
 		u32 index_texture;
 		u32 palette_texture;
+		/// Donor only: the OWNER, as an index into the frame's `targets` list. It is a target rather
+		/// than a prep texture because it is one -- a surface the page model owns and passes render
+		/// into -- and it is a separate field from `target` for exactly that reason: the two index
+		/// different lists and sharing the field would read a source as a surface.
+		u32 donor_target;
+		/// Donor only: the owner's own layout, which is the pixel space its texture realises
+		/// (page-aligned base in blocks, width in pages). With bp/bw above these are the four
+		/// numbers the reinterpretation needs; nothing else about the owner reaches the shader.
+		u32 owner_bp;
+		u32 owner_bwpg;
 	};
 
 	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every

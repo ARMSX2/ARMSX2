@@ -185,10 +185,15 @@ namespace
 
 		/// Lookup and LookupBuilt take exactly the same decisions; they differ in how the expansion
 		/// is produced and in how many passes one build costs.
-		Outcome Serve(const PairKey& k, bool build_ok, u32 levels, int* served_slot)
+		/// `admit_now` is the FirstSight admission the donor road asks for: the second-sight wait is
+		/// waived and a fresh pair builds straight away. Modelled here rather than left to the live
+		/// class, because a rule that only one caller uses is exactly the rule an equivalence test is
+		/// for -- everything else about the entry (its slot, its recency, the pin) has to be
+		/// identical to what the ordinary road would have produced.
+		Outcome Serve(const PairKey& k, bool build_ok, u32 levels, int* served_slot, bool admit_now = false)
 		{
 			*served_slot = kNone;
-			const int s = m_slots.Find(k);
+			int s = m_slots.Find(k);
 			if (s != kNone && m_has_tex[s])
 			{
 				m_slots.Touch(s);
@@ -199,12 +204,16 @@ namespace
 			}
 			if (s == kNone)
 			{
-				if (Admit(k) == kNone)
+				s = Admit(k);
+				if (s == kNone)
 					return Outcome::RefusedCapacity;
-				deferrals++;
-				return Outcome::Deferred;
+				if (!admit_now)
+				{
+					deferrals++;
+					return Outcome::Deferred;
+				}
 			}
-			if (m_seen[s] == m_frame)
+			else if (m_seen[s] == m_frame && !admit_now)
 			{
 				m_slots.Touch(s);
 				deferrals++;
@@ -221,18 +230,21 @@ namespace
 			return Outcome::Built;
 		}
 
-		Admission ProbeAdmit(const PairKey& k)
+		Admission ProbeAdmit(const PairKey& k, bool admit_now = false)
 		{
 			const int s = m_slots.Find(k);
 			if (s == kNone)
 			{
-				Admit(k);
-				return Admission::Deferred;
+				if (Admit(k) == kNone)
+					return Admission::Deferred;
+				return admit_now ? Admission::Served : Admission::Deferred;
 			}
 			m_slots.Touch(s);
 			if (m_has_tex[s])
 				m_pinned[s] = m_pin;
-			return (!m_has_tex[s] && m_seen[s] == m_frame) ? Admission::Deferred : Admission::Served;
+			if (!m_has_tex[s] && m_seen[s] == m_frame)
+				return admit_now ? Admission::Served : Admission::Deferred;
+			return Admission::Served;
 		}
 
 		/// Which key a slot currently holds a texture for, so the test can check the cache handed
@@ -564,19 +576,23 @@ TEST_F(TileCacheIndexTest, ExpandedCacheMatchesReferenceUnderRandomTraffic)
 		}
 	};
 
-	const auto do_probe = [&](const PairKey& key) {
-		const GSTileExpandedCache::Admission got = cache.ProbeAdmit(key.index_id, key.palette_id);
-		const GSTileExpandedCache::Admission want = ref.ProbeAdmit(key);
+	const auto do_probe = [&](const PairKey& key, bool admit_now = false) {
+		const auto when = admit_now ? GSTileExpandedCache::AdmitWhen::FirstSight :
+									  GSTileExpandedCache::AdmitWhen::SecondSight;
+		const GSTileExpandedCache::Admission got = cache.ProbeAdmit(key.index_id, key.palette_id, when);
+		const GSTileExpandedCache::Admission want = ref.ProbeAdmit(key, admit_now);
 		ASSERT_EQ(static_cast<int>(got), static_cast<int>(want)) << "ProbeAdmit verdict";
 		check_counters();
 	};
 
-	const auto do_lookup_built = [&](const PairKey& key) {
+	const auto do_lookup_built = [&](const PairKey& key, bool admit_now = false) {
 		GSTileExpandedCache::BuiltOutcome got{};
+		const auto when = admit_now ? GSTileExpandedCache::AdmitWhen::FirstSight :
+									  GSTileExpandedCache::AdmitWhen::SecondSight;
 		GSTexture* tex = cache.LookupBuilt(index_tex.get(), key.index_id, palette_tex.get(), key.palette_id,
-			builder, &got);
+			builder, when, &got);
 		int slot = kNone;
-		const GSTileExpandedCache::BuiltOutcome want = ref.Serve(key, !builder.refuse, 1, &slot);
+		const GSTileExpandedCache::BuiltOutcome want = ref.Serve(key, !builder.refuse, 1, &slot, admit_now);
 		ASSERT_EQ(static_cast<int>(got), static_cast<int>(want)) << "LookupBuilt outcome";
 		check_texture(key, tex, want);
 		check_counters();
@@ -627,11 +643,15 @@ TEST_F(TileCacheIndexTest, ExpandedCacheMatchesReferenceUnderRandomTraffic)
 		}
 		const PairKey key{static_cast<u64>(rng() % 60) + 1, static_cast<u64>(rng() % 12) + 1};
 		builder.refuse = (rng() % 64) == 0;
+		// A minority of the traffic asks for the FirstSight admission the donor road uses, mixed in
+		// with the ordinary road rather than run as a separate pass: the two rules share one cache,
+		// and what could go wrong is one of them leaving an entry the other then misreads.
+		const bool admit_now = (rng() % 5) == 0;
 
 		if (roll < 40)
-			ASSERT_NO_FATAL_FAILURE(do_probe(key));
+			ASSERT_NO_FATAL_FAILURE(do_probe(key, admit_now));
 		else if (roll < 70)
-			ASSERT_NO_FATAL_FAILURE(do_lookup_built(key));
+			ASSERT_NO_FATAL_FAILURE(do_lookup_built(key, admit_now));
 		else
 			ASSERT_NO_FATAL_FAILURE(do_lookup(key, (rng() % 4 == 0) ? 2u : 1u));
 	}
@@ -670,6 +690,10 @@ TEST_F(TileCacheIndexTest, ExpandedCacheMatchesReferenceUnderRandomTraffic)
 		const PairKey key{static_cast<u64>(0x200000 + i), 9};
 		ASSERT_NO_FATAL_FAILURE(do_lookup_built(key));
 		ASSERT_NO_FATAL_FAILURE(do_probe(key));
+		// FirstSight has to fail closed against a full cache too: waiving the second-sight wait
+		// waives the WAIT, never the pin, and a pair that cannot get a slot still refuses.
+		ASSERT_NO_FATAL_FAILURE(do_lookup_built(key, true));
+		ASSERT_NO_FATAL_FAILURE(do_probe(key, true));
 	}
 
 	// Not a vacuous run: every road the gate cares about was actually reached.

@@ -574,6 +574,10 @@ private:
 	/// buffer, selected by the indirect draw's first_instance. Indexed [GSTileGpuTopology][depth
 	/// mode]: outer is triangle/line/point, inner GSTileGpuDepthMode. Compiled on first use.
 	static constexpr u32 kTileGpuPushWords = 8; ///< push-constant range shared by every TileGpu layout
+	/// The donor build's own range: the two layouts it reinterprets between, and nothing else. It
+	/// has a layout of its own (one sampler, no state SSBO) because it reads no bytes, so it shares
+	/// neither the range above nor the reason for it.
+	static constexpr u32 kTileGpuDonorPushWords = 4;
 	static constexpr u32 kTileGpuNoBlend = 0xFFFFFFFFu; ///< CreateTileGpuPipeline: no blending
 	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_tilegpu_ds_layout = VK_NULL_HANDLE;
@@ -680,6 +684,18 @@ private:
 	VkPipeline m_tilegpu_expand_pipeline = VK_NULL_HANDLE;
 	bool m_tilegpu_expand_tried = false;
 	bool CompileTileGpuExpandPipeline();
+	// A resident target -> a texture source, with no byte store in between: rule 3's DONOR build.
+	// The same reinterpretation ps_tile_reinterpret_index performs, recorded raw beside the expand
+	// and for the same reason -- GSDevice::TileReinterpretIndex binds through the device state cache
+	// and would disturb the executor's sets. One sampler (the owner target), four push words (the
+	// two layouts), one pipeline per index format. Compiled on first use of that format, and only
+	// where the swizzle forms fitted, since the arithmetic is the forms.
+	static constexpr u32 kTileGpuIdxFormats = 5;
+	VkDescriptorSetLayout m_tilegpu_donor_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_tilegpu_donor_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, kTileGpuIdxFormats> m_tilegpu_donor_pipeline{};
+	std::array<bool, kTileGpuIdxFormats> m_tilegpu_donor_tried{};
+	bool CompileTileGpuDonorPipeline(u32 idx_fmt);
 	/// Whether tilegpu_byte_sel must take its constant-shift form on this device: Honeykrisp
 	/// miscompiles the dynamic one on a word loaded from the vram SSBO. Asked in one place because
 	/// every shader that extracts a byte from that buffer has to answer it the same way.
