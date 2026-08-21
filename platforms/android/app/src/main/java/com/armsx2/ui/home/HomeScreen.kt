@@ -143,7 +143,6 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
-    var stateGame by remember { mutableStateOf<GameInfo?>(null) }
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
@@ -708,48 +707,6 @@ fun HomeScreen(
         )
     }
 
-    // Slot picker for "Load save state". A second modal rather than a submenu inside the game
-    // menu: PadModal owns focus, and nesting one inside another leaves the inner rows unreachable
-    // by controller — the same trap that made the game menu itself a PadModal instead of a
-    // ModalBottomSheet.
-    stateGame?.let { game ->
-        val slots by androidx.compose.runtime.produceState(initialValue = emptyList<com.armsx2.SaveSlotLookup.Slot>(), game.serial) {
-            value = withContext(Dispatchers.IO) { com.armsx2.SaveSlotLookup.slotsFor(context, game.serial) }
-        }
-        com.armsx2.ui.common.PadModal(
-            key = "game-state-picker",
-            onDismiss = { stateGame = null },
-            alignment = Alignment.BottomCenter,
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-            ) {
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-                    Text(
-                        str("games.loadState"),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(bottom = 10.dp),
-                    )
-                    slots.forEach { slot ->
-                        GameMenuAction(
-                            "${slot.slot}",
-                            java.text.DateFormat.getDateTimeInstance(
-                                java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
-                            ).format(java.util.Date(slot.modified)),
-                            "game-state.${slot.slot}",
-                        ) {
-                            stateGame = null
-                            com.armsx2.runtime.MainActivityRuntime.launchGameFromSaveSlot(game, slot.slot)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     menuGame?.let { game ->
         // Tri-state on purpose: null while identifying, blank when the image cannot be identified.
         // produceState alone cannot tell those apart — both are null — so an unidentifiable game
@@ -822,7 +779,14 @@ fun HomeScreen(
                 {
                     GameMenuAction("💾", str("games.loadState"), "game-menu.loadstate") {
                         menuGame = null
-                        stateGame = game
+                        // ★ The real Save Manager, not a bespoke list.
+                        //
+                        // It already renders slots as a grid with preview thumbnails and has its
+                        // own back button — which is both what was asked for and the answer to a
+                        // modal with no touch exit. contextGame exists for exactly this: it is how
+                        // the Save Manager already operates on a game that is not running.
+                        com.armsx2.runtime.MainActivityRuntime.contextGame.value = game
+                        com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.SaveManager)
                     }
                 }
                 GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {
