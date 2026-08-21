@@ -12,7 +12,7 @@ import com.armsx2.navigation.SettingsCategory
  */
 internal data class SettingsSearchEntry(val text: String, val isI18nKey: Boolean, val category: SettingsCategory)
 
-internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
+private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("app.bootLogo", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.search", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.recents", true, SettingsCategory.General),
@@ -62,11 +62,6 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.ntscFramerate.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.palFramerate.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.frameSkip.label", true, SettingsCategory.Performance),
-    SettingsSearchEntry("perf.lsfg.label", true, SettingsCategory.Performance),
-    SettingsSearchEntry("perf.lsfg.multiplier.label", true, SettingsCategory.Performance),
-    SettingsSearchEntry("perf.lsfg.performance.label", true, SettingsCategory.Performance),
-    SettingsSearchEntry("perf.lsfg.flowScale.label", true, SettingsCategory.Performance),
-    SettingsSearchEntry("perf.lsfg.dll.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.lowLatencyMode.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.speedhackProfile.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.displayResolution.label", true, SettingsCategory.Performance),
@@ -268,3 +263,13 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("patches.noInterlacing.label", true, SettingsCategory.Patches),
     SettingsSearchEntry("patches.hostFs.label", true, SettingsCategory.Patches),
 )
+
+/**
+ * Everything searchable, plus whatever the flavour adds.
+ *
+ * The frame-generation rows come from a flavoured list rather than sitting in the one above. In
+ * the play build they would otherwise still be indexed while the section they point at was
+ * compiled out — searching would offer a result that renders its own key as its title and leads
+ * nowhere.
+ */
+internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = BASE_SEARCH_INDEX + LSFG_SEARCH_INDEX

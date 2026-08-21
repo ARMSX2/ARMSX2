@@ -1102,26 +1102,22 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     }
     // Frame generation, in its own card: it changes what is PRESENTED rather than what is
     // emulated, so it does not belong among the speedhacks above. Github flavour only — the
-    // section returns immediately when BuildConfig.LSFG is false, taking the card with it.
-    if (com.armsx2.BuildConfig.LSFG) {
-        SectionCard(str("perf.lsfg.label")) {
-            com.armsx2.ui.common.LsfgSection(
-                enabled = settings.lsfgEnabled,
-                multiplier = settings.lsfgMultiplier,
-                dllPath = settings.lsfgDllPath,
-                performance = settings.lsfgPerformance,
-                flowScale = settings.lsfgFlowScale,
-            ) { on, mult, dll, perf, flow ->
-                viewModel.updateSettings {
-                    it.copy(
-                        lsfgEnabled = on,
-                        lsfgMultiplier = mult,
-                        lsfgDllPath = dll,
-                        lsfgPerformance = perf,
-                        lsfgFlowScale = flow,
-                    )
-                }
-            }
+    // card is a no-op stub in the Play build, which contains no frame generation at all.
+    com.armsx2.ui.common.LsfgEmulationCard(
+        enabled = settings.lsfgEnabled,
+        multiplier = settings.lsfgMultiplier,
+        dllPath = settings.lsfgDllPath,
+        performance = settings.lsfgPerformance,
+        flowScale = settings.lsfgFlowScale,
+    ) { on, mult, dll, perf, flow ->
+        viewModel.updateSettings {
+            it.copy(
+                lsfgEnabled = on,
+                lsfgMultiplier = mult,
+                lsfgDllPath = dll,
+                lsfgPerformance = perf,
+                lsfgFlowScale = flow,
+            )
         }
     }
     SectionCard(str("tab.recompiler")) {
@@ -1488,7 +1484,7 @@ private fun ActionGrid(actions: List<MenuAction>) {
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp),

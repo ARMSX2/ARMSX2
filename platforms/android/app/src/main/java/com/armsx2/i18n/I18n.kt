@@ -159,7 +159,7 @@ fun str(key: String): String {
  * full ~400–500 keys land during the file-by-file extraction pass. Keep keys dotted + stable —
  * renaming a key orphans it in every translation JSON.
  */
-val EN: Map<String, String> = mapOf(
+private val BASE_EN: Map<String, String> = mapOf(
     "about.title" to "About app",
     "friends.title" to "Friends",
     "friends.explain" to "Link Discord to show what you're playing and see which friends are in ARMSX2. Uses your existing Discord friends — ARMSX2 keeps no account and runs no server. Only while the app is open.",
@@ -1397,28 +1397,6 @@ val EN: Map<String, String> = mapOf(
     "renderer.shaderChain.description" to "Runs a RetroArch (.slangp) shader chain over the final image — CRT masks, handheld LCD looks, scalers. Costs GPU time and stacks on top of the other display effects.",
     "renderer.shaderChain.empty" to "No .slangp presets found. Download a pack under Shader Packs below, or drop one into this folder by hand and reopen this list:",
     "renderer.shaderChain.folder.up" to "Up one folder",
-    "perf.lsfg.label" to "Frame Generation (LSFG)",
-    "perf.lsfg.description" to "Insert interpolated frames between rendered ones. Needs Vulkan, an Adreno 7xx or newer GPU, and your own copy of Lossless Scaling.",
-    "perf.lsfg.multiplier.label" to "Generated Frames",
-    "perf.lsfg.multiplier.description" to "Frames displayed for each frame the emulator renders. Higher is smoother but adds latency and GPU load.",
-    "perf.lsfg.performance.label" to "Performance Mode",
-    "perf.lsfg.performance.description" to "Use the lighter 3.1p interpolation shaders. Cheaper on the GPU, slightly softer around fast motion. Ignored if your Lossless.dll is too old to include them.",
-    "perf.lsfg.flowScale.label" to "Motion Detail",
-    "perf.lsfg.flowScale.description" to "Resolution of the motion analysis, as a share of the displayed image. Lower is much cheaper and blurs fine detail in the generated frames.",
-    "perf.lsfg.dll.label" to "Lossless.dll",
-    "perf.lsfg.dll.none" to "Not selected — tap to choose your Lossless.dll",
-    "perf.lsfg.dll.selected" to "Selected — tap to choose a different file",
-    "perf.lsfg.dll.importFailed" to "Could not read the selected file.",
-    "perf.lsfg.dll.notADll" to "That file is not a readable Lossless.dll.",
-    "perf.lsfg.requirements.title" to "Frame Generation requirements",
-    "perf.lsfg.requirements.body" to "Frame generation uses Lossless Scaling\u2019s own interpolation shaders. ARMSX2 does not include them \u2014 you must own Lossless Scaling and supply its Lossless.dll yourself.\n\nIt also requires the Vulkan renderer and an Adreno 7xx or newer GPU. On anything else it stays off.",
-    "perf.lsfg.requirements.accept" to "I understand",
-    "perf.lsfg.unavailable.notBuilt" to "Frame generation is not included in this build.",
-    "perf.lsfg.unavailable.notVulkan" to "Frame generation requires the Vulkan renderer.",
-    "perf.lsfg.unavailable.gpu" to "Frame generation requires an Adreno 7xx or newer GPU.",
-    "perf.lsfg.unavailable.noDll" to "Select your Lossless.dll to enable frame generation.",
-    "perf.lsfg.unavailable.badDll" to "The selected file is not a readable Lossless.dll.",
-    "perf.lsfg.unavailable.initFailed" to "Frame generation could not start on this device. Check the log for details.",
     "renderer.shaderChain.label" to "RetroArch Shaders",
     "renderer.shaderChain.params.countModified" to "%d changed",
     "renderer.shaderChain.params.description" to "Tweak this preset's own settings",
@@ -1683,3 +1661,16 @@ val EN: Map<String, String> = mapOf(
     "touch.stateAction.save" to "SAVE",
     "touch.stateAction.screenshot" to "SHOT",
 )
+
+/**
+ * The canonical English table.
+ *
+ * Split so the frame-generation strings can be ABSENT from the play build rather than merely
+ * unreachable in it. They are the only user-visible text in the app naming a third-party product,
+ * and a Kotlin map literal is compiled in whatever any runtime flag says — a BuildConfig.LSFG
+ * guard on the UI keeps the rows from being drawn while every one of these strings still sits in
+ * the play dex in plain text, findable by anyone who searches for them.
+ *
+ * See I18nLsfg.kt in the github and play source sets.
+ */
+val EN: Map<String, String> = BASE_EN + LSFG_EN

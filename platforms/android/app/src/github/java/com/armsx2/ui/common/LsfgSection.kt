@@ -56,6 +56,11 @@ import java.io.File
  *
  * ## Github flavour only
  *
+ * This file lives in the github source set; the play one has a stub of the same name, so the Play
+ * build does not CONTAIN it. That is a stronger claim than the [BuildConfig.LSFG] check below,
+ * which stops the rows being drawn and does nothing about the code or its strings shipping. The
+ * guard is kept anyway so a future caller that forgets cannot turn it on.
+ *
  * [BuildConfig.LSFG] is false in the Play build and the whole section compiles out of it —
  * the native side is not there either (ARMSX2_ENABLE_LSFG is off, so GSLsfg answers
  * NOT_COMPILED_IN), and build-play-aab.sh fails the build if libarmsx2_lsfg.so ever
@@ -301,5 +306,27 @@ private fun LsfgRequirementsDialog(onDismiss: () -> Unit, onAccept: () -> Unit) 
                 ) { Text(str("perf.lsfg.requirements.accept")) }
             }
         }
+    }
+}
+
+/**
+ * The in-game pause menu's frame-generation card.
+ *
+ * Exists so [com.armsx2.ui.emulation.EmulationMenuScreen] can call one thing and name nothing
+ * else — with the SectionCard built here, the shared file no longer carries the section title's
+ * string key. The play stub renders nothing, so the card is simply not in that menu.
+ */
+@Composable
+fun LsfgEmulationCard(
+    enabled: Boolean,
+    multiplier: Int,
+    dllPath: String,
+    performance: Boolean,
+    flowScale: Int,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int) -> Unit,
+) {
+    if (!BuildConfig.LSFG) return
+    com.armsx2.ui.emulation.SectionCard(str("perf.lsfg.label")) {
+        LsfgSection(enabled, multiplier, dllPath, performance, flowScale, onChange)
     }
 }
