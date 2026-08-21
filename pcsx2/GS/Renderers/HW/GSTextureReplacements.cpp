@@ -157,11 +157,6 @@ namespace GSTextureReplacements
 	/// oversized pack degrades to "some textures aren't replaced" instead of a hard crash.
 	static size_t s_replacement_texture_cache_bytes = 0;
 	static size_t s_replacement_texture_cache_budget = 0; // lazily computed on first use
-	/// DORMANT: maintained but never evicted from, because the budget is now unlimited. Kept
-	/// deliberately rather than deleted — if oversized packs start OOM-killing devices again,
-	/// reinstating eviction is a one-line change to GetReplacementCacheBudget, and the ordering
-	/// has to already be correct at that point. The cost is one list node + map entry per
-	/// resident texture, negligible beside the textures themselves.
 	static std::list<TextureName> s_replacement_texture_lru; // front = least recently used
 	static std::unordered_map<TextureName, std::list<TextureName>::iterator> s_replacement_texture_lru_map;
 	static bool s_replacement_cache_budget_hit = false;
@@ -191,27 +186,46 @@ size_t GSTextureReplacements::ReplacementTextureBytes(const ReplacementTexture& 
 
 size_t GSTextureReplacements::GetReplacementCacheBudget()
 {
-	// ★ NO CAP. Deliberate, and a reversal of the 2026-07-20 policy.
+	if (s_replacement_texture_cache_budget != 0)
+		return s_replacement_texture_cache_budget;
+
+	// ★ RAM MINUS A RESERVE, not a fraction of RAM and not a fixed number.
 	//
-	// The cap was added to stop a 5 GB uncompressed Persona 3 FES pack OOM-killing Android
-	// mid-load. It did stop the crash — and it broke every setup where an oversized pack had
-	// been working. Budget was RAM/2, so on an 8 GB device a 5 GB pack sat permanently ~1 GB
-	// over and evicted continuously: each load immediately dropping the previous one. Combined
-	// with dropping textures whose upload fails, that presents as "the mods stopped applying",
-	// which is exactly what Persona 3 FES users reported from 2.6.6.1 onward while 2.6.6 was
-	// fine. Reported by JustVibin247; the pack in question is the same one that motivated the
-	// cap.
+	// History, because this has now been wrong in both directions. It began uncapped and a 5 GB
+	// uncompressed Persona 3 FES pack OOM-killed Android mid-load. The fix capped it at RAM/4,
+	// then RAM/2 — and that broke the same pack on 8 GB devices where it had been working: 5 GB
+	// against a 4 GB budget evicts continuously, each load dropping the previous one, which
+	// surfaced as corruption and then as "the mods do not apply at all" (JustVibin247, from
+	// 2.6.6.1). Briefly removed entirely, which simply traded the crash back.
 	//
-	// There is no budget that satisfies both: 5 GB does not fit inside any fraction of 8 GB
-	// that also leaves room for the emulator. So the choice is which failure the user gets, and
-	// an oversized pack now behaves as it did before — it loads, and the device is allowed to
-	// run out of memory if it truly cannot hold it. That is the user's pack and their device;
-	// silently applying half a pack is the worse answer, because nothing on screen says why.
+	// A fraction of RAM is the wrong shape: it scales the RESERVE with total memory, when what
+	// actually has to be reserved is roughly constant — the EE/GS allocations, the JIT, Android
+	// itself. On 8 GB, RAM/2 holds back 4 GB to protect something that needs about 1.5 GB.
 	//
-	// The byte accounting below is KEPT on purpose. Nothing evicts any more, but the running
-	// total is what makes a future OOM diagnosable instead of a mystery, and it is what the
-	// warning at the call site reports.
-	return std::numeric_limits<size_t>::max();
+	// A fixed 5 GB is wrong too, and specifically so: this pack measures 5.0 GB, so a 5 GB cap
+	// sits exactly on the boundary and evicts anyway.
+	//
+	// So: reserve a constant and give the rest to textures. On 8 GB that is 5.5 GB, which holds
+	// the pack whole with room to spare; on 6 GB it is 3.5 GB, where nothing would have fitted
+	// regardless; on 12 GB it is 9.5 GB rather than an arbitrary ceiling. Real packs measured:
+	// God of War 1 HD = 2.97 GB, Persona 3 FES HD = 5.0 GB, both UNCOMPRESSED DDS.
+	//
+	// Must stay 64-bit-safe: correct only because arm64/desktop size_t is 64-bit — on a 32-bit
+	// build anything >= 4 GB wraps to 0 and would evict everything.
+	constexpr size_t RESERVE = static_cast<size_t>(2560) * 1024 * 1024; // 2.5 GB for everything else
+	constexpr size_t MIN_BUDGET = static_cast<size_t>(192) * 1024 * 1024;
+	const u64 physical = GetPhysicalMemory();
+
+	size_t budget = MIN_BUDGET;
+	if (physical > RESERVE)
+		budget = static_cast<size_t>(physical) - RESERVE;
+	if (budget < MIN_BUDGET)
+		budget = MIN_BUDGET;
+
+	s_replacement_texture_cache_budget = budget;
+	Console.WriteLnFmt("Texture replacements: cache budget {} MB (physical RAM {} MB).",
+		budget / 1048576, physical / 1048576);
+	return budget;
 }
 
 void GSTextureReplacements::TouchReplacementCacheLocked(const TextureName& name)
@@ -228,23 +242,41 @@ const GSTextureReplacements::ReplacementTexture* GSTextureReplacements::InsertRe
 	const TextureName& name, ReplacementTexture& tex)
 {
 	const size_t incoming = ReplacementTextureBytes(tex);
+	const size_t budget = GetReplacementCacheBudget();
 
-	// Nothing is evicted any more — see GetReplacementCacheBudget. The accounting stays so the
-	// footprint is visible, and so an unusually large pack is named in the log BEFORE it can
-	// take the process down. Warned once, past physical RAM/2, purely as a breadcrumb: it is
-	// not a limit and nothing is refused because of it.
-	if (!s_replacement_cache_budget_hit)
+	// A single texture larger than the entire budget can never be held. Leave [tex] untouched
+	// so the caller can still upload it this once, rather than evicting everything for it.
+	if (incoming > budget)
+		return nullptr;
+
+	while ((s_replacement_texture_cache_bytes + incoming) > budget && !s_replacement_texture_lru.empty())
 	{
-		const u64 physical = GetPhysicalMemory();
-		const size_t warn_at = (physical != 0) ? static_cast<size_t>(physical / 2)
-											   : (static_cast<size_t>(2048) * 1024 * 1024);
-		if ((s_replacement_texture_cache_bytes + incoming) > warn_at)
+		const TextureName victim = s_replacement_texture_lru.front();
+		const auto vit = s_replacement_texture_cache.find(victim);
+		if (vit != s_replacement_texture_cache.end())
+		{
+			s_replacement_texture_cache_bytes -= ReplacementTextureBytes(vit->second);
+			s_replacement_texture_cache.erase(vit);
+		}
+		s_replacement_texture_lru_map.erase(victim);
+		s_replacement_texture_lru.pop_front();
+
+		// Says the pack's size and the budget, because the actionable question is which is
+		// bigger — the old wording gave only the budget, so nobody could tell by how much they
+		// were over or whether a smaller pack would help.
+		if (!s_replacement_cache_budget_hit)
 		{
 			s_replacement_cache_budget_hit = true;
-			Console.WarningFmt("Texture replacements: pack is using {} MB, over half of this device's RAM. "
-							   "It is being kept resident anyway; if the app is killed, this is why. A "
-							   "block-compressed (BC/DXT) pack would be several times smaller.",
-				(s_replacement_texture_cache_bytes + incoming) / 1048576);
+			Console.WarningFmt("Texture replacements: cache budget of {} MB reached; evicting. This pack does "
+							   "not fit in memory and will only be partly applied. A block-compressed "
+							   "(BC/DXT) pack would be several times smaller.",
+				budget / 1048576);
+			Host::AddIconOSDMessage("ReplacementCacheBudget", ICON_FA_CIRCLE_EXCLAMATION,
+				fmt::format(TRANSLATE_FS("TextureReplacement",
+								"Texture pack is larger than the {} MB this device can hold, so only part of it "
+								"will be applied. Use a block-compressed (BC/DXT) pack for full coverage."),
+					budget / 1048576),
+				Host::OSD_WARNING_DURATION);
 		}
 	}
 
