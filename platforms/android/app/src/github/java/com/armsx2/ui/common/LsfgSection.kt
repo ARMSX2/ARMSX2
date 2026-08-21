@@ -185,7 +185,22 @@ fun LsfgSection(
         ) { on ->
             val hz = if (!on) 0 else runCatching {
                 val d = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) context.display else null
-                (d?.refreshRate ?: 60f).toInt().coerceIn(30, 480)
+                // ★ The panel's CAPABILITY, not Display.getRefreshRate().
+                //
+                // getRefreshRate() reports the rate the app's window is being driven at right now,
+                // which on a 120Hz phone is usually 60 — Android only lifts a window to the high
+                // mode when something asks. Capturing that made the target 60, and a 60fps game
+                // then needs zero interpolated frames (desired_outputs = interval * target = 1.0),
+                // so turning adaptive pacing ON silently turned frame generation OFF: FPS 60,
+                // LSFG 60. Same resolution filter as everywhere else, so the target can never be a
+                // rate that also implies a mode switch.
+                val best = d?.supportedModes
+                    ?.filter {
+                        it.physicalWidth == d.mode.physicalWidth &&
+                            it.physicalHeight == d.mode.physicalHeight
+                    }
+                    ?.maxOfOrNull { it.refreshRate }
+                (best ?: d?.refreshRate ?: 60f).toInt().coerceIn(30, 480)
             }.getOrDefault(60)
             onChange(enabled, multiplier, path, performance, flowScale, hz)
         }

@@ -859,7 +859,7 @@ fun HomeScreen(
                 // does per-game assignment whenever it is handed a game — until now the only
                 // caller that handed it one was the in-game menu, so from the library you got
                 // the global slots and no way to reach the per-game ones.
-                GameMenuAction("💳", str("memcard.perGame.menu"), "game-menu.memcard") {
+                GameMenuAction("🗃️", str("memcard.perGame.menu"), "game-menu.memcard") {
                     menuGame = null
                     com.armsx2.navigation.UiNavigator.navigate(
                         com.armsx2.navigation.AppRoute.MemoryCardManager(game))
