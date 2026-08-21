@@ -928,32 +928,38 @@ TEST(VuStickyMicroConsoleConformance, DISABLED_AllMicroStatusMatchesConsole)
 	}
 }
 
-// The div unit has no denormal encoding either -- the same defect class as
-// Arm64Cop2MacroFlushesDenormalResultsToSignedZero, one pipe over. The
-// interpreter post-processes every div-unit result through vuDouble --
+// The div unit has no denormal encoding. The interpreter runs it on the bit
+// model in FPU.cpp, which says so in three places:
 //
-//     _vuDIV / _vuSQRT / _vuRSQRT:   VU->q.F = vuDouble(VU->q.UL);
+//     eeDivide:    ea == 0  ->  sign        a denormal dividend is a zero
+//                  e  <  1  ->  sign        no binade below 2^-126 to land in
+//     eeSqrtBits:  E  == 0  ->  0           and the operand's sign goes with it
 //
-// -- and vuDouble's `case 0x0:` returns `f & 0x80000000` (VUops.cpp), so a
-// denormal Q lands as signed zero exactly the way a denormal FMAC result does.
-// Both arm64 pipes write the raw quotient: COP2 macro through cop2EmitSyncFDiv,
-// micro through writeQreg. Each is the single tail all three of its ops pass
-// through, so the class is one site per pipe.
+// and a divisor with a zero exponent field never reaches eeDivide at all --
+// _vuDIV and _vuRSQRT test `(ft & 0x7F800000) == 0`, not `ft == 0.0f`, so a
+// denormal divisor saturates Q and raises D or I like a true zero.
 //
-// The clamp tier is not an axis: vuDouble's denormal arm never consults
-// CHECK_VU_OVERFLOW, unlike its exp-255 sibling, and arm64's Fminnm/Fmaxnm clamp
-// is emitted unconditionally. Swept across all four VU0 tiers (none / Overflow /
-// +Extra / +Sign): identical results, on both engines and both pipes.
+// Both arm64 pipes ran that on host floats: a pair of Fcmps against 0.0 for
+// the two zero tests, and the hardware's FPCR.FZ for the flush. Which is
+// right, exactly and only while FZ is set. The tests below therefore come in
+// two halves -- one per FP environment -- because each pins a different thing:
 //
-// The environment is the axis, and it once made this file lie. At the default FZ
-// the host flushes the quotient before either engine can differ. The tripwire
-// these tests replace carried `jit 00400000 / interp 00000000`, captured before
-// commit 9c05f75019 moved the harness into the production FP environment;
-// afterwards it passed silently, as a disabled test, while the defect it named
-// stood. Hence the ScopedFpEnv below and the asserted premise.
+//   FZ off: the software model. Every row here failed on both pipes before
+//           the exponent-field tests and the flush landed; 19 Q and 8 D/I of
+//           the 26 rows, per pipe.
+//   FZ on:  that the hardware's answer and the model's are the same one, and
+//           that the flush the emitters skip there was not carrying anything.
 //
-// 12 of the 17 rows below fail on each pipe -- 24 [jit] legs, 0 [interp]. The
-// five that hold are the four controls and the labelled already-zero row.
+// The clamp tier is not an axis: nothing on this path consults
+// CHECK_VU_OVERFLOW, and arm64's Fminnm/Fmaxnm clamp is emitted
+// unconditionally. Swept across all four VU0 tiers (none / Overflow / +Extra
+// / +Sign): identical results, on both engines and both pipes.
+//
+// The environment once made this file lie. The tripwire these tests replace
+// carried `jit 00400000 / interp 00000000`, captured before commit 9c05f75019
+// moved the harness into the production FP environment; afterwards it passed
+// silently, as a disabled test, while the defect it named stood. Hence the
+// asserted premise in each half.
 namespace
 {
 struct DivDenormCase
@@ -962,45 +968,79 @@ struct DivDenormCase
 	enum { kDiv, kSqrt, kRsqrt } op;
 	u32 fs, ft;
 	u32 want_q;
+	u32 want_di; // STATUS D/I, mask 0x30
 };
 
-// Dimensions crossed: op family x operand signs x how far the result falls past
-// the denormal boundary x the negative-ft branch, plus four controls that must
-// not move.
+// Dimensions crossed: op family x which operand is denormal (neither, the
+// dividend, the divisor, both) x operand signs x how far a denormal result
+// falls past the boundary x the negative-ft branch, plus five controls that
+// must not move.
 constexpr DivDenormCase kDivDenormCases[] = {
-	// Quotient lands mid-denormal.
-	{"DIV 2^-126 / 2.0", DivDenormCase::kDiv, 0x00800000u, 0x40000000u, 0x00000000u},
-	{"DIV -2^-126 / 2.0", DivDenormCase::kDiv, 0x80800000u, 0x40000000u, 0x80000000u},
-	{"DIV 2^-126 / -2.0", DivDenormCase::kDiv, 0x00800000u, 0xC0000000u, 0x80000000u},
-	{"DIV -2^-126 / -2.0", DivDenormCase::kDiv, 0x80800000u, 0xC0000000u, 0x00000000u},
-	{"DIV 2^-126 / 4.0", DivDenormCase::kDiv, 0x00800000u, 0x40800000u, 0x00000000u},
+	// Quotient lands mid-denormal, from operands that are both normal.
+	{"DIV 2^-126 / 2.0", DivDenormCase::kDiv, 0x00800000u, 0x40000000u, 0x00000000u, 0x00u},
+	{"DIV -2^-126 / 2.0", DivDenormCase::kDiv, 0x80800000u, 0x40000000u, 0x80000000u, 0x00u},
+	{"DIV 2^-126 / -2.0", DivDenormCase::kDiv, 0x00800000u, 0xC0000000u, 0x80000000u, 0x00u},
+	{"DIV -2^-126 / -2.0", DivDenormCase::kDiv, 0x80800000u, 0xC0000000u, 0x00000000u, 0x00u},
+	{"DIV 2^-126 / 4.0", DivDenormCase::kDiv, 0x00800000u, 0x40800000u, 0x00000000u, 0x00u},
 	// Boundary: the largest denormal (0x007FFFFF, one ulp below the smallest
 	// normal) and the smallest (0x00000001). A predicate that tested the
 	// exponent with the wrong comparison would let one of these through.
-	{"DIV 2^-126 / (1+2^-23)", DivDenormCase::kDiv, 0x00800000u, 0x3F800001u, 0x00000000u},
-	{"DIV 2^-126 / 2^23", DivDenormCase::kDiv, 0x00800000u, 0x4B000000u, 0x00000000u},
+	{"DIV 2^-126 / (1+2^-23)", DivDenormCase::kDiv, 0x00800000u, 0x3F800001u, 0x00000000u, 0x00u},
+	{"DIV 2^-126 / 2^23", DivDenormCase::kDiv, 0x00800000u, 0x4B000000u, 0x00000000u, 0x00u},
 	// The far side of the boundary, and not a witness: 2^-150 is half the
 	// smallest denormal, so it rounds to a true zero on its own and the two
 	// engines agree here either way. Kept to bound the sweep.
-	{"DIV 2^-126 / 2^24 (already zero, agrees either way)", DivDenormCase::kDiv, 0x00800000u, 0x4B800000u, 0x00000000u},
+	{"DIV 2^-126 / 2^24 (already zero, agrees either way)", DivDenormCase::kDiv, 0x00800000u, 0x4B800000u, 0x00000000u, 0x00u},
 	// RSQRT: fs / sqrt(|ft|), so the sign is fs's alone.
-	{"RSQRT 2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x40800000u, 0x00000000u},
-	{"RSQRT -2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0x40800000u, 0x80000000u},
-	{"RSQRT 2^-126 / sqrt(16.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x41800000u, 0x00000000u},
+	{"RSQRT 2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x40800000u, 0x00000000u, 0x00u},
+	{"RSQRT -2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0x40800000u, 0x80000000u, 0x00u},
+	{"RSQRT 2^-126 / sqrt(16.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x41800000u, 0x00000000u, 0x00u},
 	// Negative ft takes the abs-and-raise-I branch before the flush.
-	{"RSQRT 2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0xC0800000u, 0x00000000u},
-	{"RSQRT -2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0xC0800000u, 0x80000000u},
+	{"RSQRT 2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0xC0800000u, 0x00000000u, 0x10u},
+	{"RSQRT -2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0xC0800000u, 0x80000000u, 0x10u},
+
+	// Denormal dividend over a normal divisor. Not reachable from the result:
+	// over a near-minimal divisor a denormal divides out to an ordinary
+	// single, which no test of the quotient alone would flush.
+	{"DIV denorm / 2^-126", DivDenormCase::kDiv, 0x00400000u, 0x00800000u, 0x00000000u, 0x00u},
+	{"DIV -denorm / 2^-126", DivDenormCase::kDiv, 0x80400000u, 0x00800000u, 0x80000000u, 0x00u},
+	{"DIV mindenorm / 2^-126", DivDenormCase::kDiv, 0x00000001u, 0x00800000u, 0x00000000u, 0x00u},
+	{"RSQRT denorm / sqrt(2^-126)", DivDenormCase::kRsqrt, 0x00400000u, 0x00800000u, 0x00000000u, 0x00u},
+
+	// Denormal divisor: a zero divisor, so Q saturates and D or I is raised.
+	// The far end of the class -- the host quotient here is not a ulp out, it
+	// is sixty binades out.
+	{"DIV 1.0 / denorm", DivDenormCase::kDiv, 0x3F800000u, 0x00400000u, 0x7FFFFFFFu, 0x20u},
+	{"DIV 1.0 / -denorm", DivDenormCase::kDiv, 0x3F800000u, 0x80400000u, 0xFFFFFFFFu, 0x20u},
+	{"DIV -1.0 / denorm", DivDenormCase::kDiv, 0xBF800000u, 0x00400000u, 0xFFFFFFFFu, 0x20u},
+	{"DIV denorm / denorm", DivDenormCase::kDiv, 0x00400000u, 0x00400000u, 0x7FFFFFFFu, 0x10u},
+	{"RSQRT 1.0 / sqrt(denorm)", DivDenormCase::kRsqrt, 0x3F800000u, 0x00400000u, 0x7FFFFFFFu, 0x20u},
+	{"RSQRT denorm / sqrt(denorm)", DivDenormCase::kRsqrt, 0x00400000u, 0x00400000u, 0x7FFFFFFFu, 0x10u},
+	// A denormal dividend over a true zero picks D, not I: the flag is a
+	// question about the exponent field, and 0/0 is exclusive with x/0.
+	{"DIV denorm / 0.0", DivDenormCase::kDiv, 0x00400000u, 0x00000000u, 0x7FFFFFFFu, 0x10u},
+	{"RSQRT denorm / sqrt(0)", DivDenormCase::kRsqrt, 0x00400000u, 0x00000000u, 0x7FFFFFFFu, 0x10u},
+
+	// A denormal radicand is a zero radicand, and eeSqrtBits drops its sign.
+	{"SQRT denorm", DivDenormCase::kSqrt, 0x00000000u, 0x00400000u, 0x00000000u, 0x00u},
+	{"SQRT mindenorm", DivDenormCase::kSqrt, 0x00000000u, 0x00000001u, 0x00000000u, 0x00u},
+	{"SQRT -denorm", DivDenormCase::kSqrt, 0x00000000u, 0x80400000u, 0x00000000u, 0x10u},
+
 	// Controls. 2^-125 / 2.0 is the smallest normal, exponent 1, and must
 	// survive untouched: it fails if the predicate tests exp <= 1 rather than
 	// exp == 0. SQRT cannot produce a denormal from a normal operand at all
 	// (sqrt of the smallest normal is 2^-63), so it pins the flush as a no-op
-	// on the one div-unit op that never needs it. A denormal SQRT *operand* is
-	// a different, still-open item.
-	{"DIV 2^-125 / 2.0 (smallest normal survives)", DivDenormCase::kDiv, 0x01000000u, 0x40000000u, 0x00800000u},
-	{"DIV 8.0 / 2.0", DivDenormCase::kDiv, 0x41000000u, 0x40000000u, 0x40800000u},
-	{"SQRT 2^-126", DivDenormCase::kSqrt, 0x00000000u, 0x00800000u, 0x20000000u},
-	{"SQRT 4.0", DivDenormCase::kSqrt, 0x00000000u, 0x40800000u, 0x40000000u},
+	// on the one div-unit op that never needs it. 1.0 / 0.0 pins the true-zero
+	// divisor the denormal rows above join.
+	{"DIV 2^-125 / 2.0 (smallest normal survives)", DivDenormCase::kDiv, 0x01000000u, 0x40000000u, 0x00800000u, 0x00u},
+	{"DIV 8.0 / 2.0", DivDenormCase::kDiv, 0x41000000u, 0x40000000u, 0x40800000u, 0x00u},
+	{"DIV 1.0 / 0.0", DivDenormCase::kDiv, 0x3F800000u, 0x00000000u, 0x7FFFFFFFu, 0x20u},
+	{"SQRT 2^-126", DivDenormCase::kSqrt, 0x00000000u, 0x00800000u, 0x20000000u, 0x00u},
+	{"SQRT 4.0", DivDenormCase::kSqrt, 0x00000000u, 0x40800000u, 0x40000000u, 0x00u},
+	{"RSQRT 1.0 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x3F800000u, 0x40800000u, 0x3F000000u, 0x00u},
 };
+
+constexpr u32 kDivDI = 0x30;
 
 // `which` names the register the pipe under test actually runs under: COP2
 // macro ops execute on the EE thread under FPUFPCR, micro programs under the
@@ -1012,10 +1052,62 @@ void RequireDenormalsLive(const FPControlRegister& fpcr, const char* which)
 		<< "before either engine sees it and every case below passes for a reason "
 		<< "unrelated to the code under test";
 }
+
+void RequireDenormalsFlushed(const FPControlRegister& fpcr, const char* which)
+{
+	ASSERT_TRUE(fpcr.GetDenormalsAreZero())
+		<< which << " has DenormalsAreZero clear, so this half is testing the "
+		<< "software model rather than the hardware's agreement with it";
+}
+
+// COP2 macro: VDIV/VSQRT/VRSQRT -> Q, read out of the VU0 snapshot rather than
+// through a CFC2, whose EE-side result would diverge on exactly the rows under
+// test and fail the harness's own GPR diff first.
+void RunMacroDivCase(const DivDenormCase& c)
+{
+	EeRecTestHarness h;
+	h.EnableVu0Capture();
+	h.ExpectVu0Divergence();
+	h.SeedVu0VfBits(4, c.fs, c.fs, c.fs, c.fs);
+	h.SeedVu0VfBits(5, c.ft, c.ft, c.ft, c.ft);
+	h.LoadProgram({
+		CTC2(0, REG_STATUS_FLAG),
+		c.op == DivDenormCase::kDiv     ? VDIV_C2(0, 0, 4, 5)
+		: c.op == DivDenormCase::kSqrt  ? VSQRT_C2(0, 5)
+										: VRSQRT_C2(0, 0, 4, 5),
+	});
+	h.Run();
+	EXPECT_EQ(h.GetVu0ViInterp(REG_Q), c.want_q) << "[interp] Q";
+	EXPECT_EQ(h.GetVu0ViJit(REG_Q), c.want_q) << "[jit] Q";
+	EXPECT_EQ(h.GetVu0ViInterp(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[interp] D/I";
+	EXPECT_EQ(h.GetVu0ViJit(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[jit] D/I";
+}
+
+// The micro pipe reaches the same three ops through a different emitter and a
+// different destination -- writeQreg's insert into the Q-pipeline's pending
+// lane, drained here by VWAITQ.
+void RunMicroDivCase(const DivDenormCase& c)
+{
+	VuTestHarness h(0);
+	h.SetVfBits(1, c.fs, c.fs, c.fs, c.fs);
+	h.SetVfBits(2, c.ft, c.ft, c.ft, c.ft);
+	h.LoadProgram({
+		vu::VuOp{c.op == DivDenormCase::kDiv     ? vu::VDIV_L(vu::vf::vf1, 0, vu::vf::vf2, 0)
+				 : c.op == DivDenormCase::kSqrt  ? vu::VSQRT_L(vu::vf::vf2, 0)
+												 : vu::VRSQRT_L(vu::vf::vf1, 0, vu::vf::vf2, 0),
+			vu::VNOP_U()},
+		vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
+		vu::EBitNopPair(),
+	});
+	h.RunNoDiff();
+	EXPECT_EQ(h.GetViInterp(REG_Q), c.want_q) << "[interp] Q";
+	EXPECT_EQ(h.GetViJit(REG_Q), c.want_q) << "[jit] Q";
+	EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[interp] D/I";
+	EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[jit] D/I";
+}
 } // namespace
 
-// TRIPWIRE -- as above, for the COP2 div unit (VDIV/VSQRT/VRSQRT -> Q).
-TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2DivUnitFlushesDenormalQToSignedZero)
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitHasNoDenormals)
 {
 	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
 	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
@@ -1023,35 +1115,25 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2DivUnitFlushesDenormalQToSign
 	for (const DivDenormCase& c : kDivDenormCases)
 	{
 		SCOPED_TRACE(c.what);
-		EeRecTestHarness h;
-		h.EnableVu0Capture();
-		h.SeedVu0VfBits(4, c.fs, c.fs, c.fs, c.fs);
-		h.SeedVu0VfBits(5, c.ft, c.ft, c.ft, c.ft);
-		h.LoadProgram({
-			CTC2(0, REG_STATUS_FLAG),
-			c.op == DivDenormCase::kDiv     ? VDIV_C2(0, 0, 4, 5)
-			: c.op == DivDenormCase::kSqrt  ? VSQRT_C2(0, 5)
-											: VRSQRT_C2(0, 0, 4, 5),
-			CFC2(kRQ[0], REG_Q),
-		});
-		h.Run();
-		EXPECT_EQ(static_cast<u32>(h.GetGpr64Interp(kRQ[0])), c.want_q) << "[interp] Q";
-		EXPECT_EQ(static_cast<u32>(h.GetGpr64Jit(kRQ[0])), c.want_q) << "[jit] Q";
+		RunMacroDivCase(c);
 	}
 }
 
-// The micro pipe reaches the same three ops through a different emitter and a
-// different destination -- writeQreg's insert into the Q-pipeline's pending
-// lane, drained here by VWAITQ.
-// TRIPWIRE -- microVU writeQreg does not software-flush a denormal Q.
-// Reverted with the COP2 pair: +4 ARM64 insns on every DIV/SQRT/RSQRT for
-// something the VU FPCR's FZ already does, in every shipping configuration
-// (DEFAULT_VU_FP_CONTROL_REGISTER is DAZ+FTZ+ChopZero and neither GameDB nor
-// the UI ever clears it). It only half-closed the wider gap: with FZ off the
-// interpreter runs both operands through vuDouble, so a denormal divisor still
-// diverges in value and in STATUS D/I. The redesign should settle whether the
-// VU is simply always-FZ rather than patch symptoms.
-TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitFlushesDenormalQToSignedZero)
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitHasNoDenormalsWithHardwareFlush)
+{
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsFlushed(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
+
+	for (const DivDenormCase& c : kDivDenormCases)
+	{
+		SCOPED_TRACE(c.what);
+		RunMacroDivCase(c);
+	}
+}
+
+// TRIPWIRE -- microVU still runs the div unit on host floats: two Fcmps
+// against 0.0 for the zero tests, and FPCR.FZ for the flush. 25 of the rows
+// below fail on it with FZ off, and none with FZ on.
+TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitHasNoDenormals)
 {
 	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
 	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
@@ -1059,20 +1141,55 @@ TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitFlushesDenormalQToSig
 	for (const DivDenormCase& c : kDivDenormCases)
 	{
 		SCOPED_TRACE(c.what);
-		VuTestHarness h(0);
-		h.SetVfBits(1, c.fs, c.fs, c.fs, c.fs);
-		h.SetVfBits(2, c.ft, c.ft, c.ft, c.ft);
-		h.LoadProgram({
-			vu::VuOp{c.op == DivDenormCase::kDiv     ? vu::VDIV_L(vu::vf::vf1, 0, vu::vf::vf2, 0)
-					 : c.op == DivDenormCase::kSqrt  ? vu::VSQRT_L(vu::vf::vf2, 0)
-													 : vu::VRSQRT_L(vu::vf::vf1, 0, vu::vf::vf2, 0),
-				vu::VNOP_U()},
-			vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
-			vu::EBitNopPair(),
-		});
-		h.Run();
-		EXPECT_EQ(h.GetViInterp(REG_Q), c.want_q) << "[interp] Q";
-		EXPECT_EQ(h.GetViJit(REG_Q), c.want_q) << "[jit] Q";
+		RunMicroDivCase(c);
+	}
+}
+
+// Every row above seeds all four lanes alike, so none of them can see an fsf
+// or ftf that reads the wrong one. The div unit's operands are scalars picked
+// out of a quadword, and the flush reloads its operand words rather than
+// reusing the ones the divide consumed -- two more places to index. Here the
+// four lanes hold four different denormals over four different divisors, so
+// each (fsf, ftf) pair has an answer no other pair shares.
+namespace
+{
+// Lane x is a denormal, y the smallest normal, z a denormal one bit wide, w
+// negative: the sign, the exponent-field test and the boundary all differ by
+// lane, and the divisors below turn each into a different quotient.
+constexpr u32 kLaneFs[4] = {0x00400000u, 0x00800000u, 0x00000001u, 0x80400000u};
+constexpr u32 kLaneFt[4] = {0x40000000u, 0x00400000u, 0x40800000u, 0x00000000u};
+} // namespace
+
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitReadsTheAddressedLane)
+{
+	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
+
+	for (u32 fsf = 0; fsf < 4; ++fsf)
+	{
+		for (u32 ftf = 0; ftf < 4; ++ftf)
+		{
+			SCOPED_TRACE(::testing::Message() << "fsf " << fsf << " ftf " << ftf);
+			for (int op = 0; op < 3; ++op)
+			{
+				SCOPED_TRACE(op == 0 ? "VDIV" : op == 1 ? "VSQRT" : "VRSQRT");
+				EeRecTestHarness h;
+				h.EnableVu0Capture();
+				h.ExpectVu0Divergence();
+				h.SeedVu0VfBits(4, kLaneFs[0], kLaneFs[1], kLaneFs[2], kLaneFs[3]);
+				h.SeedVu0VfBits(5, kLaneFt[0], kLaneFt[1], kLaneFt[2], kLaneFt[3]);
+				h.LoadProgram({
+					CTC2(0, REG_STATUS_FLAG),
+					op == 0 ? VDIV_C2(fsf, ftf, 4, 5)
+					: op == 1 ? VSQRT_C2(ftf, 5)
+							  : VRSQRT_C2(fsf, ftf, 4, 5),
+				});
+				h.Run();
+				EXPECT_EQ(h.GetVu0ViJit(REG_Q), h.GetVu0ViInterp(REG_Q)) << "Q";
+				EXPECT_EQ(h.GetVu0ViJit(REG_STATUS_FLAG) & kDivDI,
+					h.GetVu0ViInterp(REG_STATUS_FLAG) & kDivDI) << "D/I";
+			}
+		}
 	}
 }
 

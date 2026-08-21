@@ -2623,6 +2623,21 @@ static void cop2EmitSyncFDiv()
 	s_cop2DenormInScratch = false;
 }
 
+/*	The div unit has no denormal encoding: an operand whose exponent field is
+	zero is a zero, and a quotient below 2^-126 is a signed zero (eeDivide,
+	FPU.cpp). FPCR.FZ does all of that in hardware, so the tests below read the
+	exponent field rather than comparing against 0.0 -- the same answer whether
+	or not FZ is set -- and the value flush is emitted only when the FPCR the
+	pipe runs under clears it. For COP2 macro that is FPUFPCR, and a change to
+	it clears the execution caches.
+*/
+static constexpr u32 kEeExpMask = 0x7F800000;
+
+static bool cop2NeedsSoftwareFlush()
+{
+	return !EmuConfig.Cpu.FPUFPCR.GetDenormalsAreZero();
+}
+
 // VDIV: Q = VF[fs].fsf / VF[ft].ftf
 void recCOP2_VDIV()
 {
@@ -2640,34 +2655,35 @@ void recCOP2_VDIV()
 	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
 	armAsm->Ldr(RSSCRATCH2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf])); // s31 = ft[ftf]
 
-	// Check ft == 0
+	// Check ft == 0. A second load rather than an Fmov out of s31: this feeds a
+	// branch, and the FP-to-GPR move would sit on its critical path.
 	a64::Label ftNonZero, done;
-	armAsm->Fcmp(RSSCRATCH2, 0.0);
+	armAsm->Ldr(a64::w2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+	armAsm->Tst(a64::w2, kEeExpMask);
 	armAsm->B(a64::ne, &ftNonZero);
 
 	// ft == 0: set D/I flags, Q saturates with the xor of the operand signs
 	{
-		// Check if fs == 0 too → invalid (D flag = 0x10), else divide-by-zero (I flag = 0x20)
-		armAsm->Fcmp(RSSCRATCH, 0.0);
-		armAsm->Mov(a64::w1, 0x10); // invalid (0/0)
-		armAsm->Mov(a64::w2, 0x20); // div-by-zero
+		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+
+		// Q saturates at the EE's largest single, 0x7FFFFFFF, signed by the xor
+		// of the operands (FPU.cpp's checkDivideByZero). Written before the flag
+		// temps below claim w1 and w2.
+		armAsm->Eor(a64::w3, a64::w1, a64::w2);
+		armAsm->And(a64::w3, a64::w3, 0x80000000);
+		armAsm->Orr(a64::w3, a64::w3, 0x7FFFFFFF);
+		armAsm->Str(a64::w3, armVU0Mem(&VU0.q));
+
+		// 0/0 is invalid (D flag = 0x10), else divide-by-zero (I flag = 0x20).
+		// The Movs between the test and the select do not write the flags.
+		armAsm->Tst(a64::w1, kEeExpMask);
+		armAsm->Mov(a64::w1, 0x10);
+		armAsm->Mov(a64::w2, 0x20);
 		armAsm->Csel(a64::w1, a64::w1, a64::w2, a64::eq);
 
 		armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 		armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::w1);
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-
-		// Q saturates to the EE's largest single, 0x7FFFFFFF -- a binade above
-		// IEEE's FLT_MAX -- signed by the xor of the operands, which is
-		// FPU.cpp's checkDivideByZero. Both immediates are bitmask forms, so the
-		// pair costs less than the two ±FLT_MAX constants it replaces.
-		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
-		armAsm->Ldr(a64::w2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-		armAsm->Eor(a64::w1, a64::w1, a64::w2);
-		armAsm->And(RWSCRATCH, a64::w1, 0x80000000);
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7FFFFFFF);
-
-		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.q));
 	}
 	armAsm->B(&done);
 
@@ -2678,7 +2694,26 @@ void recCOP2_VDIV()
 		// Clamp result against ±FLT_MAX held in callee-saved s8/s9.
 		armAsm->Fminnm(RSSCRATCH, RSSCRATCH, a64::s8);
 		armAsm->Fmaxnm(RSSCRATCH, RSSCRATCH, a64::s9);
-		armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+
+		if (cop2NeedsSoftwareFlush())
+		{
+			// A denormal dividend and a quotient below 2^-126 both leave a
+			// signed zero, which the host quotient already carries, so one word
+			// serves both selects. Neither implies the other.
+			armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+			armAsm->Fmov(a64::w3, RSSCRATCH);
+			armAsm->Eor(RWSCRATCH, a64::w1, a64::w2);
+			armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
+			armAsm->Tst(a64::w1, kEeExpMask);
+			armAsm->Csel(a64::w3, RWSCRATCH, a64::w3, a64::eq);
+			armAsm->Tst(a64::w3, kEeExpMask);
+			armAsm->Csel(a64::w3, RWSCRATCH, a64::w3, a64::eq);
+			armAsm->Str(a64::w3, armVU0Mem(&VU0.q));
+		}
+		else
+		{
+			armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+		}
 	}
 
 	armAsm->Bind(&done);
@@ -2714,7 +2749,21 @@ void recCOP2_VSQRT()
 	armAsm->Fminnm(RSSCRATCH, RSSCRATCH, a64::s8);
 	armAsm->Fmaxnm(RSSCRATCH, RSSCRATCH, a64::s9);
 
-	armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+	if (cop2NeedsSoftwareFlush())
+	{
+		// eeSqrtBits returns a bare +0 for a zero exponent field, dropping the
+		// operand's sign with it. Only the operand needs the test: the root of
+		// the smallest normal is 2^-63, so no in-range radicand can land the
+		// result in the denormal band.
+		armAsm->Fmov(a64::w2, RSSCRATCH);
+		armAsm->Tst(a64::w1, kEeExpMask);
+		armAsm->Csel(a64::w2, a64::wzr, a64::w2, a64::eq);
+		armAsm->Str(a64::w2, armVU0Mem(&VU0.q));
+	}
+	else
+	{
+		armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+	}
 
 	cop2EmitSyncFDiv();
 }
@@ -2744,9 +2793,10 @@ void recCOP2_VRSQRT()
 	// Load fs scalar
 	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
 
-	// Check ft == 0 → div-by-zero
+	// Check ft == 0 → div-by-zero. w1 still holds the divisor's word from the
+	// sign test above, so the exponent field is already to hand.
 	a64::Label ftNonZero, done;
-	armAsm->Fcmp(RSSCRATCH2, 0.0);
+	armAsm->Tst(a64::w1, kEeExpMask);
 	armAsm->B(a64::ne, &ftNonZero);
 
 	// ft == 0: 0/0 is invalid, x/0 is a divide by zero, exclusively. Q
@@ -2756,7 +2806,7 @@ void recCOP2_VRSQRT()
 		armAsm->And(a64::w2, a64::w1, 0x80000000);
 		armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
 
-		armAsm->Fcmp(RSSCRATCH, 0.0);
+		armAsm->Tst(a64::w1, kEeExpMask);
 		armAsm->Mov(a64::w1, 0x10);
 		armAsm->Mov(a64::w3, 0x20);
 		armAsm->Csel(a64::w1, a64::w1, a64::w3, a64::eq);
@@ -2779,7 +2829,23 @@ void recCOP2_VRSQRT()
 		armAsm->Fminnm(RSSCRATCH, RSSCRATCH, a64::s8);
 		armAsm->Fmaxnm(RSSCRATCH, RSSCRATCH, a64::s9);
 
-		armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+		if (cop2NeedsSoftwareFlush())
+		{
+			// As VDIV, with the sign taken from the dividend alone: the divisor
+			// is a root, and the model's eeSqrtBits leaves it non-negative.
+			armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+			armAsm->Fmov(a64::w3, RSSCRATCH);
+			armAsm->And(RWSCRATCH, a64::w1, 0x80000000);
+			armAsm->Tst(a64::w1, kEeExpMask);
+			armAsm->Csel(a64::w3, RWSCRATCH, a64::w3, a64::eq);
+			armAsm->Tst(a64::w3, kEeExpMask);
+			armAsm->Csel(a64::w3, RWSCRATCH, a64::w3, a64::eq);
+			armAsm->Str(a64::w3, armVU0Mem(&VU0.q));
+		}
+		else
+		{
+			armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+		}
 	}
 
 	armAsm->Bind(&done);
