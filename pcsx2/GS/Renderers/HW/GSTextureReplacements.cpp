@@ -610,6 +610,14 @@ void GSTextureReplacements::ReloadReplacementMap()
 	Console.WriteLnFmt("Texture replacements: {} indexed for '{}' (scanned {})",
 		s_replacement_texture_filenames.size(), s_current_serial, replacement_dir);
 
+	// The two settings that decide whether a lookup is ever ATTEMPTED, as opposed to whether it
+	// matches. Replacements ride the hash cache, which needs Full preloading; and paltex decides
+	// whether the CLUT hash forms part of the name being looked up. A pack that indexes
+	// thousands of files and is then never consulted looks the same as one that misses.
+	Console.WriteLnFmt("Texture replacements: preloading={} paltex={} async={} upscale={}",
+		static_cast<u32>(GSConfig.TexturePreloading), GSConfig.GPUPaletteConversion ? 1 : 0,
+		GSConfig.LoadTextureReplacementsAsync ? 1 : 0, GSConfig.UpscaleMultiplier);
+
 	if (!s_replacement_texture_filenames.empty())
 	{
 		if (GSConfig.PrecacheTextureReplacements)
@@ -700,16 +708,40 @@ bool GSTextureReplacements::HasReplacementTextureWithOtherPalette(const GSTextur
 	return s_replacement_textures_without_clut_hash.find(name) != s_replacement_textures_without_clut_hash.end();
 }
 
-// One line per 20k lookups. Frequent enough to appear within seconds of entering a scene, rare
-// enough that it cannot become the log spam that itself slows the emulator down.
+// ★ Cadence matters more than it looks. This is called once per NEWLY HASHED texture, not per
+// draw, so a whole session may only be a few hundred calls. A threshold of 20k therefore prints
+// once, at the first lookup, and never again -- which cannot distinguish "one lookup happened"
+// from "twenty thousand did", and that ambiguity is exactly what a first attempt at this log ran
+// into. Report on a geometric schedule instead: 1, 2, 4, 8 ... capped at every 4096. Bounded
+// regardless of rate, dense at the start where the answer usually is.
 static void ReportLookupStatsIfDue()
 {
 	const u64 total = s_lookup_hits + s_lookup_misses;
 	if (total < s_lookup_next_report)
 		return;
-	s_lookup_next_report = total + 20000;
+	s_lookup_next_report = (total < 4096) ? (total * 2) : (total + 4096);
 	Console.WriteLnFmt("Texture replacements: {} hits, {} misses ({} of the misses match a name whose CLUT hash differs)",
 		s_lookup_hits, s_lookup_misses, s_lookup_clut_only_misses);
+}
+
+// The first handful of misses, in full. A count says a lookup failed; these say WHAT was asked
+// for and what the pack actually holds under the same TEX0 -- which is the difference between
+// "the pack does not have this texture" and "it has it under a different palette hash".
+static void ReportMissDetail(const TextureName& wanted)
+{
+	if (s_lookup_misses > 8)
+		return;
+
+	// Does the pack hold anything with this TEX0 but a different CLUT? Walk the CLUT-less set,
+	// which is indexed precisely for that question.
+	TextureName probe(wanted);
+	probe.CLUTHash = 0;
+	const bool clut_only = GSTextureReplacements::s_replacement_textures_without_clut_hash.find(probe) !=
+		GSTextureReplacements::s_replacement_textures_without_clut_hash.end();
+
+	Console.WriteLnFmt("Texture replacements: MISS tex0={:016x} clut={:016x} {}x{} psm={} -- pack has this tex0 under a different CLUT: {}",
+		wanted.TEX0Hash, wanted.CLUTHash, wanted.Width(), wanted.Height(),
+		static_cast<u32>(wanted.TEX0_PSM), clut_only ? "YES" : "no");
 }
 
 GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap,
@@ -738,6 +770,7 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 		clutless.CLUTHash = 0;
 		if (s_replacement_textures_without_clut_hash.find(clutless) != s_replacement_textures_without_clut_hash.end())
 			s_lookup_clut_only_misses++;
+		ReportMissDetail(name);
 		ReportLookupStatsIfDue();
 		return nullptr;
 	}
