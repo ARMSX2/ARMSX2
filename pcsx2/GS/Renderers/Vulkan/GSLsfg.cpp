@@ -238,23 +238,60 @@ namespace GSLsfg
 		VkFormat s_format = VK_FORMAT_UNDEFINED;
 		VkDevice s_vk_device = VK_NULL_HANDLE;
 
-		/// One storage view per swap chain image. Generated frames are written straight into a
-		/// swap chain image through these, which is why the swap chain has to carry
-		/// VK_IMAGE_USAGE_STORAGE_BIT — see VKSwapChain::IsStorageUsageAvailable.
-		std::vector<VkImageView> s_storage_views;
-
-		/// One command buffer for the whole frame's generation work, and one semaphore per
-		/// present that will be issued from it.
+		/// Interpolated frames are generated into images WE own, then copied into the acquired
+		/// swap chain image.
 		///
-		/// ★ Everything is recorded into ONE buffer and submitted ONCE, signalling N+1
-		/// semaphores. The obvious alternative — a submit per generated frame — reintroduces the
-		/// binary-semaphore hazard the old implementation was bitten by, because the real
-		/// present and the first generated present would both want to wait on the semaphore that
-		/// says "the source copy has landed". A binary semaphore may be waited exactly once.
+		/// ★ The obvious shortcut — dispatch straight into the swap chain image through a storage
+		/// view — is what crashed Turnip inside vkQueueSubmit, while the stock Qualcomm driver
+		/// tolerated it. A WSI image is not an ordinary image: on Adreno it is typically
+		/// UBWC-compressed, and a driver can advertise STORAGE_IMAGE on the format while its
+		/// swap chain images cannot actually serve as storage targets. Recording succeeded and
+		/// the fault only appeared when the driver walked the command stream at submit.
+		///
+		/// Neither Eden nor the previous implementation did that. Eden generates into its own
+		/// frame pool and blits; the old AHardwareBuffer path generated into its own images and
+		/// copied. This does the same, which costs one image copy per generated frame — the same
+		/// copy the old path already paid — and in exchange asks nothing unusual of the WSI.
+		struct GenImage
+		{
+			Vulkan::vk::Image image;
+			VkImageView view = VK_NULL_HANDLE;
+		};
+		std::vector<GenImage> s_gen_images;
+
+		/// Per-frame resources, ring-buffered.
+		///
+		/// ★ A SINGLE command buffer here is undefined behaviour, and it is what crashed the
+		/// driver at vkQueueSubmit on the first frame that actually generated. Resetting a
+		/// command buffer while it is still executing, and resubmitting one that is still
+		/// pending, are both illegal — as is signalling a binary semaphore that the previous
+		/// present has not consumed yet.
+		///
+		/// The old AHardwareBuffer implementation had exactly the same single-slot arrangement
+		/// and got away with it, because it called vkQueueWaitIdle twice per frame. Removing
+		/// those idles is the entire point of this port, and it also removed the accidental
+		/// serialisation that made reuse safe. So the synchronisation has to be explicit now:
+		/// one slot per swap chain image, each with its own fence, and a slot is not touched
+		/// until its fence says the GPU is finished with it.
+		struct FrameSlot
+		{
+			VkCommandBuffer cmd = VK_NULL_HANDLE;
+			VkFence fence = VK_NULL_HANDLE;
+			/// ★ A FENCE, not a semaphore, for the extra acquires.
+			///
+			/// Waiting on an acquire semaphore inside our submit is the one thing that
+			/// distinguishes a generating frame (waits=2) from a working one (waits=1), and it is
+			/// where Turnip segfaults — after the storage-view theory was disproved by generating
+			/// into our own images and copying, which changed nothing. Acquiring with a fence and
+			/// blocking on it before the submit removes that wait, at the cost of a short CPU
+			/// stall per generated frame. That is still far cheaper than the two full device
+			/// idles per frame the old implementation paid.
+			std::array<VkFence, VideoCore::FrameGen::MAX_GENERATIONS> acquire_fences = {};
+			std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS + 1> done_sems = {};
+			bool submitted = false; ///< false until the fence has ever been signalled
+		};
+		std::vector<FrameSlot> s_slots;
 		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
-		VkCommandBuffer s_cmd = VK_NULL_HANDLE;
-		std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS> s_acquire_sems = {};
-		std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS + 1> s_done_sems = {};
 
 		u64 s_frame_index = 0;
 
@@ -316,31 +353,36 @@ namespace GSLsfg
 			if (s_vk_device == VK_NULL_HANDLE)
 				return;
 
-			for (VkImageView view : s_storage_views)
+			for (GenImage& g : s_gen_images)
 			{
-				if (view != VK_NULL_HANDLE)
-					vkDestroyImageView(s_vk_device, view, nullptr);
+				if (g.view != VK_NULL_HANDLE)
+					vkDestroyImageView(s_vk_device, g.view, nullptr);
+				g.image = Vulkan::vk::Image(); // releases the VMA allocation
 			}
-			s_storage_views.clear();
+			s_gen_images.clear();
 
-			for (VkSemaphore& sem : s_acquire_sems)
+			for (FrameSlot& slot : s_slots)
 			{
-				if (sem != VK_NULL_HANDLE)
-					vkDestroySemaphore(s_vk_device, sem, nullptr);
-				sem = VK_NULL_HANDLE;
+				for (VkFence f : slot.acquire_fences)
+				{
+					if (f != VK_NULL_HANDLE)
+						vkDestroyFence(s_vk_device, f, nullptr);
+				}
+				for (VkSemaphore sem : slot.done_sems)
+				{
+					if (sem != VK_NULL_HANDLE)
+						vkDestroySemaphore(s_vk_device, sem, nullptr);
+				}
+				if (slot.fence != VK_NULL_HANDLE)
+					vkDestroyFence(s_vk_device, slot.fence, nullptr);
 			}
-			for (VkSemaphore& sem : s_done_sems)
-			{
-				if (sem != VK_NULL_HANDLE)
-					vkDestroySemaphore(s_vk_device, sem, nullptr);
-				sem = VK_NULL_HANDLE;
-			}
+			s_slots.clear();
+
 			if (s_cmd_pool != VK_NULL_HANDLE)
 			{
-				// Frees s_cmd with it.
+				// Frees every command buffer allocated from it.
 				vkDestroyCommandPool(s_vk_device, s_cmd_pool, nullptr);
 				s_cmd_pool = VK_NULL_HANDLE;
-				s_cmd = VK_NULL_HANDLE;
 			}
 		}
 
@@ -351,40 +393,73 @@ namespace GSLsfg
 			if (vkCreateCommandPool(s_vk_device, &pool_ci, nullptr, &s_cmd_pool) != VK_SUCCESS)
 				return false;
 
-			const VkCommandBufferAllocateInfo cmd_ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
-				s_cmd_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
-			if (vkAllocateCommandBuffers(s_vk_device, &cmd_ai, &s_cmd) != VK_SUCCESS)
-				return false;
+			// One slot per swap chain image: that is the depth at which the presentation engine
+			// can already be holding work, so it is the depth at which reuse becomes safe.
+			const u32 count = swap_chain->GetImageCount();
+			s_slots.resize(count);
 
 			VkSemaphoreCreateInfo sem_ci = {};
 			sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-			for (VkSemaphore& sem : s_acquire_sems)
+			VkFenceCreateInfo fence_ci = {};
+			fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			for (FrameSlot& slot : s_slots)
 			{
-				if (vkCreateSemaphore(s_vk_device, &sem_ci, nullptr, &sem) != VK_SUCCESS)
+				const VkCommandBufferAllocateInfo cmd_ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					nullptr, s_cmd_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+				if (vkAllocateCommandBuffers(s_vk_device, &cmd_ai, &slot.cmd) != VK_SUCCESS)
 					return false;
+				// Created UNSIGNALLED, with `submitted` false — the first use must not wait on a
+				// fence that has never been submitted, which would block forever.
+				if (vkCreateFence(s_vk_device, &fence_ci, nullptr, &slot.fence) != VK_SUCCESS)
+					return false;
+				for (VkFence& f : slot.acquire_fences)
+				{
+					if (vkCreateFence(s_vk_device, &fence_ci, nullptr, &f) != VK_SUCCESS)
+						return false;
+				}
+				for (VkSemaphore& sem : slot.done_sems)
+				{
+					if (vkCreateSemaphore(s_vk_device, &sem_ci, nullptr, &sem) != VK_SUCCESS)
+						return false;
+				}
 			}
-			for (VkSemaphore& sem : s_done_sems)
+
+			// One generation image per slot, per interpolated frame. Per-SLOT is what makes reuse
+			// safe: the fence ring already proves slot N's command buffer has finished before
+			// slot N is touched again, and these are only ever referenced by that slot's buffer.
+			const u32 per_frame = std::max<u32>(s_multiplier, 2u) - 1u;
+			s_gen_images.resize(static_cast<size_t>(count) * per_frame);
+			for (GenImage& g : s_gen_images)
 			{
-				if (vkCreateSemaphore(s_vk_device, &sem_ci, nullptr, &sem) != VK_SUCCESS)
+				VkImageCreateInfo ici = {};
+				ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+				ici.imageType = VK_IMAGE_TYPE_2D;
+				ici.format = s_format;
+				ici.extent = {s_extent.width, s_extent.height, 1};
+				ici.mipLevels = 1;
+				ici.arrayLayers = 1;
+				ici.samples = VK_SAMPLE_COUNT_1_BIT;
+				ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+				// STORAGE to be dispatched into, TRANSFER_SRC to be copied out of. Ordinary
+				// device-local images, which is the entire point — nothing here is a WSI image.
+				ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+				ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+				ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+				g.image = s_allocator->CreateImage(ici);
+				if (!g.image)
+					return false;
+
+				VkImageViewCreateInfo vci = {};
+				vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+				vci.image = *g.image;
+				vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				vci.format = s_format;
+				vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+				if (vkCreateImageView(s_vk_device, &vci, nullptr, &g.view) != VK_SUCCESS)
 					return false;
 			}
 
-			// A storage view per swap chain image. The swap chain's own views are created for the
-			// colour-attachment format, which for an sRGB surface cannot be a storage image at all,
-			// so these are separate rather than borrowed.
-			const u32 count = swap_chain->GetImageCount();
-			s_storage_views.assign(count, VK_NULL_HANDLE);
-			for (u32 i = 0; i < count; i++)
-			{
-				VkImageViewCreateInfo ci = {};
-				ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-				ci.image = swap_chain->GetImage(i);
-				ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-				ci.format = s_format;
-				ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-				if (vkCreateImageView(s_vk_device, &ci, nullptr, &s_storage_views[i]) != VK_SUCCESS)
-					return false;
-			}
 			return true;
 		}
 	} // namespace
@@ -447,19 +522,6 @@ namespace GSLsfg
 
 		Shutdown();
 
-		// The one hard prerequisite that cannot be recovered from here. The swap chain decides its
-		// image usage at creation, and it only asks for STORAGE when frame generation was already
-		// enabled — so switching the feature on mid-session needs the swap chain to be recreated
-		// before this can succeed. Reported rather than retried, because recreating a swap chain
-		// from inside a present is how you get a black screen.
-		if (!swap_chain->IsStorageUsageAvailable())
-		{
-			Console.Warning("LSFG: swap chain has no STORAGE usage — frame generation needs a "
-							"renderer restart to take effect.");
-			s_init_failed.store(true, std::memory_order_relaxed);
-			return false;
-		}
-
 		s_vk_device = dev->GetDevice();
 		s_extent = extent;
 		s_format = format;
@@ -467,32 +529,45 @@ namespace GSLsfg
 		s_flow_scale_percent = flow_scale_percent;
 		s_performance_requested = GSConfig.LsfgPerformance;
 
-		if (!CreateResources(dev, swap_chain))
-		{
-			Console.Error("LSFG: failed to create frame-generation resources.");
-			DestroyResources();
-			s_init_failed.store(true, std::memory_order_relaxed);
-			s_vk_device = VK_NULL_HANDLE;
-			return false;
-		}
-
+		// ★ ORDER MATTERS, and getting it wrong here is not a compile error.
+		//
+		// CreateResources allocates the generation images through s_allocator, so the allocator
+		// and the device adapter must exist BEFORE it runs. They used to be constructed after it,
+		// which dereferenced an empty std::optional and took the GS thread down during boot —
+		// long before frame generation would ever have produced a frame, so it looked like an
+		// entirely different bug from the one it followed.
 		s_device.emplace(dev);
-		// Both are required by the interpolation shaders and neither is core in Vulkan 1.1, so
-		// GSDeviceVK requests them as extensions. It also clears the flag when a driver advertises
-		// one without really supporting it, which is why these are asked of the DEVICE rather than
-		// of vkGetPhysicalDeviceFeatures2 — see the note in LsfgVkCompat.cpp.
+
+		// Both features are required by the interpolation shaders and neither is core in Vulkan
+		// 1.1, so GSDeviceVK requests them as extensions. It also clears the flag when a driver
+		// advertises one without really supporting it, which is why these are asked of the DEVICE
+		// rather than of vkGetPhysicalDeviceFeatures2 — see the note in LsfgVkCompat.cpp.
+		//
+		// Checked before anything is allocated: there is no point building a chain for a device
+		// that cannot run the shaders.
 		if (!s_device->IsVulkanMemoryModelSupported() || !s_device->HasNullDescriptor())
 		{
 			Console.Warning("LSFG: device lacks the Vulkan memory model or nullDescriptor — "
 							"frame generation unavailable.");
 			s_device.reset();
-			DestroyResources();
 			s_init_failed.store(true, std::memory_order_relaxed);
 			s_vk_device = VK_NULL_HANDLE;
 			return false;
 		}
 
 		s_allocator.emplace(dev->GetAllocator());
+
+		if (!CreateResources(dev, swap_chain))
+		{
+			Console.Error("LSFG: failed to create frame-generation resources.");
+			DestroyResources();
+			s_allocator.reset();
+			s_device.reset();
+			s_init_failed.store(true, std::memory_order_relaxed);
+			s_vk_device = VK_NULL_HANDLE;
+			return false;
+		}
+
 		s_frame_gen.emplace(*s_allocator, dev);
 
 		s_frame_index = 0;
@@ -527,7 +602,7 @@ namespace GSLsfg
 		}
 
 		const u32 real_index = swap_chain->GetCurrentImageIndex();
-		if (real_index >= s_storage_views.size())
+		if (s_gen_images.empty())
 		{
 			NoteFramesDisplayed(1, 0);
 			return false;
@@ -538,23 +613,49 @@ namespace GSLsfg
 		//    WantedGenerations drives the PACER, which is the whole reason a game bouncing
 		//    between 60 and 30fps does not judder here: the count varies to hold the presented
 		//    rate steady rather than blindly multiplying whatever arrived.
+		// ★ Take this frame's slot and WAIT for the GPU to be done with it before touching
+		// anything in it. Without this, the reset below hits a command buffer that may still be
+		// executing and the submit below resubmits one that is still pending — both undefined,
+		// and both were reliably fatal on the first frame that recorded a real dispatch chain.
+		FrameSlot& slot = s_slots[s_frame_index % s_slots.size()];
+		if (slot.submitted)
+		{
+			// Bounded rather than UINT64_MAX: a lost surface must not wedge the GS thread. If it
+			// does expire, decline the frame — the caller still presents normally.
+			static constexpr u64 kSlotTimeoutNs = 200ull * 1000 * 1000;
+			if (vkWaitForFences(s_vk_device, 1, &slot.fence, VK_TRUE, kSlotTimeoutNs) != VK_SUCCESS)
+			{
+				NoteFramesDisplayed(1, 0);
+				return false;
+			}
+		}
+		vkResetFences(s_vk_device, 1, &slot.fence);
+
 		const VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
 			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
-		vkResetCommandBuffer(s_cmd, 0);
-		if (vkBeginCommandBuffer(s_cmd, &begin) != VK_SUCCESS)
+		vkResetCommandBuffer(slot.cmd, 0);
+		if (vkBeginCommandBuffer(slot.cmd, &begin) != VK_SUCCESS)
 			return false;
 
 		// The ported passes expect a presentable image in GENERAL; PCSX2 hands it over in
 		// PRESENT_SRC_KHR and needs it back that way.
-		TransitionImage(s_cmd, real_image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
+		TransitionImage(slot.cmd, real_image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
 			VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
 
-		const Vulkan::vk::CommandBuffer cmdbuf{s_cmd};
-		s_frame_gen->Process(*s_device, cmdbuf, real_image, s_storage_views[real_index], s_extent, s_format,
+		const Vulkan::vk::CommandBuffer cmdbuf{slot.cmd};
+		// Process only null-checks the view (Eden uses it as a capability probe) — the presented
+		// frame is COPIED into the chain, never written through a view. Hand it one of ours.
+		s_frame_gen->Process(*s_device, cmdbuf, real_image, s_gen_images[0].view, s_extent, s_format,
 			s_extent);
 
+		// ★ The budget is what Vulkan allows us to HOLD, not the image count. Using
+		// GetImageCount() - 1 here is what crashed the driver: with min=3 and 3 images the real
+		// budget is zero, and acquiring anyway is undefined behaviour rather than a failed call.
+		const size_t acquire_budget = swap_chain->GetExtraAcquirableImages();
+		const size_t per_frame_images = std::max<u32>(s_multiplier, 2u) - 1u;
+		static constexpr u64 kGeneratedAcquireTimeoutNs = 50ull * 1000 * 1000;
 		const size_t wanted = s_frame_gen->WantedGenerations(
-			std::min<size_t>(s_multiplier - 1u, swap_chain->GetImageCount() - 1u));
+			std::min<size_t>(s_multiplier - 1u, acquire_budget));
 		const size_t available = s_frame_gen->GeneratedFrameCount();
 		const size_t generations = std::min(wanted, available);
 
@@ -563,7 +664,7 @@ namespace GSLsfg
 		//    every acquire semaphore at once.
 		u32 acquired_index[VideoCore::FrameGen::MAX_GENERATIONS] = {};
 		size_t acquired = 0;
-		for (size_t i = 0; i < generations && i < VideoCore::FrameGen::MAX_GENERATIONS; i++)
+		for (size_t i = 0; i < generations && i < acquire_budget && i < VideoCore::FrameGen::MAX_GENERATIONS; i++)
 		{
 			// ★ Bounded, but NOT zero. A zero timeout looks right — an interpolated frame is a
 			// bonus, so why stall for one — and it silently disables the entire feature: under
@@ -572,28 +673,49 @@ namespace GSLsfg
 			// generated frame is dropped. Observed exactly that on an Adreno 740. Waiting for a
 			// display slot IS the mechanism: presenting two frames per rendered frame means
 			// waiting for the second slot.
-			static constexpr u64 kGeneratedAcquireTimeoutNs = 50ull * 1000 * 1000;
 			u32 image_index = 0;
 			const VkResult acq = vkAcquireNextImageKHR(s_vk_device, swap_chain->GetSwapChain(),
-				kGeneratedAcquireTimeoutNs, s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
+				kGeneratedAcquireTimeoutNs, VK_NULL_HANDLE, slot.acquire_fences[i], &image_index);
 			if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
 				break; // nothing free, out of date, or lost — still present the real frame
-			if (image_index >= s_storage_views.size())
+			if (image_index >= swap_chain->GetImageCount())
 				break;
 
-			s_frame_gen->GenerateInto(*s_device, cmdbuf, swap_chain->GetImage(image_index),
-				s_storage_views[image_index], i);
-			// The generation pass leaves its target in GENERAL.
-			TransitionImage(s_cmd, swap_chain->GetImage(image_index), VK_IMAGE_LAYOUT_GENERAL,
-				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+			// Block until the image is genuinely ours before recording anything that touches it.
+			// This is what the semaphore wait in the submit used to do.
+			if (vkWaitForFences(s_vk_device, 1, &slot.acquire_fences[i], VK_TRUE,
+					kGeneratedAcquireTimeoutNs) != VK_SUCCESS)
+				break;
+			vkResetFences(s_vk_device, 1, &slot.acquire_fences[i]);
+
+			GenImage& gen = s_gen_images[(s_frame_index % s_slots.size()) * per_frame_images + i];
+			// Generate into OUR image, not the swap chain's — see the note on s_gen_images.
+			s_frame_gen->GenerateInto(*s_device, cmdbuf, *gen.image, gen.view, i);
+			// The pass leaves our image in GENERAL. Copy it into the acquired swap chain image,
+			// then hand that back to the presentation engine.
+			VkImage dst = swap_chain->GetImage(image_index);
+			TransitionImage(slot.cmd, *gen.image, VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+
+			VkImageCopy region = {};
+			region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			region.extent = {s_extent.width, s_extent.height, 1};
+			vkCmdCopyImage(slot.cmd, *gen.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
 
 			acquired_index[acquired++] = image_index;
 		}
 
-		TransitionImage(s_cmd, real_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		TransitionImage(slot.cmd, real_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 			VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
 
-		if (vkEndCommandBuffer(s_cmd) != VK_SUCCESS)
+		if (vkEndCommandBuffer(slot.cmd) != VK_SUCCESS)
 			return false;
 
 		// 3. ONE submit. It waits on the caller's render-finished semaphore plus every acquire,
@@ -604,11 +726,6 @@ namespace GSLsfg
 		u32 wait_count = 0;
 		wait_sems[wait_count] = render_finished;
 		wait_stages[wait_count++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		for (size_t i = 0; i < acquired; i++)
-		{
-			wait_sems[wait_count] = s_acquire_sems[i];
-			wait_stages[wait_count++] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-		}
 
 		const u32 signal_count = static_cast<u32>(acquired) + 1u;
 		VkSubmitInfo submit = {};
@@ -617,12 +734,14 @@ namespace GSLsfg
 		submit.pWaitSemaphores = wait_sems;
 		submit.pWaitDstStageMask = wait_stages;
 		submit.commandBufferCount = 1;
-		submit.pCommandBuffers = &s_cmd;
+		submit.pCommandBuffers = &slot.cmd;
 		submit.signalSemaphoreCount = signal_count;
-		submit.pSignalSemaphores = s_done_sems.data();
+		submit.pSignalSemaphores = slot.done_sems.data();
 
-		if (vkQueueSubmit(GSDeviceVK::GetInstance()->GetGraphicsQueue(), 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
+		// The fence is what lets this slot be reused safely N frames from now.
+		if (vkQueueSubmit(GSDeviceVK::GetInstance()->GetGraphicsQueue(), 1, &submit, slot.fence) != VK_SUCCESS)
 			return false;
+		slot.submitted = true;
 
 		s_frame_index++;
 
@@ -632,7 +751,7 @@ namespace GSLsfg
 		u32 presented_generated = 0;
 		for (size_t i = 0; i < acquired; i++)
 		{
-			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &s_done_sems[i], 1,
+			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &slot.done_sems[i], 1,
 				swap_chain->GetSwapChainPtr(), &acquired_index[i], nullptr};
 			// ★ VK_SUBOPTIMAL_KHR IS A SUCCESS CODE — the frame WAS presented. Treating it as
 			// failure broke nothing visible and made the overlay lie: the generated frame reached
@@ -647,7 +766,7 @@ namespace GSLsfg
 
 		// 5. The real frame goes out last, after whatever generated frames made it.
 		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
-			&s_done_sems[acquired], 1, swap_chain->GetSwapChainPtr(), &real_index, nullptr};
+			&slot.done_sems[acquired], 1, swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
 		vkQueuePresentKHR(present_queue, &present);
 		NoteFramesDisplayed(1, presented_generated);

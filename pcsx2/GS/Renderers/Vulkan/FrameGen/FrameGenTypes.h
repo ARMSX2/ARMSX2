@@ -32,6 +32,14 @@ namespace VideoCore::FrameGen
 	inline constexpr size_t MAX_GENERATIONS = 3;
 } // namespace VideoCore::FrameGen
 
+/// ★ __forceinline_odr, NOT __fi.
+///
+/// On GCC/Clang PCSX2's __forceinline expands to __attribute__((always_inline, unused)) with no
+/// `inline` keyword, so a free function marked __fi in a header gets EXTERNAL linkage and every
+/// translation unit that includes it emits its own copy — "duplicate symbol" at link, from a
+/// header that compiles perfectly in isolation. __fi is fine on member functions defined inside a
+/// class body, which are implicitly inline; that is what the rest of the renderer uses it for.
+/// Pcsx2Defs.h documents this and provides __forceinline_odr for exactly this case.
 namespace Vulkan::FrameGenSettings
 {
 	/// Interpolated frames per rendered frame, as the user configured it.
@@ -39,14 +47,14 @@ namespace Vulkan::FrameGenSettings
 	/// GSConfig stores the MULTIPLIER (2 = one interpolated frame, 3 = two, ...) because that is
 	/// what the UI shows; the ported code counts GENERATIONS. The two differ by one, and mixing
 	/// them up shows as "x2 looks like x3", so the conversion lives only here.
-	__fi size_t Generations()
+	__forceinline_odr size_t Generations()
 	{
 		const u32 mult = std::max<u32>(GSConfig.LsfgMultiplier, 2u);
 		return std::min<size_t>(mult - 1u, VideoCore::FrameGen::MAX_GENERATIONS);
 	}
 
 	/// Upper bound the pacer may probe up to.
-	__fi size_t MaxGenerations()
+	__forceinline_odr size_t MaxGenerations()
 	{
 		return GSConfig.LsfgEnabled ? Generations() : 0;
 	}
@@ -60,7 +68,7 @@ namespace Vulkan::FrameGenSettings
 	/// frames while the game runs at 30, one while it runs at 60.
 	///
 	/// Zero preserves the old fixed-multiplier behaviour exactly, so this is opt-in.
-	__fi f32 TargetRate()
+	__forceinline_odr f32 TargetRate()
 	{
 		return static_cast<f32>(GSConfig.LsfgTargetRate);
 	}

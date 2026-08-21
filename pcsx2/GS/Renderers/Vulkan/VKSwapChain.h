@@ -95,11 +95,12 @@ public:
 
 	VkFormat GetTextureFormat() const;
 
-	/// True when the swap chain images carry VK_IMAGE_USAGE_STORAGE_BIT, which frame generation
-	/// requires in order to write an interpolated frame directly into one. False whenever frame
-	/// generation was off at creation time, so switching it on needs a swap chain recreate — see
-	/// GSLsfg::Initialize.
-	__fi bool IsStorageUsageAvailable() const { return m_storage_usage_available; }
+	/// How many images may be acquired IN ADDITION to the one currently being presented.
+	///
+	/// Vulkan's limit is (imageCount - minImageCount + 1) held at once and the presented frame is
+	/// already using one of those, so this is imageCount - minImageCount. Frame generation must
+	/// not acquire more than this: doing so is undefined behaviour, not a recoverable error.
+	__fi u32 GetExtraAcquirableImages() const { return m_extra_acquirable_images; }
 	VkResult AcquireNextImage();
 	void ReleaseCurrentImage();
 	void ResetImageAcquireResult();
@@ -134,7 +135,7 @@ private:
 	VkSwapchainKHR m_swap_chain = VK_NULL_HANDLE;
 
 	std::vector<std::unique_ptr<GSTextureVK>> m_images;
-	bool m_storage_usage_available = false;
+	u32 m_extra_acquirable_images = 0;
 	std::array<ImageSemaphores, NUM_SEMAPHORES> m_semaphores = {};
 
 	u32 m_current_image = 0;
