@@ -164,6 +164,7 @@ add_pcsx2_test(recompiler_tests
 	ee_cache2_console_conformance_tests.cpp
 	ee_cache3_console_conformance_tests.cpp
 	ee_vu0_cop2_mul_underflow_tests.cpp
+	ee_vu0_cop2_overflow_tests.cpp
 )
 
 target_include_directories(recompiler_tests PRIVATE

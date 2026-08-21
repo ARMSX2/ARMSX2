@@ -36,10 +36,16 @@
 // between them would report agreement on rows where they are agreeing about
 // the wrong number.
 //
-// The recompiler's column is scored at vuClampMode 4, the mode the exact models
-// live at -- so far the adder's guard mask, which moves nothing here, and the
-// multiply's MAC U, which moves eight columns across four rows.
-// UnderflowFlagsMissedBelowModeFour is the same table at every mode under it.
+// The recompiler's column is scored at vuClampMode 4, the top of the ladder:
+// the adder's guard mask, which moves nothing here, the multiply's MAC U, which
+// moves eight columns across four rows, and MAC O for MUL, ADD and SUB, which
+// moves fourteen across seven. What the O model does not reach is MADD and
+// MSUB, whose accumulate reads a product the host has already saturated -- rows
+// 28-31 and 51-53 -- and the value column, where an exponent-255 operand is a
+// NaN to every host op the arithmetic runs through.
+//
+// All three sit at vuClampMode 4. NoModeBelowFourCarriesTheModels is the same
+// table at every mode under it.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -209,9 +215,10 @@ TEST(Vu0MacroFmacRangeConsole, ControlsSeparate)
 // The other side of the gate. Four MUL rows here flush a product to a signed
 // zero, and only the multiply's U bit tells that apart from a product one of
 // whose operands was already zero -- which row 22 is, and which must keep
-// scoring clean at every mode. Below 4 the recompiler cannot raise U at all, so
-// those four rows have to lose both flag columns and nothing else may move.
-TEST(Vu0MacroFmacRangeConsole, UnderflowFlagsMissedBelowModeFour)
+// scoring clean at every mode. Below 4 the recompiler carries none of it, so
+// those four rows lose both flag columns, the rows MAC O carries lose theirs,
+// and nothing else may move.
+TEST(Vu0MacroFmacRangeConsole, NoModeBelowFourCarriesTheModels)
 {
 	for (int mode = 1; mode <= 3; ++mode)
 	{
@@ -224,10 +231,11 @@ TEST(Vu0MacroFmacRangeConsole, UnderflowFlagsMissedBelowModeFour)
 			ASSERT_NE(word, 0u) << "case " << i << ": no encoder for op " << int(c.op);
 			bad += PopCount(Misses(c, RunCase(c, word, true, mode)));
 		}
+		std::printf("vuClampMode %d: %d column misses\n", mode, bad);
 		EXPECT_EQ(bad, kVuSatUnmodelledBadJit);
-		EXPECT_GT(kVuSatUnmodelledBadJit, kVuSatBadJit)
-			<< "the gate has stopped separating the modes";
 	}
+	EXPECT_GT(kVuSatUnmodelledBadJit, kVuSatBadJit)
+		<< "mode 4 has stopped carrying the models these rows are here for";
 }
 
 // What passing looks like once the FMAC range model is right, and the source

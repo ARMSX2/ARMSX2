@@ -185,19 +185,20 @@ void armLoadConstant128(const vixl::aarch64::VRegister& reg, const void* ptr);
 // mask (x86's AND_XYZW) costs nothing; `shift` likewise absorbs x86's
 // single-scalar SHIFT_XYZW rotate. Both are emit-time constants.
 //
-// `withUnderflow` adds the MAC U nibble at bit + 8, for the callers that pass
-// armEmitPackSignZeroBits a third predicate.
+// `withUnderflow` and `withOverflow` add the MAC U and O nibbles at bit + 8 and
+// bit + 12, for the callers that pass armEmitPackSignZeroBits a third or fourth
+// predicate.
 //
 // The caller must keep `bit + shift <= 3` so the zero half stays inside the
 // low nibble — see the SLI note in armEmitPackSignZeroBits.
 static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int shift,
-	bool withUnderflow = false)
+	bool withUnderflow = false, bool withOverflow = false)
 {
 	const int bit = reverse ? (3 - lane) : lane;
 	if (!(keepMask & (1u << bit)))
 		return 0;
 	const u32 w = 1u << (bit + shift);
-	return w | (w << 4) | (withUnderflow ? (w << 8) : 0);
+	return w | (w << 4) | (withUnderflow ? (w << 8) : 0) | (withOverflow ? (w << 12) : 0);
 }
 
 // Pack the sign and zero predicates of a 4-lane float vector into one GPR as
@@ -222,20 +223,23 @@ static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int
 // literal in the EE's COP2 macro path).
 //
 // `vExactZero`, when given, is a third temporary holding all-ones per lane
-// where a zero result is an exact zero rather than a flushed underflow. It is
-// turned into the U predicate here (a zero result that was NOT exact) and
-// inserted at nibble 2, so the caller's weights must come from
-// armPackLaneWeight with withUnderflow set. The second SLI shifts by 8 and so
-// leaves the sign nibble at [7:4] and the zero nibble at [3:0] standing; the
-// order of the two inserts is therefore fixed.
+// where a zero result is an exact zero rather than a flushed underflow; it is
+// turned into the U predicate here and inserted at nibble 2. `vOverflow` is the
+// same for the O nibble, and is read rather than clobbered. Weights for either
+// must come from armPackLaneWeight with the matching flag set.
 //
-// Emits 6 insns + the weight load, 8 with vExactZero.
+// Each SLI keeps the destination bits below its shift, so the three inserts run
+// in ascending order — 4, 8, 12 — and a skipped one leaves its nibble holding
+// whatever the previous insert shifted through. The weight vector clears that.
+//
+// Emits 6 insns + the weight load, 8 with vExactZero, 9 with vOverflow.
 template <typename LoadWeightsFn>
 __fi static void armEmitPackSignZeroBits(const vixl::aarch64::Register& dst,
 	const vixl::aarch64::VRegister& src, const vixl::aarch64::VRegister& vSign,
 	const vixl::aarch64::VRegister& vZero, const vixl::aarch64::VRegister& weights,
 	LoadWeightsFn&& load_weights,
-	const vixl::aarch64::VRegister& vExactZero = vixl::aarch64::NoVReg)
+	const vixl::aarch64::VRegister& vExactZero = vixl::aarch64::NoVReg,
+	const vixl::aarch64::VRegister& vOverflow = vixl::aarch64::NoVReg)
 {
 	armAsm->Cmlt(vSign.V4S(), src.V4S(), 0);    // all-1s where negative
 	armAsm->Fcmeq(vZero.V4S(), src.V4S(), 0.0); // all-1s where zero
@@ -244,6 +248,8 @@ __fi static void armEmitPackSignZeroBits(const vixl::aarch64::Register& dst,
 	armAsm->Sli(vZero.V4S(), vSign.V4S(), 4);   // [31:4] = sign, [3:0] = zero
 	if (vExactZero.IsValid())
 		armAsm->Sli(vZero.V4S(), vExactZero.V4S(), 8); // [31:8] = underflow
+	if (vOverflow.IsValid())
+		armAsm->Sli(vZero.V4S(), vOverflow.V4S(), 12); // [31:12] = overflow
 	load_weights(weights);
 	armAsm->And(vZero.V16B(), vZero.V16B(), weights.V16B());
 	armAsm->Addv(vixl::aarch64::VRegister(vZero.GetCode(), 32), vZero.V4S());

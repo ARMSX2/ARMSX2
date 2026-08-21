@@ -505,6 +505,11 @@ constexpr u32 COP2_FMAC(u32 mask_xyzw, u32 fd, u32 fs, u32 ft, u32 funct)
 	     | ((fd & 0x1Fu) <<  6) | (funct & 0x3Fu);
 }
 constexpr u32 VADD_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x28); }
+// VADDx/y/z/w — broadcast ADD. COP2 SPECIAL1 funct 0x00-0x03.
+constexpr u32 VADDx_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x00); }
+constexpr u32 VADDy_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x01); }
+constexpr u32 VADDz_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x02); }
+constexpr u32 VADDw_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x03); }
 constexpr u32 VMADD_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x29); }
 
 // VMADDx/y/z/w — broadcast MADD (fd = ACC + fs * ft.bc). COP2 SPECIAL1 funct
@@ -528,6 +533,7 @@ constexpr u32 VSUBw_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FM
 // Q/I-broadcast forms. Ft is the Q or I register, so the ft field is unused.
 constexpr u32 VMULq_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x1C); }
 constexpr u32 VMULi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x1E); }
+constexpr u32 VADDi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x22); }
 constexpr u32 VSUBq_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x24); }
 constexpr u32 VSUBi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x26); }
 constexpr u32 VMAX_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2B); }
@@ -591,6 +597,23 @@ constexpr u32 VMULA_C2  (u32 mask_xyzw, u32 fs, u32 ft)  { return COP2_FMAC(mask
 // funct 0x3C. Do not reach for the assembler to check this one: ps2dev's
 // binutils transposes FS and FT for the vadda mnemonic.
 constexpr u32 VADDA_C2  (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x0A, fs, ft, 0x3C); }
+
+// The rest of the add/subtract-into-ACC family, by SPECIAL2 index
+// (sa << 2) | (funct & 3): ADDAx/y/z/w are 0-3, SUBAx/y/z/w 4-7, ADDAq/ADDAi
+// 32/34, SUBAq/SUBAi 36/38 and the non-broadcast SUBA 44.
+constexpr u32 VADDAx_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x00, fs, ft, 0x3C); }
+constexpr u32 VADDAy_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x00, fs, ft, 0x3D); }
+constexpr u32 VADDAz_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x00, fs, ft, 0x3E); }
+constexpr u32 VADDAw_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x00, fs, ft, 0x3F); }
+constexpr u32 VSUBAx_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x01, fs, ft, 0x3C); }
+constexpr u32 VSUBAy_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x01, fs, ft, 0x3D); }
+constexpr u32 VSUBAz_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x01, fs, ft, 0x3E); }
+constexpr u32 VSUBAw_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x01, fs, ft, 0x3F); }
+constexpr u32 VADDAq_C2 (u32 mask_xyzw, u32 fs)         { return COP2_FMAC(mask_xyzw, 0x08, fs, 0, 0x3C); }
+constexpr u32 VADDAi_C2 (u32 mask_xyzw, u32 fs)         { return COP2_FMAC(mask_xyzw, 0x08, fs, 0, 0x3E); }
+constexpr u32 VSUBAq_C2 (u32 mask_xyzw, u32 fs)         { return COP2_FMAC(mask_xyzw, 0x09, fs, 0, 0x3C); }
+constexpr u32 VSUBAi_C2 (u32 mask_xyzw, u32 fs)         { return COP2_FMAC(mask_xyzw, 0x09, fs, 0, 0x3E); }
+constexpr u32 VSUBA_C2  (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x0B, fs, ft, 0x3C); }
 
 // COP2-CO SPECIAL2 (LowerOP2 trampolines via SPEC1 funct 0x3C..0x3F).
 // The SPEC2 dispatch index inside recCOP2SPECIAL2t is
