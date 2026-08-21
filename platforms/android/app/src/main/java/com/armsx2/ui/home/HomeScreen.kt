@@ -818,6 +818,52 @@ fun HomeScreen(
                     menuGame = null
                     com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.BiosManager(game))
                 }
+                // Cover art from another region, for THIS game only. The library-wide switch
+                // in the overflow menu is the wrong grain by itself: wanting the Japanese cover
+                // for a couple of games does not mean wanting every Western cover swapped. Only
+                // offered for a game we can actually look up — the index is keyed by serial.
+                game.serial?.takeIf { it.isNotBlank() }?.let { gameSerial ->
+                    val coverCtx = context
+                    // Read the generation so this row (and the grid behind it) recomposes on a pin.
+                    com.armsx2.CoverRegionIndex.perGameGeneration.intValue
+                    val pinned = com.armsx2.CoverRegionIndex.regionFor(gameSerial)
+                    GameMenuAction(
+                        "A/あ",
+                        str("games.overflow.coverRegion"),
+                        "game-menu.coverregion",
+                        trailing = str(
+                            when (pinned) {
+                                1 -> "games.overflow.coverRegion.usa"
+                                2 -> "games.overflow.coverRegion.eur"
+                                3 -> "games.overflow.coverRegion.jpn"
+                                0 -> "games.overflow.coverRegion.disc"
+                                else -> "games.coverRegion.library"
+                            },
+                        ),
+                    ) {
+                        // Cycles Library -> Disc -> USA -> EUR -> Jpn -> Library. "Library" is the
+                        // absence of a pin, which is why it is null and not a fifth region.
+                        val next = when (pinned) {
+                            null -> 0
+                            3 -> null
+                            else -> pinned + 1
+                        }
+                        com.armsx2.CoverRegionIndex.setFor(gameSerial, next)
+                        if (next != null && next != 0)
+                            com.armsx2.CoverRegionIndex.ensureBuilt(coverCtx)
+                        // Menu stays open: picking a region is a cycle, and closing after every
+                        // press would mean re-opening the menu three times to reach Japan.
+                    }
+                }
+                // Per-game memory cards without booting the game. The card picker already
+                // does per-game assignment whenever it is handed a game — until now the only
+                // caller that handed it one was the in-game menu, so from the library you got
+                // the global slots and no way to reach the per-game ones.
+                GameMenuAction("💳", str("memcard.perGame.menu"), "game-menu.memcard") {
+                    menuGame = null
+                    com.armsx2.navigation.UiNavigator.navigate(
+                        com.armsx2.navigation.AppRoute.MemoryCardManager(game))
+                }
                 // Pin to the launcher (issue #242). The action was lost when this menu was
                 // rebuilt, leaving HomeShortcuts with no call site at all (issue #335).
                 // pin() returns false only when the launcher can't pin — surface that.
@@ -847,7 +893,13 @@ fun HomeScreen(
 }
 
 @Composable
-private fun GameMenuAction(glyph: String, label: String, id: String, onClick: () -> Unit) {
+private fun GameMenuAction(
+    glyph: String,
+    label: String,
+    id: String,
+    trailing: String? = null,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         modifier = Modifier
@@ -863,7 +915,14 @@ private fun GameMenuAction(glyph: String, label: String, id: String, onClick: ()
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(glyph, color = MaterialTheme.colorScheme.primary, fontSize = 20.sp)
-            Text(label, style = MaterialTheme.typography.titleMedium)
+            Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            trailing?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
@@ -1314,10 +1373,15 @@ private fun GameCover(
     // skipped when a custom cover wins) so EVERY card — the Recently Played shelf
     // included — is subscribed and re-resolves when the toolbar toggle flips.
     val use3d = CoverArtStyle.use3d.value
+    // Same reasoning for Cover Region: game.coverUrl resolves it internally, so nothing here was
+    // subscribed to a region change and cards kept their old art until something else happened to
+    // recompose them. Both the library-wide setting and the per-game pins are read.
+    val coverRegion = com.armsx2.CoverRegionIndex.region.intValue
+    val coverPins = com.armsx2.CoverRegionIndex.perGameGeneration.intValue
     val customCoverMap = LocalCustomCoverMap.current
     val custom = remember(game.uri, customCoverMap) { CustomCovers.matchIn(customCoverMap, game) }
     val model = custom ?: game.coverUrl
-    val request = remember(model, use3d) {
+    val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
             .data(model)
             .size(360, 500)

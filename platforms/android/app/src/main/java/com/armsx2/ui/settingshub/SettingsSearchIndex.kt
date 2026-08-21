@@ -195,6 +195,8 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("overlay.toggle.fastForwardPopups", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.osdSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.osdColor.label", true, SettingsCategory.OnScreen),
+    SettingsSearchEntry("overlay.osdPosition.label", true, SettingsCategory.OnScreen),
+    SettingsSearchEntry("overlay.quickMenuSide.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiFontSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("fixes.antiBlur.label", true, SettingsCategory.Advanced),

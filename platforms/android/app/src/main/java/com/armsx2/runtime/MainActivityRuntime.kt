@@ -2091,6 +2091,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.ui.theme.ThemePreferences.load()
         com.armsx2.ui.theme.BootLogoPreferences.load()
         com.armsx2.ui.ScreenPinning.load()
+        com.armsx2.ui.QuickMenuSide.load()
         com.armsx2.ui.theme.ToolbarPositionPreferences.load()
         com.armsx2.ui.theme.LibraryChromePreferences.load()
         com.armsx2.ui.theme.LauncherOrientationPreferences.load()
@@ -2104,10 +2105,11 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.OverlayRepo.load()
         com.armsx2.CoverRegionIndex.load()
         // Only parses the 2.6MB GameDB when a non-default cover region is actually in use.
-        if (com.armsx2.CoverRegionIndex.region.intValue != 0)
+        if (com.armsx2.CoverRegionIndex.needsIndex())
             com.armsx2.CoverRegionIndex.ensureBuilt(applicationContext)
         // Second-display utility panel (Ayn Thor / Retroid dual screen). No-op with one display.
         com.armsx2.SecondScreen.load()
+        com.armsx2.SecondScreenLayout.load()
         com.armsx2.SecondScreen.attach(applicationContext)
         com.armsx2.BatteryWatcher.load()
         com.armsx2.BatteryWatcher.start(applicationContext)
@@ -3201,6 +3203,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down && event.repeatCount == 0) toggleSoftKeyboard()
                     return true
                 }
+                ControllerMappings.SysHotkey.DISPLAY_REFRESH -> {
+                    if (down && event.repeatCount == 0) cycleDisplayRefresh()
+                    return true
+                }
                 ControllerMappings.SysHotkey.GYRO_HOLD -> {
                     // "Only while aiming": gyro is live only while the button is held.
                     // Same shape as the FAST_FORWARD hold — act on both edges, ignore
@@ -3482,6 +3488,49 @@ open class MainActivityRuntime : ComponentActivity() {
             )
         }
         android.widget.Toast.makeText(this, "Resolution ${next}x", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Cycle the panel through the refresh rates it supports AT THE CURRENT RESOLUTION, so the
+     *  request never doubles as a resolution change (the same filter EmulationSurface applies to
+     *  its frame-rate vote). Highest first, wrapping — one press on a 120Hz phone gives 120 → 90
+     *  → 60 → 120.
+     *
+     *  preferredDisplayModeId rather than Surface.setFrameRate: the surface call is a pacing HINT
+     *  the compositor is free to ignore, which is right for latency but useless as a user-facing
+     *  toggle. This is a window-level mode request, and it survives EmulationSurface's periodic
+     *  re-vote because the two feed different parts of mode selection.
+     *
+     *  Session-only, deliberately: it is a "right now, on this panel" control, and a persisted
+     *  refresh override would follow the user onto a device whose modes don't match. */
+    private var refreshModeIndex = -1
+    private fun cycleDisplayRefresh() {
+        @Suppress("DEPRECATION")
+        val disp = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+                display else windowManager.defaultDisplay
+        }.getOrNull() ?: return
+        val modes = disp.supportedModes
+            .filter {
+                it.physicalWidth == disp.mode.physicalWidth &&
+                    it.physicalHeight == disp.mode.physicalHeight && it.refreshRate > 0f
+            }
+            // One entry per distinct rate — panels list several mode ids at the same Hz.
+            .distinctBy { Math.round(it.refreshRate) }
+            .sortedByDescending { it.refreshRate }
+        if (modes.size < 2) {
+            hotkeyToast("Only ${Math.round(disp.mode.refreshRate)} Hz available")
+            return
+        }
+        // Start from whatever the panel is on now, not from index 0, so the first press
+        // steps DOWN from the current rate instead of jumping to the top of the list.
+        if (refreshModeIndex < 0)
+            refreshModeIndex = modes.indexOfFirst { it.modeId == disp.mode.modeId }.coerceAtLeast(0)
+        refreshModeIndex = (refreshModeIndex + 1) % modes.size
+        val next = modes[refreshModeIndex]
+        runCatching {
+            window.attributes = window.attributes.apply { preferredDisplayModeId = next.modeId }
+        }
+        hotkeyToast("Display ${Math.round(next.refreshRate)} Hz")
     }
 
     // Corrects the Samsung QHD on-screen-touch offset before the event is dispatched (a strict no-op
@@ -4576,6 +4625,7 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.SLOW_DOWN -> toggleSlowDown()
             ControllerMappings.SysHotkey.TOGGLE_OSD -> hotkeyToast(InGameOverlay.cycleOsd())
             ControllerMappings.SysHotkey.TOGGLE_KEYBOARD -> toggleSoftKeyboard()
+            ControllerMappings.SysHotkey.DISPLAY_REFRESH -> cycleDisplayRefresh()
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,
             ControllerMappings.SysHotkey.PRESSURE_MOD -> {}

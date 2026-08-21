@@ -195,11 +195,17 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                     .clickable(onClick = closeMenu),
             )
         }
+        // Right edge by default, left when the user asks for it. Everything that encodes
+        // "which side" moves together — dock alignment, slide direction, which corners are
+        // rounded, and which edge gets the inset — because a half-mirrored sheet reads as a
+        // rendering bug: rounded on the wrong side, or sliding out of the edge it is glued to.
+        val menuLeft by com.armsx2.ui.QuickMenuSide.left
+        val slideFrom: (Int) -> Int = if (menuLeft) { w -> -w } else { w -> w }
         AnimatedVisibility(
             visible = shown,
-            enter = slideInHorizontally(tween(320, easing = EaseOut)) { it },
-            exit = slideOutHorizontally(tween(220, easing = EaseIn)) { it },
-            modifier = Modifier.align(Alignment.CenterEnd),
+            enter = slideInHorizontally(tween(320, easing = EaseOut), slideFrom),
+            exit = slideOutHorizontally(tween(220, easing = EaseIn), slideFrom),
+            modifier = Modifier.align(if (menuLeft) Alignment.CenterStart else Alignment.CenterEnd),
         ) {
             if (compact) {
                 Surface(
@@ -207,7 +213,8 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         .fillMaxHeight()
                         .fillMaxWidth(0.96f)
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical)),
-                    shape = RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp),
+                    shape = if (menuLeft) RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp)
+                        else RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp),
                     color = MaterialTheme.colorScheme.surface,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
                     shadowElevation = 22.dp,
@@ -227,7 +234,12 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         .fillMaxWidth(0.64f)
                         .widthIn(max = 900.dp)
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical))
-                        .padding(top = 14.dp, end = 12.dp, bottom = 14.dp),
+                        .padding(
+                            top = 14.dp,
+                            start = if (menuLeft) 12.dp else 0.dp,
+                            end = if (menuLeft) 0.dp else 12.dp,
+                            bottom = 14.dp,
+                        ),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Surface(
@@ -711,6 +723,26 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             val next = ((osdColorIndex + step) % size + size) % size
             viewModel.updateSettings { it.copy(osdColor = com.armsx2.ui.settings.OSD_COLORS[next]) }
         }
+        // Where the stats block sits, cycled in place. In the quick menu and not only in All
+        // Settings because the moment you want to move the OSD is the moment it is covering
+        // something you are trying to read — which is mid-game, not in a settings screen.
+        val osdPosIndex = com.armsx2.ui.settings.OSD_POSITIONS
+            .indexOf(state.settings.osdPosition).coerceAtLeast(0)
+        MenuCycleRow(
+            title = str("overlay.osdPosition.label"),
+            valueLabel = str(com.armsx2.ui.settings.OSD_POSITION_LABEL_KEYS[osdPosIndex]),
+        ) { step ->
+            val size = com.armsx2.ui.settings.OSD_POSITIONS.size
+            val next = ((osdPosIndex + step) % size + size) % size
+            viewModel.updateSettings { it.copy(osdPosition = com.armsx2.ui.settings.OSD_POSITIONS[next]) }
+        }
+        // Which edge this very panel docks to. Cycling it while the panel is open moves the
+        // panel under your thumb, which is the only way to judge the choice.
+        val menuSide by com.armsx2.ui.QuickMenuSide.left
+        MenuCycleRow(
+            title = str("overlay.quickMenuSide.label"),
+            valueLabel = str(if (menuSide) "overlay.quickMenuSide.left" else "overlay.quickMenuSide.right"),
+        ) { _ -> com.armsx2.ui.QuickMenuSide.set(!menuSide) }
     }
     SectionCard(str("savestate.title.loadManage")) {
         Text(
@@ -1228,6 +1260,14 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // Sits with the touch layout because it's the same job: what the on-screen pad LOOKS
     // like, right after where it's laid out. Full-screen like Controller mapping.
     CompactAction(str("tab.skins"), "◈", Modifier.fillMaxWidth(), viewModel::openSkins)
+    // Analog sticks in-game: swap/invert per stick, deadzone and feel. Requested because some
+    // games ship no invert option of their own, so changing it meant leaving the game for All
+    // Settings mid-session (Sizor). Global scope, matching the rumble/multitap toggles above.
+    run {
+        val stickPlayer = remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        val stickRefresh = remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        com.armsx2.ui.settings.AnalogSticksSection(stickPlayer, stickRefresh)
+    }
     // Motion / gyroscope controls in-game (mode, sensitivity, smoothing, invert). Global scope
     // to match the rumble/multitap toggles above; the per-game scope lives in All Settings › Controls.
     com.armsx2.ui.settings.GyroSection()

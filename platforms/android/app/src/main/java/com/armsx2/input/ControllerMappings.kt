@@ -896,6 +896,12 @@ object ControllerMappings {
         // Also useful for rotation-vector steering after shifting position mid-race.
         // Appended last for the same persisted-by-ordinal reason as TOGGLE_KEYBOARD above.
         GYRO_RECENTER("pad.gyrorecenter.keycode", "Motion Recenter"),
+        // Cycles the PANEL between its supported refresh rates (120 → 90 → 60 → …) without
+        // leaving the game. Distinct from the low-latency frame-rate vote in EmulationSurface:
+        // that one is a hint the compositor may ignore, this is a window mode request.
+        // Requested for battery — dropping a 120Hz panel to 60 while a 60fps game runs costs
+        // nothing visually. Appended last for the persisted-by-ordinal reason above.
+        DISPLAY_REFRESH("pad.displayrefresh.keycode", "Cycle Display Refresh Rate"),
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is

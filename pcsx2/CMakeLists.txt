@@ -691,22 +691,6 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKStreamBuffer.cpp
 		GS/Renderers/Vulkan/VKSwapChain.cpp
 	)
-	# GSLsfg.cpp is the ONE translation unit in PCSX2 built with exceptions.
-	#
-	# The rest of the emulator is -fno-exceptions, and stays that way. But LSFG's entire error
-	# protocol is throwing — initialize(), createContextFromAHB() and presentContext() all raise
-	# LSFG::vulkan_error, and the DXBC translator raises on a malformed shader — so without this
-	# there is no way to survive a bad Lossless.dll or an unsupported driver. The alternative,
-	# letting those propagate into -fno-exceptions frames, is std::terminate: a hard crash on the
-	# exact paths this feature is most likely to take on someone else's device.
-	#
-	# The boundary is airtight by construction: GSLsfg.cpp catches (...) at every call into the
-	# library and returns a bool, so nothing ever unwinds into GSDeviceVK. Skipping the PCH is
-	# required, not incidental — clang rejects a -fno-exceptions PCH from a -fexceptions TU.
-	set_source_files_properties(GS/Renderers/Vulkan/GSLsfg.cpp PROPERTIES
-		COMPILE_OPTIONS "-fexceptions"
-		SKIP_PRECOMPILE_HEADERS ON)
-
 	# Frame generation ported from Eden (eden-emu PR #4263).
 	#
 	# Gated on ARMSX2_ENABLE_LSFG rather than on ARMSX2_HAVE_LSFG, and the difference matters:
@@ -716,9 +700,10 @@ if(USE_VULKAN)
 	# evaluate false and drop every source below, producing a build that succeeds with the
 	# feature missing. Desktop builds never define either, so they skip this entirely.
 	#
-	# Unlike GSLsfg.cpp above, none of these need -fexceptions. That carve-out exists because the
-	# lsfg-vk-android library reports failure by throwing; the Eden port has zero throw sites and
-	# returns status enums instead, so it builds under the emulator's normal -fno-exceptions.
+	# Nothing here needs -fexceptions. The old lsfg-vk-android library reported failure by
+	# throwing, which cost GSLsfg.cpp a -fexceptions + no-PCH carve-out; the Eden port has zero
+	# throw sites and returns status enums, so the whole feature builds under the emulator's
+	# normal -fno-exceptions and GSLsfg.cpp is back on the PCH with everything else.
 	if(ARMSX2_ENABLE_LSFG)
 		list(APPEND pcsx2GSSources
 			GS/Renderers/Vulkan/FrameGen/FrameGen.cpp

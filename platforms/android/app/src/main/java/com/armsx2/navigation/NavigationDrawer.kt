@@ -203,7 +203,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("games.overflow.setup", "📂",
             onAction = { MainActivityRuntime.reopenSetup(); onDismiss() }),
         DrawerItem("setup.step.bios.title", "📀", AppRoute.BiosManager()),
-        DrawerItem("memcard.title", "💾", AppRoute.MemoryCardManager),
+        DrawerItem("memcard.title", "💾", AppRoute.MemoryCardManager()),
         DrawerItem("savestate.title.loadManage", "📥", AppRoute.SaveManager),
         DrawerItem("tab.controls", "🕹️", AppRoute.ControllerManager),
         DrawerItem("patches.dialog.patchesAndCheats", "🪄", AppRoute.PatchManager),
@@ -346,7 +346,7 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Home -> current is AppRoute.Home
     is AppRoute.Settings -> current is AppRoute.Settings
     is AppRoute.BiosManager -> current is AppRoute.BiosManager
-    AppRoute.MemoryCardManager -> current is AppRoute.MemoryCardManager
+    is AppRoute.MemoryCardManager -> current is AppRoute.MemoryCardManager
     AppRoute.SaveManager -> current is AppRoute.SaveManager
     AppRoute.ControllerManager -> current is AppRoute.ControllerManager
     AppRoute.PatchManager -> current is AppRoute.PatchManager

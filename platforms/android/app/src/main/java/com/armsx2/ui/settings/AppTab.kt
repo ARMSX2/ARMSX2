@@ -434,6 +434,113 @@ fun AppTab() {
                 description = str("secondScreen.moveOsd.desc"),
                 onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
             )
+
+            // Panel layout editor. Chips for what is on the panel, arrows for the order, a column
+            // count for the shape of the grid. Asked for as "a grid which can be filled with boxes
+            // containing the things one need" (NiceRon) — the point is that the panel is different
+            // for a save-scummer and for someone watching frame pacing, so it cannot be one fixed
+            // arrangement.
+            //
+            // Reading the generation subscribes this whole block, so a toggle re-renders the chips
+            // AND the order list without either one owning the state.
+            com.armsx2.SecondScreenLayout.generation.intValue
+            val placed = com.armsx2.SecondScreenLayout.tiles()
+            Text(
+                str("secondScreen.layout"),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+            Text(
+                str("secondScreen.layout.desc"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.armsx2.SecondScreenTile.entries.forEach { tile ->
+                    val toggle = {
+                        com.armsx2.SecondScreenLayout.toggle(tile)
+                        com.armsx2.SecondScreen.rebuild()
+                    }
+                    FilterChip(
+                        selected = tile in placed,
+                        onClick = toggle,
+                        label = { Text(str(tile.labelKey)) },
+                        shape = RoundedCornerShape(11.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "secondScreen.tile.${tile.id}",
+                            RoundedCornerShape(11.dp),
+                            onConfirm = toggle,
+                        ),
+                    )
+                }
+            }
+            // Order, one row per placed tile. Only shown once there is something to order.
+            if (placed.size > 1) {
+                placed.forEachIndexed { index, tile ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${index + 1}. ${str(tile.labelKey)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        val up = {
+                            com.armsx2.SecondScreenLayout.move(tile, -1)
+                            com.armsx2.SecondScreen.rebuild()
+                        }
+                        val down = {
+                            com.armsx2.SecondScreenLayout.move(tile, 1)
+                            com.armsx2.SecondScreen.rebuild()
+                        }
+                        OutlinedButton(
+                            onClick = up,
+                            enabled = index > 0,
+                            modifier = Modifier.controllerFocusable(
+                                "secondScreen.up.${tile.id}",
+                                RoundedCornerShape(11.dp),
+                                onConfirm = up,
+                            ),
+                        ) { Text("▲") }
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedButton(
+                            onClick = down,
+                            enabled = index < placed.lastIndex,
+                            modifier = Modifier.controllerFocusable(
+                                "secondScreen.down.${tile.id}",
+                                RoundedCornerShape(11.dp),
+                                onConfirm = down,
+                            ),
+                        ) { Text("▼") }
+                    }
+                }
+            }
+            IntSliderRow(
+                label = str("secondScreen.layout.columns"),
+                value = com.armsx2.SecondScreenLayout.columns(),
+                min = 1,
+                max = 6,
+                onChange = {
+                    com.armsx2.SecondScreenLayout.setColumns(it)
+                    com.armsx2.SecondScreen.rebuild()
+                },
+            )
+            val resetLayout = {
+                com.armsx2.SecondScreenLayout.reset()
+                com.armsx2.SecondScreen.rebuild()
+            }
+            OutlinedButton(
+                onClick = resetLayout,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .controllerFocusable(
+                        "secondScreen.layout.reset",
+                        RoundedCornerShape(11.dp),
+                        onConfirm = resetLayout,
+                    ),
+            ) { Text(str("secondScreen.layout.reset")) }
         }
 
         ToggleRow(

@@ -64,7 +64,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     ),
     // OverlayTab.kt
     SettingsCategory.OnScreen to listOf(
-        "osdColor", "osdScale", "osdShowCpu", "osdShowFps", "osdShowFrameTimes", "osdShowGpu",
+        "osdColor", "osdPosition", "osdScale", "osdShowCpu", "osdShowFps", "osdShowFrameTimes", "osdShowGpu",
         "osdShowGpuStats", "osdShowGsStats", "osdShowHardwareInfo", "osdShowInputs",
         "osdShowMessages", "osdShowResolution", "osdShowSettings", "osdShowSpeed",
         "osdShowVersion", "osdShowVps",

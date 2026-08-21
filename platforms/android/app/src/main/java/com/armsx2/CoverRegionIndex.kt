@@ -27,9 +27,28 @@ object CoverRegionIndex {
     val region = mutableIntStateOf(0)
 
     private const val PREF_KEY = "library.coverRegion"
+    private const val PREF_PER_GAME_KEY = "library.coverRegion.perGame"
+
+    /** serial -> region index, for games the user pinned to a specific region.
+     *
+     *  The library-wide setting is the wrong grain on its own: someone who wants Japanese art for
+     *  the handful of games whose Japanese covers are better does not want every Western game
+     *  swapped too (Sizor). This overrides the global choice per serial, and 0 here means "this
+     *  one follows the disc" — distinct from having no entry, which means "follow the library".
+     *
+     *  Bumped as a whole [mutableIntStateOf] generation rather than exposing the map as state: the
+     *  cover URL is read from a plain getter on GameInfo, so the grid needs SOMETHING observable to
+     *  recompose against, and the number of pinned games is far too small for the granularity to
+     *  matter. */
+    val perGameGeneration = mutableIntStateOf(0)
+    @Volatile private var perGame: Map<String, Int> = emptyMap()
 
     fun load() {
         runCatching { region.intValue = MainActivityRuntime.prefs.getInt(PREF_KEY, 0) }
+        runCatching {
+            val raw = MainActivityRuntime.prefs.getString(PREF_PER_GAME_KEY, null).orEmpty()
+            perGame = parsePerGame(raw)
+        }
     }
 
     fun set(value: Int) {
@@ -37,6 +56,38 @@ object CoverRegionIndex {
         runCatching { MainActivityRuntime.prefs.edit().putInt(PREF_KEY, value).apply() }
         // The map is region-independent; only the lookup changes, so no rebuild is needed.
     }
+
+    /** Whether anything currently asks for a non-disc region, so the caller knows to build the
+     *  index at startup. A per-game pin counts: it is exactly as much of a reason as the
+     *  library-wide setting, and checking only the latter left pinned games un-swapped until
+     *  something else happened to trigger a build. */
+    fun needsIndex(): Boolean = region.intValue != 0 || perGame.values.any { it != 0 }
+
+    /** The region pinned for [serial], or null when it follows the library-wide choice. */
+    fun regionFor(serial: String?): Int? =
+        serial?.takeIf { it.isNotBlank() }?.let { perGame[it.uppercase()] }
+
+    /** Pin [serial] to [value], or pass null to hand it back to the library-wide choice. */
+    fun setFor(serial: String?, value: Int?) {
+        val key = serial?.takeIf { it.isNotBlank() }?.uppercase() ?: return
+        perGame = perGame.toMutableMap().also { if (value == null) it.remove(key) else it[key] = value }
+        runCatching {
+            MainActivityRuntime.prefs.edit()
+                .putString(PREF_PER_GAME_KEY, perGame.entries.joinToString(",") { "${it.key}=${it.value}" })
+                .apply()
+        }
+        perGameGeneration.intValue++
+    }
+
+    /** "SLUS-20946=3,SLES-51234=1" — a flat string rather than JSON because it is a serial-to-int
+     *  map and nothing else, and prefs already store it as one value either way. */
+    private fun parsePerGame(raw: String): Map<String, Int> =
+        raw.split(',').mapNotNull { entry ->
+            val i = entry.indexOf('=')
+            if (i <= 0) return@mapNotNull null
+            val v = entry.substring(i + 1).trim().toIntOrNull() ?: return@mapNotNull null
+            entry.substring(0, i).trim().uppercase() to v.coerceIn(0, REGION_PREFIXES.lastIndex)
+        }.toMap()
 
     /** Serial prefixes per region. Sony's own releases (SC*) sit alongside licensed ones (SL*). */
     private val REGION_PREFIXES: List<Set<String>> = listOf(
@@ -59,7 +110,9 @@ object CoverRegionIndex {
      */
     fun coverSerialFor(serial: String?): String? {
         if (serial.isNullOrBlank()) return null
-        val wanted = REGION_PREFIXES.getOrNull(region.intValue).orEmpty()
+        // A per-game pin wins over the library-wide choice, including pinning back to "Disc".
+        val effective = regionFor(serial) ?: region.intValue
+        val wanted = REGION_PREFIXES.getOrNull(effective).orEmpty()
         if (wanted.isEmpty()) return null
         val key = titleOf?.get(serial.uppercase()) ?: return null
         val group = byTitle?.get(key) ?: return null
