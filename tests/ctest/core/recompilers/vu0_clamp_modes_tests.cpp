@@ -124,7 +124,7 @@ TEST(Vu0ClampModes, ExactOnTinyProductAgrees)
 	// on the flag: the interpreter classifies the underflow from its operands and
 	// raises U, the recompiler only ever sees the flushed zero. That divergence
 	// has a home of its own in
-	// VuStickyConsoleConformance.ProductionFpEnvironmentGatesTheJitsUnderflowOnModeThree,
+	// VuStickyConsoleConformance.ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode,
 	// so it is kept out of this diff rather than asserted twice.
 	h.IgnoreViInDiff(REG_MAC_FLAG);
 	h.IgnoreViInDiff(REG_STATUS_FLAG);
@@ -146,7 +146,7 @@ TEST(Vu0ClampModes, ExactOffTinyProductAgrees)
 	// on the flag: the interpreter classifies the underflow from its operands and
 	// raises U, the recompiler only ever sees the flushed zero. That divergence
 	// has a home of its own in
-	// VuStickyConsoleConformance.ProductionFpEnvironmentGatesTheJitsUnderflowOnModeThree,
+	// VuStickyConsoleConformance.ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode,
 	// so it is kept out of this diff rather than asserted twice.
 	h.IgnoreViInDiff(REG_MAC_FLAG);
 	h.IgnoreViInDiff(REG_STATUS_FLAG);

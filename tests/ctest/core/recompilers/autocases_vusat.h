@@ -42,11 +42,11 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_ADD,  0x7F800000u, 0xFF800000u, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 7, "A 2^128 + -2^128 zero under either reading"},
 	{VS_MUL,  0x7F7FFFFFu, 0x40000000u, 0x00000000u, 0x7FFFFFFFu, 0x0000u, 0x0040u, 0, 1, "B FLT_MAX*2 exactly 7FFFFFFF if the range runs that far"},
 	{VS_MUL,  0x7F7FFFFFu, 0xC0000000u, 0x00000000u, 0xFFFFFFFFu, 0x00F0u, 0x00C2u, 0, 1, "B FLT_MAX*-2 sign mirror of the row above"},
-	{VS_ADD,  0x7FFFFFFFu, 0x74000000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 7, "B max + 1ulp first value past the top: saturate or wrap"},
-	{VS_MUL,  0x7F800000u, 0x40000000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 7, "B 2^128*2 one binade past the top"},
-	{VS_MUL,  0x7F800000u, 0xC0000000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 7, "B 2^128*-2 sign mirror"},
-	{VS_ADD,  0x7FFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 7, "B max+max"},
-	{VS_MUL,  0x7F800000u, 0x7F800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 7, "B 2^128*2^128 far past the top"},
+	{VS_ADD,  0x7FFFFFFFu, 0x74000000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 1, "B max + 1ulp first value past the top: saturate or wrap"},
+	{VS_MUL,  0x7F800000u, 0x40000000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 1, "B 2^128*2 one binade past the top"},
+	{VS_MUL,  0x7F800000u, 0xC0000000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 1, "B 2^128*-2 sign mirror"},
+	{VS_ADD,  0x7FFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 1, "B max+max"},
+	{VS_MUL,  0x7F800000u, 0x7F800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 1, "B 2^128*2^128 far past the top"},
 	{VS_SUB,  0xFFFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 7, "B -max-max"},
 	{VS_MUL,  0x7F000000u, 0x3F800001u, 0x00000000u, 0x7F000001u, 0x0000u, 0x0040u, 0, 0, "B 2^127*(1+2^-23) exp FE, in range under every reading"},
 	{VS_MUL,  0x7F800000u, 0x3F800001u, 0x00000000u, 0x7F800001u, 0x0000u, 0x0040u, 0, 1, "B 2^128*(1+2^-23) exp FF and representable: does exp FF alone raise O?"},
@@ -97,8 +97,8 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_ADD,  0x3F800000u, 0x33C00000u, 0x00000000u, 0x3F800000u, 0x0000u, 0x0040u, 0, 0, "K 1.0 + 1.5*2^-24 chop 3F800000 | nearest 3F800001"},
 	{VS_ADD,  0xBF800000u, 0xB3C00000u, 0x00000000u, 0xBF800000u, 0x00F0u, 0x00C2u, 0, 0, "K -1.0 - 1.5*2^-24 chop BF800000 | nearest BF800001"},
 	{VS_ADD,  0x7FFFFFFFu, 0x73FFFFFFu, 0x00000000u, 0x7FFFFFFFu, 0x0000u, 0x0040u, 0, 1, "K max + just under 1ulp chop 7FFFFFFF, no O"},
-	{VS_ADD,  0xFF800000u, 0xFF800000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 7, "L -2^128 + -2^128"},
-	{VS_SUB,  0x7FFFFFFFu, 0xFF800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 7, "L max - -2^128"},
+	{VS_ADD,  0xFF800000u, 0xFF800000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 1, "L -2^128 + -2^128"},
+	{VS_SUB,  0x7FFFFFFFu, 0xFF800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 1, "L max - -2^128"},
 	{VS_MSUB, 0x00800000u, 0x3F800000u, 0x00800000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "L 2^-126 - 2^-126 exact zero, Z without U"},
 	{VS_MUL,  0x00800000u, 0xBF000000u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 0, 0, "L 2^-126 * -0.5 sign of a flushed product"},
 };
@@ -106,6 +106,6 @@ inline constexpr VuSatCase kVuSatCases[] = {
 inline constexpr int kVuSatCaseCount = 68;
 // Column-misses, not case-misses: a case wrong in two columns counts twice.
 inline constexpr int kVuSatBadInterp = 0;
-inline constexpr int kVuSatBadJit = 68;
+inline constexpr int kVuSatBadJit = 54;
 
 } // namespace console_vusat

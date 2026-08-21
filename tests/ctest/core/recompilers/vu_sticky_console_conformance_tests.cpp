@@ -166,14 +166,13 @@ struct Divergence
 // Recorded from an actual run of both engines, never derived from a rule. Each
 // row names its own cause.
 //
-// Twenty-eight of these rows are one defect: `cop2EmitFlagUpdate`
-// (pcsx2/arm64/iCOP2-arm64.cpp) extracts a sign bit (CMLT) and a zero bit
-// (FCMEQ) per lane, so the arm64 COP2 macro path raises no MAC O, and under the
-// DAZ-off environment this test runs in it does not raise Z or U either -- an
-// underflowing product reaches the flag update as a live denormal, which FCMEQ
-// calls non-zero. The multiply's U model added at vuClampMode 4 asks the same
-// FCMEQ and so is equally blind here; it is scored where it works, in the
-// production environment, by DISABLED_AllMacroStatusMatchesConsole.
+// Twenty-eight of these rows are one defect, and this table is the DAZ-off half
+// of it. `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) reads Z off an
+// FCMEQ against zero, and with denormals live an underflowing product arrives
+// as a live denormal, which FCMEQ calls non-zero -- so neither Z nor the
+// multiply's U comes out, whatever the clamp mode. The mode-4 U and O models
+// are scored where they work, in the production environment, by
+// DISABLED_AllMacroStatusMatchesConsole.
 // DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow below states the defect
 // once, with a minimal witness.
 //
@@ -358,7 +357,7 @@ u32 CauseFromMac(u32 mac)
 // with denormals live and overflow reaching Inf, i.e. with DenormalsAreZero
 // off. Under the default (production) FP environment it loses O outright and
 // gets U back at vuClampMode 4 -- see
-// ProductionFpEnvironmentGatesTheJitsUnderflowOnModeFour below, which pins
+// ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode below, which pins
 // that state so it cannot change unnoticed. This test is the DAZ-off
 // configuration, which is a supported user setting and the one the console
 // capture was taken under.
@@ -453,22 +452,19 @@ TEST(VuStickyConsoleConformance, MacroMacClipMatchConsole)
 //
 // `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) builds the MAC flag from
 // per-lane predicates -- CMLT for the sign bit, FCMEQ for the zero bit, and at
-// vuClampMode 4 a multiply's U from the two together with its operands. So a
-// product that overflows still raises no O (the +/-FLT_MAX clamp runs BEFORE
-// the flag update and has already folded Inf's exponent away), and in the IEEE
-// environment this test runs in the underflow rows fail for a second reason:
-// the result arrives as a live denormal, which FCMEQ calls neither zero nor
-// underflowed, so neither Z nor U comes out.
+// vuClampMode 4 a multiply's U and O as well. The O comes away here: it is read
+// from the operands, which the exponent scale keeps in range whatever the FP
+// environment is doing. The two underflow rows do not, and this is the
+// configuration that is why -- with denormals live the product reaches the flag
+// update as a live denormal, which FCMEQ calls neither zero nor underflowed, so
+// neither Z nor U comes out.
 //
-// The underflow half is not a gap in the production environment. There FZ has
-// already flushed the product to the console's signed zero, and mode 4 reads
-// the U off that -- ProductionFpEnvironmentGatesTheJitsUnderflowOnModeFour
-// below is the same two witnesses where they are reachable. What this file
-// keeps is the DAZ-off configuration, which additionally wants the software
-// flush of DISABLED_Arm64Cop2MacroFlushesDenormalResultsToSignedZero.
-// TRIPWIRE -- no MAC O anywhere, and no MAC U or Z with denormals live.
-// O would split VU0 macro from VU0 micro, which computes it only under
-// Fix_VUOverflow. Enable when a redesign lands a costed version.
+// That half is not a gap in the production environment: there FZ has already
+// flushed the product to the console's signed zero and mode 4 reads the U off
+// it, which ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode pins. What
+// is left for this configuration is the software flush of
+// DISABLED_Arm64Cop2MacroFlushesDenormalResultsToSignedZero.
+// TRIPWIRE -- no MAC U or Z with denormals live.
 TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow)
 {
 	const ScopedFpEnv fp_env; // needs live denormals and Inf
@@ -490,6 +486,7 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroExtractsUnderflowAndOver
 	{
 		SCOPED_TRACE(w.what);
 		const auto build = [&](EeRecTestHarness& h) {
+			h.SetVu0ClampMode(4); // where both the U and the O model are reached
 			h.EnableVu0Capture();
 			h.SeedVu0VfBits(4, w.fs, w.fs, w.fs, w.fs);
 			h.SeedVu0VfBits(5, w.ft, w.ft, w.ft, w.ft);
@@ -571,32 +568,36 @@ TEST(VuStickyConsoleConformance, Arm64Cop2MacroEmptyDestMaskRetiresTheMacFlag)
 // off an exponent field the clamp never lets reach 255, so it raises U and O and
 // matches the console on both rows at every mode.
 //
-// The recompiler splits. Under FZ its multiply already writes the console's
-// signed zero, so "the result is zero and neither operand was" recovers the U
-// exactly, and vuClampMode 4 emits it. O has no such route -- ChopZero
-// saturates to +FLT_MAX (exp 254), so the exponent field never carries one --
-// and x86's mVUupdateFlags says the same about its own range. Both polarities of
-// the U gate are here because a test that only ran at mode 4 would pass with the
-// gate stuck on.
-TEST(VuStickyConsoleConformance, ProductionFpEnvironmentGatesTheJitsUnderflowOnModeFour)
+// The recompiler reaches both at vuClampMode 4. Under FZ its multiply already
+// writes the console's signed zero, so "the result is zero and neither operand
+// was" recovers the U exactly. The O cannot be read off
+// the result at all -- the clamp saturates it to +FLT_MAX and the exponent field
+// never carries one -- so it is taken from the operands instead, on a scale that
+// keeps the VU's top binade inside single precision. Both polarities of each
+// gate are here because a test that only ran at the gate's own mode would pass
+// with the gate stuck on.
+TEST(VuStickyConsoleConformance, ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode)
 {
 	struct Witness
 	{
 		const char* what;
 		u32 fs, ft;
 		u32 want_interp;
-		u32 want_jit_below;  // vuClampMode 1, 2 and 3
-		u32 want_jit_mode4;
+		int gate;            // the lowest vuClampMode that carries this bit
+		u32 want_jit_below;  // every mode under it
+		u32 want_jit_gated;
 		u32 console_mac;
 	};
 	static const Witness kWitnesses[] = {
 		// FZ flushes the product to the console's signed zero before the flag
 		// update sees a mantissa. Below mode 4 only Z survives; at 4 the
 		// operands say the zero was not exact and U comes back.
-		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0808u, 0x0008u, 0x0808u, 0x0808u},
-		// No mode reaches this one: the saturated overflow is an ordinary
-		// exponent by the time any predicate could ask.
-		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x8000u, 0x0000u, 0x0000u, 0x8000u},
+		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0808u, 4, 0x0008u, 0x0808u, 0x0808u},
+		// The product is 2^254, and the result the flag update sees is an
+		// ordinary +FLT_MAX. Below mode 4 that is the end of it; at 4 the
+		// operands are scaled down by 96 exponents each and multiplied there,
+		// where 2^254 is 2^62 and still says so.
+		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x8000u, 4, 0x0000u, 0x8000u, 0x8000u},
 	};
 	const auto run_jit = [](const Witness& w, int mode) {
 		EeRecTestHarness hj;
@@ -621,11 +622,12 @@ TEST(VuStickyConsoleConformance, ProductionFpEnvironmentGatesTheJitsUnderflowOnM
 		hi.RunInterpOnly();
 		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), w.want_interp) << "[interp]";
 
-		for (int mode = 1; mode <= 3; ++mode)
+		for (int mode = 1; mode < w.gate; ++mode)
 			EXPECT_EQ(run_jit(w, mode), w.want_jit_below) << "[jit] vuClampMode " << mode;
-		EXPECT_EQ(run_jit(w, 4), w.want_jit_mode4) << "[jit] vuClampMode 4";
+		for (int mode = w.gate; mode <= 4; ++mode)
+			EXPECT_EQ(run_jit(w, mode), w.want_jit_gated) << "[jit] vuClampMode " << mode;
 		EXPECT_NE(w.want_jit_below, w.console_mac)
-			<< "the recompiler matches the console below the gate, so the mode-4 "
+			<< "the recompiler matches the console below the gate, so the gated "
 			   "row proves nothing";
 	}
 }
@@ -948,9 +950,9 @@ TEST(VuStickyMicroConsoleConformance, MicroPathControlRuns)
 // ---------------------------------------------------------------------------
 
 // The production environment, where the exact models are reachable, so the
-// recompiler is scored at vuClampMode 4 -- the mode they are gated on. Twenty-one
-// of the twenty-eight rows the DAZ-off table above records came away with the
-// multiply's U; what is left is O.
+// recompiler is scored at vuClampMode 4 -- the mode they are gated on. Every one
+// of the twenty-eight rows the DAZ-off table above records comes away here:
+// twenty-one to the multiply's U and the last seven to MAC O.
 TEST(VuStickyConsoleConformance, DISABLED_AllMacroStatusMatchesConsole)
 {
 	for (const VuStickyCase& c : kVuStickyCases)
