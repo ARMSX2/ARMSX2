@@ -55,6 +55,12 @@ data class PatchManagerUiState(
 )
 
 class PatchManagerViewModel(application: Application) : AndroidViewModel(application) {
+    init {
+        // Point the repository-tree cache at app storage. Until this runs the caches are
+        // memory-only, which is what made every cold start re-download and re-parse megabytes.
+        com.armsx2.PatchRepo.setCacheDir(java.io.File(application.cacheDir, "patch-trees"))
+    }
+
     /** The in-flight online scan, if any. See searchOnline for why this is tracked. */
     private var onlineSearchJob: kotlinx.coroutines.Job? = null
 
