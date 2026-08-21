@@ -36,14 +36,13 @@
 // ee_fpu_zero_divisor_console_tests.cpp carries the same warning and the serial
 // list behind it.
 //
-// The measured console divergences, for the record (re-measured 2026-07-31 with
-// DISABLED_DumpConsoleComparison; the numbers before that change are in
-// parentheses):
-//   * 51 rows match exactly (was 25).
-//   * 6 rows differ in VALUE only, all of them DIV or RSQRT (was 32, every op).
-//     Those two still read their operands through fpuDouble and still saturate
-//     through checkDivideByZero's posFmax, so they are the last members of this
-//     class. See EeFpuTopBinadeConsole for the ops that left it.
+// The measured console divergences, for the record (re-measured with
+// DISABLED_DumpConsoleComparison; earlier readings in parentheses):
+//   * 57 rows match exactly (was 51, and 25 before that).
+//   * 0 rows differ in VALUE (was 6, all of them DIV or RSQRT). Those two were
+//     the last to read their operands through fpuDouble and saturate through
+//     checkDivideByZero's posFmax; d71643fb75 took the clamp off them. See
+//     EeFpuTopBinadeConsole for the ops that left the class earlier.
 //   * 0 rows differ in FLAGS, on either engine. FCR31's O and U used to be
 //     wrong on 18 of the 57 -- 15 overflow rows and 3 underflow -- because
 //     checkOverflow()/checkUnderflow() inferred them from a host infinity and
@@ -51,9 +50,13 @@
 //     ever produces. They are magnitude questions now: eeToDouble() and
 //     kEeFpuMax in pcsx2/FPU.cpp.
 //
-// Where the tiers sit over these 57 rows, as asserted below:
-//   * fpuFullMode: 57/57 exact, value and flags. It is the reference.
-//   * interpreter: 57/57 on FCR31, 51/57 on value, the 6 being DIV and RSQRT.
+// Where the tiers sit over these 57 rows. What the recompiler's column varies
+// with is the eeClampMode the row runs in; the interpreter's does not vary --
+// it is 57/57 in every one of them, so nothing here is an interpreter gap:
+//   * eeClampMode 0, 1: 20 of 57 exact
+//   * eeClampMode 2:    22 -- the operand clamp heals two of the splits
+//   * eeClampMode 3, 4: 57/57 on value and flags, asserted by
+//     FullModeMatchesConsoleOnEveryRow. fpuFullMode is the reference.
 //   * fast path:   +/-FLT_MAX wherever the console is in the top binade, and it
 //     clears O and U but raises neither. A raise needs the magnitude of the
 //     exact result, and a saturating single has thrown that away by the time
