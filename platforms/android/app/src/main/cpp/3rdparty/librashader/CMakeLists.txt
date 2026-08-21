@@ -33,6 +33,22 @@ if(NOT CARGO_EXECUTABLE)
 	return()
 endif()
 
+# cargo must be recent enough to parse the pinned tree's dependency graph. moxcms (a
+# transitive dep) is edition 2024, which needs cargo >= 1.85; an older-but-present cargo
+# otherwise fails the WHOLE native build deep inside an opaque transitive manifest parse
+# ("feature `edition2024` is required"). Disable + warn instead, matching the "cargo not
+# found" contract above so a stale toolchain compiles the feature out rather than breaking
+# the build.
+execute_process(COMMAND ${CARGO_EXECUTABLE} --version
+	OUTPUT_VARIABLE _lrs_cargo_ver OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" _lrs_cargo_ver "${_lrs_cargo_ver}")
+if(_lrs_cargo_ver VERSION_LESS "1.85.0")
+	message(STATUS "librashader: cargo ${_lrs_cargo_ver} too old (need >= 1.85 for edition2024) "
+	               "-> RetroArch shader support DISABLED. Run `rustup update` to enable it.")
+	set(ARMSX2_HAVE_LIBRASHADER OFF PARENT_SCOPE)
+	return()
+endif()
+
 # ---- Android ABI -> Rust target ---------------------------------------------------
 if(ANDROID_ABI STREQUAL "arm64-v8a")
 	set(_lrs_rust_target "aarch64-linux-android")
