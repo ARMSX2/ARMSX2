@@ -139,6 +139,12 @@ namespace GSTextureReplacements
 	/// Lookup map of texture names to replacements, if they exist.
 	static std::unordered_map<TextureName, std::string> s_replacement_texture_filenames;
 
+	/// Modification time per indexed texture, captured during the scan. Used to pick between
+	/// palette variants: a mod installed over a base pack has the newer files, and nothing else
+	/// available at that point distinguishes "the pack the player added last" from "the pack it
+	/// was layered on top of".
+	static std::unordered_map<TextureName, std::time_t> s_replacement_texture_mtimes;
+
 	/// Lookup map of texture names without CLUT hash, to know when we need to disable paltex.
 	static std::unordered_set<TextureName> s_replacement_textures_without_clut_hash;
 
@@ -540,6 +546,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 	// clear out the caches
 	{
 		s_replacement_texture_filenames.clear();
+		s_replacement_texture_mtimes.clear();
 		s_replacement_textures_without_clut_hash.clear();
 
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
@@ -608,6 +615,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 		// first few, because "my mod is not applying" and "my mod is being shadowed by another
 		// pack" look identical to the person reporting it.
 		const std::string losing_path = fd.FileName;
+		s_replacement_texture_mtimes[name.value()] = fd.ModificationTime;
 		auto ins = s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
 		if (!ins.second)
 		{
@@ -827,25 +835,48 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	// is about which palette to prefer, not about loading at all.
 	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette())
 	{
+		// ★ NEWEST wins, not lowest hash.
+		//
+		// The first cut picked the lowest palette hash, which is arbitrary, and it showed: with a
+		// mod layered over a base pack both supply the same glyph under DIFFERENT palettes, so
+		// they never collide during indexing and the arbitrary rule silently preferred the base
+		// pack. The player sees the pack they installed first, which is the opposite of what
+		// layering a mod means.
+		//
+		// Modification time is the one signal that distinguishes them, and the scan already
+		// reports it, so this costs no extra I/O. Ties fall back to the lower hash purely so the
+		// result stays reproducible.
 		const TextureName* best = nullptr;
 		const std::string* best_file = nullptr;
+		std::time_t best_mtime = 0;
+		u32 candidates = 0;
 		for (const auto& it : s_replacement_texture_filenames)
 		{
 			if (it.first.TEX0Hash != name.TEX0Hash || it.first.bits != name.bits ||
 				it.first.region_width != name.region_width || it.first.region_height != name.region_height)
 				continue;
-			if (!best || it.first.CLUTHash < best->CLUTHash)
+
+			candidates++;
+			const auto mt = s_replacement_texture_mtimes.find(it.first);
+			const std::time_t mtime = (mt != s_replacement_texture_mtimes.end()) ? mt->second : 0;
+			if (s_palette_fallbacks < 4)
+			{
+				Console.WriteLnFmt("Texture replacements:   candidate clut={:016x} mtime={} '{}'",
+					it.first.CLUTHash, static_cast<s64>(mtime), it.second);
+			}
+			if (!best || mtime > best_mtime || (mtime == best_mtime && it.first.CLUTHash < best->CLUTHash))
 			{
 				best = &it.first;
 				best_file = &it.second;
+				best_mtime = mtime;
 			}
 		}
 		if (best)
 		{
 			if (s_palette_fallbacks < 8)
 			{
-				Console.WriteLnFmt("Texture replacements: PALETTE FALLBACK tex0={:016x} wanted clut={:016x}, using '{}'",
-					name.TEX0Hash, name.CLUTHash, Path::GetFileName(*best_file));
+				Console.WriteLnFmt("Texture replacements: PALETTE FALLBACK tex0={:016x} wanted clut={:016x}, chose '{}' of {} candidates (newest)",
+					name.TEX0Hash, name.CLUTHash, Path::GetFileName(*best_file), candidates);
 			}
 			s_palette_fallbacks++;
 			fnit = s_replacement_texture_filenames.find(*best);
