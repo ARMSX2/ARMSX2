@@ -147,7 +147,14 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
     )
 
     private fun readSaves(): ReadResult {
-        val active = MainActivityRuntime.currentGame.value
+        // ★ contextGame is the fallback, not an afterthought.
+        //
+        // Reached from the library's long-press menu nothing is booted, so currentGame is null —
+        // and with it null every entry came back canUseWithActiveGame = false, which greys out
+        // Load. The list also stopped filtering, so it showed every game's saves at once.
+        // contextGame is set for exactly this case and load() already honours it; the read here
+        // simply had not caught up.
+        val active = MainActivityRuntime.currentGame.value ?: MainActivityRuntime.contextGame.value
         val activeSerial = active?.serial.orEmpty()
         val activePaths = (0 until SLOT_COUNT).mapNotNull { slot ->
             runCatching { NativeApp.getGamePathSlot(slot) }
