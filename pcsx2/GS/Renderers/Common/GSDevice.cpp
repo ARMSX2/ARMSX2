@@ -1337,7 +1337,15 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	FlushDeferredDraws();
 	// Guarded here rather than in the backends so a device that never overrides
 	// DoApplyShaderChain (software, or a build without librashader) costs nothing.
-	if (!GSConfig.ShaderChainEnabled || GSConfig.ShaderChainPreset.empty() || !m_current)
+	const bool wanted = GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty();
+	// On the edge, not every frame: turning the chain off used to leave every pass's target
+	// and pipeline resident until the preset changed or the device died.
+	if (!wanted && m_shader_chain_loaded)
+	{
+		ReleaseShaderChain();
+		m_shader_chain_loaded = false;
+	}
+	if (!wanted || !m_current)
 		return false;
 
 	// A minimised or mid-resize window yields a degenerate rect; never build a 0-sized target.
@@ -1356,6 +1364,7 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	if (!DoApplyShaderChain(m_current, dTex))
 		return false;
 
+	m_shader_chain_loaded = true;
 	m_current = dTex;
 	return true;
 }

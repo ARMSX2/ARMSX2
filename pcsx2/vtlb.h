@@ -65,11 +65,10 @@ extern void vtlb_ReassignHandler( vtlbHandler rv,
 );
 
 // True if the handler id is one of the two unmapped-page handlers
-// (UnmappedVirtHandler / UnmappedPhyHandler). These are the only handlers
-// whose access paths can raise a guest exception (vtlb_Miss -> cpuTlbMiss
-// reads cpuRegs.pc for EPC); every registered hardware handler tolerates a
-// stale cpuRegs.pc. Recompilers use this to decide whether a compile-time
-// resolved handler call needs the current pc flushed.
+// (UnmappedVirtHandler / UnmappedPhyHandler), whose access paths run
+// vtlb_Miss. Recompilers use this to decide whether a compile-time resolved
+// handler call needs cpuRegs.pc flushed first: vtlb_Miss reads it, and under
+// the interpreter derives EPC from it, while a hardware handler never does.
 extern bool vtlb_IsUnmappedHandlerID(vtlbHandler id);
 
 

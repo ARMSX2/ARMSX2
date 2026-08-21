@@ -38,6 +38,7 @@ enum ARMSX2DeepLinkHandler {
         return Set(components.map { $0.lowercased() })
     }
 
+    /// Already decoded on both paths. Decoding again reads a literal % as a new escape.
     private static func queryValue(_ names: [String], in url: URL) -> String? {
         if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             for name in names {
@@ -160,7 +161,7 @@ enum ARMSX2DeepLinkHandler {
     }
 
     private static func launchGame(from url: URL) {
-        guard let game = queryValue(["game", "iso", "file", "name"], in: url)?.removingPercentEncoding else {
+        guard let game = queryValue(["game", "iso", "file", "name"], in: url) else {
             showMessage("ARMSX2 launch link is missing a game filename.")
             NSLog("[ARMSX2 iOS DeepLink] launch missing game url=%@", url.absoluteString)
             return

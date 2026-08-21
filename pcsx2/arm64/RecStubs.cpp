@@ -89,8 +89,8 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc, 
 
 	// Flush cpuRegs.pc and cpuRegs.code for exception handling.
 	// The fastmem path skips iFlushCall, so these may be stale.
-	// If the vtlb handler triggers a TLB miss or other exception,
-	// cpuTlbMiss reads cpuRegs.pc to set EPC.
+	// If the vtlb handler reports a TLB miss or raises an exception,
+	// cpuRegs.pc is what it reads.
 	armAsm->Mov(RWSCRATCH, guest_pc);
 	armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.pc));
 

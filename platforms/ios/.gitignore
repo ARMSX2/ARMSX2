@@ -10,6 +10,7 @@ node_modules/
 bun.lockb
 package-lock.json
 /build-ios*/
+/build-sim*/
 /build-maccatalyst/
 /ipa-package/
 *.ipa

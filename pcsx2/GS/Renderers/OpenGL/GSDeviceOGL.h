@@ -326,6 +326,7 @@ private:
 	/// has to be re-fed regardless of whether the store changed.
 	u64 m_shader_param_generation = 0;
 	void DestroyShaderChain();
+	void ReleaseShaderChain() override { DestroyShaderChain(); }
 	void ApplyShaderChainParams();
 	/// The chain binds its own program/VAO/FBO/textures and does not put them back, so
 	/// GLState's cache would go stale behind our back. Re-pushes what it clobbers.

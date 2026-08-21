@@ -69,6 +69,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_smc_manual_tests.cpp
 	ee_rec_smc_tests.cpp
 	ee_rec_timeout_loop_tests.cpp
+	ee_rec_tlb_divert_tests.cpp
 	ee_rec_traps_tests.cpp
 	ee_timer_count_read_race_tests.cpp
 	vtlb_get_guest_address_tests.cpp
@@ -120,6 +121,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_persist_roundtrip_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
+	mvu_ibit_hack_tests.cpp
 	# Conformance against real-hardware captures rather than against the other
 	# engine: each case is scored on interp and JIT separately, so a mistake the
 	# two share is still visible. Case tables in autocases*.h are generated
@@ -142,6 +144,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_rsqrt_sign_console_tests.cpp
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
+	vu0_macro_fmac_range_console_tests.cpp
 	vu_madd_contract_console_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
 	vu_sticky_console_conformance_tests.cpp

@@ -16,6 +16,12 @@
 #include "cpuinfo.h"
 #include "imgui.h"
 
+#ifdef ARMSX2_HAS_LIBRASHADER
+// Without this first, the header declares no Metal entry points
+#define LIBRA_RUNTIME_METAL
+#include "librashader.h"
+#endif
+
 #ifdef __APPLE__
 #include "GSMTLSharedHeader.h"
 
@@ -781,6 +787,133 @@ void GSDeviceMTL::DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float par
 	RenderCopy(sTex, m_shadeboost_pipeline, GSVector4i(0, 0, dTex->GetSize().x, dTex->GetSize().y));
 }
 
+#ifdef ARMSX2_HAS_LIBRASHADER
+
+static void ReportShaderChainError(const char* what, libra_error_t err)
+{
+	char* msg = nullptr;
+	if (libra_error_write(err, &msg) == 0 && msg)
+	{
+		Console.Error("(GS) librashader %s failed: %s", what, msg);
+		libra_error_free_string(&msg);
+	}
+	else
+	{
+		Console.Error("(GS) librashader %s failed (errno %d)", what, static_cast<int>(libra_error_errno(err)));
+	}
+	libra_error_free(&err);
+}
+
+#endif
+
+void GSDeviceMTL::DestroyShaderChain()
+{
+#ifdef ARMSX2_HAS_LIBRASHADER
+	if (m_shader_chain)
+	{
+		libra_mtl_filter_chain_t chain = static_cast<libra_mtl_filter_chain_t>(m_shader_chain);
+		libra_mtl_filter_chain_free(&chain);
+		m_shader_chain = nullptr;
+	}
+#endif
+	m_shader_chain_preset.clear();
+	m_shader_chain_failed = false;
+	m_shader_frame_count = 0;
+	m_shader_param_generation = 0;
+}
+
+void GSDeviceMTL::ApplyShaderChainParams()
+{
+#ifdef ARMSX2_HAS_LIBRASHADER
+	const u64 generation = GetShaderChainParamGeneration();
+	if (generation == m_shader_param_generation)
+		return;
+
+	std::vector<std::pair<std::string, float>> params;
+	if (GetShaderChainParams(m_shader_chain_preset, &params))
+	{
+		libra_mtl_filter_chain_t chain = static_cast<libra_mtl_filter_chain_t>(m_shader_chain);
+		for (const auto& [name, value] : params)
+		{
+			if (libra_error_t err = libra_mtl_filter_chain_set_param(&chain, name.c_str(), value))
+				libra_error_free(&err);
+		}
+	}
+
+	m_shader_param_generation = generation;
+#endif
+}
+
+bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
+{ @autoreleasepool {
+#ifndef ARMSX2_HAS_LIBRASHADER
+	return false;
+#else
+	// Latch it, or a preset that fails to compile runs a full slang compile every frame
+	if (m_shader_chain_failed && m_shader_chain_preset == GSConfig.ShaderChainPreset)
+		return false;
+
+	if (!m_shader_chain || m_shader_chain_preset != GSConfig.ShaderChainPreset)
+	{
+		DestroyShaderChain();
+		m_shader_chain_preset = GSConfig.ShaderChainPreset;
+
+		libra_shader_preset_t preset = nullptr;
+		if (libra_error_t err = libra_preset_create(m_shader_chain_preset.c_str(), &preset))
+		{
+			ReportShaderChainError("preset load", err);
+			m_shader_chain_failed = true;
+			return false;
+		}
+
+		// create() invalidates `preset` on both paths, so nothing below may free it
+		libra_mtl_filter_chain_t chain = nullptr;
+		if (libra_error_t err = libra_mtl_filter_chain_create(&preset, m_queue, nullptr, &chain))
+		{
+			ReportShaderChainError("chain create", err);
+			m_shader_chain_failed = true;
+			return false;
+		}
+
+		m_shader_chain = chain;
+		m_shader_frame_count = 0;
+		m_shader_param_generation = 0;
+		Console.WriteLn("(GS) librashader: loaded preset '%s'", m_shader_chain_preset.c_str());
+	}
+
+	ApplyShaderChainParams();
+
+	id<MTLTexture> src = static_cast<GSTextureMTL*>(sTex)->GetTexture();
+	id<MTLTexture> dst = static_cast<GSTextureMTL*>(dTex)->GetTexture();
+	const libra_viewport_t vp = {0.0f, 0.0f,
+		static_cast<uint32_t>(dTex->GetWidth()), static_cast<uint32_t>(dTex->GetHeight())};
+
+	// The chain opens its own passes, and Metal aborts if ours still encodes
+	EndRenderPass();
+
+	libra_mtl_filter_chain_t chain = static_cast<libra_mtl_filter_chain_t>(m_shader_chain);
+	if (libra_error_t err = libra_mtl_filter_chain_frame(
+			&chain, GetRenderCmdBuf(), m_shader_frame_count, src, dst, &vp, nullptr, nullptr))
+	{
+		ReportShaderChainError("frame", err);
+		m_shader_chain_failed = true;
+		// A chain that failed partway has already encoded passes into this command buffer, and
+		// the ring it recycles per-frame objects over is shallower than our deferred-submit
+		// window. The success path flushes for exactly that reason; so must this one.
+		FlushEncoders();
+		return false;
+	}
+	m_shader_frame_count++;
+	dTex->SetState(GSTexture::State::Dirty);
+
+	// librashader recycles per-frame objects over a ring shallower than our deferred-submit
+	// window, so a frame is only safe once a submit follows it. This also clears the
+	// deferred-submit counters, so a chain frame always ends a batch
+	FlushEncoders();
+	return true;
+#endif
+}}
+
 bool GSDeviceMTL::DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants)
 { @autoreleasepool {
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
@@ -1508,6 +1641,7 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 void GSDeviceMTL::Destroy()
 { @autoreleasepool {
 	FlushEncoders();
+	DestroyShaderChain();
 	std::lock_guard<std::mutex> guard(m_backref->first);
 	m_backref->second = nullptr;
 

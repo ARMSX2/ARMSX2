@@ -38,6 +38,48 @@ SLES-53299:
     hwDownloadMode: 3
     nativeScaling: 2
     textureInsideRT: 1
+# NASCAR Thunder 2002 through NASCAR 06 — count DISPFB blits instead of
+# privileged register writes when working out the internal frame rate. Reported
+# by yuasasa on Android handhelds.
+#
+# The register-write detector reads these engines as producing a new image every
+# vblank. SkipDuplicateFrames (default on) trusts that answer, so no duplicate is
+# ever dropped and every repeated frame still pays for a full present. Counting
+# blits into the displayed framebuffer gives the real render rate and lets the
+# skip fire again.
+#
+# Scope is the five titles the reporter named; every serial each was released
+# under is listed, since the fix is a property of the engine and not the region.
+# The rest of the series is out on his word that it does not need this. NASCAR 07
+# is a separate case — upstream GameIndex.yaml already sets the fix on both its
+# serials, and restating it here would put its gameFixes list under this overlay's
+# clear-then-replace rule, so anything upstream added later would be dropped on
+# mobile.
+#
+# gameFixes only, for that same rule: upstream carries roundSprite on the Thunder
+# entries and deinterlace on Total Team Control, and naming gsHWFixes here would
+# delete them.
+SLES-53635:            # NASCAR 06 - Total Team Control (PAL-E)
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-20266:            # NASCAR Thunder 2002
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-20535:            # NASCAR Thunder 2003
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-20754:            # NASCAR Thunder 2004
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-20824:            # NASCAR Thunder 2004
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-21003:            # NASCAR 2005 - Chase for the Cup
+  gameFixes:
+    - BlitInternalFPSHack
+SLUS-21266:            # NASCAR 06 - Total Team Control (NTSC-U)
+  gameFixes:
+    - BlitInternalFPSHack
 PAPX-90522:
   clampModes:
     eeClampMode: 3

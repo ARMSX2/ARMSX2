@@ -468,7 +468,7 @@ void EeRecTestHarness::Run(RunMode mode)
 		ADD_FAILURE() << ss.str();
 	}
 
-	if (capture_vu0_)
+	if (capture_vu0_ && !vu0_expect_divergence_)
 	{
 		const auto vudiffs = DiffVu(vu0_jit_snapshot_, vu0_interp_snapshot_,
 			VuDiffMode::PipelinePermissive, vu0_ignored_vi_);

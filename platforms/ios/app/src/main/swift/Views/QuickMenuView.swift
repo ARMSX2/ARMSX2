@@ -8,6 +8,7 @@ import SwiftUI
 enum QuickMenuDestination: Equatable {
     case perGame
     case speed
+    case shaders
     case saveStates
     case cheats
     case retroAchievements
@@ -34,6 +35,7 @@ struct QuickMenuView: View {
     let vmMenuAvailable: Bool
     let gameMenuAvailable: Bool
     let virtualPadHiddenByController: Bool
+    let shaderChainAvailable: Bool
     let gameTitle: String?
     let controllerSkinMenu: AnyView
     let discMenu: AnyView
@@ -252,6 +254,11 @@ struct QuickMenuView: View {
             }
             OverlayActionRow(label: settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus") {
                 onOpen(.cheats)
+            }
+        }
+        if shaderChainAvailable {
+            OverlayActionRow(label: settings.localized("Shaders"), systemImage: "camera.filters") {
+                onOpen(.shaders)
             }
         }
     }

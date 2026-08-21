@@ -1,0 +1,11 @@
+--- a/librashader-capi/src/ctypes.rs
++++ b/librashader-capi/src/ctypes.rs
+@@ -129,7 +129,7 @@
+ #[cfg_attr(feature = "docsrs", doc(cfg(feature = "runtime-vulkan")))]
+ pub type libra_vk_filter_chain_t = Option<NonNull<FilterChainVulkan>>;
+ 
+-#[cfg(all(target_os = "macos", feature = "runtime-metal"))]
++#[cfg(all(target_vendor = "apple", feature = "runtime-metal"))]
+ use librashader::runtime::mtl::FilterChain as FilterChainMetal;
+ 
+ /// A handle to a Vulkan filter chain.

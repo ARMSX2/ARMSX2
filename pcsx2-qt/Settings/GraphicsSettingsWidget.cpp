@@ -1139,8 +1139,11 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
 		current_adapter_info = (current_adapter_info || adapters.empty()) ? current_adapter_info : &adapters.front();
 	}
 
+	// The toggle unlocks everything past 8x rather than past 12x, so the usual 16K-texture
+	// GPU (max texture size / 1280 = 12x) can still reach its 12x -- it just has to ask. With
+	// no adapter info we follow the standing assumption below, that the GPU is good for 12x.
 	const bool supports_extended_upscales =
-		current_adapter_info && current_adapter_info->max_upscale_multiplier > 12u;
+		!current_adapter_info || current_adapter_info->max_upscale_multiplier > 8u;
 	{
 		QSignalBlocker sb(m_advanced.extendedUpscales);
 		m_advanced.extendedUpscales->setEnabled(supports_extended_upscales);
@@ -1185,10 +1188,24 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
 
 void GraphicsSettingsWidget::populateUpscaleMultipliers(u32 max_upscale_multiplier)
 {
+	// The set at and below 8x is the one the Android UI offers: quarter steps up to 3x, then
+	// half, then whole. Sub-native is there because fewer pixels is a large win on low/mid
+	// handhelds, and the GS only clamps the upper bound (GSClampUpscaleMultiplier), so those
+	// apply as-is. Above 8x is gated on Extended Upscaling Multipliers.
 	static constexpr std::pair<const char*, float> templates[] = {
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "0.25x Native"), 0.25f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "0.5x Native"), 0.5f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "0.75x Native"), 0.75f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "Native (PS2) (Default)"), 1.0f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "1.25x Native"), 1.25f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "1.5x Native"), 1.5f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "1.75x Native"), 1.75f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "2x Native (~720px/HD)"), 2.0f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "2.25x Native"), 2.25f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "2.5x Native"), 2.5f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "2.75x Native"), 2.75f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "3x Native (~1080px/FHD)"), 3.0f},
+		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "3.5x Native"), 3.5f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "4x Native (~1440px/QHD)"), 4.0f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "5x Native (~1800px/QHD+)"), 5.0f},
 		{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "6x Native (~2160px/4K UHD)"), 6.0f},
@@ -1214,8 +1231,9 @@ void GraphicsSettingsWidget::populateUpscaleMultipliers(u32 max_upscale_multipli
 	};
 	static constexpr u32 max_template_multiplier = 25;
 
-	// Limit the dropdown to 12x if we're not showing advanced settings. Save the noobs.
-	static constexpr u32 max_non_advanced_multiplier = 12;
+	// Stop at 8x -- the top of the Android set -- unless advanced settings are showing.
+	// Save the noobs.
+	static constexpr u32 max_non_advanced_multiplier = 8;
 
 	QSignalBlocker sb(m_hw.upscaleMultiplier);
 	m_hw.upscaleMultiplier->clear();
@@ -1270,14 +1288,16 @@ void GraphicsSettingsWidget::populateUpscaleMultipliers(u32 max_upscale_multipli
 		int index = m_hw.upscaleMultiplier->findData(QVariant(saved_value));
 
 		// If the saved value goes above the current UI limit, add it temporarily
-		if (index <= 0 && saved_value > max_shown_multiplier)
+		if (index < 0 && saved_value > max_shown_multiplier)
 		{
 			m_hw.upscaleMultiplier->addItem(tr("%1x Native").arg(saved_value), QVariant(saved_value));
 			m_hw.upscaleMultiplier->setItemData(m_hw.upscaleMultiplier->count() - 1, true, TemporaryMultiplierRole);
 			index = m_hw.upscaleMultiplier->findData(QVariant(saved_value));
 		}
 
-		if (index > 0)
+		// Index 0 is a real entry here (0.25x) — there's no "Use Global Setting" row in the
+		// global tab, so a found index of 0 has to be honoured.
+		if (index >= 0)
 			m_hw.upscaleMultiplier->setCurrentIndex(index);
 	}
 }

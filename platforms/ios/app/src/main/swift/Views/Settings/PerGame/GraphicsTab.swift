@@ -44,6 +44,8 @@ struct GraphicsTab: View {
     @Binding var perGameShadeBoostContrast: Int
     @Binding var perGameShadeBoostSaturation: Int
     @Binding var perGameShadeBoostGamma: Int
+    @Binding var perGameShaderChain: Int
+    @Binding var perGameShaderPresetRef: String
     @Binding var perGameDithering: Int
     @Binding var perGameTVShader: Int
     @Binding var perGameCASMode: Int
@@ -64,6 +66,8 @@ struct GraphicsTab: View {
     @Binding var perGamePrecacheTextureReplacements: Int
 
     let savesToRunningGame: Bool
+    let shaderChainSupported: Bool
+    let onBrowseShaderPreset: () -> Void
     let settings: SettingsStore
 
     // MARK: Static option tables (moved from the panel)
@@ -273,6 +277,15 @@ struct GraphicsTab: View {
                               global: settings.shadeBoostGamma,
                               settings: settings)
                 .disabled(!enabled)
+        }
+
+        if shaderChainSupported {
+            PerGameShaderSection(
+                enabled: enabled,
+                chain: $perGameShaderChain,
+                presetRef: $perGameShaderPresetRef,
+                settings: settings,
+                onBrowse: onBrowseShaderPreset)
         }
 
         Section(settings.localized("Advanced Upscaling Hacks")) {

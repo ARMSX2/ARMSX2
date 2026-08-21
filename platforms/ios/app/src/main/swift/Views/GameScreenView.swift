@@ -272,6 +272,7 @@ struct GameScreenView: View {
     private static let briefStatusDisplayDuration: TimeInterval = 2.2
     private static let importantStatusDisplayDuration: TimeInterval = 6.0
     private static let retroAchievementsToastDisplayDuration: TimeInterval = 5.0
+    private static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
 
     private var displaySafeAreaInsets: UIEdgeInsets {
         UIApplication.shared.connectedScenes
@@ -298,6 +299,7 @@ struct GameScreenView: View {
                     vmMenuAvailable: vmMenuAvailable,
                     gameMenuAvailable: gameMenuAvailable,
                     virtualPadHiddenByController: virtualPadHiddenByController,
+                    shaderChainAvailable: Self.shaderChainSupported,
                     gameTitle: currentRuntimeGameName(),
                     controllerSkinMenu: AnyView(controllerSkinMenu),
                     discMenu: AnyView(discSwapMenu),
@@ -450,6 +452,12 @@ struct GameScreenView: View {
         .sheet(isPresented: childPresentedBinding(.speed)) {
             SpeedControlPanel(settings: settings)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: childPresentedBinding(.shaders)) {
+            // Large only: this panel pushes a searchable browser and grows a variable-length
+            // parameter list, and a medium detent under a search keyboard shows almost nothing.
+            ShaderControlPanel(settings: settings)
+                .presentationDetents([.large])
         }
         .sheet(isPresented: childPresentedBinding(.retroAchievements)) {
             RetroAchievementsGamePanel(settings: settings)
@@ -1011,7 +1019,7 @@ struct GameScreenView: View {
         switch destination {
         case .perGame:
             openPerGameSettingsForCurrentGame()
-        case .speed, .saveStates, .cheats, .retroAchievements, .padLayout, .resetROM:
+        case .speed, .shaders, .saveStates, .cheats, .retroAchievements, .padLayout, .resetROM:
             overlayRoute = .pausedPresenting(destination)
         }
     }
@@ -1912,6 +1920,36 @@ private struct SpeedControlPanel: View {
 
     private static func formatPercent(_ scalar: Float) -> String {
         String(format: "%.0f%%", scalar * 100.0)
+    }
+}
+
+// MARK: - Shader Control Panel
+
+/// The settings tree's shader section, hosted for the pause card. Both settings live in
+/// `EmuCore/GS`, so `commit` already coalesces the graphics apply and this panel writes none.
+private struct ShaderControlPanel: View {
+    @Bindable var settings: SettingsStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                ShaderChainSection(
+                    enabled: $settings.shaderChainEnabled,
+                    presetRef: $settings.shaderChainPresetRef,
+                    localized: settings.localized
+                )
+            }
+            .navigationTitle(settings.localized("Shaders"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(settings.localized("Done")) {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 

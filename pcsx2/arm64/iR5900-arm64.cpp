@@ -624,29 +624,6 @@ static void armClearCauseBD()
 	armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.CP0.n.Cause));
 }
 
-// Flag set by cpuTlbMiss to signal that a TLB exception occurred during
-// an interpreter call. The JIT block checks this after recCall and exits
-// to the dispatcher if set, so the exception vector gets dispatched.
-u32 s_recTlbMissOccurred = 0;
-
-// Emit the post-interpreter-call TLB-miss exception dispatch. cpuTlbMiss sets
-// s_recTlbMissOccurred and moves cpuRegs.pc to the exception vector; when set we
-// clear the flag and exit to DispatcherReg rather than continue the block at the
-// wrong PC. DispatcherReg/s_recTlbMissOccurred are file-local here, so this is
-// the shared entry point used by recCall and recVTLB-arm64.cpp's recUnalignedCall.
-void recEmitInterpTlbMissCheck()
-{
-	// Dispatch to DispatcherReg (not DispatcherEvent, which runs event
-	// processing that may interfere with the pending exception state).
-	a64::Label noException;
-	armMoveAddressToReg(RSCRATCHADDR, &s_recTlbMissOccurred);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RSCRATCHADDR));
-	armAsm->Cbz(RWSCRATCH, &noException);
-	armAsm->Str(a64::wzr, a64::MemOperand(RSCRATCHADDR)); // clear flag
-	armEmitJmp(DispatcherReg);
-	armAsm->Bind(&noException);
-}
-
 // Interp-called ops assume the interpreter's post-fetch convention:
 // cpuRegs.pc = op + 4 at handler entry (trap()/SYSCALL/BREAK subtract 4 to
 // find the faulting op). Non-delay-slot compiles advance `pc` before the
@@ -690,9 +667,6 @@ void recCall(void (*func)())
 
 	// The interpreter writes guest GPRs in memory — refresh the pin mirrors.
 	armReloadEEGPRPins();
-
-	// After interpreter calls, dispatch a pending TLB-miss exception.
-	recEmitInterpTlbMissCheck();
 }
 
 void recBranchCall(void (*func)())
@@ -1752,11 +1726,10 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 // observe cpuRegs.branch at runtime, i.e. can reach cpuException (which takes
 // it as bd) or the bracket epilogue's exception divert. Fork-verified raiser
 // inventory (2026-07-07):
-//   - memory ops: TLB miss via vtlb_Miss → cpuTlbMissR/W(addr, cpuRegs.branch)
-//     (vtlb.cpp) from BOTH fastmem slow path and softmem, plus the MMIO
-//     fallback _ext_memRead/Write (Memory.cpp). The inline load/store paths
-//     have no recEmitInterpTlbMissCheck — the vector divert rides the bracket
-//     epilogue, so these must keep the bracket.
+//   - memory ops: the MMIO fallback _ext_memRead/Write (Memory.cpp) calls
+//     cpuTlbMissR/W(addr, cpuRegs.branch) from BOTH the fastmem slow path and
+//     softmem. The inline load/store paths poll nothing, so the vector divert
+//     rides the bracket epilogue and these must keep the bracket.
 //   - SYSCALL (IS_BRANCH|BRANCHTYPE_SYSCALL), BREAK, and the trap family
 //     TGE..TNE / TGEI..TNEI — all recBranchCall/recCall interpreter fallbacks
 //     whose bodies call cpuException(_, cpuRegs.branch). BREAK and the traps
@@ -2358,9 +2331,8 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			// cpuException zeroes cpuRegs.branch; still-1 means the delay
 			// slot completed without raising. On an exception, divert to the
 			// dispatcher on the vector PC before the enclosing branch's
-			// static dispatch can clobber it (same contract as
-			// recEmitInterpTlbMissCheck; cycle undercount on this exceptional
-			// path is accepted the same way). (AX-05)
+			// static dispatch can clobber it. Cycle undercount on this
+			// exceptional path is accepted. (AX-05)
 			a64::Label noException;
 			armAsm->Ldr(RWSCRATCH, armCpuRegMem(&cpuRegs.branch));
 			armAsm->Cbnz(RWSCRATCH, &noException);
@@ -3212,11 +3184,9 @@ static void recSafeExitExecution()
 
 static void recCancelInstruction()
 {
-	// Called by interpreter functions (e.g. RaiseAddressError) when an
-	// exception occurs mid-instruction. For the interpreter, this does a
-	// longjmp. For the recompiler, set the TLB miss flag so that recCall's
-	// post-call check dispatches to the exception vector.
-	s_recTlbMissOccurred = 1;
+	// The interpreter's version longjmps out of the instruction it is inside;
+	// a recompiled block has no such seam. x86 asserts here instead; its only
+	// rec-reachable caller is RaiseAddressError, which just logs.
 }
 
 static void recExecute()
