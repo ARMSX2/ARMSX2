@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
+// Per-game settings precedence over the game database. Feature contributed by
+// bmdhacks (PR #593).
+
 #pragma once
 
 #include "Config.h"

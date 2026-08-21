@@ -50,6 +50,9 @@ import java.util.zip.ZipOutputStream
  * the CreateDirectoryPath fallback in native-lib.cpp), and worked around both times by doing the
  * work from Java. A snapshot writer in the core would fail silently on exactly the devices that
  * need it most.
+ *
+ * Feature contributed by bmdhacks (PR #608), alongside the three memory card corruption fixes it
+ * is built on.
  */
 object MemoryCardBackup {
     private const val SCHEMA = 1

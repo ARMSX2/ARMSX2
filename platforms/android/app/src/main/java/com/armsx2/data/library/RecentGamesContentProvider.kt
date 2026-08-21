@@ -23,6 +23,9 @@ import org.json.JSONArray
  * [GameLibraryRepository]/MainActivityRuntime.prefs, which is only
  * initialized once the main activity has launched; a query from a companion
  * app before that point would otherwise crash or return nothing.
+ *
+ * Feature contributed by misantronic (PR #566); the opt-in gate in [query] was
+ * added on merge.
  */
 class RecentGamesContentProvider : ContentProvider() {
 
