@@ -1003,6 +1003,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "patches.online.header" to "Browse online",
     "patches.online.fetch" to "Find patches & cheats for this game",
     "patches.online.loading" to "Searching the community repos…",
+    "patches.online.loading.hint" to "This searches several community repositories and can take a minute or two. You can leave this screen — the search stops when you do, so it won\u2019t slow the game down.",
     "patches.online.install" to "Install selected",
     "patches.section.patches" to "Patches",
     "patches.section.cheats" to "Cheats",

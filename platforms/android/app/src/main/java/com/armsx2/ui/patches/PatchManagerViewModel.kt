@@ -55,6 +55,23 @@ data class PatchManagerUiState(
 )
 
 class PatchManagerViewModel(application: Application) : AndroidViewModel(application) {
+    /** The in-flight online scan, if any. See searchOnline for why this is tracked. */
+    private var onlineSearchJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Stop any online scan in progress.
+     *
+     * Called when the browser leaves the screen. Cancellation is cooperative and PatchRepo now
+     * checks between every repository and every file, so this takes effect within one request
+     * rather than at the end of the whole scan.
+     */
+    fun cancelOnlineSearch() {
+        onlineSearchJob?.cancel()
+        onlineSearchJob = null
+        if (state.value.onlineLoading)
+            state.value = state.value.copy(onlineLoading = false)
+    }
+
     private companion object {
         /** A user can hand us a storage root by accident; an unbounded SAF walk of that is a hang. */
         const val MAX_IMPORT_DEPTH = 4
@@ -335,7 +352,16 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         state.value = state.value.copy(
             onlineLoading = true, error = null, onlineEntries = emptyList(), onlineForGameKey = gameKey,
         )
-        viewModelScope.launch {
+        // ★ Tracked so it can be STOPPED, and so a second search cannot stack on the first.
+        //
+        // The scan walks four repositories, each a multi-megabyte GitHub tree that is downloaded
+        // and regex-scanned. Left running behind the emulator that is enough CPU to cost a
+        // low-end device full speed and heat it badly — reported on a Helio G99, where going
+        // back to the game did not stop it. viewModelScope alone was not enough: it only
+        // cancels when the ViewModel clears, which does not happen merely because the user
+        // returned to the game.
+        onlineSearchJob?.cancel()
+        onlineSearchJob = viewModelScope.launch {
             // Serial priority: the library's (filename-derived) serial, then the running
             // game's serial, then — for a plainly-named file whose filename yielded no
             // serial and that isn't running — read it straight off the disc image

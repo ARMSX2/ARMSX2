@@ -2,6 +2,8 @@
 package com.armsx2
 
 import android.util.Log
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kr.co.iefriends.pcsx2.HttpClient
 import java.io.File
 
@@ -104,7 +106,20 @@ object PatchRepo {
      *  offline patch DB (resources/patches.zip) — read FIRST so patches resolve even when
      *  the booted CRC isn't a DB filename or the network is rate-limited; the network below
      *  only supplements. Without it, the in-game manager showed cheats but no patches. */
-    fun fetchForGame(serial: String?, crc: String, bundledZip: File? = null): Result {
+    /**
+     * ★ SUSPEND, and it checks for cancellation between every network call.
+     *
+     * These were plain blocking functions. Kotlin cancellation is cooperative, so code that never
+     * suspends and never checks isActive cannot be stopped — cancelling the viewModelScope did
+     * nothing and the scan ran to completion regardless. Leaving the browser and going back to the
+     * game therefore left four repository trees still downloading and being regex-scanned behind
+     * the emulator, which is what users reported as sudden severe heating and a game that would no
+     * longer hold full speed (SNAKEATEROP, Helio G99).
+     *
+     * Every loop below now yields that ability back. It does not make the scan faster; it makes it
+     * STOP.
+     */
+    suspend fun fetchForGame(serial: String?, crc: String, bundledZip: File? = null): Result {
         val c = crc.trim().uppercase()
         if (!CRC_RE.matches(c))
             return Result("", emptyList(), "No game CRC yet — boot the game first.")
@@ -130,6 +145,7 @@ object PatchRepo {
             add(c)
         }
         for (name in patchCandidates) {
+            currentCoroutineContext().ensureActive()
             val text = get("$RAW_BASE/patches/$name.pnach") ?: continue
             val (gt, es) = parse(text, "patches")
             if (gametitle.isEmpty()) gametitle = gt
@@ -141,6 +157,7 @@ object PatchRepo {
         // Also merge improvement patches from the Gabominated compilation (No-Blur etc.),
         // skipping any whose name already came from the official DB.
         for (name in patchCandidates) {
+            currentCoroutineContext().ensureActive()
             val text = get("$GABO_BASE/$GABO_DIR/$name.pnach") ?: continue
             val (gt, es) = parse(text, "patches")
             if (gametitle.isEmpty()) gametitle = gt
@@ -170,7 +187,7 @@ object PatchRepo {
     /** Fetch + parse community cheats for a game across all sources. Matches
      *  each repo's tree by CRC (exact) first, then by serial as a fallback;
      *  dedupes entries by normalized name (earlier sources win). Null if nothing found. */
-    private fun fetchCheats(serial: String?, crc: String): Pair<String, List<Entry>>? {
+    private suspend fun fetchCheats(serial: String?, crc: String): Pair<String, List<Entry>>? {
         val c = crc.uppercase()
         val s = serial?.uppercase()
         val haveCrc = CRC_RE.matches(c)
@@ -180,6 +197,9 @@ object PatchRepo {
         val entries = mutableListOf<Entry>()
         val seenNames = HashSet<String>()
         for (src in CHEAT_SOURCES) {
+            // Between sources: four repositories, each a multi-megabyte tree. This is the check
+            // that matters most — it is where the bulk of the time goes.
+            currentCoroutineContext().ensureActive()
             val tree = cheatTree(src)
             if (tree.isEmpty()) continue
             var matches = if (haveCrc)
@@ -188,6 +208,7 @@ object PatchRepo {
             if (matches.isEmpty() && s != null)
                 matches = tree.filter { it.substringAfterLast('/').uppercase().startsWith("${s}_") }
             for (m in matches) {
+                currentCoroutineContext().ensureActive()
                 val text = get("${src.raw}/${m.replace(" ", "%20")}") ?: continue
                 val (gt, es) = parse(text, "cheats")
                 if (gametitle.isEmpty()) gametitle = gt
@@ -198,9 +219,11 @@ object PatchRepo {
     }
 
     /** Cached file listing for a cheat source. */
-    private fun cheatTree(src: CheatSource): List<String> {
+    private suspend fun cheatTree(src: CheatSource): List<String> {
         cheatTreeCache[src.raw]?.let { return it }
+        currentCoroutineContext().ensureActive()
         val json = get(src.tree) ?: return emptyList()
+        currentCoroutineContext().ensureActive() // the regex below is the CPU-heavy part
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
         if (paths.isNotEmpty()) cheatTreeCache[src.raw] = paths
         return paths
@@ -210,7 +233,7 @@ object PatchRepo {
      *  booted, where we have the serial but not the disc CRC. Looks the game up
      *  in the repo file tree to find its `<serial>_<crc>.pnach`; the CRC comes
      *  back in [Result.crc] so the caller can name the saved file correctly. */
-    fun fetchForSerial(serial: String?, bundledZip: File? = null): Result {
+    suspend fun fetchForSerial(serial: String?, bundledZip: File? = null): Result {
         val s = serial?.trim()?.uppercase()
         if (s.isNullOrBlank() || !SERIAL_RE.matches(s))
             return Result("", emptyList(), "This game has no serial to search the patch database with.")
