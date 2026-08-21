@@ -112,3 +112,60 @@ __fi static void armEmitVuAddSubOverflow(const a64::VRegister& dst, const a64::V
 		armAsm->Bic(dst.V16B(), t1.V16B(), dst.V16B());
 	armAsm->Cmlt(dst.V4S(), dst.V4S(), 0);
 }
+
+// ========================================================================
+//  The adder's guard bits
+// ========================================================================
+// The EE adder keeps one guard bit below its 24-bit significand: whichever
+// operand the alignment shift moves right loses its low (|diff| - 1) mantissa
+// bits, and past 24 it keeps nothing but its sign. fpuGuardMask (FPU.cpp) is
+// the same rule for the EE FPU, and the VU's FMAC is that same adder.
+//
+// fpuEmitGuardedAddSub (iFPU-arm64.cpp) branches on the exponent difference.
+// Four lanes can want different arms of it at once, so this one is branchless:
+//
+//     d    = |expa - expb|
+//     keep = 25 > d        // all ones per lane while the mask still has bits
+//     mask = ((keep << d) >> 1) | 0x80000000
+//
+// keep doubles as the shift's ones-source: on the >= 25 arm it is zero, the
+// shift yields nothing, and the sign is all the operand has left. Shifting left
+// by d and back right by one gives the (d - 1) the rule asks for without a
+// second constant. Nothing clamps the shift amount -- USHL reads the low byte
+// of each lane as a signed count, so a difference past 127 shifts right rather
+// than left -- but keep is already zero past 24, and zero shifts either way to
+// zero.
+//
+// Masking is what makes the sum exact, so under the VU's round-toward-zero FPCR
+// one single-precision add of the masked pair is the interpreter's chopped
+// exact sum.
+//
+// `outA` and `outB` receive the masked operands and `tmp` is clobbered. All
+// three must be distinct and none may be `a` or `b`, which are read-only; the
+// caller's destination may be either operand, both being consumed here before
+// it is written.
+__fi static void armEmitVuGuardMask(const a64::VRegister& outA, const a64::VRegister& outB,
+	const a64::VRegister& a, const a64::VRegister& b, const a64::VRegister& tmp)
+{
+	pxAssert(!outA.Is(outB) && !outA.Is(tmp) && !outB.Is(tmp));
+	for (const a64::VRegister& r : {outA, outB, tmp})
+		pxAssert(!r.Is(a) && !r.Is(b));
+
+	armAsm->Shl(tmp.V4S(), a.V4S(), 1); // drop the sign, keep exp + mantissa
+	armAsm->Ushr(tmp.V4S(), tmp.V4S(), 24);
+	armAsm->Shl(outB.V4S(), b.V4S(), 1);
+	armAsm->Ushr(outB.V4S(), outB.V4S(), 24);
+
+	armAsm->Cmhi(outA.V4S(), outB.V4S(), tmp.V4S()); // all ones where a is the smaller
+	armAsm->Uabd(tmp.V4S(), tmp.V4S(), outB.V4S());
+	armAsm->Movi(outB.V4S(), 25);
+	armAsm->Cmhi(outB.V4S(), outB.V4S(), tmp.V4S()); // keep
+	armAsm->Ushl(tmp.V4S(), outB.V4S(), tmp.V4S());
+	armAsm->Ushr(tmp.V4S(), tmp.V4S(), 1);
+	armAsm->Orr(tmp.V4S(), 0x80, 24);
+
+	armAsm->Orr(outB.V16B(), tmp.V16B(), outA.V16B());
+	armAsm->And(outB.V16B(), b.V16B(), outB.V16B());
+	armAsm->Orn(outA.V16B(), tmp.V16B(), outA.V16B());
+	armAsm->And(outA.V16B(), a.V16B(), outA.V16B());
+}

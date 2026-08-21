@@ -615,55 +615,19 @@ static bool cop2MacFlagLive();
 // ========================================================================
 //  The adder's guard bits
 // ========================================================================
-// The EE adder keeps one guard bit below its 24-bit significand: whichever
-// operand the alignment shift moves right loses its low (|diff| - 1) mantissa
-// bits, and past 24 it keeps nothing but its sign. fpuGuardMask (FPU.cpp)
-// states the rule and carries the console rows behind it. The VU's FMAC is
-// that same adder, so the interpreter takes every add here through
-// EeFpuModel::AddSub and a bare four-lane Fadd lands one ULP toward zero
-// wherever the mask has bits to clear.
+// armEmitVuGuardMask (VuFmacFlags-arm64.h) carries the rule; here it stands
+// between the operands and the add, which is what makes the sum the
+// interpreter's chopped exact one.
 //
-// The cleared bits sit below half an ULP of the sum, so only an add that
-// cancels carries them across an ULP boundary: a uniform random operand pair
-// almost never separates the two, and a differential sweep has to search for
-// the pairs that do.
-//
-// fpuEmitGuardedAddSub (iFPU-arm64.cpp) is the same rule for one lane, and
-// branches on the exponent difference. Four lanes can want different arms of
-// it at once, so this one is branchless:
-//
-//     d    = |expa - expb|
-//     keep = 25 > d        // all ones per lane while the mask still has bits
-//     mask = ((keep << d) >> 1) | 0x80000000
-//
-// keep doubles as the shift's ones-source: on the >= 25 arm it is zero, the
-// shift yields nothing, and the sign is all the operand has left. Shifting by
-// d and then right by one is the (d - 1) the rule asks for without a second
-// constant to subtract from; at d <= 1 both spellings are all ones anyway.
-// Nothing clamps the shift amount: USHL reads the low byte of each lane as a
-// signed count, so a difference past 127 shifts right rather than left, but
-// keep is already zero everywhere past 24 and zero shifts either way to zero.
-// Which operand the mask lands on is the comparison of the two exponents;
-// within one exponent the mask is all ones and neither is touched.
-//
-// Under the VU's round-toward-zero FPCR one single-precision add of the masked
-// pair is the interpreter's chopped exact sum: masking is what makes the sum
-// exact, so there is only ever the one rounding.
-//
-// The three temporaries are the file's per-op scratch trio (q27/q28/q29) —
+// The three temporaries are the file's per-op scratch trio (q27/q28/q29):
 // every FMAC body has all three dead across its arithmetic, and none of them
-// can be an operand or a destination there (a VF cache slot, RQSCRATCH or
-// RQSCRATCH2). VOPMSUB's rotated operands live in q27/q28 and are consumed by
-// its multiply before the subtract reaches this. The MAC O bit below wants a
-// fourth, and takes RQSCRATCH2: the masking has read both operands by then, and
-// the destination is never that register.
+// can be an operand or a destination there. VOPMSUB's rotated operands live in
+// q27/q28 and are consumed by its multiply before the subtract reaches this.
+// The MAC O bit below wants a fourth and takes RQSCRATCH2, free once the
+// masking has read both operands.
 //
-// Fifteen instructions on top of the add is not something to charge every
-// title, so the mask is emitted at vuClampMode 4 only, read through
-// CHECK_VU_EXACT on VU0 since COP2 macro is VU0's. Modes 0 to 3 keep the bare
-// host add. A mode change mid-run re-emits:
-// VMManager::CheckForCPUConfigChanges compares the whole Recompiler bitset and
-// clears the execution caches.
+// Fifteen instructions on top of the add, so it is emitted at vuClampMode 4
+// only, read through CHECK_VU_EXACT on VU0 since COP2 macro is VU0's.
 static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, bool issub, a64::VRegister* ov)
 {
@@ -682,23 +646,7 @@ static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegiste
 	for (const a64::VRegister& r : {dst, a, b})
 		pxAssert(r.GetCode() < 27 || r.GetCode() > 29);
 
-	armAsm->Shl(mask.V4S(), a.V4S(), 1); // drop the sign, keep exp + mantissa
-	armAsm->Ushr(mask.V4S(), mask.V4S(), 24);
-	armAsm->Shl(tmp.V4S(), b.V4S(), 1);
-	armAsm->Ushr(tmp.V4S(), tmp.V4S(), 24);
-
-	armAsm->Cmhi(sel.V4S(), tmp.V4S(), mask.V4S()); // all ones where a is the smaller
-	armAsm->Uabd(mask.V4S(), mask.V4S(), tmp.V4S());
-	armAsm->Movi(tmp.V4S(), 25);
-	armAsm->Cmhi(tmp.V4S(), tmp.V4S(), mask.V4S()); // keep
-	armAsm->Ushl(mask.V4S(), tmp.V4S(), mask.V4S());
-	armAsm->Ushr(mask.V4S(), mask.V4S(), 1);
-	armAsm->Orr(mask.V4S(), 0x80, 24);
-
-	armAsm->Orr(tmp.V16B(), mask.V16B(), sel.V16B());
-	armAsm->And(tmp.V16B(), b.V16B(), tmp.V16B()); // b masked; b is free now
-	armAsm->Orn(sel.V16B(), mask.V16B(), sel.V16B());
-	armAsm->And(sel.V16B(), a.V16B(), sel.V16B());
+	armEmitVuGuardMask(sel, tmp, a, b, mask);
 
 	const bool wantO = ov && _XYZW_cop2 != 0 && (cop2StatusFlagLive() || cop2MacFlagLive());
 	if (issub)
