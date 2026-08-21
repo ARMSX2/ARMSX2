@@ -30,6 +30,7 @@
 #include "VU.h"
 
 #include <cstdio>
+#include <iterator>
 #include <string>
 
 #include "autocases_efu.h"
@@ -70,10 +71,14 @@ u32 Encode(const EfuCase& c)
 	return 0;
 }
 
-// Runs one case and reports whether the engine matched silicon.
-bool CaseMatches(const EfuCase& c, u32 word, bool jit)
+// Runs one case and reports whether the engine matched silicon. clamp_mode 0
+// leaves the harness at its default of 1, which is what the table's bad_jit
+// column was recorded at.
+bool CaseMatches(const EfuCase& c, u32 word, bool jit, int clamp_mode = 0)
 {
 	VuTestHarness h(1);
+	if (clamp_mode != 0)
+		h.SetVuClampMode(clamp_mode);
 	h.SetVfBits(kFs, c.fs[0], c.fs[1], c.fs[2], c.fs[3]);
 	h.SetVfBits(kFt, 0xCCCCCCCCu, 0xCCCCCCCCu, 0xCCCCCCCCu, 0xCCCCCCCCu);
 	h.LoadProgram({
@@ -85,6 +90,25 @@ bool CaseMatches(const EfuCase& c, u32 word, bool jit)
 	h.RunNoDiff();
 	const u32 got = jit ? h.GetVfBitsJit(kFt, 'x') : h.GetVfBitsInterp(kFt, 'x');
 	return got == c.p;
+}
+
+// The EFU adds through NEON_ADDSS and NEON_SUBSS, which carry the adder's
+// guard mask at vuClampMode 4. These are the rows that mask reaches: each one
+// wrong at 1, 2 and 3, exact at 4.
+constexpr const char* kGuardMaskRows[] = {
+	"EATAN CVF_MAX", "EATAN CVF_MIN", "EATAN CVF_MAX_EXP", "EATAN CVF_PI_OVER2",
+	"EATAN CVF_INCREASING", "EATAN CVF_GARBAGE2",
+	"EATANxy CVF_DECREASING", "EATANxz CVF_INCREASING",
+};
+
+bool IsGuardMaskRow(const EfuCase& c)
+{
+	for (const char* label : kGuardMaskRows)
+	{
+		if (std::string(label) == c.label)
+			return true;
+	}
+	return false;
 }
 } // namespace
 
@@ -344,6 +368,43 @@ TEST(Vu1EfuConsoleConformance, DISABLED_AllOpsMatchConsole)
 			EXPECT_TRUE(CaseMatches(c, word, jit != 0));
 		}
 	}
+}
+
+
+
+// The clamp-mode axis, which the table's own column does not cross: bad_jit was
+// recorded at the harness default of 1 and the adder's guard mask is gated on
+// 4. Scoring the whole column at 4 as well is what keeps the gate from being
+// the place accuracy quietly leaks out of.
+//
+// 122 of 208 at mode 4 against 102 at mode 1. Eight of the twenty are the
+// adder's guard mask, named above and asserted row by row; the rest come from
+// the operand clamp the middle modes carry, which also costs the column
+// ESUM CVF_MAX and ESUM CVF_MIN -- both already gone at mode 2, so they are the
+// clamp's and not the mask's.
+TEST(Vu1EfuConsoleConformance, TheGuardMaskCarriesItsRowsAtClampModeFour)
+{
+	int ok_at_four = 0;
+	int guard_rows = 0;
+	for (int i = 0; i < kEfuCaseCount; ++i)
+	{
+		const EfuCase& c = kEfuCases[i];
+		const u32 word = Encode(c);
+		ASSERT_NE(word, 0u) << "no encoder for " << c.op;
+
+		const bool four = CaseMatches(c, word, true, 4);
+		ok_at_four += four;
+		if (!IsGuardMaskRow(c))
+			continue;
+
+		++guard_rows;
+		SCOPED_TRACE(::testing::Message() << c.label);
+		EXPECT_TRUE(four) << "the mask no longer carries this row";
+		for (int mode = 1; mode <= 3; ++mode)
+			EXPECT_FALSE(CaseMatches(c, word, true, mode)) << "already exact without the mask";
+	}
+	EXPECT_EQ(guard_rows, static_cast<int>(std::size(kGuardMaskRows)));
+	EXPECT_EQ(ok_at_four, 122);
 }
 
 } // namespace recompiler_tests
