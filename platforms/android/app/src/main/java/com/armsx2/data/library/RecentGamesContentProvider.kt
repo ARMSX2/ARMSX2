@@ -33,6 +33,11 @@ class RecentGamesContentProvider : ContentProvider() {
         private const val LAST_PLAYED_PREFIX = "playtime.last."
         private const val MAX_RECENT_LOOKUP = 12
 
+        /** Master switch for this provider, default OFF — see the gate in [query].
+         *  Lives in the same "ARMSX2" prefs file the app writes, so the App-settings
+         *  toggle and this provider are reading one value and not two. */
+        const val KEY_SHARE_ENABLED = "library.shareRecentGames"
+
         const val PATH_GAMES = "games"
         const val COLUMN_URI = "uri"
         const val COLUMN_TITLE = "title"
@@ -57,6 +62,22 @@ class RecentGamesContentProvider : ContentProvider() {
         val cursor = MatrixCursor(COLUMNS)
         val context = context ?: return cursor
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        // ★ OPT-IN, and the gate has to be HERE rather than in the manifest.
+        //
+        // The provider is android:exported="true" with no permission, which it must be for a
+        // third-party companion app to reach it at all — a signature-level permission would only
+        // admit apps we sign. Exported and ungated means every app on the device, holding no
+        // permissions of any kind, can read the library: titles, serials, last-played times, and
+        // the file URIs, which carry the user's folder layout and often their real name.
+        //
+        // So sharing is the user's decision and it starts off, matching how the second-screen
+        // panel and Discord presence are handled. An empty cursor rather than null: null is the
+        // failure signal a ContentResolver caller has to special-case, and "sharing is off" is a
+        // legitimate answer, not an error.
+        if (!prefs.getBoolean(KEY_SHARE_ENABLED, false)) {
+            return cursor
+        }
 
         val recentUris = readRecentUris(prefs)
         if (recentUris.isEmpty()) {

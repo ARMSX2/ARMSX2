@@ -1337,6 +1337,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.upscale.custom" to "Custom",
     "renderer.upscale.customScale" to "Custom resolution scale",
     "renderer.upscale.customScale.description" to "Set the internal resolution as a percentage of native, for steps the presets don't cover. For example 107% renders at roughly true 480p height, sharper than native without the cost of 2x. Higher values look better but are heavier on the GPU.",
+    "app.shareRecentGames" to "Share recently played with other apps",
+    "app.shareRecentGames.desc" to "Lets companion apps on this device read your recently-played list — game titles, serials, last-played times and file paths. Off by default: any app can read it while this is on, without asking. Turn it on only if you use a companion app that needs it.",
     "secondScreen.label" to "Second screen panel",
     "secondScreen.desc" to "On devices with a second display (Ayn Thor, Retroid dual-screen and similar), show a panel there with live FPS, the battery and clock, and buttons for save state, load state, fast-forward, pause and screenshot. Does nothing when no second display is attached.",
     "secondScreen.noGame" to "No game running — start one to use save states, fast-forward and macros here.",

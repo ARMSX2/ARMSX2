@@ -543,6 +543,32 @@ fun AppTab() {
             ) { Text(str("secondScreen.layout.reset")) }
         }
 
+        // Companion-app access to the recently-played list, over the RecentGamesContentProvider.
+        // Off by default and deliberately so: the provider is exported without a permission (it
+        // has to be, for a third-party companion to reach it), so while this is on, any app on
+        // the device can read the list — including the file URIs, which carry your folder layout.
+        run {
+            val shareKey = com.armsx2.data.library.RecentGamesContentProvider.KEY_SHARE_ENABLED
+            val shareRecent = remember {
+                mutableStateOf(
+                    com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(shareKey, false),
+                )
+            }
+            ToggleRow(
+                label = str("app.shareRecentGames"),
+                value = shareRecent.value,
+                description = str("app.shareRecentGames.desc"),
+            ) { on ->
+                shareRecent.value = on
+                // commit(), not apply(): the reader is a DIFFERENT process that can be queried
+                // the moment this returns, and apply() only guarantees the in-memory value.
+                runCatching {
+                    com.armsx2.runtime.MainActivityRuntime.prefs.edit()
+                        .putBoolean(shareKey, on).commit()
+                }
+            }
+        }
+
         ToggleRow(
             label = str("app.batteryWarnings"),
             value = com.armsx2.BatteryWatcher.enabled.value,
