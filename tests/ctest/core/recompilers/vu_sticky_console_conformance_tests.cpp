@@ -172,7 +172,7 @@ struct Divergence
 // as a live denormal, which FCMEQ calls non-zero -- so neither Z nor the
 // multiply's U comes out, whatever the clamp mode. The mode-4 U and O models
 // are scored where they work, in the production environment, by
-// DISABLED_AllMacroStatusMatchesConsole.
+// AllMacroStatusMatchesConsole.
 // DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow below states the defect
 // once, with a minimal witness.
 //
@@ -953,7 +953,7 @@ TEST(VuStickyMicroConsoleConformance, MicroPathControlRuns)
 // recompiler is scored at vuClampMode 4 -- the mode they are gated on. Every one
 // of the twenty-eight rows the DAZ-off table above records comes away here:
 // twenty-one to the multiply's U and the last seven to MAC O.
-TEST(VuStickyConsoleConformance, DISABLED_AllMacroStatusMatchesConsole)
+TEST(VuStickyConsoleConformance, AllMacroStatusMatchesConsole)
 {
 	for (const VuStickyCase& c : kVuStickyCases)
 	{
