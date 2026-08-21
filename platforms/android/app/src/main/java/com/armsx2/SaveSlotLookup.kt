@@ -29,9 +29,21 @@ object SaveSlotLookup {
      */
     fun slotsFor(context: Context, serial: String?): List<Slot> {
         if (serial.isNullOrBlank()) return emptyList()
-        val root = runCatching { MainActivityRuntime.assetCopyRoot(context) }.getOrNull() ?: return emptyList()
-        return listOf("sstates", "savestates")
-            .map { File(root, it) }
+        // ★ BOTH roots, not one.
+        //
+        // A device with a configured system directory has two: assetCopyRoot resolves to that
+        // (typically the SD card, where ROMs and most saves live) while some states stay under
+        // getExternalFilesDir. On the test device 13 states were on one and 5 on the other, so
+        // checking either alone silently under-reports — which reads as "this game has no save
+        // states" rather than as a bug.
+        val roots = buildList {
+            runCatching { MainActivityRuntime.assetCopyRoot(context) }.getOrNull()?.let(::add)
+            runCatching { context.getExternalFilesDir(null)?.absolutePath }.getOrNull()?.let(::add)
+        }.distinct()
+        if (roots.isEmpty()) return emptyList()
+
+        return roots
+            .flatMap { root -> listOf("sstates", "savestates").map { File(root, it) } }
             .filter { it.isDirectory }
             .flatMap { dir ->
                 runCatching {
@@ -46,6 +58,9 @@ object SaveSlotLookup {
                     ?: return@mapNotNull null
                 Slot(slot, file, file.lastModified())
             }
+            // Same slot in both roots: keep the newer file, since that is the one the emulator
+            // most recently wrote.
+            .sortedByDescending { it.modified }
             .distinctBy { it.slot }
             .sortedBy { it.slot }
     }

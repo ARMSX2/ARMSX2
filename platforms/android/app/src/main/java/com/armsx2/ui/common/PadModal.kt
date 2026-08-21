@@ -18,6 +18,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -220,13 +225,48 @@ fun PadModalHost() {
                 val anchor = entry.anchor.value
                 // Absorb taps on the panel itself, or the scrim's dismiss fires through it and
                 // the modal closes as you press its own buttons.
+                // Swipe-to-dismiss, for bottom-aligned panels only.
+                //
+                // PadModal replaced ModalBottomSheet because that is its own focused Android
+                // window and every row inside it was unreachable by pad. The one thing lost in the
+                // trade was the swipe — and a panel that rises from the bottom edge with a rounded
+                // top and a drag handle is *promising* a swipe, so its absence reads as broken
+                // rather than as a deliberate omission. Restored here without giving up focus.
+                //
+                // Only for BottomCenter: on a centred or anchored menu a downward drag means
+                // nothing, and hijacking it would break scrolling inside those panels.
+                val bottomAligned = entry.alignment.value == Alignment.BottomCenter
                 val absorbTaps = @Composable { inner: @Composable () -> Unit ->
+                    var dragOffset by remember { mutableFloatStateOf(0f) }
+                    val dismissThresholdPx = with(LocalDensity.current) { 110.dp.toPx() }
                     Box(
-                        Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {},
-                        ),
+                        Modifier
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {},
+                            )
+                            .then(
+                                if (!bottomAligned) Modifier
+                                else Modifier
+                                    // Follows the finger, so the gesture is visibly doing
+                                    // something before it commits.
+                                    .offset { IntOffset(0, dragOffset.roundToInt()) }
+                                    .pointerInput(entry.key) {
+                                        detectVerticalDragGestures(
+                                            onDragEnd = {
+                                                if (dragOffset > dismissThresholdPx) PadModals.dismissTop()
+                                                dragOffset = 0f
+                                            },
+                                            onDragCancel = { dragOffset = 0f },
+                                        ) { change, delta ->
+                                            change.consume()
+                                            // Downward only — dragging a bottom sheet UP should
+                                            // not lift it off the edge it is anchored to.
+                                            dragOffset = (dragOffset + delta).coerceAtLeast(0f)
+                                        }
+                                    }
+                            ),
                     ) {
                         CompositionLocalProvider(LocalNavLayer provides entry.key) { inner() }
                     }
