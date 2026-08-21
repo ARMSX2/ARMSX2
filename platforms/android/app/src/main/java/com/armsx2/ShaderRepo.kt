@@ -72,6 +72,19 @@ object ShaderRepo {
          * [download] merges instead of renaming, and refuses when the base is missing.
          */
         val requiresPack: String? = null,
+        /**
+         * A path prefix (relative to the archive's single common root) to keep, or null to
+         * keep everything.
+         *
+         * Some upstreams only ship a full-repo archive: CRT-SatPixie's RetroArch chain sits
+         * four levels down under `RetroArch/shaders/shaders_slang/crt/`, beside a ReShade
+         * port, a README, and a LICENSE that have no business in a shader pack. When set,
+         * [extract] keeps only entries under this prefix and strips it, so the subtree
+         * installs exactly as if it had been the archive's root — the `.slangp` lands at the
+         * pack root and its relative `.slang` references still resolve. null preserves the
+         * old whole-archive behaviour for the buildbot pack, the companion, and imports.
+         */
+        val keepSubtree: String? = null,
     )
 
     /** Sources, in display order.
@@ -94,6 +107,18 @@ object ShaderRepo {
             url = "https://buildbot.libretro.com/assets/frontend/shaders_slang.zip",
             id = "shaders_slang",
             description = "libretro buildbot · ~51 MB",
+        ),
+        // A self-contained CRT preset (NewPixie fork, MIT/Unlicense) that GitHub serves
+        // only as a full-repo archive — the actual RetroArch chain is four levels down,
+        // beside a ReShade port we don't want. keepSubtree lands just that subtree, so it
+        // installs as a clean one-preset pack. Pinned to a commit because the repo cuts no
+        // releases, so nothing upstream can silently change what a user installed.
+        ShaderSource(
+            name = "CRT-SatPixie",
+            url = "https://github.com/Conkwer/satpixie-crt-shader/archive/8c08dd137b77a0e00e27f1a57b8a4d4bd6ac8889.zip",
+            id = "satpixie_crt",
+            description = "Self-contained CRT · 1 preset",
+            keepSubtree = "RetroArch/shaders/shaders_slang/crt/",
         ),
         // Preset pack for guest-advanced, pinned to a dated release rather than the
         // repo's HEAD so an upstream retune can't silently change what a user installed.
@@ -342,7 +367,7 @@ object ShaderRepo {
             }
             if (!fetchToFile(source.url, tmpZip, onDownload, isCancelled)) return null
             if (isCancelled()) return null
-            if (!extract(tmpZip, tmpDir, onExtract, isCancelled)) return null
+            if (!extract(tmpZip, tmpDir, onExtract, source.keepSubtree, isCancelled)) return null
             if (isCancelled()) return null
 
             val presets = countPresets(tmpDir)
@@ -460,6 +485,7 @@ object ShaderRepo {
         zip: File,
         targetDir: File,
         onProgress: ((Int, Int) -> Unit)?,
+        keepSubtree: String? = null,
         isCancelled: () -> Boolean,
     ): Boolean {
         // Canonical (not absolute): resolves symlinks and `..`, so the
@@ -486,22 +512,30 @@ object ShaderRepo {
                 for (entry in entries) {
                     if (isCancelled()) return false
                     done++
-                    val name = entry.name.removePrefix(strip)
-                    if (name.isEmpty()) continue
 
-                    val outFile = File(targetDir, name)
-                    val canonical = outFile.canonicalPath
-                    if (canonical != targetCanonical && !canonical.startsWith(guardPrefix)) {
-                        Log.w(TAG, "extract: rejecting zip-slip entry '${entry.name}' -> $canonical")
-                        return false
-                    }
+                    var name = entry.name.removePrefix(strip)
+                    // A pinned subtree keeps only what's inside it and strips the prefix, so a
+                    // buried chain (see ShaderSource.keepSubtree) installs as if it were the
+                    // archive root. Entries outside it are skipped, but still counted toward
+                    // progress so the final tick still reaches `total`.
+                    val inSubtree = keepSubtree == null || name.startsWith(keepSubtree)
+                    if (keepSubtree != null && inSubtree) name = name.removePrefix(keepSubtree)
 
-                    if (entry.isDirectory) {
-                        outFile.mkdirs()
-                    } else {
-                        outFile.parentFile?.mkdirs()
-                        zf.getInputStream(entry).use { input ->
-                            FileOutputStream(outFile).use { out -> input.copyTo(out) }
+                    if (inSubtree && name.isNotEmpty()) {
+                        val outFile = File(targetDir, name)
+                        val canonical = outFile.canonicalPath
+                        if (canonical != targetCanonical && !canonical.startsWith(guardPrefix)) {
+                            Log.w(TAG, "extract: rejecting zip-slip entry '${entry.name}' -> $canonical")
+                            return false
+                        }
+
+                        if (entry.isDirectory) {
+                            outFile.mkdirs()
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            zf.getInputStream(entry).use { input ->
+                                FileOutputStream(outFile).use { out -> input.copyTo(out) }
+                            }
                         }
                     }
 
