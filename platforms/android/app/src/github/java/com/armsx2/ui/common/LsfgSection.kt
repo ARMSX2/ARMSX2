@@ -1,6 +1,7 @@
 package com.armsx2.ui.common
 
 import android.content.Context
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -109,7 +110,8 @@ fun LsfgSection(
     dllPath: String,
     performance: Boolean,
     flowScale: Int,
-    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int) -> Unit,
+    targetRate: Int,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int) -> Unit,
 ) {
     if (!BuildConfig.LSFG) return
 
@@ -148,7 +150,7 @@ fun LsfgSection(
         } else {
             importError = null
             path = target.absolutePath
-            onChange(enabled, multiplier, path, performance, flowScale)
+            onChange(enabled, multiplier, path, performance, flowScale, targetRate)
         }
     }
 
@@ -160,7 +162,7 @@ fun LsfgSection(
         // The requirements dialog fires on the way ON only, and BEFORE the toggle commits.
         // Turning something on and then being told it cannot work is the shape of this that
         // wastes the user's time; being told what it needs first is the shape that does not.
-        if (on) showRequirements = true else onChange(false, multiplier, path, performance, flowScale)
+        if (on) showRequirements = true else onChange(false, multiplier, path, performance, flowScale, targetRate)
     }
 
     if (enabled) {
@@ -170,14 +172,30 @@ fun LsfgSection(
             options = listOf("x2", "x3", "x4"),
             selectedIndex = (multiplier - 2).coerceIn(0, 2),
             description = str("perf.lsfg.multiplier.description"),
-        ) { index -> onChange(enabled, index + 2, path, performance, flowScale) }
+        ) { index -> onChange(enabled, index + 2, path, performance, flowScale, targetRate) }
+
+        SettingsDivider()
+        // Adaptive pacing. Stored as a concrete Hz because the native pacer needs a number, but
+        // presented as a switch: picking a target rate by hand is not a decision anyone can make
+        // usefully, and the only sensible answer is the panel's own refresh rate.
+        ToggleRow(
+            label = str("perf.lsfg.adaptive.label"),
+            value = targetRate > 0,
+            description = str("perf.lsfg.adaptive.description"),
+        ) { on ->
+            val hz = if (!on) 0 else runCatching {
+                val d = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) context.display else null
+                (d?.refreshRate ?: 60f).toInt().coerceIn(30, 480)
+            }.getOrDefault(60)
+            onChange(enabled, multiplier, path, performance, flowScale, hz)
+        }
 
         SettingsDivider()
         ToggleRow(
             label = str("perf.lsfg.performance.label"),
             value = performance,
             description = str("perf.lsfg.performance.description"),
-        ) { on -> onChange(enabled, multiplier, path, on, flowScale) }
+        ) { on -> onChange(enabled, multiplier, path, on, flowScale, targetRate) }
 
         SettingsDivider()
         // A percentage, not the divisor the library takes — the native side inverts it. Presented
@@ -190,7 +208,7 @@ fun LsfgSection(
             max = 100,
             description = str("perf.lsfg.flowScale.description"),
             valueFormatter = { "$it%" },
-        ) { value -> onChange(enabled, multiplier, path, performance, value) }
+        ) { value -> onChange(enabled, multiplier, path, performance, value, targetRate) }
 
         SettingsDivider()
         LsfgDllRow(path, importError) { picker.launch(arrayOf("*/*")) }
@@ -214,7 +232,7 @@ fun LsfgSection(
             onDismiss = { showRequirements = false },
             onAccept = {
                 showRequirements = false
-                onChange(true, multiplier, path, performance, flowScale)
+                onChange(true, multiplier, path, performance, flowScale, targetRate)
                 // Straight into the picker when there is nothing to run against — the first
                 // thing the dialog just asked for is the file, so asking for it is the next
                 // step rather than a second row to go and find.
@@ -323,10 +341,11 @@ fun LsfgEmulationCard(
     dllPath: String,
     performance: Boolean,
     flowScale: Int,
-    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int) -> Unit,
+    targetRate: Int,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int) -> Unit,
 ) {
     if (!BuildConfig.LSFG) return
     com.armsx2.ui.emulation.SectionCard(str("perf.lsfg.label")) {
-        LsfgSection(enabled, multiplier, dllPath, performance, flowScale, onChange)
+        LsfgSection(enabled, multiplier, dllPath, performance, flowScale, targetRate, onChange)
     }
 }

@@ -13,6 +13,8 @@ internal val LSFG_EN: Map<String, String> = mapOf(
     "perf.lsfg.multiplier.description" to "Frames displayed for each frame the emulator renders. Higher is smoother but adds latency and GPU load.",
     "perf.lsfg.performance.label" to "Performance Mode",
     "perf.lsfg.performance.description" to "Use the lighter 3.1p interpolation shaders. Cheaper on the GPU, slightly softer around fast motion. Ignored if your Lossless.dll is too old to include them.",
+    "perf.lsfg.adaptive.label" to "Adaptive frame pacing",
+    "perf.lsfg.adaptive.description" to "Vary how many frames are generated to hold a steady on-screen rate, instead of always multiplying by the same amount. Helps most in games that swing between 60 and 30fps, where a fixed multiplier makes every transition visible. Targets your display\u2019s refresh rate.",
     "perf.lsfg.flowScale.label" to "Motion Detail",
     "perf.lsfg.flowScale.description" to "Resolution of the motion analysis, as a share of the displayed image. Lower is much cheaper and blurs fine detail in the generated frames.",
     "perf.lsfg.dll.label" to "Lossless.dll",

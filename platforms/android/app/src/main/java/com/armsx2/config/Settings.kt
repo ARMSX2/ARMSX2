@@ -592,6 +592,18 @@ data class Settings(
      *  image (25..100). Lower is cheaper and blurrier. The native side inverts it: the library
      *  takes a divisor, so 25% becomes 4.0. See GSLsfg.cpp. */
     val lsfgFlowScale: Int = 100,
+    /** EmuCore/GS/LsfgTargetRate — target OUTPUT rate in Hz for the adaptive pacer; 0 holds
+     *  [lsfgMultiplier] fixed.
+     *
+     *  A fixed multiplier is the wrong shape for a game that oscillates between 60 and 30fps on
+     *  a 60Hz panel: at x2 it presents 120 then 60, and every transition reads as judder. Given
+     *  a target the pacer varies the generation count instead — two interpolated frames while
+     *  the game runs at 30, one while it runs at 60 — so the presented rate stays put while the
+     *  rendered rate moves underneath it.
+     *
+     *  Stored as a concrete Hz rather than an on/off flag because the native pacer needs a
+     *  number; the UI writes the panel's refresh rate when the user turns it on. */
+    val lsfgTargetRate: Int = 0,
     /** Tweaked shader parameters, as `preset path -> (parameter name -> value)`.
      *
      *  Sparse: a parameter the user hasn't touched is simply absent, and the author's own
@@ -1203,6 +1215,7 @@ data class Settings(
             lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.lsfgDllPath,
             lsfgPerformance = boolAt("EmuCore/GS/LsfgPerformance") ?: this.lsfgPerformance,
             lsfgFlowScale = intAt("EmuCore/GS/LsfgFlowScale") ?: this.lsfgFlowScale,
+            lsfgTargetRate = intAt("EmuCore/GS/LsfgTargetRate") ?: this.lsfgTargetRate,
             shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
                 // Hand-editable file, so a malformed blob is a real possibility: keep the
                 // rest of the recovered settings rather than throwing the lot away.
@@ -1409,6 +1422,7 @@ data class Settings(
         // Clamped to the same 25..100 the native side enforces. A value outside it would be
         // coerced there anyway, and the two disagreeing is how a slider ends up looking stuck.
         put("EmuCore/GS", "LsfgFlowScale", "int", lsfgFlowScale.coerceIn(25, 100).toString())
+        put("EmuCore/GS", "LsfgTargetRate", "int", lsfgTargetRate.coerceIn(0, 1000).toString())
         // Parameter overrides, as one opaque JSON blob. Nothing in emucore reads this key —
         // there is no GSConfig field behind it, and the live values reach the renderer via
         // the push below, not through here. It is written so the map survives the same
@@ -1598,6 +1612,7 @@ data class Settings(
             lsfgDllPath != other.lsfgDllPath ||
             lsfgPerformance != other.lsfgPerformance ||
             lsfgFlowScale != other.lsfgFlowScale ||
+            lsfgTargetRate != other.lsfgTargetRate ||
             casMode != other.casMode ||
             casSharpness != other.casSharpness ||
             upscaler != other.upscaler ||
@@ -1823,6 +1838,7 @@ data class Settings(
         put("lsfgDllPath", lsfgDllPath)
         put("lsfgPerformance", lsfgPerformance)
         put("lsfgFlowScale", lsfgFlowScale)
+        put("lsfgTargetRate", lsfgTargetRate)
         put("casMode", casMode)
         put("casSharpness", casSharpness)
         put("upscaler", upscaler)
@@ -2109,6 +2125,7 @@ data class Settings(
                 lsfgDllPath = json.optString("lsfgDllPath", def.lsfgDllPath),
                 lsfgPerformance = json.optBoolean("lsfgPerformance", def.lsfgPerformance),
                 lsfgFlowScale = json.optInt("lsfgFlowScale", def.lsfgFlowScale),
+                lsfgTargetRate = json.optInt("lsfgTargetRate", def.lsfgTargetRate),
                 casMode = json.optInt("casMode", def.casMode),
                 casSharpness = json.optInt("casSharpness", def.casSharpness),
                 upscaler = json.optInt("upscaler", def.upscaler),
@@ -2353,6 +2370,7 @@ data class Settings(
             if (current.lsfgDllPath         != base.lsfgDllPath)         j.put("lsfgDllPath", current.lsfgDllPath)
             if (current.lsfgPerformance     != base.lsfgPerformance)     j.put("lsfgPerformance", current.lsfgPerformance)
             if (current.lsfgFlowScale       != base.lsfgFlowScale)       j.put("lsfgFlowScale", current.lsfgFlowScale)
+            if (current.lsfgTargetRate      != base.lsfgTargetRate)      j.put("lsfgTargetRate", current.lsfgTargetRate)
             if (current.casMode             != base.casMode)             j.put("casMode", current.casMode)
             if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
             if (current.upscaler            != base.upscaler)            j.put("upscaler", current.upscaler)
@@ -2614,6 +2632,7 @@ data class Settings(
             lsfgDllPath = if (overrides.has("lsfgDllPath")) overrides.getString("lsfgDllPath") else base.lsfgDllPath,
             lsfgPerformance = if (overrides.has("lsfgPerformance")) overrides.getBoolean("lsfgPerformance") else base.lsfgPerformance,
             lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.lsfgFlowScale,
+            lsfgTargetRate = if (overrides.has("lsfgTargetRate")) overrides.getInt("lsfgTargetRate") else base.lsfgTargetRate,
             casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.casMode,
             casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
             upscaler = if (overrides.has("upscaler")) overrides.getInt("upscaler") else base.upscaler,

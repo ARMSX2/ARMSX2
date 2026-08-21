@@ -932,6 +932,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgDllPath) &&
 		OpEqu(LsfgPerformance) &&
 		OpEqu(LsfgFlowScale) &&
+		OpEqu(LsfgTargetRate) &&
 
 		OpEqu(CaptureContainer) &&
 		OpEqu(VideoCaptureCodec) &&
@@ -1211,6 +1212,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
 	SettingsWrapEntryEx(LsfgPerformance, "LsfgPerformance");
 	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
+	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
 
 	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
 	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");

@@ -354,13 +354,15 @@ fun PerformanceTab(state: MutableState<Settings>) {
             dllPath = s.lsfgDllPath,
             performance = s.lsfgPerformance,
             flowScale = s.lsfgFlowScale,
-        ) { on, mult, dll, perf, flow ->
+            targetRate = s.lsfgTargetRate,
+        ) { on, mult, dll, perf, flow, target ->
             apply(s.copy(
                 lsfgEnabled = on,
                 lsfgMultiplier = mult,
                 lsfgDllPath = dll,
                 lsfgPerformance = perf,
                 lsfgFlowScale = flow,
+                lsfgTargetRate = target,
             ))
         }
 

@@ -1109,7 +1109,8 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
         dllPath = settings.lsfgDllPath,
         performance = settings.lsfgPerformance,
         flowScale = settings.lsfgFlowScale,
-    ) { on, mult, dll, perf, flow ->
+        targetRate = settings.lsfgTargetRate,
+    ) { on, mult, dll, perf, flow, target ->
         viewModel.updateSettings {
             it.copy(
                 lsfgEnabled = on,
@@ -1117,6 +1118,7 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
                 lsfgDllPath = dll,
                 lsfgPerformance = perf,
                 lsfgFlowScale = flow,
+                lsfgTargetRate = target,
             )
         }
     }
