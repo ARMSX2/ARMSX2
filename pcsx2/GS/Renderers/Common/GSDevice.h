@@ -2079,6 +2079,29 @@ public:
 		/// reads an image an earlier draw may still be writing, so the renderer breaks the pass when
 		/// the owner is under the open pass's brush (the WritebackHoistCollides precedent).
 		Donor = 4,
+		/// A resident target -> a PALETTE. The GS loads its CLUT out of local memory at TEX0-write
+		/// time, and when the words it loads were rendered by a native draw they are in the owner
+		/// surface's texture and nowhere on the CPU -- so the load is a full GPU drain, seventy times
+		/// a frame on GT4 and twelve hundred on GT4-OPB. This gathers them on the device instead: one
+		/// fragment per entry, entry -> source word through the CSM1 loaders' own order, word ->
+		/// owner texel through the same inverse arithmetic the Donor build uses. `target` indexes
+		/// `prep_textures` (the N x 1 palette), `donor_target` the frame's `targets` (the owner),
+		/// `bp` is the load's CBP and `owner_bp`/`owner_bwpg` the owner's layout. The entry count is
+		/// the destination's width, so it needs no field of its own. Same hoist hazard as a Donor and
+		/// the same test.
+		ClutGather = 5,
+		/// A resident target -> the frame's PALETTE STREAM, as a plain image-to-buffer copy. The
+		/// same palette the ClutGather above produces, for the consumer that cannot sample a
+		/// texture: a draw on the BYTE road reads its palette words out of the ring buffer, and at
+		/// six hundred to twelve hundred CLUT loads a frame a gather PASS each would double the
+		/// frame's pass count. A copy costs no pass at all -- it runs at a pass head beside the
+		/// writebacks -- so the palette's blocks are copied verbatim and the CSM1 entry order is
+		/// applied by the fragment shader at fetch time instead (tilegpu.glsl's
+		/// palette-from-copied-block mode). `donor_target` indexes the frame's `targets` (the
+		/// owner), `bp` is the DESTINATION word offset within the frame's palette stream,
+		/// `copy_x`/`copy_y` are `copy_count` source rects of `copy_w` x `copy_h` texels, copied in
+		/// order and each row-major. Same hoist hazard as a Donor and the same test.
+		ClutBlockCopy = 6,
 	};
 
 	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise or an
@@ -2118,6 +2141,12 @@ public:
 		/// numbers the reinterpretation needs; nothing else about the owner reaches the shader.
 		u32 owner_bp;
 		u32 owner_bwpg;
+		/// ClutBlockCopy only: the source rects in the owner's texture, copied in this order into
+		/// consecutive `copy_w` x `copy_h` word runs of the destination. Four 8x8 blocks for a
+		/// 256-entry palette, one 8x2 for a 16-entry one (GSTileSwizzleForms::LocateClutBlocks).
+		u32 copy_count;
+		u32 copy_w, copy_h;
+		u32 copy_x[4], copy_y[4];
 	};
 
 	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every

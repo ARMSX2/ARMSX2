@@ -174,4 +174,57 @@ namespace GSTileSwizzleForms
 		o.nibble = nibble;
 		return o;
 	}
+
+	bool LocateClutBlocks(const FormSet& forms, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
+		ClutBlockCopy& out)
+	{
+		out = {};
+		if (!forms.valid || !forms.clut_valid)
+			return false;
+		if (entries == 256)
+		{
+			// 256 words = four blocks, contiguous in memory from CBP.
+			out.region_count = 4;
+			out.w = 8;
+			out.h = 8;
+		}
+		else if (entries == 16)
+		{
+			// 16 words = the first two texel rows of the block at CBP. columnTable32 puts
+			// words 0..15 in rows 0 and 1 and nothing else there, so an 8×2 rect is exactly
+			// the loaded words -- no more, no less.
+			out.region_count = 1;
+			out.w = 8;
+			out.h = 2;
+		}
+		else
+		{
+			return false;
+		}
+
+		if (cbp < owner_bp)
+			return false;
+		const u32 bwpg = owner_bwpg ? owner_bwpg : 1;
+		for (u32 b = 0; b < out.region_count; b++)
+		{
+			// The same owner-side arithmetic Locate performs, at block rather than texel
+			// granularity: the block relative to the owner's page-aligned base, then the
+			// inverse block form for its position inside its page.
+			const u32 rel = (cbp + b) - owner_bp;
+			const u32 pg = rel >> 5;
+			const u32 bpk = forms.inv_block48.Eval(rel & 31);
+			out.x[b] = (pg % bwpg) * 64 + (bpk & 7) * 8;
+			out.y[b] = (pg / bwpg) * 32 + (bpk >> 3) * 8;
+		}
+		return true;
+	}
+
+	u32 ClutEntryToCopyOffset(const FormSet& forms, u32 entries, u32 e)
+	{
+		// Entry -> the source word the CSM1 loader took it from, then that word's place in the
+		// copied image. inv_col32 packs (x, y) as x | (y << 3), which for an 8-wide region IS
+		// the row-major offset, so the two halves compose with no repacking.
+		const u32 w = (entries == 256) ? forms.clut_i8_word.Eval(e) : forms.clut_i4_word.Eval(e);
+		return (w >> 6) * 64 + forms.inv_col32.Eval(w & 63);
+	}
 } // namespace GSTileSwizzleForms

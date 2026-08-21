@@ -6219,7 +6219,11 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 32 * 1024 * 1024;
 	if (!m_tilegpu_indirect_stream_buffer.Create(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE) ||
 		!m_tilegpu_state_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_STATE_BUFFER_SIZE) ||
-		!m_tilegpu_vram_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_VRAM_BUFFER_SIZE))
+		// TRANSFER_DST because the CLUT gather's byte-road half copies palette blocks straight out of
+		// an owner target into the frame's palette run of this buffer -- an image-to-buffer copy at a
+		// pass head, which is what keeps a thousand CLUT loads a frame off the pass count.
+		!m_tilegpu_vram_stream_buffer.Create(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, TILEGPU_VRAM_BUFFER_SIZE))
 	{
 		return false;
 	}
@@ -6835,52 +6839,62 @@ bool GSDeviceVK::CompileTileGpuExpandPipeline()
 // through GSDevice::TileReinterpretIndex -- see tilegpu_reinterpret.glsl's header for why that
 // distinction is load-bearing. Its own one-sampler descriptor layout and its own four-word push
 // range, so it depends on no other road's compile.
-bool GSDeviceVK::CompileTileGpuDonorPipeline(u32 idx_fmt)
+// The one descriptor and pipeline layout the two read-a-target roads share: one combined image
+// sampler (the owner) and four push words (the source layout and the owner's). Built once, by
+// whichever road compiles first.
+bool GSDeviceVK::CompileTileGpuReadTargetLayout()
 {
-	pxAssert(idx_fmt < kTileGpuIdxFormats);
-	m_tilegpu_donor_tried[idx_fmt] = true;
-	// The arithmetic IS the fitted forms; without them there are no constants to compile.
-	if (TileFormDefines().empty())
+	if (m_tilegpu_readtarget_pipeline_layout != VK_NULL_HANDLE)
+		return true;
+
+	Vulkan::DescriptorSetLayoutBuilder dslb;
+	if (m_use_push_descriptors)
+		dslb.SetPushFlag();
+	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	if ((m_tilegpu_readtarget_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
 		return false;
+	Vulkan::SetObjectName(m_device, m_tilegpu_readtarget_ds_layout, "TileGpu read-target DS layout");
 
-	if (m_tilegpu_donor_pipeline_layout == VK_NULL_HANDLE)
-	{
-		Vulkan::DescriptorSetLayoutBuilder dslb;
-		if (m_use_push_descriptors)
-			dslb.SetPushFlag();
-		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
-		if ((m_tilegpu_donor_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
-		Vulkan::SetObjectName(m_device, m_tilegpu_donor_ds_layout, "TileGpu donor DS layout");
+	Vulkan::PipelineLayoutBuilder plb;
+	plb.AddDescriptorSet(m_tilegpu_readtarget_ds_layout);
+	plb.AddPushConstants(VK_SHADER_STAGE_FRAGMENT_BIT, 0, kTileGpuDonorPushWords * sizeof(u32));
+	if ((m_tilegpu_readtarget_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(m_device, m_tilegpu_readtarget_pipeline_layout, "TileGpu read-target pipeline layout");
+	return true;
+}
 
-		Vulkan::PipelineLayoutBuilder plb;
-		plb.AddDescriptorSet(m_tilegpu_donor_ds_layout);
-		plb.AddPushConstants(VK_SHADER_STAGE_FRAGMENT_BIT, 0, kTileGpuDonorPushWords * sizeof(u32));
-		if ((m_tilegpu_donor_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
-		Vulkan::SetObjectName(m_device, m_tilegpu_donor_pipeline_layout, "TileGpu donor pipeline layout");
-	}
+// One read-a-target pipeline, from a shader that takes the shared layout. `defines` carries the
+// per-variant constants; `what` names the road for the one-shot failure message, which exists
+// because a missing pipeline leaves a prep texture allocated and never filled -- and that reads as a
+// texture-cache bug at every level above here.
+VkPipeline GSDeviceVK::CompileTileGpuReadTargetPipeline(const char* shader, const std::string& defines,
+	const char* what)
+{
+	// The arithmetic IS the fitted forms; without them there are no constants to compile.
+	if (TileFormDefines().empty() || !CompileTileGpuReadTargetLayout())
+		return VK_NULL_HANDLE;
 
-	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_reinterpret.glsl");
+	const std::optional<std::string> source = ReadShaderSource(shader);
 	if (!source)
 	{
-		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_reinterpret.glsl.");
-		return false;
+		Host::ReportErrorAsync("GS", fmt::format("Failed to read {}.", shader));
+		return VK_NULL_HANDLE;
 	}
-	const std::string full_source = TileFormDefines() + fmt::format("#define TILE_IDX_FMT {}\n", idx_fmt) + *source;
+	const std::string full_source = TileFormDefines() + defines + *source;
 
 	VkShaderModule vs = GetUtilityVertexShader(full_source);
 	if (vs == VK_NULL_HANDLE)
-		return false;
+		return VK_NULL_HANDLE;
 	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
 	VkShaderModule fs = GetUtilityFragmentShader(full_source);
 	if (fs == VK_NULL_HANDLE)
-		return false;
+		return VK_NULL_HANDLE;
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
 
 	Vulkan::GraphicsPipelineBuilder gpb;
 	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-	gpb.SetPipelineLayout(m_tilegpu_donor_pipeline_layout);
+	gpb.SetPipelineLayout(m_tilegpu_readtarget_pipeline_layout);
 	gpb.SetDynamicViewportAndScissorState();
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoBlendingState();
@@ -6896,16 +6910,38 @@ bool GSDeviceVK::CompileTileGpuDonorPipeline(u32 idx_fmt)
 		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
 	if (pipe == VK_NULL_HANDLE)
-	{
-		// Say it once per format: without this the sources are allocated and never filled, which
-		// looks like a texture-cache bug at every level above here rather than a missing pipeline.
-		Console.Error("VK: TileGpu donor pipeline (index format %u) failed to build -- rule 3's "
-					  "target-derived sources will not be filled.",
-			idx_fmt);
+		Console.Error("VK: TileGpu %s pipeline failed to build -- that road will not be served.", what);
+	return pipe;
+}
+
+bool GSDeviceVK::CompileTileGpuDonorPipeline(u32 idx_fmt)
+{
+	pxAssert(idx_fmt < kTileGpuIdxFormats);
+	m_tilegpu_donor_tried[idx_fmt] = true;
+	VkPipeline pipe = CompileTileGpuReadTargetPipeline("shaders/vulkan/tilegpu_reinterpret.glsl",
+		fmt::format("#define TILE_IDX_FMT {}\n", idx_fmt), "donor");
+	if (pipe == VK_NULL_HANDLE)
 		return false;
-	}
 	m_tilegpu_donor_pipeline[idx_fmt] = pipe;
 	Vulkan::SetObjectName(m_device, pipe, "TileGpu donor pipeline (idx fmt %u)", idx_fmt);
+	return true;
+}
+
+bool GSDeviceVK::CompileTileGpuClutGatherPipeline(u32 size_idx)
+{
+	pxAssert(size_idx < kTileGpuClutSizes);
+	m_tilegpu_clut_tried[size_idx] = true;
+	// The entry -> word order is a fitted form of its own with its own validity bit: a device whose
+	// CLUT forms did not fit must not gather, even where the block forms did. TileFormDefines()
+	// performs the fit, so it is asked first.
+	if (TileFormDefines().empty() || !m_tile_forms.clut_valid)
+		return false;
+	VkPipeline pipe = CompileTileGpuReadTargetPipeline("shaders/vulkan/tilegpu_clutgather.glsl",
+		fmt::format("#define TILE_CLUT_ENTRIES {}\n", (size_idx == 0) ? 256 : 16), "CLUT gather");
+	if (pipe == VK_NULL_HANDLE)
+		return false;
+	m_tilegpu_clut_pipeline[size_idx] = pipe;
+	Vulkan::SetObjectName(m_device, pipe, "TileGpu CLUT gather pipeline (%u entries)", (size_idx == 0) ? 256 : 16);
 	return true;
 }
 
@@ -6923,7 +6959,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
 	// and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology run rather than one
 	// vkCmdDrawIndexed per draw. The state row carries the transform, the scissor, the texture
-	// block and the per-draw tests. The shader's StateRow is a fixed 112-byte layout, so
+	// block and the per-draw tests. The shader's StateRow is a fixed 160-byte layout, so
 	// state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
@@ -6931,7 +6967,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 36 &&
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 40 &&
 						  plan.state_count > 0;
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path
@@ -7140,7 +7176,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			static_cast<u32>(plan.prep_ops.size()));
 		bool pass_has_donor = false;
 		for (u32 o = pass.first_prep_op; o < op_end; o++)
-			pass_has_donor |= (plan.prep_ops[o].kind == GSTileGpuPrepKind::Donor);
+		{
+			const GSTileGpuPrepKind k = plan.prep_ops[o].kind;
+			pass_has_donor |= (k == GSTileGpuPrepKind::Donor || k == GSTileGpuPrepKind::ClutGather);
+		}
 
 		if ((can_texture || pass_has_donor) && pass.prep_op_count > 0)
 		{
@@ -7155,7 +7194,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			for (u32 o = pass.first_prep_op; o < op_end; o++)
 			{
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
-				if (op.kind != GSTileGpuPrepKind::Donor && !can_texture)
+				if (op.kind != GSTileGpuPrepKind::Donor && op.kind != GSTileGpuPrepKind::ClutGather && !can_texture)
 					continue;
 
 				// Indices + palette -> the colour image a paletted draw samples. It names three prep
@@ -7261,27 +7300,53 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					continue;
 				}
 
-				// A resident target -> an index image, with no byte store in between. Two lists at
-				// once: the DESTINATION is a prep texture (a source is nothing's render target) and
-				// the OWNER is one of the frame's targets, which is why the op carries both indices.
-				// Recorded raw for the same reason the expand is; see tilegpu_reinterpret.glsl.
-				if (op.kind == GSTileGpuPrepKind::Donor)
+				// The two roads that read a resident target through the GS swizzle: the DONOR build
+				// (a texture source reinterpreted out of its owner) and the CLUT GATHER (a palette
+				// gathered out of the target the game rendered it into). Same shape, same layout,
+				// same hoist hazard -- only the pipeline and the destination geometry differ -- so
+				// they run one arm. Two lists at once: the DESTINATION is a prep texture (neither is
+				// anything's render target) and the OWNER is one of the frame's targets, which is
+				// why the op carries both indices. Recorded raw for the same reason the expand is;
+				// see tilegpu_reinterpret.glsl.
+				if (op.kind == GSTileGpuPrepKind::Donor || op.kind == GSTileGpuPrepKind::ClutGather)
 				{
 					if (op.target >= plan.prep_textures.size() || !plan.prep_textures[op.target] ||
 						op.donor_target >= plan.targets.size() || !plan.targets[op.donor_target])
 						continue;
-					const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(op.psm);
-					if (idx_fmt < 0 || static_cast<u32>(idx_fmt) >= kTileGpuIdxFormats)
-						continue;
-					if (!m_tilegpu_donor_tried[idx_fmt])
-						CompileTileGpuDonorPipeline(static_cast<u32>(idx_fmt));
-					if (m_tilegpu_donor_pipeline[idx_fmt] == VK_NULL_HANDLE)
+					GSTextureVK* const dst = static_cast<GSTextureVK*>(plan.prep_textures[op.target]);
+					VkPipeline pipe = VK_NULL_HANDLE;
+					if (op.kind == GSTileGpuPrepKind::Donor)
+					{
+						const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(op.psm);
+						if (idx_fmt < 0 || static_cast<u32>(idx_fmt) >= kTileGpuIdxFormats)
+							continue;
+						if (!m_tilegpu_donor_tried[idx_fmt])
+							CompileTileGpuDonorPipeline(static_cast<u32>(idx_fmt));
+						pipe = m_tilegpu_donor_pipeline[idx_fmt];
+					}
+					else
+					{
+						// The palette's entry count is the destination's width by construction, so
+						// the op needs no field for it and the two cannot disagree.
+						const u32 size_idx = (dst->GetWidth() >= 256) ? 0u : 1u;
+						if (!m_tilegpu_clut_tried[size_idx])
+							CompileTileGpuClutGatherPipeline(size_idx);
+						pipe = m_tilegpu_clut_pipeline[size_idx];
+					}
+					if (pipe == VK_NULL_HANDLE)
 						continue;
 
-					GSTextureVK* const dst = static_cast<GSTextureVK*>(plan.prep_textures[op.target]);
 					GSTextureVK* const owner = static_cast<GSTextureVK*>(plan.targets[op.donor_target]);
-					pxAssertMsg(owner != rt && owner != ds,
-						"TileGpu donor reads this pass's own attachment -- the planner must have broken the pass");
+					// A DONOR reads a texture window the draw is about to sample, so reading the pass's own
+					// attachment would be the in-pass feedback road and the planner excludes it. A CLUT GATHER
+					// is a different question and legitimately reads one: a palette the game rendered into its
+					// own frame buffer is loaded BEFORE the draws that use it, and this op runs at the pass head
+					// -- ahead of every draw in the pass and behind every draw before it, which IS the load's own
+					// sequence point. What must not happen is a draw ALREADY IN this pass having overwritten
+					// those pixels, and that is the renderer's DonorHoistCollides test, not this one.
+					pxAssertMsg(op.kind != GSTileGpuPrepKind::Donor || (owner != rt && owner != ds),
+						"TileGpu donor build reads this pass's own attachment -- the planner must have "
+						"broken the pass");
 					EndRenderPass();
 					// The read first, and its transition is also the execution dependency that orders
 					// whatever earlier pass rendered into the owner ahead of this build.
@@ -7323,11 +7388,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							dsub.AddCombinedImageSamplerDescriptorWrite(
 								VK_NULL_HANDLE, 0, owner->GetView(), m_point_sampler, owner->GetVkLayout());
 							dsub.PushUpdate(
-								cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_donor_pipeline_layout, 0, false);
+								cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_readtarget_pipeline_layout, 0, false);
 						}
 						else
 						{
-							VkDescriptorSet dset = AllocateDescriptorSetFromFramePool(m_tilegpu_donor_ds_layout);
+							VkDescriptorSet dset = AllocateDescriptorSetFromFramePool(m_tilegpu_readtarget_ds_layout);
 							if (dset == VK_NULL_HANDLE) [[unlikely]]
 							{
 								// A few dozen a frame at most; exhaustion is implausible and the fallback
@@ -7339,19 +7404,81 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 								dset, 0, owner->GetView(), m_point_sampler, owner->GetVkLayout());
 							dsub.Update(m_device);
 							vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-								m_tilegpu_donor_pipeline_layout, 0, 1, &dset, 0, nullptr);
+								m_tilegpu_readtarget_pipeline_layout, 0, 1, &dset, 0, nullptr);
 						}
 					}
 					const u32 dpush[kTileGpuDonorPushWords] = {op.bp, op.bw, op.owner_bp, op.owner_bwpg};
-					vkCmdPushConstants(cmd, m_tilegpu_donor_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+					vkCmdPushConstants(cmd, m_tilegpu_readtarget_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 						sizeof(dpush), dpush);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_donor_pipeline[idx_fmt]);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 					vkCmdDraw(cmd, 3, 1, 0, 0);
 					EndRenderPass();
 					dst->SetState(GSTexture::State::Dirty);
 					// Back to shader-read, which is what set 2's descriptors were written promising, and
 					// the dependency that orders this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					continue;
+				}
+
+				// The CLUT gather's byte-road half: the palette's blocks copied verbatim out of the
+				// owner target into the frame's palette stream, one image-to-buffer copy for the whole
+				// palette. Deliberately NOT a gather pass -- at six hundred to twelve hundred CLUT loads
+				// a frame a render pass each would double the frame's pass count, and a copy at a pass
+				// head costs none. It lands texels row-major rather than in CSM1 entry order, which is
+				// why the fragment shader has a palette-from-copied-block mode instead of the two sides
+				// agreeing on an order here.
+				if (op.kind == GSTileGpuPrepKind::ClutBlockCopy)
+				{
+					if (op.donor_target >= plan.targets.size() || !plan.targets[op.donor_target] ||
+						op.copy_count == 0 || op.copy_count > 4)
+						continue;
+					GSTextureVK* const owner = static_cast<GSTextureVK*>(plan.targets[op.donor_target]);
+					const int ow = owner->GetWidth();
+					const int oh = owner->GetHeight();
+
+					VkBufferImageCopy regions[4] = {};
+					u32 count = 0;
+					for (u32 b = 0; b < op.copy_count; b++)
+					{
+						// The renderer proved the palette's pages resident and texel-filled, so every
+						// rect is inside the image; the bound is a guard against a clause that stops
+						// holding, not a semantic -- a partial copy would be a palette with holes, so
+						// the whole op drops instead.
+						if (static_cast<int>(op.copy_x[b] + op.copy_w) > ow ||
+							static_cast<int>(op.copy_y[b] + op.copy_h) > oh)
+						{
+							count = 0;
+							break;
+						}
+						VkBufferImageCopy& rc = regions[count++];
+						rc.bufferOffset =
+							static_cast<VkDeviceSize>(pal_base_words + op.bp + b * op.copy_w * op.copy_h) *
+							sizeof(u32);
+						rc.bufferRowLength = op.copy_w;
+						rc.bufferImageHeight = op.copy_h;
+						rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+						rc.imageOffset = {static_cast<s32>(op.copy_x[b]), static_cast<s32>(op.copy_y[b]), 0};
+						rc.imageExtent = {op.copy_w, op.copy_h, 1};
+					}
+					if (count == 0)
+						continue;
+
+					EndRenderPass();
+					// The transition is also the execution dependency that orders whatever rendered the
+					// palette into the owner ahead of this copy.
+					owner->TransitionToLayout(cmd, GSTextureVK::Layout::TransferSrc);
+					// Ring reads already recorded must finish before the copy overwrites any of it, and
+					// the copy must be visible to every stage that reads the ring after it.
+					ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+									 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+						VK_ACCESS_TRANSFER_WRITE_BIT);
+					vkCmdCopyImageToBuffer(cmd, owner->GetImage(), owner->GetVkLayout(),
+						m_tilegpu_vram_stream_buffer.GetBuffer(), count, regions);
+					ring_barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 					continue;
 				}
 
@@ -8811,15 +8938,22 @@ void GSDeviceVK::DestroyResources()
 		m_tilegpu_donor_pipeline[f] = VK_NULL_HANDLE;
 		m_tilegpu_donor_tried[f] = false;
 	}
-	if (m_tilegpu_donor_pipeline_layout != VK_NULL_HANDLE)
+	for (u32 f = 0; f < kTileGpuClutSizes; f++)
 	{
-		vkDestroyPipelineLayout(m_device, m_tilegpu_donor_pipeline_layout, nullptr);
-		m_tilegpu_donor_pipeline_layout = VK_NULL_HANDLE;
+		if (m_tilegpu_clut_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_clut_pipeline[f], nullptr);
+		m_tilegpu_clut_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_clut_tried[f] = false;
 	}
-	if (m_tilegpu_donor_ds_layout != VK_NULL_HANDLE)
+	if (m_tilegpu_readtarget_pipeline_layout != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_donor_ds_layout, nullptr);
-		m_tilegpu_donor_ds_layout = VK_NULL_HANDLE;
+		vkDestroyPipelineLayout(m_device, m_tilegpu_readtarget_pipeline_layout, nullptr);
+		m_tilegpu_readtarget_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_readtarget_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_readtarget_ds_layout, nullptr);
+		m_tilegpu_readtarget_ds_layout = VK_NULL_HANDLE;
 	}
 	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
 	{

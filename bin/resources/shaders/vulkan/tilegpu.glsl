@@ -118,7 +118,7 @@
 #define TILEGPU_TAP_ANY (TILEGPU_TAP_BYTE || TILEGPU_TAP_TARGET)
 #define TILEGPU_TEXTURED (TILEGPU_TAP_ANY || TILEGPU_TAP_SOURCE)
 
-// Matches the executor's StateRow byte-for-byte (std430, 144 bytes). The transform and the scissor
+// Matches the executor's StateRow byte-for-byte (std430, 160 bytes). The transform and the scissor
 // are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
 // are pipeline state, carried for layout parity, not consumed by either.
 struct StateRow
@@ -154,8 +154,17 @@ struct StateRow
 	uint ltf;          // 1 = bilinear: blend the four texels around the coordinate
 	uint tex_target;   // slot in this pass's sampled-target array, or 0xFFFFFFFF = decode the bytes
 	uint tex_source;   // slot in the frame's materialised-source array, or 0xFFFFFFFF = not rule 3.
-	                   // It took the row's old explicit tail padding, so the row is still 144 bytes on
-	                   // both sides -- see the C++ StateRow's note on why the padding was explicit.
+	                   // It took the row's old explicit tail padding -- see the C++ StateRow's note
+	                   // on why the padding is explicit.
+	uint pal_mode;     // where this draw's palette words are: 0 = entry order at pal_offset (the CPU
+	                   // road), 1 = a 256-entry palette's four copied blocks, 2 = a 16-entry one's
+	                   // single copied block. The two copied modes need the CSM1 entry order applied
+	                   // at fetch, because an image-to-buffer copy lands texels row-major.
+	uint pal_bias;     // entry bias inside a copied palette: a four-bit draw reading slot k of a
+	                   // 256-entry gathered load wants its entries 16k..16k+15.
+	uint pad0_, pad1_; // explicit, for the same reason the old tail padding was: alignas(16) pads the
+	                   // C++ row to 160 while std430's array stride would otherwise be 152, and the
+	                   // two strides disagreeing reads every row but the first from the wrong place.
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -382,6 +391,43 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
 
+// The CLUT gather's consumer half. A palette whose words were rendered by a native draw is not in
+// the CPU's CLUT RAM at all; the executor copies its BLOCKS out of the owning target into this
+// draw's reserved run of the palette stream, which lands them in texel row-major order rather than
+// in entry order. So the entry order goes here, at fetch time: entry -> source word through the
+// CSM1 loaders' own order (TILE_SWZ_CLUT8_*/CLUT4_*, the same forms the gather shader uses), then
+// word -> its place in the copied blocks through the inverse column form. inv_col32 packs (x, y) as
+// x | (y << 3), which for an 8-wide region IS the row-major offset, so nothing has to be repacked.
+// Specified on the CPU as GSTileSwizzleForms::ClutEntryToCopyOffset and pinned against GSClut there.
+uint tile_ic32(uint v)
+{
+	return XB(v, 0u, TILE_SWZ_IC32_0) ^ XB(v, 1u, TILE_SWZ_IC32_1) ^ XB(v, 2u, TILE_SWZ_IC32_2)
+	     ^ XB(v, 3u, TILE_SWZ_IC32_3) ^ XB(v, 4u, TILE_SWZ_IC32_4) ^ XB(v, 5u, TILE_SWZ_IC32_5);
+}
+
+uint tile_clut8_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT8_0) ^ XB(e, 1u, TILE_SWZ_CLUT8_1) ^ XB(e, 2u, TILE_SWZ_CLUT8_2) ^ XB(e, 3u, TILE_SWZ_CLUT8_3)
+	     ^ XB(e, 4u, TILE_SWZ_CLUT8_4) ^ XB(e, 5u, TILE_SWZ_CLUT8_5) ^ XB(e, 6u, TILE_SWZ_CLUT8_6) ^ XB(e, 7u, TILE_SWZ_CLUT8_7);
+}
+
+uint tile_clut4_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT4_0) ^ XB(e, 1u, TILE_SWZ_CLUT4_1) ^ XB(e, 2u, TILE_SWZ_CLUT4_2) ^ XB(e, 3u, TILE_SWZ_CLUT4_3);
+}
+
+// The palette word for `index`, whichever road put the words in the stream. pal_mode is per draw and
+// dynamically uniform, so this does not diverge; mode 0 is byte-identical to what the palette fetch
+// was before the gather existed.
+uint tilegpu_palette_word(StateRow sr, uint index)
+{
+	if (sr.pal_mode == 0u)
+		return vram_words[pal_base + sr.pal_offset + index];
+	const uint e = sr.pal_bias + index;
+	const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
+	return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
+}
+
 // Unpack a raw RGBA8888 word (a CT32 texel or an expanded CLUT entry) to normalised RGBA.
 vec4 tilegpu_unpack(uint w)
 {
@@ -489,9 +535,9 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	if (sr.index_format == 0u)
 		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch);
 	else if (sr.index_format == 1u)
-		w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
+		w = tilegpu_palette_word(sr, tilegpu_index8(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
 	else
-		w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
+		w = tilegpu_palette_word(sr, tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
 
 	return tilegpu_texa(sr, tilegpu_unpack(w), (w & 0x00FFFFFFu) == 0u);
 #else

@@ -684,18 +684,28 @@ private:
 	VkPipeline m_tilegpu_expand_pipeline = VK_NULL_HANDLE;
 	bool m_tilegpu_expand_tried = false;
 	bool CompileTileGpuExpandPipeline();
-	// A resident target -> a texture source, with no byte store in between: rule 3's DONOR build.
-	// The same reinterpretation ps_tile_reinterpret_index performs, recorded raw beside the expand
-	// and for the same reason -- GSDevice::TileReinterpretIndex binds through the device state cache
-	// and would disturb the executor's sets. One sampler (the owner target), four push words (the
-	// two layouts), one pipeline per index format. Compiled on first use of that format, and only
-	// where the swizzle forms fitted, since the arithmetic is the forms.
+	// The two roads that READ A RESIDENT TARGET through the GS swizzle and write a prep texture: the
+	// DONOR build (a texture source reinterpreted out of its owner) and the CLUT GATHER (a palette
+	// gathered out of the target the game rendered it into). Both are recorded raw beside the expand
+	// and for the same reason -- the device's own TileReinterpretIndex / TileClutFromTarget bind
+	// through its state cache and would disturb the executor's sets -- and both take exactly one
+	// sampler (the owner) and four push words (the two layouts), so they share ONE descriptor set
+	// layout and ONE pipeline layout. Compiled on first use, and only where the swizzle forms fitted,
+	// since the arithmetic IS the forms.
+	VkDescriptorSetLayout m_tilegpu_readtarget_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_tilegpu_readtarget_pipeline_layout = VK_NULL_HANDLE;
+	bool CompileTileGpuReadTargetLayout();
+	VkPipeline CompileTileGpuReadTargetPipeline(const char* shader, const std::string& defines, const char* what);
 	static constexpr u32 kTileGpuIdxFormats = 5;
-	VkDescriptorSetLayout m_tilegpu_donor_ds_layout = VK_NULL_HANDLE;
-	VkPipelineLayout m_tilegpu_donor_pipeline_layout = VK_NULL_HANDLE;
 	std::array<VkPipeline, kTileGpuIdxFormats> m_tilegpu_donor_pipeline{};
 	std::array<bool, kTileGpuIdxFormats> m_tilegpu_donor_tried{};
 	bool CompileTileGpuDonorPipeline(u32 idx_fmt);
+	// One pipeline per palette size, because the entry -> word order is a different fitted form for
+	// each: index 0 = 256 entries (eight-bit), 1 = 16 (four-bit).
+	static constexpr u32 kTileGpuClutSizes = 2;
+	std::array<VkPipeline, kTileGpuClutSizes> m_tilegpu_clut_pipeline{};
+	std::array<bool, kTileGpuClutSizes> m_tilegpu_clut_tried{};
+	bool CompileTileGpuClutGatherPipeline(u32 size_idx);
 	/// Whether tilegpu_byte_sel must take its constant-shift form on this device: Honeykrisp
 	/// miscompiles the dynamic one on a word loaded from the vram SSBO. Asked in one place because
 	/// every shader that extracts a byte from that buffer has to answer it the same way.

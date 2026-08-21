@@ -54,6 +54,18 @@ public:
 	/// admitted) pays the hash and nothing else.
 	static u64 ContentId(const u32* clut, u32 entries);
 
+	/// Not every palette a derived cache keys on has words to hash. The TileGpu CLUT gather
+	/// loads a palette straight off a render target — its entries are on the device and
+	/// NOWHERE on the CPU — so its identity comes from the load instead: a hash of
+	/// (owner surface × owner version × CBP × entries). Both kinds go into one id space (the
+	/// expanded cache fuses (index build id × palette id) pairs), and two ids from different
+	/// worlds comparing equal would fuse two unrelated pairs with nothing to catch it. So one
+	/// bit is reserved: every id derived from WORDS has it clear, every foreign one has it
+	/// set, and the two spaces cannot meet. Costs the word-derived ids one bit of hash.
+	static constexpr u64 kForeignPalIdBit = 1ull << 63;
+	static constexpr u64 OwnPalId(u64 content_id) { return content_id & ~kForeignPalIdBit; }
+	static constexpr u64 ForeignPalId(u64 hash) { return hash | kForeignPalIdBit; }
+
 	/// The pin discipline's clock; zero (the default, and what the Tile renderer leaves it at)
 	/// turns it off and every branch below is inert. A renderer that RECORDS draws and issues them
 	/// later sets it, and advances it when the recorded plan has executed. A palette an unissued

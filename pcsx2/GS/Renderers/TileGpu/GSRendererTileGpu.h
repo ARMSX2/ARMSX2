@@ -5,9 +5,11 @@
 
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTilePassSim.h"
+#include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
@@ -157,12 +159,26 @@ private:
 		// old explicit tail padding, which was there because alignas(16) pads the C++ side to 144
 		// anyway while the shader's std430 array stride is a multiple of 8 -- an implicit tail would
 		// have put the two sides on different strides and read every row but the first from the wrong
-		// place. Spending it on a real field keeps the row at 144 and the strides in step.
+		// place. Spending it on a real field keeps the strides in step.
 		u32 tex_source;
+		// Where this draw's palette words are. 0 = entry order at pal_offset, which is the CPU road
+		// and what every draw carried before the CLUT gather existed; 1 = a 256-entry palette's four
+		// copied blocks; 2 = a 16-entry one's single copied block. The gather's byte-road consumer
+		// gets its words by an image-to-buffer COPY of the palette's blocks out of the owning target
+		// (no gather pass, at six hundred to twelve hundred loads a frame), and a copy lands texels
+		// row-major rather than in entry order -- so the CSM1 entry order is applied at fetch instead.
+		u32 pal_mode;
+		// The entry bias inside a copied palette: a four-bit draw reading mirror slot k of a
+		// 256-entry gathered load wants that palette's entries 16k..16k+15.
+		u32 pal_bias;
+		// Explicit tail padding, for exactly the reason the old one was: alignas(16) rounds the C++
+		// row to 160 while std430's array stride over the fields above would be 152, and two sides on
+		// different strides read every row but the first from the wrong place.
+		u32 pad0_, pad1_;
 	};
-	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
-	static_assert(offsetof(StateRow, tex_source) == 140,
-		"TileGpu StateRow::tex_source must sit exactly where the row's tail padding was");
+	static_assert(sizeof(StateRow) == 160, "TileGpu StateRow must be 160 bytes to match tilegpu.glsl std430");
+	static_assert(offsetof(StateRow, pad0_) == 152,
+		"TileGpu StateRow's tail padding must sit at the end of the row, explicitly");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -216,6 +232,17 @@ private:
 		// Frame-wide rather than per-pass, because a source belongs to a texture window and serves
 		// draws in any number of passes. Set only after the cache has actually handed over an image.
 		u32 src_slot;
+
+		// The CLUT gather's per-draw link. `pal_record` is the handle of the device palette every
+		// mirror slot this draw reads was stamped by, or 0 when the draw's palette words came off the
+		// CPU as they always did. `pal_bias` is where inside that palette the draw's entries start
+		// (non-zero only for a four-bit draw on a slot of a 256-entry load), `pal_mode` the state
+		// row's fetch mode, and `pal_id` the palette's content identity for the expanded cache --
+		// derived from the load's tuple rather than from words nobody has.
+		u32 pal_record;
+		u32 pal_bias;
+		u32 pal_mode;
+		u64 pal_id;
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
@@ -502,6 +529,167 @@ private:
 	std::vector<ProbedWindow> m_probe_prev;
 	u64 m_probe_build_counter = 0;
 
+	// --- the CLUT gather: a palette loaded off a render target -------------------------------
+	//
+	// The GS loads its palette out of local memory when TEX0 is written, and when the words it
+	// loads were rendered by a native draw they are in a target's texture and NOWHERE on the CPU.
+	// Today that load is a full drain -- flush the plan, read the pages back, load from the shadow
+	// -- and it is the dominant stall on the two GT4 dumps: 671 and 1272 a frame, which is also,
+	// numerically, their whole mid-frame plan fragmentation. This road deletes it: the load is
+	// classified where it happens, an eligible one takes no readback at all, and its words reach the
+	// consumers ON THE DEVICE -- as a copy of the palette's blocks into the frame's palette stream
+	// for a byte-road draw, and as an N x 1 gathered texture for a rule-3 one.
+	//
+	// The shape is exact-Tile's (GSRendererTile.cpp's PreClutLoad/PostClutLoad, GpuPalette,
+	// GSTileClutMirror, PruneGpuPalettes, SyncClutToCpu) with ONE structural difference, which is
+	// where all the design pressure was: this renderer's consumers are DEFERRED. A draw is recorded
+	// now and issued at the plan, so a palette a recorded draw names must outlive the load that
+	// wrote it and the load that displaced it -- which is why pruning happens at the plan tail
+	// rather than at the load (design record: umbrella campaigns/p3-c6-gather-design-2026-08-20).
+
+	/// Which mirror slots a CSM1 32-bit load writes: an eight-bit palette fills slots CSA..15
+	/// (WriteCLUT_T32_I8_CSM1's loop), a four-bit one fills the single slot CSA.
+	static void ClutLoadSlots(const GIFRegTEX0& TEX0, u32& first, u32& count);
+	/// The load shapes the device gather serves: CSM1, a 32-bit palette, and either a four-bit index
+	/// (one slot) or an eight-bit one at CSA 0 (all sixteen). A 32-bit entry is RGBA verbatim under
+	/// Read32, so within this shape there is no TEXA and no CPSM decode to disagree about.
+	static bool ClutGatherServesLoad(const GIFRegTEX0& TEX0);
+
+	/// One device palette: a CLUT load the gather served. Fresh per load and never looked up by
+	/// content -- the probe measured every eligible load's tuple as new on both axes on both prize
+	/// titles (gt4 631/631, gt4opb 1259/1259), so a cache cannot hit and is not built.
+	struct GpuPalette
+	{
+		u32 handle = 0; ///< the mirror's name for it; never GSTileClutMirror::kCpu
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		u32 cbp = 0;
+		u32 entries = 0; ///< 16 or 256
+		u32 first_slot = 0; ///< the first mirror slot the load wrote
+		u32 owner_bp = 0, owner_bwpg = 0;
+		GSPageBitmap pages; ///< the load's source pages
+		u64 pal_id = 0; ///< namespace-tagged content identity, for the expanded cache
+		GIFRegTEX0 tex0 = {}; ///< the load's registers, for the CPU sync seam
+		GIFRegTEXCLUT texclut = {};
+		/// The owner's texels on these pages have been overwritten since the load, so the words are
+		/// gone from the device too. Set precisely, from the two things that write a pool texture on
+		/// those pages (a draw and a seed) plus a surface slot being recycled.
+		bool source_lost = false;
+		u64 stream_plan = 0; ///< the plan its words were copied into the palette stream for (0 = none)
+		u32 stream_offset = 0; ///< ...and the word offset they landed at
+		GSTexture* gather_tex = nullptr; ///< rule 3's N x 1 palette, gathered on demand
+	};
+
+	GSTileClutMirror m_clut_mirror;
+	std::vector<GpuPalette> m_gpu_palettes; ///< sorted by handle: handles only ever increase
+	std::vector<u32> m_clut_live; ///< indices of the records the mirror still names (at most sixteen)
+	u32 m_gpu_palette_next = 1;
+	/// Off for the session once the device refuses the road (the CLUT loaders' word order no longer
+	/// fits a closed form, or a gather pipeline failed to build). Probed once, lazily.
+	bool m_clut_gather_serves = true;
+	bool m_clut_gather_probed = false;
+	bool m_warned_clut_lost = false;
+	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
+	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's
+	/// SOURCE RECTS, which are a CPU-side answer the shader never computes.
+	GSTileSwizzleForms::FormSet m_clut_forms;
+	/// GSClut::EntryToWordCSM1_32's tables, taken once: entry -> the source word the loader read it
+	/// from. Only the CPU sync seam needs them (the shaders take the fitted forms instead).
+	bool m_clut_word_map_taken = false;
+	std::array<u16, 256> m_clut_word_i8{};
+	std::array<u16, 16> m_clut_word_i4{};
+
+	/// What the InvalidateLocalMem(clut) calls of ONE load saw, carried to PostClutLoad where TEX0
+	/// finally names the load's shape and the slots it wrote.
+	struct ClutPendingLoad
+	{
+		u32 calls = 0;
+		u32 deferred_blocks = 0; ///< blocks whose readback was skipped because the gather may serve them
+		bool stalling = false; ///< some block's pages are held newest by a target
+		bool readback = false; ///< ...and a readback actually happened for one of them
+		bool refused = false; ///< ...and some block's owner conditions did not hold
+		u32 refusal = 0; ///< which clause (ClutRefusal), for the counters
+		GSPageBitmap pages; ///< the deferred blocks' pages
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		u32 owner_bp = 0, owner_bwpg = 0;
+	};
+	ClutPendingLoad m_clut_pending;
+
+	enum ClutRefusal : u32
+	{
+		kClutRefNone = 0,
+		kClutRefMulti, ///< no single live surface owns every plane of every page (multi-owner or partial)
+		kClutRefDead, ///< the owner is not alive, or has no pool texture
+		kClutRefLayout, ///< not a page-aligned CT32/CT24 colour surface, or CBP below its base
+		kClutRefResidency, ///< its texture does not span the pages
+		kClutRefTexels, ///< ...spans them but has never written texels there
+		kClutRefMixedOwner, ///< two of the load's blocks are owned by different surfaces
+		kClutRefCount
+	};
+
+	void PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) override;
+	void PostClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) override;
+
+	/// One InvalidateLocalMem(clut) call's block, asked the donor road's own owner questions. True
+	/// when its readback is DEFERRED to PostClutLoad; false leaves the caller on today's road, which
+	/// is always correct.
+	bool ClutLoadDefer(const GSPageBitmap& pages);
+	/// Whether the device can serve the gather at all (the CLUT loaders' word order fits). Asked once.
+	bool ClutGatherServes();
+
+	GpuPalette* FindGpuPalette(u32 handle);
+	/// Rebuild the short list of records the mirror still names, after anything that changes it.
+	void RefreshClutLive();
+	/// A pool texture's pages were just written (a draw into the surface, or a seed): every record
+	/// whose source those pages carry has lost its words. Cheap by construction -- the list it walks
+	/// is at most sixteen long and empty on a title with no gathered palette at all.
+	void NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages);
+	/// The surface id has been recycled into a new surface: every palette on it has lost its words.
+	void NoteClutSurfaceReplaced(GSTileSurfaceId id);
+
+	/// Which device palette this draw's slots resolve to, or nullptr for the CPU road. Handles the
+	/// two roads the mirror cannot serve -- slots from different loads, and a 256-entry palette read
+	/// at a non-zero CSA -- by making the CPU words whole first, which is always correct.
+	/// ⚠️ May FLUSH the pending plan (the sync reads pages back), so it must run before the caller
+	/// has emitted anything into its prep-op range.
+	GpuPalette* ResolveDrawPalette(const GIFRegTEX0& tex0, u32 pal_entries, u32& first_texel, bool& synced);
+
+	/// The record's words in the frame's palette stream: a reserved run of `entries` zero words and
+	/// one image-to-buffer copy of the palette's blocks out of the owner. Idempotent within a plan
+	/// and emitted at the current op position, which is what makes it usable both from a consumer
+	/// and from the write that is about to destroy the source.
+	bool CaptureClutRecordWords(GpuPalette& gp);
+	/// The same, for a draw that is about to READ those words: adds the donor hoist test, so a copy
+	/// that cannot run at the open pass's head opens a new one. False when the source is gone.
+	bool EnsureClutStreamWords(GpuPalette& gp, PendingDraw& pd);
+	/// The record's N x 1 palette texture for rule 3, gathered off the owner by a ClutGather op in
+	/// the calling draw's prep range. Null when the source is gone or the allocation fails.
+	GSTexture* ClutGatherTexture(GpuPalette& gp, PendingDraw& pd);
+	/// A prep op that cannot be hoisted over the open pass opens a new one -- the donor's own test,
+	/// asked for a CLUT op's owner.
+	void ClutHoistBreak(const GpuPalette& gp, PendingDraw& pd);
+
+	/// Every device palette's words back into the CPU's CLUT RAM, and its slots back to the CPU.
+	/// The whole-of-truth seam (savestate, renderer switch, purge) and the two draw-side roads the
+	/// mirror cannot serve. ⚠️ Reads pages back, so it flushes the pending plan.
+	void SyncClutToCpu();
+	void SyncClutRecordToCpu(GpuPalette& gp);
+	/// A record's words are gone and nothing can recover them: count it, say so once, and hand its
+	/// slots back to the CPU so the stale words are used at most once per load rather than forever.
+	void RetireLostClutRecord(GpuPalette& gp);
+
+	/// Records the mirror no longer names are recycled -- at the tail of the plan and nowhere else.
+	/// Tile prunes at the load, and that is not sound here: a recorded-but-unissued draw may still
+	/// sample a palette whose slots a later load has already displaced. At the plan tail every
+	/// recorded op has issued and there are no pending draws, so Tile's own predicate is correct.
+	void PruneGpuPalettes();
+	void ReleaseGpuPalettes();
+
+	/// The two halves of GSTilePaletteCache's id space, named here because both roads of this
+	/// renderer's palette question use them: a palette built from CPU words takes OwnPalId, and one
+	/// the gather loaded off a target -- which has no words to hash -- takes ForeignPalId over the
+	/// load's tuple. The reserved bit is what keeps the expanded cache from fusing a pair across them.
+	static u64 ClutCpuPalId(u64 content_id) { return GSTilePaletteCache::OwnPalId(content_id); }
+
 	// Rule 3's admission question. Computes the window's key and content stamp, asks the palette
 	// pair whether it would be admitted, and either admits the draw or counts one named refusal.
 	// Called only where rule 2 declined, and it writes nothing but counters and the window record --
@@ -746,6 +934,27 @@ private:
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
 		u32 flushes = 0;         // mid-frame plan submissions
 		u32 passes = 0;
+
+		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
+		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them
+		// needs anything at all, which is what clut_no_stall counts.
+		u32 clut_loads = 0;       // CLUT loads seen
+		u32 clut_no_stall = 0;    // ...whose source pages no target holds newest: the CPU road, untouched
+		u32 clut_gathered = 0;    // ...served by the gather: no flush, no readback, no CPU words
+		u32 clut_ref_shape = 0;   // ...owner conditions held, the load's shape is not one the gather serves
+		u32 clut_ref_owner = 0;   // ...the owner conditions did not hold: today's readback road
+		u32 clut_ro[kClutRefCount] = {}; // ...bucketed by the clause that refused
+		u32 clut_draws = 0;       // paletted draws whose every slot came from ONE device palette
+		u32 clut_draws_r3 = 0;    // ...served by rule 3, off the N x 1 gather
+		u32 clut_draws_byte = 0;  // ...served on the byte road, out of the copied blocks in the stream
+		u32 clut_draws_sync = 0;  // paletted draws the mirror could not serve whole: synced to the CPU
+		u32 clut_r3_refused = 0;  // rule 3 refused a gathered palette (a sub-slot view, or no source)
+		u32 clut_copies = 0;      // block copies emitted (one per record per plan, at a pass head)
+		u32 clut_gathers = 0;     // N x 1 gather passes emitted (rule 3's volume, not the loads')
+		u32 clut_breaks = 0;      // draws that opened a pass because a CLUT op could not hoist
+		u32 clut_syncs = 0;       // device palettes handed back to the CPU (seams + the two unservable roads)
+		u32 clut_lost = 0;        // ...of which had already lost their source: the words are unrecoverable
+		u32 clut_pruned = 0;      // records recycled at the plan tail
 	};
 	ModelFrame m_frame = {};
 	std::vector<ModelFrame> m_model_frames;

@@ -178,4 +178,33 @@ namespace GSTileSwizzleForms
 	/// The shader's per-texel arithmetic: index texel (u, v) → the owner texel and byte
 	/// that hold it. Depends only on the forms and the two layouts.
 	OwnerTexel Locate(const FormSet& forms, IndexFormat fmt, const Reinterpretation& r, u32 u, u32 v);
+
+	// -- The CLUT block copy: a palette read out of an owner target WITHOUT a gather pass ---
+	// A CSM1 32-bit CLUT load reads 256 contiguous words at CBP (four blocks) or 16 (the
+	// first quarter of one block). When those words are in a render target's texture, the
+	// cheapest way to put them where a byte-road draw can read them is not a gather pass per
+	// load — at a thousand loads a frame that is a thousand render passes — but a plain
+	// image-to-buffer COPY of the blocks, block by block, into the frame's palette stream.
+	// The copy lands each block's 64 words in TEXEL ROW-MAJOR order, which is not entry
+	// order, so the consumer applies the CSM1 entry→word order at fetch time instead.
+
+	struct ClutBlockCopy
+	{
+		static constexpr u32 kMaxRegions = 4;
+		u32 region_count; ///< 4 for a 256-entry palette (four blocks), 1 for a 16-entry one
+		u32 x[kMaxRegions], y[kMaxRegions]; ///< each region's texel origin in the owner's pixel space
+		u32 w, h; ///< 8×8 per region; 8×2 for the single block of a 16-entry palette
+	};
+
+	/// Where a CSM1 32-bit CLUT load's source blocks sit in the owner surface's pixel space.
+	/// `entries` is 256 or 16; `owner_bp`/`owner_bwpg` are the owner's page-aligned base and
+	/// its width in pages. False when the forms did not fit, the entry count is not one of the
+	/// two, or a block falls below the owner's base (the caller must have proved CBP ≥ owner_bp).
+	bool LocateClutBlocks(const FormSet& forms, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
+		ClutBlockCopy& out);
+
+	/// Entry e of a CSM1 32-bit palette → its word offset in the image LocateClutBlocks
+	/// describes, once its regions have been copied out in order, each row-major. This is the
+	/// arithmetic tilegpu.glsl's palette-from-copied-block mode performs per fetch.
+	u32 ClutEntryToCopyOffset(const FormSet& forms, u32 entries, u32 e);
 } // namespace GSTileSwizzleForms
