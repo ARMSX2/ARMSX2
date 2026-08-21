@@ -29,9 +29,9 @@
 //   Q. Settled on the interpreters, which read the EE's divide-unit model and
 //   match every row. The recompilers run a host divide, so their two gaps --
 //   the ceiling and the arithmetic -- are pinned as exact tallies instead, for
-//   whoever emits the model there to move. The macro engine's zero-divisor
-//   path now returns the console's 0x7FFFFFFF; microVU's still returns FLT_MAX,
-//   a binade low, and so does every quotient either engine reaches by dividing.
+//   whoever emits the model there to move. Both engines' zero-divisor paths
+//   return the console's 0x7FFFFFFF; what still comes back a binade low is
+//   every quotient either engine reaches by dividing.
 
 #include <gtest/gtest.h>
 
@@ -204,10 +204,10 @@ TEST(VuDivUnitConsole, InterpreterQMatchesConsoleOnEveryRow)
 
 // The console's saturated quotient is the EE maximum 0x7FFFFFFF. Where a
 // recompiler writes that word outright -- the zero-divisor branch -- it can
-// carry it, and recCOP2_VDIV / recCOP2_VRSQRT do. Where it arrives by dividing,
-// the ceiling is whatever the host clamp holds -- FLT_MAX, one binade lower --
-// and that is exactly what `sat` has left: every microVU row, and on the macro
-// side the fourteen whose divisor is not zero. The sign is not part of the
+// carry it, and all four of recCOP2_VDIV, recCOP2_VRSQRT, mVU_DIV and mVU_RSQRT
+// do. Where it arrives by dividing, the ceiling is whatever the host clamp
+// holds -- FLT_MAX, one binade lower -- and that is all `sat` has left: the
+// same fourteen rows on either engine. The sign is not part of the
 // difference, so the class is defined with the sign carried over -- which is
 // what makes it a statement about the clamp and not a place for a sign bug to
 // hide. What is left over is the host divide's arithmetic.
@@ -237,18 +237,18 @@ TEST(VuDivUnitConsole, OnlyDividedQuotientsSaturateABinadeLowOfTheConsole)
 
 	EXPECT_EQ(consoleSaturated, 226);
 
-	// Two of the macro rows saturate on the console and come back as something
-	// other than the sign-matched ceiling; they fall in `unit` below rather than
-	// being counted as clamp misses.
+	// Rows that saturate on the console and come back as something other than
+	// the sign-matched ceiling fall in `unit` below rather than being counted as
+	// clamp misses.
 	EXPECT_EQ(mj.sat, 14);
-	EXPECT_EQ(uj.sat, 176);
+	EXPECT_EQ(uj.sat, 14);
 
 	// The arithmetic gap left once the ceiling is accounted for.
 	EXPECT_EQ(mj.unit, 86);
 	EXPECT_EQ(uj.unit, 82);
 
 	EXPECT_EQ(mj.ok, 402);
-	EXPECT_EQ(uj.ok, 164);
+	EXPECT_EQ(uj.ok, 326);
 
 	EXPECT_EQ(mj.ok + mj.sat + mj.unit, static_cast<int>(std::size(kVursCases)));
 	EXPECT_EQ(uj.ok + uj.sat + uj.unit, 422);

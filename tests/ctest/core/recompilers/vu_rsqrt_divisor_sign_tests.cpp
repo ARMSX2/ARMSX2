@@ -7,9 +7,9 @@
 // operand grid; this is the readable form, and it names which engine had each
 // case wrong.
 //
-// Q is the console's word. microVU still saturates a binade low of it, which
-// MicroQ() below states once and VuDivUnitConsole scores in full; the macro
-// recompiler reaches the console's ceiling and is asserted on it directly.
+// Q is the console's word and every engine is held to it directly; where a
+// quotient is instead reached by dividing, VuDivUnitConsole scores what the
+// host's ceiling leaves.
 
 #include <gtest/gtest.h>
 
@@ -51,14 +51,6 @@ struct Row
 	u32 di; // expected STATUS & kDiMask
 	u32 q;  // the console's
 };
-
-// A saturated quotient reads back as FLT_MAX from microVU -- its ceiling is the
-// clamp constant mVUglob.maxvals, not the EE range's. Nothing else moves, so the
-// rows below stay the console's and this is the only place the deficit is
-// spelled.
-constexpr bool Saturated(u32 q) { return (q & 0x7FFFFFFFu) == 0x7FFFFFFFu; }
-constexpr u32 MicroQ(u32 q) { return Saturated(q) ? ((q & 0x80000000u) | 0x7F7FFFFFu) : q; }
-constexpr const char* kWhyCeiling = "micro Q: microVU's ceiling is FLT_MAX, the interpreter's is 0x7FFFFFFF";
 
 // Every row is checked on all four engines. 0/0 goes to its own test below.
 constexpr Row kRows[] = {
@@ -131,11 +123,7 @@ TEST(VuRsqrtDivisorSign, InvalidComesFromTheDivisorSignBitAlone)
 
 		VuTestHarness m(0);
 		BuildMicro(m, r.fs, r.ft);
-		// also diffs micro JIT against micro interp
-		if (Saturated(r.q))
-			m.RunRequiringDivergence(kWhyCeiling);
-		else
-			m.Run();
+		m.Run(); // also diffs micro JIT against micro interp
 		EXPECT_EQ(m.GetViJit(REG_STATUS_FLAG) & kDiMask, r.di) << "[micro jit] STATUS";
 		EXPECT_EQ(m.GetViInterp(REG_STATUS_FLAG) & kDiMask, r.di) << "[micro interp] STATUS";
 	}
@@ -161,11 +149,8 @@ TEST(VuRsqrtDivisorSign, QuotientSignIsTheDividendsAlone)
 
 		VuTestHarness m(0);
 		BuildMicro(m, r.fs, r.ft);
-		if (Saturated(r.q))
-			m.RunRequiringDivergence(kWhyCeiling);
-		else
-			m.Run();
-		EXPECT_EQ(m.GetViJit(REG_Q), MicroQ(r.q)) << "[micro jit] Q";
+		m.Run();
+		EXPECT_EQ(m.GetViJit(REG_Q), r.q) << "[micro jit] Q";
 		EXPECT_EQ(m.GetViInterp(REG_Q), r.q) << "[micro interp] Q";
 
 		EXPECT_EQ(r.q & 0x80000000u, r.fs & 0x80000000u) << "quotient sign is the dividend's";
@@ -212,9 +197,9 @@ TEST(VuRsqrtDivisorSign, ZeroOverZeroRaisesInvalidWithoutDivideByZero)
 
 		VuTestHarness m(0);
 		BuildMicro(m, r.fs, r.ft);
-		m.RunRequiringDivergence(kWhyCeiling);
+		m.Run();
 		EXPECT_EQ(m.GetViJit(REG_STATUS_FLAG) & kDiMask, kI) << "[micro jit] STATUS";
-		EXPECT_EQ(m.GetViJit(REG_Q), MicroQ(r.q)) << "[micro jit] Q";
+		EXPECT_EQ(m.GetViJit(REG_Q), r.q) << "[micro jit] Q";
 		EXPECT_EQ(m.GetViInterp(REG_STATUS_FLAG) & kDiMask, kI) << "[micro interp] STATUS";
 		EXPECT_EQ(m.GetViInterp(REG_Q), r.q) << "[micro interp] Q";
 	}
