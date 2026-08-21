@@ -211,6 +211,13 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
     }
 
+    /** Upper bound on waiting for the emulation thread after shutdown has been asked for.
+     *  NativeApp.shutdown() already waits 5 s for the VM to reach Shutdown and returns anyway if
+     *  it does not, so an unbounded join here inherits a wedged CPU thread and hangs the destroy
+     *  path until Android force-closes us. In the ordinary case the thread is already gone and
+     *  this costs nothing. */
+    private static final long EMU_THREAD_JOIN_TIMEOUT_MS = 2000L;
+
     @Override
     protected void onDestroy() {
         NativeApp.shutdown();
@@ -218,7 +225,15 @@ public class MainActivity extends AppCompatActivity {
         ////
         if (mEmulationThread != null) {
             try {
-                mEmulationThread.join();
+                mEmulationThread.join(EMU_THREAD_JOIN_TIMEOUT_MS);
+                if (mEmulationThread.isAlive()) {
+                    // Nothing more we can do from here — the VM did not unwind, so the memory
+                    // cards were not closed by FileMcd_EmuClose either. onPause has already
+                    // queued a card flush by this point in the normal lifecycle, which is what
+                    // keeps this from being data loss.
+                    NativeApp.emulog("onDestroy: emulation thread still alive after "
+                        + EMU_THREAD_JOIN_TIMEOUT_MS + "ms, killing anyway");
+                }
                 mEmulationThread = null;
             } catch (InterruptedException ignored) {
             }

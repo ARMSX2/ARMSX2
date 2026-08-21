@@ -53,7 +53,9 @@ import com.armsx2.BuildConfig
 import com.armsx2.EmuState
 import com.armsx2.FilenameParser
 import com.armsx2.GameInfo
+import com.armsx2.MemoryCardBackup
 import com.armsx2.PlayTime
+import com.armsx2.i18n.str
 import com.armsx2.input.ControllerMappings
 import com.armsx2.input.SoftKeyboard
 import com.armsx2.runtime.MainActivityRuntime.Companion.internalBiosDir
@@ -448,6 +450,20 @@ open class MainActivityRuntime : ComponentActivity() {
         // pushed GS settings before the base settings layer existed → native SIGSEGV.
         private val pendingLaunch = mutableStateOf<Pair<String, GameInfo?>?>(null)
 
+        /** Names of the memory cards a pending launch found unreadable, when a verified backup
+         *  exists to put back. Non-empty holds the boot and shows the recovery prompt; the prompt
+         *  either restores and retries, or sets [memoryCardRecoveryBypass] and retries. */
+        val memoryCardRecovery = mutableStateOf<List<String>>(emptyList())
+
+        /** Set by "Start anyway" so the next [start] does not re-ask about the same card. Cleared
+         *  once that launch has gone through, so a later session asks again. */
+        private var memoryCardRecoveryBypass = false
+
+        fun dismissMemoryCardRecovery(startAnyway: Boolean) {
+            memoryCardRecovery.value = emptyList()
+            if (startAnyway) memoryCardRecoveryBypass = true
+        }
+
         fun invoke(task: suspend () -> Unit) {
             eScope.launch {
                 task()
@@ -635,6 +651,22 @@ open class MainActivityRuntime : ComponentActivity() {
         }
 
         fun start() {
+            // Pre-boot memory card pass. Here rather than after the VM is up because the card file
+            // is not open yet, so an unreadable card can still be put back before the game ever
+            // mounts it — and once the console has mounted a card it caches its own picture of the
+            // directory, which a restore underneath would not update.
+            if (!memoryCardRecoveryBypass && MemoryCardBackup.isEnabled()) {
+                val broken = instance?.applicationContext?.let { ctx ->
+                    runCatching {
+                        MemoryCardBackup.unreadableActiveCards(ctx, currentGame.value?.settingsKey)
+                    }.getOrDefault(emptyList())
+                }.orEmpty()
+                if (broken.isNotEmpty()) {
+                    // Held, not cancelled: the prompt calls start() again either way.
+                    memoryCardRecovery.value = broken
+                    return
+                }
+            }
             synchronized(vmLifecycleLock) {
                 if (vmStopInProgress || vmRunLoopActive || eState.value != EmuState.STOPPED) {
                     vmRestartAfterStop = true
@@ -642,6 +674,10 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
                 vmRunLoopActive = true
             }
+            // Only now that this launch has actually committed. Clearing it above the early return
+            // would drop the user's "start anyway" on a deferred launch, and ask them again when
+            // the restart came round.
+            memoryCardRecoveryBypass = false
 
             invoke {
                 try {
@@ -668,6 +704,19 @@ open class MainActivityRuntime : ComponentActivity() {
                     // The hold itself waits for the VM to come up. BIOS boots skip it.
                     if (bootCfg.autoProgressiveScan)
                         startAutoProgressiveScanHold()
+                    // Bank a copy of the cards this boot will mount, while they are still closed.
+                    // Cheap and silent: it only writes when the card verifies AND its contents
+                    // differ from the newest copy, so relaunching without saving costs nothing.
+                    runCatching {
+                        instance?.applicationContext?.let { ctx ->
+                            println("@@ANDROID_MCDBAK@@ " + MemoryCardBackup.snapshotActiveCards(
+                                ctx,
+                                currentGame.value?.settingsKey,
+                                MemoryCardBackup.Reason.SESSION,
+                                currentGame.value?.title,
+                            ))
+                        }
+                    }
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
@@ -1018,6 +1067,15 @@ open class MainActivityRuntime : ComponentActivity() {
                     // Renderer page (global, since there is no game) instead of the launcher's.
                     emulationOwnsOrientation = true
                     applyRendererPrefs()
+                    // The BIOS mounts the cards too, and its memory card manager can format one or
+                    // delete saves off it — so this boot is worth a copy for the same reason a game
+                    // boot is. No serial here, so the global card choice is the right one.
+                    runCatching {
+                        instance?.applicationContext?.let { ctx ->
+                            println("@@ANDROID_MCDBAK@@ bios " + MemoryCardBackup.snapshotActiveCards(
+                                ctx, null, MemoryCardBackup.Reason.SESSION, null))
+                        }
+                    }
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     eState.value = EmuState.STOPPED
@@ -2313,6 +2371,40 @@ open class MainActivityRuntime : ComponentActivity() {
             if (!setupComplete.value || setupEditorVisible.value) {
                 com.armsx2.ui.onboarding.OnboardingScreen()
             } else if (setupComplete.value) {
+                // A launch found an active memory card it could not read, and has a verified
+                // backup to put back. The boot is held until this is answered — restoring after
+                // the console has mounted the card would be overwritten by its cached directory.
+                memoryCardRecovery.value.takeIf { it.isNotEmpty() }?.let { broken ->
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val cardName = broken.first()
+                    val newest = androidx.compose.runtime.remember(cardName) {
+                        com.armsx2.MemoryCardBackup.list(ctx, cardName).firstOrNull { it.healthy }
+                    }
+                    com.armsx2.ui.common.ConfirmOverlay(
+                        title = str("memcard.recovery.title"),
+                        message = str("memcard.recovery.body")
+                            .format(cardName, newest?.takenAtText.orEmpty()),
+                        confirmLabel = str("memcard.recovery.restore"),
+                        dismissLabel = str("memcard.recovery.ignore"),
+                        idPrefix = "memcard-recovery",
+                        onConfirm = {
+                            val snap = newest
+                            dismissMemoryCardRecovery(startAnyway = true)
+                            invoke {
+                                if (snap != null) {
+                                    withContext(Dispatchers.IO) {
+                                        com.armsx2.MemoryCardBackup.restore(ctx, snap)
+                                    }
+                                }
+                                start()
+                            }
+                        },
+                        onDismiss = {
+                            dismissMemoryCardRecovery(startAnyway = true)
+                            start()
+                        },
+                    )
+                }
                 // Per-game play-time tracking: count while RUNNING, accumulate on
                 // pause / stop / background. Keyed on the serial too so the session
                 // re-arms once currentGame resolves shortly after launch.

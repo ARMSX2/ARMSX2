@@ -36,7 +36,11 @@ object BackupManager {
 
     /** Data-root entries worth preserving. Anything absent is skipped silently. */
     private val INCLUDED = listOf(
-        "sstates", "memcards", "covers", "gamesettings", "inputprofiles",
+        // memcard-backups rides along deliberately. It is the per-card snapshot rotation
+        // ([MemoryCardBackup]), and a card restored onto a new phone from this archive is exactly
+        // as likely to be the broken one — so the history that can undo it has to travel too. A
+        // card is mostly erased space, so the compressed rotation is small next to sstates.
+        "sstates", "memcards", "memcard-backups", "covers", "gamesettings", "inputprofiles",
         "cheats", "patches", "snaps",
     )
     private val INCLUDED_FILES = listOf(

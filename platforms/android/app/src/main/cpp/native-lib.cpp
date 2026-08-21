@@ -2797,6 +2797,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
             // no-ops when the NVM is unchanged, so pausing repeatedly is cheap.
             if (VMManager::HasValidVM())
                 cdvdSaveNVRAM();
+            // Same reasoning as the NVRAM above, and the same failure: a memory card write does
+            // not necessarily reach the file system when it happens. A FOLDER card holds writes
+            // in an in-memory page cache and flushes two frames after the last one, counted down
+            // by the per-frame tick that runs off vsync — so pausing does not delay that flush,
+            // it stops it being reached at all. A FILE card writes through, but the last sector
+            // of a save sequence sits in the stdio buffer until the next card access.
+            //
+            // Either way the pending write is lost if Android reclaims the process while it is
+            // backgrounded, which it is free to do with no further callback. Save in-game, switch
+            // apps, get reclaimed — and the save was never on disk. Queued after SetPaused above,
+            // so the console is stopped and nothing can be written behind us.
+            if (VMManager::HasValidVM())
+                FileMcd_Flush();
         });
 
         if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
@@ -2816,8 +2829,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
         Host::RunOnCPUThread([]() {
             if (VMManager::HasValidVM())
                 cdvdSaveNVRAM();
+            if (VMManager::HasValidVM())
+                FileMcd_Flush();
         });
-        Console.WriteLn("@@ANDROID_PAUSE@@ already_paused nvm_flush_queued");
+        Console.WriteLn("@@ANDROID_PAUSE@@ already_paused nvm_and_mcd_flush_queued");
     }
 }
 
