@@ -167,6 +167,104 @@ void SettingsSaveWrapper::_EnumEntry(const char* section, const char* var, int& 
 	m_si.SetStringValue(section, var, enumArray[index]);
 }
 
+SettingsSaveDeviationsWrapper::SettingsSaveDeviationsWrapper(
+	SettingsInterface& si, std::vector<const MemorySettingsInterface*> references)
+	: SettingsWrapper(si)
+	, m_references(std::move(references))
+{
+}
+
+SettingsSaveDeviationsWrapper::~SettingsSaveDeviationsWrapper() = default;
+
+bool SettingsSaveDeviationsWrapper::IsLoading() const
+{
+	return false;
+}
+
+bool SettingsSaveDeviationsWrapper::IsSaving() const
+{
+	return true;
+}
+
+template <typename WriteFn>
+void SettingsSaveDeviationsWrapper::Keep(const char* section, const char* var, const WriteFn& write)
+{
+	write(m_staging);
+
+	std::string candidate;
+	if (!m_staging.GetStringValue(section, var, &candidate))
+	{
+		// Nothing to compare against, so nothing can be said to be redundant.
+		write(m_si);
+		return;
+	}
+
+	m_staging.DeleteValue(section, var);
+
+	for (const MemorySettingsInterface* reference : m_references)
+	{
+		std::string existing;
+		if (reference->GetStringValue(section, var, &existing) && existing == candidate)
+		{
+			m_si.DeleteValue(section, var);
+			return;
+		}
+	}
+
+	write(m_si);
+}
+
+void SettingsSaveDeviationsWrapper::Entry(const char* section, const char* var, int& value, const int defvalue /*= 0*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetIntValue(section, var, value); });
+}
+
+void SettingsSaveDeviationsWrapper::Entry(const char* section, const char* var, uint& value, const uint defvalue /*= 0*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetUIntValue(section, var, value); });
+}
+
+void SettingsSaveDeviationsWrapper::Entry(const char* section, const char* var, bool& value, const bool defvalue /*= false*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetBoolValue(section, var, value); });
+}
+
+void SettingsSaveDeviationsWrapper::Entry(const char* section, const char* var, float& value, const float defvalue /*= 0.0*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetFloatValue(section, var, value); });
+}
+
+void SettingsSaveDeviationsWrapper::Entry(
+	const char* section, const char* var, std::string& value, const std::string& default_value /*= std::string()*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetStringValue(section, var, value.c_str()); });
+}
+
+void SettingsSaveDeviationsWrapper::Entry(
+	const char* section, const char* var, SmallStringBase& value, std::string_view default_value /* = std::string_view() */)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetStringValue(section, var, value.c_str()); });
+}
+
+bool SettingsSaveDeviationsWrapper::EntryBitBool(const char* section, const char* var, bool value, const bool defvalue /*= false*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetBoolValue(section, var, value); });
+	return value;
+}
+
+int SettingsSaveDeviationsWrapper::EntryBitfield(const char* section, const char* var, int value, const int defvalue /*= 0*/)
+{
+	Keep(section, var, [&](SettingsInterface& si) { si.SetIntValue(section, var, value); });
+	return value;
+}
+
+void SettingsSaveDeviationsWrapper::_EnumEntry(const char* section, const char* var, int& value, const char* const* enumArray, int defvalue)
+{
+	const int cnt = _calcEnumLength(enumArray);
+	const int index = (value < 0 || value >= cnt) ? defvalue : value;
+	Keep(section, var, [&](SettingsInterface& si) { si.SetStringValue(section, var, enumArray[index]); });
+}
+
 SettingsClearWrapper::SettingsClearWrapper(SettingsInterface& si)
 	: SettingsWrapper(si)
 {

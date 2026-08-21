@@ -513,6 +513,9 @@ namespace FullscreenUI
 	inline SettingsPage s_settings_page = SettingsPage::Interface;
 	inline std::unique_ptr<INISettingsInterface> s_game_settings_interface;
 	inline std::unique_ptr<GameList::Entry> s_game_settings_entry;
+	// Whose settings are being edited. Kept beside the interface rather than read off
+	// the entry, which is null when an ELF is what opened the page. Empty for those.
+	inline std::string s_game_settings_serial;
 	inline std::vector<std::pair<std::string, bool>> s_game_list_directories_cache;
 	inline std::vector<GSAdapterInfo> s_graphics_adapter_list_cache;
 	inline std::vector<Patch::PatchInfo> s_game_patch_list;

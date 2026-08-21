@@ -57,6 +57,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "SPU2/spu2.h"
 #include "GameList.h"
 #include "GameDatabase.h"
+#include "PerGameOverrides.h"
 #include "ps2/BiosTools.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -1758,44 +1759,13 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
 // Overlays per-game INI overrides for the given serial/crc onto a globals-seeded result.
 // Sourcing serial/crc from the caller avoids re-scanning the disc image (which is unsafe
 // while the VM is actively reading the same disc).
-// Every pin-backed hack key with its claim bit, so a file's mask is derivable
-// from which of these keys it holds rather than stored ahead of them.
-static constexpr struct { const char* key; GSUserHackOverride hack; } s_pinned_hack_keys[] = {
-    {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite},
-    {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite},
-    {"UserHacks_round_sprite_offset", GSUserHackOverride::RoundSprite},
-    {"UserHacks_HalfPixelOffset", GSUserHackOverride::HalfPixelOffset},
-    {"UserHacks_ForceEvenSpritePosition", GSUserHackOverride::ForceEvenSpritePosition},
-    {"UserHacks_native_scaling", GSUserHackOverride::NativeScaling},
-    {"UserHacks_NativePaletteDraw", GSUserHackOverride::NativePaletteDraw},
-    {"UserHacks_BilinearHack", GSUserHackOverride::BilinearHack},
-    {"UserHacks_TCOffsetX", GSUserHackOverride::TextureOffsetX},
-    {"UserHacks_AutoFlushLevel", GSUserHackOverride::AutoFlush},
-    {"UserHacks_TextureInsideRt", GSUserHackOverride::TextureInsideRt},
-    {"UserHacks_TCOffsetY", GSUserHackOverride::TextureOffsetY},
-    {"preload_frame_with_gs_data", GSUserHackOverride::PreloadFrameData},
-    {"UserHacks_DisablePartialInvalidation", GSUserHackOverride::DisablePartialInvalidation},
-    {"paltex", GSUserHackOverride::GPUPaletteConversion},
-    {"UserHacks_DisableDepthSupport", GSUserHackOverride::DisableDepthSupport},
-    {"UserHacks_CPU_FB_Conversion", GSUserHackOverride::CPUFBConversion},
-    {"UserHacks_ReadTCOnClose", GSUserHackOverride::ReadTCOnClose},
-    {"UserHacks_Limit24BitDepth", GSUserHackOverride::Limit24BitDepth},
-    {"UserHacks_EstimateTextureRegion", GSUserHackOverride::EstimateTextureRegion},
-    {"UserHacks_DrawBuffering", GSUserHackOverride::DrawBuffering},
-    {"UserHacks_CPUSpriteRenderBW", GSUserHackOverride::CPUSpriteRenderBW},
-    {"UserHacks_CPUSpriteRenderLevel", GSUserHackOverride::CPUSpriteRenderLevel},
-    {"UserHacks_CPUCLUTRender", GSUserHackOverride::CPUCLUTRender},
-    {"UserHacks_GPUTargetCLUTMode", GSUserHackOverride::GPUTargetCLUT},
-};
 
+// A file's mask is derivable from which keys it holds rather than stored ahead of
+// them. The key table lives in PerGameOverrides so the core and this bridge cannot
+// disagree about which settings a player is allowed to claim.
 static u32 ARMSX2DerivePerGameHackClaims(INISettingsInterface& si)
 {
-    u32 claims = 0;
-    for (const auto& entry : s_pinned_hack_keys) {
-        if (si.ContainsValue("EmuCore/GS", entry.key))
-            claims |= 1u << static_cast<u32>(entry.hack);
-    }
-    return claims;
+    return ComputePerGameOverrides(si).gs_hacks;
 }
 
 static void ARMSX2StoreDerivedPerGameHackClaims(INISettingsInterface& si)
@@ -1810,14 +1780,8 @@ static void ARMSX2StoreDerivedPerGameHackClaims(INISettingsInterface& si)
 // The generic per-game helpers write hack keys too, so they keep the mask in step.
 static void ARMSX2SyncClaimsIfPinnedHackKey(INISettingsInterface& si, NSString* section, NSString* key)
 {
-    if (![section isEqualToString:@"EmuCore/GS"])
-        return;
-    for (const auto& entry : s_pinned_hack_keys) {
-        if ([key isEqualToString:@(entry.key)]) {
-            ARMSX2StoreDerivedPerGameHackClaims(si);
-            return;
-        }
-    }
+    if (PerGameOverrideKeys::ClaimsAGameDBSetting([section UTF8String], [key UTF8String]))
+        ARMSX2StoreDerivedPerGameHackClaims(si);
 }
 
 static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, id>* result, const std::string& serial, u32 crc)

@@ -3,12 +3,14 @@
 
 #pragma once
 
+#include "MemorySettingsInterface.h"
 #include "SettingsInterface.h"
 
 #include "common/EnumOps.h"
 #include "common/SmallString.h"
 
 #include <optional>
+#include <vector>
 
 // Helper class which loads or saves depending on the derived class.
 class SettingsWrapper
@@ -100,6 +102,51 @@ public:
 
 protected:
 	void _EnumEntry(const char* section, const char* var, int& value, const char* const* enumArray, int defvalue) override;
+};
+
+/// Saves only the values that differ from every reference, and deletes the rest.
+///
+/// A per-game settings file is a record of decisions. Copying a whole configuration
+/// into one verbatim writes hundreds of keys the player never chose and never saw,
+/// and each of those then reads back as a deliberate choice — which is exactly how
+/// a copy of the global settings ends up suppressing every automatic fix a game had.
+/// Give this the values that would apply anyway and only the real deviations land.
+///
+/// Comparison goes through the string form rather than the typed value, so a float
+/// or an enum name compares the way it will actually be stored. That is why the
+/// references must be MemorySettingsInterfaces built the same way: same class, same
+/// formatting, exact comparison.
+class SettingsSaveDeviationsWrapper final : public SettingsWrapper
+{
+public:
+	SettingsSaveDeviationsWrapper(SettingsInterface& si, std::vector<const MemorySettingsInterface*> references);
+	~SettingsSaveDeviationsWrapper();
+
+	bool IsLoading() const override;
+	bool IsSaving() const override;
+
+	void Entry(const char* section, const char* var, int& value, const int defvalue = 0) override;
+	void Entry(const char* section, const char* var, uint& value, const uint defvalue = 0) override;
+	void Entry(const char* section, const char* var, bool& value, const bool defvalue = false) override;
+	void Entry(const char* section, const char* var, float& value, const float defvalue = 0.0) override;
+	void Entry(const char* section, const char* var, std::string& value, const std::string& default_value = std::string()) override;
+	void Entry(const char* section, const char* var, SmallStringBase& value, std::string_view default_value = std::string_view()) override;
+
+	bool EntryBitBool(const char* section, const char* var, bool value, const bool defvalue = false) override;
+	int EntryBitfield(const char* section, const char* var, int value, const int defvalue = 0) override;
+
+protected:
+	void _EnumEntry(const char* section, const char* var, int& value, const char* const* enumArray, int defvalue) override;
+
+private:
+	/// Stages the value with `write`, then keeps it only if no reference already says
+	/// the same thing.
+	template <typename WriteFn>
+	void Keep(const char* section, const char* var, const WriteFn& write);
+
+	std::vector<const MemorySettingsInterface*> m_references;
+	/// Holds the candidate long enough to be rendered the same way a reference is.
+	MemorySettingsInterface m_staging;
 };
 
 class SettingsClearWrapper final : public SettingsWrapper

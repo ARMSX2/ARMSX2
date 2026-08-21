@@ -1649,6 +1649,7 @@ void FullscreenUI::SwitchToSettings()
 {
 	s_game_settings_entry.reset();
 	s_game_settings_interface.reset();
+	s_game_settings_serial.clear();
 	s_game_patch_list = {};
 	s_enabled_game_patch_cache = {};
 	s_game_cheats_list = {};
@@ -1662,6 +1663,7 @@ void FullscreenUI::SwitchToSettings()
 void FullscreenUI::SwitchToGameSettings(const std::string_view serial, u32 crc)
 {
 	s_game_settings_entry.reset();
+	s_game_settings_serial = serial;
 	s_game_settings_interface = std::make_unique<INISettingsInterface>(VMManager::GetGameSettingsPath(serial, crc));
 	s_game_settings_interface->Load();
 	PopulatePatchesAndCheatsList(serial, crc);
@@ -1737,7 +1739,7 @@ void FullscreenUI::DoCopyGameSettings()
 	if (!s_game_settings_interface)
 		return;
 
-	Pcsx2Config::CopyConfiguration(s_game_settings_interface.get(), *GetEditingSettingsInterface(false));
+	Pcsx2Config::CopyConfiguration(s_game_settings_interface.get(), *GetEditingSettingsInterface(false), s_game_settings_serial);
 	Pcsx2Config::ClearInvalidPerGameConfiguration(s_game_settings_interface.get());
 
 	SetSettingsChanged(s_game_settings_interface.get());

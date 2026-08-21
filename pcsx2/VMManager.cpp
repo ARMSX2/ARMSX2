@@ -27,6 +27,7 @@
 #include "PINE.h"
 #include "Patch.h"
 #include "PerformanceMetrics.h"
+#include "PerGameOverrides.h"
 #include "R3000A.h"
 #include "R5900.h"
 #include "Recording/InputRecording.h"
@@ -734,6 +735,13 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	if (SettingsInterface* base = Host::Internal::GetBaseSettingsLayer(); base && base != &si)
 		EmuConfig.GS.UserHackOverrides |= static_cast<u32>(base->GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
 
+	// A hack key sitting in the per-game file is a claim on that hack, whether or not
+	// a frontend also wrote the mask — only iOS does. This is what makes MaskUserHacks()
+	// below spare it, so the value survives long enough for the database to be told to
+	// leave it alone.
+	if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+		EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
+
 	Patch::ApplyPatchSettingOverrides();
 
 	// Achievements hardcore mode disallows setting some configuration options.
@@ -854,8 +862,16 @@ void VMManager::ApplyGameFixes()
 	if (!game)
 		return;
 
-	game->applyGameFixes(EmuConfig, EmuConfig.EnableGameFixes);
-	game->applyGSHardwareFixes(EmuConfig.GS);
+	// What the player set for this game specifically, which the database does not get
+	// to overwrite. Read from the game layer alone — the layered stack cannot tell a
+	// per-game choice from a global one, and only the per-game one outranks the
+	// database. The settings lock is held by both callers of this function.
+	PerGameOverrides overrides;
+	if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+		overrides = ComputePerGameOverrides(*game_layer);
+
+	game->applyGameFixes(EmuConfig, EmuConfig.EnableGameFixes, overrides);
+	game->applyGSHardwareFixes(EmuConfig.GS, overrides);
 
 	// Re-remove upscaling fixes, make sure they don't apply at native res.
 	// We do this in LoadCoreSettings(), but game fixes get applied afterwards because of the unsafe warning.

@@ -294,7 +294,8 @@ void SettingsWindow::onCopyGlobalSettingsClicked()
 
 	if (QMessageBox::question(this, tr("ARMSX2 Settings"),
 			tr("The configuration for this game will be replaced by the current global settings.\n\nAny current setting values will be "
-			   "overwritten.\n\nDo you want to continue?"),
+			   "overwritten.\n\nOnly the settings that differ from the defaults, or from what the game database sets for this game, are "
+			   "written. Anything else keeps following your global settings.\n\nDo you want to continue?"),
 			QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
 	{
 		return;
@@ -302,7 +303,7 @@ void SettingsWindow::onCopyGlobalSettingsClicked()
 
 	{
 		auto lock = Host::GetSettingsLock();
-		Pcsx2Config::CopyConfiguration(m_sif.get(), *Host::Internal::GetBaseSettingsLayer());
+		Pcsx2Config::CopyConfiguration(m_sif.get(), *Host::Internal::GetBaseSettingsLayer(), m_serial);
 		Pcsx2Config::ClearInvalidPerGameConfiguration(m_sif.get());
 	}
 	saveAndReloadGameSettings();

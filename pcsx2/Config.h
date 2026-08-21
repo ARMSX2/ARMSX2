@@ -1662,7 +1662,12 @@ struct Pcsx2Config
 	void CopyRuntimeConfig(Pcsx2Config& cfg);
 
 	/// Copies configuration from one file to another. Does not copy controller settings.
-	static void CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si);
+	/// Copies a configuration into a per-game settings file, writing only the values
+	/// that deviate from what the game would run with anyway — stock defaults, and the
+	/// game database's own opinion for `game_serial`. Everything else is left absent,
+	/// because in a per-game file a key that is present is a key the player is taken to
+	/// have claimed, and the database then stands aside for it.
+	static void CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si, std::string_view game_serial);
 
 	/// Clears all core keys from the specified interface.
 	static void ClearConfiguration(SettingsInterface* dest_si);

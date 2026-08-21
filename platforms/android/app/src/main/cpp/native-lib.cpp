@@ -46,6 +46,7 @@
 #include "common/Error.h"
 #include "common/HTTPDownloaderAndroid.h"
 #include "Host.h"
+#include "PerGameOverrides.h"
 #include "ImGui/FullscreenUI.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "MTGS.h"
@@ -1601,6 +1602,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass cla
                 return false;
             SettingsLoadWrapper slw(*si);
             EmuConfig.GS.LoadSave(slw);
+
+            // Mirror VMManager::LoadCoreSettings: the reload above took the mask from
+            // whichever layer answered first, so re-derive the per-game claims or
+            // MaskUserHacks() below strips a hack the player set for this game.
+            if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+                EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
         }
 
         // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
@@ -1634,7 +1641,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass cla
         // until the next launch. Mirrors ApplyGameFixes' GS portion.
         if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
         {
-            game->applyGSHardwareFixes(EmuConfig.GS);
+            PerGameOverrides overrides;
+            {
+                auto lock = Host::GetSettingsLock();
+                if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+                    overrides = ComputePerGameOverrides(*game_layer);
+            }
+
+            game->applyGSHardwareFixes(EmuConfig.GS, overrides);
             EmuConfig.GS.MaskUpscalingHacks();
         }
         return true;

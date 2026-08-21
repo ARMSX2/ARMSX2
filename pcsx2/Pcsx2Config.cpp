@@ -3,6 +3,7 @@
 
 #include "common/CocoaTools.h"
 #include "common/FileSystem.h"
+#include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 #include "common/SettingsInterface.h"
 #include "common/SettingsWrapper.h"
@@ -11,6 +12,7 @@
 #include "Config.h"
 #include "GS.h"
 #include "CDVD/CDVDcommon.h"
+#include "GameDatabase.h"
 #include "Host.h"
 #include "Host/AudioStream.h"
 #include "SIO/Memcard/MemoryCardFile.h"
@@ -2317,7 +2319,7 @@ void Pcsx2Config::CopyRuntimeConfig(Pcsx2Config& cfg)
 	}
 }
 
-void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si)
+void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si, const std::string_view game_serial)
 {
 	FPControlRegisterBackup fpcr_backup(FPControlRegister::GetDefault());
 
@@ -2326,10 +2328,45 @@ void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterfac
 		SettingsLoadWrapper wrapper(src_si);
 		temp.LoadSaveCore(wrapper);
 	}
+
+	// Two things a value can agree with, and agreeing with either means writing it
+	// down would decide nothing.
+	//
+	// Stock defaults: the value is simply untouched, and the file would carry it only
+	// as noise. Copying the whole configuration verbatim is what buried the handful of
+	// real choices under hundreds of these, and in a per-game file a key that is
+	// present is a key the player is taken to have claimed — which is how one press of
+	// this button used to disable every automatic fix a game had.
+	//
+	// What the database would set: it is going to set it regardless, so writing it can
+	// only turn into a claim that suppresses the very fix it agrees with.
+	//
+	// Note the reference is a default configuration with the database applied, not this
+	// one — the question is what the database wants, not what it would leave the source
+	// at. That matters for the few fixes that clamp rather than assign; for those this
+	// errs towards writing the player's value, never towards dropping a fix.
+	MemorySettingsInterface defaults_si;
 	{
-		SettingsSaveWrapper wrapper(*dest_si);
-		temp.LoadSaveCore(wrapper);
+		Pcsx2Config defaults;
+		SettingsSaveWrapper wrapper(defaults_si);
+		defaults.LoadSaveCore(wrapper);
 	}
+
+	MemorySettingsInterface database_si;
+	{
+		Pcsx2Config database;
+		if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(game_serial))
+		{
+			game->applyGameFixes(database, true, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+			game->applyGSHardwareFixes(database.GS, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+		}
+
+		SettingsSaveWrapper wrapper(database_si);
+		database.LoadSaveCore(wrapper);
+	}
+
+	SettingsSaveDeviationsWrapper wrapper(*dest_si, {&defaults_si, &database_si});
+	temp.LoadSaveCore(wrapper);
 }
 
 void Pcsx2Config::ClearConfiguration(SettingsInterface* dest_si)
