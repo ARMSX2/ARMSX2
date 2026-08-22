@@ -529,7 +529,6 @@ static u64 s_lookup_hits = 0;
 static u64 s_lookup_misses = 0;
 static u64 s_lookup_clut_only_misses = 0;
 static u64 s_lookup_next_report = 0;
-static u64 s_palette_reports = 0;
 
 void GSTextureReplacements::ReloadReplacementMap()
 {
@@ -541,7 +540,6 @@ void GSTextureReplacements::ReloadReplacementMap()
 	s_lookup_misses = 0;
 	s_lookup_clut_only_misses = 0;
 	s_lookup_next_report = 0;
-	s_palette_reports = 0;
 
 	// clear out the caches
 	{
@@ -825,44 +823,6 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	//
 	// What is left is the diagnostic. List what the pack DOES hold for this TEX0, so a log says
 	// whether the pack is missing the texture entirely or merely missing this colour of it.
-	// ★ Palette fallback: use another colour of the same glyph when the exact one is absent.
-	//
-	// A paletted replacement is keyed on TEX0 hash AND palette hash, so a pack only applies while
-	// the game asks for a palette its packer happened to dump. Persona 3 FES lands exactly there:
-	// the pack holds several palette variants of each glyph and the game asks for one that is not
-	// among them, so every glyph misses while the unpaletted art around it replaces fine.
-	//
-	// Lowest palette hash, deliberately. It is arbitrary, but it is STABLE -- the same glyph
-	// resolves to the same file on every draw and every run, so text renders in one consistent
-	// colour. Choosing by file mtime instead was tried and was worse in a way worth recording:
-	// different glyphs won different variants and the text came out multicoloured.
-	//
-	// The colour can still be wrong, because the replacement image has the packer's palette baked
-	// into it and there is no way to recolour it. That is the trade: a mod that applies in the
-	// wrong shade beats a mod that does not apply.
-	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette())
-	{
-		const TextureName* best = nullptr;
-		for (const auto& it : s_replacement_texture_filenames)
-		{
-			if (it.first.TEX0Hash != name.TEX0Hash || it.first.bits != name.bits ||
-				it.first.region_width != name.region_width || it.first.region_height != name.region_height)
-				continue;
-			if (!best || it.first.CLUTHash < best->CLUTHash)
-				best = &it.first;
-		}
-		if (best)
-		{
-			if (s_palette_reports < 6)
-			{
-				Console.WriteLnFmt("Texture replacements: palette fallback tex0={:016x} wanted clut={:016x}, using clut={:016x}",
-					name.TEX0Hash, name.CLUTHash, best->CLUTHash);
-				s_palette_reports++;
-			}
-			fnit = s_replacement_texture_filenames.find(*best);
-		}
-	}
-
 	if (fnit == s_replacement_texture_filenames.end())
 	{
 		// ★ The second half of the "my pack does nothing" diagnosis, and the half that was

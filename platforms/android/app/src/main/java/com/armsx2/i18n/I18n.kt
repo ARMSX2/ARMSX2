@@ -394,7 +394,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "action.ok" to "OK",
     "action.save" to "Save",
     "action.edit" to "Edit",
-    "patch.purgeNotice" to "Heads up: an earlier update reset the list of enabled patches and cheats. If you used any — including PNACH game mods — re-enable them in Patches & Cheats.",
     "patches.editor.new" to "New patch file",
     "patches.editor.paste" to "Paste",
     "patches.editor.placeholder" to "patch=1,EE,00000000,extended,00000000",
