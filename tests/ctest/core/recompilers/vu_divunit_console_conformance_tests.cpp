@@ -130,6 +130,44 @@ void ScoreQ(QTally& t, const VursCase& c, u32 got)
 	else
 		t.unit++;
 }
+
+struct DivUnitScore
+{
+	QTally macro;
+	QTally micro;
+	int consoleSaturated = 0;
+};
+
+// Both recompilers' Q over the whole capture. A clamp mode of 0 leaves each
+// harness on its own default, which is what the tallies below were taken at.
+DivUnitScore ScoreDivUnit(int clamp_mode)
+{
+	DivUnitScore s;
+	for (const VursCase& c : kVursCases)
+	{
+		if ((c.q & 0x7FFFFFFFu) == 0x7FFFFFFFu)
+			++s.consoleSaturated;
+
+		EeRecTestHarness hj;
+		if (clamp_mode != 0)
+			hj.SetVu0ClampMode(clamp_mode);
+		BuildMacro(hj, c);
+		hj.RunJitNoDiff();
+		ScoreQ(s.macro, c, hj.GetGprJit(kRQ));
+
+		if (c.seed != 0)
+			continue;
+		VuTestHarness m(0);
+		if (clamp_mode != 0)
+			m.SetVuClampMode(clamp_mode);
+		m.IgnoreViInDiff(REG_STATUS_FLAG);
+		m.IgnoreViInDiff(REG_Q);
+		BuildMicro(m, c);
+		m.Run();
+		ScoreQ(s.micro, c, m.GetViJit(REG_Q));
+	}
+	return s;
+}
 } // namespace
 
 TEST(VuDivUnitConsole, MacroStatusMatchesConsoleOnEveryRow)
@@ -213,29 +251,11 @@ TEST(VuDivUnitConsole, InterpreterQMatchesConsoleOnEveryRow)
 // hide. What is left over is the host divide's arithmetic.
 TEST(VuDivUnitConsole, OnlyDividedQuotientsSaturateABinadeLowOfTheConsole)
 {
-	QTally mj, uj;
-	int consoleSaturated = 0;
-	for (const VursCase& c : kVursCases)
-	{
-		if ((c.q & 0x7FFFFFFFu) == 0x7FFFFFFFu)
-			++consoleSaturated;
+	const DivUnitScore s = ScoreDivUnit(0);
+	const QTally& mj = s.macro;
+	const QTally& uj = s.micro;
 
-		EeRecTestHarness hj;
-		BuildMacro(hj, c);
-		hj.RunJitNoDiff();
-		ScoreQ(mj, c, hj.GetGprJit(kRQ));
-
-		if (c.seed != 0)
-			continue;
-		VuTestHarness m(0);
-		m.IgnoreViInDiff(REG_STATUS_FLAG);
-		m.IgnoreViInDiff(REG_Q);
-		BuildMicro(m, c);
-		m.Run();
-		ScoreQ(uj, c, m.GetViJit(REG_Q));
-	}
-
-	EXPECT_EQ(consoleSaturated, 226);
+	EXPECT_EQ(s.consoleSaturated, 226);
 
 	// Rows that saturate on the console and come back as something other than
 	// the sign-matched ceiling fall in `unit` below rather than being counted as
@@ -252,6 +272,41 @@ TEST(VuDivUnitConsole, OnlyDividedQuotientsSaturateABinadeLowOfTheConsole)
 
 	EXPECT_EQ(mj.ok + mj.sat + mj.unit, static_cast<int>(std::size(kVursCases)));
 	EXPECT_EQ(uj.ok + uj.sat + uj.unit, 422);
+}
+
+// Where the two gaps above go. vuClampMode 4 reads the divide unit's own
+// arithmetic out of line instead of the host's Fdiv and Fsqrt, and both halves
+// close together: `unit` because the recurrence is what silicon runs, and `sat`
+// because the model's ceiling is the VU's 0x7FFFFFFF rather than the FLT_MAX
+// the clamp it replaces holds. Modes 1 to 3 are asserted alongside so the
+// counts are pinned as a step and not as a single reading -- an emitter that
+// took the model unconditionally would pass the mode-4 half on its own.
+TEST(VuDivUnitConsole, TheDivideUnitsArithmeticLandsAtClampModeFour)
+{
+	for (int mode = 1; mode <= 4; ++mode)
+	{
+		SCOPED_TRACE(::testing::Message() << "vuClampMode " << mode);
+		const DivUnitScore s = ScoreDivUnit(mode);
+
+		EXPECT_EQ(s.macro.ok + s.macro.sat + s.macro.unit, static_cast<int>(std::size(kVursCases)));
+		EXPECT_EQ(s.micro.ok + s.micro.sat + s.micro.unit, 422);
+
+		if (mode < 4)
+		{
+			EXPECT_EQ(s.macro.sat, 14);
+			EXPECT_EQ(s.micro.sat, 14);
+			EXPECT_EQ(s.macro.unit, 86);
+			EXPECT_EQ(s.micro.unit, 82);
+			continue;
+		}
+
+		EXPECT_EQ(s.macro.sat, 0);
+		EXPECT_EQ(s.micro.sat, 0);
+		EXPECT_EQ(s.macro.unit, 0);
+		EXPECT_EQ(s.micro.unit, 0);
+		EXPECT_EQ(s.macro.ok, static_cast<int>(std::size(kVursCases)));
+		EXPECT_EQ(s.micro.ok, 422);
+	}
 }
 
 // The two ops' saturated quotients take their sign by different rules, and the
