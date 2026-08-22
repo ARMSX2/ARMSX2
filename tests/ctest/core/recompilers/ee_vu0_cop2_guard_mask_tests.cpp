@@ -468,7 +468,7 @@ TEST(EeVu0Cop2GuardMask, PairsTheMaskCannotReachAreUntouched)
 	const int want = envInt("GUARD_N", 800);
 	std::mt19937 rng((u32)envInt("GUARD_SEED", 7));
 
-	int checked = 0, tried = 0, diffs = 0, flag_only = 0, top_binade = 0;
+	int checked = 0, tried = 0, diffs = 0, flag_only = 0, top_binade = 0, subnormal = 0;
 	while (checked < want && tried < want * 400)
 	{
 		++tried;
@@ -493,6 +493,19 @@ TEST(EeVu0Cop2GuardMask, PairsTheMaskCannotReachAreUntouched)
 			const Out oj = RunOne(rg, word, a, b, f.immediate, 0x12345678u, f.acc, lane, 4, true);
 			if (oi.val != oj.val && ((oi.val >> 23) & 0xFF) == 0xFF)
 				++top_binade;
+			else if (oi.val != oj.val && (oi.val & 0x7F800000u) == 0 &&
+					 (oi.val & 0x7FFFFFFFu) != 0 && (oj.val & 0x7FFFFFFFu) == 0 &&
+					 (oi.val & 0x80000000u) == (oj.val & 0x80000000u))
+			{
+				// A sum that lands below 2^-126. The console leaves the
+				// mantissa bits where normalisation put them and the
+				// interpreter now does too; the recompiler still flushes to a
+				// signed zero. Counted rather than asserted, because the rows
+				// that decide it are console rows and they live in
+				// vu0_macro_fmac_underflow_console_tests.cpp, which scores the
+				// two engines separately.
+				++subnormal;
+			}
 			else if (oi.val != oj.val)
 			{
 				if (diffs < 8)
@@ -502,20 +515,19 @@ TEST(EeVu0Cop2GuardMask, PairsTheMaskCannotReachAreUntouched)
 			}
 			else if (oi.mac != oj.mac || oi.stat != oj.stat)
 			{
-				// A sum that cancels into the subnormal range: the interpreter
-				// reports the underflow the host FPCR's flush leaves unreported.
-				// Counted, not asserted -- the U/O redesign owns it, and the
-				// DISABLED rows in vu_sticky_console_conformance_tests.cpp
-				// record what it owes.
+				// The same region seen through the flags alone, where the two
+				// engines happened to write the same word.
 				++flag_only;
 			}
 		}
 	}
 	std::printf("inert pairs %d of %d tried; unexplained value differences %d"
-	            " (top binade %d, flags only %d)\n",
-		checked, tried, diffs, top_binade, flag_only);
+	            " (top binade %d, subnormal %d, flags only %d)\n",
+		checked, tried, diffs, top_binade, subnormal, flag_only);
 	EXPECT_EQ(diffs, 0);
 	EXPECT_EQ(checked, want);
+	EXPECT_GT(subnormal, 0) << "the subnormal class stopped appearing, so the "
+	                           "allowance above is no longer being exercised";
 }
 
 } // namespace recompiler_tests
