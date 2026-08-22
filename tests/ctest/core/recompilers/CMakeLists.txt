@@ -168,6 +168,7 @@ add_pcsx2_test(recompiler_tests
 	ee_vu0_cop2_overflow_tests.cpp
 	vu_micro_fmac_uo_tests.cpp
 	vu_micro_guard_mask_console_tests.cpp
+	vu_micro_fmac_console_tests.cpp
 )
 
 target_include_directories(recompiler_tests PRIVATE
