@@ -661,7 +661,7 @@ static u32 eeDivideSignificand(u32 sma, u32 smb)
 	return (quotient << 1) + eeSrtDigitValue(digit);
 }
 
-u32 eeDivide(u32 a, u32 b)
+EEFPU_MODEL_CALL u32 eeDivide(u32 a, u32 b)
 {
 	const s32 ea = (s32)((a >> 23) & 0xFF);
 	const s32 eb = (s32)((b >> 23) & 0xFF);
@@ -757,7 +757,7 @@ static u32 eeSqrtSignificand(u32 m)
 	return (root >> 2) & 0xFFFFFFu;
 }
 
-u32 eeSqrtBits(u32 t)
+EEFPU_MODEL_CALL u32 eeSqrtBits(u32 t)
 {
 	const u32 E = (t >> 23) & 0xFFu;
 	if (E == 0)
@@ -1301,13 +1301,18 @@ Accumulate MulAccumulate(u32 acc, u32 fs, u32 ft, bool issub)
 	return {product, AddSub(acc, product.bits, issub)};
 }
 
-u32 Divide(u32 a, u32 b)
+EEFPU_MODEL_CALL u32 Divide(u32 a, u32 b)
 {
 	return COP1::eeDivide(a, b);
 }
 
-u32 SqrtBits(u32 t)
+EEFPU_MODEL_CALL u32 SqrtBits(u32 t)
 {
 	return COP1::eeSqrtBits(t);
+}
+
+EEFPU_MODEL_CALL u32 RecipSqrt(u32 a, u32 t)
+{
+	return COP1::eeDivide(a, COP1::eeSqrtBits(t));
 }
 } // namespace EeFpuModel
