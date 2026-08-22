@@ -1889,6 +1889,21 @@ open class MainActivityRuntime : ComponentActivity() {
             if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
                 runCatching { NativeApp.purgeGlobalPatchEnableLists() }
                     .onSuccess { prefs.edit { putBoolean("patchEnableListsPurged.v2", true) } }
+            } else if (!prefs.getBoolean("patchPurgeNoticeShown", false)) {
+                // ★ Tell the people the v1/v2 purge already hit.
+                //
+                // Those runs deleted every [Patches]/[Cheats] Enable entry, not just the
+                // self-armed ones, so anyone who had deliberately turned a patch or cheat on lost
+                // it silently on update. It surfaces in the worst possible way: a PNACH mod that
+                // patches game data stops applying, the texture pack keyed to the patched data
+                // stops matching with it, and the whole thing reads as "my texture mods broke"
+                // (JustVibin247, Persona 3 FES). The purge itself now discriminates -- see
+                // purgeGlobalPatchEnableLists -- but that cannot give anyone back what v2 removed.
+                // Saying so once is the only repair available.
+                prefs.edit { putBoolean("patchPurgeNoticeShown", true) }
+                runCatching {
+                    com.armsx2.ui.WelcomeBanner.show(com.armsx2.i18n.I18n.get("patch.purgeNotice"))
+                }
             }
 
             // Pin Filenames/BIOS to the file the setup wizard copied —

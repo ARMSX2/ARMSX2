@@ -2062,11 +2062,33 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass) {
     auto lock = Host::GetSettingsLock();
 
+    // ★ Only purge lists that look AUTO-ARMED, never ones a player built by hand.
+    //
+    // The original purge deleted every entry unconditionally, which cleaned up the self-arming
+    // bug and, in the same stroke, silently switched off every patch and cheat anyone had turned
+    // on deliberately. That is how a Persona 3 FES mod stopped applying: the .pnach was still on
+    // disk and still found, it was simply no longer enabled -- and because the mod PATCHES THE
+    // GAME'S DATA, the texture pack keyed to the patched font stopped matching too, which reads
+    // as "my texture mods broke" rather than "my cheat got switched off".
+    //
+    // The damage has a shape worth keying on. syncAllEnableLists() persisted every uncommented
+    // group of every on-disk .pnach, across ~4000 bundled files, so a poisoned list runs to
+    // hundreds or thousands of names. A list someone assembled by hand is a handful. Anything at
+    // or under the threshold is treated as deliberate and left alone.
+    constexpr size_t AUTO_ARMED_MIN = 25;
+    const auto looks_auto_armed = [](const SettingsInterface& si) {
+        return si.GetStringList("Patches", "Enable").size() >= AUTO_ARMED_MIN ||
+               si.GetStringList("Cheats", "Enable").size() >= AUTO_ARMED_MIN;
+    };
+
     if (SettingsInterface* si = Host::Internal::GetBaseSettingsLayer())
     {
-        si->DeleteValue("Patches", "Enable");
-        si->DeleteValue("Cheats", "Enable");
-        si->Save();
+        if (looks_auto_armed(*si))
+        {
+            si->DeleteValue("Patches", "Enable");
+            si->DeleteValue("Cheats", "Enable");
+            si->Save();
+        }
     }
 
     // Every per-game INI. Load-then-modify (never regenerate): these files also carry the user's
@@ -2080,9 +2102,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass
         INISettingsInterface ini(fd.FileName);
         if (!ini.Load())
             continue;
-        // Only rewrite when there is something to remove, so this doesn't churn every file's mtime.
-        if (ini.GetStringList("Patches", "Enable").empty() &&
-            ini.GetStringList("Cheats", "Enable").empty())
+        // Only rewrite when there is something to remove, so this doesn't churn every file's mtime,
+        // and only when the list carries the auto-armed signature -- a per-game file with two or
+        // three names in it is someone's deliberate choice.
+        if ((ini.GetStringList("Patches", "Enable").empty() &&
+             ini.GetStringList("Cheats", "Enable").empty()) ||
+            !looks_auto_armed(ini))
         {
             continue;
         }
@@ -2098,8 +2123,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass
     // Drop the live game layer's copy too, or the running game keeps the patch for this session.
     if (SettingsInterface* gsi = Host::Internal::GetGameSettingsLayer())
     {
-        gsi->DeleteValue("Patches", "Enable");
-        gsi->DeleteValue("Cheats", "Enable");
+        if (looks_auto_armed(*gsi))
+        {
+            gsi->DeleteValue("Patches", "Enable");
+            gsi->DeleteValue("Cheats", "Enable");
+        }
     }
 
     Console.WriteLnFmt("@@ANDROID_PNACH@@ purged [Patches]/[Cheats] Enable lists (base + {} per-game INIs)", cleaned);
