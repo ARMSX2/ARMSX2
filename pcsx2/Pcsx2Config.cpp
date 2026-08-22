@@ -466,11 +466,11 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	vu0Overflow = true;
 	//vu0ExtraOverflow = false;
 	//vu0SignOverflow = false;
-	//vu0Underflow = false;
+	//vu0ExactMode = false;
 	vu1Overflow = true;
 	//vu1ExtraOverflow = false;
 	//vu1SignOverflow = false;
-	//vu1Underflow = false;
+	//vu1ExactMode = false;
 
 	fpuOverflow = true;
 	//fpuExtraOverflow = false;
@@ -507,6 +507,8 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vuIsOk = vuIsOk && vu0Overflow;
 	if (vu0SignOverflow)
 		vuIsOk = vuIsOk && vu0ExtraOverflow;
+	if (vu0ExactMode)
+		vuIsOk = vuIsOk && vu0SignOverflow;
 
 	if (!vuIsOk)
 	{
@@ -514,7 +516,7 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vu0Overflow = RecompilerOptions().vu0Overflow;
 		vu0ExtraOverflow = RecompilerOptions().vu0ExtraOverflow;
 		vu0SignOverflow = RecompilerOptions().vu0SignOverflow;
-		vu0Underflow = RecompilerOptions().vu0Underflow;
+		vu0ExactMode = RecompilerOptions().vu0ExactMode;
 	}
 
 	vuIsOk = true;
@@ -523,6 +525,8 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vuIsOk = vuIsOk && vu1Overflow;
 	if (vu1SignOverflow)
 		vuIsOk = vuIsOk && vu1ExtraOverflow;
+	if (vu1ExactMode)
+		vuIsOk = vuIsOk && vu1SignOverflow;
 
 	if (!vuIsOk)
 	{
@@ -530,7 +534,7 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vu1Overflow = RecompilerOptions().vu1Overflow;
 		vu1ExtraOverflow = RecompilerOptions().vu1ExtraOverflow;
 		vu1SignOverflow = RecompilerOptions().vu1SignOverflow;
-		vu1Underflow = RecompilerOptions().vu1Underflow;
+		vu1ExactMode = RecompilerOptions().vu1ExactMode;
 	}
 }
 
@@ -550,11 +554,11 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(vu0Overflow);
 	SettingsWrapBitBool(vu0ExtraOverflow);
 	SettingsWrapBitBool(vu0SignOverflow);
-	SettingsWrapBitBool(vu0Underflow);
+	SettingsWrapBitBool(vu0ExactMode);
 	SettingsWrapBitBool(vu1Overflow);
 	SettingsWrapBitBool(vu1ExtraOverflow);
 	SettingsWrapBitBool(vu1SignOverflow);
-	SettingsWrapBitBool(vu1Underflow);
+	SettingsWrapBitBool(vu1ExactMode);
 
 	SettingsWrapBitBool(fpuOverflow);
 	SettingsWrapBitBool(fpuExtraOverflow);
@@ -578,7 +582,7 @@ void Pcsx2Config::RecompilerOptions::SetEEClampMode(u32 value)
 
 u32 Pcsx2Config::RecompilerOptions::GetVUClampMode() const
 {
-	return vu0SignOverflow ? 3 : (vu0ExtraOverflow ? 2 : (vu0Overflow ? 1 : 0));
+	return vu0ExactMode ? 4 : (vu0SignOverflow ? 3 : (vu0ExtraOverflow ? 2 : (vu0Overflow ? 1 : 0)));
 }
 
 bool Pcsx2Config::RecompilerOptions::operator!=(const RecompilerOptions& right) const
