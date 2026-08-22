@@ -4,6 +4,7 @@
 #pragma once
 
 #include "common/Pcsx2Defs.h"
+#include "EeFpuModel.h"
 
 #include <string>
 
@@ -801,8 +802,8 @@ namespace R5900
 			the same code inline. RSQRT.S is the composition of the two, with an
 			ordinary single in between. FPU.cpp, under the block that states the
 			model. */
-		u32 eeDivide(u32 fs, u32 ft);
-		u32 eeSqrtBits(u32 ft);
+		EEFPU_MODEL_CALL u32 eeDivide(u32 fs, u32 ft);
+		EEFPU_MODEL_CALL u32 eeSqrtBits(u32 ft);
 		}
 	} }
 }	// End namespace R5900

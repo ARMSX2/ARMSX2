@@ -1029,7 +1029,7 @@ static __fi void _vuRSQRT(VURegs* VU)
 	{
 		// An ordinary single in between, which is where the recompilers' own
 		// fsqrt+fdiv parts company with this by a ULP.
-		VU->q.UL = EeFpuModel::Divide(fs, EeFpuModel::SqrtBits(ft));
+		VU->q.UL = EeFpuModel::RecipSqrt(fs, ft);
 	}
 
 	VU_STICKY_DI(VU);
