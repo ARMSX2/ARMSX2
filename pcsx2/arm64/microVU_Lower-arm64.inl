@@ -42,7 +42,11 @@ mVUop(mVU_DIV)
 		const a64::SRegister sFt(Ft.GetCode());
 		const a64::SRegister sFs(Fs.GetCode());
 
-		const bool flush = mVUneedsSoftwareFlush(mVU);
+		// vuClampMode 4 reads the divide unit's own arithmetic out of line
+		// instead of the host's; below it the flush fixups stand in for the
+		// part of the model a host divide does reproduce.
+		const bool exact = CHECK_VU_EXACT(mVU.index);
+		const bool flush = !exact && mVUneedsSoftwareFlush(mVU);
 
 		// Test if Ft is zero (a NaN's exponent is 255, so it takes the not-zero
 		// branch as the Fcmp this replaces did).
@@ -83,23 +87,36 @@ mVUop(mVU_DIV)
 		// Normal division
 		armAsm->Mov(gprT1.W(), 0);
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
-		// A denormal dividend and a quotient below 2^-126 both leave a signed
-		// zero, and the host quotient already carries the sign the model gives
-		// it, so one word serves both selects. Neither implies the other: a
-		// denormal over a near-minimal normal divides out to an ordinary single.
-		if (flush)
-			armAsm->Umov(gprT2.W(), Fs.V4S(), 0); // dividend word, before Fdiv takes it
-		armAsm->Fdiv(sFs, sFs, sFt);
-		mVUclamp1(mVU, Fs, t1, 8, true);
-		if (flush)
+		if (exact)
 		{
-			armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
-			armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
-			armAsm->Tst(gprT1.W(), kEeExpMask);
-			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
-			armAsm->Tst(gprT2.W(), kEeExpMask);
-			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
-			armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+			// No clamp follows the model: mVUclamp1 would read 0x7FFFFFFF as a
+			// NaN and hand back the binade-lower maxvals. Nor the flush -- a
+			// denormal dividend and an underflowing quotient already leave it a
+			// signed zero.
+			armAsm->Umov(RWARG1, Fs.V4S(), 0);
+			armAsm->Umov(RWARG2, Ft.V4S(), 0);
+			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::Divide));
+			armAsm->Ins(Fs.V4S(), 0, RWARG1);
+		}
+		else
+		{
+			// A denormal dividend and a quotient below 2^-126 both leave a signed
+			// zero, which the host quotient already carries, so one word serves
+			// both selects. Neither implies the other.
+			if (flush)
+				armAsm->Umov(gprT2.W(), Fs.V4S(), 0); // dividend word, before Fdiv takes it
+			armAsm->Fdiv(sFs, sFs, sFt);
+			mVUclamp1(mVU, Fs, t1, 8, true);
+			if (flush)
+			{
+				armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
+				armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
+				armAsm->Tst(gprT1.W(), kEeExpMask);
+				armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+				armAsm->Tst(gprT2.W(), kEeExpMask);
+				armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+				armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+			}
 		}
 
 		armAsm->Bind(&skipNormalDiv);
@@ -144,31 +161,45 @@ mVUop(mVU_SQRT)
 		armAsm->And(Ft.V16B(), Ft.V16B(), RQSCRATCH.V16B());
 		armAsm->Bind(&notNeg);
 
+		// vuClampMode 4 reads the model instead of an Fsqrt, taking the whole VU
+		// range with it: the infinity clamp has nothing left to do, and
+		// eeSqrtBits maps a zero exponent field to a bare +0 itself.
+		const bool exact = CHECK_VU_EXACT(mVU.index);
+
 		// The radicand's word, before Fsqrt takes it. Only the operand needs
 		// the test: the root of the smallest normal is 2^-63, so no in-range
 		// radicand can land the result in the denormal band.
-		const bool flush = mVUneedsSoftwareFlush(mVU);
+		const bool flush = !exact && mVUneedsSoftwareFlush(mVU);
 		if (flush)
 			armAsm->Umov(gprT2.W(), Ft.V4S(), 0);
 
-		// Clamp infinity. Fminnm (number-preserving) so positive-NaN inputs
-		// clamp to +maxfloat instead of propagating into Fsqrt — matches
-		// mVUclamp1's semantics (see microVU_Clamp-arm64.inl).
-		if (CHECK_VU_OVERFLOW(mVU.index))
+		if (exact)
 		{
-			armAsm->Ldr(RQSCRATCH, mVUglobMem(&mVUglob.maxvals[0]));
-			armAsm->Fminnm(sFt, sFt, a64::SRegister(RQSCRATCH.GetCode()));
+			armAsm->Umov(RWARG1, Ft.V4S(), 0);
+			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
+			armAsm->Ins(Ft.V4S(), 0, RWARG1);
 		}
-
-		armAsm->Fsqrt(sFt, sFt);
-		if (flush)
+		else
 		{
-			// eeSqrtBits returns a bare +0 for a zero exponent field, dropping
-			// the operand's sign with it -- which the |Ft| above already did.
-			armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
-			armAsm->Tst(gprT2.W(), kEeExpMask);
-			armAsm->Csel(gprT1.W(), a64::wzr, gprT1.W(), a64::eq);
-			armAsm->Ins(Ft.V4S(), 0, gprT1.W());
+			// Clamp infinity. Fminnm (number-preserving) so positive-NaN inputs
+			// clamp to +maxfloat instead of propagating into Fsqrt — matches
+			// mVUclamp1's semantics (see microVU_Clamp-arm64.inl).
+			if (CHECK_VU_OVERFLOW(mVU.index))
+			{
+				armAsm->Ldr(RQSCRATCH, mVUglobMem(&mVUglob.maxvals[0]));
+				armAsm->Fminnm(sFt, sFt, a64::SRegister(RQSCRATCH.GetCode()));
+			}
+
+			armAsm->Fsqrt(sFt, sFt);
+			if (flush)
+			{
+				// eeSqrtBits returns a bare +0 for a zero exponent field, dropping
+				// the operand's sign with it -- which the |Ft| above already did.
+				armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
+				armAsm->Tst(gprT2.W(), kEeExpMask);
+				armAsm->Csel(gprT1.W(), a64::wzr, gprT1.W(), a64::eq);
+				armAsm->Ins(Ft.V4S(), 0, gprT1.W());
+			}
 		}
 		writeQreg(Ft, mVUinfo.writeQ);
 
@@ -214,9 +245,11 @@ mVUop(mVU_RSQRT)
 		// The radicand's word, before Fsqrt takes it: the divisor test is on ft
 		// itself, as _vuRSQRT's is. eeSqrtBits maps a zero exponent field to +0,
 		// so a denormal radicand is a zero divisor where a host Fsqrt's is not.
-		const bool flush = mVUneedsSoftwareFlush(mVU);
+		const bool exact = CHECK_VU_EXACT(mVU.index);
+		const bool flush = !exact && mVUneedsSoftwareFlush(mVU);
 		armAsm->Umov(gprT2.W(), Ft.V4S(), 0);
-		armAsm->Fsqrt(sFt, sFt);
+		if (!exact)
+			armAsm->Fsqrt(sFt, sFt);
 
 		// A NaN's exponent is 255, so it takes the not-zero branch as the Fcmp
 		// this replaces did.
@@ -252,19 +285,31 @@ mVUop(mVU_RSQRT)
 		armAsm->Bind(&sqrtNotZero);
 		// As mVU_DIV, with the sign taken from the dividend alone: the divisor
 		// is a root, and the model's eeSqrtBits leaves it non-negative.
-		if (flush)
-			armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
-		armAsm->Fdiv(sFs, sFs, sFt);
-		mVUclamp1(mVU, Fs, t1, 8, true);
-		if (flush)
+		if (exact)
 		{
-			armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
-			armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
-			armAsm->Tst(gprT1.W(), kEeExpMask);
-			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
-			armAsm->Tst(gprT2.W(), kEeExpMask);
-			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
-			armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+			// One call rather than two: the root is an ordinary single with
+			// nowhere to live across a second, and RecipSqrt is the pair.
+			armAsm->Umov(RWARG1, Fs.V4S(), 0);
+			armAsm->Umov(RWARG2, Ft.V4S(), 0);
+			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
+			armAsm->Ins(Fs.V4S(), 0, RWARG1);
+		}
+		else
+		{
+			if (flush)
+				armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
+			armAsm->Fdiv(sFs, sFs, sFt);
+			mVUclamp1(mVU, Fs, t1, 8, true);
+			if (flush)
+			{
+				armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
+				armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
+				armAsm->Tst(gprT1.W(), kEeExpMask);
+				armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+				armAsm->Tst(gprT2.W(), kEeExpMask);
+				armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+				armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+			}
 		}
 
 		armAsm->Bind(&rsqrtDone);
