@@ -825,25 +825,41 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	//
 	// What is left is the diagnostic. List what the pack DOES hold for this TEX0, so a log says
 	// whether the pack is missing the texture entirely or merely missing this colour of it.
-	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette() && s_palette_reports < 4)
+	// ★ Palette fallback: use another colour of the same glyph when the exact one is absent.
+	//
+	// A paletted replacement is keyed on TEX0 hash AND palette hash, so a pack only applies while
+	// the game asks for a palette its packer happened to dump. Persona 3 FES lands exactly there:
+	// the pack holds several palette variants of each glyph and the game asks for one that is not
+	// among them, so every glyph misses while the unpaletted art around it replaces fine.
+	//
+	// Lowest palette hash, deliberately. It is arbitrary, but it is STABLE -- the same glyph
+	// resolves to the same file on every draw and every run, so text renders in one consistent
+	// colour. Choosing by file mtime instead was tried and was worse in a way worth recording:
+	// different glyphs won different variants and the text came out multicoloured.
+	//
+	// The colour can still be wrong, because the replacement image has the packer's palette baked
+	// into it and there is no way to recolour it. That is the trade: a mod that applies in the
+	// wrong shade beats a mod that does not apply.
+	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette())
 	{
-		u32 candidates = 0;
+		const TextureName* best = nullptr;
 		for (const auto& it : s_replacement_texture_filenames)
 		{
 			if (it.first.TEX0Hash != name.TEX0Hash || it.first.bits != name.bits ||
 				it.first.region_width != name.region_width || it.first.region_height != name.region_height)
 				continue;
-			candidates++;
-			Console.WriteLnFmt("Texture replacements:   pack variant clut={:016x} mtime={} '{}'",
-				it.first.CLUTHash, static_cast<s64>(
-					s_replacement_texture_mtimes.count(it.first) ? s_replacement_texture_mtimes[it.first] : 0),
-				it.second);
+			if (!best || it.first.CLUTHash < best->CLUTHash)
+				best = &it.first;
 		}
-		if (candidates > 0)
+		if (best)
 		{
-			Console.WriteLnFmt("Texture replacements: wanted clut={:016x} for tex0={:016x}; pack has {} other colour(s) of it, none matching",
-				name.CLUTHash, name.TEX0Hash, candidates);
-			s_palette_reports++;
+			if (s_palette_reports < 6)
+			{
+				Console.WriteLnFmt("Texture replacements: palette fallback tex0={:016x} wanted clut={:016x}, using clut={:016x}",
+					name.TEX0Hash, name.CLUTHash, best->CLUTHash);
+				s_palette_reports++;
+			}
+			fnit = s_replacement_texture_filenames.find(*best);
 		}
 	}
 
