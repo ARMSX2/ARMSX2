@@ -23,6 +23,7 @@
 
 #include "microVU_Misc-arm64.h"
 #include "VuFmacFlags-arm64.h"
+#include "EeFpuModelCall-arm64.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 
@@ -112,8 +113,10 @@
 //       variant dimension so every weight load's [x25, #imm] moves, and the I
 //       immediate is stored whole rather than pre-clamped. At 4 as well, ADD,
 //       SUB and the EFU's scalar adds mask their operand pair into the scratch
-//       trio before the host add, and ADDi takes that path instead of the
-//       tri-ace gamefix.
+//       trio before the host add, ADDi takes that path instead of the tri-ace
+//       gamefix, and DIV, SQRT and RSQRT drop the host Fdiv/Fsqrt, the clamp
+//       under it and the denormal fixups for an out-of-line model call on
+//       their non-zero-divisor arm.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
