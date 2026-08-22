@@ -255,7 +255,7 @@ constexpr AbiPin kPins[] = {
 	// from here on. The value flush that rides with the zero tests is in none
 	// of these rows: they compile under the default VU FPCR, which sets FZ, and
 	// it is emitted only when that is clear.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0xc87c54aa88cb401b, 0xaa6042b9fe4f798e, 0x6b119d8d1e4fd199, 0xbd3d5ec9ceb305c2, 0xd933afa738820832, 0x9aae0aa1cc282a86}},
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x9106ff8fee268b6a, 0x2388db544bbe035b, 0x6b119d8d1e4fd199, 0x97c76bda811bc8e4, 0xd933afa738820832, 0xa7ad93456cba5eb2}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
