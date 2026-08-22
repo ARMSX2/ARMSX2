@@ -119,9 +119,12 @@
 //       instead of the tri-ace gamefix; DIV, SQRT and RSQRT drop the host
 //       Fdiv/Fsqrt, the clamp under it and the denormal fixups for an
 //       out-of-line model call on their non-zero-divisor arm; and all
-//       thirteen EFU ops drop their host series for one model call apiece.
-//       VU0 sees none of that last part -- every one of the thirteen is a
-//       NOP there.
+//       thirteen EFU ops drop their host series for one model call apiece;
+//       and every op carrying a MAC O predicate substitutes 0x7FFFFFFF for
+//       the clamp's FLT_MAX in the lanes it marks, so that predicate is
+//       emitted whether or not the flag registers are read and a flag-dead
+//       FMAC changes shape too. VU0 sees none of the EFU part -- every one of
+//       the thirteen is a NOP there.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>

@@ -440,21 +440,21 @@ static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt,
 // MAC U and MAC O — the exact models
 //------------------------------------------------------------------
 // armEmitVuMulOverflow, armEmitVuMulExactZero and armEmitVuAddSubOverflow
-// (VuFmacFlags-arm64.h) carry the rules and the COP2 macro path emits the same
-// three. Here is where they fit in a microVU upper op.
+// (VuFmacFlags-arm64.h) carry the rules. Here is where they fit a microVU
+// upper op.
 //
-// They read the OPERANDS, so they run before mVUclamp2 -- which at this mode
-// moves an exponent-255 operand a binade down, and is exactly what left MAC O
-// unreachable from the result -- and before the arithmetic, which writes into
-// Fs in place. The predicates are allocator temps rather than the fixed
-// scratch, so they survive the clamps and the arithmetic between here and
-// mVUupdateFlags; q29/q31 are the compute scratch, free at that point in every
-// FMAC body, and the add's third goes in q30.
+// They read the operands, so they run before mVUclamp2 -- which at this mode
+// moves an exponent-255 operand a binade down -- and before the arithmetic,
+// which writes into Fs in place. The predicates are allocator temps rather than
+// the fixed scratch, so they survive the clamps and the arithmetic between here
+// and mVUupdateFlags; q29/q31 are the compute scratch, free at that point in
+// every FMAC body, and the add's third goes in q30.
 //
 // Both sit at vuClampMode 4, on both VUs, unlike the macro path's VU0-only
-// gate. They are not the same size -- U is three instructions and only on a
-// multiply, O is ten on every FMAC -- but U also holds an allocator temp across
-// the arithmetic and puts mVUupdateFlags on a wider weight variant.
+// gate. O is ten instructions on every FMAC and the saturation ceiling reads
+// it, so it is a value model as much as a flag one. U is three on a multiply,
+// but it also holds an allocator temp across the arithmetic and puts
+// mVUupdateFlags on a wider weight variant.
 struct mVUfmacUO
 {
 	a64::VRegister underflow = a64::NoVReg;
@@ -463,9 +463,11 @@ struct mVUfmacUO
 
 static bool mVUwantExactO(mV)
 {
-	return CHECK_VU_EXACT(mVU.index) && _X_Y_Z_W != 0 && (sFLAG.doFlag || mFLAG.doFlag);
+	return CHECK_VU_EXACT(mVU.index) && _X_Y_Z_W != 0;
 }
 
+// U is read by nothing but the flag registers, so it follows their liveness.
+// O also picks the saturated lanes for mVUemitSaturateAtMax, so it does not.
 static bool mVUwantExactU(mV)
 {
 	return CHECK_VU_EXACT(mVU.index) && _X_Y_Z_W != 0
@@ -514,6 +516,21 @@ static mVUfmacUO mVUemitFmacUO(mV, int opType, const a64::VRegister& a, const a6
 	if (opType == 1)
 		return mVUemitAddSubO(mVU, a, b, true);
 	return mVUfmacUO{};
+}
+
+// The saturated word, in the lanes the O predicate marks. armEmitVuSaturateAtMax
+// (VuFmacFlags-arm64.h) carries the rule and the COP2 macro path emits the same
+// one. It runs on the ARITHMETIC's register rather than on a merged ACC: a
+// dest field narrower than xyzw leaves the other lanes of an ACC clone standing
+// for the writeback, and the O predicate says nothing useful about them.
+//
+// RQSCRATCH2 and RQSCRATCH3 are the scratch the clamps and the guard mask
+// already draw on, dead by here in every FMAC body.
+static void mVUemitSaturateAtMax(mV, const a64::VRegister& dst, const mVUfmacUO& uo)
+{
+	if (!uo.overflow.IsValid())
+		return;
+	armEmitVuSaturateAtMax(dst, uo.overflow, RQSCRATCH2, RQSCRATCH3);
 }
 
 static void mVUclearUO(mV, const mVUfmacUO& uo)
@@ -572,6 +589,8 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
 		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft, 0);
 		else               NEON_PS[opType](mVU, Fs, Ft, 0);
+
+		mVUemitSaturateAtMax(mVU, Fs, uo);
 
 		if (isACC)
 		{
@@ -870,6 +889,7 @@ mVUop(mVU_OPMULA)
 			mVUopRotateToDestLane(mVU, uo.overflow);
 		if (uo.underflow.IsValid())
 			mVUopRotateToDestLane(mVU, uo.underflow);
+		mVUemitSaturateAtMax(mVU, ACC, uo);
 		mVUupdateFlags(mVU, ACC, a64::NoVReg, a64::NoVReg, true, uo.underflow, uo.overflow);
 		mVUclearUO(mVU, uo);
 		mVU.regAlloc->clearNeeded(ACC);

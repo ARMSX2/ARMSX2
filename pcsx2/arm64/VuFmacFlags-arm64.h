@@ -73,6 +73,25 @@ __fi static void armEmitVuMulExactZero(const a64::VRegister& dst, const a64::VRe
 	armAsm->Orr(dst.V16B(), dst.V16B(), tmp.V16B());
 }
 
+// The word the console leaves in a lane that saturated: 0x7FFFFFFF with the
+// result's own sign, a binade above the +/-FLT_MAX either emitter's result
+// clamp can reach. Substituted from the O predicate rather than computed, so it
+// makes that predicate an input to the VALUE and not only to the flags -- which
+// is why both emitters build it at vuClampMode 3 whether or not anything reads
+// MAC or STATUS.
+//
+// `dst` keeps its sign and stays non-zero, so a MAC pack downstream reads the
+// same Z and S off it. `k` and `sat` are scratch and may be neither `dst` nor
+// `overflow`.
+__fi static void armEmitVuSaturateAtMax(const a64::VRegister& dst,
+	const a64::VRegister& overflow, const a64::VRegister& k, const a64::VRegister& sat)
+{
+	armAsm->Mvni(k.V4S(), 0x80, a64::LSL, 24); // 0x7FFFFFFF
+	armAsm->Sshr(sat.V4S(), dst.V4S(), 31);    // the sign, spread over the lane
+	armAsm->Orr(sat.V16B(), sat.V16B(), k.V16B());
+	armAsm->Bit(dst.V16B(), sat.V16B(), overflow.V16B());
+}
+
 // dst = all ones per lane where a +/- b is past the VU's largest value:
 //
 //     O  <=>  the two addends have the same sign, and (|a| + |b|) / 4 >= 2^127
