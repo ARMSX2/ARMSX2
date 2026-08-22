@@ -8,6 +8,7 @@
 
 #include "arm64/iR5900-arm64.h"
 #include "arm64/VuFmacFlags-arm64.h"
+#include "arm64/EeFpuModelCall-arm64.h"
 
 #include "VUmicro.h" // CpuVU0 — VE-08 thin sync helpers
 
@@ -2757,6 +2758,19 @@ static bool cop2NeedsSoftwareFlush()
 	return !EmuConfig.Cpu.FPUFPCR.GetDenormalsAreZero();
 }
 
+/*	vuClampMode 4 reads the divide unit's own arithmetic -- a digit recurrence
+	with no rounding step -- instead of the host's Fdiv and Fsqrt, out of line
+	through armEmitEeFpuModelCall, on the arm each op takes once it has answered
+	the zero divisor for itself.
+
+	Two things stop below it: the ±FLT_MAX clamp, the model's range running a
+	binade higher to 0x7FFFFFFF, and the denormal fixups, which it does
+	itself. */
+static bool cop2ExactDivUnit()
+{
+	return CHECK_VU_EXACT(0);
+}
+
 // VDIV: Q = VF[fs].fsf / VF[ft].ftf
 void recCOP2_VDIV()
 {
@@ -2770,9 +2784,13 @@ void recCOP2_VDIV()
 	armAsm->Mov(RWARG1, 0x30); armAsm->Bic(RWSCRATCH, RWSCRATCH, RWARG1); // clear D/I bits
 	armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
-	// Load fs scalar and ft scalar
-	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
-	armAsm->Ldr(RSSCRATCH2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf])); // s31 = ft[ftf]
+	// Load fs scalar and ft scalar. Only the host divide reads them -- the
+	// model takes its operands as words, and the zero arm builds its own.
+	if (!cop2ExactDivUnit())
+	{
+		armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
+		armAsm->Ldr(RSSCRATCH2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf])); // s31 = ft[ftf]
+	}
 
 	// Check ft == 0. A second load rather than an Fmov out of s31: this feeds a
 	// branch, and the FP-to-GPR move would sit on its critical path.
@@ -2808,6 +2826,14 @@ void recCOP2_VDIV()
 
 	// ft != 0: Q = fs / ft, then clamp
 	armAsm->Bind(&ftNonZero);
+	if (cop2ExactDivUnit())
+	{
+		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+		armAsm->Ldr(RWARG2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::Divide));
+		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
+	}
+	else
 	{
 		armAsm->Fdiv(RSSCRATCH, RSSCRATCH, RSSCRATCH2);
 		// Clamp result against ±FLT_MAX held in callee-saved s8/s9.
@@ -2857,31 +2883,42 @@ void recCOP2_VSQRT()
 	armAsm->Bind(&ftPositive);
 	armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
-	// Load ft scalar
-	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-
-	// Q = sqrt(|ft|)
-	armAsm->Fabs(RSSCRATCH, RSSCRATCH);
-	armAsm->Fsqrt(RSSCRATCH, RSSCRATCH);
-
-	// Clamp against ±FLT_MAX held in callee-saved s8/s9.
-	armAsm->Fminnm(RSSCRATCH, RSSCRATCH, a64::s8);
-	armAsm->Fmaxnm(RSSCRATCH, RSSCRATCH, a64::s9);
-
-	if (cop2NeedsSoftwareFlush())
+	if (cop2ExactDivUnit())
 	{
-		// eeSqrtBits returns a bare +0 for a zero exponent field, dropping the
-		// operand's sign with it. Only the operand needs the test: the root of
-		// the smallest normal is 2^-63, so no in-range radicand can land the
-		// result in the denormal band.
-		armAsm->Fmov(a64::w2, RSSCRATCH);
-		armAsm->Tst(a64::w1, kEeExpMask);
-		armAsm->Csel(a64::w2, a64::wzr, a64::w2, a64::eq);
-		armAsm->Str(a64::w2, armVU0Mem(&VU0.q));
+		// eeSqrtBits never reads the sign bit, so the |ft| the host path needs
+		// has no counterpart here.
+		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
+		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
 	}
 	else
 	{
-		armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+		// Load ft scalar
+		armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+
+		// Q = sqrt(|ft|)
+		armAsm->Fabs(RSSCRATCH, RSSCRATCH);
+		armAsm->Fsqrt(RSSCRATCH, RSSCRATCH);
+
+		// Clamp against ±FLT_MAX held in callee-saved s8/s9.
+		armAsm->Fminnm(RSSCRATCH, RSSCRATCH, a64::s8);
+		armAsm->Fmaxnm(RSSCRATCH, RSSCRATCH, a64::s9);
+
+		if (cop2NeedsSoftwareFlush())
+		{
+			// eeSqrtBits returns a bare +0 for a zero exponent field, dropping
+			// the operand's sign with it. Only the operand needs the test: the
+			// root of the smallest normal is 2^-63, so no in-range radicand can
+			// land the result in the denormal band.
+			armAsm->Fmov(a64::w2, RSSCRATCH);
+			armAsm->Tst(a64::w1, kEeExpMask);
+			armAsm->Csel(a64::w2, a64::wzr, a64::w2, a64::eq);
+			armAsm->Str(a64::w2, armVU0Mem(&VU0.q));
+		}
+		else
+		{
+			armAsm->Str(RSSCRATCH, armVU0Mem(&VU0.q));
+		}
 	}
 
 	cop2EmitSyncFDiv();
@@ -2906,11 +2943,12 @@ void recCOP2_VRSQRT()
 	armAsm->Bind(&ftPositive);
 	armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
-	// Load ft scalar
-	armAsm->Ldr(RSSCRATCH2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf])); // s31 = ft[ftf]
-
-	// Load fs scalar
-	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
+	// Load ft and fs scalars, for the host path alone -- as in VDIV.
+	if (!cop2ExactDivUnit())
+	{
+		armAsm->Ldr(RSSCRATCH2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf])); // s31 = ft[ftf]
+		armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));  // s30 = fs[fsf]
+	}
 
 	// Check ft == 0 → div-by-zero. w1 still holds the divisor's word from the
 	// sign test above, so the exponent field is already to hand.
@@ -2938,6 +2976,16 @@ void recCOP2_VRSQRT()
 
 	// ft != 0: normal path
 	armAsm->Bind(&ftNonZero);
+	if (cop2ExactDivUnit())
+	{
+		// One call rather than two: the root is an ordinary single with nowhere
+		// to live across a second, and RecipSqrt is the pair.
+		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+		armAsm->Ldr(RWARG2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
+		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
+	}
+	else
 	{
 		// Q = fs / sqrt(|ft|)
 		armAsm->Fabs(RSSCRATCH2, RSSCRATCH2);
