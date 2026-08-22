@@ -7,6 +7,7 @@
 #include "Gif_Unit.h"
 #include "MTVU.h"
 #include "EeFpuModel.h"
+#include "VuEfuModel.h"
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -1692,70 +1693,29 @@ static __fi u32 _vuEfuAdd(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, false)
 static __fi u32 _vuEfuSub(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, true).bits; }
 
 // x*x + y*y + z*z, accumulated left to right.
-static __fi u32 _vuEfuSquareSum(VURegs* VU)
+static __fi u32 _vuEfuSquareSum(u32 x, u32 y, u32 z)
 {
-	const u32 xx = EeFpuModel::Mul(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[0]).bits;
-	const u32 yy = EeFpuModel::Mul(VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[1]).bits;
-	const u32 zz = EeFpuModel::Mul(VU->VF[_Fs_].UL[2], VU->VF[_Fs_].UL[2]).bits;
-
-	return EeFpuModel::AddSub(EeFpuModel::AddSub(xx, yy, false).bits, zz, false).bits;
+	return _vuEfuAdd(_vuEfuAdd(_vuEfuMul(x, x), _vuEfuMul(y, y)), _vuEfuMul(z, z));
 }
 
-static __ri void _vuESADD(VURegs* VU)
-{
-	VU->p.UL = _vuEfuSquareSum(VU);
-}
+/*	The EFU's three series, in the order the recompilers emit them: single
+	precision multiplies and adds through the FMAC model, each power reached by
+	multiplying rather than by a pow() call in double. The coefficients are
+	mVU_Globals' own words (microVU_Misc-arm64.h), so the two engines evaluate
+	the same numbers. T1..T8 there are c1, c3, c5 ... c15 in ascending order.
 
-static __ri void _vuERSADD(VURegs* VU)
-{
-	VU->p.UL = _vuEfuRecip(_vuEfuSquareSum(VU));
-}
-
-static __ri void _vuELENG(VURegs* VU)
-{
-	VU->p.UL = EeFpuModel::SqrtBits(_vuEfuSquareSum(VU));
-}
-
-static __ri void _vuERLENG(VURegs* VU)
-{
-	VU->p.UL = _vuEfuRecip(EeFpuModel::SqrtBits(_vuEfuSquareSum(VU)));
-}
-
-
-/*	The EFU's three series, in the order the recompilers emit them
-	(mVU_EATAN_arm, mVU_ESIN, mVU_EEXP): a chain of single-precision multiplies
-	and adds through the FMAC model, each power reached by multiplying rather
-	than by a pow() call in double. The coefficients are mVU_Globals' own words
-	(microVU_Misc-arm64.h), so the two engines evaluate the same numbers.
-
-	Which coefficient goes with which power is the trap here. mVU_Globals used
-	to name four of the atan coefficients out of power order, and pairing them
-	by name cost up to 919642 ULP against the capture; upstream has since
-	renamed them, so T1..T8 below are c1, c3, c5 ... c15 in ascending order.
-
-	Three things about the accumulation cost a ULP each, and none of them is
-	visible in the sixteen constants ps2autotests uses -- they were read off a
-	sweep instead (autocases_efu_sweep.h):
+	Three details of the accumulation are worth a ULP each:
 
 	  - The constant term is not the last addend. It goes one slot earlier,
-	    between the second-to-last power and the last, which is what lets the
-	    running sum cancel down to a small exponent before the final add and so
-	    keep bits an addend at 2^-24 granularity could not.
-	  - Which operand leads each multiply. This multiplier is not commutative --
-	    its deficit is a property of ft's mantissa -- so c * x^n and x^n * c
-	    part wherever it fires. The power leads every term but the first, where
-	    the coefficient does. EEXP's first term leads with the power like the
-	    rest of it, and ESIN has no first-order coefficient to place, so EATAN
-	    is on its own there.
-	  - Each power comes from one multiply by x*x rather than two by x, and the
-	    square leads that multiply the first time round and trails it after,
-	    which is the shape _vuESIN carries. The order is only observable where
-	    the product's tail below the kept ULP is short enough for the array's
-	    borrow to reach the result, so it takes a reduced argument near -1,
-	    where the final add cancels, to see it at all.
+	    between the second-to-last power and the last.
+	  - Operand order matters. The multiplier is not commutative: its deficit
+	    depends on ft's mantissa, so c * x^n and x^n * c differ. The power
+	    leads every term except EATAN's first, where the coefficient does.
+	  - Each power comes from one multiply by x*x, not two by x. The square
+	    leads that multiply the first time round and trails it afterwards.
 
-	EEXP puts its 1.0 in the same slot, one from the end. ESIN has no constant
-	term: its x is the first-order term and goes first. */
+	EEXP puts its 1.0 in the constant term's slot. ESIN has no constant term:
+	its x is the first-order term and goes first. */
 static constexpr u32 kEatanC[8] = {
 	0x3F7FFFF5, 0xBEAAA61C, 0x3E4C40A6, 0xBE0E6C63,
 	0x3DC577DF, 0xBD6501C4, 0x3CB31652, 0xBB84D7E7};
@@ -1783,74 +1743,60 @@ static __ri u32 _vuCalculateEATAN(u32 x)
 	return p;
 }
 
-/*	The pi/4 the series carries is only correct as the second half of the
-	range-reduction identity
-
-	    atan(x) = pi/4 + atan((x - 1) / (x + 1))
-
-	so the polynomial is fed the reduced argument. The xy/xz forms reduce the
-	same identity for atan(y/x), where (y/x - 1) / (y/x + 1) == (y - x) / (y + x).
-	The quotient is the divide unit's, so a zero denominator saturates into the
-	series rather than reaching it as a host infinity. */
-static __ri void _vuEATAN(VURegs* VU)
+namespace VuEfuModel
 {
-	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
-
-	VU->p.UL = _vuCalculateEATAN(
-		_vuEfuDiv(_vuEfuSub(fs, kEfuOne), _vuEfuAdd(fs, kEfuOne)));
+EEFPU_MODEL_CALL u32 Sum(u32 x, u32 y, u32 z, u32 w)
+{
+	return _vuEfuAdd(_vuEfuAdd(_vuEfuAdd(x, y), z), w);
 }
 
-static __ri void _vuEATANxy(VURegs* VU)
+EEFPU_MODEL_CALL u32 SquareSum(u32 x, u32 y, u32 z)
 {
-	const u32 x = VU->VF[_Fs_].UL[0];
-	const u32 y = VU->VF[_Fs_].UL[1];
-
-	VU->p.UL = _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(y, x), _vuEfuAdd(x, y)));
+	return _vuEfuSquareSum(x, y, z);
 }
 
-static __ri void _vuEATANxz(VURegs* VU)
+EEFPU_MODEL_CALL u32 RecipSquareSum(u32 x, u32 y, u32 z)
 {
-	const u32 x = VU->VF[_Fs_].UL[0];
-	const u32 z = VU->VF[_Fs_].UL[2];
-
-	VU->p.UL = _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(z, x), _vuEfuAdd(x, z)));
+	return _vuEfuRecip(_vuEfuSquareSum(x, y, z));
 }
 
-static __ri void _vuESUM(VURegs* VU)
+EEFPU_MODEL_CALL u32 Length(u32 x, u32 y, u32 z)
 {
-	u32 p = EeFpuModel::AddSub(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], false).bits;
-	p = EeFpuModel::AddSub(p, VU->VF[_Fs_].UL[2], false).bits;
-
-	VU->p.UL = EeFpuModel::AddSub(p, VU->VF[_Fs_].UL[3], false).bits;
+	return EeFpuModel::SqrtBits(_vuEfuSquareSum(x, y, z));
 }
 
-static __ri void _vuERCPR(VURegs* VU)
+EEFPU_MODEL_CALL u32 RecipLength(u32 x, u32 y, u32 z)
 {
-	VU->p.UL = _vuEfuRecip(VU->VF[_Fs_].UL[_Fsf_]);
+	return _vuEfuRecip(EeFpuModel::SqrtBits(_vuEfuSquareSum(x, y, z)));
 }
 
-// The EFU square root takes the operand's MAGNITUDE: a negative input is rooted
-// as if positive, it is not passed through unchanged. Both recompilers do this
-// by ANDing the raw bits with absclip before FSQRT (mVU_ESQRT / mVU_ERSQRT).
-static __ri void _vuESQRT(VURegs* VU)
+EEFPU_MODEL_CALL u32 Recip(u32 fs)
 {
-	VU->p.UL = EeFpuModel::SqrtBits(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
+	return _vuEfuRecip(fs);
 }
 
-static __ri void _vuERSQRT(VURegs* VU)
+/*	The EFU square root takes the operand's magnitude: a negative input is
+	rooted as if positive, not passed through unchanged. The recompilers' host
+	path ands the raw bits with absclip ahead of FSQRT; here the same mask is
+	the recurrence's argument. */
+EEFPU_MODEL_CALL u32 Sqrt(u32 fs)
 {
-	VU->p.UL = _vuEfuRecip(EeFpuModel::SqrtBits(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF));
+	return EeFpuModel::SqrtBits(fs & 0x7FFFFFFF);
+}
+
+EEFPU_MODEL_CALL u32 RecipSqrt(u32 fs)
+{
+	return _vuEfuRecip(EeFpuModel::SqrtBits(fs & 0x7FFFFFFF));
 }
 
 // x + s2*x^3 + s3*x^5 + s4*x^7 + s5*x^9, the odd powers reached by squaring
 // once and multiplying up.
-static __ri void _vuESIN(VURegs* VU)
+EEFPU_MODEL_CALL u32 Sin(u32 fs)
 {
-	const u32 x = VU->VF[_Fs_].UL[_Fsf_];
-	const u32 xx = _vuEfuMul(x, x);
+	const u32 xx = _vuEfuMul(fs, fs);
 
-	u32 xn = _vuEfuMul(xx, x);
-	u32 p = _vuEfuAdd(x, _vuEfuMul(xn, kEsinC[0]));
+	u32 xn = _vuEfuMul(xx, fs);
+	u32 p = _vuEfuAdd(fs, _vuEfuMul(xn, kEsinC[0]));
 
 	for (int i = 1; i < 4; ++i)
 	{
@@ -1858,21 +1804,19 @@ static __ri void _vuESIN(VURegs* VU)
 		p = _vuEfuAdd(p, _vuEfuMul(xn, kEsinC[i]));
 	}
 
-	VU->p.UL = p;
+	return p;
 }
 
 // The reciprocal of a sixth-order series raised to the fourth: 1 + e1*x +
 // e2*x^2 + ... + e6*x^6, squared twice, then divided into one.
-static __ri void _vuEEXP(VURegs* VU)
+EEFPU_MODEL_CALL u32 Exp(u32 fs)
 {
-	const u32 x = VU->VF[_Fs_].UL[_Fsf_];
-
-	u32 p = _vuEfuMul(x, kEexpC[0]);
-	u32 xn = x;
+	u32 p = _vuEfuMul(fs, kEexpC[0]);
+	u32 xn = fs;
 
 	for (int i = 1; i < 6; ++i)
 	{
-		xn = _vuEfuMul(xn, x);
+		xn = _vuEfuMul(xn, fs);
 		if (i == 5)
 			p = _vuEfuAdd(p, kEfuOne);
 		p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[i]));
@@ -1881,7 +1825,98 @@ static __ri void _vuEEXP(VURegs* VU)
 	p = _vuEfuMul(p, p);
 	p = _vuEfuMul(p, p);
 
-	VU->p.UL = _vuEfuRecip(p);
+	return _vuEfuRecip(p);
+}
+
+/*	The pi/4 the series carries is only correct as the second half of the
+	range-reduction identity
+
+	    atan(x) = pi/4 + atan((x - 1) / (x + 1))
+
+	so the polynomial is fed the reduced argument. The xy/xz forms reduce the
+	same identity for atan(b/a), where (b/a - 1) / (b/a + 1) == (b - a) / (b + a).
+	The quotient is the divide unit's, so a zero denominator saturates into the
+	series rather than reaching it as a host infinity. */
+EEFPU_MODEL_CALL u32 Atan(u32 fs)
+{
+	return _vuCalculateEATAN(
+		_vuEfuDiv(_vuEfuSub(fs, kEfuOne), _vuEfuAdd(fs, kEfuOne)));
+}
+
+EEFPU_MODEL_CALL u32 AtanRatio(u32 a, u32 b)
+{
+	return _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(b, a), _vuEfuAdd(a, b)));
+}
+} // namespace VuEfuModel
+
+static __ri void _vuESADD(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::SquareSum(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
+}
+
+static __ri void _vuERSADD(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::RecipSquareSum(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
+}
+
+static __ri void _vuELENG(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Length(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
+}
+
+static __ri void _vuERLENG(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::RecipLength(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
+}
+
+static __ri void _vuEATAN(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Atan(VU->VF[_Fs_].UL[_Fsf_]);
+}
+
+static __ri void _vuEATANxy(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::AtanRatio(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1]);
+}
+
+static __ri void _vuEATANxz(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::AtanRatio(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[2]);
+}
+
+static __ri void _vuESUM(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Sum(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1],
+		VU->VF[_Fs_].UL[2], VU->VF[_Fs_].UL[3]);
+}
+
+static __ri void _vuERCPR(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Recip(VU->VF[_Fs_].UL[_Fsf_]);
+}
+
+static __ri void _vuESQRT(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Sqrt(VU->VF[_Fs_].UL[_Fsf_]);
+}
+
+static __ri void _vuERSQRT(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::RecipSqrt(VU->VF[_Fs_].UL[_Fsf_]);
+}
+
+static __ri void _vuESIN(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Sin(VU->VF[_Fs_].UL[_Fsf_]);
+}
+
+static __ri void _vuEEXP(VURegs* VU)
+{
+	VU->p.UL = VuEfuModel::Exp(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuXITOP(VURegs* VU)

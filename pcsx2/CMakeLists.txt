@@ -219,6 +219,7 @@ set(pcsx2Headers
 	VMManager.h
 	vtlb.h
 	VU1Trace.h
+	VuEfuModel.h
 	VUflags.h
 	VUmicro.h
 	VUops.h)
