@@ -38,6 +38,7 @@
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
 
+#include "EeFpuModel.h"
 #include "VU.h"
 #include "VUmicro.h"
 #include "Config.h"
@@ -120,6 +121,13 @@ struct DigestSet
 	// compiles below both. 0 in a pin row = probe absent.
 	u64 signClampDivUnit;
 	u64 exactDivUnit;
+	// Three EFU ops at vuClampMode:3, where the recompiler still evaluates its
+	// series in host arithmetic, and again at 4, where each calls one model
+	// entry point. The EFU is VU1-only, so this is the one probe that is not
+	// VU0 -- where the thirteen ops are NOPs. 0 in a pin row = probe absent.
+	u64 signClampEfu;
+	u64 exactEfu;
+
 };
 
 struct AbiPin
@@ -237,15 +245,15 @@ constexpr AbiPin kPins[] = {
 	// apiece, and RSQRT's divisor test is on the radicand rather than the
 	// root. Every FMAC changes shape too: the weight table gains a variant
 	// dimension so every weight load's [x25, #imm] moves, the I immediate is
-	// stored whole, and at vuClampMode:4 a flag-writing FMAC emits its MAC U and
-	// MAC O predicates ahead of the operand clamp, where ADD and SUB also mask
-	// their guard bits and the three divide-unit ops call their model out of
-	// line. The ten fields above compile below mode 3 with a full dest field,
-	// so only divUnit moves among them; the six new probes pin the two gated
-	// modes from here on. The value flush that rides with the zero tests is in
-	// none of these rows: they compile under the default VU FPCR, which sets
-	// FZ, and it is emitted only when that is clear.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x2f3e89a82bcd3228, 0xad03f981572ad1c4, 0x6b119d8d1e4fd199, 0xdaa0e7766fd10968}},
+	// stored whole, and at vuClampMode:4 a flag-writing FMAC emits its MAC U
+	// and MAC O predicates ahead of the operand clamp, where ADD and SUB also mask their guard bits
+	// and the three divide-unit ops and the thirteen EFU ops call their models
+	// out of line. The ten fields above compile below mode 3 with a full dest
+	// field, so only divUnit moves among them; the eight new probes pin the two
+	// gated modes from here on. The value flush that rides with the zero tests is in none of these
+	// rows: they compile under the default VU FPCR, which sets FZ, and it is
+	// emitted only when that is clear.
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x2f3e89a82bcd3228, 0xad03f981572ad1c4, 0x6b119d8d1e4fd199, 0xdaa0e7766fd10968, 0xd933afa738820832, 0x3f55a1efd1b28b8e}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -280,7 +288,8 @@ u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
 
 // Same contract as CompileAndDigest, on VU1. Kept separate rather than
 // parameterised so the VU0 pins above can't shift if this one is edited.
-u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs)
+u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu1Divergence = nullptr)
 {
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
 	EmuConfig.Speedhacks.vuFlagHack = true;
@@ -290,7 +299,10 @@ u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs)
 	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f);
 	h.SetVi(1, 1);
 	h.LoadProgram(pairs);
-	h.Run();
+	if (requireVu1Divergence)
+		h.RunRequiringDivergence(requireVu1Divergence);
+	else
+		h.Run();
 	h.RunJitPreserveBlockCache();
 	u64 digest = 0;
 	EXPECT_TRUE(mVUPersist::TestComputeEmitDigest(1, digest));
@@ -342,6 +354,34 @@ u64 CompileAndDigestExact(std::initializer_list<vu::VuOp> pairs)
 	EmuConfig.Cpu.Recompiler.vu0ExactMode = true;
 	const u64 digest = CompileAndDigestSignClamp(pairs);
 	EmuConfig.Cpu.Recompiler.vu0ExactMode = savedExact;
+	return digest;
+}
+
+// vuClampMode:3 on VU1, which the EFU needs: its ops NOP on VU0.
+u64 CompileAndDigestVu1SignClamp(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu1Divergence = nullptr)
+{
+	const bool savedOverflow = EmuConfig.Cpu.Recompiler.vu1Overflow;
+	const bool savedExtra    = EmuConfig.Cpu.Recompiler.vu1ExtraOverflow;
+	const bool savedSign     = EmuConfig.Cpu.Recompiler.vu1SignOverflow;
+	EmuConfig.Cpu.Recompiler.vu1Overflow      = true;
+	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = true;
+	EmuConfig.Cpu.Recompiler.vu1SignOverflow  = true;
+
+	const u64 digest = CompileAndDigestVu1(pairs, requireVu1Divergence);
+
+	EmuConfig.Cpu.Recompiler.vu1Overflow      = savedOverflow;
+	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = savedExtra;
+	EmuConfig.Cpu.Recompiler.vu1SignOverflow  = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestVu1Exact(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedExact = EmuConfig.Cpu.Recompiler.vu1ExactMode;
+	EmuConfig.Cpu.Recompiler.vu1ExactMode = true;
+	const u64 digest = CompileAndDigestVu1SignClamp(pairs);
+	EmuConfig.Cpu.Recompiler.vu1ExactMode = savedExact;
 	return digest;
 }
 
@@ -491,6 +531,23 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VMUL_U(mask::xyzw, vf::vf6, vf::vf1, vf::vf2)),
 	});
 
+	// The EFU under the same two modes, on the only VU that has one. A scalar
+	// form, a four-lane form and a two-lane form, so a change to how the
+	// operands reach the call moves the digest whichever shape it touches.
+	const std::initializer_list<vu::VuOp> efuProgram = {
+		LowerOnly(VESQRT_L(vf::vf1, /*fsf=*/2)),
+		LowerOnly(VESUM_L(vf::vf2)),
+		LowerOnly(VEATANXY_L(vf::vf1)),
+		VuOp{VWAITP_L(), VNOP_U()},
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+	};
+	// One mode below the models, the recompiler evaluates all thirteen series in
+	// host arithmetic and the interpreter still runs VuEfuModel, so P parts by a
+	// couple of ULP. That is the gate doing its job, not a compile fault.
+	actual.signClampEfu = CompileAndDigestVu1SignClamp(efuProgram,
+		"the EFU's models are a mode above this one");
+	actual.exactEfu = CompileAndDigestVu1Exact(efuProgram);
+
 	mVUPersist::SetRecordingEnabled(false);
 
 	ASSERT_NE(actual.straightLine, 0u);
@@ -508,6 +565,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.exactSS, 0u);
 	ASSERT_NE(actual.signClampDivUnit, 0u);
 	ASSERT_NE(actual.exactDivUnit, 0u);
+	ASSERT_NE(actual.signClampEfu, 0u);
+	ASSERT_NE(actual.exactEfu, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -548,7 +607,9 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.exactMulAdd
 		<< ", 0x" << actual.exactSS
 		<< ", 0x" << actual.signClampDivUnit
-		<< ", 0x" << actual.exactDivUnit << "}";
+		<< ", 0x" << actual.exactDivUnit
+		<< ", 0x" << actual.signClampEfu
+		<< ", 0x" << actual.exactEfu << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -611,17 +672,40 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		EXPECT_EQ(actual.exactSS, pin->digests.exactSS)
 			<< explain("exactSS", actual.exactSS, pin->digests.exactSS);
 	}
+	// The exact-mode probes are the two that call the EE FPU model, and a call
+	// site spills what EEFPU_MODEL_CALL does not spare (EeFpuModel.h). The
+	// compiler picks that: clang-cl has no mangling for preserve_all and takes
+	// the wide spill, a shape the pin table carries no row for.
+	const bool modelCallShapePinned = EEFPU_MODEL_CALL_SPARES_MOST != 0;
 	if (pin->digests.signClampDivUnit != 0) // probes added at abi 19; older rows unpinned
 	{
 		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
 			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
-		EXPECT_EQ(actual.exactDivUnit, pin->digests.exactDivUnit)
-			<< explain("exactDivUnit", actual.exactDivUnit, pin->digests.exactDivUnit);
+		if (modelCallShapePinned)
+		{
+			EXPECT_EQ(actual.exactDivUnit, pin->digests.exactDivUnit)
+				<< explain("exactDivUnit", actual.exactDivUnit, pin->digests.exactDivUnit);
+		}
+	}
+	if (pin->digests.signClampEfu != 0) // probes added at abi 19; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
+			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
+		if (modelCallShapePinned)
+		{
+			EXPECT_EQ(actual.exactEfu, pin->digests.exactEfu)
+				<< explain("exactEfu", actual.exactEfu, pin->digests.exactEfu);
+		}
 	}
 	if (pin->digests.signClampDivUnit != 0) // probe added at abi 23; older rows unpinned
 	{
 		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
 			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
+	}
+	if (pin->digests.signClampEfu != 0) // probe added at abi 24; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
+			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }
