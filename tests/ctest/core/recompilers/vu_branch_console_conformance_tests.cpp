@@ -534,8 +534,9 @@ TEST(VuBranchConsole, DISABLED_ScoreEnginesAgainstHardware)
 
 // Both engines leave the MAC flags standing across MAX/MINI. Asserted
 // engine-internally -- MUL+MAX and MUL+MINI must land on the same MAC, MUL+ADD
-// on a different one -- because the console's own MAC word carries the
-// underflow-bit divergence pinned below.
+// on a different one -- because the recompiler only reaches the console's own
+// MAC word for these rows at vuClampMode 3, which the test below scores, and
+// this runs at the harness default.
 TEST(VuBranchConsole, MaxMiniAreFlagTransparentInBothEngines)
 {
 	auto MacAfter = [](const char* tag, bool jit) {
@@ -559,33 +560,39 @@ TEST(VuBranchConsole, MaxMiniAreFlagTransparentInBothEngines)
 	}
 }
 
-// TRIPWIRE -- known divergence, not a MAX/MINI defect.
+// The multiply's MAC underflow bit, across the clamp modes.
 //
-// Console MAC after `mul.xyzw` of the smallest normal by 0.5 is 0x0F0F: Z and
-// U on all four lanes. Both engines report 0x000F -- Z but no U.
+// Console MAC after `mul.xyzw` of the smallest normal by 0.5 is 0x0F0F: Z and U
+// on all four lanes, a result that underflowed out of two normal operands.
 //
-// The cause is upstream of MAX/MINI entirely. VU_MAC_UPDATE (VUflags.cpp)
-// tests `if (f == 0)` first and that branch clears the U bit
-// (`& ~(0x1100<<shift)`); only the later `case 0:` denormal branch sets Z|U.
-// A product that has already been flushed to zero before the flag logic sees
-// it therefore can never raise underflow. Hardware raises U for a result that
-// underflowed out of normal operands regardless of the flush.
+// This was a tripwire against both engines and neither owes it now. The
+// interpreter reproduces the console at every mode, off the exact FMAC result
+// rather than off a VU_MAC_UPDATE that tested `f == 0` first and cleared U on
+// that branch -- a product flushed to zero before the flag logic saw it could
+// never raise underflow there. The recompiler reproduces it at vuClampMode 4,
+// where a multiply's U is read from the operands before the flush can hide it;
+// below that the model is deliberately absent and Z comes away alone.
 //
-// Same defect class as VuStickyMicroConsoleConformance's
-// AllMicroStatusMatchesConsole, which this gives a minimal witness
-// for: one multiply, four lanes, all four underflowing from normal operands.
-// Enable when the FMAC flag path stops folding flush-to-zero into "the result
-// was exactly zero".
-TEST(VuBranchConsole, DISABLED_MacUnderflowBitMatchesConsole)
+// One multiply, four lanes, all four underflowing from normal operands, which
+// is the minimal witness for what VuStickyConsoleConformance's status rows
+// cover in bulk.
+TEST(VuBranchConsole, MacUnderflowBitMatchesConsole)
 {
+	constexpr u32 kZeroWithoutUnderflow = 0x0000000Fu;
 	for (const char* tag : {"Q6_MACMAX", "Q6_MACMINI"})
 	{
 		const VuBranchCase& c = CaseByTag(tag);
 		ASSERT_EQ(c.mac, 0x00000F0Fu) << tag << ": capture invariant";
-		VuTestHarness h(0);
-		RunConsoleCase(c, h);
-		EXPECT_EQ(h.GetViJit(REG_MAC_FLAG), c.mac) << tag << " [arm64]";
-		EXPECT_EQ(h.GetViInterp(REG_MAC_FLAG), c.mac) << tag << " [interp]";
+		for (int mode = 1; mode <= 4; ++mode)
+		{
+			VuTestHarness h(0);
+			h.SetVuClampMode(mode);
+			RunConsoleCase(c, h);
+			SCOPED_TRACE(::testing::Message() << tag << " vuClampMode " << mode);
+			EXPECT_EQ(h.GetViInterp(REG_MAC_FLAG), c.mac) << "[interp]";
+			EXPECT_EQ(h.GetViJit(REG_MAC_FLAG), mode == 4 ? c.mac : kZeroWithoutUnderflow)
+				<< "[arm64]";
+		}
 	}
 }
 
