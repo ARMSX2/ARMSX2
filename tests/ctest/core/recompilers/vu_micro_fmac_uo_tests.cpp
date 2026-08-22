@@ -22,7 +22,9 @@
 // The two engines still disagree on the VALUE in the top binade -- microVU
 // clamps operands to FLT_MAX where the console's range runs to 0x7FFFFFFF --
 // so the flags are scored on their own, and the whole per-lane ZSUO group only
-// where the two wrote the same word.
+// where the two wrote the same word. A lane that raised O is the exception:
+// there the word IS the top of the range, and O is what picks it, so the two
+// have to agree.
 
 #include "harness/VuTestHarness.h"
 
@@ -256,6 +258,7 @@ TEST(VuMicroFmacUO, MatchTheInterpreterAtModeFour)
 {
 	std::mt19937 rng(kSeed);
 	int raised_o = 0, raised_u = 0, quiet = 0, comparable = 0;
+	int o_lanes = 0;
 
 	for (int it = 0; it < kIters; ++it)
 	{
@@ -289,6 +292,17 @@ TEST(VuMicroFmacUO, MatchTheInterpreterAtModeFour)
 		if (all_lanes_agree)
 			EXPECT_EQ(o.status_jit, o.status_interp) << "STATUS";
 
+		// A lane that raised O saturated, and the word it saturated to is a
+		// binade above anything the result clamp reaches -- so this is the one
+		// part of the value the two engines have to agree on even while the
+		// rest of the top binade divides them.
+		for (int lane = 0; lane < 4; ++lane)
+		{
+			if (!(o.mac_interp & LaneMacBits(lane) & kMacO))
+				continue;
+			++o_lanes;
+			EXPECT_EQ(o.dst_jit[lane], o.dst_interp[lane]) << "lane " << lane << " ceiling";
+		}
 		if (o.mac_interp & kMacO) ++raised_o;
 		if (o.mac_interp & kMacU) ++raised_u;
 		if (!(o.mac_interp & (kMacO | kMacU))) ++quiet;
@@ -300,6 +314,7 @@ TEST(VuMicroFmacUO, MatchTheInterpreterAtModeFour)
 	EXPECT_GT(raised_u, 100) << "the U window was never reached";
 	EXPECT_GT(quiet, 100) << "every row raised something";
 	EXPECT_GT(comparable, 400) << "the two engines never agreed on a result word";
+	EXPECT_GT(o_lanes, 200) << "no lane saturated, so the ceiling was never compared";
 }
 
 // The gate. Below vuClampMode 4 neither model is emitted, so every bit they

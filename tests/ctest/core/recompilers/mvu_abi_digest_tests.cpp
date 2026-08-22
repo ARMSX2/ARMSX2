@@ -111,8 +111,8 @@ struct DigestSet
 	// emitted -- all but one. CompileAndDigest forces vuFlagHack on to match
 	// production and these programs leave the multiply's flags dead, so
 	// mVUwantExactU comes back false and MAC U is in no digest in this table;
-	// mVUwantExactO reads the same liveness and is absent for the same reason.
-	// What these two carry is the operand-clamp move the pair share.
+	// mVUwantExactO does not read flag liveness, because the ceiling
+	// substitution reads its predicate, so MAC O and the ceiling are.
 	// 0 in a pin row = probe absent.
 	u64 exactMulAdd;
 	u64 exactSS;
@@ -245,15 +245,17 @@ constexpr AbiPin kPins[] = {
 	// apiece, and RSQRT's divisor test is on the radicand rather than the
 	// root. Every FMAC changes shape too: the weight table gains a variant
 	// dimension so every weight load's [x25, #imm] moves, the I immediate is
-	// stored whole, and at vuClampMode:4 a flag-writing FMAC emits its MAC U
-	// and MAC O predicates ahead of the operand clamp, where ADD and SUB also mask their guard bits
-	// and the three divide-unit ops and the thirteen EFU ops call their models
-	// out of line. The ten fields above compile below mode 3 with a full dest
-	// field, so only divUnit moves among them; the eight new probes pin the two
-	// gated modes from here on. The value flush that rides with the zero tests is in none of these
-	// rows: they compile under the default VU FPCR, which sets FZ, and it is
-	// emitted only when that is clear.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x2f3e89a82bcd3228, 0xad03f981572ad1c4, 0x6b119d8d1e4fd199, 0xdaa0e7766fd10968, 0xd933afa738820832, 0x3f55a1efd1b28b8e}},
+	// stored whole, and at vuClampMode:4 a flag-writing multiply emits its MAC U
+	// predicate ahead of the operand clamp, every FMAC its MAC O the same way
+	// and then substitutes the FMAC's ceiling for the clamp's FLT_MAX, ADD and
+	// SUB mask their guard bits, and the three divide-unit ops and the thirteen
+	// EFU ops call their models out of line.
+	// The ten fields above compile below mode 3 with a full dest field, so only
+	// divUnit moves among them; the eight new probes pin the two gated modes
+	// from here on. The value flush that rides with the zero tests is in none
+	// of these rows: they compile under the default VU FPCR, which sets FZ, and
+	// it is emitted only when that is clear.
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0xc87c54aa88cb401b, 0xaa6042b9fe4f798e, 0x6b119d8d1e4fd199, 0xbd3d5ec9ceb305c2, 0xd933afa738820832, 0x9aae0aa1cc282a86}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

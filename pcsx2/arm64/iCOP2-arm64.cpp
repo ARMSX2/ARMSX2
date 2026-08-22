@@ -608,16 +608,11 @@ static void cop2ClampResult()
 	cop2ClampResultReg(RQSCRATCH);
 }
 
-// The FMAC's ceiling, where the host clamp above cannot reach it. An op that
-// raised MAC O saturated, and what the console leaves is 0x7FFFFFFF carrying
-// the result's sign -- a binade above +/-FLT_MAX, so the word is substituted
-// rather than computed, the way recCOP2_VDIV's zero-divisor branch builds its
-// own. Only the value moves: the substitute is non-zero and keeps the sign, so
-// the MAC pack downstream reads the same Z and S off it.
-//
-// Which makes the O predicate an input to the value at vuClampMode 4 and not
-// only to the flags, and it is emitted there whatever the flag-liveness gates
-// say -- VF[fd] is written either way.
+// The FMAC's ceiling, where the host clamp above cannot reach it.
+// armEmitVuSaturateAtMax (VuFmacFlags-arm64.h) carries the rule and microVU
+// emits the same one; this is where it fits a macro op and what it costs in
+// registers. recCOP2_VDIV's zero-divisor branch builds the same word by hand,
+// having no vector to put it in.
 static void cop2EmitSaturateAtMax(const a64::VRegister& result, const a64::VRegister& overflow)
 {
 	if (!overflow.IsValid())
@@ -627,10 +622,7 @@ static void cop2EmitSaturateAtMax(const a64::VRegister& result, const a64::VRegi
 	for (const a64::VRegister& r : {result, overflow})
 		pxAssert(r.GetCode() != max.GetCode() && r.GetCode() != sat.GetCode());
 
-	armAsm->Mvni(max.V4S(), 0x80, a64::LSL, 24); // 0x7FFFFFFF
-	armAsm->Sshr(sat.V4S(), result.V4S(), 31);   // the sign, spread over the lane
-	armAsm->Orr(sat.V16B(), sat.V16B(), max.V16B());
-	armAsm->Bit(result.V16B(), sat.V16B(), overflow.V16B());
+	armEmitVuSaturateAtMax(result, overflow, max, sat);
 }
 
 // Defined with the flag update below. The guard mask is emitted for the value
