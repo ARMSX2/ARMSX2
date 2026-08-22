@@ -759,13 +759,13 @@ struct Pcsx2Config
 			vu0Overflow : 1,
 			vu0ExtraOverflow : 1,
 			vu0SignOverflow : 1,
-			vu0Underflow : 1;
+			vu0ExactMode : 1;
 
 		bool
 			vu1Overflow : 1,
 			vu1ExtraOverflow : 1,
 			vu1SignOverflow : 1,
-			vu1Underflow : 1;
+			vu1ExactMode : 1;
 
 		bool
 			fpuOverflow : 1,
@@ -1768,7 +1768,7 @@ namespace EmuFolders
 #define CHECK_VU_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0Overflow : EmuConfig.Cpu.Recompiler.vu1Overflow)
 #define CHECK_VU_EXTRA_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0ExtraOverflow : EmuConfig.Cpu.Recompiler.vu1ExtraOverflow) // If enabled, Operands are clamped before being used in the VU recs
 #define CHECK_VU_SIGN_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0SignOverflow : EmuConfig.Cpu.Recompiler.vu1SignOverflow)
-#define CHECK_VU_UNDERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0Underflow : EmuConfig.Cpu.Recompiler.vu1Underflow)
+#define CHECK_VU_EXACT(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0ExactMode : EmuConfig.Cpu.Recompiler.vu1ExactMode) // GameDB vu0/vu1ClampMode 4: mode 3 plus the adder's guard mask and the divide unit's own arithmetic.
 
 #define CHECK_FPU_OVERFLOW (EmuConfig.Cpu.Recompiler.fpuOverflow)
 #define CHECK_FPU_EXTRA_OVERFLOW (EmuConfig.Cpu.Recompiler.fpuExtraOverflow) // If enabled, Operands are checked for infinities before being used in the FPU recs

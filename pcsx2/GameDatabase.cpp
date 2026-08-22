@@ -637,6 +637,7 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(
 			config.Cpu.Recompiler.vu0Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu0ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu0SignOverflow = (clampMode >= 3);
+			config.Cpu.Recompiler.vu0ExactMode = (clampMode >= 4);
 		}
 	}
 
@@ -650,6 +651,7 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(
 			config.Cpu.Recompiler.vu1Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu1ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu1SignOverflow = (clampMode >= 3);
+			config.Cpu.Recompiler.vu1ExactMode = (clampMode >= 4);
 		}
 	}
 

@@ -9,7 +9,7 @@
 //   vu0Overflow        — basic overflow → ±MAX_FLOAT (0x7F7FFFFF / 0xFF7FFFFF)
 //   vu0ExtraOverflow   — clamp at MUL/MADD intermediate steps (more strict)
 //   vu0SignOverflow    — sign-aware overflow (preserves sign of operand)
-//   vu0Underflow       — denormal flush-to-zero
+//   vu0ExactMode       — the models mode 4 carries
 //
 // JIT and interp must agree under every combination — these tests pick a
 // handful of canonical edge inputs (large-positive overflow, large-negative
@@ -48,29 +48,29 @@ struct ClampGuard
 	bool prev_overflow;
 	bool prev_extra;
 	bool prev_sign;
-	bool prev_underflow;
+	bool prev_exact;
 
 	ClampGuard()
 	{
 		prev_overflow  = EmuConfig.Cpu.Recompiler.vu0Overflow;
 		prev_extra     = EmuConfig.Cpu.Recompiler.vu0ExtraOverflow;
 		prev_sign      = EmuConfig.Cpu.Recompiler.vu0SignOverflow;
-		prev_underflow = EmuConfig.Cpu.Recompiler.vu0Underflow;
+		prev_exact     = EmuConfig.Cpu.Recompiler.vu0ExactMode;
 	}
 	~ClampGuard()
 	{
 		EmuConfig.Cpu.Recompiler.vu0Overflow     = prev_overflow;
 		EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = prev_extra;
 		EmuConfig.Cpu.Recompiler.vu0SignOverflow = prev_sign;
-		EmuConfig.Cpu.Recompiler.vu0Underflow    = prev_underflow;
+		EmuConfig.Cpu.Recompiler.vu0ExactMode    = prev_exact;
 	}
 
-	void Set(bool overflow, bool extra, bool sign, bool underflow)
+	void Set(bool overflow, bool extra, bool sign, bool exact)
 	{
 		EmuConfig.Cpu.Recompiler.vu0Overflow     = overflow;
 		EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = extra;
 		EmuConfig.Cpu.Recompiler.vu0SignOverflow = sign;
-		EmuConfig.Cpu.Recompiler.vu0Underflow    = underflow;
+		EmuConfig.Cpu.Recompiler.vu0ExactMode    = exact;
 	}
 };
 
@@ -109,14 +109,14 @@ void RunAndExpectAllLanesAgree(VuTestHarness& h, u32 dst_vf)
 } // namespace
 
 // =========================================================================
-//  Underflow — VMUL of two tiny normals → 0 (denormal flush) when underflow
-//  clamping is on.
+//  VMUL of two tiny normals, at the top and the bottom of the fourth knob.
+//  Whatever the mode does with the product, both engines must do the same.
 // =========================================================================
 
-TEST(Vu0ClampModes, UnderflowOnTinyProductFlushesToZero)
+TEST(Vu0ClampModes, ExactOnTinyProductAgrees)
 {
 	ClampGuard cg;
-	cg.Set(true, false, false, /*underflow*/true);
+	cg.Set(true, true, true, /*exact*/true);
 
 	VuTestHarness h(0);
 	h.SetVfBits(vf::vf2, kPosTinyBits, kPosTinyBits, kPosTinyBits, kPosTinyBits);
@@ -135,10 +135,10 @@ TEST(Vu0ClampModes, UnderflowOnTinyProductFlushesToZero)
 	RunAndExpectAllLanesAgree(h, vf::vf1);
 }
 
-TEST(Vu0ClampModes, UnderflowOffTinyProductYieldsDenormal)
+TEST(Vu0ClampModes, ExactOffTinyProductAgrees)
 {
 	ClampGuard cg;
-	cg.Set(true, false, false, /*underflow*/false);
+	cg.Set(true, true, true, /*exact*/false);
 
 	VuTestHarness h(0);
 	h.SetVfBits(vf::vf2, kPosTinyBits, kPosTinyBits, kPosTinyBits, kPosTinyBits);

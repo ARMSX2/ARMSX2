@@ -130,6 +130,7 @@ The clamp modes are also numerically based.
 * `1` = Clamp **Normally** (only clamp results)
 * `2` = Clamp **Extra** (clamp results as well as operands)
 * `3` = Clamp **Extra+Preserve Sign**
+* `4` = **Exact**: mode 3 plus the VU's own arithmetic and status flags
 
 ## GS Hardware Fixes
 

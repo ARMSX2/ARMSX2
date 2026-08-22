@@ -2680,10 +2680,8 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 	std::optional<bool> default_false = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(false);
 	std::optional<bool> default_true = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(true);
 
-	// eeClampMode 4 has no VU counterpart.
-	std::optional<bool> fourth;
-	if (vunum < 0)
-		fourth = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", default_false);
+	std::optional<bool> fourth = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler",
+		(vunum >= 0 ? ((vunum == 0) ? "vu0ExactMode" : "vu1ExactMode") : "fpuExactMode"), default_false);
 	std::optional<bool> third = bsi->GetOptionalBoolValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0SignOverflow" : "vu1SignOverflow") : "fpuFullMode"), default_false);
 	std::optional<bool> second = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler",
@@ -2719,6 +2717,7 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		FSUI_NSTR("Normal (Default)"),
 		FSUI_NSTR("Extra"),
 		FSUI_NSTR("Extra + Preserve Sign"),
+		FSUI_NSTR("Exact"),
 	};
 	const char* const* options = (vunum >= 0) ? vu_clamping_mode_settings : ee_clamping_mode_settings;
 	const int option_count = static_cast<int>((vunum >= 0) ? std::size(vu_clamping_mode_settings) : std::size(ee_clamping_mode_settings));
@@ -2754,9 +2753,8 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 						(vunum >= 0 ? ((vunum == 0) ? "vu0ExtraOverflow" : "vu1ExtraOverflow") : "fpuExtraOverflow"), second);
 					bsi->SetOptionalBoolValue(
 						"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), first);
-					// Same write as AdvancedSettingsWidget::setClampingMode.
-					if (vunum < 0)
-						bsi->SetOptionalBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", fourth);
+					bsi->SetOptionalBoolValue("EmuCore/CPU/Recompiler",
+						(vunum >= 0 ? ((vunum == 0) ? "vu0ExactMode" : "vu1ExactMode") : "fpuExactMode"), fourth);
 					SetSettingsChanged(bsi);
 				}
 

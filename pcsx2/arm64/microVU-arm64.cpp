@@ -294,15 +294,15 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		u8  doWholeProgCompare_;
 		u8  pad0;
 
-		// Clamp modes (Cpu.Recompiler.vu{0,1}{Overflow,ExtraOverflow,SignOverflow,Underflow}).
+		// Clamp modes (Cpu.Recompiler.vu{0,1}{Overflow,ExtraOverflow,SignOverflow,ExactMode}).
 		u8  vu0Overflow;
 		u8  vu0ExtraOverflow;
 		u8  vu0SignOverflow;
-		u8  vu0Underflow;
+		u8  vu0ExactMode;
 		u8  vu1Overflow;
 		u8  vu1ExtraOverflow;
 		u8  vu1SignOverflow;
-		u8  vu1Underflow;
+		u8  vu1ExactMode;
 
 		// Speedhacks / Gamefixes that gate emit shape.
 		u8  vuFlagHack;
@@ -355,11 +355,11 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu0Overflow      = EmuConfig.Cpu.Recompiler.vu0Overflow      ? 1 : 0;
 	s.vu0ExtraOverflow = EmuConfig.Cpu.Recompiler.vu0ExtraOverflow ? 1 : 0;
 	s.vu0SignOverflow  = EmuConfig.Cpu.Recompiler.vu0SignOverflow  ? 1 : 0;
-	s.vu0Underflow     = EmuConfig.Cpu.Recompiler.vu0Underflow     ? 1 : 0;
+	s.vu0ExactMode     = EmuConfig.Cpu.Recompiler.vu0ExactMode     ? 1 : 0;
 	s.vu1Overflow      = EmuConfig.Cpu.Recompiler.vu1Overflow      ? 1 : 0;
 	s.vu1ExtraOverflow = EmuConfig.Cpu.Recompiler.vu1ExtraOverflow ? 1 : 0;
 	s.vu1SignOverflow  = EmuConfig.Cpu.Recompiler.vu1SignOverflow  ? 1 : 0;
-	s.vu1Underflow     = EmuConfig.Cpu.Recompiler.vu1Underflow     ? 1 : 0;
+	s.vu1ExactMode     = EmuConfig.Cpu.Recompiler.vu1ExactMode     ? 1 : 0;
 
 	s.vuFlagHack      = EmuConfig.Speedhacks.vuFlagHack ? 1 : 0;
 	s.EECycleRate     = static_cast<s8>(EmuConfig.Speedhacks.EECycleRate);
