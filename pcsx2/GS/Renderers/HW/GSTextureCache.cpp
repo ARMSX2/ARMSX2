@@ -9473,6 +9473,23 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 		if (probes < 12)
 		{
 			probes++;
+			// Base level ALONE, recomputed for the probed textures only. The shipped hash folds
+			// the base and every mip into one value, so a mismatch cannot say which moved. Same
+			// address, same extent, same lod flag and same leading bytes in both builds -- so the
+			// bytes differ somewhere, and this splits "the glyph data differs" from "the mip chain
+			// differs", which are different bugs in different places.
+			u64 base_only = 0;
+			int nmips_dbg = 0;
+			{
+				BlockHashState base_st;
+				BlockHashReset(base_st);
+				HashTextureLevel(TEX0, TEXA, region, base_st, s_unswizzle_buffer);
+				base_only = FinishBlockHash(base_st);
+				if (lod)
+					nmips_dbg = lod->y - lod->x + 1;
+			}
+			Console.WriteLnFmt("TCPROBE base={:016x} nmips={} lodx={} lody={}", base_only, nmips_dbg,
+				lod ? lod->x : -1, lod ? lod->y : -1);
 			Console.WriteLnFmt("TCPROBE tex0hash={:016x} clut={:016x} TBP0={:05x} TBW={} PSM={} TW={} TH={} "
 				"region=({},{})-({},{}) lod={} first={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
 				ret.TEX0Hash, ret.CLUTHash, static_cast<u32>(TEX0.TBP0), static_cast<u32>(TEX0.TBW),
