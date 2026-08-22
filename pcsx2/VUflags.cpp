@@ -11,19 +11,18 @@
 /*          NEW FLAGS                    */ //By asadr. Thnkx F|RES :p
 /*****************************************/
 
-/*	The four cause bits one lane's result raises, and the word the FMAC writes
-	for it.
+/*	The four cause bits one lane's result raises, and the word the FMAC writes.
 
-	None of them can be read off the value alone. Exponent 255 is an ordinary
-	exponent here -- the VU's largest number is 0x7FFFFFFF, one binade above
-	FLT_MAX -- so O is not "the exponent field filled up" but "the exact result
-	was past that", which only the unit that produced it knows; and once a
-	subnormal result has been flushed, the signed zero left behind is the same
-	word an exact cancellation returns. Both facts come in from the caller.
+	The VU's largest number is 0x7FFFFFFF, a binade above FLT_MAX, so exponent
+	255 is an ordinary exponent here and O cannot be read off the value; nor
+	can U, a flushed subnormal leaving the same signed zero an exact
+	cancellation does. Both come in from the caller.
 
-	Reading exponent 255 as O instead is what made 2^128 * (1 + 2^-23) raise O
-	and come back clamped, where the console returns 0x7F800001 with no flag at
-	all (captures/vusat).
+	The underflow arm returns the caller's word rather than the sign alone.
+	Below 2^-126 add/sub keeps the mantissa bits normalisation left where MUL
+	clears them, and the caller's rounding step has already picked between the
+	two. Z rides with U either way: the console raises Z on any result whose
+	exponent field came out 0, zero word or not.
 */
 static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, u32 v, bool overflow, bool underflow )
 {
@@ -43,7 +42,7 @@ static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, u32 v, bool overflow, boo
 	if (underflow)
 	{
 		VU->macflag = (VU->macflag&~(0x1000<<shift)) | (0x0101<<shift);
-		return s;
+		return v;
 	}
 
 	if ((v & 0x7fffffff) == 0)
