@@ -148,6 +148,7 @@ add_pcsx2_test(recompiler_tests
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
 	vu0_macro_fmac_range_console_tests.cpp
+	vu0_macro_fmac_underflow_console_tests.cpp
 	vu0_macro_guard_mask_console_tests.cpp
 	vu_madd_contract_console_tests.cpp
 	vu1_efu_band_console_tests.cpp
