@@ -216,8 +216,8 @@ TEST(Vu0MacroFmacRangeConsole, ControlsSeparate)
 // zero, and only the multiply's U bit tells that apart from a product one of
 // whose operands was already zero -- which row 22 is, and which must keep
 // scoring clean at every mode. Below 4 the recompiler carries none of it, so
-// those four rows lose both flag columns, the rows MAC O carries lose theirs,
-// and nothing else may move.
+// those four rows lose both flag columns, the rows MAC O and the ceiling carry
+// lose theirs, and nothing else may move.
 TEST(Vu0MacroFmacRangeConsole, NoModeBelowFourCarriesTheModels)
 {
 	for (int mode = 1; mode <= 3; ++mode)
