@@ -82,9 +82,14 @@ echo "-- Discord Social SDK --"
 # on include/discordpp.h, so an unset variable silently produces a build with no Discord. 2.6.6.8
 # shipped that way and it was caught only after publishing.
 if [[ -n "${DISCORD_SDK_DIR:-}" ]]; then
-	unzip -l "$OUTPUT_AAB" | grep -q "libdiscord_partner_sdk.so" \
-		|| { echo "FATAL DISCORD_SDK_DIR is set but libdiscord_partner_sdk.so is not in the bundle" >&2; exit 1; }
-	echo "  present"
+	# Capture then match. Piping into `grep -q` under `set -o pipefail` is a false-failure
+	# generator: grep exits on the first match, SIGPIPEs unzip, and pipefail reports the whole
+	# pipeline as failed even though the library WAS found. That fired here on the first run.
+	discord_listing=$(unzip -l "$OUTPUT_AAB")
+	case "$discord_listing" in
+		*libdiscord_partner_sdk.so*) echo "  present" ;;
+		*) echo "FATAL DISCORD_SDK_DIR is set but libdiscord_partner_sdk.so is not in the bundle" >&2; exit 1 ;;
+	esac
 else
 	echo "  WARNING: DISCORD_SDK_DIR unset -- this bundle has NO Discord integration." >&2
 	echo "           Set it to the staged dir (include/ + arm64-v8a/ + .aar) before a release." >&2
