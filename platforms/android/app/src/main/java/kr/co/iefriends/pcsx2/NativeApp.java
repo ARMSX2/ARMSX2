@@ -174,7 +174,7 @@ public class NativeApp {
 	 * {@link #reloadPatches()} to apply. Writing the .pnach file alone is NOT
 	 * enough — a patch is inert unless its name is enabled here.
 	 */
-	public static native void setEnabledPatches(boolean cheats, String[] allNames, String[] enabledNames);
+	public static native void setEnabledPatches(boolean cheats, String[] allNames, String[] enabledNames, String serial);
 	/**
 	 * One-time repair: drop the GLOBAL [Patches]/[Cheats] "Enable" lists.
 	 * <p>

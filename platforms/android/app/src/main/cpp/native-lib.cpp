@@ -1848,6 +1848,21 @@ static std::vector<std::string> jStringArrayToVector(JNIEnv* env, jobjectArray a
 // (Patch Manager opened from the library). Path computation is kept identical to
 // gameIniBeginWrite's so BOTH halves of the game layer — the EmuCore overrides and the
 // patch/cheat enable lists — land in the SAME file.
+// The game INI for a serial, without a running VM. Same glob as gameIniBeginWriteForSerial:
+// a serial normally has exactly one CRC-keyed file. Empty when there is none, which is the
+// signal to fall back to the base layer.
+static std::string AndroidGameSettingsPathForSerial(const std::string& serial) {
+    if (serial.empty())
+        return {};
+    FileSystem::FindResultsArray results;
+    FileSystem::FindFiles(EmuFolders::GameSettings.c_str(),
+        fmt::format("{}_*.ini", Path::SanitizeFileName(serial)).c_str(),
+        FILESYSTEM_FIND_FILES, &results);
+    if (results.empty())
+        return {};
+    return results.front().FileName;
+}
+
 static std::string AndroidGameSettingsPath() {
     if (!VMManager::HasValidVM())
         return {};
@@ -1862,10 +1877,19 @@ static std::string AndroidGameSettingsPath() {
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
-    JNIEnv* env, jclass, jboolean cheats, jobjectArray allNames, jobjectArray enabledNames) {
+    JNIEnv* env, jclass, jboolean cheats, jobjectArray allNames, jobjectArray enabledNames,
+    jstring p_serial) {
     const std::vector<std::string> all = jStringArrayToVector(env, allNames);
     const std::vector<std::string> enabled = jStringArrayToVector(env, enabledNames);
     const char* section = (cheats == JNI_TRUE) ? "Cheats" : "Patches";
+
+    std::string serial;
+    if (p_serial) {
+        if (const char* sc = env->GetStringUTFChars(p_serial, nullptr)) {
+            serial = sc;
+            env->ReleaseStringUTFChars(p_serial, sc);
+        }
+    }
 
     auto lock = Host::GetSettingsLock();
 
@@ -1875,7 +1899,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
     // fully shadows the base one. Writing to the base layer meant enabling e.g. "Widescreen
     // 16:9" for one game auto-enabled the identically NAMED group in every other game,
     // because Patch::EnablePatches matches purely by name.
-    const std::string game_ini = AndroidGameSettingsPath();
+    // ★ Prefer the GAME ini even with no VM running.
+    //
+    // ReloadEnabledLists reads through LayeredSettingsInterface, which returns the FIRST
+    // NON-EMPTY layer with LAYER_GAME ahead of LAYER_BASE. So the moment a game's INI carries any
+    // [Patches] Enable entry, the base list is invisible -- and a toggle made from the LIBRARY,
+    // which had nowhere to go but base, reads back as enabled in the Patch Manager while the
+    // patch loader never sees it. That is "I enabled HostFS and it is still off" (JustVibin247),
+    // and it is why the mod's loader stayed disabled through several attempts to switch it on.
+    //
+    // The serial comes from the caller because there is no VM to ask. When no INI exists for it
+    // yet the base layer is still the right target, which is what the fall-through below does.
+    std::string game_ini = AndroidGameSettingsPath();
+    if (game_ini.empty())
+        game_ini = AndroidGameSettingsPathForSerial(serial);
     if (!game_ini.empty()) {
         // Load-then-modify: this file ALSO carries the EmuCore per-game overrides written
         // by gameIniCommitWrite, so it must never be regenerated from scratch here.

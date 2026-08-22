@@ -320,7 +320,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
                 val cheatsSection = file.parentFile?.name == "cheats"
                 // all = the names to drop, enabled = nothing to re-add.
                 runCatching {
-                    NativeApp.setEnabledPatches(cheatsSection, names.toTypedArray(), emptyArray())
+                    NativeApp.setEnabledPatches(cheatsSection, names.toTypedArray(), emptyArray(), bestSerial())
                 }
             }
             reloadCore()
@@ -491,12 +491,12 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
                 // Labelled groups only apply when their name is in the matching Enable list.
                 if (patchEntries.isNotEmpty()) {
                     val pn = patchEntries.mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct().toTypedArray()
-                    if (pn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(false, pn, pn) } // [Patches]
+                    if (pn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(false, pn, pn, bestSerial()) } // [Patches]
                 }
                 if (cheatEntries.isNotEmpty()) {
                     update { it.copy(enableCheats = true) } // only cheats are gated on Enable Cheats
                     val cn = cheatEntries.mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct().toTypedArray()
-                    if (cn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(true, cn, cn) } // [Cheats]
+                    if (cn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(true, cn, cn, bestSerial()) } // [Cheats]
                 }
                 reloadCore()
                 state.value = state.value.copy(
@@ -889,7 +889,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         if (all.isEmpty()) return
         val enabled = state.value.localCheats.filter { it.enabled }
             .mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct().toTypedArray()
-        runCatching { NativeApp.setEnabledPatches(cheatsSection, all, enabled) }
+        runCatching { NativeApp.setEnabledPatches(cheatsSection, all, enabled, bestSerial()) }
     }
 
     /** Reflect one file's on-disk body state into the native Enable list (parses it).
@@ -906,7 +906,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         if (all.isEmpty()) return
         val enabled = parsed.filter { it.enabled }
             .mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct().toTypedArray()
-        runCatching { NativeApp.setEnabledPatches(cheatsSection, all, enabled) }
+        runCatching { NativeApp.setEnabledPatches(cheatsSection, all, enabled, bestSerial()) }
     }
 
     // syncAllEnableLists() was removed deliberately — see the note in refresh(). Reflecting every
