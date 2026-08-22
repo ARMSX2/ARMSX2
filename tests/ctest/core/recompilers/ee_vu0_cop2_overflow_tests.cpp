@@ -11,19 +11,20 @@
 // interpreter's exact model as the reference.
 //
 // What the VU calls an overflow is a result at or past 2^129, a binade above
-// anything single precision holds, and the operands reach that far too. So a
-// row that raises O is also a row where the recompiler's VALUE is still wrong
-// -- it saturates at FLT_MAX where the console saturates at 0x7FFFFFFF, and an
-// exponent-255 operand is a NaN to every host op the arithmetic runs through.
-// The flags are compared in two steps because of that: the O positions on every
-// row, and the whole of MAC and STATUS on the rows where the two engines wrote
-// the same words, which is what says the O nibble did not arrive by pushing
-// some other bit out of place.
+// anything single precision holds, and the operands reach that far too. The O
+// positions carry the saturated word with them at vuClampMode 3, but the rows
+// that do not saturate can still be a binade short -- an exponent-255 operand
+// is a NaN to every host op the arithmetic runs through. The flags are
+// compared in two steps because of that: the O positions on every row, and the
+// whole of MAC and STATUS on the rows where the two engines wrote the same
+// words, which is what says the O nibble did not arrive by pushing some other
+// bit out of place.
 //
-// Both polarities: the same stream below the gate has to lose O on the rows
-// mode 4 gets right, or the mode-4 pass says nothing about the gate.
+// Both polarities: the same stream at vuClampMode 1 has to lose O on the rows
+// the model gets right, or the pass says nothing about the gate.
 //
-// MAC O is at vuClampMode 4; the multiply's MAC U is one mode down, where
+// MAC O and the ceiling are at vuClampMode 4, so the sweep runs there; the
+// multiply's MAC U is one mode down, where
 // ee_vu0_cop2_mul_underflow_tests.cpp scores it.
 //
 // MADD and MSUB are deliberately absent. Their accumulate reads a product the
@@ -38,6 +39,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <random>
 #include <vector>
 
@@ -273,20 +275,23 @@ TEST(EeVu0Cop2Overflow, OverflowMatchesTheInterpreterAtModeFour)
 	                              "the per-lane flag comparison never ran";
 }
 
-// The gate, from the other side. Replaying the same stream at vuClampMode 1, 2
-// and 3 has to lose the O bits at each, and for the multiplies -- where mode 4
-// adds flag work and nothing else -- it must move no word at all. The adds are
-// excluded from that half deliberately: mode 4 also turns on the guard mask
-// there, which is a value model and is scored by the guard-mask files. The MAC U
-// comparison skips the gated nibbles because U is a mode lower and mode 1 has
-// none of it; ee_vu0_cop2_mul_underflow_tests.cpp scores that gate.
+// The gate, from the other side. MAC O and the ceiling are the only two things
+// on vuClampMode 4, so replaying the same stream at 1, 2 and 3 has to lose the O
+// bits at each, and for the multiplies it must move a word only where it lost
+// one: the ceiling is the whole of what mode 4 does to a multiply's value, so a
+// moved word has to be the lower mode's own answer with its magnitude promoted
+// from FLT_MAX to 0x7FFFFFFF, in a lane whose O it raised. The adds are excluded
+// from that half deliberately: mode 4 also turns on the guard mask there, which
+// is a value model and is scored by the guard-mask files. The MAC U comparison
+// skips the gated nibbles because U is a mode lower and mode 1 has none of it;
+// ee_vu0_cop2_mul_underflow_tests.cpp scores that gate.
 TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 {
 	for (int low = 1; low <= 3; ++low)
 	{
 	SCOPED_TRACE(::testing::Message() << "vuClampMode " << low);
 	std::mt19937 rng(0x0FA5EEDu);
-	int lost = 0, nonzero = 0;
+	int lost = 0, nonzero = 0, promoted = 0;
 	for (int iter = 0; iter < kIters; ++iter)
 	{
 		const Case c = NextCase(rng, iter);
@@ -304,14 +309,24 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 				<< "MAC outside the gated nibbles";
 			EXPECT_EQ(g1.status & ~(kStatO | kStatU), g4.status & ~(kStatO | kStatU))
 				<< "STATUS outside the gated bits";
-			// The model is a flag, so it must not have moved a word. This is
-			// where the predicate's scratch registers are checked: it runs
-			// before the operand clamp, with both operands and the destination
-			// live, and a full-mask op computes into a VF cache slot that may
-			// be Fs's or Ft's.
+			// Word 0-3 is Fd's lane, 4-7 is the ACC's; either way the lane
+			// index is the low two bits, and only the register the op wrote
+			// can move. This is also where the predicate's scratch registers
+			// are checked: it runs before the operand clamp, with both
+			// operands and the destination live, and a full-mask op computes
+			// into a VF cache slot that may be Fs's or Ft's.
 			for (int l = 0; l < 8; ++l)
 			{
-				EXPECT_EQ(g4.word[l], g1.word[l]) << "word " << l << " moved with the mode";
+				if (g4.word[l] != g1.word[l])
+				{
+					EXPECT_EQ(g1.word[l] & 0x7FFFFFFFu, 0x7F7FFFFFu)
+						<< "word " << l << " moved from something other than FLT_MAX";
+					EXPECT_EQ(g4.word[l], g1.word[l] | 0x7FFFFFFFu)
+						<< "word " << l << " moved to something other than the ceiling";
+					EXPECT_NE(g4.mac & LaneMacBits(l & 3) & kMacO, 0u)
+						<< "word " << l << " moved in a lane that raised no O";
+					++promoted;
+				}
 				nonzero += g1.word[l] != 0;
 			}
 		}
@@ -320,6 +335,8 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 	EXPECT_GT(lost, 200) << "nothing was lost, so the gate was not exercised";
 	EXPECT_GT(nonzero, 1000) << "the below-gate run read back nothing, so the value "
 	                            "comparison above compared zero with zero";
+	EXPECT_GT(promoted, 100) << "no multiply's word took the ceiling, so the shape of "
+	                            "the move was never checked";
 	}
 }
 
