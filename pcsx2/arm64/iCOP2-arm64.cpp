@@ -608,21 +608,20 @@ static void cop2ClampResult()
 	cop2ClampResultReg(RQSCRATCH);
 }
 
-// The FMAC's ceiling, where the host clamp above cannot reach it.
-// armEmitVuSaturateAtMax (VuFmacFlags-arm64.h) carries the rule and microVU
-// emits the same one; this is where it fits a macro op and what it costs in
-// registers. recCOP2_VDIV's zero-divisor branch builds the same word by hand,
-// having no vector to put it in.
-static void cop2EmitSaturateAtMax(const a64::VRegister& result, const a64::VRegister& overflow)
+// The FMAC's ceiling, where the host clamp above cannot reach it
+// (armEmitVuSaturateAtMax). `sign` is what cop2EmitAdd/Sub/Mul hand back
+// through their second out parameter. RQSCRATCH3 is the one scratch it needs:
+// the guard mask and both multiply predicates are done with it by here.
+static void cop2EmitSaturateAtMax(const a64::VRegister& result, const a64::VRegister& overflow,
+	const a64::VRegister& sign)
 {
 	if (!overflow.IsValid())
 		return;
-	const a64::VRegister max = RQSCRATCH2;
-	const a64::VRegister sat = RQSCRATCH3;
-	for (const a64::VRegister& r : {result, overflow})
-		pxAssert(r.GetCode() != max.GetCode() && r.GetCode() != sat.GetCode());
+	const a64::VRegister k = RQSCRATCH3;
+	for (const a64::VRegister& r : {result, overflow, sign})
+		pxAssert(r.GetCode() != k.GetCode());
 
-	armEmitVuSaturateAtMax(result, overflow, max, sat);
+	armEmitVuSaturateAtMax(result, overflow, sign, k);
 }
 
 // Defined with the flag update below. The guard mask is emitted for the value
@@ -647,7 +646,7 @@ static bool cop2MacFlagLive();
 // Fifteen instructions on top of the add, so it is emitted at vuClampMode 4
 // only, read through CHECK_VU_EXACT on VU0 since COP2 macro is VU0's.
 static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, bool issub, a64::VRegister* ov)
+	const a64::VRegister& b, bool issub, a64::VRegister* ov, a64::VRegister* sgn)
 {
 	if (!CHECK_VU_EXACT(0))
 	{
@@ -664,9 +663,28 @@ static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegiste
 	for (const a64::VRegister& r : {dst, a, b})
 		pxAssert(r.GetCode() < 27 || r.GetCode() > 29);
 
+	const bool wantO = ov && _XYZW_cop2 != 0;
+
+	// The saturated word's sign is the first addend's, and it has to be taken
+	// before the arithmetic: the O predicate reads the masked pair over the top
+	// of it, and `dst` may be its register. RQSCRATCH is the stash for that
+	// case -- no add-or-sub body puts anything of its own there.
+	if (wantO && sgn)
+	{
+		if (dst.GetCode() == a.GetCode())
+		{
+			pxAssert(b.GetCode() != RQSCRATCH.GetCode());
+			armAsm->Mov(RQSCRATCH.V16B(), a.V16B());
+			*sgn = RQSCRATCH;
+		}
+		else
+		{
+			*sgn = a;
+		}
+	}
+
 	armEmitVuGuardMask(sel, tmp, a, b, mask);
 
-	const bool wantO = ov && _XYZW_cop2 != 0;
 	if (issub)
 		armAsm->Fsub(dst.V4S(), sel.V4S(), tmp.V4S());
 	else
@@ -688,20 +706,24 @@ static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegiste
 // MAC O predicate where the op models one; a multiply's is taken from the
 // operands before the clamp (cop2EmitMulOverflow) and arrives already set.
 static void cop2EmitAdd(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* ov = nullptr)
+	const a64::VRegister& b, a64::VRegister* ov = nullptr, a64::VRegister* sgn = nullptr)
 {
-	cop2EmitGuardedAddSub(dst, a, b, false, ov);
+	cop2EmitGuardedAddSub(dst, a, b, false, ov, sgn);
 }
 
 static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* ov = nullptr)
+	const a64::VRegister& b, a64::VRegister* ov = nullptr, a64::VRegister* sgn = nullptr)
 {
-	cop2EmitGuardedAddSub(dst, a, b, true, ov);
+	cop2EmitGuardedAddSub(dst, a, b, true, ov, sgn);
 }
 
 static void cop2EmitMul(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* = nullptr)
+	const a64::VRegister& b, a64::VRegister* = nullptr, a64::VRegister* sgn = nullptr)
 {
+	// A product that saturates keeps the sign the host gave it, so the ceiling
+	// reads it back off the result.
+	if (sgn)
+		*sgn = dst;
 	armAsm->Fmul(dst.V4S(), a.V4S(), b.V4S());
 }
 
@@ -711,15 +733,15 @@ static void cop2EmitMul(const a64::VRegister& dst, const a64::VRegister& a,
 // the console raises and invents ones it does not -- a NaN product arrives as
 // +FLT_MAX too.
 static void cop2EmitAccAdd(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* = nullptr)
+	const a64::VRegister& b, a64::VRegister* = nullptr, a64::VRegister* = nullptr)
 {
-	cop2EmitGuardedAddSub(dst, a, b, false, nullptr);
+	cop2EmitGuardedAddSub(dst, a, b, false, nullptr, nullptr);
 }
 
 static void cop2EmitAccSub(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* = nullptr)
+	const a64::VRegister& b, a64::VRegister* = nullptr, a64::VRegister* = nullptr)
 {
-	cop2EmitGuardedAddSub(dst, a, b, true, nullptr);
+	cop2EmitGuardedAddSub(dst, a, b, true, nullptr, nullptr);
 }
 
 // ========================================================================
@@ -1867,10 +1889,10 @@ void recCOP2_VADD()
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	a64::VRegister ov = a64::NoVReg;
-	cop2EmitAdd(rd, fs, ft, &ov);
+	a64::VRegister ov = a64::NoVReg, sgn = a64::NoVReg;
+	cop2EmitAdd(rd, fs, ft, &ov, &sgn);
 	cop2ClampResultReg(rd);
-	cop2EmitSaturateAtMax(rd, ov);
+	cop2EmitSaturateAtMax(rd, ov, sgn);
 	cop2EmitFlagUpdate(_XYZW_cop2, rd, a64::NoVReg, ov);
 	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd);
 
@@ -1896,7 +1918,7 @@ void recCOP2_VSUB()
 	// zero. This stays at x86's answer's expense until the operands can be held
 	// at their real magnitude.
 	a64::VRegister rd;
-	a64::VRegister ov = a64::NoVReg;
+	a64::VRegister ov = a64::NoVReg, sgn = a64::NoVReg;
 	if (_Fs_cop2 == _Ft_cop2)
 	{
 		// PS2 x - x is exactly +0 in every lane: VU floats have no inf/NaN,
@@ -1913,10 +1935,10 @@ void recCOP2_VSUB()
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 		const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 		rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-		cop2EmitSub(rd, fs, ft, &ov);
+		cop2EmitSub(rd, fs, ft, &ov, &sgn);
 		cop2ClampResultReg(rd);
 	}
-	cop2EmitSaturateAtMax(rd, ov);
+	cop2EmitSaturateAtMax(rd, ov, sgn);
 	cop2EmitFlagUpdate(_XYZW_cop2, rd, a64::NoVReg, ov);
 	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd);
 
@@ -1944,7 +1966,7 @@ void recCOP2_VMUL()
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
 	armAsm->Fmul(rd.V4S(), RQSCRATCH.V4S(), mulB.V4S());
 	cop2ClampResultReg(rd);
-	cop2EmitSaturateAtMax(rd, ov);
+	cop2EmitSaturateAtMax(rd, ov, rd);
 	cop2EmitFlagUpdate(_XYZW_cop2, rd, uz, ov);
 	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd);
 
@@ -2011,9 +2033,10 @@ static void cop2LoadBroadcast(const a64::VRegister& qreg, int vfReg, int bc)
 		const a64::VRegister uz = mulClamp \
 			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		emitOp(rd, mulA, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rd, mulA, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rd); \
-		cop2EmitSaturateAtMax(rd, ov); \
+		cop2EmitSaturateAtMax(rd, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz, ov); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
@@ -2117,9 +2140,10 @@ void recCOP2_VMINIi()
 		const a64::VRegister uz = mulClamp \
 			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		emitOp(rd, mulA, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rd, mulA, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rd); \
-		cop2EmitSaturateAtMax(rd, ov); \
+		cop2EmitSaturateAtMax(rd, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz, ov); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x111); \
@@ -2149,9 +2173,10 @@ COP2_Q_OP(MULq, cop2EmitMul, true)
 		const a64::VRegister uz = mulClamp \
 			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		emitOp(rd, mulA, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rd, mulA, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rd); \
-		cop2EmitSaturateAtMax(rd, ov); \
+		cop2EmitSaturateAtMax(rd, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz, ov); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
@@ -2357,9 +2382,10 @@ void recCOP2_VOPMSUB()
 		const a64::VRegister uz = isMul \
 			? cop2EmitMulExactZero(_XYZW_cop2, fs, ft) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
-		emitOp(rdA, fs, ft, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rdA, fs, ft, &ov, &sgn); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitSaturateAtMax(rdA, ov); \
+		cop2EmitSaturateAtMax(rdA, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz, ov); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
@@ -2390,9 +2416,10 @@ COP2_ACCUM_OP(MULA, cop2EmitMul, true)
 		const a64::VRegister uz = mulClamp \
 			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
-		emitOp(rdA, mulA, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rdA, mulA, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitSaturateAtMax(rdA, ov); \
+		cop2EmitSaturateAtMax(rdA, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz, ov); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
@@ -2432,9 +2459,10 @@ COP2_ACCUM_BC(MULAw, cop2EmitMul, 3, true)
 		const a64::VRegister uz = isMul \
 			? cop2EmitMulExactZero(_XYZW_cop2, fs, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
-		emitOp(rdA, fs, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rdA, fs, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitSaturateAtMax(rdA, ov); \
+		cop2EmitSaturateAtMax(rdA, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz, ov); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x111); \
@@ -2456,9 +2484,10 @@ COP2_ACCUM_Q(MULAq, cop2EmitMul, true)
 		const a64::VRegister uz = isMul \
 			? cop2EmitMulExactZero(_XYZW_cop2, fs, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
-		emitOp(rdA, fs, RQSCRATCH2, &ov); \
+		a64::VRegister sgn = a64::NoVReg; \
+		emitOp(rdA, fs, RQSCRATCH2, &ov, &sgn); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitSaturateAtMax(rdA, ov); \
+		cop2EmitSaturateAtMax(rdA, ov, sgn); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz, ov); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
@@ -2591,7 +2620,7 @@ void recCOP2_VOPMULA()
 	const a64::VRegister ov = cop2EmitMulOverflow(_XYZW_cop2, fsRot, ftRot,
 		/*k=*/RQSCRATCH2);
 	cop2ClampResult();
-	cop2EmitSaturateAtMax(RQSCRATCH, ov);
+	cop2EmitSaturateAtMax(RQSCRATCH, ov, RQSCRATCH);
 	cop2EmitFlagUpdate(_XYZW_cop2, RQSCRATCH, uz, ov);
 
 	cop2ApplyDestMaskACC(RQSCRATCH);

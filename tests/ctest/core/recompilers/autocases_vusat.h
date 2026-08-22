@@ -47,7 +47,7 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_MUL,  0x7F800000u, 0xC0000000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 0, "B 2^128*-2 sign mirror"},
 	{VS_ADD,  0x7FFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 0, "B max+max"},
 	{VS_MUL,  0x7F800000u, 0x7F800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 0, 0, "B 2^128*2^128 far past the top"},
-	{VS_SUB,  0xFFFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 7, "B -max-max"},
+	{VS_SUB,  0xFFFFFFFFu, 0x7FFFFFFFu, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 0, 0, "B -max-max"},
 	{VS_MUL,  0x7F000000u, 0x3F800001u, 0x00000000u, 0x7F000001u, 0x0000u, 0x0040u, 0, 0, "B 2^127*(1+2^-23) exp FE, in range under every reading"},
 	{VS_MUL,  0x7F800000u, 0x3F800001u, 0x00000000u, 0x7F800001u, 0x0000u, 0x0040u, 0, 1, "B 2^128*(1+2^-23) exp FF and representable: does exp FF alone raise O?"},
 	{VS_ADD,  0x7F800000u, 0x74000000u, 0x00000000u, 0x7F800001u, 0x0000u, 0x0040u, 0, 1, "B 2^128 + 1ulp exp FF and representable, via the adder"},
@@ -106,6 +106,6 @@ inline constexpr VuSatCase kVuSatCases[] = {
 inline constexpr int kVuSatCaseCount = 68;
 // Column-misses, not case-misses: a case wrong in two columns counts twice.
 inline constexpr int kVuSatBadInterp = 0;
-inline constexpr int kVuSatBadJit = 47;
+inline constexpr int kVuSatBadJit = 44;
 
 } // namespace console_vusat

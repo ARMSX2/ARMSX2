@@ -103,28 +103,17 @@
 //       of the accumulate; only shapes compiled under vuClampMode:2 change.
 //  18 — RSQRT's zero path ORs its D/I into divFlag instead of assigning over
 //       it, so the sign test's I survives. Only RSQRT changes shape.
-//  19 — the console-exact VU models, on two rungs of the clamp ladder.
-//       Every divide-unit block changes shape whatever the mode: DIV and
-//       RSQRT saturate their zero-divisor Q at 0x7FFFFFFF, built with one
-//       MVNI instead of the signbit/maxvals pair of mVUglob loads; all three
-//       ops read the operand's exponent field instead of Fcmp against 0.0;
-//       and the denormal flush is emitted only where the unit's own FPCR
-//       clears FZ. Every FMAC changes shape too: mVUglob.macWeights gains a
-//       variant dimension so every weight load's [x25, #imm] moves, the I
-//       immediate is stored whole rather than pre-clamped. At vuClampMode 4,
-//       on top of that: a flag-writing multiply emits its MAC U predicate
-//       ahead of the operand clamp and every flag-writing FMAC its MAC O the
-//       same way; ADD, SUB and the EFU's scalar adds mask their operand pair
-//       into the scratch trio before the host add, with ADDi on that path
-//       instead of the tri-ace gamefix; DIV, SQRT and RSQRT drop the host
-//       Fdiv/Fsqrt, the clamp under it and the denormal fixups for an
-//       out-of-line model call on their non-zero-divisor arm; and all
-//       thirteen EFU ops drop their host series for one model call apiece;
-//       and every op carrying a MAC O predicate substitutes 0x7FFFFFFF for
-//       the clamp's FLT_MAX in the lanes it marks, so that predicate is
-//       emitted whether or not the flag registers are read and a flag-dead
-//       FMAC changes shape too. VU0 sees none of the EFU part -- every one of
-//       the thirteen is a NOP there.
+//  19 — the console-exact VU models. Every divide-unit block changes shape at
+//       any mode: the zero-divisor Q is built with one MVNI, the zero tests
+//       read the exponent field, and the denormal flush is emitted only where
+//       the unit's own FPCR clears FZ. So does every FMAC: macWeights gains a
+//       variant dimension, moving every weight load's [x25, #imm], and the I
+//       immediate is stored unclamped. At vuClampMode 4 a flag-writing multiply
+//       adds its MAC U predicate ahead of the operand clamp, every FMAC adds
+//       MAC O and the 0x7FFFFFFF substitution it feeds (so a flag-dead FMAC
+//       changes shape too), ADD and SUB mask their operands through the guard
+//       mask, and the divide unit and all thirteen EFU ops become out-of-line
+//       model calls.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>

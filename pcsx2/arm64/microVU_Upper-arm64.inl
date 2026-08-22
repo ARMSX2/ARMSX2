@@ -459,6 +459,7 @@ struct mVUfmacUO
 {
 	a64::VRegister underflow = a64::NoVReg;
 	a64::VRegister overflow = a64::NoVReg;
+	a64::VRegister sign = a64::NoVReg;
 };
 
 static bool mVUwantExactO(mV)
@@ -499,6 +500,12 @@ static mVUfmacUO mVUemitAddSubO(mV, const a64::VRegister& a, const a64::VRegiste
 		return uo;
 	uo.overflow = mVU.regAlloc->allocReg();
 	armEmitVuAddSubOverflow(uo.overflow, a, b, issub, RQSCRATCH3, RQSCRATCH2, RQSCRATCH);
+	// The ceiling substitutes the first addend's sign and the arithmetic writes
+	// over that register, so it is copied rather than read back. The result
+	// usually carries it anyway, mVUclamp3's integer clamp being sign
+	// preserving, but a body that skips that clamp would take it off a NaN.
+	uo.sign = mVU.regAlloc->allocReg();
+	armAsm->Mov(uo.sign.V16B(), a.V16B());
 	return uo;
 }
 
@@ -518,25 +525,25 @@ static mVUfmacUO mVUemitFmacUO(mV, int opType, const a64::VRegister& a, const a6
 	return mVUfmacUO{};
 }
 
-// The saturated word, in the lanes the O predicate marks. armEmitVuSaturateAtMax
-// (VuFmacFlags-arm64.h) carries the rule and the COP2 macro path emits the same
-// one. It runs on the ARITHMETIC's register rather than on a merged ACC: a
-// dest field narrower than xyzw leaves the other lanes of an ACC clone standing
-// for the writeback, and the O predicate says nothing useful about them.
-//
-// RQSCRATCH2 and RQSCRATCH3 are the scratch the clamps and the guard mask
-// already draw on, dead by here in every FMAC body.
+// The saturated word, in the lanes the O predicate marks
+// (armEmitVuSaturateAtMax). It runs on the arithmetic's register rather than a
+// merged ACC: a dest field narrower than xyzw leaves the other lanes of an ACC
+// clone standing for the writeback, and the O predicate says nothing useful
+// about them. A multiply has no `uo.sign` and takes the sign off its own
+// result; RQSCRATCH3 is dead by here in every FMAC body.
 static void mVUemitSaturateAtMax(mV, const a64::VRegister& dst, const mVUfmacUO& uo)
 {
 	if (!uo.overflow.IsValid())
 		return;
-	armEmitVuSaturateAtMax(dst, uo.overflow, RQSCRATCH2, RQSCRATCH3);
+	armEmitVuSaturateAtMax(dst, uo.overflow, uo.sign.IsValid() ? uo.sign : dst, RQSCRATCH3);
 }
 
 static void mVUclearUO(mV, const mVUfmacUO& uo)
 {
 	if (uo.underflow.IsValid())
 		mVU.regAlloc->clearNeeded(uo.underflow);
+	if (uo.sign.IsValid())
+		mVU.regAlloc->clearNeeded(uo.sign);
 	if (uo.overflow.IsValid())
 		mVU.regAlloc->clearNeeded(uo.overflow);
 }

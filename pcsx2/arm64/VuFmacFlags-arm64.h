@@ -74,22 +74,42 @@ __fi static void armEmitVuMulExactZero(const a64::VRegister& dst, const a64::VRe
 }
 
 // The word the console leaves in a lane that saturated: 0x7FFFFFFF with the
-// result's own sign, a binade above the +/-FLT_MAX either emitter's result
-// clamp can reach. Substituted from the O predicate rather than computed, so it
-// makes that predicate an input to the VALUE and not only to the flags -- which
-// is why both emitters build it at vuClampMode 3 whether or not anything reads
-// MAC or STATUS.
+// result's sign, a binade above the +/-FLT_MAX either emitter's result clamp
+// can reach. It is substituted from the O predicate rather than computed, so
+// that predicate feeds the value and not only the flags -- which is why both
+// emitters build it whether or not anything reads MAC or STATUS.
 //
-// `dst` keeps its sign and stays non-zero, so a MAC pack downstream reads the
-// same Z and S off it. `k` and `sat` are scratch and may be neither `dst` nor
-// `overflow`.
+// `sign` is the first addend for an add or a sub. ADD overflows only when the
+// two signs agree and SUB only when they differ, so either way the magnitudes
+// add and the sign they share is `a`'s. Taking it off the result loses it
+// wherever the host arithmetic returned a NaN, which is every pair with an
+// exponent-255 operand in it. A multiply passes `dst`, whose sign the host
+// product already carries. Only bit 31 of a `sign` lane is read, so an operand
+// register goes in whole.
+//
+// Two spellings, so that whichever input is late arrives one instruction from
+// the answer: `overflow` is the late one for an add and `dst` for a multiply,
+// where the sign is already in place and an all-ones lane shifted right by one
+// is 0x7FFFFFFF for free.
+//
+// `dst` keeps that sign and stays non-zero, so a MAC pack downstream reads the
+// same Z and S off it. `k` is scratch and may be neither `overflow` nor `sign`.
 __fi static void armEmitVuSaturateAtMax(const a64::VRegister& dst,
-	const a64::VRegister& overflow, const a64::VRegister& k, const a64::VRegister& sat)
+	const a64::VRegister& overflow, const a64::VRegister& sign, const a64::VRegister& k)
 {
+	pxAssert(!k.Is(overflow) && !k.Is(sign));
+
+	if (sign.GetCode() == dst.GetCode())
+	{
+		pxAssert(!k.Is(dst));
+		armAsm->Ushr(k.V4S(), overflow.V4S(), 1);
+		armAsm->Orr(dst.V16B(), dst.V16B(), k.V16B());
+		return;
+	}
+
 	armAsm->Mvni(k.V4S(), 0x80, a64::LSL, 24); // 0x7FFFFFFF
-	armAsm->Sshr(sat.V4S(), dst.V4S(), 31);    // the sign, spread over the lane
-	armAsm->Orr(sat.V16B(), sat.V16B(), k.V16B());
-	armAsm->Bit(dst.V16B(), sat.V16B(), overflow.V16B());
+	armAsm->Orr(k.V16B(), sign.V16B(), k.V16B());
+	armAsm->Bit(dst.V16B(), k.V16B(), overflow.V16B());
 }
 
 // dst = all ones per lane where a +/- b is past the VU's largest value:
