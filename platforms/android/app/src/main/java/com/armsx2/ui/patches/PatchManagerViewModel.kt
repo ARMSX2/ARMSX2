@@ -600,7 +600,25 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         state.value = state.value.copy(
             localCheats = state.value.localCheats.map { if (it.name == name) it.copy(enabled = nowEnabled, body = newBody) else it },
         )
-        if (newBody == target.body) return // no patch= lines changed; nothing to write
+        // ★ The body being unchanged does NOT mean there is nothing to do.
+        //
+        // setBodyEnabled only comments or uncomments the patch= lines, and community pnach files
+        // ship UNCOMMENTED -- so enabling one of those produces an identical body. This used to
+        // return here, which skipped pushEnableList entirely. Patch.cpp applies a NAMED group only
+        // when its name is in the [Patches]/[Cheats] Enable list (unlabelled groups auto-enable),
+        // so the switch flipped on screen, the file was already correct, and the patch still never
+        // applied. That is "I enabled HostFS and it is still off" -- the enable list was never
+        // written, and the game INI ended up with no [Patches] section at all.
+        //
+        // The two writes are independent: rewrite the body only when it actually differs, but
+        // always push the enable list.
+        if (newBody == target.body) {
+            viewModelScope.launch {
+                pushEnableList(path)
+                reloadCore()
+            }
+            return
+        }
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
