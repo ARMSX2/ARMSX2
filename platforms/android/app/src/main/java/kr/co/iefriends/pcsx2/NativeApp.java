@@ -182,7 +182,6 @@ public class NativeApp {
 	 * patches are enabled by NAME those entries armed the same-named group in the bundled pnach
 	 * archive for every game. Per-game lists are left alone. Call once, gated on a pref.
 	 */
-	public static native void purgeGlobalPatchEnableLists();
 
 	// ---- USB lightgun (GunCon 2) ----------------------------------------------
 	/** GunCon2 binding ids, from pcsx2/USB/usb-lightgun/guncon2.cpp. */

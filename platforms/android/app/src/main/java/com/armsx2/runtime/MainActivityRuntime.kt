@@ -1868,27 +1868,12 @@ open class MainActivityRuntime : ComponentActivity() {
             NativeApp.initializeOnce(applicationContext)
             nativeReady.value = true
 
-            // One-time repair of globally-armed patches. Older builds filled the global
-            // [Patches]/[Cheats] Enable lists just by opening the Patch Manager, and since
-            // patches are matched BY NAME those entries armed the same-named group in the
-            // bundled archive for every game — the "60fps/16:9 with every patch setting off,
-            // and it won't turn off" reports. The auto-sync is gone, but existing installs
-            // still carry the poisoned lists, so clear them once. Must run after
-            // initializeOnce (the base settings layer has to exist).
-            // Key is versioned: v1 cleared only the base layer, which a stale PER-GAME list then
-            // shadowed (GOW2 still reported "1 game patch active" with everything off). Bumping it
-            // re-runs the now-complete purge for anyone who already took v1.
             // Lightgun: read the pref and re-assert the USB device type. The ini is
             // authoritative, but this covers a first run that has no USB section yet.
             runCatching {
                 com.armsx2.input.UsbDevices.load()
                 com.armsx2.input.Lightgun.load()
                 com.armsx2.input.UsbDevices.applyAtBoot()
-            }
-
-            if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
-                runCatching { NativeApp.purgeGlobalPatchEnableLists() }
-                    .onSuccess { prefs.edit { putBoolean("patchEnableListsPurged.v2", true) } }
             }
 
             // Pin Filenames/BIOS to the file the setup wizard copied —
