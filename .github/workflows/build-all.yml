@@ -169,6 +169,19 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app
 
+      # RetroAchievements grants hardcore on the client name and version in the HTTP user
+      # agent, and pcsx2/Host.cpp reads that version from a gitignored header. Only builds
+      # that reach players get it: a pull request artifact would be one more public copy of
+      # an identity that cannot be revoked without a release. Those keep the stock PCSX2
+      # agent and stay softcore, which is what a test build should be.
+      - name: Embed the RetroAchievements client identity
+        if: >-
+          github.repository == 'ARMSX2/ARMSX2' &&
+          github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
+        run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
+
       - name: Configure (CMake, Xcode generator, real device SDK, no signing)
         working-directory: platforms/ios/app/src/main/cpp
         run: >
@@ -208,6 +221,21 @@ jobs:
 
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
           ls -lh "$IPA_NAME"
+
+      # Nothing on the client reports a rejected agent, so a master build that lost the
+      # identity looks healthy until a player loses an unlock. Fail here instead. Carries
+      # the same guard as the write step, or every pull request would fail this check.
+      - name: Verify the client identity reached the binary
+        if: >-
+          github.repository == 'ARMSX2/ARMSX2' &&
+          github.event_name == 'push' && github.ref == 'refs/heads/master'
+        working-directory: platforms/ios/app/src/main/cpp
+        env:
+          IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
+        run: |
+          APP_PATH=$(find build -name "ARMSX2iOS.app" -type d | head -1)
+          bash "$GITHUB_WORKSPACE/.github/workflows/scripts/common/verify-ra-ua-agent.sh" \
+            "$APP_PATH/ARMSX2iOS"
 
       - name: Upload .ipa
         uses: actions/upload-artifact@v4
