@@ -92,23 +92,18 @@ bool CaseMatches(const EfuCase& c, u32 word, bool jit, int clamp_mode = 0)
 	return got == c.p;
 }
 
-// The EFU adds through NEON_ADDSS and NEON_SUBSS, which carry the adder's
-// guard mask at vuClampMode 4. These are the rows that mask reaches: each one
-// wrong at 1, 2 and 3, exact at 4.
-constexpr const char* kGuardMaskRows[] = {
-	"EATAN CVF_MAX", "EATAN CVF_MIN", "EATAN CVF_MAX_EXP", "EATAN CVF_PI_OVER2",
-	"EATAN CVF_INCREASING", "EATAN CVF_GARBAGE2",
-	"EATANxy CVF_DECREASING", "EATANxz CVF_INCREASING",
-};
-
-bool IsGuardMaskRow(const EfuCase& c)
+// One engine's score over the whole capture at one clamp mode.
+int ScoreJit(int clamp_mode)
 {
-	for (const char* label : kGuardMaskRows)
+	int ok = 0;
+	for (int i = 0; i < kEfuCaseCount; ++i)
 	{
-		if (std::string(label) == c.label)
-			return true;
+		const EfuCase& c = kEfuCases[i];
+		const u32 word = Encode(c);
+		EXPECT_NE(word, 0u) << "no encoder for " << c.op;
+		ok += CaseMatches(c, word, true, clamp_mode);
 	}
-	return false;
+	return ok;
 }
 } // namespace
 
@@ -373,38 +368,22 @@ TEST(Vu1EfuConsoleConformance, DISABLED_AllOpsMatchConsole)
 
 
 // The clamp-mode axis, which the table's own column does not cross: bad_jit was
-// recorded at the harness default of 1 and the adder's guard mask is gated on
-// 4. Scoring the whole column at 4 as well is what keeps the gate from being
-// the place accuracy quietly leaks out of.
+// recorded at the harness default of 1 and this tree's exact models are gated on
+// 4. Scoring the whole column at each mode is what keeps the gate from being the
+// place accuracy quietly leaks out of.
 //
-// 122 of 208 at mode 4 against 102 at mode 1. Eight of the twenty are the
-// adder's guard mask, named above and asserted row by row; the rest come from
-// the operand clamp the middle modes carry, which also costs the column
-// ESUM CVF_MAX and ESUM CVF_MIN -- both already gone at mode 2, so they are the
-// clamp's and not the mask's.
-TEST(Vu1EfuConsoleConformance, TheGuardMaskCarriesItsRowsAtClampModeFour)
+// At mode 4 every EFU op calls VuEfuModel rather than evaluating its series in
+// host arithmetic, so the recompiler answers what the interpreter answers and
+// the column closes. The three modes below it are the negative control: they
+// still run the host path. They are not one number -- the operand clamps move
+// between them and one case with them -- which is what says the sweep is
+// reading the mode and not a constant.
+TEST(Vu1EfuConsoleConformance, TheEfuLandsAtClampModeFour)
 {
-	int ok_at_four = 0;
-	int guard_rows = 0;
-	for (int i = 0; i < kEfuCaseCount; ++i)
-	{
-		const EfuCase& c = kEfuCases[i];
-		const u32 word = Encode(c);
-		ASSERT_NE(word, 0u) << "no encoder for " << c.op;
-
-		const bool four = CaseMatches(c, word, true, 4);
-		ok_at_four += four;
-		if (!IsGuardMaskRow(c))
-			continue;
-
-		++guard_rows;
-		SCOPED_TRACE(::testing::Message() << c.label);
-		EXPECT_TRUE(four) << "the mask no longer carries this row";
-		for (int mode = 1; mode <= 3; ++mode)
-			EXPECT_FALSE(CaseMatches(c, word, true, mode)) << "already exact without the mask";
-	}
-	EXPECT_EQ(guard_rows, static_cast<int>(std::size(kGuardMaskRows)));
-	EXPECT_EQ(ok_at_four, 122);
+	EXPECT_EQ(ScoreJit(1), 102);
+	EXPECT_EQ(ScoreJit(2), 113);
+	EXPECT_EQ(ScoreJit(3), 114);
+	EXPECT_EQ(ScoreJit(4), kEfuCaseCount);
 }
 
 } // namespace recompiler_tests
