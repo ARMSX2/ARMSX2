@@ -9459,48 +9459,6 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 
 	ret.TEX0Hash = FinishBlockHash(hash_st);
 
-	// ★ CROSS-VERSION PROBE (diagnostic builds only).
-	//
-	// Two builds ask for completely disjoint TEX0 hashes for the same on-screen font: nine values
-	// on 2.6.6, eight now, no overlap, same palette hash, same 32x32 PSMT4. Every hashing function
-	// involved is byte-identical between them, so the DATA being hashed differs -- and the key
-	// records only the region's width and height, never where it starts or which address it came
-	// from. Print the things the key throws away, so the two logs can be diffed directly instead
-	// of guessed at.
-	if (psm.pal != 0)   // any paletted texture; the cap below keeps the volume sane
-	{
-		static u32 probes = 0;
-		if (probes < 12)
-		{
-			probes++;
-			// Base level ALONE, recomputed for the probed textures only. The shipped hash folds
-			// the base and every mip into one value, so a mismatch cannot say which moved. Same
-			// address, same extent, same lod flag and same leading bytes in both builds -- so the
-			// bytes differ somewhere, and this splits "the glyph data differs" from "the mip chain
-			// differs", which are different bugs in different places.
-			u64 base_only = 0;
-			int nmips_dbg = 0;
-			{
-				BlockHashState base_st;
-				BlockHashReset(base_st);
-				HashTextureLevel(TEX0, TEXA, region, base_st, s_unswizzle_buffer);
-				base_only = FinishBlockHash(base_st);
-				if (lod)
-					nmips_dbg = lod->y - lod->x + 1;
-			}
-			Console.WriteLnFmt("TCPROBE base={:016x} nmips={} lodx={} lody={}", base_only, nmips_dbg,
-				lod ? lod->x : -1, lod ? lod->y : -1);
-			Console.WriteLnFmt("TCPROBE tex0hash={:016x} clut={:016x} TBP0={:05x} TBW={} PSM={} TW={} TH={} "
-				"region=({},{})-({},{}) lod={} first={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-				ret.TEX0Hash, ret.CLUTHash, static_cast<u32>(TEX0.TBP0), static_cast<u32>(TEX0.TBW),
-				static_cast<u32>(TEX0.PSM), static_cast<u32>(TEX0.TW), static_cast<u32>(TEX0.TH),
-				region.GetMinX(), region.GetMinY(), region.GetMaxX(), region.GetMaxY(),
-				lod ? 1 : 0,
-				s_unswizzle_buffer[0], s_unswizzle_buffer[1], s_unswizzle_buffer[2], s_unswizzle_buffer[3],
-				s_unswizzle_buffer[4], s_unswizzle_buffer[5], s_unswizzle_buffer[6], s_unswizzle_buffer[7]);
-		}
-	}
-
 	return ret;
 }
 

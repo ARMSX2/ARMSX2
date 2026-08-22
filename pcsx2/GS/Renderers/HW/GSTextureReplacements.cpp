@@ -139,12 +139,6 @@ namespace GSTextureReplacements
 	/// Lookup map of texture names to replacements, if they exist.
 	static std::unordered_map<TextureName, std::string> s_replacement_texture_filenames;
 
-	/// Modification time per indexed texture, captured during the scan. Used to pick between
-	/// palette variants: a mod installed over a base pack has the newer files, and nothing else
-	/// available at that point distinguishes "the pack the player added last" from "the pack it
-	/// was layered on top of".
-	static std::unordered_map<TextureName, std::time_t> s_replacement_texture_mtimes;
-
 	/// Lookup map of texture names without CLUT hash, to know when we need to disable paltex.
 	static std::unordered_set<TextureName> s_replacement_textures_without_clut_hash;
 
@@ -523,28 +517,14 @@ static bool GetWrongCasePath(std::string* output, const char* dir, std::string_v
 	return false;
 }
 
-// Lookup accounting for the diagnostic line below. Plain counters on the GS thread, which is the
-// only caller of LookupReplacementTexture.
-static u64 s_lookup_hits = 0;
-static u64 s_lookup_misses = 0;
-static u64 s_lookup_clut_only_misses = 0;
-static u64 s_lookup_next_report = 0;
-
 void GSTextureReplacements::ReloadReplacementMap()
 {
 	SyncWorkerThread();
 	ScopedGuard startup_complete_guard([]() { NotifyStartupCompleteForCurrentGame(); });
 
-	// Per game: a carried-over hit count from the previous title would read as a healthy pack.
-	s_lookup_hits = 0;
-	s_lookup_misses = 0;
-	s_lookup_clut_only_misses = 0;
-	s_lookup_next_report = 0;
-
 	// clear out the caches
 	{
 		s_replacement_texture_filenames.clear();
-		s_replacement_texture_mtimes.clear();
 		s_replacement_textures_without_clut_hash.clear();
 
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
@@ -588,7 +568,6 @@ void GSTextureReplacements::ReloadReplacementMap()
 		return;
 
 	std::string filename;
-	u32 duplicates = 0;
 	for (FILESYSTEM_FIND_DATA& fd : files)
 	{
 		// file format we can handle?
@@ -602,28 +581,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 			continue;
 
 		DbgCon.WriteLn("Found %ux%u replacement '%.*s'", name->Width(), name->Height(), static_cast<int>(filename.size()), filename.data());
-
-		// ★ emplace does NOT overwrite, and this scan is RECURSIVE. Two files under different
-		// subdirectories that decode to the same texture name are a collision, and the one the
-		// directory walk happens to reach first wins -- silently, with no way to tell from
-		// outside which of them is on screen.
-		//
-		// That is how a mod layered on top of a base pack loses: same texture, two files, and
-		// the base pack wins on traversal order rather than on intent. Count them and name the
-		// first few, because "my mod is not applying" and "my mod is being shadowed by another
-		// pack" look identical to the person reporting it.
-		const std::string losing_path = fd.FileName;
-		s_replacement_texture_mtimes[name.value()] = fd.ModificationTime;
-		auto ins = s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
-		if (!ins.second)
-		{
-			duplicates++;
-			if (duplicates <= 6)
-			{
-				Console.WriteLnFmt("Texture replacements: DUPLICATE '{}' ignored, '{}' already claimed that texture",
-					losing_path, ins.first->second);
-			}
-		}
+		s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
 
 		// zero out the CLUT hash, because we need this for checking if there's any replacements with this hash when using paltex
 		name->CLUTHash = 0;
@@ -636,30 +594,8 @@ void GSTextureReplacements::ReloadReplacementMap()
 	// function looks identical from outside (feature off, wrong serial, empty folder,
 	// unparseable names), so print the count AND the exact directory scanned: a zero here
 	// with a path that doesn't match the user's pack folder is the whole diagnosis.
-	Console.WriteLnFmt("Texture replacements: {} indexed from {} files ({} shadowed by an earlier file) for '{}' (scanned {})",
-		s_replacement_texture_filenames.size(), files.size(), duplicates, s_current_serial, replacement_dir);
-
-	// The two settings that decide whether a lookup is ever ATTEMPTED, as opposed to whether it
-	// matches. Replacements ride the hash cache, which needs Full preloading; and paltex decides
-	// whether the CLUT hash forms part of the name being looked up. A pack that indexes
-	// thousands of files and is then never consulted looks the same as one that misses.
-	// Three sample names, so the pack's filename STYLE is on the record whether or not anything
-	// misses later. A pack dumped without palette hashes is a different problem from one dumped
-	// with them, and the names are the only place that distinction is visible.
-	{
-		u32 sampled = 0;
-		for (const auto& it : s_replacement_texture_filenames)
-		{
-			if (sampled >= 3)
-				break;
-			Console.WriteLnFmt("Texture replacements: sample name '{}'", Path::GetFileName(it.second));
-			sampled++;
-		}
-	}
-
-	Console.WriteLnFmt("Texture replacements: preloading={} paltex={} async={} upscale={}",
-		static_cast<u32>(GSConfig.TexturePreloading), GSConfig.GPUPaletteConversion ? 1 : 0,
-		GSConfig.LoadTextureReplacementsAsync ? 1 : 0, GSConfig.UpscaleMultiplier);
+	Console.WriteLnFmt("Texture replacements: {} indexed for '{}' (scanned {})",
+		s_replacement_texture_filenames.size(), s_current_serial, replacement_dir);
 
 	if (!s_replacement_texture_filenames.empty())
 	{
@@ -751,62 +687,6 @@ bool GSTextureReplacements::HasReplacementTextureWithOtherPalette(const GSTextur
 	return s_replacement_textures_without_clut_hash.find(name) != s_replacement_textures_without_clut_hash.end();
 }
 
-// ★ Cadence matters more than it looks. This is called once per NEWLY HASHED texture, not per
-// draw, so a whole session may only be a few hundred calls. A threshold of 20k therefore prints
-// once, at the first lookup, and never again -- which cannot distinguish "one lookup happened"
-// from "twenty thousand did", and that ambiguity is exactly what a first attempt at this log ran
-// into. Report on a geometric schedule instead: 1, 2, 4, 8 ... capped at every 4096. Bounded
-// regardless of rate, dense at the start where the answer usually is.
-static void ReportLookupStatsIfDue()
-{
-	const u64 total = s_lookup_hits + s_lookup_misses;
-	if (total < s_lookup_next_report)
-		return;
-	s_lookup_next_report = (total < 4096) ? (total * 2) : (total + 4096);
-	Console.WriteLnFmt("Texture replacements: {} hits, {} misses ({} of the misses match a name whose CLUT hash differs)",
-		s_lookup_hits, s_lookup_misses, s_lookup_clut_only_misses);
-}
-
-// The first handful of misses, in full. A count says a lookup failed; these say WHAT was asked
-// for and what the pack actually holds under the same TEX0 -- which is the difference between
-// "the pack does not have this texture" and "it has it under a different palette hash".
-static void ReportMissDetail(const TextureName& wanted)
-{
-	if (s_lookup_misses > 8)
-		return;
-
-	// Does the pack hold anything with this TEX0 but a different CLUT? Walk the CLUT-less set,
-	// which is indexed precisely for that question.
-	TextureName probe(wanted);
-	probe.CLUTHash = 0;
-	const bool clut_only = GSTextureReplacements::s_replacement_textures_without_clut_hash.find(probe) !=
-		GSTextureReplacements::s_replacement_textures_without_clut_hash.end();
-
-	Console.WriteLnFmt("Texture replacements: MISS tex0={:016x} clut={:016x} {}x{} psm={} -- pack has this tex0 under a different CLUT: {}",
-		wanted.TEX0Hash, wanted.CLUTHash, wanted.Width(), wanted.Height(),
-		static_cast<u32>(wanted.TEX0_PSM), clut_only ? "YES" : "no");
-
-	// ★ And WHICH entry, by name. The flag above says the pack holds this TEX0 under some other
-	// palette; the filename says which, and that is the whole diagnosis:
-	//
-	//   <tex0>-<clut>-<w>x<h>-<bits>.ext   a real, different palette hash -> the palette contents
-	//                                      differ at run time from when the pack was dumped
-	//   <tex0>-<w>x<h>-<bits>.ext          no palette field at all, so it indexed with CLUTHash=0
-	//                                      -> it can only ever match while paltex is on
-	//
-	// Printed rather than asked for, because the people who hit this are players, not people who
-	// will run a shell on their own device to list a directory.
-	u32 shown = 0;
-	for (const auto& it : GSTextureReplacements::s_replacement_texture_filenames)
-	{
-		if (it.first.TEX0Hash != wanted.TEX0Hash || shown >= 2)
-			continue;
-		Console.WriteLnFmt("Texture replacements:   pack holds clut={:016x} as '{}'",
-			it.first.CLUTHash, Path::GetFileName(it.second));
-		shown++;
-	}
-}
-
 GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap,
 	bool* pending, std::pair<u8, u8>* alpha_minmax)
 {
@@ -815,38 +695,8 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 
 	// replacement for this name exists?
 	auto fnit = s_replacement_texture_filenames.find(name);
-
-	// ★ No substitution. A paletted glyph's palette IS its colour, so when the game asks for a
-	// palette the pack does not carry there is no "close enough" file to stand in: substituting
-	// any other variant paints that glyph the wrong colour. Tried, and it produced multicoloured
-	// text -- eight colour variants of one glyph, different glyphs winning different ones.
-	//
-	// What is left is the diagnostic. List what the pack DOES hold for this TEX0, so a log says
-	// whether the pack is missing the texture entirely or merely missing this colour of it.
 	if (fnit == s_replacement_texture_filenames.end())
-	{
-		// ★ The second half of the "my pack does nothing" diagnosis, and the half that was
-		// missing. The indexed count at load time proves the FILES were found; it says nothing
-		// about whether any draw ever asks for one of them. A pack that indexes thousands of
-		// textures and then misses every lookup is a HASH problem (wrong dump settings, paltex
-		// vs CLUT, wrong upscale) and looks identical, from outside, to a pack that never
-		// loaded at all.
-		//
-		// Summarised rather than logged per lookup: this runs per draw, and log volume alone
-		// can stall the emulator. Also counts how many of those misses would have matched with
-		// the CLUT hash zeroed, which separates "the pack does not contain this texture" from
-		// "it does, but the palette hash differs" — the usual cause for paletted UI art.
-		s_lookup_misses++;
-		TextureName clutless(name);
-		clutless.CLUTHash = 0;
-		if (s_replacement_textures_without_clut_hash.find(clutless) != s_replacement_textures_without_clut_hash.end())
-			s_lookup_clut_only_misses++;
-		ReportMissDetail(name);
-		ReportLookupStatsIfDue();
 		return nullptr;
-	}
-	s_lookup_hits++;
-	ReportLookupStatsIfDue();
 
 	// try the full cache first, to avoid reloading from disk
 	{
