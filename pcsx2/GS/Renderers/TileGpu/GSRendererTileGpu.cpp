@@ -1461,6 +1461,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto sreb = stat([](const MF& f) { return f.src_rebuild; });
 	const auto sfresh = stat([](const MF& f) { return f.src_fresh; });
 	const auto rregion = stat([](const MF& f) { return f.src_ref_region; });
+	const auto rsfmt = stat([](const MF& f) { return f.src_ref_srcfmt; });
 	const auto smip = stat([](const MF& f) { return f.src_mip_draws; });
 	const auto smipl = stat([](const MF& f) { return f.src_mip_live; });
 	const auto rcap = stat([](const MF& f) { return f.src_ref_capacity; });
@@ -1522,10 +1523,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 		tdraws.mean, tdraws.p50, thi.mean, thi.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
 	Console.WriteLn("  eligible by cost: hit %.2f / %-5u  rebuild %.2f / %-5u  first build %.2f / %u",
 		shit.mean, shit.p50, sreb.mean, sreb.p50, sfresh.mean, sfresh.p50);
-	Console.WriteLn("  refused: format %.2f/%u  region wrap %.2f/%u  palette first sight %.2f/%u  pin %.2f/%u  "
-					"capacity %.2f/%u",
-		tunsup.mean, tunsup.p50, rregion.mean, rregion.p50, rpal.mean, rpal.p50, rpin.mean, rpin.p50, rcap.mean,
-		rcap.p50);
+	Console.WriteLn("  refused: unsampleable format %.2f/%u  no materialise arm (16-bit) %.2f/%u  "
+					"region wrap %.2f/%u  palette first sight %.2f/%u  pin %.2f/%u  capacity %.2f/%u",
+		tunsup.mean, tunsup.p50, rsfmt.mean, rsfmt.p50, rregion.mean, rregion.p50, rpal.mean, rpal.p50, rpin.mean,
+		rpin.p50, rcap.mean, rcap.p50);
 	Console.WriteLn("  mipmapped draws (eligible, served at level 0 as every road serves them today) %.2f/%u, "
 					"mipmapping live on %.2f/%u of them",
 		smip.mean, smip.p50, smipl.mean, smipl.p50);
@@ -1928,6 +1929,17 @@ u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& 
 	bool paletted, bool mip_active, const GSTileTextureSource::ContentToken& donor_token)
 {
 	const GSDrawingContext* ctx = m_context;
+
+	// A format the materialise has no arm for. The 16-bit families are sampled straight out of the
+	// bytes and nothing builds them into an image, so admitting one here would hand the draw a
+	// source slot whose build op the executor then skips -- an image nobody wrote, sampled as
+	// texture. Asked FIRST, before the shape questions, because it is a fact about the road rather
+	// than about this window.
+	if (GSTileSwizzleForms::Direct16FormatFor(tex0.PSM) >= 0)
+	{
+		m_frame.src_ref_srcfmt++;
+		return kNoSourceSlot;
+	}
 
 	// The wrap modes a sampler expresses exactly at tw x th. The two REGION modes address a
 	// sub-rect of a shared texture page and have no sampler spelling, so they keep the byte road:
@@ -3075,13 +3087,15 @@ void GSRendererTileGpu::AccumulateDraw()
 	}
 	pd.color_mask = color_mask;
 
-	// Texture inputs. Two address geometries are sampled at this stage: the CT32 one (PSMCT32 and
+	// Texture inputs. Three address geometries are sampled at this stage: the CT32 one (PSMCT32 and
 	// PSMCT24 as direct colour, and the alpha-byte views PSMT8H/PSMT4HL/PSMT4HH as indices in the
-	// top bits of the same words) and the PSMT8/PSMT4 one (128-texel pages, a swizzled index into
-	// an expanded CLUT). Every other textured draw -- the 16-bit families -- keeps the
-	// vertex-colour path until its format is added. The fixed TEX0 folds TW/TH to the used ST
-	// range, exactly as ObserveDraw derives its footprint, so the dimensions the shader scales by
-	// match the draw.
+	// top bits of the same words), the PSMT8/PSMT4 one (128-texel pages, a swizzled index into an
+	// expanded CLUT), and the 16-bit one (64x64-texel pages of 16x8 blocks, two texels to a word --
+	// PSMCT16/PSMCT16S and their depth twins PSMZ16/PSMZ16S, which are the same tables under one
+	// block XOR). That is every format the GS can sample except the 8/4-bit ones read out of a
+	// 32-bit target, which the alpha-byte views already cover. The fixed TEX0 folds TW/TH to the
+	// used ST range, exactly as ObserveDraw derives its footprint, so the dimensions the shader
+	// scales by match the draw.
 	pd.tex_enable = false;
 	pd.index_format = 0;
 	pd.pal_offset = 0;
@@ -3101,7 +3115,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		// and a second list here is how the two would come to disagree about what is sampleable.
 		const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(psm);
 		const bool paletted = (idx_fmt >= 0);
-		if (direct32 || paletted)
+		// ...and the direct 16-bit families, whose texel is one halfword expanded by TEXA. Its own
+		// list beside that one, and both feed the single index_format numbering the fragment shader
+		// switches on.
+		const int d16_fmt = GSTileSwizzleForms::Direct16FormatFor(psm);
+		const bool direct16 = (d16_fmt >= 0);
+		if (direct32 || paletted || direct16)
 		{
 			m_frame.tex_draws++;
 			if (paletted && GSLocalMemory::m_psm[psm].pgs.x == GSLocalMemory::m_psm[PSMCT32].pgs.x)
@@ -3137,12 +3156,20 @@ void GSRendererTileGpu::AccumulateDraw()
 			// numberings are pinned together in the gs suite -- nothing links this file to the GLSL,
 			// and a renumbering that moved one and not the other would sample PSMT4HL's nibble out of
 			// a PSMT8H texture.
-			pd.index_format = direct32 ? 0u : static_cast<u32>(idx_fmt) + 1u;
+			pd.index_format = direct32 ? 0u :
+									     (paletted ? static_cast<u32>(idx_fmt) + 1u :
+													 static_cast<u32>(d16_fmt) + 6u);
 			// A 24-bit texture's texels carry no alpha byte: TEXA supplies it (and AEM makes an
-			// all-zero RGB texel transparent). A paletted texture takes TEXA in the CLUT expansion.
+			// all-zero RGB texel transparent). A 16-bit texel has an alpha BIT, so TEXA selects
+			// between TA1 and TA0 by it, and AEM makes an all-zero CELL transparent -- a different
+			// rule, which is why the fragment stage gives that road its own arm rather than sharing
+			// tilegpu_texa. A paletted texture takes TEXA in the CLUT expansion.
 			pd.texa = (psm == PSMCT24) ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
 											 (static_cast<u32>(m_env.TEXA.TA0) << 8)) :
-										 0u;
+					  direct16 ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
+									 (static_cast<u32>(m_env.TEXA.TA0) << 8) |
+									 (static_cast<u32>(m_env.TEXA.TA1) << 16)) :
+								 0u;
 			if (paletted)
 			{
 				// Where this draw's palette words are. The mirror answers for the CLUT slots the draw
@@ -3310,8 +3337,10 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 		else
 		{
-			// A format neither road samples -- the 16-bit families, which is all that is left: the
-			// draw renders with vertex colour alone today, and rule 3 refuses it on format.
+			// Nothing is left: every PSM the GS can name as a texture is now one of direct-32,
+			// paletted, or direct-16. Kept as a counter rather than an assert because TEX0.PSM is
+			// six raw bits and a game can write a reserved one, and the answer to that is a
+			// vertex-colour draw and a number, not a crash.
 			m_frame.tex_unsupported++;
 		}
 	}

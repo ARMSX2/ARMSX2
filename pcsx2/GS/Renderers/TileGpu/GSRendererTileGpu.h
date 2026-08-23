@@ -944,6 +944,11 @@ private:
 		u32 src_rebuild = 0;       // ...served after a rebuild: the window is known and its bytes moved
 		u32 src_fresh = 0;         // ...served after a first build: the window was not seen last frame
 		u32 src_ref_region = 0;    // refused: REGION_CLAMP / REGION_REPEAT on either axis
+		// Refused because the MATERIALISE has no arm for the window's format -- the 16-bit
+		// families, which the byte road samples directly and nothing builds into an image. Its own
+		// counter and not src_ref_region's: that one is a window SHAPE the road declines, this is a
+		// road that does not exist.
+		u32 src_ref_srcfmt = 0;
 		u32 src_mip_draws = 0;     // NOT a refusal: MXL != 0, eligible, served at level 0 like every
 		                           // other road serves it today (mip LEVEL SELECTION is M4)
 		u32 src_mip_live = 0;      // ...of those, draws where mipmapping is actually active: the ones

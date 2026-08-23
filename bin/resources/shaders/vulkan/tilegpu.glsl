@@ -138,7 +138,10 @@ struct StateRow
 	uint wms;        // CLAMP.WMS horizontal wrap mode
 	uint wmt;        // CLAMP.WMT vertical wrap mode
 	uint index_format; // 0 = direct 32-bit texel, else GSTileSwizzleForms::IndexFormatFor + 1:
-	                   // 1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH
+	                   // 1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH;
+	                   // else GSTileSwizzleForms::Direct16FormatFor + 6, a direct 16-bit texel:
+	                   // 6 = PSMCT16, 7 = PSMCT16S, 8 = PSMZ16, 9 = PSMZ16S. Bit 0 of (fmt - 6)
+	                   // picks the strided block table, bit 1 the depth block XOR.
 	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
 	uint epoch;        // page-table epoch this draw's byte reads go through
 	uint date;         // destination-alpha test: 0 off, 1 = pass where alpha bit 7 clear (DATM 0), 2 = set (DATM 1)
@@ -149,7 +152,10 @@ struct StateRow
 	uint fogcol;       // FOGCOL packed 0x00BBGGRR
 	uint atst;         // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
 	uint aref;         // TEST.AREF
-	uint texa;         // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
+	uint texa;         // texel alpha the format does not store: bit 0 = apply (the 24-bit road's
+	                   // gate; the 16-bit road always applies), bit 1 = TEXA.AEM,
+	                   // bits 8-15 = TEXA.TA0, bits 16-23 = TEXA.TA1 (16-bit only -- a 24-bit
+	                   // texel has no alpha BIT to select on, so TA1 never reaches that road)
 	uint region_u;     // CLAMP.MINU | (CLAMP.MAXU << 16)
 	uint region_v;     // CLAMP.MINV | (CLAMP.MAXV << 16)
 	uint ltf;          // 1 = bilinear: blend the four texels around the coordinate
@@ -457,6 +463,64 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 	return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
 }
 
+// The two forms the 16-bit families add: the strided block table (PSMCT16S / PSMZ16S -- the plain
+// one is tile_b84 above, because blockTable16 IS blockTable4 and the fit checks it) and the
+// halfword-in-block column table. A 16-bit page is 64x64 texels of 16x8-texel blocks, two texels
+// to a 32-bit word.
+uint tile_b84s(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B84S_X0) ^ XB(x, 1u, TILE_SWZ_B84S_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84S_Y0) ^ XB(y, 1u, TILE_SWZ_B84S_Y1) ^ XB(y, 2u, TILE_SWZ_B84S_Y2);
+}
+
+uint tile_c16(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C16_X0) ^ XB(x, 1u, TILE_SWZ_C16_X1) ^ XB(x, 2u, TILE_SWZ_C16_X2) ^ XB(x, 3u, TILE_SWZ_C16_X3)
+	     ^ XB(y, 0u, TILE_SWZ_C16_Y0) ^ XB(y, 1u, TILE_SWZ_C16_Y1) ^ XB(y, 2u, TILE_SWZ_C16_Y2);
+}
+
+// Halfword (sel & 1) of an SSBO-loaded word, under the same driver gate tilegpu_byte_sel carries
+// and for the same reason: Honeykrisp takes the selector of a computed sub-word shift from the word
+// INDEX. Here the selector is bit 3 of u, so the miscompile would blank every other 8-texel column
+// of every 16-bit texture.
+uint tilegpu_half_sel(uint word, uint sel)
+{
+#if TILEGPU_STATIC_BYTE_SEL
+	return ((sel & 1u) != 0u) ? (word >> 16u) : (word & 0xFFFFu);
+#else
+	return (word >> ((sel & 1u) * 16u)) & 0xFFFFu;
+#endif
+}
+
+// A direct 16-bit texel at (u, v), expanded to normalised RGBA. `fmt` is the state row's
+// index_format minus six: bit 0 selects the strided block table, bit 1 the depth block XOR.
+//
+// The XOR lands on the ABSOLUTE block, after the base and the page term, because that is where
+// GSOffset::bn() applies it -- distributing it into the in-page index would be right only for a
+// page-aligned TBP0, and a texture window's is often not.
+//
+// The alpha rule is the GAME's TEXA, not the frame-buffer pin the seed and writeback use: bit 15
+// selects TA1, and with AEM set an all-zero cell is transparent instead of taking TA0. That is
+// GSLocalMemory::Expand16To32 exactly, including its test being on the whole cell.
+vec4 tilegpu_texel16(StateRow sr, uint u, uint v, uint fmt)
+{
+	const uint page = (v >> 6u) * sr.tbw + (u >> 6u);
+	const uint b = ((fmt & 1u) != 0u) ? tile_b84s((u >> 4u) & 3u, (v >> 3u) & 7u)
+	                                  : tile_b84((u >> 4u) & 3u, (v >> 3u) & 7u);
+	// & 16383 is bn()'s own `% GS_MAX_BLOCKS`, a power of two. It matters here and not on the
+	// 32-bit arm: a window based near the top of memory wraps, and an unwrapped block would send
+	// tilegpu_ring_word past the end of the page table into the entries and the palettes -- live
+	// data in the same buffer -- and hand back a plausible slot.
+	const uint blk = ((sr.tbp0 + page * 32u + b) ^ (((fmt & 2u) != 0u) ? TILE_SWZ_Z16XOR : 0u)) & 16383u;
+	const uint hw = tile_c16(u & 15u, v & 7u);
+	const uint c = tilegpu_half_sel(vram_words[tilegpu_ring_word(blk * 64u + (hw >> 1u), sr.epoch)], hw);
+
+	const uint a = ((c & 0x8000u) != 0u) ? ((sr.texa >> 16u) & 0xFFu)
+	             : ((((sr.texa & 2u) != 0u) && c == 0u) ? 0u : ((sr.texa >> 8u) & 0xFFu));
+	return tilegpu_norm8(vec4(float((c & 0x001Fu) << 3u), float((c & 0x03E0u) >> 2u),
+		float((c & 0x7C00u) >> 7u), float(a)));
+}
+
 // Unpack a raw RGBA8888 word (a CT32 texel or an expanded CLUT entry) to normalised RGBA.
 vec4 tilegpu_unpack(uint w)
 {
@@ -559,6 +623,13 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 #endif
 
 #if TILEGPU_TAP_BYTE
+	// The 16-bit families first, because their alpha rule is their own: a 16-bit texel has an
+	// alpha BIT, so TEXA selects between TA1 and TA0 rather than always supplying TA0, and the
+	// AEM test is on the whole cell rather than on an RGB word. tilegpu_texa below cannot express
+	// that, so this arm returns rather than falling through to it.
+	if (sr.index_format >= 6u)
+		return tilegpu_texel16(sr, iu, iv, sr.index_format - 6u);
+
 	// index_format is dynamically uniform per draw, so this does not diverge.
 	uint w;
 	if (sr.index_format == 0u)
