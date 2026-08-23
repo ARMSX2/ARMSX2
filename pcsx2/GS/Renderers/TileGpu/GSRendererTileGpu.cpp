@@ -292,7 +292,7 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 			continue;
 
 		// Pages the texture spans but does not hold: never filled, or filled and since superseded.
-		GSPageBitmap need = PagesNeedingSeed(id, pages, kGSTilePlanesColor) | pages.andnot(Texels(id).filled);
+		GSPageBitmap need = PagesNeedingSeed(id, pages, kGSTilePlanesColor) | Texels(id).filled.MissingFrom(pages);
 		need &= Texels(id).pages;
 		if (need.empty())
 			continue;
@@ -315,7 +315,7 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
 		if (pd.prep_op_count == 0)
 			continue; // nothing was emitted at all, so this bail strands nothing
-		Texels(id).filled |= need;
+		Texels(id).filled.MarkWhole(need);
 		m_frame.seed_breaks++;
 
 		pd.color_surface = id;
@@ -532,7 +532,7 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSPageBitmap& pages)
 			refusal = kClutRefLayout;
 		else if (!s.residency.contains(pages))
 			refusal = kClutRefResidency;
-		else if (m_surface_texels.size() <= owner || !pages.andnot(m_surface_texels[owner].filled).empty())
+		else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
 			refusal = kClutRefTexels;
 		else if (p.deferred_blocks != 0 && p.owner != owner)
 			refusal = kClutRefMixedOwner;
@@ -1667,6 +1667,49 @@ void GSRendererTileGpu::NoteTextureGeometry(GSTileSurfaceId id, int height)
 	t.height = height;
 }
 
+void GSTileBlockFill::Mark(u32 page, u32 mask)
+{
+	if (mask == 0 || m_whole.test(page))
+		return;
+	if (mask == GSVramModel::kFullBlockMask)
+	{
+		m_whole.set(page);
+		if (m_partial.test(page))
+		{
+			m_partial.unset(page);
+			m_masks.erase(static_cast<u16>(page));
+		}
+		return;
+	}
+	u32& have = m_masks[static_cast<u16>(page)];
+	m_partial.set(page);
+	have |= mask;
+	if (have == GSVramModel::kFullBlockMask)
+	{
+		// The blocks add up: promote, so the common query (HoldsWhole) stays one bitmap test.
+		m_whole.set(page);
+		m_partial.unset(page);
+		m_masks.erase(static_cast<u16>(page));
+	}
+}
+
+void GSTileBlockFill::MarkWhole(const GSPageBitmap& pages)
+{
+	// The partial side is small (only pages some draw covered in part and no seed has filled),
+	// so clean it out of the map rather than leaving dead entries behind a `whole` bit.
+	(pages & m_partial).forEachSetPage([this](u32 page) { m_masks.erase(static_cast<u16>(page)); });
+	m_partial = m_partial.andnot(pages);
+	m_whole |= pages;
+}
+
+u32 GSTileBlockFill::BlocksOf(u32 page) const
+{
+	if (m_whole.test(page))
+		return GSVramModel::kFullBlockMask;
+	const auto it = m_masks.find(static_cast<u16>(page));
+	return it == m_masks.end() ? 0u : it->second;
+}
+
 GSRendererTileGpu::SurfaceTexels& GSRendererTileGpu::Texels(GSTileSurfaceId id)
 {
 	if (m_surface_texels.size() <= id)
@@ -1732,7 +1775,7 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 	// The model tracks BYTES; the sampler reads TEXELS. A page whose bytes the surface owns but
 	// whose texture rows nothing has written yet would sample allocator leftovers, which is exactly
 	// what SurfaceTexels exists to know about.
-	if (m_surface_texels.size() <= src || !tex_pages.andnot(m_surface_texels[src].filled).empty())
+	if (m_surface_texels.size() <= src || !m_surface_texels[src].filled.HoldsWhole(tex_pages))
 		return kGSTileNoSurface;
 
 	// ...and the window has to be inside the image. The pool only ever grows a target, so a fit
@@ -1802,7 +1845,7 @@ bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPage
 		return false;
 	if (!surf.residency.contains(tex_pages))
 		return false;
-	if (m_surface_texels.size() <= owner || !tex_pages.andnot(m_surface_texels[owner].filled).empty())
+	if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(tex_pages))
 		return false;
 	if (tex0.TBP0 < surf.layout.bp)
 		return false;
@@ -3276,7 +3319,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// those pages are fine -- their bytes live in the CPU shadow -- but the present reads the
 		// texture, so an unfilled page reaches the screen as allocator leftovers. Paid once per
 		// surface: after this the whole residency is materialised.
-		seed |= Texels(fb_id).pages.andnot(Texels(fb_id).filled);
+		seed |= Texels(fb_id).filled.MissingFrom(Texels(fb_id).pages);
 		GSPageBitmap covered;
 		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
 			gsTileFrameWriteIsTotal(ctx->FRAME.FBMSK, fb_fmsk) &&
@@ -3296,6 +3339,15 @@ void GSRendererTileGpu::AccumulateDraw()
 				// synced without moving anything, so the claim below can take the page.
 				m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(seed & covered, kGSTilePlanesAll));
 				seed = seed.andnot(covered);
+				// The same proof, per block, for the pages this draw covers only in PART. A page
+				// still needs a whole-page seed before it can be skipped -- the seed shader has no
+				// block mask -- but its texels are as real in the blocks the rect covers in full
+				// as they are on a page it covers entirely, and recording them is what keeps the
+				// texture bookkeeping in the model's own units. Edge blocks (`blocks & ~full`) are
+				// NOT recorded: the rect enters them, so the fragments outside it keep whatever
+				// the texture had.
+				for (u32 e = 0; e < fp.edge_count; e++)
+					Texels(fb_id).filled.Mark(fp.edges[e].page, fp.edges[e].full);
 			}
 		}
 		if (!seed.empty())
@@ -3311,7 +3363,7 @@ void GSRendererTileGpu::AccumulateDraw()
 				pd.break_before = true;
 				m_frame.seed_breaks++;
 				BreakOpenPass();
-				Texels(fb_id).filled |= seed;
+				Texels(fb_id).filled.MarkWhole(seed);
 			}
 			else
 			{
@@ -3319,7 +3371,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			}
 		}
 		// A page this draw covers in full ends up holding texels whether it was seeded or not.
-		Texels(fb_id).filled |= covered;
+		Texels(fb_id).filled.MarkWhole(covered);
 	}
 	u8 z_claims = 0;
 	if (z_used)

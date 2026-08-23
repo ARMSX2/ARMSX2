@@ -15,6 +15,7 @@
 #include "GS/Renderers/Tile/GSVramModel.h"
 
 #include <array>
+#include <unordered_map>
 #include <vector>
 
 // The GS-on-GPU backend (GSHWRendererVariant::TileGpu): pass-planned indirect submission
@@ -63,6 +64,48 @@ struct GSTileRingPlaneState
 /// that union is a block no writeback covers, and the slot must be prefilled from S or those
 /// bytes are whatever the executor left in the slot -- which is zero.
 u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
+
+/// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
+///
+/// The memory model tracks guest bytes at block granularity and this has to answer in the same
+/// units, because the two are read against each other: the model says a page's bytes are the
+/// surface's, and the seed gate then asks whether the surface's TEXTURE has them. A page bitmap
+/// standing in for a 32-bit block mask can only answer that question by rounding, and the
+/// rounding that costs nothing is the one that over-claims -- a page counted held whose texels
+/// are half allocator leftovers, sampled by the present or written back into the ring as if it
+/// were guest data.
+///
+/// Nothing may be marked without a proof that those blocks were written. Two roads have one: a
+/// seed, which fills whole pages out of the ring, and a draw the planner has already proved
+/// writes every fragment it covers, which fills the blocks its (scissor-clipped) rect covers in
+/// full. Everything else stays unheld, and unheld only ever costs a seed.
+class GSTileBlockFill
+{
+public:
+	void Clear()
+	{
+		m_whole.clear();
+		m_partial.clear();
+		m_masks.clear();
+	}
+
+	/// `mask`'s blocks of `page` now hold texels.
+	void Mark(u32 page, u32 mask);
+	/// Every block of every page in `pages` now holds texels.
+	void MarkWhole(const GSPageBitmap& pages);
+
+	/// The blocks of `page` that hold texels.
+	u32 BlocksOf(u32 page) const;
+	/// Does every page of `pages` hold texels in all 32 blocks?
+	bool HoldsWhole(const GSPageBitmap& pages) const { return pages.andnot(m_whole).empty(); }
+	/// The pages of `pages` that do not: what a seed has to bring in.
+	GSPageBitmap MissingFrom(const GSPageBitmap& pages) const { return pages.andnot(m_whole); }
+
+private:
+	GSPageBitmap m_whole; ///< all 32 blocks held
+	GSPageBitmap m_partial; ///< some blocks held; the mask lives in m_masks
+	std::unordered_map<u16, u32> m_masks;
+};
 
 // Stage-1 contract: wrong-fast where the executor is (no blending, no per-draw write masks);
 // EXACT where the model is -- every page's truth is named, every crossing is counted.
@@ -737,13 +780,15 @@ private:
 	// rare corner: a target is allocated tall enough for the pages drawn so far and the rest of
 	// its rows are simply never written.
 	//
-	// A page enters `filled` when a seed writes it or a draw covers it in full; `pages` is the
-	// whole page set the texture spans, recomputed when the pool grows it. The first draw into a
-	// surface seeds the difference, so the cost is one full-target seed per surface lifetime.
+	// Blocks enter `filled` when a seed writes their page or a draw the planner has proved total
+	// covers them; `pages` is the whole page set the texture spans, recomputed when the pool grows
+	// it. The first draw into a surface seeds the difference, so the cost is one full-target seed
+	// per surface lifetime. Block granularity, not page granularity, because the question it is
+	// asked against -- the model's TruthMask -- is per block: see GSTileBlockFill.
 	struct SurfaceTexels
 	{
 		GSPageBitmap pages; // every page the texture rectangle spans
-		GSPageBitmap filled;
+		GSTileBlockFill filled;
 		int height = 0; // the texture height `pages` was computed for
 	};
 	std::vector<SurfaceTexels> m_surface_texels;

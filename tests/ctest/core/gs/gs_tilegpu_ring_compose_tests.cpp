@@ -151,3 +151,110 @@ TEST(TileGpuRingCompose, RelaxingAnyOneProxyClauseCanLeaveBlocksUncovered)
 	road.Set(3, kB, 0xFFFFFF00u, /*synced=*/false, /*road=*/false);
 	EXPECT_EQ(road.Composable(), 0x000000FFu);
 }
+
+// ---------------------------------------------------------------------------------------
+// GSTileBlockFill — which blocks of a surface's texture actually hold texels.
+// ---------------------------------------------------------------------------------------
+//
+// The other half of the same mismatch. The model tracks guest bytes per BLOCK; the record of
+// what the surface's texture holds was a page bitmap, so it could only answer per PAGE. A page
+// bitmap that stands in for a block mask has to round, and the rounding that costs nothing at
+// the call site is the one that over-claims: a page counted held whose texels are half allocator
+// leftovers, then sampled by the present or written back into the ring as if it were guest data.
+//
+// The rule is that nothing is marked without a proof. These pin the accumulation, the promotion
+// to whole, and — the property the readers depend on — that a partially held page never answers
+// "yes" to a whole-page question.
+
+namespace
+{
+constexpr u32 kPage = 293;
+}
+
+TEST(TileGpuBlockFill, AFreshFillHoldsNothing)
+{
+	GSTileBlockFill f;
+	GSPageBitmap one;
+	one.set(kPage);
+	EXPECT_EQ(f.BlocksOf(kPage), 0u);
+	EXPECT_FALSE(f.HoldsWhole(one));
+	EXPECT_FALSE(f.MissingFrom(one).empty());
+}
+
+TEST(TileGpuBlockFill, AWholePageMarkHoldsEveryBlock)
+{
+	GSTileBlockFill f;
+	GSPageBitmap one;
+	one.set(kPage);
+	f.MarkWhole(one);
+	EXPECT_EQ(f.BlocksOf(kPage), kFull);
+	EXPECT_TRUE(f.HoldsWhole(one));
+	EXPECT_TRUE(f.MissingFrom(one).empty());
+}
+
+TEST(TileGpuBlockFill, PartialBlocksDoNotAnswerAWholePageQuestion)
+{
+	// The whole point. Twenty-eight of thirty-two blocks is not a held page, and every reader
+	// (the seed gate, the rule-2 bind, the donor road, the display materialise) asks the
+	// whole-page question.
+	GSTileBlockFill f;
+	GSPageBitmap one;
+	one.set(kPage);
+	f.Mark(kPage, 0xFFFFFFF0u);
+	EXPECT_EQ(f.BlocksOf(kPage), 0xFFFFFFF0u);
+	EXPECT_FALSE(f.HoldsWhole(one));
+	EXPECT_FALSE(f.MissingFrom(one).empty());
+}
+
+TEST(TileGpuBlockFill, BlocksAccumulateAndPromote)
+{
+	GSTileBlockFill f;
+	GSPageBitmap one;
+	one.set(kPage);
+	f.Mark(kPage, 0x0000FFFFu);
+	EXPECT_FALSE(f.HoldsWhole(one));
+	f.Mark(kPage, 0x00FF0000u);
+	EXPECT_EQ(f.BlocksOf(kPage), 0x00FFFFFFu);
+	EXPECT_FALSE(f.HoldsWhole(one));
+	f.Mark(kPage, 0xFF000000u);
+	// The blocks add up to the page, so it answers the whole-page question from here.
+	EXPECT_EQ(f.BlocksOf(kPage), kFull);
+	EXPECT_TRUE(f.HoldsWhole(one));
+}
+
+TEST(TileGpuBlockFill, MarkingNothingChangesNothing)
+{
+	GSTileBlockFill f;
+	f.Mark(kPage, 0);
+	EXPECT_EQ(f.BlocksOf(kPage), 0u);
+}
+
+TEST(TileGpuBlockFill, AWholePageMarkSubsumesEarlierPartials)
+{
+	GSTileBlockFill f;
+	GSPageBitmap one;
+	one.set(kPage);
+	f.Mark(kPage, 0x0000000Fu);
+	f.MarkWhole(one);
+	EXPECT_EQ(f.BlocksOf(kPage), kFull);
+	// ...and a later partial mark cannot take blocks away again.
+	f.Mark(kPage, 0x0000000Fu);
+	EXPECT_EQ(f.BlocksOf(kPage), kFull);
+	EXPECT_TRUE(f.HoldsWhole(one));
+}
+
+TEST(TileGpuBlockFill, PagesAreIndependentAndClearResetsThem)
+{
+	GSTileBlockFill f;
+	GSPageBitmap two;
+	two.set(kPage);
+	two.set(kPage + 4);
+	f.Mark(kPage, kFull);
+	EXPECT_FALSE(f.HoldsWhole(two));
+	EXPECT_EQ(f.MissingFrom(two).count(), 1u);
+	f.Mark(kPage + 4, kFull);
+	EXPECT_TRUE(f.HoldsWhole(two));
+	f.Clear();
+	EXPECT_EQ(f.BlocksOf(kPage), 0u);
+	EXPECT_FALSE(f.HoldsWhole(two));
+}
