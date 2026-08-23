@@ -457,7 +457,7 @@ void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 		// and no to the second, and counting those as refusals would inflate the refused column by
 		// twenty a frame on GT4 for loads that cost nothing.
 		const u32 before = m_frame.stalls[static_cast<u32>(StallSite::Clut)];
-		ReadbackToShadow(pages, clut ? StallSite::Clut : StallSite::LocalRead);
+		ReadbackToShadow(layout, r, pages, clut ? StallSite::Clut : StallSite::LocalRead);
 		if (clut && m_frame.stalls[static_cast<u32>(StallSite::Clut)] != before) [[unlikely]]
 			m_clut_pending.readback = true;
 	}
@@ -4060,7 +4060,14 @@ void GSRendererTileGpu::ReadbackToShadow(const GSPageBitmap& pages, StallSite si
 		return;
 
 	FlushPendingPlan();
-	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
+	PullToShadow(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll), site);
+}
+
+// The pull itself, shared by both overloads: the plan is already flushed and the page set is
+// already settled. The pool's synchronous readback per owner surface, masked to the planes and
+// blocks each holds.
+void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
+{
 	if (need.empty())
 		return;
 	m_frame.stalls[static_cast<u32>(site)]++;
@@ -4083,6 +4090,35 @@ void GSRendererTileGpu::ReadbackToShadow(const GSPageBitmap& pages, StallSite si
 		}
 	});
 	m_vram_model.OnReadback(need);
+}
+
+// The same road, for a caller whose ask is a RECT -- a local->host transfer, a move's source,
+// a CLUT load. Only the question about WHAT to pull is sharper.
+//
+// The page-granular overload cannot see which blocks of a page the read wants, and that costs
+// whole readbacks. A CLUT load reads 256 bytes, and what games do with a palette is park it in
+// the blocks past the bottom row of a render target's last page -- the unused tail of the
+// framebuffer. The page belongs to a target; not one block of the read does. Asking
+// page-granularly there flushes the plan and pulls every GPU-newest block of the page down so
+// that a loader can read bytes the target never wrote: on this corpus that is EVERY CLUT
+// readback that costs anything.
+//
+// `GSVramModel::ReadbackNeeded`'s rect overload already refines through the block sidecar and
+// counts what it refutes -- exact-Tile has taken that road since it was written. This one
+// simply had no way to hand it a rect.
+void GSRendererTileGpu::ReadbackToShadow(const GSTileSurfaceLayout& layout, const GSVector4i& r,
+	const GSPageBitmap& pages, StallSite site)
+{
+	// The cheap question first, so a read of plain CPU memory still costs one bitmap AND and
+	// builds no footprint: sotc runs ~1789 CLUT loads a frame that need nothing at all, and
+	// that has to stay free.
+	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
+		return;
+
+	FlushPendingPlan();
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(layout, r, fp);
+	PullToShadow(m_vram_model.ReadbackNeeded(fp, kGSTilePlanesAll), site);
 }
 
 // Whole-of-truth: every page any target holds newest comes down. Synced claims are dropped

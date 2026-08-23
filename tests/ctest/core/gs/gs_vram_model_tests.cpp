@@ -609,6 +609,47 @@ TEST(GSVramModel, OverflowedFootprintFallsBackToMaximalSpill)
 	EXPECT_TRUE(m.CheckInvariants());
 }
 
+// The corpus shape, as an address statement: MGS3's palette lives in the blocks past the
+// bottom of its 16-bit render target's last page. The two ReadbackNeeded overloads disagree
+// about it, and which one a CPU read takes is worth 114 pool readbacks a frame -- so pin the
+// disagreement rather than one side of it. If a future change makes the page-granular road
+// agree, the first assertion fires and says so instead of the saving quietly evaporating.
+TEST(GSVramModel, AClutInTheTailOfATargetsLastPageNeedsNoPullButThePageRoadSaysItDoes)
+{
+	// The real surface: PSMCT16 at bp 11776, 4 pages per row, 64x64 pixel pages. Page 383 is
+	// its last, and the target's bottom edge leaves the page's final blocks unwritten.
+	GSVramModel m;
+	const auto fb = Layout(11776, 4, PSMCT16);
+	const GSVector4i covered(0, 0, 256, 224);
+	const GSTileSurfaceId id = m.Create(fb, covered, 1);
+	m.OnNativeDraw(id, GSVramModel::PagesForRect(fb, covered), kGSTilePlanesColor);
+
+	// The rows below the target go back to the CPU: truth shrinks to the blocks above them.
+	GSVramModel::RectFootprint tail;
+	GSVramModel::FootprintForRect(fb, GSVector4i(0, 224, 256, 256), tail);
+	ASSERT_TRUE(m.SpillBeforeCpuWrite(tail, kGSTilePlanesColor).empty());
+	m.OnCpuWrite(tail, kGSTilePlanesColor);
+
+	const u32 page = 383;
+	const u32 truth = m.TruthMask(page, GSVramModel::PlaneIndex(GSTilePlaneRGB));
+	ASSERT_NE(truth, 0u);
+	ASSERT_NE(truth, GSVramModel::kFullBlockMask);
+
+	// The load: one 8x8 block of 32-bit palette at bp 12284 -- block 28 of page 383, which
+	// the shrink left to the CPU.
+	const auto clut = Layout(12284, 1, PSMCT32);
+	const GSVector4i one_block(0, 0, 8, 8);
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(clut, one_block, fp);
+	const GSVramModel::RectFootprint::Edge* e = fp.FindEdge(page);
+	ASSERT_NE(e, nullptr);
+	EXPECT_EQ(e->blocks & truth, 0u);
+
+	// The two roads, side by side. This is the whole change.
+	EXPECT_FALSE(m.ReadbackNeeded(GSVramModel::PagesForRect(clut, one_block), kGSTilePlanesAll).empty());
+	EXPECT_TRUE(m.ReadbackNeeded(fp, kGSTilePlanesAll).empty());
+}
+
 TEST(GSVramModel, RandomizedFlowsVsNaiveModel)
 {
 	std::mt19937_64 rng(0x67766f52);

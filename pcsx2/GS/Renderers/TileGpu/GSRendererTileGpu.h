@@ -852,6 +852,13 @@ private:
 		Count
 	};
 	void ReadbackToShadow(const GSPageBitmap& pages, StallSite site);
+	/// The same, for a caller whose ask is a RECT: refines "which pages must be pulled" through
+	/// the model's block sidecar, so a read landing only on blocks the owner never wrote costs
+	/// nothing at all. `pages` must be the rect's own page set.
+	void ReadbackToShadow(const GSTileSurfaceLayout& layout, const GSVector4i& r, const GSPageBitmap& pages,
+		StallSite site);
+	/// The pull, shared by both: the plan is already flushed and `need` already settled.
+	void PullToShadow(const GSPageBitmap& need, StallSite site);
 	void SyncAllTruthToCpu();
 
 	// Submit whatever the frame has planned so far, so the resident targets hold every draw up to
