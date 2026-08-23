@@ -76,7 +76,7 @@ enum JITScriptProtocol: String, CaseIterable, Identifiable {
 
     static func normalized(_ rawValue: String) -> JITScriptProtocol {
         switch rawValue.lowercased() {
-        case "legacy", "utm-dolphin", "utm_dolphin":
+        case "legacy", "utm-dolphin", "utm_dolphin", "classic":
             return .legacy
         default:
             return .universal

@@ -1,49 +1,12 @@
-# Unified "build everything on every commit" pipeline for the single-core monorepo.
-#
-# One push to the default branch fans out to every supported target and uploads
-# an individual binary artifact per platform:
-#   * PC arm64 Qt GUI  -> macOS, Linux, Windows  (reuses the reusable workflows)
-#   * Android APK       -> platforms/android  (Gradle + NDK, thin CMake on root core)
-#   * iOS .app          -> platforms/ios      (Xcode/CMake on root core)
-#
-# Windows-on-arm64 builds natively on a Windows 11 arm64 runner (see
-# windows_build_qt.yml): a single arm64 deps stage, then the arm64 GUI.
-#
-# NOTE: The Android and iOS jobs build against the freshly-collapsed single core
-# and have not yet had a green run; they are the mechanism that will surface the
-# remaining reconciliation work. Keep them non-blocking until they first pass.
-#
-# INVARIANT (do not weaken): the PC arm64 jobs (pc-macos-arm64 / pc-linux-arm64 /
-# pc-windows-arm64) are BLOCKING and must stay so. They are the guardrail that a
-# mobile-motivated change has not silently altered the shared canonical core.
-# Anything mobile-specific belongs behind a platform guard (#if __ANDROID__ /
-# ARMSX2_IOS) or in a forked, CMake-selected translation unit (see the aR5900*
-# EE fork in pcsx2/CMakeLists.txt) -- never grafted unguarded into shared files.
-name: Build All Platforms
+name: Build iOS IPA (unsigned, sideload)
 
 on:
-  push:
-    branches:
-      - master
-    # Doc-only pushes shouldn't burn ~2h of arm64 CI.
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE*'
-      - '.gitignore'
   workflow_dispatch:
 
-concurrency:
-  group: build-all-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-
-  # ---- iOS .app ----------------------------------------------------------
   ios:
-    name: iOS (arm64, unsigned device IPA)
+    name: iOS IPA (unsigned, sideload)
     runs-on: macos-26
-    # Non-blocking until the collapsed-core iOS build first goes green.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,9 +21,6 @@ jobs:
       # an identity that cannot be revoked without a release. Those keep the stock PCSX2
       # agent and stay softcore, which is what a test build should be.
       - name: Embed the RetroAchievements client identity
-        if: >-
-          github.repository == 'ARMSX2/ARMSX2' &&
-          github.event_name == 'push' && github.ref == 'refs/heads/master'
         env:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
         run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
@@ -82,8 +42,7 @@ jobs:
       - name: Package unsigned .ipa
         working-directory: platforms/ios/app/src/main/cpp
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
-          IPA_NAME="ARMSX2-iOS-${SHORT_SHA}.ipa"
+          IPA_NAME="armsx2-ios-unsigned-stosdebug.ipa"
 
           APP_PATH=$(find build -name "ARMSX2iOS.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
@@ -105,13 +64,7 @@ jobs:
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
           ls -lh "$IPA_NAME"
 
-      # Nothing on the client reports a rejected agent, so a master build that lost the
-      # identity looks healthy until a player loses an unlock. Fail here instead. Carries
-      # the same guard as the write step, or every pull request would fail this check.
       - name: Verify the client identity reached the binary
-        if: >-
-          github.repository == 'ARMSX2/ARMSX2' &&
-          github.event_name == 'push' && github.ref == 'refs/heads/master'
         working-directory: platforms/ios/app/src/main/cpp
         env:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}

@@ -18,11 +18,14 @@ enum StikDebugLauncher {
 #if canImport(UIKit)
         let bundleID = Bundle.main.bundleIdentifier ?? "com.armsx2.ios"
         let encodedBundleID = bundleID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bundleID
+        let appName = Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "ARMSX2iOS"
         let candidates = [
             "stikdebug://enable-jit?bundle-id=\(encodedBundleID)",
             "stikjit://enable-jit?bundle-id=\(encodedBundleID)",
-            "stikdebug://"
-        ].compactMap(URL.init(string:))
+            "stikdebug://",
+            "stosdebug://enableJIT?bundleId=\(encodedBundleID)&appName=\(appName)",
+            "stosdebug://"
+                    ].compactMap(URL.init(string:))
 
         guard !candidates.isEmpty else {
             log("open failed: no valid launch URLs")
