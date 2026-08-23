@@ -48,6 +48,26 @@ import android.util.Log
  * here; the app process learns the outcome from the next state poll like any other change.
  */
 class DiscordAuthActivity : Activity() {
+    companion object {
+        /** Intent extra: also open the browser sign-in, rather than only handing over the Activity. */
+        const val EXTRA_AUTHORIZE = "authorize"
+
+        /**
+         * True once setEngineActivity has run in THIS process.
+         *
+         * The SDK keeps the Activity in a static, and statics are per-process, so this resets
+         * every time Android restarts :discord -- which it does freely. Anything that needs the
+         * SDK must check this rather than assume sign-in already happened.
+         */
+        @Volatile
+        var engineBound = false
+            private set
+
+        /** Ran once, when the Activity below hands itself to the SDK. Set by DiscordService. */
+        @Volatile
+        var onEngineBound: (() -> Unit)? = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -65,10 +85,20 @@ class DiscordAuthActivity : Activity() {
                 .getMethod("setEngineActivity", Activity::class.java)
                 .invoke(null, this)
         }
+            .onSuccess {
+                engineBound = true
+                val waiting = onEngineBound
+                onEngineBound = null
+                waiting?.invoke()
+            }
             .onFailure { Log.w("ARMSX2DiscordSvc", "setEngineActivity failed: ${it.message}") }
 
-        runCatching { DiscordNative.authorize() }
-            .onFailure { Log.w("ARMSX2DiscordSvc", "authorize failed: ${it.message}") }
+        // Only when asked. Handing the Activity over is now also done on a plain start, and that
+        // must not drag the browser up with it.
+        if (intent?.getBooleanExtra(EXTRA_AUTHORIZE, false) == true) {
+            runCatching { DiscordNative.authorize() }
+                .onFailure { Log.w("ARMSX2DiscordSvc", "authorize failed: ${it.message}") }
+        }
 
         finish()
         overridePendingTransition(0, 0)
