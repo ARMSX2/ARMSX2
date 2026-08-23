@@ -45,6 +45,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_fbmsk_mask_tests.cpp
 	gs_tilegpu_alpha_test_fold_tests.cpp
 	gs_tilegpu_readback_store_tests.cpp
+	gs_tilegpu_ring_compose_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

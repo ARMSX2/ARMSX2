@@ -43,6 +43,27 @@
 // The GPU never reads S; the CPU never reads B; program order plus the ring is the whole
 // synchronisation story.
 //
+// One plane's state on one page, as the ring's compose sees it: who holds the newest bytes,
+// which of the page's 32 blocks they hold, whether the ring already carries them, and whether
+// that owner has a writeback shader at all.
+struct GSTileRingPlaneState
+{
+	GSTileSurfaceId owner = kGSTileNoSurface;
+	u32 truth_mask = 0; ///< GSVramModel::TruthMask for this page/plane (0 = no truth)
+	bool synced = false; ///< the ring already holds these bytes
+	bool byte_road = false; ///< the owner's layout has a writeback shader
+};
+
+/// The blocks of a page that the writebacks ComposeRingPages is about to emit will actually
+/// compose, given the four planes' state.
+///
+/// This is EmitPrepOp's rule, stated once so the two cannot drift: an owner joins the compose
+/// when it holds UNSYNCED truth on some plane and has a byte road, and each owner that joins
+/// writes back the union of the truth masks of EVERY plane it owns on the page. Anything outside
+/// that union is a block no writeback covers, and the slot must be prefilled from S or those
+/// bytes are whatever the executor left in the slot -- which is zero.
+u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
+
 // Stage-1 contract: wrong-fast where the executor is (no blending, no per-draw write masks);
 // EXACT where the model is -- every page's truth is named, every crossing is counted.
 class GSRendererTileGpu final : public GSRenderer
@@ -845,6 +866,11 @@ private:
 		u32 ring_pages = 0;      // ring entries this frame
 		u32 ring_prefill = 0;    // ...of which prefilled from S / a version copy
 		u32 ring_versions = 0;   // version copies taken (uploads superseding a live slot)
+		// Slots the per-plane proxy would have left for the GPU to compose whole, that the
+		// block-exact coverage test caught: their planned writebacks do not reach every block, so
+		// they take the S prefill instead of shipping executor zeros. Nonzero is not a fault --
+		// it is the class the two rules can disagree on, made visible.
+		u32 prefill_uncomposed = 0;
 		u32 epochs = 0;
 		u32 writeback_ops = 0;
 		u32 writeback_pages = 0;

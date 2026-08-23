@@ -1392,6 +1392,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto wbrk = stat([](const MF& f) { return f.writeback_breaks; });
 	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
+	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
 	const auto self = stat([](const MF& f) { return f.self_reads; });
 	const auto binds = stat([](const MF& f) { return f.tex_binds; });
@@ -1415,9 +1416,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 
 	Console.WriteLn("TileGpu memory model over %u frames (mean / p50 per frame):", static_cast<u32>(m_model_frames.size()));
 	Console.WriteLn("  surfaces live %6.2f / %-4u  passes %7.2f / %-5u  ring pages %7.2f / %-5u (prefilled %.2f / %u, "
-					"version copies %.2f / %u, epochs %.2f / %u)",
+					"version copies %.2f / %u, epochs %.2f / %u, prefilled for uncomposed blocks %.2f / %u)",
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
-		versions.p50, epochs.mean, epochs.p50);
+		versions.p50, epochs.mean, epochs.p50, uncomp.mean, uncomp.p50);
 	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
 					"%8.2f / %-5u pages, %.2f / %u pass breaks",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
@@ -2407,21 +2408,78 @@ u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
 	return m_plan_target_of_surface[id];
 }
 
+// EmitPrepOp's writeback rule, stated as a pure function so the prefill decision below and the
+// op it predicts cannot drift apart. See the declaration for what it means.
+u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount])
+{
+	// Who writes back: an owner holding unsynced truth on some plane, with a road to carry it.
+	GSTileSurfaceId writers[kGSTilePlaneCount];
+	u32 writer_count = 0;
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+	{
+		const GSTileRingPlaneState& p = planes[pi];
+		if (p.owner == kGSTileNoSurface || p.truth_mask == 0 || p.synced || !p.byte_road)
+			continue;
+		u32 w = 0;
+		while (w < writer_count && writers[w] != p.owner)
+			w++;
+		if (w == writer_count)
+			writers[writer_count++] = p.owner;
+	}
+
+	// What each of them writes: the union over every plane it owns here, synced or not -- that is
+	// the mask EmitPrepOp puts on the page entry, and the shader honours no other filter.
+	u32 composed = 0;
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+	{
+		for (u32 w = 0; w < writer_count; w++)
+		{
+			if (writers[w] == planes[pi].owner)
+			{
+				composed |= planes[pi].truth_mask;
+				break;
+			}
+		}
+	}
+	return composed;
+}
+
 // A ring slot for `page` in the current epoch. Prefill from S unless the page is, in every
 // plane, whole-page unsynced truth of a surface with a byte road -- exactly the case where a
 // writeback this epoch composes every byte (ComposeRingPages emits it right after asking here).
 // A page synced already (either its bytes are in S after a stall readback, or an earlier
 // writeback this epoch composed its live slot) prefills too: over the same live slot the memcpy
 // runs first and the writeback's blocks land over it, so the extra copy is harmless.
+//
+// ⚠️ The per-plane test above is a PROXY for the question that actually matters -- "will the
+// writebacks this compose emits cover all 32 blocks?" -- and a proxy is only as good as the rule
+// it stands in for. Nothing in the two functions makes them move together: the decision is
+// per-plane and whole-page, the writeback's mask is per-block and per-OWNER, and a block that is
+// neither prefilled nor inside some writeback's mask keeps whatever the executor left in the
+// slot, which is zero. That is a wrong colour, not a stale one, and the model counts the page
+// composed either way. So the coverage is computed too and both must agree: a slot goes
+// unprefilled only where the planned writebacks provably reach every block. Strictly more
+// prefill than the proxy alone, never less; the worst case it leaves is a byte one write old
+// instead of a byte that was never guest data at all.
 u32 GSRendererTileGpu::EnsureRingSlot(u32 page)
 {
+	GSTileRingPlaneState planes[kGSTilePlaneCount];
 	bool needs_prefill = false;
-	for (u32 pi = 0; pi < kGSTilePlaneCount && !needs_prefill; pi++)
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
 		const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
-		if (owner == kGSTileNoSurface || m_vram_model.TruthMask(page, pi) != GSVramModel::kFullBlockMask ||
-			m_vram_model.SyncedPages(pi).test(page) || !HasByteRoad(m_vram_model.Get(owner).layout))
+		planes[pi].owner = owner;
+		planes[pi].truth_mask = m_vram_model.TruthMask(page, pi);
+		planes[pi].synced = m_vram_model.SyncedPages(pi).test(page);
+		planes[pi].byte_road = owner != kGSTileNoSurface && HasByteRoad(m_vram_model.Get(owner).layout);
+		if (owner == kGSTileNoSurface || planes[pi].truth_mask != GSVramModel::kFullBlockMask ||
+			planes[pi].synced || !planes[pi].byte_road)
 			needs_prefill = true;
+	}
+	if (!needs_prefill && gsTileComposableBlocks(planes) != GSVramModel::kFullBlockMask)
+	{
+		needs_prefill = true;
+		m_frame.prefill_uncomposed++;
 	}
 
 	if (m_ring_live[page] != 0)
@@ -2579,7 +2637,15 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 			{
 				if (num_buckets == std::size(buckets))
 				{
-					lossy++; // beyond the table: counted as lost rather than mis-composed
+					// Beyond the table: this owner's writeback is not emitted at all, and
+					// EnsureRingSlot could not know that when it decided -- it looked at the
+					// planes, not at the table. Force the prefill now, while the slot is still
+					// this frame's (the ring is built at plan time, so a later flag still lands).
+					// Counted as lost rather than mis-composed, which is only true once the slot
+					// carries S's bytes rather than the executor's zeros.
+					if (m_ring_live[page] != 0)
+						m_ring_entries[m_ring_live[page] - 1].prefill_s = true;
+					lossy++;
 					continue;
 				}
 				buckets[num_buckets].id = owner;
