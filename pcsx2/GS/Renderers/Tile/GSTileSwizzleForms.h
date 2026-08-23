@@ -125,6 +125,14 @@ namespace GSTileSwizzleForms
 		XorForm1 inv_block48; ///< in-page block 0..31 → bx | (by << 3)
 		XorForm1 inv_col32; ///< word in block 0..63 → cx | (cy << 3)
 
+		/// The DEPTH 16-bit formats are their colour twins with a constant XOR on the absolute block
+		/// number: PSMZ16 is PSMCT16's tables, PSMZ16S is PSMCT16S's, both under
+		/// GSSwizzleInfo's blockAddressXor. So the shader needs no new table for them — one extra
+		/// XOR — and the constant is READ OFF GSOffset here rather than transcribed, with the
+		/// twin relation itself checked over a whole page (a table change that broke it would
+		/// otherwise address the wrong block silently). Zero, and `valid` false, if it stops holding.
+		u32 z16_block_xor = 0;
+
 		/// The CSM1 32-bit CLUT loaders' word order (GSClut::EntryToWordCSM1_32): entry
 		/// e of an eight-bit palette at CSA 0 → source word 0..255; entry e of a
 		/// four-bit palette → source word 0..15. Fitted separately (`clut_valid`) so a
@@ -161,6 +169,32 @@ namespace GSTileSwizzleForms
 
 	/// Maps a GS PSM to the shader's format, or -1 for one it does not serve.
 	int IndexFormatFor(u32 psm);
+
+	/// Source-side DIRECT 16-bit formats: a texel is one halfword, expanded to 8888 by TEXA rather
+	/// than by a palette. Kept beside IndexFormatFor because the fragment shader switches on ONE
+	/// numbering built from both lists — a state row's index_format is 0 for direct 32-bit,
+	/// 1 + IndexFormatFor for an index, and 6 + Direct16FormatFor for these — and two lists that
+	/// could be renumbered independently is how a draw comes to read PSMZ16S through PSMCT16's
+	/// block table.
+	enum class Direct16Format : u8
+	{
+		CT16 = 0, ///< PSMCT16: blockTable16 (== blockTable4), no block XOR
+		CT16S = 1, ///< PSMCT16S: blockTable16S, no block XOR
+		Z16 = 2, ///< PSMZ16: blockTable16 with the depth block XOR
+		Z16S = 3, ///< PSMZ16S: blockTable16S with the depth block XOR
+	};
+
+	/// Maps a GS PSM to one of the four above, or -1.
+	int Direct16FormatFor(u32 psm);
+
+	/// The guest BYTE address of texel (u, v) of a 16-bit texture window — the arithmetic
+	/// tilegpu.glsl's 16-bit texel road performs, so the unit suite can pin it against GSOffset.
+	///
+	/// Unlike Locate16, which serves the SURFACE roads and so may assume a page-aligned base, this
+	/// takes any TBP0: a texture window legitimately starts blocks into a page, and the block XOR
+	/// the depth formats carry applies to the whole sum, not to the in-page index. Wrapped into the
+	/// 4 MB of GS memory exactly as GSOffset wraps it. False for a psm that is not one of the four.
+	bool Address16(const FormSet& forms, u32 psm, u32 tbp0, u32 tbw, u32 u, u32 v, u32& byte_addr);
 
 	/// Pages per texture row for a window of `psm` at TEX0.TBW — the page term every
 	/// address form below (and every TileGpu shader) multiplies the row index by. This

@@ -71,6 +71,28 @@ namespace GSTileSwizzleForms
 		ok &= Invert2(f.block48, f.inv_block48);
 		ok &= Invert2(f.col32, f.inv_col32);
 
+		// The depth 16-bit formats as their colour twins plus one constant XOR. Read the constant
+		// off GSOffset (bp 0, so the block number IS the XOR at the origin) and then hold the whole
+		// page to the relation, both families -- a table or a blockAddressXor change that broke it
+		// would otherwise send every depth-16 texture read to the wrong block with no complaint.
+		{
+			const GSOffset c16 = GSOffset::fromKnownPSM(0, 1, PSMCT16);
+			const GSOffset z16 = GSOffset::fromKnownPSM(0, 1, PSMZ16);
+			const GSOffset c16s = GSOffset::fromKnownPSM(0, 1, PSMCT16S);
+			const GSOffset z16s = GSOffset::fromKnownPSM(0, 1, PSMZ16S);
+			f.z16_block_xor = z16.bn(0, 0);
+			for (int y = 0; y < 64 && ok; y += 8)
+			{
+				for (int x = 0; x < 64; x += 16)
+				{
+					ok &= z16.bn(x, y) == (c16.bn(x, y) ^ f.z16_block_xor);
+					ok &= z16s.bn(x, y) == (c16s.bn(x, y) ^ f.z16_block_xor);
+				}
+			}
+			if (!ok)
+				f.z16_block_xor = 0;
+		}
+
 		f.valid = ok;
 
 		u16 i8[256];
@@ -106,6 +128,8 @@ namespace GSTileSwizzleForms
 		form1("IC32", forms.inv_col32);
 		form1("CLUT8", forms.clut_i8_word);
 		form1("CLUT4", forms.clut_i4_word);
+		// Not a form: the one constant that turns a 16-bit colour block address into its depth twin's.
+		s += fmt::format("#define TILE_SWZ_Z16XOR 0x{:x}u\n", forms.z16_block_xor);
 		return s;
 	}
 
@@ -126,6 +150,46 @@ namespace GSTileSwizzleForms
 			default:
 				return -1;
 		}
+	}
+
+	int Direct16FormatFor(u32 psm)
+	{
+		switch (psm)
+		{
+			case PSMCT16:
+				return static_cast<int>(Direct16Format::CT16);
+			case PSMCT16S:
+				return static_cast<int>(Direct16Format::CT16S);
+			case PSMZ16:
+				return static_cast<int>(Direct16Format::Z16);
+			case PSMZ16S:
+				return static_cast<int>(Direct16Format::Z16S);
+			default:
+				return -1;
+		}
+	}
+
+	bool Address16(const FormSet& forms, u32 psm, u32 tbp0, u32 tbw, u32 u, u32 v, u32& byte_addr)
+	{
+		byte_addr = 0;
+		const int fmt = Direct16FormatFor(psm);
+		if (!forms.valid || fmt < 0)
+			return false;
+
+		// The two bits of the format number: bit 0 picks the strided block table, bit 1 the depth
+		// XOR. The shader reads them the same way, off the state row's index_format minus six.
+		const bool strided = (fmt & 1) != 0;
+		const u32 zxor = (fmt & 2) != 0 ? forms.z16_block_xor : 0u;
+
+		// A 16-bit page is 64x64 texels of 16x8-texel blocks; the block XOR lands on the absolute
+		// block, after the base and the page term, exactly as GSOffset's bn() applies it.
+		const u32 page = (v >> 6) * tbw + (u >> 6);
+		const u32 blk = ((tbp0 + page * 32 + (strided ? forms.block84s.Eval((u >> 4) & 3, (v >> 3) & 7) :
+														forms.block84.Eval((u >> 4) & 3, (v >> 3) & 7))) ^
+							zxor) %
+						GS_MAX_BLOCKS;
+		byte_addr = blk * 256 + forms.col16.Eval(u & 15, v & 7) * 2;
+		return true;
 	}
 
 	u32 PagesPerRow(u32 psm, u32 tbw)

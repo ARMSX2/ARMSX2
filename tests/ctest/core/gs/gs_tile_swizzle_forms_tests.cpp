@@ -141,6 +141,97 @@ TEST(GSTileSwizzleForms, Locate16AgreesWithGSOffsetOnEveryTexel)
 	}
 }
 
+// The 16-bit texture READ arm's address, against GSOffset's own. Same property as Locate16, asked
+// of the road that samples rather than the road that owns -- so the base is NOT page-aligned in
+// every case, and the two depth formats carry the block XOR that Locate16 never sees.
+TEST(GSTileSwizzleForms, Address16AgreesWithGSOffsetOnEveryTexel)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	// The depth twins really are the colour tables plus one constant, and it is the constant
+	// GSOffset carries. Stated here as well as checked inside Fit(), so the fit's silent
+	// invalidation cannot pass for agreement.
+	EXPECT_NE(f.z16_block_xor, 0u);
+
+	struct Case
+	{
+		u32 psm;
+		u32 tbp0, tbw;
+		u32 w, h;
+	};
+	const Case cases[] = {
+		// Page-aligned windows in all four formats, one and several page rows.
+		{PSMCT16, 0x1180, 4, 256, 128},
+		{PSMCT16S, 0x1180, 4, 256, 128},
+		{PSMZ16, 0x1180, 4, 256, 128},
+		{PSMZ16S, 0x1180, 4, 256, 128},
+		// The corpus shapes: full-width 640 windows at the bases the census recorded.
+		{PSMCT16, 0x08c0, 10, 640, 128},
+		{PSMCT16, 0x2800, 8, 512, 128},
+		{PSMZ16, 0x12c0, 10, 640, 128},
+		{PSMCT16S, 0x2400, 2, 128, 256},
+		// A base sitting BLOCKS into a page, which a texture window legitimately does and a
+		// surface never does -- and which is where the depth XOR stops distributing over the sum.
+		{PSMCT16, 0x1184, 2, 128, 64},
+		{PSMZ16, 0x1187, 2, 128, 64},
+		{PSMZ16S, 0x1183, 1, 64, 128},
+		// TBW = 0: GSOffset folds every row onto page column zero, and so must this.
+		{PSMCT16, 0x1180, 0, 64, 64},
+		// High enough to wrap past the top of memory.
+		{PSMZ16, 15872, 8, 512, 192},
+	};
+
+	for (const Case& c : cases)
+	{
+		const GSOffset off = GSOffset::fromKnownPSM(c.tbp0, c.tbw, static_cast<GS_PSM>(c.psm));
+		u32 mismatches = 0;
+		for (u32 v = 0; v < c.h; v++)
+		{
+			for (u32 u = 0; u < c.w; u++)
+			{
+				u32 got = 0;
+				ASSERT_TRUE(Address16(f, c.psm, c.tbp0, c.tbw, u, v, got));
+				// GSOffset::pa counts HALFWORDS for a 16-bit format, and GS memory wraps at 4 MB.
+				const u32 want = static_cast<u32>(
+					(static_cast<u64>(off.pa(static_cast<int>(u), static_cast<int>(v))) * 2) %
+					(static_cast<u64>(GS_MAX_PAGES) * GS_PAGE_SIZE));
+				if (got != want && mismatches++ < 8)
+				{
+					ADD_FAILURE() << "psm " << c.psm << " tbp0 " << c.tbp0 << " tbw " << c.tbw << " texel (" << u
+								  << "," << v << "): want byte " << want << ", got " << got;
+				}
+			}
+		}
+		EXPECT_EQ(mismatches, 0u) << "psm " << c.psm << " tbp0 " << c.tbp0;
+	}
+}
+
+// The state row's index_format is ONE numbering built from two lists. The fragment shader switches
+// on it; nothing links this file to the GLSL, so a renumbering that moved one list and not the
+// other would read PSMZ16S through PSMCT16's block table and produce plausible wrong texels.
+TEST(GSTileSwizzleForms, TheDirect16NumberingIsWhatTheShaderSwitchesOn)
+{
+	EXPECT_EQ(Direct16FormatFor(PSMCT16), 0);
+	EXPECT_EQ(Direct16FormatFor(PSMCT16S), 1);
+	EXPECT_EQ(Direct16FormatFor(PSMZ16), 2);
+	EXPECT_EQ(Direct16FormatFor(PSMZ16S), 3);
+	// Bit 0 is "strided block table", bit 1 is "depth XOR" -- which is how the shader decodes it
+	// rather than as four separate arms.
+	EXPECT_EQ(Direct16FormatFor(PSMCT16S) & 1, 1);
+	EXPECT_EQ(Direct16FormatFor(PSMZ16S) & 1, 1);
+	EXPECT_EQ(Direct16FormatFor(PSMZ16) & 2, 2);
+	EXPECT_EQ(Direct16FormatFor(PSMZ16S) & 2, 2);
+	// Disjoint from the index list, and both refuse everything else: index_format 6 + this must
+	// never collide with 1 + IndexFormatFor, whose largest is 5.
+	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMT8), u32(PSMT4), u32(PSMT8H), u32(PSMT4HL), u32(PSMT4HH),
+			 u32(PSMZ32), u32(PSMZ24)})
+	{
+		EXPECT_EQ(Direct16FormatFor(psm), -1) << psm;
+	}
+	for (u32 psm : {u32(PSMCT16), u32(PSMCT16S), u32(PSMZ16), u32(PSMZ16S)})
+		EXPECT_EQ(IndexFormatFor(psm), -1) << psm;
+}
+
 // The two texels the writeback pairs into one word really are one word apart in the ring, and the
 // low half is the one at the lower x. That pairing is what lets the compute pass store a whole
 // word instead of read-modify-writing a halfword from two workgroups at once.
@@ -235,11 +326,11 @@ TEST(GSTileSwizzleForms, ShaderDefinesCarryEveryConstant)
 	ASSERT_TRUE(f.valid);
 	const std::string s = ShaderDefines(f);
 	// One line per basis entry: seven 2-input forms × 12 entries + four 1-input forms × 10
-	// (the two inverse forms and the two CLUT word-order forms).
+	// (the two inverse forms and the two CLUT word-order forms), plus the depth block XOR.
 	size_t lines = 0;
 	for (char c : s)
 		lines += (c == '\n');
-	EXPECT_EQ(lines, 7u * 12u + 4u * 10u);
+	EXPECT_EQ(lines, 7u * 12u + 4u * 10u + 1u);
 	EXPECT_TRUE(f.clut_valid);
 	EXPECT_NE(s.find("#define TILE_SWZ_CLUT8_7 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_B48_X0 "), std::string::npos);
@@ -248,6 +339,8 @@ TEST(GSTileSwizzleForms, ShaderDefinesCarryEveryConstant)
 	EXPECT_NE(s.find("#define TILE_SWZ_B84S_X0 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_C16_X3 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_C16_Y2 "), std::string::npos);
+	// ...and the one constant that is not a form.
+	EXPECT_NE(s.find("#define TILE_SWZ_Z16XOR "), std::string::npos);
 }
 
 namespace
