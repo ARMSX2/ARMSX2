@@ -97,8 +97,22 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
     }
 
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-        thread = RenderThread(st, w, h, spec) { ok -> post { onGlStatus?.invoke(ok) } }
-            .also { it.start() }
+        // Arm the crash-loop breaker for as long as native GL code is running on our behalf; the
+        // thread disarms it when it exits in an orderly way. See LibraryBackground.armSaver.
+        LibraryBackground.armSaver()
+        // start() asks for a 16MB stack (see STACK_BYTES) and can throw OutOfMemoryError on a
+        // constrained device. That would be an uncaught throw on the MAIN thread -- the process
+        // dies, and since this is the first screen the app would be unlaunchable. Fall back to the
+        // 2D backdrop instead, the same way an EGL failure does.
+        thread = runCatching {
+            RenderThread(st, w, h, spec) { ok -> post { onGlStatus?.invoke(ok) } }
+                .also { it.start() }
+        }.getOrElse {
+            Log.w(TAG, "saver thread failed to start", it)
+            LibraryBackground.disarmSaver()
+            onGlStatus?.invoke(false)
+            null
+        }
     }
 
     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
@@ -152,9 +166,26 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
         private var saver: Saver? = null
 
         fun resize(w: Int, h: Int) { width = w; height = h; sizeDirty = true }
-        fun finish() { running = false; runCatching { join(500) } }
+        fun finish() {
+            running = false
+            runCatching { join(500) }
+            // join() is bounded, so the thread's own finally may not have run yet. We asked it to
+            // stop and the process is still here, which is all the breaker needs to know.
+            LibraryBackground.disarmSaver()
+        }
 
         override fun run() {
+            // Reaching the end of this function at all -- however the saver did -- means the
+            // process survived it, which is the only thing the breaker is asking about. A native
+            // crash or a kill never gets here, and that is what leaves the flag set.
+            try {
+                render()
+            } finally {
+                LibraryBackground.disarmSaver()
+            }
+        }
+
+        private fun render() {
             if (!initEgl()) { onStatus(false); teardown(); return }
 
             val s = spec.newSaver()

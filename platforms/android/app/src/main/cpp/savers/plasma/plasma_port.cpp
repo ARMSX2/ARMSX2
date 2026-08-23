@@ -42,7 +42,14 @@ int plasma_port_new(int preset)
 
     saver_plasma::initSaver();
     g_started = saver_plasma::readyToDraw != 0;
-    return g_started ? 1 : 0;
+    if (!g_started) {
+        /* Returning 0 means the JNI never calls port_free, so this is the only chance to give
+         * gl1 back. Leaving it up would strand g.ready with names from a context that is about
+         * to die, and gl1_init() early-returns on g.ready -- poisoning the NEXT saver. */
+        gl1_shutdown();
+        return 0;
+    }
+    return 1;
 }
 
 void plasma_port_resize(int width, int height)

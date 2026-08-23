@@ -146,6 +146,19 @@ fun HomeScreen(
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
+    // The animated background switched itself off because the last run died with it on screen
+    // (LibraryBackground.armSaver). Say so -- silently reverting a setting the user chose reads
+    // as the setting being broken, and the name tells them which one to avoid.
+    LaunchedEffect(LibraryBackground.crashedSaver.value) {
+        LibraryBackground.crashedSaver.value?.let { kind ->
+            LibraryBackground.crashedSaver.value = null
+            Toast.makeText(
+                context,
+                "Animated background turned off: ${LibraryBackground.saverName(kind)} crashed last time.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         picked?.let { LibraryBackground.set(context, it) }
     }
