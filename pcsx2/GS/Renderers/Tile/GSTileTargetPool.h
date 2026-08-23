@@ -66,7 +66,8 @@ public:
 	bool UploadPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages);
 
 	/// Read pages back into CPU local memory. write_mask selects the bytes of each
-	/// 32-bit cell to write (16-bit formats write whole cells and ignore it);
+	/// 32-bit cell to write (16-bit DEPTH writes whole cells and ignores it; a 16-bit
+	/// COLOUR layout is refused outright -- see ReadbackAddressable);
 	/// block_mask selects which of each page's 32 physical blocks are pulled, so a
 	/// page whose truth a CPU transfer has already shrunk keeps its CPU-newest blocks.
 	///
@@ -77,6 +78,9 @@ public:
 	/// pages collect to no runs returns without touching the device at all.
 	bool ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages,
 		u32 write_mask, u32 block_mask = GSVramModel::kFullBlockMask, u32* out_drains = nullptr);
+
+	/// Whether ReadbackPages' store road can address `layout` at all -- see the definition.
+	static bool ReadbackAddressable(const GSTileSurfaceLayout& layout);
 
 	/// Pixel rects covering the set pages, refined to `block_mask`'s blocks within
 	/// each page (kFullBlockMask takes the whole-page run path). Pure: derived from
@@ -105,6 +109,10 @@ public:
 		return v <= 0.0 ? 0u : (v >= 4294967295.0 ? 0xFFFFFFFFu : static_cast<u32>(v));
 	}
 
+	/// Readbacks refused because ReadbackAddressable said no: their pages kept the CPU
+	/// shadow's bytes instead of the surface's. Nonzero means a title is running a road
+	/// this renderer does not have yet, not that anything went wrong at this call.
+	u32 UnaddressableReadbacks() const { return m_unaddressable_readbacks; }
 	/// Readbacks served by the out-of-band copy (no drain of the frame's buffer).
 	u32 OutOfBandCopies() const { return m_oob_copies; }
 	/// Wall time spent inside drain-road submit-and-waits. Beside the drain COUNT
@@ -112,6 +120,9 @@ public:
 	u64 DrainWallNs() const { return m_drain_wall_ns; }
 
 private:
+	u32 m_unaddressable_readbacks = 0;
+	bool m_warned_unaddressable = false;
+
 	struct Slot
 	{
 		GSTexture* tex = nullptr;

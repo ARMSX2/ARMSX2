@@ -10,6 +10,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 
 #include "common/Assertions.h"
+#include "common/Console.h"
 
 #include <cstring>
 
@@ -361,11 +362,50 @@ bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileS
 	return true;
 }
 
+// Whether the store road below can put this layout's pixels back where they belong.
+//
+// Both roads end in GSLocalMemory's rect writers, and a writer is bound to a CELL WIDTH: it
+// indexes vm32() or vm16() with the pixel index GSOffset produced, and that index counts pixels
+// in the LAYOUT'S OWN format. Pair a 32-bit writer with a 16-bit layout and every destination
+// byte offset doubles -- the store does not miss by a pixel, it misses by tens of pages, and it
+// lands there through the wrapped VM alias so nothing faults and nothing complains.
+//
+// The depth road already carries both writers (WritePixel16 for Z16/Z16S). The colour road
+// carries only WritePixel32, so a 16-bit COLOUR surface has no store at all -- which is the same
+// gap that leaves 16-bit out of the writeback and seed shaders. Until that road exists, say so
+// here rather than letting the caller scribble somebody else's bytes: measured on OutRun 2006, a
+// PSMCT16S surface at page 380 zeroing GS pages 293 and 297, the game's fog-index plane.
+bool GSTileTargetPool::ReadbackAddressable(const GSTileSurfaceLayout& layout)
+{
+	if (layout.kind == GSTileSurfaceKind::Color)
+		return gsTileStorageBpp(layout.psm) == 32;
+	return gsTileStorageBpp(layout.psm) == 32 || gsTileStorageBpp(layout.psm) == 16;
+}
+
 bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout,
 	const GSPageBitmap& pages, u32 write_mask, u32 block_mask, u32* out_drains)
 {
 	if (pages.empty() || write_mask == 0 || block_mask == 0)
 		return true;
+
+	// A layout whose pixels this road cannot address brings nothing down. Reported as served,
+	// not as a failure: the thing it replaces is not a readback that did not happen, it is one
+	// that happened at the wrong addresses, so every caller's control flow stays exactly where it
+	// was and the pages simply keep the bytes the CPU shadow already holds. Counted, and said
+	// once, because "stale" must never be silent.
+	if (!ReadbackAddressable(layout))
+	{
+		m_unaddressable_readbacks++;
+		if (!m_warned_unaddressable)
+		{
+			m_warned_unaddressable = true;
+			Console.Warning("Tile: a readback was asked of a %u-bit colour surface (PSM %u), which the store road "
+							"cannot address -- its pages keep the CPU shadow's bytes, stale. Counted as "
+							"unaddressable readbacks.",
+				gsTileStorageBpp(layout.psm), layout.psm);
+		}
+		return true;
+	}
 
 	Slot& s = GetSlot(handle);
 	if (CollectRuns(layout, pages, block_mask, m_runs) == 0)
