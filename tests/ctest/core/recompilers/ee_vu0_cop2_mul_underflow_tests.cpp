@@ -19,8 +19,8 @@
 // in the pool because they are the cases a result-only test cannot tell from an
 // underflow.
 //
-// Both polarities: the same stream below vuClampMode 4 has to lose U on the
-// rows mode 4 gets right, or the mode-4 pass says nothing about the gate.
+// Both polarities: the same stream at vuClampMode 1 has to lose U on the rows
+// mode 3 gets right, or the mode-3 pass says nothing about the gate.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace recompiler_tests
@@ -194,9 +195,10 @@ TEST(EeVu0Cop2MulUnderflow, FlagsMatchTheInterpreterAtModeFour)
 
 // The gate, from the other side. Replaying the same stream below vuClampMode 4
 // has to lose the U bits and nothing else: MAC and STATUS agree with the
-// interpreter except in the U positions, and they disagree there on every row
-// the model moved. All three low modes, because the ladder's other rungs run
-// through the same FMAC bodies.
+// interpreter except in the U positions, they disagree there on every row the
+// model moved, and the word is the same at all three low modes. U is a flag
+// model; nothing on its path writes the result, and nothing below 4 writes it
+// either.
 TEST(EeVu0Cop2MulUnderflow, ModesBelowFourLoseTheUBitsAndOnlyThose)
 {
 	std::mt19937 rng(0xC0DE2141u);
@@ -215,7 +217,7 @@ TEST(EeVu0Cop2MulUnderflow, ModesBelowFourLoseTheUBitsAndOnlyThose)
 		const u32 fd = (rng() % 3u == 0) ? fs : ((rng() % 2u) ? ft : kFd);
 
 		const Obs gi = RunOne(f, mask, fd, fs, ft, vfs, q, i, false, 4);
-		const Obs g4 = RunOne(f, mask, fd, fs, ft, vfs, q, i, true, 4);
+		const Obs g1 = RunOne(f, mask, fd, fs, ft, vfs, q, i, true, 1, /*diff=*/false);
 		for (int mode = 1; mode <= 3; ++mode)
 		{
 			const Obs g = RunOne(f, mask, fd, fs, ft, vfs, q, i, true, mode, /*diff=*/false);
@@ -225,22 +227,73 @@ TEST(EeVu0Cop2MulUnderflow, ModesBelowFourLoseTheUBitsAndOnlyThose)
 			EXPECT_EQ(g.mac & ~kMacU, gi.mac & ~kMacU) << "MAC outside the U nibble";
 			EXPECT_EQ(g.status & ~kStatU, gi.status & ~kStatU) << "STATUS outside U/US";
 			EXPECT_EQ(g.mac & kMacU, 0u) << "raised MAC U";
-			// The model is a flag, so it must not have moved a word. This is
-			// where the predicate's scratch registers are checked: q27 and
-			// RQSCRATCH3 are live across the multiply, and a full-mask op
-			// computes into a VF cache slot that may be Fs's or Ft's.
 			for (int l = 0; l < 4; ++l)
 			{
-				EXPECT_EQ(g4.vf[l], g.vf[l]) << "VF[fd] lane " << l << " moved with the mode";
-				EXPECT_EQ(g4.acc[l], g.acc[l]) << "ACC lane " << l << " moved with the mode";
+				EXPECT_EQ(g.vf[l], g1.vf[l]) << "lane " << l << " moved";
+				EXPECT_EQ(g.acc[l], g1.acc[l]) << "ACC lane " << l << " moved";
 			}
 		}
 		for (int l = 0; l < 4; ++l)
-			nonzero += (g4.vf[l] | g4.acc[l]) != 0;
+			nonzero += (g1.vf[l] | g1.acc[l]) != 0;
 		lost += (gi.mac & kMacU) != 0;
 	}
 	EXPECT_GT(lost, 200) << "nothing was lost, so the gate was not exercised";
 	EXPECT_GT(nonzero, 900) << "the below-gate run read back nothing, so the value "
 	                           "comparison above compared zero with zero";
+}
+
+// What mode 4 adds, in one place. The U predicate and the multiplier's deficit
+// (armEmitVuDefectiveMul) arrive together and share a multiply: U's scratch is
+// q27 and RQSCRATCH3, the deficit's RQSCRATCH3 and q28, and both are live
+// across it. A clobber of either shows up here -- as a word that moved by
+// something other than the multiplier's one step toward zero, or as a flag bit
+// moving outside the U nibble. Nothing else of mode 4's is awake on this
+// stream: MAC O and the ceiling it feeds need a product this operand pool
+// cannot reach.
+TEST(EeVu0Cop2MulUnderflow, ModeFourTakesTheDeficitAndTheUBits)
+{
+	std::mt19937 rng(0xC0DE2141u);
+	int decremented = 0, nonzero = 0, raised = 0;
+	for (int iter = 0; iter < 900; ++iter)
+	{
+		const MulForm& f = kForms[iter % std::size(kForms)];
+		u32 vfs[3][4];
+		for (auto& reg : vfs)
+			for (u32& lane : reg)
+				lane = RandomOperand(rng);
+		const u32 q = RandomOperand(rng), i = RandomOperand(rng);
+		const u32 mask = rng() & 0xFu;
+		const u32 fs = (rng() & 1u) ? kFs : kFt;
+		const u32 ft = (rng() & 1u) ? kFt : kFs;
+		const u32 fd = (rng() % 3u == 0) ? fs : ((rng() % 2u) ? ft : kFd);
+
+		const Obs g3 = RunOne(f, mask, fd, fs, ft, vfs, q, i, true, 3, /*diff=*/false);
+		const Obs g4 = RunOne(f, mask, fd, fs, ft, vfs, q, i, true, 4, /*diff=*/false);
+		SCOPED_TRACE(::testing::Message()
+			<< f.name << " mask " << mask << " fd " << fd << " fs " << fs << " ft " << ft
+			<< " iter " << iter);
+		EXPECT_EQ(g4.mac & ~kMacU, g3.mac & ~kMacU) << "MAC moved outside the U nibble";
+		EXPECT_EQ(g4.status & ~kStatU, g3.status & ~kStatU) << "STATUS moved outside U/US";
+		EXPECT_EQ(g3.mac & kMacU, 0u) << "mode 3 raised MAC U";
+		raised += (g4.mac & kMacU) != 0;
+		for (int l = 0; l < 4; ++l)
+		{
+			for (const std::pair<u32, u32> w : {std::pair<u32, u32>{g4.vf[l], g3.vf[l]},
+					std::pair<u32, u32>{g4.acc[l], g3.acc[l]}})
+			{
+				if (w.first == w.second)
+					continue;
+				EXPECT_EQ(w.first, w.second - 1u) << "lane " << l
+					<< " moved by something other than the multiplier's one step";
+				++decremented;
+			}
+			nonzero += (g3.vf[l] | g3.acc[l]) != 0;
+		}
+	}
+	EXPECT_GT(nonzero, 900) << "the mode-3 run read back nothing, so the value "
+	                           "comparison above compared zero with zero";
+	EXPECT_GT(decremented, 20) << "no word took the deficit, so its size was never checked";
+	EXPECT_GT(raised, 200) << "no row raised U, so the nibble the flags are masked "
+	                          "through was never populated";
 }
 } // namespace recompiler_tests

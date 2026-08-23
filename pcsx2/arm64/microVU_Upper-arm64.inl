@@ -72,11 +72,34 @@ static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from,
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
+// The multiplier's one-ULP deficit (armEmitVuDefectiveMul), between the clamps
+// and the result clamp, on both VUs at vuClampMode 4.
+//
+// The scratch pair is q29 and q31, free across every FMAC body's arithmetic for
+// the reason mVUemitAddSub gives about the trio. `to` is the destination and
+// the first multiplicand at once, so the product is computed twice rather than
+// parked; ft is `from`, and it is the operand the predicate reads.
+//
+// The AX-14 lane fold in setupFtReg cannot reach this: it needs !willClamp and
+// clampE is on from vuClampMode 2 up.
+static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& from, bool scalar)
+{
+	if (!CHECK_VU_EXACT(mVU.index))
+	{
+		if (scalar)
+			armAsm->Fmul(to.S(), to.S(), from.S());
+		else
+			armAsm->Fmul(to.V4S(), to.V4S(), from.V4S());
+		return;
+	}
+	armEmitVuDefectiveMul(to, to, from, RQSCRATCH3, RQSCRATCH2, scalar);
+}
+
 static void NEON_MULPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
-	armAsm->Fmul(to.V4S(), to.V4S(), from.V4S());
+	mVUemitMul(mVU, to, from, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
@@ -100,7 +123,22 @@ static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
-	armAsm->Fmul(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
+	mVUemitMul(mVU, to, from, true);
+	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
+}
+
+// The same clamps without the deficit, for the EFU's polynomials
+// (microVU_Lower-arm64.inl). Those are not FMAC products: below vuClampMode 4
+// the recompiler evaluates each series in host arithmetic, and at 4 the whole
+// op becomes one VuEfuModel call, which carries the multiplier itself. Two of
+// the series' multiply shapes -- the coefficient multiply and the squares --
+// reach neither this function nor NEON_MULSS, so the deficit could only ever
+// cover part of a series, and it moves no row of autocases_efu.h.
+static void NEON_MULSS_Series(mV, const a64::VRegister& to, const a64::VRegister& from)
+{
+	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
+	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	armAsm->Fmul(to.S(), to.S(), from.S());
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
