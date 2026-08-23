@@ -15,6 +15,11 @@
 // than by everything sharing one program that only grows. Specialization MANAGES the budget; it
 // does not remove the cliff, so a new arm still owes the stats line.
 //
+// ⚠️ The budget has a gate now: gs_tilegpu_shader_budget_tests compiles every variant the planner
+// can ask for and fails the suite if a single-geometry one crosses the calibrated SPIR-V word
+// ceiling. It exists because this budget was breached twice by landings that never took the stats
+// line, and both times nothing said so.
+//
 // ⚠️ THE RULE THAT COMES WITH IT, and it binds every road added here -- the materialised-source road
 // below was written under it, and so must the next one be: a
 // variant only ever REMOVES code, so the float arithmetic that survives must not change when its
