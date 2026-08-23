@@ -15,11 +15,17 @@ namespace { bool g_started = false; }
 
 extern "C" {
 
+void solarwinds_port_free();  /* defined below; port_new tears down a stale run */
+
 /* preset is 1..6 from the UI. Upstream's DEFAULTS1..DEFAULTS6 is a zero-based ENUM here, not
  * the 1-based #defines Flux uses, so the UI value is shifted down. */
 int solarwinds_port_new(int preset)
 {
-    if (g_started) return 1;
+    /* NOT "return 1". g_started can only be set here if a previous run was never
+     * freed, and nativeInit has already called gl1_lost() -- so gl1 is DOWN, and
+     * reporting success would hand the caller a saver with no shim under it. Tear the
+     * stale run down and start clean. */
+    if (g_started) solarwinds_port_free();
     if (!gl1_init()) return 0;
 
     if (preset < 1 || preset > 6) preset = 1;
@@ -52,11 +58,18 @@ void solarwinds_port_draw()
 
 void solarwinds_port_free()
 {
-    if (!g_started) return;
-    saver_solarwinds::cleanUp();
+    if (g_started) {
+        saver_solarwinds::cleanUp();
+        saver_solarwinds::readyToDraw = 0;
+        g_started = false;
+    }
+    /* Unconditional, and NOT guarded by g_started. gl1_init() ran in port_new, and everything
+     * it holds -- the shader program, the vertex buffers -- belongs to the EGL context that is
+     * about to be destroyed. Leaving g.ready set with names from a dead context poisons the NEXT
+     * saver, because gl1_init() early-returns on g.ready. That the JNI currently only calls this
+     * after a successful create is a property of today's call graph, not of this function.
+     * gl1_shutdown() is idempotent. */
     gl1_shutdown();
-    saver_solarwinds::readyToDraw = 0;
-    g_started = false;
 }
 
 }

@@ -23,9 +23,15 @@ int  g_preset = 1;
 
 extern "C" {
 
+void lattice_port_free();  /* defined below; port_new tears down a stale run */
+
 int lattice_port_new(int preset)
 {
-    if (g_started) return 1;
+    /* NOT "return 1". g_started can only be set here if a previous run was never
+     * freed, and nativeInit has already called gl1_lost() -- so gl1 is DOWN, and
+     * reporting success would hand the caller a saver with no shim under it. Tear the
+     * stale run down and start clean. */
+    if (g_started) lattice_port_free();
     if (!gl1_init()) return 0;
 
     g_preset = (preset >= 1 && preset <= 6) ? preset : 1;

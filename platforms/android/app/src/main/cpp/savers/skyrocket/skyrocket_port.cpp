@@ -26,10 +26,16 @@ bool g_started = false;
 
 extern "C" {
 
+void skyrocket_port_free();  /* defined below; port_new tears down a stale run */
+
 int skyrocket_port_new(int preset)
 {
     (void) preset;  /* No presets upstream; every knob was a registry value. */
-    if (g_started) return 1;
+    /* NOT "return 1". g_started can only be set here if a previous run was never
+     * freed, and nativeInit has already called gl1_lost() -- so gl1 is DOWN, and
+     * reporting success would hand the caller a saver with no shim under it. Tear the
+     * stale run down and start clean. */
+    if (g_started) skyrocket_port_free();
     if (!gl1_init()) return 0;
 
     saver_skyrocket::setDefaults();
