@@ -51,14 +51,21 @@ namespace GSTileSwizzleForms
 		FormSet f;
 		bool ok = true;
 
-		// blockTable8 must BE blockTable32 — the shader evaluates one form for both.
+		// blockTable8 must BE blockTable32, and blockTable16 must BE blockTable4 — the shaders
+		// evaluate one form for each pair, so a table that stops agreeing has to invalidate the set
+		// rather than quietly address the wrong block.
 		for (u32 by = 0; by < 4 && ok; by++)
 			for (u32 bx = 0; bx < 8; bx++)
 				ok &= blockTable32.lookup(bx, by) == blockTable8.lookup(bx, by);
+		for (u32 by = 0; by < 8 && ok; by++)
+			for (u32 bx = 0; bx < 4; bx++)
+				ok &= blockTable4.lookup(bx, by) == blockTable16.lookup(bx, by);
 
 		ok &= Fit2([](u32 bx, u32 by) { return static_cast<u32>(blockTable32.lookup(bx, by)); }, 3, 2, f.block48);
 		ok &= Fit2([](u32 bx, u32 by) { return static_cast<u32>(blockTable4.lookup(bx, by)); }, 2, 3, f.block84);
+		ok &= Fit2([](u32 bx, u32 by) { return static_cast<u32>(blockTable16S.lookup(bx, by)); }, 2, 3, f.block84s);
 		ok &= Fit2([](u32 x, u32 y) { return static_cast<u32>(columnTable32[y][x]); }, 3, 3, f.col32);
+		ok &= Fit2([](u32 x, u32 y) { return static_cast<u32>(columnTable16[y][x]); }, 4, 3, f.col16);
 		ok &= Fit2([](u32 x, u32 y) { return static_cast<u32>(columnTable8[y][x]); }, 4, 4, f.col8);
 		ok &= Fit2([](u32 x, u32 y) { return static_cast<u32>(columnTable4[y][x]); }, 5, 4, f.col4);
 		ok &= Invert2(f.block48, f.inv_block48);
@@ -90,7 +97,9 @@ namespace GSTileSwizzleForms
 		};
 		form2("B48", forms.block48);
 		form2("B84", forms.block84);
+		form2("B84S", forms.block84s);
 		form2("C32", forms.col32);
+		form2("C16", forms.col16);
 		form2("C8", forms.col8);
 		form2("C4", forms.col4);
 		form1("IB48", forms.inv_block48);
@@ -184,6 +193,29 @@ namespace GSTileSwizzleForms
 		o.byte = byte_in_block & 3;
 		o.nibble = nibble;
 		return o;
+	}
+
+	bool Locate16(const FormSet& forms, u32 psm, u32 bp, u32 bw, u32 x, u32 y, Texel16& out)
+	{
+		out = {};
+		if (!forms.valid || bw == 0 || (bp & 31) != 0 || (psm != PSMCT16 && psm != PSMCT16S))
+			return false;
+
+		// A 16-bit page is 64x64 texels; pool page (row, col) is physical page base + row*bw + col,
+		// wrapping at the end of memory exactly as the shaders' `& 511` does.
+		const u32 rel = (y >> 6) * bw + (x >> 6);
+		out.page = ((bp >> 5) + rel) & (GS_MAX_PAGES - 1);
+
+		// Block within the page: 16x8-texel blocks, four across and eight down. CT16 and CT16S
+		// differ here and nowhere else -- the column arrangement inside a block is shared.
+		const u32 bib = (psm == PSMCT16) ? forms.block84.Eval((x >> 4) & 3, (y >> 3) & 7) :
+										   forms.block84s.Eval((x >> 4) & 3, (y >> 3) & 7);
+		// ...and the halfword within the block's 128. Its low bit is bit 3 of x, which is what puts
+		// texel x and texel x+8 in the two halves of one word.
+		const u32 hw = forms.col16.Eval(x & 15, y & 7);
+		out.word_in_page = bib * 64 + (hw >> 1);
+		out.half = hw & 1;
+		return true;
 	}
 
 	bool LocateClutBlocks(const FormSet& forms, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,

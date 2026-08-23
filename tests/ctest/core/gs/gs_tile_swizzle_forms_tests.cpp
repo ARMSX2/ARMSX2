@@ -27,6 +27,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 using namespace GSTileSwizzleForms;
 
 TEST(GSTileSwizzleForms, EveryTableFitsAndTheFormsReproduceThem)
@@ -52,6 +54,148 @@ TEST(GSTileSwizzleForms, EveryTableFitsAndTheFormsReproduceThem)
 	for (u32 y = 0; y < 16; y++)
 		for (u32 x = 0; x < 32; x++)
 			EXPECT_EQ(f.col4.Eval(x, y), columnTable4[y][x]) << x << "," << y;
+}
+
+// The 16-bit colour families' own tables. blockTable16 is byte-identical to blockTable4 in
+// GSTables.cpp, so the shader evaluates one form for both -- which is a fact about the tree that
+// must fail loudly if it ever stops being true, exactly as blockTable8 == blockTable32 does.
+// blockTable16S and columnTable16 are their own fits.
+TEST(GSTileSwizzleForms, TheSixteenBitTablesFitAndTheFormsReproduceThem)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	for (u32 by = 0; by < 8; by++)
+		for (u32 bx = 0; bx < 4; bx++)
+		{
+			EXPECT_EQ(blockTable16.lookup(bx, by), blockTable4.lookup(bx, by))
+				<< "blockTable16 is no longer blockTable4 at " << bx << "," << by;
+			EXPECT_EQ(f.block84.Eval(bx, by), blockTable16.lookup(bx, by)) << bx << "," << by;
+			EXPECT_EQ(f.block84s.Eval(bx, by), blockTable16S.lookup(bx, by)) << bx << "," << by;
+		}
+	for (u32 y = 0; y < 8; y++)
+		for (u32 x = 0; x < 16; x++)
+			EXPECT_EQ(f.col16.Eval(x, y), columnTable16[y][x]) << x << "," << y;
+}
+
+namespace
+{
+// Locate16's answer restated as a guest BYTE address, the way the writeback and seed shaders
+// spend it: page * 8 KB + the word inside the page's slot * 4 + the halfword.
+u64 Locate16ByteAddr(const FormSet& f, u32 psm, u32 bp, u32 bw, u32 x, u32 y)
+{
+	Texel16 t;
+	EXPECT_TRUE(Locate16(f, psm, bp, bw, x, y, t));
+	return static_cast<u64>(t.page) * GS_PAGE_SIZE + static_cast<u64>(t.word_in_page) * 4 +
+		   static_cast<u64>(t.half) * 2;
+}
+} // namespace
+
+// The 16-bit colour byte road's address, against GSOffset's own. GSOffset::pa counts HALFWORDS for
+// a 16-bit format, so its byte address is pa * 2 -- folded into the 4 MB wrap, because a surface
+// near the top of memory legitimately addresses pages below its base.
+TEST(GSTileSwizzleForms, Locate16AgreesWithGSOffsetOnEveryTexel)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	struct Case
+	{
+		u32 psm;
+		u32 bp, bw; // page-aligned base in blocks, stride in pages
+		u32 w, h;   // pixels to sweep
+	};
+	const Case cases[] = {
+		// A 640-wide 16-bit frame buffer, the bgda2/yugioh shape, over two page rows.
+		{PSMCT16, 0x0000, 10, 640, 128},
+		{PSMCT16S, 0x0000, 10, 640, 128},
+		// Based well into memory, and a stride that is not a power of two.
+		{PSMCT16, 4800, 10, 640, 64},
+		{PSMCT16S, 12160, 10, 640, 64},
+		// One page wide, several rows down: the degenerate stride the display road can hand it.
+		{PSMCT16, 0x1180, 1, 64, 256},
+		{PSMCT16S, 0x1180, 1, 64, 256},
+		// A wide surface whose base is high enough that its own rows wrap past the top of memory.
+		{PSMCT16, 15872, 8, 512, 192},
+	};
+
+	for (const Case& c : cases)
+	{
+		const GSOffset off = GSOffset::fromKnownPSM(c.bp, c.bw, static_cast<GS_PSM>(c.psm));
+		u32 mismatches = 0;
+		for (u32 y = 0; y < c.h; y++)
+		{
+			for (u32 x = 0; x < c.w; x++)
+			{
+				const u64 want = (static_cast<u64>(off.pa(static_cast<int>(x), static_cast<int>(y))) * 2) %
+								 (static_cast<u64>(GS_MAX_PAGES) * GS_PAGE_SIZE);
+				const u64 got = Locate16ByteAddr(f, c.psm, c.bp, c.bw, x, y);
+				if (got != want && mismatches++ < 8)
+				{
+					ADD_FAILURE() << "psm " << c.psm << " bp " << c.bp << " bw " << c.bw << " texel (" << x << ","
+								  << y << "): want byte " << want << ", got " << got;
+				}
+			}
+		}
+		EXPECT_EQ(mismatches, 0u) << "psm " << c.psm << " bp " << c.bp;
+	}
+}
+
+// The two texels the writeback pairs into one word really are one word apart in the ring, and the
+// low half is the one at the lower x. That pairing is what lets the compute pass store a whole
+// word instead of read-modify-writing a halfword from two workgroups at once.
+TEST(GSTileSwizzleForms, TheSixteenBitWordPairsAreEightTexelsApart)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	for (u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (u32 y = 0; y < 64; y++)
+		{
+			for (u32 g = 0; g < 4; g++) // the four 16-texel groups of a page row
+			{
+				for (u32 i = 0; i < 8; i++)
+				{
+					Texel16 lo, hi;
+					ASSERT_TRUE(Locate16(f, psm, 0, 1, g * 16 + i, y, lo));
+					ASSERT_TRUE(Locate16(f, psm, 0, 1, g * 16 + i + 8, y, hi));
+					EXPECT_EQ(lo.page, hi.page);
+					EXPECT_EQ(lo.word_in_page, hi.word_in_page);
+					EXPECT_EQ(lo.half, 0u);
+					EXPECT_EQ(hi.half, 1u);
+				}
+			}
+		}
+	}
+}
+
+// Every word of a 16-bit page is covered exactly once by the writeback's invocation grid, and
+// every invocation stays inside its own page. A gap here is a word the ring never receives.
+TEST(GSTileSwizzleForms, TheSixteenBitWritebackGridCoversAPageExactlyOnce)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	for (u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		std::vector<int> seen(2048, 0);
+		for (u32 gy = 0; gy < 64; gy++) // 8 workgroups of 8 in y
+		{
+			for (u32 gx = 0; gx < 32; gx++) // 4 workgroups of 8 in x
+			{
+				// The shader's own mapping: invocation gx owns the low half of one 16-texel group.
+				const u32 px = (gx >> 3) * 16 + (gx & 7);
+				Texel16 t;
+				ASSERT_TRUE(Locate16(f, psm, 0, 1, px, gy, t));
+				EXPECT_EQ(t.page, 0u);
+				ASSERT_LT(t.word_in_page, 2048u);
+				seen[t.word_in_page]++;
+			}
+		}
+		for (u32 w = 0; w < 2048; w++)
+			EXPECT_EQ(seen[w], 1) << "psm " << psm << " word " << w;
+	}
 }
 
 TEST(GSTileSwizzleForms, TheInverseFormsInvert)
@@ -90,16 +234,20 @@ TEST(GSTileSwizzleForms, ShaderDefinesCarryEveryConstant)
 	const FormSet f = Fit();
 	ASSERT_TRUE(f.valid);
 	const std::string s = ShaderDefines(f);
-	// One line per basis entry: five 2-input forms × 12 entries + four 1-input forms × 10
+	// One line per basis entry: seven 2-input forms × 12 entries + four 1-input forms × 10
 	// (the two inverse forms and the two CLUT word-order forms).
 	size_t lines = 0;
 	for (char c : s)
 		lines += (c == '\n');
-	EXPECT_EQ(lines, 5u * 12u + 4u * 10u);
+	EXPECT_EQ(lines, 7u * 12u + 4u * 10u);
 	EXPECT_TRUE(f.clut_valid);
 	EXPECT_NE(s.find("#define TILE_SWZ_CLUT8_7 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_B48_X0 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_IC32_5 "), std::string::npos);
+	// The 16-bit colour road's forms: the strided block table and the halfword column table.
+	EXPECT_NE(s.find("#define TILE_SWZ_B84S_X0 "), std::string::npos);
+	EXPECT_NE(s.find("#define TILE_SWZ_C16_X3 "), std::string::npos);
+	EXPECT_NE(s.find("#define TILE_SWZ_C16_Y2 "), std::string::npos);
 }
 
 namespace

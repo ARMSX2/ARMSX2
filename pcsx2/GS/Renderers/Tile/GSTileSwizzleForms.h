@@ -116,8 +116,10 @@ namespace GSTileSwizzleForms
 	{
 		bool valid = false;
 		XorForm2 block48; ///< blockTable32 (== blockTable8): (bx 0..7, by 0..3) → in-page block 0..31
-		XorForm2 block84; ///< blockTable4: (bx 0..3, by 0..7) → in-page block 0..31
+		XorForm2 block84; ///< blockTable4 (== blockTable16): (bx 0..3, by 0..7) → in-page block 0..31
+		XorForm2 block84s; ///< blockTable16S: (bx 0..3, by 0..7) → in-page block 0..31
 		XorForm2 col32; ///< columnTable32: (x 0..7, y 0..7) → word in block 0..63
+		XorForm2 col16; ///< columnTable16: (x 0..15, y 0..7) → HALFWORD in block 0..127
 		XorForm2 col8; ///< columnTable8: (x 0..15, y 0..15) → byte in block 0..255
 		XorForm2 col4; ///< columnTable4: (x 0..31, y 0..15) → nibble in block 0..511
 		XorForm1 inv_block48; ///< in-page block 0..31 → bx | (by << 3)
@@ -133,8 +135,9 @@ namespace GSTileSwizzleForms
 	};
 
 	/// Fits every form from the tree's tables. `valid` is false if any swizzle table
-	/// fails to fit or blockTable8 is no longer blockTable32 (the shader shares one
-	/// form); `clut_valid` is false if the CLUT loaders' word order does not fit.
+	/// fails to fit, or blockTable8 is no longer blockTable32, or blockTable16 is no longer
+	/// blockTable4 (the shaders share one form for each pair); `clut_valid` is false if the
+	/// CLUT loaders' word order does not fit.
 	FormSet Fit();
 
 	/// The fitted constants as GLSL `#define`s (one per basis entry, zero entries
@@ -194,7 +197,30 @@ namespace GSTileSwizzleForms
 
 	/// The shader's per-texel arithmetic: index texel (u, v) → the owner texel and byte
 	/// that hold it. Depends only on the forms and the two layouts.
+	///
+	/// ⚠️ The OWNER side is CT32-shaped — 64×32 pages of 8×8 blocks, one word per texel — which is
+	/// why the roads that use this refuse a 16-bit owner (`gsTileSurfaceHasCt32PixelSpace`). A
+	/// 16-bit owner's texture is a different pixel space, and asking this about one gives an answer
+	/// that looks reasonable and reads the wrong bytes.
 	OwnerTexel Locate(const FormSet& forms, IndexFormat fmt, const Reinterpretation& r, u32 u, u32 v);
+
+	// -- The 16-bit COLOUR byte road ---------------------------------------------------------
+	// PSMCT16/PSMCT16S surfaces are 64×64-texel pages of 16×8-texel blocks, two texels to a
+	// 32-bit word. tilegpu_writeback.glsl and tilegpu_seed.glsl address them with the forms above
+	// (block84 for CT16, block84s for CT16S, col16 for both); this is the same arithmetic on the
+	// CPU, kept here rather than in a test because it is the specification the GLSL transcribes.
+
+	struct Texel16
+	{
+		u32 page; ///< guest page, already wrapped into [0, GS_MAX_PAGES)
+		u32 word_in_page; ///< 0..2047 — block-in-page * 64 + halfword-in-block / 2
+		u32 half; ///< 0 = low halfword of that word, 1 = high
+	};
+
+	/// Where texel (x, y) of a 16-bit colour surface lives, in the surface's own linear-from-base
+	/// pixel space. `psm` must be PSMCT16 or PSMCT16S, `bp` page-aligned and `bw` non-zero — the
+	/// byte road's own admission conditions; false otherwise, and `out` is left zeroed.
+	bool Locate16(const FormSet& forms, u32 psm, u32 bp, u32 bw, u32 x, u32 y, Texel16& out);
 
 	// -- The CLUT block copy: a palette read out of an owner target WITHOUT a gather pass ---
 	// A CSM1 32-bit CLUT load reads 256 contiguous words at CBP (four blocks) or 16 (the

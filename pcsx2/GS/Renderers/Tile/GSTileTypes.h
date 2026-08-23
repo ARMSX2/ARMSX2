@@ -398,6 +398,125 @@ constexpr u32 gsTileStorageBpp(u32 psm)
 	}
 }
 
+/// Pixel height of one guest page under `psm`. Every format the target pool backs has 64-pixel-wide
+/// pages, so the height is the only geometry number a road holding nothing but a PSM has to work
+/// out — which the TileGpu byte road's executor is, twice: the writeback's workgroup count and the
+/// seed's scissor both come off it. Unit-pinned against GSLocalMemory's own page size, because a
+/// disagreement writes half a page or twice one.
+constexpr u32 gsTilePageHeight(u32 psm)
+{
+	switch (gsTileSwizzleFamily(psm))
+	{
+		case GSTileSwizzleFamily::CT32:
+		case GSTileSwizzleFamily::Z32:
+			return 32;
+		case GSTileSwizzleFamily::CT16:
+		case GSTileSwizzleFamily::CT16S:
+		case GSTileSwizzleFamily::Z16:
+		case GSTileSwizzleFamily::Z16S:
+		case GSTileSwizzleFamily::T8:
+			return 64;
+		case GSTileSwizzleFamily::T4:
+			return 128;
+		default:
+			return 0;
+	}
+}
+
+/// The TileGpu byte road's shader variant for a colour format. The writeback and the seed compile
+/// one program per swizzle universe, because the block table, the page height and the cell width
+/// are all baked in; CT32 and CT24 share one (identical addresses — only the byte mask differs).
+///
+/// A format the road does not serve gets an out-of-range index rather than 0, deliberately: a
+/// format that slips past the admission test below then compiles nothing, instead of running the
+/// CT32 program over 16-bit bytes.
+static constexpr u32 kGSTileByteRoadFormats = 3;
+
+constexpr u32 gsTileByteRoadFormat(u32 psm)
+{
+	switch (psm)
+	{
+		case PSMCT32:
+		case PSMCT24:
+			return 0;
+		case PSMCT16:
+			return 1;
+		case PSMCT16S:
+			return 2;
+		default:
+			return kGSTileByteRoadFormats;
+	}
+}
+
+/// The writeback compute dispatch for ONE page of `psm`, in workgroups of 8x8 invocations.
+///
+/// A 32-bit page is 64x32 texels and one word each, so the grid is the page. A 16-bit page is 64x64
+/// texels of half a word each, and the pass covers it one WORD per invocation — the two texels eight
+/// apart that columnTable16 puts in the same word — so the grid is 32x64. Pairing them is not an
+/// optimisation: the alternative is two invocations read-modify-writing one word from different
+/// workgroups, with no ordering between them.
+struct GSTileDispatch2D
+{
+	u32 x, y;
+};
+
+constexpr GSTileDispatch2D gsTileWritebackGroups(u32 psm)
+{
+	const u32 words_x = (gsTileStorageBpp(psm) == 32) ? 64u : 32u;
+	return GSTileDispatch2D{words_x / 8u, gsTilePageHeight(psm) / 8u};
+}
+
+/// A 32-bit RGBA guest word packed to the 16-bit colour formats' A1B5G5R5: the top five bits of
+/// each colour byte, and the alpha bit from the MSB of the alpha byte. This is
+/// GSLocalMemory::WriteFrame16's arithmetic — the software renderer's own 16-bit frame store — and
+/// the unit suite holds the two together.
+constexpr u16 gsTilePack5551(u32 c)
+{
+	const u32 rb = c & 0x00F800F8u;
+	const u32 ga = c & 0x8000F800u;
+	return static_cast<u16>((ga >> 16) | (rb >> 9) | (ga >> 6) | (rb >> 3));
+}
+
+/// The inverse, as a FRAME buffer read takes it: five bits back to the top of each byte, low bits
+/// zero, and the alpha bit to 0x80 or 0x00. That is GSLocalMemory::Expand16To32 under the pool's
+/// own TEXA pin (AEM = 0, TA0 = 0, TA1 = 0x80) — the same pin UploadPages uses for Z16 — and it is
+/// the exact inverse of the pack above, so a cell that goes out through one comes back through the
+/// other unchanged.
+///
+/// ⚠️ NOT a texture read: a game's TEXA can put anything in the alpha byte and AEM can make an
+/// all-zero cell transparent. This is the byte road's frame-buffer road only.
+constexpr u32 gsTileUnpack5551(u16 c)
+{
+	return ((c & 0x8000u) ? 0x80000000u : 0u) | (static_cast<u32>(c & 0x7C00u) << 9) |
+		   (static_cast<u32>(c & 0x03E0u) << 6) | (static_cast<u32>(c & 0x001Fu) << 3);
+}
+
+/// Whether a surface can travel the TileGpu byte road — the writeback that reswizzles its finished
+/// pixels into guest bytes and the seed that reads bytes back into it. A colour surface in one of
+/// the three colour swizzle universes, with a page-aligned base: both shaders derive a page from
+/// (row, col) off the base page, and pool page (row, col) IS physical page base + row*bw + col.
+/// Depth surfaces have no writeback shader in any format — a standing separate gap — so truth that
+/// moves through one is counted lossy.
+constexpr bool gsTileSurfaceHasByteRoad(const GSTileSurfaceLayout& layout)
+{
+	return layout.kind == GSTileSurfaceKind::Color && (layout.bp & 31) == 0 &&
+		   gsTileByteRoadFormat(layout.psm) < kGSTileByteRoadFormats;
+}
+
+/// The NARROWER question the roads that reinterpret an owner's texture ask: is this surface's pixel
+/// space a CT32-shaped window — 64x32 pages of 8x8 blocks, one word per texel?
+///
+/// The donor build, the CLUT block copy and a rule-2 bind all read an owner through CT32's block
+/// and column forms, so they must go on refusing a 16-bit owner even though the byte road carries
+/// one. Two predicates rather than one, deliberately: sharing a predicate is exactly how a 16-bit
+/// target would come to be addressed through the 32-bit forms and silently produce texels out of
+/// the wrong bytes. Always a subset of the byte road.
+constexpr bool gsTileSurfaceHasCt32PixelSpace(const GSTileSurfaceLayout& layout)
+{
+	return layout.kind == GSTileSurfaceKind::Color && (layout.bp & 31) == 0 &&
+		   (layout.psm == PSMCT32 || layout.psm == PSMCT24);
+}
+
 // Cross-layout alias resolution tiers, cheapest first. M2 classifies every alias and
 // implements only Spill (always correct, counted); the cheaper tiers get realized as
 // their consumers land.
