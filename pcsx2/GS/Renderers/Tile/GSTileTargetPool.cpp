@@ -424,8 +424,7 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 	// colour in bits 0-14 and its alpha in bit 15, so "any of bytes 0-2" is the colour half and
 	// "any of byte 3" is the alpha bit. Derived here rather than asked of the caller so nothing
 	// outside this file has to know which surfaces are narrow.
-	const u16 write_mask16 = static_cast<u16>(((write_mask & 0x00FFFFFFu) ? 0x7FFFu : 0u) |
-											  ((write_mask & 0xFF000000u) ? 0x8000u : 0u));
+	const u16 write_mask16 = NarrowWriteMaskTo16(write_mask);
 	const GSVector4i drc(0, 0, bb.width(), bb.height());
 	const GSOffset off = mem.GetOffset(layout.bp, layout.bw, layout.psm);
 

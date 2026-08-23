@@ -83,6 +83,23 @@ public:
 	/// Whether ReadbackPages' store road can address `layout` at all -- see the definition.
 	static bool ReadbackAddressable(const GSTileSurfaceLayout& layout);
 
+	/// A caller's 32-bit-cell plane mask restated in the cell width a 16-bit COLOUR surface
+	/// actually stores: bits 0-14 are the colour, bit 15 the alpha. Callers speak in 32-bit
+	/// cell bytes because that is what the memory model's planes are, so the narrowing lives
+	/// here rather than at every call site.
+	///
+	/// ⚠️ It DISTRIBUTES OVER OR -- Narrow(a | b) == Narrow(a) | Narrow(b) -- and a caller that
+	/// merges several plane masks into one readback relies on that: one call with the union
+	/// must write exactly the bytes the separate calls would have. Pinned in
+	/// gs_tilegpu_readback_store_tests.cpp, because it is not obvious from the expression and
+	/// it would stop being true the moment the narrowing gained a case that is not a
+	/// per-byte-group test.
+	static u16 NarrowWriteMaskTo16(u32 write_mask)
+	{
+		return static_cast<u16>(
+			((write_mask & 0x00FFFFFFu) ? 0x7FFFu : 0u) | ((write_mask & 0xFF000000u) ? 0x8000u : 0u));
+	}
+
 	/// Pixel rects covering the set pages, refined to `block_mask`'s blocks within
 	/// each page (kFullBlockMask takes the whole-page run path). Pure: derived from
 	/// GSOffset's own shifts, so the unit suite runs it with no device and no

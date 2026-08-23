@@ -165,6 +165,43 @@ TEST(TileGpuReadbackStore, FiveFiveFiveOnePackAndUnpackAreInverse)
 	}
 }
 
+// The readback road issues one pool call per (owner surface, truth block mask) and hands it the
+// UNION of the plane masks that fell into that group, instead of one call per plane. That is
+// byte-identical only if the mask's meaning is "select the bytes of the cell to write", which
+// is true of WritePixel32 by construction and true of the 16-bit road only because the
+// narrowing to the 5551 cell distributes over OR. Pin the distribution over every union of the
+// masks PlaneByteMask can produce, under both the full-byte formats and the 24-bit ones (whose
+// alpha planes narrow to nothing).
+TEST(TileGpuReadbackStore, SixteenBitNarrowingDistributesOverMergedPlaneMasks)
+{
+	// PlaneByteMask's outputs: RGB, alpha-low, alpha-high, Z -- and the 24-bit variants, where
+	// the format's own byte mask clears the alpha planes entirely.
+	const u32 plane_masks[] = {0x00FFFFFFu, 0x0F000000u, 0xF0000000u, 0xFFFFFFFFu, 0x00000000u};
+	for (u32 a : plane_masks)
+	{
+		for (u32 b : plane_masks)
+		{
+			EXPECT_EQ(GSTileTargetPool::NarrowWriteMaskTo16(a | b),
+				static_cast<u16>(
+					GSTileTargetPool::NarrowWriteMaskTo16(a) | GSTileTargetPool::NarrowWriteMaskTo16(b)))
+				<< "masks 0x" << std::hex << a << " | 0x" << b;
+			for (u32 c : plane_masks)
+			{
+				EXPECT_EQ(GSTileTargetPool::NarrowWriteMaskTo16(a | b | c),
+					static_cast<u16>(GSTileTargetPool::NarrowWriteMaskTo16(a) |
+									 GSTileTargetPool::NarrowWriteMaskTo16(b) |
+									 GSTileTargetPool::NarrowWriteMaskTo16(c)))
+					<< "masks 0x" << std::hex << a << " | 0x" << b << " | 0x" << c;
+			}
+		}
+	}
+	// The three colour planes of one 32-bit owner -- the merge the corpus actually performs --
+	// come out as the whole 16-bit cell, colour bits and the alpha bit.
+	EXPECT_EQ(GSTileTargetPool::NarrowWriteMaskTo16(0x00FFFFFFu | 0x0F000000u | 0xF0000000u), 0xFFFFu);
+	// A group that collected nothing writes nothing; ReadbackPages early-outs on it.
+	EXPECT_EQ(GSTileTargetPool::NarrowWriteMaskTo16(0u), 0u);
+}
+
 TEST(TileGpuReadbackStore, PackIsGSLocalMemorysOwnFrameWrite)
 {
 	// gsTilePack5551 is used by the pool's store road and by the writeback shader's CPU

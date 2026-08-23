@@ -11,6 +11,7 @@
 #include "common/Assertions.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <span>
@@ -4073,9 +4074,39 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	m_frame.stalls[static_cast<u32>(site)]++;
 	m_frame.stall_pages[static_cast<u32>(site)] += need.count();
 
+	// One pool call per (owner surface, truth block mask) -- NOT one per plane.
+	//
+	// A readback's price is the device round trip, not the bytes: every call ends in a
+	// submit-and-wait, either a drain of the frame's command buffer or an out-of-band submit
+	// plus its own fence. A colour target owns three planes and a colour/depth pair owns four,
+	// so asking plane by plane downloads the SAME rect of the SAME image three or four times,
+	// differing only in which bytes of the 32-bit cell the store is allowed to write. Merging
+	// them costs nothing and pays four round trips back: GT4 1048 pool calls a run -> 70,
+	// OutRun-a 816 -> 196, SotC 92 -> 23.
+	//
+	// The merge is byte-identical by construction, on three legs:
+	//   - same owner => the same source texture, and the same rect, since the block mask is
+	//     part of the key and the rect is derived from it;
+	//   - the write mask "selects the bytes of each 32-bit cell to write", so the union mask
+	//     writes exactly the union of what the separate calls wrote, out of the same source;
+	//   - on a 16-bit colour surface the pool narrows that mask to the 5551 cell, and the
+	//     narrowing distributes over OR (GSTileTargetPool::NarrowWriteMaskTo16, pinned).
+	// 16-bit DEPTH ignores the mask entirely, and Z is a single plane, so nothing merges there.
+	//
+	// Groups are created in plane order and issued in creation order, so where a page is
+	// aliased by a colour owner and a depth owner the colour writes still land before the
+	// depth ones, exactly as the plane loop used to order them.
+	struct PlaneGroup
+	{
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		u32 block_mask = 0;
+		u32 write_mask = 0;
+	};
 	need.forEachSetPage([&](u32 page) {
 		GSPageBitmap one;
 		one.set(page);
+		std::array<PlaneGroup, kGSTilePlaneCount> groups;
+		u32 group_count = 0;
 		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		{
 			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
@@ -4085,8 +4116,27 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
 			if (!surf.pool_handle)
 				continue;
-			m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, one, PlaneByteMask(pi, surf.layout),
-				m_vram_model.TruthMask(page, pi));
+			const u32 block_mask = m_vram_model.TruthMask(page, pi);
+			u32 g = 0;
+			for (; g < group_count; g++)
+			{
+				if (groups[g].owner == owner && groups[g].block_mask == block_mask)
+					break;
+			}
+			if (g == group_count)
+			{
+				groups[g].owner = owner;
+				groups[g].block_mask = block_mask;
+				groups[g].write_mask = 0;
+				group_count++;
+			}
+			groups[g].write_mask |= PlaneByteMask(pi, surf.layout);
+		}
+		for (u32 g = 0; g < group_count; g++)
+		{
+			const GSVramModel::Surface& surf = m_vram_model.Get(groups[g].owner);
+			m_target_pool.ReadbackPages(
+				m_mem, surf.pool_handle, surf.layout, one, groups[g].write_mask, groups[g].block_mask);
 		}
 	});
 	m_vram_model.OnReadback(need);
