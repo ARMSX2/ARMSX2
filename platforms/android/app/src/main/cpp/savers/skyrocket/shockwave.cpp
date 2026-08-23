@@ -19,7 +19,7 @@
  */
 
 
-#include <gl/gl.h>
+#include <GL/gl.h>
 #include <math.h>
 
 #include "shockwave.h"

@@ -130,6 +130,24 @@ rm -f "$OUTPUT_APK"
 echo; echo "================= VERIFY ================="
 echo "-- both cores present --"
 unzip -l "$OUTPUT_APK" | grep -E "libemucore_(4k|16k)\.so" || { echo "FATAL cores missing" >&2; exit 1; }
+echo "-- Discord Social SDK --"
+# ★ The SDK is resolved from $DISCORD_SDK_DIR at configure time and gated only on
+# include/discordpp.h existing, so with the variable unset the build simply omits Discord --
+# no error, no warning, nothing in the log. A whole release shipped that way (2.6.6.8) and it
+# was only noticed after publication. Make it impossible to do silently again.
+if [[ -n "${DISCORD_SDK_DIR:-}" ]]; then
+	# Capture then match. Piping into `grep -q` under `set -o pipefail` is a false-failure
+	# generator: grep exits on the first match, SIGPIPEs unzip, and pipefail reports the whole
+	# pipeline as failed even though the library WAS found. That fired here on the first run.
+	discord_listing=$(unzip -l "$OUTPUT_APK")
+	case "$discord_listing" in
+		*libdiscord_partner_sdk.so*) echo "  present" ;;
+		*) echo "FATAL DISCORD_SDK_DIR is set but libdiscord_partner_sdk.so is not in the APK" >&2; exit 1 ;;
+	esac
+else
+	echo "  WARNING: DISCORD_SDK_DIR unset -- this build has NO Discord integration." >&2
+	echo "           Set it to the staged dir (include/ + arm64-v8a/ + .aar) before a release." >&2
+fi
 echo "-- 16k alignment --"
 "$ZIPALIGN" -c -P 16 4 "$OUTPUT_APK" && echo "  zipalign OK"
 echo "-- signer certs (expect BOTH old debug + new release) --"

@@ -24,10 +24,16 @@ namespace { bool g_started = false; }
 
 extern "C" {
 
+void hyperspace_port_free();  /* defined below; port_new tears down a stale run */
+
 int hyperspace_port_new(int preset)
 {
     (void) preset;  /* No presets upstream; every knob was a registry value. */
-    if (g_started) return 1;
+    /* NOT "return 1". g_started can only be set here if a previous run was never
+     * freed, and nativeInit has already called gl1_lost() -- so gl1 is DOWN, and
+     * reporting success would hand the caller a saver with no shim under it. Tear the
+     * stale run down and start clean. */
+    if (g_started) hyperspace_port_free();
     if (!gl1_init()) return 0;
 
     saver_hyperspace::setDefaults();
@@ -59,11 +65,18 @@ void hyperspace_port_draw()
 
 void hyperspace_port_free()
 {
-    if (!g_started) return;
-    saver_hyperspace::cleanUp();
+    if (g_started) {
+        saver_hyperspace::cleanUp();
+        saver_hyperspace::readyToDraw = 0;
+        g_started = false;
+    }
+    /* Unconditional, and NOT guarded by g_started. gl1_init() ran in port_new, and everything
+     * it holds -- the shader program, the vertex buffers -- belongs to the EGL context that is
+     * about to be destroyed. Leaving g.ready set with names from a dead context poisons the NEXT
+     * saver, because gl1_init() early-returns on g.ready. That the JNI currently only calls this
+     * after a successful create is a property of today's call graph, not of this function.
+     * gl1_shutdown() is idempotent. */
     gl1_shutdown();
-    saver_hyperspace::readyToDraw = 0;
-    g_started = false;
 }
 
 }  /* extern "C" */

@@ -7,6 +7,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include "gl1.h"
 #include <cstddef>
 #include <mutex>
 
@@ -81,6 +82,21 @@ Java_com_armsx2_ui_home_SaverNative_nativeInit(JNIEnv *, jobject, jint effect, j
 
     /* A previous saver may still be up if the outgoing view has not torn down yet. */
     if (g_active) g_active->destroy();
+
+    /* Every nativeInit arrives on a freshly created EGL context -- one view, one render thread,
+     * one context, one create. So whatever GL names gl1 is still holding belong to a context
+     * that no longer exists, and gl1_init() early-returns on g.ready, which would hand those
+     * dead names to the saver we are about to start. gl1_lost() drops them without calling GL
+     * on them (gl1_shutdown() would try to delete them, in the wrong context).
+     *
+     * The ports above each give gl1 back on their own failure and teardown paths, so this
+     * should already be a no-op. It is here because it is the invariant that actually matters
+     * -- a saver added later that forgets, or an upstream cleanup that returns early, would
+     * otherwise poison the NEXT saver rather than fail visibly in its own. Drivers answer a
+     * draw against a dead program name with anything from a black screen to a segfault, and a
+     * segfault here is unrecoverable: the library is the first screen, so the app would crash
+     * on every launch. */
+    gl1_lost();
 
     g_active = &k_savers[effect];
     if (!g_active->create(preset)) {
