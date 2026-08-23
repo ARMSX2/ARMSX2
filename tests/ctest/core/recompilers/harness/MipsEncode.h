@@ -539,6 +539,17 @@ constexpr u32 VSUBi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_F
 constexpr u32 VMAX_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2B); }
 constexpr u32 VSUB_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2C); }
 constexpr u32 VMSUB_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2D); }
+// VMSUBx/y/z/w — broadcast MSUB. COP2 SPECIAL1 funct 0x0C-0x0F.
+constexpr u32 VMSUBx_C2 (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x0C); }
+constexpr u32 VMSUBy_C2 (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x0D); }
+constexpr u32 VMSUBz_C2 (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x0E); }
+constexpr u32 VMSUBw_C2 (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x0F); }
+// The Q/I multiply-accumulates: MADDq/MADDi/MSUBq/MSUBi at funct 0x21/0x23/
+// 0x25/0x27.
+constexpr u32 VMADDq_C2 (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x21); }
+constexpr u32 VMADDi_C2 (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x23); }
+constexpr u32 VMSUBq_C2 (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x25); }
+constexpr u32 VMSUBi_C2 (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x27); }
 constexpr u32 VOPMSUB_C2(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2E); }
 constexpr u32 VMINI_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2F); }
 
@@ -592,6 +603,11 @@ constexpr u32 VMULAz_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_
 constexpr u32 VMULAq_C2 (u32 mask_xyzw, u32 fs)          { return COP2_FMAC(mask_xyzw, 0x07, fs, 0, 0x3C); }
 constexpr u32 VMULAi_C2 (u32 mask_xyzw, u32 fs)          { return COP2_FMAC(mask_xyzw, 0x07, fs, 0, 0x3E); }
 constexpr u32 VMULA_C2  (u32 mask_xyzw, u32 fs, u32 ft)  { return COP2_FMAC(mask_xyzw, 0x0A, fs, ft, 0x3E); }
+
+// MADDA/MSUBA, the non-broadcast multiply-accumulates into ACC: SPECIAL2
+// indices 42 and 46, one funct along from VMULA and VSUBA.
+constexpr u32 VMADDA_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x0A, fs, ft, 0x3D); }
+constexpr u32 VMSUBA_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x0B, fs, ft, 0x3D); }
 
 // VADDA — non-broadcast accumulate (ACC = fs + ft). SPEC2 sub-op 0x0A,
 // funct 0x3C. Do not reach for the assembler to check this one: ps2dev's

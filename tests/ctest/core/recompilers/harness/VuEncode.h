@@ -450,6 +450,10 @@ constexpr u32 VMSUBA_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyz
 constexpr u32 VMULA_U  (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0A, 2); }
 constexpr u32 VOPMULA_U(u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0B, 2); }
 
+// The Q/I multiplies into ACC: sub-op 0x07, table 0 for Q and 2 for I.
+constexpr u32 VMULAq_U (u32 mask_xyzw, u32 fs) { return UpperFD(mask_xyzw, 0, fs, 0x07, 0); }
+constexpr u32 VMULAi_U (u32 mask_xyzw, u32 fs) { return UpperFD(mask_xyzw, 0, fs, 0x07, 2); }
+
 // Broadcast ACC-target FMACs (ACC ← op(FS, FT.bc)). bc selects the FD table
 // (fd_table_sel: 0=x 1=y 2=z 3=w); sub-op index within every table per
 // VUops.cpp:3705-3747: [0]=ADDAbc [1]=SUBAbc [2]=MADDAbc [3]=MSUBAbc
