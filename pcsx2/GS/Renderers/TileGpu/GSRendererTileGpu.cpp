@@ -81,14 +81,22 @@ bool PoolSupports(const GSTileSurfaceLayout& layout)
 	return layout.bw != 0 && gsTileStorageBpp(layout.psm) >= 16;
 }
 
-// Whether a surface can travel the byte road (writeback / seed): a colour surface in the CT32
-// swizzle universe with a page-aligned base -- the two shaders address it with the CT32 forms
-// and pool page (row, col) == physical page base + row*bw + col. Depth and 16-bit surfaces
-// exist in the model but have no road yet: truth that moves through them is counted lossy.
+// Whether a surface can travel the byte road (writeback / seed): a colour surface in one of the
+// three colour swizzle universes with a page-aligned base -- the two shaders carry a program per
+// universe, and pool page (row, col) == physical page base + row*bw + col only for a page-aligned
+// base. DEPTH surfaces exist in the model and have no road at all: truth that moves through one is
+// counted lossy.
 bool HasByteRoad(const GSTileSurfaceLayout& layout)
 {
-	return layout.kind == GSTileSurfaceKind::Color && (layout.psm == PSMCT32 || layout.psm == PSMCT24) &&
-		   (layout.bp & 31) == 0;
+	return gsTileSurfaceHasByteRoad(layout);
+}
+
+// The narrower question the three roads that REINTERPRET an owner's texture ask -- the donor build,
+// the CLUT block copy, and rule 2's direct bind. They read the owner through CT32's block and column
+// forms, so they must go on refusing a 16-bit owner even though the byte road now carries one.
+bool HasCt32PixelSpace(const GSTileSurfaceLayout& layout)
+{
+	return gsTileSurfaceHasCt32PixelSpace(layout);
 }
 
 // Pages per texture ROW for a sampled window, in the one spelling every road has to share: the
@@ -528,7 +536,7 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSPageBitmap& pages)
 		const GSVramModel::Surface& s = m_vram_model.Get(owner);
 		if (!s.alive || !s.pool_handle)
 			refusal = kClutRefDead;
-		else if (!HasByteRoad(s.layout))
+		else if (!HasCt32PixelSpace(s.layout))
 			refusal = kClutRefLayout;
 		else if (!s.residency.contains(pages))
 			refusal = kClutRefResidency;
@@ -1399,6 +1407,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto bindbrk = stat([](const MF& f) { return f.tex_bind_breaks; });
 	const auto alias = stat([](const MF& f) { return f.alias_steal_pages; });
 	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
+	// The depth half is the standing gap (no depth writeback shader in any format), so it is
+	// reported beside the total rather than folded into it -- the COLOUR half is the number a
+	// byte-road change is answerable for.
+	const auto lossyz = stat([](const MF& f) { return f.lossy_pages_depth; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
 	const auto afold_f = stat([](const MF& f) { return f.atst_fold_fail; });
@@ -1427,10 +1439,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"%.2f / %u pass breaks",
 		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
 	Console.WriteLn("  self-reads (snapshot semantics) %.2f / %u   DATE: %.2f / %u pass breaks, %.2f / %u snapshots   "
-					"alias-steal pages %.2f / %u   lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   "
-					"mid-frame flushes %.2f / %u",
+					"alias-steal pages %.2f / %u   lossy pages (no byte road) %.2f / %u (of which depth %.2f / %u)   "
+					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
-		lossy.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
+		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
 	Console.WriteLn("  alpha test folded at plan time (constant fragment alpha): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
@@ -1759,11 +1771,15 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 	if (!surf.alive || !surf.pool_handle)
 		return kGSTileNoSurface;
 
-	// The pool's pixel space is the guest layout only for a page-aligned CT32/CT24 colour surface
-	// (HasByteRoad's conditions, for the same reason the writeback and seed shaders need them), and
-	// it is the READ's pixel space only when base and stride agree exactly. Then target pixel
+	// The pool's pixel space is the guest layout only for a page-aligned CT32/CT24 colour surface,
+	// and it is the READ's pixel space only when base and stride agree exactly. Then target pixel
 	// (u, v) is guest texel (u, v) -- no offset, no restride, no region arithmetic.
-	if (!HasByteRoad(surf.layout) || surf.layout.bp != tex_l.bp || surf.layout.bw != tex_l.bw)
+	//
+	// The narrow question, not HasByteRoad's: a 16-bit target read as 16-bit would be just as
+	// bindable, but nothing can ask for one -- the texture block above admits only direct-32 and
+	// index formats -- so widening this would be an untested road nothing takes. It goes with the
+	// 16-bit texture READ arm, which is where a caller for it first exists.
+	if (!HasCt32PixelSpace(surf.layout) || surf.layout.bp != tex_l.bp || surf.layout.bw != tex_l.bw)
 		return kGSTileNoSurface;
 	// Byte-compatible formats. Equal PSM is the whole story except for a CT32 target read as CT24:
 	// same bytes, and the draw's TEXA already supplies the alpha the read must not take from the
@@ -1809,8 +1825,11 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 //    not just colour: the reinterpretation reads any byte of the owner's RGBA cell, so the alpha
 //    byte has to be the owner's too.
 //  - not the draw's own colour or depth target -- that is the feedback road, and this stage has none.
-//  - a page-aligned CT32/CT24 colour layout (HasByteRoad), which is what makes the owner's pixel
-//    space the guest layout: pool textures are linear from the base page.
+//  - a page-aligned CT32/CT24 colour layout (HasCt32PixelSpace), which is what makes the owner's
+//    pixel space the guest layout AND what makes it the CT32-shaped one the reinterpretation reads:
+//    pool textures are linear from the base page. A 16-bit owner has a byte road and is still
+//    refused here, because Locate's owner side is 64x32 pages of 8x8 blocks and a 16-bit target's
+//    is not.
 //  - the owner's texture actually holding texels on those pages. The model tracks BYTES, and a page
 //    whose bytes the surface owns but whose rows nothing has written yet is in perfect order by the
 //    model and allocator leftovers to a sampler. Rule 2's own clause, for the same reason.
@@ -1841,7 +1860,7 @@ bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPage
 		return false;
 
 	const GSVramModel::Surface& surf = m_vram_model.Get(owner);
-	if (!surf.alive || !surf.pool_handle || !HasByteRoad(surf.layout))
+	if (!surf.alive || !surf.pool_handle || !HasCt32PixelSpace(surf.layout))
 		return false;
 	if (!surf.residency.contains(tex_pages))
 		return false;
@@ -2658,6 +2677,7 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 	Bucket buckets[8];
 	u32 num_buckets = 0;
 	u32 lossy = 0;
+	u32 lossy_depth = 0;
 	need.forEachSetPage([&](u32 page) {
 		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		{
@@ -2665,9 +2685,11 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 				continue;
 			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
 			pxAssert(owner != kGSTileNoSurface);
-			if (!HasByteRoad(m_vram_model.Get(owner).layout))
+			const GSTileSurfaceLayout& owner_l = m_vram_model.Get(owner).layout;
+			if (!HasByteRoad(owner_l))
 			{
 				lossy++;
+				lossy_depth += (owner_l.kind == GSTileSurfaceKind::Depth) ? 1 : 0;
 				continue;
 			}
 			u32 b = 0;
@@ -2689,6 +2711,7 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 					if (m_ring_live[page] != 0)
 						m_ring_entries[m_ring_live[page] - 1].prefill_s = true;
 					lossy++;
+					lossy_depth += (owner_l.kind == GSTileSurfaceKind::Depth) ? 1 : 0;
 					continue;
 				}
 				buckets[num_buckets].id = owner;
@@ -2705,11 +2728,13 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 	if (lossy)
 	{
 		m_frame.lossy_pages += lossy;
+		m_frame.lossy_pages_depth += lossy_depth;
 		if (!m_warned_lossy)
 		{
 			m_warned_lossy = true;
-			Console.Warning("TileGpu: page truth held by a surface without a byte road (depth / 16-bit / unaligned) "
-							"was read or stolen -- the bytes are stale there. Counted per frame as lossy pages.");
+			Console.Warning("TileGpu: page truth held by a surface without a byte road (depth, or a base that is not "
+							"page-aligned) was read or stolen -- the bytes are stale there. Counted per frame as "
+							"lossy pages.");
 		}
 	}
 
@@ -2720,27 +2745,29 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 // Truth on `pages` is about to become unreachable and no byte road can carry it: count it and say
 // so once. Two roads reach here -- a target whose own layout has no writeback shader, and the depth
 // plane, which has none at all.
-void GSRendererTileGpu::NoteLossyPages(const GSPageBitmap& pages)
+void GSRendererTileGpu::NoteLossyPages(const GSPageBitmap& pages, GSTileSurfaceKind kind)
 {
 	if (pages.empty())
 		return;
 	m_frame.lossy_pages += pages.count();
+	if (kind == GSTileSurfaceKind::Depth)
+		m_frame.lossy_pages_depth += pages.count();
 	if (!m_warned_lossy)
 	{
 		m_warned_lossy = true;
-		Console.Warning("TileGpu: page truth moved through a surface without a byte road (depth / 16-bit / unaligned) "
-						"-- the bytes are stale there. Counted per frame as lossy pages.");
+		Console.Warning("TileGpu: page truth moved through a surface without a byte road (depth, or a base that is "
+						"not page-aligned) -- the bytes are stale there. Counted per frame as lossy pages.");
 	}
 }
 
 // A surface without a byte road is about to take `pages`: the model's steal invariant needs the
 // previous owners' truth marked synced, but no bytes actually move -- the previous owners' pixels
 // are lost to the byte store, and the taker's texture keeps whatever it held.
-void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
+void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages, GSTileSurfaceKind kind)
 {
 	if (pages.empty())
 		return;
-	NoteLossyPages(pages);
+	NoteLossyPages(pages, kind);
 	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
 }
 
@@ -3367,7 +3394,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			}
 			else
 			{
-				LossySteal(seed);
+				LossySteal(seed, GSTileSurfaceKind::Color);
 			}
 		}
 		// A page this draw covers in full ends up holding texels whether it was seeded or not.
@@ -3389,7 +3416,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// read of the same pages happened to write them back first; removing one such read (the
 		// resident-target bind) is how FlatOut 2 surfaced it.
 		const GSPageBitmap z_seed = PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ);
-		NoteLossyPages(z_seed);
+		NoteLossyPages(z_seed, GSTileSurfaceKind::Depth);
 		ComposeForPendingDraw(z_seed, pd);
 		if (z_write)
 			z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);

@@ -6599,9 +6599,10 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 // pixels. Binding 0 = the target (combined sampler), 1 = the ring SSBO (read-modify-write). Only
 // meaningful when the swizzle forms fitted (m_tilegpu_tex): the shader shares tilegpu.glsl's
 // TILE_SWZ_* defines, so writer and reader cannot disagree about a constant.
-bool GSDeviceVK::CompileTileGpuWritebackPipeline()
+bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 {
-	m_tilegpu_writeback_tried = true;
+	pxAssert(road_fmt < kGSTileByteRoadFormats);
+	m_tilegpu_writeback_tried[road_fmt] = true;
 
 	// No texturing means no byte road to reconcile; the forms also must have fitted for the defines
 	// to exist. Leave everything null -- the executor skips the op (the read stays whatever the slot
@@ -6609,6 +6610,9 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline()
 	if (!m_tilegpu_tex)
 		return false;
 
+	// The set and pipeline layouts are shared by every format's program; only the first build makes
+	// them.
+	if (m_tilegpu_writeback_pipeline_layout == VK_NULL_HANDLE)
 	{
 		Vulkan::DescriptorSetLayoutBuilder dslb;
 		if (m_use_push_descriptors)
@@ -6636,7 +6640,8 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline()
 
 	// GetComputeShader compiles the source verbatim (no #version injected, unlike the utility path),
 	// so the version line leads and the swizzle-form defines follow it before the body.
-	const std::string full_source = "#version 460 core\n\n" + TileFormDefines() + *source;
+	const std::string full_source = "#version 460 core\n\n" + TileFormDefines() +
+									fmt::format("#define TILEGPU_WB_FMT {}\n", road_fmt) + *source;
 	VkShaderModule cs = g_vulkan_shader_cache->GetComputeShader(full_source);
 	if (cs == VK_NULL_HANDLE)
 		return false;
@@ -6645,10 +6650,10 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline()
 	Vulkan::ComputePipelineBuilder cpb;
 	cpb.SetPipelineLayout(m_tilegpu_writeback_pipeline_layout);
 	cpb.SetShader(cs, "main");
-	m_tilegpu_writeback_pipeline = cpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
-	if (m_tilegpu_writeback_pipeline == VK_NULL_HANDLE)
+	m_tilegpu_writeback_pipeline[road_fmt] = cpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tilegpu_writeback_pipeline[road_fmt] == VK_NULL_HANDLE)
 		return false;
-	Vulkan::SetObjectName(m_device, m_tilegpu_writeback_pipeline, "TileGpu writeback pipeline");
+	Vulkan::SetObjectName(m_device, m_tilegpu_writeback_pipeline[road_fmt], "TileGpu writeback pipeline");
 	return true;
 }
 
@@ -6657,9 +6662,10 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline()
 // shares the geometry pipeline's layout and persistent descriptor set (binding 1 is the ring), so
 // running it costs a pipeline bind and a push, no descriptor traffic. Compiled on first use, only
 // when the swizzle forms fitted.
-bool GSDeviceVK::CompileTileGpuSeedPipeline()
+bool GSDeviceVK::CompileTileGpuSeedPipeline(u32 road_fmt)
 {
-	m_tilegpu_seed_tried = true;
+	pxAssert(road_fmt < kGSTileByteRoadFormats);
+	m_tilegpu_seed_tried[road_fmt] = true;
 	if (!m_tilegpu_tex || m_tilegpu_pipeline_layout == VK_NULL_HANDLE)
 		return false;
 
@@ -6669,7 +6675,12 @@ bool GSDeviceVK::CompileTileGpuSeedPipeline()
 		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_seed.glsl.");
 		return false;
 	}
-	const std::string full_source = TileFormDefines() + *source;
+	// TILEGPU_STATIC_BYTE_SEL rides along for the same reason the materialise takes it: the 16-bit
+	// arm extracts a halfword from an SSBO-loaded word with a computed shift, which is the shape
+	// Honeykrisp gets wrong.
+	const std::string full_source = TileFormDefines() +
+									fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", TileGpuStaticByteSel() ? 1 : 0) +
+									fmt::format("#define TILEGPU_SEED_FMT {}\n", road_fmt) + *source;
 
 	VkShaderModule vs = GetUtilityVertexShader(full_source);
 	if (vs == VK_NULL_HANDLE)
@@ -6696,10 +6707,10 @@ bool GSDeviceVK::CompileTileGpuSeedPipeline()
 		0);
 	gpb.SetColorWriteMask(0,
 		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
-	m_tilegpu_seed_pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
-	if (m_tilegpu_seed_pipeline == VK_NULL_HANDLE)
+	m_tilegpu_seed_pipeline[road_fmt] = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tilegpu_seed_pipeline[road_fmt] == VK_NULL_HANDLE)
 		return false;
-	Vulkan::SetObjectName(m_device, m_tilegpu_seed_pipeline, "TileGpu seed pipeline");
+	Vulkan::SetObjectName(m_device, m_tilegpu_seed_pipeline[road_fmt], "TileGpu seed pipeline");
 	return true;
 }
 
@@ -7211,10 +7222,21 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		{
 			if (can_texture)
 			{
-				if (!m_tilegpu_writeback_tried)
-					CompileTileGpuWritebackPipeline();
-				if (!m_tilegpu_seed_tried)
-					CompileTileGpuSeedPipeline();
+				// One writeback and one seed program per colour swizzle universe, compiled on the
+				// first op that names one -- a title with no 16-bit target never builds those two.
+				for (u32 o = pass.first_prep_op; o < op_end; o++)
+				{
+					const GSTileGpuPrepOp& op = plan.prep_ops[o];
+					if (op.kind != GSTileGpuPrepKind::Writeback && op.kind != GSTileGpuPrepKind::Seed)
+						continue;
+					const u32 rf = gsTileByteRoadFormat(op.psm);
+					if (rf >= kGSTileByteRoadFormats)
+						continue;
+					if (op.kind == GSTileGpuPrepKind::Writeback && !m_tilegpu_writeback_tried[rf])
+						CompileTileGpuWritebackPipeline(rf);
+					if (op.kind == GSTileGpuPrepKind::Seed && !m_tilegpu_seed_tried[rf])
+						CompileTileGpuSeedPipeline(rf);
+				}
 			}
 
 			for (u32 o = pass.first_prep_op; o < op_end; o++)
@@ -7574,9 +7596,18 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					continue;
 				GSTextureVK* const tex = static_cast<GSTextureVK*>(plan.targets[op.target]);
 
+				// The colour swizzle universe decides the program AND the page geometry both roads
+				// address the surface with. Out of range means the renderer emitted an op for a
+				// layout the byte road does not serve, which its own admission test forbids -- skip
+				// rather than run some other format's program over these bytes.
+				const u32 road_fmt = gsTileByteRoadFormat(op.psm);
+				if (road_fmt >= kGSTileByteRoadFormats)
+					continue;
+				const u32 page_h = gsTilePageHeight(op.psm);
+
 				if (op.kind == GSTileGpuPrepKind::Writeback)
 				{
-					if (m_tilegpu_writeback_pipeline == VK_NULL_HANDLE)
+					if (m_tilegpu_writeback_pipeline[road_fmt] == VK_NULL_HANDLE)
 						continue;
 					EndRenderPass();
 					// Prior shader reads and compute writes of the ring must finish before this
@@ -7615,9 +7646,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						entries_base_words, op.first_page_entry, op.page_entry_count};
 					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
 						sizeof(wpush), wpush);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline);
-					// (8, 4) groups of 8x8 cover one 64x32 CT32 page; one page per z.
-					vkCmdDispatch(cmd, 8, 4, op.page_entry_count);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
+					// Groups of 8x8 covering one page's WORDS: (8, 4) for a 64x32 CT32 page, one
+					// texel per invocation; (4, 8) for a 64x64 16-bit page, whose invocations each
+					// pack the two texels that share a word. 2048 invocations either way, one page
+					// per z.
+					{
+						const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm);
+						vkCmdDispatch(cmd, groups.x, groups.y, op.page_entry_count);
+					}
 					// The composed slots feed the seeds and passes that follow.
 					ring_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
@@ -7626,7 +7663,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				}
 				else // Seed
 				{
-					if (m_tilegpu_seed_pipeline == VK_NULL_HANDLE)
+					if (m_tilegpu_seed_pipeline[road_fmt] == VK_NULL_HANDLE)
 						continue;
 					EndRenderPass();
 
@@ -7646,8 +7683,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						min_row = std::min(min_row, row);
 						max_row = std::max(max_row, row);
 					}
-					const GSVector4i sc_rect = GSVector4i(min_col * 64, min_row * 32, (max_col + 1) * 64, (max_row + 1) * 32)
-												   .rintersect(GSVector4i(0, 0, size.x, size.y));
+					const GSVector4i sc_rect =
+						GSVector4i(min_col * 64, min_row * static_cast<int>(page_h), (max_col + 1) * 64,
+							(max_row + 1) * static_cast<int>(page_h))
+							.rintersect(GSVector4i(0, 0, size.x, size.y));
 					if (sc_rect.rempty())
 						continue;
 
@@ -7681,7 +7720,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						masks_base_words + o * (GS_MAX_PAGES / 32), 0, 0, 0};
 					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(spush), spush);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_seed_pipeline);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_seed_pipeline[road_fmt]);
 					vkCmdDraw(cmd, 3, 1, 0, 0);
 					EndRenderPass();
 					tex->SetState(GSTexture::State::Dirty);
@@ -8928,12 +8967,13 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_source_ds_layout, nullptr);
 		m_tilegpu_source_ds_layout = VK_NULL_HANDLE;
 	}
-	if (m_tilegpu_seed_pipeline != VK_NULL_HANDLE)
+	for (u32 f = 0; f < kGSTileByteRoadFormats; f++)
 	{
-		vkDestroyPipeline(m_device, m_tilegpu_seed_pipeline, nullptr);
-		m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
+		if (m_tilegpu_seed_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_seed_pipeline[f], nullptr);
+		m_tilegpu_seed_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_seed_tried[f] = false;
 	}
-	m_tilegpu_seed_tried = false;
 	for (u32 f = 0; f < kTileGpuSrcFormats; f++)
 	{
 		if (m_tilegpu_materialise_pipeline[f] != VK_NULL_HANDLE)
@@ -8981,10 +9021,12 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_readtarget_ds_layout, nullptr);
 		m_tilegpu_readtarget_ds_layout = VK_NULL_HANDLE;
 	}
-	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
+	for (u32 f = 0; f < kGSTileByteRoadFormats; f++)
 	{
-		vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline, nullptr);
-		m_tilegpu_writeback_pipeline = VK_NULL_HANDLE;
+		if (m_tilegpu_writeback_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline[f], nullptr);
+		m_tilegpu_writeback_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_writeback_tried[f] = false;
 	}
 	if (m_tilegpu_writeback_pipeline_layout != VK_NULL_HANDLE)
 	{
@@ -8996,7 +9038,6 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_writeback_ds_layout, nullptr);
 		m_tilegpu_writeback_ds_layout = VK_NULL_HANDLE;
 	}
-	m_tilegpu_writeback_tried = false;
 	if (m_tilegpu_indirect_stream_buffer.IsValid())
 		m_tilegpu_indirect_stream_buffer.Destroy(false);
 	if (m_tilegpu_state_stream_buffer.IsValid())

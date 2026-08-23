@@ -808,11 +808,11 @@ private:
 
 	// Truth on `pages` cannot reach the byte store at all: count it and warn once. The depth plane
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.
-	void NoteLossyPages(const GSPageBitmap& pages);
+	void NoteLossyPages(const GSPageBitmap& pages, GSTileSurfaceKind kind);
 
 	// Truth on `pages` is taken by a surface with no byte road: mark it synced without moving
 	// bytes, and count it lossy.
-	void LossySteal(const GSPageBitmap& pages);
+	void LossySteal(const GSPageBitmap& pages, GSTileSurfaceKind kind);
 
 	// Compose `pages` into the ring for the draw being accumulated, breaking the open pass if the
 	// writebacks it emitted cannot be hoisted to that pass's head. The idiom a texture read has
@@ -1007,7 +1007,12 @@ private:
 		                           // `opaque` are unproven and `moved - rescued - opaque` are
 		                           // bytes that demonstrably changed.
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
-		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
+		u32 lossy_pages = 0;     // truth moved without a byte road (depth, or a base that is not page-aligned)
+		// ...of which the DEPTH plane's, which is a standing separate gap: no writeback shader
+		// exists for any depth format, so every depth seed is lossy by construction. Split out
+		// because "colour lossy pages" is a gate and "depth lossy pages" is a backlog row, and one
+		// number cannot be both.
+		u32 lossy_pages_depth = 0;
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
 		// The alpha test decided at plan time, over the draws that would otherwise have carried a
 		// per-fragment test: a comparison the draw's constant fragment alpha provably fails, or

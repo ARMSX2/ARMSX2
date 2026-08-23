@@ -400,9 +400,9 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 		if (!m_warned_unaddressable)
 		{
 			m_warned_unaddressable = true;
-			Console.Warning("Tile: a readback was asked of a %u-bit colour surface (PSM %u), which the store road "
-							"cannot address -- its pages keep the CPU shadow's bytes, stale. Counted as "
-							"unaddressable readbacks.",
+			Console.Warning("Tile: a readback was asked of a %u-bit surface (PSM %u), which the store road cannot "
+							"address -- its pages keep the CPU shadow's bytes, stale. Counted as unaddressable "
+							"readbacks.",
 				gsTileStorageBpp(layout.psm), layout.psm);
 		}
 		return true;

@@ -9,6 +9,7 @@
 #include "GS/Renderers/Vulkan/VKLoader.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSTileTypes.h" // kGSTileByteRoadFormats: the byte road's shader variants
 
 #include "common/HashCombine.h"
 #include "common/ReadbackSpinManager.h"
@@ -652,17 +653,23 @@ private:
 	// those pages reads the target's pixels through the unchanged texel path. Binding 0 = the target
 	// (combined sampler), 1 = the ring SSBO (read-modify-write). Compiled on first use, only when
 	// the swizzle forms fitted (m_tilegpu_tex).
+	//
+	// One pipeline per colour swizzle universe (gsTileByteRoadFormat: 0 = PSMCT32/PSMCT24,
+	// 1 = PSMCT16, 2 = PSMCT16S). The page geometry, the block table and the cell width are all
+	// compiled in, because a runtime branch on them would be paid per invocation of every page.
 	VkPipelineLayout m_tilegpu_writeback_pipeline_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_tilegpu_writeback_ds_layout = VK_NULL_HANDLE;
-	VkPipeline m_tilegpu_writeback_pipeline = VK_NULL_HANDLE;
-	bool m_tilegpu_writeback_tried = false;
-	bool CompileTileGpuWritebackPipeline();
+	std::array<VkPipeline, kGSTileByteRoadFormats> m_tilegpu_writeback_pipeline{};
+	std::array<bool, kGSTileByteRoadFormats> m_tilegpu_writeback_tried{};
+	bool CompileTileGpuWritebackPipeline(u32 road_fmt);
 	// Bytes -> target: a fragment pass over a colour target that unswizzles the op's pages out of
 	// the ring into the target's pixel space (fragments outside the page set discard). Shares the
-	// geometry pipeline's layout and descriptor set. Compiled on first use, same gate.
-	VkPipeline m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
-	bool m_tilegpu_seed_tried = false;
-	bool CompileTileGpuSeedPipeline();
+	// geometry pipeline's layout and descriptor set. Compiled on first use, same gate, and one
+	// pipeline per universe for the same reason as the writeback -- the two must be the same list,
+	// or a page seeded by one and written back by the other addresses two sets of bytes.
+	std::array<VkPipeline, kGSTileByteRoadFormats> m_tilegpu_seed_pipeline{};
+	std::array<bool, kGSTileByteRoadFormats> m_tilegpu_seed_tried{};
+	bool CompileTileGpuSeedPipeline(u32 road_fmt);
 	// Bytes -> a texture source: a fragment pass that unswizzles a whole texture window out of the
 	// ring into an ordinary RGBA8 image, one fragment per texel, for the hardware sampler to read.
 	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24, 2 = PSMT8, 3 = PSMT4, 4 = PSMT8H,
