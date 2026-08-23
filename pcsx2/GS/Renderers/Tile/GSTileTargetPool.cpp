@@ -368,18 +368,19 @@ bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileS
 // indexes vm32() or vm16() with the pixel index GSOffset produced, and that index counts pixels
 // in the LAYOUT'S OWN format. Pair a 32-bit writer with a 16-bit layout and every destination
 // byte offset doubles -- the store does not miss by a pixel, it misses by tens of pages, and it
-// lands there through the wrapped VM alias so nothing faults and nothing complains.
+// lands there through the wrapped VM alias so nothing faults and nothing complains. That was a
+// real defect, measured on OutRun 2006: a PSMCT16S surface at page 380 zeroing GS pages 293 and
+// 297, the game's fog-index plane.
 //
-// The depth road already carries both writers (WritePixel16 for Z16/Z16S). The colour road
-// carries only WritePixel32, so a 16-bit COLOUR surface has no store at all -- which is the same
-// gap that leaves 16-bit out of the writeback and seed shaders. Until that road exists, say so
-// here rather than letting the caller scribble somebody else's bytes: measured on OutRun 2006, a
-// PSMCT16S surface at page 380 zeroing GS pages 293 and 297, the game's fog-index plane.
+// Every family the pool can back now has a writer of its own width: WritePixel32 for the 32-bit
+// colour formats, WritePixel16 for Z16/Z16S, and WriteFrame16 (the 5551 pack) for the 16-bit
+// colour ones. So the answer is yes for everything -- stated as the two questions rather than as
+// `true`, because the property being asserted is "a writer of the layout's own cell width exists",
+// and the day a format arrives without one this must go back to saying no.
 bool GSTileTargetPool::ReadbackAddressable(const GSTileSurfaceLayout& layout)
 {
-	if (layout.kind == GSTileSurfaceKind::Color)
-		return gsTileStorageBpp(layout.psm) == 32;
-	return gsTileStorageBpp(layout.psm) == 32 || gsTileStorageBpp(layout.psm) == 16;
+	const u32 bpp = gsTileStorageBpp(layout.psm);
+	return bpp == 32 || bpp == 16;
 }
 
 bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout,
@@ -417,6 +418,14 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 	pxAssert(bb.z <= s.tex->GetWidth() && bb.w <= s.tex->GetHeight());
 
 	const bool depth16 = (s.kind == GSTileSurfaceKind::Depth) && (layout.psm == PSMZ16 || layout.psm == PSMZ16S);
+	const bool color16 = (s.kind == GSTileSurfaceKind::Color) && (gsTileStorageBpp(layout.psm) == 16);
+	// The plane window, restated in the cell width the store actually writes. Callers speak in
+	// 32-bit cell bytes because that is what the model's planes are; a 16-bit colour cell keeps its
+	// colour in bits 0-14 and its alpha in bit 15, so "any of bytes 0-2" is the colour half and
+	// "any of byte 3" is the alpha bit. Derived here rather than asked of the caller so nothing
+	// outside this file has to know which surfaces are narrow.
+	const u16 write_mask16 = static_cast<u16>(((write_mask & 0x00FFFFFFu) ? 0x7FFFu : 0u) |
+											  ((write_mask & 0xFF000000u) ? 0x8000u : 0u));
 	const GSVector4i drc(0, 0, bb.width(), bb.height());
 	const GSOffset off = mem.GetOffset(layout.bp, layout.bw, layout.psm);
 
@@ -442,8 +451,19 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 			const u8* bits = StageUncachedMap(raw->get(), raw->get()->GetMapPointer(), pitch, drc.w);
 			if (s.kind == GSTileSurfaceKind::Color)
 			{
+				// The image is RGBA8 whatever the guest format is, so a 16-bit surface's cells are
+				// packed to 5551 on the way down -- GSLocalMemory's own WriteFrame16 arithmetic,
+				// which is also what tilegpu_writeback.glsl performs on the GPU side. The two must
+				// agree bit for bit or a page reconciled by one road and read through the other
+				// changes colour.
 				for (const GSVector4i& r : m_runs)
-					mem.WritePixel32(const_cast<u8*>(bits) + (r.y - bb.y) * pitch + (r.x - bb.x) * sizeof(u32), pitch, off, r, write_mask);
+				{
+					u8* const row = const_cast<u8*>(bits) + (r.y - bb.y) * pitch + (r.x - bb.x) * sizeof(u32);
+					if (color16)
+						mem.WriteFrame16(row, pitch, off, r, write_mask16);
+					else
+						mem.WritePixel32(row, pitch, off, r, write_mask);
+				}
 			}
 			else
 			{
@@ -531,6 +551,10 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 		if (depth16)
 		{
 			mem.WritePixel16(bits + (r.y - bb.y) * pitch + (r.x - bb.x) * sizeof(u16), pitch, off, r);
+		}
+		else if (color16)
+		{
+			mem.WriteFrame16(bits + (r.y - bb.y) * pitch + (r.x - bb.x) * sizeof(u32), pitch, off, r, write_mask16);
 		}
 		else
 		{

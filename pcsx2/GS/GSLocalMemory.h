@@ -1014,6 +1014,22 @@ public:
 		});
 	}
 
+	/// The same pack, keeping the bits `write_mask` clears. WritePixel32's masked form for the
+	/// 16-bit colour formats: a plane a surface does not own -- a 16-bit frame's alpha bit, or its
+	/// fifteen colour bits -- belongs to whoever else holds it, and must survive the store.
+	void WriteFrame16(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r, u16 write_mask)
+	{
+		off.loopPixels(r, vm16(), (u32*)src, pitch,
+		[&](u16* dst, u32* src)
+		{
+			u32 rb = *src & 0x00f800f8;
+			u32 ga = *src & 0x8000f800;
+			u16 c = (u16)((ga >> 16) | (rb >> 9) | (ga >> 6) | (rb >> 3));
+
+			*dst = (u16)((*dst & ~write_mask) | (c & write_mask));
+		});
+	}
+
 	__forceinline u32 ReadTexel32(u32 addr, const GIFRegTEXA& TEXA) const
 	{
 		return vm32()[addr];

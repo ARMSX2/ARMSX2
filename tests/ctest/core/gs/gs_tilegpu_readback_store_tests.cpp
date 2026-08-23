@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include <iomanip>
 #include <vector>
 
 namespace
@@ -62,16 +63,19 @@ const Case kCases[] = {
 
 // The pages a readback of `pages` would actually write, spelled out the way ReadbackPages spells
 // it: CollectRuns for the pixel rects, GSOffset::pa for each pixel's index in the layout's own
-// units, and the cell width of the writer the store road picks for this surface kind.
+// units, and the cell width of the writer the store road picks for this surface.
+//
+// The cell width is the LAYOUT'S storage width, for both kinds. That is the whole property: a
+// writer whose cell is wider than the format's multiplies every destination offset, and a writer
+// whose cell matches lands inside the pages the runs came from. Colour used to be pinned at four
+// bytes here because the colour road only had WritePixel32; it now has the 16-bit pack as well.
 GSPageBitmap StoreTouchedPages(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages)
 {
 	std::vector<GSVector4i> runs;
 	GSTileTargetPool::CollectRuns(layout, pages, GSVramModel::kFullBlockMask, runs);
 
 	const GSOffset off = GSOffset::fromKnownPSM(layout.bp, layout.bw, static_cast<GS_PSM>(layout.psm));
-	const bool depth16 =
-		layout.kind == GSTileSurfaceKind::Depth && (layout.psm == PSMZ16 || layout.psm == PSMZ16S);
-	const u64 cell = depth16 ? sizeof(u16) : sizeof(u32);
+	const u64 cell = gsTileStorageBpp(layout.psm) / 8;
 
 	GSPageBitmap touched;
 	for (const GSVector4i& r : runs)
@@ -129,14 +133,50 @@ TEST(TileGpuReadbackStore, RefusesExactlyTheLayoutsItCannotAddress)
 	}
 }
 
-TEST(TileGpuReadbackStore, SixteenBitColourIsTheRefusedCase)
+TEST(TileGpuReadbackStore, EverySixteenBitFamilyIsAddressable)
 {
-	// Named on its own so the reason survives a future widening of the case table: 16-bit COLOUR
-	// is the gap (no 16-bit writer on the colour road), and 16-bit DEPTH is not (WritePixel16).
-	EXPECT_FALSE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT16, GSTileSurfaceKind::Color)));
-	EXPECT_FALSE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT16S, GSTileSurfaceKind::Color)));
+	// This was `SixteenBitColourIsTheRefusedCase`: 16-bit colour was the one gap, because the
+	// colour road only carried WritePixel32. It now carries the 5551 pack through WriteFrame16, so
+	// every family the pool can back has a store, and the refusal is gone rather than merely
+	// narrowed. Named on its own so a future widening of the case table cannot quietly lose it.
+	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT16, GSTileSurfaceKind::Color)));
+	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT16S, GSTileSurfaceKind::Color)));
 	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMZ16, GSTileSurfaceKind::Depth)));
 	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMZ16S, GSTileSurfaceKind::Depth)));
 	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT32, GSTileSurfaceKind::Color)));
 	EXPECT_TRUE(GSTileTargetPool::ReadbackAddressable(Layout(4800, 10, PSMCT24, GSTileSurfaceKind::Color)));
+}
+
+// The 16-bit colour store's own arithmetic, pinned against GSLocalMemory rather than against a
+// literal: the pack ReadbackPages hands WriteFrame16 and the unpack the seed shader performs are
+// each other's inverse over the five bits the format keeps, and the pack is the software
+// renderer's own.
+TEST(TileGpuReadbackStore, FiveFiveFiveOnePackAndUnpackAreInverse)
+{
+	for (u32 c = 0; c < 0x10000u; c++)
+	{
+		const u16 h = static_cast<u16>(c);
+		const u32 expanded = gsTileUnpack5551(h);
+		EXPECT_EQ(gsTilePack5551(expanded), h) << "16-bit cell 0x" << std::hex << c;
+		// Only the bits the format stores come back: five per colour channel at the top of each
+		// byte, and alpha as the one bit, 0x80 or 0x00.
+		EXPECT_EQ(expanded & 0x07070700u, 0u) << "16-bit cell 0x" << std::hex << c;
+		EXPECT_TRUE((expanded >> 24) == 0x80u || (expanded >> 24) == 0x00u);
+	}
+}
+
+TEST(TileGpuReadbackStore, PackIsGSLocalMemorysOwnFrameWrite)
+{
+	// gsTilePack5551 is used by the pool's store road and by the writeback shader's CPU
+	// specification; WriteFrame16 is what the software renderer stores a 16-bit frame with. A
+	// disagreement between them is a renderer that writes different bytes for the same pixel.
+	const u32 samples[] = {0x00000000u, 0xFFFFFFFFu, 0x80402010u, 0x7F7F7F7Fu, 0x01020304u,
+		0x8000FF00u, 0x00FFFFFFu, 0xFF000000u, 0x12345678u, 0xF8F8F8F8u};
+	for (u32 c : samples)
+	{
+		const u32 rb = c & 0x00f800f8u;
+		const u32 ga = c & 0x8000f800u;
+		const u16 want = static_cast<u16>((ga >> 16) | (rb >> 9) | (ga >> 6) | (rb >> 3));
+		EXPECT_EQ(gsTilePack5551(c), want) << "word 0x" << std::hex << c;
+	}
 }

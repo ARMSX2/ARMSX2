@@ -65,11 +65,12 @@ public:
 	/// Deswizzle whole pages out of CPU local memory into the surface texture.
 	bool UploadPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages);
 
-	/// Read pages back into CPU local memory. write_mask selects the bytes of each
-	/// 32-bit cell to write (16-bit DEPTH writes whole cells and ignores it; a 16-bit
-	/// COLOUR layout is refused outright -- see ReadbackAddressable);
-	/// block_mask selects which of each page's 32 physical blocks are pulled, so a
-	/// page whose truth a CPU transfer has already shrunk keeps its CPU-newest blocks.
+	/// Read pages back into CPU local memory. write_mask selects the bytes of each 32-bit cell to
+	/// write, in the model's own plane units whatever the layout's width: a 16-bit COLOUR layout
+	/// narrows it internally (bytes 0-2 are the fifteen colour bits, byte 3 the alpha bit), and
+	/// 16-bit DEPTH writes whole cells and ignores it. block_mask selects which of each page's 32
+	/// physical blocks are pulled, so a page whose truth a CPU transfer has already shrunk keeps
+	/// its CPU-newest blocks.
 	///
 	/// out_drains, when given, is incremented once per GPU stall this call actually
 	/// pays. That is the unit the readback bill is denominated in — a stall is a full
