@@ -383,6 +383,38 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
+                    // Tap to hold (#612) — the on-screen buttons have always had this; an
+                    // accessibility request brought it to physical ones, for games that expect a
+                    // button held while another control is worked. Sits with Turbo because both
+                    // change what holding the button means, and both need a binding to act on.
+                    val latch = remember(action.id, editPlayer.intValue, refreshToken.intValue) {
+                        mutableStateOf(ControllerMappings.isLatchAction(action, editPlayer.intValue))
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val nv = !latch.value
+                                latch.value = nv
+                                ControllerMappings.setLatchAction(action, editPlayer.intValue, nv)
+                            }
+                            .padding(start = 18.dp, end = 10.dp, top = 2.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "\u21b3 Tap to hold (press once to hold, again to release)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 14.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            if (latch.value) "ON" else "OFF",
+                            color = if (latch.value) Color(0xFF4DA3FF)
+                            else Color(0xFF808080),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
                 SettingsDivider()
             }

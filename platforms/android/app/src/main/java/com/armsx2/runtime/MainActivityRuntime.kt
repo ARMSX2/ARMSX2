@@ -137,6 +137,40 @@ open class MainActivityRuntime : ComponentActivity() {
     companion object {
         var instance: MainActivityRuntime? = null
         lateinit var prefs: SharedPreferences
+
+        // Tap-to-hold state (#612). In the companion rather than beside handleTurbo because the
+        // boot path that has to clear it -- a latch must not outlive the game it was set in --
+        // runs here, while the dispatch that sets it is an instance method. Instance methods see
+        // companion members, so both reach it.
+        private val latchDown = HashSet<Long>()  // physical buttons currently held, port|physical
+        private val latchHeld = HashSet<Long>()  // PS2 targets currently latched ON, port|target
+
+        /** A latch must not outlive the game it was set in. Called on each fresh start. */
+        fun clearLatches() {
+            latchDown.clear()
+            latchHeld.clear()
+        }
+
+        /**
+         * Release whatever is latched right now, through the normal dispatch so the analog and
+         * pressure bookkeeping unwinds with it.
+         *
+         * Turning tap-to-hold off for a button that is currently HELD would otherwise strand it
+         * pressed: the second tap that would have released it no longer toggles anything, so the
+         * game sees the button down forever. Called whenever the setting changes.
+         */
+        fun releaseLatches() {
+            val held = latchHeld.toList()
+            clearLatches()
+            val act = instance ?: return
+            held.forEach { key ->
+                act.sendKeyAction(
+                    KeyEventType.KeyUp,
+                    (key and 0xffffffffL).toInt(),   // target, as packed by turboMapKey
+                    (key ushr 32).toInt(),           // port
+                )
+            }
+        }
         val setupComplete = mutableStateOf(false)
         // Set at launch when a restored-but-unusable setup is detected (Auto Backup
         // brought back prefs incl. setupComplete, but the ROMs folder permission
@@ -682,6 +716,7 @@ open class MainActivityRuntime : ComponentActivity() {
             invoke {
                 try {
                     eState.value = EmuState.RUNNING
+                    clearLatches()
                     println("@@ANDROID_START_VM@@ kind=game path=${m_szGamefile.take(240)}")
                     // Local co-op: re-pair controllers each session (first pad = P1,
                     // next = P2) so player slots are deterministic per boot.
@@ -1061,6 +1096,7 @@ open class MainActivityRuntime : ComponentActivity() {
             invoke {
                 try {
                     eState.value = EmuState.RUNNING
+                    clearLatches()
                     println("@@ANDROID_START_VM@@ kind=bios path=<empty>")
                     com.armsx2.input.PadRouter.reset()
                     // The BIOS is emulation too: claim the renderer rotation tier so it honours the
@@ -1950,6 +1986,36 @@ open class MainActivityRuntime : ComponentActivity() {
     private val turboPressed = HashMap<Long, Boolean>()
     private fun turboMapKey(physicalCode: Int, port: Int) =
         (port.toLong() shl 32) or (physicalCode.toLong() and 0xffffffffL)
+
+    // ---- Tap to hold (latch) -----------------------------------------------
+    // #612, requested by bobo123g: the on-screen buttons have had "tap to hold" since they
+    // existed, but physical buttons always followed the button exactly. A game that wants one
+    // held while you work another control -- MGS2 holding R1 to aim -- is then unplayable for
+    // anyone who cannot hold two controls at once.
+    //
+    // Modelled as a TRANSFORM on the event stream rather than a branch beside turbo: a tap
+    // becomes a synthetic KeyDown, the next tap a synthetic KeyUp, and everything in between is
+    // swallowed. Turbo then composes with it for free -- flag a button both and a tap toggles
+    // autofire on and off, which is what a shmup wants.
+    /**
+     * The event to act on for a latch-flagged button, or null when there is nothing to do.
+     *
+     * Keyed on the PHYSICAL code for "is this a fresh press" (ACTION_DOWN auto-repeats while a
+     * key is held, and each repeat would otherwise toggle) and on the TARGET for "is it latched",
+     * so two physical buttons bound to the same PS2 button cannot desync.
+     */
+    private fun latchEdge(physicalCode: Int, type: KeyEventType, target: Int, port: Int): KeyEventType? {
+        val physKey = turboMapKey(physicalCode, port)
+        if (type != KeyEventType.KeyDown) {
+            // Releasing the physical button is exactly what a latch ignores.
+            latchDown.remove(physKey)
+            return null
+        }
+        if (!latchDown.add(physKey)) return null // auto-repeat, not a new press
+        val tgtKey = turboMapKey(target, port)
+        return if (latchHeld.remove(tgtKey)) KeyEventType.KeyUp
+        else { latchHeld.add(tgtKey); KeyEventType.KeyDown }
+    }
 
     private fun handleTurbo(physicalCode: Int, type: KeyEventType, target: Int, port: Int) {
         val key = turboMapKey(physicalCode, port)
@@ -3388,10 +3454,15 @@ open class MainActivityRuntime : ComponentActivity() {
         }
 
         val target = ControllerMappings.targetForPhysical(physicalCode, port) ?: return false
+        // Tap to hold rewrites the edges before anything else sees them (#612); a swallowed event
+        // is still consumed, or the key would fall through to the frontend.
+        val edge = if (ControllerMappings.isLatchTarget(target, port))
+            latchEdge(physicalCode, type, target, port) ?: return true
+        else type
         if (ControllerMappings.isTurboTarget(target, port)) {
-            handleTurbo(physicalCode, type, target, port)
+            handleTurbo(physicalCode, edge, target, port)
         } else {
-            sendKeyAction(type, target, port)
+            sendKeyAction(edge, target, port)
         }
         return true
     }
