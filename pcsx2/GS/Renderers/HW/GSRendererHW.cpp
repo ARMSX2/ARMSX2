@@ -877,7 +877,11 @@ GSRendererHW::TextureShuffleInfo GSRendererHW::DetectTextureShuffleImpl()
 		}
 		else
 		{
-			pxFail("Impossible.");
+			// A shuffle writes whole 8 pixel column groups, so an 8 pixel strip has to start
+			// on one. When it doesn't, the draw only looked like a shuffle to the heuristics
+			// above -- there is no channel pair to mask here, so take it as an ordinary draw.
+			GL_INS("Not a shuffle (8 pixel strip not aligned to a column group).");
+			return { TextureShuffleType::None, TextureShuffleChannels_None };
 		}
 	}
 
