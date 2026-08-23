@@ -2173,6 +2173,53 @@ public:
 	static constexpr u32 kGSTileGpuRoadMaskAll =
 		kGSTileGpuRoadByte | kGSTileGpuRoadTarget | kGSTileGpuRoadSource;
 
+	/// The BYTE road's texel-decode ARMS, as a bit per arm. The byte road is not one decoder, it is
+	/// five address geometries behind a shared wrapper, and the per-texel tap is inlined five times
+	/// over by bilinear sampling — so a pass sampling nothing but PSMT8 was paying program size for
+	/// four geometries it never executes, times five. A pass's texel_mask is the OR over its
+	/// byte-road draws, exactly as road_mask is the OR over its draws' roads.
+	///
+	/// Formats sharing an address geometry share an arm, deliberately: the three alpha-byte views
+	/// differ by one bitfield extract and the four 16-bit families by two selects, so splitting
+	/// those buys a handful of instructions and multiplies the variant population for nothing.
+	static constexpr u32 kGSTileGpuTexelDirect32 = 1u << 0; ///< PSMCT32 / PSMCT24
+	static constexpr u32 kGSTileGpuTexelIndex8 = 1u << 1;   ///< PSMT8
+	static constexpr u32 kGSTileGpuTexelIndex4 = 1u << 2;   ///< PSMT4
+	static constexpr u32 kGSTileGpuTexelIndexHi = 1u << 3;  ///< PSMT8H / PSMT4HL / PSMT4HH
+	static constexpr u32 kGSTileGpuTexelDirect16 = 1u << 4; ///< PSMCT16 / PSMCT16S / PSMZ16 / PSMZ16S
+	/// Not an address geometry: the CSM1 entry order a GATHERED palette needs. A palette the CPU
+	/// expanded is one indexed load per entry; one copied out of the target a native draw rendered it
+	/// into lands texel row-major, so three more closed forms have to run per tap to find an entry.
+	/// Two of the eighteen corpus dumps ever gather a palette, and this bit is what keeps the other
+	/// sixteen from carrying the machinery — which is the commit that crossed the a650 cliff.
+	static constexpr u32 kGSTileGpuTexelPalGather = 1u << 5;
+	/// Just the address geometries: the population "does this pass mix formats" is asked about.
+	static constexpr u32 kGSTileGpuTexelGeometryMask = kGSTileGpuTexelDirect32 | kGSTileGpuTexelIndex8 |
+													   kGSTileGpuTexelIndex4 | kGSTileGpuTexelIndexHi |
+													   kGSTileGpuTexelDirect16;
+	/// The paletted geometries: the ones the gather arm means anything for.
+	static constexpr u32 kGSTileGpuTexelPalettedMask =
+		kGSTileGpuTexelIndex8 | kGSTileGpuTexelIndex4 | kGSTileGpuTexelIndexHi;
+	static constexpr u32 kGSTileGpuTexelMaskAll = kGSTileGpuTexelGeometryMask | kGSTileGpuTexelPalGather;
+	static constexpr u32 kGSTileGpuTexelArms = 6;
+
+	/// The arm a state row's index_format decodes through. The numbering is the renderer's (0 =
+	/// direct 32-bit, 1-5 = GSTileSwizzleForms::IndexFormatFor + 1, 6-9 = Direct16FormatFor + 6) and
+	/// the fragment shader switches on the same value, so this mapping is the third party that has
+	/// to agree with both — pinned in the gs suite rather than left to inspection.
+	static constexpr u32 GSTileGpuTexelArm(u32 index_format)
+	{
+		if (index_format == 0)
+			return kGSTileGpuTexelDirect32;
+		if (index_format == 1)
+			return kGSTileGpuTexelIndex8;
+		if (index_format == 2)
+			return kGSTileGpuTexelIndex4;
+		if (index_format < 6)
+			return kGSTileGpuTexelIndexHi;
+		return kGSTileGpuTexelDirect16;
+	}
+
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
 	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
 	/// optionally declaring the raster-order self-read the blend and same-pixel feedback
@@ -2200,6 +2247,15 @@ public:
 		/// the depth mode it is uniform across the pass by construction (it is a union, not a
 		/// per-draw choice), so it splits nothing.
 		u32 road_mask;
+		/// The OR of the decode arms this pass's BYTE-road draws need (kGSTileGpuTexel*) — one of the
+		/// five address geometries per draw, plus the palette-order arm where a draw's palette was
+		/// gathered off a target. Zero for a pass that takes no byte road at all. It selects the
+		/// fragment variant beside road_mask and is uniform across the pass for the same reason: it
+		/// is a union, not a per-draw choice, so it splits nothing. A pass whose road_mask carries
+		/// the byte bit always names at least one geometry — a byte-road draw is textured by
+		/// definition — and the device treats an empty one as the full set, because a superset is
+		/// slow and a subset is wrong.
+		u32 texel_mask;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};

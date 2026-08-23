@@ -615,28 +615,36 @@ private:
 	// fixed-function factors through GSDevice::m_blendMap, with As as the shader's dual-source
 	// output and FIX as the blend constant (dynamic).
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
-	// key: topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7, < 81) | nocolour<<16 | noalpha<<17 |
-	// road mask<<18 (3 bits, byte/target/source) -- so bits 4-7, 15 and 21 up are still free.
+	// key: topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7, < 81) | colour write mask<<16 (4) |
+	// road mask<<20 (3, byte/target/source) | texel-arm mask<<23 (6) -- so bits 4-7, 15 and 29 up
+	// are still free.
 	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines;
-	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask);
+	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask);
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
-	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full-road module: the eager pipelines and the fallback
-	// One fragment module per road mask a pass has actually asked for, compiled on first use from
-	// m_tilegpu_shader_source. The mask names which texel roads the module carries, so most passes
-	// run a program smaller than the full shader; the vertex stage is road-independent and stays a
-	// single module. Keyed by the NORMALISED mask (TileGpuRoadMask), never the plan's raw one.
+	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full module: the eager pipelines and the fallback
+	// One fragment module per (road mask, texel-arm mask) a pass has actually asked for, compiled on
+	// first use from m_tilegpu_shader_source. The masks name which texel roads and which of the byte
+	// road's decode arms the module carries, so most passes run a program a fraction of the full
+	// shader's size; the vertex stage takes no road and stays a single module. Keyed by the
+	// NORMALISED masks (TileGpuVariantKey), never the plan's raw ones.
 	std::unordered_map<u32, VkShaderModule> m_tilegpu_fs_variants;
 	std::string m_tilegpu_shader_source; // the device defines + tilegpu.glsl, kept for those compiles
 	/// The plan's road mask reduced to what this device can actually serve, so a mask bit never asks
 	/// for a road the shader would leave out anyway (and two masks that compile the same program do
 	/// not become two modules).
 	u32 TileGpuRoadMask(u32 plan_road_mask) const;
-	VkShaderModule GetTileGpuFragmentShader(u32 road_mask);
-	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask);
+	/// The plan's texel-arm mask, normalised against the road mask it rides with: no byte road means
+	/// no arms, and a byte road that named none takes the whole set — a superset is slow, a subset is
+	/// wrong, and a plan that says "byte road, no arms" is a bug the shader must not render around.
+	static u32 TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask);
+	/// The two normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8.
+	static constexpr u32 TileGpuVariantKey(u32 road_mask, u32 texel_mask) { return road_mask | (texel_mask << 3); }
+	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask);
+	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask);
 	/// `color_write_mask` is the 4-bit rgba mask of channels the draw lands (bit 0 = R .. bit 3 = A),
 	/// realized verbatim as the attachment's VkPipelineColorBlendAttachmentState::colorWriteMask.
 	VkPipeline CreateTileGpuPipeline(
-		u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask);
+		u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask, u32 texel_mask);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB

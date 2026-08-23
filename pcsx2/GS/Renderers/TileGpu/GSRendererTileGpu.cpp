@@ -1421,6 +1421,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto stp = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.stall_pages[static_cast<u32>(s)]; });
 	};
+	const auto txp = stat([](const MF& f) { return f.texel_passes; });
+	const auto txm = stat([](const MF& f) { return f.texel_mixed_passes; });
+	const auto txmd = stat([](const MF& f) { return f.texel_mixed_draws; });
 	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
 			   s_all = st(StallSite::SyncAll);
 	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
@@ -1446,6 +1449,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  alpha test folded at plan time (constant fragment alpha): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
+	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
+					"byte-road draws",
+		txp.mean, txp.p50, txm.mean, txm.p50, (txp.mean > 0.0) ? (txm.mean * 100.0 / txp.mean) : 0.0, txmd.mean,
+		txmd.p50);
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -3802,12 +3809,26 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			pass.first_tex_source = static_cast<u32>(m_plan_tex_sources.size());
 			pass.tex_source_count = 0;
 			pass.road_mask = 0;
+			pass.texel_mask = 0;
+			u32 byte_draws = 0;
 			for (u32 d = i; d < j; d++)
 			{
 				const PendingDraw& pd = m_plan_pending[d];
-				// The pass's shader variant: the union of the roads its draws take. A pass of nothing
-				// but untextured draws lands at zero and gets the smallest program there is.
+				// The pass's shader variant: the union of the roads its draws take, and -- for the draws
+				// that decode ring bytes -- the union of the texel arms they decode through. A pass of
+				// nothing but untextured draws lands at zero on both and gets the smallest program there
+				// is. Both are unions over the same run of draws, so neither can split it.
 				pass.road_mask |= pd.road_mask;
+				if (pd.tex_enable && (pd.road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
+				{
+					pass.texel_mask |= GSDevice::GSTileGpuTexelArm(pd.index_format);
+					// The sixth arm: a palette the gather copied out of a target is in texel order, so the
+					// entry order has to be applied at fetch. Only the two Gran Turismo dumps in the corpus
+					// ever ask for it, and every other pass gets the machinery left out.
+					if (pd.pal_mode != 0)
+						pass.texel_mask |= GSDevice::kGSTileGpuTexelPalGather;
+					byte_draws++;
+				}
 				if (pd.tex_source == kGSTileNoSurface)
 					continue;
 				const u32 ti = m_plan_target_of_surface[pd.tex_source];
@@ -3820,6 +3841,22 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					pass.tex_source_count++;
 				}
 				pxAssertMsg(slot == pd.tex_slot, "TileGpu rule-2 slot disagrees with the pass's bind table");
+			}
+			// What the texel-arm axis costs, watched rather than assumed: a pass whose byte-road draws
+			// span two arms compiles a program carrying both, which is the one case the shatter does not
+			// shrink all the way. The corpus says 1.6% of byte-road passes, so this number staying small
+			// is a standing claim -- if a title moves it, the answer is a wider census, not a shrug.
+			if (byte_draws != 0)
+			{
+				m_frame.texel_passes++;
+				// Mixed means two address GEOMETRIES; the palette-order arm rides along with whichever
+				// paletted geometry asked for it and is not a format the pass mixes.
+				const u32 geom = pass.texel_mask & GSDevice::kGSTileGpuTexelGeometryMask;
+				if ((geom & (geom - 1)) != 0)
+				{
+					m_frame.texel_mixed_passes++;
+					m_frame.texel_mixed_draws += byte_draws;
+				}
 			}
 			// What the rule-3 half of the sampled-binding split COSTS, in calls -- the same
 			// arithmetic that priced it before it was taken, now measuring the real thing. The

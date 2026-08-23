@@ -1030,6 +1030,13 @@ private:
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
 		u32 flushes = 0;         // mid-frame plan submissions
 		u32 passes = 0;
+		// The texel-arm axis of the fragment variant (GSDevice::kGSTileGpuTexel*). A pass whose
+		// byte-road draws all decode through one arm gets a program carrying that arm alone; one
+		// that spans two carries both, and is the only case the shatter does not shrink all the way.
+		// Watched rather than assumed: the mixed share is what says the axis still pays.
+		u32 texel_passes = 0;       // passes with at least one byte-road draw
+		u32 texel_mixed_passes = 0; // ...whose byte-road draws span more than one arm
+		u32 texel_mixed_draws = 0;  // the byte-road draws inside those passes
 
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them

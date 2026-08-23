@@ -2057,6 +2057,9 @@
     <ClInclude Include="GS\Renderers\TileGpu\GSRendererTileGpu.h">
       <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\TileGpu\GSTileGpuShaderVariant.h">
+      <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>

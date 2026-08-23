@@ -9,9 +9,11 @@
 // reads; the cliff rides on that register, so DEAD CODE COUNTS and only the fragment stage does.
 // Whatever you add here, take the stats line on an a650 before landing it. If a road cannot fit,
 // the answer is a per-pass shader VARIANT that leaves the other roads out, not a bigger shader.
-// That mechanism is TILEGPU_ROAD_* below: the executor compiles one fragment module per per-pass
-// road mask, so a pass pays instruction size only for the roads its own draws take -- which is how
-// this budget is enforced, rather than by everything sharing one program that only grows.
+// That mechanism is TILEGPU_ROAD_* and TILEGPU_FMT_* below: the executor compiles one fragment
+// module per per-pass (road mask, texel-arm mask), so a pass pays instruction size only for the
+// roads AND the texel formats its own draws take -- which is how this budget is enforced, rather
+// than by everything sharing one program that only grows. Specialization MANAGES the budget; it
+// does not remove the cliff, so a new arm still owes the stats line.
 //
 // ⚠️ THE RULE THAT COMES WITH IT, and it binds every road added here -- the materialised-source road
 // below was written under it, and so must the next one be: a
@@ -107,6 +109,52 @@
 #define TILEGPU_ROAD_SOURCE 1
 #endif
 
+// TILEGPU_FMT_* (injected by the device, PER PASS): the BYTE road's texel-decode ARMS this pass's
+// draws actually use -- GSTileGpuPass::texel_mask, ORed over the pass's byte-road draws exactly the
+// way road_mask is ORed over its draws' roads. The byte road is not one decoder, it is five address
+// geometries that share a wrapper, and tilegpu_tap is inlined FIVE times over by bilinear sampling
+// -- so a pass that samples nothing but PSMT8 was paying program size for four geometries it never
+// executes, times five. That is what carried the byte-carrying programs from 108-121 units (under
+// the a650 cliff) to 260-271 (more than double it).
+//
+// Formats that share an address geometry share an arm, deliberately: the three alpha-byte views
+// differ by one bitfieldExtract and the four 16-bit families by two selects, so splitting those
+// further buys a handful of instructions and multiplies the variant population for nothing.
+//
+// Like road_mask the mask is constant across a pass by construction (it is a union, not a per-draw
+// choice), so it selects a module and a pipeline and never splits an indirect run. All default to
+// 1: an uninjected compile is the full shader, which is every arm together.
+#ifndef TILEGPU_FMT_D32
+#define TILEGPU_FMT_D32 1 // index_format 0: PSMCT32 / PSMCT24
+#endif
+
+#ifndef TILEGPU_FMT_IDX8
+#define TILEGPU_FMT_IDX8 1 // index_format 1: PSMT8
+#endif
+
+#ifndef TILEGPU_FMT_IDX4
+#define TILEGPU_FMT_IDX4 1 // index_format 2: PSMT4
+#endif
+
+#ifndef TILEGPU_FMT_IDXHI
+#define TILEGPU_FMT_IDXHI 1 // index_format 3-5: PSMT8H / PSMT4HL / PSMT4HH
+#endif
+
+#ifndef TILEGPU_FMT_D16
+#define TILEGPU_FMT_D16 1 // index_format 6-9: PSMCT16 / PSMCT16S / PSMZ16 / PSMZ16S
+#endif
+
+// The sixth arm is not an address geometry, it is the palette ORDER a GATHERED palette needs. A
+// palette the CPU expanded is in entry order and one entry is one indexed load; a palette copied out
+// of the target a native draw rendered it into lands texel row-major, so the CSM1 entry order has to
+// be applied at fetch -- three more closed forms, eighteen XOR terms, inlined per tap like everything
+// else on this road. Two of the eighteen corpus dumps ever gather a palette, and this is what keeps
+// the other sixteen from carrying the machinery. It is also, precisely, the commit that pushed every
+// byte-carrying program over the a650 cliff in one step.
+#ifndef TILEGPU_FMT_PALGATHER
+#define TILEGPU_FMT_PALGATHER 1
+#endif
+
 // The gates the body actually uses. A road compiles in only where the device can serve it at all, so
 // a stray mask bit can never resurrect a path TILEGPU_TEX or TILEGPU_TEX_TARGETS took out; and with
 // no road at all (an untextured pass) the whole texture block goes, which is the smallest variant.
@@ -117,6 +165,22 @@
 #define TILEGPU_TAP_SOURCE (TILEGPU_TEX && TILEGPU_TEX_SOURCES && TILEGPU_ROAD_SOURCE)
 #define TILEGPU_TAP_ANY (TILEGPU_TAP_BYTE || TILEGPU_TAP_TARGET)
 #define TILEGPU_TEXTURED (TILEGPU_TAP_ANY || TILEGPU_TAP_SOURCE)
+
+// The byte road's arms, gated the same way: an arm exists only where the byte road itself does, so a
+// stray format bit on a pass that samples only resident targets can never resurrect the ring reads.
+#define TILEGPU_BYTE_D32 (TILEGPU_TAP_BYTE && TILEGPU_FMT_D32)
+#define TILEGPU_BYTE_IDX8 (TILEGPU_TAP_BYTE && TILEGPU_FMT_IDX8)
+#define TILEGPU_BYTE_IDX4 (TILEGPU_TAP_BYTE && TILEGPU_FMT_IDX4)
+#define TILEGPU_BYTE_IDXHI (TILEGPU_TAP_BYTE && TILEGPU_FMT_IDXHI)
+#define TILEGPU_BYTE_D16 (TILEGPU_TAP_BYTE && TILEGPU_FMT_D16)
+// What several arms need in common. PAL is the palette fetch, which every index arm ends in; W32 is
+// the CT32 address geometry, which the direct 32-bit texel and the three alpha-byte views share;
+// UNPACK is "this arm produces a 32-bit RGBA word", which is every arm except the 16-bit one (whose
+// texel is a halfword with its own TEXA rule).
+#define TILEGPU_BYTE_PAL (TILEGPU_BYTE_IDX8 || TILEGPU_BYTE_IDX4 || TILEGPU_BYTE_IDXHI)
+#define TILEGPU_BYTE_PALGATHER (TILEGPU_BYTE_PAL && TILEGPU_FMT_PALGATHER)
+#define TILEGPU_BYTE_W32 (TILEGPU_BYTE_D32 || TILEGPU_BYTE_IDXHI)
+#define TILEGPU_BYTE_UNPACK (TILEGPU_BYTE_D32 || TILEGPU_BYTE_PAL)
 
 // Matches the executor's StateRow byte-for-byte (std430, 160 bytes). The transform and the scissor
 // are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
@@ -307,12 +371,15 @@ uint tilegpu_ring_word(uint gs_word, uint epoch)
 // so this shader and the CPU readers cannot disagree about a constant.
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
+#if TILEGPU_BYTE_W32 || TILEGPU_BYTE_IDX8
 uint tile_b48(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_B48_X0) ^ XB(x, 1u, TILE_SWZ_B48_X1) ^ XB(x, 2u, TILE_SWZ_B48_X2)
 	     ^ XB(y, 0u, TILE_SWZ_B48_Y0) ^ XB(y, 1u, TILE_SWZ_B48_Y1);
 }
+#endif
 
+#if TILEGPU_BYTE_W32
 uint tile_c32(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_C32_X0) ^ XB(x, 1u, TILE_SWZ_C32_X1) ^ XB(x, 2u, TILE_SWZ_C32_X2)
@@ -329,26 +396,35 @@ uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint word_in_block = tile_c32(u & 7u, v & 7u);
 	return vram_words[tilegpu_ring_word(blk * 64u + word_in_block, epoch)];
 }
+#endif // TILEGPU_BYTE_W32
 
 // The extra swizzle forms the paletted index reads need, copied from tfx.glsl: the 4-bit block
-// form and the 8-/4-bit column forms (the 32-bit block form tile_b48 is shared with CT32).
+// form and the 8-/4-bit column forms (the 32-bit block form tile_b48 is shared with CT32). The
+// 4-bit block form is also the 16-bit families' unstrided one -- blockTable16 IS blockTable4 --
+// so it survives into a module that carries only the 16-bit arm.
+#if TILEGPU_BYTE_IDX4 || TILEGPU_BYTE_D16
 uint tile_b84(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
 	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
 }
+#endif
 
+#if TILEGPU_BYTE_IDX8
 uint tile_c8(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_C8_X0) ^ XB(x, 1u, TILE_SWZ_C8_X1) ^ XB(x, 2u, TILE_SWZ_C8_X2) ^ XB(x, 3u, TILE_SWZ_C8_X3)
 	     ^ XB(y, 0u, TILE_SWZ_C8_Y0) ^ XB(y, 1u, TILE_SWZ_C8_Y1) ^ XB(y, 2u, TILE_SWZ_C8_Y2) ^ XB(y, 3u, TILE_SWZ_C8_Y3);
 }
+#endif
 
+#if TILEGPU_BYTE_IDX4
 uint tile_c4(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_C4_X0) ^ XB(x, 1u, TILE_SWZ_C4_X1) ^ XB(x, 2u, TILE_SWZ_C4_X2) ^ XB(x, 3u, TILE_SWZ_C4_X3) ^ XB(x, 4u, TILE_SWZ_C4_X4)
 	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
 }
+#endif
 
 // Extract byte (sel & 3) of an SSBO-loaded word. TILEGPU_STATIC_BYTE_SEL (injected by the
 // device from the driver id) selects a branchy form with constant shift amounts, because
@@ -358,6 +434,7 @@ uint tile_c4(uint x, uint y)
 // lattice over every paletted texture. A second, unrelated use of the sel sub-expression
 // also hides it, so it is an optimiser defect, not shader semantics. Every other driver
 // keeps the straight-line shift.
+#if TILEGPU_BYTE_IDX8 || TILEGPU_BYTE_IDX4
 uint tilegpu_byte_sel(uint word, uint sel)
 {
 #if TILEGPU_STATIC_BYTE_SEL
@@ -373,7 +450,9 @@ uint tilegpu_byte_sel(uint word, uint sel)
 	return (word >> ((sel & 3u) * 8u)) & 0xFFu;
 #endif
 }
+#endif // TILEGPU_BYTE_IDX8 || TILEGPU_BYTE_IDX4
 
+#if TILEGPU_BYTE_IDX8
 // The PSMT8 index byte at texel (u, v): 128x64 page, 16x16-texel columns; block b occupies bytes
 // [b*256, b*256+256) = words [b*64, b*64+64). byte_in_block picks the byte within its word.
 uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
@@ -384,7 +463,9 @@ uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
 	return tilegpu_byte_sel(word, byte_in_block);
 }
+#endif // TILEGPU_BYTE_IDX8
 
+#if TILEGPU_BYTE_IDX4
 // The PSMT4 index nibble at texel (u, v): 128x128 page, 32x16-texel columns. col4 gives the
 // nibble index within the 512-nibble (256-byte) block; the low bit selects the nibble in its byte.
 uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
@@ -397,7 +478,9 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint byteval = tilegpu_byte_sel(word, byte_in_block);
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
+#endif // TILEGPU_BYTE_IDX4
 
+#if TILEGPU_BYTE_IDXHI
 // The alpha-byte views: PSMT8H, PSMT4HL, PSMT4HH. Their address geometry is PSMCT32's -- 64x32
 // pages, 8x8 blocks, 8x8-texel columns, TBW pages per row, one word per texel -- and the palette
 // index lives in the TOP BITS of that word. So the address is tilegpu_texel32's, unchanged, and the
@@ -425,7 +508,9 @@ uint tilegpu_index_hi(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint fmt)
 		return b;
 	return (fmt == 4u) ? (b & 0xFu) : (b >> 4u);
 }
+#endif // TILEGPU_BYTE_IDXHI
 
+#if TILEGPU_BYTE_PALGATHER
 // The CLUT gather's consumer half. A palette whose words were rendered by a native draw is not in
 // the CPU's CLUT RAM at all; the executor copies its BLOCKS out of the owning target into this
 // draw's reserved run of the palette stream, which lands them in texel row-major order rather than
@@ -450,19 +535,28 @@ uint tile_clut4_word(uint e)
 {
 	return XB(e, 0u, TILE_SWZ_CLUT4_0) ^ XB(e, 1u, TILE_SWZ_CLUT4_1) ^ XB(e, 2u, TILE_SWZ_CLUT4_2) ^ XB(e, 3u, TILE_SWZ_CLUT4_3);
 }
+#endif // TILEGPU_BYTE_PALGATHER
 
+#if TILEGPU_BYTE_PAL
 // The palette word for `index`, whichever road put the words in the stream. pal_mode is per draw and
 // dynamically uniform, so this does not diverge; mode 0 is byte-identical to what the palette fetch
-// was before the gather existed.
+// was before the gather existed -- and in a module without the gather arm it is all that is left,
+// which is the same statement one preprocessor level up.
 uint tilegpu_palette_word(StateRow sr, uint index)
 {
-	if (sr.pal_mode == 0u)
-		return vram_words[pal_base + sr.pal_offset + index];
-	const uint e = sr.pal_bias + index;
-	const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
-	return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
+#if TILEGPU_BYTE_PALGATHER
+	if (sr.pal_mode != 0u)
+	{
+		const uint e = sr.pal_bias + index;
+		const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
+		return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
+	}
+#endif
+	return vram_words[pal_base + sr.pal_offset + index];
 }
+#endif // TILEGPU_BYTE_PAL
 
+#if TILEGPU_BYTE_D16
 // The two forms the 16-bit families add: the strided block table (PSMCT16S / PSMZ16S -- the plain
 // one is tile_b84 above, because blockTable16 IS blockTable4 and the fit checks it) and the
 // halfword-in-block column table. A 16-bit page is 64x64 texels of 16x8-texel blocks, two texels
@@ -520,13 +614,16 @@ vec4 tilegpu_texel16(StateRow sr, uint u, uint v, uint fmt)
 	return tilegpu_norm8(vec4(float((c & 0x001Fu) << 3u), float((c & 0x03E0u) >> 2u),
 		float((c & 0x7C00u) >> 7u), float(a)));
 }
+#endif // TILEGPU_BYTE_D16
 
+#if TILEGPU_BYTE_UNPACK
 // Unpack a raw RGBA8888 word (a CT32 texel or an expanded CLUT entry) to normalised RGBA.
 vec4 tilegpu_unpack(uint w)
 {
 	return tilegpu_norm8(vec4(float(w & 0xFFu), float((w >> 8u) & 0xFFu), float((w >> 16u) & 0xFFu),
 		float((w >> 24u) & 0xFFu)));
 }
+#endif
 
 #endif // TILEGPU_TAP_BYTE
 
@@ -622,29 +719,48 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	}
 #endif
 
-#if TILEGPU_TAP_BYTE
+#if TILEGPU_BYTE_D16
 	// The 16-bit families first, because their alpha rule is their own: a 16-bit texel has an
 	// alpha BIT, so TEXA selects between TA1 and TA0 rather than always supplying TA0, and the
 	// AEM test is on the whole cell rather than on an RGB word. tilegpu_texa below cannot express
 	// that, so this arm returns rather than falling through to it.
 	if (sr.index_format >= 6u)
 		return tilegpu_texel16(sr, iu, iv, sr.index_format - 6u);
+#endif
 
-	// index_format is dynamically uniform per draw, so this does not diverge.
-	uint w;
+#if TILEGPU_BYTE_UNPACK
+	// index_format is dynamically uniform per draw, so this does not diverge. Each arm is here only
+	// if this pass's draws take it (TILEGPU_FMT_*, the header's note): an arm nobody takes is not in
+	// the module, and when the mask names one arm all that is left of the switch is its own guard.
+	//
+	// ⚠️ Each guard tests its OWN range rather than leaning on the arms above it having returned.
+	// That costs one compare in the alpha-byte arm and buys the property the whole variant scheme
+	// rests on: removing an arm removes exactly that arm. A `>= 3u` that was only correct because
+	// the 16-bit arm returned first would silently decode a 16-bit texture as an alpha-byte view in
+	// the module that leaves the 16-bit arm out.
+	uint w = 0u;
+#if TILEGPU_BYTE_D32
 	if (sr.index_format == 0u)
 		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch);
-	else if (sr.index_format == 1u)
+#endif
+#if TILEGPU_BYTE_IDX8
+	if (sr.index_format == 1u)
 		w = tilegpu_palette_word(sr, tilegpu_index8(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
-	else if (sr.index_format == 2u)
+#endif
+#if TILEGPU_BYTE_IDX4
+	if (sr.index_format == 2u)
 		w = tilegpu_palette_word(sr, tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
-	else
+#endif
+#if TILEGPU_BYTE_IDXHI
+	if (sr.index_format >= 3u && sr.index_format < 6u)
 		w = tilegpu_palette_word(sr, tilegpu_index_hi(iu, iv, sr.tbp0, sr.tbw, sr.epoch, sr.index_format));
+#endif
 
 	return tilegpu_texa(sr, tilegpu_unpack(w), (w & 0x00FFFFFFu) == 0u);
 #else
-	// Target road only: every textured draw in this pass names a target, so the branch above took
-	// every fragment. GLSL still needs the fall-through to return something.
+	// Nothing in this module produces a 32-bit word: the pass reads only resident targets, or only
+	// 16-bit textures off the byte road, so every fragment returned above. GLSL still needs the
+	// fall-through to return something.
 	return vec4(0.0f);
 #endif
 }
