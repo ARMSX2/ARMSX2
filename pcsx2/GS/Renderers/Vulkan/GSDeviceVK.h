@@ -632,8 +632,10 @@ private:
 	u32 TileGpuRoadMask(u32 plan_road_mask) const;
 	VkShaderModule GetTileGpuFragmentShader(u32 road_mask);
 	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask);
+	/// `color_write_mask` is the 4-bit rgba mask of channels the draw lands (bit 0 = R .. bit 3 = A),
+	/// realized verbatim as the attachment's VkPipelineColorBlendAttachmentState::colorWriteMask.
 	VkPipeline CreateTileGpuPipeline(
-		u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write, u32 road_mask);
+		u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB

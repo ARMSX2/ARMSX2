@@ -2240,11 +2240,24 @@ public:
 		/// runs on it -- a split, never a pass break.
 		std::span<const u32> blend_keys;
 		static constexpr u32 kBlendEnable = 0x80000000u;
-		/// Bit 30: the draw writes no colour (a depth-only draw); the pipeline masks every channel.
-		static constexpr u32 kNoColorWrite = 0x40000000u;
-		/// Bit 29: the draw writes RGB but not alpha (the GS AFAIL RGB_ONLY mode); the pipeline
-		/// masks the alpha channel alone.
-		static constexpr u32 kNoAlphaWrite = 0x20000000u;
+		/// Bits 16-19: the colour channels the draw does NOT write — R at bit 16, G at 17, B at
+		/// 18, A at 19 — which the pipeline realizes as its per-channel colour write mask. It is
+		/// the PRESERVE sense rather than the write sense so that zero means "write all four":
+		/// that is both the overwhelming majority of draws and what a plan carrying no blend keys
+		/// at all falls back to. 0xF is a depth-only draw (the GS AFAIL ZB_ONLY fold, or an FBMSK
+		/// that keeps every bit the frame format stores); 0x8 is RGB without alpha (AFAIL
+		/// RGB_ONLY — NOT FBMSK=0xFF000000, whose alpha half this road still writes, see
+		/// gsTileFrameColorWriteMask); and the partial-FBMSK population lives in between —
+		/// OutRun 2006's world-erasing post sprites and Beyond Good & Evil's alpha-mask
+		/// silhouettes are both 0x7, alpha alone.
+		static constexpr u32 kNoWriteShift = 16;
+		static constexpr u32 kNoWriteMask = 0xFu << kNoWriteShift;
+		/// Pack a 4-bit rgba WRITE mask (the sense GSTileTypes.h's gsTileFrameColorWriteMask
+		/// returns) into the blend key's preserve field.
+		static constexpr u32 PackNoWrite(u32 write_mask)
+		{
+			return ((~write_mask) & 0xFu) << kNoWriteShift;
+		}
 		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
 		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
 		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a

@@ -6321,7 +6321,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
 		{
 			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
-			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, true, true, TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll));
+			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, 0xFu, TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll));
 			if (pipe == VK_NULL_HANDLE)
 				return false;
 		}
@@ -6450,8 +6450,13 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(u32 road_mask)
 // blend constant (dynamic state), Ad as DST_ALPHA -- and kTileGpuNoBlend disables blending. The
 // alpha channel is always written unblended (the GS stores the fragment alpha as-is). The road mask
 // picks the fragment module: the pass's roads and no others.
+//
+// color_write_mask carries the draw's FRAME.FBMSK, one bit per channel, straight onto the
+// attachment. The mask applies AFTER blending and after the depth/stencil stage, so it composes
+// with everything above it: a masked channel of a blended draw leaves the destination alone, and a
+// draw masking all four still tests and writes depth.
 VkPipeline GSDeviceVK::CreateTileGpuPipeline(
-	u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write, u32 road_mask)
+	u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask)
 {
 	static constexpr VkPrimitiveTopology kTopology[3] = {
 		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
@@ -6519,10 +6524,13 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 		0);
 	gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
 	gpb.SetNoStencilState();
-	const VkColorComponentFlags channels = color_write ?
-		(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-			(alpha_write ? VK_COLOR_COMPONENT_A_BIT : 0)) :
-		0;
+	// A colour target is RGBA8 with R holding the guest cell's byte 0, so the GS's per-byte FBMSK
+	// and Vulkan's per-channel write mask are the same four bits in the same order.
+	const VkColorComponentFlags channels =
+		((color_write_mask & 0x1u) ? VK_COLOR_COMPONENT_R_BIT : 0) |
+		((color_write_mask & 0x2u) ? VK_COLOR_COMPONENT_G_BIT : 0) |
+		((color_write_mask & 0x4u) ? VK_COLOR_COMPONENT_B_BIT : 0) |
+		((color_write_mask & 0x8u) ? VK_COLOR_COMPONENT_A_BIT : 0);
 	if (blend_index == kTileGpuNoBlend || blend_index >= 3 * 3 * 3 * 3)
 	{
 		gpb.SetNoBlendingState();
@@ -6538,7 +6546,13 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
 	if (pipe == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
-	const char* mask = !color_write ? " (depth only)" : (alpha_write ? "" : " (rgb only)");
+	// The written channels spelt out, so a capture names the FBMSK the draw carried.
+	static constexpr const char* kMaskName[16] = {
+		" (depth only)", " (writes r)", " (writes g)", " (writes rg)",
+		" (writes b)", " (writes rb)", " (writes gb)", " (writes rgb)",
+		" (writes a)", " (writes ra)", " (writes ga)", " (writes rga)",
+		" (writes ba)", " (writes rba)", " (writes gba)", ""};
+	const char* mask = kMaskName[color_write_mask & 0xFu];
 	if (blend_index == kTileGpuNoBlend)
 		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s roads %u", kTopologyName[topology], dv.name, mask, road_mask);
 	else
@@ -6547,28 +6561,34 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 	return pipe;
 }
 
-// The pipeline for a (topology, depth mode, blend key, road mask) tuple; everything but the eager
-// full-road no-blend table is cached on first use. A blend the table cannot express (or anything
-// that failed to build) falls back to the eager pipeline of the same topology and depth mode --
-// wrong-fast, never a dropped draw, and a fallback carries the full shader, so it is always a
-// superset of what the pass needs.
+// The pipeline for a (topology, depth mode, colour write mask, blend key, road mask) tuple;
+// everything but the eager full-road no-blend table is cached on first use. A blend the table
+// cannot express (or anything that failed to build) falls back to the eager pipeline of the same
+// topology and depth mode -- wrong-fast, never a dropped draw, and a fallback carries the full
+// shader, so it is always a superset of what the pass needs.
+//
+// ⚠️ The fallback writes all four channels, so a masked draw that lands on it paints channels the
+// GS preserves. That is only reachable when pipeline creation itself fails; it is called out
+// because for the write mask the degradation is a visible defect (the Beyond Good & Evil ratchet),
+// not the cosmetic wrong-blend the fallback was written for.
 VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 plan_road_mask)
 {
-	const bool color_write = !(blend_key & GSTileGpuPassPlan::kNoColorWrite);
-	const bool alpha_write = !(blend_key & GSTileGpuPassPlan::kNoAlphaWrite);
+	// The key's colour field is the PRESERVE sense (see GSTileGpuPassPlan::kNoWriteMask), so a plan
+	// that carries no blend keys at all still asks for all four channels.
+	const u32 color_write_mask = (~(blend_key >> GSTileGpuPassPlan::kNoWriteShift)) & 0xFu;
 	const bool blend = (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
 	const u32 road_mask = TileGpuRoadMask(plan_road_mask);
 	const bool full_roads = road_mask == TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
-	if (full_roads && !blend && color_write && alpha_write)
+	if (full_roads && !blend && color_write_mask == 0xFu)
 		return m_tilegpu_pipeline[topology][depth_mode];
 	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
-	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16 no-colour, 17 no-alpha; the road mask takes 18-19.
+	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask; road mask takes 20-22.
 	const u32 key = topology | (depth_mode << 2) | ((blend ? (blend_key & 0x7Fu) : 0x80u) << 8) |
-					(color_write ? 0 : 0x10000u) | (alpha_write ? 0 : 0x20000u) | (road_mask << 18);
+					(color_write_mask << 16) | (road_mask << 20);
 	const auto it = m_tilegpu_blend_pipelines.find(key);
 	if (it != m_tilegpu_blend_pipelines.end())
 		return it->second != VK_NULL_HANDLE ? it->second : m_tilegpu_pipeline[topology][depth_mode];
-	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write, alpha_write, road_mask);
+	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write_mask, road_mask);
 	m_tilegpu_blend_pipelines.emplace(key, pipe);
 	return pipe != VK_NULL_HANDLE ? pipe : m_tilegpu_pipeline[topology][depth_mode];
 }

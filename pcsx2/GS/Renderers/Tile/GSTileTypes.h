@@ -80,6 +80,125 @@ constexpr u8 gsTileColorPlanesSpannedBy(u8 claims)
 	return (claims & GSTilePlaneZ) ? kGSTilePlanesColor : static_cast<u8>(claims & kGSTilePlanesColor);
 }
 
+/// A 4-bit rgba channel mask: bit 0 = R, 1 = G, 2 = B, 3 = A. The GS stores a 32-bit
+/// frame cell one channel per byte, so this is also a byte mask over the cell, which is
+/// what lets FBMSK map onto a raster pipeline's per-channel colour write mask.
+static constexpr u8 kGSTileChannelsRGB = 0x7;
+static constexpr u8 kGSTileChannelAlpha = 0x8;
+static constexpr u8 kGSTileChannelsRGBA = 0xF;
+
+/// Whether FRAME.FBMSK leaves every bit the frame format stores writable — the exact
+/// "this draw overwrites the cell" precondition. Callers that need to prove a draw
+/// covers a page in full (the seed skip) must ask THIS, not the channel mask below: a
+/// channel the mask reports as written may still be preserving bits inside its byte.
+constexpr bool gsTileFrameWriteIsTotal(u32 fbmsk, u32 fmsk)
+{
+	return (fbmsk & fmsk) == 0;
+}
+
+/// Whether FRAME.FBMSK preserves every bit the frame format stores — the draw lands no
+/// colour at all, whatever its channel mask says.
+constexpr bool gsTileFrameWritesNothing(u32 fbmsk, u32 fmsk)
+{
+	return (fbmsk & fmsk) == fmsk;
+}
+
+/// The colour channels a draw with this FBMSK lands, as a 4-bit rgba mask, one channel at
+/// a time: a channel is preserved only where FBMSK covers EVERY BIT THE FORMAT STORES in
+/// it, and written otherwise.
+///
+/// The format's bits, not the byte's — that is the whole difference for a 16-bit frame,
+/// which keeps five bits per colour channel. PSMCT16 under FBMSK=0x000000F8 preserves the
+/// entire red channel as far as guest memory is concerned, and a rule that asked for a
+/// literal 0xFF byte would write red back over bits the GS keeps. The same rule settles
+/// the all-or-nothing edge: a mask that keeps every stored bit writes no channel at all,
+/// even where a byte outside the format reads as writable (PSMCT24 + FBMSK=0x00FFFFFF).
+///
+/// A channel the format stores NOTHING in — a 24-bit frame's alpha — rides along with the
+/// ones it does store. Those bytes are not guest data (writeback masks them off under the
+/// format's own byte mask), so reading "no bits here" as "fully masked" would take alpha
+/// out of every 24-bit draw for nothing. It cannot keep a draw alive on its own: when
+/// every channel the format DOES store is masked, nothing guest-visible lands and the
+/// mask is empty.
+///
+/// ⚠️ A channel the mask covers only PARTLY is reported as written — the whole channel
+/// lands, and the bits inside it the GS would have kept are lost. A raster pipeline masks
+/// at channel granularity and the GS masks at bit granularity, so the sub-channel cases
+/// have no exact expression here; they are an approximation, rowed in the
+/// deferred-accuracy ledger. The corpus population is small and cosmetic (a 1-LSB alpha
+/// in Beyond Good & Evil, an alpha MSB in Xenosaga) next to the whole-byte population
+/// this exists to serve, which is where the alpha-mask idiom lives.
+constexpr u8 gsTileFrameWriteMask(u32 fbmsk, u32 fmsk)
+{
+	if (gsTileFrameWritesNothing(fbmsk, fmsk))
+		return 0;
+	u8 m = 0;
+	for (u32 b = 0; b < 4; b++)
+	{
+		const u32 stored = fmsk & (0xFFu << (b * 8));
+		if (stored == 0 || (fbmsk & stored) != stored)
+			m |= static_cast<u8>(1u << b);
+	}
+	return m;
+}
+
+/// Whether gsTileFrameWriteMask is EXACT for this FBMSK — no byte is partly masked, so
+/// the channel mask reproduces the GS's write bit for bit. Census and ledger use; the
+/// route never branches on it (an inexact mask still writes, it just writes too much).
+constexpr bool gsTileFrameWriteMaskIsExact(u32 fbmsk, u32 fmsk)
+{
+	if (gsTileFrameWritesNothing(fbmsk, fmsk))
+		return true;
+	for (u32 b = 0; b < 4; b++)
+	{
+		const u32 byte = (fbmsk >> (b * 8)) & 0xFFu;
+		const u32 stored = (fmsk >> (b * 8)) & 0xFFu;
+		if ((byte & stored) != 0 && (byte & stored) != stored)
+			return false;
+	}
+	return true;
+}
+
+/// The colour write mask a draw actually gets: the FBMSK channels above, with the alpha
+/// test's AFAIL fold on top and with the one carve-out this road still owes.
+///
+/// The two derivations COMPOSE, neither overrides the other. ATST=NEVER never reaches the
+/// fragment stage — every pixel fails it — so AFAIL alone says what a failing pixel still
+/// writes; FBMSK then says which of those channels the register lets through. Reading
+/// only one of the two is the bug this function exists to prevent: OutRun's world-erasing
+/// sprites are ATST NEVER + AFAIL FB_ONLY ("write the frame buffer") carrying
+/// FBMSK=0x00FFFFFF ("but only its alpha byte").
+///
+/// ⚠️ **FBMSK's ALPHA byte is deliberately NOT honoured yet.** A draw that lands anything
+/// lands alpha, and only AFAIL RGB_ONLY takes it away — exactly what this renderer did
+/// before FBMSK was per channel at all. That is a staging decision with a measurement
+/// behind it, not an oversight. Preserving a target's alpha exposes whatever its pool
+/// image already held there, and nothing seeds a TileGpu target's alpha independently of
+/// its colour, so a later TCC=1 read of that target samples stale bytes. Ace Combat 5 is
+/// where it was measured: 248 draws a frame at FBMSK=0xFF000000 over cloud buffers whose
+/// alpha is established by a PSMCT16S alias pass and a self-read pass, neither of which
+/// this road serves. Honouring the alpha half there puts a white band across the sky and
+/// takes the frame from 0.021 to 0.080 mean-abs against the software golden, while every
+/// dump the RGB half repairs is unaffected by it either way. So alpha follows AFAIL alone
+/// until targets carry a seeded alpha. Rowed in the deferred-accuracy ledger, and pinned
+/// by `AlphaHalfOfFbmskIsDeferred` — that test is what says the carve-out can go, the day
+/// the seeding lands.
+constexpr u8 gsTileFrameColorWriteMask(u32 fbmsk, u32 fmsk, bool atst_never, u32 afail)
+{
+	u8 m = gsTileFrameWriteMask(fbmsk, fmsk);
+	if (m != 0)
+		m |= kGSTileChannelAlpha; // the deferred alpha half: a live draw always writes alpha
+	if (atst_never)
+	{
+		// Every pixel fails, so AFAIL alone decides what a failing pixel still lands.
+		if (afail == AFAIL_KEEP || afail == AFAIL_ZB_ONLY)
+			m = 0;
+		else if (afail == AFAIL_RGB_ONLY)
+			m &= kGSTileChannelsRGB;
+	}
+	return m;
+}
+
 // Whether a surface holds color or depth data — the two swizzle universes of GS
 // memory, and on the GPU side the two attachment types.
 enum class GSTileSurfaceKind : u8

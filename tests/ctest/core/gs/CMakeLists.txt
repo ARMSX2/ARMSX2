@@ -42,6 +42,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_source_road_tests.cpp
 	gs_tilegpu_donor_road_tests.cpp
 	gs_tilegpu_clut_gather_tests.cpp
+	gs_tilegpu_fbmsk_mask_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

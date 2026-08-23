@@ -211,7 +211,10 @@ private:
 		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
 		u32 aref;
-		bool alpha_written;   // false = the colour write mask keeps alpha (AFAIL RGB_ONLY)
+		u8 color_mask;        // rgba channels this draw lands (GSTileTypes.h's
+		                      // gsTileFrameColorWriteMask: FBMSK per channel, the ATST NEVER AFAIL
+		                      // fold on top, alpha half deferred); the pipeline's colour write
+		                      // mask. Zero is a depth-only draw.
 		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
 		u32 region_u, region_v; // CLAMP MIN | (MAX << 16) per axis, for the REGION wrap modes
 		bool ltf;             // TEX1 asks for LINEAR on the side of the LOD this draw sits on

@@ -2794,9 +2794,19 @@ void GSRendererTileGpu::AccumulateDraw()
 	const bool z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK && !(atst_never && afail != AFAIL_ZB_ONLY);
 	const bool z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
 	const bool z_used = z_write || z_test;
-	const bool color_written = !(atst_never && (afail == AFAIL_KEEP || afail == AFAIL_ZB_ONLY)) &&
-							   (ctx->FRAME.FBMSK & GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk) !=
-								   GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk;
+	// FBMSK per channel, not all-or-nothing. Games use the frame buffer as scratch for one
+	// channel at a time -- OutRun 2006 lays three full-screen sprites a frame over the finished
+	// world under FBMSK=0x00FFFFFF with a black fragment colour, meaning to rewrite the frame's
+	// alpha byte alone, and Beyond Good & Evil draws silhouettes into the buffer that is ON
+	// SCREEN under the same mask. Writing the RGB of those draws paints black over the world in
+	// the first case and the silhouettes over the picture in the second, and bge's alpha-only
+	// full-screen blit at the end of each frame then carries the damage into the other buffer --
+	// a ratchet to black over three frames. gsTileFrameColorWriteMask folds the AFAIL modes in
+	// on top and holds the deferred-alpha carve-out; a partly masked channel lands whole (the
+	// approximation, ledgered).
+	const u32 fb_fmsk = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk;
+	const u8 color_mask = gsTileFrameColorWriteMask(ctx->FRAME.FBMSK, fb_fmsk, atst_never, afail);
+	const bool color_written = color_mask != 0;
 	if (!color_written && !z_write)
 		return; // nothing lands anywhere: a no-op draw
 
@@ -2897,8 +2907,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		pd.atst = static_cast<u32>(ctx->TEST.ATST) + 1;
 		pd.aref = ctx->TEST.AREF;
 	}
-	// A draw that fails every pixel into RGB_ONLY writes colour without its alpha byte.
-	pd.alpha_written = !(atst_never && afail == AFAIL_RGB_ONLY);
+	pd.color_mask = color_mask;
 
 	// Texture inputs. Two address geometries are sampled at this stage: the CT32 one (PSMCT32 and
 	// PSMCT24 as direct colour, and the alpha-byte views PSMT8H/PSMT4HL/PSMT4HH as indices in the
@@ -3152,6 +3161,11 @@ void GSRendererTileGpu::AccumulateDraw()
 	// page inside its rect entirely, so those pages need no bytes brought in first. This is what
 	// keeps SotC's page-column clears (and every game's frame clear) from re-seeding what they
 	// are about to overwrite.
+	//
+	// ⚠️ "Every channel lands" is gsTileFrameWriteIsTotal, NOT color_mask == RGBA. A channel the
+	// mask reports as written can still be preserving bits inside its byte, and a masked draw
+	// leaves the rest of the cell holding whatever the texture had -- which is exactly what the
+	// seed is for. Only a draw that masks nothing at all may skip it.
 	const u8 fb_claims = kGSTilePlanesAll;
 	if (color_written)
 	{
@@ -3163,7 +3177,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		seed |= Texels(fb_id).pages.andnot(Texels(fb_id).filled);
 		GSPageBitmap covered;
 		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
-			(ctx->FRAME.FBMSK & GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk) == 0 &&
+			gsTileFrameWriteIsTotal(ctx->FRAME.FBMSK, fb_fmsk) &&
 			(!ctx->TEST.ATE || ctx->TEST.ATST == ATST_ALWAYS ||
 				(atst_never && (afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY))))
 		{
@@ -3438,13 +3452,11 @@ void GSRendererTileGpu::AccumulateDraw()
 			blend_key = GSDevice::GSTileGpuPassPlan::kBlendEnable | (al.A * 27u + al.B * 9u + al.C * 3u + al.D) |
 						((al.C == 2) ? (static_cast<u32>(al.FIX) << 8) : 0u);
 	}
-	// A depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or a fully masked FBMSK) rides a pipeline
-	// whose colour write mask is off: it still tests and writes depth in its pass. A NEVER draw
-	// into AFAIL RGB_ONLY masks the alpha channel alone.
-	if (!color_written)
-		blend_key |= GSDevice::GSTileGpuPassPlan::kNoColorWrite;
-	else if (!pd.alpha_written)
-		blend_key |= GSDevice::GSTileGpuPassPlan::kNoAlphaWrite;
+	// The colour write mask rides the blend key, so the executor's per-draw pipeline pick carries
+	// it and a draw whose mask differs only splits the indirect run -- never breaks the pass. A
+	// depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or an FBMSK that keeps every stored bit) masks
+	// all four channels and still tests and writes depth in its pass.
+	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.color_mask);
 	m_plan_blend_keys.push_back(blend_key);
 	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
