@@ -576,19 +576,34 @@ static void cop2ClampResultReg(const a64::VRegister& result)
 	armAsm->Fmaxnm(result.V4S(), result.V4S(), a64::v26.V4S()); // clamp to -FLT_MAX
 }
 
+// The same bounds for an operand on its way into the FMAC, where the pair above
+// is the wrong shape: FMINNM answers a NaN with its other operand, so every
+// exponent-255 word came out +FLT_MAX and a negative one arrived having lost
+// its sign. The VU has no NaN -- that word is an ordinary number a binade above
+// FLT_MAX -- so what is bounded here is the magnitude.
+//
+// -max * 0xFFFFFFFF is where the lost sign showed: a product of two negatives,
+// which the console saturates at +0x7FFFFFFF and a sign-losing clamp turns
+// negative. Moving the magnitude down a binade is still the trade the emitters
+// make for having no top binade to hold it in.
+//
+// The two integer minimums are microVU's mVUclamp2, whose bounds are these same
+// two registers read as words: SMIN against +FLT_MAX bounds the positives and
+// leaves every negative alone, UMIN against -FLT_MAX bounds the negatives and
+// leaves every positive alone. A denormal comes through where the float pair
+// flushed it, which is what the arithmetic's own FZ does to it anyway.
+//
+// `dst` may be `src`.
+static void cop2ClampOperandInto(const a64::VRegister& dst, const a64::VRegister& src)
+{
+	cop2EnsureClampConsts();
+	armAsm->Smin(dst.V4S(), src.V4S(), a64::v25.V4S());
+	armAsm->Umin(dst.V4S(), dst.V4S(), a64::v26.V4S());
+}
+
 static void cop2ClampResult()
 {
 	cop2ClampResultReg(RQSCRATCH);
-}
-
-// Non-destructive clamp: dst = clamp(src) without modifying src (which may be
-// a live VF-cache register) — the first Fminnm is 3-operand, so preserving
-// src is free.
-static void cop2ClampInto(const a64::VRegister& dst, const a64::VRegister& src)
-{
-	cop2EnsureClampConsts();
-	armAsm->Fminnm(dst.V4S(), src.V4S(), a64::v25.V4S());
-	armAsm->Fmaxnm(dst.V4S(), dst.V4S(), a64::v26.V4S());
 }
 
 // ========================================================================
@@ -1708,8 +1723,8 @@ void recCOP2_VMUL()
 	// zero. mVU_MUL's table row is (_XYZW_PS) ? (cFs | cFt) : cFs, and a partial
 	// dest field leaving Ft alone is where Jak and Daxter walks off a wild jalr
 	// from `0 * q` with a Q of 0x7FFFFFFF at dest 0xE.
-	cop2ClampInto(RQSCRATCH, fs);
-	cop2ClampInto(RQSCRATCH2, ft);
+	cop2ClampOperandInto(RQSCRATCH, fs);
+	cop2ClampOperandInto(RQSCRATCH2, ft);
 	const a64::VRegister mulB = RQSCRATCH2;
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
 	armAsm->Fmul(rd.V4S(), RQSCRATCH.V4S(), mulB.V4S());
@@ -1771,9 +1786,9 @@ static void cop2LoadBroadcast(const a64::VRegister& qreg, int vfReg, int bc)
 		a64::VRegister mulA = fs; \
 		if (mulClamp) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
@@ -1872,9 +1887,9 @@ void recCOP2_VMINIi()
 		a64::VRegister mulA = fs; \
 		if (mulClamp) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
@@ -1899,9 +1914,9 @@ COP2_Q_OP(MULq, Fmul, true)
 		a64::VRegister mulA = fs; \
 		if (mulClamp) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
@@ -1948,7 +1963,7 @@ void recCOP2_VMSUB()
 
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
-	cop2ClampInto(RQSCRATCH2, fs);
+	cop2ClampOperandInto(RQSCRATCH2, fs);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
 	armAsm->Fmul(rd.V4S(), RQSCRATCH2.V4S(), ft.V4S());
 	const a64::VRegister acc = cop2GetACC();
@@ -1977,18 +1992,18 @@ void recCOP2_VMSUB()
 		a64::VRegister mulA = fs; \
 		if (clampFs) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
 		} \
 		cop2LoadBroadcast(RQSCRATCH2, _Ft_cop2, bc); \
 		if (clampFtAcc) \
-			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->Fmul(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
 		const a64::VRegister acc = cop2GetACC(); \
 		if (clampFtAcc) \
 		{ \
-			cop2ClampInto(RQSCRATCH2, acc); \
+			cop2ClampOperandInto(RQSCRATCH2, acc); \
 			armAsm->addOp(rd.V4S(), RQSCRATCH2.V4S(), rd.V4S()); \
 		} \
 		else \
@@ -2121,9 +2136,9 @@ COP2_ACCUM_OP(MULA, Fmul)
 		a64::VRegister mulA = fs; \
 		if (mulClamp) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		armAsm->neonOp(rdA.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
@@ -2230,7 +2245,7 @@ COP2_MADDA_OP(MSUBA, Fsub)
 		a64::VRegister mulA = fs; \
 		if (clampFs) \
 		{ \
-			cop2ClampInto(RQSCRATCH, fs); \
+			cop2ClampOperandInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
 		} \
 		cop2LoadBroadcast(RQSCRATCH2, _Ft_cop2, bc); \
