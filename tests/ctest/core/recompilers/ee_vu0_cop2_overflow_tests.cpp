@@ -275,12 +275,11 @@ TEST(EeVu0Cop2Overflow, OverflowMatchesTheInterpreterAtModeFour)
 	                              "the per-lane flag comparison never ran";
 }
 
-// The gate, from the other side. MAC O and the ceiling are the only two things
-// on vuClampMode 4, so replaying the same stream at 1, 2 and 3 has to lose the O
-// bits at each, and for the multiplies it must move a word only where it lost
-// one: the ceiling is the whole of what mode 4 does to a multiply's value, so a
-// moved word has to be the lower mode's own answer with its magnitude promoted
-// from FLT_MAX to 0x7FFFFFFF, in a lane whose O it raised. The adds are excluded
+// The gate, from the other side. Replaying the same stream at 1, 2 and 3 has to
+// lose the O bits at each, and for the multiplies it must move a word only in
+// one of two shapes: the ceiling, which is the lower mode's own answer with its
+// magnitude promoted from FLT_MAX to 0x7FFFFFFF in a lane whose O it raised, or
+// the multiplier's deficit, which is one step toward zero. The adds are excluded
 // from that half deliberately: mode 4 also turns on the guard mask there, which
 // is a value model and is scored by the guard-mask files. The MAC U comparison
 // skips the gated nibbles because U is a mode lower and mode 1 has none of it;
@@ -291,7 +290,7 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 	{
 	SCOPED_TRACE(::testing::Message() << "vuClampMode " << low);
 	std::mt19937 rng(0x0FA5EEDu);
-	int lost = 0, nonzero = 0, promoted = 0;
+	int lost = 0, nonzero = 0, promoted = 0, decremented = 0;
 	for (int iter = 0; iter < kIters; ++iter)
 	{
 		const Case c = NextCase(rng, iter);
@@ -319,13 +318,24 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 			{
 				if (g4.word[l] != g1.word[l])
 				{
-					EXPECT_EQ(g1.word[l] & 0x7FFFFFFFu, 0x7F7FFFFFu)
-						<< "word " << l << " moved from something other than FLT_MAX";
-					EXPECT_EQ(g4.word[l], g1.word[l] | 0x7FFFFFFFu)
-						<< "word " << l << " moved to something other than the ceiling";
-					EXPECT_NE(g4.mac & LaneMacBits(l & 3) & kMacO, 0u)
-						<< "word " << l << " moved in a lane that raised no O";
-					++promoted;
+					// The multiplier's deficit is the other value model on
+					// this gate -- mode 4 carries it and no mode below does --
+					// so a word one step nearer zero at 4 is that and not the
+					// ceiling.
+					if (g4.word[l] == g1.word[l] - 1u)
+					{
+						++decremented;
+					}
+					else
+					{
+						EXPECT_EQ(g1.word[l] & 0x7FFFFFFFu, 0x7F7FFFFFu)
+							<< "word " << l << " moved from something other than FLT_MAX";
+						EXPECT_EQ(g4.word[l], g1.word[l] | 0x7FFFFFFFu)
+							<< "word " << l << " moved to something other than the ceiling";
+						EXPECT_NE(g4.mac & LaneMacBits(l & 3) & kMacO, 0u)
+							<< "word " << l << " moved in a lane that raised no O";
+						++promoted;
+					}
 				}
 				nonzero += g1.word[l] != 0;
 			}
@@ -337,6 +347,10 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 	                            "comparison above compared zero with zero";
 	EXPECT_GT(promoted, 100) << "no multiply's word took the ceiling, so the shape of "
 	                            "the move was never checked";
+	// No mode below 4 carries any of the deficit, so every word it moves
+	// separates each of them from 4 here.
+	EXPECT_GT(decremented, 0) << "no multiply's word took the deficit, so the other "
+	                             "shape of the move was never checked";
 	}
 }
 

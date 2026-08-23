@@ -208,3 +208,126 @@ __fi static void armEmitVuGuardMask(const a64::VRegister& outA, const a64::VRegi
 	armAsm->Orn(outA.V16B(), tmp.V16B(), outA.V16B());
 	armAsm->And(outA.V16B(), a.V16B(), outA.V16B());
 }
+
+// ========================================================================
+//  The multiplier's one-ULP deficit
+// ========================================================================
+// The console's multiply array is not a correctly-rounding multiplier: it comes
+// back one step closer to zero on a large fraction of operands, and which ones
+// depends on ft alone wherever the exact product is representable in single.
+// FPU.cpp's eeMulArray carries the law and the measurement behind it; the VU's
+// multiplier is that multiplier, which is why VUops.cpp reaches it through
+// EeFpuModel::Mul.
+//
+// Where the exact product is NOT representable the decision needs fs as well,
+// so nothing built out of ft can reach it. iFPUd-arm64.cpp runs the array
+// itself there, on a double product it keeps for the purpose. Four singles in a
+// Q register have no such product to keep, and a relocated VF would take two
+// registers where a relocated FPR takes one. FMLS stands in for it: `t = p;
+// FMLS t, fs, ft` leaves the exact error of the rounding, and `t == 0` says the
+// product was representable -- what the double product's low 29 bits say there,
+// four lanes at a time.
+//
+// Three conjuncts, ANDed as lane masks and added: an all-ones lane added to the
+// raw word is the decrement, and it steps toward zero at either sign.
+//
+//   * the product is exact, from the FMLS residue;
+//   * ft fires the predicate;
+//   * the product's exponent field is at least 48.
+//
+// The last is not eeMulRound's own guard, which is only that the decrement must
+// not walk out of the normals. It is wider because the residue cannot be
+// trusted below it: under FZ an error smaller than 2^-126 flushes to zero and
+// reads as "exact", and the error of a product with exponent e is as small as
+// 2^(e-47). 48 is where that stops, so it is the floor of the method, and
+// products under 2^-79 keep the word the host gave them.
+//
+// vuClampMode 4 only, on both emitters. The mask on ft is not a cheaper rung of
+// this on its own: the exactness test is what turns a property of ft into a
+// property of the product, and a model without it claims 24337908 of the
+// 33554432 rows of the four-significand mul.s sweep where the console is low on
+// 8299538 -- a worse answer than the plain FMUL it would replace.
+
+// ft's half, into `dst`. `tmp` is a second scratch. Neither may be `b`.
+__fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
+	const a64::VRegister& b, const a64::VRegister& tmp)
+{
+	pxAssert(!dst.Is(b) && !tmp.Is(b) && !dst.Is(tmp));
+
+	// Bit 11 against a boundary term on bits 12..15. iFPUd-arm64.cpp spells that
+	// term b15 & ~(b14 & b13), then ^ b11, which wants an XOR against a shifted
+	// operand; NEON has no such form, so the same bit comes out of
+	// (b ^ (b << 4)) ^ (b13 & b14 & b15).
+	armAsm->Shl(dst.V4S(), b.V4S(), 1);
+	armAsm->And(dst.V16B(), dst.V16B(), b.V16B());
+	armAsm->Shl(dst.V4S(), dst.V4S(), 1);
+	armAsm->And(dst.V16B(), dst.V16B(), b.V16B()); // bit 15 = b13 & b14 & b15
+
+	armAsm->Shl(tmp.V4S(), b.V4S(), 4);
+	armAsm->Eor(tmp.V16B(), tmp.V16B(), b.V16B()); // bit 15 = b15 ^ b11
+	armAsm->Eor(tmp.V16B(), tmp.V16B(), dst.V16B());
+	armAsm->Shl(tmp.V4S(), tmp.V4S(), 16);
+	armAsm->Ushr(tmp.V4S(), tmp.V4S(), 31); // the boundary term, as 0 or 1
+
+	armAsm->Movi(dst.V4S(), 0x02, a64::LSL, 8);
+	armAsm->Orr(dst.V4S(), 0xAA); // mantissa bits 1,3,5,7,9
+	armAsm->And(dst.V16B(), dst.V16B(), b.V16B());
+	armAsm->Orr(dst.V16B(), dst.V16B(), tmp.V16B());
+	armAsm->Cmtst(dst.V4S(), dst.V4S(), dst.V4S());
+}
+
+// `dst = a * b`, decremented where the array comes up short. `b` is the recoded
+// operand, the one the predicate reads -- the operation is not commutative.
+//
+// `t` and `u` are clobbered and must be distinct from each other and from all
+// three of dst/a/b. ft's half is built first, while both are still free. `dst`
+// may be `a` or `b`; the product is then computed twice rather than parked,
+// which is the same one instruction either way.
+//
+// `scalar` is microVU's single-lane form. Only the two multiplies narrow: a
+// scalar FMUL zeroes the lanes above it, so the mask the rest of this builds
+// comes out zero there and adds nothing.
+__fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
+	const a64::VRegister& b, const a64::VRegister& t, const a64::VRegister& u,
+	bool scalar = false)
+{
+	for (const a64::VRegister& r : {t, u})
+		pxAssert(!r.Is(dst) && !r.Is(a) && !r.Is(b));
+	pxAssert(!t.Is(u));
+
+	armEmitVuMulDeficitPredicate(u, b, t);
+
+	const auto product = [&](const a64::VRegister& into) {
+		if (scalar)
+			armAsm->Fmul(into.S(), a.S(), b.S());
+		else
+			armAsm->Fmul(into.V4S(), a.V4S(), b.V4S());
+	};
+
+	const bool aliased = dst.Is(a) || dst.Is(b);
+	if (aliased)
+	{
+		product(t);
+	}
+	else
+	{
+		product(dst);
+		armAsm->Mov(t.V16B(), dst.V16B());
+	}
+	armAsm->Fmls(t.V4S(), a.V4S(), b.V4S()); // the rounding's exact error
+	armAsm->Fcmeq(t.V4S(), t.V4S(), 0.0);
+	armAsm->And(t.V16B(), t.V16B(), u.V16B());
+
+	if (aliased)
+		product(dst);
+
+	// The exponent floor, carried inside the mask rather than beside it: a
+	// masked-off lane comes out zero, which is below the floor.
+	armAsm->And(t.V16B(), t.V16B(), dst.V16B());
+	armAsm->Shl(t.V4S(), t.V4S(), 1); // drop the sign
+	armAsm->Ushr(t.V4S(), t.V4S(), 24);
+	armAsm->Movi(u.V4S(), 48);
+	armAsm->Cmhs(t.V4S(), t.V4S(), u.V4S());
+
+	armAsm->Add(dst.V4S(), dst.V4S(), t.V4S());
+}

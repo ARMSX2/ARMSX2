@@ -435,8 +435,8 @@ static __fi void mVU_sumXYZ_arm(const a64::VRegister& dst, const a64::VRegister&
 // All scalar math operates on lane 0 of `pq` (a scratch, NOT qmmPQ).
 #define EATANhelper_arm(addr) \
 	do { \
-		NEON_MULSS(mVU, t2, Fs); \
-		NEON_MULSS(mVU, t2, Fs); \
+		NEON_MULSS_Series(mVU, t2, Fs); \
+		NEON_MULSS_Series(mVU, t2, Fs); \
 		mVUmovAPSReg(t1, t2); \
 		mVUmulSSConst(t1, (addr)); \
 		NEON_ADDSS(mVU, pq, t1); \
@@ -603,7 +603,7 @@ mVUop(mVU_EATANxz)
 // Matches the x86 eexpHelper macro.
 #define eexpHelper_arm(addr) \
 	do { \
-		NEON_MULSS(mVU, t2, Fs); \
+		NEON_MULSS_Series(mVU, t2, Fs); \
 		mVUmovAPSReg(t1, t2); \
 		mVUmulSSConst(t1, (addr)); \
 		NEON_ADDSS(mVU, pq, t1); \
@@ -637,18 +637,18 @@ mVUop(mVU_EEXP)
 			mVUmulSSConst(pq, &mVUglob.E1[0]);   // pq *= E1
 			mVUaddSSConst(pq, &mVUglob.one[0]);  // pq += 1
 			mVUmovAPSReg(t1, Fs);
-			NEON_MULSS(mVU, t1, Fs);             // t1 = Fs^2
+			NEON_MULSS_Series(mVU, t1, Fs);             // t1 = Fs^2
 			mVUmovAPSReg(t2, t1);                // t2 = Fs^2
 			mVUmulSSConst(t1, &mVUglob.E2[0]);
 			NEON_ADDSS(mVU, pq, t1);
 			eexpHelper_arm(&mVUglob.E3[0]);
 			eexpHelper_arm(&mVUglob.E4[0]);
 			eexpHelper_arm(&mVUglob.E5[0]);
-			NEON_MULSS(mVU, t2, Fs);
+			NEON_MULSS_Series(mVU, t2, Fs);
 			mVUmulSSConst(t2, &mVUglob.E6[0]);
 			NEON_ADDSS(mVU, pq, t2);
-			NEON_MULSS(mVU, pq, pq);
-			NEON_MULSS(mVU, pq, pq);
+			NEON_MULSS_Series(mVU, pq, pq);
+			NEON_MULSS_Series(mVU, pq, pq);
 			// pq[0] = 1 / pq[0]^4
 			armAsm->Ldr(a64::SRegister(t2.GetCode()), mVUglobMem(&mVUglob.one[0]));
 			NEON_DIVSS(mVU, t2, pq);
@@ -899,24 +899,24 @@ mVUop(mVU_ESIN)
 			const a64::VRegister& t2 = mVU.regAlloc->allocReg();
 			// pq = X
 			armAsm->Ins(pq.V4S(), 0, Fs.V4S(), 0);
-			NEON_MULSS(mVU, Fs, Fs);                 // Fs = X^2
+			NEON_MULSS_Series(mVU, Fs, Fs);                 // Fs = X^2
 			mVUmovAPSReg(t1, Fs);                    // t1 = X^2
-			NEON_MULSS(mVU, Fs, pq);                 // Fs = X^3
+			NEON_MULSS_Series(mVU, Fs, pq);                 // Fs = X^3
 			mVUmovAPSReg(t2, Fs);                    // t2 = X^3
 			mVUmulSSConst(Fs, &mVUglob.S2[0]);       // Fs = s2 * X^3
 			NEON_ADDSS(mVU, pq, Fs);                 // pq = X + s2*X^3
 
-			NEON_MULSS(mVU, t2, t1);                 // t2 = X^5
+			NEON_MULSS_Series(mVU, t2, t1);                 // t2 = X^5
 			mVUmovAPSReg(Fs, t2);
 			mVUmulSSConst(Fs, &mVUglob.S3[0]);       // Fs = s3*X^5
 			NEON_ADDSS(mVU, pq, Fs);
 
-			NEON_MULSS(mVU, t2, t1);                 // t2 = X^7
+			NEON_MULSS_Series(mVU, t2, t1);                 // t2 = X^7
 			mVUmovAPSReg(Fs, t2);
 			mVUmulSSConst(Fs, &mVUglob.S4[0]);       // Fs = s4*X^7
 			NEON_ADDSS(mVU, pq, Fs);
 
-			NEON_MULSS(mVU, t2, t1);                 // t2 = X^9
+			NEON_MULSS_Series(mVU, t2, t1);                 // t2 = X^9
 			mVUmulSSConst(t2, &mVUglob.S5[0]);       // t2 = s5*X^9
 			NEON_ADDSS(mVU, pq, t2);
 

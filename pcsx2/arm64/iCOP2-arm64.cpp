@@ -717,14 +717,44 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 	cop2EmitGuardedAddSub(dst, a, b, true, ov, sgn);
 }
 
+// The multiplier's one-ULP deficit (armEmitVuDefectiveMul), on every product a
+// COP2 macro op forms. Emitted at vuClampMode 4, read through CHECK_VU_EXACT on
+// VU0, the mode the multiply's flag models are on.
+//
+// The model wants two scratch registers and every FMAC body has RQSCRATCH3
+// free across its arithmetic. The second is q28, which is also where a
+// multiply's MAC O predicate lands; that one is built before the operand clamp
+// and read after the arithmetic, so where it exists the deficit parks it in the
+// rec's own scratch for the eleven instructions it needs the register. q27 is
+// the multiply's MAC U predicate; every body that has no U model -- the MADD,
+// MSUB and A-forms -- has it free across its arithmetic.
+static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);
+
+static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
+	const a64::VRegister& b, const a64::VRegister& u, bool uLive)
+{
+	if (!CHECK_VU_EXACT(0))
+	{
+		armAsm->Fmul(dst.V4S(), a.V4S(), b.V4S());
+		return;
+	}
+
+	const a64::MemOperand park = armCpuRegMem(&_cpuRegistersPack.cop2Rec.deficitPark);
+	if (uLive)
+		armAsm->Str(u, park);
+	armEmitVuDefectiveMul(dst, a, b, RQSCRATCH3, u);
+	if (uLive)
+		armAsm->Ldr(u, park);
+}
+
 static void cop2EmitMul(const a64::VRegister& dst, const a64::VRegister& a,
-	const a64::VRegister& b, a64::VRegister* = nullptr, a64::VRegister* sgn = nullptr)
+	const a64::VRegister& b, a64::VRegister* ov = nullptr, a64::VRegister* sgn = nullptr)
 {
 	// A product that saturates keeps the sign the host gave it, so the ceiling
 	// reads it back off the result.
 	if (sgn)
 		*sgn = dst;
-	armAsm->Fmul(dst.V4S(), a.V4S(), b.V4S());
+	cop2EmitDefectiveMul(dst, a, b, a64::VRegister(28, 128), ov && ov->IsValid());
 }
 
 // MADD/MSUB accumulate: the same adder, with no O. Its addend is a product the
@@ -1964,7 +1994,7 @@ void recCOP2_VMUL()
 	const a64::VRegister mulB = RQSCRATCH2;
 	const a64::VRegister uz = cop2EmitMulExactZero(_XYZW_cop2, RQSCRATCH, mulB);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	armAsm->Fmul(rd.V4S(), RQSCRATCH.V4S(), mulB.V4S());
+	cop2EmitDefectiveMul(rd, RQSCRATCH, mulB, a64::VRegister(28, 128), ov.IsValid());
 	cop2ClampResultReg(rd);
 	cop2EmitSaturateAtMax(rd, ov, rd);
 	cop2EmitFlagUpdate(_XYZW_cop2, rd, uz, ov);
@@ -2201,7 +2231,7 @@ void recCOP2_VMADD()
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	armAsm->Fmul(rd.V4S(), fs.V4S(), ft.V4S());
+	cop2EmitDefectiveMul(rd, fs, ft, kCop2MulDeficitScratch, false);
 	const a64::VRegister acc = cop2GetACC();
 	cop2EmitAccAdd(rd, acc, rd);
 	cop2ClampResultReg(rd);
@@ -2221,7 +2251,7 @@ void recCOP2_VMSUB()
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 	cop2ClampOperandInto(RQSCRATCH2, fs);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	armAsm->Fmul(rd.V4S(), RQSCRATCH2.V4S(), ft.V4S());
+	cop2EmitDefectiveMul(rd, RQSCRATCH2, ft, kCop2MulDeficitScratch, false);
 	const a64::VRegister acc = cop2GetACC();
 	cop2EmitAccSub(rd, acc, rd);
 	cop2ClampResultReg(rd);
@@ -2255,7 +2285,7 @@ void recCOP2_VMSUB()
 		if (clampFtAcc) \
 			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		armAsm->Fmul(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(rd, mulA, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		if (clampFtAcc) \
 		{ \
@@ -2289,7 +2319,7 @@ COP2_MADD_BC(MSUBw, cop2EmitAccSub, 3, false, false)
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_Q]); \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		armAsm->Fmul(rd.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(rd, fs, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		emitOp(rd, acc, rd); \
 		cop2ClampResultReg(rd); \
@@ -2310,7 +2340,7 @@ COP2_MADD_Q(MSUBq, cop2EmitAccSub)
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_I]); \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		armAsm->Fmul(rd.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(rd, fs, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		emitOp(rd, acc, rd); \
 		cop2ClampResultReg(rd); \
@@ -2356,8 +2386,9 @@ void recCOP2_VOPMSUB()
 	const a64::VRegister ftRot = a64::VRegister(27, 128);
 	cop2EmitOpRotate(fs, ft, fsRot, ftRot);
 
-	// Separate FMUL+FSUB for PS2 rounding.
-	armAsm->Fmul(RQSCRATCH.V4S(), fsRot.V4S(), ftRot.V4S());
+	// Separate FMUL+FSUB for PS2 rounding. The rotated pair holds q27 and q28,
+	// so the deficit's second scratch is RQSCRATCH2, which this op never uses.
+	cop2EmitDefectiveMul(RQSCRATCH, fsRot, ftRot, RQSCRATCH2, false);
 	cop2EmitAccSub(RQSCRATCH, acc, RQSCRATCH);
 	cop2ClampResult();
 	cop2EmitFlagUpdate(_XYZW_cop2);
@@ -2505,7 +2536,7 @@ COP2_ACCUM_I(MULAi, cop2EmitMul, true)
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		const a64::VRegister ft = cop2GetVF(_Ft_cop2); \
-		armAsm->Fmul(RQSCRATCH.V4S(), fs.V4S(), ft.V4S()); \
+		cop2EmitDefectiveMul(RQSCRATCH, fs, ft, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		const a64::VRegister rdA = (_XYZW_cop2 == 0xF) ? acc : RQSCRATCH; \
 		emitOp(rdA, acc, RQSCRATCH); \
@@ -2538,7 +2569,7 @@ COP2_MADDA_OP(MSUBA, cop2EmitSub)
 			mulA = RQSCRATCH; \
 		} \
 		cop2LoadBroadcast(RQSCRATCH2, _Ft_cop2, bc); \
-		armAsm->Fmul(RQSCRATCH.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(RQSCRATCH, mulA, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		const a64::VRegister rdA = (_XYZW_cop2 == 0xF) ? acc : RQSCRATCH; \
 		emitOp(rdA, acc, RQSCRATCH); \
@@ -2565,7 +2596,7 @@ COP2_MADDA_BC(MSUBAw, cop2EmitSub, 3, false)
 		setupMacroOp_arm64(0x111); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_Q]); \
-		armAsm->Fmul(RQSCRATCH.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(RQSCRATCH, fs, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		const a64::VRegister rdA = (_XYZW_cop2 == 0xF) ? acc : RQSCRATCH; \
 		emitOp(rdA, acc, RQSCRATCH); \
@@ -2585,7 +2616,7 @@ COP2_MADDA_Q(MSUBAq, cop2EmitSub)
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_I]); \
-		armAsm->Fmul(RQSCRATCH.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		cop2EmitDefectiveMul(RQSCRATCH, fs, RQSCRATCH2, kCop2MulDeficitScratch, false); \
 		const a64::VRegister acc = cop2GetACC(); \
 		const a64::VRegister rdA = (_XYZW_cop2 == 0xF) ? acc : RQSCRATCH; \
 		emitOp(rdA, acc, RQSCRATCH); \
@@ -2612,7 +2643,7 @@ void recCOP2_VOPMULA()
 	const a64::VRegister ftRot = RQSCRATCH2;
 	cop2EmitOpRotate(fs, ft, fsRot, ftRot);
 
-	armAsm->Fmul(RQSCRATCH.V4S(), fsRot.V4S(), ftRot.V4S());
+	cop2EmitDefectiveMul(RQSCRATCH, fsRot, ftRot, kCop2MulDeficitScratch, false);
 	// After the multiply: the rotated operands are what both predicates read,
 	// and they exist only once it has run. The zero test goes first -- the
 	// overflow test's scale destroys the magnitudes it reads.

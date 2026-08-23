@@ -286,6 +286,7 @@ struct EeCop2RecState
 	alignas(16) u32 minFloat[4];      // -FLT_MAX per lane (pre-negated lower bound)
 	alignas(16) u32 destMasks[16][4]; // per-XYZW lane-select masks (lane = ~0 if written)
 	alignas(16) u32 clipWeightPos[4]; // VCLIP positive per-lane clip-bit weights
+	alignas(16) u32 deficitPark[4];   // multiply-deficit scratch (block-transient)
 	u32 denormStatusFlag;             // denormalized status-flag scratch
 };
 
