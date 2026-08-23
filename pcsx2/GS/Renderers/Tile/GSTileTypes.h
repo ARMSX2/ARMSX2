@@ -159,15 +159,113 @@ constexpr bool gsTileFrameWriteMaskIsExact(u32 fbmsk, u32 fmsk)
 	return true;
 }
 
+/// What the alpha test does to EVERY fragment of a draw, where the plan can decide that
+/// before the draw runs. A test whose outcome is the same for all of them is not a
+/// per-fragment test at all: it is a statement about what the draw writes, and belongs in
+/// the write flags rather than in the fragment stage.
+enum class GSTileAlphaTestFold : u8
+{
+	Varies = 0,  ///< the test can accept one fragment and reject the next: it has to be emitted
+	AllPass = 1, ///< nothing is rejected — ATE off, ATST ALWAYS, or a comparison that provably holds
+	AllFail = 2, ///< everything is rejected: AFAIL alone says what the draw still lands
+};
+
+/// Whether the alpha the test compares is the same for every fragment of the draw.
+///
+/// Two independent reasons it can vary, and neither may be present. The TEXTURE supplies
+/// the alpha when it is sampled and TEX0.TCC says its alpha is used — with TCC=0 every
+/// texture function passes the vertex alpha through untouched, which is what makes an
+/// untextured draw and a TCC=0 one the same case. And AA1 modulates a fragment's alpha by
+/// its coverage, per pixel, on the primitive's edges.
+///
+/// `vertex_alpha_uniform` is the vertex trace's alpha equality bit — the ALPHA component
+/// alone (GSVertexTrace's m_eq.a), not whole-RGBA equality: a gouraud-shaded draw whose
+/// colour ramps while its alpha holds still is as decidable as a flat one.
+constexpr bool gsTileAlphaIsDrawConstant(bool tme, bool tcc, bool aa1, bool vertex_alpha_uniform)
+{
+	return vertex_alpha_uniform && !aa1 && !(tme && tcc);
+}
+
+/// Decide the alpha test at plan time, where the fragment alpha allows it.
+///
+/// ATST=NEVER and ATST=ALWAYS decide themselves. What this adds is the SAME intent written
+/// as a comparison that cannot come out either way — which games do write, and which
+/// costs a whole character when it is read as a live test instead.
+///
+/// Katamari Damacy composites the King's head out of two sprites over one rectangle: the
+/// first stamps a lower Z into it, the second draws the head with ZTST=GEQUAL against that
+/// Z. The stamp is untextured with vertex alpha 0x00, asks for ATST=NOTEQUAL AREF=0 — "0 !=
+/// 0" is false, so every fragment fails — and carries AFAIL=ZB_ONLY, "a failing fragment
+/// still writes depth". The fragment stage's approximation discards a failing fragment
+/// outright, so read as a live test the stamp deposits no depth and the head behind it then
+/// fails its own GEQUAL over every pixel the star covers.
+///
+/// ⚠️ The comparisons are the software renderer's (GSState::TryAlphaTest's GetResult with
+/// the vertex-trace alpha range collapsed to one value) and tilegpu.glsl's fragment stage,
+/// which are the same list. All three have to stay the same list; a boundary that drifts
+/// here changes some other game's draw and nothing says so.
+constexpr GSTileAlphaTestFold gsTileFoldAlphaTest(bool ate, u32 atst, u32 aref, bool alpha_is_constant, u32 alpha)
+{
+	if (!ate || atst == ATST_ALWAYS)
+		return GSTileAlphaTestFold::AllPass;
+	if (atst == ATST_NEVER)
+		return GSTileAlphaTestFold::AllFail;
+	if (!alpha_is_constant)
+		return GSTileAlphaTestFold::Varies;
+
+	bool pass;
+	switch (atst)
+	{
+		case ATST_LESS: pass = alpha < aref; break;
+		case ATST_LEQUAL: pass = alpha <= aref; break;
+		case ATST_EQUAL: pass = alpha == aref; break;
+		case ATST_GEQUAL: pass = alpha >= aref; break;
+		case ATST_GREATER: pass = alpha > aref; break;
+		case ATST_NOTEQUAL: pass = alpha != aref; break;
+		default: return GSTileAlphaTestFold::Varies;
+	}
+	return pass ? GSTileAlphaTestFold::AllPass : GSTileAlphaTestFold::AllFail;
+}
+
+/// Whether the draw's depth write survives its own alpha test. ZTE and ZMSK have the final
+/// word; on top of them, a draw every fragment of which fails writes depth only in the one
+/// AFAIL mode that says a failing fragment still does.
+constexpr bool gsTileDepthWriteSurvives(bool zte, bool zmsk, bool atst_all_fail, u32 afail)
+{
+	return zte && !zmsk && !(atst_all_fail && afail != AFAIL_ZB_ONLY);
+}
+
+/// Whether every fragment of the draw lands its colour — the alpha test's half of "this
+/// sprite provably overwrites the page", which is what lets the seed skip drop the bytes
+/// that were there before. FBMSK's half is gsTileFrameWriteIsTotal, and both must hold.
+///
+/// ⚠️ AFAIL_RGB_ONLY is counted here as it always has been, and on a 32-bit frame it does
+/// leave the alpha byte alone — so such a draw covers the page's colour but not its alpha.
+/// Pre-existing, and the FBMSK half is what keeps it harmless today: the corpus's only
+/// all-fail RGB_ONLY sprites are OutRun's eight, all at FBMSK=0xFF000000, which
+/// gsTileFrameWriteIsTotal refuses before this is even asked. Named rather than quietly
+/// changed, because changing it moves pixels on a draw nothing has measured.
+constexpr bool gsTileColorLandsOnEveryFragment(GSTileAlphaTestFold fold, u32 afail)
+{
+	if (fold == GSTileAlphaTestFold::AllPass)
+		return true;
+	if (fold == GSTileAlphaTestFold::AllFail)
+		return afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY;
+	return false;
+}
+
 /// The colour write mask a draw actually gets: the FBMSK channels above, with the alpha
 /// test's AFAIL fold on top and with the one carve-out this road still owes.
 ///
-/// The two derivations COMPOSE, neither overrides the other. ATST=NEVER never reaches the
-/// fragment stage — every pixel fails it — so AFAIL alone says what a failing pixel still
+/// The two derivations COMPOSE, neither overrides the other. An alpha test every fragment
+/// fails never reaches the fragment stage, so AFAIL alone says what a failing pixel still
 /// writes; FBMSK then says which of those channels the register lets through. Reading
 /// only one of the two is the bug this function exists to prevent: OutRun's world-erasing
 /// sprites are ATST NEVER + AFAIL FB_ONLY ("write the frame buffer") carrying
 /// FBMSK=0x00FFFFFF ("but only its alpha byte").
+///
+/// `atst_all_fail` is gsTileFoldAlphaTest's AllFail. It was ATST=NEVER alone when this was
+/// written; a comparison that provably fails is the same statement and takes the same road.
 ///
 /// ⚠️ **FBMSK's ALPHA byte is deliberately NOT honoured yet.** A draw that lands anything
 /// lands alpha, and only AFAIL RGB_ONLY takes it away — exactly what this renderer did
@@ -183,12 +281,12 @@ constexpr bool gsTileFrameWriteMaskIsExact(u32 fbmsk, u32 fmsk)
 /// until targets carry a seeded alpha. Rowed in the deferred-accuracy ledger, and pinned
 /// by `AlphaHalfOfFbmskIsDeferred` — that test is what says the carve-out can go, the day
 /// the seeding lands.
-constexpr u8 gsTileFrameColorWriteMask(u32 fbmsk, u32 fmsk, bool atst_never, u32 afail)
+constexpr u8 gsTileFrameColorWriteMask(u32 fbmsk, u32 fmsk, bool atst_all_fail, u32 afail)
 {
 	u8 m = gsTileFrameWriteMask(fbmsk, fmsk);
 	if (m != 0)
 		m |= kGSTileChannelAlpha; // the deferred alpha half: a live draw always writes alpha
-	if (atst_never)
+	if (atst_all_fail)
 	{
 		// Every pixel fails, so AFAIL alone decides what a failing pixel still lands.
 		if (afail == AFAIL_KEEP || afail == AFAIL_ZB_ONLY)

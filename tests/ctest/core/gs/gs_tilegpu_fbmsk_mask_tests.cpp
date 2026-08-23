@@ -50,9 +50,12 @@ constexpr u32 kC16 = 0x80F8F8F8u; // PSMCT16 / PSMCT16S and the Z twins
 constexpr u8 kR = 0x1, kG = 0x2, kB = 0x4, kA = 0x8;
 
 // The composed policy the renderer actually asks for, with the alpha test defaulted off.
-constexpr u8 Mask(u32 fbmsk, u32 fmsk, bool atst_never = false, u32 afail = AFAIL_KEEP)
+// The third argument is "every fragment fails this draw's alpha test" -- ATST=NEVER when
+// these tests were written, and since the constant fold, also a comparison that provably
+// fails (gs_tilegpu_alpha_test_fold_tests.cpp).
+constexpr u8 Mask(u32 fbmsk, u32 fmsk, bool atst_all_fail = false, u32 afail = AFAIL_KEEP)
 {
-	return gsTileFrameColorWriteMask(fbmsk, fmsk, atst_never, afail);
+	return gsTileFrameColorWriteMask(fbmsk, fmsk, atst_all_fail, afail);
 }
 } // namespace
 

@@ -212,7 +212,7 @@ private:
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
 		u32 aref;
 		u8 color_mask;        // rgba channels this draw lands (GSTileTypes.h's
-		                      // gsTileFrameColorWriteMask: FBMSK per channel, the ATST NEVER AFAIL
+		                      // gsTileFrameColorWriteMask: FBMSK per channel, the all-fail AFAIL
 		                      // fold on top, alpha half deferred); the pipeline's colour write
 		                      // mask. Zero is a depth-only draw.
 		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
@@ -938,6 +938,13 @@ private:
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
+		// The alpha test decided at plan time, over the draws that would otherwise have carried a
+		// per-fragment test: a comparison the draw's constant fragment alpha provably fails, or
+		// provably passes. ATST NEVER and ALWAYS are NOT counted -- they never reached the fragment
+		// stage. These are the population the fold moves, per frame, which is what says a dump the
+		// fold cannot touch must come back byte-identical.
+		u32 atst_fold_fail = 0;
+		u32 atst_fold_pass = 0;
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
 		u32 flushes = 0;         // mid-frame plan submissions

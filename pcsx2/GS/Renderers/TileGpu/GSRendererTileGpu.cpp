@@ -1400,6 +1400,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
+	const auto afold_f = stat([](const MF& f) { return f.atst_fold_fail; });
+	const auto afold_p = stat([](const MF& f) { return f.atst_fold_pass; });
 	const auto st = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.stalls[static_cast<u32>(s)]; });
 	};
@@ -1428,6 +1430,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
+	Console.WriteLn("  alpha test folded at plan time (constant fragment alpha): all-fail %.2f / %u   "
+					"all-pass %.2f / %u",
+		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -2784,14 +2789,37 @@ void GSRendererTileGpu::AccumulateDraw()
 	const GSTileSurfaceLayout z_l{ctx->ZBUF.Block(), static_cast<u8>(ctx->FRAME.FBW),
 		static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
 
-	// What this draw actually writes. An alpha test of NEVER fails every pixel, and AFAIL then
-	// says which channels the failing pixel still lands in -- Classic's zm/fm derivation, and the
-	// idiom SotC uses for its full-screen fades and post sprites: ATE=1 ATST=NEVER AFAIL=FB_ONLY
-	// is "colour only, leave depth alone" whatever ZTE/ZMSK say. Missing it deposits those
-	// sprites' Z=max into the persistent depth buffer and the whole 3D pass then fails GEQUAL.
-	const bool atst_never = ctx->TEST.ATE && ctx->TEST.ATST == ATST_NEVER;
+	// What this draw actually writes. An alpha test every fragment fails still lands whatever
+	// AFAIL keeps alive -- Classic's zm/fm derivation, and the idiom SotC uses for its
+	// full-screen fades and post sprites: ATE=1 ATST=NEVER AFAIL=FB_ONLY is "colour only, leave
+	// depth alone" whatever ZTE/ZMSK say. Missing it deposits those sprites' Z=max into the
+	// persistent depth buffer and the whole 3D pass then fails GEQUAL.
+	//
+	// The same intent also arrives as a COMPARISON that cannot come out either way, and it has to
+	// be recognised there too. Katamari Damacy stamps a lower Z into the King's head's rectangle
+	// with an untextured sprite carrying vertex alpha 0x00 under ATST=NOTEQUAL AREF=0 -- "0 != 0"
+	// is false on every fragment -- plus AFAIL=ZB_ONLY, "a failing fragment still writes depth".
+	// Read as a live per-fragment test the fragment stage discards the whole sprite, the stamp
+	// never lands, and the head draw behind it (ZTST=GEQUAL at the stamped Z) then fails over
+	// every pixel the star covers. So the fold asks the alpha, not just the register.
+	const bool alpha_is_constant = gsTileAlphaIsDrawConstant(PRIM->TME, ctx->TEX0.TCC, PRIM->AA1,
+		m_vt.m_eq.a == 0xF);
+	const u32 const_alpha = static_cast<u32>(m_vt.m_min.c.I32[3]) & 0xFFu;
+	const GSTileAlphaTestFold atst_fold = gsTileFoldAlphaTest(ctx->TEST.ATE, ctx->TEST.ATST,
+		ctx->TEST.AREF, alpha_is_constant, const_alpha);
+	const bool atst_all_fail = (atst_fold == GSTileAlphaTestFold::AllFail);
+	if (ctx->TEST.ATE && ctx->TEST.ATST != ATST_NEVER && ctx->TEST.ATST != ATST_ALWAYS &&
+		atst_fold != GSTileAlphaTestFold::Varies)
+	{
+		// The population the constant fold moves off the fragment stage, per frame. NEVER and
+		// ALWAYS are excluded: they never reached it in the first place.
+		if (atst_all_fail)
+			m_frame.atst_fold_fail++;
+		else
+			m_frame.atst_fold_pass++;
+	}
 	const u32 afail = ctx->TEST.GetAFAIL(ctx->FRAME.PSM);
-	const bool z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK && !(atst_never && afail != AFAIL_ZB_ONLY);
+	const bool z_write = gsTileDepthWriteSurvives(ctx->TEST.ZTE, ctx->ZBUF.ZMSK, atst_all_fail, afail);
 	const bool z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
 	const bool z_used = z_write || z_test;
 	// FBMSK per channel, not all-or-nothing. Games use the frame buffer as scratch for one
@@ -2805,7 +2833,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// on top and holds the deferred-alpha carve-out; a partly masked channel lands whole (the
 	// approximation, ledgered).
 	const u32 fb_fmsk = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk;
-	const u8 color_mask = gsTileFrameColorWriteMask(ctx->FRAME.FBMSK, fb_fmsk, atst_never, afail);
+	const u8 color_mask = gsTileFrameColorWriteMask(ctx->FRAME.FBMSK, fb_fmsk, atst_all_fail, afail);
 	const bool color_written = color_mask != 0;
 	if (!color_written && !z_write)
 		return; // nothing lands anywhere: a no-op draw
@@ -2878,20 +2906,22 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.fogcol = static_cast<u32>(m_env.FOGCOL.FCR) | (static_cast<u32>(m_env.FOGCOL.FCG) << 8) |
 				(static_cast<u32>(m_env.FOGCOL.FCB) << 16);
 
-	// The alpha test. ATST=NEVER and ATST=ALWAYS never reach the fragment stage: every fragment
-	// takes the same road, so the write flags above already carry them (NEVER's AFAIL decides what
-	// the draw writes; ALWAYS writes everything). What is left is a genuine per-fragment split, and
-	// it is worth emitting only where the two sides actually land differently -- AFAIL=FB_ONLY
-	// keeps the whole colour and drops only the depth write, so a draw that writes no depth is
-	// unaffected by its own test, which is most of a game's blended geometry.
+	// The alpha test. A test the fold decided never reaches the fragment stage: every fragment
+	// takes the same road, so the write flags above already carry it (an all-fail draw's AFAIL
+	// decides what it lands; an all-pass one writes everything). What is left is a genuine
+	// per-fragment split, and it is worth emitting only where the two sides actually land
+	// differently -- AFAIL=FB_ONLY keeps the whole colour and drops only the depth write, so a
+	// draw that writes no depth is unaffected by its own test, which is most of a game's blended
+	// geometry.
 	//
 	// ⚠️ Wrong-fast: the fragment stage discards a failing fragment outright. That is exact for
 	// AFAIL=KEEP; for the three modes that still write something on failure it drops that write.
 	// The exact form needs the draw split in two -- one draw per side of the test, each with its
 	// own write masks and depth mode -- which costs an indirect run split per draw, so it waits
 	// until the run structure is measured rather than guessed. Rowed in the deferred-accuracy
-	// ledger.
-	const bool ate_real = ctx->TEST.ATE && ctx->TEST.ATST != ATST_ALWAYS && ctx->TEST.ATST != ATST_NEVER;
+	// ledger. The fold above takes the decidable draws out of that population entirely: where the
+	// alpha cannot vary there is no split to make, and the answer is exact.
+	const bool ate_real = (atst_fold == GSTileAlphaTestFold::Varies);
 	bool needs_test = false;
 	if (ate_real)
 	{
@@ -3166,6 +3196,12 @@ void GSRendererTileGpu::AccumulateDraw()
 	// mask reports as written can still be preserving bits inside its byte, and a masked draw
 	// leaves the rest of the cell holding whatever the texture had -- which is exactly what the
 	// seed is for. Only a draw that masks nothing at all may skip it.
+	//
+	// "No test can reject one" is gsTileColorLandsOnEveryFragment, which reads the SAME fold the
+	// write flags did: no alpha test, one that provably passes, or one that provably fails in an
+	// AFAIL mode that still writes the frame buffer. Both halves of the fold only strengthen this
+	// -- an all-pass draw is as total as ATST=ALWAYS, and an all-fail one is total exactly where
+	// ATST=NEVER already was.
 	const u8 fb_claims = kGSTilePlanesAll;
 	if (color_written)
 	{
@@ -3178,8 +3214,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		GSPageBitmap covered;
 		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
 			gsTileFrameWriteIsTotal(ctx->FRAME.FBMSK, fb_fmsk) &&
-			(!ctx->TEST.ATE || ctx->TEST.ATST == ATST_ALWAYS ||
-				(atst_never && (afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY))))
+			gsTileColorLandsOnEveryFragment(atst_fold, afail))
 		{
 			GSVramModel::RectFootprint fp;
 			GSVramModel::FootprintForRect(fb_l, r, fp);
