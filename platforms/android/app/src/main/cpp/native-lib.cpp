@@ -639,6 +639,12 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setHardcoreMode(JNIEnv *env, jclass clazz, jboolean enabled) {
     Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", enabled == JNI_TRUE);
+    // This is the user driving the toggle, so it outranks whatever
+    // setAchievementsHostOverride stashed: drop the saved value so clearing the
+    // override later restores nothing and leaves this choice standing. Keeps
+    // hardcore under the user's own control while an override is active — the
+    // override only supplies the default.
+    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
@@ -779,9 +785,17 @@ static void PersistAndApplyAchievementsSettings() {
 
 // Point the RetroAchievements client at a loopback proxy. Drives the same
 // [Achievements] Host setting CreateClient reads, so the override survives a
-// cold start. Hardcore mode is left untouched here so it can be exercised
-// against the dev proxy; it stays under the user's own control. An empty
-// host is ignored (use the clear path instead).
+// cold start. An empty host is ignored (use the clear path instead).
+//
+// Hardcore is forced off for the duration. The receiver only accepts loopback
+// hosts, and what listens there in practice is an offline RA proxy, which
+// cannot honour a hardcore award: the unlock is rejected server-side and
+// rcheevos surfaces nothing, so the user loses achievements silently. The
+// user's own setting is stashed in HostOverrideSavedHardcore and put back by
+// clearAchievementsHostOverride, so this borrows the setting rather than
+// overwriting it. Turning hardcore back on by hand while the override is
+// active still works and still wins (see setHardcoreMode) — the dev-proxy
+// case keeps working, it just is not the default any more.
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jclass clazz, jstring p_host) {
@@ -791,9 +805,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jc
 
     Host::SetBaseStringSettingValue("Achievements", "Host", host.c_str());
 
-    // Older builds saved/forced hardcore off while an override was active;
-    // we no longer touch hardcore, so drop any leftover saved-state key.
-    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+    // Only stash on the first set: a re-broadcast of the same override (the
+    // pending-replay path in RetroAchievementsHostOverrideReceiver fires one on
+    // every cold start) must not overwrite the saved value with the forced-off
+    // one and lose the user's setting.
+    if (!Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool hardcore = Host::GetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
+        Host::SetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", hardcore);
+        if (hardcore)
+            Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
+    }
 
     PersistAndApplyAchievementsSettings();
     RestartAchievementsForHostChange();
@@ -803,7 +824,17 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_clearAchievementsHostOverride(JNIEnv *env, jclass clazz) {
     Host::RemoveBaseSettingValue("Achievements", "Host");
-    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+
+    // Give the user's hardcore setting back. Absent key = nothing was borrowed
+    // (no override was active, or the user set hardcore by hand while it was),
+    // in which case ChallengeMode is already what they want and must be left
+    // alone. A restored ON only engages on the next boot, same as any other
+    // hardcore enable.
+    if (Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool saved = Host::GetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", false);
+        Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+        Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", saved);
+    }
 
     PersistAndApplyAchievementsSettings();
     RestartAchievementsForHostChange();
