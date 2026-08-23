@@ -130,6 +130,24 @@
             android:exported="true" />
 
         <!--
+            Consent prompt a companion app launches to ask for read access to the recently-played
+            list. Exported so a third-party app can start it; excludeFromRecents/noHistory because
+            it is a one-shot dialog and has no business sitting in the recents list afterwards.
+            The grant it records is per calling package — see RecentGamesAccessActivity.
+        -->
+        <activity
+            android:name=".data.library.RecentGamesAccessActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="${applicationId}.action.REQUEST_RECENT_GAMES_ACCESS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
             Discord Social SDK's OAuth landing activity. Declared here rather than inherited from
             the vendor .aar on purpose: that .aar's manifest also declares RECORD_AUDIO, three
             foreground-service permissions and Bluetooth for its voice features, and the merger

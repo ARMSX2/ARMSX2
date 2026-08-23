@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.Bundle
 import org.json.JSONArray
 
 /**
@@ -36,10 +37,26 @@ class RecentGamesContentProvider : ContentProvider() {
         private const val LAST_PLAYED_PREFIX = "playtime.last."
         private const val MAX_RECENT_LOOKUP = 12
 
-        /** Master switch for this provider, default OFF — see the gate in [query].
+        /** Share-with-everything switch, default OFF — see the gate in [query].
          *  Lives in the same "ARMSX2" prefs file the app writes, so the App-settings
-         *  toggle and this provider are reading one value and not two. */
+         *  toggle and this provider are reading one value and not two.
+         *
+         *  Prefer a per-caller grant ([RecentGamesAccess]); this stays for the people who
+         *  already turned it on, and for frontends too old to ask. */
         const val KEY_SHARE_ENABLED = "library.shareRecentGames"
+
+        /** Set on the returned cursor's extras when the caller has no grant, so a companion
+         *  can tell "you may not read this" from "nothing has been played". Both are an empty
+         *  cursor, and without this they are indistinguishable — which leaves the companion
+         *  unable to say anything useful and the user with a feature that silently does
+         *  nothing. */
+        const val EXTRA_ACCESS_DENIED = "com.armsx2.extra.RECENT_GAMES_ACCESS_DENIED"
+
+        /** Also set when this caller has already been asked and said no. Lets a companion stay
+         *  quiet instead of re-opening the prompt on every query, without having to remember the
+         *  refusal itself — which it cannot do correctly, since it never learns that the user
+         *  went into these settings and changed their mind. */
+        const val EXTRA_CONSENT_DECLINED = "com.armsx2.extra.RECENT_GAMES_CONSENT_DECLINED"
 
         const val PATH_GAMES = "games"
         const val COLUMN_URI = "uri"
@@ -78,7 +95,19 @@ class RecentGamesContentProvider : ContentProvider() {
         // panel and Discord presence are handled. An empty cursor rather than null: null is the
         // failure signal a ContentResolver caller has to special-case, and "sharing is off" is a
         // legitimate answer, not an error.
-        if (!prefs.getBoolean(KEY_SHARE_ENABLED, false)) {
+        //
+        // The grant is normally per-CALLER, keyed on the package Binder reports for whoever is
+        // querying — which cannot be spoofed, unlike anything the caller passes in. That keeps
+        // "any app on the device can read this" from ever being true: one companion asking for
+        // access (RecentGamesAccessActivity) admits that companion and nothing else. The global
+        // switch above still wins when it is on, for people who already enabled it.
+        val allowed = prefs.getBoolean(KEY_SHARE_ENABLED, false) ||
+            RecentGamesAccess.isGranted(prefs, callingPackage)
+        if (!allowed) {
+            cursor.extras = Bundle().apply {
+                putBoolean(EXTRA_ACCESS_DENIED, true)
+                putBoolean(EXTRA_CONSENT_DECLINED, RecentGamesAccess.isDeclined(prefs, callingPackage))
+            }
             return cursor
         }
 
