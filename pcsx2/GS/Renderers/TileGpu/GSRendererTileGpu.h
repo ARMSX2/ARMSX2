@@ -311,7 +311,7 @@ private:
 	u32 ReaderFlags(bool color_written);
 	/// What the in-pass read would be USED for on this draw (GSDevice::kGSTileGpuSelf*), given the
 	/// reasons above. Zero where the device has no such road, or where fixed-function is exact.
-	u32 SelfReadUses(u32 reader_flags) const;
+	u32 SelfReadUses(u32 reader_flags, bool fbmsk_exact) const;
 
 	// Mean/p50 of the accumulated per-frame pass structure and of the memory model's traffic,
 	// emitted at teardown.

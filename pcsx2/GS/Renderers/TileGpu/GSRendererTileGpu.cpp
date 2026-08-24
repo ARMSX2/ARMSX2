@@ -1209,7 +1209,7 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 // says which of those the fragment stage is actually built to serve, so a use that has not been
 // built yet stays on today's approximation rather than silently reading a destination nothing does
 // anything with.
-u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags) const
+u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool fbmsk_exact) const
 {
 	if (!m_self_read)
 		return 0;
@@ -1225,6 +1225,15 @@ u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags) const
 	// because the planner spends a pass break making it so.
 	if (reader_flags & GSTilePassSim::ReaderDate)
 		uses |= GSDevice::kGSTileGpuSelfDate;
+	// The blend equations the executor's fixed-function state approximates. ReaderAsDualSource is
+	// deliberately NOT here: that class is exactly the one dual-source blending expresses, and it is
+	// most of the corpus's blended draws.
+	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
+						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit.
+	if (!fbmsk_exact)
+		uses |= GSDevice::kGSTileGpuSelfMask;
 	return uses;
 }
 
@@ -3179,8 +3188,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	// answer: without the road there is nothing to admit to, and its blend arm costs a GetAlphaMinMax
 	// scan on every blended draw, which is real CPU work on a road that is CPU-bound. So the gate
 	// names the reasons that are live rather than asking unconditionally.
-	const u32 self_mask =
-		(m_self_read && (m_force_self_read || date != 0)) ? SelfReadUses(ReaderFlags(color_written)) : 0;
+	const bool fbmsk_exact = gsTileFrameWriteMaskIsExact(ctx->FRAME.FBMSK, fb_fmsk);
+	const u32 self_mask = (m_self_read && (m_force_self_read || date != 0)) ?
+							  SelfReadUses(ReaderFlags(color_written), fbmsk_exact) :
+							  0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -3995,8 +4006,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.tex_source = pd.src_slot;
 			sr.pal_mode = pd.pal_mode;
 			sr.pal_bias = pd.pal_bias;
-			sr.blend = pd.self_blend;
-			sr.fbmsk = pd.self_fbmsk;
+			// The row says what the fragment stage must DO with this draw, not what the registers said.
+			// A pass declares the read for the draws that need it and carries the ones that do not, so
+			// the two bits below are what tells them apart -- and spending the admission that way costs
+			// the shader nothing to unpack, which the Adreno instruction budget notices.
+			sr.blend = (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) ? pd.self_blend :
+																		(pd.self_blend & ~kGSTileBlendEnable);
+			sr.fbmsk = (pd.self_mask & GSDevice::kGSTileGpuSelfMask) ? pd.self_fbmsk : 0u;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 		}
 

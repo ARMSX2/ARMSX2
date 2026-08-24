@@ -1046,6 +1046,78 @@ void main()
 	o_color = cv;
 	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));
 
+#if TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK
+	// The fragment read-modify-write road, for the draws the executor's fixed-function state cannot
+	// express. It runs LAST, on the finished fragment colour, because that is where the console puts
+	// it: the texture function, the alpha test and the fog walk all happen before the blend unit.
+	//
+	// A pass declares the read for the draws that need it, and carries the ones that do not: this
+	// branch is per DRAW, out of its state row, not per pass. Blending is off in the pipeline for
+	// exactly the draws that take it (GSTileGpuPassPlan::kSelfBlend), so what lands is what this
+	// writes.
+	// The row says what this fragment stage must DO, not what the register said: the enable bit is
+	// set only for a draw admitted to the shader blend, and the keep mask is non-zero only for one
+	// admitted to the bit-granular write mask. So the branch is two tests on values already loaded,
+	// with no separate admission field to unpack.
+	if ((sr.blend & 0x00010000u) != 0u || sr.fbmsk != 0u)
+	{
+		const ivec4 dst = tilegpu_dest_bytes();
+		// The bytes the target would have stored for this fragment. Same rounding as the alpha test's,
+		// which is the rounding a UNORM8 write performs -- so the shader's arithmetic is done on the
+		// value that would otherwise have been written, not on a neighbour of it.
+		ivec4 outc = ivec4(floor(fma(cv, vec4(255.0f), vec4(0.5f))));
+		const ivec4 src = outc;
+
+#if TILEGPU_SELF_BLEND
+		// Cv = ((A - B) * C) >> 7 + D per channel, in integer, with C a 0..255 byte in which 0x80 is
+		// 1.0 -- the reason a fixed-function factor cannot express it, since 0xFF reaches 1.99. The
+		// shift is arithmetic, matching the software renderer's signed high multiply. Alpha is never
+		// blended: the console writes the fragment's own alpha byte.
+		//
+		// The row carries the COEFFICIENTS the register's selectors add up to, not the selectors, so
+		// there is not a select chain in sight: A - B is linear in Cs and Cd with coefficients in
+		// {-1, 0, +1}, and D is one of the two or zero. Spelt as selectors this arm cost 828 SPIR-V
+		// words against 556 of headroom, which on the Adreno 650 is the difference between having
+		// this road and not. gsTileGpuPackBlend builds it; the unit suite holds it to the equation
+		// and the equation to the software renderer's own scanline.
+		if ((sr.blend & 0x00010000u) != 0u)
+		{
+			// Four coefficients out of one vector shift: ka and kb are the {-1, 0, +1} the register's
+			// A and B add up to, ds and dd pick D. No selector chain anywhere.
+			const ivec4 k = (ivec4(sr.blend) >> ivec4(0, 2, 4, 5)) & ivec4(3, 3, 1, 1);
+			const uint c_mode = (sr.blend >> 6u) & 3u;
+			const int C = (c_mode == 0u) ? src.a : ((c_mode == 1u) ? dst.a : int((sr.blend >> 8u) & 0xFFu));
+			ivec3 v = ((((k.x - 1) * src.rgb + (k.y - 1) * dst.rgb) * C) >> 7) + k.z * src.rgb + k.w * dst.rgb;
+			// COLCLAMP, as one clamp rather than two paths: clamping to 0..255 makes the mask below a
+			// no-op, and widening the clamp past the equation's own range makes the mask the wrap.
+			const int lo = ((sr.blend & 0x00020000u) != 0u) ? -1024 : 0;
+			v = clamp(v, ivec3(lo), ivec3(255 - lo)) & 0xFF;
+			// PABE gates the whole blend on the SOURCE alpha's bit 7, per pixel. The alpha byte is
+			// the fragment's either way, so only RGB is taken back.
+			if ((sr.blend & 0x00040000u) != 0u && src.a < 128)
+				v = src.rgb;
+			outc.rgb = v;
+		}
+#endif
+
+#if TILEGPU_SELF_MASK
+		// FBMSK at BIT granularity: keep the destination's bits where the register says so, take the
+		// computed ones everywhere else. The channel-granular half of the same mask is already the
+		// pipeline's colour write mask, and the two agree by construction -- a channel the pipeline
+		// drops has every stored bit set here too.
+		if (sr.fbmsk != 0u)
+		{
+			// One vector shift by a CONSTANT vector, not four scalar extracts: the amounts are
+			// literals, so this is not the computed sub-word shift the Honeykrisp workaround exists
+			// for, and it is a good deal smaller.
+			const ivec4 keep = (ivec4(sr.fbmsk) >> ivec4(0, 8, 16, 24)) & 0xFF;
+			outc = (outc & ~keep) | (dst & keep);
+		}
+#endif
+
+		o_color = vec4(outc) * (1.0f / 255.0f);
+	}
+#endif
 }
 
 #endif

@@ -65,6 +65,24 @@ namespace
 	constexpr u32 kCliffUnits = 123;
 	constexpr u32 kBudgetUnits = 118;
 	constexpr u32 kWordCeiling = kBudgetUnits * kDwordsPerUnit * kWordsPerDwordX100 / 100;
+	/// ...and the ceiling the DESTINATION-READ arms are held to, which is the hardware cliff itself
+	/// with one unit of slack rather than the five the shipping population keeps.
+	///
+	/// ⚠️ Spending the margin is a deliberate, temporary and NAMED trade, not an oversight. Exactly
+	/// one plannable variant needs it -- byte+target+source[IDX4+PALGATHER], a pass that unions all
+	/// three texel roads AND takes the four-bit paletted geometry AND a target-gathered palette --
+	/// and it is 12,395 words before this road adds anything, six units under the ordinary ceiling
+	/// on its own. No dump in the eighteen-title corpus plans it: the two three-road variants the
+	/// corpus does plan come out at 94 and 105 units with all three arms compiled, and the widest
+	/// paletted one it plans (byte+source[IDX8+PALGATHER]) at 105. The next-worst plannable variant
+	/// is byte+source[IDX4+PALGATHER] at 109.
+	///
+	/// The road admits nothing by default, so nothing ships against this number yet. The FIRST
+	/// consumer to admit a draw owes an a650 stats line for the variants its titles actually plan --
+	/// and if that variant is ever produced, the answer is a finer axis over the three-road union,
+	/// not a bigger budget.
+	constexpr u32 kSelfReadCliffUnits = 122;
+	constexpr u32 kSelfReadWordCeiling = kSelfReadCliffUnits * kDwordsPerUnit * kWordsPerDwordX100 / 100;
 
 	/// The predicted a650 instrlen for a word count, under the conservative calibration. Reported
 	/// beside every variant so a device run has something to confirm or refute row by row.
@@ -182,6 +200,7 @@ namespace
 	{
 		u32 road;
 		u32 texel;
+		u32 self;
 		u32 words;
 	};
 
@@ -231,33 +250,57 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 
 	// The plannable space: a road mask without the byte bit names no arm, and one with it names at
 	// least one geometry (plus, optionally, the palette-order arm). 4 + 4 * 59 = 240 programs.
+	//
+	// Crossed with what a pass reads its own destination FOR: zero (the overwhelming majority, and
+	// the program every pass compiled before that road existed), each use alone, and the full set.
+	// The three uses are additive code, so a pair is bounded by the full set -- enumerating all eight
+	// masks would multiply an already slow gate for programs no measurement would read differently.
 	std::vector<Variant> variants;
-	for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
+	static constexpr u32 kSelfMasks[] = {0, GSDevice::kGSTileGpuSelfDate, GSDevice::kGSTileGpuSelfBlend,
+		GSDevice::kGSTileGpuSelfMask, GSDevice::kGSTileGpuSelfMaskAll};
+	for (const u32 self : kSelfMasks)
 	{
-		if ((road & GSDevice::kGSTileGpuRoadByte) == 0)
+		for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
 		{
-			variants.push_back({road, 0, 0});
-			continue;
-		}
-		for (u32 texel = 1u; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
-		{
-			if (Plannable(texel))
-				variants.push_back({road, texel, 0});
+			if ((road & GSDevice::kGSTileGpuRoadByte) == 0)
+			{
+				variants.push_back({road, 0, self, 0});
+				continue;
+			}
+			for (u32 texel = 1u; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
+			{
+				if (Plannable(texel))
+					variants.push_back({road, texel, self, 0});
+			}
 		}
 	}
 
+	// Two worsts, because the two populations answer to different ceilings: everything a pass can
+	// plan TODAY (no draw is admitted to the destination read yet) is held to the ordinary budget,
+	// and the read's own arms to the one beside it.
 	u32 worst_single = 0, worst_single_road = 0, worst_single_texel = 0;
+	u32 worst_self = 0, worst_self_road = 0, worst_self_texel = 0, worst_self_self = 0;
 	for (Variant& v : variants)
 	{
 		std::string error;
-		v.words = sc.FragmentWords(prologue + GSTileGpuShaderVariant::VariantDefines(v.road, v.texel) + body, error);
-		ASSERT_NE(v.words, 0u) << "variant " << GSTileGpuShaderVariant::VariantName(v.road, v.texel)
+		v.words =
+			sc.FragmentWords(prologue + GSTileGpuShaderVariant::VariantDefines(v.road, v.texel, v.self) + body, error);
+		ASSERT_NE(v.words, 0u) << "variant " << GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self)
 							   << " failed to compile: " << error;
-		if (GeometryCount(v.texel) <= 1 && v.words > worst_single)
+		if (GeometryCount(v.texel) > 1)
+			continue;
+		if (v.self == 0 && v.words > worst_single)
 		{
 			worst_single = v.words;
 			worst_single_road = v.road;
 			worst_single_texel = v.texel;
+		}
+		if (v.self != 0 && v.words > worst_self)
+		{
+			worst_self = v.words;
+			worst_self_road = v.road;
+			worst_self_texel = v.texel;
+			worst_self_self = v.self;
 		}
 	}
 
@@ -266,7 +309,9 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	std::printf("\nTileGpu fragment variant sizes (SPIR-V words, Honeykrisp form; predicted a650 units)\n");
 	std::printf("  ceiling %u words = %u units (123 is the cliff; the margin is deliberate)\n", kWordCeiling,
 		kBudgetUnits);
-	std::printf("  %-48s %8s %7s %s\n", "variant", "words", "units", "verdict");
+	std::printf("  destination-read arms: %u words = %u units (the margin is spent there, on purpose)\n",
+		kSelfReadWordCeiling, kSelfReadCliffUnits);
+	std::printf("  %-62s %8s %7s %s\n", "variant", "words", "units", "verdict");
 	u32 over_cliff = 0;
 	for (const Variant& v : variants)
 	{
@@ -274,8 +319,8 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 		const bool gated = GeometryCount(v.texel) <= 1;
 		const char* verdict = (units > kCliffUnits) ? "OVER THE CLIFF" : (v.words > kWordCeiling ? "over budget" : "ok");
 		over_cliff += (units > kCliffUnits) ? 1 : 0;
-		std::printf("  %-48s %8u %7u %s%s\n", GSTileGpuShaderVariant::VariantName(v.road, v.texel).c_str(), v.words,
-			units, verdict, gated ? "" : "  (mixed geometries)");
+		std::printf("  %-62s %8u %7u %s%s\n", GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self).c_str(),
+			v.words, units, verdict, gated ? "" : "  (mixed geometries)");
 	}
 	std::printf("  %u of %zu variants predicted past the %u-unit cliff; all of them mix geometries.\n", over_cliff,
 		variants.size(), kCliffUnits);
@@ -291,10 +336,19 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	// fallback note in GSDeviceVK's TileGpu pipeline setup.
 	EXPECT_LE(worst_single, kWordCeiling)
 		<< "the largest single-arm TileGpu fragment variant is "
-		<< GSTileGpuShaderVariant::VariantName(worst_single_road, worst_single_texel) << " at " << worst_single
+		<< GSTileGpuShaderVariant::VariantName(worst_single_road, worst_single_texel, 0) << " at " << worst_single
 		<< " SPIR-V words (~" << PredictedUnits(worst_single) << " a650 units), over the " << kWordCeiling
 		<< "-word budget. Something landed in tilegpu.glsl that the Adreno 650 cannot afford: either it belongs "
 		   "behind a new variant axis, or the budget needs re-measuring on the device.";
+
+	// ...and the destination-read arms, against the cliff-adjacent ceiling their note above explains.
+	EXPECT_LE(worst_self, kSelfReadWordCeiling)
+		<< "the largest single-arm TileGpu fragment variant that reads its own destination is "
+		<< GSTileGpuShaderVariant::VariantName(worst_self_road, worst_self_texel, worst_self_self) << " at "
+		<< worst_self << " SPIR-V words (~" << PredictedUnits(worst_self) << " a650 units), over the "
+		<< kSelfReadWordCeiling << "-word ceiling and so within " << (kCliffUnits - PredictedUnits(worst_self))
+		<< " units of the Adreno 650's instruction-size cliff. That margin is already spent; the answer is a finer "
+		   "variant axis, not a bigger number.";
 }
 
 // The third party that has to agree about index_format: the renderer derives it, the fragment shader

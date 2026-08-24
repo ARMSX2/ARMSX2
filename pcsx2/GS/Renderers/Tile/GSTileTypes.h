@@ -242,32 +242,115 @@ constexpr GSTileAlphaTestFold gsTileFoldAlphaTest(bool ate, u32 atst, u32 aref, 
 /// renderer's scanline, which is the oracle for this: its `modulate16<1>` is a left-shift-by-2 and
 /// a signed high multiply against `alpha << 7`, i.e. an arithmetic `(x * C) >> 7`.
 ///
-/// `fmt` is `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit. The 24-bit
-/// case is not cosmetic: a 24-bit destination has no alpha byte, and the console takes C=Ad there as
-/// exactly 1.0 rather than reading the byte (the software renderer skips the multiply outright).
-constexpr u32 kGSTileBlendAShift = 0;
-constexpr u32 kGSTileBlendBShift = 2;
-constexpr u32 kGSTileBlendCShift = 4;
-constexpr u32 kGSTileBlendDShift = 6;
-constexpr u32 kGSTileBlendFixShift = 8;
-constexpr u32 kGSTileBlendEnable = 1u << 16;   ///< blend at all; clear means Cv = Cs
-constexpr u32 kGSTileBlendWrap = 1u << 17;     ///< COLCLAMP = 0: the result wraps mod 256 instead of clamping
-constexpr u32 kGSTileBlendPabe = 1u << 18;     ///< PABE: the blend applies only where the source alpha's bit 7 is set
-constexpr u32 kGSTileBlendDest24 = 1u << 19;   ///< the destination stores no alpha, so C=Ad is exactly 1.0
+/// ⚠️ What rides in the row is NOT the register's three selectors but the COEFFICIENTS they add up
+/// to, and that is a size decision, not a style one. A - B is linear in Cs and Cd with coefficients
+/// in {-1, 0, +1}, and D is one of the two or zero, so the whole equation is
+///
+///     Cv = ((ka*Cs + kb*Cd) * C) >> 7 + ds*Cs + dd*Cd
+///
+/// which the fragment stage evaluates with no selector chains at all. Spelt as selectors it cost
+/// 828 SPIR-V words on the largest single-geometry variant, against a budget with 556 words of
+/// headroom; the Adreno 650's instruction-size cliff is what makes that the difference between a
+/// road and no road.
+///
+/// The same packing swallows the two shapes that are not the closed form:
+///   - A == B leaves ka and kb both zero, so the multiply contributes nothing and Cv is D. (Which
+///     is also why the expressibility classifier can gate on A != B before it looks at anything.)
+///   - A **24-bit destination** has no alpha byte, and the console takes C = Ad there as exactly
+///     1.0 rather than as whatever the unstored byte holds (the scanline skips the multiply
+///     outright). The packer turns that into the constant factor 0x80, and 0x80 >> 7 is 1 exactly.
+constexpr u32 kGSTileBlendKaShift = 0;    ///< coefficient of Cs in (A - B), biased by +1
+constexpr u32 kGSTileBlendKbShift = 2;    ///< coefficient of Cd in (A - B), biased by +1
+constexpr u32 kGSTileBlendDsBit = 1u << 4;  ///< D is Cs
+constexpr u32 kGSTileBlendDdBit = 1u << 5;  ///< D is Cd
+constexpr u32 kGSTileBlendCShift = 6;     ///< 0 = As, 1 = Ad, 2 = the constant below
+constexpr u32 kGSTileBlendFixShift = 8;   ///< the constant factor, when C says so
+constexpr u32 kGSTileBlendEnable = 1u << 16; ///< blend at all; clear means Cv = Cs
+constexpr u32 kGSTileBlendWrap = 1u << 17;   ///< COLCLAMP = 0: the result wraps mod 256 instead of clamping
+constexpr u32 kGSTileBlendPabe = 1u << 18;   ///< PABE: the blend applies only where the source alpha's bit 7 is set
+/// Pack the ALPHA register (plus COLCLAMP, PABE and the frame format) into the row. `fmt` is
+/// `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit.
 constexpr u32 gsTileGpuPackBlend(bool abe, u32 a, u32 b, u32 c, u32 d, u32 fix, bool colclamp, bool pabe, u32 fmt)
 {
-	u32 v = ((a & 3u) << kGSTileBlendAShift) | ((b & 3u) << kGSTileBlendBShift) |
-			((c & 3u) << kGSTileBlendCShift) | ((d & 3u) << kGSTileBlendDShift) |
-			((fix & 0xFFu) << kGSTileBlendFixShift);
+	int ka = 0, kb = 0;
+	if (a == 0)
+		ka++;
+	else if (a == 1)
+		kb++;
+	if (b == 0)
+		ka--;
+	else if (b == 1)
+		kb--;
+
+	// C = Ad on a destination that stores no alpha is exactly 1.0, which is the constant 0x80.
+	u32 c_mode = c;
+	u32 c_fix = fix;
+	if (c == 1 && fmt == 1)
+	{
+		c_mode = 2;
+		c_fix = 0x80;
+	}
+
+	u32 v = (static_cast<u32>(ka + 1) << kGSTileBlendKaShift) | (static_cast<u32>(kb + 1) << kGSTileBlendKbShift) |
+			((c_mode & 3u) << kGSTileBlendCShift) | ((c_fix & 0xFFu) << kGSTileBlendFixShift);
+	if (d == 0)
+		v |= kGSTileBlendDsBit;
+	else if (d == 1)
+		v |= kGSTileBlendDdBit;
 	if (abe)
 		v |= kGSTileBlendEnable;
 	if (!colclamp)
 		v |= kGSTileBlendWrap;
 	if (pabe)
 		v |= kGSTileBlendPabe;
-	if (fmt == 1)
-		v |= kGSTileBlendDest24;
 	return v;
+}
+
+/// One colour channel of the blend, evaluated from the packed row exactly as the fragment stage
+/// evaluates it. Held against gsTileGpuBlendChannel below, which is held against the scanline --
+/// so the chain from the software renderer to the shader is closed by two unit tests rather than
+/// by a reading of two files side by side.
+constexpr int gsTileGpuBlendChannelPacked(int cs, int cd, u32 blend, int as, int ad)
+{
+	const int ka = static_cast<int>((blend >> kGSTileBlendKaShift) & 3u) - 1;
+	const int kb = static_cast<int>((blend >> kGSTileBlendKbShift) & 3u) - 1;
+	const u32 c_mode = (blend >> kGSTileBlendCShift) & 3u;
+	const int C = (c_mode == 0) ? as : ((c_mode == 1) ? ad : static_cast<int>((blend >> kGSTileBlendFixShift) & 0xFFu));
+	const int D = ((blend & kGSTileBlendDsBit) ? cs : 0) + ((blend & kGSTileBlendDdBit) ? cd : 0);
+	const int v = (((ka * cs + kb * cd) * C) >> 7) + D;
+	// COLCLAMP as ONE clamp rather than two paths, which is how the fragment stage spells it:
+	// clamping to 0..255 makes the mask a no-op, and widening the clamp past the equation's own
+	// range (which is [-510, 765]) makes the mask the wrap.
+	const int lo = (blend & kGSTileBlendWrap) ? -1024 : 0;
+	const int hi = 255 - lo;
+	return ((v < lo) ? lo : ((v > hi) ? hi : v)) & 0xFF;
+}
+
+/// One colour channel of the GS blend in the register's own terms -- the SEMANTIC model, the thing
+/// the software renderer is compared against. The packed form above is what actually runs; this is
+/// what says what it means.
+///
+/// `a_sel`/`b_sel`/`d_sel` are the ALPHA register's encodings (0 = Cs, 1 = Cd, 2 = zero); `c_sel` is
+/// 0 = As, 1 = Ad, 2 = FIX. `dest24` says the destination stores no alpha byte.
+constexpr int gsTileGpuBlendChannel(
+	int cs, int cd, u32 a_sel, u32 b_sel, u32 c_sel, u32 d_sel, int as, int ad, int fix, bool colclamp, bool dest24)
+{
+	const int A = (a_sel == 0) ? cs : ((a_sel == 1) ? cd : 0);
+	const int B = (b_sel == 0) ? cs : ((b_sel == 1) ? cd : 0);
+	const int D = (d_sel == 0) ? cs : ((d_sel == 1) ? cd : 0);
+	int v;
+	if (dest24 && c_sel == 1)
+	{
+		v = (A - B) + D;
+	}
+	else
+	{
+		const int C = (c_sel == 0) ? as : ((c_sel == 1) ? ad : fix);
+		v = (((A - B) * C) >> 7) + D;
+	}
+	if (!colclamp)
+		return v & 0xFF;
+	return (v < 0) ? 0 : ((v > 255) ? 255 : v);
 }
 
 /// FBMSK as a KEEP mask on the target's expanded RGBA8 bytes: the bits of the destination the draw
