@@ -82,8 +82,8 @@ public:
 		TileGpuScissorCuts,
 		TileGpuScissorExtraCalls,
 		TileGpuDualSrcDraws,
-		TileGpuDualSrcCarrier,
-		TileGpuDualSrcReaders,
+		TileGpuDualSrcRestore,
+		TileGpuDualSrcCompanions,
 
 		CounterLast,
 

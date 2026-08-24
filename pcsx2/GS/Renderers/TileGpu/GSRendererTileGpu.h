@@ -1096,6 +1096,13 @@ private:
 		/// on a device with dual-source blending, on every draw whose row names no As factor, and on
 		/// the companion draw that writes the alpha byte the carrier displaced.
 		u32 dualsrc_bits;
+		/// Which of the blend row's two factors the GS's own source alpha supplies
+		/// (GSDevice::kGSTileGpuDualSrc*), and which road that draw's factor WOULD take on a device
+		/// with no second colour output (GSDevice::GSTileGpuDualSrcRoad). Both filled on every
+		/// device, because the census has to say what the carrier roads cost even on an arm that
+		/// does not take them; only the road's application is gated on the device.
+		u32 dualsrc_terms;
+		u8 dualsrc_road;
 		/// This draw's failing fragments land their RGB and keep the destination's alpha instead of
 		/// being discarded (gsTileGpuAfailKeepsAlpha). A per-fragment write mask, so it rides the same
 		/// fragment arm the bit-granular FBMSK merge does.
@@ -2353,14 +2360,14 @@ private:
 		// blob on the RG477V hardcodes absent -- and a pipeline naming a SRC1 factor there does not
 		// render wrongly, it fails to be created. These columns say how much of a frame the feature
 		// carries and what each of the roads that need no feature would have to take.
-		u32 dualsrc_draws = 0;     // fixed-function blended draws whose row names As as a factor
-		u32 dualsrc_src_only = 0;  // ...where As multiplies the SOURCE only: the shader can premultiply
-		u32 dualsrc_alpha_free = 0;// ...whose alpha channel the draw does not write: o_color.a is free
-		u32 dualsrc_carrier = 0;   // ...served by one of those two without reading the destination
-		u32 dualsrc_readers = 0;   // ...served by neither: the shader-blend residue
-		u32 dualsrc_reader_runs = 0; // ...and the runs of consecutive such draws, one declared run each
-		u32 dualsrc_readers_unclamped = 0; // ...of that residue, the draws whose As factor never clamps
-		u32 dualsrc_companions = 0;        // alpha-only draws the carrier road added to the plan
+		u32 dualsrc_draws = 0;      // fixed-function blended draws whose row names As as a factor
+		u32 dualsrc_src_only = 0;   // ...where As multiplies the SOURCE only (see gsTileGpuDualSrcRoad
+		                            //    on why that is now only informational)
+		u32 dualsrc_carrier = 0;    // ...road Carrier: the alpha channel is free, nothing to give back
+		u32 dualsrc_restore = 0;    // ...road CarrierRestore: the alpha blend equation gives it back
+		u32 dualsrc_needs_comp = 0; // ...road CarrierCompanion: a second draw has to write the alpha
+		u32 dualsrc_companions = 0; // ...and the companions this frame actually ISSUED, which is zero
+		                            //    wherever the device took the second colour output instead
 
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them

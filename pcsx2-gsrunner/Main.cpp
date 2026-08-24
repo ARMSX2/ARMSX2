@@ -285,10 +285,10 @@ static double s_last_scissor_extra_calls = 0;
 static u64 s_total_scissor_extra_calls = 0;
 static double s_last_dualsrc_draws = 0;
 static u64 s_total_dualsrc_draws = 0;
-static double s_last_dualsrc_carrier = 0;
-static u64 s_total_dualsrc_carrier = 0;
-static double s_last_dualsrc_readers = 0;
-static u64 s_total_dualsrc_readers = 0;
+static double s_last_dualsrc_restore = 0;
+static u64 s_total_dualsrc_restore = 0;
+static double s_last_dualsrc_companions = 0;
+static u64 s_total_dualsrc_companions = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -545,8 +545,8 @@ void Host::BeginPresentFrame()
 		update_stat(GSPerfMon::TileGpuScissorCuts, s_total_scissor_cuts, s_last_scissor_cuts);
 		update_stat(GSPerfMon::TileGpuScissorExtraCalls, s_total_scissor_extra_calls, s_last_scissor_extra_calls);
 		update_stat(GSPerfMon::TileGpuDualSrcDraws, s_total_dualsrc_draws, s_last_dualsrc_draws);
-		update_stat(GSPerfMon::TileGpuDualSrcCarrier, s_total_dualsrc_carrier, s_last_dualsrc_carrier);
-		update_stat(GSPerfMon::TileGpuDualSrcReaders, s_total_dualsrc_readers, s_last_dualsrc_readers);
+		update_stat(GSPerfMon::TileGpuDualSrcRestore, s_total_dualsrc_restore, s_last_dualsrc_restore);
+		update_stat(GSPerfMon::TileGpuDualSrcCompanions, s_total_dualsrc_companions, s_last_dualsrc_companions);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -1612,8 +1612,8 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"tilegpu_scissor_cuts\": %" PRIu64 ",\n", s_total_scissor_cuts);
 	std::fprintf(fp.get(), "    \"tilegpu_scissor_extra_calls\": %" PRIu64 ",\n", s_total_scissor_extra_calls);
 	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_draws\": %" PRIu64 ",\n", s_total_dualsrc_draws);
-	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_carrier\": %" PRIu64 ",\n", s_total_dualsrc_carrier);
-	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_readers\": %" PRIu64 ",\n", s_total_dualsrc_readers);
+	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_restore\": %" PRIu64 ",\n", s_total_dualsrc_restore);
+	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_companions\": %" PRIu64 ",\n", s_total_dualsrc_companions);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	// The same population, split by cause, so an attribution round needs no teardown-ordering print
 	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader

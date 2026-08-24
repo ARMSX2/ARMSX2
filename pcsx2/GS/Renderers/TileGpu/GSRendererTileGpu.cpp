@@ -399,8 +399,8 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	g_perfmon.Put(GSPerfMon::TileGpuScissorCuts, static_cast<double>(m_frame.scissor_cuts));
 	g_perfmon.Put(GSPerfMon::TileGpuScissorExtraCalls, static_cast<double>(m_frame.scissor_extra_calls));
 	g_perfmon.Put(GSPerfMon::TileGpuDualSrcDraws, static_cast<double>(m_frame.dualsrc_draws));
-	g_perfmon.Put(GSPerfMon::TileGpuDualSrcCarrier, static_cast<double>(m_frame.dualsrc_carrier));
-	g_perfmon.Put(GSPerfMon::TileGpuDualSrcReaders, static_cast<double>(m_frame.dualsrc_readers));
+	g_perfmon.Put(GSPerfMon::TileGpuDualSrcRestore, static_cast<double>(m_frame.dualsrc_restore));
+	g_perfmon.Put(GSPerfMon::TileGpuDualSrcCompanions, static_cast<double>(m_frame.dualsrc_needs_comp));
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
@@ -1960,19 +1960,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 		const auto pld = stat([](const MF& f) { return f.scissor_draws; });
 		const auto dsd = stat([](const MF& f) { return f.dualsrc_draws; });
 		const auto dss = stat([](const MF& f) { return f.dualsrc_src_only; });
-		const auto dsa = stat([](const MF& f) { return f.dualsrc_alpha_free; });
-		const auto dsc = stat([](const MF& f) { return f.dualsrc_carrier; });
-		const auto dsr = stat([](const MF& f) { return f.dualsrc_readers; });
-		const auto dsu = stat([](const MF& f) { return f.dualsrc_readers_unclamped; });
-		const auto dsn = stat([](const MF& f) { return f.dualsrc_reader_runs; });
+		const auto dsa = stat([](const MF& f) { return f.dualsrc_carrier; });
+		const auto dsv = stat([](const MF& f) { return f.dualsrc_restore; });
+		const auto dsn = stat([](const MF& f) { return f.dualsrc_needs_comp; });
 		const auto dsk = stat([](const MF& f) { return f.dualsrc_companions; });
 		Console.WriteLn("  dual-src: draws %.2f / %u / %u worst (%.2f%% of plan draws)   As on the source alone "
-						"%.2f / %u   alpha channel free %.2f / %u   NO-FEATURE ROADS carry %.2f / %u (%.2f%%)   "
-						"residue %.2f / %u / %u worst in %.2f / %u runs, of which factor never clamps %.2f / %u   "
-						"companion draws issued %.2f / %u / %u worst",
+						"%.2f / %u   ROADS alpha free %.2f / %u, alpha restored %.2f / %u, companion needed "
+						"%.2f / %u / %u worst   companions ISSUED %.2f / %u",
 			dsd.mean, dsd.p50, dsd.max, (pld.mean > 0.0) ? (dsd.mean * 100.0 / pld.mean) : 0.0, dss.mean, dss.p50,
-			dsa.mean, dsa.p50, dsc.mean, dsc.p50, (dsd.mean > 0.0) ? (dsc.mean * 100.0 / dsd.mean) : 0.0, dsr.mean,
-			dsr.p50, dsr.max, dsn.mean, dsn.p50, dsu.mean, dsu.p50, dsk.mean, dsk.p50, dsk.max);
+			dsa.mean, dsa.p50, dsv.mean, dsv.p50, dsn.mean, dsn.p50, dsn.max, dsk.mean, dsk.p50);
 	}
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
@@ -4520,22 +4516,27 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 	}
 
-	// The As blend factor's road. On a device with dual-source blending it rides as the fragment
-	// stage's index-1 output and nothing here fires. Without one it has to reach the blend unit
-	// another way, and which way is a per-draw question -- gsTileGpuDualSrcRoad asks it.
+	// The As blend factor's road, asked as though the device had no second colour output -- always,
+	// on every device. That is what makes the census comparable across the two arms: a run on a
+	// device that HAS dual-source still reports what the carrier roads would have cost it. Which
+	// road is then APPLIED is the device's question, one gate below.
 	u32 write_mask = pd.color_mask;
 	bool alpha_companion = false;
-	if (fixed_function_blend && !m_dual_source)
+	pd.dualsrc_terms = fixed_function_blend ? GSDevice::gsTileGpuDualSrcTerms(blend_key & 0x7Fu) : 0u;
+	if (pd.dualsrc_terms != 0)
 	{
-		const u32 terms = GSDevice::gsTileGpuDualSrcTerms(blend_key & 0x7Fu);
 		// The two ways the fragment stage owns the alpha byte it writes: a per-fragment AFAIL keep,
 		// and an FBMSK that masks alpha in PART so the shader merges the destination's bits. Both
 		// put a value in o_color.a that the carrier would overwrite.
 		const bool alpha_is_the_shaders =
 			pd.afail_keep_alpha || ((pd.self_mask & GSDevice::kGSTileGpuSelfMask) != 0 &&
 									   (pd.self_fbmsk & 0xFF000000u) != 0);
-		switch (GSDevice::gsTileGpuDualSrcRoad(
-			terms, false, (pd.color_mask & 0x8u) != 0, pd.as_unclamped, alpha_is_the_shaders))
+		pd.dualsrc_road = static_cast<u8>(GSDevice::gsTileGpuDualSrcRoad(
+			pd.dualsrc_terms, false, (pd.color_mask & 0x8u) != 0, pd.as_unclamped, alpha_is_the_shaders));
+	}
+	if (pd.dualsrc_terms != 0 && !m_dual_source)
+	{
+		switch (static_cast<GSDevice::GSTileGpuDualSrcRoad>(pd.dualsrc_road))
 		{
 			case GSDevice::GSTileGpuDualSrcRoad::Carrier:
 				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcCarrier;
@@ -4603,6 +4604,10 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_plan_depth_modes.push_back(pd.depth_mode);
 		PendingDraw apd = pd;
 		apd.dualsrc_bits = 0;
+		// It blends nothing and names no factor, so it is not part of the population the census
+		// counts -- leaving the copy's fields set would have it asking for a companion of its own.
+		apd.dualsrc_terms = 0;
+		apd.dualsrc_road = static_cast<u8>(GSDevice::GSTileGpuDualSrcRoad::None);
 		apd.color_mask = static_cast<u8>(pd.color_mask & 0x8u);
 		apd.draw_index = alpha_draw.state_index;
 		// The prep ops belong to the draw above and have already run; this one names an empty range
@@ -4759,10 +4764,6 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// ...and the per-draw fragment variant, sized here and filled by the grouping below, which is
 		// where a draw's pass -- and so the DATE road its pass provided -- is finally known.
 		m_plan_variant_keys.assign(m_plan_pending.size(), 0u);
-		// The dual-source census's run state: the residue draws are counted in runs as well as in
-		// draws, and a run ends where the colour surface changes or a non-residue draw lands.
-		bool dualsrc_run_open = false;
-		GSTileSurfaceId dualsrc_run_surface = kGSTileNoSurface;
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
@@ -4840,52 +4841,26 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			if (pd.scissor_cuts)
 				m_frame.scissor_cuts++;
 
-			// The dual-source census, asked of the blend row the executor will really build the
-			// pipeline from: the fixed-function blend has to be ON (a draw whose equation the fragment
-			// stage evaluates names no factors at all) and the row has to reach for the second source.
-			const u32 bkey = m_plan_blend_keys[i];
-			const bool ff_blend = (bkey & GSDevice::GSTileGpuPassPlan::kBlendEnable) != 0 &&
-								  (bkey & GSDevice::GSTileGpuPassPlan::kSelfBlend) == 0;
-			const u32 terms = ff_blend ? GSDevice::gsTileGpuDualSrcTerms(bkey & 0x7Fu) : 0u;
-			if (terms != 0)
+			// The dual-source census. The road was decided at accumulation as though no device had
+			// a second colour output, so these columns say what the carrier roads cost on BOTH arms
+			// -- and dualsrc_companions, counted where the companions are really issued, says what
+			// this arm actually paid.
+			if (pd.dualsrc_terms != 0)
 			{
 				m_frame.dualsrc_draws++;
-				// As multiplying the SOURCE only is the cheap case: the fragment stage can fold the
-				// factor into its own colour and hand the blend unit a factor of one, which touches
-				// nothing else about the draw. As multiplying the DESTINATION cannot be folded --
-				// the fragment stage does not have Cd unless it reads for it.
-				const bool src_only = (terms & GSDevice::kGSTileGpuDualSrcDest) == 0;
-				if (src_only)
+				// Informational: the population the deleted fold road served. Kept because it is the
+				// one number that would price bringing it back on a driver that rounds a shader
+				// multiply and a blend-unit multiply the same way.
+				if ((pd.dualsrc_terms & GSDevice::kGSTileGpuDualSrcDest) == 0)
 					m_frame.dualsrc_src_only++;
-				// ...and the other cheap case: a draw that does not write the target's alpha byte can
-				// put the factor in o_color.a and let the blend unit read it as SRC_ALPHA, because the
-				// channel write mask throws the carrier away after the blend has used it.
-				const bool alpha_free = (pd.color_mask & 0x8u) == 0;
-				if (alpha_free)
-					m_frame.dualsrc_alpha_free++;
-				if (src_only || alpha_free)
+				switch (static_cast<GSDevice::GSTileGpuDualSrcRoad>(pd.dualsrc_road))
 				{
-					m_frame.dualsrc_carrier++;
-				}
-				else
-				{
-					m_frame.dualsrc_readers++;
-					// ...and of the residue, the half whose factor never reaches its clamp. That is
-					// the half an alpha channel could carry AND give back, if the alpha blend
-					// equation were made to undo the 255/128 the carrier applies.
-					if (pd.as_unclamped)
-						m_frame.dualsrc_readers_unclamped++;
+					case GSDevice::GSTileGpuDualSrcRoad::Carrier: m_frame.dualsrc_carrier++; break;
+					case GSDevice::GSTileGpuDualSrcRoad::CarrierRestore: m_frame.dualsrc_restore++; break;
+					case GSDevice::GSTileGpuDualSrcRoad::CarrierCompanion: m_frame.dualsrc_needs_comp++; break;
+					default: break;
 				}
 			}
-			// A run of consecutive residue draws into one colour surface declares one pass between
-			// them, so the residue's price is runs as much as draws -- the same two terms the
-			// declaring budget charges its classes in.
-			const bool residue = terms != 0 && (terms & GSDevice::kGSTileGpuDualSrcDest) != 0 &&
-								 (pd.color_mask & 0x8u) != 0;
-			if (residue && !(dualsrc_run_open && dualsrc_run_surface == pd.color_surface))
-				m_frame.dualsrc_reader_runs++;
-			dualsrc_run_open = residue;
-			dualsrc_run_surface = pd.color_surface;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
