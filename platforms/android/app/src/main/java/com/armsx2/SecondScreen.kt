@@ -495,8 +495,21 @@ object SecondScreen {
                 val params = android.widget.GridLayout.LayoutParams().apply {
                     width = 0
                     // 0 means "as tall as the text needs", which is what the panel always did.
-                    height = if (fixedH > 0) (dp * fixedH).toInt()
-                    else ViewGroup.LayoutParams.WRAP_CONTENT
+                    //
+                    // The cover is the exception: WRAP_CONTENT around an image gives the cell no
+                    // definite height, so FIT_CENTER had no box to fit into and the art spilled
+                    // past the cell and was clipped. Box art is about 1.4 times as tall as it is
+                    // wide, so the cell is given that shape at the column width and the whole
+                    // cover then fits inside it.
+                    height = when {
+                        fixedH > 0 -> (dp * fixedH).toInt()
+                        tile == SecondScreenTile.COVER -> {
+                            val cellW = (resources.displayMetrics.widthPixels -
+                                (dp * 28).toInt()) / columns.coerceAtLeast(1)
+                            (cellW * 1.4f).toInt()
+                        }
+                        else -> ViewGroup.LayoutParams.WRAP_CONTENT
+                    }
                     columnSpec = android.widget.GridLayout.spec(
                         android.widget.GridLayout.UNDEFINED, 1, 1f,
                     )
@@ -583,7 +596,6 @@ object SecondScreen {
                 // logo and the title on them. Fitting shows the whole cover and letterboxes it
                 // against the tile background instead.
                 scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                adjustViewBounds = true
             }
             // A label UNDER the image rather than instead of it. With no game, or before the
             // fetch lands, an empty box is indistinguishable from a broken tile -- and this tile
@@ -990,7 +1002,7 @@ object SecondScreen {
         private fun raPoints(): String {
             if (raItems.isEmpty()) return I18n.get("secondScreen.tile.raPoints") + "\n—"
             val earned = raItems.filter { it.unlocked }.sumOf { it.points }
-            return "🏆 RA\n$earned/${raItems.sumOf { it.points }}"
+            return I18n.get("secondScreen.tile.raPoints") + "\n$earned/${raItems.sumOf { it.points }}"
         }
 
         /**
@@ -1002,16 +1014,20 @@ object SecondScreen {
          * hardcore, and a hardcore unlock sets both, so the casual figure is deliberately the
          * softcore-ONLY count rather than the total.
          */
+        /**
+         * Which mode you are in, then how many you have.
+         *
+         * The first attempt showed a hardcore count and a casual count above the total, which
+         * read as three unrelated numbers -- "🏆0" over "0/64" says nothing about which mode is
+         * active, and both being zero made it worse. What a glance actually wants is the mode
+         * you are playing in and your progress in it, so that is what it says.
+         */
         private fun achievementSummary(): String {
             if (raItems.isEmpty()) return I18n.get("secondScreen.tile.achievements") + "\n—"
-            val unlocked = raItems.filter { it.unlocked }
-            val hardcore = unlocked.count { it.unlockedMask and 2 != 0 }
-            val casual = unlocked.size - hardcore
-            return buildString {
-                append("🏆").append(hardcore)
-                if (casual > 0) append("  🎖").append(casual)
-                append('\n').append(unlocked.size).append('/').append(raItems.size)
-            }
+            val hardcore = runCatching { NativeApp.isHardcorePersisted() }.getOrDefault(false)
+            val mode = if (hardcore) "🏆 " + I18n.get("secondScreen.ra.hardcore")
+            else "🎖 " + I18n.get("secondScreen.ra.casual")
+            return mode + "\n" + raItems.count { it.unlocked } + "/" + raItems.size
         }
 
         /** Session-only: which achievement ids were already unlocked when we last looked. */
