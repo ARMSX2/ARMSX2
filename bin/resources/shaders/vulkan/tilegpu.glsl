@@ -206,11 +206,15 @@ struct StateRow
 	uint tcc;        // TEX0.TCC: 1 = texture carries alpha, 0 = alpha from vertex
 	uint wms;        // CLAMP.WMS horizontal wrap mode
 	uint wmt;        // CLAMP.WMT vertical wrap mode
-	uint index_format; // 0 = direct 32-bit texel, else GSTileSwizzleForms::IndexFormatFor + 1:
+	uint index_format; // 0 = direct 32-bit texel in the CT32 block space (PSMCT32 / PSMCT24),
+	                   // else GSTileSwizzleForms::IndexFormatFor + 1:
 	                   // 1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH;
 	                   // else GSTileSwizzleForms::Direct16FormatFor + 6, a direct 16-bit texel:
 	                   // 6 = PSMCT16, 7 = PSMCT16S, 8 = PSMZ16, 9 = PSMZ16S. Bit 0 of (fmt - 6)
-	                   // picks the strided block table, bit 1 the depth block XOR.
+	                   // picks the strided block table, bit 1 the depth block XOR;
+	                   // 10 = direct 32-bit texel in the DEPTH block space (PSMZ32 / PSMZ24), which
+	                   // is 0's tables under the 32-bit depth block XOR. Not contiguous with 0 on
+	                   // purpose -- 0 is what an untextured row already carries, so it stays put.
 	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
 	uint epoch;        // page-table epoch this draw's byte reads go through
 	uint date;         // destination-alpha test: 0 off, 1 = pass where alpha bit 7 clear (DATM 0), 2 = set (DATM 1)
@@ -394,10 +398,21 @@ uint tile_c32(uint x, uint y)
 // The CT32/CT24 texel at integer coords (u, v) of the texture at tbp0/tbw, as a raw RGBA8888 word.
 // A CT32 page is 64x32 texels, 8x8 blocks, 8x8-texel columns; block b of guest memory occupies words
 // [b*64, b*64+64), so the absolute block times 64 plus the word-in-block is the linear word address.
-uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw, uint epoch)
+//
+// `zxor` turns the same arithmetic into PSMZ32/PSMZ24's: the depth pair is the colour pair's tables
+// under one constant XOR on the ABSOLUTE block, which is where GSOffset::bn() applies it -- and where
+// it has to stay, because distributing it into the in-page index would be right only for a
+// page-aligned TBP0 and a texture window's often is not. Zero on every colour read, so the depth road
+// costs the caller a select the compiler hoists out of the four bilinear taps.
+//
+// & 16383 is bn()'s own `% GS_MAX_BLOCKS`, a power of two, and it matters for the same reason it does
+// on the 16-bit arm: a window based near the top of memory wraps, and an unwrapped block would send
+// tilegpu_ring_word past the end of the page table into the entries and the palettes -- live data in
+// the same buffer -- and hand back a plausible slot.
+uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint zxor)
 {
 	uint page = (v >> 5u) * tbw + (u >> 6u);
-	uint blk = tbp0 + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
+	uint blk = ((tbp0 + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u)) ^ zxor) & 16383u;
 	uint word_in_block = tile_c32(u & 7u, v & 7u);
 	return vram_words[tilegpu_ring_word(blk * 64u + word_in_block, epoch)];
 }
@@ -508,7 +523,9 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 uint tilegpu_index_hi(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint fmt)
 {
 	// The alpha byte: the whole index for PSMT8H, and the byte the two 4-bit views take a nibble of.
-	uint b = bitfieldExtract(tilegpu_texel32(u, v, tbp0, tbw, epoch), 24, 8);
+	// No block XOR: the three alpha-byte views live in the CT32 swizzle universe and there is no
+	// depth spelling of any of them.
+	uint b = bitfieldExtract(tilegpu_texel32(u, v, tbp0, tbw, epoch, 0u), 24, 8);
 	if (fmt == 3u)
 		return b;
 	return (fmt == 4u) ? (b & 0xFu) : (b >> 4u);
@@ -745,8 +762,14 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	// the module that leaves the 16-bit arm out.
 	uint w = 0u;
 #if TILEGPU_BYTE_D32
-	if (sr.index_format == 0u)
-		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch);
+	// TWO values land on this arm: 0 is the CT32 pair (PSMCT32 / PSMCT24) and 10 the DEPTH pair
+	// (PSMZ32 / PSMZ24), which is the same address geometry under one constant block XOR -- exactly
+	// the relation 8 and 9 have to 6 and 7 on the 16-bit arm. The 24-bit member of either pair is
+	// told from the 32-bit one by TEXA below, not here, because that is a fact about the word's top
+	// byte and not about where the word is.
+	if (sr.index_format == 0u || sr.index_format == 10u)
+		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch,
+			(sr.index_format != 0u) ? TILE_SWZ_Z32XOR : 0u);
 #endif
 #if TILEGPU_BYTE_IDX8
 	if (sr.index_format == 1u)

@@ -2182,7 +2182,7 @@ public:
 	/// Formats sharing an address geometry share an arm, deliberately: the three alpha-byte views
 	/// differ by one bitfield extract and the four 16-bit families by two selects, so splitting
 	/// those buys a handful of instructions and multiplies the variant population for nothing.
-	static constexpr u32 kGSTileGpuTexelDirect32 = 1u << 0; ///< PSMCT32 / PSMCT24
+	static constexpr u32 kGSTileGpuTexelDirect32 = 1u << 0; ///< PSMCT32 / PSMCT24 / PSMZ32 / PSMZ24
 	static constexpr u32 kGSTileGpuTexelIndex8 = 1u << 1;   ///< PSMT8
 	static constexpr u32 kGSTileGpuTexelIndex4 = 1u << 2;   ///< PSMT4
 	static constexpr u32 kGSTileGpuTexelIndexHi = 1u << 3;  ///< PSMT8H / PSMT4HL / PSMT4HH
@@ -2204,9 +2204,14 @@ public:
 	static constexpr u32 kGSTileGpuTexelArms = 6;
 
 	/// The arm a state row's index_format decodes through. The numbering is the renderer's (0 =
-	/// direct 32-bit, 1-5 = GSTileSwizzleForms::IndexFormatFor + 1, 6-9 = Direct16FormatFor + 6) and
-	/// the fragment shader switches on the same value, so this mapping is the third party that has
-	/// to agree with both — pinned in the gs suite rather than left to inspection.
+	/// direct 32-bit in the CT32 block space, 1-5 = GSTileSwizzleForms::IndexFormatFor + 1,
+	/// 6-9 = Direct16FormatFor + 6, 10 = direct 32-bit in the DEPTH block space) and the fragment
+	/// shader switches on the same value, so this mapping is the third party that has to agree with
+	/// both — pinned in the gs suite rather than left to inspection.
+	///
+	/// ⚠️ 10 lands on the SAME arm as 0. The depth pair is the colour pair's address geometry under
+	/// one constant block XOR, which is a select inside the arm rather than a second arm — the same
+	/// call the 16-bit families' two depth members already take.
 	static constexpr u32 GSTileGpuTexelArm(u32 index_format)
 	{
 		if (index_format == 0)
@@ -2217,7 +2222,9 @@ public:
 			return kGSTileGpuTexelIndex4;
 		if (index_format < 6)
 			return kGSTileGpuTexelIndexHi;
-		return kGSTileGpuTexelDirect16;
+		if (index_format < 10)
+			return kGSTileGpuTexelDirect16;
+		return kGSTileGpuTexelDirect32;
 	}
 
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF

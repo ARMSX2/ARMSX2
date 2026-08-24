@@ -116,7 +116,10 @@ bool HasCt32PixelSpace(const GSTileSurfaceLayout& layout)
 // so it stays exactly where it was rather than being tidied into a byte-moving change.
 u32 TextureWindowBwPg(u32 psm, u32 tbw)
 {
-	if (psm == PSMCT32 || psm == PSMCT24)
+	// ...and their depth twins, which are the identical 64-texel page geometry one swizzle universe
+	// over. A road that differed from its colour twin only at TBW = 0 is a difference nobody would
+	// ever go looking for.
+	if (psm == PSMCT32 || psm == PSMCT24 || psm == PSMZ32 || psm == PSMZ24)
 		return std::max<u32>(tbw, 1);
 	return GSTileSwizzleForms::PagesPerRow(psm, tbw);
 }
@@ -1941,9 +1944,12 @@ u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& 
 	// A format the materialise has no arm for. The 16-bit families are sampled straight out of the
 	// bytes and nothing builds them into an image, so admitting one here would hand the draw a
 	// source slot whose build op the executor then skips -- an image nobody wrote, sampled as
-	// texture. Asked FIRST, before the shape questions, because it is a fact about the road rather
-	// than about this window.
-	if (GSTileSwizzleForms::Direct16FormatFor(tex0.PSM) >= 0)
+	// texture. The direct-32 DEPTH pair is in the same position: tilegpu_materialise.glsl's CT32 arm
+	// has no block XOR, so it would build the window out of the colour twin's blocks. Asked FIRST,
+	// before the shape questions, because both are facts about the road rather than about this
+	// window.
+	if (GSTileSwizzleForms::Direct16FormatFor(tex0.PSM) >= 0 ||
+		GSTileSwizzleForms::Direct32FormatFor(tex0.PSM) == static_cast<int>(GSTileSwizzleForms::Direct32Format::Z32))
 	{
 		m_frame.src_ref_srcfmt++;
 		return kNoSourceSlot;
@@ -3096,14 +3102,20 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.color_mask = color_mask;
 
 	// Texture inputs. Three address geometries are sampled at this stage: the CT32 one (PSMCT32 and
-	// PSMCT24 as direct colour, and the alpha-byte views PSMT8H/PSMT4HL/PSMT4HH as indices in the
-	// top bits of the same words), the PSMT8/PSMT4 one (128-texel pages, a swizzled index into an
-	// expanded CLUT), and the 16-bit one (64x64-texel pages of 16x8 blocks, two texels to a word --
-	// PSMCT16/PSMCT16S and their depth twins PSMZ16/PSMZ16S, which are the same tables under one
-	// block XOR). That is every format the GS can sample except the 8/4-bit ones read out of a
-	// 32-bit target, which the alpha-byte views already cover. The fixed TEX0 folds TW/TH to the
+	// PSMCT24 as direct colour, their depth twins PSMZ32/PSMZ24 under one block XOR, and the
+	// alpha-byte views PSMT8H/PSMT4HL/PSMT4HH as indices in the top bits of the same words), the
+	// PSMT8/PSMT4 one (128-texel pages, a swizzled index into an expanded CLUT), and the 16-bit one
+	// (64x64-texel pages of 16x8 blocks, two texels to a word -- PSMCT16/PSMCT16S and their depth
+	// twins PSMZ16/PSMZ16S, which are the same tables under one block XOR). That is EVERY format the
+	// GS can name in TEX0.PSM. The fixed TEX0 folds TW/TH to the
 	// used ST range, exactly as ObserveDraw derives its footprint, so the dimensions the shader
 	// scales by match the draw.
+	//
+	// ⚠️ Admitting a depth format here is a statement about the ADDRESS, not about whether the bytes
+	// under it are current. A window a live DEPTH surface owns has no writeback road, so the ring
+	// hands this road the CPU shadow's bytes for those pages and the read is stale -- counted lossy
+	// by the model, and rowed in the deferred-accuracy ledger. Sampling the right bytes staleley
+	// beats sampling nothing, which is what the vertex-colour fallback did.
 	pd.tex_enable = false;
 	pd.index_format = 0;
 	pd.pal_offset = 0;
@@ -3117,7 +3129,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		const bool mip = IsMipMapActive();
 		const GIFRegTEX0 tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
 		const u32 psm = tex0.PSM;
-		const bool direct32 = (psm == PSMCT32 || psm == PSMCT24);
+		// The direct 32-bit families: the CT32 pair, and their depth twins PSMZ32/PSMZ24, which are
+		// the same tables under one constant block XOR. Its own list beside the other two, and all
+		// three feed the single index_format numbering the fragment shader switches on.
+		const int d32_fmt = GSTileSwizzleForms::Direct32FormatFor(psm);
+		const bool direct32 = (d32_fmt >= 0);
+		const bool direct32_depth = (d32_fmt == static_cast<int>(GSTileSwizzleForms::Direct32Format::Z32));
 		// Every format whose texel is a palette index: PSMT8/PSMT4 and the three alpha-byte views.
 		// IndexFormatFor is the one list -- the donor road's reinterpretation already keyed off it,
 		// and a second list here is how the two would come to disagree about what is sampleable.
@@ -3159,24 +3176,26 @@ void GSRendererTileGpu::AccumulateDraw()
 			// primitive (the two filters differ and the LOD crossing falls inside it) takes one
 			// filter for the whole draw here, which is what IsLinear already picked.
 			pd.ltf = m_vt.IsLinear();
-			// The state row's index_format: 0 for a direct 32-bit texel, else the shader's format
-			// number plus one (1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH). The two
+			// The state row's index_format: 0 for a direct 32-bit texel in the CT32 block space, 10
+			// for one in the DEPTH block space, else the shader's format number plus one (1 = PSMT8,
+			// 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH) or plus six for a 16-bit halfword. The
 			// numberings are pinned together in the gs suite -- nothing links this file to the GLSL,
 			// and a renumbering that moved one and not the other would sample PSMT4HL's nibble out of
 			// a PSMT8H texture.
-			pd.index_format = direct32 ? 0u :
+			pd.index_format = direct32 ? (direct32_depth ? 10u : 0u) :
 									     (paletted ? static_cast<u32>(idx_fmt) + 1u :
 													 static_cast<u32>(d16_fmt) + 6u);
 			// A 24-bit texture's texels carry no alpha byte: TEXA supplies it (and AEM makes an
-			// all-zero RGB texel transparent). A 16-bit texel has an alpha BIT, so TEXA selects
-			// between TA1 and TA0 by it, and AEM makes an all-zero CELL transparent -- a different
-			// rule, which is why the fragment stage gives that road its own arm rather than sharing
-			// tilegpu_texa. A paletted texture takes TEXA in the CLUT expansion.
-			pd.texa = (psm == PSMCT24) ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
-											 (static_cast<u32>(m_env.TEXA.TA0) << 8)) :
-					  direct16 ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
-									 (static_cast<u32>(m_env.TEXA.TA0) << 8) |
-									 (static_cast<u32>(m_env.TEXA.TA1) << 16)) :
+			// all-zero RGB texel transparent). BOTH 24-bit formats take that rule, PSMZ24 exactly
+			// as PSMCT24 -- it is about the word's missing top byte, and the depth twin is missing
+			// the same one. A 16-bit texel has an alpha BIT, so TEXA selects between TA1 and TA0
+			// by it, and AEM makes an all-zero CELL transparent -- a different rule, which is why
+			// the fragment stage gives that road its own arm rather than sharing tilegpu_texa. A
+			// paletted texture takes TEXA in the CLUT expansion.
+			const bool bits24 = (psm == PSMCT24 || psm == PSMZ24);
+			const u32 texa_common = 1u | (m_env.TEXA.AEM ? 2u : 0u) | (static_cast<u32>(m_env.TEXA.TA0) << 8);
+			pd.texa = bits24 ? texa_common :
+					  direct16 ? (texa_common | (static_cast<u32>(m_env.TEXA.TA1) << 16)) :
 								 0u;
 			if (paletted)
 			{

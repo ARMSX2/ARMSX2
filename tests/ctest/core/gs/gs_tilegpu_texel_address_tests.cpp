@@ -40,11 +40,32 @@ namespace
 	// for PSMT4. `tbw` is what the renderer puts in the state row -- pages per texture
 	// row, which for a paletted format is TBW >> 1 (GSOffset's bw >> (pageShiftX - 6)).
 
-	u32 ShaderTexel32Word(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw)
+	// tilegpu_texel32, transcribed. `zxor` is the depth pair's constant block XOR (zero on every
+	// colour read); it lands on the ABSOLUTE block and the sum wraps at GS_MAX_BLOCKS, both exactly
+	// as GSOffset::bn() does them.
+	u32 ShaderTexel32WordZ(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw, u32 zxor)
 	{
 		const u32 page = (v >> 5) * tbw + (u >> 6);
-		const u32 blk = tbp0 + page * 32 + f.block48.Eval((u >> 3) & 7, (v >> 3) & 3);
+		const u32 blk = ((tbp0 + page * 32 + f.block48.Eval((u >> 3) & 7, (v >> 3) & 3)) ^ zxor) & 16383u;
 		return blk * 64 + f.col32.Eval(u & 7, v & 7);
+	}
+
+	u32 ShaderTexel32Word(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw)
+	{
+		return ShaderTexel32WordZ(f, u, v, tbp0, tbw, 0);
+	}
+
+	// tilegpu_texa, transcribed, for the 24-bit road: the word carries no alpha byte of its own, so
+	// TEXA.TA0 supplies one -- and with AEM set an all-zero RGB texel is transparent instead. The
+	// test is on the RGB word, which is what the byte road's `(w & 0x00FFFFFF) == 0` says.
+	// `texa` is the state row's packed field: bit 0 apply, bit 1 AEM, bits 8-15 TA0.
+	u32 ShaderTexa24Alpha(u32 word, u32 texa)
+	{
+		if ((texa & 1u) == 0)
+			return (word >> 24) & 0xFFu;
+		if ((texa & 2u) != 0 && (word & 0x00FFFFFFu) == 0)
+			return 0;
+		return (texa >> 8) & 0xFFu;
 	}
 
 	u32 ShaderIndex8Byte(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw)
@@ -75,11 +96,17 @@ namespace
 	}
 
 	// The state row's index_format for a PSM, as the renderer derives it: 0 for a direct 32-bit
-	// texel, else the shader format number plus one.
+	// texel in the CT32 block space, 10 for one in the depth block space, else the shader format
+	// number plus one (an index) or plus six (a 16-bit halfword).
 	u32 StateRowIndexFormat(u32 psm)
 	{
 		const int f = IndexFormatFor(psm);
-		return (f < 0) ? 0u : static_cast<u32>(f) + 1u;
+		if (f >= 0)
+			return static_cast<u32>(f) + 1u;
+		const int d16 = Direct16FormatFor(psm);
+		if (d16 >= 0)
+			return static_cast<u32>(d16) + 6u;
+		return (Direct32FormatFor(psm) == static_cast<int>(Direct32Format::Z32)) ? 10u : 0u;
 	}
 
 	class TileGpuTexelAddressTest : public ::testing::Test
@@ -332,6 +359,166 @@ TEST(GSTileGpuTexelAddress, StateRowIndexFormatMatchesTheShadersBranchOrder)
 	EXPECT_EQ(StateRowIndexFormat(PSMT8H), 3u);
 	EXPECT_EQ(StateRowIndexFormat(PSMT4HL), 4u);
 	EXPECT_EQ(StateRowIndexFormat(PSMT4HH), 5u);
+	EXPECT_EQ(StateRowIndexFormat(PSMCT16), 6u);
+	EXPECT_EQ(StateRowIndexFormat(PSMCT16S), 7u);
+	EXPECT_EQ(StateRowIndexFormat(PSMZ16), 8u);
+	EXPECT_EQ(StateRowIndexFormat(PSMZ16S), 9u);
+	// The depth pair of the direct-32 road. NOT adjacent to its colour twin's zero, so the shader's
+	// D32 guard tests two values rather than a range -- and both this and that guard have to be
+	// changed together, which is what this line is for.
+	EXPECT_EQ(StateRowIndexFormat(PSMZ32), 10u);
+	EXPECT_EQ(StateRowIndexFormat(PSMZ24), 10u);
+}
+
+// -- the direct-32 DEPTH pair: PSMZ32, PSMZ24 ----------------------------------------------------
+//
+// The same address geometry as PSMCT32/PSMCT24 under one constant block XOR, which is the whole of
+// the difference. A missing XOR reads the colour twin's blocks: same page, same word within a block,
+// wrong block -- which on screen is plausible texture in 8x8 tiles from the wrong place, the single
+// hardest defect class to see and the reason this is pinned against the CPU reader rather than
+// looked at.
+TEST(GSTileGpuTexelAddress, Depth32MatchesPixelAddress32Z)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	for (const u32 tbw : {1u, 2u, 4u, 8u, 10u})
+	{
+		for (const u32 tbp0 : {0u, 32u, 37u, 0x1400u, 0x1500u, 0x1cc0u})
+		{
+			for (u32 v = 0; v < 72; v++)
+			{
+				for (u32 u = 0; u < tbw * 64 + 8; u++)
+				{
+					const u32 want =
+						GSLocalMemory::PixelAddress32Z(static_cast<int>(u), static_cast<int>(v), tbp0, tbw);
+					ASSERT_EQ(ShaderTexel32WordZ(f, u, v, tbp0, tbw, f.z32_block_xor), want)
+						<< "u=" << u << " v=" << v << " tbp0=" << tbp0 << " tbw=" << tbw;
+				}
+			}
+		}
+	}
+}
+
+// PSMZ24 is PSMZ32's address exactly, the way PSMCT24 is PSMCT32's: the 24-bit member of a pair
+// differs only in who owns the word's top byte. Asked of the CPU readers, so a future split of the
+// two would fail here rather than in a picture.
+TEST(GSTileGpuTexelAddress, Depth24SharesDepth32sAddress)
+{
+	for (const u32 tbw : {1u, 2u, 8u})
+	{
+		for (const u32 tbp0 : {0u, 37u, 0x1500u})
+		{
+			const GSOffset z32 = GSOffset::fromKnownPSM(tbp0, tbw, PSMZ32);
+			const GSOffset z24 = GSOffset::fromKnownPSM(tbp0, tbw, PSMZ24);
+			for (u32 v = 0; v < 40; v++)
+			{
+				for (u32 u = 0; u < tbw * 64 + 8; u++)
+				{
+					ASSERT_EQ(z32.pa(static_cast<int>(u), static_cast<int>(v)),
+						z24.pa(static_cast<int>(u), static_cast<int>(v)))
+						<< "u=" << u << " v=" << v << " tbp0=" << tbp0 << " tbw=" << tbw;
+					// ...and it is PixelAddress32Z's, which is what every CPU reader of either format
+					// calls.
+					ASSERT_EQ(z24.pa(static_cast<int>(u), static_cast<int>(v)),
+						GSLocalMemory::PixelAddress32Z(static_cast<int>(u), static_cast<int>(v), tbp0, tbw))
+						<< "u=" << u << " v=" << v;
+				}
+			}
+		}
+	}
+}
+
+// The alpha a PSMZ24 texel gets, against GSLocalMemory's own 24-bit expansion. The rule is TEXA.TA0
+// with AEM zeroing an all-zero-RGB texel, and it is the GAME's TEXA -- the identical rule PSMCT24
+// takes, which is why the renderer sets the state row's texa field for both and the fragment stage
+// has one arm for the pair.
+TEST(GSTileGpuTexelAddress, Depth24TakesTheSameTexaExpansionAsColour24)
+{
+	// Every AEM/TA0 combination that matters, over words with and without a zero RGB.
+	for (const u32 ta0 : {0x00u, 0x01u, 0x7Fu, 0x80u, 0xFFu})
+	{
+		for (const u32 aem : {0u, 1u})
+		{
+			const u32 texa = 1u | (aem ? 2u : 0u) | (ta0 << 8);
+			for (const u32 w : {0x00000000u, 0xFF000000u, 0x00000001u, 0x00FFFFFFu, 0xAB123456u})
+			{
+				const u32 want = ((w & 0x00FFFFFFu) == 0 && aem) ? 0u : ta0;
+				EXPECT_EQ(ShaderTexa24Alpha(w, texa), want) << "w=" << w << " ta0=" << ta0 << " aem=" << aem;
+			}
+		}
+	}
+
+	// The apply bit clear leaves the raw byte through, which is what the byte road's tilegpu_texa
+	// does with it -- unreachable for a 24-bit draw today (the renderer always sets it), and pinned
+	// so a divergence from the byte road there would be a failure rather than an invisibility.
+	EXPECT_EQ(ShaderTexa24Alpha(0xAB123456u, 0u), 0xABu);
+	EXPECT_EQ(ShaderTexa24Alpha(0x00000000u, 2u), 0x00u);
+
+	// The whole-window agreement with GSLocalMemory's own 24-bit expansion is asked in
+	// Depth32WindowsMatchTheCpuColourReader below, which runs the format's rtx over real bytes --
+	// that is where this arm is compared against the reader the software renderer uses, rather than
+	// against a second transcription of the same rule.
+}
+
+// Every direct-32 window in the corpus census, texel by texel, against the CPU deswizzler the
+// software renderer uses (psm.rtx). Address AND value together for the depth pair, which is what the
+// fragment stage actually performs -- an address check alone cannot see a wrong TEXA.
+TEST_F(TileGpuTexelAddressTest, Depth32WindowsMatchTheCpuColourReader)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	const u32* const vm = s_mem->vm32();
+
+	struct Window
+	{
+		u32 psm;
+		u32 tbp0;
+		u32 tbw;
+		int tw, th;
+	};
+	static constexpr Window kWindows[] = {
+		{PSMZ24, 0x1500, 8, 512, 64}, // Ace Combat 5's read, at its own base and stride
+		{PSMZ32, 0x1cc0, 10, 640, 64}, // Beyond Good & Evil's post-process road
+		{PSMZ32, 0, 1, 64, 96},
+		{PSMZ24, 37, 2, 128, 64}, // a base blocks into a page
+	};
+
+	std::vector<u32> cpu;
+	GIFRegTEXA TEXA = {};
+	TEXA.TA0 = 0x5A;
+	TEXA.TA1 = 0xA5;
+	TEXA.AEM = 1;
+	const u32 texa_row = 1u | 2u | (0x5Au << 8);
+
+	for (const Window& w : kWindows)
+	{
+		const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[w.psm];
+		const u32 pages_per_row = PagesPerRow(w.psm, w.tbw);
+		const u32 pitch = static_cast<u32>(w.tw);
+		cpu.assign(pitch * static_cast<u32>(w.th), 0);
+
+		const GSOffset off = s_mem->GetOffset(w.tbp0, w.tbw, w.psm);
+		p.rtx(*s_mem, off, GSVector4i(0, 0, w.tw, w.th), reinterpret_cast<u8*>(cpu.data()),
+			static_cast<int>(pitch * 4), TEXA);
+
+		for (int v = 0; v < w.th; v++)
+		{
+			const u32* const row = cpu.data() + static_cast<u32>(v) * pitch;
+			for (int u = 0; u < w.tw; u++)
+			{
+				const u32 addr = ShaderTexel32WordZ(f, static_cast<u32>(u), static_cast<u32>(v), w.tbp0,
+					pages_per_row, f.z32_block_xor);
+				const u32 word = vm[addr];
+				// The fragment stage's own composition: the raw word, then TEXA over its top byte
+				// for the 24-bit member and nothing for the 32-bit one.
+				u32 got = word;
+				if (w.psm == PSMZ24)
+					got = (word & 0x00FFFFFFu) | (ShaderTexa24Alpha(word, texa_row) << 24);
+				ASSERT_EQ(got, row[u]) << "psm=" << w.psm << " tbp0=" << w.tbp0 << " u=" << u << " v=" << v;
+			}
+		}
+	}
 }
 
 // The palette the shader has to be handed for each format. The renderer sizes a draw's CLUT

@@ -133,6 +133,13 @@ namespace GSTileSwizzleForms
 		/// otherwise address the wrong block silently). Zero, and `valid` false, if it stops holding.
 		u32 z16_block_xor = 0;
 
+		/// The same relation one family over: PSMZ32/PSMZ24 are PSMCT32/PSMCT24's tables under one
+		/// constant XOR on the absolute block. Derived and checked separately from the 16-bit one
+		/// even though GSLocalMemory happens to give both swizzles the same constant today — the two
+		/// are independent facts about two GSSwizzleInfo entries, and sharing one field is how a
+		/// change to one of them would silently redirect the other family's reads.
+		u32 z32_block_xor = 0;
+
 		/// The CSM1 32-bit CLUT loaders' word order (GSClut::EntryToWordCSM1_32): entry
 		/// e of an eight-bit palette at CSA 0 → source word 0..255; entry e of a
 		/// four-bit palette → source word 0..15. Fitted separately (`clut_valid`) so a
@@ -170,6 +177,27 @@ namespace GSTileSwizzleForms
 	/// Maps a GS PSM to the shader's format, or -1 for one it does not serve.
 	int IndexFormatFor(u32 psm);
 
+	/// Source-side DIRECT 32-bit formats: a texel is one whole guest word. The pair a value covers
+	/// differ only in whether the word's top byte belongs to this texture (TEXA supplies it for the
+	/// 24-bit member, which the state row's texa already carries), so this list is about the ADDRESS
+	/// alone -- and the two addresses differ by exactly the kind of constant block XOR that makes
+	/// PSMZ16 PSMCT16's twin, one family over.
+	///
+	/// ⚠️ The direct-32 pair does NOT sit at a contiguous base of its own in the state row's
+	/// numbering: index_format 0 is the CT32 one and index_format 10 is the depth one. Zero is CT32
+	/// because zero is what every row that never asked for a texture already carries, and the depth
+	/// one took the first free value above the 16-bit block. GSDevice::GSTileGpuTexelArm and the
+	/// fragment shader's direct-32 guard both know that, and the suite pins the three against each
+	/// other.
+	enum class Direct32Format : u8
+	{
+		CT32 = 0, ///< PSMCT32 / PSMCT24: blockTable32, no block XOR
+		Z32 = 1, ///< PSMZ32 / PSMZ24: the same tables under the depth block XOR
+	};
+
+	/// Maps a GS PSM to one of the two above, or -1.
+	int Direct32FormatFor(u32 psm);
+
 	/// Source-side DIRECT 16-bit formats: a texel is one halfword, expanded to 8888 by TEXA rather
 	/// than by a palette. Kept beside IndexFormatFor because the fragment shader switches on ONE
 	/// numbering built from both lists — a state row's index_format is 0 for direct 32-bit,
@@ -195,6 +223,15 @@ namespace GSTileSwizzleForms
 	/// the depth formats carry applies to the whole sum, not to the in-page index. Wrapped into the
 	/// 4 MB of GS memory exactly as GSOffset wraps it. False for a psm that is not one of the four.
 	bool Address16(const FormSet& forms, u32 psm, u32 tbp0, u32 tbw, u32 u, u32 v, u32& byte_addr);
+
+	/// The same statement for the DIRECT 32-bit road: the guest BYTE address of texel (u, v) of a
+	/// 32-bit texture window, which is the arithmetic tilegpu.glsl's direct-32 texel road performs.
+	/// Any TBP0, the depth pair's block XOR on the whole sum, wrapped into the 4 MB of GS memory
+	/// exactly as GSOffset wraps it. False for a psm Direct32FormatFor does not admit.
+	///
+	/// `tbw` is pages per texture row as the state row carries it, not the raw TEX0.TBW -- the same
+	/// convention Address16 takes, and for a 64-texel-wide page the two coincide.
+	bool Address32(const FormSet& forms, u32 psm, u32 tbp0, u32 tbw, u32 u, u32 v, u32& byte_addr);
 
 	/// Pages per texture row for a window of `psm` at TEX0.TBW — the page term every
 	/// address form below (and every TileGpu shader) multiplies the row index by. This

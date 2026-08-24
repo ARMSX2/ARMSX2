@@ -313,11 +313,22 @@ TEST(GSTileGpuShaderBudget, TexelArmMatchesTheIndexFormatNumbering)
 	EXPECT_EQ(GSDevice::GSTileGpuTexelArm(7), GSDevice::kGSTileGpuTexelDirect16); // PSMCT16S
 	EXPECT_EQ(GSDevice::GSTileGpuTexelArm(8), GSDevice::kGSTileGpuTexelDirect16); // PSMZ16
 	EXPECT_EQ(GSDevice::GSTileGpuTexelArm(9), GSDevice::kGSTileGpuTexelDirect16); // PSMZ16S
+	// The direct-32 depth pair rides the SAME arm as its colour twin -- one address geometry under a
+	// constant block XOR, which is a select inside the arm and not a sixth geometry. A landing that
+	// gave it its own bit would double the variant population and cost the budget for nothing.
+	EXPECT_EQ(GSDevice::GSTileGpuTexelArm(10), GSDevice::kGSTileGpuTexelDirect32); // PSMZ32 / PSMZ24
 
-	// And against the numbering's own source: the renderer builds index_format out of these two
-	// lists, so every format either list admits has to land on an arm.
+	// And against the numbering's own source: the renderer builds index_format out of these three
+	// lists, so every format any of them admits has to land on an arm.
 	for (u32 psm = 0; psm < 64; psm++)
 	{
+		const int d32 = GSTileSwizzleForms::Direct32FormatFor(psm);
+		if (d32 >= 0)
+		{
+			const u32 fmt = (d32 == static_cast<int>(GSTileSwizzleForms::Direct32Format::Z32)) ? 10u : 0u;
+			EXPECT_EQ(GSDevice::GSTileGpuTexelArm(fmt), GSDevice::kGSTileGpuTexelDirect32)
+				<< "PSM " << psm << " is a direct 32-bit format but lands off the direct-32 arm";
+		}
 		const int idx = GSTileSwizzleForms::IndexFormatFor(psm);
 		if (idx >= 0)
 		{

@@ -93,6 +93,32 @@ namespace GSTileSwizzleForms
 				f.z16_block_xor = 0;
 		}
 
+		// The same relation for the 32-bit families, asked of its own GSSwizzleInfo pair rather than
+		// assumed from the 16-bit answer. Both 24-bit members ride their 32-bit twin's tables, so the
+		// check covers all four formats: a blockAddressXor change on swizzle32Z alone would otherwise
+		// leave the 16-bit check green while every depth-32 texture read went to the wrong block.
+		{
+			const GSOffset c32 = GSOffset::fromKnownPSM(0, 1, PSMCT32);
+			const GSOffset z32 = GSOffset::fromKnownPSM(0, 1, PSMZ32);
+			const GSOffset c24 = GSOffset::fromKnownPSM(0, 1, PSMCT24);
+			const GSOffset z24 = GSOffset::fromKnownPSM(0, 1, PSMZ24);
+			f.z32_block_xor = z32.bn(0, 0);
+			for (int y = 0; y < 32 && ok; y += 8)
+			{
+				for (int x = 0; x < 64; x += 8)
+				{
+					ok &= z32.bn(x, y) == (c32.bn(x, y) ^ f.z32_block_xor);
+					ok &= z24.bn(x, y) == (c24.bn(x, y) ^ f.z32_block_xor);
+				}
+			}
+			// The XOR has to stay INSIDE the page, and that is load-bearing rather than incidental:
+			// the writeback and the seed apply it to the in-page block index and leave the page term
+			// alone, which is the same map only while the constant is under 32.
+			ok &= f.z32_block_xor < 32;
+			if (!ok)
+				f.z32_block_xor = 0;
+		}
+
 		f.valid = ok;
 
 		u16 i8[256];
@@ -128,8 +154,10 @@ namespace GSTileSwizzleForms
 		form1("IC32", forms.inv_col32);
 		form1("CLUT8", forms.clut_i8_word);
 		form1("CLUT4", forms.clut_i4_word);
-		// Not a form: the one constant that turns a 16-bit colour block address into its depth twin's.
+		// Not forms: the two constants that turn a colour block address into its depth twin's, one per
+		// storage width. Separate defines because they are separate facts -- see the FormSet fields.
 		s += fmt::format("#define TILE_SWZ_Z16XOR 0x{:x}u\n", forms.z16_block_xor);
+		s += fmt::format("#define TILE_SWZ_Z32XOR 0x{:x}u\n", forms.z32_block_xor);
 		return s;
 	}
 
@@ -147,6 +175,21 @@ namespace GSTileSwizzleForms
 				return static_cast<int>(IndexFormat::P4HL);
 			case PSMT4HH:
 				return static_cast<int>(IndexFormat::P4HH);
+			default:
+				return -1;
+		}
+	}
+
+	int Direct32FormatFor(u32 psm)
+	{
+		switch (psm)
+		{
+			case PSMCT32:
+			case PSMCT24:
+				return static_cast<int>(Direct32Format::CT32);
+			case PSMZ32:
+			case PSMZ24:
+				return static_cast<int>(Direct32Format::Z32);
 			default:
 				return -1;
 		}
@@ -189,6 +232,24 @@ namespace GSTileSwizzleForms
 							zxor) %
 						GS_MAX_BLOCKS;
 		byte_addr = blk * 256 + forms.col16.Eval(u & 15, v & 7) * 2;
+		return true;
+	}
+
+	bool Address32(const FormSet& forms, u32 psm, u32 tbp0, u32 tbw, u32 u, u32 v, u32& byte_addr)
+	{
+		byte_addr = 0;
+		const int fmt = Direct32FormatFor(psm);
+		if (!forms.valid || fmt < 0)
+			return false;
+
+		// One bit of format number, and it is the depth XOR. A CT32 page is 64x32 texels of 8x8-texel
+		// blocks, one word per texel; the XOR lands on the ABSOLUTE block, after the base and the page
+		// term, exactly as GSOffset's bn() applies it -- distributing it into the in-page index would
+		// be right only for a page-aligned TBP0, and a texture window's often is not.
+		const u32 zxor = (fmt != static_cast<int>(Direct32Format::CT32)) ? forms.z32_block_xor : 0u;
+		const u32 page = (v >> 5) * tbw + (u >> 6);
+		const u32 blk = ((tbp0 + page * 32 + forms.block48.Eval((u >> 3) & 7, (v >> 3) & 3)) ^ zxor) % GS_MAX_BLOCKS;
+		byte_addr = blk * 256 + forms.col32.Eval(u & 7, v & 7) * 4;
 		return true;
 	}
 
