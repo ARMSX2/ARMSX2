@@ -764,7 +764,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuUploadSpillReadback = false;
 	TileGpuForceDepthUniformPasses = false;
 	TileGpuForceDepthMergedPasses = false;
-	TileGpuAdaptiveDepthPasses = false;
+	TileGpuAdaptiveDepthPasses = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;

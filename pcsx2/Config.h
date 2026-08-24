@@ -1056,8 +1056,13 @@ struct Pcsx2Config
 					// turns on the predictor's CENSUS, which counts both groupings
 					// and reports what it would have chosen without moving a
 					// boundary, so the thresholds can be checked on a machine that
-					// is not the one they were calibrated on. Off -- the default --
-					// is today's shipped behaviour byte for byte. Dev only; a
+					// is not the one they were calibrated on. ON by default since
+					// the SD865 device gate passed (no losses beyond spread, six
+					// wins to -30%, at most one switch per title); off is the
+					// escape hatch back to the pre-predictor behaviour -- one
+					// polarity for the whole run and no census walks -- and the
+					// choice is pixel-inert either way (both polarities render
+					// byte-identical frames, proven corpus-wide). Dev only; a
 					// pass-boundary policy is not a user setting.
 					TileGpuAdaptiveDepthPasses : 1,
 					// The fast profile: shed an exactness class for its GPU-native
