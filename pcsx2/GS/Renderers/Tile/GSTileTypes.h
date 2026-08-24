@@ -423,14 +423,23 @@ constexpr u32 gsTilePageHeight(u32 psm)
 	}
 }
 
-/// The TileGpu byte road's shader variant for a colour format. The writeback and the seed compile
-/// one program per swizzle universe, because the block table, the page height and the cell width
-/// are all baked in; CT32 and CT24 share one (identical addresses — only the byte mask differs).
+/// The TileGpu byte road's shader variant for a format a COLOUR surface can carry. The writeback
+/// and the seed compile one program per swizzle universe, because the block table, the page height
+/// and the cell width are all baked in; CT32 and CT24 share one (identical addresses — only the
+/// byte mask differs), and so do PSMZ32 and PSMZ24.
+///
+/// ⚠️ The Z32 universe is here because a game may set FRAME.PSM to a depth format and render
+/// ordinary colour into it — Ace Combat 5's occlusion probe and Beyond Good & Evil's post-process
+/// chain both do, and both then read those bytes back through a PSMCT32 texture window. That
+/// surface is a COLOUR surface (its kind comes from FRAME, not from the PSM), and its program is
+/// the CT32 one with the depth block XOR: same page geometry, same column table, one extra term.
+/// This says nothing about a real Z BUFFER — a Depth-kind surface is refused by the predicate
+/// below whatever its PSM, because there is no shader that turns a depth attachment into bytes.
 ///
 /// A format the road does not serve gets an out-of-range index rather than 0, deliberately: a
 /// format that slips past the admission test below then compiles nothing, instead of running the
 /// CT32 program over 16-bit bytes.
-static constexpr u32 kGSTileByteRoadFormats = 3;
+static constexpr u32 kGSTileByteRoadFormats = 4;
 
 constexpr u32 gsTileByteRoadFormat(u32 psm)
 {
@@ -443,6 +452,9 @@ constexpr u32 gsTileByteRoadFormat(u32 psm)
 			return 1;
 		case PSMCT16S:
 			return 2;
+		case PSMZ32:
+		case PSMZ24:
+			return 3;
 		default:
 			return kGSTileByteRoadFormats;
 	}
@@ -492,11 +504,16 @@ constexpr u32 gsTileUnpack5551(u16 c)
 }
 
 /// Whether a surface can travel the TileGpu byte road — the writeback that reswizzles its finished
-/// pixels into guest bytes and the seed that reads bytes back into it. A colour surface in one of
-/// the three colour swizzle universes, with a page-aligned base: both shaders derive a page from
-/// (row, col) off the base page, and pool page (row, col) IS physical page base + row*bw + col.
-/// Depth surfaces have no writeback shader in any format — a standing separate gap — so truth that
-/// moves through one is counted lossy.
+/// pixels into guest bytes and the seed that reads bytes back into it. A COLOUR surface in one of
+/// the four swizzle universes the road has a program for, with a page-aligned base: both shaders
+/// derive a page from (row, col) off the base page, and pool page (row, col) IS physical page base
+/// + row*bw + col.
+///
+/// ⚠️ "Colour surface" is about the KIND, not the PSM, and the two come apart in both directions: a
+/// FRAME whose PSM is PSMZ32 is a colour surface (kind comes from FRAME) and does travel, while a
+/// real Z buffer is a Depth surface and does not, whatever its PSM. Depth surfaces have no
+/// writeback shader in any format — a standing separate gap, because their pixels are a depth
+/// attachment rather than guest bytes — so truth that moves through one is counted lossy.
 constexpr bool gsTileSurfaceHasByteRoad(const GSTileSurfaceLayout& layout)
 {
 	return layout.kind == GSTileSurfaceKind::Color && (layout.bp & 31) == 0 &&

@@ -18,6 +18,8 @@
 //   0 = PSMCT32 / PSMCT24 -- 64x32-texel pages of 8x8 blocks, the guest word IS the texel.
 //   1 = PSMCT16, 2 = PSMCT16S -- 64x64-texel pages of 16x8 blocks, two texels to a word, expanded
 //       from A1B5G5R5 to RGBA8. The two differ only in the block table.
+//   3 = PSMZ32 / PSMZ24 -- arm 0 under the depth block XOR, for a colour surface a game made by
+//       setting FRAME.PSM to a depth format. In-page constant, so the page term is arm 0's.
 //
 // ⚠️ The 16-bit expansion is the FRAME buffer's, not a texture read's: five bits back to the top of
 // each byte, low bits zero, and the alpha bit to 0x80 or 0x00. That is GSLocalMemory::Expand16To32
@@ -61,7 +63,18 @@ layout(push_constant) uniform cb
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
-#if TILEGPU_SEED_FMT == 0
+// Arm 0 and arm 3 share this geometry; arm 3 adds the depth block XOR. Kept in the same two
+// spellings tilegpu_writeback.glsl uses, because the seed is that pass run backwards and a
+// disagreement here reads a page back from blocks the writeback never wrote.
+#define TILEGPU_SEED_CT32 (TILEGPU_SEED_FMT == 0 || TILEGPU_SEED_FMT == 3)
+
+#if TILEGPU_SEED_FMT == 3
+#define TILEGPU_SEED_ZXOR TILE_SWZ_Z32XOR
+#else
+#define TILEGPU_SEED_ZXOR 0u
+#endif
+
+#if TILEGPU_SEED_CT32
 
 uint tile_b48(uint x, uint y)
 {
@@ -118,7 +131,7 @@ void main()
 	// The guest page this pixel lives in under the surface layout (page-aligned base: pool page
 	// (row, col) is physical page base + row*bw + col, wrapping at the end of memory). A 32-bit
 	// page is 32 rows tall and a 16-bit one 64.
-#if TILEGPU_SEED_FMT == 0
+#if TILEGPU_SEED_CT32
 	const uint rel = (y >> 5u) * bw + (x >> 6u);
 #else
 	const uint rel = (y >> 6u) * bw + (x >> 6u);
@@ -129,9 +142,9 @@ void main()
 
 	const uint slot = vram_words[table_base + epoch * 512u + page];
 
-#if TILEGPU_SEED_FMT == 0
+#if TILEGPU_SEED_CT32
 	// The exact ring word tilegpu_writeback.glsl wrote (or the executor prefilled) for this texel.
-	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u);
+	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u) ^ TILEGPU_SEED_ZXOR;
 	const uint w = vram_words[slot + bib * 64u + tile_c32(x & 7u, y & 7u)];
 
 	o_color = vec4(float(w & 0xFFu), float((w >> 8u) & 0xFFu), float((w >> 16u) & 0xFFu),

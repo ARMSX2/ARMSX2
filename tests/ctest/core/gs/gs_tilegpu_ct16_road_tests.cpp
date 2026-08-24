@@ -31,24 +31,37 @@ constexpr GSTileSurfaceLayout Layout(u32 bp, u8 bw, u8 psm, GSTileSurfaceKind ki
 
 TEST(TileGpuByteRoad, ServesEveryColourFormatThePoolCanBack)
 {
-	// The four colour formats with 64-pixel-wide pages. Depth has no writeback shader at all --
-	// a separate, standing gap -- and the index formats never reach the pool.
+	// The four colour formats with 64-pixel-wide pages. The index formats never reach the pool.
 	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMCT32, GSTileSurfaceKind::Color)));
 	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMCT24, GSTileSurfaceKind::Color)));
 	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMCT16, GSTileSurfaceKind::Color)));
 	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMCT16S, GSTileSurfaceKind::Color)));
 
+	// ...plus the 32-bit DEPTH pair as a COLOUR surface. That is not a depth buffer: it is what a
+	// game makes by setting FRAME.PSM to PSMZ32/PSMZ24 and rendering ordinary colour into it, and
+	// the road serves it with the CT32 program under one block XOR.
+	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ32, GSTileSurfaceKind::Color)));
+	EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ24, GSTileSurfaceKind::Color)));
+	// The 16-bit depth pair has no such program, colour-kind or not: nothing in the corpus renders
+	// into one, so it would be an untested road with no caller.
+	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ16, GSTileSurfaceKind::Color)));
+	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ16S, GSTileSurfaceKind::Color)));
+
+	// A real Z BUFFER never travels, whatever its PSM -- its pixels are a depth attachment and no
+	// shader turns one into guest bytes. That is the standing separate gap, and the DEPTH kind is
+	// what keeps the line between it and the case above.
 	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ32, GSTileSurfaceKind::Depth)));
 	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ24, GSTileSurfaceKind::Depth)));
 	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ16, GSTileSurfaceKind::Depth)));
 	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMZ16S, GSTileSurfaceKind::Depth)));
+	EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, PSMCT32, GSTileSurfaceKind::Depth)));
 }
 
 TEST(TileGpuByteRoad, RefusesABaseThatIsNotPageAligned)
 {
 	// Both shaders derive the page from (row, col) off the base page, so a base sitting blocks
 	// into a page has no expressible pixel space. Every colour format, not just the 32-bit ones.
-	for (u8 psm : {u8(PSMCT32), u8(PSMCT24), u8(PSMCT16), u8(PSMCT16S)})
+	for (u8 psm : {u8(PSMCT32), u8(PSMCT24), u8(PSMCT16), u8(PSMCT16S), u8(PSMZ32), u8(PSMZ24)})
 	{
 		EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, psm, GSTileSurfaceKind::Color))) << int(psm);
 		EXPECT_FALSE(gsTileSurfaceHasByteRoad(Layout(0x1184, 10, psm, GSTileSurfaceKind::Color))) << int(psm);
@@ -89,10 +102,30 @@ TEST(TileGpuByteRoad, TheShaderVariantIsOnePerSwizzleUniverse)
 	EXPECT_LT(gsTileByteRoadFormat(PSMCT16S), kGSTileByteRoadFormats);
 	EXPECT_NE(gsTileByteRoadFormat(PSMCT16), gsTileByteRoadFormat(PSMCT32));
 	EXPECT_NE(gsTileByteRoadFormat(PSMCT16), gsTileByteRoadFormat(PSMCT16S));
+	// The 32-bit depth pair shares a program with each other and with NEITHER colour universe: its
+	// addresses are CT32's under a block XOR, which is a different program even though it is the
+	// same page geometry -- one #define apart, and the two must not collapse to one index or a Z32
+	// surface would be written back to its colour twin's blocks.
+	EXPECT_EQ(gsTileByteRoadFormat(PSMZ32), gsTileByteRoadFormat(PSMZ24));
+	EXPECT_LT(gsTileByteRoadFormat(PSMZ32), kGSTileByteRoadFormats);
+	EXPECT_NE(gsTileByteRoadFormat(PSMZ32), gsTileByteRoadFormat(PSMCT32));
+	EXPECT_NE(gsTileByteRoadFormat(PSMZ32), gsTileByteRoadFormat(PSMCT16));
+	EXPECT_NE(gsTileByteRoadFormat(PSMZ32), gsTileByteRoadFormat(PSMCT16S));
 	// Everything else is off the road, and says so with an out-of-range index rather than a 0
 	// that would run the CT32 program over the wrong bytes.
-	for (u32 psm : {u32(PSMZ32), u32(PSMZ24), u32(PSMZ16), u32(PSMZ16S), u32(PSMT8), u32(PSMT4), u32(PSMT8H)})
+	for (u32 psm : {u32(PSMZ16), u32(PSMZ16S), u32(PSMT8), u32(PSMT4), u32(PSMT8H)})
 		EXPECT_GE(gsTileByteRoadFormat(psm), kGSTileByteRoadFormats) << psm;
+	// And every index the road hands out has a program: the device sizes its pipeline arrays by
+	// kGSTileByteRoadFormats, so a format numbered past it dispatches nothing while the model
+	// believes the pages travelled.
+	for (u32 psm = 0; psm < 64; psm++)
+	{
+		const u32 rf = gsTileByteRoadFormat(psm);
+		EXPECT_TRUE(rf < kGSTileByteRoadFormats || rf == kGSTileByteRoadFormats) << psm;
+		if (rf < kGSTileByteRoadFormats)
+			EXPECT_TRUE(gsTileSurfaceHasByteRoad(Layout(0x1180, 10, static_cast<u8>(psm), GSTileSurfaceKind::Color)))
+				<< psm;
+	}
 }
 
 TEST(TileGpuByteRoad, PageGeometryIsGSLocalMemorysOwn)
@@ -101,7 +134,7 @@ TEST(TileGpuByteRoad, PageGeometryIsGSLocalMemorysOwn)
 	// the pool, or the writeback covers a different rectangle than CollectRuns handed it.
 	// GSLocalMemory::m_psm is filled by a GSLocalMemory constructor, so one has to exist.
 	const GSLocalMemory mem;
-	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S)})
+	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S), u32(PSMZ32), u32(PSMZ24)})
 	{
 		EXPECT_EQ(gsTilePageHeight(psm), static_cast<u32>(GSLocalMemory::m_psm[psm].pgs.y)) << psm;
 		EXPECT_EQ(GSLocalMemory::m_psm[psm].pgs.x, 64) << psm;
@@ -109,6 +142,9 @@ TEST(TileGpuByteRoad, PageGeometryIsGSLocalMemorysOwn)
 	EXPECT_EQ(gsTilePageHeight(PSMCT32), 32u);
 	EXPECT_EQ(gsTilePageHeight(PSMCT16), 64u);
 	EXPECT_EQ(gsTilePageHeight(PSMCT16S), 64u);
+	// The depth pair's page is its colour twin's, which is what lets arm 3 be arm 0 plus a term.
+	EXPECT_EQ(gsTilePageHeight(PSMZ32), gsTilePageHeight(PSMCT32));
+	EXPECT_EQ(gsTilePageHeight(PSMZ24), gsTilePageHeight(PSMCT32));
 }
 
 TEST(TileGpuByteRoad, TheWritebackDispatchCoversExactlyOnePage)
@@ -117,7 +153,7 @@ TEST(TileGpuByteRoad, TheWritebackDispatchCoversExactlyOnePage)
 	// (2048 texels); a 16-bit page is one WORD per invocation -- the two texels 8 apart that share
 	// it -- which is also 2048. Both must come out to the page's word count exactly: short and the
 	// ring keeps stale words, long and a neighbour's page is overwritten.
-	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S)})
+	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S), u32(PSMZ32), u32(PSMZ24)})
 	{
 		const GSTileDispatch2D groups = gsTileWritebackGroups(psm);
 		EXPECT_EQ(groups.x * 8u * groups.y * 8u, 2048u) << psm;

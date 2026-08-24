@@ -27,6 +27,13 @@
 //   1 = PSMCT16, 2 = PSMCT16S -- 64x64-texel pages of 16x8 blocks, two texels to a word. The two
 //       differ only in the block table (blockTable16 is byte-identical to blockTable4, hence B84;
 //       blockTable16S is its own form, B84S) and share columnTable16.
+//   3 = PSMZ32 / PSMZ24 -- arm 0's page geometry, column table and pixel-is-a-word rule under one
+//       constant XOR on the block. A game that sets FRAME.PSM to a depth format and renders colour
+//       into it (Ace Combat 5's occlusion probe, Beyond Good & Evil's post-process chain) makes a
+//       COLOUR surface whose bytes live at depth-swizzled addresses; this is the program that puts
+//       them there. The XOR is under 32 by construction, so it lands on the IN-PAGE block index and
+//       the page term is arm 0's unchanged -- which is why a Z32 surface claims exactly the pages
+//       its colour twin would.
 //
 // ⚠️ The 16-bit arms write a WHOLE word from ONE invocation, covering the pair of texels eight
 // apart that columnTable16 puts in its two halves. That is not packing for its own sake: the two
@@ -67,7 +74,18 @@ layout(push_constant) uniform cb
 // The swizzle forms, byte-identical to tilegpu.glsl's: block-in-page and unit-in-block column.
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
-#if TILEGPU_WB_FMT == 0
+// Arm 0 and arm 3 share this geometry; arm 3 adds the depth block XOR below.
+#define TILEGPU_WB_CT32 (TILEGPU_WB_FMT == 0 || TILEGPU_WB_FMT == 3)
+
+// The in-page block XOR that makes arm 3 the depth twin of arm 0. Zero everywhere else, so the
+// expression below is one spelling for both arms and cannot drift between them.
+#if TILEGPU_WB_FMT == 3
+#define TILEGPU_WB_ZXOR TILE_SWZ_Z32XOR
+#else
+#define TILEGPU_WB_ZXOR 0u
+#endif
+
+#if TILEGPU_WB_CT32
 
 uint tile_b48(uint x, uint y)
 {
@@ -136,12 +154,13 @@ void main()
 	const uint col = rel % bw;
 	const uint row = rel / bw;
 
-#if TILEGPU_WB_FMT == 0
+#if TILEGPU_WB_CT32
 	const uint u = col * 64u + gl_WorkGroupID.x * 8u + gl_LocalInvocationID.x;
 	const uint v = row * 32u + gl_WorkGroupID.y * 8u + gl_LocalInvocationID.y;
 
-	// Block within the page; only the surface's blocks travel.
-	const uint bib = tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
+	// Block within the page; only the surface's blocks travel. The block_mask is over PHYSICAL
+	// in-page blocks, so the XOR has to be applied before the mask test as well as before the word.
+	const uint bib = tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u) ^ TILEGPU_WB_ZXOR;
 	if ((block_mask & (1u << bib)) == 0u)
 		return;
 
