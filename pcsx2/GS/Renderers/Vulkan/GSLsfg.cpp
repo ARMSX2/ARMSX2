@@ -52,10 +52,24 @@ namespace GSLsfg
 
 		// The structural PE check reads the file, and GetUnavailableReason() runs once per frame
 		// from EndPresent while the feature is on — so without this the GS thread did an
-		// fopen/fread/fseek/fread/fclose on the present path every single frame. The verdict can
-		// only change when the path does, which is exactly when SetDllPath() clears it.
+		// fopen/fread/fseek/fread/fclose on the present path every single frame.
+		//
+		// ★ Keyed on the FILE, not on the path alone. The Android importer always copies the
+		// user's pick to the same <files>/lsfg/Lossless.dll, so the path is IDENTICAL on every
+		// import and SetDllPath() — which only invalidates when the string changes — never fires.
+		// A path-keyed verdict therefore answered every later import with the verdict formed on
+		// the first one, and the first one is false whenever that path was checked while nothing
+		// was there yet: LsfgDllPath survives a reinstall/clear-data (it lives in the ini on
+		// external storage) and Reset deliberately keeps it, while filesDir does not, so the
+		// settings screen stats a missing file, caches "unreadable", and then rejects the real
+		// Lossless.dll the user imports seconds later — deleting it — for the rest of the
+		// process, every launch. Size+mtime is the same staleness key LosslessDll.cpp's shader
+		// cache already uses, and it keeps the per-frame cost at the stat() this comment
+		// budgeted for.
 		std::atomic<bool> s_dll_checked{false};
 		std::atomic<bool> s_dll_ok{false};
+		std::atomic<s64> s_dll_size{-1};
+		std::atomic<s64> s_dll_mtime{-1};
 
 		// What the overlay reports. Written from the GS thread in the present path, read from
 		// whichever thread draws the OSD, so both are atomic rather than mutex'd — a recent
@@ -141,9 +155,20 @@ namespace GSLsfg
 
 		if (s_dll_path.empty())
 			return Unavailable::NoDll;
-		if (!s_dll_checked.load(std::memory_order_acquire))
+		// A stat() every time, so a file REPLACED at the same path re-runs the structural check
+		// instead of inheriting the previous file's verdict. Missing reads as (-1, -1), which is
+		// a state of its own rather than a reason to keep the last answer.
+		FILESYSTEM_STAT_DATA sd = {};
+		const bool stat_ok = FileSystem::StatFile(s_dll_path.c_str(), &sd);
+		const s64 size = stat_ok ? static_cast<s64>(sd.Size) : -1;
+		const s64 mtime = stat_ok ? static_cast<s64>(sd.ModificationTime) : -1;
+		if (!s_dll_checked.load(std::memory_order_acquire) ||
+			size != s_dll_size.load(std::memory_order_relaxed) ||
+			mtime != s_dll_mtime.load(std::memory_order_relaxed))
 		{
-			s_dll_ok.store(LooksLikeLosslessDll(s_dll_path), std::memory_order_relaxed);
+			s_dll_ok.store(stat_ok && LooksLikeLosslessDll(s_dll_path), std::memory_order_relaxed);
+			s_dll_size.store(size, std::memory_order_relaxed);
+			s_dll_mtime.store(mtime, std::memory_order_relaxed);
 			s_dll_checked.store(true, std::memory_order_release);
 		}
 		if (!s_dll_ok.load(std::memory_order_relaxed))
