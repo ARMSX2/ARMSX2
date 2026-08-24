@@ -521,6 +521,7 @@ set(pcsx2GSSources
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
 	GS/GSDump.cpp
+	GS/GSFeDecode.cpp
 	GS/GSLocalMemory.cpp
 	GS/GSLzma.cpp
 	GS/GSPerfMon.cpp
@@ -570,6 +571,7 @@ set(pcsx2GSHeaders
 	GS/GSDrawingEnvironment.h
 	GS/GSDump.h
 	GS/GSExtra.h
+	GS/GSFeDecode.h
 	GS/GSGL.h
 	GS/GSRegs.h
 	GS/GS.h

@@ -9,6 +9,7 @@
 #include "GS/Renderers/Common/GSSnapshotPolicy.h"
 #include "GS/GSCapture.h"
 #include "GS/GSDump.h"
+#include "GS/GSFeDecode.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -792,6 +793,11 @@ void GSRenderer::SubmitVsync(u32 field, bool registers_written)
 	rec.field = field;
 	rec.registers_written = registers_written;
 	rec.idle_frame = IsIdleFrame(); // front-computable: compares serials against the last frame's
+
+	// Front-end decode tap: the frame boundary, so a divergence can be reported
+	// as "frame 3, draw 812" and not only as an event index.
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnVsync(rec.field, rec.registers_written, rec.idle_frame);
 
 	// VSYNC is never queued: present runs on the MTGS thread behind a drain, so
 	// the back thread stays off the GSDevice on present paths entirely (which

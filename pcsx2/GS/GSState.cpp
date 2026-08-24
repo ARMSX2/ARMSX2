@@ -3,6 +3,7 @@
 
 #include "GS/GSState.h"
 #include "GS/GSDump.h"
+#include "GS/GSFeDecode.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -2923,6 +2924,11 @@ void GSState::FlushWrite()
 
 void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 {
+	// Front-end decode tap: both TransferRecord build sites (FlushWrite and the
+	// Write whole-packet fast path) funnel here, in both threading modes.
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnTransfer(rec);
+
 	if (rec.first_slice)
 	{
 		m_exec_tr_x = rec.init_x;
@@ -3299,6 +3305,14 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 // running against installed (or, on the record-off path, live) state.
 void GSState::DrawRecordTail(u64 draw_serial)
 {
+	// Front-end decode tap. This is the single funnel every draw reaches -- the
+	// record path arrives via ExecDrawRecord, the records-off path straight from
+	// FlushPrim -- and it is upstream of everything this function does to the
+	// draw (the texel-rounding pass mutates the vertices, and it reads m_vt, so
+	// it is consumer-side by construction). GS/GSFeDecode.h explains the choice.
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnDraw();
+
 	GL_REG("FlushPrim ctxt %d", PRIM->CTXT);
 
 	// internal frame rate detection based on sprite blits to the display framebuffer
@@ -3761,6 +3775,12 @@ void GSState::Read(u8* mem, int len)
 	if (!m_tr.Update(w, h, bpp, len))
 		return;
 
+	// Front-end decode tap. Request only: the bytes handed back come out of local
+	// memory, which the BACK end wrote, so a payload digest here would make the
+	// stream renderer-dependent. See GS/GSFeDecode.h.
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnLocalToHost(len);
+
 	const u64 draw = s_n;
 
 	if (draw != s_n)
@@ -3802,6 +3822,9 @@ void GSState::SubmitMove()
 
 void GSState::ExecMoveRecord(const GSBackQueue::MoveRecord& rec)
 {
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnMove(rec);
+
 	// Install the record's registers and run the virtual Move chain (HW hack ->
 	// TC move -> software blit) unchanged. Inline this is a self-assignment; on
 	// the back object (GV7-1) it is the real record install.
@@ -3830,6 +3853,9 @@ void GSState::SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLU
 
 void GSState::ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec)
 {
+	if (GSFeDecode::IsActive()) [[unlikely]]
+		FeDecodeOnClutLoad(rec);
+
 	m_mem.m_clut.WriteLoad(rec.TEX0, rec.TEXCLUT);
 }
 
