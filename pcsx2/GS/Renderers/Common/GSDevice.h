@@ -1465,6 +1465,41 @@ static inline u32 GetVertexAlignment(GSHWDrawConfig::VSExpand expand)
 	}
 }
 
+/// The TileGpu source-descriptor ring: how many sets the device keeps for rule 3's frame-wide
+/// materialised sources. One set is written per PLAN, and a set may not be rewritten while a
+/// submission that reads it is still in flight — so when the ring comes round early the GS thread
+/// blocks on that set's fence, mid-plan (GSDeviceVK::GpuWaitCause::SourceSet).
+///
+/// Depth is therefore a wait-count lever and nothing else. Every set carries identical descriptors;
+/// which physical index a plan lands on cannot reach a pixel.
+///
+/// ⚠️ The default is 32 rather than the 8 it shipped as, decided 2026-08-24 against a measured
+/// write rate. A plan flush writes a set, and the corpus's plan-flush rate spans two orders of
+/// magnitude: Katamari 1.5–2 writes a frame, SotC 5.9, Ace Combat 5 6.8, Yu-Gi-Oh 12.5, OutRun 42,
+/// GT4 52. At depth 8 the ring reached back four frames on Katamari and two thirds of ONE frame on
+/// Yu-Gi-Oh — and the SD865's steady-state blocking waits ranked in exactly that order (Katamari
+/// 0.00 a frame, SotC and AC5 0.97, Yu-Gi-Oh 2.43). The cost of depth is descriptor memory and
+/// nothing else: a set is kMaxSources = 128 combined image samplers, and Turnip gives a combined
+/// image sampler 2 × 16 dwords = 128 bytes (`descriptor_size`, tu_descriptor_set.cc), so a set is
+/// 16 KB on Adreno and 8 → 32 buys four times the reach for 384 KB. The ceiling of 64 is 1 MB.
+constexpr u32 kGSTileGpuSourceSetRingDefault = 32;
+constexpr u32 kGSTileGpuSourceSetRingMin = 2;
+constexpr u32 kGSTileGpuSourceSetRingMax = 64;
+
+/// The effective ring depth: what EmuCore/GS/TileGpuSourceSetRingDepth says, or the built-in
+/// default where it says nothing. Two states, not three — a negative has no meaning here (there is
+/// no "uncapped" ring) and reads as the default rather than as an error, because the alternative is
+/// a run that refuses to start over a typo in a dev-only key.
+constexpr u32 gsTileGpuSourceSetRingDepth(int setting, u32 builtin_default = kGSTileGpuSourceSetRingDefault)
+{
+	const u32 want = (setting > 0) ? static_cast<u32>(setting) : builtin_default;
+	if (want < kGSTileGpuSourceSetRingMin)
+		return kGSTileGpuSourceSetRingMin;
+	if (want > kGSTileGpuSourceSetRingMax)
+		return kGSTileGpuSourceSetRingMax;
+	return want;
+}
+
 class GSPassScheduler;
 
 class GSDevice : public GSAlignedClass<32>

@@ -6449,26 +6449,49 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
 	}
 
-	// The source set ring and its pool. Sized for the ring, not for the frame: the array is written
-	// once per plan (twice if a mid-plan flush forces it), so a handful of sets covers every
-	// submission that can be in flight at once. Allocated eagerly with the layout because a failure
+	// The source set ring and its pool.
+	//
+	// ⚠️ The rationale that used to stand here -- "written once per plan, twice if a mid-plan flush
+	// forces it, so a handful of sets covers everything in flight" -- was wrong, and wrong by two
+	// orders of magnitude on half the corpus. A plan flush writes a set, and the flush rate runs
+	// from 1.5 a frame on Katamari to 52 on GT4. Depth is set by gsTileGpuSourceSetRingDepth, which
+	// carries the measurement. Allocated eagerly with the layout because a failure
 	// here has to fall back to "rule 3 is not available" rather than surface mid-frame.
 	{
+		// Depth is the one thing about this pool that is a policy rather than a fact, so it is named
+		// in the log with where the number came from: a run whose ring depth you cannot read off its
+		// emulog is a run whose wait count means nothing.
+		const u32 depth = gsTileGpuSourceSetRingDepth(GSConfig.TileGpuSourceSetRingDepth);
 		const VkDescriptorPoolSize src_pool_sizes[] = {
-			{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, GSTileGpuPassPlan::kMaxSources * kTileGpuSourceSets}};
+			{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, GSTileGpuPassPlan::kMaxSources * depth}};
 		const VkDescriptorPoolCreateInfo src_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0,
-			kTileGpuSourceSets, static_cast<u32>(std::size(src_pool_sizes)), src_pool_sizes};
+			depth, static_cast<u32>(std::size(src_pool_sizes)), src_pool_sizes};
 		if (vkCreateDescriptorPool(m_device, &src_pool_info, nullptr, &m_tilegpu_source_pool) != VK_SUCCESS)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_source_pool, "TileGpu source descriptor pool");
-		for (u32 i = 0; i < kTileGpuSourceSets; i++)
+		m_tilegpu_source_set_count = 0;
+		for (u32 i = 0; i < depth; i++)
 		{
 			const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
 				m_tilegpu_source_pool, 1, &m_tilegpu_source_ds_layout};
+			// A short ring is a slower ring, not a broken one, so a device that runs out of
+			// descriptor memory part way keeps what it got rather than losing rule 3 entirely. Only
+			// a ring below the minimum is a failure -- deepening the default must not be able to
+			// turn a working machine into one with no source road.
 			if (vkAllocateDescriptorSets(m_device, &ai, &m_tilegpu_source_sets[i]) != VK_SUCCESS)
-				return false;
+			{
+				if (i < kGSTileGpuSourceSetRingMin)
+					return false;
+				Console.Warning("TileGpu source set ring: only %u of %u sets allocated; running short.", i, depth);
+				break;
+			}
 			m_tilegpu_source_set_epoch[i] = 0;
+			m_tilegpu_source_set_count = i + 1;
 		}
+		Console.WriteLn("TileGpu source descriptor ring: %u sets (%s) -- built-in %u, "
+						"EmuCore/GS/TileGpuSourceSetRingDepth = %d, %u descriptors a set.",
+			m_tilegpu_source_set_count, (GSConfig.TileGpuSourceSetRingDepth > 0) ? "FORCED by settings" : "the default",
+			kGSTileGpuSourceSetRingDefault, GSConfig.TileGpuSourceSetRingDepth, GSTileGpuPassPlan::kMaxSources);
 
 		// The eight samplers rule 3 admits: wrap U x wrap V x filter. REGION_CLAMP and REGION_REPEAT
 		// have no sampler spelling, so the renderer refuses them to the byte road and they need none.
@@ -6664,11 +6687,11 @@ u32 GSDeviceVK::TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask)
 // into. Nothing else in the plan may end the command buffer.
 u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources)
 {
-	if (m_tilegpu_source_pool == VK_NULL_HANDLE)
-		return kTileGpuSourceSets;
+	if (m_tilegpu_source_pool == VK_NULL_HANDLE || m_tilegpu_source_set_count == 0)
+		return kTileGpuSourceSetsMax;
 
 	const u32 idx = m_tilegpu_source_next_set;
-	m_tilegpu_source_next_set = (m_tilegpu_source_next_set + 1) % kTileGpuSourceSets;
+	m_tilegpu_source_next_set = (m_tilegpu_source_next_set + 1) % m_tilegpu_source_set_count;
 	if (m_tilegpu_source_set_epoch[idx] >= GetCurrentFenceCounter())
 	{
 		// The ring came all the way round inside one command buffer: the set's last reader is still
@@ -7487,12 +7510,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// one buffer on the stall-heavy titles, and only a submission can free a set the buffer is still
 	// recording against). Nothing staged yet means a submit here costs nothing and strands nothing;
 	// after the staging it would strand the stream reservations the plan is about to reference.
-	u32 source_set_index = kTileGpuSourceSets;
+	u32 source_set_index = kTileGpuSourceSetsMax;
 	VkDescriptorSet source_set = VK_NULL_HANDLE;
 	if (can_draw && !plan.sources.empty())
 	{
 		source_set_index = WriteTileGpuSourceSet(plan.sources);
-		if (source_set_index < kTileGpuSourceSets)
+		if (source_set_index < kTileGpuSourceSetsMax)
 			source_set = m_tilegpu_source_sets[source_set_index];
 	}
 
@@ -8623,7 +8646,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// pass rather than the one that was current when it was written. Those differ whenever a pass
 	// forced a mid-plan flush, and taking the earlier of the two would let the ring recycle the set
 	// while a later submission still reads it.
-	if (source_set_index < kTileGpuSourceSets)
+	if (source_set_index < kTileGpuSourceSetsMax)
 		m_tilegpu_source_set_epoch[source_set_index] = GetCurrentFenceCounter();
 
 	InvalidateCachedState();
@@ -9594,6 +9617,7 @@ void GSDeviceVK::DestroyResources()
 	m_tilegpu_source_set_epoch.fill(0);
 	m_tilegpu_source_sampler.fill(VK_NULL_HANDLE);
 	m_tilegpu_source_next_set = 0;
+	m_tilegpu_source_set_count = 0;
 	if (m_tilegpu_source_ds_layout != VK_NULL_HANDLE)
 	{
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_source_ds_layout, nullptr);

@@ -1287,6 +1287,21 @@ struct Pcsx2Config
 		// policy. Dev only; a pass-boundary policy is not a user setting.
 		int TileGpuMaxPassDraws = 0;
 
+		// How many descriptor sets the TileGpu source ring holds (the sets rule 3's
+		// materialised textures are bound through, one written per plan). Zero -- the
+		// default -- takes the built-in depth; a positive value forces that depth,
+		// clamped to what the ring can be. Negative means nothing here and is treated
+		// as zero: unlike a pass cap there is no "off" position, because a ring of no
+		// sets is not a configuration.
+		//
+		// It is a pure resource count. The sets carry identical descriptors whatever
+		// the depth is, so the frame cannot change -- what changes is how often the
+		// ring comes round to a set an in-flight submission still reads, which stalls
+		// the GS thread mid-plan (GSDeviceVK::GpuWaitCause::SourceSet). So this is a
+		// wait-count lever, not a pixel one, and it exists as the A/B road back from
+		// the built-in depth. Dev only.
+		int TileGpuSourceSetRingDepth = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

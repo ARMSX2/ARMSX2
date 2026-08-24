@@ -675,20 +675,26 @@ private:
 	// RING of persistent sets, each stamped with the submit epoch it was last written under and taken
 	// again only once that submission has completed. Rewriting a set an in-flight pass still reads
 	// gives intermittently wrong textures, worst on the fastest device; the stamp is what stops it.
-	static constexpr u32 kTileGpuSourceSets = 8;
+	// The ring's depth is a RUNTIME count (EmuCore/GS/TileGpuSourceSetRingDepth over the built-in
+	// default, resolved by gsTileGpuSourceSetRingDepth), so the arrays are sized for the largest
+	// depth the key admits and m_tilegpu_source_set_count says how much of them is real. The max
+	// doubles as the "no set" sentinel WriteTileGpuSourceSet returns, since no live index reaches it.
+	static constexpr u32 kTileGpuSourceSetsMax = kGSTileGpuSourceSetRingMax;
 	static constexpr u32 kTileGpuSourceSamplers = 8; ///< wrap U x wrap V x filter, the eight rule 3 admits
 	VkDescriptorSetLayout m_tilegpu_source_ds_layout = VK_NULL_HANDLE;
 	/// Set 3: the pass's own colour attachment as an input attachment. Bound only by a pass that
 	/// declares the in-pass destination read. Never a push set -- see its creation site.
 	VkDescriptorSetLayout m_tilegpu_dest_ds_layout = VK_NULL_HANDLE;
 	VkDescriptorPool m_tilegpu_source_pool = VK_NULL_HANDLE;
-	std::array<VkDescriptorSet, kTileGpuSourceSets> m_tilegpu_source_sets{};
-	std::array<u64, kTileGpuSourceSets> m_tilegpu_source_set_epoch{};
+	std::array<VkDescriptorSet, kTileGpuSourceSetsMax> m_tilegpu_source_sets{};
+	std::array<u64, kTileGpuSourceSetsMax> m_tilegpu_source_set_epoch{};
 	std::array<VkSampler, kTileGpuSourceSamplers> m_tilegpu_source_sampler{};
 	u32 m_tilegpu_source_next_set = 0;
+	/// How many of the arrays above hold real sets. Zero until the pool is built.
+	u32 m_tilegpu_source_set_count = 0;
 	/// Take the next set of the ring that no in-flight submission is reading, and fill it with
 	/// `sources` (every unused slot the null texture, so the shader's static use of the array never
-	/// needs descriptorBindingPartiallyBound). Returns its index, or kTileGpuSourceSets on failure.
+	/// needs descriptorBindingPartiallyBound). Returns its index, or kTileGpuSourceSetsMax on failure.
 	u32 WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources);
 	// [topology][depth mode]; the depth index is the DRAW's GSTileGpuDepthMode, off the run key
 	// (GSTileGpuPassPlan::depth_modes), because the depth state is per draw and not per pass.
