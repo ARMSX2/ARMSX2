@@ -541,6 +541,7 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 	// The stall. The copy was recorded into the CURRENT command buffer moments ago, so
 	// the download texture's "already complete, do nothing" early-out can never fire
 	// here and this is unconditionally a submit-and-wait — one full GPU drain per call.
+	m_drains++;
 	if (out_drains)
 		(*out_drains)++;
 	// Timed as well as counted: a drain's PRICE varies with the GPU backlog it

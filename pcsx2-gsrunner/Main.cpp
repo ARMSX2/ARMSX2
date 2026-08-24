@@ -135,6 +135,7 @@ static double s_last_barriers = 0;
 static double s_last_copies = 0;
 static double s_last_uploads = 0;
 static double s_last_readbacks = 0;
+static double s_last_gpu_blocking_waits = 0;
 static double s_last_depth_copies_rov = 0;
 static double s_last_draws_rov = 0;
 static double s_last_barriers_rov = 0;
@@ -145,6 +146,7 @@ static u64 s_total_barriers = 0;
 static u64 s_total_copies = 0;
 static u64 s_total_uploads = 0;
 static u64 s_total_readbacks = 0;
+static u64 s_total_gpu_blocking_waits = 0;
 static u64 s_total_copies_rov = 0;
 static u64 s_total_draws_rov = 0;
 static u64 s_total_barriers_rov = 0;
@@ -180,6 +182,10 @@ struct FrameSample
 	u64 copies;
 	u64 uploads;
 	u64 readbacks;
+	/// Times the GS thread blocked on the GPU out of turn (readback submit-and-wait,
+	/// out-of-band fence, explicit sync). One per frame serializes the whole pipeline, so the
+	/// number to read is whether it is zero, not whether it fell.
+	u64 gpu_blocking_waits;
 	u64 copies_rov;
 	u64 draw_calls_rov;
 	u64 barriers_rov;
@@ -451,6 +457,8 @@ void Host::BeginPresentFrame()
 		sample.copies = update_stat(GSPerfMon::TextureCopies, s_total_copies, s_last_copies);
 		sample.uploads = update_stat(GSPerfMon::TextureUploads, s_total_uploads, s_last_uploads);
 		sample.readbacks = update_stat(GSPerfMon::Readbacks, s_total_readbacks, s_last_readbacks);
+		sample.gpu_blocking_waits =
+			update_stat(GSPerfMon::GpuBlockingWaits, s_total_gpu_blocking_waits, s_last_gpu_blocking_waits);
 		sample.copies_rov = update_stat(GSPerfMon::TextureCopiesROV, s_total_copies_rov, s_last_depth_copies_rov);
 		sample.draw_calls_rov = update_stat(GSPerfMon::DrawCallsROV, s_total_draws_rov, s_last_draws_rov);
 		sample.barriers_rov = update_stat(GSPerfMon::BarriersROV, s_total_barriers_rov, s_last_barriers_rov);
@@ -1520,6 +1528,7 @@ static void WriteStatsJson(const std::string& path)
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
 	std::fprintf(fp.get(), "    \"tile_payload_bytes\": %" PRIu64 ",\n", s_total_tile_payload_bytes);
+	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
@@ -1542,7 +1551,8 @@ static void WriteStatsJson(const std::string& path)
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
-			"\"pipeline_switches\":%" PRIu64 ",\"tile_payload_bytes\":%" PRIu64 "}%s\n",
+			"\"pipeline_switches\":%" PRIu64 ",\"tile_payload_bytes\":%" PRIu64 ","
+			"\"gpu_blocking_waits\":%" PRIu64 "}%s\n",
 			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.barriers, s.copies,
@@ -1552,6 +1562,7 @@ static void WriteStatsJson(const std::string& path)
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
 			s.pipeline_switches, s.tile_payload_bytes,
+			s.gpu_blocking_waits,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
@@ -1573,6 +1584,18 @@ void GSRunner::DumpStats()
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Readbacks: {} (avg {})", s_total_readbacks, static_cast<u64>(std::ceil(s_total_readbacks / static_cast<double>(s_total_drawn_frames)))));
+	// Not a duplicate of Readbacks: that counts copies that reach the device, this counts the times
+	// the GS thread BLOCKED for one. Zero is the target; any nonzero value costs the frame
+	// min(cpu, gpu) whatever the magnitude.
+	Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {:.2f}/frame)", s_total_gpu_blocking_waits,
+		s_total_gpu_blocking_waits / static_cast<double>(s_total_drawn_frames)));
+	if (g_gs_device)
+	{
+		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Wait ms: {:.3f} (sync {:.3f} + out-of-band {:.3f}); "
+									"ring backpressure {:.3f} ms over {} waits",
+			(g_gs_device->GetSyncWaitNs() + g_gs_device->GetOobWaitNs()) / 1e6, g_gs_device->GetSyncWaitNs() / 1e6,
+			g_gs_device->GetOobWaitNs() / 1e6, g_gs_device->GetRingWaitNs() / 1e6, g_gs_device->GetRingWaitCalls()));
+	}
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers (ROV): {} (avg {})", s_total_barriers_rov, static_cast<u64>(std::ceil(s_total_barriers_rov / static_cast<double>(s_total_drawn_frames)))));

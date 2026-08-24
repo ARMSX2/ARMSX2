@@ -1668,6 +1668,32 @@ void GSRendererTileGpu::ReportModelTraffic()
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
 		s_all.p50, p_all.mean);
 
+	// The wait bill, which the stall census above cannot show: a stall is one CONSUMER asking, and
+	// what costs the frame is the number of times the GS thread blocked on the GPU to answer it.
+	// One such wait per frame serializes the whole pipeline — frame becomes cpu + gpu instead of
+	// max(cpu, gpu), and the count above one does not matter — so the number to read here is
+	// whether the total is ZERO, not whether it fell.
+	//
+	// Both roads block. The drain road submits the frame's buffer and waits for it; the
+	// out-of-band road submits its own tiny buffer and waits for that, which still waits for
+	// everything already queued because queue submissions retire in order. TileGpu reported
+	// NEITHER until now (only exact-Tile printed the out-of-band line), which is how a regression
+	// built entirely of out-of-band waits once hid behind falling drain counters.
+	//
+	// ⚠️ Basis: MODEL frames (one per plan build, idle frames included), matching every other line
+	// in this census. The runner's stats.json divides by DRAWN frames, so its per-frame figure for
+	// the same population is larger — on a 30 Hz title by about 2x.
+	const double mframes = static_cast<double>(std::max<size_t>(m_model_frames.size(), 1));
+	const double drains = static_cast<double>(m_target_pool.Drains());
+	const double oob = static_cast<double>(g_gs_device->GetOobWaitCalls());
+	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /frame  =  drains %.2f (%.2f ms/frame)  +  out-of-band %.2f "
+					"(%.2f ms/frame)   [ring backpressure, not a drain: %.2f /frame, %.2f ms]",
+		(drains + oob) / mframes, drains / mframes,
+		static_cast<double>(m_target_pool.DrainWallNs()) / mframes / 1e6, oob / mframes,
+		static_cast<double>(g_gs_device->GetOobWaitNs()) / mframes / 1e6,
+		static_cast<double>(g_gs_device->GetRingWaitCalls()) / mframes,
+		static_cast<double>(g_gs_device->GetRingWaitNs()) / mframes / 1e6);
+
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of
 	// materialised sources WOULD have served, and for the rest, exactly which clause refused.
 	const auto tdraws = stat([](const MF& f) { return f.tex_draws; });

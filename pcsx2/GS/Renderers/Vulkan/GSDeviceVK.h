@@ -33,6 +33,10 @@ class GSDeviceVK final : public GSDevice
 public:
 	u64 GetOobWaitNs() const override { return m_oob_wait_ns; }
 	u64 GetOobWaitCalls() const override { return m_oob_wait_calls; }
+	u64 GetSyncWaitNs() const override { return m_sync_wait_ns; }
+	u64 GetSyncWaitCalls() const override { return m_sync_wait_calls; }
+	u64 GetRingWaitNs() const override { return m_ring_wait_ns; }
+	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -288,7 +292,17 @@ private:
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
-	void WaitForCommandBufferCompletion(u32 index);
+	/// Why the host is about to block on a GPU fence. `Ring` is the command-buffer ring's own
+	/// recycle wait — the pipeline is full and the frame ahead has to retire — which is
+	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
+	/// paid out of turn to get an answer, and that is the population the readback work is judged
+	/// against (see GSPerfMon::GpuBlockingWaits).
+	enum class GpuWaitCause
+	{
+		Ring,
+		Sync,
+	};
+	void WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause = GpuWaitCause::Sync);
 	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
 	/// structured fault records (addresses, kinds, vendor codes) before the exit.
 	void ReportDeviceFault();
@@ -400,6 +414,10 @@ private:
 	OutOfBandResources m_oob;
 	u64 m_oob_wait_ns = 0;
 	u64 m_oob_wait_calls = 0;
+	u64 m_sync_wait_ns = 0;
+	u64 m_sync_wait_calls = 0;
+	u64 m_ring_wait_ns = 0;
+	u64 m_ring_wait_calls = 0;
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif

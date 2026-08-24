@@ -140,6 +140,10 @@ public:
 	u32 UnaddressableReadbacks() const { return m_unaddressable_readbacks; }
 	/// Readbacks served by the out-of-band copy (no drain of the frame's buffer).
 	u32 OutOfBandCopies() const { return m_oob_copies; }
+	/// Readbacks that took the drain road. Counted here as well as through the caller's
+	/// optional `out_drains`, because a caller that does not pass one (TileGpu does not)
+	/// otherwise leaves half the wait bill unattributed.
+	u32 Drains() const { return m_drains; }
 	/// Wall time spent inside drain-road submit-and-waits. Beside the drain COUNT
 	/// because a drain's price varies with the GPU backlog it lands behind.
 	u64 DrainWallNs() const { return m_drain_wall_ns; }
@@ -187,5 +191,6 @@ private:
 	std::unique_ptr<u8[]> m_map_stage;
 	u32 m_map_stage_size = 0;
 	u32 m_oob_copies = 0;
+	u32 m_drains = 0;
 	u64 m_drain_wall_ns = 0;
 };

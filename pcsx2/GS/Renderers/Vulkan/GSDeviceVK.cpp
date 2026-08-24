@@ -1449,6 +1449,11 @@ bool GSDeviceVK::SubmitOutOfBandAndWait()
 	res = vkWaitForFences(m_device, 1, &m_oob.fence, VK_TRUE, UINT64_MAX);
 	m_oob_wait_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - oob_t0);
 	m_oob_wait_calls++;
+	// Out of the drain accounting, but squarely inside the blocking-wait one: queue submissions
+	// retire in order, so waiting on this fence waits on everything already submitted. The road's
+	// name says "does not drain the frame's BUFFER", which is true and is not the same claim as
+	// "does not drain the pipeline".
+	g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences (out-of-band) failed: ");
@@ -1744,7 +1749,11 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
 
 void GSDeviceVK::WaitForGPUIdle()
 {
+	const u64 t0 = Common::Timer::GetCurrentValue();
 	vkDeviceWaitIdle(m_device);
+	m_sync_wait_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - t0);
+	m_sync_wait_calls++;
+	g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
 }
 
 float GSDeviceVK::GetAndResetAccumulatedGPUTime()
@@ -1895,10 +1904,25 @@ void GSDeviceVK::ReportDeviceFault()
 	}
 }
 
-void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
+void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause)
 {
-	// Wait for this command buffer to be completed.
+	// Wait for this command buffer to be completed. Timed and attributed: a Sync wait is the GS
+	// thread stalling out of turn, which serializes the whole frame whatever it carries, and it
+	// was previously indistinguishable from the ring's own recycle wait in every counter we had.
+	const u64 wait_t0 = Common::Timer::GetCurrentValue();
 	const VkResult res = vkWaitForFences(m_device, 1, &m_frame_resources[index].fence, VK_TRUE, UINT64_MAX);
+	const u64 wait_ns = Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - wait_t0);
+	if (cause == GpuWaitCause::Sync)
+	{
+		m_sync_wait_ns += wait_ns;
+		m_sync_wait_calls++;
+		g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+	}
+	else
+	{
+		m_ring_wait_ns += wait_ns;
+		m_ring_wait_calls++;
+	}
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
@@ -2146,9 +2170,10 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 {
 	FrameResources& resources = m_frame_resources[index];
 
-	// Wait for the GPU to finish with all resources for this command buffer.
+	// Wait for the GPU to finish with all resources for this command buffer. This one is the ring
+	// coming round — the pipeline is full — not a stall anybody asked for.
 	if (resources.fence_counter > m_completed_fence_counter)
-		WaitForCommandBufferCompletion(index);
+		WaitForCommandBufferCompletion(index, GpuWaitCause::Ring);
 
 	// Reset fence to unsignaled before starting.
 	VkResult res = vkResetFences(m_device, 1, &resources.fence);

@@ -1906,6 +1906,16 @@ public:
 	virtual u64 GetOobWaitNs() const { return 0; }
 	virtual u64 GetOobWaitCalls() const { return 0; }
 
+	/// Host waits on GPU completion, split by who is to blame. `Sync` is the GS thread blocking
+	/// OUT OF TURN — a readback's submit-and-wait, an explicit sync — and together with the
+	/// out-of-band waits above it is the whole population that serializes the frame. `Ring` is the
+	/// command-buffer ring's own recycle wait, which is backpressure and is reported separately so
+	/// it cannot be mistaken for a drain.
+	virtual u64 GetSyncWaitNs() const { return 0; }
+	virtual u64 GetSyncWaitCalls() const { return 0; }
+	virtual u64 GetRingWaitNs() const { return 0; }
+	virtual u64 GetRingWaitCalls() const { return 0; }
+
 	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
 	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
 	/// begin at block `cbp` of `owner`, a page-aligned CT32/CT24 surface texture, in
