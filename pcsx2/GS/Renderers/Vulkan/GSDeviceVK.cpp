@@ -916,12 +916,21 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// driver may reject. NON-uniform indexing is deliberately NOT required: the executor
 		// splits its indirect runs at a slot change, so the index is wave-uniform by construction
 		// (ExecuteTileGpuPassPlan).
+		//
+		// EmuCore/GS/TileGpuDisableBindlessTargets holds it off whatever the device answers. It is
+		// for a bring-up round on a device the contract has only just started passing on: every
+		// road the contract gates comes up in the same boot, and rules 2 and 3 are the pair worth
+		// seeing separately from the rest. Folded in HERE, not at the accessor, so the shader's
+		// defines, the source-array build and the renderer all read one decision -- a shader that
+		// declares the array while the renderer refuses to bind it is the one shape that must not
+		// happen. Fail-closed: unset, the device's own answer stands.
 		m_optional_extensions.tilegpu_bindless_targets =
-			m_optional_extensions.tilegpu_device_capable &&
+			m_optional_extensions.tilegpu_device_capable && !GSConfig.TileGpuDisableBindlessTargets &&
 			m_device_features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
-		DevCon.WriteLn("VK: TileGpu sampled targets %s (sampled-image array dynamic indexing=%s).",
+		DevCon.WriteLn("VK: TileGpu sampled targets %s (sampled-image array dynamic indexing=%s%s).",
 			m_optional_extensions.tilegpu_bindless_targets ? "enabled" : "disabled",
-			m_device_features.shaderSampledImageArrayDynamicIndexing ? "yes" : "no");
+			m_device_features.shaderSampledImageArrayDynamicIndexing ? "yes" : "no",
+			GSConfig.TileGpuDisableBindlessTargets ? ", HELD OFF by TileGpuDisableBindlessTargets" : "");
 
 		// The in-pass destination read: a pass declares its colour attachment as an input attachment
 		// too and the fragment stage reads the pixel it is about to write, in rasterization order.

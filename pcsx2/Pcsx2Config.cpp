@@ -766,6 +766,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuForceDepthMergedPasses = false;
 	TileGpuAdaptiveDepthPasses = true;
 	TileGpuIgnoreDeviceContract = false;
+	TileGpuDisableBindlessTargets = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1111,6 +1112,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuForceDepthMergedPasses);
 	SettingsWrapBitBool(TileGpuAdaptiveDepthPasses);
 	SettingsWrapBitBool(TileGpuIgnoreDeviceContract);
+	SettingsWrapBitBool(TileGpuDisableBindlessTargets);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

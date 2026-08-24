@@ -1078,6 +1078,21 @@ struct Pcsx2Config
 					// the run, not the frame. Fail-closed: off means the fallback is
 					// active. Never a user setting.
 					TileGpuIgnoreDeviceContract : 1,
+					// Hold TileGpu's bindless sampled-target and materialised-source
+					// arrays off, whatever the device answers about indexing a
+					// sampled-image array by a value the shader computes.
+					//
+					// Same bring-up shape as the key above and for the same reason:
+					// everything the device contract gates comes up in one boot on a
+					// device that has only just started passing it, and rule 2 (a draw
+					// sampling a resident target) and rule 3 (a draw sampling a
+					// materialised source) are the pair worth watching separately from
+					// the rest. Read once in CreateDevice, so the shader's defines, the
+					// source-array build and the renderer all take one answer -- a
+					// shader declaring an array the renderer refuses to bind is the one
+					// shape this must never produce. Fail-closed: off means the device's
+					// own answer stands. Dev only.
+					TileGpuDisableBindlessTargets : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
