@@ -170,61 +170,66 @@ enum class GSTileAlphaTestFold : u8
 	AllFail = 2, ///< everything is rejected: AFAIL alone says what the draw still lands
 };
 
-/// Whether the alpha the test compares is the same for every fragment of the draw.
-///
-/// Two independent reasons it can vary, and neither may be present. The TEXTURE supplies
-/// the alpha when it is sampled and TEX0.TCC says its alpha is used — with TCC=0 every
-/// texture function passes the vertex alpha through untouched, which is what makes an
-/// untextured draw and a TCC=0 one the same case. And AA1 modulates a fragment's alpha by
-/// its coverage, per pixel, on the primitive's edges.
-///
-/// `vertex_alpha_uniform` is the vertex trace's alpha equality bit — the ALPHA component
-/// alone (GSVertexTrace's m_eq.a), not whole-RGBA equality: a gouraud-shaded draw whose
-/// colour ramps while its alpha holds still is as decidable as a flat one.
-constexpr bool gsTileAlphaIsDrawConstant(bool tme, bool tcc, bool aa1, bool vertex_alpha_uniform)
-{
-	return vertex_alpha_uniform && !aa1 && !(tme && tcc);
-}
-
-/// Decide the alpha test at plan time, where the fragment alpha allows it.
+/// Decide the alpha test at plan time, from the INTERVAL the draw's fragment alpha can
+/// take. `alpha_min`/`alpha_max` are that interval inclusive, in 0..255; a caller that
+/// cannot bound the alpha passes the whole range and gets Varies out of every comparison.
 ///
 /// ATST=NEVER and ATST=ALWAYS decide themselves. What this adds is the SAME intent written
 /// as a comparison that cannot come out either way — which games do write, and which
 /// costs a whole character when it is read as a live test instead.
 ///
-/// Katamari Damacy composites the King's head out of two sprites over one rectangle: the
-/// first stamps a lower Z into it, the second draws the head with ZTST=GEQUAL against that
-/// Z. The stamp is untextured with vertex alpha 0x00, asks for ATST=NOTEQUAL AREF=0 — "0 !=
-/// 0" is false, so every fragment fails — and carries AFAIL=ZB_ONLY, "a failing fragment
-/// still writes depth". The fragment stage's approximation discards a failing fragment
-/// outright, so read as a live test the stamp deposits no depth and the head behind it then
-/// fails its own GEQUAL over every pixel the star covers.
+/// An interval rather than a single value, because the draws that need this most are
+/// TEXTURED. Katamari Damacy's is the easy shape: it composites the King's head out of two
+/// sprites over one rectangle, the first stamping a lower Z into it, the second drawing the
+/// head with ZTST=GEQUAL against that Z. The stamp is untextured with vertex alpha 0x00,
+/// asks for ATST=NOTEQUAL AREF=0 — "0 != 0" is false, so every fragment fails — and carries
+/// AFAIL=ZB_ONLY, "a failing fragment still writes depth". One alpha value decides it.
 ///
-/// ⚠️ The comparisons are the software renderer's (GSState::TryAlphaTest's GetResult with
-/// the vertex-trace alpha range collapsed to one value) and tilegpu.glsl's fragment stage,
-/// which are the same list. All three have to stay the same list; a boundary that drifts
-/// here changes some other game's draw and nothing says so.
-constexpr GSTileAlphaTestFold gsTileFoldAlphaTest(bool ate, u32 atst, u32 aref, bool alpha_is_constant, u32 alpha)
+/// R&C UYA's exhaust flare is the shape a single value CANNOT decide, and it is a whole
+/// effect rather than a detail. The flare is one additively-blended 351-triangle strip
+/// sampling a paletted glow texture under ATST=GEQUAL AREF=128 AFAIL=RGB_ONLY — "a fragment
+/// that fails still writes its RGB, it just must not touch the alpha byte or depth", the
+/// standard idiom for an additive effect that must not disturb the frame's alpha or Z. Its
+/// palette tops out at alpha 128 and its vertex alpha at 64, so its MODULATE output tops out
+/// at (128 × 64) >> 7 = 64: no fragment can reach the reference. Decided as an interval the
+/// draw folds to AllFail, RGB_ONLY paints the flare and drops the alpha and depth writes;
+/// read as a live test the fragment stage discards every fragment and the flare is gone.
+///
+/// ⚠️ The comparisons are the software renderer's (GSState::TryAlphaTest's GetResult), the
+/// shared Tile lowering's (GSTileDrawLowering.h) and tilegpu.glsl's fragment stage, which
+/// are the same list. All of them have to stay the same list; a boundary that drifts here
+/// changes some other game's draw and nothing says so.
+constexpr GSTileAlphaTestFold gsTileFoldAlphaTest(bool ate, u32 atst, u32 aref, u32 alpha_min, u32 alpha_max)
 {
+	using Fold = GSTileAlphaTestFold;
 	if (!ate || atst == ATST_ALWAYS)
-		return GSTileAlphaTestFold::AllPass;
+		return Fold::AllPass;
 	if (atst == ATST_NEVER)
-		return GSTileAlphaTestFold::AllFail;
-	if (!alpha_is_constant)
-		return GSTileAlphaTestFold::Varies;
+		return Fold::AllFail;
+	if (alpha_min > alpha_max)
+		return Fold::Varies; // an interval that says nothing decides nothing
 
-	bool pass;
+	const u32 lo = alpha_min;
+	const u32 hi = alpha_max;
 	switch (atst)
 	{
-		case ATST_LESS: pass = alpha < aref; break;
-		case ATST_LEQUAL: pass = alpha <= aref; break;
-		case ATST_EQUAL: pass = alpha == aref; break;
-		case ATST_GEQUAL: pass = alpha >= aref; break;
-		case ATST_GREATER: pass = alpha > aref; break;
-		case ATST_NOTEQUAL: pass = alpha != aref; break;
-		default: return GSTileAlphaTestFold::Varies;
+		case ATST_LESS:
+			return (hi < aref) ? Fold::AllPass : ((lo >= aref) ? Fold::AllFail : Fold::Varies);
+		case ATST_LEQUAL:
+			return (hi <= aref) ? Fold::AllPass : ((lo > aref) ? Fold::AllFail : Fold::Varies);
+		case ATST_EQUAL:
+			return (lo == aref && hi == aref) ? Fold::AllPass :
+												((aref < lo || aref > hi) ? Fold::AllFail : Fold::Varies);
+		case ATST_GEQUAL:
+			return (lo >= aref) ? Fold::AllPass : ((hi < aref) ? Fold::AllFail : Fold::Varies);
+		case ATST_GREATER:
+			return (lo > aref) ? Fold::AllPass : ((hi <= aref) ? Fold::AllFail : Fold::Varies);
+		case ATST_NOTEQUAL:
+			return (aref < lo || aref > hi) ? Fold::AllPass :
+											  ((lo == aref && hi == aref) ? Fold::AllFail : Fold::Varies);
+		default:
+			return Fold::Varies;
 	}
-	return pass ? GSTileAlphaTestFold::AllPass : GSTileAlphaTestFold::AllFail;
 }
 
 /// Whether the draw's depth write survives its own alpha test. ZTE and ZMSK have the final
@@ -245,6 +250,12 @@ constexpr bool gsTileDepthWriteSurvives(bool zte, bool zmsk, bool atst_all_fail,
 /// all-fail RGB_ONLY sprites are OutRun's eight, all at FBMSK=0xFF000000, which
 /// gsTileFrameWriteIsTotal refuses before this is even asked. Named rather than quietly
 /// changed, because changing it moves pixels on a draw nothing has measured.
+///
+/// Re-measured when the fold widened from a constant alpha to an interval, which is exactly
+/// the change that could have populated this: over the whole 18-dump corpus every draw that
+/// reaches the seed skip with an all-fail verdict is ATST=NEVER + AFAIL=FB_ONLY (SotC 227
+/// a frame, OutRun 8 and 4, MGS3 2) — the population that was already there. The interval
+/// adds none, so the carve-out above is unchanged rather than merely still unmeasured.
 constexpr bool gsTileColorLandsOnEveryFragment(GSTileAlphaTestFold fold, u32 afail)
 {
 	if (fold == GSTileAlphaTestFold::AllPass)

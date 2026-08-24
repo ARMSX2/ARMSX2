@@ -1,35 +1,45 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The alpha test decided at plan time, where the fragment alpha cannot vary.
+// The alpha test decided at plan time, from the interval the draw's fragment alpha can take.
 //
 // TileGpu's fragment stage discards a failing fragment outright. That is exact for
 // AFAIL=KEEP and wrong for the three modes that still write something on failure, so the
 // renderer only asks for a per-fragment test where the two sides of it land differently,
 // and folds the cases it can decide up front into the write flags instead. ATST=NEVER was
-// always folded. This pins the other half: a COMPARISON that provably fails, or provably
-// passes, against an alpha that is the same for every fragment of the draw.
+// always folded. This pins the other half: a COMPARISON no fragment of the draw can cross.
 //
-// Katamari Damacy is why. The King's head is composited out of two sprites over the same
-// rectangle: the first stamps a lower Z into it, the second draws the head with
-// ZTST=GEQUAL against that Z. The stamp is untextured with vertex alpha 0x00 on all four
-// vertices, and asks for ATST=NOTEQUAL AREF=0 -- "0 != 0" is false, so every fragment
-// fails -- with AFAIL=ZB_ONLY, "a failing fragment still writes depth". Read as a live
-// per-fragment test the stamp discards every fragment and deposits no depth at all, and
-// the head then fails its own GEQUAL over every pixel the purple star behind it covers.
-// The head was missing from every archived TileGpu run of that scene.
+// Katamari Damacy is the shape one alpha value decides. The King's head is composited out
+// of two sprites over the same rectangle: the first stamps a lower Z into it, the second
+// draws the head with ZTST=GEQUAL against that Z. The stamp is untextured with vertex alpha
+// 0x00 on all four vertices, and asks for ATST=NOTEQUAL AREF=0 -- "0 != 0" is false, so
+// every fragment fails -- with AFAIL=ZB_ONLY, "a failing fragment still writes depth". Read
+// as a live per-fragment test the stamp discards every fragment and deposits no depth at
+// all, and the head then fails its own GEQUAL over every pixel the purple star behind it
+// covers. The head was missing from every archived TileGpu run of that scene.
 //
-// Three things are pinned here:
+// R&C UYA's exhaust flare is the shape one value CANNOT decide, and it is why the fold takes
+// an interval. The flare is one additively-blended 351-triangle strip sampling a paletted
+// glow texture under ATST=GEQUAL AREF=128 AFAIL=RGB_ONLY. Its alpha is not constant -- the
+// palette varies and the vertices are gouraud -- but it is BOUNDED: palette alpha tops out
+// at 128 and vertex alpha at 64, so the MODULATE output tops out at (128 * 64) >> 7 = 64 and
+// no fragment can reach the reference. Armored Core 3's HUD is the same shape at
+// AFAIL=FB_ONLY, 1,547 draws a frame, at (255 * 64) >> 7 = 127 against the same AREF=128.
+//
+// Four things are pinned here:
 //
 //  - the fold's comparisons are the SAME comparisons the software renderer makes
-//    (GSState::TryAlphaTest's GetResult, with the alpha range collapsed to one value) and
-//    the same ones tilegpu.glsl's fragment stage makes. A boundary that disagrees with
-//    either silently changes a draw in some other game.
+//    (GSState::TryAlphaTest's GetResult) and the shared Tile lowering makes
+//    (GSTileDrawLowering.h), on intervals as well as on points. A boundary that disagrees
+//    with either silently changes a draw in some other game.
+//  - an interval that straddles AREF decides NOTHING. Folding a straddling draw would drop
+//    real fragments, which is worse than the approximation the fold exists to avoid.
 //  - what a folded all-fail draw writes is decided by AFAIL alone, exactly as ATST=NEVER
 //    already was -- so the NEVER road must come out byte-identical.
 //  - the seed skip's "this sprite provably overwrites the page" gate has to keep meaning
 //    that. A fold to all-pass makes a draw MORE total; a fold to all-fail makes it total
-//    only in the AFAIL modes that still write the frame buffer.
+//    only in the AFAIL modes that still write the frame buffer, which is exactly where
+//    ATST=NEVER already put it -- so widening the fold may not widen that gate's reach.
 
 #include "GS/Renderers/Tile/GSTileTypes.h"
 
@@ -46,15 +56,22 @@ constexpr u8 kR = 0x1, kG = 0x2, kB = 0x4, kA = 0x8;
 
 using Fold = GSTileAlphaTestFold;
 
+/// The whole 0..255 range: what a caller that cannot bound the alpha passes.
+constexpr u32 kAnyLo = 0, kAnyHi = 255;
+
 constexpr Fold FoldConst(u32 atst, u32 aref, u32 alpha)
 {
-	return gsTileFoldAlphaTest(true, atst, aref, true, alpha);
+	return gsTileFoldAlphaTest(true, atst, aref, alpha, alpha);
+}
+
+constexpr Fold FoldRange(u32 atst, u32 aref, u32 lo, u32 hi)
+{
+	return gsTileFoldAlphaTest(true, atst, aref, lo, hi);
 }
 
 // The software renderer's own decision, transcribed from GSState::TryAlphaTest's GetResult
-// so the sweep below compares against an independent copy rather than against the code it
-// is testing. UNKNOWN is what that function returns when the vertex-trace alpha RANGE
-// straddles AREF; with a constant alpha the range is a point and it can never come back.
+// so the sweeps below compare against an independent copy rather than against the code they
+// are testing. UNKNOWN is what that function returns when the alpha RANGE straddles AREF.
 enum class Ref
 {
 	Unknown,
@@ -101,41 +118,67 @@ const char* Name(Fold f)
 } // namespace
 
 // ---------------------------------------------------------------------------------------
-// When the fragment alpha is a draw-time constant.
+// The draws this exists for.
 // ---------------------------------------------------------------------------------------
 
-// The three register combinations that make the alpha the test compares the same for every
-// fragment. Each half is a separate reason and all of them have to hold.
-TEST(TileGpuAlphaTestFold, ConstantAlphaNeedsNoTextureAlphaNoCoverageAndOneVertexAlpha)
+// R&C UYA's exhaust flare, register for register: a textured gouraud strip whose fragment
+// alpha is bounded at 64 by (palette max 128 * vertex max 64) >> 7, under ATST=GEQUAL
+// AREF=128 AFAIL=RGB_ONLY, ZTE=1 ZMSK=0, FBMSK=0. Every fragment fails, so the draw paints
+// its RGB and touches neither the frame's alpha byte nor its depth. This is the whole
+// effect: read as a live test the fragment stage discards all 351 primitives and the flare
+// does not exist.
+TEST(TileGpuAlphaTestFold, RcuyaExhaustFlareFailsEveryFragmentAndStillPaintsItsColour)
 {
-	for (bool tme : {false, true})
-	{
-		for (bool tcc : {false, true})
-		{
-			for (bool aa1 : {false, true})
-			{
-				for (bool uniform : {false, true})
-				{
-					// The texture supplies the alpha only when it is sampled AND TCC says its
-					// alpha is used; every texture function passes the vertex alpha through
-					// when TCC is 0.
-					const bool texture_supplies = tme && tcc;
-					// AA1 modulates a fragment's alpha by its coverage, per pixel.
-					const bool expect = uniform && !aa1 && !texture_supplies;
-					EXPECT_EQ(gsTileAlphaIsDrawConstant(tme, tcc, aa1, uniform), expect)
-						<< "tme " << tme << " tcc " << tcc << " aa1 " << aa1 << " uniform " << uniform;
-				}
-			}
-		}
-	}
+	const Fold fold = FoldRange(ATST_GEQUAL, 0x80, /*lo*/ 19, /*hi*/ 64);
+	EXPECT_EQ(fold, Fold::AllFail);
+	const bool all_fail = (fold == Fold::AllFail);
+
+	// RGB lands, the alpha byte does not.
+	EXPECT_EQ(gsTileFrameColorWriteMask(0x00000000u, kC32, all_fail, AFAIL_RGB_ONLY), kGSTileChannelsRGB);
+	// And no depth, whatever ZTE/ZMSK say.
+	EXPECT_FALSE(gsTileDepthWriteSurvives(/*zte*/ true, /*zmsk*/ false, all_fail, AFAIL_RGB_ONLY));
+	// No per-fragment test is left to emit, so nothing discards it.
+	EXPECT_NE(fold, Fold::Varies);
+	// One level higher and the draw straddles the reference: nothing may be decided then.
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x80, 19, 128), Fold::Varies);
 }
 
-// Katamari Damacy's depth stamp, register for register: an untextured sprite, vertex alpha
-// 0x00 on every vertex, ATST=NOTEQUAL AREF=0 AFAIL=ZB_ONLY, ZTE=1 ZMSK=0, FBMSK=0x7f000000.
-// Every fragment fails, so the draw lands no colour and its depth write survives.
+// Armored Core 3's HUD: 1,547 draws a frame, ATST=GEQUAL AREF=128 AFAIL=FB_ONLY, vertex
+// alpha exactly 64 through a MODULATE by an opaque texel -- (255 * 64) >> 7 = 127, one level
+// below the reference. FB_ONLY keeps the WHOLE frame-buffer write, alpha byte included, and
+// drops only the depth write.
+TEST(TileGpuAlphaTestFold, Ac3HudSitsOneLevelUnderTheReferenceAndKeepsItsWholeColourWrite)
+{
+	const Fold fold = FoldRange(ATST_GEQUAL, 0x80, /*lo*/ 127, /*hi*/ 127);
+	EXPECT_EQ(fold, Fold::AllFail);
+	const bool all_fail = true;
+	EXPECT_EQ(gsTileFrameColorWriteMask(0x00000000u, kC32, all_fail, AFAIL_FB_ONLY), kGSTileChannelsRGBA);
+	EXPECT_FALSE(gsTileDepthWriteSurvives(true, false, all_fail, AFAIL_FB_ONLY));
+
+	// The one-level boundary is the whole draw: at 128 it passes instead, and at 128 the
+	// fold must say so rather than guess.
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x80, 128, 128), Fold::AllPass);
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x80, 127, 128), Fold::Varies);
+}
+
+// SotC's full-screen haze quad, the one draw on the corpus where this fold costs accuracy
+// rather than buying it: FB_ONLY at vertex alpha [11,22] against AREF=128, so it folds to
+// all-fail and paints. Correct -- the software renderer paints it too -- and it is pinned
+// here so a later change that stops painting it is recognised as a REGRESSION rather than
+// as the SotC number improving.
+TEST(TileGpuAlphaTestFold, SotcHazeQuadFoldsToAllFailAndPaints)
+{
+	const Fold fold = FoldRange(ATST_GEQUAL, 0x80, 11, 22);
+	EXPECT_EQ(fold, Fold::AllFail);
+	EXPECT_EQ(gsTileFrameColorWriteMask(0x00000000u, kC32, true, AFAIL_FB_ONLY), kGSTileChannelsRGBA);
+}
+
+// Katamari Damacy's depth stamp: an untextured sprite, vertex alpha 0x00 on every vertex, so
+// its interval is the single point 0. ATST=NOTEQUAL AREF=0 AFAIL=ZB_ONLY, ZTE=1 ZMSK=0,
+// FBMSK=0x7f000000. Every fragment fails, so the draw lands no colour and its depth write
+// survives. The point case has to keep working exactly as it did before the widening.
 TEST(TileGpuAlphaTestFold, KatamariDepthStampFailsEveryFragmentAndKeepsItsDepthWrite)
 {
-	ASSERT_TRUE(gsTileAlphaIsDrawConstant(/*tme*/ false, /*tcc*/ false, /*aa1*/ false, /*uniform*/ true));
 	const Fold fold = FoldConst(ATST_NOTEQUAL, 0, 0x00);
 	EXPECT_EQ(fold, Fold::AllFail);
 
@@ -187,11 +230,15 @@ TEST(TileGpuAlphaTestFold, AfailDecidesWhatAFoldedAllFailDrawLands)
 
 // A comparison that provably holds is ATST_ALWAYS: no test is emitted and nothing else
 // about the draw changes.
-TEST(TileGpuAlphaTestFold, ConstantAlphaThatPassesIsAlways)
+TEST(TileGpuAlphaTestFold, AnIntervalThatPassesIsAlways)
 {
 	EXPECT_EQ(FoldConst(ATST_NOTEQUAL, 0, 0x80), Fold::AllPass);
 	EXPECT_EQ(FoldConst(ATST_GEQUAL, 0x40, 0x80), Fold::AllPass);
 	EXPECT_EQ(FoldConst(ATST_EQUAL, 0x80, 0x80), Fold::AllPass);
+	// And the interval forms of the same three.
+	EXPECT_EQ(FoldRange(ATST_NOTEQUAL, 0, 1, 0xFF), Fold::AllPass);
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x40, 0x40, 0xFF), Fold::AllPass);
+	EXPECT_EQ(FoldRange(ATST_LESS, 0x80, 0, 0x7F), Fold::AllPass);
 
 	// An all-pass draw writes what its registers say, with no AFAIL fold at all: AFAIL only
 	// ever describes a fragment that FAILED.
@@ -207,9 +254,37 @@ TEST(TileGpuAlphaTestFold, ConstantAlphaThatPassesIsAlways)
 // ---------------------------------------------------------------------------------------
 
 // Against the software renderer's own decision, over every ATST, every AREF and every
-// alpha. With a constant alpha the reference can never answer UNKNOWN, so this is a total
-// agreement check, not a subset one.
-TEST(TileGpuAlphaTestFold, AgreesWithTheSoftwareTestOnEveryAtstArefAlpha)
+// interval endpoint pair. This is the whole table: every place the fold answers AllPass or
+// AllFail the reference must agree, and every place the reference says UNKNOWN the fold must
+// say Varies -- deciding a straddling draw is exactly the error that drops real fragments.
+TEST(TileGpuAlphaTestFold, AgreesWithTheSoftwareTestOnEveryAtstArefInterval)
+{
+	for (u32 atst = 0; atst < 8; atst++)
+	{
+		for (u32 aref = 0; aref < 256; aref += 5)
+		{
+			for (u32 lo = 0; lo < 256; lo += 7)
+			{
+				for (u32 hi = lo; hi < 256; hi += 11)
+				{
+					const Ref want = RefResult(atst, static_cast<int>(aref), static_cast<int>(lo),
+						static_cast<int>(hi));
+					const Fold got = gsTileFoldAlphaTest(true, atst, aref, lo, hi);
+					const Fold want_fold = (want == Ref::AllPass) ? Fold::AllPass :
+										   (want == Ref::AllFail) ? Fold::AllFail :
+																	Fold::Varies;
+					ASSERT_EQ(got, want_fold) << "atst " << atst << " aref " << aref << " [" << lo << "," << hi
+											  << "] got " << Name(got) << " want " << Name(want_fold);
+				}
+			}
+		}
+	}
+}
+
+// The degenerate interval -- one alpha value -- over the FULL grid, because that is the case
+// the fold started life as and the one a regression would most plausibly reach. With a point
+// interval the reference can never answer UNKNOWN, so this is a total agreement check.
+TEST(TileGpuAlphaTestFold, AgreesWithTheSoftwareTestOnEveryAtstArefPointAlpha)
 {
 	for (u32 atst = 0; atst < 8; atst++)
 	{
@@ -231,7 +306,7 @@ TEST(TileGpuAlphaTestFold, AgreesWithTheSoftwareTestOnEveryAtstArefAlpha)
 }
 
 // The boundaries, spelled out. These are the values a transcription error lands on, and the
-// sweep above would report them as one failure among sixteen thousand.
+// sweeps above would report them as one failure among thousands.
 TEST(TileGpuAlphaTestFold, ArefBoundaries)
 {
 	// Nothing is less than 0, and nothing is greater than 255: two tests that can never pass.
@@ -243,6 +318,13 @@ TEST(TileGpuAlphaTestFold, ArefBoundaries)
 		EXPECT_EQ(FoldConst(ATST_GEQUAL, 0, alpha), Fold::AllPass) << "alpha " << alpha;
 		EXPECT_EQ(FoldConst(ATST_LEQUAL, 255, alpha), Fold::AllPass) << "alpha " << alpha;
 	}
+	// The same four over the widest interval there is: they are register-decided, so even an
+	// unbounded alpha folds them.
+	EXPECT_EQ(FoldRange(ATST_LESS, 0, kAnyLo, kAnyHi), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_GREATER, 255, kAnyLo, kAnyHi), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0, kAnyLo, kAnyHi), Fold::AllPass);
+	EXPECT_EQ(FoldRange(ATST_LEQUAL, 255, kAnyLo, kAnyHi), Fold::AllPass);
+
 	// The pair either side of AREF, for each ordered comparison.
 	EXPECT_EQ(FoldConst(ATST_LESS, 0x80, 0x7F), Fold::AllPass);
 	EXPECT_EQ(FoldConst(ATST_LESS, 0x80, 0x80), Fold::AllFail);
@@ -259,25 +341,46 @@ TEST(TileGpuAlphaTestFold, ArefBoundaries)
 	EXPECT_EQ(FoldConst(ATST_NOTEQUAL, 255, 255), Fold::AllFail);
 	EXPECT_EQ(FoldConst(ATST_EQUAL, 255, 254), Fold::AllFail);
 	EXPECT_EQ(FoldConst(ATST_NOTEQUAL, 255, 254), Fold::AllPass);
+
+	// The interval one level either side of the reference, for every ordered comparison. The
+	// pair that touches AREF may not be decided; the pair that clears it must be.
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x80, 0x7E, 0x7F), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_GEQUAL, 0x80, 0x7F, 0x80), Fold::Varies);
+	EXPECT_EQ(FoldRange(ATST_GREATER, 0x80, 0x7F, 0x80), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_GREATER, 0x80, 0x80, 0x81), Fold::Varies);
+	EXPECT_EQ(FoldRange(ATST_LESS, 0x80, 0x80, 0x81), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_LESS, 0x80, 0x7F, 0x80), Fold::Varies);
+	EXPECT_EQ(FoldRange(ATST_LEQUAL, 0x80, 0x81, 0x82), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_LEQUAL, 0x80, 0x80, 0x81), Fold::Varies);
+	// EQUAL/NOTEQUAL: an interval containing AREF and something else decides neither way.
+	EXPECT_EQ(FoldRange(ATST_EQUAL, 0x80, 0x80, 0x81), Fold::Varies);
+	EXPECT_EQ(FoldRange(ATST_NOTEQUAL, 0x80, 0x80, 0x81), Fold::Varies);
+	EXPECT_EQ(FoldRange(ATST_EQUAL, 0x80, 0x81, 0x82), Fold::AllFail);
+	EXPECT_EQ(FoldRange(ATST_NOTEQUAL, 0x80, 0x81, 0x82), Fold::AllPass);
 }
 
 // ---------------------------------------------------------------------------------------
 // What must NOT change.
 // ---------------------------------------------------------------------------------------
 
-// A draw whose alpha the plan cannot pin keeps the per-fragment road, whatever its
-// registers say. This is every textured TCC=1 draw and every gouraud-alpha one.
-TEST(TileGpuAlphaTestFold, AlphaThatCanVaryKeepsThePerFragmentTest)
+// A draw whose alpha the plan cannot bound at all keeps the per-fragment road, whatever its
+// registers say. This is what an AA1 draw and an unsynced-palette draw get, and it is what
+// every draw got before the fold existed.
+TEST(TileGpuAlphaTestFold, AnUnboundedAlphaKeepsThePerFragmentTest)
 {
 	for (u32 atst = ATST_LESS; atst <= ATST_NOTEQUAL; atst++)
 	{
-		for (u32 aref : {0u, 1u, 0x80u, 0xFEu, 0xFFu})
-			EXPECT_EQ(gsTileFoldAlphaTest(true, atst, aref, /*constant*/ false, 0), Fold::Varies)
+		for (u32 aref : {1u, 0x80u, 0xFEu})
+			EXPECT_EQ(gsTileFoldAlphaTest(true, atst, aref, kAnyLo, kAnyHi), Fold::Varies)
 				<< "atst " << atst << " aref " << aref;
 	}
 	// NEVER and ALWAYS never needed the alpha in the first place, so they still fold.
-	EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, 0x80, false, 0), Fold::AllFail);
-	EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_ALWAYS, 0x80, false, 0), Fold::AllPass);
+	EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, 0x80, kAnyLo, kAnyHi), Fold::AllFail);
+	EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_ALWAYS, 0x80, kAnyLo, kAnyHi), Fold::AllPass);
+	// An inverted interval says nothing, so it decides nothing either -- a caller that fills
+	// the pair in the wrong order gets the conservative answer, not a wrong one.
+	for (u32 atst = ATST_LESS; atst <= ATST_NOTEQUAL; atst++)
+		EXPECT_EQ(gsTileFoldAlphaTest(true, atst, 0x80, 200, 100), Fold::Varies) << "atst " << atst;
 }
 
 // ATE=0 is not a test at all: every fragment passes and AFAIL says nothing.
@@ -285,23 +388,20 @@ TEST(TileGpuAlphaTestFold, AlphaTestOffPassesEverything)
 {
 	for (u32 atst = 0; atst < 8; atst++)
 	{
-		for (bool constant : {false, true})
-			EXPECT_EQ(gsTileFoldAlphaTest(false, atst, 0x80, constant, 0), Fold::AllPass) << "atst " << atst;
+		EXPECT_EQ(gsTileFoldAlphaTest(false, atst, 0x80, kAnyLo, kAnyHi), Fold::AllPass) << "atst " << atst;
+		EXPECT_EQ(gsTileFoldAlphaTest(false, atst, 0x80, 0, 0), Fold::AllPass) << "atst " << atst;
 	}
 }
 
 // The ATST=NEVER road is a pure rename: it folded to all-fail before this existed and it
 // folds to all-fail now, for every alpha the draw could carry and whether or not the plan
-// can pin one.
+// can bound one.
 TEST(TileGpuAlphaTestFold, NeverRoadIsUnchanged)
 {
 	for (u32 aref = 0; aref < 256; aref++)
 	{
-		for (bool constant : {false, true})
-		{
-			EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, aref, constant, aref), Fold::AllFail);
-			EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, aref, constant, 0xFF - aref), Fold::AllFail);
-		}
+		EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, aref, aref, aref), Fold::AllFail);
+		EXPECT_EQ(gsTileFoldAlphaTest(true, ATST_NEVER, aref, kAnyLo, kAnyHi), Fold::AllFail);
 	}
 	// And the two derivations it feeds answer exactly what they answered before, on every
 	// AFAIL and every frame format.
@@ -356,33 +456,74 @@ TEST(TileGpuAlphaTestFold, SeedSkipGateMatchesThePreFoldExpressionWhereverThatCo
 				const bool old_gate = !ate || atst == ATST_ALWAYS ||
 									  ((ate && atst == ATST_NEVER) &&
 										  (afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY));
-				// With no constant to fold, the new gate sees exactly what the old one saw.
-				const Fold fold = gsTileFoldAlphaTest(ate, atst, 0x80, /*constant*/ false, 0);
+				// With no bound to fold, the new gate sees exactly what the old one saw.
+				const Fold fold = gsTileFoldAlphaTest(ate, atst, 0x80, kAnyLo, kAnyHi);
 				EXPECT_EQ(gsTileColorLandsOnEveryFragment(fold, afail), old_gate)
 					<< "ate " << ate << " atst " << atst << " afail " << afail;
 			}
 		}
 	}
-	// And where a constant DOES decide it, the gate can only get stronger, never weaker: an
-	// all-pass fold is a total write, an all-fail one is total in the same two AFAIL modes
-	// ATST=NEVER already was.
-	for (u32 atst = ATST_LESS; atst <= ATST_NOTEQUAL; atst++)
+}
+
+// What the seed skip may be told, now that the interval decides draws a constant alpha could
+// not. The skip means "these bytes are all about to be overwritten, do not fetch them", so
+// every admitted draw must write every channel of the page -- and the sweep below says which
+// admissions do and which is the one that does not.
+//
+// Exactly three admissions exist over the whole domain:
+//   * AllPass          -- every fragment writes everything. Sound.
+//   * AllFail FB_ONLY  -- every fragment fails and FB_ONLY keeps the whole frame-buffer
+//                         write, alpha byte included. Sound.
+//   * AllFail RGB_ONLY -- colour lands, the alpha byte does not. NOT a total write, and the
+//                         named pre-existing carve-out in gsTileColorLandsOnEveryFragment.
+//                         Held harmless by the FBMSK half of the gate, which refuses the
+//                         corpus's only such sprites (OutRun's, at FBMSK=0xFF000000).
+//
+// Measured on the 18-dump corpus when the interval landed, which is the change that could
+// have populated that third row: every draw that reaches the seed skip with an all-fail
+// verdict is ATST=NEVER + AFAIL=FB_ONLY (SotC 227 a frame, OutRun 8 and 4, MGS3 2). The
+// interval adds none, so the residual stays theoretical rather than becoming live.
+TEST(TileGpuAlphaTestFold, EverySeedSkipAdmissionIsATotalWriteExceptTheNamedRgbOnlyCarveOut)
+{
+	bool saw_all_pass = false, saw_fb_only = false, saw_rgb_only = false;
+	for (u32 atst = 0; atst < 8; atst++)
 	{
-		for (u32 aref = 0; aref < 256; aref++)
+		for (u32 aref = 0; aref < 256; aref += 17)
 		{
-			for (u32 alpha = 0; alpha < 256; alpha += 17)
+			for (u32 lo = 0; lo < 256; lo += 23)
 			{
-				const Fold fold = FoldConst(atst, aref, alpha);
-				for (u32 afail = 0; afail < 4; afail++)
+				for (u32 hi = lo; hi < 256; hi += 29)
 				{
-					if (gsTileColorLandsOnEveryFragment(fold, afail))
+					const Fold fold = gsTileFoldAlphaTest(true, atst, aref, lo, hi);
+					for (u32 afail = 0; afail < 4; afail++)
 					{
-						EXPECT_TRUE(fold == Fold::AllPass ||
-									(fold == Fold::AllFail &&
-										(afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY)));
+						if (!gsTileColorLandsOnEveryFragment(fold, afail))
+							continue;
+						const u8 m = gsTileFrameColorWriteMask(0x00000000u, kC32, fold == Fold::AllFail, afail);
+						if (fold == Fold::AllPass)
+						{
+							saw_all_pass = true;
+							EXPECT_EQ(m, kGSTileChannelsRGBA);
+						}
+						else if (afail == AFAIL_FB_ONLY)
+						{
+							saw_fb_only = true;
+							EXPECT_EQ(m, kGSTileChannelsRGBA);
+						}
+						else
+						{
+							saw_rgb_only = true;
+							EXPECT_EQ(afail, AFAIL_RGB_ONLY)
+								<< "atst " << atst << " aref " << aref << " [" << lo << "," << hi << "]";
+							EXPECT_EQ(m, kGSTileChannelsRGB); // the carve-out: no alpha byte
+						}
 					}
 				}
 			}
 		}
 	}
+	// All three rows are actually reached, so the sweep is testing what it claims to.
+	EXPECT_TRUE(saw_all_pass);
+	EXPECT_TRUE(saw_fb_only);
+	EXPECT_TRUE(saw_rgb_only);
 }

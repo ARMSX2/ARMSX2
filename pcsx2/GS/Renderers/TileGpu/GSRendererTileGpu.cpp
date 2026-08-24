@@ -1450,7 +1450,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
-	Console.WriteLn("  alpha test folded at plan time (constant fragment alpha): all-fail %.2f / %u   "
+	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
@@ -2959,17 +2959,51 @@ void GSRendererTileGpu::AccumulateDraw()
 	// Read as a live per-fragment test the fragment stage discards the whole sprite, the stamp
 	// never lands, and the head draw behind it (ZTST=GEQUAL at the stamped Z) then fails over
 	// every pixel the star covers. So the fold asks the alpha, not just the register.
-	const bool alpha_is_constant = gsTileAlphaIsDrawConstant(PRIM->TME, ctx->TEX0.TCC, PRIM->AA1,
-		m_vt.m_eq.a == 0xF);
-	const u32 const_alpha = static_cast<u32>(m_vt.m_min.c.I32[3]) & 0xFFu;
+	//
+	// It asks for the alpha's INTERVAL, not for a single value, because the draws that most need
+	// deciding are textured. R&C UYA's exhaust flare is one additively-blended paletted strip
+	// under ATST=GEQUAL AREF=128 AFAIL=RGB_ONLY whose palette tops out at alpha 128 and whose
+	// vertex alpha tops out at 64: (128 * 64) >> 7 = 64, so nothing it draws can reach the
+	// reference. Decidable, and the whole flare depends on it -- RGB_ONLY paints the colour and
+	// drops the alpha and depth writes, while the live test discards every fragment instead.
+	// GetAlphaMinMax is the software renderer's own bound and folds TFX, TCC, TEXA/AEM and the
+	// CLUT's alpha range in, which is what makes a textured draw answerable at all.
+	//
+	// Only asked where the answer can matter: ATE off and the two self-deciding ATSTs need no
+	// alpha, and the scan is the one part of this that costs anything on a palettised draw.
+	//
+	// Two cases refuse the bound and take the whole range instead:
+	//   * AA1. GetAlphaMinMax answers for a renderer that either supports coverage alpha or
+	//     assumes a fixed 128 for it; this road applies no coverage alpha at all, so neither
+	//     answer describes its fragments.
+	//   * A palette the device holds and the CPU has not synced. The scan reads the CPU's CLUT
+	//     RAM, which is stale for those slots, and a verdict off the wrong palette is unsound --
+	//     the same failure GSRendererTile::BuildLoweringInput guards with its cpu_current check.
+	//     Asked of the slot mirror here (this road's ResolveDrawPalette is the same question in
+	//     its precise per-window form, and runs much further down), and asked about every slot
+	//     rather than the draw's window: conservative can only cost a fold, unsound moves pixels.
+	//     A readback would cost far more than the verdict is worth.
+	u32 alpha_min = 0, alpha_max = 255;
+	if (ctx->TEST.ATE && ctx->TEST.ATST != ATST_ALWAYS && ctx->TEST.ATST != ATST_NEVER && !PRIM->AA1)
+	{
+		const bool palettised = PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0;
+		if (!palettised || !m_clut_mirror.AnyUnsynced())
+		{
+			if (palettised)
+				m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+			const GSVertexTrace::VertexAlpha& av = GetAlphaMinMax();
+			alpha_min = static_cast<u32>(std::clamp(av.min, 0, 255));
+			alpha_max = static_cast<u32>(std::clamp(av.max, 0, 255));
+		}
+	}
 	const GSTileAlphaTestFold atst_fold = gsTileFoldAlphaTest(ctx->TEST.ATE, ctx->TEST.ATST,
-		ctx->TEST.AREF, alpha_is_constant, const_alpha);
+		ctx->TEST.AREF, alpha_min, alpha_max);
 	const bool atst_all_fail = (atst_fold == GSTileAlphaTestFold::AllFail);
 	if (ctx->TEST.ATE && ctx->TEST.ATST != ATST_NEVER && ctx->TEST.ATST != ATST_ALWAYS &&
 		atst_fold != GSTileAlphaTestFold::Varies)
 	{
-		// The population the constant fold moves off the fragment stage, per frame. NEVER and
-		// ALWAYS are excluded: they never reached it in the first place.
+		// The population the fold moves off the fragment stage, per frame. NEVER and ALWAYS are
+		// excluded: they never reached it in the first place.
 		if (atst_all_fail)
 			m_frame.atst_fold_fail++;
 		else
@@ -3077,7 +3111,9 @@ void GSRendererTileGpu::AccumulateDraw()
 	// own write masks and depth mode -- which costs an indirect run split per draw, so it waits
 	// until the run structure is measured rather than guessed. Rowed in the deferred-accuracy
 	// ledger. The fold above takes the decidable draws out of that population entirely: where the
-	// alpha cannot vary there is no split to make, and the answer is exact.
+	// alpha INTERVAL cannot cross AREF there is no split to make, and the answer is exact. What
+	// is left in the approximation is the draw whose alpha genuinely straddles the reference --
+	// R&C UYA's flare was not one of those, and neither is Armored Core 3's HUD.
 	const bool ate_real = (atst_fold == GSTileAlphaTestFold::Varies);
 	bool needs_test = false;
 	if (ate_real)
