@@ -659,8 +659,12 @@ private:
 	// 15, 29-31 and 38 up are
 	// still free. Sixty-four bits because the three self-read fields no longer fit in thirty-two.
 	std::unordered_map<u64, VkPipeline> m_tilegpu_blend_pipelines;
+	// `declares` is the PASS's answer, not this run's: the declaration is an input-attachment
+	// reference in the render pass, so every pipeline the pass binds has to be built against it
+	// whether or not this run's fragment stage reads anything. The four mask arguments are the RUN's
+	// (GSTileGpuPassPlan::variant_keys), which is a subset of the pass's union.
 	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask,
-		u32 self_mask, bool quantise);
+		u32 self_mask, bool quantise, bool declares);
 	VkPipeline TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares);
 	bool m_tilegpu_declared_fallback_warned = false;
 	// The other road a declaring pass can lose its draws on: no descriptor set for the pass's own

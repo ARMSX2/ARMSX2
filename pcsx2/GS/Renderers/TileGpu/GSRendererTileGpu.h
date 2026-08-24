@@ -881,6 +881,11 @@ private:
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<u32> m_plan_blend_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::blend_keys)
 	std::vector<u32> m_plan_bind_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::bind_keys)
+	// One per m_plan_draws entry (GSTileGpuPassPlan::variant_keys): the draw's own fragment variant,
+	// packed. Resolved with the bind keys rather than at accumulation, because the DATE axis of it is
+	// a property of the pass the draw lands in (whether that pass took a snapshot copy) and pass
+	// membership is not known until the grouping below has run.
+	std::vector<u32> m_plan_variant_keys;
 	// One per m_plan_draws entry (GSTileGpuPassPlan::depth_modes): the draw's depth pipeline
 	// variant. Pipeline state like the topology and the blend key, so it cuts the indirect run and
 	// never the pass.
@@ -1453,8 +1458,45 @@ private:
 	// those counters describe a submission shape the executor does not produce.
 	GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey PlanRunKeyAt(u32 d) const
 	{
-		return GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey{
-			m_plan_topologies[d], m_plan_blend_keys[d], m_plan_depth_modes[d]};
+		return GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey{m_plan_topologies[d], m_plan_blend_keys[d],
+			m_plan_depth_modes[d],
+			(m_plan_variant_keys.size() == m_plan_draws.size()) ? m_plan_variant_keys[d] : 0u};
+	}
+
+	// Draw `d`'s FRAGMENT VARIANT, as the executor will compile it: its own texel road, its own byte
+	// road decode arm, what it alone needs the destination read for, and whether its own output is
+	// what a 16-bit frame stores. `pass_self_mask` is the union its pass declares.
+	//
+	// Two of the four axes are not purely per-draw and the promotion below is what keeps this
+	// mechanism PIXEL-INERT rather than merely narrower:
+	//
+	//  - DATE. Where a pass declares the read for its destination-alpha test it takes no snapshot
+	//    copy, so a draw with DATE in that pass has nothing to read but the live pixel, whether or
+	//    not its own admission asked for one. Narrowing it to the snapshot road would fetch a null
+	//    texture.
+	//  - The AFAIL alpha keep. Its state-row bit is set for every draw the fold names, admitted or
+	//    not, so a refused draw inside a pass that compiled the bit-mask arm keeps its alpha today.
+	//    That is an inconsistency in the row (see the report), not something this lane changes.
+	//
+	// Both promotions are unreachable in either shipped configuration -- a non-segregating device
+	// admits every class, and a segregating one keys non-readers into their own pass -- so they cost
+	// nothing measurable and exist so that a future admission policy cannot silently move a pixel.
+	u32 PlanVariantKeyAt(u32 d, u32 pass_self_mask) const
+	{
+		const PendingDraw& pd = m_plan_pending[d];
+		u32 texel = 0;
+		if (pd.tex_enable && (pd.road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
+		{
+			texel = GSDevice::GSTileGpuTexelArm(pd.index_format);
+			if (pd.pal_mode != 0)
+				texel |= GSDevice::kGSTileGpuTexelPalGather;
+		}
+		u32 self = pd.self_mask;
+		if (pd.date != 0)
+			self |= pass_self_mask & GSDevice::kGSTileGpuSelfDate;
+		if (pd.afail_keep_alpha)
+			self |= pass_self_mask & GSDevice::kGSTileGpuSelfMask;
+		return GSDevice::GSTileGpuPassPlan::PackVariantKey(pd.road_mask, texel, self, pd.quantise_5551);
 	}
 
 	// Copy one flushed batch's geometry into the frame streams, drive the memory model for its
@@ -1713,6 +1755,22 @@ private:
 		u32 texel_mixed_passes = 0; // ...whose byte-road draws span more than one arm
 		u32 texel_mixed_draws = 0;  // the byte-road draws inside those passes
 
+		// The fragment variant as a RUN key rather than a pass property
+		// (GSTileGpuPassPlan::variant_keys). Three columns, and they are the before-and-after of the
+		// same trade: how many draws stop executing their pass's union program, and what the extra
+		// indirect calls cost.
+		u32 variant_runs = 0;        // maximal runs of constant variant inside a pass (the population)
+		u32 variant_extra_calls = 0; // ...of which cut a run nothing else would have cut: the COST
+		// Draws whose own variant is narrower than their pass's union -- the population that stops
+		// paying for a program it does not run.
+		u32 variant_narrowed_draws = 0;
+		// ...and the census's own column, kept in its own units so the before-and-after is directly
+		// comparable to the pass-cause table: draws NOT on the byte road sitting in a pass whose
+		// union takes it. Those are the ones that were executing a 1039-1748 instruction decoder for
+		// nothing. The counter measures the PASS unions, so it reads the same on both arms -- it is
+		// the size of the population rescued, not a residue that shrinks.
+		u32 variant_byte_freeloaders = 0;
+
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them
 		// needs anything at all, which is what clut_no_stall counts.
@@ -1736,6 +1794,33 @@ private:
 	};
 	ModelFrame m_frame = {};
 	std::vector<ModelFrame> m_model_frames;
+
+	// The fragment-variant draw census, accumulated over the whole run rather than per frame: how
+	// many draws COMPILE each variant, and how many would have compiled it under the pass's union.
+	// Two histograms off one run, which is the point -- the before-and-after of the decoupling with
+	// no second run to confound it, and the thing you join against the device's own per-variant
+	// SPIR-V word line to get a draw-weighted program size.
+	//
+	// A flat vector scanned linearly: a frame binds a handful of variants (six on Shadow of the
+	// Colossus), so a map would cost more than it saves and would allocate on a CPU-bound path.
+	std::vector<std::pair<u32, u64>> m_variant_census_own;
+	std::vector<std::pair<u32, u64>> m_variant_census_union;
+	static void CensusAdd(std::vector<std::pair<u32, u64>>& hist, u32 key, u64 n)
+	{
+		for (auto& e : hist)
+		{
+			if (e.first == key)
+			{
+				e.second += n;
+				return;
+			}
+		}
+		hist.emplace_back(key, n);
+	}
+	/// Print both histograms, biggest population first. Read beside the device's "TileGpu fragment
+	/// variant ... N SPIR-V words" lines in the same log, which is what turns draws into a
+	/// draw-weighted program size.
+	void ReportVariantCensus();
 	bool m_warned_lossy = false;
 	bool m_warned_alias = false;
 

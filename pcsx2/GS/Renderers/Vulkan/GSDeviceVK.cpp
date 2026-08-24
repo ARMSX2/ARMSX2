@@ -6823,7 +6823,7 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 // because for the write mask the degradation is a visible defect (the Beyond Good & Evil ratchet),
 // not the cosmetic wrong-blend the fallback was written for.
 VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 plan_road_mask,
-	u32 plan_texel_mask, u32 self_mask, bool quantise)
+	u32 plan_texel_mask, u32 self_mask, bool quantise, bool declares)
 {
 	// The key's colour field is the PRESERVE sense (see GSTileGpuPassPlan::kNoWriteMask), so a plan
 	// that carries no blend keys at all still asks for all four channels.
@@ -6836,7 +6836,12 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	const bool reads = (blend_key & GSTileGpuPassPlan::kSelfRead) != 0;
 	const bool shader_blend = (blend_key & GSTileGpuPassPlan::kSelfBlend) != 0;
 	const bool blend = !shader_blend && (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
-	const bool declares = self_mask != 0;
+	// `declares` is the pass's and arrives from the caller; `self_mask` is this RUN's, and says how
+	// much of the read machinery THESE draws need compiled in. A run that needs none of it inside a
+	// declaring pass still has to be built against the declaring render pass -- that is what makes
+	// the two separate arguments -- but its fragment program carries no destination read at all.
+	pxAssertMsg(declares || self_mask == 0, "TileGpu run needs the destination read in a pass that declares none");
+	pxAssertMsg(!reads || self_mask != 0, "TileGpu draw reads its destination through a variant that compiles none");
 	const u32 road_mask = TileGpuRoadMask(plan_road_mask);
 	const u32 texel_mask = TileGpuTexelMask(road_mask, plan_texel_mask);
 	const u32 all_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
@@ -6845,7 +6850,7 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	// built against the ordinary render pass, so a declaring pass may never reach it.
 	const bool full_variant =
 		road_mask == all_roads && texel_mask == TileGpuTexelMask(all_roads, GSDevice::kGSTileGpuTexelMaskAll);
-	if (!declares && !quantise && full_variant && !blend && color_write_mask == 0xFu)
+	if (!declares && self_mask == 0 && !quantise && full_variant && !blend && color_write_mask == 0xFu)
 		return m_tilegpu_pipeline[topology][depth_mode];
 	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
 	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask, 20-22 the road mask,
@@ -8351,12 +8356,19 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 
 			// One vkCmdDrawIndexedIndirect per maximal run of draws sharing pipeline state -- the run
-			// key: topology, blend key, depth mode -- and, within a run, per stretch sharing a
-			// sampled-target slot. In draw order throughout: commands are laid out in draw order, each
-			// run is a contiguous slice, and runs issue in order -- so overdraw is identical to the
-			// per-draw path, at one submission per run instead of one per draw. A pipeline change (and,
-			// for a FIX-factor blend, a blend-constant set) is the only per-run cost; a slot change
+			// key: topology, blend key, depth mode, fragment variant -- and, within a run, per stretch
+			// sharing a sampled-target slot. In draw order throughout: commands are laid out in draw
+			// order, each run is a contiguous slice, and runs issue in order -- so overdraw is identical
+			// to the per-draw path, at one submission per run instead of one per draw. A pipeline change
+			// (and, for a FIX-factor blend, a blend-constant set) is the only per-run cost; a slot change
 			// costs the call alone. This is the constant-cost submission the design bets on.
+			//
+			// The FRAGMENT VARIANT is in that key rather than on the pass because the fragment program
+			// is not attachment state. Keyed per pass it was the union of everything the pass's draws
+			// needed, so a merge widened the program every draw of the pass ran -- on the corpus, 99.6%
+			// of Bloodrayne 2's source-road draws were executing a byte decoder they never entered, and
+			// merging pushed untextured draws off the Adreno's 4-register wave128 program onto a
+			// 12-register wave64 one. Keyed per run, each draw gets the smallest program that serves it.
 			//
 			// The sampled-binding key ends an indirect call too, but for a different reason: it is
 			// not pipeline state, it is the pair of indices the fragment shader reads the per-pass
@@ -8381,6 +8393,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				}
 			}
 			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
+			// A plan that carries no variant stream leaves every run on its pass's union masks, which
+			// is what this loop did before the variant joined the run key.
+			const bool have_variants = plan.variant_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
 			while (d < end)
@@ -8388,6 +8403,19 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				const GSTileGpuPassPlan::GSTileGpuRunKey rkey = plan.RunKeyAt(d);
 				const u32 bkey = rkey.blend_key;
 				const u32 run_end = plan.RunEndAt(d, end);
+				// This run's fragment variant: its own draws' roads, decode arms, destination-read uses
+				// and 16-bit quantise -- never the pass's union, unless the plan carries no stream.
+				const u32 run_road =
+					have_variants ? GSTileGpuPassPlan::VariantRoadMask(rkey.variant) : pass.road_mask;
+				const u32 run_texel =
+					have_variants ? GSTileGpuPassPlan::VariantTexelMask(rkey.variant) : pass.texel_mask;
+				const u32 run_self =
+					have_variants ? GSTileGpuPassPlan::VariantSelfMask(rkey.variant) : pass.self_mask;
+				const bool run_quantise =
+					have_variants ? GSTileGpuPassPlan::VariantQuantises(rkey.variant) : pass.quantises_frame;
+				pxAssertMsg((run_road & ~pass.road_mask) == 0 && (run_texel & ~pass.texel_mask) == 0 &&
+								(run_self & ~pass.self_mask) == 0 && (!run_quantise || pass.quantises_frame),
+					"TileGpu run asks for a fragment variant its pass's union does not cover");
 
 				// The depth ATTACHMENT is uniform across the pass whatever the device's grouping policy --
 				// a render pass cannot gain or lose one -- so a run's None-ness and this pass's depth
@@ -8397,8 +8425,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				const VkPipeline run_pipe =
 					declared_set_exhausted ? VK_NULL_HANDLE :
 											 GetTileGpuPipeline(static_cast<u32>(rkey.topology),
-												 static_cast<u32>(rkey.depth_mode), bkey, pass.road_mask,
-												 pass.texel_mask, pass.self_mask, pass.quantises_frame);
+												 static_cast<u32>(rkey.depth_mode), bkey, run_road, run_texel,
+												 run_self, run_quantise, declares);
 				if (run_pipe == VK_NULL_HANDLE)
 				{
 					// Only reachable inside a declaring pass whose pipeline failed to build, where the

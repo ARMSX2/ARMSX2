@@ -3,6 +3,7 @@
 
 #include "GSRendererTileGpu.h"
 
+#include "GS/Renderers/TileGpu/GSTileGpuShaderVariant.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/GSLocalMemory.h"
@@ -222,6 +223,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
+	m_plan_variant_keys.clear();
 	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
@@ -1370,6 +1372,7 @@ void GSRendererTileGpu::ObserveDraw()
 void GSRendererTileGpu::ReportPassStructure()
 {
 	ReportModelTraffic();
+	ReportVariantCensus();
 	if (!m_pass_sim.IsActive())
 	{
 		// Say so rather than print nothing: a missing section reads as "the sim found nothing",
@@ -1461,6 +1464,43 @@ void GSRendererTileGpu::ReportPassStructure()
 		tas.mean, tlive.mean, tresc.mean, eligible);
 }
 
+// The fragment-variant draw census: how many draws of the whole run compiled each variant, and how
+// many would have compiled each PASS-UNION variant instead.
+//
+// Two histograms off one run, deliberately. The question the decoupling has to answer is "what does
+// the average draw's program cost now, against what it cost before", and answering it with two runs
+// would compare two scenes as well as two arms. Joined against the device's own per-variant
+// "... N SPIR-V words" lines in the same log, these two columns ARE the draw-weighted program size,
+// before and after.
+void GSRendererTileGpu::ReportVariantCensus()
+{
+	if (m_variant_census_own.empty())
+		return;
+	const auto report = [](const char* what, std::vector<std::pair<u32, u64>>& hist) {
+		std::sort(hist.begin(), hist.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+		u64 total = 0;
+		for (const auto& [key, n] : hist)
+			total += n;
+		Console.WriteLn("  %s (%zu variants over %llu draws):", what, hist.size(), static_cast<unsigned long long>(total));
+		for (const auto& [key, n] : hist)
+		{
+			Console.WriteLn("    %10llu  %5.1f%%  road=%u texel=%u self=%u q16=%u  %s",
+				static_cast<unsigned long long>(n), (total > 0) ? (static_cast<double>(n) * 100.0 / static_cast<double>(total)) : 0.0,
+				GSDevice::GSTileGpuPassPlan::VariantRoadMask(key), GSDevice::GSTileGpuPassPlan::VariantTexelMask(key),
+				GSDevice::GSTileGpuPassPlan::VariantSelfMask(key),
+				GSDevice::GSTileGpuPassPlan::VariantQuantises(key) ? 1u : 0u,
+				GSTileGpuShaderVariant::VariantName(GSDevice::GSTileGpuPassPlan::VariantRoadMask(key),
+					GSDevice::GSTileGpuPassPlan::VariantTexelMask(key),
+					GSDevice::GSTileGpuPassPlan::VariantSelfMask(key),
+					GSDevice::GSTileGpuPassPlan::VariantQuantises(key))
+					.c_str());
+		}
+	};
+	Console.WriteLn("TileGpu fragment-variant draw census:");
+	report("draws by the variant they COMPILE (per run)", m_variant_census_own);
+	report("draws by their PASS's UNION (what they compiled before)", m_variant_census_union);
+}
+
 // The memory model's per-frame traffic: what the byte road actually moved, and every crossing
 // the design says should be rare. Mean / p50 over presented frames.
 void GSRendererTileGpu::ReportModelTraffic()
@@ -1531,6 +1571,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto txp = stat([](const MF& f) { return f.texel_passes; });
 	const auto txm = stat([](const MF& f) { return f.texel_mixed_passes; });
 	const auto txmd = stat([](const MF& f) { return f.texel_mixed_draws; });
+	const auto vruns = stat([](const MF& f) { return f.variant_runs; });
+	const auto vcalls = stat([](const MF& f) { return f.variant_extra_calls; });
+	const auto vnarrow = stat([](const MF& f) { return f.variant_narrowed_draws; });
+	const auto vfree = stat([](const MF& f) { return f.variant_byte_freeloaders; });
 	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
 			   s_all = st(StallSite::SyncAll);
 	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
@@ -1588,6 +1632,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"byte-road draws",
 		txp.mean, txp.p50, txm.mean, txm.p50, (txp.mean > 0.0) ? (txm.mean * 100.0 / txp.mean) : 0.0, txmd.mean,
 		txmd.p50);
+	Console.WriteLn("  fragment variant as a run key: %.2f / %u runs, of which %.2f / %u cut by the variant alone "
+					"(the COST, ~237 ns each)   narrowed draws %.2f / %u   off-byte-road draws inside a "
+					"byte-compiled pass %.2f / %u (the contamination the decoupling ends)",
+		vruns.mean, vruns.p50, vcalls.mean, vcalls.p50, vnarrow.mean, vnarrow.p50, vfree.mean, vfree.p50);
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -4079,6 +4127,9 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// runs on the pair, and the state table's layout is not part of that contract
 		// (GSTileGpuPassPlan::bind_keys).
 		m_plan_bind_keys.resize(m_plan_pending.size());
+		// ...and the per-draw fragment variant, sized here and filled by the grouping below, which is
+		// where a draw's pass -- and so the DATE road its pass provided -- is finally known.
+		m_plan_variant_keys.assign(m_plan_pending.size(), 0u);
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
@@ -4160,6 +4211,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		pxAssert(m_plan_topologies.size() == m_plan_draws.size() &&
 				 m_plan_blend_keys.size() == m_plan_draws.size() &&
 				 m_plan_depth_modes.size() == m_plan_draws.size() &&
+				 m_plan_bind_keys.size() == m_plan_draws.size() &&
+				 m_plan_variant_keys.size() == m_plan_draws.size() &&
 				 m_plan_pending.size() == m_plan_draws.size());
 
 		u32 i = 0;
@@ -4236,7 +4289,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				// The pass's shader variant: the union of the roads its draws take, and -- for the draws
 				// that decode ring bytes -- the union of the texel arms they decode through. A pass of
 				// nothing but untextured draws lands at zero on both and gets the smallest program there
-				// is. Both are unions over the same run of draws, so neither can split it.
+				// is.
+				//
+				// ⚠️ This is no longer what a draw COMPILES. The union is the pass's descriptor story and
+				// the size gate's census; the program a draw runs comes off its own variant key, filled
+				// below, which is part of the executor's run key. Keeping the union is not redundancy --
+				// it is the fallback for a plan that carries no variant stream, and the number the
+				// contamination census is expressed in.
 				pass.road_mask |= pd.road_mask;
 				if (pd.tex_enable && (pd.road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
 				{
@@ -4277,15 +4336,54 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					m_frame.texel_mixed_draws += byte_draws;
 				}
 			}
+			// The per-draw fragment variant, resolved now that the pass -- and so the DATE road the
+			// pass provided -- is known. Filled in a second walk rather than the one above because
+			// pass.self_mask is only complete when that walk has finished.
+			for (u32 d = i; d < j; d++)
+			{
+				m_plan_variant_keys[d] = PlanVariantKeyAt(d, pass.self_mask);
+				const PendingDraw& pd = m_plan_pending[d];
+				const u32 v = m_plan_variant_keys[d];
+				// What this draw stops paying for: the union program is a superset of its own on every
+				// axis, so "narrower on any axis" is the whole population the decoupling serves.
+				if (GSDevice::GSTileGpuPassPlan::VariantRoadMask(v) != pass.road_mask ||
+					GSDevice::GSTileGpuPassPlan::VariantTexelMask(v) != pass.texel_mask ||
+					GSDevice::GSTileGpuPassPlan::VariantSelfMask(v) != pass.self_mask ||
+					GSDevice::GSTileGpuPassPlan::VariantQuantises(v) != pass.quantises_frame)
+					m_frame.variant_narrowed_draws++;
+				// ...and the census's own column, in the units the pass-cause table used: a draw off the
+				// byte road inside a pass that compiles it. Those are the expensive ones -- the byte
+				// roads are 1039-1748 instructions against the materialised source road's 390.
+				if ((pd.road_mask & GSDevice::kGSTileGpuRoadByte) == 0 &&
+					(pass.road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
+					m_frame.variant_byte_freeloaders++;
+				// The two histograms: what this draw compiles now, and what it would have compiled as a
+				// member of its pass. Same run, both arms, so the before-and-after cannot be a different
+				// scene.
+				CensusAdd(m_variant_census_own, v, 1);
+				CensusAdd(m_variant_census_union,
+					GSDevice::GSTileGpuPassPlan::PackVariantKey(
+						pass.road_mask, pass.texel_mask, pass.self_mask, pass.quantises_frame),
+					1);
+			}
+			// The runs the executor will submit inside this pass, and what the variant axis added to
+			// them. Counted here rather than inferred from the device's call total because the device
+			// also cuts on the sampled-binding key, and the two costs have to stay separable.
+			for (u32 d = i; d < j; d++)
+			{
+				if (d == i || PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
+					m_frame.variant_runs++;
+			}
+
 			// What the rule-3 half of the sampled-binding split COSTS, in calls -- the same
 			// arithmetic that priced it before it was taken, now measuring the real thing. The
-			// executor cuts a call at a pipeline change (topology or blend key) and at a bind-key
-			// change, because a descriptor array index has to be dynamically uniform across the
-			// call. Folding the source into that key cuts one more call wherever the source changes
-			// and nothing else does -- so only those boundaries are counted, and only inside a
-			// pass, which is the one place pass membership is known. Priced at the measured ~237 ns
-			// per indirect call, this is what says whether the slot-splitting shape stays
-			// affordable.
+			// executor cuts a call at a pipeline change (topology, blend key, depth mode or fragment
+			// variant) and at a bind-key change, because a descriptor array index has to be
+			// dynamically uniform across the call. Folding the source into that key cuts one more
+			// call wherever the source changes and nothing else does -- so only those boundaries are
+			// counted, and only inside a pass, which is the one place pass membership is known.
+			// Priced at the measured ~237 ns per indirect call, this is what says whether the
+			// slot-splitting shape stays affordable.
 			for (u32 d = i + 1; d < j; d++)
 			{
 				if (PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
@@ -4294,6 +4392,21 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					continue; // already a new call, for the rule-2 slot
 				if (m_plan_pending[d].src_slot != m_plan_pending[d - 1].src_slot)
 					m_frame.src_extra_calls++;
+			}
+			// And the same arithmetic for the variant axis, against the run key WITHOUT it: a cut
+			// nothing else would have made. This is the number the census predicted at 30 a frame
+			// worst case in the corpus, and the one that says whether the decoupling stays free.
+			for (u32 d = i + 1; d < j; d++)
+			{
+				if (m_plan_topologies[d] != m_plan_topologies[d - 1] ||
+					m_plan_blend_keys[d] != m_plan_blend_keys[d - 1] ||
+					m_plan_depth_modes[d] != m_plan_depth_modes[d - 1])
+					continue; // a new pipeline run for a reason that predates this axis
+				if (m_plan_pending[d].tex_slot != m_plan_pending[d - 1].tex_slot ||
+					m_plan_pending[d].src_slot != m_plan_pending[d - 1].src_slot)
+					continue; // already a new call, for the sampled-binding key
+				if (m_plan_variant_keys[d] != m_plan_variant_keys[d - 1])
+					m_frame.variant_extra_calls++;
 			}
 
 			// A pass with a DATE draw snapshots its colour target before opening.
@@ -4372,6 +4485,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.topologies = m_plan_topologies;
 		plan.blend_keys = m_plan_blend_keys;
 		plan.bind_keys = m_plan_bind_keys;
+		// Withholding the stream is what the forced-vs-narrowed gate does: the executor's fallback is
+		// each pass's UNION masks, which is exactly the program every draw used to run. Same plan, same
+		// draws, same order -- only the fragment program each one compiles differs, so the two arms
+		// have to come out byte-identical and a difference is a shader bug rather than a planner one.
+		if (!GSConfig.TileGpuUnionFragmentVariant)
+			plan.variant_keys = m_plan_variant_keys;
 		plan.depth_modes = m_plan_depth_modes;
 		plan.target_pairs = m_plan_target_pairs;
 		plan.snapshots = m_plan_snapshots;
@@ -4418,6 +4537,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
+	m_plan_variant_keys.clear();
 	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();

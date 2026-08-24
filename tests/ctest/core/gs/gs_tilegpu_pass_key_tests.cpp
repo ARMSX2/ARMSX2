@@ -40,6 +40,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <initializer_list>
 #include <tuple>
 #include <utility>
@@ -121,21 +123,40 @@ struct RunPlan
 	std::vector<Topology> topologies;
 	std::vector<u32> blend_keys;
 	std::vector<DepthMode> depth_modes;
+	std::vector<u32> variant_keys;
 	GSDevice::GSTileGpuPassPlan plan;
 
 	RunPlan(std::initializer_list<std::tuple<Topology, u32, DepthMode>> rows)
 	{
 		for (const auto& [topo, blend, depth] : rows)
-		{
-			draws.push_back(GSDevice::GSTileGpuIndirectDraw{});
-			topologies.push_back(topo);
-			blend_keys.push_back(blend);
-			depth_modes.push_back(depth);
-		}
+			Push(topo, blend, depth, 0u);
+		Bind();
+	}
+
+	/// The same, with the fourth run-key field: the draw's packed fragment variant.
+	RunPlan(std::initializer_list<std::tuple<Topology, u32, DepthMode, u32>> rows)
+	{
+		for (const auto& [topo, blend, depth, variant] : rows)
+			Push(topo, blend, depth, variant);
+		Bind();
+	}
+
+	void Push(Topology topo, u32 blend, DepthMode depth, u32 variant)
+	{
+		draws.push_back(GSDevice::GSTileGpuIndirectDraw{});
+		topologies.push_back(topo);
+		blend_keys.push_back(blend);
+		depth_modes.push_back(depth);
+		variant_keys.push_back(variant);
+	}
+
+	void Bind()
+	{
 		plan.draws = draws;
 		plan.topologies = topologies;
 		plan.blend_keys = blend_keys;
 		plan.depth_modes = depth_modes;
+		plan.variant_keys = variant_keys;
 	}
 
 	RunKey At(u32 d) const { return plan.RunKeyAt(d); }
@@ -481,6 +502,154 @@ TEST(TileGpuRunKey, AnAbsentBlendArrayReadsAsNoBlend)
 	p.plan.blend_keys = {};
 	EXPECT_EQ(p.At(0), p.At(1));
 	EXPECT_EQ(p.At(0).blend_key, 0u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The fourth run-key field: the FRAGMENT VARIANT.
+//
+// A pass is one attachment configuration; a fragment program is not attachment state. Keyed on the
+// pass, the program every draw ran was the UNION of what its pass's draws needed -- so merging two
+// passes widened the program for both, which is what the corpus census found: 99.6% of Bloodrayne
+// 2's materialised-source draws were executing a byte decoder they never entered (1039-1748
+// instructions against their own road's 390), and merging pushed untextured draws off the Adreno
+// 650's 4-register wave128 program onto a 12-register wave64 one. Keyed on the run, each draw
+// executes the smallest program that serves it and merging widens nothing.
+//
+// The cost is the same cost the sampled-binding key has: a cut, i.e. one more indirect call, priced
+// by the census at 30 a frame worst case in the corpus. Unlike that one it is pipeline state, so it
+// also costs the pipeline bind.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuRunKey, TheFragmentVariantCutsTheRun)
+{
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	const u32 byte_d32 = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuTexelDirect32, 0, false);
+	const u32 source = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadSource, 0, 0, false);
+	const RunPlan p{{Topology::Triangle, 0u, DepthMode::TestWrite, byte_d32},
+		{Topology::Triangle, 0u, DepthMode::TestWrite, source}};
+	EXPECT_NE(p.At(0), p.At(1));
+	EXPECT_EQ(p.At(0).variant, byte_d32);
+	EXPECT_EQ(p.At(1).variant, source);
+}
+
+TEST(TileGpuRunKey, EveryVariantAxisCutsTheRunOnItsOwn)
+{
+	// Four axes, one key, and a run that shared a pipeline across any of them would execute a
+	// program that is wrong for half its draws -- silently, because the state row's gates make the
+	// missing arm a no-op rather than a fault. So each is pinned separately.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	constexpr u32 kByte = GSDevice::kGSTileGpuRoadByte;
+	const u32 base = Plan::PackVariantKey(kByte, GSDevice::kGSTileGpuTexelIndex8, 0, false);
+	const u32 other_road = Plan::PackVariantKey(kByte | GSDevice::kGSTileGpuRoadTarget, GSDevice::kGSTileGpuTexelIndex8, 0, false);
+	const u32 other_arm = Plan::PackVariantKey(kByte, GSDevice::kGSTileGpuTexelIndex4, 0, false);
+	const u32 other_self = Plan::PackVariantKey(kByte, GSDevice::kGSTileGpuTexelIndex8, GSDevice::kGSTileGpuSelfBlend, false);
+	const u32 other_q16 = Plan::PackVariantKey(kByte, GSDevice::kGSTileGpuTexelIndex8, 0, true);
+	for (const u32 v : {other_road, other_arm, other_self, other_q16})
+	{
+		const RunPlan p{{Topology::Triangle, 0u, DepthMode::None, base}, {Topology::Triangle, 0u, DepthMode::None, v}};
+		EXPECT_NE(p.At(0), p.At(1)) << "variant " << v << " shared a run with " << base;
+	}
+}
+
+TEST(TileGpuRunKey, AMixedVariantPassSplitsExactlyAtTheVariantBoundaries)
+{
+	// The partition property again, now driven by the variant alone: same topology, same blend, same
+	// depth throughout, so every cut here is the variant's and the boundaries are exactly where the
+	// variant changes -- not one draw earlier, not one later, and never re-sorted into buckets.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	const u32 a = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadSource, 0, 0, false);
+	const u32 b = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuTexelDirect32, 0, false);
+	const u32 c = 0; // untextured: the smallest program there is, and the one merging used to lose
+	constexpr Topology kT = Topology::Triangle;
+	constexpr DepthMode kD = DepthMode::TestWrite;
+	const RunPlan p{{kT, 0u, kD, a}, {kT, 0u, kD, b}, {kT, 0u, kD, b}, {kT, 0u, kD, c}, {kT, 0u, kD, b}};
+
+	const std::vector<std::pair<u32, u32>> runs = p.Runs();
+	EXPECT_EQ(runs, (std::vector<std::pair<u32, u32>>{{0, 1}, {1, 3}, {3, 4}, {4, 5}}));
+
+	// ...and the partition itself, stated as the property: every draw once, in submission order.
+	// Interleaving b,c,b must submit three runs and not two -- an untextured draw between two
+	// textured ones does not get hoisted out to join them.
+	std::vector<u32> visited;
+	for (const auto& [first, end] : runs)
+	{
+		for (u32 d = first; d < end; d++)
+			visited.push_back(d);
+	}
+	EXPECT_EQ(visited, (std::vector<u32>{0, 1, 2, 3, 4}));
+}
+
+TEST(TileGpuRunKey, AnAbsentVariantArrayFallsBackToThePassUnion)
+{
+	// The variant stream has a fallback and it is load-bearing twice over: it is what an executor
+	// sees from a plan built before this axis existed, and it is the forced-vs-narrowed gate's other
+	// arm (TileGpuUnionFragmentVariant withholds the stream, so every run compiles its pass's union
+	// program and the two arms must render byte-identical frames).
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	RunPlan p{{Topology::Triangle, 0u, DepthMode::None, Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, 1u, 0, false)},
+		{Topology::Triangle, 0u, DepthMode::None, Plan::PackVariantKey(GSDevice::kGSTileGpuRoadSource, 0u, 0, false)}};
+	EXPECT_NE(p.At(0), p.At(1));
+	p.plan.variant_keys = {};
+	EXPECT_EQ(p.At(0), p.At(1));
+	EXPECT_EQ(p.At(0).variant, 0u);
+}
+
+TEST(TileGpuVariantKey, EveryAxisRoundTripsAndNoneCollides)
+{
+	// One packer, three unpackers and thirteen bits: the renderer fills it, the run key compares it
+	// and the executor turns it back into #defines. A field that bled into its neighbour would
+	// compile the wrong program with no symptom but the pixels.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
+	{
+		for (u32 texel = 0; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
+		{
+			for (u32 self = 0; self <= GSDevice::kGSTileGpuSelfMaskAll; self++)
+			{
+				for (const bool q : {false, true})
+				{
+					const u32 key = Plan::PackVariantKey(road, texel, self, q);
+					ASSERT_EQ(Plan::VariantRoadMask(key), road);
+					ASSERT_EQ(Plan::VariantTexelMask(key), texel);
+					ASSERT_EQ(Plan::VariantSelfMask(key), self);
+					ASSERT_EQ(Plan::VariantQuantises(key), q);
+				}
+			}
+		}
+	}
+	// ...and the key is INJECTIVE over the whole product, which is what makes comparing two packed
+	// words the same question as comparing four masks.
+	std::vector<u32> keys;
+	for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
+		for (u32 texel = 0; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
+			for (u32 self = 0; self <= GSDevice::kGSTileGpuSelfMaskAll; self++)
+				for (const bool q : {false, true})
+					keys.push_back(Plan::PackVariantKey(road, texel, self, q));
+	const size_t total = keys.size();
+	std::sort(keys.begin(), keys.end());
+	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+	EXPECT_EQ(keys.size(), total);
+}
+
+TEST(TileGpuRunKey, TheIndirectDrawStructStaysByteIdenticalToVulkansCommand)
+{
+	// The executor memcpys the plan's draw array straight into a VkDrawIndexedIndirectBuffer and
+	// hands vkCmdDrawIndexedIndirect sizeof(GSTileGpuIndirectDraw) as the stride, so this struct IS
+	// VkDrawIndexedIndirectCommand -- five u32 in that order, the fifth being firstInstance, which
+	// is how a draw names its state row without a descriptor rebind.
+	//
+	// Pinned here because the variant went into a PARALLEL array for exactly this reason: a field
+	// added to the draw struct would not fail to compile and would not fail a test, it would feed
+	// the GPU a misaligned command stream at runtime.
+	using Draw = GSDevice::GSTileGpuIndirectDraw;
+	static_assert(sizeof(Draw) == 5 * sizeof(u32), "the indirect draw is VkDrawIndexedIndirectCommand");
+	static_assert(alignof(Draw) == alignof(u32));
+	static_assert(offsetof(Draw, index_count) == 0);
+	static_assert(offsetof(Draw, instance_count) == 4);
+	static_assert(offsetof(Draw, first_index) == 8);
+	static_assert(offsetof(Draw, vertex_offset) == 12);
+	static_assert(offsetof(Draw, state_index) == 16); // -> firstInstance
+	SUCCEED();
 }
 
 // ---------------------------------------------------------------------------------------------

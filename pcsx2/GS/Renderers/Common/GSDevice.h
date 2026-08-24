@@ -2325,29 +2325,32 @@ public:
 		u32 first_tex_source;
 		u32 tex_source_count;
 		/// The OR of this pass's draws' texel roads (kGSTileGpuRoad*), zero for a pass whose draws
-		/// are all untextured. It selects the fragment shader variant: the module compiles in these
-		/// roads and no others, so a pass never pays program size for a road it does not take. Like
-		/// the depth mode it is uniform across the pass by construction (it is a union, not a
-		/// per-draw choice), so it splits nothing.
+		/// are all untextured.
+		///
+		/// ⚠️ This is the pass's UNION and it is the FALLBACK, not the fragment variant a draw runs.
+		/// The variant is per DRAW and rides the run key (GSTileGpuPassPlan::variant_keys); a plan
+		/// carrying none leaves every run on these masks, which is what the executor did before the
+		/// per-run key existed. The union still has a job: it is what the pass's descriptor binding
+		/// and the size gate's variant census are about.
 		u32 road_mask;
 		/// The OR of the decode arms this pass's BYTE-road draws need (kGSTileGpuTexel*) — one of the
 		/// five address geometries per draw, plus the palette-order arm where a draw's palette was
-		/// gathered off a target. Zero for a pass that takes no byte road at all. It selects the
-		/// fragment variant beside road_mask and is uniform across the pass for the same reason: it
-		/// is a union, not a per-draw choice, so it splits nothing. A pass whose road_mask carries
-		/// the byte bit always names at least one geometry — a byte-road draw is textured by
-		/// definition — and the device treats an empty one as the full set, because a superset is
-		/// slow and a subset is wrong.
+		/// gathered off a target. Zero for a pass that takes no byte road at all. Union and fallback,
+		/// exactly as road_mask above. A pass whose road_mask carries the byte bit always names at
+		/// least one geometry — a byte-road draw is textured by definition — and the device treats an
+		/// empty one as the full set, because a superset is slow and a subset is wrong.
 		u32 texel_mask;
 		/// The OR of what this pass's draws need the in-pass destination read FOR (kGSTileGpuSelf*),
-		/// zero for a pass no draw of which reads. Third variant axis beside road_mask and
-		/// texel_mask, and a union over the draws already grouped -- so, like them, it splits
-		/// nothing. Non-zero is exactly `declares_self_read`.
+		/// zero for a pass no draw of which reads. Union and fallback, as above. Non-zero is exactly
+		/// `declares_self_read`, and THAT half stays a pass property whatever the run key says: the
+		/// declaration is an input-attachment reference in the render pass, so every pipeline the pass
+		/// binds has to be built against it, reader or not.
 		u32 self_mask;
 		/// This pass renders into a frame format that stores fewer bits than the target's RGBA8 image
-		/// holds (CT16 / CT16S), so its draws have to say what the console would have stored. A pass
-		/// property because a pass has ONE colour surface and therefore one format; a fragment
-		/// variant bit because a pass whose frame is 32-bit must not carry the arithmetic.
+		/// holds (CT16 / CT16S), so its draws have to say what the console would have stored. Union
+		/// and fallback: a pass has ONE colour surface and therefore one format, but a draw whose
+		/// blend the executor's blend unit still runs is quantised by the console AFTER that blend
+		/// and takes nothing here — so the arithmetic is per draw even though the format is not.
 		bool quantises_frame;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 	};
@@ -2448,6 +2451,41 @@ public:
 			return (tex_slot & 0xFFFFu) | ((source_slot & 0xFFFFu) << 16);
 		}
 
+		/// One per draw, parallel to `draws`: the draw's FRAGMENT VARIANT — the texel road it takes,
+		/// the byte road's decode arm it decodes through, what it needs the in-pass destination read
+		/// for, and whether its own output is what a 16-bit frame stores. Packed by PackVariantKey.
+		///
+		/// It is part of the RUN key, and that is the whole point of it existing. A pass is one
+		/// attachment configuration, so a pass had to carry the UNION of its draws' variants and every
+		/// draw of it executed the union program. The fragment program is not attachment state — it is
+		/// pipeline state, like the topology, the blend and the depth mode — so it belongs where those
+		/// are, and keying it here costs a pipeline bind rather than a pass break.
+		///
+		/// What the union cost, from the corpus census: 99.6% of Bloodrayne 2's source-road draws, 99.4%
+		/// of Ratchet & Clank's gameplay draws and 91.9% of Gran Turismo 4's sat in a pass that also
+		/// compiled the byte road, and therefore ran a 1039-1748 instruction program where their own
+		/// road is 390. And merging moved untextured draws off the 4-register program that runs wave128
+		/// on an Adreno 650 onto a 12-register one that runs wave64 — 63 draws a frame on Shadow of the
+		/// Colossus, 1390 on Xenosaga — halving the fragments in flight for a third of the painted area.
+		/// Priced the other way, the extra indirect calls are 30 a frame worst case in the corpus,
+		/// 0.007 ms at the measured 237 ns a call.
+		///
+		/// Empty leaves every run on its PASS's union masks, which is exactly what the executor did
+		/// before this stream existed.
+		std::span<const u32> variant_keys;
+		/// The variant's packing: road mask at 0 (3 bits), texel-arm mask at 3 (6), self-read mask at
+		/// 9 (3), the 16-bit quantise at 12. One packer so the renderer, the executor and the run key
+		/// cannot disagree about which bit is which.
+		static constexpr u32 PackVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise)
+		{
+			return (road_mask & kGSTileGpuRoadMaskAll) | ((texel_mask & kGSTileGpuTexelMaskAll) << 3) |
+				   ((self_mask & kGSTileGpuSelfMaskAll) << 9) | (quantise ? (1u << 12) : 0u);
+		}
+		static constexpr u32 VariantRoadMask(u32 key) { return key & kGSTileGpuRoadMaskAll; }
+		static constexpr u32 VariantTexelMask(u32 key) { return (key >> 3) & kGSTileGpuTexelMaskAll; }
+		static constexpr u32 VariantSelfMask(u32 key) { return (key >> 9) & kGSTileGpuSelfMaskAll; }
+		static constexpr bool VariantQuantises(u32 key) { return (key & (1u << 12)) != 0; }
+
 		/// The per-draw PIPELINE state an indirect run has to be uniform in. A run is a maximal
 		/// stretch of a pass's draws sharing it: the executor binds one pipeline and issues the
 		/// stretch as one vkCmdDrawIndexedIndirect, so a change here cuts the run and costs a
@@ -2460,10 +2498,14 @@ public:
 			GSTileGpuTopology topology = GSTileGpuTopology::Triangle;
 			u32 blend_key = 0;
 			GSTileGpuDepthMode depth_mode = GSTileGpuDepthMode::None;
+			/// The draw's packed fragment variant (PackVariantKey), or 0 for a plan carrying no
+			/// variant stream — where every run falls back to its pass's union masks.
+			u32 variant = 0;
 
 			constexpr bool operator==(const GSTileGpuRunKey& o) const
 			{
-				return topology == o.topology && blend_key == o.blend_key && depth_mode == o.depth_mode;
+				return topology == o.topology && blend_key == o.blend_key && depth_mode == o.depth_mode &&
+					   variant == o.variant;
 			}
 			constexpr bool operator!=(const GSTileGpuRunKey& o) const { return !(*this == o); }
 		};
@@ -2472,8 +2514,8 @@ public:
 		/// that wants to predict its cuts cannot disagree about what a run is.
 		GSTileGpuRunKey RunKeyAt(u32 d) const
 		{
-			return GSTileGpuRunKey{
-				topologies[d], (blend_keys.size() == draws.size()) ? blend_keys[d] : 0u, depth_modes[d]};
+			return GSTileGpuRunKey{topologies[d], (blend_keys.size() == draws.size()) ? blend_keys[d] : 0u,
+				depth_modes[d], (variant_keys.size() == draws.size()) ? variant_keys[d] : 0u};
 		}
 
 		/// One past the last draw of the maximal run starting at `first`, bounded by `end`.

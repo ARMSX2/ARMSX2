@@ -990,6 +990,14 @@ struct Pcsx2Config
 					// whole corpus before any accuracy repair rides on it. gsrunner
 					// -tilermw arms it; nothing else should. Dev only, default off.
 					TileGpuForceSelfRead : 1,
+					// Compile each PASS's union fragment program for every draw of
+					// it, the way the executor did before the fragment variant
+					// joined the indirect run key. Default off; the on position is
+					// the forced-vs-narrowed gate (both roads must be
+					// byte-identical: a narrower program serving the same draws
+					// cannot move a pixel) and the bisect lever afterwards. Never a
+					// user setting.
+					TileGpuUnionFragmentVariant : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
