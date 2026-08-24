@@ -144,6 +144,33 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// Asked once for the same reason: it decides pass boundaries, and a boundary that moved
 	// mid-frame would leave a draw's prep ops hoisted into a pass the draw is not in.
 	m_depth_uniform_passes = g_gs_device && g_gs_device->TileGpuPrefersDepthUniformPasses();
+	// ...and the A/B override, so a three-arm device round runs off one binary. Both keys off is the
+	// shipped arm and says nothing; a contradiction is refused back to the device's own answer rather
+	// than resolved by precedence, because a run whose polarity you have to derive from a rule is a
+	// run whose polarity nobody will believe. Every non-default arm names itself in the emulog, which
+	// is what an archived log has to carry for the numbers taken under it to be attributable.
+	{
+		const bool device_wants = m_depth_uniform_passes;
+		const bool force_uniform = GSConfig.TileGpuForceDepthUniformPasses;
+		const bool force_merged = GSConfig.TileGpuForceDepthMergedPasses;
+		if (force_uniform && force_merged)
+		{
+			Console.Error("TileGpu: TileGpuForceDepthUniformPasses and TileGpuForceDepthMergedPasses are BOTH set; "
+						  "neither is applied. Depth-pass policy stays the device's answer (%s).",
+				device_wants ? "uniform" : "merged");
+		}
+		else if (force_uniform || force_merged)
+		{
+			m_depth_uniform_passes = force_uniform;
+			Console.WriteLn("TileGpu: depth-pass policy FORCED to %s by settings (the device asked for %s).",
+				force_uniform ? "uniform" : "merged", device_wants ? "uniform" : "merged");
+		}
+		else
+		{
+			Console.WriteLn("TileGpu: depth-pass policy is the device's answer: %s.",
+				device_wants ? "uniform" : "merged");
+		}
+	}
 	// ...and the second pass-boundary policy, asked once beside it: whether a pass that declares the
 	// in-pass destination read may carry draws that do not need it.
 	m_segregate_self_read = g_gs_device && g_gs_device->TileGpuSegregatesSelfRead();

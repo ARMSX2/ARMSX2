@@ -998,6 +998,24 @@ struct Pcsx2Config
 					// cannot move a pixel) and the bisect lever afterwards. Never a
 					// user setting.
 					TileGpuUnionFragmentVariant : 1,
+					// Override the device's answer to "would you rather render MORE
+					// passes than see the depth state change inside one?"
+					// (GSDevice::TileGpuPrefersDepthUniformPasses). Both off -- the
+					// default -- asks the device, which is what ships. Exactly one on
+					// pins that polarity; both on is a contradiction and is refused
+					// back to the device's answer, loudly, because a lever that
+					// silently picks for you is worse than no lever.
+					//
+					// It exists so a three-arm device A/B runs off ONE binary: the
+					// depth key is Adreno's alone (measured, mechanism unnamed until
+					// the fragment-variant census found one), and re-measuring it
+					// against a build where the fragment program no longer widens
+					// when passes merge is the whole point of decoupling the variant
+					// from the pass. Dev only; a pass-boundary policy is not a user
+					// setting. The renderer reads it ONCE at construction, like every
+					// other boundary policy -- a mid-run flip needs a restart.
+					TileGpuForceDepthUniformPasses : 1,
+					TileGpuForceDepthMergedPasses : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

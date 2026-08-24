@@ -760,6 +760,8 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuPassSim = false;
 	TileGpuForceSelfRead = false;
 	TileGpuUnionFragmentVariant = false;
+	TileGpuForceDepthUniformPasses = false;
+	TileGpuForceDepthMergedPasses = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1095,6 +1097,8 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuPassSim);
 	SettingsWrapBitBool(TileGpuForceSelfRead);
 	SettingsWrapBitBool(TileGpuUnionFragmentVariant);
+	SettingsWrapBitBool(TileGpuForceDepthUniformPasses);
+	SettingsWrapBitBool(TileGpuForceDepthMergedPasses);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);
