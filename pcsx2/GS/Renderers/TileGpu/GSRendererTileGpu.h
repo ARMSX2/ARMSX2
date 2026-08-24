@@ -296,6 +296,126 @@ u32 gsTileGpuRunCount(u32 first, u32 end, VariantAt variant_at, OtherCutAt other
 	return runs;
 }
 
+/// How many passes a draw list of `count` draws cuts into under `key_at`.
+///
+/// This IS gsTileGpuPassEnd in a loop, which is the point: the depth predictor below has to count a
+/// grouping the frame did NOT take, and a grouping counted by a model of the cut rather than by the
+/// cut itself is a number that can drift away from the plan build without anything failing.
+template <typename KeyAt, typename BreaksAt>
+u32 gsTileGpuCountPasses(u32 count, u32 max_pass_draws, KeyAt key_at, BreaksAt breaks_at)
+{
+	u32 passes = 0;
+	for (u32 i = 0; i < count; passes++)
+		i = gsTileGpuPassEnd(i, count, max_pass_draws, key_at, breaks_at);
+	return passes;
+}
+
+/// The depth-pass predictor's constants.
+///
+/// The thresholds are RECIPROCALS of the metric, so the whole decision is integer arithmetic on
+/// counts. A frame's verdict must not depend on how a float rounded on one architecture.
+enum : u32
+{
+	/// Go merged at (uniform_passes - merged_passes) / draws >= 1/16.
+	kGSTileGpuDepthMergeOnReciprocal = 16,
+	/// ...and fall back to uniform only below 1/32. The 2x band is the hysteresis: the metric is a
+	/// per-frame quantity and a scene sitting on the threshold would otherwise re-key every pass in
+	/// the frame, every frame.
+	kGSTileGpuDepthMergeOffReciprocal = 32,
+	/// Consecutive frames that must ask for the other polarity before it is taken. Two, not more:
+	/// the band above is what suppresses oscillation, and this only removes a single anomalous
+	/// frame. A longer window costs a real share of a 20-frame corpus replay and buys nothing the
+	/// band does not already buy.
+	kGSTileGpuDepthPolicyConfirmFrames = 2,
+};
+
+/// Whether the frame just planned asks for MERGED depth passes.
+///
+/// The metric is `(uniform_passes - merged_passes) / draws`: the fraction of the frame's draws that
+/// STOP OPENING A PASS when the depth mode leaves the pass key. Every pass is opened by exactly one
+/// draw, so the numerator is a count of draws promoted out of pass-opening and the ratio is
+/// dimensionless -- which is what makes one threshold serve a 52-draw menu and a 6738-draw battle.
+///
+/// It is the only one of the three candidates measured that separates the SD865 corpus round
+/// (19 dumps, both arms, `-loop 10`, structural counters off the device's own stats.json). Ranked by
+/// this metric the seven titles merging wins on are the top seven of nineteen, and no title merging
+/// loses on reaches the eighth place: the winners run 0.084 (Beyond Good & Evil) to 0.841
+/// (Xenosaga), the losers 0.002 (Dirge of Cerberus) to 0.033 (Armored Core 3). 1/16 sits in that
+/// gap, nearer the loser side on purpose -- misclassifying a loser costs frame time, misclassifying
+/// a winner costs only the win.
+///
+/// The two candidates that FAIL, recorded so they are not re-proposed: the collapse RATIO
+/// (uniform/merged) puts BG&E at 1.10 below Baldur's Gate 2's 1.20, and the ABSOLUTE saving puts
+/// BG&E's 8 passes below Armored Core 3's 53. Merging's win is not how much of the pass structure
+/// collapses, nor how many passes go away; it is how many passes go away PER DRAW THAT PAID FOR THEM.
+constexpr bool gsTileGpuWantsMergedDepthPasses(u32 uniform_passes, u32 merged_passes, u32 draws, bool merged_now)
+{
+	// A frame with no draws says nothing about either polarity, so it must not vote.
+	if (draws == 0)
+		return merged_now;
+	const u64 saved = (uniform_passes > merged_passes) ? static_cast<u64>(uniform_passes - merged_passes) : 0;
+	const u32 reciprocal = merged_now ? kGSTileGpuDepthMergeOffReciprocal : kGSTileGpuDepthMergeOnReciprocal;
+	return saved * reciprocal >= draws;
+}
+
+/// The sticky per-frame depth-pass polarity, and its census.
+///
+/// Sticky because the polarity is a PASS KEY input: flipping it re-cuts every pass in the frame, so
+/// a scene oscillating around the threshold would re-plan its whole frame structure twice a frame
+/// for no gain. Two guards, and they answer different failure modes -- the hysteresis band answers a
+/// metric sitting on the threshold, the confirmation count answers one anomalous frame (a load
+/// screen, a full-screen wipe) in an otherwise steady scene.
+///
+/// Starts UNIFORM whatever the scene, because uniform is what ships on the device this engages on:
+/// the predictor may only ever move a frame off the shipped arrangement after it has seen evidence,
+/// never before.
+struct GSTileGpuDepthPolicyPicker
+{
+	bool merged = false;   ///< the polarity in force
+	u32 confirming = 0;    ///< consecutive frames that have asked for the other one
+	u32 switches = 0;      ///< times the polarity actually changed -- the churn column
+	u32 frames = 0;        ///< frames observed
+	u32 frames_merged = 0; ///< ...of which ran merged
+	u64 saved_passes = 0;  ///< sum of the metric's numerator over those frames
+	u64 draws = 0;         ///< ...and of its denominator
+
+	/// Feed one finished frame; returns the polarity the NEXT frame runs under.
+	bool Observe(u32 uniform_passes, u32 merged_passes, u32 frame_draws)
+	{
+		// ⚠️ A frame that planned no draws is NEUTRAL. Not a vote for the polarity in force, and in
+		// particular not agreement -- agreement clears the confirmation count, and a title that
+		// alternates a drawn frame with an empty one would then never reach two consecutive votes.
+		// Xenosaga and MGS3 are exactly that shape (6750 draws, 0, 6725, 0, ...), so treating an
+		// empty frame as agreement pinned the two biggest wins in the corpus to uniform for ever.
+		// Measured: both read 0/8 frames merged with a mean metric of 0.84 and 0.51.
+		if (frame_draws == 0)
+			return merged;
+		frames++;
+		frames_merged += merged ? 1u : 0u;
+		saved_passes += (uniform_passes > merged_passes) ? (uniform_passes - merged_passes) : 0u;
+		draws += frame_draws;
+
+		const bool want = gsTileGpuWantsMergedDepthPasses(uniform_passes, merged_passes, frame_draws, merged);
+		if (want == merged)
+		{
+			confirming = 0;
+			return merged;
+		}
+		if (++confirming < kGSTileGpuDepthPolicyConfirmFrames)
+			return merged;
+		merged = want;
+		confirming = 0;
+		switches++;
+		return merged;
+	}
+
+	/// The metric over every frame observed. Reported, never decided on -- the decision is per frame.
+	double MeanMetric() const
+	{
+		return draws ? (static_cast<double>(saved_passes) / static_cast<double>(draws)) : 0.0;
+	}
+};
+
 /// Whether the fragment stage truncates this draw's output to what a 16-bit frame stores.
 ///
 /// A TileGpu colour target is an RGBA8 image whatever the guest format is, and every road that puts
