@@ -1684,6 +1684,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// in this census. The runner's stats.json divides by DRAWN frames, so its per-frame figure for
 	// the same population is larger — on a 30 Hz title by about 2x.
 	const double mframes = static_cast<double>(std::max<size_t>(m_model_frames.size(), 1));
+	const auto pcalls = stat([](const MF& f) { return f.pull_calls; });
+	Console.WriteLn("  pool calls the stalls issued %.2f / %u  (one per owner x block mask x byte window, over the "
+					"whole page set it needs -- the unit the device round trip is charged in)",
+		pcalls.mean, pcalls.p50);
 	const double drains = static_cast<double>(m_target_pool.Drains());
 	const double oob = static_cast<double>(g_gs_device->GetOobWaitCalls());
 	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /frame  =  drains %.2f (%.2f ms/frame)  +  out-of-band %.2f "
@@ -4661,49 +4665,86 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	m_frame.stalls[static_cast<u32>(site)]++;
 	m_frame.stall_pages[static_cast<u32>(site)] += need.count();
 
-	// One pool call per (owner surface, truth block mask) -- NOT one per plane.
+	// One pool call per (owner surface, truth block mask) -- NOT one per plane, and NOT one per
+	// page.
 	//
 	// A readback's price is the device round trip, not the bytes: every call ends in a
 	// submit-and-wait, either a drain of the frame's command buffer or an out-of-band submit
-	// plus its own fence. A colour target owns three planes and a colour/depth pair owns four,
-	// so asking plane by plane downloads the SAME rect of the SAME image three or four times,
-	// differing only in which bytes of the 32-bit cell the store is allowed to write. Merging
-	// them costs nothing and pays four round trips back: GT4 1048 pool calls a run -> 70,
-	// OutRun-a 816 -> 196, SotC 92 -> 23.
+	// plus its own fence, and the out-of-band one is a whole vkQueueSubmit and fence wait for
+	// what is often a single 8 KB page. A colour target owns three planes and a colour/depth pair
+	// owns four, so asking plane by plane downloads the SAME rect of the SAME image three or four
+	// times, differing only in which bytes of the 32-bit cell the store is allowed to write; and
+	// asking page by page pays a fresh round trip for every page of a set the pool would have
+	// collected into runs of one image in one copy. Beyond Good & Evil's one local read a frame is
+	// 30 pages and was 30 round trips; Armored Core 3 pulls 14.5 single pages a frame off one Z
+	// buffer.
 	//
-	// The merge is byte-identical by construction, on three legs:
-	//   - same owner => the same source texture, and the same rect, since the block mask is
-	//     part of the key and the rect is derived from it;
+	// The pool has always taken a page BITMAP and derived its runs from it -- exact-Tile's
+	// ReadbackModelPages has bucketed whole page sets per owner since it was written. TileGpu
+	// kept a per-page loop through both the plane merge and this, which is transcription drift,
+	// not a decision.
+	//
+	// The merge is byte-identical by construction, on four legs:
+	//   - same owner => the same source texture, and the same rect per page, since the block mask
+	//     is part of the key and the rect is derived from it;
 	//   - the write mask "selects the bytes of each 32-bit cell to write", so the union mask
 	//     writes exactly the union of what the separate calls wrote, out of the same source;
 	//   - on a 16-bit colour surface the pool narrows that mask to the 5551 cell, and the
-	//     narrowing distributes over OR (GSTileTargetPool::NarrowWriteMaskTo16, pinned).
-	// 16-bit DEPTH ignores the mask entirely, and Z is a single plane, so nothing merges there.
+	//     narrowing distributes over OR (GSTileTargetPool::NarrowWriteMaskTo16, pinned);
+	//   - a wider page set only widens the DOWNLOAD rect (the union bounding box of the runs);
+	//     the store still walks the same runs and writes the same guest bytes.
 	//
-	// Groups are created in plane order and issued in creation order, so where a page is
-	// aliased by a colour owner and a depth owner the colour writes still land before the
-	// depth ones, exactly as the plane loop used to order them.
+	// ⚠️ ORDER is why the page merge is not unconditional. Two groups on ONE page must be issued in
+	// plane order, because their byte windows can OVERLAP: a Z plane's PlaneByteMask is all four
+	// bytes and an RGB plane's is the low three, so a page aliased by a colour owner and a depth
+	// owner has the depth store covering the colour one. Bucketing such a page across pages can
+	// float its second group ahead of its first (page P contributes only the depth group, page Q
+	// both -- then the depth bucket exists first and Q's colour write lands after it).
+	//
+	// So a page whose pull is a SINGLE group joins the cross-page bucket for that group, and a
+	// page with two or more keeps the per-page path, issued in plane order, exactly as before.
+	// Pages are disjoint guest memory, so the two halves cannot interact with each other whatever
+	// order they run in. Aliased pages are rare -- the alias-steal counter is zero on most of the
+	// corpus -- and the coalescible ones are the whole population that matters.
+	PlanPull(m_vram_model, need, m_pull_calls);
+	for (const PullCall& c : m_pull_calls)
+	{
+		const GSVramModel::Surface& surf = m_vram_model.Get(c.owner);
+		m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, c.pages, c.write_mask, c.block_mask);
+	}
+	m_frame.pull_calls += static_cast<u32>(m_pull_calls.size());
+	m_vram_model.OnReadback(need);
+}
+
+void GSRendererTileGpu::PlanPull(const GSVramModel& model, const GSPageBitmap& need, std::vector<PullCall>& out)
+{
+	out.clear();
+
 	struct PlaneGroup
 	{
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 block_mask = 0;
 		u32 write_mask = 0;
 	};
+	// Where the coalescible pages of each key are accumulating, as an index into `out`. Bounded by
+	// the distinct keys the page set actually produces rather than by a constant, for the reason
+	// GSTileComposeBuckets carries: MGS3 gathers 49 owners at once elsewhere, and a fixed table
+	// there dropped the ninth silently and served every later reader stale memory.
+	std::vector<size_t> buckets;
+
 	need.forEachSetPage([&](u32 page) {
-		GSPageBitmap one;
-		one.set(page);
 		std::array<PlaneGroup, kGSTilePlaneCount> groups;
 		u32 group_count = 0;
 		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		{
-			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
+			if (!model.Truth(pi).test(page) || model.SyncedPages(pi).test(page))
 				continue;
-			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+			const GSTileSurfaceId owner = model.OwnerOf(page, pi);
 			pxAssert(owner != kGSTileNoSurface);
-			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+			const GSVramModel::Surface& surf = model.Get(owner);
 			if (!surf.pool_handle)
 				continue;
-			const u32 block_mask = m_vram_model.TruthMask(page, pi);
+			const u32 block_mask = model.TruthMask(page, pi);
 			u32 g = 0;
 			for (; g < group_count; g++)
 			{
@@ -4719,14 +4760,32 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 			}
 			groups[g].write_mask |= PlaneByteMask(pi, surf.layout);
 		}
+
+		if (group_count == 1)
+		{
+			for (const size_t bi : buckets)
+			{
+				if (out[bi].owner == groups[0].owner && out[bi].block_mask == groups[0].block_mask &&
+					out[bi].write_mask == groups[0].write_mask)
+				{
+					out[bi].pages.set(page);
+					return;
+				}
+			}
+			buckets.push_back(out.size());
+			out.push_back(PullCall{groups[0].owner, groups[0].block_mask, groups[0].write_mask, GSPageBitmap()});
+			out.back().pages.set(page);
+			return;
+		}
+
+		// Two or more calls on one page: they stay this page's own, in plane order, and join no
+		// bucket. Their byte windows can overlap, so the later one is meant to land on top.
 		for (u32 g = 0; g < group_count; g++)
 		{
-			const GSVramModel::Surface& surf = m_vram_model.Get(groups[g].owner);
-			m_target_pool.ReadbackPages(
-				m_mem, surf.pool_handle, surf.layout, one, groups[g].write_mask, groups[g].block_mask);
+			out.push_back(PullCall{groups[g].owner, groups[g].block_mask, groups[g].write_mask, GSPageBitmap()});
+			out.back().pages.set(page);
 		}
 	});
-	m_vram_model.OnReadback(need);
 }
 
 // The same road, for a caller whose ask is a RECT -- a local->host transfer, a move's source,

@@ -1529,6 +1529,31 @@ private:
 		StallSite site);
 	/// The pull, shared by both: the plan is already flushed and `need` already settled.
 	void PullToShadow(const GSPageBitmap& need, StallSite site);
+
+public:
+	/// One pool readback: a page set of ONE owner surface, under one truth block mask and one
+	/// byte window. The unit the device round trip is charged in.
+	struct PullCall
+	{
+		GSTileSurfaceId owner;
+		u32 block_mask;
+		u32 write_mask;
+		GSPageBitmap pages;
+	};
+
+	/// Plan `need`'s pull as a list of calls, in the order they must be issued.
+	///
+	/// Static and model-only so the two properties it exists for can be pinned without a device:
+	/// pages sharing an (owner, block mask, byte window) collapse into ONE call, and a page whose
+	/// pull needs more than one call is never collapsed with anything -- because two calls on one
+	/// page can have OVERLAPPING byte windows (a depth plane's is all four bytes, a colour plane's
+	/// the low three), so their order is load-bearing, and bucketing across pages can float the
+	/// second ahead of the first. See gs_tilegpu_pull_grouping_tests.cpp.
+	static void PlanPull(const GSVramModel& model, const GSPageBitmap& need, std::vector<PullCall>& out);
+
+private:
+	std::vector<PullCall> m_pull_calls; ///< PlanPull's scratch, kept so a pull allocates nothing
+
 	void SyncAllTruthToCpu();
 
 	// Submit whatever the frame has planned so far, so the resident targets hold every draw up to
@@ -1745,6 +1770,11 @@ private:
 		u32 afail_varies_depth = 0;     // ...of which the draw also uses depth (the half a colour read cannot serve)
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
+		// Pool calls the stalls issued. Not derivable from either column above: one consumer ask
+		// becomes one call per (owner, block mask, byte window) over the whole page set it needs,
+		// and the device round trip is charged per CALL -- so this is the number a coalescing
+		// change moves, where stalls and pages both stay put.
+		u32 pull_calls = 0;
 		u32 flushes = 0;         // mid-frame plan submissions
 		u32 passes = 0;
 		// The texel-arm axis of the fragment variant (GSDevice::kGSTileGpuTexel*). A pass whose
