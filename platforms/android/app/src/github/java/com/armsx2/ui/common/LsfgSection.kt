@@ -132,16 +132,17 @@ fun LsfgSection(
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val target = lsfgDllTarget(context)
-        // The BYTE COUNT, not just "no exception". A provider that hands back an empty stream —
-        // a cloud placeholder that was never downloaded, a shortcut, a file the user moved out
-        // from under the picker — copies zero bytes without failing, and a zero-byte target then
-        // fails the PE check and is reported as "that is not a Lossless.dll", which sends the user
-        // off to re-download a file that was fine. An empty copy is an IMPORT failure.
+        // The byte count, not just "no exception". A provider handing back an empty stream copies
+        // zero bytes without failing, and the empty target then reads as a bad DLL rather than as
+        // the import failure it is.
         val copied = runCatching {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             } ?: error("could not open the selected file")
         }.getOrDefault(0L) > 0L
+        // Same path as last time, new bytes behind it. Without this the check below answers from
+        // the verdict formed on whatever was there before, which for a first import is nothing.
+        NativeApp.lsfgDllChanged()
         // Validate before storing the path. A wrong pick — a .txt, a truncated download, some
         // other DLL — otherwise sits in the config looking correct and fails much later,
         // inside a frame, where the only symptom is that frame generation quietly never

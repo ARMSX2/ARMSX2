@@ -14,6 +14,11 @@ if(ARCH_ARM64)
 	target_sources(core_test PRIVATE arm64_emit_test.cpp)
 endif()
 
+# GSLsfg.cpp only builds with the Vulkan renderer, so its structural-PE-check test follows it.
+if(USE_VULKAN)
+	target_sources(core_test PRIVATE lsfg_dll_check_tests.cpp)
+endif()
+
 # The recompiler differential-test harness drives the arm64 JIT through
 # arm64-only entry points (recEeExecuteBlock, recEeIsBlockLinked) and the
 # arm64 microVU persist API, so it only builds on ARCH_ARM64.

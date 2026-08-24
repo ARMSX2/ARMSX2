@@ -749,6 +749,11 @@ public class NativeApp {
 	 *  answers NOT_COMPILED_IN). */
 	public static native int lsfgAvailability(String dllPath);
 
+	/** Tell the native side the file behind the current path was replaced, so the next
+	 *  lsfgAvailability() re-reads it. The import always writes to the same path, so nothing
+	 *  else can notice. */
+	public static native void lsfgDllChanged();
+
 	public static native void flushShaderCache();
 
 	/**

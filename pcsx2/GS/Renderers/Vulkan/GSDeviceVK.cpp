@@ -6159,24 +6159,29 @@ bool GSDeviceVK::CompileSGSRPipeline()
 		return false;
 	Vulkan::SetObjectName(dev, m_sgsr_pipeline_layout, "SGSR pipeline layout");
 
-	// One module, no preprocessor gating: the whole filter is one function, so unlike FSR1 there
-	// is nothing to select before the preprocessor runs.
-	std::optional<std::string> sgsr_source = ReadShaderSource("shaders/vulkan/sgsr.glsl");
-	if (!sgsr_source.has_value())
-		return false;
-	sgsr_source->insert(0, "#version 460 core\n");
+	// Two modules from two differently-#define'd copies of one file, the same shape FSR1 uses:
+	// the variant decides which filter body the preprocessor emits at all, so it cannot be a
+	// specialization constant.
+	for (u8 edge = 0; edge < NUM_SGSR_PIPELINES; edge++)
+	{
+		std::optional<std::string> sgsr_source = ReadShaderSource("shaders/vulkan/sgsr.glsl");
+		if (!sgsr_source.has_value())
+			return false;
+		sgsr_source->insert(0, edge ? "#version 460 core\n#define SGSR_EDGE_DIRECTION 1\n"
+									: "#version 460 core\n#define SGSR_EDGE_DIRECTION 0\n");
 
-	VkShaderModule mod = g_vulkan_shader_cache->GetComputeShader(sgsr_source->c_str());
-	if (mod == VK_NULL_HANDLE)
-		return false;
-	ScopedGuard mod_guard = [this, &mod]() { vkDestroyShaderModule(m_device, mod, nullptr); };
+		VkShaderModule mod = g_vulkan_shader_cache->GetComputeShader(sgsr_source->c_str());
+		if (mod == VK_NULL_HANDLE)
+			return false;
+		ScopedGuard mod_guard = [this, &mod]() { vkDestroyShaderModule(m_device, mod, nullptr); };
 
-	Vulkan::ComputePipelineBuilder cpb;
-	cpb.SetPipelineLayout(m_sgsr_pipeline_layout);
-	cpb.SetShader(mod, "main");
-	m_sgsr_pipeline = cpb.Create(dev, g_vulkan_shader_cache->GetPipelineCache(true), false);
-	if (!m_sgsr_pipeline)
-		return false;
+		Vulkan::ComputePipelineBuilder cpb;
+		cpb.SetPipelineLayout(m_sgsr_pipeline_layout);
+		cpb.SetShader(mod, "main");
+		m_sgsr_pipelines[edge] = cpb.Create(dev, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		if (!m_sgsr_pipelines[edge])
+			return false;
+	}
 
 	m_features.sgsr = true;
 	return true;
@@ -6556,7 +6561,8 @@ bool GSDeviceVK::DoFSR1Pass(
 	return true;
 }
 
-bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants)
+bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants,
+	bool edge_direction)
 {
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
 
@@ -6616,7 +6622,7 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 
 	vkCmdPushConstants(cmdbuf, m_sgsr_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
 		NUM_SGSR_CONSTANTS * sizeof(u32), constants.data());
-	vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_sgsr_pipeline);
+	vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_sgsr_pipelines[edge_direction ? 1 : 0]);
 	vkCmdDispatch(cmdbuf, dispatchX, dispatchY, 1);
 
 	// Handed straight to the present pass, which samples it from the fragment stage.
@@ -6699,8 +6705,11 @@ void GSDeviceVK::DestroyResources()
 	if (m_fsr1_ds_layout != VK_NULL_HANDLE)
 		vkDestroyDescriptorSetLayout(m_device, m_fsr1_ds_layout, nullptr);
 
-	if (m_sgsr_pipeline != VK_NULL_HANDLE)
-		vkDestroyPipeline(m_device, m_sgsr_pipeline, nullptr);
+	for (VkPipeline it : m_sgsr_pipelines)
+	{
+		if (it != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, it, nullptr);
+	}
 	if (m_sgsr_pipeline_layout != VK_NULL_HANDLE)
 		vkDestroyPipelineLayout(m_device, m_sgsr_pipeline_layout, nullptr);
 	if (m_sgsr_ds_layout != VK_NULL_HANDLE)

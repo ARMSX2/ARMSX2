@@ -1081,7 +1081,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			// compute pass before the present render pass opens, and inside CAS's `if` rather
 			// than beside it, because SGSR sharpens as part of upscaling and letting CAS run
 			// afterwards would sharpen twice.
-			if (GSConfig.Upscaler == GSUpscaler::SGSR)
+			if (GSConfig.Upscaler == GSUpscaler::SGSR || GSConfig.Upscaler == GSUpscaler::SGSREdge)
 			{
 				static bool sgsr_log_once = false;
 				if (g_gs_device->Features().sgsr)
@@ -1089,7 +1089,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 					const int draw_w = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
 					const int draw_h = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
 					if (current->GetWidth() < draw_w && current->GetHeight() < draw_h)
-						g_gs_device->SGSRUpscale(current, src_rect, src_uv, draw_rect);
+						g_gs_device->SGSRUpscale(current, src_rect, src_uv, draw_rect,
+							GSConfig.Upscaler == GSUpscaler::SGSREdge);
 				}
 				else if (!sgsr_log_once)
 				{

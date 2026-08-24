@@ -1671,7 +1671,9 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	// RCAS takes sharpness in stops - 0 is the maximum and each stop halves it - so the 0..100
 	// slider runs backwards across the 2..0 range AMD's own sample exposes.
 	std::array<u32, NUM_FSR1_CONSTANTS> rcas_consts = {};
-	FsrRcasCon(&rcas_consts[0], 2.0f - (static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f));
+	// Clamped to 100: the slider now runs to 200 for SGSR's sake, and RCAS stops go NEGATIVE
+	// past that, which is not a sharper picture, it is an invalid constant.
+	FsrRcasCon(&rcas_consts[0], 2.0f - (std::min(GSConfig.FSR_Sharpness, 100) * 0.02f));
 
 	if (!DoFSR1RCAS(m_fsr1_easu, m_fsr1_output, rcas_consts))
 	{
@@ -1691,7 +1693,8 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 // (eden-emu/eden PR #4293: wider sharpening range and explicit crop handling). The filter itself
 // is Qualcomm's, BSD-3-Clause; see shaders/vulkan/sgsr.glsl for the notices and for what the
 // fragment-to-compute conversion changed.
-void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect)
+void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect,
+	bool edge_direction)
 {
 	FlushDeferredDraws();
 	const int dst_width = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
@@ -1706,8 +1709,9 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	{
 		s_logged_w = dst_width;
 		s_logged_h = dst_height;
-		Console.WriteLnFmt("@@ANDROID_SGSR@@ upscaling {}x{} -> {}x{} (sharpness {})",
-			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.FSR_Sharpness);
+		Console.WriteLnFmt("@@ANDROID_SGSR@@ upscaling {}x{} -> {}x{} (sharpness {}{})",
+			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.FSR_Sharpness,
+			edge_direction ? ", edge-direction" : "");
 	}
 
 	// One target, unlike FSR1: SGSR is a single pass, so there is no intermediate to hand on.
@@ -1732,10 +1736,11 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	const float uv_scale_x = static_cast<float>(src_rect.width()) / src_tex_w;
 	const float uv_scale_y = static_cast<float>(src_rect.height()) / src_tex_h;
 
-	// Qualcomm's edge sharpness runs 0..2 with 1.0 as its own default. Our slider is the 0..100
-	// one FSR1 already uses, so the two features share a control rather than growing a second
-	// one that means almost the same thing.
-	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f, 0.0f, 2.0f);
+	// Qualcomm's edge sharpness runs 0..2, and 1.0 is their default. The shared slider is 0..200
+	// so that whole range is reachable — halving it at 100 was the thing Eden's change fixed
+	// upstream, and shipping the narrow version of a setting whose top half is the point would
+	// have been a strange way to adopt it. 100 on the slider is Qualcomm's default.
+	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.01f, 0.0f, 2.0f);
 
 	std::array<u32, NUM_SGSR_CONSTANTS> consts = {};
 	const auto put_f = [&consts](u32 i, float v) { std::memcpy(&consts[i], &v, sizeof(float)); };
@@ -1751,7 +1756,7 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	put_f(9, 1.0f / src_tex_h);
 	put_f(10, sharpness);
 
-	if (!DoSGSR(src_tex, m_sgsr_output, consts))
+	if (!DoSGSR(src_tex, m_sgsr_output, consts, edge_direction))
 	{
 		// leave textures intact if we failed
 		Console.Warning("Applying SGSR failed.");

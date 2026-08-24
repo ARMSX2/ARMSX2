@@ -483,6 +483,7 @@ enum class GSUpscaler : u8
 	// MetalFXSpatial would silently re-point every existing config at a different upscaler.
 	FSR1,          ///< AMD FidelityFX Super Resolution 1 (EASU + RCAS compute passes, Vulkan).
 	SGSR,          ///< Qualcomm Snapdragon Game Super Resolution 1 (single compute pass, Vulkan).
+	SGSREdge,      ///< SGSR's edge-direction variant: same pass, directional Lanczos, dearer.
 };
 
 enum class GSHWAutoFlushLevel : u8
@@ -1085,6 +1086,11 @@ struct Pcsx2Config
 		u16 LsfgTargetRate = 0;
 
 		u8 CAS_Sharpness = 50;
+		// 0..200. FSR1 uses 0..100 of it, mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
+		// and reads no higher; SGSR uses the whole range as its 0..2 edge sharpness, where 1.0
+		// (i.e. 100) is Qualcomm's own default and the top half is the widened range Eden added
+		// because the original stopped short of useful. One setting, two readings of it.
+		// Historical note kept because the name still says FSR:
 		// FSR1's RCAS pass, 0..100. Mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
 		// where 0 stops is maximum sharpening - it is not the same curve as CAS_Sharpness.
 		u8 FSR_Sharpness = 50;

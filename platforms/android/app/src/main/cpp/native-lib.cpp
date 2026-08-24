@@ -2946,6 +2946,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_lsfgAvailability(JNIEnv *env, jclass clazz,
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_lsfgDllChanged(JNIEnv *env, jclass clazz) {
+    // The import rewrites the same file every time, so the path never changes and SetDllPath()
+    // cannot tell the file is new. Only the importer knows, so only the importer says so —
+    // lsfgAvailability() stays a pure query, and EndPresent, which asks once per frame, keeps
+    // answering from the cache instead of re-reading the DLL inside the present path.
+    GSLsfg::InvalidateDllVerdict();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz) {
     // Persist the Vulkan pipeline cache so cold restarts don't re-compile every
     // pipeline. Hooked from onPause so the typical background-then-swipe-kill

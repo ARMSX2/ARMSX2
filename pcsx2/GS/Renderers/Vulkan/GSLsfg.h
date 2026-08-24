@@ -73,7 +73,12 @@ namespace GSLsfg
 	/// the SAF pick into app storage first — the PE is read with ordinary file IO, so a
 	/// content:// URI will not do.
 	void SetDllPath(std::string path);
-	const std::string& GetDllPath();
+	std::string GetDllPath();
+
+	/// Drop the cached structural verdict so the next GetUnavailableReason() re-reads the file.
+	/// The importer rewrites the same path on every import, so a path change cannot be the
+	/// trigger; the present path must not pay for a re-read it never needs.
+	void InvalidateDllVerdict();
 
 	/// Cheap structural check that a file is a PE ARMSX2 could read shaders out of, so the UI can
 	/// reject a wrong pick at import time instead of failing later inside a frame. Does not
