@@ -559,10 +559,27 @@ object SecondScreen {
          * Re-resolved on the panel tick rather than once at build, so it follows a game change
          * without the panel being rebuilt.
          */
-        private fun buildCoverTile(): View =
-            android.widget.ImageView(context).apply {
+        private var coverImage: android.widget.ImageView? = null
+        private var coverLabel: TextView? = null
+
+        private fun buildCoverTile(): View {
+            val image = android.widget.ImageView(context).apply {
                 scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
                 adjustViewBounds = true
+            }
+            // A label UNDER the image rather than instead of it. With no game, or before the
+            // fetch lands, an empty box is indistinguishable from a broken tile -- and this tile
+            // is blank far more often than the text ones, because it depends on a download.
+            val label = TextView(context).apply {
+                gravity = Gravity.CENTER
+                setTextColor(TEXT_DIM)
+                textSize = 13f
+                maxLines = 3
+                text = I18n.get("secondScreen.tile.cover")
+            }
+            coverImage = image
+            coverLabel = label
+            return android.widget.FrameLayout(context).apply {
                 background = android.graphics.drawable.GradientDrawable().apply {
                     cornerRadius = dp * 14f
                     setColor(TILE_STAT)
@@ -574,35 +591,44 @@ object SecondScreen {
                         o.setRoundRect(0, 0, v.width, v.height, dp * 14f)
                     }
                 }
+                addView(label, android.widget.FrameLayout.LayoutParams(-1, -1))
+                addView(image, android.widget.FrameLayout.LayoutParams(-1, -1))
             }
+        }
 
         /** The cover currently shown, so the tick only reloads when the game actually changes. */
         private var coverKey: String? = null
 
-        private fun updateCover(view: android.widget.ImageView) {
+        private fun updateCover() {
+            val view = coverImage ?: return
             val game = MainActivityRuntime.currentGame.value
             val key = game?.serial ?: game?.title
             if (key == coverKey) return
             coverKey = key
+            // The label says what the tile IS while there is no picture, and what the GAME is
+            // once there is a game but no art yet.
+            coverLabel?.text = game?.title ?: I18n.get("secondScreen.tile.cover")
             if (game == null) { view.setImageDrawable(null); return }
             val custom = runCatching { com.armsx2.CustomCovers.fileFor(context, game) }.getOrNull()
             if (custom != null) {
-                runCatching {
-                    view.setImageBitmap(android.graphics.BitmapFactory.decodeFile(custom.absolutePath))
-                }
-                return
+                val bmp = runCatching {
+                    android.graphics.BitmapFactory.decodeFile(custom.absolutePath)
+                }.getOrNull()
+                if (bmp != null) { view.setImageBitmap(bmp); return }
+                // Fall through to the URL when a custom cover is set but unreadable.
             }
             val url = game.coverUrl ?: run { view.setImageDrawable(null); return }
             runCatching {
-                val loader = coil.ImageLoader(context)
-                val req = coil.request.ImageRequest.Builder(context)
-                    .data(url)
-                    .target(
-                        onSuccess = { d -> view.setImageDrawable(d) },
-                        onError = { _ -> view.setImageDrawable(null) },
-                    )
-                    .build()
-                loader.enqueue(req)
+                coil.ImageLoader(context).enqueue(
+                    coil.request.ImageRequest.Builder(context)
+                        .data(url)
+                        .target(
+                            onSuccess = { d -> view.setImageDrawable(d) },
+                            // Leave the label showing rather than a blank box.
+                            onError = { _ -> view.setImageDrawable(null) },
+                        )
+                        .build(),
+                )
             }
         }
 
@@ -865,10 +891,7 @@ object SecondScreen {
                     SecondScreenTile.BATTERY_TEMP -> "BATT\n" + (Thermals.format(Thermals.battery) ?: "—")
                     SecondScreenTile.ACHIEVEMENTS -> achievementSummary()
                     // The picture tile updates itself; the when only produces text.
-                    SecondScreenTile.COVER -> {
-                        (view as? android.widget.ImageView)?.let { updateCover(it) }
-                        null
-                    }
+                    SecondScreenTile.COVER -> { updateCover(); null }
                     SecondScreenTile.RA_POINTS -> raPoints()
                     SecondScreenTile.RA_RECENT ->
                         I18n.get(tile.labelKey) + "\n" + (lastUnlock ?: "—")

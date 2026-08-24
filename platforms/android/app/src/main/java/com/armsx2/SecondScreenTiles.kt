@@ -88,6 +88,30 @@ object SecondScreenLayout {
     /** What the panel showed before it was customisable, so an existing user's panel is unchanged
      *  by the update and a new one starts somewhere sensible. */
     private val DEFAULT = listOf(
+        SecondScreenTile.COVER,
+        SecondScreenTile.TITLE,
+        SecondScreenTile.FPS,
+        SecondScreenTile.BATTERY,
+        SecondScreenTile.CLOCK,
+        SecondScreenTile.ACHIEVEMENTS,
+        SecondScreenTile.RA_POINTS,
+        SecondScreenTile.RICH_PRESENCE,
+        SecondScreenTile.SAVE,
+        SecondScreenTile.LOAD,
+        SecondScreenTile.FAST_FORWARD,
+        SecondScreenTile.PAUSE,
+        SecondScreenTile.SCREENSHOT,
+    )
+
+    /**
+     * The default as it stood before cover art and the RetroAchievements read-outs existed.
+     *
+     * Kept so the new defaults can reach people who never customised their panel. A saved layout
+     * normally wins over DEFAULT -- that is the whole point of saving it -- but a layout that is
+     * byte-for-byte the OLD default is not a choice anyone made, it is just what they were given.
+     * Those get upgraded once; anything the user actually arranged is left alone.
+     */
+    private val DEFAULT_V1 = listOf(
         SecondScreenTile.TITLE,
         SecondScreenTile.FPS,
         SecondScreenTile.BATTERY,
@@ -131,6 +155,11 @@ object SecondScreenLayout {
         runCatching {
             val raw = MainActivityRuntime.prefs.getString(PREF_TILES, null)
             tiles = if (raw == null) DEFAULT else parse(raw)
+            // One-time upgrade for panels still sitting on the untouched old default.
+            if (tiles == DEFAULT_V1) {
+                tiles = DEFAULT
+                persist()
+            }
             columnCount = MainActivityRuntime.prefs.getInt(PREF_COLUMNS, 3).coerceIn(1, 6)
             tileHeightDp = MainActivityRuntime.prefs.getInt(PREF_TILE_HEIGHT, 0).coerceIn(0, 200)
         }
