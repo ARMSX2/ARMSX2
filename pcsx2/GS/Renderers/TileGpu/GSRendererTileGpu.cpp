@@ -281,7 +281,7 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 	// The density budget's frame boundary, taken here so the verdict is constant for every draw of a
 	// frame and is decided from the frame that just finished. The counters it read reset with it.
-	m_declaring_budget.Roll(m_segregate_self_read);
+	m_declaring_budget.Roll();
 	m_budget_group = GSTileGpuPassKey{};
 	m_budget_prev_wanted = 0;
 
@@ -1248,8 +1248,13 @@ void GSRendererTileGpu::ChargeDeclaringBudget(u32 wanted_classes, const GSTileGp
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 	{
 		const u32 bit = 1u << c;
-		m_frame.class_wanted[c] += (wanted_classes & bit) ? 1u : 0u;
-		m_frame.class_exposed[c] += ((wanted_classes & bit) && !(opening & bit)) ? 1u : 0u;
+		if ((wanted_classes & bit) == 0)
+			continue;
+		m_frame.class_wanted[c]++;
+		if (opening & bit)
+			m_frame.class_runs[c]++;
+		else
+			m_frame.class_taxed[c]++;
 	}
 	m_budget_prev_wanted = wanted_classes;
 }
@@ -1569,12 +1574,14 @@ void GSRendererTileGpu::ReportModelTraffic()
 			const auto want = stat([c](const MF& f) { return f.class_wanted[c]; });
 			if (want.mean == 0.0)
 				continue;
-			const auto expo = stat([c](const MF& f) { return f.class_exposed[c]; });
+			const auto taxd = stat([c](const MF& f) { return f.class_taxed[c]; });
+			const auto runs = stat([c](const MF& f) { return f.class_runs[c]; });
 			const auto peak = stat([c](const MF& f) { return f.class_peak[c]; });
 			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
-			Console.WriteLn("    class %-17s wanted %.2f / %u draws   exposed %.2f / %u   peak %.2f / %u   "
-							"budget refused it in %.0f%% of frames",
-				kClassNames[c], want.mean, want.p50, expo.mean, expo.p50, peak.mean, peak.p50, refu.mean * 100.0);
+			Console.WriteLn("    class %-17s wanted %.2f / %u draws (taxed %.2f / %u + runs %.2f / %u)   "
+							"cost peak %.2f / %u   budget refused it in %.0f%% of frames",
+				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, runs.mean, runs.p50, peak.mean,
+				peak.p50, refu.mean * 100.0);
 		}
 	}
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "

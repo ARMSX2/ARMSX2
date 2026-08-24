@@ -213,16 +213,6 @@ enum : u32
 static constexpr u32 kGSTileGpuAdmissionClasses = 5;
 static constexpr u32 kGSTileGpuClassAll = (1u << kGSTileGpuAdmissionClasses) - 1;
 
-/// The classes that can go BULK -- whose population is a property of the TITLE rather than of the
-/// scene, so that one game asks for them on tens of draws a frame and another on thousands.
-///
-/// Measured, not guessed. Over the 18-dump corpus the partial-FBMSK class runs from 0 to 2,409 draws
-/// a frame and the quantised-blend class from 0 to 478, while DATE tops out at 32, the exotic blends
-/// at 448 spread one-per-pass, and the alpha keep at 6. These two are therefore the ones that start
-/// REFUSED on a device that taxes declaring: the first frame runs before any measurement exists, and
-/// one frame of approximation is cheaper than one frame that hangs the GPU.
-static constexpr u32 kGSTileGpuBulkCapableClasses = kGSTileGpuClassQuantisedBlend | kGSTileGpuClassPartialMask;
-
 /// What this draw would be admitted FOR, whatever any device thinks of the price.
 ///
 /// Deliberately free of policy: the budget below needs to know what a class WOULD cost even in a
@@ -300,123 +290,204 @@ constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bo
 	return self_read ? gsTileGpuClassUses(wanted_classes & admitted_classes) : 0u;
 }
 
-/// A class's cost, in the unit the tax is actually levied in: draws that would share a declaring
-/// pass with an earlier draw of the same class.
+/// A class's cost, in the unit the device actually charges in.
 ///
-/// Not the class's draw count and not its declaring-pass count, because the mechanism is a render-
-/// backend flush PER OVERLAPPING PRIMITIVE inside a declaring pass
-/// (GRAS_SC_CNTL.single_prim_mode = FLUSH_PER_OVERLAP_AND_OVERWRITE). A declaring pass holding one
-/// draw has nothing for that mode to charge; a declaring pass holding ninety-eight overlapping draws
-/// is charged ninety-seven times. So the quantity is "how many draws are standing behind another
-/// draw in a declaring pass", which is (draws in the class) minus (consecutive runs of them), and
-/// the corpus separates cleanly on it where it does not on either half alone: FlatOut 2 puts 448
-/// draws in 448 declaring passes and costs ZERO by this measure, while Baldur's Gate Dark Alliance
-/// II puts 478 in 4.88 and costs 473.
+/// TWO terms, because the SD865 round (20260824, e4d6eddce3) said the one-term form was half a
+/// model. The tax has two halves and a class pays both:
 ///
-/// ⚠️ A run is counted over the draws' ATTACHMENT group -- one colour surface, one depth surface,
-/// one depth mode -- and not over the passes as they finally came out, because those passes depend
-/// on the verdict this measurement decides. See GSTileGpuDeclaringBudget.
-/// The number is a calibration and is pinned by a test that names the measurements it came from.
-/// Under the Adreno pass shape the corpus's per-class peaks fall in two groups: everything that is
-/// both visible and cheap tops out at 195 (Katamari's punctuation FBMSK), and the three classes that
-/// saturate their title sit at 357, 473 and 950 (Ratchet's effect blends, Baldur's Gate's 16-bit
-/// blends, Xenosaga's alpha-MSB FBMSK). 256 is in the gap. The device round is what re-tunes it, and
-/// the test is there so a re-tune is argued rather than noticed later on hardware.
-constexpr u32 kGSTileGpuDeclaringAdmitAtOrUnder = 256;
-/// ...and the far edge of the hysteresis band. A class hovering at the line would otherwise change
-/// what the frame is exact about every frame; both renderings are valid, so the flicker is subtle
-/// rather than broken, which is exactly the kind of defect that survives review.
+///   taxed draws     a draw sharing a declaring pass with an earlier draw of the same class pays a
+///                   render-backend flush, because on sysmem a declaring pass rasterizes under
+///                   GRAS_SC_CNTL.single_prim_mode = FLUSH_PER_OVERLAP_AND_OVERWRITE.
+///   declared runs   ...and a declaring pass costs about 77 us of its OWN, whatever it holds --
+///                   transitions, load forcing, the input-attachment bind. The previous cost model
+///                   scored a run of one draw as FREE, and the device refuted it in the loudest
+///                   available way: FlatOut 2's exotic blends are 896 draws in 896 solo declared
+///                   passes, scored ZERO, admitted, and the frame came back at 122.04 ms -- +120%
+///                   against the arm before the budget existed and +383% against the arm before the
+///                   read road existed, with the pass count going 235 -> 1,100.
 ///
-/// Between the two lines the class keeps whatever answer it already had, which for a class that has
-/// never been priced means the startup prior below. That is the band doing its job rather than a
-/// loophole: a class the measurement cannot place confidently is left where its population says it
-/// belongs, and the two edges are what a device round moves.
-constexpr u32 kGSTileGpuDeclaringRefuseAbove = 2 * kGSTileGpuDeclaringAdmitAtOrUnder;
+/// So cost = taxed + alpha * runs.
+///
+/// ⚠️ alpha IS ONE, and the reason is not that a pass and an overlap happen to cost the same -- it
+/// is that alpha = 1 is the only value whose verdict does not depend on a number this planner
+/// cannot measure. At alpha = 1 the cost is arithmetically taxed + runs = the class's DRAW COUNT,
+/// which is invariant to how those draws fall into passes; at any other alpha the split matters,
+/// and the split is exactly what the run counter gets wrong. It counts runs broken by the
+/// attachment group changing, and cannot see the pass breaks a prep op or a texture bind makes
+/// later in the same draw -- on Ratchet & Clank's effects scene it counts SEVEN runs where the
+/// device declared 357 passes. Feed that error into a term with a coefficient and it moves
+/// verdicts; feed it into alpha = 1 and it cancels. The interval the device constrains is
+/// [0.75, 1] and this is the robust end of it.
+///
+/// Kept as two terms with alpha named rather than collapsed to a draw count, because the two halves
+/// were measured separately and a device round that prices a declared pass differently should be
+/// able to say so here rather than reverse-engineer it.
+constexpr u32 kGSTileGpuRunCostNumerator = 1;
+constexpr u32 kGSTileGpuRunCostDenominator = 1;
+
+constexpr u32 gsTileGpuClassCost(u32 taxed_draws, u32 declared_runs)
+{
+	return taxed_draws + declared_runs * kGSTileGpuRunCostNumerator / kGSTileGpuRunCostDenominator;
+}
+
+/// The line, and it is a fit to a constraint set rather than a round number.
+///
+/// Per-class costs over the 18-dump corpus under the Adreno pass shape, with the device's verdict
+/// on each where it ran:
+///
+///   must refuse   Xenosaga's alpha-MSB FBMSK 4805, FlatOut 2's exotic blends 896, Baldur's Gate's
+///                 16-bit blends 478, Ratchet & Clank's effect blends 364
+///   must admit    Katamari's punctuation FBMSK 211, Beyond Good & Evil's FBMSK 62, Shadow of the
+///                 Colossus' exotic blends 52, Yu-Gi-Oh's 16-bit blend 46, GT4 Online Beta's 45,
+///                 and twenty-odd classes under 32
+///
+/// 211 and 364 are the two that bind, and the line sits between them. MGS3's exotic blends are the
+/// one class in neither group: 162 draws in 162 solo declared passes, which this line admits. At
+/// ~77 us a declared pass that is around 12 ms of its 29.1 ms device frame, so it is a real
+/// question and not a settled one -- but no line on this metric separates 162 from Katamari's 211,
+/// and separating them needs alpha ABOVE one, which this device round does not pin. Named here so
+/// the next round can aim at it.
+constexpr u32 kGSTileGpuDeclaringRefuseAbove = 256;
+/// ...and the re-admit line, the near edge of the hysteresis band.
+///
+/// A class hovering at one line would otherwise change what the frame is exact about every frame;
+/// both renderings are valid, so the flicker is subtle rather than broken. The band has to satisfy
+/// one property beyond being narrow, and the obvious 25% band does not: a class that MUST be
+/// admitted has to be able to come BACK after any transient spike refuses it, so the re-admit line
+/// must sit above the largest must-admit cost. That is Katamari's 211, so 192 would latch its
+/// punctuation off for good after one bad frame. 224 clears it, and the band it leaves (225..256)
+/// contains no measured class on the corpus at all.
+constexpr u32 kGSTileGpuDeclaringReadmitAtOrUnder = 224;
 
 /// The per-class declaring budget: which admission classes are worth their tax this frame, decided
-/// from what each of them cost last frame.
+/// from what each of them has recently cost.
 ///
 /// A static per-class rule cannot work and the corpus says so three times over. Refusing the
 /// partial-FBMSK class buys Xenosaga its whole toll for two changed pixels and costs Katamari its
 /// punctuation; refusing the quantised-blend class buys Baldur's Gate Dark Alliance II its toll and
-/// costs Katamari the quantisation of a full-screen composite that, alone in its own segregated
-/// pass, has nothing to overlap and so is not being taxed at all. Two titles, opposite right
-/// answers, one class. The variable that separates them is never the class -- it is the DENSITY, and
-/// the renderer is the only thing that knows it.
+/// costs Katamari the quantisation of a full-screen composite. Two titles, opposite right answers,
+/// one class. The variable that separates them is never the class -- it is the DENSITY, and the
+/// renderer is the only thing that knows it.
 ///
-/// One frame stale, deliberately. Targets persist across the frame boundary and content is stable
-/// frame to frame, so last frame's density is this frame's density; this is the same
-/// Classic-grade-staleness bet the rest of the design already makes. The alternative is deciding
-/// mid-frame, and a verdict that moved mid-frame would key two draws of one class into different
-/// passes and different pipelines.
+/// One frame stale for a class that has been priced, deliberately. Targets persist across the frame
+/// boundary and content is stable frame to frame, so last frame's density is this frame's density;
+/// this is the same Classic-grade-staleness bet the rest of the design already makes. A verdict that
+/// moved mid-frame for a priced class would key two draws of one class into different passes for no
+/// reason the measurement asked for.
+///
+/// ⚠️ An UNPRICED class is the exception, and it is the whole of the startup story. See Charge.
 struct GSTileGpuDeclaringBudget
 {
-	/// What each class would cost if admitted, accumulated over the frame being built.
-	std::array<u32, kGSTileGpuAdmissionClasses> exposed{};
-	/// ...and what it has cost RECENTLY: a running peak that decays a quarter each frame, which is
-	/// the number the verdict is actually made on.
+	/// This frame, per class: draws standing behind another draw of the same class, and the number
+	/// of consecutive runs of the class. The two terms of the cost.
+	std::array<u32, kGSTileGpuAdmissionClasses> taxed{};
+	std::array<u32, kGSTileGpuAdmissionClasses> runs{};
+	/// ...and what the class has cost RECENTLY: a running peak of gsTileGpuClassCost that decays a
+	/// quarter each frame, which is the number the verdict is actually made on.
 	///
 	/// ⚠️ Not the last frame's cost, and this is not a refinement -- a budget reading one frame is
 	/// wrong on half the corpus. A title presenting at 30 Hz over a 60 Hz vsync draws nothing at all
 	/// in every second frame, so a one-frame-lagged verdict is decided by the EMPTY frame and the
-	/// heavy frame is admitted, every time: Xenosaga's alpha-MSB FBMSK alternates 950 and 0, and read
-	/// one frame at a time it was refused in only 62% of frames while the frames it was refused in
-	/// were the cheap ones. The peak asks "has this class been expensive lately", which is the
-	/// question, and a quarter a frame means about eight frames of genuine quiet -- an eighth of a
-	/// second -- before a class that has calmed down is re-admitted.
+	/// heavy frame is admitted, every time: Xenosaga's FBMSK alternates 4805 and 0, and read one
+	/// frame at a time it was refused in only 62% of frames while the frames it was refused in were
+	/// the cheap ones. The peak asks "has this class been expensive lately", which is the question,
+	/// and a quarter a frame means about eight frames of genuine quiet before a class that has
+	/// calmed down is re-admitted.
 	std::array<u32, kGSTileGpuAdmissionClasses> peak{};
-	/// The verdict in force for the WHOLE of the frame being built.
+	/// The verdict in force. Constant for the frame for a priced class; see Charge for the other.
 	u32 admitted = kGSTileGpuClassAll;
+	/// Classes that have completed a frame in which they were seen, and so have a peak worth
+	/// believing. A class outside this set is UNPRICED.
+	u32 priced = 0;
+	/// Whether this device charges for declaring at all (GSDevice::TileGpuSegregatesSelfRead).
+	/// Latched once, here, rather than passed to each call: it cannot change without a renderer
+	/// restart, and two copies of one answer is two chances to disagree.
+	bool taxes = false;
 
-	/// The first frame runs before any measurement exists, so the startup polarity is a bet rather
-	/// than a decision. It is taken toward not hanging the GPU: the two classes that can go bulk
-	/// start refused where declaring is taxed, and the three that the census bounds at tens of draws
-	/// a frame start admitted. One frame of approximation on a title that did not need it is cheaper
-	/// than one 303 ms frame on a title that did -- the SD865 took a kernel-level GPU fault on
-	/// Xenosaga twice in two runs, and that is the frame this polarity exists to not render.
 	constexpr void Start(bool declaring_taxes_the_pass)
 	{
-		admitted = declaring_taxes_the_pass ? (kGSTileGpuClassAll & ~kGSTileGpuBulkCapableClasses) : kGSTileGpuClassAll;
+		taxes = declaring_taxes_the_pass;
+		admitted = kGSTileGpuClassAll;
+		priced = 0;
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
-			exposed[c] = 0;
+			taxed[c] = 0;
+			runs[c] = 0;
 			peak[c] = 0;
 		}
 	}
 
 	/// Charge one draw. `wanted` is every class it would be admitted for; `opening` is the subset of
-	/// those whose consecutive run this draw STARTS, and so is the subset it costs nothing for.
+	/// those whose consecutive run this draw STARTS.
+	///
+	/// ⚠️ This is also where an UNPRICED class is refused, mid-frame, the moment its own running cost
+	/// crosses the line -- the one deliberate exception to the frame-constant verdict, and it exists
+	/// because the alternative was measured and is user-visible.
+	///
+	/// A class with no peak cannot be judged, so something has to be assumed about the first frame it
+	/// appears in. Assuming the worst -- start the bulk-capable classes refused -- costs one frame of
+	/// approximation, and one frame of approximation is NOT transient: targets persist by design, so
+	/// anything drawn once into a target later frames do not redraw keeps whatever frame one wrote.
+	/// On the device that was Katamari's punctuation, missing from the screen, permanently, because
+	/// the glyph store is written once. Assuming the best -- start everything admitted -- costs one
+	/// whole admitted frame, which on Xenosaga was 303 ms and a kernel-level GPU fault.
+	///
+	/// So: start admitted, and stop the moment the class proves expensive. Exposure is bounded by the
+	/// line rather than by the frame -- about 256 draws' worth, not 2,409 -- and a class whose whole
+	/// frame fits under the line is never refused at all, which is exactly the case the permanent
+	/// damage was in. Exactness is MONOTONE within a frame: admitted to refused, never back.
 	constexpr void Charge(u32 wanted, u32 opening)
 	{
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
-			if ((wanted & bit) != 0 && (opening & bit) == 0)
-				exposed[c]++;
+			if ((wanted & bit) == 0)
+				continue;
+			if ((opening & bit) != 0)
+				runs[c]++;
+			else
+				taxed[c]++;
+			if (taxes && (priced & bit) == 0 && (admitted & bit) != 0 &&
+				gsTileGpuClassCost(taxed[c], runs[c]) > kGSTileGpuDeclaringRefuseAbove)
+				admitted &= ~bit;
 		}
 	}
 
-	/// End of frame: this frame's costs decide the next frame's verdict, and the counters reset.
+	/// End of frame: this frame's cost joins the peak, the peak decides the next frame's verdict, and
+	/// the per-frame counters reset.
 	///
-	/// A device that does not tax declaring re-admits everything unconditionally rather than being
-	/// left at whatever the last verdict was -- the budget must be inert there, not merely idle.
-	constexpr void Roll(bool declaring_taxes_the_pass)
+	/// A device that does not charge for declaring re-admits everything unconditionally rather than
+	/// being left at whatever the last verdict was -- the budget must be inert there, not merely idle.
+	constexpr void Roll()
 	{
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
+			const u32 cost = gsTileGpuClassCost(taxed[c], runs[c]);
 			const u32 decayed = peak[c] - peak[c] / 4;
-			peak[c] = exposed[c] > decayed ? exposed[c] : decayed;
-			if (!declaring_taxes_the_pass)
+			peak[c] = cost > decayed ? cost : decayed;
+			// A class seen for a whole frame now has a peak worth believing, so it stops being
+			// bootstrapped and takes the frame-constant verdict from here on.
+			if (taxed[c] != 0 || runs[c] != 0)
+				priced |= bit;
+			if (!taxes)
 				admitted |= bit;
 			else if ((admitted & bit) != 0)
 			{
 				if (peak[c] > kGSTileGpuDeclaringRefuseAbove)
 					admitted &= ~bit;
 			}
-			else if (peak[c] <= kGSTileGpuDeclaringAdmitAtOrUnder)
+			else if (peak[c] <= kGSTileGpuDeclaringReadmitAtOrUnder)
+			{
+				// Re-admitting a class the budget once refused is a GUESS again -- the peak that
+				// justifies it was measured while the class was refused and the scene has moved on.
+				// So it goes back to being unpriced, and the frame that tries it gets Charge's
+				// mid-frame guard rather than a whole frame at whatever the class now costs.
 				admitted |= bit;
-			exposed[c] = 0;
+				priced &= ~bit;
+			}
+			taxed[c] = 0;
+			runs[c] = 0;
 		}
 	}
 };
@@ -1475,8 +1546,9 @@ private:
 		//   refused  1 if the budget refused the class for this frame, so the mean is the fraction
 		//            of frames it was off
 		u32 class_wanted[kGSTileGpuAdmissionClasses] = {};
-		u32 class_exposed[kGSTileGpuAdmissionClasses] = {};
-		u32 class_peak[kGSTileGpuAdmissionClasses] = {}; // the decayed peak the verdict was made on
+		u32 class_taxed[kGSTileGpuAdmissionClasses] = {};  // of those, standing behind another of the class
+		u32 class_runs[kGSTileGpuAdmissionClasses] = {};   // ...and the declared runs they fall into
+		u32 class_peak[kGSTileGpuAdmissionClasses] = {};   // the decayed cost peak the verdict was made on
 		u32 class_refused[kGSTileGpuAdmissionClasses] = {};
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target

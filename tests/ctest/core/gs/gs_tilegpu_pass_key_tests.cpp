@@ -576,7 +576,7 @@ namespace
 {
 /// Run one frame's worth of draws through a budget: `runs` runs of `per_run` draws each, all wanting
 /// `classes`, then the frame boundary. Returns the verdict now in force.
-u32 RunFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 runs, u32 per_run, bool taxes)
+u32 RunFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 runs, u32 per_run)
 {
 	for (u32 r = 0; r < runs; r++)
 	{
@@ -584,73 +584,209 @@ u32 RunFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 runs, u32 per_run, bo
 		for (u32 d = 1; d < per_run; d++)
 			b.Charge(classes, /*opening=*/0);
 	}
-	b.Roll(taxes);
+	b.Roll();
 	return b.admitted;
 }
+
+/// One frame of `draws` draws of `classes`, all in ONE run -- the Baldur's Gate shape.
+u32 RunDenseFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 draws)
+{
+	return RunFrame(b, classes, 1, draws);
+}
+
+/// One frame of `draws` draws of `classes`, each alone in its own run -- the FlatOut 2 shape.
+u32 RunSpreadFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 draws)
+{
+	return RunFrame(b, classes, draws, 1);
+}
 } // namespace
+
+// -- the cost model ----------------------------------------------------------------------------
+
+TEST(TileGpuClassCost, ADeclaredRunCostsWhatATaxedDrawCosts)
+{
+	// alpha = 1. The device refuted the previous model in the loudest available way: FlatOut 2's
+	// 896 exotic blends sit one per declared pass, the old measure scored them ZERO, and the frame
+	// came back at 122.04 ms -- +120% against the arm before the budget and +383% against the arm
+	// before the read road. A declaring pass costs about 77 us whatever it holds.
+	EXPECT_EQ(100u, gsTileGpuClassCost(/*taxed=*/100, /*runs=*/0));
+	EXPECT_EQ(100u, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/100));
+	EXPECT_EQ(100u, gsTileGpuClassCost(/*taxed=*/50, /*runs=*/50));
+}
+
+TEST(TileGpuClassCost, TheVerdictDoesNotDependOnTheRunCountBeingRight)
+{
+	// ⚠️ Why alpha is one and not 0.75, which the device constraints also allow. The run counter is
+	// the number this planner CANNOT measure: it counts runs broken by the attachment group
+	// changing, and cannot see the pass breaks a prep op or a texture bind makes later in the same
+	// draw. On Ratchet & Clank's effects scene it counts SEVEN runs where the device declared 357
+	// passes. At alpha = 1 the same draws cost the same however they are split, so the error cannot
+	// move a verdict; at any other alpha it can.
+	constexpr u32 kDraws = 364;
+	EXPECT_EQ(gsTileGpuClassCost(kDraws - 7, 7), gsTileGpuClassCost(kDraws - 357, 357));
+	EXPECT_EQ(kDraws, gsTileGpuClassCost(kDraws - 7, 7));
+}
+
+TEST(TileGpuDeclaringBudget, TheBudgetSitsWhereTheCorpusSeparates)
+{
+	// The calibration, pinned where a re-tune will see it. Per-class costs over the 18-dump corpus
+	// under the Adreno pass shape, with the SD865 round's verdict on each where it ran:
+	//
+	//   must refuse   Xenosaga's alpha-MSB FBMSK 4805, FlatOut 2's exotic blends 896, Baldur's
+	//                 Gate's 16-bit blends 478, Ratchet & Clank's effect blends 364
+	//   must admit    Katamari's punctuation FBMSK 211, Beyond Good & Evil's FBMSK 62, Shadow of
+	//                 the Colossus' exotic blends 52, Yu-Gi-Oh's 46, GT4 Online Beta's 45
+	//
+	// 211 and 364 are the two that bind.
+	EXPECT_LT(211u, kGSTileGpuDeclaringRefuseAbove);
+	EXPECT_GT(364u, kGSTileGpuDeclaringRefuseAbove);
+	// ...and the property the obvious 25% hysteresis band would have broken: a class that must be
+	// admitted has to be able to come BACK after a transient spike refuses it, so the re-admit line
+	// sits above the largest must-admit cost rather than an arbitrary fraction below the other line.
+	EXPECT_LE(211u, kGSTileGpuDeclaringReadmitAtOrUnder);
+	EXPECT_LT(kGSTileGpuDeclaringReadmitAtOrUnder, kGSTileGpuDeclaringRefuseAbove);
+}
+
+// -- the device gate ---------------------------------------------------------------------------
 
 TEST(TileGpuDeclaringBudget, ADeviceThatDoesNotChargeForDeclaringAdmitsEverythingAlways)
 {
 	// The gate on the whole mechanism. Nothing about the budget may be observable where declaring is
-	// free, however dense the frame -- that is the byte-identity the default polarity has to keep.
+	// free, however dense the frame -- that is the byte-identity the default polarity has to keep,
+	// and it covers the mid-frame bootstrap too.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsFree);
 	EXPECT_EQ(kGSTileGpuClassAll, b.admitted);
 	for (int frame = 0; frame < 4; frame++)
-		EXPECT_EQ(kGSTileGpuClassAll, RunFrame(b, kGSTileGpuClassAll, 1, 100000, kDeclaringIsFree));
+	{
+		EXPECT_EQ(kGSTileGpuClassAll, RunDenseFrame(b, kGSTileGpuClassAll, 100000));
+		EXPECT_EQ(kGSTileGpuClassAll, b.admitted) << "mid-frame flip fired on a device that is not charging";
+	}
 }
 
-TEST(TileGpuDeclaringBudget, TheStartupPolarityRefusesOnlyTheClassesThatCanGoBulk)
+// -- the in-frame bootstrap --------------------------------------------------------------------
+
+TEST(TileGpuDeclaringBudget, AnUnpricedClassStartsAdmitted)
 {
-	// Frame one runs before any measurement exists. The bet is taken toward not hanging the GPU: the
-	// two classes the census has seen reach thousands of draws a frame start off, the three it bounds
-	// at tens start on.
+	// There is no startup polarity any more. Assuming the worst for an unmeasured class cost one
+	// frame of approximation, and one frame is NOT transient: targets persist, so anything drawn
+	// once into a target later frames do not redraw keeps what frame one wrote. On the device that
+	// was Katamari's punctuation, missing from the screen, permanently.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassQuantisedBlend);
-	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
-	EXPECT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate);
-	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
-	EXPECT_EQ(kGSTileGpuClassAfailKeep, b.admitted & kGSTileGpuClassAfailKeep);
+	EXPECT_EQ(kGSTileGpuClassAll, b.admitted);
+	EXPECT_EQ(0u, b.priced);
 }
+
+TEST(TileGpuDeclaringBudget, AClassThatFitsUnderTheLineIsExactFromTheFirstDraw)
+{
+	// ★ The headline: Katamari's punctuation. Its FBMSK class costs 211 a frame, under the line, so
+	// the bootstrap never trips and frame one writes the glyphs exactly. Under the startup polarity
+	// this frame was approximated and the damage was permanent.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (u32 d = 0; d < 211; d++)
+	{
+		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0);
+		ASSERT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask) << "draw " << d;
+	}
+	b.Roll();
+	EXPECT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask);
+}
+
+TEST(TileGpuDeclaringBudget, AnUnpricedClassIsRefusedTheMomentItCrossesTheLine)
+{
+	// The other side of the same bet: exposure is bounded by the LINE, not by the frame. Xenosaga's
+	// FBMSK is 4805 draws a frame; a whole admitted frame of it measured 303 ms on the device and
+	// took a kernel-level GPU fault. Here it is stopped after about 256.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	u32 admitted_draws = 0;
+	for (u32 d = 0; d < 4805; d++)
+	{
+		const bool was_admitted = (b.admitted & kGSTileGpuClassPartialMask) != 0;
+		admitted_draws += was_admitted ? 1u : 0u;
+		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0);
+		// Monotone: exactness only ever goes away within a frame, it never comes back.
+		EXPECT_TRUE(was_admitted || (b.admitted & kGSTileGpuClassPartialMask) == 0) << "draw " << d;
+	}
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove + 2, admitted_draws);
+	EXPECT_LE(kGSTileGpuDeclaringRefuseAbove, admitted_draws);
+}
+
+TEST(TileGpuDeclaringBudget, TheBootstrapCountsRunsAsWellAsTaxedDraws)
+{
+	// FlatOut 2's shape: 896 draws, every one alone in its own declared run. Under the old one-term
+	// cost this frame was free and stayed admitted; it must now trip like any other.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (u32 d = 0; d < 896; d++)
+		b.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassExoticBlend);
+	b.Roll();
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassExoticBlend);
+}
+
+TEST(TileGpuDeclaringBudget, APricedClassKeepsItsVerdictForTheWholeFrame)
+{
+	// The bootstrap is an exception for the unpriced case ONLY. A class whose price is known keeps
+	// the frame-constant verdict, because a verdict moving mid-frame keys two draws of one class
+	// into different passes for no reason the measurement asked for.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	RunDenseFrame(b, kGSTileGpuClassDate, 4); // cheap: priced and admitted
+	ASSERT_EQ(kGSTileGpuClassDate, b.priced & kGSTileGpuClassDate);
+	ASSERT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate);
+
+	// Now the scene explodes. The class is priced, so it rides the whole frame admitted...
+	for (u32 d = 0; d < kGSTileGpuDeclaringRefuseAbove * 4; d++)
+	{
+		b.Charge(kGSTileGpuClassDate, d == 0 ? kGSTileGpuClassDate : 0);
+		ASSERT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate) << "draw " << d;
+	}
+	// ...and pays for it at the boundary, not before.
+	b.Roll();
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassDate);
+}
+
+TEST(TileGpuDeclaringBudget, ReAdmittingAClassMakesItUnpricedAgain)
+{
+	// A re-admission is a guess: the peak that justified it was measured while the class was
+	// refused. So the frame that tries the class again gets the bootstrap's mid-frame guard rather
+	// than a whole frame at whatever the class now costs -- which is the 303 ms frame, arriving late.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 4);
+	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+
+	int quiet = 0;
+	while ((b.admitted & kGSTileGpuClassPartialMask) == 0 && quiet < 64)
+	{
+		b.Roll();
+		quiet++;
+	}
+	ASSERT_NE(0u, b.admitted & kGSTileGpuClassPartialMask) << "never came back";
+	EXPECT_EQ(0u, b.priced & kGSTileGpuClassPartialMask) << "a re-admitted class must be bootstrapped again";
+
+	// ...and the guard really is armed: the retry frame stops at the line.
+	for (u32 d = 0; d < kGSTileGpuDeclaringRefuseAbove * 4; d++)
+		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0);
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+}
+
+// -- the peak, the hysteresis and the handoff ----------------------------------------------------
 
 TEST(TileGpuDeclaringBudget, TheFrameJustDrawnDecidesTheNextOne)
 {
-	// The handoff. A bulk-capable class starts refused and turns ON once a frame proves it sparse;
-	// a sparse class starts admitted and turns OFF once a frame proves it dense.
+	// The handoff, for a class already priced: a dense frame turns it off, and it stays off.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
-	// One run of 9 draws costs 8 -- comfortably under the budget.
-	EXPECT_EQ(kGSTileGpuClassPartialMask,
-		RunFrame(b, kGSTileGpuClassPartialMask, 1, 9, kDeclaringIsTaxed) & kGSTileGpuClassPartialMask);
-
-	GSTileGpuDeclaringBudget d;
-	d.Start(kDeclaringIsTaxed);
-	ASSERT_EQ(kGSTileGpuClassExoticBlend, d.admitted & kGSTileGpuClassExoticBlend);
-	EXPECT_EQ(0u,
-		RunFrame(d, kGSTileGpuClassExoticBlend, 1, kGSTileGpuDeclaringRefuseAbove + 2, kDeclaringIsTaxed) &
-			kGSTileGpuClassExoticBlend);
-}
-
-TEST(TileGpuDeclaringBudget, ADrawThatOpensARunCostsNothing)
-{
-	// The cost measure, stated on its own: the tax is a flush per OVERLAPPING primitive, so the first
-	// draw of a declaring pass has nothing to overlap. A frame of N one-draw runs costs zero -- which
-	// is FlatOut 2, 448 draws in 448 declaring passes -- and one run of N costs N-1, which is Baldur's
-	// Gate, 478 draws in 4.88.
-	GSTileGpuDeclaringBudget spread;
-	spread.Start(kDeclaringIsTaxed);
-	for (u32 r = 0; r < 1000; r++)
-		spread.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
-	EXPECT_EQ(0u, spread.exposed[1]);
-
-	GSTileGpuDeclaringBudget dense;
-	dense.Start(kDeclaringIsTaxed);
-	dense.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
-	for (u32 d = 1; d < 1000; d++)
-		dense.Charge(kGSTileGpuClassExoticBlend, 0);
-	EXPECT_EQ(999u, dense.exposed[1]);
+	ASSERT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kGSTileGpuDeclaringRefuseAbove * 3) &
+					  kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kGSTileGpuDeclaringRefuseAbove * 3) &
+					  kGSTileGpuClassExoticBlend);
 }
 
 TEST(TileGpuDeclaringBudget, ARefusedClassKeepsMeasuringWhatItWouldHaveCost)
@@ -664,36 +800,88 @@ TEST(TileGpuDeclaringBudget, ARefusedClassKeepsMeasuringWhatItWouldHaveCost)
 	b.Start(kDeclaringIsTaxed);
 	for (int frame = 0; frame < 8; frame++)
 	{
-		const u32 verdict = RunFrame(b, kGSTileGpuClassPartialMask, 1, kGSTileGpuDeclaringRefuseAbove + 2,
-			kDeclaringIsTaxed);
-		EXPECT_EQ(0u, verdict & kGSTileGpuClassPartialMask) << "frame " << frame;
+		EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3) &
+						  kGSTileGpuClassPartialMask)
+			<< "frame " << frame;
 	}
 }
 
-TEST(TileGpuDeclaringBudget, HysteresisHoldsAClassHoveringAtTheBudget)
+TEST(TileGpuDeclaringBudget, AClassExpensiveEveryOtherFrameStaysRefused)
 {
-	// Between the budget and twice it, whichever way the class is already set is the way it stays.
-	// Without the band a class sitting near the line changes what the frame is exact about every
-	// frame; both renderings are correct, so the flicker is subtle rather than broken.
-	const u32 hover = kGSTileGpuDeclaringAdmitAtOrUnder + 1; // above the admit line, below the refuse line
-
-	GSTileGpuDeclaringBudget on;
-	on.Start(kDeclaringIsTaxed); // exotic blend starts ADMITTED
-	for (int frame = 0; frame < 4; frame++)
+	// ⚠️ The defect that a one-frame-lagged budget has and this one does not. Half the corpus presents
+	// at 30 Hz over a 60 Hz vsync and draws NOTHING in every second frame, so last-frame's-cost is
+	// read off the empty frame and the heavy frame is admitted -- every time. Measured before the
+	// peak existed: Xenosaga's FBMSK alternates 4805 and 0, and was refused in only 62% of frames
+	// while the frames it was refused in were the cheap ones.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (int frame = 0; frame < 12; frame++)
 	{
-		EXPECT_EQ(kGSTileGpuClassExoticBlend,
-			RunFrame(on, kGSTileGpuClassExoticBlend, 1, hover + 1, kDeclaringIsTaxed) & kGSTileGpuClassExoticBlend)
-			<< "frame " << frame;
+		if (frame % 2 == 0)
+			RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3);
+		else
+			b.Roll();
+		EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask) << "frame " << frame;
 	}
+}
 
-	GSTileGpuDeclaringBudget off;
-	off.Start(kDeclaringIsTaxed); // partial FBMSK starts REFUSED
-	for (int frame = 0; frame < 4; frame++)
+TEST(TileGpuDeclaringBudget, APeakDecaysSoAQuietSceneIsReAdmitted)
+{
+	// Recently-expensive must not mean permanently refused. A quarter a frame is about eight frames
+	// of genuine quiet.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3);
+	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+
+	int frames = 0;
+	while ((b.admitted & kGSTileGpuClassPartialMask) == 0 && frames < 64)
 	{
-		EXPECT_EQ(0u,
-			RunFrame(off, kGSTileGpuClassPartialMask, 1, hover + 1, kDeclaringIsTaxed) & kGSTileGpuClassPartialMask)
-			<< "frame " << frame;
+		b.Roll();
+		frames++;
 	}
+	EXPECT_LT(0, frames);
+	EXPECT_GT(20, frames) << "a class that has calmed down waited " << frames << " frames to come back";
+}
+
+TEST(TileGpuDeclaringBudget, AMustAdmitClassComesBackAfterATransientSpike)
+{
+	// The reason the re-admit line is 224 and not a round fraction of the other one. Katamari's
+	// punctuation costs 211 every frame. One bad frame refuses it; if the re-admit line sat below
+	// 211 the peak would decay to 211, stop there, and the punctuation would be off for good.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3); // the spike
+	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	for (int frame = 0; frame < 40 && (b.admitted & kGSTileGpuClassPartialMask) == 0; frame++)
+		RunDenseFrame(b, kGSTileGpuClassPartialMask, 211); // Katamari's ordinary frame
+	EXPECT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask)
+		<< "a class that must be admitted was latched off by one bad frame";
+}
+
+TEST(TileGpuDeclaringBudget, ADrawThatOpensARunIsCountedAsARunAndNotAsATaxedDraw)
+{
+	// The two terms, kept apart in the counters even though alpha makes their sum the verdict: they
+	// were measured separately and a device round that prices a declared pass differently has to be
+	// able to see them.
+	GSTileGpuDeclaringBudget spread;
+	spread.Start(kDeclaringIsTaxed);
+	for (u32 r = 0; r < 100; r++)
+		spread.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u, spread.taxed[1]);
+	EXPECT_EQ(100u, spread.runs[1]);
+
+	GSTileGpuDeclaringBudget dense;
+	dense.Start(kDeclaringIsTaxed);
+	dense.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	for (u32 d = 1; d < 100; d++)
+		dense.Charge(kGSTileGpuClassExoticBlend, 0);
+	EXPECT_EQ(99u, dense.taxed[1]);
+	EXPECT_EQ(1u, dense.runs[1]);
+
+	// ...and they cost the same, which is the whole of alpha = 1.
+	EXPECT_EQ(gsTileGpuClassCost(spread.taxed[1], spread.runs[1]),
+		gsTileGpuClassCost(dense.taxed[1], dense.runs[1]));
 }
 
 TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
@@ -703,76 +891,32 @@ TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
 	b.Start(kDeclaringIsTaxed);
 	for (int frame = 0; frame < 8; frame++)
 	{
-		const u32 verdict = RunFrame(b, kGSTileGpuClassQuantisedBlend, 1,
-			kGSTileGpuDeclaringAdmitAtOrUnder / 2, kDeclaringIsTaxed);
-		EXPECT_EQ(kGSTileGpuClassQuantisedBlend, verdict & kGSTileGpuClassQuantisedBlend) << "frame " << frame;
+		EXPECT_EQ(kGSTileGpuClassQuantisedBlend,
+			RunDenseFrame(b, kGSTileGpuClassQuantisedBlend, kGSTileGpuDeclaringRefuseAbove / 2) &
+				kGSTileGpuClassQuantisedBlend)
+			<< "frame " << frame;
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
-			EXPECT_EQ(0u, b.exposed[c]) << "class " << c << " frame " << frame;
-	}
-}
-
-TEST(TileGpuDeclaringBudget, TheBudgetSitsWhereTheCorpusSeparates)
-{
-	// The calibration, pinned where a re-tune will see it. These are measured per-class PEAKS from
-	// the 18-dump corpus under the Adreno pass shape, and the budget has to fall between two groups:
-	//
-	//   must admit   Katamari's punctuation FBMSK 195, GT4 Online Beta's 16-bit blend 43, Beyond Good
-	//                & Evil's FBMSK 42, Shadow of the Colossus' exotic blends 44, Yu-Gi-Oh's 16-bit
-	//                blend 29, OutRun's 17, FlatOut 2's and MGS3's 0
-	//   must refuse  Baldur's Gate's 16-bit blend 473, Xenosaga's alpha-MSB FBMSK 950
-	//
-	// Ratchet & Clank's effect blends sit between the two at 357 and are held admitted by the
-	// hysteresis band and their class prior; refusing them costs 51 pixels and removes 313 taxed
-	// draws a frame, which is the first trade the device round should re-price.
-	EXPECT_LT(195u, kGSTileGpuDeclaringAdmitAtOrUnder);
-	EXPECT_GT(473u, kGSTileGpuDeclaringAdmitAtOrUnder);
-	EXPECT_GT(950u, kGSTileGpuDeclaringRefuseAbove);
-	EXPECT_LT(357u, kGSTileGpuDeclaringRefuseAbove);
-}
-
-TEST(TileGpuDeclaringBudget, AClassExpensiveEveryOtherFrameStaysRefused)
-{
-	// ⚠️ The defect that a one-frame-lagged budget has and this one does not. Half the corpus presents
-	// at 30 Hz over a 60 Hz vsync and draws NOTHING in every second frame, so last-frame's-cost is
-	// read off the empty frame and the heavy frame is admitted -- every time. Measured before the
-	// peak existed: Xenosaga's FBMSK alternates 950 and 0 and was refused in only 62% of frames, and
-	// the frames it was refused in were the cheap ones.
-	GSTileGpuDeclaringBudget b;
-	b.Start(kDeclaringIsTaxed);
-	for (int frame = 0; frame < 12; frame++)
-	{
-		const u32 heavy = (frame % 2 == 0) ? (kGSTileGpuDeclaringRefuseAbove * 2) : 0;
-		if (heavy)
 		{
-			b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
-			for (u32 d = 1; d <= heavy; d++)
-				b.Charge(kGSTileGpuClassPartialMask, 0);
+			EXPECT_EQ(0u, b.taxed[c]) << "class " << c << " frame " << frame;
+			EXPECT_EQ(0u, b.runs[c]) << "class " << c << " frame " << frame;
 		}
-		b.Roll(kDeclaringIsTaxed);
-		EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask) << "frame " << frame;
 	}
 }
 
-TEST(TileGpuDeclaringBudget, APeakDecaysSoAQuietSceneIsReAdmitted)
+TEST(TileGpuDeclaringBudget, OneClassCrossingTheLineDoesNotTakeTheOthersWithIt)
 {
-	// The other half of the same property: recently-expensive must not mean permanently refused. A
-	// quarter a frame is about eight frames of genuine quiet.
+	// The classes are budgeted independently, and the bootstrap does not change that. Xenosaga's
+	// frame is exactly this shape: the FBMSK class refused, the exotic blends admitted alongside it.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
-	for (u32 d = 1; d <= kGSTileGpuDeclaringRefuseAbove * 2; d++)
-		b.Charge(kGSTileGpuClassPartialMask, 0);
-	b.Roll(kDeclaringIsTaxed);
-	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
-
-	int frames = 0;
-	while ((b.admitted & kGSTileGpuClassPartialMask) == 0 && frames < 64)
+	const u32 both = kGSTileGpuClassPartialMask | kGSTileGpuClassExoticBlend;
+	for (u32 d = 0; d < 4805; d++)
 	{
-		b.Roll(kDeclaringIsTaxed); // nothing charged: the scene has gone quiet
-		frames++;
+		const u32 wanted = (d % 100 == 0) ? both : kGSTileGpuClassPartialMask;
+		b.Charge(wanted, d == 0 ? both : 0);
 	}
-	EXPECT_LT(0, frames);
-	EXPECT_GT(20, frames) << "a class that has calmed down waited " << frames << " frames to come back";
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
 }
 
 // ---------------------------------------------------------------------------------------------
