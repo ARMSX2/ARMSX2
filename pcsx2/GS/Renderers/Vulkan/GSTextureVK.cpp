@@ -202,7 +202,7 @@ void GSTextureVK::Destroy(bool defer)
 
 	if (IsRenderTargetOrDepthStencil())
 	{
-		for (const auto& [other_tex, fb, feedback_color, feedback_depth] : m_framebuffers)
+		for (const auto& [other_tex, fb, feedback_color, feedback_depth, self_read] : m_framebuffers)
 		{
 			if (other_tex)
 			{
@@ -817,21 +817,30 @@ VkFramebuffer GSTextureVK::GetFramebuffer(bool feedback_loop)
 	return GetLinkedFramebuffer(nullptr, feedback_loop, false);
 }
 
-VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool feedback_loop_color, bool feedback_loop_depth)
+VkFramebuffer GSTextureVK::GetLinkedFramebuffer(
+	GSTextureVK* depth_texture, bool feedback_loop_color, bool feedback_loop_depth, bool tilegpu_self_read)
 {
 	pxAssertRel(!IsTexture(), "Texture is a render target");
 
-	for (const auto& [other_tex, fb, other_feedback_loop_color, other_feedback_loop_depth] : m_framebuffers)
+	for (const auto& [other_tex, fb, other_feedback_loop_color, other_feedback_loop_depth, other_self_read] :
+		m_framebuffers)
 	{
-		if (other_tex == depth_texture && other_feedback_loop_color == feedback_loop_color && other_feedback_loop_depth == feedback_loop_depth)
+		if (other_tex == depth_texture && other_feedback_loop_color == feedback_loop_color &&
+			other_feedback_loop_depth == feedback_loop_depth && other_self_read == tilegpu_self_read)
 			return fb;
 	}
 
+	// ⚠️ The declared-read shape has to be built HERE too, not only where the pass begins. Subpass
+	// DEPENDENCIES count towards render-pass compatibility, and the ordinary feedback-loop pass
+	// carries a framebuffer-local self-dependency the declared one deliberately does not -- so a
+	// framebuffer built from the wrong one of the two cannot begin the other's pass. Validation says
+	// so (VUID-VkRenderPassBeginInfo-renderPass-00904); without validation it renders garbage.
 	const VkRenderPass rp = GSDeviceVK::GetInstance()->GetRenderPass(
 		!IsDepthStencil() ? m_vk_format : VK_FORMAT_UNDEFINED,
 		!IsDepthStencil() ? (depth_texture ? depth_texture->m_vk_format : VK_FORMAT_UNDEFINED) : m_vk_format,
 		VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_LOAD,
-		VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, feedback_loop_color, feedback_loop_depth);
+		VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		feedback_loop_color, feedback_loop_depth, tilegpu_self_read);
 	if (!rp)
 		return VK_NULL_HANDLE;
 
@@ -867,9 +876,9 @@ VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool
 	if (!fb)
 		return VK_NULL_HANDLE;
 
-	m_framebuffers.emplace_back(depth_texture, fb, feedback_loop_color, feedback_loop_depth);
+	m_framebuffers.emplace_back(depth_texture, fb, feedback_loop_color, feedback_loop_depth, tilegpu_self_read);
 	if (depth_texture)
-		depth_texture->m_framebuffers.emplace_back(this, fb, feedback_loop_color, feedback_loop_depth);
+		depth_texture->m_framebuffers.emplace_back(this, fb, feedback_loop_color, feedback_loop_depth, tilegpu_self_read);
 	return fb;
 }
 

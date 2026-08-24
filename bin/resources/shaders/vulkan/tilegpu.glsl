@@ -114,6 +114,29 @@
 #define TILEGPU_ROAD_SOURCE 1
 #endif
 
+// TILEGPU_SELF_* (injected by the device, PER PASS): what this pass's draws need the in-pass
+// destination read FOR -- GSTileGpuPass::self_mask, ORed over the draws the renderer admitted to the
+// read. Off by default, because the overwhelming majority of passes need none of it and a pass that
+// declares nothing must compile to the same program it did before this road existed.
+//
+// Split three ways for the reason road_mask and texel_mask are split: a pass whose only reader is
+// the destination-alpha test must not carry the blend equation's integer arithmetic, and the a650
+// instruction budget has no room to spare (the worst gated variant already sits within 5% of the
+// ceiling).
+#ifndef TILEGPU_SELF_DATE
+#define TILEGPU_SELF_DATE 0
+#endif
+
+#ifndef TILEGPU_SELF_BLEND
+#define TILEGPU_SELF_BLEND 0
+#endif
+
+#ifndef TILEGPU_SELF_MASK
+#define TILEGPU_SELF_MASK 0
+#endif
+
+#define TILEGPU_SELF_READ (TILEGPU_SELF_DATE || TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK)
+
 // TILEGPU_FMT_* (injected by the device, PER PASS): the BYTE road's texel-decode ARMS this pass's
 // draws actually use -- GSTileGpuPass::texel_mask, ORed over the pass's byte-road draws exactly the
 // way road_mask is ORed over its draws' roads. The byte road is not one decoder, it is five address
@@ -242,9 +265,13 @@ struct StateRow
 	                   // at fetch, because an image-to-buffer copy lands texels row-major.
 	uint pal_bias;     // entry bias inside a copied palette: a four-bit draw reading slot k of a
 	                   // 256-entry gathered load wants its entries 16k..16k+15.
-	uint pad0_, pad1_; // explicit, for the same reason the old tail padding was: alignas(16) pads the
-	                   // C++ row to 160 while std430's array stride would otherwise be 152, and the
-	                   // two strides disagreeing reads every row but the first from the wrong place.
+	uint blend;        // the GS blend equation for a draw that reads its own destination: bits 0-1 A,
+	                   // 2-3 B, 4-5 C, 6-7 D, 8-15 FIX, 16 = blend at all, 17 = COLCLAMP wraps,
+	                   // 18 = PABE, 19 = a PSMCT24 destination (its C=Ad is exactly 1.0). Zero on
+	                   // every draw the executor blends for.
+	uint fbmsk;        // FBMSK reduced to the frame format's stored bits, as a per-channel KEEP mask
+	                   // on the expanded RGBA8 bytes. These two took the row's explicit tail padding;
+	                   // the C++ side's assert is what keeps the row 160 bytes on both strides.
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -335,6 +362,26 @@ layout(location = 0, index = 1) out vec4 o_blend;
 // alpha the DATE test reads. Bound per pass (set 1); a pass without DATE draws binds a null
 // texture that no fragment reads.
 layout(set = 1, binding = 0) uniform sampler2D u_snapshot;
+
+#if TILEGPU_SELF_READ
+// The pass's own colour attachment, read back at the fragment's own pixel in rasterization order.
+// The pass declares it as an input attachment as well as a colour attachment, keeps it in GENERAL
+// for the pass's whole life, and carries the rasterization-order subpass flag -- so this returns
+// what every earlier fragment of this pass wrote to this pixel, with no barrier and no pass break.
+// Declared only in a variant whose pass actually reads: a pass that does not is not built against
+// that render pass and has no such descriptor bound.
+layout(input_attachment_index = 0, set = 3, binding = 0) uniform subpassInput u_dest;
+
+// The destination pixel as the guest's own bytes. A UNORM8 fetch hands back k/255 correctly rounded,
+// which is not the same float as k * (1/255) -- so recover the integer and do the arithmetic there,
+// exactly as the materialised-source road recovers a texel byte. Everything downstream of here is
+// integer, because the GS blend is integer.
+ivec4 tilegpu_dest_bytes()
+{
+	const vec4 raw = subpassLoad(u_dest);
+	return ivec4(floor(fma(raw, vec4(255.0f), vec4(0.5f))));
+}
+#endif
 
 #if TILEGPU_TEXTURED
 
@@ -898,12 +945,20 @@ void main()
 {
 	StateRow sr = state_rows[v_row];
 
-	// Destination alpha test: the GS passes a pixel when the destination alpha's bit 7 equals
-	// DATM. The destination is the pass snapshot (pre-pass bytes; the planner keeps that exact).
+	// Destination alpha test: the GS passes a pixel when the destination alpha's bit 7 equals DATM.
 	if (sr.date != 0u)
 	{
+#if TILEGPU_SELF_DATE
+		// The live pixel, in rasterization order: exact by construction, including against what this
+		// same pass has already written under it. The pass therefore takes no snapshot copy and the
+		// planner breaks it for nothing.
+		const bool msb = tilegpu_dest_bytes().a >= 128;
+#else
+		// The pass snapshot (pre-pass bytes). Exact only because the planner opens a new pass
+		// whenever a DATE draw's rect meets what the open pass already wrote.
 		const float da = texelFetch(u_snapshot, ivec2(gl_FragCoord.xy), 0).a;
 		const bool msb = da >= (128.0f / 255.0f);
+#endif
 		if (msb != (sr.date == 2u))
 			discard;
 	}
@@ -990,6 +1045,7 @@ void main()
 
 	o_color = cv;
 	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));
+
 }
 
 #endif

@@ -305,6 +305,13 @@ private:
 	// Feed one flushed primitive batch to the pass model: derive its page footprints,
 	// classify its in-pass reads, and observe it. Fired once per Draw().
 	void ObserveDraw();
+	/// Why this draw would need to read its own destination pixel, as GSTilePassSim::ReaderFlag bits.
+	/// One reader for the pass-structure census and for admission to the actual read, so the two
+	/// cannot come to describe different renderers.
+	u32 ReaderFlags(bool color_written);
+	/// What the in-pass read would be USED for on this draw (GSDevice::kGSTileGpuSelf*), given the
+	/// reasons above. Zero where the device has no such road, or where fixed-function is exact.
+	u32 SelfReadUses(u32 reader_flags) const;
 
 	// Mean/p50 of the accumulated per-frame pass structure and of the memory model's traffic,
 	// emitted at teardown.
@@ -366,14 +373,29 @@ private:
 		// The entry bias inside a copied palette: a four-bit draw reading mirror slot k of a
 		// 256-entry gathered load wants that palette's entries 16k..16k+15.
 		u32 pal_bias;
-		// Explicit tail padding, for exactly the reason the old one was: alignas(16) rounds the C++
-		// row to 160 while std430's array stride over the fields above would be 152, and two sides on
-		// different strides read every row but the first from the wrong place.
-		u32 pad0_, pad1_;
+		// The GS blend equation, for a draw the fixed-function state cannot express and that
+		// therefore reads its own destination: bits 0-1 A, 2-3 B, 4-5 C, 6-7 D (the ALPHA register's
+		// own encodings), 8-15 FIX, bit 16 = blend at all, 17 = COLCLAMP is WRAP rather than clamp,
+		// 18 = PABE, 19 = the destination is PSMCT24, whose C=Ad the console takes as exactly 1.0.
+		// Zero on every draw the executor blends for. It took one of the row's two explicit tail
+		// padding words -- see below on why the tail is where a new field goes.
+		u32 blend;
+		// FRAME.FBMSK reduced to the bits the frame FORMAT actually stores (FBMSK & fmsk), as a
+		// per-channel KEEP mask on the target's expanded RGBA8 bytes. A 16-bit frame's mask lands
+		// here unchanged because the console packs FBMSK by the same 5551 packing as the colour, so
+		// bit k of a stored channel is bit k of the expanded byte. Read only by a draw that reads
+		// its destination; the channel-granular half of the same mask stays in the pipeline.
+		//
+		// It took the row's other explicit tail padding word. The padding was there because
+		// alignas(16) rounds the C++ row to 160 while std430's array stride over the fields above
+		// would have been 152, and two sides on different strides read every row but the first from
+		// the wrong place. Two real fields hold the stride at 160 just as well as two dead ones, and
+		// the assert below is what says the row still ENDS there.
+		u32 fbmsk;
 	};
 	static_assert(sizeof(StateRow) == 160, "TileGpu StateRow must be 160 bytes to match tilegpu.glsl std430");
-	static_assert(offsetof(StateRow, pad0_) == 152,
-		"TileGpu StateRow's tail padding must sit at the end of the row, explicitly");
+	static_assert(offsetof(StateRow, blend) == 152,
+		"TileGpu StateRow must end at 160 bytes with no implicit tail padding -- std430's stride would differ");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -405,7 +427,19 @@ private:
 		u32 tbp0, tbw, tw, th, tfx, tcc, wms, wmt;
 		u32 index_format, pal_offset;
 		u32 epoch;
-		u32 date;             // 0 off, 1 = DATM 0, 2 = DATM 1; the pass takes a snapshot for it
+		u32 date;             // 0 off, 1 = DATM 0, 2 = DATM 1; served by the in-pass read where the
+		                      // device has it, and by a pass snapshot where it does not
+		// What this draw needs the in-pass destination read FOR (GSDevice::kGSTileGpuSelf*), zero for
+		// a draw the fixed-function state expresses exactly. The pass's self_mask is the OR over its
+		// draws, so this is what decides how much shader a declaring pass compiles -- and non-zero is
+		// what puts GSTileGpuPassPlan::kSelfRead in the draw's blend key.
+		u32 self_mask;
+		// The GS blend equation and the bit-granular write mask the fragment stage would need to do
+		// this draw itself, in the state row's own encoding (see StateRow::blend / StateRow::fbmsk).
+		// Filled for every draw, not just admitted ones: the encoding is two shifts and a mask, and a
+		// row that only sometimes means something is how a field comes to be read in the wrong state.
+		u32 self_blend;
+		u32 self_fbmsk;
 		bool fge;             // PRIM.FGE: this draw's fragments are fogged
 		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
@@ -547,6 +581,17 @@ private:
 	// window is never composed into the ring) -- asking late, or asking a device that then
 	// refuses, would leave the fragment stage decoding bytes nobody wrote.
 	bool m_bindless_targets = false;
+	/// The device serves a pass that reads its own colour attachment in rasterization order. Read once
+	/// at construction: it decides the target pool's image usage, so it cannot be discovered later.
+	bool m_self_read = false;
+	/// Test scaffolding (EmuCore/GS TileGpuForceSelfRead, gsrunner -tilermw): admit every draw the
+	/// classifier can name, not only the classes whose repairs have landed. Read once, like the other
+	/// levers here, because it moves pass boundaries.
+	bool m_force_self_read = false;
+	/// Whether the BLEND half of the read is admitted at all. Separate from m_self_read because the
+	/// classifier's blend arm costs a fragment-alpha scan per blended draw, which is real CPU work on
+	/// a road that is CPU-bound -- so it is not paid while nothing acts on the answer.
+	bool m_self_read_blend = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -1107,6 +1152,12 @@ private:
 		u32 seed_breaks = 0;     // draws that opened a pass because their target needed seeding
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
+		// The fragment read-modify-write road. Both are zero on a device without it, and zero on a
+		// frame no draw of which needs it -- which is the gate the road ships under: the SotC gate
+		// scene has FBMSK 0 on every draw, PABE 0, no 16-bit frame and no DATE, so it must admit
+		// nothing at all and pay nothing at all.
+		u32 self_read_draws = 0;  // draws admitted to the in-pass destination read
+		u32 self_read_passes = 0; // passes that therefore declared it
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one

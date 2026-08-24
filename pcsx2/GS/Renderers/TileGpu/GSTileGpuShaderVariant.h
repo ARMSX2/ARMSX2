@@ -41,7 +41,7 @@ namespace GSTileGpuShaderVariant
 	/// carries. Everything the mask does not name is not in the SPIR-V at all — on a tiler an
 	/// instruction that never executes still costs program size, and on the Adreno 650 crossing one
 	/// size threshold swings the whole frame.
-	inline std::string VariantDefines(u32 road_mask, u32 texel_mask)
+	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0)
 	{
 		return fmt::format("#define TILEGPU_ROAD_BYTE {}\n"
 						   "#define TILEGPU_ROAD_TARGET {}\n"
@@ -51,7 +51,10 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_FMT_IDX4 {}\n"
 						   "#define TILEGPU_FMT_IDXHI {}\n"
 						   "#define TILEGPU_FMT_D16 {}\n"
-						   "#define TILEGPU_FMT_PALGATHER {}\n",
+						   "#define TILEGPU_FMT_PALGATHER {}\n"
+						   "#define TILEGPU_SELF_DATE {}\n"
+						   "#define TILEGPU_SELF_BLEND {}\n"
+						   "#define TILEGPU_SELF_MASK {}\n",
 			(road_mask & GSDevice::kGSTileGpuRoadByte) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadTarget) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadSource) ? 1 : 0,
@@ -60,33 +63,53 @@ namespace GSTileGpuShaderVariant
 			(texel_mask & GSDevice::kGSTileGpuTexelIndex4) ? 1 : 0,
 			(texel_mask & GSDevice::kGSTileGpuTexelIndexHi) ? 1 : 0,
 			(texel_mask & GSDevice::kGSTileGpuTexelDirect16) ? 1 : 0,
-			(texel_mask & GSDevice::kGSTileGpuTexelPalGather) ? 1 : 0);
+			(texel_mask & GSDevice::kGSTileGpuTexelPalGather) ? 1 : 0,
+			(self_mask & GSDevice::kGSTileGpuSelfDate) ? 1 : 0,
+			(self_mask & GSDevice::kGSTileGpuSelfBlend) ? 1 : 0,
+			(self_mask & GSDevice::kGSTileGpuSelfMask) ? 1 : 0);
 	}
 
 	/// A name for one variant, for the compile log and the budget gate's table.
-	inline std::string VariantName(u32 road_mask, u32 texel_mask)
+	inline std::string VariantName(u32 road_mask, u32 texel_mask, u32 self_mask = 0)
 	{
 		static constexpr const char* kRoad[8] = {"untextured", "byte", "target", "byte+target", "source",
 			"byte+source", "target+source", "byte+target+source"};
 		std::string name = kRoad[road_mask & 7u];
-		if ((road_mask & GSDevice::kGSTileGpuRoadByte) == 0)
-			return name;
-		static constexpr const char* kArm[GSDevice::kGSTileGpuTexelArms] = {
-			"D32", "IDX8", "IDX4", "IDXHI", "D16", "PALGATHER"};
-		name += '[';
-		bool first = true;
-		for (u32 a = 0; a < GSDevice::kGSTileGpuTexelArms; a++)
+		if ((road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
 		{
-			if ((texel_mask & (1u << a)) == 0)
-				continue;
-			if (!first)
-				name += '+';
-			name += kArm[a];
-			first = false;
+			static constexpr const char* kArm[GSDevice::kGSTileGpuTexelArms] = {
+				"D32", "IDX8", "IDX4", "IDXHI", "D16", "PALGATHER"};
+			name += '[';
+			bool first = true;
+			for (u32 a = 0; a < GSDevice::kGSTileGpuTexelArms; a++)
+			{
+				if ((texel_mask & (1u << a)) == 0)
+					continue;
+				if (!first)
+					name += '+';
+				name += kArm[a];
+				first = false;
+			}
+			if (first)
+				name += '-';
+			name += ']';
 		}
-		if (first)
-			name += '-';
-		name += ']';
+		if (self_mask != 0)
+		{
+			static constexpr const char* kSelf[GSDevice::kGSTileGpuSelfUses] = {"date", "blend", "mask"};
+			name += " self{";
+			bool first = true;
+			for (u32 u = 0; u < GSDevice::kGSTileGpuSelfUses; u++)
+			{
+				if ((self_mask & (1u << u)) == 0)
+					continue;
+				if (!first)
+					name += '+';
+				name += kSelf[u];
+				first = false;
+			}
+			name += '}';
+		}
 		return name;
 	}
 } // namespace GSTileGpuShaderVariant

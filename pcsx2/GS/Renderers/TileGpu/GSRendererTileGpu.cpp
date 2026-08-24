@@ -144,6 +144,18 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// mid-frame would leave a draw's prep ops hoisted into a pass the draw is not in.
 	m_depth_uniform_passes = g_gs_device && g_gs_device->TileGpuPrefersDepthUniformPasses();
 
+	// Asked once because the answer changes how a colour target is CREATED -- the read is an input
+	// attachment and that usage cannot be added to an image later. Without it no draw is admitted to
+	// the read, no pass declares one, and the destination-alpha test keeps its snapshot copy.
+	m_self_read = g_gs_device && g_gs_device->TileGpuSelfRead();
+	m_target_pool.SetColorSelfReadable(m_self_read);
+
+	// Validation scaffolding, read once like every other lever here: admit everything the classifier
+	// can name rather than only the classes whose repairs have landed. It is what lets the declared
+	// read be exercised over the whole corpus before anything depends on it.
+	m_force_self_read = m_self_read && GSConfig.TileGpuForceSelfRead;
+	m_self_read_blend = m_force_self_read;
+
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
 	// draws and issues them at the plan, so a texture one of them names must survive to the end of
@@ -1118,6 +1130,104 @@ GSVector4i GSRendererTileGpu::ComputeDrawRect() const
 // the SW-floor semantics (ZTE gates both) rather than pulled from a full draw lowering — the
 // lowering's later z-write refinements are a stage-1.5 concern, when the decode-compare harness
 // makes the whole vertex/state input byte-identical to the shipping decode.
+// -- the in-pass reader classifier ------------------------------------------------------------
+// Which draws need the raster-order read of their own pixel, beyond pixel-identity feedback (the
+// pass sim classifies that itself): blend equations and tests fixed-function cannot express. Alpha
+// range comes from the vertex trace; when it is not valid the classifier assumes the full range, so
+// it leans conservative. The dual-source class is kept apart because Adreno has dual-source blending
+// and Mali-G615 does not — that flag is where the two tiers' reader populations diverge. DATE on
+// 24-bit targets is skipped: destination alpha reads back as a constant there, so no read is needed.
+//
+// ⚠️ ONE reader for two consumers, deliberately. The pass-structure census (ObserveDraw, which only
+// runs under -tilepasssim) has counted these since the crossover study, and admission to the actual
+// read now decides from the SAME facts. If the two ever answered differently, the census would be
+// describing a renderer nobody runs.
+//
+// `color_written` is the caller's own notion of "this draw lands colour": the census asks it as
+// "FBMSK does not mask everything", the plan asks it as the channel mask the AFAIL fold leaves. The
+// two differ only where a draw is being dropped anyway.
+u32 GSRendererTileGpu::ReaderFlags(bool color_written)
+{
+	const GSDrawingContext* ctx = m_context;
+	u32 reader_flags = 0;
+	if (!color_written)
+		return reader_flags;
+
+	if (ctx->TEST.DATE && GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp != 24)
+		reader_flags |= GSTilePassSim::ReaderDate;
+	if (PRIM->ABE)
+	{
+		const GIFRegALPHA& al = ctx->ALPHA;
+		const bool uses_cd = (al.A == 1) || (al.B == 1) || (al.D == 1) || (al.C == 1);
+		if (uses_cd && al.A != al.B)
+		{
+			// Cv = (A - B) * C >> 7 + D with the destination involved. A == B degenerates
+			// to Cv = D (source-only or destination passthrough), which fixed-function
+			// always expresses — hence the gate above.
+			if (m_draw_env->COLCLAMP.CLAMP == 0)
+				reader_flags |= GSTilePassSim::ReaderWrap;
+			if (m_draw_env->PABE.PABE)
+				reader_flags |= GSTilePassSim::ReaderPabe;
+			if (al.D == al.A)
+				reader_flags |= GSTilePassSim::ReaderCoeffGt1; // accumulation: a coefficient is 1 + C
+			if (al.C == 1)
+				reader_flags |= GSTilePassSim::ReaderAdFactor;
+			else if (al.C == 2)
+			{
+				if (al.FIX > 0x80)
+					reader_flags |= GSTilePassSim::ReaderFacGt1;
+				// FIX <= 0x80 maps onto the constant blend factor: expressible.
+			}
+			else if (al.C == 0)
+			{
+				// C=As: the blend factor is the draw's POST-texture-function source alpha,
+				// so the range must fold TFX/TEXA/CLUT — GetAlphaMinMax does exactly that
+				// (the base trace's Update only zeroes m_alpha.valid; the renderer computes
+				// the range lazily, which the plain-GSRenderer base does not do for us). A
+				// palettised draw needs the CLUT's decoded read buffer current first or the
+				// scan reads the previous draw's palette; there is no GPU-resident palette on
+				// this road yet, so the Tile feeder's conservative not-cpu-current branch does
+				// not apply here.
+				if (PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
+					m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+				const int amax = GetAlphaMinMax().max;
+				if (amax > 0x80)
+					reader_flags |= GSTilePassSim::ReaderFacGt1;
+				else
+					reader_flags |= GSTilePassSim::ReaderAsDualSource;
+			}
+		}
+	}
+	return reader_flags;
+}
+
+// What a draw would USE the in-pass destination read for, given why it needs one. Zero is the
+// answer for the overwhelming majority of draws and for every draw on a device without the road, and
+// zero is what keeps that draw's pipeline, its indirect run and its pass exactly what they were.
+//
+// This is the admission decision. The classifier above says what fixed-function cannot express; this
+// says which of those the fragment stage is actually built to serve, so a use that has not been
+// built yet stays on today's approximation rather than silently reading a destination nothing does
+// anything with.
+u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags) const
+{
+	if (!m_self_read)
+		return 0;
+
+	// Nothing is admitted by default yet. The machinery is in and proven; each class joins with its
+	// own accuracy repair and its own corpus evidence, so that a frame that moves can be attributed
+	// to one thing. Until then the scaffolding flag is the only way in, and it takes everything.
+	if (!m_force_self_read)
+		return 0;
+
+	u32 uses = 0;
+	// The destination-alpha test: the live pixel is exact where the pre-pass snapshot is only exact
+	// because the planner spends a pass break making it so.
+	if (reader_flags & GSTilePassSim::ReaderDate)
+		uses |= GSDevice::kGSTileGpuSelfDate;
+	return uses;
+}
+
 void GSRendererTileGpu::ObserveDraw()
 {
 	const GSVector4i r = ComputeDrawRect();
@@ -1206,63 +1316,7 @@ void GSRendererTileGpu::ObserveDraw()
 		}
 	}
 
-	// -- the in-pass reader classifier (the crossover's per-tier policy fork) ----------
-	// Which draws need the raster-order read of their own pixel, beyond pixel-identity
-	// feedback (classified in the sim): blend equations and tests fixed-function cannot
-	// express. Alpha range comes from the vertex trace; when it is not valid the classifier
-	// assumes the full range (a census leans conservative). The dual-source class is kept
-	// apart because Adreno has dual-source blending and Mali-G615 does not — that flag is
-	// where the two tiers' reader populations diverge. DATE on 24-bit targets is skipped:
-	// destination alpha reads back as a constant there, so no read is needed.
-	u32 reader_flags = 0;
-	if (!fb_written.empty())
-	{
-		if (ctx->TEST.DATE && GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp != 24)
-			reader_flags |= GSTilePassSim::ReaderDate;
-		if (PRIM->ABE)
-		{
-			const GIFRegALPHA& al = ctx->ALPHA;
-			const bool uses_cd = (al.A == 1) || (al.B == 1) || (al.D == 1) || (al.C == 1);
-			if (uses_cd && al.A != al.B)
-			{
-				// Cv = (A - B) * C >> 7 + D with the destination involved. A == B degenerates
-				// to Cv = D (source-only or destination passthrough), which fixed-function
-				// always expresses — hence the gate above.
-				if (m_draw_env->COLCLAMP.CLAMP == 0)
-					reader_flags |= GSTilePassSim::ReaderWrap;
-				if (m_draw_env->PABE.PABE)
-					reader_flags |= GSTilePassSim::ReaderPabe;
-				if (al.D == al.A)
-					reader_flags |= GSTilePassSim::ReaderCoeffGt1; // accumulation: a coefficient is 1 + C
-				if (al.C == 1)
-					reader_flags |= GSTilePassSim::ReaderAdFactor;
-				else if (al.C == 2)
-				{
-					if (al.FIX > 0x80)
-						reader_flags |= GSTilePassSim::ReaderFacGt1;
-					// FIX <= 0x80 maps onto the constant blend factor: expressible.
-				}
-				else if (al.C == 0)
-				{
-					// C=As: the blend factor is the draw's POST-texture-function source alpha,
-					// so the range must fold TFX/TEXA/CLUT — GetAlphaMinMax does exactly that
-					// (the base trace's Update only zeroes m_alpha.valid; the renderer computes
-					// the range lazily, which the plain-GSRenderer base does not do for us). A
-					// palettised draw needs the CLUT's decoded read buffer current first or the
-					// scan reads the previous draw's palette; there is no GPU-resident palette on
-					// this road yet, so the Tile feeder's conservative not-cpu-current branch does
-					// not apply here.
-					if (PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
-						m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
-					const int amax = GetAlphaMinMax().max;
-					if (amax > 0x80)
-						reader_flags |= GSTilePassSim::ReaderFacGt1;
-					else
-						reader_flags |= GSTilePassSim::ReaderAsDualSource;
-				}
-			}
-		}
-	}
+	const u32 reader_flags = ReaderFlags(!fb_written.empty());
 
 	// Does this draw land any alpha in memory? Only the alpha bits the target FORMAT keeps
 	// count — PSMCT24 stores none at all, PSMCT16 keeps one — and FBMSK masks them off from
@@ -1437,6 +1491,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto stp = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.stall_pages[static_cast<u32>(s)]; });
 	};
+	const auto srd = stat([](const MF& f) { return f.self_read_draws; });
+	const auto srp = stat([](const MF& f) { return f.self_read_passes; });
 	const auto txp = stat([](const MF& f) { return f.texel_passes; });
 	const auto txm = stat([](const MF& f) { return f.texel_mixed_passes; });
 	const auto txmd = stat([](const MF& f) { return f.texel_mixed_draws; });
@@ -1465,6 +1521,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
+	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared",
+		srd.mean, srd.p50, srp.mean, srp.p50);
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
 					"byte-road draws",
 		txp.mean, txp.p50, txm.mean, txm.p50, (txp.mean > 0.0) ? (txm.mean * 100.0 / txp.mean) : 0.0, txmd.mean,
@@ -3106,8 +3164,9 @@ void GSRendererTileGpu::AccumulateDraw()
 
 	// The destination-alpha test. On a 24-bit target there is no alpha to test and the GS passes
 	// nothing (Classic's finding, tested on hardware) -- the draw is a no-op. Otherwise the draw
-	// reads its own target's alpha before writing: served from a pass snapshot, so it must not
-	// read pixels this pass already wrote (see the break below).
+	// reads its own target's alpha before writing: from the live pixel where the device serves the
+	// in-pass read, and from a pass snapshot where it does not -- and the snapshot road is what the
+	// staleness break further down exists for.
 	u32 date = 0;
 	if (ctx->TEST.DATE)
 	{
@@ -3115,6 +3174,13 @@ void GSRendererTileGpu::AccumulateDraw()
 			return;
 		date = 1u + static_cast<u32>(ctx->TEST.DATM);
 	}
+
+	// Admission to the in-pass destination read. The classifier is asked only where it can change the
+	// answer: without the road there is nothing to admit to, and its blend arm costs a GetAlphaMinMax
+	// scan on every blended draw, which is real CPU work on a road that is CPU-bound. So the gate
+	// names the reasons that are live rather than asking unconditionally.
+	const u32 self_mask =
+		(m_self_read && (m_force_self_read || date != 0)) ? SelfReadUses(ReaderFlags(color_written)) : 0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -3666,7 +3732,11 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_run_surface = fb_id;
 		m_run_written = GSVector4i::zero();
 	}
-	if (date != 0 && !m_run_written.rempty() && !m_run_written.rintersect(r).rempty())
+	// ...and only on the snapshot road. A DATE draw served by the in-pass read sees the live pixel,
+	// including whatever this same pass has already written under it, so there is nothing for a break
+	// to make exact -- it would cost a pass and buy nothing.
+	const bool date_reads_live = (self_mask & GSDevice::kGSTileGpuSelfDate) != 0;
+	if (date != 0 && !date_reads_live && !m_run_written.rempty() && !m_run_written.rintersect(r).rempty())
 	{
 		pd.break_before = true;
 		m_run_written = GSVector4i::zero();
@@ -3677,6 +3747,15 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_run_written = GSVector4i::zero();
 	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
 	pd.date = date;
+	pd.self_mask = self_mask;
+	// The equation and the mask the fragment stage would need, whether or not this draw was admitted:
+	// two shifts and an AND, and a field that only sometimes carries a meaning is a field that gets
+	// read in the wrong state eventually.
+	pd.self_blend = gsTileGpuPackBlend(PRIM->ABE && color_written, ctx->ALPHA.A, ctx->ALPHA.B, ctx->ALPHA.C,
+		ctx->ALPHA.D, ctx->ALPHA.FIX, m_draw_env->COLCLAMP.CLAMP != 0, m_draw_env->PABE.PABE != 0,
+		GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
+	pd.self_fbmsk = gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk);
+	m_frame.self_read_draws += (self_mask != 0) ? 1u : 0u;
 
 	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
 	// numbering belongs to the pass and everything above may still have broken the pass. Two things
@@ -3823,6 +3902,13 @@ void GSRendererTileGpu::AccumulateDraw()
 	// depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or an FBMSK that keeps every stored bit) masks
 	// all four channels and still tests and writes depth in its pass.
 	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.color_mask);
+	// ...and so does the in-pass read, for the same reason: the executor's pipeline pick has to turn
+	// the fixed-function blend OFF for a draw whose equation the fragment stage evaluates instead,
+	// and the run cut has to fall where admission changes. One bit does both.
+	if (pd.self_mask != 0)
+		blend_key |= GSDevice::GSTileGpuPassPlan::kSelfRead;
+	if (pd.self_mask & GSDevice::kGSTileGpuSelfBlend)
+		blend_key |= GSDevice::GSTileGpuPassPlan::kSelfBlend;
 	m_plan_blend_keys.push_back(blend_key);
 	// The depth variant rides beside them: pipeline state, so it cuts the executor's indirect run
 	// and never the pass. Under depth-uniform passes every draw of a pass carries the same one and
@@ -3909,8 +3995,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.tex_source = pd.src_slot;
 			sr.pal_mode = pd.pal_mode;
 			sr.pal_bias = pd.pal_bias;
-			sr.pad0_ = 0;
-			sr.pad1_ = 0;
+			sr.blend = pd.self_blend;
+			sr.fbmsk = pd.self_fbmsk;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 		}
 
@@ -3965,7 +4051,14 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			pass.target_pair_count = 1;
 			pass.first_prep_op = first.first_prep_op;
 			pass.prep_op_count = (last.first_prep_op + last.prep_op_count) - first.first_prep_op;
-			pass.declares_self_read = false;
+			// The in-pass destination read, as a union over the draws THIS GROUPING already put in
+			// the pass. Computed here rather than at accumulation on purpose: declaring is a property
+			// of a pass, never a reason to open one, so the read can only ever remove pass breaks.
+			pass.self_mask = 0;
+			for (u32 d = i; d < j; d++)
+				pass.self_mask |= m_plan_pending[d].self_mask;
+			pass.declares_self_read = pass.self_mask != 0;
+			m_frame.self_read_passes += pass.declares_self_read ? 1u : 0u;
 
 			// The pass's rule-2 bind table, rebuilt by walking its draws in order and appending each
 			// source the first time it appears. That is exactly how accumulation numbered the slots
@@ -4046,9 +4139,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// A pass with a DATE draw snapshots its colour target before opening.
 			pass.first_snapshot = static_cast<u32>(m_plan_snapshots.size());
 			pass.snapshot_count = 0;
+			// ...and takes none when the read serves DATE: the live pixel is the destination, exactly.
 			for (u32 d = i; d < j; d++)
 			{
-				if (m_plan_pending[d].date != 0)
+				if (m_plan_pending[d].date != 0 && (pass.self_mask & GSDevice::kGSTileGpuSelfDate) == 0)
 				{
 					const GSVector2i tsz = m_plan_targets[tp.frame_target]->GetSize();
 					m_plan_snapshots.push_back(GSDevice::GSTileGpuSnapshotCopy{tp.frame_target, GSVector4i(0, 0, tsz.x, tsz.y)});

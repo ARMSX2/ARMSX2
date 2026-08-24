@@ -2267,6 +2267,18 @@ public:
 	static constexpr u32 kGSTileGpuTexelMaskAll = kGSTileGpuTexelGeometryMask | kGSTileGpuTexelPalGather;
 	static constexpr u32 kGSTileGpuTexelArms = 6;
 
+	/// What the in-pass destination read is FOR, as a bit per use. A pass's self_mask is the OR over
+	/// the draws it admitted to the read, and it selects the fragment variant beside road_mask and
+	/// texel_mask, for the same reason those exist: a pass that only needs the destination-alpha bit
+	/// must not carry the blend equation's arithmetic. Zero = the pass reads nothing and is compiled,
+	/// bound and submitted exactly as it was before this road existed.
+	static constexpr u32 kGSTileGpuSelfDate = 1u << 0;  ///< the destination-alpha test reads the live pixel, not a snapshot
+	static constexpr u32 kGSTileGpuSelfBlend = 1u << 1; ///< the GS blend equation is evaluated in the shader, in integer
+	static constexpr u32 kGSTileGpuSelfMask = 1u << 2;  ///< FBMSK is honoured at BIT granularity by merging the destination
+	static constexpr u32 kGSTileGpuSelfMaskAll =
+		kGSTileGpuSelfDate | kGSTileGpuSelfBlend | kGSTileGpuSelfMask;
+	static constexpr u32 kGSTileGpuSelfUses = 3;
+
 	/// The arm a state row's index_format decodes through. The numbering is the renderer's (0 =
 	/// direct 32-bit in the CT32 block space, 1-5 = GSTileSwizzleForms::IndexFormatFor + 1,
 	/// 6-9 = Direct16FormatFor + 6, 10 = direct 32-bit in the DEPTH block space) and the fragment
@@ -2327,6 +2339,11 @@ public:
 		/// definition — and the device treats an empty one as the full set, because a superset is
 		/// slow and a subset is wrong.
 		u32 texel_mask;
+		/// The OR of what this pass's draws need the in-pass destination read FOR (kGSTileGpuSelf*),
+		/// zero for a pass no draw of which reads. Third variant axis beside road_mask and
+		/// texel_mask, and a union over the draws already grouped -- so, like them, it splits
+		/// nothing. Non-zero is exactly `declares_self_read`.
+		u32 self_mask;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 	};
 
@@ -2393,6 +2410,21 @@ public:
 		{
 			return ((~write_mask) & 0xFu) << kNoWriteShift;
 		}
+		/// Bit 30: this draw reads its own destination pixel in rasterization order, and does in the
+		/// fragment stage whatever the fixed-function state could not express for it -- the blend
+		/// equation, the bit-granular write mask, the destination-alpha test, or several at once.
+		/// It rides HERE rather than in a stream of its own because the blend key is already the run
+		/// key, the pipeline key and the pass's per-draw pipeline state: putting the flag in it makes
+		/// the indirect run cut, the pipeline pick and the pass's declaration fall out of one bit.
+		/// A draw carrying it gets fixed-function blending disabled (bits 0-15 are then the equation
+		/// the SHADER evaluates, out of the state row, and the executor must not also apply it) and
+		/// keeps its channel write mask, which stays exact for every channel the mask covers whole.
+		static constexpr u32 kSelfRead = 1u << 30;
+		/// Bit 29: ...and of those, this draw's BLEND is one of the things the shader does itself, so
+		/// the fixed-function blend must be off for it. Separate from kSelfRead because reading is not
+		/// blending: a draw admitted only for its destination-alpha test still wants the executor's
+		/// blend, and turning it off there silently renders every composite sprite unblended.
+		static constexpr u32 kSelfBlend = 1u << 29;
 		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
 		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
 		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a
@@ -2537,6 +2569,13 @@ public:
 	/// device that then failed to bind the target would sample stale bytes. False keeps every
 	/// draw on the byte road.
 	virtual bool TileGpuBindlessTargets() { return false; }
+
+	/// Whether the executor can serve a pass that reads its own colour attachment in rasterization
+	/// order -- the fragment-side read-modify-write road. Asked ONCE, before any target is
+	/// allocated, because the read is an input attachment and that usage has to be on the image
+	/// from creation. False keeps every draw on the fixed-function blend, keeps the destination-alpha
+	/// test on its pre-pass snapshot copy, and declares no pass.
+	virtual bool TileGpuSelfRead() { return false; }
 
 	/// Whether this device would rather render MORE passes than see the depth write-enable or
 	/// depth compare-enable change inside one.

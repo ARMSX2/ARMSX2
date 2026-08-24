@@ -736,6 +736,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -tilepasssim: Score the GS-semantic minimum pass structure of the run (pass breaks, "
 						 "snapshots, syncs a fully-GPU-timeline backend would be forced to take) plus GIF stream "
 						 "volume; report at teardown. Tile and TileGpu; an attribution arm, never a timed one.\n");
+	std::fprintf(stderr, "  -tilermw: TileGpu only, TEST SCAFFOLDING. Admit every draw whose blend, write mask or "
+						 "destination-alpha test fixed-function cannot express to the declared in-pass destination "
+						 "read, instead of only the classes whose accuracy repairs have landed. It exists to exercise "
+						 "the read over the whole corpus; it is not a correctness or a performance mode.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1127,6 +1131,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetBoolValue("EmuCore/GS", "TilePassSim", true);
 				s_settings_interface.SetBoolValue("EmuCore/GS", "TileGpuPassSim", true);
 				Console.WriteLn("Scoring GS-semantic minimum pass structure (report at teardown)");
+				continue;
+			}
+			else if (CHECK_ARG("-tilermw"))
+			{
+				s_settings_interface.SetBoolValue("EmuCore/GS", "TileGpuForceSelfRead", true);
+				Console.WriteLn("Admitting every inexpressible draw to the TileGpu in-pass destination read");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-stats-json"))

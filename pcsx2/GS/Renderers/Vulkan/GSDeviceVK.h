@@ -59,6 +59,7 @@ public:
 		bool vk_khr_draw_indirect_count : 1; ///< Count-buffer indirect draws (TileGpu nicety, not part of the capability gate).
 		bool tilegpu_device_capable : 1; ///< The whole TileGpu device contract (descriptor indexing + indirect draw stream) is present.
 		bool tilegpu_bindless_targets : 1; ///< ...and dynamic indexing of a sampled-image array, which the rule-2 tap needs to bind targets.
+		bool tilegpu_self_read : 1; ///< ...and rasterization-order colour access, which the in-pass destination read needs.
 	};
 
 	// Global state accessors
@@ -138,7 +139,7 @@ public:
 		VkAttachmentStoreOp depth_store_op = VK_ATTACHMENT_STORE_OP_STORE,
 		VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		VkAttachmentStoreOp stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE, bool color_feedback_loop = false,
-		bool depth_sampling = false);
+		bool depth_sampling = false, bool tilegpu_self_read = false);
 
 	// Gets a non-clearing version of the specified render pass. Slow, don't call in hot path.
 	VkRenderPass GetRenderPassForRestarting(VkRenderPass pass);
@@ -190,6 +191,7 @@ public:
 	bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level) override;
 	bool TileGpuExecutorAvailable() override;
 	bool TileGpuBindlessTargets() override;
+	bool TileGpuSelfRead() override;
 	bool TileGpuPrefersDepthUniformPasses() override;
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
@@ -254,6 +256,13 @@ private:
 			u32 stencil_store_op : 1;
 			u32 color_feedback_loop : 1;
 			u32 depth_sampling : 1;
+			/// TileGpu's declared in-pass destination read: the colour attachment is referenced as an
+			/// input attachment too, sits in GENERAL for the pass's whole life, and the subpass carries
+			/// the rasterization-order colour-access flag with NO self-dependency. A key bit of its own
+			/// rather than a reuse of color_feedback_loop because that one's shape is decided by two
+			/// other toggles (UseFeedbackLoopLayout, framebuffer_fetch) and this one's is fixed: it is
+			/// the shape the ROAA correctness probe passed on both device tiers, and nothing else.
+			u32 tilegpu_self_read : 1;
 		};
 
 		u32 key;
@@ -424,6 +433,13 @@ public:
 		FeedbackLoopFlag_ReadAndWriteRT = 1,
 		FeedbackLoopFlag_ReadDepth = 2,
 		FeedbackLoopFlag_ReadAndWriteDepth = 4,
+		/// TileGpu's declared in-pass destination read. Like FeedbackLoopFlag_ReadAndWriteRT it puts the
+		/// colour target in the feedback-loop layout, and unlike it the framebuffer's render pass is
+		/// built to the declared shape -- one input-attachment reference, the rasterization-order
+		/// subpass flag, and NO self-dependency. That last difference is why it cannot simply reuse the
+		/// existing flag: subpass dependencies count towards render-pass compatibility, so a framebuffer
+		/// built with the self-dependency cannot begin a pass that has none.
+		FeedbackLoopFlag_TileGpuSelfRead = 8,
 	};
 
 	enum class ResourceType
@@ -601,6 +617,9 @@ private:
 	static constexpr u32 kTileGpuSourceSets = 8;
 	static constexpr u32 kTileGpuSourceSamplers = 8; ///< wrap U x wrap V x filter, the eight rule 3 admits
 	VkDescriptorSetLayout m_tilegpu_source_ds_layout = VK_NULL_HANDLE;
+	/// Set 3: the pass's own colour attachment as an input attachment. Bound only by a pass that
+	/// declares the in-pass destination read. Never a push set -- see its creation site.
+	VkDescriptorSetLayout m_tilegpu_dest_ds_layout = VK_NULL_HANDLE;
 	VkDescriptorPool m_tilegpu_source_pool = VK_NULL_HANDLE;
 	std::array<VkDescriptorSet, kTileGpuSourceSets> m_tilegpu_source_sets{};
 	std::array<u64, kTileGpuSourceSets> m_tilegpu_source_set_epoch{};
@@ -618,10 +637,14 @@ private:
 	// output and FIX as the blend constant (dynamic).
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
 	// key: topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7, < 81) | colour write mask<<16 (4) |
-	// road mask<<20 (3, byte/target/source) | texel-arm mask<<23 (6) -- so bits 4-7, 15 and 29 up
-	// are still free.
-	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines;
-	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask);
+	// road mask<<20 (3, byte/target/source) | texel-arm mask<<23 (6) | pass self-read mask<<32 (3) |
+	// this pass DECLARES the read<<35 | this DRAW reads<<36 -- so bits 4-7, 15, 29-31 and 37 up are
+	// still free. Sixty-four bits because the three self-read fields no longer fit in thirty-two.
+	std::unordered_map<u64, VkPipeline> m_tilegpu_blend_pipelines;
+	VkPipeline GetTileGpuPipeline(
+		u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask, u32 self_mask);
+	VkPipeline TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares);
+	bool m_tilegpu_declared_fallback_warned = false;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
 	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full module: the eager pipelines and the fallback
 	// One fragment module per (road mask, texel-arm mask) a pass has actually asked for, compiled on
@@ -639,14 +662,21 @@ private:
 	/// no arms, and a byte road that named none takes the whole set — a superset is slow, a subset is
 	/// wrong, and a plan that says "byte road, no arms" is a bug the shader must not render around.
 	static u32 TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask);
-	/// The two normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8.
-	static constexpr u32 TileGpuVariantKey(u32 road_mask, u32 texel_mask) { return road_mask | (texel_mask << 3); }
-	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask);
-	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask);
+	/// The three normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8,
+	/// what the pass reads its own destination for in bits 9-11.
+	static constexpr u32 TileGpuVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask)
+	{
+		return road_mask | (texel_mask << 3) | (self_mask << 9);
+	}
+	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask);
+	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask);
 	/// `color_write_mask` is the 4-bit rgba mask of channels the draw lands (bit 0 = R .. bit 3 = A),
 	/// realized verbatim as the attachment's VkPipelineColorBlendAttachmentState::colorWriteMask.
-	VkPipeline CreateTileGpuPipeline(
-		u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask, u32 texel_mask);
+	/// `declares` builds against the pass's declaring render pass (the colour attachment is an input
+	/// attachment too); `reads` additionally puts the rasterization-order flag on the colour-blend
+	/// state, which is what makes THIS pipeline's destination reads ordered.
+	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool declares, bool reads);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB

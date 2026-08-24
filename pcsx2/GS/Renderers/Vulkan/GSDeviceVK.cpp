@@ -893,6 +893,18 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		DevCon.WriteLn("VK: TileGpu sampled targets %s (sampled-image array dynamic indexing=%s).",
 			m_optional_extensions.tilegpu_bindless_targets ? "enabled" : "disabled",
 			m_device_features.shaderSampledImageArrayDynamicIndexing ? "yes" : "no");
+
+		// The in-pass destination read: a pass declares its colour attachment as an input attachment
+		// too and the fragment stage reads the pixel it is about to write, in rasterization order.
+		// Needs the ROAA colour feature and nothing else -- the descriptor is an ordinary input
+		// attachment. Without it the renderer admits no draw to the read, declares no pass, and keeps
+		// the snapshot road for DATE, so a device that lacks it renders exactly what it rendered
+		// before.
+		m_optional_extensions.tilegpu_self_read = m_optional_extensions.tilegpu_device_capable &&
+												  m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		DevCon.WriteLn("VK: TileGpu in-pass destination read %s (rasterization-order colour access=%s).",
+			m_optional_extensions.tilegpu_self_read ? "enabled" : "disabled",
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "no");
 	}
 
 	if (m_optional_extensions.vk_ext_provoking_vertex)
@@ -1064,6 +1076,10 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	// Depth ROAA is meaningless (and its subpass/pipeline flags invalid) without the color
 	// extension being usable; keep them consistent after the post-create reconcile.
 	m_optional_extensions.vk_ext_roaa_depth &= m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		// ...and so is TileGpu's in-pass destination read, which is that extension plus the executor
+		// contract. This reconcile runs after vkCreateDevice, so it can only ever narrow.
+		m_optional_extensions.tilegpu_self_read &=
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout &=
 		(attachment_feedback_loop_feature.attachmentFeedbackLoopLayout == VK_TRUE);
 
@@ -1325,17 +1341,26 @@ bool GSDeviceVK::CreateCommandBuffers()
 		// in ActivateCommandBuffer when the frame is recycled. Sized generously for a heavy frame; if a
 		// frame ever exceeds this, the caller flushes to reset the pool and restarts the render pass (see
 		// AllocateDescriptorSetFromFramePool callers) - tune here if that ever thrashes.
-		if (!m_use_push_descriptors)
+		// ...and on the PUSH path too when TileGpu can declare an in-pass destination read, for one
+		// set per declaring pass. An input-attachment descriptor is the one shape that would not stay
+		// validation-clean in a push set here (measured: the same run is clean through a pooled set
+		// and reports the descriptor invalid through a pushed one), and a per-frame pool is exactly
+		// the lifetime a per-pass set wants -- it resets when the frame is recycled. Sized for the
+		// declaring passes rather than for a heavy textured frame, which is the other path's number.
+		if (!m_use_push_descriptors || m_optional_extensions.tilegpu_self_read)
 		{
 			static constexpr u32 MAX_FRAME_TEXTURE_SETS = 8192;
+			static constexpr u32 MAX_TILEGPU_DECLARED_SETS = 1024;
+			const u32 sets = m_use_push_descriptors ? MAX_TILEGPU_DECLARED_SETS : MAX_FRAME_TEXTURE_SETS;
 			const VkDescriptorPoolSize frame_pool_sizes[] = {
-				{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAME_TEXTURE_SETS * 2},
-				{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_FRAME_TEXTURE_SETS * 3},
-				{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, MAX_FRAME_TEXTURE_SETS * 2},
-				{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAME_TEXTURE_SETS * 2},
+				{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					sets * (GSTileGpuPassPlan::kMaxTexSourcesPerPass + 2)},
+				{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 3},
+				{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, sets * 2},
+				{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * 2},
 			};
 			const VkDescriptorPoolCreateInfo frame_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				nullptr, 0, MAX_FRAME_TEXTURE_SETS, static_cast<u32>(std::size(frame_pool_sizes)), frame_pool_sizes};
+				nullptr, 0, sets, static_cast<u32>(std::size(frame_pool_sizes)), frame_pool_sizes};
 			res = vkCreateDescriptorPool(m_device, &frame_pool_info, nullptr, &resources.descriptor_pool);
 			if (res != VK_SUCCESS)
 			{
@@ -1517,7 +1542,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_format, VkAttachmentLoadOp color_load_op,
 	VkAttachmentStoreOp color_store_op, VkAttachmentLoadOp depth_load_op, VkAttachmentStoreOp depth_store_op,
 	VkAttachmentLoadOp stencil_load_op, VkAttachmentStoreOp stencil_store_op, bool color_feedback_loop,
-	bool depth_sampling)
+	bool depth_sampling, bool tilegpu_self_read)
 {
 	RenderPassCacheKey key = {};
 	key.color_format = color_format;
@@ -1530,6 +1555,7 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	key.stencil_store_op = stencil_store_op;
 	key.color_feedback_loop = color_feedback_loop;
 	key.depth_sampling = depth_sampling;
+	key.tilegpu_self_read = tilegpu_self_read;
 
 	// Mali driver bug (ported from PPSSPP): a packed depth/stencil attachment whose
 	// depth vs stencil load-ops MISMATCH corrupts on ARM Mali. PCSX2's GS uses one
@@ -2268,10 +2294,18 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	u32 num_attachments = 0;
 	if (key.color_format != VK_FORMAT_UNDEFINED)
 	{
+		// The TileGpu declared read pins the shape rather than deriving it: GENERAL for the
+		// attachment's whole life, referenced as colour AND input, the rasterization-order subpass
+		// flag, and no dependency of any kind. That is the exact contract the ROAA correctness probe
+		// carried through five formats and 63-draw chains on both device tiers; the alternatives it
+		// tried alongside are the ones that silently drop content on Turnip.
 		const VkImageLayout layout =
-			key.color_feedback_loop ? (UseFeedbackLoopLayout() ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT :
-																 VK_IMAGE_LAYOUT_GENERAL) :
-									  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			key.tilegpu_self_read ?
+				VK_IMAGE_LAYOUT_GENERAL :
+				(key.color_feedback_loop ?
+						(UseFeedbackLoopLayout() ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT :
+												   VK_IMAGE_LAYOUT_GENERAL) :
+						VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 		attachments[num_attachments] = {0, static_cast<VkFormat>(key.color_format), VK_SAMPLE_COUNT_1_BIT,
 			static_cast<VkAttachmentLoadOp>(key.color_load_op), static_cast<VkAttachmentStoreOp>(key.color_store_op),
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, layout, layout};
@@ -2279,7 +2313,13 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		color_reference.layout = layout;
 		color_reference_ptr = &color_reference;
 
-		if (key.color_feedback_loop)
+		if (key.tilegpu_self_read)
+		{
+			input_reference[num_subpass_inputs].attachment = num_attachments;
+			input_reference[num_subpass_inputs].layout = layout;
+			num_subpass_inputs++;
+		}
+		else if (key.color_feedback_loop)
 		{
 			if (!UseFeedbackLoopLayout())
 			{
@@ -2356,7 +2396,8 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	}
 
 	VkSubpassDescriptionFlags subpass_flags =
-		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access) ?
+		((key.color_feedback_loop || key.tilegpu_self_read) &&
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access) ?
 			VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT :
 			0;
 	// Mobile ordered depth feedback: on the framebuffer_fetch path the depth self-dependency above
@@ -5220,11 +5261,12 @@ void GSDeviceVK::OMSetRenderTargets(
 			m_current_framebuffer =
 				vkRt->GetLinkedFramebuffer(vkDs,
 					(feedback_loop & FeedbackLoopFlag_ReadAndWriteRT) != 0,
-					(feedback_loop & (FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth)) != 0);
+					(feedback_loop & (FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth)) != 0,
+					(feedback_loop & FeedbackLoopFlag_TileGpuSelfRead) != 0);
 		}
 		else if (vkDs)
 		{
-			pxAssert(!(feedback_loop & FeedbackLoopFlag_ReadAndWriteRT));
+			pxAssert(!(feedback_loop & (FeedbackLoopFlag_ReadAndWriteRT | FeedbackLoopFlag_TileGpuSelfRead)));
 			m_current_framebuffer = vkDs->GetLinkedFramebuffer(
 				nullptr, false, (feedback_loop & (FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth)) != 0);
 		}
@@ -5318,16 +5360,24 @@ void GSDeviceVK::OMSetRenderTargets(
 	{
 		if (vkRt)
 		{
-			if (feedback_loop & FeedbackLoopFlag_ReadAndWriteRT)
+			// The declared in-pass read wants exactly what the feedback loop wants of the colour target:
+			// the GENERAL layout, and the two Adreno quirks below (a self-read of a CLEAR or DONT_CARE
+			// load op reads garbage there).
+			if (feedback_loop & (FeedbackLoopFlag_ReadAndWriteRT | FeedbackLoopFlag_TileGpuSelfRead))
 			{
-				// NVIDIA drivers appear to return random garbage when sampling the RT via a feedback loop, if the load op for
-				// the render pass is CLEAR. Using vkCmdClearAttachments() doesn't work, so we have to clear the image instead.
-				// Adreno/turnip has the same garbage-on-CLEAR feedback read.
-				if (vkRt->GetState() == GSTexture::State::Cleared && (IsDeviceNVIDIA() || IsDeviceAdreno()))
+				// ⚠️ A pass cannot read what it did not LOAD. On the declared-read road that is not a
+				// vendor quirk but the contract: a DONT_CARE load op leaves the attachment undefined at
+				// pass start, so the first fragment's read of it is undefined too, and a CLEAR load op
+				// hands some drivers garbage instead of the clear value. Both were already answered here
+				// for Classic's feedback loop, gated on the two vendors that were observed doing it;
+				// TileGpu's declared read needs the answer on every device, so the gate widens for it.
+				// Measured on a software rasterizer: with the target left Invalidated, the destination-alpha
+				// test read undefined content and the SotC composite came out 56.3 mean levels from the
+				// software golden against the snapshot road's 6.3.
+				const bool declared = (feedback_loop & FeedbackLoopFlag_TileGpuSelfRead) != 0;
+				if (vkRt->GetState() == GSTexture::State::Cleared && (declared || IsDeviceNVIDIA() || IsDeviceAdreno()))
 					vkRt->CommitClear();
-				// Adreno/turnip: a feedback-read RT with a DONT_CARE load op (Invalidated state) reads undefined
-				// tile memory. Mark it Dirty so the load op becomes LOAD and the read sees real content.
-				else if (vkRt->GetState() == GSTexture::State::Invalidated && IsDeviceAdreno())
+				else if (vkRt->GetState() == GSTexture::State::Invalidated && (declared || IsDeviceAdreno()))
 					vkRt->SetState(GSTexture::State::Dirty);
 
 				if (vkRt->GetLayout() != GSTextureVK::Layout::FeedbackLoop)
@@ -6114,6 +6164,14 @@ bool GSDeviceVK::TileGpuBindlessTargets()
 	return m_optional_extensions.tilegpu_bindless_targets;
 }
 
+// The declared in-pass destination read. Asked once, before any target is allocated, because the
+// answer changes how a colour target is CREATED: the read is an input attachment, so the image
+// needs that usage bit from the start and no later discovery can add it.
+bool GSDeviceVK::TileGpuSelfRead()
+{
+	return m_optional_extensions.tilegpu_self_read;
+}
+
 // Adreno wants its passes depth-uniform, and it is the only architecture measured that does.
 //
 // Merging draws that differ only in the depth write-enable into one pass, with the executor
@@ -6188,10 +6246,25 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_source_ds_layout, "TileGpu source DS layout");
 
+		// Set 3, bound only by a pass that declares the in-pass destination read: the pass's own colour
+		// attachment, as an input attachment. A set of its own rather than a binding on the per-pass
+		// set 1, for two reasons that both bite. Set 1 is the layout's ONE push-descriptor set, and a
+		// push layout's set cannot be allocated from a pool -- while an input attachment is precisely
+		// the descriptor that would not stay validation-clean when pushed (measured on a software
+		// rasterizer: the identical run reports the descriptor invalid through a push and is clean
+		// through a pooled set). Bound at most once per pass, so a set of its own costs one command on
+		// the passes that declare and nothing at all on the ones that do not.
+		Vulkan::DescriptorSetLayoutBuilder dest_dslb;
+		dest_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_dest_ds_layout = dest_dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_dest_ds_layout, "TileGpu destination-read DS layout");
+
 		Vulkan::PipelineLayoutBuilder plb;
 		plb.AddDescriptorSet(m_tilegpu_ds_layout);
 		plb.AddDescriptorSet(m_tilegpu_snapshot_ds_layout);
 		plb.AddDescriptorSet(m_tilegpu_source_ds_layout);
+		plb.AddDescriptorSet(m_tilegpu_dest_ds_layout);
 		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * kTileGpuPushWords);
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
@@ -6331,7 +6404,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// rides on the size register written when a pipeline is BOUND. The vertex stage reads no texture
 	// and takes no road, so it has no variants at all.
 	const u32 full_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
-	VkShaderModule fs = CompileTileGpuFragmentModule(full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll));
+	VkShaderModule fs =
+		CompileTileGpuFragmentModule(full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0);
 	if (fs == VK_NULL_HANDLE)
 		return false;
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
@@ -6353,8 +6427,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
 		{
 			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
-			pipe = CreateTileGpuPipeline(
-				t, i, kTileGpuNoBlend, 0xFu, full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll));
+			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, 0xFu, full_roads,
+				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false);
 			if (pipe == VK_NULL_HANDLE)
 				return false;
 		}
@@ -6457,18 +6531,18 @@ u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceB
 // One fragment module for one road mask. The mask arrives as #defines, so the roads it does not name
 // are not in the SPIR-V at all -- which is the whole point on a tiler, where an instruction that is
 // never executed still costs program size and can carry the whole frame over a cliff.
-VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask)
+VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask)
 {
 	const std::string source =
-		GSTileGpuShaderVariant::VariantDefines(road_mask, texel_mask) + m_tilegpu_shader_source;
+		GSTileGpuShaderVariant::VariantDefines(road_mask, texel_mask, self_mask) + m_tilegpu_shader_source;
 	u32 spv_words = 0;
 	VkShaderModule mod = GetUtilityFragmentShader(source, nullptr, &spv_words);
 #ifdef PCSX2_DEVBUILD
 	// The attribution line the instruction-size gate reads: a device stats line says how big a
 	// program is, and this says which variant it was. Word count is the local proxy -- the real
 	// number is the driver's instrlen, which only the device can report.
-	Console.WriteLn("TileGpu fragment variant road=%u texel=%u (%s): %u SPIR-V words%s", road_mask, texel_mask,
-		GSTileGpuShaderVariant::VariantName(road_mask, texel_mask).c_str(), spv_words,
+	Console.WriteLn("TileGpu fragment variant road=%u texel=%u self=%u (%s): %u SPIR-V words%s", road_mask, texel_mask,
+		self_mask, GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask).c_str(), spv_words,
 		(mod == VK_NULL_HANDLE) ? " -- FAILED" : "");
 #endif
 	return mod;
@@ -6477,16 +6551,17 @@ VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(u32 road_mask, u32 texel
 // The fragment module for a pass's (road mask, texel-arm mask), compiled on first sight of the pair.
 // A pair that fails to compile falls back to the full module, which is a superset: bigger than the
 // pass needs, never wrong.
-VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask)
+VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask)
 {
 	const u32 full_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
-	if (road_mask == full_roads && texel_mask == TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll))
+	if (self_mask == 0 && road_mask == full_roads &&
+		texel_mask == TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll))
 		return m_tilegpu_fs;
-	const u32 key = TileGpuVariantKey(road_mask, texel_mask);
+	const u32 key = TileGpuVariantKey(road_mask, texel_mask, self_mask);
 	const auto it = m_tilegpu_fs_variants.find(key);
 	if (it != m_tilegpu_fs_variants.end())
 		return (it->second != VK_NULL_HANDLE) ? it->second : m_tilegpu_fs;
-	VkShaderModule mod = CompileTileGpuFragmentModule(road_mask, texel_mask);
+	VkShaderModule mod = CompileTileGpuFragmentModule(road_mask, texel_mask, self_mask);
 	m_tilegpu_fs_variants.emplace(key, mod);
 	return (mod != VK_NULL_HANDLE) ? mod : m_tilegpu_fs;
 }
@@ -6506,8 +6581,8 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(u32 road_mask, u32 texel_mas
 // attachment. The mask applies AFTER blending and after the depth/stencil stage, so it composes
 // with everything above it: a masked channel of a blended draw leaves the destination alone, and a
 // draw masking all four still tests and writes depth.
-VkPipeline GSDeviceVK::CreateTileGpuPipeline(
-	u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask, u32 road_mask, u32 texel_mask)
+VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
+	u32 road_mask, u32 texel_mask, u32 self_mask, bool declares, bool reads)
 {
 	static constexpr VkPrimitiveTopology kTopology[3] = {
 		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
@@ -6544,7 +6619,7 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 		return VK_NULL_HANDLE;
 	// This pass's roads and texel arms and no others. A variant that failed to compile comes back as
 	// the full module.
-	const VkShaderModule fs = GetTileGpuFragmentShader(road_mask, texel_mask);
+	const VkShaderModule fs = GetTileGpuFragmentShader(road_mask, texel_mask, self_mask);
 	if (fs == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
 	const DepthVariant& dv = kDepthVariant[depth_mode];
@@ -6568,12 +6643,23 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 	gpb.SetNoCullRasterizationState();
 	gpb.SetVertexShader(m_tilegpu_vs);
 	gpb.SetFragmentShader(fs);
+	// A pipeline is only usable inside a render pass COMPATIBLE with the one it was built against, and
+	// an input-attachment reference is part of that compatibility -- so every pipeline a declaring pass
+	// binds has to be built against the declaring render pass, whether or not that particular draw
+	// reads. `reads` is the separate question, and it is the one the ROAA blend flag answers.
 	gpb.SetRenderPass(
 		GetRenderPass(color_fmt, dv.has_depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
 			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
 			dv.has_depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			dv.has_depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
+			dv.has_depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, false, false, declares),
 		0);
+	// The declaration under test in the ROAA probe, and the reason a reading draw's destination read
+	// is ordered against every earlier fragment of the pass. Only the READERS carry it: the probe put
+	// an unflagged write-only pipeline in the same flagged subpass and the first flagged reader saw
+	// its output, on both device tiers, so the mixed shape is proven rather than assumed -- and a
+	// pipeline that does not read has no reason to pay whatever the flag costs.
+	gpb.SetBlendFlags(reads ? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT : 0);
 	gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
 	gpb.SetNoStencilState();
 	// A colour target is RGBA8 with R holding the guest cell's byte 0, so the GS's per-byte FBMSK
@@ -6605,7 +6691,8 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 		" (writes a)", " (writes ra)", " (writes ga)", " (writes rga)",
 		" (writes ba)", " (writes rba)", " (writes gba)", ""};
 	const char* mask = kMaskName[color_write_mask & 0xFu];
-	const std::string variant = GSTileGpuShaderVariant::VariantName(road_mask, texel_mask);
+	const std::string variant = GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask) +
+								(reads ? " reading" : (declares ? " in-declared-pass" : ""));
 	if (blend_index == kTileGpuNoBlend)
 		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s %s", kTopologyName[topology], dv.name, mask,
 			variant.c_str());
@@ -6626,33 +6713,62 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(
 // because for the write mask the degradation is a visible defect (the Beyond Good & Evil ratchet),
 // not the cosmetic wrong-blend the fallback was written for.
 VkPipeline GSDeviceVK::GetTileGpuPipeline(
-	u32 topology, u32 depth_mode, u32 blend_key, u32 plan_road_mask, u32 plan_texel_mask)
+	u32 topology, u32 depth_mode, u32 blend_key, u32 plan_road_mask, u32 plan_texel_mask, u32 self_mask)
 {
 	// The key's colour field is the PRESERVE sense (see GSTileGpuPassPlan::kNoWriteMask), so a plan
 	// that carries no blend keys at all still asks for all four channels.
 	const u32 color_write_mask = (~(blend_key >> GSTileGpuPassPlan::kNoWriteShift)) & 0xFu;
-	const bool blend = (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
+	// A draw whose BLEND the fragment stage evaluates out of its state row must have the
+	// fixed-function blend off -- applying both would blend twice. A draw that merely READS its
+	// destination (for the alpha test, say) keeps it: reading is not blending. Either way the channel
+	// write mask stays, because that half of FBMSK is exact and the shader only owns the bits inside a
+	// channel the mask covers in part.
+	const bool reads = (blend_key & GSTileGpuPassPlan::kSelfRead) != 0;
+	const bool shader_blend = (blend_key & GSTileGpuPassPlan::kSelfBlend) != 0;
+	const bool blend = !shader_blend && (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
+	const bool declares = self_mask != 0;
 	const u32 road_mask = TileGpuRoadMask(plan_road_mask);
 	const u32 texel_mask = TileGpuTexelMask(road_mask, plan_texel_mask);
 	const u32 all_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
 	// The eager table is the FULL program, which on Adreno sits past the instruction-size threshold --
-	// so a pass reaches it only by genuinely being the full set, never as a convenience.
+	// so a pass reaches it only by genuinely being the full set, never as a convenience. It is also
+	// built against the ordinary render pass, so a declaring pass may never reach it.
 	const bool full_variant =
 		road_mask == all_roads && texel_mask == TileGpuTexelMask(all_roads, GSDevice::kGSTileGpuTexelMaskAll);
-	if (full_variant && !blend && color_write_mask == 0xFu)
+	if (!declares && full_variant && !blend && color_write_mask == 0xFu)
 		return m_tilegpu_pipeline[topology][depth_mode];
 	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
 	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask, 20-22 the road mask,
-	// 23-28 the texel-arm mask.
-	const u32 key = topology | (depth_mode << 2) | ((blend ? (blend_key & 0x7Fu) : 0x80u) << 8) |
-					(color_write_mask << 16) | (road_mask << 20) | (texel_mask << 23);
+	// 23-28 the texel-arm mask, 32-34 the pass's self-read mask, 35 declares, 36 reads.
+	const u64 key = static_cast<u64>(topology) | (static_cast<u64>(depth_mode) << 2) |
+					(static_cast<u64>(blend ? (blend_key & 0x7Fu) : 0x80u) << 8) |
+					(static_cast<u64>(color_write_mask) << 16) | (static_cast<u64>(road_mask) << 20) |
+					(static_cast<u64>(texel_mask) << 23) | (static_cast<u64>(self_mask) << 32) |
+					(static_cast<u64>(declares ? 1u : 0u) << 35) | (static_cast<u64>(reads ? 1u : 0u) << 36);
 	const auto it = m_tilegpu_blend_pipelines.find(key);
 	if (it != m_tilegpu_blend_pipelines.end())
-		return it->second != VK_NULL_HANDLE ? it->second : m_tilegpu_pipeline[topology][depth_mode];
-	VkPipeline pipe =
-		CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write_mask, road_mask, texel_mask);
+		return (it->second != VK_NULL_HANDLE) ? it->second : TileGpuPipelineFallback(topology, depth_mode, declares);
+	VkPipeline pipe = CreateTileGpuPipeline(
+		topology, depth_mode, blend_index, color_write_mask, road_mask, texel_mask, self_mask, declares, reads);
 	m_tilegpu_blend_pipelines.emplace(key, pipe);
-	return pipe != VK_NULL_HANDLE ? pipe : m_tilegpu_pipeline[topology][depth_mode];
+	return (pipe != VK_NULL_HANDLE) ? pipe : TileGpuPipelineFallback(topology, depth_mode, declares);
+}
+
+// What a failed build falls back to. Outside a declaring pass that is the eager full-road pipeline --
+// wrong-fast, never a dropped draw. Inside one there is nothing to fall back TO: the eager table is
+// built against the ordinary render pass and binding it in a declaring pass is not a wrong blend, it
+// is an incompatible render pass. So the run is dropped and said out loud instead.
+VkPipeline GSDeviceVK::TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares)
+{
+	if (!declares)
+		return m_tilegpu_pipeline[topology][depth_mode];
+	if (!m_tilegpu_declared_fallback_warned)
+	{
+		m_tilegpu_declared_fallback_warned = true;
+		Console.Error("TileGpu: a pipeline for a pass that declares the in-pass destination read failed to build; "
+					  "its draws are dropped (there is no render-pass-compatible fallback).");
+	}
+	return VK_NULL_HANDLE;
 }
 
 // The target -> bytes reconciliation: a compute pass that reswizzles a resident colour target's
@@ -7902,7 +8018,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// pass, into a scratch texture recycled after the pass; the queue orders it behind every
 		// earlier pass on the target.
 		GSTexture* snapshot = nullptr;
-		if (rt && pass.snapshot_count > 0 && pass.first_snapshot < plan.snapshots.size())
+		if (rt && pass.snapshot_count > 0 && pass.first_snapshot < plan.snapshots.size() && !pass.declares_self_read)
 		{
 			const GSTileGpuSnapshotCopy& sc = plan.snapshots[pass.first_snapshot];
 			const GSVector2i ssz = rt->GetSize();
@@ -7948,7 +8064,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			rt ? rt->GetHeight() : 0, ds != nullptr, ds ? ds->GetWidth() : 0, ds ? ds->GetHeight() : 0);
 		const GSVector2i size(geom.area_width, geom.area_height);
 		const GSVector4i area = GSVector4i::loadh(size);
-		OMSetRenderTargets(rt, ds, area);
+		// A declaring pass wants its colour target in GENERAL with the feedback framebuffer, which is
+		// exactly what the feedback-loop flag arranges -- including the Adreno quirks around a CLEAR or
+		// DONT_CARE load op under a self-read, which are already answered there. The declared render
+		// pass built below is compatible with that framebuffer's: same attachment formats, same single
+		// input-attachment reference.
+		const bool declares = pass.declares_self_read && rt != nullptr;
+		bool declared_set_exhausted = false;
+		pxAssertMsg(pass.declares_self_read == (pass.self_mask != 0),
+			"TileGpu pass declares the self-read without saying what for, or the other way round");
+		OMSetRenderTargets(rt, ds, area, declares ? FeedbackLoopFlag_TileGpuSelfRead : FeedbackLoopFlag_None);
 
 		// Targets persist across frames: a texture the pool has just allocated clears on its
 		// first bind (State::Cleared), everything else loads and accumulates -- a seed pass above
@@ -7960,7 +8085,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const VkFormat color_fmt = rt ? LookupNativeFormat(rt->GetFormat()) : VK_FORMAT_UNDEFINED;
 		const VkFormat depth_fmt = ds ? LookupNativeFormat(ds->GetFormat()) : VK_FORMAT_UNDEFINED;
 		const VkRenderPass rp = GetRenderPass(color_fmt, depth_fmt, rt_op, VK_ATTACHMENT_STORE_OP_STORE, ds_op,
-			VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+			VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, false,
+			false, declares);
 		if (rp == VK_NULL_HANDLE)
 			return false;
 
@@ -8045,7 +8171,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					src_infos[s].imageView = src->GetView();
 					src_infos[s].imageLayout = src->GetVkLayout();
 				}
-				VkWriteDescriptorSet w[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+				VkWriteDescriptorSet w[2] = {
+					{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+				const u32 nw = 2;
 				w[0].dstBinding = 0;
 				w[0].descriptorCount = 1;
 				w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -8056,18 +8184,48 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				w[1].pImageInfo = src_infos.data();
 				if (m_use_push_descriptors)
 				{
-					vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 2, w);
+					vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, nw, w);
 				}
 				else
 				{
 					VkDescriptorSet sset = AllocateDescriptorSetFromFramePool(m_tilegpu_snapshot_ds_layout);
 					if (sset != VK_NULL_HANDLE)
 					{
-						w[0].dstSet = sset;
-						w[1].dstSet = sset;
-						vkUpdateDescriptorSets(m_device, 2, w, 0, nullptr);
+						for (u32 i = 0; i < nw; i++)
+							w[i].dstSet = sset;
+						vkUpdateDescriptorSets(m_device, nw, w, 0, nullptr);
 						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 1,
 							&sset, 0, nullptr);
+					}
+				}
+
+				// Set 3: this pass's colour attachment as an input attachment, in the layout the render
+				// pass keeps it in (GENERAL). Only a declaring pass binds it, and only a declaring pass's
+				// fragment module names it.
+				if (declares)
+				{
+					GSTextureVK* const vk_rt = static_cast<GSTextureVK*>(rt);
+					const VkDescriptorImageInfo dest_info = {
+						VK_NULL_HANDLE, vk_rt->GetView(), vk_rt->GetVkLayout()};
+					VkWriteDescriptorSet dw = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+					dw.dstBinding = 0;
+					dw.descriptorCount = 1;
+					dw.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+					dw.pImageInfo = &dest_info;
+					const VkDescriptorSet dset = AllocateDescriptorSetFromFramePool(m_tilegpu_dest_ds_layout);
+					if (dset != VK_NULL_HANDLE)
+					{
+						dw.dstSet = dset;
+						vkUpdateDescriptorSets(m_device, 1, &dw, 0, nullptr);
+						vkCmdBindDescriptorSets(
+							cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 3, 1, &dset, 0, nullptr);
+					}
+					else
+					{
+						// A pass whose fragment stage READS through this set cannot proceed without it: the
+						// binding would be whatever an earlier pass left, which is a wrong pixel rather than
+						// a slow one. Drop the pass's draws and say so.
+						declared_set_exhausted = true;
 					}
 				}
 			}
@@ -8094,6 +8252,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			// one wave under one descriptor. So the run keeps its pipeline and only the CALL is cut --
 			// see GSTileGpuPassPlan::bind_keys, and tilegpu.glsl's tilegpu_target_texel and
 			// tilegpu_source_sample, both undecorated on the strength of this.
+			if (declared_set_exhausted && !m_tilegpu_declared_fallback_warned)
+			{
+				m_tilegpu_declared_fallback_warned = true;
+				Console.Error("TileGpu: the frame descriptor pool ran out during a pass that declares the in-pass "
+							  "destination read; its draws are dropped.");
+			}
 			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
@@ -8108,10 +8272,20 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				// binding are the same fact. The three depth-carrying variants are per run.
 				pxAssertMsg((rkey.depth_mode == GSTileGpuDepthMode::None) == (ds == nullptr),
 					"TileGpu draw's depth mode disagrees with its pass's depth attachment");
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-					GetTileGpuPipeline(static_cast<u32>(rkey.topology), static_cast<u32>(rkey.depth_mode), bkey,
-						pass.road_mask, pass.texel_mask));
-				if (bkey & GSTileGpuPassPlan::kBlendEnable)
+				const VkPipeline run_pipe =
+					declared_set_exhausted ? VK_NULL_HANDLE :
+											 GetTileGpuPipeline(static_cast<u32>(rkey.topology),
+												 static_cast<u32>(rkey.depth_mode), bkey, pass.road_mask,
+												 pass.texel_mask, pass.self_mask);
+				if (run_pipe == VK_NULL_HANDLE)
+				{
+					// Only reachable inside a declaring pass whose pipeline failed to build, where the
+					// eager fallback would be an incompatible render pass rather than a wrong blend.
+					d = run_end;
+					continue;
+				}
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, run_pipe);
+				if ((bkey & GSTileGpuPassPlan::kBlendEnable) && !(bkey & GSTileGpuPassPlan::kSelfBlend))
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.
 					const float fix = std::min(static_cast<float>((bkey >> 8) & 0xFFu) * (1.0f / 128.0f), 1.0f);
@@ -9120,6 +9294,11 @@ void GSDeviceVK::DestroyResources()
 	{
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_ds_layout, nullptr);
 		m_tilegpu_ds_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_dest_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_dest_ds_layout, nullptr);
+		m_tilegpu_dest_ds_layout = VK_NULL_HANDLE;
 	}
 	if (m_tilegpu_snapshot_ds_layout != VK_NULL_HANDLE)
 	{

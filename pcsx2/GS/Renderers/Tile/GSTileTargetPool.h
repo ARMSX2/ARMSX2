@@ -41,6 +41,13 @@ public:
 	GSTileTargetPool();
 	~GSTileTargetPool();
 
+	/// Ask every future COLOUR surface for the extra usage a pass needs to read it while it is the
+	/// attachment (an input attachment on Vulkan). Set once, before the first Allocate, by a renderer
+	/// whose device serves the in-pass destination read -- a usage bit cannot be added to an image
+	/// after it exists, so this cannot be discovered later. Leaves depth alone: this road is colour
+	/// only.
+	void SetColorSelfReadable(bool enable) { m_color_self_readable = enable; }
+
 	struct Geometry
 	{
 		int ppr; ///< pages per page-row (== bw for every M2-native format)
@@ -164,8 +171,13 @@ private:
 	/// the whole rectangle.
 	const u8* StageUncachedMap(const GSDownloadTexture* dl, const u8* bits, u32 pitch, int rows);
 
+	/// One place both creation sites (Allocate, and EnsureHeight's grow) ask, so a grown surface
+	/// cannot come back without the usage the original had.
+	GSTexture* CreateColorSurface(int width_px, int height_px) const;
+
 	std::vector<Slot> m_slots; // handle - 1 indexed
 	std::vector<u32> m_free_handles;
+	bool m_color_self_readable = false;
 	std::vector<GSVector4i> m_runs; // scratch for CollectRuns
 	std::unique_ptr<GSDownloadTexture> m_color_download;
 	std::unique_ptr<GSDownloadTexture> m_uint32_download;

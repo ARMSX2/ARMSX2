@@ -983,6 +983,13 @@ struct Pcsx2Config
 					// roughly 0.4 ms/frame to feed, so it is off unless a validation
 					// run asks for it. Dev only, default off.
 					TileGpuPassSim : 1,
+					// Validation scaffolding for the TileGpu fragment read-modify-write
+					// road: admit EVERY draw the classifier says fixed-function cannot
+					// express, rather than only the classes whose consumers have landed.
+					// It exists so the declared in-pass read can be exercised over the
+					// whole corpus before any accuracy repair rides on it. gsrunner
+					// -tilermw arms it; nothing else should. Dev only, default off.
+					TileGpuForceSelfRead : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

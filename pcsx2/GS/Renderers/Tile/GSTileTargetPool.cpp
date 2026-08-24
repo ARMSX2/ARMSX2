@@ -87,6 +87,16 @@ const GSTileTargetPool::Slot& GSTileTargetPool::GetSlot(u32 handle) const
 	return m_slots[handle - 1];
 }
 
+// A colour surface, with the extra usage a declared in-pass read needs when the renderer asked for
+// it. A feedback target is the same RGBA8 image with one more usage bit; the pool keys surfaces by
+// usage, so the two kinds never mix inside one session.
+GSTexture* GSTileTargetPool::CreateColorSurface(int width_px, int height_px) const
+{
+	return m_color_self_readable ?
+		g_gs_device->CreateFeedbackTarget(width_px, height_px, GSTexture::Format::Color, true) :
+		g_gs_device->CreateRenderTarget(width_px, height_px, GSTexture::Format::Color, true);
+}
+
 u32 GSTileTargetPool::Allocate(const GSTileSurfaceLayout& layout, int height_px)
 {
 	const Geometry g = GeometryFor(layout);
@@ -97,7 +107,7 @@ u32 GSTileTargetPool::Allocate(const GSTileSurfaceLayout& layout, int height_px)
 
 	GSTexture* tex = (layout.kind == GSTileSurfaceKind::Depth) ?
 		g_gs_device->CreateDepthStencil(width_px, height_px, true) :
-		g_gs_device->CreateRenderTarget(width_px, height_px, GSTexture::Format::Color, true);
+		CreateColorSurface(width_px, height_px);
 	if (!tex)
 		return 0;
 
@@ -160,7 +170,7 @@ bool GSTileTargetPool::EnsureHeight(u32 handle, int height_px)
 
 	GSTexture* grown = (s.kind == GSTileSurfaceKind::Depth) ?
 		g_gs_device->CreateDepthStencil(old_size.x, height_px, true) :
-		g_gs_device->CreateRenderTarget(old_size.x, height_px, GSTexture::Format::Color, true);
+		CreateColorSurface(old_size.x, height_px);
 	if (!grown)
 		return false;
 

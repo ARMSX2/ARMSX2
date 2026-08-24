@@ -232,6 +232,57 @@ constexpr GSTileAlphaTestFold gsTileFoldAlphaTest(bool ate, u32 atst, u32 aref, 
 	}
 }
 
+/// The GS blend equation packed for a fragment stage that evaluates it itself, out of a draw's
+/// state row. The console computes, per colour channel and in integer,
+///
+///     Cv = ((A - B) * C) >> 7 + D
+///
+/// with A, B, D selecting Cs / Cd / zero, and C a plain byte in which 0x80 is 1.0 (so 0xFF reaches
+/// 1.99, which is exactly what a fixed-function factor cannot express). Read off the software
+/// renderer's scanline, which is the oracle for this: its `modulate16<1>` is a left-shift-by-2 and
+/// a signed high multiply against `alpha << 7`, i.e. an arithmetic `(x * C) >> 7`.
+///
+/// `fmt` is `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit. The 24-bit
+/// case is not cosmetic: a 24-bit destination has no alpha byte, and the console takes C=Ad there as
+/// exactly 1.0 rather than reading the byte (the software renderer skips the multiply outright).
+constexpr u32 kGSTileBlendAShift = 0;
+constexpr u32 kGSTileBlendBShift = 2;
+constexpr u32 kGSTileBlendCShift = 4;
+constexpr u32 kGSTileBlendDShift = 6;
+constexpr u32 kGSTileBlendFixShift = 8;
+constexpr u32 kGSTileBlendEnable = 1u << 16;   ///< blend at all; clear means Cv = Cs
+constexpr u32 kGSTileBlendWrap = 1u << 17;     ///< COLCLAMP = 0: the result wraps mod 256 instead of clamping
+constexpr u32 kGSTileBlendPabe = 1u << 18;     ///< PABE: the blend applies only where the source alpha's bit 7 is set
+constexpr u32 kGSTileBlendDest24 = 1u << 19;   ///< the destination stores no alpha, so C=Ad is exactly 1.0
+constexpr u32 gsTileGpuPackBlend(bool abe, u32 a, u32 b, u32 c, u32 d, u32 fix, bool colclamp, bool pabe, u32 fmt)
+{
+	u32 v = ((a & 3u) << kGSTileBlendAShift) | ((b & 3u) << kGSTileBlendBShift) |
+			((c & 3u) << kGSTileBlendCShift) | ((d & 3u) << kGSTileBlendDShift) |
+			((fix & 0xFFu) << kGSTileBlendFixShift);
+	if (abe)
+		v |= kGSTileBlendEnable;
+	if (!colclamp)
+		v |= kGSTileBlendWrap;
+	if (pabe)
+		v |= kGSTileBlendPabe;
+	if (fmt == 1)
+		v |= kGSTileBlendDest24;
+	return v;
+}
+
+/// FBMSK as a KEEP mask on the target's expanded RGBA8 bytes: the bits of the destination the draw
+/// must leave alone, per channel, at BIT granularity.
+///
+/// It is just `FBMSK & fmsk` for every frame format, and that is worth stating because the 16-bit
+/// case looks like it should need work and does not. The console packs FBMSK by the very same 5551
+/// packing it packs the colour with, so bit k of a stored 5-bit channel is bit k of the byte the
+/// expanded target holds; `fmsk` (0x80F8F8F8 for PSMCT16) already names exactly those bits, and the
+/// bits it drops are the ones the format does not store and nothing may keep.
+constexpr u32 gsTileGpuFrameKeepMask(u32 fbmsk, u32 fmsk)
+{
+	return fbmsk & fmsk;
+}
+
 /// Whether the draw's depth write survives its own alpha test. ZTE and ZMSK have the final
 /// word; on top of them, a draw every fragment of which fails writes depth only in the one
 /// AFAIL mode that says a failing fragment still does.
