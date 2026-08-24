@@ -60,6 +60,17 @@ public:
 		// copies that reach the device, and a copy is not the same thing as a wait.
 		GpuBlockingWaits,
 
+		// The TileGpu per-frame depth-pass predictor (EmuCore/GS/TileGpuAdaptiveDepthPasses). All
+		// three are zero unless it is engaged, which is what makes a run's arm readable from
+		// stats.json without parsing an emulog: MergedFrames is how many frames were planned with the
+		// depth mode OUT of the pass key, PolicySwitches how many times it changed hands (the churn
+		// column -- a policy that oscillates is re-cutting every pass in the frame for nothing), and
+		// PassesSaved the metric's numerator, summed per frame. Its denominator is `Draw`, already
+		// counted, so the metric the decision is made on is recoverable from the pair.
+		TileGpuDepthMergedFrames,
+		TileGpuDepthPolicySwitches,
+		TileGpuDepthPassesSaved,
+
 		CounterLast,
 
 		// Reused counters for HW.

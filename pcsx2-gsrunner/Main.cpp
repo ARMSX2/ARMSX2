@@ -264,6 +264,16 @@ static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
 static double s_last_tile_payload_bytes = 0;
 static u64 s_total_tile_payload_bytes = 0;
+// The TileGpu per-frame depth-pass predictor's three counters. Zero on every run that is not
+// running it, which is what lets a device gate read a run's arm out of stats.json rather than out of
+// an emulog: merged frames, policy switches, and the metric's numerator (its denominator is `draws`,
+// already here).
+static double s_last_depth_merged_frames = 0;
+static u64 s_total_depth_merged_frames = 0;
+static double s_last_depth_policy_switches = 0;
+static u64 s_total_depth_policy_switches = 0;
+static double s_last_depth_passes_saved = 0;
+static u64 s_total_depth_passes_saved = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -513,6 +523,9 @@ void Host::BeginPresentFrame()
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
 		sample.tile_payload_bytes = update_stat(GSPerfMon::TilePayloadBytes, s_total_tile_payload_bytes, s_last_tile_payload_bytes);
+		update_stat(GSPerfMon::TileGpuDepthMergedFrames, s_total_depth_merged_frames, s_last_depth_merged_frames);
+		update_stat(GSPerfMon::TileGpuDepthPolicySwitches, s_total_depth_policy_switches, s_last_depth_policy_switches);
+		update_stat(GSPerfMon::TileGpuDepthPassesSaved, s_total_depth_passes_saved, s_last_depth_passes_saved);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -1571,6 +1584,9 @@ static void WriteStatsJson(const std::string& path)
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
 	std::fprintf(fp.get(), "    \"tile_payload_bytes\": %" PRIu64 ",\n", s_total_tile_payload_bytes);
+	std::fprintf(fp.get(), "    \"tilegpu_depth_merged_frames\": %" PRIu64 ",\n", s_total_depth_merged_frames);
+	std::fprintf(fp.get(), "    \"tilegpu_depth_policy_switches\": %" PRIu64 ",\n", s_total_depth_policy_switches);
+	std::fprintf(fp.get(), "    \"tilegpu_depth_passes_saved\": %" PRIu64 ",\n", s_total_depth_passes_saved);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	// The same population, split by cause, so an attribution round needs no teardown-ordering print
 	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader

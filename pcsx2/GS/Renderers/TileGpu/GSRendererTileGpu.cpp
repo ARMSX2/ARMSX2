@@ -170,6 +170,27 @@ GSRendererTileGpu::GSRendererTileGpu()
 			Console.WriteLn("TileGpu: depth-pass policy is the device's answer: %s.",
 				device_wants ? "uniform" : "merged");
 		}
+		// ...and above the device's answer but BELOW the force keys, the per-frame predictor.
+		//
+		// Two bits, not one, because observing and deciding are different rights. The census counts
+		// both groupings of every frame and reports what the predictor WOULD have done; it moves no
+		// boundary and no pixel, so it is allowed anywhere the key is on -- including on a forced arm
+		// and on a device that already merges, which is the only way its thresholds can be checked
+		// against a corpus off the one device they were calibrated on.
+		//
+		// DECIDING is scoped to where the device asked for uniform, because that is the only place a
+		// corpus found the answer to be scene-dependent, and to runs with no force key set at all, a
+		// contradiction included -- so a forced arm is one polarity for the whole run and nothing has
+		// to be derived from a precedence rule to know which.
+		m_depth_predictor_census = GSConfig.TileGpuAdaptiveDepthPasses;
+		m_depth_predictor = m_depth_predictor_census && device_wants && !force_uniform && !force_merged;
+		if (m_depth_predictor_census)
+		{
+			Console.WriteLn("TileGpu: per-frame depth-pass predictor %s (device asked for %s%s).",
+				m_depth_predictor ? "DECIDING, starting uniform" : "OBSERVING only (dry run)",
+				device_wants ? "uniform" : "merged",
+				(force_uniform || force_merged) ? ", and a force key outranks it" : "");
+		}
 	}
 	// ...and the pass-LENGTH policy, asked once for the same reason and independent of the polarity
 	// above: the most draws one pass may hold. A pass that reaches it closes and another with the same
@@ -327,6 +348,31 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// claim with it -- BuildAndExecutePlan drops them).
 	MaterialiseDisplayBuffers();
 	BuildAndExecutePlan();
+
+	// The depth polarity for the NEXT frame, from the one that just finished. Here and nowhere else:
+	// the plan is built and executed, BuildAndExecutePlan's tail has broken the open pass, and the
+	// next frame's first draw has not been accumulated -- so both grouping sites will see one value
+	// for every draw of a frame, which is the whole constraint on this member.
+	// A frame that planned no draws is skipped entirely rather than fed as a null observation: the
+	// picker treats it as neutral anyway, and counting it would put frames that rendered nothing into
+	// a merged-frame share meant to say what the frames with pixels in them ran under.
+	if (m_depth_predictor_census && m_frame.planned_draws != 0)
+	{
+		// Counted against the frame that just RAN, not the one about to: a run's merged-frame share
+		// has to name frames whose pixels were produced that way. Under a dry run the picker's state
+		// is what it WOULD have run, which is the number a threshold check wants.
+		g_perfmon.Put(GSPerfMon::TileGpuDepthMergedFrames, m_depth_picker.merged ? 1 : 0);
+		g_perfmon.Put(GSPerfMon::TileGpuDepthPassesSaved,
+			static_cast<double>((m_frame.passes_uniform_key > m_frame.passes_merged_key) ?
+									(m_frame.passes_uniform_key - m_frame.passes_merged_key) :
+									0u));
+		const u32 switches_before = m_depth_picker.switches;
+		const bool merged = m_depth_picker.Observe(
+			m_frame.passes_uniform_key, m_frame.passes_merged_key, m_frame.planned_draws);
+		g_perfmon.Put(GSPerfMon::TileGpuDepthPolicySwitches, m_depth_picker.switches - switches_before);
+		if (m_depth_predictor)
+			m_depth_uniform_passes = !merged;
+	}
 
 	// The source probe's frame boundary. This frame's window record becomes what the next frame
 	// compares its content stamps against, and the expanded cache's admission clock ticks -- a
@@ -1785,6 +1831,22 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  max draws per pass %u (0 = uncapped)  biggest pass built %.2f / %-5u draws  "
 					"passes the cap ended %.2f / %u",
 		m_max_pass_draws, bigpass.mean, bigpass.p50, capped.mean, capped.p50);
+	// The predictor's own line, and only when it ran -- a census of a policy that was not deciding
+	// anything reads as a policy that decided nothing, which is a different run. Both counterfactual
+	// pass counts are printed beside the metric, because the metric is a ratio and a ratio hides
+	// whether it came from a 6000-pass collapse or a 3-pass one.
+	if (m_depth_predictor_census)
+	{
+		const auto pu = stat([](const MF& f) { return f.passes_uniform_key; });
+		const auto pm = stat([](const MF& f) { return f.passes_merged_key; });
+		Console.WriteLn("  per-frame depth-pass predictor (%s): %u/%u frames merged, %u switches, "
+						"metric %.4f saved passes/draw (threshold 1/%u on, 1/%u off) -- "
+						"grouping would cut %.2f uniform / %.2f merged passes a frame",
+			m_depth_predictor ? "deciding" : "dry run", m_depth_picker.frames_merged, m_depth_picker.frames,
+			m_depth_picker.switches,
+			m_depth_picker.MeanMetric(), kGSTileGpuDepthMergeOnReciprocal, kGSTileGpuDepthMergeOffReciprocal,
+			pu.mean, pm.mean);
+	}
 	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
 					"%8.2f / %-5u pages, %.2f / %u pass breaks (of the seeds, depth %.2f / %u ops, %.2f / %u pages)",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
@@ -4896,6 +4958,41 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			i = j;
 		}
 		m_frame.passes += static_cast<u32>(m_plan_passes.size());
+
+		// The depth predictor's observation of this plan: how many passes THIS draw list cuts into
+		// under each depth polarity, with everything else -- the cap, the reader segregation, every
+		// draw's own break_before -- held exactly as it stands. One of the two is the cut that just
+		// ran, and it is recounted rather than read off m_plan_passes.size() so both numbers come out
+		// of the same loop over the same list and cannot differ by a bookkeeping accident.
+		//
+		// ⚠️ The counterfactual side is an ESTIMATE in one respect and it cannot be otherwise: a
+		// draw's break_before was decided during accumulation, against the pass that was open under
+		// the polarity actually in force. The other polarity would have had a different pass open and
+		// so, for a handful of draws a frame, a different break_before. Measured on the M2 corpus the
+		// residual is small enough to leave the metric's verdict unchanged on all 19 dumps; it is
+		// named here because a reader deriving the metric from first principles would expect exactness.
+		if (m_depth_predictor_census)
+		{
+			const u32 count = static_cast<u32>(m_plan_draws.size());
+			const auto breaks_at = [this](u32 d) { return m_plan_pending[d].break_before; };
+			const auto key_under = [this](u32 d, bool depth_uniform) {
+				const PendingDraw& pd = m_plan_pending[d];
+				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, depth_uniform,
+					pd.self_mask != 0, m_segregate_self_read);
+			};
+			const u32 under_uniform = gsTileGpuCountPasses(count, m_max_pass_draws,
+				[&](u32 d) { return key_under(d, true); }, breaks_at);
+			const u32 under_merged = gsTileGpuCountPasses(count, m_max_pass_draws,
+				[&](u32 d) { return key_under(d, false); }, breaks_at);
+			m_frame.passes_uniform_key += under_uniform;
+			m_frame.passes_merged_key += under_merged;
+			m_frame.planned_draws += count;
+			// The recount of the polarity that DID run must reproduce the plan, or the metric is
+			// being read off a cut the executor never made.
+			pxAssertMsg(static_cast<u32>(m_plan_passes.size()) ==
+							(m_depth_uniform_passes ? under_uniform : under_merged),
+				"TileGpu depth predictor recounted the active grouping differently from the plan");
+		}
 
 		// 3b. Backstop for the framebuffer-fits-its-attachments clamp. The executor renders each
 		//     pass into min(colour, depth) of the pair (a framebuffer may not be bigger than the

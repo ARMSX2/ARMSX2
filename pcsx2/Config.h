@@ -1037,6 +1037,29 @@ struct Pcsx2Config
 					// other boundary policy -- a mid-run flip needs a restart.
 					TileGpuForceDepthUniformPasses : 1,
 					TileGpuForceDepthMergedPasses : 1,
+					// Let the PLANNER pick that polarity per frame instead of
+					// taking one answer for the whole run.
+					//
+					// It exists because the corpus answered the flat question and
+					// the answer was "it depends on the scene": on an SD865, all
+					// 19 dumps, merging wins 7 (Xenosaga -29.5%), ties 5 and loses
+					// 7 (Baldur's Gate 2 +7.2%). What separates the two sets is
+					// how many passes merging removes PER DRAW -- the winners run
+					// 0.084 to 0.841 passes saved per draw, the losers 0.002 to
+					// 0.033 -- so the planner counts both groupings of the frame
+					// it just built and takes the polarity that number asks for,
+					// stickily. See gsTileGpuWantsMergedDepthPasses.
+					//
+					// DECIDES only where the device asked for uniform passes (the
+					// Adreno path) and neither force key above is set -- the force
+					// keys stay ABSOLUTE above it. Anywhere else the key still
+					// turns on the predictor's CENSUS, which counts both groupings
+					// and reports what it would have chosen without moving a
+					// boundary, so the thresholds can be checked on a machine that
+					// is not the one they were calibrated on. Off -- the default --
+					// is today's shipped behaviour byte for byte. Dev only; a
+					// pass-boundary policy is not a user setting.
+					TileGpuAdaptiveDepthPasses : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

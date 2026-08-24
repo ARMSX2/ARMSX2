@@ -1324,6 +1324,23 @@ private:
 	// put a draw's prep ops in a pass the draw is not in. Both grouping sites read THIS member --
 	// accumulation's open-pass test and the plan build's cut -- so they cannot disagree.
 	bool m_depth_uniform_passes = false;
+	// The per-frame depth-pass predictor (EmuCore/GS/TileGpuAdaptiveDepthPasses), in two rights.
+	//
+	// The CENSUS counts both groupings of every frame and runs the picker over them. It moves no
+	// boundary and no pixel, so the key alone turns it on, anywhere -- which is what makes the
+	// thresholds checkable against a corpus on a machine that is not the one they were calibrated on.
+	bool m_depth_predictor_census = false;
+	// DECIDING additionally writes the picker's answer into m_depth_uniform_passes, and only where
+	// the device asked for uniform with no force key set. With the key off -- and on every device
+	// that already wants merged -- nothing here runs and the frame is byte-identical to the shipped
+	// one.
+	//
+	// The write happens at the FRAME BOUNDARY, after the frame's plan has been built and executed and
+	// before the next frame's first draw is accumulated. That is the one instant at which moving the
+	// polarity is safe: the constraint the member above states is that both grouping sites see one
+	// value for one frame's draws, not that the value never changes.
+	bool m_depth_predictor = false;
+	GSTileGpuDepthPolicyPicker m_depth_picker;
 	// The most draws one pass may hold, 0 meaning no cap (GSDevice::TileGpuMaxPassDraws, overridable
 	// by EmuCore/GS/TileGpuMaxPassDraws). Read once at construction and held in a member for exactly
 	// the reason the bit above is: both grouping sites read THIS, so a pass length they disagree
@@ -2223,6 +2240,17 @@ private:
 		// cap as engaged on a frame it never touched.
 		u32 biggest_pass_draws = 0; // the longest pass built this frame
 		u32 capped_passes = 0;      // ...and how many the cap itself ended
+		// The depth predictor's two counterfactual pass counts and its denominator, summed over every
+		// plan the frame built (a mid-frame flush makes more than one). Both polarities are counted,
+		// including the one the frame actually took, so the pair is self-consistent -- taking the
+		// active side from m_plan_passes and only the other side from the counterfactual would compare
+		// a number that includes the display-seed pseudo-draw's pass against one that does not.
+		//
+		// Zero unless the predictor is engaged: counting them is two extra cuts of the draw list, and
+		// a run that is not deciding anything must not pay for them.
+		u32 passes_uniform_key = 0;
+		u32 passes_merged_key = 0;
+		u32 planned_draws = 0;
 		// The texel-arm axis of the fragment variant (GSDevice::kGSTileGpuTexel*). A pass whose
 		// byte-road draws all decode through one arm gets a program carrying that arm alone; one
 		// that spans two carries both, and is the only case the shatter does not shrink all the way.
