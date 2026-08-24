@@ -1518,6 +1518,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
 	const auto afold_f = stat([](const MF& f) { return f.atst_fold_fail; });
 	const auto afold_p = stat([](const MF& f) { return f.atst_fold_pass; });
+	const auto afv = stat([](const MF& f) { return f.afail_varies; });
+	const auto afvr = stat([](const MF& f) { return f.afail_varies_rgb_only; });
+	const auto afvz = stat([](const MF& f) { return f.afail_varies_depth; });
 	const auto st = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.stalls[static_cast<u32>(s)]; });
 	};
@@ -1554,6 +1557,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
+	Console.WriteLn("  alpha test that VARIES under a non-KEEP AFAIL: %.2f / %u draws   of which RGB_ONLY "
+					"%.2f / %u   of which depth-writing %.2f / %u",
+		afv.mean, afv.p50, afvr.mean, afvr.p50, afvz.mean, afvz.p50);
 	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared",
 		srd.mean, srd.p50, srp.mean, srp.p50);
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
@@ -3171,6 +3177,22 @@ void GSRendererTileGpu::AccumulateDraw()
 	const bool z_write = gsTileDepthWriteSurvives(ctx->TEST.ZTE, ctx->ZBUF.ZMSK, atst_all_fail, afail);
 	const bool z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
 	const bool z_used = z_write || z_test;
+	// The exact-AFAIL population, counted where the fold is known. A draw whose test folds one way
+	// for every fragment is already exact (the fold moved it into the write flags); what is left is
+	// the draws that genuinely straddle AREF under an AFAIL that keeps something, where the fragment
+	// stage's discard drops what the console still writes.
+	// ...and the sliver of it this road can serve exactly: RGB_ONLY on a draw that writes no depth,
+	// where landing the failing fragment's colour costs nothing at the depth stage. Everything else
+	// keeps the discard.
+	const bool afail_keep_alpha = m_self_read && gsTileGpuAfailKeepsAlpha(atst_fold, afail, z_write);
+	if (atst_fold == GSTileAlphaTestFold::Varies && ctx->TEST.ATE && afail != AFAIL_KEEP)
+	{
+		m_frame.afail_varies++;
+		if (afail == AFAIL_RGB_ONLY)
+			m_frame.afail_varies_rgb_only++;
+		if (ctx->TEST.ZTE && !ctx->ZBUF.ZMSK)
+			m_frame.afail_varies_depth++;
+	}
 	// FBMSK per channel, not all-or-nothing. Games use the frame buffer as scratch for one
 	// channel at a time -- OutRun 2006 lays three full-screen sprites a frame over the finished
 	// world under FBMSK=0x00FFFFFF with a black fragment colour, meaning to rewrite the frame's
@@ -3792,7 +3814,9 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_run_written = GSVector4i::zero();
 	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
 	pd.date = date;
-	pd.self_mask = self_mask;
+	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
+	pd.afail_keep_alpha = afail_keep_alpha;
+	pd.self_mask = self_mask | (afail_keep_alpha ? GSDevice::kGSTileGpuSelfMask : 0u);
 	// The equation and the mask the fragment stage would need, whether or not this draw was admitted:
 	// two shifts and an AND, and a field that only sometimes carries a meaning is a field that gets
 	// read in the wrong state eventually.
@@ -4060,6 +4084,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.fbmsk = (pd.self_mask & GSDevice::kGSTileGpuSelfMask) ? pd.self_fbmsk : 0u;
 			if (pd.quantise_5551)
 				sr.blend |= kGSTileBlendQuant16;
+			if (pd.afail_keep_alpha)
+				sr.blend |= kGSTileBlendAfailKeepAlpha;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 		}
 

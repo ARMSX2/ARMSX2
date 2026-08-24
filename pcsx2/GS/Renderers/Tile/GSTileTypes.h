@@ -272,6 +272,32 @@ constexpr u32 kGSTileBlendPabe = 1u << 18;   ///< PABE: the blend applies only w
 /// Not part of the blend equation -- it is what the console does at the WRITE -- but it rides in the
 /// same word because it is the same per-draw decision the fragment stage takes at the same point.
 constexpr u32 kGSTileBlendQuant16 = 1u << 20;
+/// Bit 21: this draw's alpha test VARIES per fragment under AFAIL=RGB_ONLY, and it writes no depth,
+/// so a fragment that fails must land its RGB and keep the destination's alpha rather than being
+/// discarded. A per-FRAGMENT write mask, which is why it rides the same arm the bit-granular FBMSK
+/// merge does; see gsTileGpuAfailKeepsAlpha for why the depth clause is not a conservatism.
+constexpr u32 kGSTileBlendAfailKeepAlpha = 1u << 21;
+
+/// Whether a draw's failing fragments can be served exactly by keeping the destination's alpha.
+///
+/// ⚠️ The interesting part is the DEPTH clause, and it is not caution -- it is the whole boundary.
+/// Under AFAIL=RGB_ONLY a failing fragment lands its RGB, keeps the destination's alpha and does
+/// NOT write depth. Discarding it, which is what this renderer does today, gets two of those three
+/// right by accident: no alpha write and no depth write. The single error is the missing RGB.
+///
+/// So writing that RGB is only free where the draw writes no depth ANYWAY. On a depth-writing draw,
+/// keeping the fragment alive to land its colour also sends it through the depth stage, and the
+/// console does not let it write there -- per-fragment depth masking, which a colour read cannot do
+/// and gl_FragDepth would buy at the cost of early-Z for the whole pass. Serving those would trade a
+/// missing colour for a wrong depth, which is not a repair.
+///
+/// The corpus splits almost entirely the wrong way for us: of ~1258 varying non-KEEP AFAIL draws a
+/// frame, 1012 are RGB_ONLY and all but 18 of those write depth. Eighteen a frame, over three dumps,
+/// is what this serves; the rest is rowed.
+constexpr bool gsTileGpuAfailKeepsAlpha(GSTileAlphaTestFold fold, u32 afail, bool depth_write)
+{
+	return fold == GSTileAlphaTestFold::Varies && afail == AFAIL_RGB_ONLY && !depth_write;
+}
 /// Pack the ALPHA register (plus COLCLAMP, PABE and the frame format) into the row. `fmt` is
 /// `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit.
 constexpr u32 gsTileGpuPackBlend(bool abe, u32 a, u32 b, u32 c, u32 d, u32 fix, bool colclamp, bool pabe, u32 fmt)

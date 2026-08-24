@@ -1014,6 +1014,9 @@ void main()
 	}
 #endif
 
+	// Set by the alpha test below for a fragment that FAILS on a draw whose AFAIL keeps its colour
+	// alive; read by the byte tail, which is where the per-fragment alpha keep happens.
+	bool afail_keep_alpha = false;
 	// The alpha test. The GS compares the fragment's alpha byte -- after the texture function, so
 	// this must sit below it -- against AREF, and AFAIL says what a failing fragment still writes.
 	// Here a failure always discards, which is exact for AFAIL=KEEP and an approximation for the
@@ -1039,7 +1042,20 @@ void main()
 			default:  pass = true; break;         // NEVER/ALWAYS never reach the fragment stage
 		}
 		if (!pass)
+		{
+#if TILEGPU_SELF_MASK
+			// AFAIL=RGB_ONLY on a draw that writes no depth: the console lands this fragment's RGB and
+			// keeps the destination's alpha. Discarding gets the alpha and the depth right by accident
+			// and loses the colour, so the fragment stays alive and the byte tail below takes its alpha
+			// from the destination instead.
+			if ((sr.blend & 0x00200000u) != 0u)
+				afail_keep_alpha = true;
+			else
+				discard;
+#else
 			discard;
+#endif
+		}
 	}
 
 	// Fog. The console rule (gs-interp capture, SCPH-30001, and the Tile floor's walk) is
@@ -1069,7 +1085,7 @@ void main()
 	// the registers said -- the enable bit is set only for a draw whose blend the shader owns, the
 	// keep mask is non-zero only for one whose write mask it owns, and the quantise bit only for one
 	// whose output is what lands -- so the gate is three tests on one word already loaded.
-	if ((sr.blend & 0x00110000u) != 0u || sr.fbmsk != 0u)
+	if ((sr.blend & 0x00110000u) != 0u || sr.fbmsk != 0u || afail_keep_alpha)
 	{
 		// The bytes the target would have stored for this fragment. Same rounding as the alpha test's,
 		// which is the rounding a UNORM8 write performs -- so the tail's arithmetic is done on the
@@ -1126,12 +1142,16 @@ void main()
 		// computed ones everywhere else. The channel-granular half of the same mask is already the
 		// pipeline's colour write mask, and the two agree by construction -- a channel the pipeline
 		// drops has every stored bit set here too.
-		if (sr.fbmsk != 0u)
+		if (sr.fbmsk != 0u || afail_keep_alpha)
 		{
 			// One vector shift by a CONSTANT vector, not four scalar extracts: the amounts are
 			// literals, so this is not the computed sub-word shift the Honeykrisp workaround exists
 			// for, and it is a good deal smaller.
-			const ivec4 keep = (ivec4(sr.fbmsk) >> ivec4(0, 8, 16, 24)) & 0xFF;
+			ivec4 keep = (ivec4(sr.fbmsk) >> ivec4(0, 8, 16, 24)) & 0xFF;
+			// ...and the per-FRAGMENT half: a failing fragment under AFAIL=RGB_ONLY keeps the whole
+			// destination alpha byte, which is the same operation over a different mask.
+			if (afail_keep_alpha)
+				keep.a = 0xFF;
 			outc = (outc & ~keep) | (dst & keep);
 		}
 #endif

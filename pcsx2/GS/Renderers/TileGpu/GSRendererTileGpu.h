@@ -445,6 +445,10 @@ private:
 		/// set for a draw the fixed-function blend unit still has to touch: the console quantises the
 		/// blend's result, not its source, and the blend happens after the fragment stage.
 		bool quantise_5551;
+		/// This draw's failing fragments land their RGB and keep the destination's alpha instead of
+		/// being discarded (gsTileGpuAfailKeepsAlpha). A per-fragment write mask, so it rides the same
+		/// fragment arm the bit-granular FBMSK merge does.
+		bool afail_keep_alpha;
 		bool fge;             // PRIM.FGE: this draw's fragments are fogged
 		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
@@ -1262,6 +1266,14 @@ private:
 		// fold cannot touch must come back byte-identical.
 		u32 atst_fold_fail = 0;
 		u32 atst_fold_pass = 0;
+		// The exact-AFAIL population: draws whose alpha test genuinely VARIES per fragment under an
+		// AFAIL that keeps something alive, so the fragment stage's discard is not what the console
+		// does. Split three ways because the three are owed different things -- RGB_ONLY's alpha-keep
+		// is servable by the destination read, and the depth half of any of them is not servable by a
+		// COLOUR read at all.
+		u32 afail_varies = 0;           // fold == Varies and AFAIL != KEEP
+		u32 afail_varies_rgb_only = 0;  // ...of which AFAIL == RGB_ONLY (the alpha-keep half)
+		u32 afail_varies_depth = 0;     // ...of which the draw also uses depth (the half a colour read cannot serve)
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
 		u32 flushes = 0;         // mid-frame plan submissions

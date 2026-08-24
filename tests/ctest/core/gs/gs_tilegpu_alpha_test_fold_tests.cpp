@@ -527,3 +527,40 @@ TEST(TileGpuAlphaTestFold, EverySeedSkipAdmissionIsATotalWriteExceptTheNamedRgbO
 	EXPECT_TRUE(saw_fb_only);
 	EXPECT_TRUE(saw_rgb_only);
 }
+
+// -- what an AFAIL that keeps something can be served exactly ------------------------------------
+//
+// ⚠️ The depth clause below is the whole boundary, and it is not caution. Under AFAIL=RGB_ONLY a
+// failing fragment lands its RGB, keeps the destination's alpha and does NOT write depth. Discarding
+// it -- which is what the fragment stage does -- gets two of those three right by accident: no alpha
+// write and no depth write. The single error is the missing RGB.
+//
+// So landing that RGB is only free where the draw writes no depth ANYWAY. On a depth-writing draw,
+// keeping the fragment alive to write its colour also sends it through the depth stage, where the
+// console does not let it write -- per-fragment depth masking, which a colour read cannot do. Serving
+// those would trade a missing colour for a wrong depth, which is not a repair.
+//
+// The corpus splits almost entirely the wrong way: ~1258 varying non-KEEP AFAIL draws a frame, 1012
+// of them RGB_ONLY, and all but 18 of those write depth.
+
+TEST(TileGpuAlphaTestFold, AfailAlphaKeepIsServedOnlyWhereTheDrawWritesNoDepth)
+{
+	using Fold = GSTileAlphaTestFold;
+	// The servable shape.
+	EXPECT_TRUE(gsTileGpuAfailKeepsAlpha(Fold::Varies, AFAIL_RGB_ONLY, false));
+	// ...and the one that would trade a colour error for a depth error.
+	EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::Varies, AFAIL_RGB_ONLY, true));
+
+	// A test that does not vary needs nothing: the fold already moved it into the write flags.
+	EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::AllPass, AFAIL_RGB_ONLY, false));
+	EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::AllFail, AFAIL_RGB_ONLY, false));
+
+	// The other three AFAIL modes are not this road's: KEEP is what the discard already does
+	// exactly, and FB_ONLY and ZB_ONLY need a write the fragment stage cannot make conditional --
+	// FB_ONLY the whole frame-buffer write without depth, ZB_ONLY the depth write alone.
+	for (u32 afail : {u32(AFAIL_KEEP), u32(AFAIL_FB_ONLY), u32(AFAIL_ZB_ONLY)})
+	{
+		EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::Varies, afail, false)) << afail;
+		EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::Varies, afail, true)) << afail;
+	}
+}
