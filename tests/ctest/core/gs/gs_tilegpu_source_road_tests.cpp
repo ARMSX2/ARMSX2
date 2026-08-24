@@ -83,27 +83,43 @@ TEST(TileGpuSourceRoad, RoadBitsAreDistinctAndSourceIsTheThird)
 
 TEST(TileGpuSourceRoad, RoadMaskFitsThePipelineKeyWithoutCollision)
 {
-	// GSDeviceVK::GetTileGpuPipeline's key, transcribed:
-	//   topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7) | nocolour<<16 | noalpha<<17 | roads<<18
-	// Three road bits occupy 18..20, so the fields below must not reach that far and nothing else may
-	// claim 18..20. This is the check that a fourth road axis (M4's mipmapping) has to re-run.
-	constexpr u32 kRoadShift = 18;
+	// GSDeviceVK::GetTileGpuPipeline's key, transcribed. It is 64 bits now -- the transcription this
+	// test carried was three landings out of date, which is exactly the drift a key check exists to
+	// catch and did not, because it was checking a key nothing builds:
+	//
+	//   topology<<0 (2) | depth<<2 (2) | blend<<8 (8) | colour write mask<<16 (4) | roads<<20 (3) |
+	//   texel arms<<23 (6) | pass self-read mask<<32 (3) | declares<<35 | reads<<36
+	//
+	// Three road bits occupy 20..22, so the fields below must not reach that far and nothing else may
+	// claim them. This is the check that a fourth road axis (M4's mipmapping) has to re-run.
+	constexpr u32 kRoadShift = 20;
 	constexpr u32 kRoadBits = 3;
-	constexpr u32 kRoadField = ((1u << kRoadBits) - 1u) << kRoadShift;
+	constexpr u64 kRoadField = static_cast<u64>((1u << kRoadBits) - 1u) << kRoadShift;
 
 	EXPECT_EQ(GSDevice::kGSTileGpuRoadMaskAll, (1u << kRoadBits) - 1u);
 
-	const u32 topo_field = 3u << 0;
-	const u32 depth_field = (GSDevice::kGSTileGpuDepthModes - 1u) << 2;
-	const u32 blend_field = (3u * 3u * 3u * 3u - 1u) << 8; // GSDevice::m_blendMap index, < 81
-	const u32 nocolor_field = 0x10000u;
-	const u32 noalpha_field = 0x20000u;
-	const u32 below = topo_field | depth_field | blend_field | nocolor_field | noalpha_field;
+	const u64 topo_field = 3u << 0;
+	const u64 depth_field = static_cast<u64>(GSDevice::kGSTileGpuDepthModes - 1u) << 2;
+	// The blend field is the GS ALPHA index (< 81) plus the 0x80 the key uses for "no blend at all".
+	const u64 blend_field = static_cast<u64>(0xFFu) << 8;
+	const u64 mask_field = static_cast<u64>(0xFu) << 16;
+	const u64 below = topo_field | depth_field | blend_field | mask_field;
 
 	EXPECT_EQ(below & kRoadField, 0u) << "a pipeline key field overlaps the road mask";
-	EXPECT_LT(below, 1u << kRoadShift) << "the fields below the road mask no longer fit under it";
-	// ...and the top of the road field is bit 20, so 21 up stay free for the next axis.
-	EXPECT_EQ(kRoadField, 0x1C0000u);
+	EXPECT_LT(below, 1ull << kRoadShift) << "the fields below the road mask no longer fit under it";
+	EXPECT_EQ(kRoadField, 0x700000ull);
+
+	// ...and the fields ABOVE it, which the road mask must equally not run into: six texel-arm bits
+	// at 23, then the destination-read axis in the upper word.
+	const u64 texel_field = static_cast<u64>(GSDevice::kGSTileGpuTexelMaskAll) << 23;
+	const u64 self_field = static_cast<u64>(GSDevice::kGSTileGpuSelfMaskAll) << 32;
+	const u64 declares_field = 1ull << 35;
+	const u64 reads_field = 1ull << 36;
+	const u64 above = texel_field | self_field | declares_field | reads_field;
+	EXPECT_EQ(above & kRoadField, 0u) << "a pipeline key field above the road mask overlaps it";
+	EXPECT_EQ(above & below, 0u) << "the pipeline key's fields overlap each other";
+	EXPECT_EQ(GSDevice::kGSTileGpuTexelMaskAll, 0x3Fu); // six arms, so the field ends at bit 28
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfMaskAll, 0x7u); // three uses, so the field ends at bit 34
 }
 
 // -- 2. the sampled-binding key ------------------------------------------------------------------
