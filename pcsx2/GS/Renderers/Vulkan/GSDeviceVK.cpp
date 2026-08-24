@@ -7450,17 +7450,26 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
-	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE &&
-						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
-						  plan.topologies.size() == plan.draws.size() &&
-						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 40 &&
-						  plan.state_count > 0;
+	const bool pipelines_ok =
+		m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE && m_tilegpu_state_descriptor_set != VK_NULL_HANDLE;
+	const bool have_geometry = !plan.draws.empty() && plan.topologies.size() == plan.draws.size() &&
+							   plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
+							   plan.state_table != nullptr && plan.state_stride == sizeof(float) * 40 &&
+							   plan.state_count > 0;
+	const bool can_draw = pipelines_ok && have_geometry;
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path
 	// compiled in (the swizzle forms fitted). Without it the state rows' tex_enable is still set but
 	// the shader #ifdef'd the sampling out, so the ring is inert; the reconciliation ops are skipped.
-	const bool can_texture = can_draw && m_tilegpu_tex && !plan.ring_pages.empty() && plan.epoch_count > 0;
+	//
+	// ⚠️ It does NOT require the plan to carry GEOMETRY, and that is not a relaxation for its own
+	// sake. A plan can legitimately consist of nothing but reconciliation: the display materialise
+	// appends a pending draw that renders zero indices purely to carry a prep-op range, and a plan
+	// flushed with no ordinary draw in it then has an empty vertex stream. Gating the byte road on
+	// the geometry stream made the executor silently DISCARD such a plan's ops -- the renderer's
+	// model recorded the reconciliation as done and no bytes moved, which is the exact shape of a
+	// wrong pixel nothing downstream can correct.
+	const bool can_texture = pipelines_ok && m_tilegpu_tex && !plan.ring_pages.empty() && plan.epoch_count > 0;
 
 	EndRenderPass();
 
@@ -7512,78 +7521,78 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		std::memcpy(m_tilegpu_indirect_stream_buffer.GetCurrentHostPointer(), plan.draws.data(), indirect_bytes);
 		indirect_base_bytes = m_tilegpu_indirect_stream_buffer.GetCurrentOffset();
 		m_tilegpu_indirect_stream_buffer.CommitMemory(indirect_bytes);
+	}
 
-		// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
-		//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries][palettes]
-		// Slots the renderer named a source for are memcpy'd from it (the CPU shadow's bytes, or a
-		// version copy); the rest are left for the writeback compute to compose. Every table entry
-		// starts at the zero slot and each ring page then claims its epoch range, so a page the plan
-		// never staged for an epoch reads as zeros rather than as another page's bytes.
-		if (can_texture)
+	// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
+	//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries][palettes]
+	// Slots the renderer named a source for are memcpy'd from it (the CPU shadow's bytes, or a
+	// version copy); the rest are left for the writeback compute to compose. Every table entry
+	// starts at the zero slot and each ring page then claims its epoch range, so a page the plan
+	// never staged for an epoch reads as zeros rather than as another page's bytes.
+	if (can_texture)
+	{
+		static constexpr u32 kPageBytes = GS_PAGE_SIZE;
+		static constexpr u32 kPageWords = kPageBytes / sizeof(u32);
+		const u32 slot_bytes = (1 + static_cast<u32>(plan.ring_pages.size())) * kPageBytes;
+		const u32 table_bytes = plan.epoch_count * GS_MAX_PAGES * sizeof(u32);
+		const u32 entry_bytes = static_cast<u32>(plan.page_entries.size() * sizeof(GSTileGpuPageEntry));
+		// One 512-bit page mask per seed op, built below; reserve for every op (writebacks skip theirs).
+		const u32 mask_words = static_cast<u32>(plan.prep_ops.size()) * (GS_MAX_PAGES / 32);
+		const u32 mask_bytes = mask_words * sizeof(u32);
+		const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
+		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + pal_bytes;
+		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 		{
-			static constexpr u32 kPageBytes = GS_PAGE_SIZE;
-			static constexpr u32 kPageWords = kPageBytes / sizeof(u32);
-			const u32 slot_bytes = (1 + static_cast<u32>(plan.ring_pages.size())) * kPageBytes;
-			const u32 table_bytes = plan.epoch_count * GS_MAX_PAGES * sizeof(u32);
-			const u32 entry_bytes = static_cast<u32>(plan.page_entries.size() * sizeof(GSTileGpuPageEntry));
-			// One 512-bit page mask per seed op, built below; reserve for every op (writebacks skip theirs).
-			const u32 mask_words = static_cast<u32>(plan.prep_ops.size()) * (GS_MAX_PAGES / 32);
-			const u32 mask_bytes = mask_words * sizeof(u32);
-			const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
-			const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + pal_bytes;
+			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
 			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
-			{
-				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
-				if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
-					pxFailRel("Failed to reserve TileGpu ring");
-			}
-			u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
-			const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
-
-			std::memset(base, 0, kPageBytes); // the zero slot
-			u32* const tables = reinterpret_cast<u32*>(base + slot_bytes);
-			for (u32 i = 0; i < plan.epoch_count * GS_MAX_PAGES; i++)
-				tables[i] = base_words; // -> zero slot
-			for (u32 i = 0; i < plan.ring_pages.size(); i++)
-			{
-				const GSTileGpuRingPage& rp = plan.ring_pages[i];
-				u8* const slot = base + (1 + i) * kPageBytes;
-				if (rp.src)
-					std::memcpy(slot, rp.src, kPageBytes);
-				const u32 slot_words = base_words + (1 + i) * kPageWords;
-				const u32 e1 = std::min<u32>(rp.epoch_last, plan.epoch_count - 1);
-				for (u32 e = rp.epoch_first; e <= e1; e++)
-					tables[e * GS_MAX_PAGES + rp.page] = slot_words;
-			}
-			table_base_words = base_words + slot_bytes / sizeof(u32);
-
-			u8* const entries = base + slot_bytes + table_bytes;
-			if (entry_bytes)
-				std::memcpy(entries, plan.page_entries.data(), entry_bytes);
-			entries_base_words = table_base_words + table_bytes / sizeof(u32);
-
-			u32* const masks = reinterpret_cast<u32*>(entries + entry_bytes);
-			masks_base_words = entries_base_words + entry_bytes / sizeof(u32);
-			for (u32 o = 0; o < plan.prep_ops.size(); o++)
-			{
-				u32* const m = masks + o * (GS_MAX_PAGES / 32);
-				std::memset(m, 0, (GS_MAX_PAGES / 32) * sizeof(u32));
-				const GSTileGpuPrepOp& op = plan.prep_ops[o];
-				if (op.kind != GSTileGpuPrepKind::Seed && op.kind != GSTileGpuPrepKind::SeedDepth)
-					continue;
-				for (u32 k = 0; k < op.page_entry_count; k++)
-				{
-					const u32 page = plan.page_entries[op.first_page_entry + k].page;
-					m[page >> 5] |= 1u << (page & 31);
-				}
-			}
-
-			if (pal_bytes)
-				std::memcpy(reinterpret_cast<u8*>(masks) + mask_bytes, plan.palettes.data(), pal_bytes);
-			pal_base_words = masks_base_words + mask_words;
-
-			m_tilegpu_vram_stream_buffer.CommitMemory(total);
+				pxFailRel("Failed to reserve TileGpu ring");
 		}
+		u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
+		const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
+
+		std::memset(base, 0, kPageBytes); // the zero slot
+		u32* const tables = reinterpret_cast<u32*>(base + slot_bytes);
+		for (u32 i = 0; i < plan.epoch_count * GS_MAX_PAGES; i++)
+			tables[i] = base_words; // -> zero slot
+		for (u32 i = 0; i < plan.ring_pages.size(); i++)
+		{
+			const GSTileGpuRingPage& rp = plan.ring_pages[i];
+			u8* const slot = base + (1 + i) * kPageBytes;
+			if (rp.src)
+				std::memcpy(slot, rp.src, kPageBytes);
+			const u32 slot_words = base_words + (1 + i) * kPageWords;
+			const u32 e1 = std::min<u32>(rp.epoch_last, plan.epoch_count - 1);
+			for (u32 e = rp.epoch_first; e <= e1; e++)
+				tables[e * GS_MAX_PAGES + rp.page] = slot_words;
+		}
+		table_base_words = base_words + slot_bytes / sizeof(u32);
+
+		u8* const entries = base + slot_bytes + table_bytes;
+		if (entry_bytes)
+			std::memcpy(entries, plan.page_entries.data(), entry_bytes);
+		entries_base_words = table_base_words + table_bytes / sizeof(u32);
+
+		u32* const masks = reinterpret_cast<u32*>(entries + entry_bytes);
+		masks_base_words = entries_base_words + entry_bytes / sizeof(u32);
+		for (u32 o = 0; o < plan.prep_ops.size(); o++)
+		{
+			u32* const m = masks + o * (GS_MAX_PAGES / 32);
+			std::memset(m, 0, (GS_MAX_PAGES / 32) * sizeof(u32));
+			const GSTileGpuPrepOp& op = plan.prep_ops[o];
+			if (op.kind != GSTileGpuPrepKind::Seed && op.kind != GSTileGpuPrepKind::SeedDepth)
+				continue;
+			for (u32 k = 0; k < op.page_entry_count; k++)
+			{
+				const u32 page = plan.page_entries[op.first_page_entry + k].page;
+				m[page >> 5] |= 1u << (page & 31);
+			}
+		}
+
+		if (pal_bytes)
+			std::memcpy(reinterpret_cast<u8*>(masks) + mask_bytes, plan.palettes.data(), pal_bytes);
+		pal_base_words = masks_base_words + mask_words;
+
+		m_tilegpu_vram_stream_buffer.CommitMemory(total);
 	}
 
 	// A multi-draw indirect covers at most this many commands; a longer topology run is split.
