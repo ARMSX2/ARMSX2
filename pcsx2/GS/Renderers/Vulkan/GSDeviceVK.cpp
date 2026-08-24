@@ -1337,38 +1337,9 @@ bool GSDeviceVK::CreateCommandBuffers()
 		}
 		Vulkan::SetObjectName(m_device, resources.fence, "Frame Fence %u", frame_index);
 
-		// Non-push-descriptor path (Mali): per-frame pool for texture descriptor sets, reset wholesale
-		// in ActivateCommandBuffer when the frame is recycled. Sized generously for a heavy frame; if a
-		// frame ever exceeds this, the caller flushes to reset the pool and restarts the render pass (see
-		// AllocateDescriptorSetFromFramePool callers) - tune here if that ever thrashes.
-		// ...and on the PUSH path too when TileGpu can declare an in-pass destination read, for one
-		// set per declaring pass. An input-attachment descriptor is the one shape that would not stay
-		// validation-clean in a push set here (measured: the same run is clean through a pooled set
-		// and reports the descriptor invalid through a pushed one), and a per-frame pool is exactly
-		// the lifetime a per-pass set wants -- it resets when the frame is recycled. Sized for the
-		// declaring passes rather than for a heavy textured frame, which is the other path's number.
-		if (!m_use_push_descriptors || m_optional_extensions.tilegpu_self_read)
-		{
-			static constexpr u32 MAX_FRAME_TEXTURE_SETS = 8192;
-			static constexpr u32 MAX_TILEGPU_DECLARED_SETS = 1024;
-			const u32 sets = m_use_push_descriptors ? MAX_TILEGPU_DECLARED_SETS : MAX_FRAME_TEXTURE_SETS;
-			const VkDescriptorPoolSize frame_pool_sizes[] = {
-				{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-					sets * (GSTileGpuPassPlan::kMaxTexSourcesPerPass + 2)},
-				{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 3},
-				{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, sets * 2},
-				{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * 2},
-			};
-			const VkDescriptorPoolCreateInfo frame_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				nullptr, 0, sets, static_cast<u32>(std::size(frame_pool_sizes)), frame_pool_sizes};
-			res = vkCreateDescriptorPool(m_device, &frame_pool_info, nullptr, &resources.descriptor_pool);
-			if (res != VK_SUCCESS)
-			{
-				LOG_VULKAN_ERROR(res, "vkCreateDescriptorPool (frame) failed: ");
-				return false;
-			}
-			Vulkan::SetObjectName(m_device, resources.descriptor_pool, "Frame Texture Descriptor Pool %u", frame_index);
-		}
+		// The frame's descriptor pools are NOT created here. They are a chain grown on demand by
+		// AllocateDescriptorSetFromFramePool, so a device that never allocates from it never has
+		// one, and a device that needs a thousand sets gets a thousand sets.
 
 		++frame_index;
 	}
@@ -1636,26 +1607,112 @@ void GSDeviceVK::FreePersistentDescriptorSet(VkDescriptorSet set)
 	vkFreeDescriptorSets(m_device, m_global_descriptor_pool, 1, &set);
 }
 
+// One link of a frame's descriptor-pool chain. The size is deliberately a slice of a frame rather
+// than a frame's worst case: the chain grows on demand, so this constant decides how many links a
+// heavy frame ends up holding, never whether that frame renders. It is small enough that ordinary
+// corpus dumps grow the chain, and that is the point -- a growth path that only runs on the one
+// title nobody renders locally is a path nobody has tested. Raising it is a memory/allocation
+// trade, never a correctness fix.
+static constexpr u32 FRAME_DESCRIPTOR_POOL_CHUNK_SETS = 256;
+
+VkDescriptorPool GSDeviceVK::CreateFrameDescriptorPool()
+{
+	// Per-set budgets: the largest single set of each type that a layout allocated from this pool
+	// declares, so an EMPTY link can serve one set of any of them.
+	const u32 sets = FRAME_DESCRIPTOR_POOL_CHUNK_SETS;
+	const VkDescriptorPoolSize pool_sizes[] = {
+		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * (GSTileGpuPassPlan::kMaxTexSourcesPerPass + 2)},
+		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 3},
+		{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, sets * 2},
+		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * 2},
+	};
+	const VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, sets,
+		static_cast<u32>(std::size(pool_sizes)), pool_sizes};
+
+	VkDescriptorPool pool = VK_NULL_HANDLE;
+	const VkResult res = vkCreateDescriptorPool(m_device, &pool_info, nullptr, &pool);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkCreateDescriptorPool (frame) failed: ");
+		return VK_NULL_HANDLE;
+	}
+	return pool;
+}
+
 VkDescriptorSet GSDeviceVK::AllocateDescriptorSetFromFramePool(VkDescriptorSetLayout set_layout)
 {
-	VkDescriptorPool pool = m_frame_resources[m_current_frame].descriptor_pool;
-	pxAssert(pool != VK_NULL_HANDLE);
+	FrameResources& resources = m_frame_resources[m_current_frame];
 
-	VkDescriptorSetAllocateInfo allocate_info = {
-		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, pool, 1, &set_layout};
+	// Walk the frame's chain, appending a link when every existing one is full. A fixed pool would
+	// make the frame's set count a cliff -- and a cliff whose height is device-dependent, because
+	// what allocates from here (per-pass sets on the push path, every texture set on the non-push
+	// one) is decided by device features. So the frame gets as many links as it turns out to need;
+	// they live for the device's lifetime and are reset, not freed, when the frame is recycled, so
+	// the cost is paid once by the first heavy frame.
+	for (;;)
+	{
+		// A link is full once it has served the sets it was created for -- our count, not the
+		// driver's answer. A driver may serve past its pool's maxSets and one we test on does,
+		// handing out thousands of sets from a pool created for one; waiting to be refused would
+		// leave this path dead on every device we can run here and live only on the ones we ship
+		// to, which is the whole reason the fixed pool's ceiling went unnoticed.
+		if (resources.descriptor_pool_cursor < resources.descriptor_pools.size() &&
+			resources.descriptor_pool_cursor_sets >= FRAME_DESCRIPTOR_POOL_CHUNK_SETS)
+		{
+			resources.descriptor_pool_cursor++;
+			resources.descriptor_pool_cursor_sets = 0;
+		}
 
-	VkDescriptorSet descriptor_set;
-	VkResult res = vkAllocateDescriptorSets(m_device, &allocate_info, &descriptor_set);
-	if (res == VK_SUCCESS)
-		return descriptor_set;
+		if (resources.descriptor_pool_cursor >= resources.descriptor_pools.size())
+		{
+			const VkDescriptorPool pool = CreateFrameDescriptorPool();
+			if (pool == VK_NULL_HANDLE)
+				return VK_NULL_HANDLE;
 
-	// Pool exhausted. Recovery (flush the command buffer to reset the frame pool,
-	// then restart the render pass and re-apply state) must be driven by the caller:
-	// callers capture their command buffer and emit binding state before calling us,
-	// so flushing here would leave them writing to a submitted command buffer with no
-	// active render pass. Signal exhaustion with a null set and let the caller flush,
-	// restart, and re-enter (mirroring the uniform-buffer overflow paths).
-	return VK_NULL_HANDLE;
+			resources.descriptor_pools.push_back(pool);
+			resources.descriptor_pool_cursor_sets = 0;
+			Vulkan::SetObjectName(m_device, pool, "Frame Descriptor Pool %u.%u", m_current_frame,
+				static_cast<u32>(resources.descriptor_pools.size() - 1));
+			Console.WriteLn("VK: frame %u descriptor pool chain grew to %u pools of %u sets.", m_current_frame,
+				static_cast<u32>(resources.descriptor_pools.size()), FRAME_DESCRIPTOR_POOL_CHUNK_SETS);
+		}
+
+		const VkDescriptorSetAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
+			resources.descriptor_pools[resources.descriptor_pool_cursor], 1, &set_layout};
+
+		VkDescriptorSet descriptor_set;
+		const VkResult res = vkAllocateDescriptorSets(m_device, &allocate_info, &descriptor_set);
+		if (res == VK_SUCCESS)
+		{
+			resources.descriptor_pool_cursor_sets++;
+			return descriptor_set;
+		}
+
+		if (res != VK_ERROR_OUT_OF_POOL_MEMORY && res != VK_ERROR_FRAGMENTED_POOL)
+		{
+			// Out of host or device memory. Nothing to grow into; the caller's loud road is the
+			// honest answer.
+			LOG_VULKAN_ERROR(res, "vkAllocateDescriptorSets (frame) failed: ");
+			return VK_NULL_HANDLE;
+		}
+
+		if (resources.descriptor_pool_cursor_sets == 0)
+		{
+			// A link that has served nothing since it was reset just refused this layout, so no
+			// link of this shape ever will -- growing for it would append pools forever. The pool
+			// shape in CreateFrameDescriptorPool is missing a descriptor type the layout declares.
+			if (!m_frame_pool_layout_refused_warned)
+			{
+				m_frame_pool_layout_refused_warned = true;
+				Console.Error("VK: an empty frame descriptor pool cannot serve a descriptor set layout -- the pool "
+							  "reserves no descriptors of some type the layout declares.");
+			}
+			return VK_NULL_HANDLE;
+		}
+
+		resources.descriptor_pool_cursor++;
+		resources.descriptor_pool_cursor_sets = 0;
+	}
 }
 
 void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
@@ -2095,14 +2152,18 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	if (res != VK_SUCCESS)
 		LOG_VULKAN_ERROR(res, "vkResetCommandPool failed: ");
 
-	// Non-push-descriptor path (Mali): the GPU is done with this frame, so recycle its texture
-	// descriptor sets wholesale. Cheaper than per-set frees and matches the command-pool lifecycle.
-	if (resources.descriptor_pool != VK_NULL_HANDLE)
+	// The GPU is done with this frame, so recycle its descriptor sets wholesale: reset every link
+	// of the chain and allocate from the first again. Cheaper than per-set frees, matches the
+	// command-pool lifecycle, and keeps the links the frame grew -- a heavy frame pays for its
+	// chain once rather than on every pass through.
+	for (const VkDescriptorPool pool : resources.descriptor_pools)
 	{
-		res = vkResetDescriptorPool(m_device, resources.descriptor_pool, 0);
+		res = vkResetDescriptorPool(m_device, pool, 0);
 		if (res != VK_SUCCESS)
 			LOG_VULKAN_ERROR(res, "vkResetDescriptorPool failed: ");
 	}
+	resources.descriptor_pool_cursor = 0;
+	resources.descriptor_pool_cursor_sets = 0;
 
 	// Enable commands to be recorded to the two buffers again.
 	// ONE_TIME_SUBMIT is load-bearing on Mali: without it (SIMULTANEOUS_USE) the blob switches
@@ -7899,7 +7960,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						VkDescriptorSet wbset = AllocateDescriptorSetFromFramePool(m_tilegpu_writeback_ds_layout);
 						if (wbset == VK_NULL_HANDLE) [[unlikely]]
-							continue; // a few dozen per frame at most -- exhaustion implausible; skip, read stays as prefilled
+							continue; // out of descriptor memory outright; skip, read stays as prefilled
 						dsub.AddCombinedImageSamplerDescriptorWrite(
 							wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
 						dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -8226,7 +8287,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						// A pass whose fragment stage READS through this set cannot proceed without it: the
 						// binding would be whatever an earlier pass left, which is a wrong pixel rather than
-						// a slow one. Drop the pass's draws and say so.
+						// a slow one. Drop the pass's draws and say so. The pool grows on demand, so this
+						// is no longer a capacity cliff -- reaching here means the device would give us no
+						// more descriptor memory at all.
 						declared_set_exhausted = true;
 					}
 				}
@@ -8254,11 +8317,20 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			// one wave under one descriptor. So the run keeps its pipeline and only the CALL is cut --
 			// see GSTileGpuPassPlan::bind_keys, and tilegpu.glsl's tilegpu_target_texel and
 			// tilegpu_source_sample, both undecorated on the strength of this.
-			if (declared_set_exhausted && !m_tilegpu_declared_fallback_warned)
+			if (declared_set_exhausted)
 			{
-				m_tilegpu_declared_fallback_warned = true;
-				Console.Error("TileGpu: the frame descriptor pool ran out during a pass that declares the in-pass "
-							  "destination read; its draws are dropped.");
+				// Counted, not just warned: the warning fires once and the totals go out at teardown,
+				// so a run that loses draws says so in its text output rather than only in its frames.
+				// A flag of its own, because the pipeline-build road below has one too and sharing it
+				// let whichever failed first silence the other.
+				m_tilegpu_declared_pool_dropped_passes++;
+				m_tilegpu_declared_pool_dropped_draws += pass.draw_count;
+				if (!m_tilegpu_declared_pool_warned)
+				{
+					m_tilegpu_declared_pool_warned = true;
+					Console.Error("TileGpu: the device would give no descriptor set to a pass that declares the "
+								  "in-pass destination read; its draws are dropped. Totals at teardown.");
+				}
 			}
 			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
@@ -9491,6 +9563,15 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyCommandPool(m_device, m_oob.command_pool, nullptr);
 	m_oob = {};
 
+	// Say out loud what a run lost, so a recurrence shows up in a log rather than only in a frame.
+	// The per-occurrence error is printed once; this is the total.
+	if (m_tilegpu_declared_pool_dropped_draws != 0)
+	{
+		Console.Error("TileGpu: %u draws in %u passes were dropped this session because the frame descriptor pool "
+					  "could not serve the in-pass destination read.",
+			m_tilegpu_declared_pool_dropped_draws, m_tilegpu_declared_pool_dropped_passes);
+	}
+
 	for (FrameResources& resources : m_frame_resources)
 	{
 		for (auto& it : resources.cleanup_resources)
@@ -9506,8 +9587,9 @@ void GSDeviceVK::DestroyResources()
 		}
 		if (resources.command_pool != VK_NULL_HANDLE)
 			vkDestroyCommandPool(m_device, resources.command_pool, nullptr);
-		if (resources.descriptor_pool != VK_NULL_HANDLE)
-			vkDestroyDescriptorPool(m_device, resources.descriptor_pool, nullptr);
+		for (const VkDescriptorPool pool : resources.descriptor_pools)
+			vkDestroyDescriptorPool(m_device, pool, nullptr);
+		resources.descriptor_pools.clear();
 	}
 
 	if (m_timestamp_query_pool != VK_NULL_HANDLE)

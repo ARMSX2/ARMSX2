@@ -153,8 +153,9 @@ public:
 	/// Allocates a descriptor set from the pool reserved for the current frame.
 	VkDescriptorSet AllocatePersistentDescriptorSet(VkDescriptorSetLayout set_layout);
 
-	/// Allocates a descriptor set from the current frame's per-frame pool (push descriptor fallback).
-	/// Returns VK_NULL_HANDLE on pool exhaustion after flushing the command buffer.
+	/// Allocates a descriptor set from the current frame's pool chain, growing the chain if every
+	/// existing link is full. Returns VK_NULL_HANDLE only when the device cannot give us another
+	/// pool, or when the layout is one no pool of this shape can serve.
 	VkDescriptorSet AllocateDescriptorSetFromFramePool(VkDescriptorSetLayout set_layout);
 
 	/// Frees a descriptor set allocated from the global pool.
@@ -165,7 +166,6 @@ public:
 	/// per-frame allocated descriptor sets (vkUpdateDescriptorSets + vkCmdBindDescriptorSets).
 	__fi bool UsePushDescriptors() const { return m_use_push_descriptors; }
 
-	/// Allocates a descriptor set from the current frame's reset-per-frame pool (non-push path only).
 
 	// Gets the fence that will be signaled when the currently executing command buffer is
 	// queued and executed. Do not wait for this fence before the buffer is executed.
@@ -279,6 +279,8 @@ private:
 	bool CreateAllocator();
 	bool CreateCommandBuffers();
 	bool CreateGlobalDescriptorPool();
+	/// One link of a frame's descriptor-pool chain. See AllocateDescriptorSetFromFramePool.
+	VkDescriptorPool CreateFrameDescriptorPool();
 
 	VkRenderPass CreateCachedRenderPass(RenderPassCacheKey key);
 
@@ -311,9 +313,19 @@ private:
 		// [0] - Init (upload) command buffer, [1] - draw command buffer
 		VkCommandPool command_pool = VK_NULL_HANDLE;
 		std::array<VkCommandBuffer, 2> command_buffers{VK_NULL_HANDLE, VK_NULL_HANDLE};
-		// Per-frame texture descriptor pool, reset wholesale each time the frame is reused.
-		// Only created/used on the non-push-descriptor path (Mali workaround).
-		VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+		// Per-frame descriptor pools, reset wholesale each time the frame is reused. A CHAIN, not
+		// one pool: allocation walks it and appends another link when the current one is full, so
+		// the frame's capacity is whatever the frame turns out to need. See
+		// AllocateDescriptorSetFromFramePool. Created lazily, so a device that never allocates
+		// from it never has one.
+		std::vector<VkDescriptorPool> descriptor_pools;
+		// Which link allocations are coming from, and how many sets it has served since it was
+		// reset. The count decides when the link is full -- drivers are not reliable about saying
+		// so -- and it also separates "full" from "no link of this shape can ever serve that
+		// layout": a request an EMPTY link refuses is unservable, and growing for it would append
+		// pools forever.
+		u32 descriptor_pool_cursor = 0;
+		u32 descriptor_pool_cursor_sets = 0;
 		VkFence fence = VK_NULL_HANDLE;
 		u64 fence_counter = 0;
 		s32 spin_id = -1;
@@ -344,6 +356,10 @@ private:
 	VkCommandBuffer m_current_command_buffer = VK_NULL_HANDLE;
 
 	VkDescriptorPool m_global_descriptor_pool = VK_NULL_HANDLE;
+
+	// A layout an EMPTY frame descriptor pool refused: the pool shape reserves no descriptors of
+	// some type it declares, so growing the chain for it would never help. Warned once.
+	bool m_frame_pool_layout_refused_warned = false;
 
 	// Set false for Mali (vendorID 0x13B5) in CreateDevice: its driver crashes inside
 	// vkCmdPushDescriptorSetKHR, so texture binding falls back to per-frame descriptor sets.
@@ -646,6 +662,12 @@ private:
 		u32 self_mask, bool quantise);
 	VkPipeline TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares);
 	bool m_tilegpu_declared_fallback_warned = false;
+	// The other road a declaring pass can lose its draws on: no descriptor set for the pass's own
+	// colour attachment. Its own flag, so a pipeline-build failure cannot silence it, and totals so
+	// teardown can say what a run lost.
+	bool m_tilegpu_declared_pool_warned = false;
+	u32 m_tilegpu_declared_pool_dropped_passes = 0;
+	u32 m_tilegpu_declared_pool_dropped_draws = 0;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
 	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full module: the eager pipelines and the fallback
 	// One fragment module per (road mask, texel-arm mask) a pass has actually asked for, compiled on
