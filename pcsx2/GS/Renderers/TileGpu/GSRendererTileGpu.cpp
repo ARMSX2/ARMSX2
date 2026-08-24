@@ -1208,7 +1208,8 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 // says which of those the fragment stage is actually built to serve, so a use that has not been
 // built yet stays on today's approximation rather than silently reading a destination nothing does
 // anything with.
-u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact) const
+u32 GSRendererTileGpu::SelfReadUses(
+	u32 reader_flags, bool date, bool fbmsk_exact, bool blend_needs_quantised_result) const
 {
 	if (!m_self_read)
 		return 0;
@@ -1241,6 +1242,12 @@ u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exac
 	// move the bulk of every blended frame onto the read for no accuracy at all.
 	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
 						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+
+	// ...and a blend whose equation IS expressible but whose RESULT the frame format quantises. The
+	// console quantises after the blend; the executor's blend unit runs after the fragment stage, so
+	// there is no point at which it could. The whole blend therefore moves to the shader, which can.
+	if (blend_needs_quantised_result)
 		uses |= GSDevice::kGSTileGpuSelfBlend;
 
 	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
@@ -3204,9 +3211,21 @@ void GSRendererTileGpu::AccumulateDraw()
 	// scan on every blended draw, which is real CPU work on a road that is CPU-bound. So the gate
 	// names the reasons that are live rather than asking unconditionally.
 	const bool fbmsk_exact = gsTileFrameWriteMaskIsExact(ctx->FRAME.FBMSK, fb_fmsk);
-	const u32 self_mask = (m_self_read && (m_force_self_read || date != 0 || PRIM->ABE)) ?
-							  SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact) :
-							  0;
+	// Whether the blend unit has anything to do for this draw, spelt exactly as the blend key spells
+	// it further down -- ABE with a colour to write, and not the (X - X) * C + Cs identity. One
+	// definition, because two decisions read it and they must not disagree: whether the draw is
+	// admitted to the shader blend, and whether its output is what lands (and so gets quantised).
+	const bool blend_active =
+		PRIM->ABE && color_written && !(ctx->ALPHA.A == ctx->ALPHA.B && ctx->ALPHA.D == 0);
+	// A frame that stores fewer bits than the target holds quantises the blend's RESULT, which the
+	// executor's blend unit cannot do -- it runs after the fragment stage. So a blended draw on such
+	// a frame goes to the shader whatever its equation is.
+	const bool blend_needs_quantised_result =
+		blend_active && gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
+	const u32 self_mask =
+		(m_self_read && (m_force_self_read || date != 0 || PRIM->ABE)) ?
+			SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result) :
+			0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -3791,7 +3810,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// has to touch is quantised by the console AFTER that blend, so quantising its source would be a
 	// different picture, not a more accurate one. Those draws wait for the shader blend.
 	pd.quantise_5551 = gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt) &&
-					   !(PRIM->ABE && color_written && (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) == 0);
+					   !(blend_active && (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) == 0);
 	m_frame.self_read_draws += (self_mask != 0) ? 1u : 0u;
 
 	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
