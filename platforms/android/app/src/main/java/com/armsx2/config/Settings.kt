@@ -624,11 +624,13 @@ data class Settings(
      *  1 is unreachable from this UI; the values are the core enum's, and it is persisted
      *  as an integer, so they must not be renumbered to close the gap. */
     val upscaler: Int = 0,
-    /** EmuCore/GS/FSRSharpness — shared upscaler sharpness, 0..100 (%). FSR1 reads it as RCAS
-     *  strength; SGSR scales it two-for-one into its own 0..2 edge sharpness, so 100% reaches
-     *  the top of both without the slider having to grow. Separate from casSharpness: RCAS runs
-     *  on a different curve, so those two are not interchangeable. */
+    /** EmuCore/GS/FSRSharpness — FSR1 RCAS strength 0..100 (%). Separate from casSharpness:
+     *  RCAS runs on a different curve, so the two sliders are not interchangeable. */
     val fsrSharpness: Int = 50,
+    /** EmuCore/GS/SGSRSharpness — SGSR edge sharpness 0..200 (%), 100 = Qualcomm's default.
+     *  Deliberately NOT shared with fsrSharpness: FSR1's is natively 0..100, so one field would
+     *  either redefine existing FSR configurations or force FSR's range to change meaning. */
+    val sgsrSharpness: Int = 100,
     /** EmuCore/GS/LoadTextureReplacements. */
     val loadTextureReplacements: Boolean = false,
     /** EmuCore/GS/LoadTextureReplacementsAsync. */
@@ -1236,6 +1238,7 @@ data class Settings(
             casSharpness = intAt("EmuCore/GS/CASSharpness") ?: this.casSharpness,
             upscaler = intAt("EmuCore/GS/Upscaler") ?: this.upscaler,
             fsrSharpness = intAt("EmuCore/GS/FSRSharpness") ?: this.fsrSharpness,
+            sgsrSharpness = intAt("EmuCore/GS/SGSRSharpness") ?: this.sgsrSharpness,
             loadTextureReplacements = boolAt("EmuCore/GS/LoadTextureReplacements") ?: this.loadTextureReplacements,
             loadTextureReplacementsAsync = boolAt("EmuCore/GS/LoadTextureReplacementsAsync") ?: this.loadTextureReplacementsAsync,
             precacheTextureReplacements = boolAt("EmuCore/GS/PrecacheTextureReplacements") ?: this.precacheTextureReplacements,
@@ -1457,6 +1460,7 @@ data class Settings(
         // written to warn about: it was still UPSCALER_FSR1 when SGSR was added.
         put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR_EDGE).toString())
         put("EmuCore/GS", "FSRSharpness", "int", fsrSharpness.coerceIn(0, 100).toString())
+        put("EmuCore/GS", "SGSRSharpness", "int", sgsrSharpness.coerceIn(0, 200).toString())
         put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
         put("EmuCore/GS", "PrecacheTextureReplacements", "bool", precacheTextureReplacements.toString())
@@ -1633,6 +1637,7 @@ data class Settings(
             casSharpness != other.casSharpness ||
             upscaler != other.upscaler ||
             fsrSharpness != other.fsrSharpness ||
+            sgsrSharpness != other.sgsrSharpness ||
             accurateBlendingUnit != other.accurateBlendingUnit ||
             hwMipmap != other.hwMipmap ||
             triFilter != other.triFilter ||
@@ -1859,6 +1864,7 @@ data class Settings(
         put("casSharpness", casSharpness)
         put("upscaler", upscaler)
         put("fsrSharpness", fsrSharpness)
+        put("sgsrSharpness", sgsrSharpness)
         put("loadTextureReplacements", loadTextureReplacements)
         put("loadTextureReplacementsAsync", loadTextureReplacementsAsync)
         put("precacheTextureReplacements", precacheTextureReplacements)
@@ -2149,6 +2155,7 @@ data class Settings(
                 casSharpness = json.optInt("casSharpness", def.casSharpness),
                 upscaler = json.optInt("upscaler", def.upscaler),
                 fsrSharpness = json.optInt("fsrSharpness", def.fsrSharpness),
+                sgsrSharpness = json.optInt("sgsrSharpness", def.sgsrSharpness),
                 loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.loadTextureReplacements),
                 loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.loadTextureReplacementsAsync),
                 precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.precacheTextureReplacements),
@@ -2395,6 +2402,7 @@ data class Settings(
             if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
             if (current.upscaler            != base.upscaler)            j.put("upscaler", current.upscaler)
             if (current.fsrSharpness        != base.fsrSharpness)        j.put("fsrSharpness", current.fsrSharpness)
+            if (current.sgsrSharpness       != base.sgsrSharpness)       j.put("sgsrSharpness", current.sgsrSharpness)
             if (current.loadTextureReplacements != base.loadTextureReplacements) j.put("loadTextureReplacements", current.loadTextureReplacements)
             if (current.loadTextureReplacementsAsync != base.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.loadTextureReplacementsAsync)
             if (current.precacheTextureReplacements != base.precacheTextureReplacements) j.put("precacheTextureReplacements", current.precacheTextureReplacements)
@@ -2658,6 +2666,7 @@ data class Settings(
             casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
             upscaler = if (overrides.has("upscaler")) overrides.getInt("upscaler") else base.upscaler,
             fsrSharpness = if (overrides.has("fsrSharpness")) overrides.getInt("fsrSharpness") else base.fsrSharpness,
+            sgsrSharpness = if (overrides.has("sgsrSharpness")) overrides.getInt("sgsrSharpness") else base.sgsrSharpness,
             loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.loadTextureReplacements,
             loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.loadTextureReplacementsAsync,
             precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.precacheTextureReplacements,

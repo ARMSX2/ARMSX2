@@ -415,22 +415,31 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = upscalerValues.indexOf(s.upscaler).coerceAtLeast(0),
                 onChange = { apply(s.copy(upscaler = upscalerValues[it])) },
             )
+            // One slider per upscaler, not one shared. They are never both on screen, and the
+            // ranges genuinely differ: FSR1's RCAS is natively 0..100, SGSR's edge sharpness is
+            // 0..2 with 100 as Qualcomm's default. Sharing a field would redefine an existing FSR
+            // configuration the moment SGSR was picked.
             if (upscalerOn) {
                 SettingsDivider()
-                // Shared slider. FSR1 maps it onto RCAS stops and SGSR onto its 0..2 edge
-                // sharpness, so the number means different things, but it is the same intent and
-                // a second slider would only invite disagreement between them.
-                IntSliderRow(
-                    label = str(
-                        if (sgsrOn) "renderer.sgsr.sharpness.label"
-                        else "renderer.fsr1.sharpness.label",
-                    ),
-                    value = s.fsrSharpness.coerceIn(0, 100),
-                    min = 0,
-                    max = 100,
-                    valueFormatter = { "$it%" },
-                    onChange = { apply(s.copy(fsrSharpness = it)) },
-                )
+                if (sgsrOn) {
+                    IntSliderRow(
+                        label = str("renderer.sgsr.sharpness.label"),
+                        value = s.sgsrSharpness.coerceIn(0, 200),
+                        min = 0,
+                        max = 200,
+                        valueFormatter = { "$it%" },
+                        onChange = { apply(s.copy(sgsrSharpness = it)) },
+                    )
+                } else {
+                    IntSliderRow(
+                        label = str("renderer.fsr1.sharpness.label"),
+                        value = s.fsrSharpness.coerceIn(0, 100),
+                        min = 0,
+                        max = 100,
+                        valueFormatter = { "$it%" },
+                        onChange = { apply(s.copy(fsrSharpness = it)) },
+                    )
+                }
             }
             val fsr1On = upscalerOn
             // FSR's second pass IS RCAS, a contrast-adaptive sharpener, so the core runs one or

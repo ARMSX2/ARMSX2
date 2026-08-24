@@ -909,6 +909,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 
 		OpEqu(CAS_Sharpness) &&
 		OpEqu(FSR_Sharpness) &&
+		OpEqu(SGSR_Sharpness) &&
 		OpEqu(ShadeBoost_Brightness) &&
 		OpEqu(ShadeBoost_Contrast) &&
 		OpEqu(ShadeBoost_Saturation) &&
@@ -1168,6 +1169,8 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(CAS_Sharpness, "CASSharpness");
 	// Bitfield, not Entry: FSR_Sharpness is a u8, same as CAS_Sharpness above.
 	SettingsWrapBitfieldEx(FSR_Sharpness, "FSRSharpness");
+	// Bitfield for the same reason: u8.
+	SettingsWrapBitfieldEx(SGSR_Sharpness, "SGSRSharpness");
 	SettingsWrapBitfieldEx(Dithering, "dithering_ps2");
 	SettingsWrapBitfieldEx(MaxAnisotropy, "MaxAnisotropy");
 	SettingsWrapBitfieldEx(SWExtraThreads, "extrathreads");

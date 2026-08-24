@@ -1708,7 +1708,7 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 		s_logged_w = dst_width;
 		s_logged_h = dst_height;
 		Console.WriteLnFmt("@@ANDROID_SGSR@@ upscaling {}x{} -> {}x{} (sharpness {}{})",
-			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.FSR_Sharpness,
+			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.SGSR_Sharpness,
 			edge_direction ? ", edge-direction" : "");
 	}
 
@@ -1734,12 +1734,11 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	const float uv_scale_x = static_cast<float>(src_rect.width()) / src_tex_w;
 	const float uv_scale_y = static_cast<float>(src_rect.height()) / src_tex_h;
 
-	// Qualcomm's edge sharpness runs 0..2 with 1.0 as their default, and the whole range has to
-	// be reachable — stopping at 1.0 was what Eden's change fixed upstream. Rather than widen
-	// the slider to 200% for one of three upscalers, each percent is worth 2x here: 100% is
-	// still 100%, and it still gets you the full range. (CamilleLaVey's suggestion; the widened
-	// slider was the obvious reading of the upstream change and the worse one.)
-	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f, 0.0f, 2.0f);
+	// Its OWN setting, 0..200, where 100 is Qualcomm's default of 1.0. Sharing FSR's would mean
+	// an existing FSR configuration quietly means something different under SGSR, and widening
+	// FSR's to reach 2.0 would change what every FSR value already in the wild means. Neither is
+	// worth saving one setting. See Pcsx2Config::GSOptions::SGSR_Sharpness.
+	const float sharpness = std::clamp(static_cast<float>(GSConfig.SGSR_Sharpness) * 0.01f, 0.0f, 2.0f);
 
 	std::array<u32, NUM_SGSR_CONSTANTS> consts = {};
 	const auto put_f = [&consts](u32 i, float v) { std::memcpy(&consts[i], &v, sizeof(float)); };

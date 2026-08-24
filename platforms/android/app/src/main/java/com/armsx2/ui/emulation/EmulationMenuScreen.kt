@@ -879,17 +879,26 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             onSelect = { v -> viewModel.updateSettings { it.copy(upscaler = v) } },
         )
         if (fsr1On) {
-            com.armsx2.ui.settings.IntSliderRow(
-                label = str(
-                    if (sgsrOn) "renderer.sgsr.sharpness.label"
-                    else "renderer.fsr1.sharpness.label",
-                ),
-                value = settings.fsrSharpness.coerceIn(0, 100),
-                min = 0,
-                max = 100,
-                valueFormatter = { "$it%" },
-                onChange = { pct -> viewModel.updateSettings { it.copy(fsrSharpness = pct) } },
-            )
+            // Separate settings, separate ranges — see the note in RendererTab.
+            if (sgsrOn) {
+                com.armsx2.ui.settings.IntSliderRow(
+                    label = str("renderer.sgsr.sharpness.label"),
+                    value = settings.sgsrSharpness.coerceIn(0, 200),
+                    min = 0,
+                    max = 200,
+                    valueFormatter = { "$it%" },
+                    onChange = { pct -> viewModel.updateSettings { it.copy(sgsrSharpness = pct) } },
+                )
+            } else {
+                com.armsx2.ui.settings.IntSliderRow(
+                    label = str("renderer.fsr1.sharpness.label"),
+                    value = settings.fsrSharpness.coerceIn(0, 100),
+                    min = 0,
+                    max = 100,
+                    valueFormatter = { "$it%" },
+                    onChange = { pct -> viewModel.updateSettings { it.copy(fsrSharpness = pct) } },
+                )
+            }
         }
     }
     HorizontalOptions(
