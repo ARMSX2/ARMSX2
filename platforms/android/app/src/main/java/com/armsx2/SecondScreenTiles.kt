@@ -104,23 +104,25 @@ object SecondScreenLayout {
     )
 
     /**
-     * The default as it stood before cover art and the RetroAchievements read-outs existed.
+     * Tiles introduced after the panel shipped, appended once to layouts that predate them.
      *
-     * Kept so the new defaults can reach people who never customised their panel. A saved layout
-     * normally wins over DEFAULT -- that is the whole point of saving it -- but a layout that is
-     * byte-for-byte the OLD default is not a choice anyone made, it is just what they were given.
-     * Those get upgraded once; anything the user actually arranged is left alone.
+     * The first attempt at this only upgraded a layout that was byte-for-byte the old default,
+     * on the reasoning that anything else was a deliberate arrangement to leave alone. That
+     * reasoning fails for the ordinary case: toggle a single tile on and off and the layout is no
+     * longer the default, so a user who had barely touched it never saw the new tiles at all.
+     *
+     * Appending is additive and order-preserving -- whatever the user arranged stays arranged,
+     * the new tiles land at the end, and removing one sticks because the version stamp means this
+     * runs exactly once.
      */
-    private val DEFAULT_V1 = listOf(
-        SecondScreenTile.TITLE,
-        SecondScreenTile.FPS,
-        SecondScreenTile.BATTERY,
-        SecondScreenTile.CLOCK,
-        SecondScreenTile.SAVE,
-        SecondScreenTile.LOAD,
-        SecondScreenTile.FAST_FORWARD,
-        SecondScreenTile.PAUSE,
-        SecondScreenTile.SCREENSHOT,
+    private const val PREF_LAYOUT_VERSION = "secondScreen.layoutVersion"
+    private const val LAYOUT_VERSION = 2
+
+    private val V2_ADDITIONS = listOf(
+        SecondScreenTile.COVER,
+        SecondScreenTile.ACHIEVEMENTS,
+        SecondScreenTile.RA_POINTS,
+        SecondScreenTile.RICH_PRESENCE,
     )
 
     /** Bumped on any change so the panel knows to rebuild and Compose knows to recompose. */
@@ -155,10 +157,19 @@ object SecondScreenLayout {
         runCatching {
             val raw = MainActivityRuntime.prefs.getString(PREF_TILES, null)
             tiles = if (raw == null) DEFAULT else parse(raw)
-            // One-time upgrade for panels still sitting on the untouched old default.
-            if (tiles == DEFAULT_V1) {
-                tiles = DEFAULT
-                persist()
+            val version = MainActivityRuntime.prefs.getInt(PREF_LAYOUT_VERSION, 1)
+            if (version < LAYOUT_VERSION) {
+                // A brand-new panel already has them from DEFAULT; an existing one gets whatever
+                // it is missing appended, exactly once.
+                if (raw != null) {
+                    val missing = V2_ADDITIONS.filterNot { it in tiles }
+                    if (missing.isNotEmpty()) {
+                        tiles = tiles + missing
+                        persist()
+                    }
+                }
+                MainActivityRuntime.prefs.edit()
+                    .putInt(PREF_LAYOUT_VERSION, LAYOUT_VERSION).apply()
             }
             columnCount = MainActivityRuntime.prefs.getInt(PREF_COLUMNS, 3).coerceIn(1, 6)
             tileHeightDp = MainActivityRuntime.prefs.getInt(PREF_TILE_HEIGHT, 0).coerceIn(0, 200)
