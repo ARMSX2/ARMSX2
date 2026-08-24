@@ -383,6 +383,13 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	m_probe_windows.clear();
 	m_expand_cache.NextFrame();
 
+	// The scissor census, out to stats.json so a run's scissor bill is readable without an emulog.
+	// Unconditional: it says what the road NOT taken would have cost, so it has to be counted on
+	// the road that was.
+	g_perfmon.Put(GSPerfMon::TileGpuScissorDraws, static_cast<double>(m_frame.scissor_draws));
+	g_perfmon.Put(GSPerfMon::TileGpuScissorCuts, static_cast<double>(m_frame.scissor_cuts));
+	g_perfmon.Put(GSPerfMon::TileGpuScissorExtraCalls, static_cast<double>(m_frame.scissor_extra_calls));
+
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 	{
@@ -1268,7 +1275,7 @@ void GSRendererTileGpu::PurgeTextureCache(bool sources, bool targets, bool hash_
 	m_surface_version.clear();
 }
 
-GSVector4i GSRendererTileGpu::ComputeDrawRect() const
+GSVector4i GSRendererTileGpu::ComputeDrawBBox() const
 {
 	GSVector4i bbox;
 	if (m_vt.m_primclass == GS_LINE_CLASS || m_vt.m_primclass == GS_POINT_CLASS)
@@ -1279,7 +1286,12 @@ GSVector4i GSRendererTileGpu::ComputeDrawRect() const
 		bbox += GSVector4i(-1, -1, 1, 1);
 	bbox += GSVector4i(0, 0, 1, 1);
 
-	return bbox.rintersect(m_context->scissor.in);
+	return bbox;
+}
+
+GSVector4i GSRendererTileGpu::ComputeDrawRect() const
+{
+	return ComputeDrawBBox().rintersect(m_context->scissor.in);
 }
 
 // The Tile renderer's PassSimObserveDraw, ported to the plain GSRenderer base. Every input
@@ -1737,17 +1749,20 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto stat = [this, n](auto get) {
 		std::vector<u32> v(m_model_frames.size());
 		double sum = 0.0;
+		u32 worst = 0;
 		for (size_t i = 0; i < m_model_frames.size(); i++)
 		{
 			v[i] = get(m_model_frames[i]);
 			sum += v[i];
+			worst = std::max(worst, v[i]);
 		}
 		std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
 		struct
 		{
 			double mean;
 			u32 p50;
-		} r{sum / n, v[v.size() / 2]};
+			u32 max;
+		} r{sum / n, v[v.size() / 2], worst};
 		return r;
 	};
 	using MF = ModelFrame;
@@ -1907,6 +1922,24 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"%.2f   guard de-specialized %.2f / %u passes carrying %.2f / %u draws",
 		vruns.mean, vruns.p50, vrunsu.mean, vrunsd.mean, vrunsd.p50, vrunsu.mean - vrunsd.mean, m_max_spec_binds,
 		vprog.mean, vprogd.mean, sgp.mean, sgp.p50, sgd.mean, sgd.p50);
+	// The GS scissor priced as a device question: what the clip-plane road buys, and what the
+	// per-call vkCmdSetScissor road that needs no device feature would cost instead. Runs on both
+	// roads, so the arms are directly comparable.
+	{
+		const auto scdraws = stat([](const MF& f) { return f.scissor_draws; });
+		const auto scsub = stat([](const MF& f) { return f.scissor_subrect; });
+		const auto sccut = stat([](const MF& f) { return f.scissor_cuts; });
+		const auto scdist = stat([](const MF& f) { return f.scissor_distinct; });
+		const auto scmax = stat([](const MF& f) { return f.scissor_pass_distinct_max; });
+		const auto scex = stat([](const MF& f) { return f.scissor_extra_calls; });
+		Console.WriteLn("  scissor: draws %.2f / %u   narrower than target %.2f / %u (%.2f%%)   cuts the draw "
+						"%.2f / %u (%.2f%%)   distinct rects %.2f / %u summed over passes, most in one pass "
+						"%.2f / %u / %u worst   PER-CALL-SCISSOR extra calls %.2f / %u / %u worst",
+			scdraws.mean, scdraws.p50, scsub.mean, scsub.p50,
+			(scdraws.mean > 0.0) ? (scsub.mean * 100.0 / scdraws.mean) : 0.0, sccut.mean, sccut.p50,
+			(scdraws.mean > 0.0) ? (sccut.mean * 100.0 / scdraws.mean) : 0.0, scdist.mean, scdist.p50, scmax.mean,
+			scmax.p50, scmax.max, scex.mean, scex.p50, scex.max);
+	}
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -3488,7 +3521,8 @@ bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 // frame vertex stream.
 void GSRendererTileGpu::AccumulateDraw()
 {
-	const GSVector4i r = ComputeDrawRect();
+	const GSVector4i bbox = ComputeDrawBBox();
+	const GSVector4i r = bbox.rintersect(m_context->scissor.in);
 	if (r.rempty())
 		return;
 
@@ -4358,6 +4392,9 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
 	pd.rect = r;
 	pd.scissor = ctx->scissor.in;
+	// Whether the scissor rejects anything of THIS draw, which is not the same question as whether
+	// it is narrower than the target: the bbox is what the geometry covers, r is what survives.
+	pd.scissor_cuts = !bbox.eq(r);
 	pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
 	// Make sure the surfaces are in the plan's target list even when no prep op named them.
 	PlanTargetIndex(fb_id);
@@ -4655,6 +4692,16 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			if (pd.afail_keep_alpha)
 				sr.blend |= kGSTileBlendAfailKeepAlpha;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
+
+			// The scissor census's per-draw half. `dim` is this draw's colour target, so a scissor
+			// that swallows it whole rejects nothing whatever the geometry does; `scissor_cuts` is
+			// the narrower population that actually loses fragments to it.
+			m_frame.scissor_draws++;
+			const GSVector4i target_rect(0, 0, dim.x, dim.y);
+			if (!pd.scissor.rintersect(target_rect).eq(target_rect))
+				m_frame.scissor_subrect++;
+			if (pd.scissor_cuts)
+				m_frame.scissor_cuts++;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
@@ -4921,6 +4968,31 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					continue; // already a new call, for the sampled-binding key
 				if (m_plan_variant_keys[d] != m_plan_variant_keys[d - 1])
 					m_frame.variant_extra_calls++;
+			}
+
+			// ...and the same arithmetic for the SCISSOR, which is not a cut today at all: it rides as
+			// four vertex clip planes, so one indirect call carries any number of scissors. A device
+			// without shaderClipDistance has to set it per call instead, and this is what that costs --
+			// the boundaries where the scissor changes and the pipeline run and the sampled-binding key
+			// both do not. Counted whichever road this device took, so the two arms report the same
+			// number off the same frame.
+			m_scissor_keys.clear();
+			for (u32 d = i; d < j; d++)
+			{
+				const GSVector4i& sc = m_plan_pending[d].scissor;
+				m_scissor_keys.push_back(gsTileGpuScissorKey(sc.x, sc.y, sc.z, sc.w));
+			}
+			const u32 scissors_here = gsTileGpuSortUniqueCount(m_scissor_keys);
+			m_frame.scissor_distinct += scissors_here;
+			m_frame.scissor_pass_distinct_max = std::max(m_frame.scissor_pass_distinct_max, scissors_here);
+			for (u32 d = i + 1; d < j; d++)
+			{
+				if (PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
+					continue; // a new pipeline run, so already a new call
+				if (m_plan_bind_keys[d] != m_plan_bind_keys[d - 1])
+					continue; // already a new call, for the sampled-binding key
+				if (!m_plan_pending[d].scissor.eq(m_plan_pending[d - 1].scissor))
+					m_frame.scissor_extra_calls++;
 			}
 
 			// A pass with a DATE draw snapshots its colour target before opening.

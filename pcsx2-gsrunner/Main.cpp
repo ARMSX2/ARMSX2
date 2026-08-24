@@ -274,6 +274,15 @@ static double s_last_depth_policy_switches = 0;
 static u64 s_total_depth_policy_switches = 0;
 static double s_last_depth_passes_saved = 0;
 static u64 s_total_depth_passes_saved = 0;
+// The TileGpu scissor census. Counted on whichever scissor road the device took, so a run on either
+// reports what the other would have cost: draws planned, draws the scissor rejects part of, and the
+// indirect calls a per-call vkCmdSetScissor adds over the clip-plane road.
+static double s_last_scissor_draws = 0;
+static u64 s_total_scissor_draws = 0;
+static double s_last_scissor_cuts = 0;
+static u64 s_total_scissor_cuts = 0;
+static double s_last_scissor_extra_calls = 0;
+static u64 s_total_scissor_extra_calls = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -526,6 +535,9 @@ void Host::BeginPresentFrame()
 		update_stat(GSPerfMon::TileGpuDepthMergedFrames, s_total_depth_merged_frames, s_last_depth_merged_frames);
 		update_stat(GSPerfMon::TileGpuDepthPolicySwitches, s_total_depth_policy_switches, s_last_depth_policy_switches);
 		update_stat(GSPerfMon::TileGpuDepthPassesSaved, s_total_depth_passes_saved, s_last_depth_passes_saved);
+		update_stat(GSPerfMon::TileGpuScissorDraws, s_total_scissor_draws, s_last_scissor_draws);
+		update_stat(GSPerfMon::TileGpuScissorCuts, s_total_scissor_cuts, s_last_scissor_cuts);
+		update_stat(GSPerfMon::TileGpuScissorExtraCalls, s_total_scissor_extra_calls, s_last_scissor_extra_calls);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -1587,6 +1599,9 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"tilegpu_depth_merged_frames\": %" PRIu64 ",\n", s_total_depth_merged_frames);
 	std::fprintf(fp.get(), "    \"tilegpu_depth_policy_switches\": %" PRIu64 ",\n", s_total_depth_policy_switches);
 	std::fprintf(fp.get(), "    \"tilegpu_depth_passes_saved\": %" PRIu64 ",\n", s_total_depth_passes_saved);
+	std::fprintf(fp.get(), "    \"tilegpu_scissor_draws\": %" PRIu64 ",\n", s_total_scissor_draws);
+	std::fprintf(fp.get(), "    \"tilegpu_scissor_cuts\": %" PRIu64 ",\n", s_total_scissor_cuts);
+	std::fprintf(fp.get(), "    \"tilegpu_scissor_extra_calls\": %" PRIu64 ",\n", s_total_scissor_extra_calls);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	// The same population, split by cause, so an attribution round needs no teardown-ordering print
 	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader

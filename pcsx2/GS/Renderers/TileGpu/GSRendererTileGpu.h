@@ -238,6 +238,15 @@ constexpr u32 gsTileGpuMaxSpecializationBinds(int setting, u32 device_answer)
 	return device_answer;
 }
 
+/// A GS scissor as one comparable word, for counting distinct rects. SCAX0/SCAY0/SCAX1/SCAY1 are
+/// eleven-bit register fields and scissor.in adds one to the exclusive edges, so every edge is in
+/// [0, 2048] and the four pack into a u64 without loss.
+constexpr u64 gsTileGpuScissorKey(s32 x0, s32 y0, s32 x1, s32 y1)
+{
+	return static_cast<u64>(static_cast<u16>(x0)) | (static_cast<u64>(static_cast<u16>(y0)) << 16) |
+		   (static_cast<u64>(static_cast<u16>(x1)) << 32) | (static_cast<u64>(static_cast<u16>(y1)) << 48);
+}
+
 /// The same variant key with the frozen per-draw GS state withheld -- every axis back on the state
 /// row, the road/texel/self/quantise half untouched.
 ///
@@ -914,6 +923,10 @@ private:
 	GSVramModel m_vram_model;
 	GSTileTargetPool m_target_pool;
 
+	// The screen-space bbox of the current draw, BEFORE the scissor. Split out of ComputeDrawRect
+	// so a caller can tell a scissor that rejects part of this draw from one that does not.
+	GSVector4i ComputeDrawBBox() const;
+
 	// The screen-space bbox of the current draw, scissor-clipped — the Tile renderer's
 	// ComputeDrawRect, which reads only base state, replicated here (it is not a base method).
 	GSVector4i ComputeDrawRect() const;
@@ -1040,6 +1053,9 @@ private:
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
 		GSVector4i scissor;   // the GS scissor (SCISSOR register), exclusive right/bottom
+		// The scissor rejects part of THIS draw, as against merely being narrower than the target.
+		// The two are different populations: a draw wholly inside a narrow scissor loses nothing.
+		bool scissor_cuts;
 		u32 draw_index;
 		u32 first_prep_op;    // reconciliation ops that must run before this draw's pass
 		u32 prep_op_count;
@@ -2298,6 +2314,19 @@ private:
 		u32 specguard_passes = 0;
 		u32 specguard_draws = 0;
 
+		// The GS scissor, priced as a device question. It rides as four vertex-shader clip planes,
+		// which is a device FEATURE (shaderClipDistance) not every driver offers -- the Mali blob on
+		// the RG477V does not. The alternative that needs no feature is a per-call vkCmdSetScissor,
+		// and what it costs is one more indirect call wherever the scissor changes inside a run that
+		// nothing else cuts. These columns are that price, counted off the plan the executor
+		// actually submits and against the executor's own cut rule.
+		u32 scissor_draws = 0;   // draws the plan carries
+		u32 scissor_subrect = 0; // ...whose scissor is narrower than their colour target
+		u32 scissor_cuts = 0;    // ...and rejects part of that draw's own geometry
+		u32 scissor_distinct = 0;          // distinct scissor rects, summed over the frame's passes
+		u32 scissor_pass_distinct_max = 0; // ...the most any one pass of this frame carried
+		u32 scissor_extra_calls = 0;       // calls a per-call scissor adds: a cut nothing else makes
+
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them
 		// needs anything at all, which is what clut_no_stall counts.
@@ -2359,7 +2388,8 @@ private:
 	// stays small while carrying the keys an offline instrlen table joins against.
 	/// Sort, unique in place, and say how many distinct values were left. Free function because the
 	/// two callers want the sorted vector afterwards as much as they want the count.
-	static u32 gsTileGpuSortUniqueCount(std::vector<u32>& v)
+	template <typename T>
+	static u32 gsTileGpuSortUniqueCount(std::vector<T>& v)
 	{
 		std::sort(v.begin(), v.end());
 		v.erase(std::unique(v.begin(), v.end()), v.end());
@@ -2368,6 +2398,9 @@ private:
 	/// Scratch for the two counts above, held rather than local so a pass costs no allocation.
 	std::vector<u32> m_shape_keys;
 	std::vector<u32> m_shape_keys_despec;
+	/// ...and for the per-pass scissor census. A GS scissor is four register fields of eleven bits,
+	/// so [0, 2048] on every edge and the four pack into one u64 without loss.
+	std::vector<u64> m_scissor_keys;
 
 	struct PassShape
 	{
