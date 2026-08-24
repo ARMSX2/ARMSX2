@@ -1915,9 +1915,9 @@ bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPage
 // so the slot half of WritebackHoistCollides has nothing to say about it.
 bool GSRendererTileGpu::DonorHoistCollides(GSTileSurfaceId owner, const GSPageBitmap& pages) const
 {
-	if (owner == m_open_color && pages.intersects(m_open_color_written))
+	if (owner == m_open_pass.color && pages.intersects(m_open_color_written))
 		return true;
-	if (m_open_z_used && owner == m_open_z && pages.intersects(m_open_z_written))
+	if (m_open_pass.depth_used && owner == m_open_pass.depth && pages.intersects(m_open_z_written))
 		return true;
 	return false;
 }
@@ -2898,11 +2898,7 @@ void GSRendererTileGpu::AliasSteal(const GSPageBitmap& pages)
 
 void GSRendererTileGpu::BreakOpenPass()
 {
-	m_open_color = kGSTileNoSurface;
-	m_open_z = kGSTileNoSurface;
-	m_open_z_used = false;
-	m_open_z_write = false;
-	m_open_z_test = false;
+	m_open_pass = GSTileGpuPassKey{};
 	m_open_color_written.clear();
 	m_open_z_written.clear();
 	m_open_read.clear();
@@ -2950,9 +2946,9 @@ bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 			return true;
 
 		const GSTileSurfaceId src = m_plan_target_surfaces[op.target];
-		if (src == m_open_color && p.intersects(m_open_color_written))
+		if (src == m_open_pass.color && p.intersects(m_open_color_written))
 			return true;
-		if (m_open_z_used && src == m_open_z && p.intersects(m_open_z_written))
+		if (m_open_pass.depth_used && src == m_open_pass.depth && p.intersects(m_open_z_written))
 			return true;
 	}
 	return false;
@@ -3136,15 +3132,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 	}
 
-	// Which pass is open for this draw? The plan build groups on the colour+depth surface pair and
-	// the depth mode, so a draw that differs from the pass's first draw in any of them starts a new
-	// pass and nothing the earlier draws did constrains its prep ops. Mirror of the grouping in
-	// BuildAndExecutePlan -- the two must stay in step.
-	if (fb_id != m_open_color || z_used != m_open_z_used || (z_used && z_id != m_open_z) ||
-		z_write != m_open_z_write || z_test != m_open_z_test)
-	{
+	// Which pass is open for this draw? A draw whose key differs from the open pass's starts a new
+	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
+	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
+	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(fb_id, z_id, gsTileGpuDepthModeFor(z_used, z_test, z_write));
+	if (draw_key != m_open_pass)
 		BreakOpenPass();
-	}
 
 	PendingDraw pd = {};
 	pd.tex_source = kGSTileNoSurface;
@@ -3684,8 +3677,9 @@ void GSRendererTileGpu::AccumulateDraw()
 	// this draw's own, which the eligibility test already excluded.
 	if (pd.tex_source != kGSTileNoSurface)
 	{
-		bool need_break = m_open_color != kGSTileNoSurface &&
-						  (pd.tex_source == m_open_color || (m_open_z_used && pd.tex_source == m_open_z));
+		bool need_break = m_open_pass.color != kGSTileNoSurface &&
+						  (pd.tex_source == m_open_pass.color ||
+							  (m_open_pass.depth_used && pd.tex_source == m_open_pass.depth));
 		if (!need_break)
 		{
 			u32 s = 0;
@@ -3712,11 +3706,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// remember the pages it renders into and the ring pages it samples, so a later draw's
 	// writeback can be tested against it. Last word in the function on pass structure -- nothing
 	// below here can still break the pass.
-	m_open_color = fb_id;
-	m_open_z = z_id;
-	m_open_z_used = z_used;
-	m_open_z_write = z_write;
-	m_open_z_test = z_test;
+	m_open_pass = draw_key;
 	if (color_written)
 		m_open_color_written |= fb_pages;
 	if (z_write)
@@ -3736,6 +3726,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.z_used = z_used;
 	pd.z_write = z_write;
 	pd.z_test = z_test;
+	pd.depth_mode = draw_key.depth_mode;
 	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
 	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
 	pd.rect = r;
@@ -3925,13 +3916,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		while (i < m_plan_draws.size())
 		{
 			const PendingDraw& first = m_plan_pending[i];
+			const GSTileGpuPassKey first_key = gsTileGpuPassKeyFor(first.color_surface, first.z_surface, first.depth_mode);
 			u32 j = i + 1;
 			while (j < m_plan_draws.size())
 			{
 				const PendingDraw& pd = m_plan_pending[j];
-				if (pd.break_before || pd.color_surface != first.color_surface || pd.z_used != first.z_used ||
-					(pd.z_used && pd.z_surface != first.z_surface) || pd.z_write != first.z_write ||
-					pd.z_test != first.z_test)
+				if (pd.break_before ||
+					gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode) != first_key)
 					break;
 				j++;
 			}
@@ -4018,8 +4009,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// affordable.
 			for (u32 d = i + 1; d < j; d++)
 			{
-				if (m_plan_topologies[d] != m_plan_topologies[d - 1] ||
-					m_plan_blend_keys[d] != m_plan_blend_keys[d - 1])
+				if (PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
 					continue; // a new pipeline run, so already a new call
 				if (m_plan_pending[d].tex_slot != m_plan_pending[d - 1].tex_slot)
 					continue; // already a new call, for the rule-2 slot
@@ -4041,12 +4031,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					break;
 				}
 			}
-			// GS depth grows towards the viewer: a real test is GEQUAL, a write-only draw is ALWAYS,
-			// and the write follows ZMSK independently of the test. z_used == (z_write || z_test).
-			pass.depth_mode = !first.z_used ? GSDevice::GSTileGpuDepthMode::None
-				: (first.z_test ? (first.z_write ? GSDevice::GSTileGpuDepthMode::TestWrite
-												 : GSDevice::GSTileGpuDepthMode::TestNoWrite)
-								: GSDevice::GSTileGpuDepthMode::WriteAlways);
+			pass.depth_mode = first_key.depth_mode;
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);

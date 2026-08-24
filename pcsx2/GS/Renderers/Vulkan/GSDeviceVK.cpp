@@ -8068,7 +8068,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			// submission per run instead of one per draw. A pipeline change (and, for a FIX-factor
 			// blend, a blend-constant set) is the only per-run cost; a slot change costs the call
 			// alone. This is the constant-cost submission the design bets on.
-			const bool have_blend = plan.blend_keys.size() == plan.draws.size();
 			// The sampled-binding key ends an indirect call too, but for a different reason: it is
 			// not pipeline state, it is the pair of indices the fragment shader reads the per-pass
 			// target array and the frame's source array at, and a descriptor array index has to be
@@ -8081,15 +8080,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			u32 d = pass.first_draw;
 			while (d < end)
 			{
-				const u32 topo = static_cast<u32>(plan.topologies[d]);
-				const u32 bkey = have_blend ? plan.blend_keys[d] : 0u;
+				const GSTileGpuPassPlan::GSTileGpuRunKey rkey = plan.RunKeyAt(d);
+				const u32 bkey = rkey.blend_key;
 				u32 run_end = d + 1;
-				while (run_end < end && static_cast<u32>(plan.topologies[run_end]) == topo &&
-					   (have_blend ? plan.blend_keys[run_end] : 0u) == bkey)
+				while (run_end < end && plan.RunKeyAt(run_end) == rkey)
 					run_end++;
 
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-					GetTileGpuPipeline(topo, depth_idx, bkey, pass.road_mask, pass.texel_mask));
+					GetTileGpuPipeline(static_cast<u32>(rkey.topology), depth_idx, bkey, pass.road_mask,
+						pass.texel_mask));
 				if (bkey & GSTileGpuPassPlan::kBlendEnable)
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.

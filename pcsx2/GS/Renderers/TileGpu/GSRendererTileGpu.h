@@ -81,6 +81,59 @@ u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCoun
 /// afterwards the question answers `true` for pages it just answered `false` for.
 bool gsTilePageByteTruthReachable(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
 
+/// The depth pipeline variant a draw takes, from the three depth facts the planner derives out of
+/// ZTE/ZTST/ZMSK and the alpha test's AFAIL fold. GS depth grows towards the viewer, so a real test
+/// is GEQUAL and a write-only draw is ALWAYS, and the write follows ZMSK independently of the test.
+/// z_used == (z_write || z_test) at every call site.
+///
+/// One function rather than an expression repeated per call site: the derivation is asked for by
+/// the pass key, by the per-draw plan array the executor picks its pipeline from, and by anything
+/// that wants to name a draw's depth variant, and two of those disagreeing would bind a pipeline
+/// that tests depth for a draw that must not.
+constexpr GSDevice::GSTileGpuDepthMode gsTileGpuDepthModeFor(bool z_used, bool z_test, bool z_write)
+{
+	if (!z_used)
+		return GSDevice::GSTileGpuDepthMode::None;
+	if (!z_test)
+		return GSDevice::GSTileGpuDepthMode::WriteAlways;
+	return z_write ? GSDevice::GSTileGpuDepthMode::TestWrite : GSDevice::GSTileGpuDepthMode::TestNoWrite;
+}
+
+/// What a draw must share with the pass ahead of it to join it rather than open a new one.
+///
+/// Two places group draws into passes -- accumulation, which needs to know the open pass while it
+/// is still deciding whether a prep op may be hoisted, and the plan build, which cuts the finished
+/// draw list into GSTileGpuPass ranges. They must produce the same boundaries or a draw's prep ops
+/// land in a different pass than the draw, so both ask this one type instead of each spelling the
+/// predicate out.
+struct GSTileGpuPassKey
+{
+	GSTileSurfaceId color = kGSTileNoSurface;
+	GSTileSurfaceId depth = kGSTileNoSurface; ///< compared only when depth_used
+	bool depth_used = false;
+	/// The pass's depth pipeline variant. ⚠️ In the key only because GSTileGpuPass carries one
+	/// depth_mode and the executor binds it per pass; it is pipeline state, not attachment state.
+	GSDevice::GSTileGpuDepthMode depth_mode = GSDevice::GSTileGpuDepthMode::None;
+
+	constexpr bool operator==(const GSTileGpuPassKey& o) const
+	{
+		return color == o.color && depth_used == o.depth_used && (!depth_used || depth == o.depth) &&
+			   depth_mode == o.depth_mode;
+	}
+	constexpr bool operator!=(const GSTileGpuPassKey& o) const { return !(*this == o); }
+};
+
+/// The pass key of a draw rendering into `color` and `depth` with depth variant `mode`.
+///
+/// The depth attachment's PRESENCE is `mode != None` rather than a fourth argument: the two are the
+/// same fact. gsTileGpuDepthModeFor returns None exactly when the draw neither tests nor writes
+/// depth, which is exactly when the pass needs no depth attachment.
+constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(
+	GSTileSurfaceId color, GSTileSurfaceId depth, GSDevice::GSTileGpuDepthMode mode)
+{
+	return GSTileGpuPassKey{color, depth, mode != GSDevice::GSTileGpuDepthMode::None, mode};
+}
+
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
 ///
 /// The memory model tracks guest bytes at block granularity and this has to answer in the same
@@ -309,6 +362,10 @@ private:
 		GSTileSurfaceId z_surface; // valid only if z_used
 		bool z_used;
 		bool z_write, z_test;
+		// The pipeline variant z_used/z_test/z_write add up to, derived ONCE at accumulation
+		// (gsTileGpuDepthModeFor) and read by everything downstream. The three bools above stay
+		// because the draw's state row carries them to the shader.
+		GSDevice::GSTileGpuDepthMode depth_mode;
 		bool break_before;    // this draw's prep ops cannot be hoisted over the open pass: it opens a new one
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
@@ -900,6 +957,15 @@ private:
 	// Resolve a surface's pool texture into the plan's target list (once per frame per surface).
 	u32 PlanTargetIndex(GSTileSurfaceId id);
 
+	// Draw `d`'s indirect-run key, off the plan arrays as they stand mid-build. The same key the
+	// executor cuts its runs on (GSTileGpuPassPlan::RunKeyAt) -- the plan does not exist yet at the
+	// point the call-cost counters need it, and two spellings of "what starts a new run" would make
+	// those counters describe a submission shape the executor does not produce.
+	GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey PlanRunKeyAt(u32 d) const
+	{
+		return GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey{m_plan_topologies[d], m_plan_blend_keys[d]};
+	}
+
 	// Copy one flushed batch's geometry into the frame streams, drive the memory model for its
 	// target and texture footprints (seeds, writebacks, claims), and record its indirect draw +
 	// PendingDraw. Fired from Draw() beside ObserveDraw().
@@ -954,11 +1020,9 @@ private:
 	// The read side is per RING SLOT, not per page: m_open_read says which pages the pass's
 	// draws sample and m_open_read_slot which slot each of them read (entry index + 1), because
 	// a page whose slot was superseded since is a different slot and rewriting it is invisible
-	// to the earlier read. The key below mirrors the grouping conditions exactly -- keep the two
-	// in step -- and everything resets whenever a pass breaks.
-	GSTileSurfaceId m_open_color = kGSTileNoSurface;
-	GSTileSurfaceId m_open_z = kGSTileNoSurface;
-	bool m_open_z_used = false, m_open_z_write = false, m_open_z_test = false;
+	// to the earlier read. m_open_pass is the grouping key itself, the same type the plan build
+	// groups on, so the two cannot drift; everything resets whenever a pass breaks.
+	GSTileGpuPassKey m_open_pass;
 	GSPageBitmap m_open_color_written;
 	GSPageBitmap m_open_z_written;
 	GSPageBitmap m_open_read;

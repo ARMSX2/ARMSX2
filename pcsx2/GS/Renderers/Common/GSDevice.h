@@ -2353,6 +2353,32 @@ public:
 		{
 			return (tex_slot & 0xFFFFu) | ((source_slot & 0xFFFFu) << 16);
 		}
+
+		/// The per-draw PIPELINE state an indirect run has to be uniform in. A run is a maximal
+		/// stretch of a pass's draws sharing it: the executor binds one pipeline and issues the
+		/// stretch as one vkCmdDrawIndexedIndirect, so a change here cuts the run and costs a
+		/// pipeline bind — never a pass break, because none of it is attachment state.
+		///
+		/// (The sampled-binding key cuts the CALL inside a run without changing the pipeline; see
+		/// bind_keys. It is not part of this key for that reason.)
+		struct GSTileGpuRunKey
+		{
+			GSTileGpuTopology topology = GSTileGpuTopology::Triangle;
+			u32 blend_key = 0;
+
+			constexpr bool operator==(const GSTileGpuRunKey& o) const
+			{
+				return topology == o.topology && blend_key == o.blend_key;
+			}
+			constexpr bool operator!=(const GSTileGpuRunKey& o) const { return !(*this == o); }
+		};
+
+		/// Draw `d`'s run key. One reader for the whole rule, so the executor's run loop and anything
+		/// that wants to predict its cuts cannot disagree about what a run is.
+		GSTileGpuRunKey RunKeyAt(u32 d) const
+		{
+			return GSTileGpuRunKey{topologies[d], (blend_keys.size() == draws.size()) ? blend_keys[d] : 0u};
+		}
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;
