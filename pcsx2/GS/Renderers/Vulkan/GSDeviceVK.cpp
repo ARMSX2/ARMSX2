@@ -6986,9 +6986,18 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 				return kBlendFactors[f];
 			if (fold)
 				return VK_BLEND_FACTOR_ONE;
-			pxAssertMsg(carrier, "TileGpu pipeline names a dual-source factor with no road to carry it");
-			return (f == SRC1_COLOR || f == SRC1_ALPHA) ? VK_BLEND_FACTOR_SRC_ALPHA :
-														  VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			if (carrier)
+			{
+				return (f == SRC1_COLOR || f == SRC1_ALPHA) ? VK_BLEND_FACTOR_SRC_ALPHA :
+															  VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			}
+			// No road, so the factor stays what the table said -- which is legal only where the
+			// device really has the feature. A pipeline that reaches here without one is not slow or
+			// wrong, it fails to be created, and the frame goes on the eager fallback: worth an
+			// assert rather than a silent black.
+			pxAssertMsg(m_optional_extensions.tilegpu_dual_source,
+				"TileGpu pipeline names a dual-source factor on a device with no dual-source blending");
+			return kBlendFactors[f];
 		};
 		const bool restore = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrierRestore;
 		gpb.SetBlendAttachment(0, true, factor(b.src), factor(b.dst), kBlendOps[b.op],
