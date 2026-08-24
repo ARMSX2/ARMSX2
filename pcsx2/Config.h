@@ -998,6 +998,18 @@ struct Pcsx2Config
 					// cannot move a pixel) and the bisect lever afterwards. Never a
 					// user setting.
 					TileGpuUnionFragmentVariant : 1,
+					// Keep the per-draw narrowing of the road, decode arm, self-read
+					// use and 16-bit quantise, but stop freezing the per-draw GS
+					// state (the alpha test, fog, the texture function, the wrap
+					// modes, the filter, the coordinate kind, DATE, TEXA) into the
+					// fragment program -- the state row is read at run time again,
+					// which is exactly the program set that shipped before the
+					// specialization landed. Default off; the on position is the
+					// forced-vs-specialized gate's control arm (both roads must be
+					// byte-identical, because freezing a value a draw already
+					// carries cannot move its pixels) and the bisect lever
+					// afterwards. Never a user setting.
+					TileGpuUnspecializedFragmentVariant : 1,
 					// Override the device's answer to "would you rather render MORE
 					// passes than see the depth state change inside one?"
 					// (GSDevice::TileGpuPrefersDepthUniformPasses). Both off -- the

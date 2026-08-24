@@ -1464,8 +1464,16 @@ private:
 	}
 
 	// Draw `d`'s FRAGMENT VARIANT, as the executor will compile it: its own texel road, its own byte
-	// road decode arm, what it alone needs the destination read for, and whether its own output is
-	// what a 16-bit frame stores. `pass_self_mask` is the union its pass declares.
+	// road decode arm, what it alone needs the destination read for, whether its own output is what a
+	// 16-bit frame stores, and -- the specialization half -- the per-draw GS state the program takes
+	// as a compile-time constant instead of reading out of the state row. `pass_self_mask` is the
+	// union its pass declares.
+	//
+	// The specialization half is purely per draw. Every field is one this draw already carries in its
+	// row, so freezing it cannot change what the fragment computes; what it changes is that the value
+	// is not fetched and not branched on. There is no pass union for these axes and there should not
+	// be: the four masks above are ORed over the pass because the pass's DESCRIPTORS depend on them,
+	// and nothing about a pass depends on which alpha comparison its draws run.
 	//
 	// Two of the four axes are not purely per-draw and the promotion below is what keeps this
 	// mechanism PIXEL-INERT rather than merely narrower:
@@ -1496,7 +1504,29 @@ private:
 			self |= pass_self_mask & GSDevice::kGSTileGpuSelfDate;
 		if (pd.afail_keep_alpha)
 			self |= pass_self_mask & GSDevice::kGSTileGpuSelfMask;
-		return GSDevice::GSTileGpuPassPlan::PackVariantKey(pd.road_mask, texel, self, pd.quantise_5551);
+		GSDevice::GSTileGpuFragmentSpec spec;
+		if (!GSConfig.TileGpuUnspecializedFragmentVariant)
+		{
+			// The road mask answers the textured block's own gate, so no key bit is spent on
+			// tex_enable -- and the two must agree, because the shader stops testing the row once a
+			// road is named. Every road is set inside the tex_enable branch of AccumulateDraw, so
+			// they do; this is where that would be caught if it ever stopped being true.
+			pxAssertMsg(pd.tex_enable == (pd.road_mask != 0),
+				"TileGpu draw's texel road disagrees with whether it samples at all");
+			spec.valid = true;
+			spec.fst = pd.fst ? 1 : 0;
+			spec.ltf = pd.ltf ? 1 : 0;
+			spec.tfx = static_cast<u8>(pd.tfx & 3u);
+			spec.tcc = (pd.tcc != 0) ? 1 : 0;
+			spec.atst = static_cast<u8>(pd.atst);
+			spec.fge = pd.fge ? 1 : 0;
+			spec.date = static_cast<u8>(pd.date);
+			spec.wms = static_cast<u8>(pd.wms & 3u);
+			spec.wmt = static_cast<u8>(pd.wmt & 3u);
+			spec.texa = static_cast<u8>(pd.texa & 3u);
+			spec.NarrowToRoad(pd.road_mask);
+		}
+		return GSDevice::GSTileGpuPassPlan::PackVariantKey(pd.road_mask, texel, self, pd.quantise_5551, spec);
 	}
 
 	// Copy one flushed batch's geometry into the frame streams, drive the memory model for its

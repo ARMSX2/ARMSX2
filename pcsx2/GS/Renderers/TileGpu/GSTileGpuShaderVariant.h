@@ -41,6 +41,50 @@ namespace GSTileGpuShaderVariant
 	/// carries. Everything the mask does not name is not in the SPIR-V at all — on a tiler an
 	/// instruction that never executes still costs program size, and on the Adreno 650 crossing one
 	/// size threshold swings the whole frame.
+	/// The per-DRAW half: the GS state every draw this program serves carries, frozen so the fragment
+	/// stage neither loads it nor branches on it. -1 in a field means "read the state row", which is
+	/// what an unspecialized program and the pass-union fallback both get.
+	///
+	/// Each one deletes its own state-row load (a cat5 `isam` on a650, unhoistable because `v_row` is
+	/// a flat per-primitive varying) along with the compares and selects it fed and the delay slots
+	/// the scheduler could not fill around them — and, past a point, the live state that holds the
+	/// textured roads above the eight-register wave-size threshold. TILEGPU_SPEC_TEX is not keyed:
+	/// the road mask already says whether this program samples, so the device derives it.
+	inline std::string SpecDefines(const GSDevice::GSTileGpuFragmentSpec& spec)
+	{
+		if (!spec.valid)
+			return std::string();
+		return fmt::format("#define TILEGPU_SPEC_TEX 1\n"
+						   "#define TILEGPU_SPEC_FST {}\n"
+						   "#define TILEGPU_SPEC_LTF {}\n"
+						   "#define TILEGPU_SPEC_TFX {}\n"
+						   "#define TILEGPU_SPEC_TCC {}\n"
+						   "#define TILEGPU_SPEC_ATST {}\n"
+						   "#define TILEGPU_SPEC_FGE {}\n"
+						   "#define TILEGPU_SPEC_DATE {}\n"
+						   "#define TILEGPU_SPEC_WMS {}\n"
+						   "#define TILEGPU_SPEC_WMT {}\n"
+						   "#define TILEGPU_SPEC_TEXA {}\n",
+			spec.fst, spec.ltf, spec.tfx, spec.tcc, spec.atst, spec.fge, spec.date, spec.wms, spec.wmt,
+			spec.texa);
+	}
+
+	/// A name for one frozen-state set, for the compile log. Empty when nothing is frozen.
+	inline std::string SpecName(const GSDevice::GSTileGpuFragmentSpec& spec)
+	{
+		if (!spec.valid)
+			return std::string();
+		static constexpr const char* kTfx[4] = {"modulate", "decal", "highlight", "highlight2"};
+		static constexpr const char* kWrap[4] = {"repeat", "clamp", "rgnclamp", "rgnrepeat"};
+		static constexpr const char* kAtst[9] = {
+			"-", "?", "?", "less", "leq", "eq", "geq", "gt", "neq"};
+		return fmt::format(" spec{{{} {} {}{} atst={} {}{}wrap={}/{} texa={}}}", spec.fst ? "uv" : "stq",
+			spec.ltf ? "linear" : "nearest", kTfx[spec.tfx & 3], spec.tcc ? "+tcc" : "",
+			kAtst[(spec.atst < 9) ? spec.atst : 0], spec.fge ? "fog " : "",
+			(spec.date != 0) ? ((spec.date == 2) ? "date1 " : "date0 ") : "", kWrap[spec.wms & 3],
+			kWrap[spec.wmt & 3], spec.texa);
+	}
+
 	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)
 	{
 		return fmt::format("#define TILEGPU_ROAD_BYTE {}\n"

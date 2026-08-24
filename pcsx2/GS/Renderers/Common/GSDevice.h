@@ -2313,6 +2313,70 @@ public:
 		return kGSTileGpuTexelDirect32;
 	}
 
+	/// The per-draw GS state a fragment program may take as a COMPILE-TIME CONSTANT rather than
+	/// reading it out of the draw's state row. Every field here is one the fragment stage otherwise
+	/// loads and branches on, and freezing one pays three times over on the Adreno 650: the load goes
+	/// (a state-row read compiles to a cat5 `isam` with its own address arithmetic, and there are
+	/// seventeen of them, because `v_row` is a flat per-primitive varying that nothing can hoist into
+	/// a preamble); the compare/select chain the field fed goes; and the live state that held the
+	/// textured roads at twelve to sixteen registers goes with it. That last one is a THRESHOLD, not
+	/// a gradient — mesa's `regs * 2 <= reg_size_vec4 / 4` with a650's `reg_size_vec4 = 64` means a
+	/// program at eight full registers or fewer runs wave128 (1280 fragments in flight) and one at
+	/// nine runs wave64 (640). Measured offline against the device's own Turnip (26.1.2, a650): the
+	/// materialised-source road goes 390 instructions / 12 registers / wave64 to 89 / 4 / wave128,
+	/// the resident-target road 663 / 12 / wave64 to 172 / 6 / wave128, and the untextured road 192
+	/// / 4 to 16 / 3.
+	///
+	/// `valid` false means every field is read from the row, which is what the PASS-UNION fallback
+	/// must always do: a program standing in for many draws cannot freeze what they disagree about.
+	///
+	/// ⚠️ A specialized program must not move a pixel, and that holds only because each axis SELECTS
+	/// an arm and never rewrites one. `tex_enable` is deliberately absent: a draw's road mask is
+	/// non-zero exactly when it samples, so the textured block's own gate is already answered by the
+	/// road, and spending a key bit on it would only let the two disagree.
+	struct GSTileGpuFragmentSpec
+	{
+		bool valid = false;
+		u8 fst = 0;  ///< StateRow::fst — 0 = STQ coordinates, 1 = UV
+		u8 ltf = 0;  ///< StateRow::ltf — 0 = NEAREST, 1 = LINEAR
+		u8 tfx = 0;  ///< TEX0.TFX — 0 MODULATE, 1 DECAL, 2 HIGHLIGHT, 3 HIGHLIGHT2
+		u8 tcc = 0;  ///< TEX0.TCC — 1 = the texel carries alpha
+		u8 atst = 0; ///< StateRow::atst — 0 = no test, else TEST.ATST + 1 (3 LESS .. 8 NOTEQUAL)
+		u8 fge = 0;  ///< PRIM.FGE — 1 = fogged
+		u8 date = 0; ///< StateRow::date — 0 off, 1 = DATM 0, 2 = DATM 1
+		u8 wms = 0;  ///< CLAMP.WMS 0..3
+		u8 wmt = 0;  ///< CLAMP.WMT 0..3
+		u8 texa = 0; ///< the low two bits of StateRow::texa — bit 0 apply, bit 1 AEM
+
+		/// Zero every field the program THIS road mask compiles cannot read, so two draws whose
+		/// programs would come out character-identical do not become two keys, two modules, two
+		/// pipelines and two indirect calls.
+		///
+		/// Two rules, both structural (tilegpu.glsl's own `#if`s, not a guess about what pays):
+		/// the texture function, the coordinate kind, the filter and the wrap modes live inside
+		/// TILEGPU_TEXTURED, which no road at all takes out; and TEXA lives inside TILEGPU_TAP_ANY,
+		/// the two roads that go through the per-texel tap — a materialised source (rule 3) has its
+		/// TEXA baked into the image at build time and the shader never applies it again.
+		constexpr void NarrowToRoad(u32 road_mask)
+		{
+			if (road_mask == 0)
+			{
+				fst = ltf = tfx = tcc = wms = wmt = texa = 0;
+				return;
+			}
+			if ((road_mask & (kGSTileGpuRoadByte | kGSTileGpuRoadTarget)) == 0)
+				texa = 0;
+		}
+
+		constexpr bool operator==(const GSTileGpuFragmentSpec& o) const
+		{
+			return valid == o.valid && fst == o.fst && ltf == o.ltf && tfx == o.tfx && tcc == o.tcc &&
+				   atst == o.atst && fge == o.fge && date == o.date && wms == o.wms && wmt == o.wmt &&
+				   texa == o.texa;
+		}
+		constexpr bool operator!=(const GSTileGpuFragmentSpec& o) const { return !(*this == o); }
+	};
+
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
 	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
 	/// optionally declaring the raster-order self-read the blend and same-pixel feedback
@@ -2463,7 +2527,9 @@ public:
 
 		/// One per draw, parallel to `draws`: the draw's FRAGMENT VARIANT — the texel road it takes,
 		/// the byte road's decode arm it decodes through, what it needs the in-pass destination read
-		/// for, and whether its own output is what a 16-bit frame stores. Packed by PackVariantKey.
+		/// for, whether its own output is what a 16-bit frame stores, and the per-draw GS state the
+		/// program freezes as a compile-time constant instead of reading out of the state row
+		/// (GSTileGpuFragmentSpec). Packed by PackVariantKey.
 		///
 		/// It is part of the RUN key, and that is the whole point of it existing. A pass is one
 		/// attachment configuration, so a pass had to carry the UNION of its draws' variants and every
@@ -2484,17 +2550,56 @@ public:
 		/// before this stream existed.
 		std::span<const u32> variant_keys;
 		/// The variant's packing: road mask at 0 (3 bits), texel-arm mask at 3 (6), self-read mask at
-		/// 9 (3), the 16-bit quantise at 12. One packer so the renderer, the executor and the run key
+		/// 9 (3), the 16-bit quantise at 12, and the frozen per-draw GS state
+		/// (GSDevice::GSTileGpuFragmentSpec) from 13 up — its presence flag at 13 and its ten fields
+		/// in bits 14-30; bit 31 is unused. One packer so the renderer, the executor and the run key
 		/// cannot disagree about which bit is which.
+		///
+		/// The alpha test's field is `atst - 2`, not `atst`, so "no test" plus the six comparisons
+		/// that can reach the fragment stage fit three bits instead of four. NEVER and ALWAYS are
+		/// folded into the write flags by the renderer and never arrive here.
+		static constexpr u32 kVariantSpecValid = 1u << 13;
+		static constexpr u32 kVariantSpecMask = 0x7FFFE000u; ///< bits 13-30: the whole frozen-state half
 		static constexpr u32 PackVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise)
 		{
 			return (road_mask & kGSTileGpuRoadMaskAll) | ((texel_mask & kGSTileGpuTexelMaskAll) << 3) |
 				   ((self_mask & kGSTileGpuSelfMaskAll) << 9) | (quantise ? (1u << 12) : 0u);
 		}
+		static constexpr u32 PackVariantKey(
+			u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSTileGpuFragmentSpec& spec)
+		{
+			const u32 key = PackVariantKey(road_mask, texel_mask, self_mask, quantise);
+			if (!spec.valid)
+				return key;
+			return key | kVariantSpecValid | ((spec.fst & 1u) << 14) | ((spec.ltf & 1u) << 15) |
+				   ((spec.tfx & 3u) << 16) | ((spec.tcc & 1u) << 18) |
+				   (((spec.atst != 0) ? (spec.atst - 2u) : 0u) << 19) | ((spec.fge & 1u) << 22) |
+				   ((spec.date & 3u) << 23) | ((spec.wms & 3u) << 25) | ((spec.wmt & 3u) << 27) |
+				   ((spec.texa & 3u) << 29);
+		}
 		static constexpr u32 VariantRoadMask(u32 key) { return key & kGSTileGpuRoadMaskAll; }
 		static constexpr u32 VariantTexelMask(u32 key) { return (key >> 3) & kGSTileGpuTexelMaskAll; }
 		static constexpr u32 VariantSelfMask(u32 key) { return (key >> 9) & kGSTileGpuSelfMaskAll; }
 		static constexpr bool VariantQuantises(u32 key) { return (key & (1u << 12)) != 0; }
+		static constexpr GSTileGpuFragmentSpec VariantSpec(u32 key)
+		{
+			GSTileGpuFragmentSpec spec;
+			if ((key & kVariantSpecValid) == 0)
+				return spec;
+			spec.valid = true;
+			spec.fst = static_cast<u8>((key >> 14) & 1u);
+			spec.ltf = static_cast<u8>((key >> 15) & 1u);
+			spec.tfx = static_cast<u8>((key >> 16) & 3u);
+			spec.tcc = static_cast<u8>((key >> 18) & 1u);
+			const u32 at = (key >> 19) & 7u;
+			spec.atst = static_cast<u8>((at != 0) ? (at + 2u) : 0u);
+			spec.fge = static_cast<u8>((key >> 22) & 1u);
+			spec.date = static_cast<u8>((key >> 23) & 3u);
+			spec.wms = static_cast<u8>((key >> 25) & 3u);
+			spec.wmt = static_cast<u8>((key >> 27) & 3u);
+			spec.texa = static_cast<u8>((key >> 29) & 3u);
+			return spec;
+		}
 
 		/// The per-draw PIPELINE state an indirect run has to be uniform in. A run is a maximal
 		/// stretch of a pass's draws sharing it: the executor binds one pipeline and issues the
@@ -2509,7 +2614,8 @@ public:
 			u32 blend_key = 0;
 			GSTileGpuDepthMode depth_mode = GSTileGpuDepthMode::None;
 			/// The draw's packed fragment variant (PackVariantKey), or 0 for a plan carrying no
-			/// variant stream — where every run falls back to its pass's union masks.
+			/// variant stream — where every run falls back to its pass's union masks and reads all
+			/// of its per-draw GS state out of the state row.
 			u32 variant = 0;
 
 			constexpr bool operator==(const GSTileGpuRunKey& o) const

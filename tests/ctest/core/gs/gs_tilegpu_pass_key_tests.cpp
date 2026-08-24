@@ -1223,3 +1223,192 @@ TEST(TileGpuQuantiseOnWrite, ARefusedSixteenBitBlendFallsBackToTheWHOLEApproxima
 			gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, shader_blend));
 	}
 }
+
+// ---------------------------------------------------------------------------------------------
+// The FROZEN PER-DRAW STATE (GSDevice::GSTileGpuFragmentSpec), the second half of the same key.
+//
+// The four masks above say which ROADS a program carries. These ten fields say what the GS state
+// IS for every draw it serves, so the fragment stage neither loads the field nor branches on it.
+// Measured offline against the device's own Turnip (mesa 26.1.2, a650): the materialised-source
+// road goes 390 instructions / 12 registers / wave64 to 89 / 4 / wave128, the resident-target road
+// 663 / 12 / wave64 to 172 / 6 / wave128, and the untextured road 192 / 4 to 16 / 3 with no state
+// read left at all. The register number is the one that matters -- mesa's rule is
+// `regs * 2 <= reg_size_vec4 / 4`, a650's reg_size_vec4 is 64, so eight registers is a THRESHOLD:
+// at eight a program runs wave128 with 1280 fragments in flight, at nine wave64 with 640.
+//
+// Unlike the masks these axes have no PASS union. Nothing about a render pass depends on which
+// alpha comparison its draws run, so there is nothing to be a subset of and the executor's subset
+// assert deliberately does not mention them. They are run-only, and the fallback for a plan
+// carrying no variant stream is `valid == false`, which reads every field from the row.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuVariantKey, TheFrozenStateRoundTripsAndNoneCollides)
+{
+	// Ten fields in eighteen bits above the four masks. A field bleeding into its neighbour would
+	// compile a program that freezes the WRONG constant -- no fault, no validation error, just the
+	// wrong pixels, which is the failure mode this whole key exists to avoid.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	using Spec = GSDevice::GSTileGpuFragmentSpec;
+	std::vector<u32> keys;
+	// atst is the row's own encoding: 0 = no test, else TEST.ATST + 1, and only LESS..NOTEQUAL
+	// (3..8) can reach the fragment stage -- NEVER and ALWAYS are folded into the write flags.
+	static constexpr u8 kAtst[7] = {0, 3, 4, 5, 6, 7, 8};
+	for (const u8 fst : {0, 1})
+		for (const u8 ltf : {0, 1})
+			for (const u8 tfx : {0, 1, 2, 3})
+				for (const u8 tcc : {0, 1})
+					for (const u8 atst : kAtst)
+						for (const u8 fge : {0, 1})
+							for (const u8 date : {0, 1, 2})
+								for (const u8 wms : {0, 1, 2, 3})
+									for (const u8 wmt : {0, 1, 2, 3})
+										for (const u8 texa : {0, 1, 2, 3})
+										{
+											Spec s;
+											s.valid = true;
+											s.fst = fst;
+											s.ltf = ltf;
+											s.tfx = tfx;
+											s.tcc = tcc;
+											s.atst = atst;
+											s.fge = fge;
+											s.date = date;
+											s.wms = wms;
+											s.wmt = wmt;
+											s.texa = texa;
+											const u32 key = Plan::PackVariantKey(
+												GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuTexelIndex8, 0, false, s);
+											ASSERT_EQ(Plan::VariantSpec(key), s);
+											// ...and the mask half is untouched by any of it.
+											ASSERT_EQ(Plan::VariantRoadMask(key), GSDevice::kGSTileGpuRoadByte);
+											ASSERT_EQ(Plan::VariantTexelMask(key), GSDevice::kGSTileGpuTexelIndex8);
+											ASSERT_EQ(Plan::VariantSelfMask(key), 0u);
+											ASSERT_FALSE(Plan::VariantQuantises(key));
+											keys.push_back(key);
+										}
+	const size_t total = keys.size();
+	std::sort(keys.begin(), keys.end());
+	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+	EXPECT_EQ(keys.size(), total);
+	// The spec half lives entirely in bits 13-30 -- bit 31 stays free for the next axis, and
+	// nothing below 13 moves.
+	for (const u32 key : keys)
+		ASSERT_EQ(key & ~(0x1FFFu | Plan::kVariantSpecMask), 0u);
+}
+
+TEST(TileGpuVariantKey, AnUnspecializedKeyIsTheKeyThatShippedBefore)
+{
+	// The fallback, stated as an identity: a key packed with no frozen state is bit-for-bit the key
+	// the four-mask packer produces, so a plan built before this axis existed and the pass-union
+	// arm of the gate both land on exactly the program set that shipped.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
+	{
+		for (u32 self = 0; self <= GSDevice::kGSTileGpuSelfMaskAll; self++)
+		{
+			for (const bool q : {false, true})
+			{
+				const u32 bare = Plan::PackVariantKey(road, 3u, self, q);
+				const u32 with = Plan::PackVariantKey(road, 3u, self, q, GSDevice::GSTileGpuFragmentSpec());
+				ASSERT_EQ(bare, with);
+				ASSERT_FALSE(Plan::VariantSpec(bare).valid);
+				ASSERT_EQ(bare & Plan::kVariantSpecMask, 0u);
+			}
+		}
+	}
+}
+
+TEST(TileGpuRunKey, EveryFrozenStateAxisCutsTheRunOnItsOwn)
+{
+	// Ten axes, one key. Two draws sharing an indirect run share a pipeline and therefore a fragment
+	// program, so a draw whose alpha test the program froze at GEQUAL must not ride in the run of a
+	// draw that tests EQUAL -- and the symptom would be a wrong pixel, never a fault, because the
+	// frozen program simply does not read the row. Each axis is pinned separately for that reason.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	using Spec = GSDevice::GSTileGpuFragmentSpec;
+	Spec base;
+	base.valid = true;
+	const auto key = [](const Spec& s) {
+		return Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuTexelIndex8, 0, false, s);
+	};
+	std::vector<std::pair<const char*, Spec>> others;
+	const auto add = [&](const char* name, auto&& mutate) {
+		Spec s = base;
+		mutate(s);
+		others.emplace_back(name, s);
+	};
+	add("fst", [](Spec& s) { s.fst = 1; });
+	add("ltf", [](Spec& s) { s.ltf = 1; });
+	add("tfx", [](Spec& s) { s.tfx = 2; });
+	add("tcc", [](Spec& s) { s.tcc = 1; });
+	add("atst", [](Spec& s) { s.atst = 5; });
+	add("fge", [](Spec& s) { s.fge = 1; });
+	add("date", [](Spec& s) { s.date = 2; });
+	add("wms", [](Spec& s) { s.wms = 3; });
+	add("wmt", [](Spec& s) { s.wmt = 3; });
+	add("texa", [](Spec& s) { s.texa = 3; });
+	// ...and the presence flag itself: a draw whose state is frozen may not share a run with one
+	// reading the row, even when every frozen field happens to be zero.
+	Spec unspecialized;
+	others.emplace_back("valid", unspecialized);
+
+	for (const auto& [name, s] : others)
+	{
+		const RunPlan p{{Topology::Triangle, 0u, DepthMode::None, key(base)},
+			{Topology::Triangle, 0u, DepthMode::None, key(s)}};
+		EXPECT_NE(p.At(0), p.At(1)) << "the " << name << " axis did not cut the run";
+	}
+}
+
+TEST(TileGpuVariantKey, TheRoadNarrowsTheFrozenStateToWhatTheProgramCanRead)
+{
+	// A field the compiled program cannot read must not be in the key, or two programs that come out
+	// character-identical become two modules, two pipelines and two indirect calls. Both rules are
+	// tilegpu.glsl's own #ifs rather than a guess: the texture function, the coordinate kind, the
+	// filter and the wrap modes live inside TILEGPU_TEXTURED, which no road takes out entirely; and
+	// TEXA lives inside TILEGPU_TAP_ANY, the two roads that go through the per-texel tap. A
+	// materialised source (rule 3) has TEXA baked into its image by the prep pass.
+	using Spec = GSDevice::GSTileGpuFragmentSpec;
+	Spec full;
+	full.valid = true;
+	full.fst = 1;
+	full.ltf = 1;
+	full.tfx = 3;
+	full.tcc = 1;
+	full.atst = 5;
+	full.fge = 1;
+	full.date = 2;
+	full.wms = 3;
+	full.wmt = 3;
+	full.texa = 3;
+
+	Spec untextured = full;
+	untextured.NarrowToRoad(0);
+	EXPECT_TRUE(untextured.valid);
+	EXPECT_EQ(untextured.fst, 0);
+	EXPECT_EQ(untextured.ltf, 0);
+	EXPECT_EQ(untextured.tfx, 0);
+	EXPECT_EQ(untextured.tcc, 0);
+	EXPECT_EQ(untextured.wms, 0);
+	EXPECT_EQ(untextured.wmt, 0);
+	EXPECT_EQ(untextured.texa, 0);
+	// ...and the three the untextured program still reads survive, because it still tests alpha,
+	// still fogs and still runs the destination-alpha test.
+	EXPECT_EQ(untextured.atst, 5);
+	EXPECT_EQ(untextured.fge, 1);
+	EXPECT_EQ(untextured.date, 2);
+
+	Spec source = full;
+	source.NarrowToRoad(GSDevice::kGSTileGpuRoadSource);
+	EXPECT_EQ(source.texa, 0);
+	EXPECT_EQ(source.wms, 3); // rule 3's NEAREST arm applies the same wrap the byte road does
+	EXPECT_EQ(source.ltf, 1);
+
+	for (const u32 road : {GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuRoadTarget,
+			 GSDevice::kGSTileGpuRoadByte | GSDevice::kGSTileGpuRoadSource})
+	{
+		Spec tap = full;
+		tap.NarrowToRoad(road);
+		EXPECT_EQ(tap.texa, 3) << "road " << road << " goes through the tap and applies TEXA";
+	}
+}

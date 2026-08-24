@@ -143,6 +143,132 @@
 #define TILEGPU_QUANT16 0
 #endif
 
+// TILEGPU_SPEC_* (injected by the device, PER DRAW): the per-draw GS state this program may treat
+// as a COMPILE-TIME CONSTANT instead of reading it out of the state row. Every one of them is a
+// field of StateRow that the fragment stage otherwise loads and branches on, and freezing one pays
+// three times over on an Adreno 650: the load goes (a state-row read is a cat5 isam with its own
+// address arithmetic, and there are seventeen of them because v_row is a flat per-primitive varying
+// that nothing can hoist), the compare/select chain the field fed goes, and the delay slots the
+// scheduler could not fill around them go with it. The register pressure that costs the textured
+// roads their wave size is the same live state.
+//
+// -1 means "read the row", which is what an unspecialized build does and what the PASS-UNION
+// fallback must always do -- a run that stands for many draws cannot freeze anything they disagree
+// about. Any other value is that field's exact value for every draw the program serves; the renderer
+// puts it in the draw's variant key and the executor compiles a module per distinct key, exactly the
+// way the texel road and the decode arm already work.
+//
+// ⚠️ A specialized program must not move a pixel. That holds only while each axis SELECTS an arm and
+// never rewrites one: the arithmetic on the arm that survives is the same arithmetic, character for
+// character, and the mul-adds on the texel path stay explicit fma() under `precise` per the header's
+// pinning rule. An axis that folded two arms into one cheaper expression would be an accuracy trade,
+// which this is not.
+#ifndef TILEGPU_SPEC_TEX
+#define TILEGPU_SPEC_TEX -1 // StateRow::tex_enable, 0/1
+#endif
+#ifndef TILEGPU_SPEC_FST
+#define TILEGPU_SPEC_FST -1 // StateRow::fst, 0 = STQ, 1 = UV
+#endif
+#ifndef TILEGPU_SPEC_LTF
+#define TILEGPU_SPEC_LTF -1 // StateRow::ltf, 0 = NEAREST, 1 = LINEAR
+#endif
+#ifndef TILEGPU_SPEC_TFX
+#define TILEGPU_SPEC_TFX -1 // StateRow::tfx, 0 MODULATE / 1 DECAL / 2 HIGHLIGHT / 3 HIGHLIGHT2
+#endif
+#ifndef TILEGPU_SPEC_TCC
+#define TILEGPU_SPEC_TCC -1 // StateRow::tcc, 0/1
+#endif
+#ifndef TILEGPU_SPEC_ATST
+// StateRow::atst: 0 = no test at all, else TEST.ATST + 1 (3 LESS .. 8 NOTEQUAL; the renderer folds
+// NEVER and ALWAYS into the write flags, so they never reach here). The comparison itself has to be
+// fixed, not merely its presence: measured on a650, a program that knows a test happens but not
+// which one still holds nine registers and stays on wave64, while one that knows GEQUAL drops to
+// eight and flips to wave128.
+#define TILEGPU_SPEC_ATST -1
+#endif
+#ifndef TILEGPU_SPEC_FGE
+#define TILEGPU_SPEC_FGE -1 // StateRow::fge, 0/1
+#endif
+#ifndef TILEGPU_SPEC_DATE
+#define TILEGPU_SPEC_DATE -1 // StateRow::date, 0 off / 1 DATM 0 / 2 DATM 1
+#endif
+#ifndef TILEGPU_SPEC_WMS
+#define TILEGPU_SPEC_WMS -1 // StateRow::wms, CLAMP.WMS 0..3
+#endif
+#ifndef TILEGPU_SPEC_WMT
+#define TILEGPU_SPEC_WMT -1 // StateRow::wmt, CLAMP.WMT 0..3
+#endif
+#ifndef TILEGPU_SPEC_TEXA
+#define TILEGPU_SPEC_TEXA -1 // the low two bits of StateRow::texa: bit 0 apply, bit 1 AEM
+#endif
+
+// The readers. One spelling per field, so a call site cannot accidentally read the row on one road
+// and the constant on another.
+#if TILEGPU_SPEC_TEX < 0
+#define TG_TEX(sr) ((sr).tex_enable)
+#else
+#define TG_TEX(sr) uint(TILEGPU_SPEC_TEX)
+#endif
+#if TILEGPU_SPEC_FST < 0
+#define TG_FST(sr) ((sr).fst)
+#else
+#define TG_FST(sr) uint(TILEGPU_SPEC_FST)
+#endif
+#if TILEGPU_SPEC_LTF < 0
+#define TG_LTF(sr) ((sr).ltf)
+#else
+#define TG_LTF(sr) uint(TILEGPU_SPEC_LTF)
+#endif
+#if TILEGPU_SPEC_TFX < 0
+#define TG_TFX(sr) ((sr).tfx)
+#else
+#define TG_TFX(sr) uint(TILEGPU_SPEC_TFX)
+#endif
+#if TILEGPU_SPEC_TCC < 0
+#define TG_TCC(sr) ((sr).tcc)
+#else
+#define TG_TCC(sr) uint(TILEGPU_SPEC_TCC)
+#endif
+#if TILEGPU_SPEC_ATST < 0
+#define TG_ATST_ANY(sr) ((sr).atst != 0u)
+#define TG_ATST_OP(sr) ((sr).atst)
+#elif TILEGPU_SPEC_ATST == 0
+#define TG_ATST_ANY(sr) false
+#define TG_ATST_OP(sr) 0u
+#else
+#define TG_ATST_ANY(sr) true
+#define TG_ATST_OP(sr) uint(TILEGPU_SPEC_ATST)
+#endif
+#if TILEGPU_SPEC_FGE < 0
+#define TG_FGE(sr) ((sr).fge)
+#else
+#define TG_FGE(sr) uint(TILEGPU_SPEC_FGE)
+#endif
+#if TILEGPU_SPEC_DATE < 0
+#define TG_DATE(sr) ((sr).date)
+#else
+#define TG_DATE(sr) uint(TILEGPU_SPEC_DATE)
+#endif
+#if TILEGPU_SPEC_WMS < 0
+#define TG_WMS(sr) ((sr).wms)
+#else
+#define TG_WMS(sr) uint(TILEGPU_SPEC_WMS)
+#endif
+#if TILEGPU_SPEC_WMT < 0
+#define TG_WMT(sr) ((sr).wmt)
+#else
+#define TG_WMT(sr) uint(TILEGPU_SPEC_WMT)
+#endif
+// TEXA's two flag bits only: TA0 and TA1 are eight-bit values that vary draw to draw within any
+// sensible variant population, so they stay in the row.
+#if TILEGPU_SPEC_TEXA < 0
+#define TG_TEXA_APPLY(sr) (((sr).texa & 1u) != 0u)
+#define TG_TEXA_AEM(sr) (((sr).texa & 2u) != 0u)
+#else
+#define TG_TEXA_APPLY(sr) ((uint(TILEGPU_SPEC_TEXA) & 1u) != 0u)
+#define TG_TEXA_AEM(sr) ((uint(TILEGPU_SPEC_TEXA) & 2u) != 0u)
+#endif
+
 #define TILEGPU_SELF_READ (TILEGPU_SELF_DATE || TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK)
 // The fragment stage's integer tail: anything that has to see the fragment as the BYTES the target
 // would store rather than as a normalised colour.
@@ -694,7 +820,7 @@ vec4 tilegpu_texel16(StateRow sr, uint u, uint v, uint fmt)
 	const uint c = tilegpu_half_sel(vram_words[tilegpu_ring_word(blk * 64u + (hw >> 1u), sr.epoch)], hw);
 
 	const uint a = ((c & 0x8000u) != 0u) ? ((sr.texa >> 16u) & 0xFFu)
-	             : ((((sr.texa & 2u) != 0u) && c == 0u) ? 0u : ((sr.texa >> 8u) & 0xFFu));
+	             : ((TG_TEXA_AEM(sr) && c == 0u) ? 0u : ((sr.texa >> 8u) & 0xFFu));
 	return tilegpu_norm8(vec4(float((c & 0x001Fu) << 3u), float((c & 0x03E0u) >> 2u),
 		float((c & 0x7C00u) >> 7u), float(a)));
 }
@@ -720,9 +846,9 @@ vec4 tilegpu_unpack(uint w)
 // byte road, a channel compare on the image.
 vec4 tilegpu_texa(StateRow sr, vec4 t, bool rgb_zero)
 {
-	if ((sr.texa & 1u) != 0u)
+	if (TG_TEXA_APPLY(sr))
 	{
-		const bool aem_zero = (sr.texa & 2u) != 0u && rgb_zero;
+		const bool aem_zero = TG_TEXA_AEM(sr) && rgb_zero;
 		t.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
 	}
 	return t;
@@ -785,8 +911,8 @@ int tilegpu_wrap(int c, uint dim, uint mode, uint region)
 // up individually, expands each through the CLUT, and blends the results, never the indices.
 vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 {
-	const uint iu = uint(tilegpu_wrap(cu, sr.tw, sr.wms, sr.region_u));
-	const uint iv = uint(tilegpu_wrap(cv, sr.th, sr.wmt, sr.region_v));
+	const uint iu = uint(tilegpu_wrap(cu, sr.tw, TG_WMS(sr), sr.region_u));
+	const uint iv = uint(tilegpu_wrap(cv, sr.th, TG_WMT(sr), sr.region_v));
 
 	// Rule 2: the texel comes out of a resident target instead of the bytes. Same wrap, same
 	// coordinate, same TEXA -- only the fetch differs, so the two roads agree wherever the bytes
@@ -871,7 +997,7 @@ layout(set = 2, binding = 0) uniform sampler2D u_sources[TILEGPU_MAX_SOURCES];
 
 vec4 tilegpu_source_sample(StateRow sr, vec2 uv)
 {
-	if (sr.ltf == 0u)
+	if (TG_LTF(sr) == 0u)
 	{
 		// NEAREST, and this arm has to be BIT-IDENTICAL to the byte road's, because a draw moving
 		// between the two roads must not move a pixel. Two things buy that.
@@ -886,8 +1012,8 @@ vec4 tilegpu_source_sample(StateRow sr, vec2 uv)
 		// of the 256 bytes, and nothing in the shader says which the device does. The byte road says
 		// tilegpu_norm8, so this road recovers the byte -- round-tripping through *255 is exact from
 		// either conversion, since both land within an ULP of k -- and says tilegpu_norm8 too.
-		const int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, sr.wms, sr.region_u);
-		const int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, sr.wmt, sr.region_v);
+		const int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, TG_WMS(sr), sr.region_u);
+		const int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, TG_WMT(sr), sr.region_v);
 		const vec4 raw = texelFetch(u_sources[sr.tex_source], ivec2(iu, iv), 0);
 		precise vec4 b = floor(fma(raw, vec4(255.0f), vec4(0.5f)));
 		return tilegpu_norm8(b);
@@ -932,7 +1058,7 @@ vec4 tilegpu_sample(StateRow sr, vec2 uv)
 #endif
 
 #if TILEGPU_TAP_ANY
-	if (sr.ltf == 0u)
+	if (TG_LTF(sr) == 0u)
 		return tilegpu_tap(sr, int(floor(uv.x)), int(floor(uv.y)));
 
 	const vec2 c = uv - 0.5f;
@@ -961,7 +1087,7 @@ void main()
 	StateRow sr = state_rows[v_row];
 
 	// Destination alpha test: the GS passes a pixel when the destination alpha's bit 7 equals DATM.
-	if (sr.date != 0u)
+	if (TG_DATE(sr) != 0u)
 	{
 #if TILEGPU_SELF_DATE
 		// The live pixel, in rasterization order: exact by construction, including against what this
@@ -974,7 +1100,7 @@ void main()
 		const float da = texelFetch(u_snapshot, ivec2(gl_FragCoord.xy), 0).a;
 		const bool msb = da >= (128.0f / 255.0f);
 #endif
-		if (msb != (sr.date == 2u))
+		if (msb != (TG_DATE(sr) == 2u))
 			discard;
 	}
 
@@ -990,30 +1116,30 @@ void main()
 	precise vec4 cv = cf;
 
 #if TILEGPU_TEXTURED
-	if (sr.tex_enable != 0u)
+	if (TG_TEX(sr) != 0u)
 	{
 		// The texel coordinate: FST is a direct texel (12.4 already unpacked in the VS); STQ divides
 		// the interpolated S,T by the interpolated Q and scales by the texture dimensions. The affine
 		// interpolation (gl_Position.w == 1) plus this per-pixel divide reproduces the PS2's own
 		// affine-rasteriser-with-per-pixel-divide texturing.
-		const vec2 uv = (sr.fst != 0u) ? v_uv : (vec2(v_st.x, v_st.y) / v_q) * vec2(float(sr.tw), float(sr.th));
+		const vec2 uv = (TG_FST(sr) != 0u) ? v_uv : (vec2(v_st.x, v_st.y) / v_q) * vec2(float(sr.tw), float(sr.th));
 		const vec4 ct = tilegpu_sample(sr, uv);
 
 		const float k = 255.0f / 128.0f;
-		if (sr.tfx == 1u) // DECAL
+		if (TG_TFX(sr) == 1u) // DECAL
 		{
 			cv.rgb = ct.rgb;
-			cv.a = (sr.tcc != 0u) ? ct.a : cf.a;
+			cv.a = (TG_TCC(sr) != 0u) ? ct.a : cf.a;
 		}
-		else if (sr.tfx == 0u) // MODULATE
+		else if (TG_TFX(sr) == 0u) // MODULATE
 		{
 			cv.rgb = min(ct.rgb * cf.rgb * k, vec3(1.0f));
-			cv.a = (sr.tcc != 0u) ? min(ct.a * cf.a * k, 1.0f) : cf.a;
+			cv.a = (TG_TCC(sr) != 0u) ? min(ct.a * cf.a * k, 1.0f) : cf.a;
 		}
 		else // HIGHLIGHT (2) / HIGHLIGHT2 (3)
 		{
 			cv.rgb = min(ct.rgb * cf.rgb * k + vec3(cf.a), vec3(1.0f));
-			cv.a = (sr.tcc != 0u) ? ((sr.tfx == 2u) ? min(ct.a + cf.a, 1.0f) : ct.a) : cf.a;
+			cv.a = (TG_TCC(sr) != 0u) ? ((TG_TFX(sr) == 2u) ? min(ct.a + cf.a, 1.0f) : ct.a) : cf.a;
 		}
 	}
 #endif
@@ -1026,7 +1152,7 @@ void main()
 	// Here a failure always discards, which is exact for AFAIL=KEEP and an approximation for the
 	// three modes that keep writing something (the renderer only asks for a test when the mode
 	// changes what lands, and folds the ATST=NEVER cases into the write flags instead).
-	if (sr.atst != 0u)
+	if (TG_ATST_ANY(sr))
 	{
 		// The alpha byte the test sees is the one the target would store, so it rounds -- the same
 		// value the UNORM write produces. Truncating instead costs a level wherever the texture
@@ -1035,7 +1161,7 @@ void main()
 		precise float av = fma(cv.a, 255.0f, 0.5f);
 		const uint a = uint(av);
 		bool pass;
-		switch (sr.atst - 1u)
+		switch (TG_ATST_OP(sr) - 1u)
 		{
 			case 2u:  pass = a <  sr.aref; break; // LESS
 			case 3u:  pass = a <= sr.aref; break; // LEQUAL
@@ -1067,7 +1193,7 @@ void main()
 	// the floor writes it: Cfog plus the difference scaled by F at fifteen fractional bits, all in
 	// integer arithmetic, because a float mix rounds where the hardware truncates. Our colour is in
 	// normalised guest units, so it scales to 0..255 for the walk and back afterwards.
-	if (sr.fge != 0u)
+	if (TG_FGE(sr) != 0u)
 	{
 		const ivec3 cfog = ivec3(uvec3(sr.fogcol, sr.fogcol >> 8u, sr.fogcol >> 16u) & 0xFFu);
 		const int f15 = int(v_fog * (255.0f * 128.0f));
