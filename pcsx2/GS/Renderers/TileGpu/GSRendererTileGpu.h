@@ -316,11 +316,21 @@ constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bo
 /// ⚠️ A run is counted over the draws' ATTACHMENT group -- one colour surface, one depth surface,
 /// one depth mode -- and not over the passes as they finally came out, because those passes depend
 /// on the verdict this measurement decides. See GSTileGpuDeclaringBudget.
-constexpr u32 kGSTileGpuDeclaringAdmitAtOrUnder = 128;
-/// ...and the hysteresis band. A class hovering at the threshold would otherwise change what the
-/// frame is exact about every frame; both renderings are valid, so the flicker is subtle rather than
-/// broken, which is exactly the kind of defect that survives review. Twice the budget, because the
-/// band has to be wide enough to cover a scene breathing and no wider.
+/// The number is a calibration and is pinned by a test that names the measurements it came from.
+/// Under the Adreno pass shape the corpus's per-class peaks fall in two groups: everything that is
+/// both visible and cheap tops out at 195 (Katamari's punctuation FBMSK), and the three classes that
+/// saturate their title sit at 357, 473 and 950 (Ratchet's effect blends, Baldur's Gate's 16-bit
+/// blends, Xenosaga's alpha-MSB FBMSK). 256 is in the gap. The device round is what re-tunes it, and
+/// the test is there so a re-tune is argued rather than noticed later on hardware.
+constexpr u32 kGSTileGpuDeclaringAdmitAtOrUnder = 256;
+/// ...and the far edge of the hysteresis band. A class hovering at the line would otherwise change
+/// what the frame is exact about every frame; both renderings are valid, so the flicker is subtle
+/// rather than broken, which is exactly the kind of defect that survives review.
+///
+/// Between the two lines the class keeps whatever answer it already had, which for a class that has
+/// never been priced means the startup prior below. That is the band doing its job rather than a
+/// loophole: a class the measurement cannot place confidently is left where its population says it
+/// belongs, and the two edges are what a device round moves.
 constexpr u32 kGSTileGpuDeclaringRefuseAbove = 2 * kGSTileGpuDeclaringAdmitAtOrUnder;
 
 /// The per-class declaring budget: which admission classes are worth their tax this frame, decided
@@ -343,6 +353,18 @@ struct GSTileGpuDeclaringBudget
 {
 	/// What each class would cost if admitted, accumulated over the frame being built.
 	std::array<u32, kGSTileGpuAdmissionClasses> exposed{};
+	/// ...and what it has cost RECENTLY: a running peak that decays a quarter each frame, which is
+	/// the number the verdict is actually made on.
+	///
+	/// ⚠️ Not the last frame's cost, and this is not a refinement -- a budget reading one frame is
+	/// wrong on half the corpus. A title presenting at 30 Hz over a 60 Hz vsync draws nothing at all
+	/// in every second frame, so a one-frame-lagged verdict is decided by the EMPTY frame and the
+	/// heavy frame is admitted, every time: Xenosaga's alpha-MSB FBMSK alternates 950 and 0, and read
+	/// one frame at a time it was refused in only 62% of frames while the frames it was refused in
+	/// were the cheap ones. The peak asks "has this class been expensive lately", which is the
+	/// question, and a quarter a frame means about eight frames of genuine quiet -- an eighth of a
+	/// second -- before a class that has calmed down is re-admitted.
+	std::array<u32, kGSTileGpuAdmissionClasses> peak{};
 	/// The verdict in force for the WHOLE of the frame being built.
 	u32 admitted = kGSTileGpuClassAll;
 
@@ -356,7 +378,10 @@ struct GSTileGpuDeclaringBudget
 	{
 		admitted = declaring_taxes_the_pass ? (kGSTileGpuClassAll & ~kGSTileGpuBulkCapableClasses) : kGSTileGpuClassAll;
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+		{
 			exposed[c] = 0;
+			peak[c] = 0;
+		}
 	}
 
 	/// Charge one draw. `wanted` is every class it would be admitted for; `opening` is the subset of
@@ -380,14 +405,16 @@ struct GSTileGpuDeclaringBudget
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
+			const u32 decayed = peak[c] - peak[c] / 4;
+			peak[c] = exposed[c] > decayed ? exposed[c] : decayed;
 			if (!declaring_taxes_the_pass)
 				admitted |= bit;
 			else if ((admitted & bit) != 0)
 			{
-				if (exposed[c] > kGSTileGpuDeclaringRefuseAbove)
+				if (peak[c] > kGSTileGpuDeclaringRefuseAbove)
 					admitted &= ~bit;
 			}
-			else if (exposed[c] <= kGSTileGpuDeclaringAdmitAtOrUnder)
+			else if (peak[c] <= kGSTileGpuDeclaringAdmitAtOrUnder)
 				admitted |= bit;
 			exposed[c] = 0;
 		}
@@ -1449,6 +1476,7 @@ private:
 		//            of frames it was off
 		u32 class_wanted[kGSTileGpuAdmissionClasses] = {};
 		u32 class_exposed[kGSTileGpuAdmissionClasses] = {};
+		u32 class_peak[kGSTileGpuAdmissionClasses] = {}; // the decayed peak the verdict was made on
 		u32 class_refused[kGSTileGpuAdmissionClasses] = {};
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target

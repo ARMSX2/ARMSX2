@@ -272,7 +272,10 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+	{
 		m_frame.class_refused[c] = (m_declaring_budget.admitted & (1u << c)) ? 0u : 1u;
+		m_frame.class_peak[c] = m_declaring_budget.peak[c];
+	}
 	m_model_frames.push_back(m_frame);
 	m_frame = ModelFrame{};
 
@@ -1567,10 +1570,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 			if (want.mean == 0.0)
 				continue;
 			const auto expo = stat([c](const MF& f) { return f.class_exposed[c]; });
+			const auto peak = stat([c](const MF& f) { return f.class_peak[c]; });
 			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
-			Console.WriteLn("    class %-17s wanted %.2f / %u draws   exposed %.2f / %u   "
+			Console.WriteLn("    class %-17s wanted %.2f / %u draws   exposed %.2f / %u   peak %.2f / %u   "
 							"budget refused it in %.0f%% of frames",
-				kClassNames[c], want.mean, want.p50, expo.mean, expo.p50, refu.mean * 100.0);
+				kClassNames[c], want.mean, want.p50, expo.mean, expo.p50, peak.mean, peak.p50, refu.mean * 100.0);
 		}
 	}
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "

@@ -713,19 +713,66 @@ TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
 
 TEST(TileGpuDeclaringBudget, TheBudgetSitsWhereTheCorpusSeparates)
 {
-	// The calibration, pinned where a retune will see it. These are measured per-class costs from the
-	// 18-dump corpus under the Adreno pass shape, and the budget has to fall between the two groups:
+	// The calibration, pinned where a re-tune will see it. These are measured per-class PEAKS from
+	// the 18-dump corpus under the Adreno pass shape, and the budget has to fall between two groups:
 	//
-	//   admitted   Katamari's FBMSK 97, GT4 Online Beta's 16-bit blend 41, Beyond Good & Evil's
-	//              FBMSK 40, OutRun's exotic blends 12, FlatOut 2's and MGS3's and Ratchet's 0
-	//   refused    Baldur's Gate's 16-bit blend 473, Xenosaga's FBMSK 479
+	//   must admit   Katamari's punctuation FBMSK 195, GT4 Online Beta's 16-bit blend 43, Beyond Good
+	//                & Evil's FBMSK 42, Shadow of the Colossus' exotic blends 44, Yu-Gi-Oh's 16-bit
+	//                blend 29, OutRun's 17, FlatOut 2's and MGS3's 0
+	//   must refuse  Baldur's Gate's 16-bit blend 473, Xenosaga's alpha-MSB FBMSK 950
 	//
-	// The gap between 97 and 473 is the widest in the whole distribution, and the budget is inside it.
-	// A change that moves the line out of that gap is a change of policy on real titles, so it should
-	// fail here and be argued rather than noticed later on a device.
-	EXPECT_LT(97u, kGSTileGpuDeclaringAdmitAtOrUnder);
+	// Ratchet & Clank's effect blends sit between the two at 357 and are held admitted by the
+	// hysteresis band and their class prior; refusing them costs 51 pixels and removes 313 taxed
+	// draws a frame, which is the first trade the device round should re-price.
+	EXPECT_LT(195u, kGSTileGpuDeclaringAdmitAtOrUnder);
 	EXPECT_GT(473u, kGSTileGpuDeclaringAdmitAtOrUnder);
-	EXPECT_GT(473u, kGSTileGpuDeclaringRefuseAbove);
+	EXPECT_GT(950u, kGSTileGpuDeclaringRefuseAbove);
+	EXPECT_LT(357u, kGSTileGpuDeclaringRefuseAbove);
+}
+
+TEST(TileGpuDeclaringBudget, AClassExpensiveEveryOtherFrameStaysRefused)
+{
+	// ⚠️ The defect that a one-frame-lagged budget has and this one does not. Half the corpus presents
+	// at 30 Hz over a 60 Hz vsync and draws NOTHING in every second frame, so last-frame's-cost is
+	// read off the empty frame and the heavy frame is admitted -- every time. Measured before the
+	// peak existed: Xenosaga's FBMSK alternates 950 and 0 and was refused in only 62% of frames, and
+	// the frames it was refused in were the cheap ones.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (int frame = 0; frame < 12; frame++)
+	{
+		const u32 heavy = (frame % 2 == 0) ? (kGSTileGpuDeclaringRefuseAbove * 2) : 0;
+		if (heavy)
+		{
+			b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+			for (u32 d = 1; d <= heavy; d++)
+				b.Charge(kGSTileGpuClassPartialMask, 0);
+		}
+		b.Roll(kDeclaringIsTaxed);
+		EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask) << "frame " << frame;
+	}
+}
+
+TEST(TileGpuDeclaringBudget, APeakDecaysSoAQuietSceneIsReAdmitted)
+{
+	// The other half of the same property: recently-expensive must not mean permanently refused. A
+	// quarter a frame is about eight frames of genuine quiet.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+	for (u32 d = 1; d <= kGSTileGpuDeclaringRefuseAbove * 2; d++)
+		b.Charge(kGSTileGpuClassPartialMask, 0);
+	b.Roll(kDeclaringIsTaxed);
+	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+
+	int frames = 0;
+	while ((b.admitted & kGSTileGpuClassPartialMask) == 0 && frames < 64)
+	{
+		b.Roll(kDeclaringIsTaxed); // nothing charged: the scene has gone quiet
+		frames++;
+	}
+	EXPECT_LT(0, frames);
+	EXPECT_GT(20, frames) << "a class that has calmed down waited " << frames << " frames to come back";
 }
 
 // ---------------------------------------------------------------------------------------------
