@@ -37,6 +37,8 @@ public:
 	u64 GetSyncWaitCalls() const override { return m_sync_wait_calls; }
 	u64 GetRingWaitNs() const override { return m_ring_wait_ns; }
 	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
+	u64 GetSourceSetWaitNs() const override { return m_source_set_wait_ns; }
+	u64 GetSourceSetWaitCalls() const override { return m_source_set_wait_calls; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -213,9 +215,33 @@ public:
 	void DeferImageDestruction(VkImage object, VmaAllocation allocation);
 	void DeferImageViewDestruction(VkImageView object);
 
+	/// Why the host is about to block on a GPU fence. `Ring` is the command-buffer ring's own
+	/// recycle wait — the pipeline is full and the frame ahead has to retire — which is
+	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
+	/// paid out of turn to get an answer, and that is the population the readback work is judged
+	/// against (see GSPerfMon::GpuBlockingWaits).
+	///
+	/// `SourceSet` is the TileGpu source-descriptor ring coming round to a set whose last reader
+	/// has not retired (WriteTileGpuSourceSet). ⚠️ The judgement call, made deliberately and
+	/// written down because the obvious reading points the other way: this is resource-recycling
+	/// backpressure in the same SENSE as `Ring` — a fixed pool of reusable objects, wrapped — and
+	/// it is nevertheless counted in GpuBlockingWaits alongside `Sync`, not excused with `Ring`.
+	/// Two reasons. It stalls the GS thread in the MIDDLE of a frame, before the plan it is
+	/// building has been recorded, so the frame it delays is the one being built and not the one
+	/// ahead. And the acceptance metric for the whole readback campaign is
+	/// GpuBlockingWaits/frame: a wait that leaves that number because it was renamed is a metric
+	/// improving while the machine does not. It gets its own bucket so the residual is a read
+	/// instead of an inference — itemised, not excused.
+	enum class GpuWaitCause
+	{
+		Ring,
+		Sync,
+		SourceSet,
+	};
+
 	// Wait for a fence to be completed.
 	// Also invokes callbacks for completion.
-	void WaitForFenceCounter(u64 fence_counter);
+	void WaitForFenceCounter(u64 fence_counter, GpuWaitCause cause = GpuWaitCause::Sync);
 
 	void WaitForGPUIdle();
 
@@ -293,16 +319,6 @@ private:
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
-	/// Why the host is about to block on a GPU fence. `Ring` is the command-buffer ring's own
-	/// recycle wait — the pipeline is full and the frame ahead has to retire — which is
-	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
-	/// paid out of turn to get an answer, and that is the population the readback work is judged
-	/// against (see GSPerfMon::GpuBlockingWaits).
-	enum class GpuWaitCause
-	{
-		Ring,
-		Sync,
-	};
 	void WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause = GpuWaitCause::Sync);
 	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
 	/// structured fault records (addresses, kinds, vendor codes) before the exit.
@@ -419,6 +435,10 @@ private:
 	u64 m_sync_wait_calls = 0;
 	u64 m_ring_wait_ns = 0;
 	u64 m_ring_wait_calls = 0;
+	// Its own bucket, disjoint from the Sync one -- but inside GpuBlockingWaits with it, unlike the
+	// ring's. See GpuWaitCause for why a recycling wait is counted there.
+	u64 m_source_set_wait_ns = 0;
+	u64 m_source_set_wait_calls = 0;
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif

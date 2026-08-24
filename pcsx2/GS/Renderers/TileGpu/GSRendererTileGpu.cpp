@@ -1763,13 +1763,28 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  pool calls the stalls issued %.2f / %u  (one per owner x block mask x byte window, over the "
 					"whole page set it needs -- the unit the device round trip is charged in)",
 		pcalls.mean, pcalls.p50);
+	//
+	// ⚠️ Itemised off the DEVICE's own counters, not off the pool's drain count, since 2026-08-24.
+	// The old line summed drains + out-of-band and called that the bill, which made it structurally
+	// incapable of seeing a wait belonging to neither -- and one does: the source-descriptor ring
+	// wrapping onto a set an in-flight submission still reads. On the SD865 that class was the
+	// entire residual while this line read a flat zero, and it took an elimination argument rather
+	// than a reading to name it. The pool's drains stay, as the named SUB-cause of the sync class,
+	// so a sync figure larger than the drain figure is itself the report that something else is in
+	// there. Total = the GpuBlockingWaits population exactly; ring backpressure is the one class
+	// deliberately outside it.
 	const double drains = static_cast<double>(m_target_pool.Drains());
+	const double sync = static_cast<double>(g_gs_device->GetSyncWaitCalls());
 	const double oob = static_cast<double>(g_gs_device->GetOobWaitCalls());
-	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /frame  =  drains %.2f (%.2f ms/frame)  +  out-of-band %.2f "
-					"(%.2f ms/frame)   [ring backpressure, not a drain: %.2f /frame, %.2f ms]",
-		(drains + oob) / mframes, drains / mframes,
+	const double srcset = static_cast<double>(g_gs_device->GetSourceSetWaitCalls());
+	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /frame  =  sync %.2f (%.2f ms/frame, of which pool drains %.2f at "
+					"%.2f ms)  +  out-of-band %.2f (%.2f ms/frame)  +  source-set wrap %.2f (%.2f ms/frame)   "
+					"[ring backpressure, not a drain: %.2f /frame, %.2f ms]",
+		(sync + oob + srcset) / mframes, sync / mframes,
+		static_cast<double>(g_gs_device->GetSyncWaitNs()) / mframes / 1e6, drains / mframes,
 		static_cast<double>(m_target_pool.DrainWallNs()) / mframes / 1e6, oob / mframes,
-		static_cast<double>(g_gs_device->GetOobWaitNs()) / mframes / 1e6,
+		static_cast<double>(g_gs_device->GetOobWaitNs()) / mframes / 1e6, srcset / mframes,
+		static_cast<double>(g_gs_device->GetSourceSetWaitNs()) / mframes / 1e6,
 		static_cast<double>(g_gs_device->GetRingWaitCalls()) / mframes,
 		static_cast<double>(g_gs_device->GetRingWaitNs()) / mframes / 1e6);
 

@@ -1728,7 +1728,7 @@ VkDescriptorSet GSDeviceVK::AllocateDescriptorSetFromFramePool(VkDescriptorSetLa
 	}
 }
 
-void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
+void GSDeviceVK::WaitForFenceCounter(u64 fence_counter, GpuWaitCause cause)
 {
 	if (m_completed_fence_counter >= fence_counter)
 		return;
@@ -1744,7 +1744,7 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
 	}
 
 	pxAssert(index != m_current_frame);
-	WaitForCommandBufferCompletion(index);
+	WaitForCommandBufferCompletion(index, cause);
 }
 
 void GSDeviceVK::WaitForGPUIdle()
@@ -1912,16 +1912,25 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause)
 	const u64 wait_t0 = Common::Timer::GetCurrentValue();
 	const VkResult res = vkWaitForFences(m_device, 1, &m_frame_resources[index].fence, VK_TRUE, UINT64_MAX);
 	const u64 wait_ns = Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - wait_t0);
-	if (cause == GpuWaitCause::Sync)
+	// Ring is backpressure and stays out of the blocking-wait population; the other two are in it.
+	// SourceSet is a bucket of its own INSIDE that population, not a way out of it -- see
+	// GpuWaitCause for why a recycling wait is counted with the drains rather than with the ring.
+	switch (cause)
 	{
-		m_sync_wait_ns += wait_ns;
-		m_sync_wait_calls++;
-		g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
-	}
-	else
-	{
-		m_ring_wait_ns += wait_ns;
-		m_ring_wait_calls++;
+		case GpuWaitCause::Sync:
+			m_sync_wait_ns += wait_ns;
+			m_sync_wait_calls++;
+			g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+			break;
+		case GpuWaitCause::SourceSet:
+			m_source_set_wait_ns += wait_ns;
+			m_source_set_wait_calls++;
+			g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+			break;
+		case GpuWaitCause::Ring:
+			m_ring_wait_ns += wait_ns;
+			m_ring_wait_calls++;
+			break;
 	}
 	if (res != VK_SUCCESS)
 	{
@@ -6667,7 +6676,7 @@ u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceB
 		ExecuteCommandBuffer(false, "TileGpu source descriptor ring wrapped inside one command buffer");
 	}
 	if (m_tilegpu_source_set_epoch[idx] > GetCompletedSubmitEpoch())
-		WaitForFenceCounter(m_tilegpu_source_set_epoch[idx]);
+		WaitForFenceCounter(m_tilegpu_source_set_epoch[idx], GpuWaitCause::SourceSet);
 
 	// Every slot written, including the ones this frame does not use: the shader uses the array
 	// statically, so an unwritten slot would need descriptorBindingPartiallyBound. The null texture

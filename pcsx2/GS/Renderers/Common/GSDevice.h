@@ -1916,6 +1916,13 @@ public:
 	virtual u64 GetRingWaitNs() const { return 0; }
 	virtual u64 GetRingWaitCalls() const { return 0; }
 
+	/// The TileGpu source-descriptor ring wrapping onto a set an in-flight submission still reads.
+	/// Reported separately from `Sync` and, unlike `Ring`, still counted in
+	/// GSPerfMon::GpuBlockingWaits — it stalls the GS thread mid-frame, and the acceptance metric
+	/// must not improve by reclassification. See GSDeviceVK::GpuWaitCause for the argument in full.
+	virtual u64 GetSourceSetWaitNs() const { return 0; }
+	virtual u64 GetSourceSetWaitCalls() const { return 0; }
+
 	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
 	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
 	/// begin at block `cbp` of `owner`, a page-aligned CT32/CT24 surface texture, in
