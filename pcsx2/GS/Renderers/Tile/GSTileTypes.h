@@ -357,6 +357,43 @@ constexpr int gsTileGpuBlendChannel(
 	return (v < 0) ? 0 : ((v > 255) ? 255 : v);
 }
 
+/// What TEST.DATE means for a draw, once the frame format has had its say.
+///
+/// The destination-alpha test passes a pixel when the destination alpha's bit 7 equals DATM. On a
+/// 24-bit frame there is no alpha bit at all, and the console's answer is NOT "everything passes":
+/// ⚠️ **nothing passes — the draw is ignored**, for BOTH values of DATM. That was measured on a PS2
+/// and it is what the software renderer does (`GSRendererSW::GetScanlineGlobalData`, "When the
+/// format is 24bit (Z or C), DATE ceases to function"); a renderer that reasoned its way to
+/// "no alpha means no test" would draw the whole thing.
+///
+/// `trbpp` is `GSLocalMemory::m_psm[FRAME.PSM].trbpp`. It is the right question to ask because the
+/// two 24-bit frame formats are PSMCT24 and PSMZ24 and those are exactly the two the software
+/// renderer's own `(PSM & 0xF) == PSMCT24` names.
+enum class GSTileDateFold : u8
+{
+	Off = 0,           ///< no destination-alpha test
+	PassOnAlphaClear,  ///< DATM 0: the pixel passes where the destination alpha's bit 7 is clear
+	PassOnAlphaSet,    ///< DATM 1: ...and where it is set
+	DropDraw,          ///< a 24-bit frame: nothing passes, whatever DATM says
+};
+
+constexpr GSTileDateFold gsTileFoldDate(bool date, u32 datm, u32 trbpp)
+{
+	if (!date)
+		return GSTileDateFold::Off;
+	if (trbpp == 24)
+		return GSTileDateFold::DropDraw;
+	return (datm != 0) ? GSTileDateFold::PassOnAlphaSet : GSTileDateFold::PassOnAlphaClear;
+}
+
+/// The fold as the state row carries it: 0 off, 1 = pass on alpha bit 7 clear, 2 = on set. DropDraw
+/// never reaches a row -- the draw does not happen -- so it is the caller's job to check for it
+/// first, and the value here is the one that lands if it does not.
+constexpr u32 gsTileGpuDateRow(GSTileDateFold fold)
+{
+	return (fold == GSTileDateFold::PassOnAlphaClear) ? 1u : ((fold == GSTileDateFold::PassOnAlphaSet) ? 2u : 0u);
+}
+
 /// What a CT16/CT16S frame actually stores, applied to a target's expanded RGBA8 bytes.
 ///
 /// A TileGpu colour target is an RGBA8 image whatever the guest format is, so a 16-bit frame's

@@ -1209,22 +1209,29 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 // says which of those the fragment stage is actually built to serve, so a use that has not been
 // built yet stays on today's approximation rather than silently reading a destination nothing does
 // anything with.
-u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool fbmsk_exact) const
+u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact) const
 {
 	if (!m_self_read)
 		return 0;
 
-	// Nothing is admitted by default yet. The machinery is in and proven; each class joins with its
-	// own accuracy repair and its own corpus evidence, so that a frame that moves can be attributed
-	// to one thing. Until then the scaffolding flag is the only way in, and it takes everything.
-	if (!m_force_self_read)
-		return 0;
-
 	u32 uses = 0;
-	// The destination-alpha test: the live pixel is exact where the pre-pass snapshot is only exact
-	// because the planner spends a pass break making it so.
-	if (reader_flags & GSTilePassSim::ReaderDate)
+	// The destination-alpha test, always, because there is nothing to trade: the live pixel is exact,
+	// where the pre-pass snapshot is only exact because the planner spends a pass break and a
+	// full-target copy making it so.
+	//
+	// ⚠️ Asked of the draw's own DATE fold rather than of the classifier's ReaderDate bit. The two
+	// differ in one case and the difference matters: the classifier answers for the pass-structure
+	// census, which only counts a draw that lands colour, and a DATE draw that lands none still reads
+	// destination alpha to decide its DEPTH write. Widening the census would change what it has
+	// counted since the crossover study; widening here costs nothing and admits the draw.
+	if (date)
 		uses |= GSDevice::kGSTileGpuSelfDate;
+
+	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
+	// evidence -- so that a frame that moves can be attributed to one thing.
+	if (!m_force_self_read)
+		return uses;
+
 	// The blend equations the executor's fixed-function state approximates. ReaderAsDualSource is
 	// deliberately NOT here: that class is exactly the one dual-source blending expresses, and it is
 	// most of the corpus's blended draws.
@@ -3176,13 +3183,11 @@ void GSRendererTileGpu::AccumulateDraw()
 	// reads its own target's alpha before writing: from the live pixel where the device serves the
 	// in-pass read, and from a pass snapshot where it does not -- and the snapshot road is what the
 	// staleness break further down exists for.
-	u32 date = 0;
-	if (ctx->TEST.DATE)
-	{
-		if (GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp == 24)
-			return;
-		date = 1u + static_cast<u32>(ctx->TEST.DATM);
-	}
+	const GSTileDateFold date_fold =
+		gsTileFoldDate(ctx->TEST.DATE, ctx->TEST.DATM, GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp);
+	if (date_fold == GSTileDateFold::DropDraw)
+		return;
+	const u32 date = gsTileGpuDateRow(date_fold);
 
 	// Admission to the in-pass destination read. The classifier is asked only where it can change the
 	// answer: without the road there is nothing to admit to, and its blend arm costs a GetAlphaMinMax
@@ -3190,7 +3195,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// names the reasons that are live rather than asking unconditionally.
 	const bool fbmsk_exact = gsTileFrameWriteMaskIsExact(ctx->FRAME.FBMSK, fb_fmsk);
 	const u32 self_mask = (m_self_read && (m_force_self_read || date != 0)) ?
-							  SelfReadUses(ReaderFlags(color_written), fbmsk_exact) :
+							  SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact) :
 							  0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;

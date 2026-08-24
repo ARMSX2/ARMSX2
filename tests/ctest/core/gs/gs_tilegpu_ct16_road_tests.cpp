@@ -231,3 +231,66 @@ TEST(TileGpuCT16Road, OnlyTheSixteenBitFamilyQuantises)
 	EXPECT_FALSE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT32].fmt));
 	EXPECT_FALSE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT24].fmt));
 }
+
+// -- the destination-alpha test, folded before the draw ------------------------------------------
+//
+// The tree had no test for DATE at all, on any road, and the one thing about it that is easy to get
+// backwards is the 24-bit case. It is not "there is no alpha bit, so everything passes" -- it is
+// "nothing passes, the draw is ignored", for BOTH values of DATM, measured on a PS2. The software
+// renderer says so in as many words (GSRendererSW::GetScanlineGlobalData, "When the format is 24bit
+// (Z or C), DATE ceases to function ... after testing this on a PS2 it turns out nothing passes").
+
+TEST(TileGpuDate, TwentyFourBitFrameDropsTheDrawForBothDatmValues)
+{
+	// trbpp 24 is the two 24-bit frame formats and only those, which is the same set the software
+	// renderer names as (PSM & 0xF) == PSMCT24 -- so asking trbpp is asking its question.
+	const GSLocalMemory mem;
+	for (u32 psm : {u32(PSMCT24), u32(PSMZ24)})
+	{
+		EXPECT_EQ(GSLocalMemory::m_psm[psm].trbpp, 24u) << psm;
+		for (u32 datm = 0; datm < 2; datm++)
+			EXPECT_EQ(gsTileFoldDate(true, datm, GSLocalMemory::m_psm[psm].trbpp), GSTileDateFold::DropDraw)
+				<< "psm " << psm << " datm " << datm;
+	}
+	// ...and the formats that DO carry an alpha bit must not be dropped.
+	for (u32 psm : {u32(PSMCT32), u32(PSMCT16), u32(PSMCT16S)})
+	{
+		EXPECT_NE(GSLocalMemory::m_psm[psm].trbpp, 24u) << psm;
+		EXPECT_NE(gsTileFoldDate(true, 0, GSLocalMemory::m_psm[psm].trbpp), GSTileDateFold::DropDraw) << psm;
+	}
+}
+
+TEST(TileGpuDate, DatmPicksWhichAlphaBitValuePasses)
+{
+	EXPECT_EQ(gsTileFoldDate(false, 0, 32), GSTileDateFold::Off);
+	EXPECT_EQ(gsTileFoldDate(false, 1, 32), GSTileDateFold::Off);
+	EXPECT_EQ(gsTileFoldDate(true, 0, 32), GSTileDateFold::PassOnAlphaClear);
+	EXPECT_EQ(gsTileFoldDate(true, 1, 32), GSTileDateFold::PassOnAlphaSet);
+	EXPECT_EQ(gsTileFoldDate(true, 0, 16), GSTileDateFold::PassOnAlphaClear);
+	EXPECT_EQ(gsTileFoldDate(true, 1, 16), GSTileDateFold::PassOnAlphaSet);
+}
+
+TEST(TileGpuDate, TheStateRowCarriesTheFoldAndNothingElse)
+{
+	// The fragment stage switches on 0 / 1 / 2 and reads "pass where the alpha MSB is set" as row 2.
+	// A renumbering here inverts the test on every DATE draw in the corpus and nothing else says so.
+	EXPECT_EQ(gsTileGpuDateRow(GSTileDateFold::Off), 0u);
+	EXPECT_EQ(gsTileGpuDateRow(GSTileDateFold::PassOnAlphaClear), 1u);
+	EXPECT_EQ(gsTileGpuDateRow(GSTileDateFold::PassOnAlphaSet), 2u);
+	// DropDraw never reaches a row: the caller returns before one is written. Zero is what lands if
+	// anybody ever forgets, which is "no test" -- the draw would render, but it would not render
+	// with the test inverted.
+	EXPECT_EQ(gsTileGpuDateRow(GSTileDateFold::DropDraw), 0u);
+}
+
+TEST(TileGpuDate, TheAlphaBitTheTestReadsIsTheBitEachFormatStores)
+{
+	// The shader decides on "the destination alpha byte >= 128", and the destination is the target's
+	// expanded RGBA8. For a 32-bit frame that byte is the guest's alpha byte, so bit 7 is bit 31 of
+	// the word. For a 16-bit frame the target holds the one stored alpha bit expanded to 0x80, which
+	// is the same threshold -- and both the seed and the draw's own quantisation put it there.
+	EXPECT_GE(gsTileUnpack5551(0x8000u) >> 24, 128u);
+	EXPECT_LT(gsTileUnpack5551(0x7FFFu) >> 24, 128u);
+	EXPECT_GE(gsTileGpuQuantise5551(0xFF000000u) >> 24, 128u);
+	EXPECT_LT(gsTileGpuQuantise5551(0x7F000000u) >> 24, 128u);
+}
