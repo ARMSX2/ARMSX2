@@ -504,9 +504,20 @@ object SecondScreen {
                     height = when {
                         fixedH > 0 -> (dp * fixedH).toInt()
                         tile == SecondScreenTile.COVER -> {
-                            val cellW = (resources.displayMetrics.widthPixels -
-                                (dp * 28).toInt()) / columns.coerceAtLeast(1)
-                            (cellW * 1.4f).toInt()
+                            // Sized against the DISPLAY, not the art.
+                            //
+                            // Giving the cell the cover's own 1.4 ratio at the column width came
+                            // out as 869px on a 1080px-tall panel -- one tile taking most of the
+                            // screen and shoving everything under it off the bottom. The panel is
+                            // landscape; the art is portrait; deriving a height from the width is
+                            // the wrong axis entirely.
+                            //
+                            // FIT_CENTER already guarantees the whole cover is visible in a box
+                            // of ANY shape, so the box only has to be a reasonable size. A third
+                            // of the panel's height reads as a cover without crowding out the
+                            // tiles people actually press, and the tile-height slider overrides
+                            // it for anyone who wants it bigger.
+                            (resources.displayMetrics.heightPixels / 3).coerceAtLeast((dp * 96).toInt())
                         }
                         else -> ViewGroup.LayoutParams.WRAP_CONTENT
                     }
