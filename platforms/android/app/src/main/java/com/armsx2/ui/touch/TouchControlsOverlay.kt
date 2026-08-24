@@ -420,12 +420,34 @@ fun TouchControlsOverlay() {
             val dxState = TouchControls.editorPanelDx(isLandscape)
             val dyState = TouchControls.editorPanelDy(isLandscape)
             val panelScale = TouchControls.editorPanelScale(isLandscape).floatValue
+
+            // ★ The panel moves ITSELF off whatever is being edited.
+            //
+            // It used to be a floating window pinned to the top, which meant every button under
+            // it had to be uncovered by hand before it could be touched -- "having to drag it
+            // around everywhere". Dragging is still there for anything unusual, but it should
+            // not be the price of editing a button in the top half of the screen.
+            //
+            // Halves rather than real overlap maths: the rule has to be predictable. A panel
+            // that darts around as rectangles graze each other is worse than one that is simply
+            // always on the opposite side from the thing you picked.
+            val selectedY = TouchControls.selectedButton.value?.let { id ->
+                layout.buttons.firstOrNull { it.id == id }?.yFrac
+            }
+            val dockBottom = selectedY != null && selectedY < 0.5f
             Box(
                 Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 12.dp)
+                    .align(if (dockBottom) Alignment.BottomCenter else Alignment.TopCenter)
+                    .padding(top = if (dockBottom) 0.dp else 12.dp, bottom = if (dockBottom) 12.dp else 0.dp)
                     .offset {
-                        IntOffset(dxState.floatValue.roundToInt(), dyState.floatValue.roundToInt())
+                        // The stored offset means "away from the anchored edge", so it has to
+                        // flip with the anchor -- otherwise a panel the user had nudged DOWN
+                        // would be nudged straight off the bottom of the screen once it docked
+                        // there.
+                        IntOffset(
+                            dxState.floatValue.roundToInt(),
+                            (if (dockBottom) -dyState.floatValue else dyState.floatValue).roundToInt(),
+                        )
                     },
             ) {
                 CompositionLocalProvider(
