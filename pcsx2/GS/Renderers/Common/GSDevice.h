@@ -2344,6 +2344,11 @@ public:
 		/// texel_mask, and a union over the draws already grouped -- so, like them, it splits
 		/// nothing. Non-zero is exactly `declares_self_read`.
 		u32 self_mask;
+		/// This pass renders into a frame format that stores fewer bits than the target's RGBA8 image
+		/// holds (CT16 / CT16S), so its draws have to say what the console would have stored. A pass
+		/// property because a pass has ONE colour surface and therefore one format; a fragment
+		/// variant bit because a pass whose frame is 32-bit must not carry the arithmetic.
+		bool quantises_frame;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 	};
 

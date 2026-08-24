@@ -41,7 +41,7 @@ namespace GSTileGpuShaderVariant
 	/// carries. Everything the mask does not name is not in the SPIR-V at all — on a tiler an
 	/// instruction that never executes still costs program size, and on the Adreno 650 crossing one
 	/// size threshold swings the whole frame.
-	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0)
+	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)
 	{
 		return fmt::format("#define TILEGPU_ROAD_BYTE {}\n"
 						   "#define TILEGPU_ROAD_TARGET {}\n"
@@ -54,7 +54,8 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_FMT_PALGATHER {}\n"
 						   "#define TILEGPU_SELF_DATE {}\n"
 						   "#define TILEGPU_SELF_BLEND {}\n"
-						   "#define TILEGPU_SELF_MASK {}\n",
+						   "#define TILEGPU_SELF_MASK {}\n"
+						   "#define TILEGPU_QUANT16 {}\n",
 			(road_mask & GSDevice::kGSTileGpuRoadByte) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadTarget) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadSource) ? 1 : 0,
@@ -66,11 +67,11 @@ namespace GSTileGpuShaderVariant
 			(texel_mask & GSDevice::kGSTileGpuTexelPalGather) ? 1 : 0,
 			(self_mask & GSDevice::kGSTileGpuSelfDate) ? 1 : 0,
 			(self_mask & GSDevice::kGSTileGpuSelfBlend) ? 1 : 0,
-			(self_mask & GSDevice::kGSTileGpuSelfMask) ? 1 : 0);
+			(self_mask & GSDevice::kGSTileGpuSelfMask) ? 1 : 0, quantise ? 1 : 0);
 	}
 
 	/// A name for one variant, for the compile log and the budget gate's table.
-	inline std::string VariantName(u32 road_mask, u32 texel_mask, u32 self_mask = 0)
+	inline std::string VariantName(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)
 	{
 		static constexpr const char* kRoad[8] = {"untextured", "byte", "target", "byte+target", "source",
 			"byte+source", "target+source", "byte+target+source"};
@@ -110,6 +111,8 @@ namespace GSTileGpuShaderVariant
 			}
 			name += '}';
 		}
+		if (quantise)
+			name += " q16";
 		return name;
 	}
 } // namespace GSTileGpuShaderVariant

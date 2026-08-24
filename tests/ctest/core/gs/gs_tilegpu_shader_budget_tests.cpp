@@ -201,6 +201,7 @@ namespace
 		u32 road;
 		u32 texel;
 		u32 self;
+		bool quantise;
 		u32 words;
 	};
 
@@ -255,22 +256,32 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	// the program every pass compiled before that road existed), each use alone, and the full set.
 	// The three uses are additive code, so a pair is bounded by the full set -- enumerating all eight
 	// masks would multiply an already slow gate for programs no measurement would read differently.
+	// ...and with the 16-bit frame's quantisation, which is a handful of integer ops on the same tail
+	// but a variant axis all the same, because a pass whose frame is 32-bit must not carry it. Crossed
+	// with the two self masks that bound the space (none, and all three) rather than with all five:
+	// the arms are additive, so those two bracket every combination, and a full cross would double an
+	// already slow gate for programs no measurement would read differently.
 	std::vector<Variant> variants;
 	static constexpr u32 kSelfMasks[] = {0, GSDevice::kGSTileGpuSelfDate, GSDevice::kGSTileGpuSelfBlend,
 		GSDevice::kGSTileGpuSelfMask, GSDevice::kGSTileGpuSelfMaskAll};
 	for (const u32 self : kSelfMasks)
 	{
-		for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
+		for (int q = 0; q < 2; q++)
 		{
-			if ((road & GSDevice::kGSTileGpuRoadByte) == 0)
-			{
-				variants.push_back({road, 0, self, 0});
+			if (q != 0 && self != 0 && self != GSDevice::kGSTileGpuSelfMaskAll)
 				continue;
-			}
-			for (u32 texel = 1u; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
+			for (u32 road = 0; road <= GSDevice::kGSTileGpuRoadMaskAll; road++)
 			{
-				if (Plannable(texel))
-					variants.push_back({road, texel, self, 0});
+				if ((road & GSDevice::kGSTileGpuRoadByte) == 0)
+				{
+					variants.push_back({road, 0, self, q != 0, 0});
+					continue;
+				}
+				for (u32 texel = 1u; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
+				{
+					if (Plannable(texel))
+						variants.push_back({road, texel, self, q != 0, 0});
+				}
 			}
 		}
 	}
@@ -279,13 +290,16 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	// plan TODAY (no draw is admitted to the destination read yet) is held to the ordinary budget,
 	// and the read's own arms to the one beside it.
 	u32 worst_single = 0, worst_single_road = 0, worst_single_texel = 0;
+	bool worst_single_q = false;
 	u32 worst_self = 0, worst_self_road = 0, worst_self_texel = 0, worst_self_self = 0;
+	bool worst_self_q = false;
 	for (Variant& v : variants)
 	{
 		std::string error;
-		v.words =
-			sc.FragmentWords(prologue + GSTileGpuShaderVariant::VariantDefines(v.road, v.texel, v.self) + body, error);
-		ASSERT_NE(v.words, 0u) << "variant " << GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self)
+		v.words = sc.FragmentWords(
+			prologue + GSTileGpuShaderVariant::VariantDefines(v.road, v.texel, v.self, v.quantise) + body, error);
+		ASSERT_NE(v.words, 0u) << "variant "
+							   << GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self, v.quantise)
 							   << " failed to compile: " << error;
 		if (GeometryCount(v.texel) > 1)
 			continue;
@@ -294,6 +308,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 			worst_single = v.words;
 			worst_single_road = v.road;
 			worst_single_texel = v.texel;
+			worst_single_q = v.quantise;
 		}
 		if (v.self != 0 && v.words > worst_self)
 		{
@@ -301,6 +316,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 			worst_self_road = v.road;
 			worst_self_texel = v.texel;
 			worst_self_self = v.self;
+			worst_self_q = v.quantise;
 		}
 	}
 
@@ -311,7 +327,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 		kBudgetUnits);
 	std::printf("  destination-read arms: %u words = %u units (the margin is spent there, on purpose)\n",
 		kSelfReadWordCeiling, kSelfReadCliffUnits);
-	std::printf("  %-62s %8s %7s %s\n", "variant", "words", "units", "verdict");
+	std::printf("  %-66s %8s %7s %s\n", "variant", "words", "units", "verdict");
 	u32 over_cliff = 0;
 	for (const Variant& v : variants)
 	{
@@ -319,8 +335,9 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 		const bool gated = GeometryCount(v.texel) <= 1;
 		const char* verdict = (units > kCliffUnits) ? "OVER THE CLIFF" : (v.words > kWordCeiling ? "over budget" : "ok");
 		over_cliff += (units > kCliffUnits) ? 1 : 0;
-		std::printf("  %-62s %8u %7u %s%s\n", GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self).c_str(),
-			v.words, units, verdict, gated ? "" : "  (mixed geometries)");
+		std::printf("  %-66s %8u %7u %s%s\n",
+			GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self, v.quantise).c_str(), v.words, units, verdict,
+			gated ? "" : "  (mixed geometries)");
 	}
 	std::printf("  %u of %zu variants predicted past the %u-unit cliff; all of them mix geometries.\n", over_cliff,
 		variants.size(), kCliffUnits);
@@ -336,7 +353,8 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	// fallback note in GSDeviceVK's TileGpu pipeline setup.
 	EXPECT_LE(worst_single, kWordCeiling)
 		<< "the largest single-arm TileGpu fragment variant is "
-		<< GSTileGpuShaderVariant::VariantName(worst_single_road, worst_single_texel, 0) << " at " << worst_single
+		<< GSTileGpuShaderVariant::VariantName(worst_single_road, worst_single_texel, 0, worst_single_q) << " at "
+		<< worst_single
 		<< " SPIR-V words (~" << PredictedUnits(worst_single) << " a650 units), over the " << kWordCeiling
 		<< "-word budget. Something landed in tilegpu.glsl that the Adreno 650 cannot afford: either it belongs "
 		   "behind a new variant axis, or the budget needs re-measuring on the device.";
@@ -344,7 +362,8 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	// ...and the destination-read arms, against the cliff-adjacent ceiling their note above explains.
 	EXPECT_LE(worst_self, kSelfReadWordCeiling)
 		<< "the largest single-arm TileGpu fragment variant that reads its own destination is "
-		<< GSTileGpuShaderVariant::VariantName(worst_self_road, worst_self_texel, worst_self_self) << " at "
+		<< GSTileGpuShaderVariant::VariantName(worst_self_road, worst_self_texel, worst_self_self, worst_self_q)
+		<< " at "
 		<< worst_self << " SPIR-V words (~" << PredictedUnits(worst_self) << " a650 units), over the "
 		<< kSelfReadWordCeiling << "-word ceiling and so within " << (kCliffUnits - PredictedUnits(worst_self))
 		<< " units of the Adreno 650's instruction-size cliff. That margin is already spent; the answer is a finer "

@@ -135,7 +135,18 @@
 #define TILEGPU_SELF_MASK 0
 #endif
 
+// TILEGPU_QUANT16 (injected by the device, PER PASS): this pass's frame format stores fewer bits
+// than the RGBA8 target holds, so a draw whose output IS what lands has to say what the console
+// would have stored. Not a self-read use -- it needs no destination -- but it lands at the same
+// point in the fragment stage, so it shares the byte stage below.
+#ifndef TILEGPU_QUANT16
+#define TILEGPU_QUANT16 0
+#endif
+
 #define TILEGPU_SELF_READ (TILEGPU_SELF_DATE || TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK)
+// The fragment stage's integer tail: anything that has to see the fragment as the BYTES the target
+// would store rather than as a normalised colour.
+#define TILEGPU_BYTE_TAIL (TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK || TILEGPU_QUANT16)
 
 // TILEGPU_FMT_* (injected by the device, PER PASS): the BYTE road's texel-decode ARMS this pass's
 // draws actually use -- GSTileGpuPass::texel_mask, ORed over the pass's byte-road draws exactly the
@@ -1046,27 +1057,28 @@ void main()
 	o_color = cv;
 	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));
 
-#if TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK
-	// The fragment read-modify-write road, for the draws the executor's fixed-function state cannot
-	// express. It runs LAST, on the finished fragment colour, because that is where the console puts
-	// it: the texture function, the alpha test and the fog walk all happen before the blend unit.
+#if TILEGPU_BYTE_TAIL
+	// The fragment stage's integer tail: the blend the executor's fixed-function state cannot
+	// express, the write mask it cannot express, and the precision a 16-bit frame does not keep.
+	// It runs LAST, on the finished fragment colour, because that is where the console puts all
+	// three: the texture function, the alpha test and the fog walk happen before the blend unit,
+	// and the frame format's own quantisation happens at the write after it.
 	//
-	// A pass declares the read for the draws that need it, and carries the ones that do not: this
-	// branch is per DRAW, out of its state row, not per pass. Blending is off in the pipeline for
-	// exactly the draws that take it (GSTileGpuPassPlan::kSelfBlend), so what lands is what this
-	// writes.
-	// The row says what this fragment stage must DO, not what the register said: the enable bit is
-	// set only for a draw admitted to the shader blend, and the keep mask is non-zero only for one
-	// admitted to the bit-granular write mask. So the branch is two tests on values already loaded,
-	// with no separate admission field to unpack.
-	if ((sr.blend & 0x00010000u) != 0u || sr.fbmsk != 0u)
+	// A pass compiles the arms its draws need and carries the draws that need none: every branch
+	// here is per DRAW, out of its state row. The row says what this stage must DO rather than what
+	// the registers said -- the enable bit is set only for a draw whose blend the shader owns, the
+	// keep mask is non-zero only for one whose write mask it owns, and the quantise bit only for one
+	// whose output is what lands -- so the gate is three tests on one word already loaded.
+	if ((sr.blend & 0x00110000u) != 0u || sr.fbmsk != 0u)
 	{
-		const ivec4 dst = tilegpu_dest_bytes();
 		// The bytes the target would have stored for this fragment. Same rounding as the alpha test's,
-		// which is the rounding a UNORM8 write performs -- so the shader's arithmetic is done on the
+		// which is the rounding a UNORM8 write performs -- so the tail's arithmetic is done on the
 		// value that would otherwise have been written, not on a neighbour of it.
 		ivec4 outc = ivec4(floor(fma(cv, vec4(255.0f), vec4(0.5f))));
+#if TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK
+		const ivec4 dst = tilegpu_dest_bytes();
 		const ivec4 src = outc;
+#endif
 
 #if TILEGPU_SELF_BLEND
 		// Cv = ((A - B) * C) >> 7 + D per channel, in integer, with C a 0..255 byte in which 0x80 is
@@ -1098,6 +1110,15 @@ void main()
 				v = src.rgb;
 			outc.rgb = v;
 		}
+#endif
+
+#if TILEGPU_QUANT16
+		// What a 16-bit frame stores: five bits per colour channel and one of alpha, TRUNCATED --
+		// the console drops the low bits rather than rounding to the nearest representable value.
+		// After the blend and before the write mask, which is the console's own order, and which is
+		// what makes the mask's low bits (the ones a 16-bit FBMSK cannot name) come out zero.
+		if ((sr.blend & 0x00100000u) != 0u)
+			outc &= ivec4(0xF8, 0xF8, 0xF8, 0x80);
 #endif
 
 #if TILEGPU_SELF_MASK

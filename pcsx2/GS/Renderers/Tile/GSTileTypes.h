@@ -268,6 +268,10 @@ constexpr u32 kGSTileBlendFixShift = 8;   ///< the constant factor, when C says 
 constexpr u32 kGSTileBlendEnable = 1u << 16; ///< blend at all; clear means Cv = Cs
 constexpr u32 kGSTileBlendWrap = 1u << 17;   ///< COLCLAMP = 0: the result wraps mod 256 instead of clamping
 constexpr u32 kGSTileBlendPabe = 1u << 18;   ///< PABE: the blend applies only where the source alpha's bit 7 is set
+/// Bit 20: quantise this draw's output to what a 16-bit frame stores, before anything reads it back.
+/// Not part of the blend equation -- it is what the console does at the WRITE -- but it rides in the
+/// same word because it is the same per-draw decision the fragment stage takes at the same point.
+constexpr u32 kGSTileBlendQuant16 = 1u << 20;
 /// Pack the ALPHA register (plus COLCLAMP, PABE and the frame format) into the row. `fmt` is
 /// `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit.
 constexpr u32 gsTileGpuPackBlend(bool abe, u32 a, u32 b, u32 c, u32 d, u32 fix, bool colclamp, bool pabe, u32 fmt)
@@ -351,6 +355,35 @@ constexpr int gsTileGpuBlendChannel(
 	if (!colclamp)
 		return v & 0xFF;
 	return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+/// What a CT16/CT16S frame actually stores, applied to a target's expanded RGBA8 bytes.
+///
+/// A TileGpu colour target is an RGBA8 image whatever the guest format is, so a 16-bit frame's
+/// pixels live there expanded: five bits per colour channel at the top of a byte, one alpha bit as
+/// 0x80. Everything that puts bytes INTO such a target already agrees on that -- the writeback packs
+/// `byte >> 3` and the seed unpacks `bits << 3`, and the software renderer's WriteFrame16 truncates
+/// the same way (`fs & 0x00f800f8` / `& 0x8000f800`) -- but the DRAW did not: it wrote a full eight
+/// bits per channel, so the image held precision the console never stored, and everything that read
+/// the target back (a destination blend, DATE, a TCC=1 sample) saw it.
+///
+/// ⚠️ TRUNCATION, not rounding. The console drops the low bits; it does not round to the nearest
+/// representable value. The one rounding step in the chain is float -> byte, which happens before
+/// this and is the UNORM8 store's own.
+///
+/// ⚠️ This is the WRITE. A draw whose result the blend unit still has to touch must NOT be quantised
+/// here -- the console quantises the blend's OUTPUT, not its source -- which is why the state row's
+/// bit is set per draw rather than per target.
+constexpr u32 gsTileGpuQuantise5551(u32 rgba8)
+{
+	return rgba8 & 0x80F8F8F8u;
+}
+
+/// Whether a frame format stores fewer bits than the target's RGBA8 image holds, so a draw landing
+/// in it has to say so. `fmt` is `GSLocalMemory::m_psm[FRAME.PSM].fmt`: 2 is the 16-bit family.
+constexpr bool gsTileGpuFrameQuantises(u32 fmt)
+{
+	return fmt == 2;
 }
 
 /// FBMSK as a KEEP mask on the target's expanded RGBA8 bytes: the bits of the destination the draw

@@ -638,11 +638,12 @@ private:
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
 	// key: topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7, < 81) | colour write mask<<16 (4) |
 	// road mask<<20 (3, byte/target/source) | texel-arm mask<<23 (6) | pass self-read mask<<32 (3) |
-	// this pass DECLARES the read<<35 | this DRAW reads<<36 -- so bits 4-7, 15, 29-31 and 37 up are
+	// this pass DECLARES the read<<35 | this DRAW reads<<36 | the frame quantises<<37 -- so bits 4-7,
+	// 15, 29-31 and 38 up are
 	// still free. Sixty-four bits because the three self-read fields no longer fit in thirty-two.
 	std::unordered_map<u64, VkPipeline> m_tilegpu_blend_pipelines;
-	VkPipeline GetTileGpuPipeline(
-		u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask, u32 self_mask);
+	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask, u32 texel_mask,
+		u32 self_mask, bool quantise);
 	VkPipeline TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares);
 	bool m_tilegpu_declared_fallback_warned = false;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
@@ -662,21 +663,22 @@ private:
 	/// no arms, and a byte road that named none takes the whole set — a superset is slow, a subset is
 	/// wrong, and a plan that says "byte road, no arms" is a bug the shader must not render around.
 	static u32 TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask);
-	/// The three normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8,
+	/// The normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8,
 	/// what the pass reads its own destination for in bits 9-11.
-	static constexpr u32 TileGpuVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask)
+	/// ...and whether its frame format quantises, at bit 12.
+	static constexpr u32 TileGpuVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise)
 	{
-		return road_mask | (texel_mask << 3) | (self_mask << 9);
+		return road_mask | (texel_mask << 3) | (self_mask << 9) | (quantise ? (1u << 12) : 0u);
 	}
-	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask);
-	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask);
+	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise);
+	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise);
 	/// `color_write_mask` is the 4-bit rgba mask of channels the draw lands (bit 0 = R .. bit 3 = A),
 	/// realized verbatim as the attachment's VkPipelineColorBlendAttachmentState::colorWriteMask.
 	/// `declares` builds against the pass's declaring render pass (the colour attachment is an input
 	/// attachment too); `reads` additionally puts the rasterization-order flag on the colour-blend
 	/// state, which is what makes THIS pipeline's destination reads ordered.
 	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
-		u32 road_mask, u32 texel_mask, u32 self_mask, bool declares, bool reads);
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB

@@ -164,3 +164,70 @@ TEST(TileGpuByteRoad, TheWritebackDispatchCoversExactlyOnePage)
 		EXPECT_EQ(groups.y * 8u, gsTilePageHeight(psm)) << psm;
 	}
 }
+
+// -- what a 16-bit frame STORES, as the draw now has to say ---------------------------------------
+//
+// A TileGpu colour target is an RGBA8 image whatever the guest format is, so a 16-bit frame's pixels
+// live there expanded. Every road that puts bytes into such a target already agreed on the form --
+// the writeback packs `byte >> 3`, the seed unpacks `bits << 3`, and gsTilePack5551 /
+// gsTileUnpack5551 above are the CPU spelling of the same pair. The DRAW did not: it wrote eight
+// bits a channel, so the image held precision the console never stored and everything that read the
+// target back (a destination blend, DATE, a TCC=1 sample) saw it.
+//
+// These pin the draw's quantisation to the roads it has to agree with, rather than to a restatement
+// of the format.
+
+TEST(TileGpuCT16Road, DrawQuantisationIsTheWritebackAndSeedRoundTrip)
+{
+	// The strong form: quantising a byte and then sending it out through the writeback's pack and
+	// back through the seed's unpack has to be the same value. If the draw quantised by rounding
+	// where the pack truncates, or kept a sixth bit, this is where the two roads would disagree --
+	// and the disagreement would only ever show as a target that reads back differently from the
+	// guest bytes under it.
+	for (u32 r = 0; r < 256; r++)
+	{
+		for (u32 a = 0; a < 256; a += 5)
+		{
+			const u32 px = r | (r << 8) | (r << 16) | (a << 24);
+			const u32 q = gsTileGpuQuantise5551(px);
+			EXPECT_EQ(gsTileUnpack5551(gsTilePack5551(q)), q) << "r=" << r << " a=" << a;
+			// ...and quantising is idempotent, which is what makes a target that has been written,
+			// read back and written again stable rather than drifting.
+			EXPECT_EQ(gsTileGpuQuantise5551(q), q) << "r=" << r << " a=" << a;
+			// ...and it agrees with the pack/unpack pair applied to the UNquantised pixel, which is
+			// what the writeback would have stored for the draw before this existed.
+			EXPECT_EQ(gsTileUnpack5551(gsTilePack5551(px)), q) << "r=" << r << " a=" << a;
+		}
+	}
+}
+
+TEST(TileGpuCT16Road, DrawQuantisationTruncatesAndTakesAlphasTopBitOnly)
+{
+	// Truncation, not rounding: the console drops the low bits. 0xFF must not become 0x100.
+	EXPECT_EQ(gsTileGpuQuantise5551(0x00FFFFFFu), 0x00F8F8F8u);
+	EXPECT_EQ(gsTileGpuQuantise5551(0x00070707u), 0u);
+	EXPECT_EQ(gsTileGpuQuantise5551(0x00F9FAFBu), 0x00F8F8F8u);
+	// Alpha keeps one bit, and it is the top one.
+	EXPECT_EQ(gsTileGpuQuantise5551(0x7F000000u), 0u);
+	EXPECT_EQ(gsTileGpuQuantise5551(0x80000000u), 0x80000000u);
+	EXPECT_EQ(gsTileGpuQuantise5551(0xFF000000u), 0x80000000u);
+}
+
+TEST(TileGpuCT16Road, OnlyTheSixteenBitFamilyQuantises)
+{
+	// fmt is GSLocalMemory::m_psm[PSM].fmt: 0 = 32-bit, 1 = 24-bit, 2 = the 16-bit family. A 24-bit
+	// frame stores eight bits a channel and must NOT be quantised -- it is the alpha byte it does
+	// not keep, and the write mask is what says so.
+	EXPECT_FALSE(gsTileGpuFrameQuantises(0));
+	EXPECT_FALSE(gsTileGpuFrameQuantises(1));
+	EXPECT_TRUE(gsTileGpuFrameQuantises(2));
+
+	// ...and against the format table itself, so a PSM joining the family cannot be missed.
+	// GSLocalMemory::m_psm is filled by a GSLocalMemory constructor, so one has to exist -- without
+	// it every fmt reads zero and this test passes for PSMCT32 by accident while failing here.
+	const GSLocalMemory mem;
+	EXPECT_TRUE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT16].fmt));
+	EXPECT_TRUE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT16S].fmt));
+	EXPECT_FALSE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT32].fmt));
+	EXPECT_FALSE(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[PSMCT24].fmt));
+}

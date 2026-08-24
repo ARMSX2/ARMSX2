@@ -3766,6 +3766,17 @@ void GSRendererTileGpu::AccumulateDraw()
 		ctx->ALPHA.D, ctx->ALPHA.FIX, m_draw_env->COLCLAMP.CLAMP != 0, m_draw_env->PABE.PABE != 0,
 		GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
 	pd.self_fbmsk = gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk);
+	// What a 16-bit frame stores. A TileGpu colour target is an RGBA8 image whatever the guest format
+	// is, and every road that puts bytes INTO one already agrees the 16-bit families live there
+	// expanded -- the writeback packs `byte >> 3`, the seed unpacks `bits << 3`. The DRAW did not: it
+	// wrote eight bits a channel, so the image held precision the console never stored and everything
+	// that read the target back saw it.
+	//
+	// ⚠️ Only where the fragment stage's output IS what lands. A draw the executor's blend unit still
+	// has to touch is quantised by the console AFTER that blend, so quantising its source would be a
+	// different picture, not a more accurate one. Those draws wait for the shader blend.
+	pd.quantise_5551 = gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt) &&
+					   !(PRIM->ABE && color_written && (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) == 0);
 	m_frame.self_read_draws += (self_mask != 0) ? 1u : 0u;
 
 	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
@@ -4013,6 +4024,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.blend = (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) ? pd.self_blend :
 																		(pd.self_blend & ~kGSTileBlendEnable);
 			sr.fbmsk = (pd.self_mask & GSDevice::kGSTileGpuSelfMask) ? pd.self_fbmsk : 0u;
+			if (pd.quantise_5551)
+				sr.blend |= kGSTileBlendQuant16;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 		}
 
@@ -4074,6 +4087,11 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			for (u32 d = i; d < j; d++)
 				pass.self_mask |= m_plan_pending[d].self_mask;
 			pass.declares_self_read = pass.self_mask != 0;
+			// A pass has ONE colour surface and therefore one frame format, so this is a property of
+			// the pass even though the decision that uses it is per draw.
+			pass.quantises_frame = false;
+			for (u32 d = i; d < j; d++)
+				pass.quantises_frame = pass.quantises_frame || m_plan_pending[d].quantise_5551;
 			m_frame.self_read_passes += pass.declares_self_read ? 1u : 0u;
 
 			// The pass's rule-2 bind table, rebuilt by walking its draws in order and appending each

@@ -440,6 +440,11 @@ private:
 		// row that only sometimes means something is how a field comes to be read in the wrong state.
 		u32 self_blend;
 		u32 self_fbmsk;
+		/// This draw's OUTPUT is what lands in a frame format that stores fewer bits than the target's
+		/// RGBA8 image holds, so the fragment stage has to say what the console would have stored. Not
+		/// set for a draw the fixed-function blend unit still has to touch: the console quantises the
+		/// blend's result, not its source, and the blend happens after the fragment stage.
+		bool quantise_5551;
 		bool fge;             // PRIM.FGE: this draw's fragments are fogged
 		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
