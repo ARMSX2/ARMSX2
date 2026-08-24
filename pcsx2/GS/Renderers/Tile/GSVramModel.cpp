@@ -309,6 +309,11 @@ void GSVramModel::OnCpuWrite(const GSPageBitmap& pages, u8 planes)
 	pages.forEachSetPage([this](u32 page) { m_gen[page].cpu_write++; });
 }
 
+void GSVramModel::OnCpuWriteServedOnGpu(const GSPageBitmap& pages)
+{
+	pages.forEachSetPage([this](u32 page) { m_gen[page].cpu_write++; });
+}
+
 GSPageBitmap GSVramModel::ReadbackNeeded(const RectFootprint& fp, u8 planes)
 {
 	GSPageBitmap need;

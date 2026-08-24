@@ -288,6 +288,11 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_ring_versions.clear();
 	m_ring_live.fill(0);
 	m_epoch = 0;
+	m_merge_groups.clear();
+	m_merge_bytes.clear();
+	m_merge_words.clear();
+	m_merge_emitting = false;
+	m_cpu_read_pages.clear();
 	AdvanceSourcePinFrame();
 	// The surfaces the open pass named died with the model, so its ids would alias whatever takes
 	// them next.
@@ -399,48 +404,56 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		// ring slots holding nothing but their S prefill while the model counted the bytes
 		// composed. Opening the range first puts the compose and the seed in one range, in the
 		// order they must run.
-		PendingDraw pd = {};
-		pd.tex_source = kGSTileNoSurface;
-		pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
-		pd.src_slot = kNoSourceSlot;
-		pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
+		const u32 first_op = static_cast<u32>(m_plan_prep_ops.size());
 		ComposeRingPages(need);
 		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
-		pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
-		if (pd.prep_op_count == 0)
+		if (!AppendPrepOnlyDraw(id, rect, first_op))
 			continue; // nothing was emitted at all, so this bail strands nothing
 		Texels(id).filled.MarkWhole(need);
 		m_frame.seed_breaks++;
-
-		pd.color_surface = id;
-		pd.z_surface = kGSTileNoSurface;
-		pd.break_before = true; // the seed must land after every draw of the frame
-		pd.rect = rect;
-		pd.scissor = rect;
-		pd.epoch = m_epoch;
-
-		GSDevice::GSTileGpuIndirectDraw draw = {};
-		draw.instance_count = 1;
-		draw.index_count = 0; // the pass exists for its prep ops
-		draw.first_index = static_cast<u32>(m_plan_indices.size());
-		draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
-		draw.state_index = static_cast<u32>(m_plan_draws.size());
-		pd.draw_index = draw.state_index;
-		m_plan_draws.push_back(draw);
-		m_plan_topologies.push_back(GSDevice::GSTileGpuTopology::Triangle);
-		m_plan_blend_keys.push_back(0);
-		// No depth attachment: this pseudo-draw exists for its prep ops and renders nothing. Every
-		// per-draw plan array has to be appended to here as well as in AccumulateDraw -- the
-		// executor indexes them all by draw, and a short one reads the next draw's state.
-		m_plan_depth_modes.push_back(GSDevice::GSTileGpuDepthMode::None);
-		m_plan_pending.push_back(pd);
-
-		// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
-		// already done" must reset with it, exactly as AccumulateDraw's breaks do. Nothing reads
-		// it between here and BuildAndExecutePlan's own reset, so it cannot be observed today --
-		// it keeps the reset-on-break invariant true for whatever reads it next.
-		BreakOpenPass();
 	}
+}
+
+// See the declaration. Both callers need the same five per-draw plan arrays appended to and the
+// same pass break; the executor indexes every one of them by draw, and a short one reads the next
+// draw's state -- which is exactly the trap the pass-grouping assert exists to catch.
+bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op)
+{
+	const u32 count = static_cast<u32>(m_plan_prep_ops.size()) - first_prep_op;
+	if (count == 0)
+		return false;
+
+	PendingDraw pd = {};
+	pd.tex_source = kGSTileNoSurface;
+	pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
+	pd.src_slot = kNoSourceSlot;
+	pd.first_prep_op = first_prep_op;
+	pd.prep_op_count = count;
+	pd.color_surface = color;
+	pd.z_surface = kGSTileNoSurface;
+	pd.break_before = true; // the ops must land after every draw recorded so far
+	pd.rect = rect;
+	pd.scissor = rect;
+	pd.epoch = m_epoch;
+
+	GSDevice::GSTileGpuIndirectDraw draw = {};
+	draw.instance_count = 1;
+	draw.index_count = 0; // the pass exists for its prep ops
+	draw.first_index = static_cast<u32>(m_plan_indices.size());
+	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
+	draw.state_index = static_cast<u32>(m_plan_draws.size());
+	pd.draw_index = draw.state_index;
+	m_plan_draws.push_back(draw);
+	m_plan_topologies.push_back(GSDevice::GSTileGpuTopology::Triangle);
+	m_plan_blend_keys.push_back(0);
+	// No depth attachment: this pseudo-draw exists for its prep ops and renders nothing.
+	m_plan_depth_modes.push_back(GSDevice::GSTileGpuDepthMode::None);
+	m_plan_pending.push_back(pd);
+
+	// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
+	// already done" must reset with it, exactly as AccumulateDraw's breaks do.
+	BreakOpenPass();
+	return true;
 }
 
 GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
@@ -491,13 +504,14 @@ bool GSRendererTileGpu::IsCoverageAlphaSupported()
 // A host->local transfer's destination. Fires BEFORE GSState writes the shadow, so: (1) any
 // live ring slot for the pages captures the page's current bytes as a version copy and closes,
 // keeping every already-planned reader on the bytes it saw (the "version" upload mechanism);
-// (2) blocks only a target holds newest that this write only PARTIALLY overwrites are pulled
-// down first (the one stall road -- the whole-block/whole-page common case shrinks or clears
-// the target's claim for free); (3) the model records the CPU write. Order matters: closing
-// the slots first also drops their synced claims, so the spill question is asked against
-// truth the CPU shadow does NOT hold (a claim the ring vouched for is not one S can shrink
-// against). Footprints are exact through GSOffset, DBW=0 included (the address math folds
-// every row onto one page column, which is what the hardware does with it).
+// (2) blocks only a target holds newest that this write only PARTIALLY overwrites are reconciled
+// first -- on the GPU where the merge can be planned, by draining the target to the shadow where
+// it cannot (the whole-block/whole-page common case shrinks or clears the target's claim for
+// free); (3) the model records the CPU write, except on the pages the merge already accounted
+// for. Order matters: closing the slots first also drops their synced claims, so the spill
+// question is asked against truth the CPU shadow does NOT hold (a claim the ring vouched for is
+// not one S can shrink against). Footprints are exact through GSOffset, DBW=0 included (the
+// address math folds every row onto one page column, which is what the hardware does with it).
 void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
 	const GSTileSurfaceLayout layout{BITBLTBUF.DBP, static_cast<u8>(BITBLTBUF.DBW),
@@ -506,20 +520,40 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	GSVramModel::RectFootprint fp;
 	GSVramModel::FootprintForRect(layout, r, fp);
 	SupersedeRingSlots(fp.pages);
+	GSPageBitmap merged;
 	if (!m_vram_model.SpillBeforeCpuWrite(fp, planes).empty())
 	{
-		// This write partially overwrites blocks only a target holds, so it takes the stall road
-		// -- and a stall FLUSHES the pending plan, which retires every synced claim the ring
-		// vouched for (those slots are spent, and their bytes were never in S). Retiring a claim
-		// can only ADD pages to the spill set, so the set that actually has to come down is the
-		// one asked for on the far side of the flush. Answering from this side leaves the pages
-		// whose claim the flush retired unpulled, and OnCpuWrite below then clears truth the CPU
-		// shadow never received -- silent in Release, its synced assert in Devel. So: ask once to
-		// learn a stall is coming, flush, then ask again for the real set.
+		// This write partially overwrites blocks only a target holds. That FLUSHES the pending
+		// plan, which retires every synced claim the ring vouched for (those slots are spent, and
+		// their bytes were never in S). Retiring a claim can only ADD pages to the spill set, so
+		// the set that actually has to be dealt with is the one asked for on the far side of the
+		// flush. Answering from this side leaves the pages whose claim the flush retired
+		// unreconciled, and OnCpuWrite below then clears truth the CPU shadow never received --
+		// silent in Release, its synced assert in Devel. So: ask once to learn the reconciliation
+		// is coming, flush, then ask again for the real set.
+		//
+		// The flush happens on the merge road too, and deliberately: it is not a device WAIT (a
+		// plan submission records, it does not block), so it costs nothing the acceptance metric
+		// counts, and asking the spill question the same way on both roads is what keeps the merge
+		// from inheriting a subtly different set than the readback it replaces.
 		FlushPendingPlan();
-		ReadbackToShadow(m_vram_model.SpillBeforeCpuWrite(fp, planes), StallSite::UploadSubBlock);
+		const GSPageBitmap spill = m_vram_model.SpillBeforeCpuWrite(fp, planes);
+		// Decided BEFORE the readback, EMITTED after it. The readback's own plan flush must not
+		// carry merge ops: their ring slot is prefilled from the CPU shadow AT PLAN-BUILD TIME, and
+		// GSState has not written this transfer into it yet, so a plan built between here and the
+		// write would compose the page as it stands BEFORE the transfer and seed that into the
+		// target -- losing the upload entirely.
+		merged = PlanUploadMerge(layout, r, fp, spill);
+		ReadbackToShadow(spill.andnot(merged), StallSite::UploadSubBlock);
+		EmitUploadMerge();
 	}
-	m_vram_model.OnCpuWrite(fp, planes);
+	// The merged pages' write is already accounted for: the ring carried its bytes into the owner's
+	// texture and the owner still holds the page's newest bytes, so nothing about truth moves. Every
+	// other page takes the ordinary clear-or-shrink.
+	GSVramModel::RectFootprint cpu_fp = fp;
+	cpu_fp.pages = fp.pages.andnot(merged);
+	m_vram_model.OnCpuWrite(cpu_fp, planes);
+	m_vram_model.OnCpuWriteServedOnGpu(merged);
 	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
 }
@@ -1586,6 +1620,13 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto sdzp = stat([](const MF& f) { return f.seed_pages_depth; });
 	const auto wbrk = stat([](const MF& f) { return f.writeback_breaks; });
 	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
+	const auto mrg = stat([](const MF& f) { return f.merge_ops; });
+	const auto mrgp = stat([](const MF& f) { return f.merge_pages; });
+	const auto mref_o = stat([](const MF& f) { return f.merge_ref_owner; });
+	const auto mref_c = stat([](const MF& f) { return f.merge_ref_cpu; });
+	const auto mref_b = stat([](const MF& f) { return f.merge_ref_bytes; });
+	const auto mref_s = stat([](const MF& f) { return f.merge_ref_slice; });
+	const auto mref_f = stat([](const MF& f) { return f.merge_ref_overflow; });
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
@@ -1694,6 +1735,13 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
 		s_all.p50, p_all.mean);
+	// The other half of the upload-sub-block population: the spills served on the device instead.
+	// Read it beside the stall line above -- the two add up to the spills the frame takes, and the
+	// refusals say which clause sent the rest down the blocking road.
+	Console.WriteLn("  upload merge: %.2f / %-4u served on the GPU, %.2f / %-4u pages   refused: no sole byte-road "
+					"owner %.2f, a CPU read already wanted it %.2f, half a byte %.2f, rect is a claim %.2f, "
+					"footprint overflow %.2f",
+		mrg.mean, mrg.p50, mrgp.mean, mrgp.p50, mref_o.mean, mref_c.mean, mref_b.mean, mref_s.mean, mref_f.mean);
 
 	// The wait bill, which the stall census above cannot show: a stall is one CONSUMER asking, and
 	// what costs the frame is the number of times the GS thread blocked on the GPU to answer it.
@@ -2867,18 +2915,18 @@ GSPageBitmap GSRendererTileGpu::PagesDepthSeedable(const GSPageBitmap& pages, co
 // unprefilled only where the planned writebacks provably reach every block. Strictly more
 // prefill than the proxy alone, never less; the worst case it leaves is a byte one write old
 // instead of a byte that was never guest data at all.
-u32 GSRendererTileGpu::EnsureRingSlot(u32 page)
+u32 GSRendererTileGpu::EnsureRingSlot(u32 page, bool force_prefill)
 {
 	GSTileRingPlaneState planes[kGSTilePlaneCount];
 	RingPlaneStateFor(page, planes);
-	bool needs_prefill = false;
+	bool needs_prefill = force_prefill;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
 		if (planes[pi].owner == kGSTileNoSurface || planes[pi].truth_mask != GSVramModel::kFullBlockMask ||
 			planes[pi].synced || !planes[pi].byte_road)
 			needs_prefill = true;
 	}
-	if (!needs_prefill && gsTileComposableBlocks(planes) != GSVramModel::kFullBlockMask)
+	if (!force_prefill && !needs_prefill && gsTileComposableBlocks(planes) != GSVramModel::kFullBlockMask)
 	{
 		needs_prefill = true;
 		m_frame.prefill_uncomposed++;
@@ -2961,7 +3009,7 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());
 	pages.forEachSetPage([&](u32 page) {
 		u32 mask = GSVramModel::kFullBlockMask;
-		const u32 keep = GSDevice::kGSTileGpuNoKeepMask;
+		u32 keep = GSDevice::kGSTileGpuNoKeepMask;
 		if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
 		{
 			// The blocks this surface holds newest on the page, over the planes it owns there
@@ -2973,6 +3021,24 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 			{
 				if (m_vram_model.OwnerOf(page, pi) == id)
 					mask |= m_vram_model.TruthMask(page, pi);
+			}
+			// The upload merge's exception, and ONLY inside the merge's own compose: an upload is
+			// about to land on this page, its bytes are what the slot's prefill carries, and the
+			// model still says the surface holds the blocks it is landing in. So the blocks the
+			// upload covers whole come out of the writeback altogether, and the ones it covers in
+			// part carry a keep mask naming its bytes. (A later reader composing the same page
+			// gets neither: by then the model accounts for the transfer, and a keep mask there
+			// would leave the CPU's bytes standing over bytes the surface has since made its own.)
+			if (m_merge_emitting)
+			{
+				for (const UploadPageBytes& ub : m_merge_bytes)
+				{
+					if (ub.page != page)
+						continue;
+					mask &= ~ub.blocks_whole;
+					keep = m_merge_keep_base + ub.first_word;
+					break;
+				}
 			}
 			if (mask == 0)
 				return;
@@ -3057,7 +3123,9 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 {
 	if (pages.empty())
 		return;
-	pages.forEachSetPage([&](u32 page) { EnsureRingSlot(page); });
+	// Under the upload merge every page here is one the merge staged, and its slot MUST take the S
+	// prefill whatever the model says about who holds the page -- see EnsureRingSlot.
+	pages.forEachSetPage([&](u32 page) { EnsureRingSlot(page, m_merge_emitting); });
 
 	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
 	if (need.empty())
@@ -4728,6 +4796,13 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	m_frame.stalls[static_cast<u32>(site)]++;
 	m_frame.stall_pages[static_cast<u32>(site)] += need.count();
 
+	// A CPU READ had to pull these pages: remember it, so the upload merge stops keeping them on the
+	// GPU. See m_cpu_read_pages -- the upload road is excluded because that is the merge's own road
+	// and marking it would switch the merge off the first time it declined a page, and the savestate
+	// sync is excluded because it pulls everything and means nothing about what the game reads.
+	if (site == StallSite::LocalRead || site == StallSite::Clut)
+		m_cpu_read_pages |= need;
+
 	// One pool call per (owner surface, truth block mask) -- NOT one per plane, and NOT one per
 	// page.
 	//
@@ -4894,4 +4969,371 @@ void GSRendererTileGpu::SyncAllTruthToCpu()
 	SyncClutToCpu();
 	m_vram_model.ClearAllSynced();
 	ReadbackToShadow(m_vram_model.TruthAny(), StallSite::SyncAll);
+}
+
+// -- the CPU->GPU upload merge --------------------------------------------------------------------
+//
+// The road that used to be the ONLY reason five corpus dumps ever blocked on the device. An upload
+// covering part of a block a target holds newest leaves that block's bytes split -- some the CPU's
+// new ones, the rest still the target's -- and GS truth is tracked per block, so somebody has to
+// merge them. Doing it on the CPU means the target's half has to come down first, which is a submit
+// and a fence wait per spill: 2.88 a frame on Shadow of the Colossus, and under the serialization
+// law one such wait costs the whole frame's overlap however few there are.
+//
+// So the merge goes the other way, and needs no wait, because the ring already moves bytes in both
+// directions:
+//
+//   1. the page takes a ring slot prefilled from the CPU shadow. The prefill is a memcpy the
+//      EXECUTOR does when the plan is built, and GSState writes this transfer into the shadow
+//      immediately after InvalidateVideoMem returns -- so by then the slot's source already holds
+//      the CPU's new bytes;
+//   2. a WRITEBACK of the owner composes the rest of the page out of its texture, under a per-block
+//      keep mask naming the bytes the transfer wrote, so the CPU's half survives the read-modify-
+//      write instead of being overwritten by a byte the target no longer owns;
+//   3. a SEED reads the merged bytes back into the owner's texture -- only the blocks it holds, so
+//      no texel of it changes that the transfer had nothing to do with;
+//   4. truth does not move AT ALL. The owner still holds exactly the blocks it held, whose newest
+//      bytes are now in its texture; the shadow still holds exactly the rest. Nothing was pulled
+//      down and the model records only the write generation.
+//
+// The ops are one range on a draw-less pending draw (AppendPrepOnlyDraw), which puts them at a pass
+// head behind every draw recorded so far and ahead of every draw after. That IS the transfer's
+// sequence point, and it is why the merge does not need to know anything about the frame's pass
+// structure.
+//
+// ⚠️ What it CANNOT keep is the favour the old road did on the side: draining a page also handed
+// truth back, so every later CPU read of it was free. See m_cpu_read_pages for what that cost and
+// what the merge does about it.
+
+namespace
+{
+/// Where writing one texel of `psm` lands inside the unit its pixel address names, as a BIT range:
+/// the unit's width, the first bit of it the write touches, and how many. This is GSLocalMemory's
+/// own WritePixel family read as coverage rather than as a value -- WritePixel24 keeps 0xff000000,
+/// WritePixel8H writes bits 24-31, WritePixel4HL bits 24-27 -- and the 4-bit case needs no special
+/// handling here because its pixel address is already a nibble address.
+struct UploadUnitBits
+{
+	u32 unit_bits;
+	u32 bit_offset;
+	u32 bit_count;
+};
+
+bool UploadUnitBitsFor(u32 psm, UploadUnitBits& out)
+{
+	switch (psm)
+	{
+		case PSMCT32:
+		case PSMZ32: out = {32, 0, 32}; return true;
+		case PSMCT24:
+		case PSMZ24: out = {32, 0, 24}; return true;
+		case PSMT8H: out = {32, 24, 8}; return true;
+		case PSMT4HL: out = {32, 24, 4}; return true;
+		case PSMT4HH: out = {32, 28, 4}; return true;
+		case PSMCT16:
+		case PSMCT16S:
+		case PSMZ16:
+		case PSMZ16S: out = {16, 0, 16}; return true;
+		case PSMT8: out = {8, 0, 8}; return true;
+		case PSMT4: out = {4, 0, 4}; return true;
+		default: return false;
+	}
+}
+} // namespace
+
+// See the declaration.
+bool GSRendererTileGpu::BuildUploadByteMask(const GSTileSurfaceLayout& layout, const GSVector4i& r,
+	const GSPageBitmap& pages, std::vector<UploadPageBytes>& out, std::vector<u32>& words)
+{
+	out.clear();
+	words.clear();
+	UploadUnitBits unit;
+	if (r.rempty() || pages.empty() || !UploadUnitBitsFor(layout.psm, unit))
+		return false;
+
+	// What one WORD of a fully written block looks like, as a 4-bit byte mask. Every format packs a
+	// whole number of units into a 32-bit word, so this is the same for every word of every block:
+	// 0xF for the formats that write whole units, 0x7 for the 24-bit ones (the alpha byte is not
+	// theirs) and 0x8 for PSMT8H.
+	u32 full_bits = 0;
+	for (u32 u = 0; u < 32 / unit.unit_bits; u++)
+	{
+		const u32 span = (unit.bit_count >= 32) ? ~0u : ((1u << unit.bit_count) - 1u);
+		full_bits |= span << (u * unit.unit_bits + unit.bit_offset);
+	}
+	u32 full_byte_bits = 0;
+	for (u32 b = 0; b < 4; b++)
+	{
+		const u32 byte = (full_bits >> (b * 8)) & 0xFFu;
+		// A format whose texel owns half a byte can never be merged, whatever the rect: the
+		// writeback masks at byte granularity, so a byte the CPU owns one nibble of has no right
+		// answer -- writing it loses the CPU's nibble, skipping it loses the target's. PSMT4HL and
+		// PSMT4HH are exactly that, always. (PSMT4 is not: its texels pair into whole bytes, and
+		// whether a given rect's do is the per-block question below.)
+		if (byte != 0 && byte != 0xFFu)
+			return false;
+		full_byte_bits |= (byte != 0) ? (1u << b) : 0u;
+	}
+	const u32 full_word = full_byte_bits * 0x11111111u;
+
+	const GSOffset off = GSOffset::fromKnownPSM(layout.bp, layout.bw, static_cast<GS_PSM>(layout.psm));
+	const GSVector2i bs(1 << off.blockShiftX(), 1 << off.blockShiftY());
+	const int bx0 = (r.left / bs.x) * bs.x;
+	const int by0 = (r.top / bs.y) * bs.y;
+
+	// Two bits a byte: which halves of this block's 256 bytes the write covers. Only the 4-bit
+	// formats can ever set one and not the other, and that is what makes a rect unmergeable.
+	std::array<u8, 256> half{};
+
+	for (int by = by0; by < r.bottom; by += bs.y)
+	{
+		for (int bx = bx0; bx < r.right; bx += bs.x)
+		{
+			const u32 bn = off.bn(bx, by);
+			const u32 page = bn >> 5;
+			if (!pages.test(page))
+				continue;
+			const u32 bib = bn & 31;
+
+			UploadPageBytes* pb = nullptr;
+			for (UploadPageBytes& e : out)
+			{
+				if (e.page == page)
+				{
+					pb = &e;
+					break;
+				}
+			}
+			if (!pb)
+			{
+				// A whole page's table, not just its touched blocks: it costs a kilobyte on a spill
+				// that happens a couple of times a frame, and it makes the block index the shader
+				// already has the whole lookup -- no ranking, no popcount, nothing to get wrong.
+				out.push_back(UploadPageBytes{static_cast<u16>(page), 0, 0, static_cast<u32>(words.size())});
+				words.resize(words.size() + GSDevice::kGSTileGpuKeepMaskWordsPerPage, 0u);
+				pb = &out.back();
+			}
+			u32* const blk = words.data() + pb->first_word + bib * 8;
+			pb->blocks |= 1u << bib;
+
+			// A footprint big enough to wrap GS memory revisits blocks, so everything here ORs.
+			if (bx >= r.left && (bx + bs.x) <= r.right && by >= r.top && (by + bs.y) <= r.bottom)
+			{
+				for (u32 w = 0; w < 8; w++)
+					blk[w] |= full_word;
+				continue;
+			}
+
+			// The block the rect only enters: texel by texel, so it claims the bytes it lands on
+			// and not one more. Bounded by the block, which is 512 texels at its largest.
+			half.fill(0);
+			const int x0 = std::max(bx, r.left), x1 = std::min(bx + bs.x, r.right);
+			const int y0 = std::max(by, r.top), y1 = std::min(by + bs.y, r.bottom);
+			for (int y = y0; y < y1; y++)
+			{
+				const GSOffset::PAHelper pa = off.paMulti(0, y);
+				for (int x = x0; x < x1; x++)
+				{
+					const u32 bit0 = pa.value(x) * unit.unit_bits + unit.bit_offset;
+					pxAssert((((bit0 >> 3) >> 8) & 31) == bib);
+					for (u32 b = 0; b < unit.bit_count; b += 4)
+						half[((bit0 + b) >> 3) & 255] |= static_cast<u8>(1u << (((bit0 + b) >> 2) & 1));
+				}
+			}
+			for (u32 byte = 0; byte < 256; byte++)
+			{
+				if (half[byte] == 0)
+					continue;
+				if (half[byte] != 3)
+				{
+					// Half a byte, so no byte mask expresses it: see the format check above. Leaving
+					// a part-built table behind would be a mask a caller could still read.
+					out.clear();
+					words.clear();
+					return false;
+				}
+				blk[byte >> 5] |= 1u << ((((byte >> 2) & 7) * 4) + (byte & 3));
+			}
+		}
+	}
+
+	for (UploadPageBytes& e : out)
+	{
+		const u32* const table = words.data() + e.first_word;
+		for (u32 b = 0; b < 32; b++)
+		{
+			if (!(e.blocks & (1u << b)))
+				continue;
+			bool whole = true;
+			for (u32 w = 0; w < 8; w++)
+				whole = whole && table[b * 8 + w] == 0xFFFFFFFFu;
+			if (whole)
+				e.blocks_whole |= 1u << b;
+		}
+	}
+	return true;
+}
+
+// See the declaration. Every clause is a proof that the ring slot this merge composes will hold the
+// page's real bytes, because the seed writes that slot straight into the owner's texture and the
+// model goes on saying the owner holds those blocks -- so a slot that is wrong anywhere is a wrong
+// pixel no later read can correct.
+GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layout, const GSVector4i& r,
+	const GSVramModel::RectFootprint& fp, const GSPageBitmap& spill)
+{
+	m_merge_groups.clear();
+	m_merge_bytes.clear();
+	m_merge_words.clear();
+	if (spill.empty() || GSConfig.TileGpuUploadSpillReadback)
+		return GSPageBitmap();
+	if (!m_upload_writes_whole_rect)
+	{
+		// The rect is a CLAIM (a sliced transfer hands the whole image to every slice; a truncated
+		// one hands a guess), and the keep mask has to be a RECORD -- a byte it names that the
+		// shadow does not actually receive is a byte the writeback skips and nobody writes.
+		m_frame.merge_ref_slice++;
+		return GSPageBitmap();
+	}
+	if (fp.overflowed)
+	{
+		// No block masks, so there is no telling which blocks the write covers whole.
+		m_frame.merge_ref_overflow++;
+		return GSPageBitmap();
+	}
+
+	GSPageBitmap take;
+	spill.forEachSetPage([&](u32 page) {
+		// A page a CPU read has already had to pull once goes back down the blocking road: see
+		// m_cpu_read_pages for the measurement that put this clause here.
+		if (m_cpu_read_pages.test(page))
+		{
+			m_frame.merge_ref_cpu++;
+			return;
+		}
+		// ONE live surface must hold every plane of the page that has truth at all. Not a
+		// simplification: the compose can only carry a plane whose owner has a writeback shader, and
+		// it marks the page composed either way -- so a page whose Z a depth buffer holds would get
+		// the stale shadow's bytes for the Z half, the seed would write that into the colour target's
+		// cells, and the model would go on saying the ring has the page. Every plane one owner, or
+		// the blocking road, which moves all of it.
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		bool split = false;
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			const GSTileSurfaceId o = m_vram_model.OwnerOf(page, pi);
+			if (o == kGSTileNoSurface)
+				continue;
+			split = split || (owner != kGSTileNoSurface && o != owner);
+			owner = o;
+		}
+		if (split || owner == kGSTileNoSurface)
+		{
+			m_frame.merge_ref_owner++;
+			return;
+		}
+		const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+		// A byte road both ways (the writeback that composes the page and the seed that reads it
+		// back), a pool texture to run them against, and a texture rectangle that actually spans
+		// the page -- the seed's scissor comes off the page's row and column in that rectangle.
+		if (!surf.pool_handle || !HasByteRoad(surf.layout) || !Texels(owner).pages.test(page))
+		{
+			m_frame.merge_ref_owner++;
+			return;
+		}
+		take.set(page);
+		for (UploadMergeGroup& g : m_merge_groups)
+		{
+			if (g.owner == owner)
+			{
+				g.pages.set(page);
+				return;
+			}
+		}
+		m_merge_groups.push_back(UploadMergeGroup{owner, GSPageBitmap()});
+		m_merge_groups.back().pages.set(page);
+	});
+	if (take.empty())
+		return take;
+
+	if (!BuildUploadByteMask(layout, r, take, m_merge_bytes, m_merge_words))
+	{
+		m_frame.merge_ref_bytes++;
+		m_merge_groups.clear();
+		m_merge_bytes.clear();
+		m_merge_words.clear();
+		return GSPageBitmap();
+	}
+	return take;
+}
+
+// See the declaration.
+void GSRendererTileGpu::EmitUploadMerge()
+{
+	if (m_merge_groups.empty())
+		return;
+
+	// The keep tables move into the plan here, once, and the entries below name them by their
+	// position in it.
+	m_merge_keep_base = static_cast<u32>(m_plan_writeback_keep_masks.size());
+	m_plan_writeback_keep_masks.insert(
+		m_plan_writeback_keep_masks.end(), m_merge_words.begin(), m_merge_words.end());
+
+	for (const UploadMergeGroup& g : m_merge_groups)
+	{
+		const u32 first_op = static_cast<u32>(m_plan_prep_ops.size());
+		// The compose stages the pages from the shadow and writes the owner's remaining bytes over
+		// them. Every page here is unsynced truth of `g.owner` (PlanUploadMerge proved the owner and
+		// the spill question proved the truth), so the writeback is always emitted -- a page that
+		// composed nothing would be seeded straight from the prefill, which is the shadow, which is
+		// stale exactly where the owner holds it.
+		pxAssert(!m_vram_model.ReadbackNeeded(g.pages, kGSTilePlanesAll).empty());
+		m_merge_emitting = true;
+		ComposeRingPages(g.pages);
+		m_merge_emitting = false;
+		// One seed per page, each narrowed to the blocks the owner holds. Not a whole-page seed:
+		// the rest of the page is the CPU's, its bytes are already right in the byte store, and
+		// writing them over this surface's texels would change texels nothing asked about --
+		// measured as the whole of the difference this road made to the frame before it was
+		// narrowed (6132 bytes of one SotC page, all of them blocks the target does not hold).
+		g.pages.forEachSetPage([&](u32 page) {
+			u32 own_blocks = 0;
+			for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+			{
+				if (m_vram_model.OwnerOf(page, pi) == g.owner)
+					own_blocks |= m_vram_model.TruthMask(page, pi);
+			}
+			if (own_blocks == 0)
+				return;
+			GSPageBitmap one;
+			one.set(page);
+			EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, g.owner, one, own_blocks);
+			Texels(g.owner).filled.Mark(page, own_blocks);
+		});
+		// The compose always emits at least the owner's writeback (the assert above), so the range is
+		// never empty -- and if it ever were, the ops would be inside no pass and would silently not
+		// run while the model below recorded the reconciliation as done.
+		const bool carried = AppendPrepOnlyDraw(g.owner, GSVector4i::zero(), first_op);
+		pxAssertMsg(carried, "TileGpu upload merge emitted no prep op to carry");
+		if (!carried)
+			continue;
+
+		// ⚠️ And the model move is NOTHING, which is the whole point and is worth stating plainly.
+		// The owner held blocks T of this page and the CPU held the rest. The transfer's bytes have
+		// just gone into the owner's texture for the blocks of T it lands in, so the owner still
+		// holds the newest bytes of exactly T; the blocks outside T got their new bytes in the
+		// shadow, which still holds the newest bytes of exactly those. Truth is unchanged, and
+		// InvalidateVideoMem's OnCpuWrite skips these pages for that reason.
+		//
+		// Claiming the WHOLE page for the owner instead would also be true -- the seed writes every
+		// texel of it -- but it is a bigger move than the transfer justifies, and it is not free:
+		// road selection is a function of the model, so handing the owner blocks it did not hold
+		// makes later reads eligible for target and donor roads they were not eligible for before.
+		m_frame.merge_ops++;
+		m_frame.merge_pages += g.pages.count();
+		m_frame.seed_breaks++;
+	}
+
+	m_merge_groups.clear();
+	m_merge_bytes.clear();
+	m_merge_words.clear();
 }

@@ -139,6 +139,14 @@ public:
 	void OnCpuWrite(const RectFootprint& fp, u8 planes);
 	void OnCpuWrite(const GSPageBitmap& pages, u8 planes);
 
+	/// A CPU-side write landed on these pages and its bytes have ALREADY been given to the surface
+	/// that holds them — so no truth moves and nothing is lost, only the write generation advances.
+	/// TileGpu's upload merge is the one caller: it stages the transfer's bytes into the byte store,
+	/// merges the surface's remaining bytes in on the GPU and reads the whole page back into the
+	/// surface's texture, so the surface still holds the page's newest bytes when the write is done.
+	/// Calling OnCpuWrite for such a page instead would clear truth the CPU shadow does not have.
+	void OnCpuWriteServedOnGpu(const GSPageBitmap& pages);
+
 	/// Pages a CPU read of fp must pull from the GPU first: GPU-newest pages whose
 	/// truth blocks intersect the read. Partial-page refutations are counted.
 	GSPageBitmap ReadbackNeeded(const RectFootprint& fp, u8 planes);

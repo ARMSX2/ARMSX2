@@ -1010,6 +1010,15 @@ struct Pcsx2Config
 					// carries cannot move its pixels) and the bisect lever
 					// afterwards. Never a user setting.
 					TileGpuUnspecializedFragmentVariant : 1,
+					// Serve an upload's sub-block spill by DRAINING the target to the
+					// CPU shadow, the way the renderer did before the GPU-side merge:
+					// the GS thread blocks on the device, merges the transfer's bytes
+					// into the pulled page and hands truth back to the CPU. Default
+					// off; the on position is the A/B control arm for the merge (both
+					// roads must be byte-identical -- one merges the same bytes on the
+					// GPU and never waits) and the bisect lever afterwards. Never a
+					// user setting.
+					TileGpuUploadSpillReadback : 1,
 					// Override the device's answer to "would you rather render MORE
 					// passes than see the depth state change inside one?"
 					// (GSDevice::TileGpuPrefersDepthUniformPasses). Both off -- the

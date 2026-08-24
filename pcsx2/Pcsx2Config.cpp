@@ -761,6 +761,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuForceSelfRead = false;
 	TileGpuUnionFragmentVariant = false;
 	TileGpuUnspecializedFragmentVariant = false;
+	TileGpuUploadSpillReadback = false;
 	TileGpuForceDepthUniformPasses = false;
 	TileGpuForceDepthMergedPasses = false;
 	TileFastShading = true;
@@ -1100,6 +1101,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuForceSelfRead);
 	SettingsWrapBitBool(TileGpuUnionFragmentVariant);
 	SettingsWrapBitBool(TileGpuUnspecializedFragmentVariant);
+	SettingsWrapBitBool(TileGpuUploadSpillReadback);
 	SettingsWrapBitBool(TileGpuForceDepthUniformPasses);
 	SettingsWrapBitBool(TileGpuForceDepthMergedPasses);
 	SettingsWrapBitBool(TileFastShading);

@@ -952,8 +952,8 @@ private:
 	std::vector<GSDevice::GSTileGpuSnapshotCopy> m_plan_snapshots;
 	std::vector<GSDevice::GSTileGpuPrepOp> m_plan_prep_ops;
 	std::vector<GSDevice::GSTileGpuPageEntry> m_plan_page_entries;
-	/// The keep tables a writeback page entry's `keep_mask_words` indexes. Empty until something
-	/// emits a writeback that does not own every byte of the blocks it writes.
+	/// The keep tables a writeback page entry's `keep_mask_words` indexes. Empty on every frame
+	/// that plans no upload merge, which is most of them.
 	std::vector<u32> m_plan_writeback_keep_masks;
 	std::vector<u32> m_plan_tex_sources; // per pass: the rule-2 targets its draws sample, as target indices
 	// The images this frame's Materialise prep ops build into (GSTileGpuPassPlan::prep_textures).
@@ -986,7 +986,12 @@ private:
 
 	// Give `page` a ring slot for the current epoch (or find its live one), and mark the S
 	// prefill if any of its bytes are CPU-newest right now. Returns the entry index.
-	u32 EnsureRingSlot(u32 page);
+	//
+	// `force_prefill` is the upload merge's, and it is a correctness requirement rather than a
+	// hint: the merge's whole mechanism is that the slot CARRIES the transfer's bytes out of the
+	// shadow, and the model cannot see that yet -- it still says the surface holds the page, which
+	// on a whole-page claim reads as "the GPU composes every byte of this, prefill nothing".
+	u32 EnsureRingSlot(u32 page, bool force_prefill = false);
 
 	// A CPU write is about to land on `pages`: every live slot among them captures the page's
 	// current S bytes as a version copy and closes at this epoch, so draws already planned keep
@@ -1004,6 +1009,84 @@ private:
 	// ComposeRingPages' scratch, a member so the per-surface-id arrays are allocated once and
 	// reused rather than sized by a constant that a game can walk past.
 	GSTileComposeBuckets m_compose_buckets;
+
+	// -- the CPU->GPU upload merge ---------------------------------------------------------------
+	//
+	// An upload covering only PART of a block a target holds newest used to be the only road on
+	// which the GS thread waited for the device, because the block's bytes end up split between the
+	// two sides and the merge has to happen where both halves are. This puts it on the GPU: the ring
+	// slot carries the CPU's half (its prefill is the shadow, which holds the transfer's bytes by
+	// the time the plan is built), a byte-masked writeback fills in the target's half, and a seed
+	// reads the merged page back into the target. See EmitUploadMerge.
+
+	/// The pages of `spill` the merge can take, with its groups and keep tables staged in the
+	/// scratch below. Asked BEFORE the residual readback, because the readback's own plan flush must
+	/// not carry merge ops (their ring slot would then be prefilled from a shadow the transfer has
+	/// not been written into yet).
+	GSPageBitmap PlanUploadMerge(const GSTileSurfaceLayout& layout, const GSVector4i& r,
+		const GSVramModel::RectFootprint& fp, const GSPageBitmap& spill);
+	/// Emit what PlanUploadMerge staged: per owner, a draw-less pass carrying its writebacks and
+	/// the seeds that read the merged pages back into its texture. Moves no truth -- see the body.
+	void EmitUploadMerge();
+
+	// Public only so the oracle suite can reach the mask builder with no device and no
+	// renderer, exactly as PlanPull is -- see gs_tilegpu_upload_merge_tests.cpp. The members
+	// below use the type, so it has to be declared here rather than beside PlanPull.
+public:
+	/// One guest page of a host->local transfer, described at the byte granularity the merge needs.
+	struct UploadPageBytes
+	{
+		u16 page;
+		u32 blocks;       ///< blocks of the page the write touches at all
+		u32 blocks_whole; ///< ...of those, the ones every byte of which it writes
+		/// This page's keep table: kGSTileGpuKeepMaskWordsPerPage words, block-major, 8 words a
+		/// block, one BIT per byte of the block's 256. Indexes the words vector built beside it.
+		u32 first_word;
+	};
+
+	/// The bytes a host->local transfer of `r` under `layout` writes, per guest page of `pages`.
+	///
+	/// Returns FALSE when the write is not byte-exact, in which case no merge may be planned off
+	/// it at all: a byte the transfer owns only HALF of (PSMT4HL and PSMT4HH always, PSMT4 where the
+	/// rect's nibbles do not pair up) cannot be split by a byte mask, so neither answer is right --
+	/// writing it loses the CPU's nibble and skipping it loses the target's.
+	///
+	/// Static and model-free: the address arithmetic is the load-bearing part and it is pinned
+	/// against GSLocalMemory's own WritePixel family with no device and no renderer.
+	static bool BuildUploadByteMask(const GSTileSurfaceLayout& layout, const GSVector4i& r,
+		const GSPageBitmap& pages, std::vector<UploadPageBytes>& out, std::vector<u32>& words);
+
+private:
+	/// One owner's share of a merge: every page whose planes it alone holds truth of.
+	struct UploadMergeGroup
+	{
+		GSTileSurfaceId owner;
+		GSPageBitmap pages;
+	};
+	/// Pages a CPU READ has already had to pull off the GPU (a local read or a CLUT load), from the
+	/// start of the session. The merge refuses them, and that refusal is what keeps it from trading
+	/// one wait for several.
+	///
+	/// The road it replaces did the CPU a favour on the side: draining a page for an upload spill
+	/// also handed truth back, so every later CPU read of that page was free. Keeping truth on the
+	/// GPU takes that away, and on a title whose palettes live in the tail blocks of a framebuffer
+	/// page -- Dirge of Cerberus does exactly this -- the CLUT loads then pay for it over and over.
+	/// Measured, before this bitmap existed: dirge's upload stalls fell 4.62 -> 0.88 a frame and its
+	/// CLUT stalls rose 2.00 -> 10.25, a net LOSS of 4.5 waits a frame.
+	///
+	/// So the merge does not guess which pages the CPU wants: it waits to be told. The first read
+	/// that has to pull a page marks it, and from then on uploads to it take the blocking road and
+	/// leave it where the CPU can reach it. Monotonic, so it cannot oscillate, and every entry in it
+	/// was paid for by a wait that already happened.
+	GSPageBitmap m_cpu_read_pages;
+	std::vector<UploadMergeGroup> m_merge_groups;
+	std::vector<UploadPageBytes> m_merge_bytes; ///< one entry per page of this merge
+	std::vector<u32> m_merge_words;             ///< their keep tables, before the plan rebases them
+	u32 m_merge_keep_base = 0;                  ///< where m_merge_words landed in the plan's array
+	/// EmitPrepOp applies the keep tables ONLY inside the merge's own compose. A later reader of the
+	/// same page composes it again from a model that already accounts for the transfer, and giving
+	/// that writeback the keep mask would leave the CPU's bytes standing over the target's own.
+	bool m_merge_emitting = false;
 
 	// Ensure a surface for `layout` covering `pages` exists in the model and the pool (grown as
 	// needed). Returns kGSTileNoSurface on allocation failure.
@@ -1480,9 +1563,21 @@ private:
 	// Emit a prep op over `pages` for surface `id` (Writeback or Seed) on the pending draw being
 	// accumulated; block masks per page come from the model for writebacks, full for seeds.
 	// `seed_blocks` narrows a SEED to part of each page it names; the default is the whole page,
-	// which is what every road that seeds a target current wants (see GSTileGpuPrepOp::seed_blocks).
+	// which is what every road but the upload merge wants (see GSTileGpuPrepOp::seed_blocks).
 	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages,
 		u32 seed_blocks = GSVramModel::kFullBlockMask);
+
+	// Append a pending draw that renders nothing and exists only to carry the prep ops emitted
+	// since `first_prep_op`. The executor runs a pass's op range at the pass head, and it takes
+	// that range from the pass's DRAWS -- so an op emitted outside every draw's range is inside no
+	// pass and is silently never run. This is what gives one to the two roads that compose bytes
+	// with no draw of their own to hang them on (the display materialise, the upload merge), and it
+	// always breaks the pass, so the ops land behind every draw recorded so far and ahead of every
+	// draw after: that is the sequence point both roads need.
+	//
+	// `color` is the surface the pass binds -- a pass with no attachment at all is skipped by the
+	// executor. Returns false when the range is empty, having appended nothing.
+	bool AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op);
 
 	// Truth on `pages` cannot reach the byte store at all: count it and warn once. The depth plane
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.
@@ -1648,6 +1743,7 @@ public:
 	/// second ahead of the first. See gs_tilegpu_pull_grouping_tests.cpp.
 	static void PlanPull(const GSVramModel& model, const GSPageBitmap& need, std::vector<PullCall>& out);
 
+
 private:
 	std::vector<PullCall> m_pull_calls; ///< PlanPull's scratch, kept so a pull allocates nothing
 
@@ -1735,6 +1831,17 @@ private:
 		u32 seed_ops_depth = 0;
 		u32 seed_pages_depth = 0;
 		u32 seed_breaks = 0;     // draws that opened a pass because their target needed seeding
+		// The CPU->GPU upload merge: spills served on the device instead of by draining the target
+		// to the shadow. `merge_ops` is the population that used to be StallSite::UploadSubBlock
+		// stalls, so the two columns add up to the spills a frame takes, and the refusals say which
+		// clause sent the rest down the blocking road.
+		u32 merge_ops = 0;
+		u32 merge_pages = 0;
+		u32 merge_ref_owner = 0;    // no single byte-road owner holding every plane of the page
+		u32 merge_ref_cpu = 0;      // a CPU read has already had to pull this page down once
+		u32 merge_ref_bytes = 0;    // the write owns half a byte somewhere: no byte mask expresses it
+		u32 merge_ref_slice = 0;    // the rect is a claim, not a record (a sliced or truncated upload)
+		u32 merge_ref_overflow = 0; // the footprint lost its block masks, so coverage is unknown
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		// The fragment read-modify-write road. Both are zero on a device without it, and zero on a
