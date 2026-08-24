@@ -356,6 +356,12 @@ object SecondScreen {
                 gravity = Gravity.CENTER
                 setTextColor(if (action) ACCENT else TEXT)
                 textSize = 14f
+                // ALWAYS two lines, not just at most two. An active tile appends a state line
+                // ("\n❚❚" on Pause, likewise Fast Forward), so with maxLines alone a tile grew
+                // the moment you used it and the row went ragged. Reserving the second line makes
+                // every tile the same height whether or not it is currently showing state, and it
+                // scales with the text size instead of being pinned to a magic dp value.
+                minLines = 2
                 maxLines = 2
                 if (this is Button) isAllCaps = false
             }
@@ -369,8 +375,15 @@ object SecondScreen {
                 SecondScreenTile.LOAD -> MainActivityRuntime.instance?.loadState()
                 SecondScreenTile.FAST_FORWARD -> MainActivityRuntime.instance?.toggleFastForward()
                 SecondScreenTile.PAUSE ->
-                    if (MainActivityRuntime.eState.value == EmuState.PAUSED) MainActivityRuntime.resume()
-                    else MainActivityRuntime.pause()
+                    if (MainActivityRuntime.eState.value == EmuState.PAUSED) {
+                        MainActivityRuntime.resume()
+                    } else {
+                        // Mark it deliberate FIRST. This is the only pause that leaves the game
+                        // uncovered, and the stuck-paused backstop resumes exactly that state
+                        // unless it is told the user meant it. resume() clears the flag.
+                        MainActivityRuntime.userHeldPause.value = true
+                        MainActivityRuntime.pause()
+                    }
                 SecondScreenTile.SCREENSHOT ->
                     MainActivityRuntime.instance?.applicationContext?.let { Screenshots.capture(it) }
                 SecondScreenTile.ASPECT -> {
@@ -428,8 +441,11 @@ object SecondScreen {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         )
 
+        // MATCH_PARENT height, not WRAP_CONTENT: inside a horizontal row this stretches every
+        // tile to the tallest in that row, so any residual difference (a Button's built-in
+        // padding against a TextView's) is absorbed rather than showing as a ragged edge.
         private fun rowLp() = LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f,
+            0, ViewGroup.LayoutParams.MATCH_PARENT, 1f,
         )
 
         private fun action(label: String, onClick: () -> Unit): View =

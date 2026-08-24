@@ -1187,7 +1187,24 @@ open class MainActivityRuntime : ComponentActivity() {
             NativeApp.pause()
         }
 
+        /**
+         * A pause the USER asked for and expects to stay.
+         *
+         * The stuck-paused backstop below resumes a VM that is paused with nothing covering the
+         * screen, on the reasoning that such a state can only be a lost resume. That was true
+         * while every pause came with a frontend over it -- pauseForOverlay() is what the quick
+         * menu, the library and backgrounding all use. The second screen broke the assumption:
+         * its Pause tile is the one caller of plain pause(), and it deliberately leaves the game
+         * on screen. The backstop then undid it 700ms later, which is what "pause immediately
+         * unpauses itself" was.
+         *
+         * Compose state rather than a plain flag because the backstop keys a LaunchedEffect on it.
+         */
+        val userHeldPause = mutableStateOf(false)
+
         fun resume() {
+            // Whatever the user was holding, they are done holding it.
+            userHeldPause.value = false
             if (vmStopInProgress)
                 return
             vmControl.execute {
@@ -2664,7 +2681,10 @@ open class MainActivityRuntime : ComponentActivity() {
                         val stuckPaused = !WindowImpl.frontendCovers &&
                             eState.value == EmuState.PAUSED &&
                             !WindowImpl.showLibrary.value &&
-                            !com.armsx2.ui.touch.TouchControls.editMode.value
+                            !com.armsx2.ui.touch.TouchControls.editMode.value &&
+                            // A pause with nothing over it is not always a lost resume -- the
+                            // second screen pauses on purpose and leaves the game visible.
+                            !userHeldPause.value
                         androidx.compose.runtime.LaunchedEffect(stuckPaused) {
                             if (!stuckPaused) return@LaunchedEffect
                             // The normal close path posts its resume after a 220 ms dismiss
@@ -2673,7 +2693,8 @@ open class MainActivityRuntime : ComponentActivity() {
                                 kotlinx.coroutines.delay(700)
                                 if (eState.value != EmuState.PAUSED || WindowImpl.frontendCovers ||
                                     WindowImpl.showLibrary.value ||
-                                    com.armsx2.ui.touch.TouchControls.editMode.value
+                                    com.armsx2.ui.touch.TouchControls.editMode.value ||
+                                    userHeldPause.value
                                 ) return@LaunchedEffect
                                 println("@@ANDROID_RESUME_RETRY@@ attempt=$it eState=${eState.value}")
                                 resume()

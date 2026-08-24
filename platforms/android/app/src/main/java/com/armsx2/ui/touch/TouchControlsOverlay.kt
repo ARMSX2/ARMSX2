@@ -466,7 +466,7 @@ private fun ButtonWidget(
         .fillMaxSize()
         .let {
             if (edit) it.editGestures(cfg)
-            else if (inputEnabled) it.pressGestures(cfg.id.keycode, cfg.tapToHold) { p -> localPressed = p }
+            else if (inputEnabled) it.pressGestures(cfg.id.keycode, cfg.tapToHold, cfg.turbo) { p -> localPressed = p }
             else it
         }
     // Pressed feedback: every button shrinks a hair AND darkens.
@@ -1715,10 +1715,17 @@ private fun isMultiTouchKind(kind: TouchButtonId.Kind): Boolean =
 private fun Modifier.pressGestures(
     keycode: Int,
     tapToHold: Boolean = false,
+    turbo: Int = 0,
     onPressedChange: (Boolean) -> Unit,
 ) =
-    pointerInput(keycode, tapToHold) {
+    pointerInput(keycode, tapToHold, turbo) {
         var latched = false
+        // One place decides hold-vs-rapid-fire, so latch and momentary get turbo for free and
+        // the two compose: with both on, a tap starts the autofire and the next tap stops it.
+        fun emitPress(on: Boolean) {
+            if (turbo > 0) TouchControls.fireTurboButton(keycode, "touch", on, turbo, ::sendDigital)
+            else sendDigital(keycode, on)
+        }
         try {
             awaitPointerEventScope {
                 while (true) {
@@ -1732,7 +1739,7 @@ private fun Modifier.pressGestures(
                         // Toggle the latch on this tap-down.
                         latched = !latched
                         onPressedChange(latched)
-                        sendDigital(keycode, latched)
+                        emitPress(latched)
                         // Consume this finger's lifetime so the same press can't
                         // re-toggle; ignore other pointers.
                         while (true) {
@@ -1742,19 +1749,22 @@ private fun Modifier.pressGestures(
                         }
                     } else {
                         onPressedChange(true)
-                        sendDigital(keycode, true)
+                        emitPress(true)
                         while (true) {
                             val next = awaitPointerEvent()
                             val nc = next.changes.firstOrNull { it.id == id }
                             if (nc == null || !nc.pressed) break
                         }
                         onPressedChange(false)
-                        sendDigital(keycode, false)
+                        emitPress(false)
                     }
                 }
             }
         } finally {
-            // Disposed/reconfigured while latched → don't leave the key stuck down.
+            // Disposed/reconfigured mid-press → don't leave the key stuck down, and don't
+            // leave a turbo toggling a button whose widget no longer exists. emitPress(false)
+            // cancels the timer AND emits the up, so it is right for both cases.
+            if (turbo > 0) emitPress(false)
             if (latched) {
                 sendDigital(keycode, false)
                 onPressedChange(false)
@@ -2094,6 +2104,22 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 if (selectedCfg.id.kind == TouchButtonId.Kind.FACE ||
                     selectedCfg.id.kind == TouchButtonId.Kind.SHOULDER
                 ) {
+                    // Rapid-fire (#619). Cycles rather than opening a slider: the toolbar is
+                    // the one surface that has to stay usable one-thumbed over the game, and
+                    // three speeds cover what mashing is actually for. Frames between toggles,
+                    // matching a macro's Frequency; 2 is about as fast as the VM can sample.
+                    ToolbarChip(
+                        when (selectedCfg.turbo) {
+                            0 -> str("touch.editor.turboOff")
+                            in 1..2 -> str("touch.editor.turboFast")
+                            in 3..5 -> str("touch.editor.turboMed")
+                            else -> str("touch.editor.turboSlow")
+                        },
+                    ) {
+                        TouchControls.updateButton(selectedCfg.id) {
+                            it.copy(turbo = when (it.turbo) { 0 -> 2; 2 -> 4; 4 -> 8; else -> 0 })
+                        }
+                    }
                     ToolbarChip(if (selectedCfg.tapToHold) str("touch.editor.tapHoldOn") else str("touch.editor.tapHoldOff")) {
                         TouchControls.updateButton(selectedCfg.id) { it.copy(tapToHold = !it.tapToHold) }
                     }

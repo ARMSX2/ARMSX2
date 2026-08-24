@@ -601,6 +601,45 @@ object TouchControls {
         macroHandler.post(runnable)
     }
 
+    /**
+     * Rapid-fire for ONE button (#619), on the same timer and the same sampling floor as a
+     * macro's Frequency.
+     *
+     * Separate from [fireMacro] rather than folded into it because a macro is a SET of codes
+     * plus a pressure modifier, and collapsing a single button into that shape would mean
+     * building a list to throw it away. What matters is that both share [macroRunnables], so a
+     * release always finds and cancels the toggle it started, and [MACRO_MIN_STATE_MS], so the
+     * fastest settings still produce presses the VM actually samples.
+     *
+     * [key] namespaces concurrent users of the same button the way it does for macros.
+     */
+    fun fireTurboButton(keycode: Int, key: String, down: Boolean, frames: Int, emit: (Int, Boolean) -> Unit) {
+        val runKey = "btn$keycode:$key"
+        if (!down) {
+            macroRunnables.remove(runKey)?.let { macroHandler.removeCallbacks(it) }
+            // Always emit the up, even mid-cycle: let go on the "on" half and the button would
+            // otherwise stay down in the emulator.
+            emit(keycode, false)
+            return
+        }
+        if (frames <= 0) {
+            emit(keycode, true)
+            return
+        }
+        if (macroRunnables.containsKey(runKey)) return // already firing
+        val periodMs = (frames * MACRO_FRAME_MS).toLong().coerceAtLeast(MACRO_MIN_STATE_MS)
+        var pressed = false
+        val runnable = object : Runnable {
+            override fun run() {
+                pressed = !pressed
+                emit(keycode, pressed)
+                macroHandler.postDelayed(this, periodMs)
+            }
+        }
+        macroRunnables[runKey] = runnable
+        macroHandler.post(runnable)
+    }
+
     /** The macro a physical [keycode] triggers — only if it's bound AND has buttons
      *  configured. Checked in the gameplay key path (Main) before normal pad routing. */
     @Volatile private var runtimeMacroMap: Map<Int, TouchButtonId>? = null
@@ -1307,6 +1346,12 @@ data class TouchButtonCfg(
     /** Tap-to-hold / latch: a tap toggles the button held (stays pressed until
      *  tapped again) instead of momentary press. Per-button, opt-in. */
     val tapToHold: Boolean = false,
+    /** Rapid-fire while held (#619), in frames between toggles; 0 = off, which stays the
+     *  default. Same unit and machinery as a macro's Frequency, because it is the same idea
+     *  applied to one button: physical buttons already had turbo and the on-screen ones did
+     *  not, which is exactly the asymmetry the request was about. Composes with [tapToHold] —
+     *  set both and a tap starts the autofire and the next tap stops it. */
+    val turbo: Int = 0,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id.name)
@@ -1315,6 +1360,7 @@ data class TouchButtonCfg(
         put("size", sizeDp.toDouble())
         put("on", enabled)
         put("hold", tapToHold)
+        put("turbo", turbo)
     }
 
     companion object {
@@ -1328,6 +1374,7 @@ data class TouchButtonCfg(
                 sizeDp = json.optDouble("size", 64.0).toFloat().coerceIn(28f, 220f),
                 enabled = json.optBoolean("on", true),
                 tapToHold = json.optBoolean("hold", false),
+                turbo = json.optInt("turbo", 0).coerceIn(0, TouchControls.MACRO_FREQ_MAX),
             )
         }
     }
