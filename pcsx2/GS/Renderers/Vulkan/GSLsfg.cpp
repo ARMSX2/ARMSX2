@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #ifdef ARMSX2_HAS_LSFG
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
@@ -37,6 +38,9 @@ namespace GSLsfg
 {
 	namespace
 	{
+		// Guards s_dll_path, s_dll_checked and s_dll_ok: SetDllPath() runs on the UI and the GS
+		// thread, and GetUnavailableReason() reads from both.
+		std::mutex s_dll_mutex;
 		std::string s_dll_path;
 
 		// Written once from the GS thread at device creation, read from the UI thread whenever
@@ -52,10 +56,11 @@ namespace GSLsfg
 
 		// The structural PE check reads the file, and GetUnavailableReason() runs once per frame
 		// from EndPresent while the feature is on — so without this the GS thread did an
-		// fopen/fread/fseek/fread/fclose on the present path every single frame. The verdict can
-		// only change when the path does, which is exactly when SetDllPath() clears it.
-		std::atomic<bool> s_dll_checked{false};
-		std::atomic<bool> s_dll_ok{false};
+		// fopen/fread/fseek/fread/fclose on the present path every single frame. Cleared by
+		// SetDllPath() on a path change, and by InvalidateDllVerdict() when the file itself was
+		// rewritten under an unchanged path.
+		bool s_dll_checked = false;
+		bool s_dll_ok = false;
 
 		// What the overlay reports. Written from the GS thread in the present path, read from
 		// whichever thread draws the OSD, so both are atomic rather than mutex'd — a recent
@@ -77,16 +82,28 @@ namespace GSLsfg
 
 	void SetDllPath(std::string path)
 	{
+		std::unique_lock lock(s_dll_mutex);
 		if (s_dll_path == path)
 			return;
 		s_dll_path = std::move(path);
+		s_dll_checked = false;
 		// A new DLL deserves a fresh attempt; the previous failure may have been this file.
 		s_init_failed.store(false, std::memory_order_relaxed);
-		s_dll_checked.store(false, std::memory_order_relaxed);
 		s_no_shaders.store(false, std::memory_order_relaxed);
 	}
 
-	const std::string& GetDllPath() { return s_dll_path; }
+	void InvalidateDllVerdict()
+	{
+		std::unique_lock lock(s_dll_mutex);
+		s_dll_checked = false;
+	}
+
+	// By value: a reference would outlive the lock.
+	std::string GetDllPath()
+	{
+		std::unique_lock lock(s_dll_mutex);
+		return s_dll_path;
+	}
 
 	bool LooksLikeLosslessDll(const std::string& path)
 	{
@@ -139,15 +156,18 @@ namespace GSLsfg
 				return Unavailable::GpuUnsupported;
 		}
 
-		if (s_dll_path.empty())
-			return Unavailable::NoDll;
-		if (!s_dll_checked.load(std::memory_order_acquire))
 		{
-			s_dll_ok.store(LooksLikeLosslessDll(s_dll_path), std::memory_order_relaxed);
-			s_dll_checked.store(true, std::memory_order_release);
+			std::unique_lock lock(s_dll_mutex);
+			if (s_dll_path.empty())
+				return Unavailable::NoDll;
+			if (!s_dll_checked)
+			{
+				s_dll_ok = LooksLikeLosslessDll(s_dll_path);
+				s_dll_checked = true;
+			}
+			if (!s_dll_ok)
+				return Unavailable::DllUnreadable;
 		}
-		if (!s_dll_ok.load(std::memory_order_relaxed))
-			return Unavailable::DllUnreadable;
 		if (s_init_failed.load(std::memory_order_relaxed))
 			return Unavailable::InitFailed;
 		return Unavailable::Available;
