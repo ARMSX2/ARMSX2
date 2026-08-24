@@ -403,11 +403,15 @@ fun RendererTab(state: MutableState<Settings>) {
             // mutually exclusive upscalers, and two toggles that silently turn each other off
             // is a worse way to say that than one list. The UI index is NOT the enum value --
             // MetalFX is 1 and is Apple-only, so it has no row here.
-            val upscalerValues = listOf(Settings.UPSCALER_OFF, Settings.UPSCALER_FSR1, Settings.UPSCALER_SGSR)
-            val upscalerOn = s.upscaler == Settings.UPSCALER_FSR1 || s.upscaler == Settings.UPSCALER_SGSR
+            val upscalerValues = listOf(
+                Settings.UPSCALER_OFF, Settings.UPSCALER_FSR1,
+                Settings.UPSCALER_SGSR, Settings.UPSCALER_SGSR_EDGE,
+            )
+            val sgsrOn = s.upscaler == Settings.UPSCALER_SGSR || s.upscaler == Settings.UPSCALER_SGSR_EDGE
+            val upscalerOn = s.upscaler == Settings.UPSCALER_FSR1 || sgsrOn
             SegmentedRow(
                 label = str("renderer.upscaler.label"),
-                options = listOf(str("common.off"), "FSR 1", "SGSR"),
+                options = listOf(str("common.off"), "FSR 1", "SGSR", "SGSR Edge"),
                 selectedIndex = upscalerValues.indexOf(s.upscaler).coerceAtLeast(0),
                 onChange = { apply(s.copy(upscaler = upscalerValues[it])) },
             )
@@ -418,7 +422,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 // a second slider would only invite disagreement between them.
                 IntSliderRow(
                     label = str(
-                        if (s.upscaler == Settings.UPSCALER_SGSR) "renderer.sgsr.sharpness.label"
+                        if (sgsrOn) "renderer.sgsr.sharpness.label"
                         else "renderer.fsr1.sharpness.label",
                     ),
                     value = s.fsrSharpness.coerceIn(0, 100),

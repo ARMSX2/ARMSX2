@@ -619,12 +619,15 @@ data class Settings(
     val casMode: Int = 0,
     /** EmuCore/GS/CASSharpness — sharpening strength 0..100 (%). */
     val casSharpness: Int = 50,
-    /** EmuCore/GS/Upscaler — GSUpscaler: 0 Off / 1 MetalFX (Apple only) / 2 FSR1 / 3 SGSR.
+    /** EmuCore/GS/Upscaler — GSUpscaler: 0 Off / 1 MetalFX (Apple only) / 2 FSR1 / 3 SGSR /
+     *  4 SGSR edge-direction.
      *  1 is unreachable from this UI; the values are the core enum's, and it is persisted
      *  as an integer, so they must not be renumbered to close the gap. */
     val upscaler: Int = 0,
-    /** EmuCore/GS/FSRSharpness — FSR1 RCAS strength 0..100 (%). Separate from casSharpness:
-     *  RCAS runs on a different curve, so the two sliders are not interchangeable. */
+    /** EmuCore/GS/FSRSharpness — shared upscaler sharpness, 0..100 (%). FSR1 reads it as RCAS
+     *  strength; SGSR scales it two-for-one into its own 0..2 edge sharpness, so 100% reaches
+     *  the top of both without the slider having to grow. Separate from casSharpness: RCAS runs
+     *  on a different curve, so those two are not interchangeable. */
     val fsrSharpness: Int = 50,
     /** EmuCore/GS/LoadTextureReplacements. */
     val loadTextureReplacements: Boolean = false,
@@ -1452,7 +1455,7 @@ data class Settings(
         // clamping to the visible choices would silently rewrite the top one back to Off. This
         // bound has to move every time the core enum grows, which is exactly the trap it was
         // written to warn about: it was still UPSCALER_FSR1 when SGSR was added.
-        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR).toString())
+        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR_EDGE).toString())
         put("EmuCore/GS", "FSRSharpness", "int", fsrSharpness.coerceIn(0, 100).toString())
         put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
@@ -1926,6 +1929,7 @@ data class Settings(
         const val UPSCALER_OFF = 0
         const val UPSCALER_FSR1 = 2
         const val UPSCALER_SGSR = 3
+        const val UPSCALER_SGSR_EDGE = 4
 
         /** One-tap "Low-End" performance snapshot applied on top of [base].
          *  Only cheap, safe-for-most levers that already exist as fields:

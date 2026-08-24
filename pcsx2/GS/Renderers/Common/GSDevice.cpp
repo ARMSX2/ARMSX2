@@ -1671,9 +1671,7 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	// RCAS takes sharpness in stops - 0 is the maximum and each stop halves it - so the 0..100
 	// slider runs backwards across the 2..0 range AMD's own sample exposes.
 	std::array<u32, NUM_FSR1_CONSTANTS> rcas_consts = {};
-	// Clamped to 100: the slider now runs to 200 for SGSR's sake, and RCAS stops go NEGATIVE
-	// past that, which is not a sharper picture, it is an invalid constant.
-	FsrRcasCon(&rcas_consts[0], 2.0f - (std::min(GSConfig.FSR_Sharpness, 100) * 0.02f));
+	FsrRcasCon(&rcas_consts[0], 2.0f - (static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f));
 
 	if (!DoFSR1RCAS(m_fsr1_easu, m_fsr1_output, rcas_consts))
 	{
@@ -1736,11 +1734,12 @@ void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	const float uv_scale_x = static_cast<float>(src_rect.width()) / src_tex_w;
 	const float uv_scale_y = static_cast<float>(src_rect.height()) / src_tex_h;
 
-	// Qualcomm's edge sharpness runs 0..2, and 1.0 is their default. The shared slider is 0..200
-	// so that whole range is reachable — halving it at 100 was the thing Eden's change fixed
-	// upstream, and shipping the narrow version of a setting whose top half is the point would
-	// have been a strange way to adopt it. 100 on the slider is Qualcomm's default.
-	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.01f, 0.0f, 2.0f);
+	// Qualcomm's edge sharpness runs 0..2 with 1.0 as their default, and the whole range has to
+	// be reachable — stopping at 1.0 was what Eden's change fixed upstream. Rather than widen
+	// the slider to 200% for one of three upscalers, each percent is worth 2x here: 100% is
+	// still 100%, and it still gets you the full range. (CamilleLaVey's suggestion; the widened
+	// slider was the obvious reading of the upstream change and the worse one.)
+	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f, 0.0f, 2.0f);
 
 	std::array<u32, NUM_SGSR_CONSTANTS> consts = {};
 	const auto put_f = [&consts](u32 i, float v) { std::memcpy(&consts[i], &v, sizeof(float)); };

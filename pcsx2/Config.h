@@ -1086,12 +1086,9 @@ struct Pcsx2Config
 		u16 LsfgTargetRate = 0;
 
 		u8 CAS_Sharpness = 50;
-		// 0..200. FSR1 uses 0..100 of it, mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
-		// and reads no higher; SGSR uses the whole range as its 0..2 edge sharpness, where 1.0
-		// (i.e. 100) is Qualcomm's own default and the top half is the widened range Eden added
-		// because the original stopped short of useful. One setting, two readings of it.
-		// Historical note kept because the name still says FSR:
-		// FSR1's RCAS pass, 0..100. Mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
+		// 0..100, shared by the upscalers. FSR1 maps it to AMD's "stops" scale and SGSR to its
+		// own 0..2 edge sharpness, two percent per percent, so both reach their full range off
+		// one control. FSR1's RCAS pass, 0..100. Mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
 		// where 0 stops is maximum sharpening - it is not the same curve as CAS_Sharpness.
 		u8 FSR_Sharpness = 50;
 		u8 ShadeBoost_Brightness = DEFAULT_SHADEBOOST_BRIGHTNESS;
