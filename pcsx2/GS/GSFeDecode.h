@@ -226,18 +226,26 @@ namespace GSFeDecode
 	};
 	static_assert(sizeof(LocalToHostBody) == 48);
 
-	// Frame boundary. Mirrors GSBackQueue::VsyncRecord plus the two counters the
-	// locator quotes.
+	// Frame boundary. Mirrors GSBackQueue::VsyncRecord, plus the front-assigned
+	// draw serial the locator quotes.
+	//
+	// g_perfmon.GetFrame() is deliberately NOT here, and it is worth saying why:
+	// it was, and the corpus self-diff caught it. That counter is bumped inside
+	// GSRenderer::VSync's non-skipped branch, so it counts PRESENTED frames --
+	// GSDevice::ShouldSkipPresentingFrame() is a present-throttle decision made
+	// on timing, and two runs of one dump legitimately disagree about it (seen
+	// both directions: flatout2 3-vs-2, xenosaga 1-vs-2). The locator's "frame"
+	// is the instrument's own count of Vsync records instead, which is a
+	// property of the stream and not of the clock.
 	struct VsyncBody
 	{
-		u64 frame_index;
 		u64 draw_serial;
 		u32 field;
 		u8 registers_written;
 		u8 idle_frame;
 		u8 pad0[2];
 	};
-	static_assert(sizeof(VsyncBody) == 24);
+	static_assert(sizeof(VsyncBody) == 16);
 
 	// ------------------------------------------------------------------
 	// Arming

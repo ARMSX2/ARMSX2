@@ -4,7 +4,6 @@
 #include "GS/GSFeDecode.h"
 #include "GS/GSState.h"
 #include "GS/GSXXH.h"
-#include "GS/GSPerfMon.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSVertex.h"
 
@@ -135,7 +134,6 @@ namespace GSFeDecode
 		};
 
 		constexpr FieldSpan kVsyncFields[] = {
-			FE_FIELD(VsyncBody, frame_index),
 			FE_FIELD(VsyncBody, draw_serial),
 			FE_FIELD(VsyncBody, field),
 			FE_FIELD(VsyncBody, registers_written),
@@ -771,7 +769,6 @@ void GSState::FeDecodeOnLocalToHost(int len)
 void GSState::FeDecodeOnVsync(u32 field, bool registers_written, bool idle_frame)
 {
 	GSFeDecode::VsyncBody body = {};
-	body.frame_index = static_cast<u64>(g_perfmon.GetFrame());
 	body.draw_serial = s_n;
 	body.field = field;
 	body.registers_written = registers_written ? 1 : 0;
