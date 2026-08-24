@@ -2602,17 +2602,29 @@ public:
 	/// the design targets, and a device that needs uniformity says so.
 	virtual bool TileGpuPrefersDepthUniformPasses() { return false; }
 
-	/// Whether a pass that declares the in-pass destination read must contain ONLY the draws that
-	/// need it.
+	/// Whether declaring the in-pass destination read is charged to EVERY draw of the pass, reader
+	/// or not — so that a pass which declares must contain only the draws that need it.
 	///
-	/// Declaring is a property of the pass, so the cheap arrangement is to let a reader join
-	/// whatever pass is open and have the pass declare on its behalf — the non-readers simply do
-	/// not read. That is free on hardware where an in-pass read is free, and it is the wrong shape
-	/// where declaring changes how the whole pass rasterizes: there the readers have to be alone,
-	/// however many passes that costs.
+	/// ⚠️ One bit, two consequences, and the name says only the first. It is deliberately one bit
+	/// and not two: both answers come from the same silicon fact, so a second virtual would be a
+	/// second chance to answer it inconsistently, and there is no device that could sensibly say
+	/// yes to one and no to the other.
+	///
+	///  1. SEGREGATION, the pass key. Declaring is a property of the pass, so the cheap arrangement
+	///     is to let a reader join whatever pass is open and have the pass declare on its behalf —
+	///     the non-readers simply do not read. That is free on hardware where an in-pass read is
+	///     free, and it is the wrong shape where declaring changes how the whole pass rasterizes:
+	///     there the readers have to be alone, however many passes that costs.
+	///  2. ADMISSION, which draws read at all. Segregation confines the toll to the readers and can
+	///     do nothing for a title whose passes are reader-SATURATED, because there the readers
+	///     already are the passes. So under this bit the planner declines the one admission class
+	///     that saturates whole titles rather than costing them tens of draws a frame — the blend
+	///     whose only inexpressible part is that a 16-bit frame quantises its result. Everything
+	///     else stays admitted everywhere. See gsTileGpuAdmitsQuantisedBlend for the measurement
+	///     and for what the refused draws keep.
 	///
 	/// False is the default, including for vendors nobody has measured: it is the arrangement with
-	/// no pass-count cost, and a device that charges for declaring says so.
+	/// no pass-count cost and the more accurate one, and a device that charges for declaring says so.
 	virtual bool TileGpuSegregatesSelfRead() { return false; }
 
 	/// Submit one frame's pass plan through the executor. Returns false when the device does

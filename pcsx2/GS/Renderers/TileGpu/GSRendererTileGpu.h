@@ -172,6 +172,120 @@ constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(GSTileSurfaceId color, GSTileSurf
 		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None, segregate_self_read && reads_self};
 }
 
+/// Whether a blended draw whose frame format quantises the blend's RESULT takes the shader blend.
+///
+/// The console quantises after the blend, and the executor's blend unit runs after the fragment
+/// stage, so only the shader can put those two in that order -- which means the whole blend has to
+/// move there, expressible or not. On a 16-bit frame that is the difference between the eight bits
+/// a colour target holds and the five the console stored.
+///
+/// It is also the one admission class that saturates a TITLE rather than costing it tens of draws a
+/// frame. A game whose every target is CT16/CT16S blends on nearly every draw, so nearly every draw
+/// is admitted and nearly every pass declares: Xenosaga admits 2,409 draws a frame into 1,930
+/// declaring passes, and those counters are identical merged and segregated, because its readers
+/// already ARE its passes. Where declaring taxes the whole pass
+/// (GSDevice::TileGpuSegregatesSelfRead) segregation has nothing left to confine and the title pays
+/// the full toll -- an SD865 measured Xenosaga at 303 ms a frame against ~32 ms before the read
+/// road existed, with a kernel-level GPU fault in two runs of two.
+///
+/// So on those devices this class is not admitted, and its draws keep the approximation they had
+/// before the road landed: fixed-function blending, and no quantise on write
+/// (gsTileGpuQuantisesOnWrite), because the blend unit touches the output afterwards. What is given
+/// up is the exact-blend increment ONLY. The quantise-on-write half needs no read, runs on every
+/// device, and already carries most of the 16-bit accuracy: measured on an M2 that has no read
+/// road, Yu-Gi-Oh 4.07 -> 2.01 mean absolute channel error against the software golden, OutRun
+/// 10.77 -> 6.04, FlatOut 2 14.42 -> 12.73, against full-road values of 1.93 and 13.25.
+///
+/// `force` is the test scaffolding (EmuCore/GS TileGpuForceSelfRead, gsrunner -tilermw) and it
+/// reaches past this, because the instrument exists to exercise the road: a forced run on a taxing
+/// device is a measurement, not a shipping shape.
+constexpr bool gsTileGpuAdmitsQuantisedBlend(
+	bool blend_needs_quantised_result, bool declaring_taxes_the_pass, bool force)
+{
+	return blend_needs_quantised_result && (force || !declaring_taxes_the_pass);
+}
+
+/// Whether the fragment stage truncates this draw's output to what a 16-bit frame stores.
+///
+/// A TileGpu colour target is an RGBA8 image whatever the guest format is, and every road that puts
+/// bytes into one already agrees the 16-bit families live there expanded -- the writeback packs
+/// `byte >> 3`, the seed unpacks `bits << 3`. A draw that writes eight bits a channel leaves
+/// precision in the image the console never stored, and everything that reads the target back sees
+/// it.
+///
+/// ⚠️ Only where the fragment stage's output IS what lands. A draw the executor's blend unit still
+/// has to touch is quantised by the console AFTER that blend, so truncating the shader's output
+/// would be a different picture rather than a more accurate one. Hence the question is whether the
+/// draw took the SHADER blend, not merely whether it blends.
+constexpr bool gsTileGpuQuantisesOnWrite(bool frame_quantises, bool blend_active, bool shader_blend)
+{
+	return frame_quantises && (shader_blend || !blend_active);
+}
+
+/// What a draw would USE the in-pass destination read for (GSDevice::kGSTileGpuSelf*), given why it
+/// needs one. Zero is the answer for the overwhelming majority of draws and for every draw on a
+/// device without the road, and zero is what keeps that draw's pipeline, its indirect run and its
+/// pass exactly what they were.
+///
+/// This is the admission decision. GSRendererTileGpu::ReaderFlags says what fixed-function cannot
+/// express; this says which of those the fragment stage is actually built to serve, so a use that
+/// has not been built yet stays on today's approximation rather than silently reading a destination
+/// nothing does anything with -- and which of those the DEVICE is willing to pay for.
+constexpr u32 gsTileGpuSelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact,
+	bool blend_needs_quantised_result, bool self_read, bool declaring_taxes_the_pass, bool force_self_read)
+{
+	if (!self_read)
+		return 0;
+
+	u32 uses = 0;
+	// The destination-alpha test, always, because there is nothing to trade: the live pixel is exact,
+	// where the pre-pass snapshot is only exact because the planner spends a pass break and a
+	// full-target copy making it so.
+	//
+	// ⚠️ Asked of the draw's own DATE fold rather than of the classifier's ReaderDate bit. The two
+	// differ in one case and the difference matters: the classifier answers for the pass-structure
+	// census, which only counts a draw that lands colour, and a DATE draw that lands none still reads
+	// destination alpha to decide its DEPTH write. Widening the census would change what it has
+	// counted since the crossover study; widening here costs nothing and admits the draw.
+	if (date)
+		uses |= GSDevice::kGSTileGpuSelfDate;
+
+	// The blend equations the executor's fixed-function state cannot express. Five classes, and the
+	// classifier is the same one the pass-structure census has counted since the crossover study:
+	//
+	//   ReaderAdFactor  C=Ad. Fixed-function DST_ALPHA is dest/255; the console's is dest/128.
+	//   ReaderFacGt1    C=As with a fragment alpha that can pass 0x80, or C=FIX above 0x80. Both
+	//                   saturate at 1.0 in a blend factor and reach 1.99 on the console.
+	//   ReaderCoeffGt1  the D == A accumulation shapes, where a coefficient is 1 + C.
+	//   ReaderWrap      COLCLAMP = 0, which a blend unit cannot do at all -- it clamps.
+	//   ReaderPabe      PABE's per-pixel gate on the source alpha's MSB, likewise.
+	//
+	// Tens of draws a frame, all of them, so segregation confines their toll on a device that
+	// charges for declaring and they are admitted on every device.
+	//
+	// ⚠️ ReaderAsDualSource is deliberately NOT here. That class is exactly the one dual-source
+	// blending expresses exactly, and it is most of the corpus's blended draws -- admitting it would
+	// move the bulk of every blended frame onto the read for no accuracy at all.
+	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
+						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+
+	// ...and a blend whose equation IS expressible but whose RESULT the frame format quantises. The
+	// one class that saturates a title, and so the one class a device that taxes declaring refuses.
+	if (gsTileGpuAdmitsQuantisedBlend(blend_needs_quantised_result, declaring_taxes_the_pass, force_self_read))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+
+	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit. The pipeline
+	// still drops the channels FBMSK covers whole -- that half is exact and cheaper -- and the shader
+	// owns only the bits inside a channel the register masks in part.
+	if (!fbmsk_exact)
+		uses |= GSDevice::kGSTileGpuSelfMask;
+
+	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
+	// evidence -- so that a frame that moves can be attributed to one thing.
+	return uses;
+}
+
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
 ///
 /// The memory model tracks guest bytes at block granularity and this has to answer in the same
@@ -326,6 +440,7 @@ private:
 	u32 ReaderFlags(bool color_written);
 	/// What the in-pass read would be USED for on this draw (GSDevice::kGSTileGpuSelf*), given the
 	/// reasons above. Zero where the device has no such road, or where fixed-function is exact.
+	/// gsTileGpuSelfReadUses against this renderer's latched device answers.
 	u32 SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact, bool blend_needs_quantised_result) const;
 
 	// Mean/p50 of the accumulated per-frame pass structure and of the memory model's traffic,
@@ -616,6 +731,10 @@ private:
 	/// Test scaffolding (EmuCore/GS TileGpuForceSelfRead, gsrunner -tilermw): admit every draw the
 	/// classifier can name, not only the classes whose repairs have landed. Read once, like the other
 	/// levers here, because it moves pass boundaries.
+	///
+	/// It also reaches past the device's admission narrowing, because the instrument exists to
+	/// exercise the road and a device that refuses a class would otherwise leave it unexercised. A
+	/// forced run on a device that taxes declaring is a measurement, not a shipping shape.
 	bool m_force_self_read = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
@@ -624,9 +743,14 @@ private:
 	// put a draw's prep ops in a pass the draw is not in. Both grouping sites read THIS member --
 	// accumulation's open-pass test and the plan build's cut -- so they cannot disagree.
 	bool m_depth_uniform_passes = false;
-	// Whether a declaring pass must hold only the draws that read
+	// Whether declaring the in-pass destination read taxes every draw of the pass
 	// (GSDevice::TileGpuSegregatesSelfRead). Read once at construction and used through the same
 	// key function for the same reason: it is a pass boundary, and both grouping sites must agree.
+	//
+	// ONE member for both of that bit's consequences -- a declaring pass holds only its readers, and
+	// the one admission class that saturates a title is not admitted at all. They come from one
+	// silicon fact, so a second member would be a second chance to disagree with it. The admission
+	// half reads it through gsTileGpuSelfReadUses; the pass-key half through gsTileGpuPassKeyFor.
 	bool m_segregate_self_read = false;
 
 	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------

@@ -6293,6 +6293,15 @@ bool GSDeviceVK::TileGpuPrefersDepthUniformPasses()
 // the planner's. On Mali the opposite holds -- an in-pass read is free below stride-1 density
 // (measured 2026-08-17) and there is no analogous whole-pass mode -- so it keeps the merged
 // arrangement, and so does every vendor nobody has measured.
+//
+// ⚠️ Answering yes here does a SECOND thing, and it is here rather than behind a virtual of its own
+// because it is the same fact: segregation moves the readers out of everybody else's pass, and it
+// can do nothing at all for a title whose passes are reader-saturated. Xenosaga is entirely 16-bit,
+// so almost every blended draw is admitted for result quantisation -- 2,409 admitted draws inside
+// 1,930 declaring passes a frame, and those counters come out identical merged or segregated. The
+// device measured it at 303 ms a frame with one kernel-level GPU fault in two runs. So under this
+// bit that admission class is not taken at all, and those draws keep fixed-function blending
+// without the quantise; see gsTileGpuAdmitsQuantisedBlend for what the accuracy costs.
 bool GSDeviceVK::TileGpuSegregatesSelfRead()
 {
 	return IsDeviceAdreno();

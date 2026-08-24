@@ -27,6 +27,12 @@
 // Both polarities are pinned here, because the failure mode of either is invisible in the frame and
 // enormous in the frame time, and because the two grouping sites reading different answers is the
 // bug class this subsystem keeps meeting.
+//
+// The second device bit, GSDevice::TileGpuSegregatesSelfRead, has TWO consequences and both are
+// pinned here for the same reason -- it is one bit, so its two effects have to be read off one
+// answer. The pass-key half is below in the reader-dimension section; the ADMISSION half is at the
+// end of the file, because narrowing which draws read at all is the only lever left on a title
+// whose passes are reader-saturated and where segregation therefore has nothing to segregate.
 
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
@@ -57,6 +63,19 @@ constexpr bool kUniform = true; ///< depth mode in the key: the Adreno answer, a
 /// ...and the two reader polarities, the second independent dimension.
 constexpr bool kShared = false;     ///< readers share a pass with non-readers: the default
 constexpr bool kSegregated = true;  ///< a declaring pass holds only readers: the Adreno answer
+
+/// The SAME bit as kShared/kSegregated, spelt for its other consequence. Two names for one device
+/// answer is the point: the admission tests at the end of this file and the pass-key tests above
+/// have to be reading the same bit, or the design claim behind having only one is false.
+constexpr bool kDeclaringIsFree = false;
+constexpr bool kDeclaringIsTaxed = true;
+
+/// Whether the device serves an in-pass destination read at all, and whether -tilermw is arming
+/// the forced-admission instrument.
+constexpr bool kNoRoad = false;
+constexpr bool kRoad = true;
+constexpr bool kNatural = false;
+constexpr bool kForced = true;
 
 /// The pass key of a draw expressed the way the renderer holds it: the two surfaces plus the three
 /// depth facts it derives out of ZTE / ZTST / ZMSK and the alpha test's AFAIL fold, plus whether
@@ -465,4 +484,167 @@ TEST(TileGpuRunKey, AnAbsentBlendArrayReadsAsNoBlend)
 	p.plan.blend_keys = {};
 	EXPECT_EQ(p.At(0), p.At(1));
 	EXPECT_EQ(p.At(0).blend_key, 0u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The admission half of the same device bit: WHICH draws read, not which pass they read in.
+//
+// Segregation confines the declaration toll to the draws that need the read. It can do nothing at
+// all for a title whose passes are reader-SATURATED, because there the readers already are the
+// pass -- Xenosaga's counters are identical merged and segregated, 2,409 admitted draws inside
+// 1,930 declaring passes a frame, and the SD865 measured 303 ms a frame against ~32 ms before the
+// road existed, with a kernel-level GPU fault in two of two runs.
+//
+// One admission class produces that saturation, and only that one: a blended draw on a CT16/CT16S
+// frame, admitted not because its equation is inexpressible but because the console quantises the
+// blend's RESULT and a blend unit that runs after the fragment stage cannot. A 16-bit title blends
+// on nearly every draw, so nearly every draw is admitted. Every other class is tens of draws a
+// frame and segregation confines it.
+//
+// So where declaring is taxed, that one class is not admitted, and its draws go back to the
+// approximation they had before the road landed: fixed-function blending, and NO quantise on write,
+// because the blend unit touches the output afterwards. Both halves are pinned below, because
+// admitting without quantising and quantising without admitting are each a picture, not an error.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuSelfReadAdmission, TheQuantisedBlendClassIsAdmittedWhereDeclaringIsFree)
+{
+	// The default, and every device but Adreno: the exact blend is worth its pass, so take it.
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+		gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
+			/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsFree, kNatural));
+}
+
+TEST(TileGpuSelfReadAdmission, TheQuantisedBlendClassIsRefusedWhereDeclaringTaxesThePass)
+{
+	// The whole change: the same draw, on a device that charges every draw of a declaring pass.
+	EXPECT_EQ(0u,
+		gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
+			/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsTaxed, kNatural));
+}
+
+TEST(TileGpuSelfReadAdmission, TheForcedInstrumentReachesTheRoadOnATaxingDevice)
+{
+	// -tilermw exists to EXERCISE the road, so the narrowing may not be the thing that stops it.
+	// A forced run on a taxing device is a measurement instrument and not a shipping shape.
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+		gsTileGpuSelfReadUses(0, false, true, /*blend_needs_quantised_result=*/true, kRoad,
+			kDeclaringIsTaxed, kForced));
+}
+
+TEST(TileGpuSelfReadAdmission, TheSparseClassesAreAdmittedOnEveryDevice)
+{
+	// DATE, a write mask the pipeline cannot reproduce bit for bit, and the five blend equations
+	// fixed function cannot express. Tens of draws a frame each, so segregation confines their toll
+	// and the accuracy is worth having on both polarities.
+	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	{
+		EXPECT_EQ(GSDevice::kGSTileGpuSelfDate,
+			gsTileGpuSelfReadUses(0, /*date=*/true, true, false, kRoad, tax, kNatural))
+			<< "taxed=" << tax;
+		EXPECT_EQ(GSDevice::kGSTileGpuSelfMask,
+			gsTileGpuSelfReadUses(0, false, /*fbmsk_exact=*/false, false, kRoad, tax, kNatural))
+			<< "taxed=" << tax;
+		for (const u32 flag : {GSTilePassSim::ReaderWrap, GSTilePassSim::ReaderPabe,
+				 GSTilePassSim::ReaderCoeffGt1, GSTilePassSim::ReaderAdFactor, GSTilePassSim::ReaderFacGt1})
+		{
+			EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+				gsTileGpuSelfReadUses(flag, false, true, false, kRoad, tax, kNatural))
+				<< "taxed=" << tax << " reader flag " << flag;
+		}
+	}
+}
+
+TEST(TileGpuSelfReadAdmission, AnExoticBlendOnASixteenBitFrameKeepsItsAdmission)
+{
+	// The narrowing removes ONE reason to read, not the draw's other reasons. A COLCLAMP-wrapping
+	// blend on a 16-bit frame is inexpressible whatever the format quantises, so it still reads --
+	// and having read, it still quantises its result.
+	const u32 uses = gsTileGpuSelfReadUses(GSTilePassSim::ReaderWrap, /*date=*/true, /*fbmsk_exact=*/false,
+		/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsTaxed, kNatural);
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfMaskAll, uses);
+	EXPECT_TRUE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true,
+		(uses & GSDevice::kGSTileGpuSelfBlend) != 0));
+}
+
+TEST(TileGpuSelfReadAdmission, DualSourceBlendIsStillNeverAdmittedOnEitherDevice)
+{
+	// The class next door to the narrowed one, and the reason the narrowing has to name a class
+	// rather than "blended draws": C=As at or below 0x80 is exactly what dual-source blending
+	// expresses, so admitting it would buy nothing anywhere.
+	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	{
+		EXPECT_EQ(0u,
+			gsTileGpuSelfReadUses(GSTilePassSim::ReaderAsDualSource, false, true, false, kRoad, tax, kNatural))
+			<< "taxed=" << tax;
+	}
+}
+
+TEST(TileGpuSelfReadAdmission, ADeviceWithoutTheRoadAdmitsNothingUnderEitherPolicy)
+{
+	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	{
+		for (const bool force : {kNatural, kForced})
+		{
+			EXPECT_EQ(0u,
+				gsTileGpuSelfReadUses(GSTilePassSim::kReaderStrict, /*date=*/true, /*fbmsk_exact=*/false,
+					/*blend_needs_quantised_result=*/true, kNoRoad, tax, force))
+				<< "taxed=" << tax << " forced=" << force;
+		}
+	}
+}
+
+TEST(TileGpuSelfReadAdmission, TheRefusedClassFallsBackToTheWholeApproximation)
+{
+	// The composition, stated as one fact because getting half of it right is a picture. On a
+	// taxing device the plain 16-bit blend takes fixed-function blending AND is not quantised on
+	// write -- the console quantises the blend's result, and the blend unit runs after the shader,
+	// so a shader that truncated here would be truncating the wrong value. On a free device it
+	// takes the shader blend and quantises there, which is exact.
+	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	{
+		const u32 uses = gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
+			/*blend_needs_quantised_result=*/true, kRoad, tax, kNatural);
+		const bool shader_blend = (uses & GSDevice::kGSTileGpuSelfBlend) != 0;
+		EXPECT_EQ(!tax, shader_blend) << "taxed=" << tax;
+		EXPECT_EQ(!tax, gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, shader_blend))
+			<< "taxed=" << tax;
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// ...and the quantise-on-write half on its own. It executes on EVERY device, needs no read, and is
+// where most of the 16-bit accuracy lives: on an M2 with no read road at all it moved Yu-Gi-Oh from
+// 4.07 to 2.01 mean absolute channel error against the software golden, OutRun 10.77 to 6.04 and
+// FlatOut 2 14.42 to 12.73, against full-road values of 1.93 and 13.25.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuQuantiseOnWrite, AnUnblendedDrawQuantisesWhateverTheDeviceSays)
+{
+	// Nothing runs after the fragment stage, so the shader's output IS what lands.
+	EXPECT_TRUE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/false, /*shader_blend=*/false));
+}
+
+TEST(TileGpuQuantiseOnWrite, AFixedFunctionBlendedDrawQuantisesNothing)
+{
+	// The blend unit runs after the fragment stage and the console quantises after the blend, so
+	// there is no value here worth truncating.
+	EXPECT_FALSE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, /*shader_blend=*/false));
+}
+
+TEST(TileGpuQuantiseOnWrite, AShaderBlendedDrawQuantisesTheBlendsResult)
+{
+	EXPECT_TRUE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, /*shader_blend=*/true));
+}
+
+TEST(TileGpuQuantiseOnWrite, AFrameThatStoresEightBitsQuantisesNobody)
+{
+	// Which formats those are is pinned against GSLocalMemory's own table in
+	// TileGpuCT16Road.OnlyTheSixteenBitFamilyQuantises; this is only that the answer gates everything
+	// else, so a 32-bit frame cannot be truncated by any combination of the two blend questions.
+	for (const bool blend : {false, true})
+	{
+		for (const bool shader : {false, true})
+			EXPECT_FALSE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/false, blend, shader));
+	}
 }

@@ -1203,65 +1203,15 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 	return reader_flags;
 }
 
-// What a draw would USE the in-pass destination read for, given why it needs one. Zero is the
-// answer for the overwhelming majority of draws and for every draw on a device without the road, and
-// zero is what keeps that draw's pipeline, its indirect run and its pass exactly what they were.
-//
-// This is the admission decision. The classifier above says what fixed-function cannot express; this
-// says which of those the fragment stage is actually built to serve, so a use that has not been
-// built yet stays on today's approximation rather than silently reading a destination nothing does
-// anything with.
+// The admission decision, against this renderer's three latched device answers. The decision itself
+// is gsTileGpuSelfReadUses in the header, beside the pass key, because it is policy a test can ask
+// directly and because both of GSDevice::TileGpuSegregatesSelfRead's consequences then read one bit
+// in one place.
 u32 GSRendererTileGpu::SelfReadUses(
 	u32 reader_flags, bool date, bool fbmsk_exact, bool blend_needs_quantised_result) const
 {
-	if (!m_self_read)
-		return 0;
-
-	u32 uses = 0;
-	// The destination-alpha test, always, because there is nothing to trade: the live pixel is exact,
-	// where the pre-pass snapshot is only exact because the planner spends a pass break and a
-	// full-target copy making it so.
-	//
-	// ⚠️ Asked of the draw's own DATE fold rather than of the classifier's ReaderDate bit. The two
-	// differ in one case and the difference matters: the classifier answers for the pass-structure
-	// census, which only counts a draw that lands colour, and a DATE draw that lands none still reads
-	// destination alpha to decide its DEPTH write. Widening the census would change what it has
-	// counted since the crossover study; widening here costs nothing and admits the draw.
-	if (date)
-		uses |= GSDevice::kGSTileGpuSelfDate;
-
-	// The blend equations the executor's fixed-function state cannot express. Five classes, and the
-	// classifier is the same one the pass-structure census has counted since the crossover study:
-	//
-	//   ReaderAdFactor  C=Ad. Fixed-function DST_ALPHA is dest/255; the console's is dest/128.
-	//   ReaderFacGt1    C=As with a fragment alpha that can pass 0x80, or C=FIX above 0x80. Both
-	//                   saturate at 1.0 in a blend factor and reach 1.99 on the console.
-	//   ReaderCoeffGt1  the D == A accumulation shapes, where a coefficient is 1 + C.
-	//   ReaderWrap      COLCLAMP = 0, which a blend unit cannot do at all -- it clamps.
-	//   ReaderPabe      PABE's per-pixel gate on the source alpha's MSB, likewise.
-	//
-	// ⚠️ ReaderAsDualSource is deliberately NOT here. That class is exactly the one dual-source
-	// blending expresses exactly, and it is most of the corpus's blended draws -- admitting it would
-	// move the bulk of every blended frame onto the read for no accuracy at all.
-	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
-						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
-		uses |= GSDevice::kGSTileGpuSelfBlend;
-
-	// ...and a blend whose equation IS expressible but whose RESULT the frame format quantises. The
-	// console quantises after the blend; the executor's blend unit runs after the fragment stage, so
-	// there is no point at which it could. The whole blend therefore moves to the shader, which can.
-	if (blend_needs_quantised_result)
-		uses |= GSDevice::kGSTileGpuSelfBlend;
-
-	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit. The pipeline
-	// still drops the channels FBMSK covers whole -- that half is exact and cheaper -- and the shader
-	// owns only the bits inside a channel the register masks in part.
-	if (!fbmsk_exact)
-		uses |= GSDevice::kGSTileGpuSelfMask;
-
-	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
-	// evidence -- so that a frame that moves can be attributed to one thing.
-	return uses;
+	return gsTileGpuSelfReadUses(reader_flags, date, fbmsk_exact, blend_needs_quantised_result, m_self_read,
+		m_segregate_self_read, m_force_self_read);
 }
 
 void GSRendererTileGpu::ObserveDraw()
@@ -3837,17 +3787,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		ctx->ALPHA.D, ctx->ALPHA.FIX, m_draw_env->COLCLAMP.CLAMP != 0, m_draw_env->PABE.PABE != 0,
 		GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
 	pd.self_fbmsk = gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk);
-	// What a 16-bit frame stores. A TileGpu colour target is an RGBA8 image whatever the guest format
-	// is, and every road that puts bytes INTO one already agrees the 16-bit families live there
-	// expanded -- the writeback packs `byte >> 3`, the seed unpacks `bits << 3`. The DRAW did not: it
-	// wrote eight bits a channel, so the image held precision the console never stored and everything
-	// that read the target back saw it.
-	//
-	// ⚠️ Only where the fragment stage's output IS what lands. A draw the executor's blend unit still
-	// has to touch is quantised by the console AFTER that blend, so quantising its source would be a
-	// different picture, not a more accurate one. Those draws wait for the shader blend.
-	pd.quantise_5551 = gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt) &&
-					   !(blend_active && (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) == 0);
+	// What a 16-bit frame stores, truncated in the fragment stage wherever the fragment stage's
+	// output is what lands (gsTileGpuQuantisesOnWrite). A draw whose blend the executor's blend unit
+	// still has to run is quantised by the console after that blend, so it takes nothing here --
+	// which is where the refused 16-bit blend class lands on a device that taxes declaring.
+	pd.quantise_5551 = gsTileGpuQuantisesOnWrite(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt),
+		blend_active, (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) != 0);
 	m_frame.self_read_draws += (self_mask != 0) ? 1u : 0u;
 
 	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
