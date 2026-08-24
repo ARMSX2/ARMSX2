@@ -294,8 +294,15 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		const bool mobile_tiler_profile =
 			gpu_profile == RuntimeGpuProfile::Mali || gpu_profile == RuntimeGpuProfile::Adreno ||
 			gpu_profile == RuntimeGpuProfile::PowerVR || gpu_profile == RuntimeGpuProfile::Xclipse;
+		// The TileGpu device contract, asked of the device that was just opened. TileGpu is the one
+		// variant that cannot run without it -- the executor refuses the plan and every draw is
+		// discarded -- so the decision needs it, and this is the first point at which it can be
+		// asked. A device that is not Vulkan answers false, which is harmless: the API veto in the
+		// policy fires first and names itself.
+		const bool device_serves_tilegpu = g_gs_device && g_gs_device->TileGpuExecutorAvailable();
 		const GSTileSelectionDecision tile_decision = DecideHWRendererVariant(GSConfig.HWRendererVariant,
-			renderer == GSRendererType::VK, /*gamedb_recommends_tile=*/false, mobile_tiler_profile);
+			renderer == GSRendererType::VK, device_serves_tilegpu, GSConfig.TileGpuIgnoreDeviceContract,
+			/*gamedb_recommends_tile=*/false, mobile_tiler_profile);
 
 		if (tile_decision.variant == GSHWRendererVariant::Tile)
 		{
@@ -318,6 +325,14 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 				GSHWRendererVariantName(GSConfig.HWRendererVariant),
 				GSTileSelectionReasonName(tile_decision.reason),
 				GpuProfileDetector::RuntimeProfileToString(gpu_profile));
+			if (tile_decision.reason == GSTileSelectionReason::TileGpuContractOverridden)
+			{
+				Console.Error("GS: TileGpu is being CONSTRUCTED ON A DEVICE THAT FAILS ITS CONTRACT because "
+							  "EmuCore/GS/TileGpuIgnoreDeviceContract is set. Every draw will be discarded and "
+							  "the output will be black. Clear that key to fall back to Classic. See the "
+							  "\"VK: TileGpu device contract absent (...)\" line logged at device creation for "
+							  "which term is missing.");
+			}
 			// Plain GSRenderer subclass: no SW output path, so GSCurrentPresenterOffsetsRead
 			// keeps the hardware default from above. Revisit when its presenter road lands.
 			if (GSConfig.BackThreadMode != GSBackThreadMode::Off)
@@ -331,6 +346,18 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 				Console.WriteLn("GS: Classic renderer active (variant=%s, reason=%s)",
 					GSHWRendererVariantName(GSConfig.HWRendererVariant),
 					GSTileSelectionReasonName(tile_decision.reason));
+			}
+			// The one fallback a user can hit without asking for anything unusual: TileGpu chosen on
+			// a Vulkan device whose driver does not serve the executor. Loud, because the alternative
+			// the fallback replaced was a black frame with a clean exit code, and because the missing
+			// term is named in a line the user has to be told to go and read.
+			if (tile_decision.reason == GSTileSelectionReason::TileGpuRequiresDeviceContract)
+			{
+				Console.Error("GS: TileGpu was requested, but this device does not meet the TileGpu device "
+							  "contract -- running the CLASSIC hardware renderer instead. See the \"VK: TileGpu "
+							  "device contract absent (...)\" line logged at device creation for which term is "
+							  "missing. Set EmuCore/GS/TileGpuIgnoreDeviceContract to build TileGpu anyway "
+							  "(bring-up only: it renders nothing).");
 			}
 			GSClampUpscaleMultiplier(GSConfig);
 			g_gs_renderer = std::make_unique<GSRendererHW>();

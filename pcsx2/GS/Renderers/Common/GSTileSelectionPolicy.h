@@ -27,6 +27,8 @@ enum class GSTileSelectionReason : u8
 	AutoTile, // Auto: GameDB recommends this title on Vulkan on a mobile tiler
 	ExplicitTileGpu, // the user chose TileGpu and the device is Vulkan
 	TileGpuRequiresVulkan, // the user chose TileGpu on a non-Vulkan device; Classic runs instead
+	TileGpuRequiresDeviceContract, // Vulkan, but the device fails the TileGpu contract; Classic runs instead
+	TileGpuContractOverridden, // ...and TileGpuIgnoreDeviceContract forced TileGpu anyway
 };
 
 // The RESOLVED variant: which hardware-renderer implementation actually constructs. Never
@@ -37,8 +39,15 @@ struct GSTileSelectionDecision
 	GSTileSelectionReason reason = GSTileSelectionReason::AutoClassic;
 };
 
-constexpr GSTileSelectionDecision DecideHWRendererVariant(
-	GSHWRendererVariant variant, bool is_vulkan, bool gamedb_recommends_tile, bool mobile_tiler_profile)
+// `device_serves_tilegpu` is the device's own answer to GSDevice::TileGpuExecutorAvailable(), which
+// is readable here because the device is created before the variant is chosen. No default: this file
+// takes every input explicitly, and a defaulted device fact is one a new call site can forget.
+//
+// `ignore_device_contract` is EmuCore/GS/TileGpuIgnoreDeviceContract, the bring-up escape. It waives
+// the contract only -- never the API -- so it can never resurrect TileGpu off Vulkan.
+constexpr GSTileSelectionDecision DecideHWRendererVariant(GSHWRendererVariant variant, bool is_vulkan,
+	bool device_serves_tilegpu, bool ignore_device_contract, bool gamedb_recommends_tile,
+	bool mobile_tiler_profile)
 {
 	GSTileSelectionDecision decision;
 
@@ -58,12 +67,45 @@ constexpr GSTileSelectionDecision DecideHWRendererVariant(
 	}
 	else if (variant == GSHWRendererVariant::TileGpu)
 	{
-		// Same rule as Tile: honoured on any Vulkan device, vetoed only by the API. Auto
-		// never resolves here — the GameDB promotion evidence is Tile evidence, and TileGpu
+		// TileGpu has TWO vetoes where Tile has one. The API veto is the same: there is no
+		// non-Vulkan backend. The second is the device contract — TileGpu is the only variant
+		// whose renderer cannot function on a device that fails a capability probe, because it
+		// has no fallback road of its own: the executor simply refuses the plan and every draw
+		// is discarded, which reaches the user as a black frame and a clean exit code.
+		//
+		// So a contract-absent device resolves Classic. Decided 2026-08-24, during the Mali
+		// bring-up: the RG477V's blob failed one contract term and the whole suite arm rendered
+		// nothing, three rounds running, byte-identically, with the "TileGpu renderer active"
+		// banner still printing. Running the renderer the user did not ask for is strictly
+		// better than running nothing. (GSDeviceVK's contract-evaluation comment recorded this
+		// as pending; this is where it was answered.)
+		//
+		// Auto never resolves here — the GameDB promotion evidence is Tile evidence, and TileGpu
 		// earns its own promotion input if and when it graduates.
-		decision.variant = is_vulkan ? GSHWRendererVariant::TileGpu : GSHWRendererVariant::Classic;
-		decision.reason = is_vulkan ? GSTileSelectionReason::ExplicitTileGpu :
-									  GSTileSelectionReason::TileGpuRequiresVulkan;
+		if (!is_vulkan)
+		{
+			decision.variant = GSHWRendererVariant::Classic;
+			decision.reason = GSTileSelectionReason::TileGpuRequiresVulkan;
+		}
+		else if (device_serves_tilegpu)
+		{
+			decision.variant = GSHWRendererVariant::TileGpu;
+			decision.reason = GSTileSelectionReason::ExplicitTileGpu;
+		}
+		else if (ignore_device_contract)
+		{
+			// The bring-up escape: build it anyway, on a device known not to serve it, because
+			// the pipeline creations and the validation output are the point of that run and the
+			// frame is not. Its own reason so the caller can say which of the two TileGpu
+			// resolutions this is.
+			decision.variant = GSHWRendererVariant::TileGpu;
+			decision.reason = GSTileSelectionReason::TileGpuContractOverridden;
+		}
+		else
+		{
+			decision.variant = GSHWRendererVariant::Classic;
+			decision.reason = GSTileSelectionReason::TileGpuRequiresDeviceContract;
+		}
 	}
 	else // Auto
 	{
@@ -142,37 +184,57 @@ constexpr const char* GSTileSelectionReasonName(GSTileSelectionReason reason)
 			return "explicit-tilegpu";
 		case GSTileSelectionReason::TileGpuRequiresVulkan:
 			return "tilegpu-requires-vulkan";
+		case GSTileSelectionReason::TileGpuRequiresDeviceContract:
+			return "tilegpu-requires-device-contract";
+		case GSTileSelectionReason::TileGpuContractOverridden:
+			return "tilegpu-contract-overridden";
 			// no default: a new reason must fail to compile until it is named here
 	}
 	return "unknown";
 }
 
-// The seven outcomes, one pin each. The exhaustive 32-case sweep lives in the test file.
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Classic, true, true, true).variant ==
+// The nine outcomes, one pin each. The exhaustive 128-case sweep lives in the test file.
+// Argument order: variant, is_vulkan, device_serves_tilegpu, ignore_device_contract,
+// gamedb_recommends_tile, mobile_tiler_profile.
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Classic, true, true, false, true, true).variant ==
 			  GSHWRendererVariant::Classic);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Classic, true, true, true).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Classic, true, true, false, true, true).reason ==
 			  GSTileSelectionReason::ExplicitClassic);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, true, false, false).variant ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, true, false, false, false, false).variant ==
 			  GSHWRendererVariant::Tile);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, true, false, false).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, true, false, false, false, false).reason ==
 			  GSTileSelectionReason::ExplicitTile);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, false, true, true).variant ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, false, true, false, true, true).variant ==
 			  GSHWRendererVariant::Classic);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, false, true, true).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Tile, false, true, false, true, true).reason ==
 			  GSTileSelectionReason::TileRequiresVulkan);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, false).variant ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, true, false, false, false).variant ==
 			  GSHWRendererVariant::TileGpu);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, false).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, true, false, false, false).reason ==
 			  GSTileSelectionReason::ExplicitTileGpu);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, true, true).variant ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, true, false, true, true).variant ==
 			  GSHWRendererVariant::Classic);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, true, true).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, true, false, true, true).reason ==
 			  GSTileSelectionReason::TileGpuRequiresVulkan);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, true).variant ==
-			  GSHWRendererVariant::Tile);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, true).reason ==
-			  GSTileSelectionReason::AutoTile);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false).variant ==
+// Vulkan, contract absent: Classic by default, TileGpu only under the bring-up escape.
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, false, false, false).variant ==
 			  GSHWRendererVariant::Classic);
-static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false).reason ==
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, false, false, false).reason ==
+			  GSTileSelectionReason::TileGpuRequiresDeviceContract);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, true, false, false).variant ==
+			  GSHWRendererVariant::TileGpu);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, true, false, true, false, false).reason ==
+			  GSTileSelectionReason::TileGpuContractOverridden);
+// ...and the escape never beats the API veto.
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, false, true, false, false).variant ==
+			  GSHWRendererVariant::Classic);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::TileGpu, false, false, true, false, false).reason ==
+			  GSTileSelectionReason::TileGpuRequiresVulkan);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false, true, true).variant ==
+			  GSHWRendererVariant::Tile);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false, true, true).reason ==
+			  GSTileSelectionReason::AutoTile);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false, true, false).variant ==
+			  GSHWRendererVariant::Classic);
+static_assert(DecideHWRendererVariant(GSHWRendererVariant::Auto, true, true, false, true, false).reason ==
 			  GSTileSelectionReason::AutoClassic);

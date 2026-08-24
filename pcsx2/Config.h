@@ -1065,6 +1065,19 @@ struct Pcsx2Config
 					// byte-identical frames, proven corpus-wide). Dev only; a
 					// pass-boundary policy is not a user setting.
 					TileGpuAdaptiveDepthPasses : 1,
+					// Construct TileGpu even on a device that FAILS the TileGpu
+					// device contract, instead of falling back to Classic.
+					//
+					// The fallback is the shipped behaviour (GSTileSelectionPolicy.h):
+					// a contract-absent device has no executor, so every draw is
+					// discarded and the output is black, which is worse for a user
+					// than the renderer they did not ask for. This key exists for
+					// bring-up on a device whose contract is absent for one term
+					// while the rest of the road is being brought up on it -- the
+					// pipeline creations and the validation output are the point of
+					// the run, not the frame. Fail-closed: off means the fallback is
+					// active. Never a user setting.
+					TileGpuIgnoreDeviceContract : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
