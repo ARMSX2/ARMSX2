@@ -824,6 +824,12 @@ private:
 	/// miscompiles the dynamic one on a word loaded from the vram SSBO. Asked in one place because
 	/// every shader that extracts a byte from that buffer has to answer it the same way.
 	bool TileGpuStaticByteSel() const;
+	/// Whether this device's fragment programs may freeze TEXA as a compile-time constant. False on
+	/// Honeykrisp, for the reason GSTileGpuFragmentSpec::NarrowToDriver states: the second face of
+	/// the miscompile class TileGpuStaticByteSel above already works around. Asked in one place, at
+	/// the same layer and off the same driverID, because the #define block and both cache keys have
+	/// to answer it identically or a program and its key stop describing each other.
+	bool TileGpuFreezeTexa() const;
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};

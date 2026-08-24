@@ -66,7 +66,7 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_SPEC_WMT {}\n"
 						   "#define TILEGPU_SPEC_TEXA {}\n",
 			spec.fst, spec.ltf, spec.tfx, spec.tcc, spec.atst, spec.fge, spec.date, spec.wms, spec.wmt,
-			spec.texa);
+			spec.texa_frozen ? static_cast<int>(spec.texa) : -1);
 	}
 
 	/// A name for one frozen-state set, for the compile log. Empty when nothing is frozen.
@@ -82,7 +82,7 @@ namespace GSTileGpuShaderVariant
 			spec.ltf ? "linear" : "nearest", kTfx[spec.tfx & 3], spec.tcc ? "+tcc" : "",
 			kAtst[(spec.atst < 9) ? spec.atst : 0], spec.fge ? "fog " : "",
 			(spec.date != 0) ? ((spec.date == 2) ? "date1 " : "date0 ") : "", kWrap[spec.wms & 3],
-			kWrap[spec.wmt & 3], spec.texa);
+			kWrap[spec.wmt & 3], spec.texa_frozen ? std::to_string(spec.texa) : std::string("row"));
 	}
 
 	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)

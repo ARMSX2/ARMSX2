@@ -6876,9 +6876,12 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	const u32 texel_mask = TileGpuTexelMask(road_mask, plan_texel_mask);
 	// ...and the frozen state narrowed the same way, against the road this DEVICE serves rather than
 	// the one the plan asked for: a field the program cannot read must not be in the key, or two
-	// character-identical programs become two modules and two pipelines.
+	// character-identical programs become two modules and two pipelines. Then the driver's own
+	// narrowing, for the axis Honeykrisp may not be trusted with. Both run BEFORE the spec reaches
+	// the #define block or either cache key below, so the program and its key cannot disagree.
 	GSDevice::GSTileGpuFragmentSpec spec = plan_spec;
 	spec.NarrowToRoad(road_mask);
+	spec.NarrowToDriver(TileGpuFreezeTexa());
 	const u32 all_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
 	// The eager table is the FULL program, which on Adreno sits past the instruction-size threshold --
 	// so a pass reaches it only by genuinely being the full set, never as a convenience. It is also
@@ -7116,6 +7119,19 @@ bool GSDeviceVK::CompileTileGpuSeedDepthPipeline(u32 depth_fmt)
 bool GSDeviceVK::TileGpuStaticByteSel() const
 {
 	return m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP;
+}
+
+// The same driver, the same miscompile class, one axis further on. Freezing TEXA into the fragment
+// program moves six pixels of one corpus frame on Honeykrisp -- green channel, |delta| <= 8, two 2x2
+// quads of a bilinear byte-road draw -- and the source is not at fault: the frozen constants provably
+// equal the state row's, every contractible float op already carries NoContraction, and the same
+// binary renders all eighteen corpus dumps byte-identically under lavapipe. It needs five frozen axes
+// interacting and any one of them read back off the row hides it again, which is a code-shape effect
+// rather than a wrong value. So TEXA comes off the frozen set here and nowhere else; every other
+// driver keeps all ten axes.
+bool GSDeviceVK::TileGpuFreezeTexa() const
+{
+	return m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_HONEYKRISP;
 }
 
 // Bytes -> a texture source: a fragment pass over the source image that unswizzles one texel per

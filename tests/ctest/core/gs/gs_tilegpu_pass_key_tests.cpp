@@ -37,12 +37,14 @@
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
 #include "GS/Renderers/Tile/GSTileTypes.h"
+#include "GS/Renderers/TileGpu/GSTileGpuShaderVariant.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <initializer_list>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1411,4 +1413,73 @@ TEST(TileGpuVariantKey, TheRoadNarrowsTheFrozenStateToWhatTheProgramCanRead)
 		tap.NarrowToRoad(road);
 		EXPECT_EQ(tap.texa, 3) << "road " << road << " goes through the tap and applies TEXA";
 	}
+}
+
+TEST(TileGpuVariantKey, TheDriverCanTakeAnAxisBackOutOfTheFrozenSet)
+{
+	// One axis is not frozen everywhere. Honeykrisp moves six pixels of one corpus frame when TEXA
+	// is a compile-time constant -- not because the constant is wrong (it provably equals the state
+	// row's) but because the program shape changes, which is the same driver and the same class as
+	// the dynamic byte-extract miscompile TILEGPU_STATIC_BYTE_SEL already works around. So the
+	// device may hand an axis back, and the rule is pinned here rather than only inside the Vulkan
+	// backend, because three things have to agree about it: the #define block, the fragment module
+	// cache key and the pipeline cache key.
+	using Spec = GSDevice::GSTileGpuFragmentSpec;
+	Spec frozen;
+	frozen.valid = true;
+	frozen.texa = 3;
+
+	Spec keep = frozen;
+	keep.NarrowToDriver(/*freeze_texa=*/true);
+	EXPECT_TRUE(keep.texa_frozen);
+	EXPECT_EQ(keep.texa, 3);
+	EXPECT_EQ(keep, frozen);
+
+	Spec give_back = frozen;
+	give_back.NarrowToDriver(/*freeze_texa=*/false);
+	EXPECT_FALSE(give_back.texa_frozen);
+	EXPECT_EQ(give_back.texa, 0) << "the key field has to be zero, or two specs that compile the "
+									"identical program become two modules";
+	EXPECT_NE(give_back, frozen);
+	// ...and nothing else moves. The other nine axes are the driver's business only through this
+	// one call, and it must not touch them.
+	Spec expect = frozen;
+	expect.texa = 0;
+	expect.texa_frozen = false;
+	EXPECT_EQ(give_back, expect);
+
+	// The defines follow the flag, not the value: -1 is the shader's "read the state row".
+	EXPECT_NE(GSTileGpuShaderVariant::SpecDefines(keep).find("#define TILEGPU_SPEC_TEXA 3\n"),
+		std::string::npos);
+	EXPECT_NE(GSTileGpuShaderVariant::SpecDefines(give_back).find("#define TILEGPU_SPEC_TEXA -1\n"),
+		std::string::npos);
+	// A frozen ZERO and a given-back axis are different programs and must not spell the same define.
+	Spec frozen_zero = frozen;
+	frozen_zero.texa = 0;
+	EXPECT_NE(GSTileGpuShaderVariant::SpecDefines(frozen_zero).find("#define TILEGPU_SPEC_TEXA 0\n"),
+		std::string::npos);
+
+	// The two narrowings compose in either order, which is what lets the executor apply the road's
+	// and the driver's without caring which came first.
+	for (const u32 road : {0u, GSDevice::kGSTileGpuRoadByte, GSDevice::kGSTileGpuRoadSource,
+			 GSDevice::kGSTileGpuRoadByte | GSDevice::kGSTileGpuRoadTarget})
+	{
+		for (const bool freeze : {false, true})
+		{
+			Spec a = frozen, b = frozen;
+			a.NarrowToRoad(road);
+			a.NarrowToDriver(freeze);
+			b.NarrowToDriver(freeze);
+			b.NarrowToRoad(road);
+			EXPECT_EQ(a, b) << "road " << road << " freeze_texa " << freeze;
+		}
+	}
+
+	// An unspecialized spec is untouched by either narrowing -- the pass-union fallback reads every
+	// field from the row on every driver.
+	Spec none;
+	none.NarrowToRoad(GSDevice::kGSTileGpuRoadByte);
+	none.NarrowToDriver(false);
+	EXPECT_FALSE(none.valid);
+	EXPECT_TRUE(GSTileGpuShaderVariant::SpecDefines(none).empty());
 }

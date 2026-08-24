@@ -2347,6 +2347,12 @@ public:
 		u8 wms = 0;  ///< CLAMP.WMS 0..3
 		u8 wmt = 0;  ///< CLAMP.WMT 0..3
 		u8 texa = 0; ///< the low two bits of StateRow::texa — bit 0 apply, bit 1 AEM
+		/// Whether TEXA is frozen at all. False only where NarrowToDriver has taken it back off this
+		/// driver; it is a DEVICE-side narrowing and never rides the plan's variant key, so a plan
+		/// always arrives with it set. That costs no key ambiguity, because it is constant for a
+		/// session: on a driver that freezes, `texa == 0` means "frozen to no TEXA", and on one that
+		/// does not, it means "read the row" — never both in the same process.
+		bool texa_frozen = true;
 
 		/// Zero every field the program THIS road mask compiles cannot read, so two draws whose
 		/// programs would come out character-identical do not become two keys, two modules, two
@@ -2368,11 +2374,35 @@ public:
 				texa = 0;
 		}
 
+		/// The DEVICE half of the same narrowing: an axis this driver may not be trusted to freeze.
+		///
+		/// `freeze_texa` is false on Honeykrisp only. Freezing TEXA there moves six pixels of one
+		/// corpus frame — green channel, |delta| <= 8, on two 2x2 quads of a bilinear byte-road draw
+		/// — and it is not a source defect: the frozen constants provably equal the row's (a probe
+		/// that paints on disagreement never fires), every contractible float op already carries
+		/// NoContraction, and the same binary is byte-identical on all eighteen corpus dumps under
+		/// lavapipe. It takes the interaction of five frozen axes to appear and any one of them read
+		/// back off the row hides it again, which makes it a code-shape effect. Same driver, same
+		/// signature and same class as the dynamic byte-extract miscompile the shader's
+		/// TILEGPU_STATIC_BYTE_SEL form already works around; this is that bug's second face, and
+		/// the workaround is the same shape — keyed on the driver, costing every other driver
+		/// nothing. Adreno and Mali freeze all ten axes.
+		///
+		/// It runs before the spec enters ANY key, so the module cache, the pipeline cache and the
+		/// #define block on that driver all agree that TEXA is not frozen. Nothing compiles twice.
+		constexpr void NarrowToDriver(bool freeze_texa)
+		{
+			if (freeze_texa)
+				return;
+			texa = 0;
+			texa_frozen = false;
+		}
+
 		constexpr bool operator==(const GSTileGpuFragmentSpec& o) const
 		{
 			return valid == o.valid && fst == o.fst && ltf == o.ltf && tfx == o.tfx && tcc == o.tcc &&
 				   atst == o.atst && fge == o.fge && date == o.date && wms == o.wms && wmt == o.wmt &&
-				   texa == o.texa;
+				   texa == o.texa && texa_frozen == o.texa_frozen;
 		}
 		constexpr bool operator!=(const GSTileGpuFragmentSpec& o) const { return !(*this == o); }
 	};
