@@ -65,6 +65,22 @@ struct GSTileRingPlaneState
 /// bytes are whatever the executor left in the slot -- which is zero.
 u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
 
+/// Whether a compose of this page will put the page's REAL guest bytes in its ring slot.
+///
+/// GSTileComposeBuckets::Gather's lossy test, stated once for the readers who have to decide
+/// something before the compose runs rather than count afterwards. A plane with no unsynced truth
+/// costs nothing -- the slot's prefill from the CPU shadow already carries it -- and a plane whose
+/// unsynced truth an owner WITH a byte road holds is composed by that owner's writeback. What is
+/// left is an owner with no writeback shader (a depth surface, or a base that is not page-aligned):
+/// its bytes never reach the slot, the prefill's stale ones stay, and the model marks the page
+/// synced anyway. That page is `lossy`, and a reader that would OVERWRITE something with what it
+/// finds there must not read it -- which is the difference between the depth seed being page-precise
+/// and it being the blanket clear that healed BGE and broke OutRun.
+///
+/// ⚠️ Ask BEFORE ComposeRingPages. It marks everything it was given synced, lossy pages included, so
+/// afterwards the question answers `true` for pages it just answered `false` for.
+bool gsTilePageByteTruthReachable(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
+
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
 ///
 /// The memory model tracks guest bytes at block granularity and this has to answer in the same
@@ -853,6 +869,18 @@ private:
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.
 	void NoteLossyPages(const GSPageBitmap& pages, GSTileSurfaceKind kind);
 
+	// Of `pages`, the ones a DEPTH SEED may take: the compose can serve their real guest bytes
+	// (gsTilePageByteTruthReachable) AND every plane holding truth on them holds it through a pixel
+	// space that IS this Z buffer's (gsTileDepthSeedSourceMatches). The rest keep whatever the depth
+	// image has, exactly as they did before the depth seed existed, and stay counted lossy.
+	// ⚠️ Only meaningful BEFORE the compose: see gsTilePageByteTruthReachable.
+	GSPageBitmap PagesDepthSeedable(const GSPageBitmap& pages, const GSTileSurfaceLayout& z_layout) const;
+
+	// One page's four planes as the ring's compose sees them. The shape EnsureRingSlot decides a
+	// prefill from and PagesWithoutByteTruth decides seedability from; shared so the two cannot come
+	// to read the model differently.
+	void RingPlaneStateFor(u32 page, GSTileRingPlaneState (&planes)[kGSTilePlaneCount]) const;
+
 	// Truth on `pages` is taken by a surface with no byte road: mark it synced without moving
 	// bytes, and count it lossy.
 	void LossySteal(const GSPageBitmap& pages, GSTileSurfaceKind kind);
@@ -972,6 +1000,11 @@ private:
 		u32 writeback_breaks = 0; // draws that opened a pass because their read needed a writeback
 		u32 seed_ops = 0;
 		u32 seed_pages = 0;
+		// ...of which the DEPTH seeds', counted apart because their population is a different
+		// question: how much of a Z buffer a game rebuilds by writing bytes over it, and how much of
+		// that this road now carries instead of leaving the depth image accumulating.
+		u32 seed_ops_depth = 0;
+		u32 seed_pages_depth = 0;
 		u32 seed_breaks = 0;     // draws that opened a pass because their target needed seeding
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
@@ -1063,8 +1096,10 @@ private:
 		                           // bytes that demonstrably changed.
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth, or a base that is not page-aligned)
-		// ...of which the DEPTH plane's, which is a standing separate gap: no writeback shader
-		// exists for any depth format, so every depth seed is lossy by construction. Split out
+		// ...of which the DEPTH plane's. The gap here USED to be the whole depth direction; the
+		// SEED half now exists (GSTileGpuPrepKind::SeedDepth), so what is left in this counter is
+		// the WRITEBACK half -- pages whose newest Z lives in a depth attachment that something
+		// else wants as bytes, which no shader can carry back. Split out from `lossy_pages`
 		// because "colour lossy pages" is a gate and "depth lossy pages" is a backlog row, and one
 		// number cannot be both.
 		u32 lossy_pages_depth = 0;

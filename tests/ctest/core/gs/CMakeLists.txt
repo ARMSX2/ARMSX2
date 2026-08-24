@@ -47,14 +47,17 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_readback_store_tests.cpp
 	gs_tilegpu_ring_compose_tests.cpp
 	gs_tilegpu_ct16_road_tests.cpp
+	gs_tilegpu_depth_seed_tests.cpp
 	gs_tilegpu_texture_shuffle_tests.cpp
 	gs_tilegpu_shader_budget_tests.cpp
 )
 
 # The TileGpu fragment size gate compiles the real shader source, so it needs to find it. The
 # runtime tree under build/bin/resources is a symlink to exactly this directory, but the test binary
-# is not launched from there and a gate should not depend on a working directory.
-set_source_files_properties(gs_tilegpu_shader_budget_tests.cpp PROPERTIES
+# is not launched from there and a gate should not depend on a working directory. The depth seed's
+# suite reads three shaders for the same reason: it holds the seed's guest-word -> depth map to the
+# draw road's own, and a gate on a constant has to read the constant.
+set_source_files_properties(gs_tilegpu_shader_budget_tests.cpp gs_tilegpu_depth_seed_tests.cpp PROPERTIES
 	COMPILE_DEFINITIONS ARMSX2_SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/bin/resources/shaders")
 
 target_include_directories(gs_vertex_tests PRIVATE

@@ -26,9 +26,34 @@
 // under the pool's TEXA pin (AEM = 0, TA0 = 0, TA1 = 0x80), and it is the exact inverse of the
 // writeback's pack, so a cell that goes out through one comes back through the other unchanged. A
 // game's TEXA belongs to the texture road and has no business here.
+//
+// TILEGPU_SEED_DEPTH = 1 builds the DEPTH twin instead: the identical pass over a Z buffer's depth
+// attachment, writing gl_FragDepth and no colour at all. Same addressing, same discard, same page
+// mask -- only the destination and the last line differ. It exists because a game that clears its Z
+// buffer by writing bytes over it (Beyond Good & Evil draws zero-coloured pixels over the Z buffer's
+// own address as a PSMCT32 FRAME) leaves the depth IMAGE holding every earlier frame's high-water
+// mark, and with persistent targets the scene then fails GEQUAL against it.
+//
+// Under DEPTH the format number is its OWN enumeration (gsTileDepthRoadFormat), because a Z buffer
+// reaches formats the colour road never carries and because both families appear: GSState swaps
+// ZBUF.PSM's 0x30 bit when FRAME's PSM is a depth format, so a Z buffer can legitimately be
+// PSMCT32-swizzled.
+//   0 = PSMCT32, 1 = PSMCT24, 2 = PSMCT16, 3 = PSMCT16S,
+//   4 = PSMZ32,  5 = PSMZ24,  6 = PSMZ16,  7 = PSMZ16S
+//
+// ⚠️ The guest word -> depth mapping is the DRAW ROAD's, not a choice made here: tilegpu.glsl's
+// vertex stage puts a raw integer Z on the attachment as `float(z) * exp2(-32)` (and convert.glsl's
+// uint_to_depth32/24/16 do the same for the classic renderer's conversions), so a seed that scaled
+// differently would shift every depth comparison against the geometry that follows it. The far-plane
+// nudge is copied for the same reason: a vertex whose z lands exactly on 1.0 is pulled to 0.999999
+// there, so a seeded 1.0 would reject geometry the console accepts.
 
 #ifndef TILEGPU_SEED_FMT
 #define TILEGPU_SEED_FMT 0
+#endif
+
+#ifndef TILEGPU_SEED_DEPTH
+#define TILEGPU_SEED_DEPTH 0
 #endif
 
 #ifdef VERTEX_SHADER
@@ -44,7 +69,9 @@ void main()
 
 #ifdef FRAGMENT_SHADER
 
+#if !TILEGPU_SEED_DEPTH
 layout(location = 0) out vec4 o_color;
+#endif
 
 // The frame's ring: page slots, epoch page tables and the op's 512-bit page mask, one word array.
 layout(std430, set = 0, binding = 1) readonly buffer Vram
@@ -63,15 +90,51 @@ layout(push_constant) uniform cb
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
-// Arm 0 and arm 3 share this geometry; arm 3 adds the depth block XOR. Kept in the same two
-// spellings tilegpu_writeback.glsl uses, because the seed is that pass run backwards and a
-// disagreement here reads a page back from blocks the writeback never wrote.
+// The three geometry facts each arm's format number decides: 64x32 pages of 8x8 blocks (one word a
+// texel) or 64x64 pages of 16x8 blocks (two texels a word); the strided block table or the plain
+// one; and the depth block XOR. Kept in the same spellings tilegpu_writeback.glsl uses, because the
+// colour seed is that pass run backwards and a disagreement here reads a page back from blocks the
+// writeback never wrote.
+#if TILEGPU_SEED_DEPTH
+
+// The eight indices spelled out once, so this file and gsTileDepthRoadFormat can be read against
+// each other and so a NINTH one stops the build instead of quietly taking every #else arm below.
+#if TILEGPU_SEED_FMT != 0 && TILEGPU_SEED_FMT != 1 && TILEGPU_SEED_FMT != 2 && TILEGPU_SEED_FMT != 3 && \
+	TILEGPU_SEED_FMT != 4 && TILEGPU_SEED_FMT != 5 && TILEGPU_SEED_FMT != 6 && TILEGPU_SEED_FMT != 7
+#error "TILEGPU_SEED_FMT is not a gsTileDepthRoadFormat index"
+#endif
+
+#define TILEGPU_SEED_CT32 \
+	(TILEGPU_SEED_FMT == 0 || TILEGPU_SEED_FMT == 1 || TILEGPU_SEED_FMT == 4 || TILEGPU_SEED_FMT == 5)
+#define TILEGPU_SEED_B16S (TILEGPU_SEED_FMT == 3 || TILEGPU_SEED_FMT == 7)
+
+#if TILEGPU_SEED_FMT == 4 || TILEGPU_SEED_FMT == 5
+#define TILEGPU_SEED_ZXOR TILE_SWZ_Z32XOR
+#elif TILEGPU_SEED_FMT == 6 || TILEGPU_SEED_FMT == 7
+#define TILEGPU_SEED_ZXOR TILE_SWZ_Z16XOR
+#else
+#define TILEGPU_SEED_ZXOR 0u
+#endif
+
+// PSMCT24 and PSMZ24 store 24 bits of the word; the top byte is not this surface's and must not
+// reach the depth value. convert.glsl's uint_to_depth24 masks in exactly this place.
+#if TILEGPU_SEED_FMT == 1 || TILEGPU_SEED_FMT == 5
+#define TILEGPU_SEED_ZMASK 0x00FFFFFFu
+#else
+#define TILEGPU_SEED_ZMASK 0xFFFFFFFFu
+#endif
+
+#else
+
 #define TILEGPU_SEED_CT32 (TILEGPU_SEED_FMT == 0 || TILEGPU_SEED_FMT == 3)
+#define TILEGPU_SEED_B16S (TILEGPU_SEED_FMT == 2)
 
 #if TILEGPU_SEED_FMT == 3
 #define TILEGPU_SEED_ZXOR TILE_SWZ_Z32XOR
 #else
 #define TILEGPU_SEED_ZXOR 0u
+#endif
+
 #endif
 
 #if TILEGPU_SEED_CT32
@@ -92,12 +155,12 @@ uint tile_c32(uint x, uint y)
 
 uint tile_b16(uint x, uint y)
 {
-#if TILEGPU_SEED_FMT == 1
-	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
-	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
-#else
+#if TILEGPU_SEED_B16S
 	return XB(x, 0u, TILE_SWZ_B84S_X0) ^ XB(x, 1u, TILE_SWZ_B84S_X1)
 	     ^ XB(y, 0u, TILE_SWZ_B84S_Y0) ^ XB(y, 1u, TILE_SWZ_B84S_Y1) ^ XB(y, 2u, TILE_SWZ_B84S_Y2);
+#else
+	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
 #endif
 }
 
@@ -146,14 +209,28 @@ void main()
 	// The exact ring word tilegpu_writeback.glsl wrote (or the executor prefilled) for this texel.
 	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u) ^ TILEGPU_SEED_ZXOR;
 	const uint w = vram_words[slot + bib * 64u + tile_c32(x & 7u, y & 7u)];
+#else
+	const uint bib = tile_b16((x >> 4u) & 3u, (y >> 3u) & 7u) ^ TILEGPU_SEED_ZXOR;
+	const uint hw = tile_c16(x & 15u, y & 7u);
+	const uint c = tilegpu_half_sel(vram_words[slot + bib * 64u + (hw >> 1u)], hw);
+#endif
 
+#if TILEGPU_SEED_DEPTH
+	// The draw road's own mapping, in the one place that has to agree with it exactly:
+	// tilegpu.glsl's vertex stage writes `float(raw_z) * exp2(-32)`, and pulls a z that lands on
+	// the far plane back off it. A seed that scaled differently, or that left 1.0 standing where a
+	// drawn 1.0 becomes 0.999999, would reject geometry the console accepts.
+#if TILEGPU_SEED_CT32
+	const uint z = w & TILEGPU_SEED_ZMASK;
+#else
+	const uint z = c;
+#endif
+	const float d = float(z) * exp2(-32.0f);
+	gl_FragDepth = (d == 1.0f) ? (d * 0.999999f) : d;
+#elif TILEGPU_SEED_CT32
 	o_color = vec4(float(w & 0xFFu), float((w >> 8u) & 0xFFu), float((w >> 16u) & 0xFFu),
 	               float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
 #else
-	const uint bib = tile_b16((x >> 4u) & 3u, (y >> 3u) & 7u);
-	const uint hw = tile_c16(x & 15u, y & 7u);
-	const uint c = tilegpu_half_sel(vram_words[slot + bib * 64u + (hw >> 1u)], hw);
-
 	// A1B5G5R5 -> RGBA8888, the writeback's pack run backwards.
 	o_color = vec4(float((c & 0x001Fu) << 3u), float((c & 0x03E0u) >> 2u), float((c & 0x7C00u) >> 7u),
 	               ((c & 0x8000u) != 0u) ? 128.0f : 0.0f) * (1.0f / 255.0f);

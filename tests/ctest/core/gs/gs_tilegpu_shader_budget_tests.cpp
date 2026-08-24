@@ -23,6 +23,7 @@
 
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/Renderers/TileGpu/GSTileGpuShaderVariant.h"
 
 #include "common/DynamicLibrary.h"
@@ -154,9 +155,9 @@ namespace
 		}
 	};
 
-	std::string ReadTileGpuShader()
+	std::string ReadShaderSourceFile(const char* name)
 	{
-		const std::string path = std::string(ARMSX2_SHADER_SOURCE_DIR) + "/vulkan/tilegpu.glsl";
+		const std::string path = std::string(ARMSX2_SHADER_SOURCE_DIR) + "/vulkan/" + name;
 		std::FILE* fp = std::fopen(path.c_str(), "rb");
 		if (!fp)
 			return {};
@@ -215,7 +216,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
 	ASSERT_TRUE(forms.valid) << "the page swizzle tables stopped fitting closed forms; there is no shader to size";
 
-	const std::string body = ReadTileGpuShader();
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
 	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
 
 	Shaderc sc;
@@ -343,5 +344,53 @@ TEST(GSTileGpuShaderBudget, TexelArmMatchesTheIndexFormatNumbering)
 			EXPECT_EQ(GSDevice::GSTileGpuTexelArm(static_cast<u32>(d16) + 6), GSDevice::kGSTileGpuTexelDirect16)
 				<< "PSM " << psm << " is a direct 16-bit format but lands off the 16-bit arm";
 		}
+	}
+}
+
+// Every DEPTH SEED program the device can inject, compiled. A size gate is not what this is for --
+// a seed is one texel-free fetch and a depth write -- it is a COMPILE gate, and the failure mode it
+// exists for is silence. Only the formats a corpus dump happens to use ever reach the device's
+// compile path, and when one fails the executor skips the op and the depth image keeps what it had:
+// no error, no VUID, just a Z buffer that was not seeded. Formats nothing in the corpus exercises
+// (PSMCT16 and PSMCT16S as a Z buffer's PSM, PSMZ16, PSMZ16S) would sit unbuilt and unbroken until a
+// game asked. So all eight are built here, on the Honeykrisp byte-select form for the same reason
+// the sizes above use it.
+TEST(GSTileGpuShaderBudget, EveryDepthSeedFormatCompiles)
+{
+	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
+	ASSERT_TRUE(forms.valid) << "the page swizzle tables stopped fitting closed forms";
+
+	const std::string body = ReadShaderSourceFile("tilegpu_seed.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu_seed.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	Shaderc sc;
+	if (!sc.Open())
+	{
+		GTEST_SKIP() << "shaderc is not loadable here, so no program can be compiled. This is a SKIP, not a pass: "
+						"the depth seed's eight variants were NOT built on this machine.";
+	}
+
+	const std::string prologue = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+								 "#define TILEGPU_STATIC_BYTE_SEL 1\n#define TILEGPU_SEED_DEPTH 1\n";
+	for (u32 f = 0; f < kGSTileDepthRoadFormats; f++)
+	{
+		std::string error;
+		const std::string src = prologue + "#define TILEGPU_SEED_FMT " + std::to_string(f) + "\n" + body;
+		const u32 words = sc.FragmentWords(src, error);
+		EXPECT_NE(words, 0u) << "depth seed format " << f << " failed to compile: " << error;
+		std::printf("  depth seed format %u: %u SPIR-V words\n", f, words);
+	}
+
+	// ...and the four COLOUR seed programs beside them, because the same file now carries both and a
+	// define added for one arm can break the other.
+	const std::string cprologue = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+								  "#define TILEGPU_STATIC_BYTE_SEL 1\n";
+	for (u32 f = 0; f < kGSTileByteRoadFormats; f++)
+	{
+		std::string error;
+		const std::string src = cprologue + "#define TILEGPU_SEED_FMT " + std::to_string(f) + "\n" + body;
+		const u32 words = sc.FragmentWords(src, error);
+		EXPECT_NE(words, 0u) << "colour seed format " << f << " failed to compile: " << error;
+		std::printf("  colour seed format %u: %u SPIR-V words\n", f, words);
 	}
 }

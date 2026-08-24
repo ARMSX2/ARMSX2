@@ -6750,6 +6750,71 @@ bool GSDeviceVK::CompileTileGpuSeedPipeline(u32 road_fmt)
 	return true;
 }
 
+// The same pass with the depth attachment as its destination: no colour attachment, depth compare
+// ALWAYS and depth write on (Vulkan writes depth only when the TEST is enabled, so "no test" here is
+// spelled as a test that always passes). The one road that fills a Z buffer from guest bytes; there
+// is still no road back.
+bool GSDeviceVK::CompileTileGpuSeedDepthPipeline(u32 depth_fmt)
+{
+	pxAssert(depth_fmt < kGSTileDepthRoadFormats);
+	m_tilegpu_seed_depth_tried[depth_fmt] = true;
+	if (!m_tilegpu_tex || m_tilegpu_pipeline_layout == VK_NULL_HANDLE)
+		return false;
+
+	// Fits the swizzle forms if nothing has yet; the 16-bit guard below reads one of them.
+	const std::string& defines = TileFormDefines();
+
+	// The 16-bit arms fold the depth block XOR into the IN-PAGE block index, which is the same map
+	// as GSOffset's absolute-block XOR only while the constant stays under 32. Fit() proves that for
+	// the 32-bit constant and the writeback road depends on it; nothing proved it for the 16-bit one
+	// because until now nothing used it, so it is checked here rather than widened into a FormSet
+	// validity rule the Tile renderer would also inherit.
+	const bool sixteen = depth_fmt == 2 || depth_fmt == 3 || depth_fmt == 6 || depth_fmt == 7;
+	if (sixteen && m_tile_forms.z16_block_xor >= 32)
+		return false;
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_seed.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_seed.glsl.");
+		return false;
+	}
+	const std::string full_source = defines +
+									fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", TileGpuStaticByteSel() ? 1 : 0) +
+									"#define TILEGPU_SEED_DEPTH 1\n" +
+									fmt::format("#define TILEGPU_SEED_FMT {}\n", depth_fmt) + *source;
+
+	VkShaderModule vs = GetUtilityVertexShader(full_source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(full_source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetDepthState(true, true, VK_COMPARE_OP_ALWAYS);
+	gpb.SetNoStencilState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(fs);
+	gpb.SetRenderPass(GetRenderPass(VK_FORMAT_UNDEFINED, LookupNativeFormat(GSTexture::Format::DepthStencil),
+						  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+						  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE),
+		0);
+	m_tilegpu_seed_depth_pipeline[depth_fmt] =
+		gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tilegpu_seed_depth_pipeline[depth_fmt] == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(m_device, m_tilegpu_seed_depth_pipeline[depth_fmt], "TileGpu depth seed pipeline");
+	return true;
+}
+
 bool GSDeviceVK::TileGpuStaticByteSel() const
 {
 	return m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP;
@@ -7155,7 +7220,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				u32* const m = masks + o * (GS_MAX_PAGES / 32);
 				std::memset(m, 0, (GS_MAX_PAGES / 32) * sizeof(u32));
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
-				if (op.kind != GSTileGpuPrepKind::Seed)
+				if (op.kind != GSTileGpuPrepKind::Seed && op.kind != GSTileGpuPrepKind::SeedDepth)
 					continue;
 				for (u32 k = 0; k < op.page_entry_count; k++)
 				{
@@ -7260,9 +7325,17 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			{
 				// One writeback and one seed program per colour swizzle universe, compiled on the
 				// first op that names one -- a title with no 16-bit target never builds those two.
+				// The depth seed has its own eight-format list, on the same terms.
 				for (u32 o = pass.first_prep_op; o < op_end; o++)
 				{
 					const GSTileGpuPrepOp& op = plan.prep_ops[o];
+					if (op.kind == GSTileGpuPrepKind::SeedDepth)
+					{
+						const u32 df = gsTileDepthRoadFormat(op.psm);
+						if (df < kGSTileDepthRoadFormats && !m_tilegpu_seed_depth_tried[df])
+							CompileTileGpuSeedDepthPipeline(df);
+						continue;
+					}
 					if (op.kind != GSTileGpuPrepKind::Writeback && op.kind != GSTileGpuPrepKind::Seed)
 						continue;
 					const u32 rf = gsTileByteRoadFormat(op.psm);
@@ -7632,13 +7705,27 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					continue;
 				GSTextureVK* const tex = static_cast<GSTextureVK*>(plan.targets[op.target]);
 
-				// The colour swizzle universe decides the program AND the page geometry both roads
-				// address the surface with. Out of range means the renderer emitted an op for a
-				// layout the byte road does not serve, which its own admission test forbids -- skip
+				// The swizzle universe decides the program AND the page geometry the road addresses the
+				// surface with. TWO enumerations, because a Z buffer reaches formats the colour road does
+				// not carry (PSMZ16/PSMZ16S, and both families -- GSState swaps ZBUF.PSM's 0x30 bit when
+				// FRAME's PSM is a depth format): a depth seed asks gsTileDepthRoadFormat, the writeback
+				// and the colour seed gsTileByteRoadFormat. Out of range means the renderer emitted an op
+				// for a layout that road does not serve, which its own admission test forbids -- skip
 				// rather than run some other format's program over these bytes.
-				const u32 road_fmt = gsTileByteRoadFormat(op.psm);
-				if (road_fmt >= kGSTileByteRoadFormats)
-					continue;
+				const bool is_depth_seed = op.kind == GSTileGpuPrepKind::SeedDepth;
+				u32 road_fmt;
+				if (is_depth_seed)
+				{
+					road_fmt = gsTileDepthRoadFormat(op.psm);
+					if (road_fmt >= kGSTileDepthRoadFormats)
+						continue;
+				}
+				else
+				{
+					road_fmt = gsTileByteRoadFormat(op.psm);
+					if (road_fmt >= kGSTileByteRoadFormats)
+						continue;
+				}
 				const u32 page_h = gsTilePageHeight(op.psm);
 
 				if (op.kind == GSTileGpuPrepKind::Writeback)
@@ -7697,9 +7784,18 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 				}
-				else // Seed
+				else // Seed / SeedDepth
 				{
-					if (m_tilegpu_seed_pipeline[road_fmt] == VK_NULL_HANDLE)
+					// One pass shape, two destinations. The addressing, the page mask, the scissor and the
+					// push constants are identical -- what differs is which attachment the fragments land on
+					// and therefore which pipeline and render pass carry them.
+					const VkPipeline seed_pipe = is_depth_seed ? m_tilegpu_seed_depth_pipeline[road_fmt] :
+																 m_tilegpu_seed_pipeline[road_fmt];
+					if (seed_pipe == VK_NULL_HANDLE)
+						continue;
+					pxAssertMsg(is_depth_seed == tex->IsDepthStencil(),
+						"TileGpu seed kind disagrees with the target it names");
+					if (is_depth_seed != tex->IsDepthStencil())
 						continue;
 					EndRenderPass();
 
@@ -7727,17 +7823,28 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						continue;
 
 					const GSVector4i area = GSVector4i::loadh(size);
-					OMSetRenderTargets(tex, nullptr, area);
+					OMSetRenderTargets(is_depth_seed ? nullptr : tex, is_depth_seed ? tex : nullptr, area);
 					const VkAttachmentLoadOp op_load = GetLoadOpForTexture(tex);
-					const VkRenderPass rp = GetRenderPass(LookupNativeFormat(tex->GetFormat()), VK_FORMAT_UNDEFINED, op_load,
-						VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-						VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					const VkFormat native_fmt = LookupNativeFormat(tex->GetFormat());
+					const VkRenderPass rp = is_depth_seed ?
+												GetRenderPass(VK_FORMAT_UNDEFINED, native_fmt, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+													VK_ATTACHMENT_STORE_OP_DONT_CARE, op_load, VK_ATTACHMENT_STORE_OP_STORE,
+													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE) :
+												GetRenderPass(native_fmt, VK_FORMAT_UNDEFINED, op_load, VK_ATTACHMENT_STORE_OP_STORE,
+													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (rp == VK_NULL_HANDLE)
 						return false;
 					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
+						// A pool texture on its first bind. The clear covers the WHOLE attachment, not the
+						// scissor: the pages outside it would otherwise stay uninitialized and a later pass
+						// that LOADs them reads garbage.
 						VkClearValue cv = {};
-						cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+						if (is_depth_seed)
+							cv.depthStencil = {tex->GetClearDepth(), 0};
+						else
+							cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 						BeginClearRenderPass(rp, area, &cv, 1);
 					}
 					else
@@ -7756,7 +7863,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						masks_base_words + o * (GS_MAX_PAGES / 32), 0, 0, 0};
 					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(spush), spush);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_seed_pipeline[road_fmt]);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);
 					vkCmdDraw(cmd, 3, 1, 0, 0);
 					EndRenderPass();
 					tex->SetState(GSTexture::State::Dirty);
@@ -9020,6 +9127,13 @@ void GSDeviceVK::DestroyResources()
 			vkDestroyPipeline(m_device, m_tilegpu_seed_pipeline[f], nullptr);
 		m_tilegpu_seed_pipeline[f] = VK_NULL_HANDLE;
 		m_tilegpu_seed_tried[f] = false;
+	}
+	for (u32 f = 0; f < kGSTileDepthRoadFormats; f++)
+	{
+		if (m_tilegpu_seed_depth_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_seed_depth_pipeline[f], nullptr);
+		m_tilegpu_seed_depth_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_seed_depth_tried[f] = false;
 	}
 	for (u32 f = 0; f < kTileGpuSrcFormats; f++)
 	{

@@ -525,6 +525,87 @@ constexpr bool gsTileSurfaceHasByteRoad(const GSTileSurfaceLayout& layout)
 		   gsTileByteRoadFormat(layout.psm) < kGSTileByteRoadFormats;
 }
 
+/// The DEPTH seed's shader variant, one per (page geometry, value width) pair a Z buffer can have.
+///
+/// Its own enumeration and not `gsTileByteRoadFormat`'s, for two reasons. The road is one-way — a
+/// depth attachment can be filled FROM guest bytes but there is still no shader that turns one back
+/// INTO bytes — so the two must be able to admit different format sets; and a Z buffer reaches four
+/// formats the colour road never carries (PSMZ16/PSMZ16S, and the 24-bit value width, which is a
+/// value mask rather than a byte mask here).
+///
+/// ⚠️ A Z buffer's PSM is a COLOUR format whenever FRAME's is a depth one: GSState swaps the 0x30
+/// bit (`GIFRegHandlerZBUF`, the Powerdrome behaviour), so the two families both appear on a
+/// Depth-kind surface and both are listed. The pairs differ only by the depth block XOR the shader
+/// applies, exactly as PSMZ32 differs from PSMCT32 everywhere else.
+static constexpr u32 kGSTileDepthRoadFormats = 8;
+
+constexpr u32 gsTileDepthRoadFormat(u32 psm)
+{
+	switch (psm)
+	{
+		case PSMCT32:
+			return 0;
+		case PSMCT24:
+			return 1;
+		case PSMCT16:
+			return 2;
+		case PSMCT16S:
+			return 3;
+		case PSMZ32:
+			return 4;
+		case PSMZ24:
+			return 5;
+		case PSMZ16:
+			return 6;
+		case PSMZ16S:
+			return 7;
+		default:
+			return kGSTileDepthRoadFormats;
+	}
+}
+
+/// Whether a DEPTH surface can be re-seeded out of guest bytes: a page-aligned base (the seed
+/// derives a page from (row, col) off the base page, and pool page (row, col) IS physical page base
+/// + row*bw + col only then) in one of the eight formats above.
+///
+/// The mirror of `gsTileSurfaceHasByteRoad` for the other kind and the other direction. Deliberately
+/// NOT folded into it: that predicate answers "writeback AND seed", and a depth surface has only the
+/// seed half. Everything that asks about writing a surface back into bytes must go on refusing Depth.
+constexpr bool gsTileSurfaceHasDepthSeedRoad(const GSTileSurfaceLayout& layout)
+{
+	return layout.kind == GSTileSurfaceKind::Depth && (layout.bp & 31) == 0 &&
+		   gsTileDepthRoadFormat(layout.psm) < kGSTileDepthRoadFormats;
+}
+
+/// Whether bytes a surface holds may be read back into a DEPTH attachment as that Z buffer's own
+/// depth: a COLOUR surface whose pixel space IS the Z buffer's — same base, same stride, same
+/// storage width, so its cells and the Z buffer's are the same cells and a whole-page claim by it is
+/// a whole-page rewrite of the very words the Z buffer stores. The swizzle universes may differ (a
+/// colour twin under the depth block XOR is the whole point: that is how "clear Z by drawing zero
+/// over its address" arrives), because the seed reads each Z cell through the Z buffer's own
+/// swizzle whatever wrote it.
+///
+/// Another DEPTH surface never qualifies, whatever its layout. Its pixels are a depth attachment and
+/// no shader carries them into bytes, so what the ring would hold for it is the CPU shadow's stale
+/// copy. The compose counts that as lossy while it happens — but it also marks the page SYNCED, and
+/// from then on the model's own answer is "the store has these bytes". This clause is what keeps a
+/// later seed from acting on that.
+///
+/// ⚠️ This is NARROWER than "the model says those bytes are the game's", and deliberately. The model
+/// tracks bytes per PAGE and a draw that covers part of a page claims all of it, so byte truth that
+/// travelled through a FOREIGN pixel space carries whole-page claims that were never whole-page
+/// writes — and, worse, may have passed through a lossy sync that dropped the real Z on the floor
+/// while marking the page composed. OutRun 2006 renders 16-bit colour over its own Z buffer's
+/// address (same base, same stride, 64x64 pages against the Z buffer's 64x32), so the model hands
+/// the depth road a page of colour and the car's own fragments then fail GEQUAL against it. Refusing
+/// the foreign view leaves that page exactly as it was before this road existed: the depth image
+/// keeps it, and it is counted lossy.
+constexpr bool gsTileDepthSeedSourceMatches(const GSTileSurfaceLayout& owner, const GSTileSurfaceLayout& z)
+{
+	return owner.kind == GSTileSurfaceKind::Color && owner.bp == z.bp && owner.bw == z.bw &&
+		   gsTileStorageBpp(owner.psm) == gsTileStorageBpp(z.psm);
+}
+
 /// The NARROWER question the roads that reinterpret an owner's texture ask: is this surface's pixel
 /// space a CT32-shaped window — 64x32 pages of 8x8 blocks, one word per texel?
 ///

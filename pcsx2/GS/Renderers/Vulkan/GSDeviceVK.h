@@ -678,6 +678,13 @@ private:
 	std::array<VkPipeline, kGSTileByteRoadFormats> m_tilegpu_seed_pipeline{};
 	std::array<bool, kGSTileByteRoadFormats> m_tilegpu_seed_tried{};
 	bool CompileTileGpuSeedPipeline(u32 road_fmt);
+	// Bytes -> a DEPTH target: the same pass writing gl_FragDepth into a Z buffer's attachment, with
+	// no colour attachment at all (compare ALWAYS, depth write on). Its own list because the format
+	// enumeration is its own -- gsTileDepthRoadFormat's eight, not gsTileByteRoadFormat's four -- and
+	// because it pairs with NO writeback: a depth attachment still cannot be turned back into bytes.
+	std::array<VkPipeline, kGSTileDepthRoadFormats> m_tilegpu_seed_depth_pipeline{};
+	std::array<bool, kGSTileDepthRoadFormats> m_tilegpu_seed_depth_tried{};
+	bool CompileTileGpuSeedDepthPipeline(u32 depth_fmt);
 	// Bytes -> a texture source: a fragment pass that unswizzles a whole texture window out of the
 	// ring into an ordinary RGBA8 image, one fragment per texel, for the hardware sampler to read.
 	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24, 2 = PSMT8, 3 = PSMT4, 4 = PSMT8H,

@@ -2102,6 +2102,21 @@ public:
 		/// `copy_x`/`copy_y` are `copy_count` source rects of `copy_w` x `copy_h` texels, copied in
 		/// order and each row-major. Same hoist hazard as a Donor and the same test.
 		ClutBlockCopy = 6,
+		/// Bytes -> a DEPTH target: the Seed above with the depth attachment as its destination. A
+		/// full-target triangle whose fragments discard outside the op's page set and otherwise write
+		/// `gl_FragDepth` — depth compare ALWAYS, depth write on, no colour attachment at all — with
+		/// the guest word taken through the same swizzle the colour seed uses and mapped to the depth
+		/// range exactly as the draw road's vertex stage maps a vertex Z.
+		///
+		/// A separate kind rather than a flag on Seed because everything about the destination
+		/// differs: a different pipeline, a different render pass, a different attachment slot. `psm`
+		/// selects the program through `gsTileDepthRoadFormat`, NOT `gsTileByteRoadFormat` — a Z
+		/// buffer reaches formats the colour road does not carry.
+		///
+		/// There is no depth WRITEBACK to pair with it: a depth attachment still cannot be turned
+		/// back into guest bytes, so truth a depth surface holds is still counted lossy when
+		/// something else needs it as bytes.
+		SeedDepth = 7,
 	};
 
 	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise or an

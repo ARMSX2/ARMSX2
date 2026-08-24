@@ -1401,6 +1401,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto wbp = stat([](const MF& f) { return f.writeback_pages; });
 	const auto sdo = stat([](const MF& f) { return f.seed_ops; });
 	const auto sdp = stat([](const MF& f) { return f.seed_pages; });
+	const auto sdzo = stat([](const MF& f) { return f.seed_ops_depth; });
+	const auto sdzp = stat([](const MF& f) { return f.seed_pages_depth; });
 	const auto wbrk = stat([](const MF& f) { return f.writeback_breaks; });
 	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
@@ -1411,9 +1413,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto bindbrk = stat([](const MF& f) { return f.tex_bind_breaks; });
 	const auto alias = stat([](const MF& f) { return f.alias_steal_pages; });
 	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
-	// The depth half is the standing gap (no depth writeback shader in any format), so it is
-	// reported beside the total rather than folded into it -- the COLOUR half is the number a
-	// byte-road change is answerable for.
+	// The depth half is the standing gap, so it is reported beside the total rather than folded
+	// into it -- the COLOUR half is the number a byte-road change is answerable for. What is left in
+	// the depth half is the WRITEBACK direction: the seed direction exists now, and the pages it
+	// cannot serve (another depth surface's, or this one's own partial claim) are what remain here.
 	const auto lossyz = stat([](const MF& f) { return f.lossy_pages_depth; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
@@ -1439,9 +1442,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
 		versions.p50, epochs.mean, epochs.p50, uncomp.mean, uncomp.p50);
 	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
-					"%8.2f / %-5u pages, %.2f / %u pass breaks",
+					"%8.2f / %-5u pages, %.2f / %u pass breaks (of the seeds, depth %.2f / %u ops, %.2f / %u pages)",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
-		sbrk.p50);
+		sbrk.p50, sdzo.mean, sdzo.p50, sdzp.mean, sdzp.p50);
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
 		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
@@ -2532,6 +2535,61 @@ u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCoun
 	return composed;
 }
 
+// See the declaration. GSTileComposeBuckets::Gather's lossy test, as a pure function of the same
+// four plane states, so the readers that must decide before the compose and the counter that runs
+// inside it cannot come apart.
+bool gsTilePageByteTruthReachable(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount])
+{
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+	{
+		const GSTileRingPlaneState& p = planes[pi];
+		// No truth here (the CPU shadow is newest, and the prefill carries it), or the ring already
+		// holds it. Either way nothing has to move.
+		if (p.truth_mask == 0 || p.synced)
+			continue;
+		if (!p.byte_road)
+			return false;
+	}
+	return true;
+}
+
+void GSRendererTileGpu::RingPlaneStateFor(u32 page, GSTileRingPlaneState (&planes)[kGSTilePlaneCount]) const
+{
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+	{
+		const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+		planes[pi].owner = owner;
+		planes[pi].truth_mask = m_vram_model.TruthMask(page, pi);
+		planes[pi].synced = m_vram_model.SyncedPages(pi).test(page);
+		planes[pi].byte_road = owner != kGSTileNoSurface && HasByteRoad(m_vram_model.Get(owner).layout);
+	}
+}
+
+GSPageBitmap GSRendererTileGpu::PagesDepthSeedable(const GSPageBitmap& pages, const GSTileSurfaceLayout& z_layout) const
+{
+	GSPageBitmap out;
+	pages.forEachSetPage([&](u32 page) {
+		GSTileRingPlaneState planes[kGSTilePlaneCount];
+		RingPlaneStateFor(page, planes);
+		if (!gsTilePageByteTruthReachable(planes))
+			return;
+		// ...and every plane that holds truth here holds it through this Z buffer's own pixel space.
+		// A plane with no owner is the CPU shadow, which is authoritative by construction: no GPU
+		// truth was dropped to get there. See gsTileDepthSeedSourceMatches for why a foreign view of
+		// the same pages is refused rather than trusted.
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			const GSTileSurfaceId owner = planes[pi].owner;
+			if (owner == kGSTileNoSurface || planes[pi].truth_mask == 0)
+				continue;
+			if (!gsTileDepthSeedSourceMatches(m_vram_model.Get(owner).layout, z_layout))
+				return;
+		}
+		out.set(page);
+	});
+	return out;
+}
+
 // A ring slot for `page` in the current epoch. Prefill from S unless the page is, in every
 // plane, whole-page unsynced truth of a surface with a byte road -- exactly the case where a
 // writeback this epoch composes every byte (ComposeRingPages emits it right after asking here).
@@ -2552,15 +2610,11 @@ u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCoun
 u32 GSRendererTileGpu::EnsureRingSlot(u32 page)
 {
 	GSTileRingPlaneState planes[kGSTilePlaneCount];
+	RingPlaneStateFor(page, planes);
 	bool needs_prefill = false;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
-		const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
-		planes[pi].owner = owner;
-		planes[pi].truth_mask = m_vram_model.TruthMask(page, pi);
-		planes[pi].synced = m_vram_model.SyncedPages(pi).test(page);
-		planes[pi].byte_road = owner != kGSTileNoSurface && HasByteRoad(m_vram_model.Get(owner).layout);
-		if (owner == kGSTileNoSurface || planes[pi].truth_mask != GSVramModel::kFullBlockMask ||
+		if (planes[pi].owner == kGSTileNoSurface || planes[pi].truth_mask != GSVramModel::kFullBlockMask ||
 			planes[pi].synced || !planes[pi].byte_road)
 			needs_prefill = true;
 	}
@@ -2627,8 +2681,11 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	// A seed overwrites the surface's texels, so a palette gathered out of those pages has to be
 	// captured into the frame's stream BEFORE the op that destroys it is queued: array order is
 	// execution order at the pass head, and a copy queued after the seed would read what the seed
-	// wrote. (A writeback only reads, so it asks nothing.)
-	if (kind == GSDevice::GSTileGpuPrepKind::Seed)
+	// wrote. (A writeback only reads, so it asks nothing.) Both seed kinds ask, though only the
+	// colour one can find anything: a palette's owner is always a colour surface.
+	const bool is_seed = kind == GSDevice::GSTileGpuPrepKind::Seed ||
+						 kind == GSDevice::GSTileGpuPrepKind::SeedDepth;
+	if (is_seed)
 		NoteClutSourceWritten(id, pages);
 	const GSVramModel::Surface& surf = m_vram_model.Get(id);
 	GSDevice::GSTileGpuPrepOp op = {};
@@ -2672,6 +2729,11 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	{
 		m_frame.seed_ops++;
 		m_frame.seed_pages += op.page_entry_count;
+		if (kind == GSDevice::GSTileGpuPrepKind::SeedDepth)
+		{
+			m_frame.seed_ops_depth++;
+			m_frame.seed_pages_depth += op.page_entry_count;
+		}
 		// A seed writes the surface's texture, so anything cached under its identity is stale. (The
 		// palettes gathered out of those pages were captured at the top of this function, before the
 		// op was queued.)
@@ -3490,21 +3552,57 @@ void GSRendererTileGpu::AccumulateDraw()
 	u8 z_claims = 0;
 	if (z_used)
 	{
-		// Two different things share these pages and only ONE of them is lost. The depth texture
-		// should hold their newest Z for a test or a write and there is no depth road to bring it
-		// in, so pages it does not hold read as whatever its texture has: lossy, counted. But the
-		// COLOUR truth other surfaces hold on those same pages is perfectly serviceable, and the
-		// depth claim below is about to take it -- so it gets composed into the ring first, the
-		// spill a road-having surface has always owed.
+		// The depth texture should hold this footprint's newest Z for a test or a write, and the
+		// pages it does not hold have to be brought in from the bytes -- the same seed the colour
+		// branch above runs, into the depth attachment. Whatever holds those pages' bytes composes
+		// into the ring first (other targets' writebacks, the S prefill), which is also the spill a
+		// road-having surface has always owed the depth claim below.
 		//
 		// ⚠️ This used to mark the whole set synced and move nothing, which is a LIE the model then
 		// tells every later reader of those pages: "the ring has these bytes", and the reader
 		// samples whatever the CPU shadow's prefill left. It stayed invisible only while some other
 		// read of the same pages happened to write them back first; removing one such read (the
 		// resident-target bind) is how FlatOut 2 surfaced it.
+		//
+		// ⚠️ And it then composed the bytes and CONSUMED NOTHING, because a depth surface had no seed
+		// program. Since targets became persistent that is not a stale page, it is an ACCUMULATING
+		// one: the image keeps every earlier frame's GEQUAL high-water mark, and the scene fails the
+		// depth test against it. Beyond Good & Evil clears its Z buffer by drawing zero-coloured
+		// pixels over the Z buffer's own address as a PSMCT32 FRAME, so the Z plane of those pages is
+		// invalidated, the bytes are right there, and 18,054 pixels of frame 3 came out black.
+		//
+		// The split is the whole correctness story, and it is what separates this from the blanket
+		// "clear the depth image whenever any page is unservable" that healed BGE and broke OutRun.
+		// `z_seed` names the pages the IMAGE does not hold newest; of those, PagesDepthSeedable takes
+		// only the ones whose bytes a compose really can serve AND whose truth is held through this Z
+		// buffer's own pixel space. Everything it refuses keeps what the image has, which is exactly
+		// what every depth page got before this road existed, so a refusal can only ever be neutral:
+		//
+		//   - a page another DEPTH surface holds: no writeback shader, so the ring would carry the
+		//     CPU shadow's stale bytes;
+		//   - a page THIS surface holds only in part: same, and the blocks it does hold would be
+		//     overwritten by stale ones;
+		//   - a page whose truth a colour surface holds through a FOREIGN view -- OutRun 2006 draws
+		//     16-bit colour over its own Z buffer's address, so the model would hand the depth road a
+		//     page of colour and the player's car would fail GEQUAL against it.
+		//
+		// Asked BEFORE the compose, which marks even lossy pages synced and would answer differently
+		// after.
 		const GSPageBitmap z_seed = PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ);
-		NoteLossyPages(z_seed, GSTileSurfaceKind::Depth);
+		const GSPageBitmap z_fill =
+			gsTileSurfaceHasDepthSeedRoad(z_l) ? PagesDepthSeedable(z_seed, z_l) : GSPageBitmap();
+		// What is left is the depth gap as it now stands: pages whose Z the byte store cannot serve,
+		// or serves only through a foreign view of the same memory. They keep whatever the depth image
+		// holds -- exactly as every depth page did before this road existed.
+		NoteLossyPages(z_seed.andnot(z_fill), GSTileSurfaceKind::Depth);
 		ComposeForPendingDraw(z_seed, pd);
+		if (!z_fill.empty())
+		{
+			EmitPrepOp(GSDevice::GSTileGpuPrepKind::SeedDepth, z_id, z_fill);
+			pd.break_before = true;
+			m_frame.seed_breaks++;
+			BreakOpenPass();
+		}
 		if (z_write)
 			z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);
 	}
