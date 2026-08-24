@@ -512,7 +512,21 @@ object SecondScreen {
             }
             rootView.addView(grid, lp())
 
-            setContentView(rootView)
+            // Scrollable, because the panel has no say in how tall it gets: the user picks how
+            // many tiles are on it and how tall each one is, and a fixed root simply clipped
+            // whatever did not fit off the bottom of the display with no indication it was there.
+            setContentView(
+                android.widget.ScrollView(context).apply {
+                    isFillViewport = true
+                    addView(
+                        rootView,
+                        android.widget.FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ),
+                    )
+                },
+            )
             updateStats()
         }
 
@@ -564,7 +578,11 @@ object SecondScreen {
 
         private fun buildCoverTile(): View {
             val image = android.widget.ImageView(context).apply {
-                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                // FIT_CENTER, not CENTER_CROP. Box art is portrait and a grid cell is not, so
+                // cropping to fill ate the top and bottom of the cover -- the parts with the
+                // logo and the title on them. Fitting shows the whole cover and letterboxes it
+                // against the tile background instead.
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
                 adjustViewBounds = true
             }
             // A label UNDER the image rather than instead of it. With no game, or before the
@@ -972,14 +990,27 @@ object SecondScreen {
         private fun raPoints(): String {
             if (raItems.isEmpty()) return I18n.get("secondScreen.tile.raPoints") + "\n—"
             val earned = raItems.filter { it.unlocked }.sumOf { it.points }
-            return "RA\n$earned/${raItems.sumOf { it.points }}"
+            return "🏆 RA\n$earned/${raItems.sumOf { it.points }}"
         }
 
+        /**
+         * Unlocks, split by the mode they were earned in.
+         *
+         * "12/40" alone does not say whether those were earned in hardcore or casual, which is
+         * the distinction RetroAchievements cares most about -- so the counts carry the same
+         * marks RA uses. rc_client reports a per-achievement mask: bit 1 softcore, bit 2
+         * hardcore, and a hardcore unlock sets both, so the casual figure is deliberately the
+         * softcore-ONLY count rather than the total.
+         */
         private fun achievementSummary(): String {
             if (raItems.isEmpty()) return I18n.get("secondScreen.tile.achievements") + "\n—"
+            val unlocked = raItems.filter { it.unlocked }
+            val hardcore = unlocked.count { it.unlockedMask and 2 != 0 }
+            val casual = unlocked.size - hardcore
             return buildString {
-                append(raItems.count { it.unlocked }).append('/').append(raItems.size)
-                lastUnlock?.let { append('\n').append(it) }
+                append("🏆").append(hardcore)
+                if (casual > 0) append("  🎖").append(casual)
+                append('\n').append(unlocked.size).append('/').append(raItems.size)
             }
         }
 
