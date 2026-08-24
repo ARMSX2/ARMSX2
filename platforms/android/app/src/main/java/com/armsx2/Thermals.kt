@@ -22,8 +22,21 @@ import java.io.File
  */
 object Thermals {
 
-    /** No reading. Distinguished from a real 0°C, which a phone will not be at. */
-    const val NONE = Float.MIN_VALUE
+    /**
+     * No reading.
+     *
+     * MUST stay equal to ARMSX2_THERMAL_NONE in ImGuiOverlays.h -- the overlay hides a figure by
+     * testing `value > ARMSX2_THERMAL_NONE`, so a sentinel that is not below every real
+     * temperature is not a sentinel at all.
+     *
+     * This was Float.MIN_VALUE, which in Kotlin and Java is the smallest POSITIVE float
+     * (1.4e-45), not the most negative one -- that is -Float.MAX_VALUE. So it sailed through the
+     * overlay's test as a real reading and printed as "0°". The bug is invisible on any device
+     * whose zones all resolve, because the sentinel is then never sent; it shows up exactly on
+     * the devices the fallback exists for, e.g. a readable CPU zone and no GPU zone printing
+     * "CPU 47° GPU 0°". Caught in ARMSX3 review, not by testing.
+     */
+    const val NONE = -1000.0f
 
     private const val ZONES = "/sys/class/thermal"
 
