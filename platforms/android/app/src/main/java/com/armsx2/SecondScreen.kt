@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.toArgb
 import com.armsx2.i18n.I18n
 import com.armsx2.runtime.MainActivityRuntime
 import kr.co.iefriends.pcsx2.NativeApp
@@ -34,18 +35,84 @@ import kr.co.iefriends.pcsx2.NativeApp
  */
 object SecondScreen {
 
-    // Panel palette. Deliberately not pulled from the Compose theme: a Presentation is outside
-    // the Compose tree entirely, and reaching into MaterialTheme from a plain View would mean
-    // holding a composition alive just to read six colours.
-    private const val BG_TOP = 0xFF11151C.toInt()
-    private const val BG_BOTTOM = 0xFF080A0E.toInt()
-    private const val TILE_ACTION = 0xFF1B2331.toInt()
-    private const val TILE_STAT = 0xFF141A23.toInt()
-    private const val BORDER = 0x33FFFFFF
-    private const val ACCENT = 0xFF7FB2FF.toInt()
-    private const val ACCENT_DIM = 0x557FB2FF
-    private const val TEXT = 0xFFE6EAF0.toInt()
-    private const val TEXT_DIM = 0xFF9AA0A6.toInt()
+    // Panel palette, taken from the app's LIVE theme.
+    //
+    // This used to be a hand-written set of neutral greys, on the reasoning that a Presentation
+    // sits outside the Compose tree and reading MaterialTheme from a plain View would mean
+    // holding a composition alive just to get six colours. The reasoning was right; the
+    // conclusion was not. ARMSX2's night theme is BLUE (0xFF0A1C36), so a grey panel was not a
+    // neutral choice, it was a different app on the second screen -- which is what "it still
+    // looks quite unpleasant... more like stock android instead of armsx2" was describing.
+    //
+    // ThemeBridge publishes the already-resolved scheme, so there is no composition to hold and
+    // no second copy of the theme logic to drift: the panel follows Blue, Purple, OLED, Custom,
+    // Material You and the animated RGB mode without knowing any of them exist. The old values
+    // stay as the fallback for the window between process start and the first composition.
+    private fun themed(
+        fallback: Int,
+        pick: (androidx.compose.material3.ColorScheme) -> androidx.compose.ui.graphics.Color,
+    ): Int = com.armsx2.ui.theme.ThemeBridge.scheme?.let { pick(it).toArgb() } ?: fallback
+
+    /** Scale a colour's RGB toward black, keeping alpha. For the ground gradient. */
+    private fun Int.darken(factor: Float): Int {
+        val a = this ushr 24 and 0xFF
+        val r = ((this shr 16 and 0xFF) * factor).toInt().coerceIn(0, 255)
+        val g = ((this shr 8 and 0xFF) * factor).toInt().coerceIn(0, 255)
+        val b = ((this and 0xFF) * factor).toInt().coerceIn(0, 255)
+        return (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    private val BG_TOP get() = themed(0xFF11151C.toInt()) { it.background }
+    private val BG_BOTTOM get() = BG_TOP.darken(0.55f)
+    private val TILE_ACTION get() = themed(0xFF1B2331.toInt()) { it.surfaceVariant }
+    private val TILE_STAT get() = themed(0xFF141A23.toInt()) { it.surface }
+    private val BORDER get() = (themed(0xFFFFFFFF.toInt()) { it.outline } and 0x00FFFFFF) or 0x33000000
+    private val ACCENT get() = themed(0xFF7FB2FF.toInt()) { it.primary }
+    private val ACCENT_DIM get() = (ACCENT and 0x00FFFFFF) or 0x55000000
+    private val TEXT get() = themed(0xFFE6EAF0.toInt()) { it.onSurface }
+    private val TEXT_DIM get() = themed(0xFF9AA0A6.toInt()) { it.onSurfaceVariant }
+
+    // ---- Background choice (requested alongside the restyle) --------------------------------
+    /** 0 = the theme's own ground, 1 = the library's backdrop darkened, 2 = solid black. */
+    private const val PREF_BACKGROUND = "secondScreen.background"
+    const val BG_THEME = 0
+    const val BG_LIBRARY = 1
+    const val BG_BLACK = 2
+
+    val background = mutableStateOf(BG_THEME)
+
+    fun loadBackground() {
+        background.value = runCatching {
+            MainActivityRuntime.prefs.getInt(PREF_BACKGROUND, BG_THEME)
+        }.getOrDefault(BG_THEME).coerceIn(BG_THEME, BG_BLACK)
+    }
+
+    // ---- Thermal polling interval -----------------------------------------------------------
+    /** Seconds between sensor reads: 1, 2, 3 or 5. Not "realtime" — these are sysfs reads on the
+     *  UI thread, and a temperature that moves slower than a second is not worth the syscalls. */
+    private const val PREF_TEMP_INTERVAL = "secondScreen.tempInterval"
+    val tempIntervalSec = mutableStateOf(2)
+
+    fun loadTempInterval() {
+        tempIntervalSec.value = runCatching {
+            MainActivityRuntime.prefs.getInt(PREF_TEMP_INTERVAL, 2)
+        }.getOrDefault(2).coerceIn(1, 5)
+    }
+
+    fun setTempInterval(seconds: Int) {
+        tempIntervalSec.value = seconds.coerceIn(1, 5)
+        runCatching {
+            MainActivityRuntime.prefs.edit().putInt(PREF_TEMP_INTERVAL, tempIntervalSec.value).apply()
+        }
+    }
+
+    private fun tempIntervalMs(): Long = tempIntervalSec.value * 1000L
+
+    fun setBackground(value: Int) {
+        background.value = value.coerceIn(BG_THEME, BG_BLACK)
+        runCatching { MainActivityRuntime.prefs.edit().putInt(PREF_BACKGROUND, background.value).apply() }
+        rebuild()
+    }
 
     private const val PREF_KEY = "secondScreen.enabled"
     private const val PREF_OSD_KEY = "secondScreen.moveOsd"
@@ -91,6 +158,8 @@ object SecondScreen {
             enabled.value = MainActivityRuntime.prefs.getBoolean(PREF_KEY, false)
             moveOsd.value = MainActivityRuntime.prefs.getBoolean(PREF_OSD_KEY, true)
         }
+        loadBackground()
+        loadTempInterval()
     }
 
     fun set(context: Context, value: Boolean) {
@@ -256,10 +325,7 @@ object SecondScreen {
             // matching the app: dark ground, rounded surface tiles, one accent.
             val rootView = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                background = android.graphics.drawable.GradientDrawable(
-                    android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
-                    intArrayOf(BG_TOP, BG_BOTTOM),
-                )
+                background = panelBackground(context)
                 setPadding(pad, pad, pad, pad)
             }
 
@@ -329,7 +395,7 @@ object SecondScreen {
             }
             val label = I18n.get(tile.labelKey)
             return TextView(context).styleAsTile(action = true).also { view ->
-                (view as TextView).text = label
+                (view as TextView).text = tileFace(tile.icon, label)
                 view.setOnClickListener { runCatching { fire(tile) } }
             }
         }
@@ -341,6 +407,52 @@ object SecondScreen {
             SecondScreenTile.MACRO4 -> com.armsx2.ui.touch.TouchButtonId.MACRO4
             else -> null
         }
+
+        /**
+         * A tile's face: the glyph on its own line, larger and in the accent, over the label.
+         *
+         * Built as a Spannable rather than two stacked TextViews because the grid measures one
+         * view per tile, and the two-line shape is what keeps every tile the same height. When a
+         * tile has no glyph (the stat tiles) this is just the text, so callers need no branch.
+         */
+        private fun tileFace(icon: String, label: String): CharSequence {
+            if (icon.isEmpty()) return label
+            val text = "$icon\n$label"
+            return android.text.SpannableString(text).apply {
+                setSpan(
+                    android.text.style.RelativeSizeSpan(1.55f), 0, icon.length,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+        }
+
+        /**
+         * The panel's ground, per the user's choice.
+         *
+         * The library's backdrop is offered because the panel sits next to the library and
+         * looking like a different app was the complaint; it is darkened rather than drawn as-is
+         * so tile text stays readable over whatever image is behind it. Solid black is for OLED
+         * second screens, where a gradient is just power spent on something nobody asked to see.
+         */
+        private fun panelBackground(context: Context): android.graphics.drawable.Drawable =
+            when (background.value) {
+                BG_BLACK -> android.graphics.drawable.ColorDrawable(Color.BLACK)
+                BG_LIBRARY -> runCatching {
+                    val art = androidx.core.content.ContextCompat.getDrawable(
+                        context, com.armsx2.R.drawable.library_bg_xmb,
+                    ) ?: throw IllegalStateException("no backdrop")
+                    android.graphics.drawable.LayerDrawable(
+                        arrayOf(art, android.graphics.drawable.ColorDrawable(0xB0000000.toInt())),
+                    )
+                }.getOrElse { themeGround() }
+                else -> themeGround()
+            }
+
+        private fun themeGround(): android.graphics.drawable.Drawable =
+            android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(BG_TOP, BG_BOTTOM),
+            )
 
         /** Common tile chrome: rounded surface, hairline border, centred text. */
         private fun View.styleAsTile(action: Boolean): View = apply {
@@ -465,6 +577,11 @@ object SecondScreen {
 
             val fps = runCatching { NativeApp.getFPS() }.getOrDefault(0f)
             val title = MainActivityRuntime.currentGame.value?.title.orEmpty()
+            // Thermals are file reads, so they run on their own interval rather than on every
+            // panel tick — that interval IS the mitigation Cotcho asked about. Cheap to call:
+            // Thermals.poll returns immediately until the interval is up.
+            runCatching { Thermals.poll(context, tempIntervalMs()) }
+
             // Read charge straight from BatteryManager rather than plumbing state over from the
             // main-display status cluster — this panel ticks on its own and the call is cheap.
             val battery = runCatching {
@@ -480,7 +597,7 @@ object SecondScreen {
                 .format(java.util.Date(System.currentTimeMillis()))
 
             tileViews.forEach { (tile, view) ->
-                val text: String? = when (tile) {
+                val text: CharSequence? = when (tile) {
                     SecondScreenTile.TITLE -> title.ifBlank { I18n.get("secondScreen.tile.title") }
                     // FPS is meaningless with no VM — the reading would just sit at the last value.
                     SecondScreenTile.FPS ->
@@ -494,18 +611,30 @@ object SecondScreen {
                     SecondScreenTile.BATTERY ->
                         if (battery >= 0) batteryIcon(battery, charging) + "\n" + battery + "%" else null
                     SecondScreenTile.CLOCK -> clock
+                    SecondScreenTile.CPU_TEMP -> "CPU\n" + (Thermals.format(Thermals.cpu) ?: "—")
+                    SecondScreenTile.GPU_TEMP -> "GPU\n" + (Thermals.format(Thermals.gpu) ?: "—")
+                    SecondScreenTile.BATTERY_TEMP -> "BATT\n" + (Thermals.format(Thermals.battery) ?: "—")
                     SecondScreenTile.ACHIEVEMENTS -> achievementSummary()
                     // Action tiles that carry state show it, so the panel reads as a status
                     // display and not just a remote control.
-                    SecondScreenTile.FAST_FORWARD -> I18n.get(tile.labelKey) +
+                    // State is carried by the GLYPH, not by an extra line. Appending one was
+                    // what made an active tile taller than its neighbours.
+                    SecondScreenTile.FAST_FORWARD -> tileFace(
                         if (runCatching { MainActivityRuntime.isFastForwardActive() }.getOrDefault(false))
-                            "\n▶▶" else ""
-                    SecondScreenTile.PAUSE -> I18n.get(tile.labelKey) +
-                        if (MainActivityRuntime.eState.value == EmuState.PAUSED) "\n❚❚" else ""
+                            "▶▶▶" else tile.icon,
+                        I18n.get(tile.labelKey),
+                    )
+                    // Shows what the tap will DO: ▶ while paused, ❚❚ while running.
+                    SecondScreenTile.PAUSE -> tileFace(
+                        if (MainActivityRuntime.eState.value == EmuState.PAUSED) "▶" else tile.icon,
+                        I18n.get(tile.labelKey),
+                    )
                     SecondScreenTile.SLOT ->
-                        I18n.get(tile.labelKey) + "\n" + MainActivityRuntime.currentSaveSlot.intValue
-                    SecondScreenTile.ASPECT -> I18n.get(tile.labelKey) + "\n" +
-                        aspectLabel(com.armsx2.ui.InGameOverlay.settingsState.value.aspectRatio)
+                        tileFace(tile.icon, MainActivityRuntime.currentSaveSlot.intValue.toString())
+                    SecondScreenTile.ASPECT -> tileFace(
+                        tile.icon,
+                        aspectLabel(com.armsx2.ui.InGameOverlay.settingsState.value.aspectRatio),
+                    )
                     else -> null
                 }
                 if (text != null && view is TextView) view.text = text

@@ -15,7 +15,20 @@ import com.armsx2.runtime.MainActivityRuntime
  * ORDER IS PART OF THE PREFERENCE — the stored list is what gets laid out, top-left to
  * bottom-right, which is why it is a List and not a Set.
  */
-enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Boolean = false) {
+enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Boolean = false,
+    /**
+     * A glyph shown above the label on ACTION tiles, so a tile can be recognised at a glance
+     * from across a desk -- "much easier to quickly recognize pictures than text" (NiceRon).
+     *
+     * Deliberately geometric Unicode rather than emoji: emoji render in their own colours and
+     * their own house style, which is exactly the stock-Android look the panel was being
+     * restyled away from. These take the theme accent like everything else.
+     *
+     * Stat tiles leave this empty -- their label IS the identifier, and a value needs the
+     * second line.
+     */
+    val icon: String = "",
+) {
     // Read-outs. These fill their box with live text and ignore taps.
     TITLE("title", "secondScreen.tile.title", stat = true),
     FPS("fps", "secondScreen.tile.fps", stat = true),
@@ -23,24 +36,30 @@ enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Bool
     BATTERY("battery", "secondScreen.tile.battery", stat = true),
     CLOCK("clock", "secondScreen.tile.clock", stat = true),
     ACHIEVEMENTS("achievements", "secondScreen.tile.achievements", stat = true),
+    // Thermals (Cotcho, Mike22). Stat tiles like the rest -- a device with no readable zone
+    // simply shows a dash rather than the tile being hidden, so the grid does not reflow
+    // depending on what the kernel happens to expose.
+    CPU_TEMP("cputemp", "secondScreen.tile.cpuTemp", stat = true),
+    GPU_TEMP("gputemp", "secondScreen.tile.gpuTemp", stat = true),
+    BATTERY_TEMP("battemp", "secondScreen.tile.batteryTemp", stat = true),
 
     // Actions.
-    SAVE("save", "touch.stateAction.save"),
-    LOAD("load", "touch.stateAction.load"),
-    FAST_FORWARD("ff", "secondScreen.fastForward"),
-    PAUSE("pause", "secondScreen.pause"),
-    SCREENSHOT("screenshot", "touch.stateAction.screenshot"),
-    ASPECT("aspect", "secondScreen.tile.aspect"),
-    SLOT("slot", "secondScreen.tile.slot"),
+    SAVE("save", "touch.stateAction.save", icon = "▼"),
+    LOAD("load", "touch.stateAction.load", icon = "▲"),
+    FAST_FORWARD("ff", "secondScreen.fastForward", icon = "▶▶"),
+    PAUSE("pause", "secondScreen.pause", icon = "❚❚"),
+    SCREENSHOT("screenshot", "touch.stateAction.screenshot", icon = "◉"),
+    ASPECT("aspect", "secondScreen.tile.aspect", icon = "▭"),
+    SLOT("slot", "secondScreen.tile.slot", icon = "▣"),
     // The way out from the panel itself — asked for after the panel landed on the display the game
     // was running on, with no way to dismiss it from there (BrainBeat: "I wonder if there is a way
     // to toggle it on inside the panel"). Turns the whole feature off, same as the App setting.
-    HIDE("hide", "secondScreen.tile.hide"),
+    HIDE("hide", "secondScreen.tile.hide", icon = "✕"),
 
-    MACRO1("macro1", "secondScreen.tile.macro1"),
-    MACRO2("macro2", "secondScreen.tile.macro2"),
-    MACRO3("macro3", "secondScreen.tile.macro3"),
-    MACRO4("macro4", "secondScreen.tile.macro4"),
+    MACRO1("macro1", "secondScreen.tile.macro1", icon = "①"),
+    MACRO2("macro2", "secondScreen.tile.macro2", icon = "②"),
+    MACRO3("macro3", "secondScreen.tile.macro3", icon = "③"),
+    MACRO4("macro4", "secondScreen.tile.macro4", icon = "④"),
 }
 
 object SecondScreenLayout {

@@ -42,6 +42,17 @@ enum class ThemeMode { System, MaterialYou, Rgb, Custom, Light, Blue, Purple, Pi
     val followsSystemDarkMode: Boolean get() = this == System || this == MaterialYou
 }
 
+/**
+ * The live [ColorScheme], for code that cannot be a @Composable.
+ *
+ * Written by [Armsx2Theme] on every recomposition that changes the theme, read by the
+ * second-screen Presentation. Null until the first composition, so readers need a fallback.
+ */
+object ThemeBridge {
+    @Volatile
+    var scheme: androidx.compose.material3.ColorScheme? = null
+}
+
 object ThemePreferences {
     private const val PreferenceKey = "ui.theme.mode"
 
@@ -553,14 +564,22 @@ fun Armsx2Theme(content: @Composable () -> Unit) {
             remember(step) { hueScheme(step * RgbHueStep, 0.62f, 0.92f) }
         }
     }
+    // OLED base is a modifier over the resolved scheme, so it applies to every mode above —
+    // including MaterialYou, Custom and the animated Rgb one. Light themes are left alone;
+    // forcing black surfaces under light-theme text would be unreadable.
+    val resolved = if (ThemePreferences.oledBase.value && scheme.isDarkScheme())
+        scheme.withOledBase()
+    else
+        scheme
+    // Publish it for the parts of the app that are NOT Compose. The second-screen panel is
+    // classic Views inside a Presentation, so it cannot read MaterialTheme, and it used to carry
+    // a hand-written palette of its own -- neutral greys against an app whose night theme is
+    // blue. That is why it read as a stock Android dialog rather than as ARMSX2. Publishing the
+    // RESOLVED scheme (rather than re-deriving it there) means the panel follows every mode,
+    // including MaterialYou, Custom, OLED and the animated RGB one, for free.
+    ThemeBridge.scheme = resolved
     MaterialTheme(
-        // OLED base is a modifier over the resolved scheme, so it applies to every mode above —
-        // including MaterialYou, Custom and the animated Rgb one. Light themes are left alone;
-        // forcing black surfaces under light-theme text would be unreadable.
-        colorScheme = if (ThemePreferences.oledBase.value && scheme.isDarkScheme())
-            scheme.withOledBase()
-        else
-            scheme,
+        colorScheme = resolved,
         typography = ArmsTypography,
         content = content,
     )

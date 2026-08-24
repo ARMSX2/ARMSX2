@@ -472,6 +472,38 @@ fun AppTab() {
                 onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
             )
 
+            // The panel now takes its colours from whichever theme is selected, so this is only
+            // about the GROUND behind the tiles: the theme's own, the library's backdrop for
+            // continuity with the screen it sits beside, or black for an OLED second display.
+            SegmentedRow(
+                label = str("secondScreen.background"),
+                options = listOf(
+                    str("secondScreen.background.theme"),
+                    str("secondScreen.background.library"),
+                    str("secondScreen.background.black"),
+                ),
+                selectedIndex = com.armsx2.SecondScreen.background.value,
+                onChange = { com.armsx2.SecondScreen.setBackground(it) },
+            )
+
+            // Only worth showing once a thermal tile is actually on the panel — otherwise it is
+            // a control over something invisible.
+            if (com.armsx2.SecondScreenLayout.tiles().any {
+                    it == com.armsx2.SecondScreenTile.CPU_TEMP ||
+                        it == com.armsx2.SecondScreenTile.GPU_TEMP ||
+                        it == com.armsx2.SecondScreenTile.BATTERY_TEMP
+                }
+            ) {
+                val seconds = listOf(1, 2, 3, 5)
+                SegmentedRow(
+                    label = str("secondScreen.tempInterval"),
+                    options = seconds.map { "${it}s" },
+                    selectedIndex = seconds.indexOf(com.armsx2.SecondScreen.tempIntervalSec.value)
+                        .coerceAtLeast(0),
+                    onChange = { com.armsx2.SecondScreen.setTempInterval(seconds[it]) },
+                )
+            }
+
             // Panel layout editor. Chips for what is on the panel, arrows for the order, a column
             // count for the shape of the grid. Asked for as "a grid which can be filled with boxes
             // containing the things one need" (NiceRon) — the point is that the panel is different
