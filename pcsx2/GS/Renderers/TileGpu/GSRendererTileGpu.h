@@ -2428,8 +2428,10 @@ private:
 
 	// Set the first time BuildAndExecutePlan finds a non-empty plan and no executor to give it
 	// to (the device failed the TileGpu contract at construction -- GSDeviceVK.cpp's
-	// tilegpu_device_capable). Every draw is dropped whether this fires or not; it only gates
-	// the one-time Console.Error that says so, so a contract-absent device cannot render black
-	// with a clean exit code and no explanation.
+	// tilegpu_device_capable). Reachable only under EmuCore/GS/TileGpuIgnoreDeviceContract now:
+	// a contract-absent device otherwise resolves to Classic at variant selection and never
+	// constructs this renderer. Every draw is dropped whether this fires or not; it only gates
+	// the one-time Console.Error that says so, so a bring-up run cannot render black with a
+	// clean exit code and no explanation.
 	bool m_warned_no_executor = false;
 };

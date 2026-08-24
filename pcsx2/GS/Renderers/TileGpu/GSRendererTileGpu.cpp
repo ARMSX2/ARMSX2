@@ -5161,7 +5161,9 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	else if (!m_warned_no_executor)
 	{
 		// The device failed the TileGpu contract at construction, but the renderer was selected
-		// and built anyway (there is no fallback yet -- a separate pending decision). From here
+		// and built anyway -- which now only happens under EmuCore/GS/TileGpuIgnoreDeviceContract,
+		// because the shipped answer is to resolve to Classic instead (GSTileSelectionPolicy.h
+		// carries the decision record). So this is a bring-up path, not the ordinary one. From here
 		// every frame's plan is silently discarded: without this, that is a black frame and a
 		// clean exit code, indistinguishable at every level above this one from working GS
 		// output. Say it once, loudly, and name the log line that has the actual missing feature

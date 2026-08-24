@@ -560,7 +560,11 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	VkPhysicalDeviceFeatures available_features;
 	vkGetPhysicalDeviceFeatures(m_physical_device, &available_features);
 
-	// Enable the features we use.
+	// Enable the features we use. dualSrcBlend is one of them for the HW renderer, which SW-blends
+	// where it is absent -- and a TileGpu CONTRACT term, which has no such fallback: its fragment
+	// shader declares an index-1 output and its blend table names SRC1_* factors, so a device
+	// without it fails pipeline creation rather than rendering differently. CreateDevice folds it
+	// into the gate.
 	m_device_features.dualSrcBlend = available_features.dualSrcBlend;
 	m_device_features.largePoints = available_features.largePoints;
 	m_device_features.wideLines = available_features.wideLines;
@@ -866,16 +870,25 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_descriptor_indexing, di_bits);
 
 		// The TileGpu backend can run on this device only if its whole contract holds: the
-		// descriptor-indexing sub-features above AND an indirect draw stream that carries a
-		// per-draw firstInstance. Recorded once. The renderer does NOT refuse to construct
-		// without it -- it builds and runs regardless -- so a contract-absent device instead
-		// has every draw discarded downstream: GSRendererTileGpu::BuildAndExecutePlan checks
-		// this flag before handing its plan to the executor, and logs loudly (once) when it
-		// finds a plan with nowhere to go. Falling back to another renderer on contract
-		// failure is a separate, still-pending design decision.
+		// descriptor-indexing sub-features above, an indirect draw stream that carries a per-draw
+		// firstInstance, and dual-source blending. Recorded once.
+		//
+		// Dual-source is in here because tilegpu.glsl declares a second colour output at index 1
+		// unconditionally and the executor's blend table names SRC1_* factors, which Vulkan forbids
+		// outright when dualSrcBlend is false -- so a device without it does not render badly, it
+		// fails pipeline creation on the first draw. The Mali blob on the RG477V reports it false
+		// with a hardcoded zero dual-source attachment count, so this is a real exclusion and not a
+		// theoretical one. Making the second output a fragment variant is a separate piece of work.
+		//
+		// The renderer does NOT refuse to construct without the contract -- it builds and runs
+		// regardless -- but nothing gets that far any more: a contract-absent device resolves to
+		// Classic at variant selection, and GSTileSelectionPolicy.h carries that decision record.
+		// The downstream discard in GSRendererTileGpu::BuildAndExecutePlan is now only reachable
+		// under EmuCore/GS/TileGpuIgnoreDeviceContract.
 		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
 													   m_device_features.multiDrawIndirect == VK_TRUE &&
-													   m_device_features.drawIndirectFirstInstance == VK_TRUE;
+													   m_device_features.drawIndirectFirstInstance == VK_TRUE &&
+													   m_device_features.dualSrcBlend == VK_TRUE;
 		// The scissor is NOT part of that contract, because there are two roads to it and every
 		// device can take one of them. shaderClipDistance buys the cheaper one -- four clip planes
 		// out of the state row, so one indirect call carries any number of scissors. Without it the
@@ -887,11 +900,12 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.tilegpu_clip_scissor =
 			gsTileGpuScissorRoad(GSConfig.TileGpuScissorRoad, m_device_features.shaderClipDistance == VK_TRUE) ==
 			GSTileGpuScissorRoad::ClipPlanes;
-		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s), scissor road %s "
-					   "(clip-distance=%s, TileGpuScissorRoad=%d).",
+		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s, dual-src=%s), "
+					   "scissor road %s (clip-distance=%s, TileGpuScissorRoad=%d).",
 			m_optional_extensions.tilegpu_device_capable ? "present" : "absent",
 			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
 			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no",
+			m_device_features.dualSrcBlend ? "yes" : "no",
 			m_optional_extensions.tilegpu_clip_scissor ? "clip planes" : "per-call scissor",
 			m_device_features.shaderClipDistance ? "yes" : "no", GSConfig.TileGpuScissorRoad);
 
