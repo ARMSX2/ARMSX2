@@ -1936,6 +1936,11 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Collapse/expand. First control in the row so it is in the same place whether the
+            // panel is open or shut.
+            PanelSizeButton(if (TouchControls.editorCollapsed.value) "▼" else "▲") {
+                TouchControls.editorCollapsed.value = !TouchControls.editorCollapsed.value
+            }
             PanelSizeButton("－") {
                 val ls = OverlayDims.last?.let { it.widthPx > it.heightPx } ?: true
                 TouchControls.editorPanelScale(ls).floatValue =
@@ -1981,6 +1986,9 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                     (TouchControls.editorPanelScale(ls).floatValue + 0.1f).coerceIn(0.6f, 1.35f)
             }
         }
+        // Collapsed = grip row only, so everything under the panel is reachable. Column is an
+        // inline composable, so an early return here really does skip the rest of the content.
+        if (TouchControls.editorCollapsed.value) return@Column
         // Scope hint: with no game running the editor edits the GLOBAL Default
         // layout (per-game layouts need a running disc).
         Text(

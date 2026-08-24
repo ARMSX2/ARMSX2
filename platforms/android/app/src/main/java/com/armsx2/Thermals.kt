@@ -119,12 +119,15 @@ object Thermals {
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var feeding = false
 
-    val osdEnabled = androidx.compose.runtime.mutableStateOf(false)
+    // Default ON. It reads as a normal part of the perf overlay next to CPU/GPU load, the poll
+    // is one file read every couple of seconds, and a device with no readable zone shows nothing
+    // rather than something wrong -- so there is no device this is worse for.
+    val osdEnabled = androidx.compose.runtime.mutableStateOf(true)
 
     fun loadOsdEnabled(context: Context) {
         osdEnabled.value = runCatching {
-            com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(PREF_OSD, false)
-        }.getOrDefault(false)
+            com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(PREF_OSD, true)
+        }.getOrDefault(true)
         applyOsd(context)
     }
 

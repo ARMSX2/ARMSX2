@@ -578,6 +578,18 @@ fun Armsx2Theme(content: @Composable () -> Unit) {
     // RESOLVED scheme (rather than re-deriving it there) means the panel follows every mode,
     // including MaterialYou, Custom, OLED and the animated RGB one, for free.
     ThemeBridge.scheme = resolved
+    // The second-screen panel reads these colours when it BUILDS its views, so publishing a new
+    // scheme is not enough on its own -- an already-open panel keeps the colours it was born
+    // with, which is why changing theme appeared to do nothing to it. Keyed on the user-facing
+    // switches rather than on the scheme object: the RGB mode produces a new scheme every hue
+    // step, and tearing the panel down and back up sixty times a cycle would be absurd.
+    androidx.compose.runtime.LaunchedEffect(
+        ThemePreferences.mode.value,
+        ThemePreferences.oledBase.value,
+        ThemePreferences.customColor.value,
+    ) {
+        runCatching { com.armsx2.SecondScreen.rebuild() }
+    }
     MaterialTheme(
         colorScheme = resolved,
         typography = ArmsTypography,

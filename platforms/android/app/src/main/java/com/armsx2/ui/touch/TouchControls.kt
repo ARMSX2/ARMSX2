@@ -104,6 +104,9 @@ object TouchControls {
      *  No-op if the VM isn't paused. */
     fun exitEditMode() {
         editMode.value = false
+        // Next time the editor opens it should have its controls, not the collapsed grip the
+        // user happened to leave behind.
+        editorCollapsed.value = false
         if (MainActivityRuntime.eState.value == EmuState.PAUSED) MainActivityRuntime.resume()
     }
 
@@ -113,6 +116,20 @@ object TouchControls {
      *  awkward to pinch-zoom. Tap a widget to select; tap the dim
      *  backdrop to deselect. */
     val selectedButton = mutableStateOf<TouchButtonId?>(null)
+
+    /**
+     * Editor panel collapsed to just its grip.
+     *
+     * The panel covers a real part of the screen, and to select a widget under it you have to
+     * touch that widget first -- which the panel is in the way of. Moving it out of the way
+     * REACTIVELY cannot help with that, because the obstruction happens before there is anything
+     * to react to. This is the way out that does not involve dragging: one tap uncovers
+     * everything, one tap brings the controls back.
+     *
+     * Not persisted. It is a momentary "let me see under this", and a session that opened the
+     * editor to a panel with no controls on it would look broken.
+     */
+    val editorCollapsed = mutableStateOf(false)
 
     /** Profile picker / save-as dialog shown over the editor. */
     val profileDialogOpen = mutableStateOf(false)
