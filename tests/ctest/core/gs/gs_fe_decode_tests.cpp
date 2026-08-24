@@ -113,7 +113,6 @@ namespace
 	void EmitStreamPerturbed(PerturbFn perturb, u32 draw_count)
 	{
 		VsyncBody v = {};
-		v.frame_index = 1;
 		v.draw_serial = 0;
 		v.field = 1;
 		v.registers_written = 1;
@@ -222,7 +221,11 @@ TEST(GSFeDecode, TheRecordLayoutIsPinned)
 	EXPECT_EQ(sizeof(MoveBody), 32u);
 	EXPECT_EQ(sizeof(ClutLoadBody), 16u);
 	EXPECT_EQ(sizeof(LocalToHostBody), 48u);
-	EXPECT_EQ(sizeof(VsyncBody), 24u);
+	EXPECT_EQ(sizeof(VsyncBody), 16u);
+	EXPECT_EQ(offsetof(VsyncBody, draw_serial), 0u);
+	EXPECT_EQ(offsetof(VsyncBody, field), 8u);
+	EXPECT_EQ(offsetof(VsyncBody, registers_written), 12u);
+	EXPECT_EQ(offsetof(VsyncBody, idle_frame), 13u);
 
 	// The vertex payload is raw GSVertex bytes; a stride change would silently
 	// reinterpret every recording ever taken.
@@ -400,7 +403,6 @@ TEST(GSFeDecode, AFlippedTransferFieldIsLocated)
 	ASSERT_TRUE(BeginDiff(path));
 	{
 		VsyncBody v = {};
-		v.frame_index = 1;
 		v.field = 1;
 		v.registers_written = 1;
 		SubmitFixed(RecordType::Vsync, v);
@@ -486,7 +488,6 @@ TEST(GSFeDecode, AShorterDrawIsADivergence)
 	ASSERT_TRUE(BeginDiff(path));
 	{
 		VsyncBody v = {};
-		v.frame_index = 1;
 		v.field = 1;
 		v.registers_written = 1;
 		SubmitFixed(RecordType::Vsync, v);
