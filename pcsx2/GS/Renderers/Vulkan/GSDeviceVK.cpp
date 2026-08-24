@@ -1618,13 +1618,21 @@ static constexpr u32 FRAME_DESCRIPTOR_POOL_CHUNK_SETS = 256;
 VkDescriptorPool GSDeviceVK::CreateFrameDescriptorPool()
 {
 	// Per-set budgets: the largest single set of each type that a layout allocated from this pool
-	// declares, so an EMPTY link can serve one set of any of them.
+	// declares, so an EMPTY link can serve one set of any of them. Undercount a type and that
+	// layout is not slow, it is unservable -- every allocation of it fails, on every link, forever.
+	//
+	//   storage buffer: the TileGpu writeback set declares one and this pool reserved none, so on
+	//     the non-push path every writeback compute dispatch went unbound and its pages were never
+	//     composed. The call site read the failure as "exhaustion implausible, skip it".
+	//   sampled image:  a TFX texture set declares four of them (palette, primid, and the colour
+	//     and depth feedback bindings wherever those are not input attachments), not three.
 	const u32 sets = FRAME_DESCRIPTOR_POOL_CHUNK_SETS;
 	const VkDescriptorPoolSize pool_sizes[] = {
 		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * (GSTileGpuPassPlan::kMaxTexSourcesPerPass + 2)},
-		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 3},
+		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 4},
 		{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, sets * 2},
 		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * 2},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 1},
 	};
 	const VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, sets,
 		static_cast<u32>(std::size(pool_sizes)), pool_sizes};
