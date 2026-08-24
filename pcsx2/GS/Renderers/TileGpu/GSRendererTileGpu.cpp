@@ -301,6 +301,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_palettes.clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
+	m_plan_scissors.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
 	m_plan_variant_keys.clear();
@@ -4630,6 +4631,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// runs on the pair, and the state table's layout is not part of that contract
 		// (GSTileGpuPassPlan::bind_keys).
 		m_plan_bind_keys.resize(m_plan_pending.size());
+		// ...and the per-draw GS scissor, which one road needs as a command rather than as state.
+		m_plan_scissors.resize(m_plan_pending.size());
 		// ...and the per-draw fragment variant, sized here and filled by the grouping below, which is
 		// where a draw's pass -- and so the DATE road its pass provided -- is finally known.
 		m_plan_variant_keys.assign(m_plan_pending.size(), 0u);
@@ -4692,6 +4695,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			if (pd.afail_keep_alpha)
 				sr.blend |= kGSTileBlendAfailKeepAlpha;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
+			// The same rectangle the four state-row fields above carry, handed to the executor as
+			// its own stream: on a device without shaderClipDistance it is a Vulkan scissor and a
+			// cut in the indirect run, neither of which the state table can express.
+			m_plan_scissors[i] = pd.scissor;
 
 			// The scissor census's per-draw half. `dim` is this draw's colour target, so a scissor
 			// that swallows it whole rejects nothing whatever the geometry does; `scissor_cuts` is
@@ -4733,6 +4740,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// take the second road.
 		pxAssert(m_plan_topologies.size() == m_plan_draws.size() &&
 				 m_plan_blend_keys.size() == m_plan_draws.size() &&
+				 m_plan_scissors.size() == m_plan_draws.size() &&
 				 m_plan_depth_modes.size() == m_plan_draws.size() &&
 				 m_plan_bind_keys.size() == m_plan_draws.size() &&
 				 m_plan_variant_keys.size() == m_plan_draws.size() &&
@@ -5118,6 +5126,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.passes = m_plan_passes;
 		plan.draws = m_plan_draws;
 		plan.topologies = m_plan_topologies;
+		plan.scissors = m_plan_scissors;
 		plan.blend_keys = m_plan_blend_keys;
 		plan.bind_keys = m_plan_bind_keys;
 		// Withholding the stream is what the forced-vs-narrowed gate does: the executor's fallback is
@@ -5171,6 +5180,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_palettes.clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
+	m_plan_scissors.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
 	m_plan_variant_keys.clear();

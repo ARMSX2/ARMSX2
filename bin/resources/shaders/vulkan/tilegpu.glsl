@@ -445,7 +445,12 @@ layout(location = 3) out vec2 v_uv;      // UV in texels (12.4 -> texel), for th
 layout(location = 4) flat out uint v_row; // this vertex's state row, so the fragment stage reads it
 layout(location = 5) out float v_fog;    // fog factor F/255, interpolated across the primitive
 
+#if TILEGPU_VS_CLIP
+// Declared only on the clip-plane scissor road. A module that names this array names the SPIR-V
+// ClipDistance capability, which a driver without shaderClipDistance may refuse outright -- so the
+// other road leaves the declaration out rather than writing zeros into it.
 out float gl_ClipDistance[4];
+#endif
 
 void main()
 {
@@ -469,15 +474,21 @@ void main()
 	// Point topology reads gl_PointSize; a GS point covers one pixel. Ignored for line/triangle.
 	gl_PointSize = 1.0f;
 
+#if TILEGPU_VS_CLIP
 	// The GS scissor as four clip planes in target pixel space: a pixel centre c is inside
 	// [x0, x1) exactly when c - x0 > 0 and x1 - c > 0, and the same in y. Per draw from the state
 	// row, so one indirect call carries any number of scissors -- SotC draws its full-screen
 	// post sprites eight times under eight column scissors.
+	//
+	// The other road cuts the indirect call at a scissor change and sets a Vulkan scissor per call
+	// instead. It rejects exactly these fragments: Vulkan tests the pixel's integer coordinate
+	// against the same half-open interval these planes select.
 	vec2 pix = (vec2(a_xy) - vec2(float(sr.ofx), float(sr.ofy))) * (1.0f / 16.0f);
 	gl_ClipDistance[0] = pix.x - float(sr.sc_x0);
 	gl_ClipDistance[1] = float(sr.sc_x1) - pix.x;
 	gl_ClipDistance[2] = pix.y - float(sr.sc_y0);
 	gl_ClipDistance[3] = float(sr.sc_y1) - pix.y;
+#endif
 }
 
 #endif

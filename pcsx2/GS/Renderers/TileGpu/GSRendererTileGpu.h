@@ -1139,6 +1139,12 @@ private:
 	std::vector<u32> m_plan_palettes; // expanded CLUTs (GSClut::Read32), concatenated per frame
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
+	// One per m_plan_draws entry: the draw's GS scissor (GSTileGpuPassPlan::scissors). Filled from
+	// m_plan_pending at the plan build rather than appended at accumulation, so it cannot come out
+	// short on the road neither append site remembered to touch. Read only by a device on the
+	// per-call scissor road; carried on both, because a stream that exists on one device and not on
+	// another is a difference no test on this box can see.
+	std::vector<GSVector4i> m_plan_scissors;
 	std::vector<u32> m_plan_blend_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::blend_keys)
 	std::vector<u32> m_plan_bind_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::bind_keys)
 	// One per m_plan_draws entry (GSTileGpuPassPlan::variant_keys): the draw's own fragment variant,

@@ -963,6 +963,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileGpuMaxPassDraws) &&
 		OpEqu(TileGpuSourceSetRingDepth) &&
 		OpEqu(TileGpuMaxSpecializationBinds) &&
+		OpEqu(TileGpuScissorRoad) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
 		OpEqu(ScreenshotSize) &&
@@ -1270,6 +1271,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileGpuMaxPassDraws, "TileGpuMaxPassDraws");
 	SettingsWrapBitfieldEx(TileGpuSourceSetRingDepth, "TileGpuSourceSetRingDepth");
 	SettingsWrapBitfieldEx(TileGpuMaxSpecializationBinds, "TileGpuMaxSpecializationBinds");
+	SettingsWrapBitfieldEx(TileGpuScissorRoad, "TileGpuScissorRoad");
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");

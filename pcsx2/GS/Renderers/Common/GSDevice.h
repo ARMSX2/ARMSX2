@@ -2088,6 +2088,64 @@ public:
 		return GSTileGpuPassGeometry{vw, vh, aw, ah};
 	}
 
+	/// How a TileGpu pass applies the per-draw GS scissor.
+	enum class GSTileGpuScissorRoad : u8
+	{
+		/// Four vertex-shader clip planes, written from the draw's state row. One indirect call
+		/// carries any number of scissors, so the scissor is not part of any cut -- but the vertex
+		/// stage declares the ClipDistance capability, which needs shaderClipDistance.
+		ClipPlanes = 0,
+		/// vkCmdSetScissor before each indirect call, with the call cut wherever the scissor
+		/// changes. Needs no device feature and no shader capability; costs one call per change
+		/// that the pipeline run and the sampled-binding key did not already cut.
+		PerCall = 1,
+	};
+
+	/// Which scissor road this device takes: what EmuCore/GS/TileGpuScissorRoad says, or the
+	/// device's own answer where it says nothing.
+	///
+	/// Three states, as the pass cap and the specialization budget have: zero asks the device, a
+	/// positive value forces the per-call road (the arm an A/B needs on a device that would not
+	/// otherwise take it), a negative one asks for the clip planes. A negative value cannot
+	/// conjure the feature, so on a device without shaderClipDistance the per-call road stands
+	/// whatever the setting says -- there is no third road to fall to.
+	static constexpr GSTileGpuScissorRoad gsTileGpuScissorRoad(int setting, bool has_clip_distance)
+	{
+		if (setting > 0)
+			return GSTileGpuScissorRoad::PerCall;
+		if (!has_clip_distance)
+			return GSTileGpuScissorRoad::PerCall;
+		return GSTileGpuScissorRoad::ClipPlanes;
+	}
+
+	/// A VkRect2D's worth of scissor: the GS scissor in target pixels, clamped into the pass's
+	/// render area.
+	struct GSTileGpuScissorRect
+	{
+		int x, y;
+		int width, height;
+	};
+
+	/// The GS scissor [x0, x1) x [y0, y1) as the pass's scissor rectangle.
+	///
+	/// Vulkan tests the pixel's integer coordinate against [offset, offset + extent), which is the
+	/// same half-open interval the clip planes select -- a clip distance of pix.x - x0 is positive
+	/// exactly on the pixel columns x0 .. x1-1 -- so the two roads reject the same fragments and
+	/// this is an exact substitution, not an approximation.
+	///
+	/// The clamping is not cosmetic: a scissor offset must be non-negative and the rectangle has to
+	/// stay inside the area the pass declared, and a GS scissor with its high edge below its low one
+	/// is legal and means "nothing", which arrives here as a zero extent rather than a negative one.
+	static constexpr GSTileGpuScissorRect gsTileGpuScissorRect(
+		int x0, int y0, int x1, int y1, int area_width, int area_height)
+	{
+		const int cx0 = (x0 < 0) ? 0 : ((x0 > area_width) ? area_width : x0);
+		const int cy0 = (y0 < 0) ? 0 : ((y0 > area_height) ? area_height : y0);
+		const int cx1 = (x1 < cx0) ? cx0 : ((x1 > area_width) ? area_width : x1);
+		const int cy1 = (y1 < cy0) ? cy0 : ((y1 > area_height) ? area_height : y1);
+		return GSTileGpuScissorRect{cx0, cy0, cx1 - cx0, cy1 - cy0};
+	}
+
 	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
 	/// pass's draws sample, so a draw reads a pre-pass version of pixels the pass also writes
 	/// without a raster-order hazard. Taken before the pass it feeds opens; one per pass. Today
@@ -2561,6 +2619,13 @@ public:
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
 		std::span<const GSTileGpuTopology> topologies; ///< one per draw, parallel to `draws`
+		/// One per draw, parallel to `draws`: the GS scissor in target pixels, [x0, x1) x [y0, y1).
+		/// Read only on the per-call scissor road (GSTileGpuScissorRoad::PerCall), where it both
+		/// cuts the indirect call and supplies the rectangle; on the clip-plane road the scissor is
+		/// in the state row and this is unread. Carried whichever road the device takes, because the
+		/// plan is built before the executor is asked and a stream present on one device and absent
+		/// on another is a difference nothing tests.
+		std::span<const GSVector4i> scissors;
 		/// One per draw, parallel to `draws`: the draw's depth pipeline variant. Required, like the
 		/// topology and unlike the blend key — there is no per-pass depth mode to fall back to, and a
 		/// draw whose depth state the executor guessed would write depth it must not write.
