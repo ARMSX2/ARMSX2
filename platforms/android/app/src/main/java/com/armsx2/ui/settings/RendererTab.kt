@@ -417,7 +417,10 @@ fun RendererTab(state: MutableState<Settings>) {
                 // sharpness, so the number means different things, but it is the same intent and
                 // a second slider would only invite disagreement between them.
                 IntSliderRow(
-                    label = str("renderer.fsr1.sharpness.label"),
+                    label = str(
+                        if (s.upscaler == Settings.UPSCALER_SGSR) "renderer.sgsr.sharpness.label"
+                        else "renderer.fsr1.sharpness.label",
+                    ),
                     value = s.fsrSharpness.coerceIn(0, 100),
                     min = 0,
                     max = 100,

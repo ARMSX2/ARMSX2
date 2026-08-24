@@ -878,7 +878,11 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         )
         if (fsr1On) {
             com.armsx2.ui.settings.IntSliderRow(
-                label = str("renderer.fsr1.sharpness.label"),
+                label = str(
+                    if (settings.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR)
+                        "renderer.sgsr.sharpness.label"
+                    else "renderer.fsr1.sharpness.label",
+                ),
                 value = settings.fsrSharpness.coerceIn(0, 100),
                 min = 0,
                 max = 100,

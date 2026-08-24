@@ -1269,6 +1269,11 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.fsr1.description" to "AMD FidelityFX Super Resolution 1 — upscales the frame to the screen with edge-adaptive sharpening instead of a plain stretch. Replaces CAS.",
     "renderer.fsr1.label" to "FSR 1 Upscaling",
     "renderer.fsr1.sharpness.label" to "FSR Sharpness",
+    // The slider is shared between the upscalers, but the number means a different thing to
+    // each -- RCAS stops for FSR1, a 0..2 edge-sharpness factor for SGSR -- so it says which one
+    // it is currently driving rather than naming whichever came first.
+    "renderer.sgsr.sharpness.label" to "SGSR Sharpness",
+    "renderer.sgsr.description" to "Qualcomm Snapdragon Game Super Resolution 1 — a single-pass edge-directed upscale built for mobile GPUs. Cheaper than FSR 1. Replaces CAS.",
     "renderer.fxaa.description" to "Fast post-process anti-aliasing — smooths jagged edges with a light blur.",
     "renderer.fxaa.label" to "FXAA",
     "renderer.deinterlacing.description" to "Changes how interlaced video is displayed. Auto is safest.",
