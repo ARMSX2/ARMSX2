@@ -276,10 +276,14 @@ struct StateRow
 	                   // at fetch, because an image-to-buffer copy lands texels row-major.
 	uint pal_bias;     // entry bias inside a copied palette: a four-bit draw reading slot k of a
 	                   // 256-entry gathered load wants its entries 16k..16k+15.
-	uint blend;        // the GS blend equation for a draw that reads its own destination: bits 0-1 A,
-	                   // 2-3 B, 4-5 C, 6-7 D, 8-15 FIX, 16 = blend at all, 17 = COLCLAMP wraps,
-	                   // 18 = PABE, 19 = a PSMCT24 destination (its C=Ad is exactly 1.0). Zero on
-	                   // every draw the executor blends for.
+	uint blend;        // the GS blend equation for a draw that reads its own destination, packed as
+	                   // COEFFICIENTS, not the register's selectors (gsTileGpuPackBlend is the one
+	                   // packer): bits 0-1 = coefficient of Cs in (A - B) biased +1, 2-3 = coefficient
+	                   // of Cd biased +1, bit 4 = D is Cs, bit 5 = D is Cd, 6-7 = C (0 As, 1 Ad,
+	                   // 2 constant), 8-15 = the constant, 16 = blend at all, 17 = COLCLAMP wraps,
+	                   // 18 = PABE, 20 = quantise to the 16-bit frame's bits, 21 = AFAIL keeps the
+	                   // destination alpha. A PSMCT24 destination's C=Ad arrives as the constant 0x80
+	                   // (exactly 1.0); the enable bit is zero on every draw the executor blends for.
 	uint fbmsk;        // FBMSK reduced to the frame format's stored bits, as a per-channel KEEP mask
 	                   // on the expanded RGBA8 bytes. These two took the row's explicit tail padding;
 	                   // the C++ side's assert is what keeps the row 160 bytes on both strides.

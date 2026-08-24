@@ -374,11 +374,16 @@ private:
 		// 256-entry gathered load wants that palette's entries 16k..16k+15.
 		u32 pal_bias;
 		// The GS blend equation, for a draw the fixed-function state cannot express and that
-		// therefore reads its own destination: bits 0-1 A, 2-3 B, 4-5 C, 6-7 D (the ALPHA register's
-		// own encodings), 8-15 FIX, bit 16 = blend at all, 17 = COLCLAMP is WRAP rather than clamp,
-		// 18 = PABE, 19 = the destination is PSMCT24, whose C=Ad the console takes as exactly 1.0.
-		// Zero on every draw the executor blends for. It took one of the row's two explicit tail
-		// padding words -- see below on why the tail is where a new field goes.
+		// therefore reads its own destination -- in gsTileGpuPackBlend's encoding, which packs the
+		// COEFFICIENTS the register's selectors add up to, not the selectors (see GSTileTypes.h for
+		// why that is a size decision): bits 0-1 = coefficient of Cs in (A - B) biased +1, 2-3 =
+		// coefficient of Cd biased +1, bit 4 = D is Cs, bit 5 = D is Cd, 6-7 = C (0 As, 1 Ad,
+		// 2 constant), 8-15 = the constant, bit 16 = blend at all, 17 = COLCLAMP is WRAP rather than
+		// clamp, 18 = PABE, 20 = quantise to the 16-bit frame's bits, 21 = AFAIL keeps the
+		// destination alpha. A PSMCT24 destination's C=Ad is packed as the constant 0x80 (exactly
+		// 1.0). The enable bit is zero on every draw the executor blends for. It took one of the
+		// row's two explicit tail padding words -- see below on why the tail is where a new field
+		// goes.
 		u32 blend;
 		// FRAME.FBMSK reduced to the bits the frame FORMAT actually stores (FBMSK & fmsk), as a
 		// per-channel KEEP mask on the target's expanded RGBA8 bytes. A 16-bit frame's mask lands
