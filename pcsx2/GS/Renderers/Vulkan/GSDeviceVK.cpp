@@ -870,15 +870,15 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_descriptor_indexing, di_bits);
 
 		// The TileGpu backend can run on this device only if its whole contract holds: the
-		// descriptor-indexing sub-features above, an indirect draw stream that carries a per-draw
-		// firstInstance, and dual-source blending. Recorded once.
+		// descriptor-indexing sub-features above and an indirect draw stream that carries a per-draw
+		// firstInstance. Recorded once.
 		//
-		// Dual-source is in here because tilegpu.glsl declares a second colour output at index 1
-		// unconditionally and the executor's blend table names SRC1_* factors, which Vulkan forbids
-		// outright when dualSrcBlend is false -- so a device without it does not render badly, it
-		// fails pipeline creation on the first draw. The Mali blob on the RG477V reports it false
-		// with a hardcoded zero dual-source attachment count, so this is a real exclusion and not a
-		// theoretical one. Making the second output a fragment variant is a separate piece of work.
+		// Dual-source blending LEFT this contract when the road below was built, for the same reason
+		// shaderClipDistance did: there is now a second road to the As blend factor and every device
+		// can take it. It was a real exclusion while it lasted -- tilegpu.glsl declared a second
+		// colour output at index 1 unconditionally and the blend table named SRC1_* factors, which
+		// Vulkan forbids outright when dualSrcBlend is false, so a device without it did not render
+		// badly, it failed pipeline creation on the first draw.
 		//
 		// The renderer does NOT refuse to construct without the contract -- it builds and runs
 		// regardless -- but nothing gets that far any more: a contract-absent device resolves to
@@ -887,8 +887,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// under EmuCore/GS/TileGpuIgnoreDeviceContract.
 		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
 													   m_device_features.multiDrawIndirect == VK_TRUE &&
-													   m_device_features.drawIndirectFirstInstance == VK_TRUE &&
-													   m_device_features.dualSrcBlend == VK_TRUE;
+													   m_device_features.drawIndirectFirstInstance == VK_TRUE;
 		// The scissor is NOT part of that contract, because there are two roads to it and every
 		// device can take one of them. shaderClipDistance buys the cheaper one -- four clip planes
 		// out of the state row, so one indirect call carries any number of scissors. Without it the
@@ -900,14 +899,24 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.tilegpu_clip_scissor =
 			gsTileGpuScissorRoad(GSConfig.TileGpuScissorRoad, m_device_features.shaderClipDistance == VK_TRUE) ==
 			GSTileGpuScissorRoad::ClipPlanes;
+		// ...and the As blend factor, decided here for the same reason: the fragment module either
+		// declares an index-1 output or it does not, and a module that declares one is a module a
+		// driver without the feature may refuse. Three states as the scissor road has -- zero asks
+		// the device, positive forces the feature-free roads anywhere, negative asks for the second
+		// output, which a device without dualSrcBlend still cannot give.
+		m_optional_extensions.tilegpu_dual_source =
+			gsTileGpuDualSourceRoad(GSConfig.TileGpuDualSrcRoad, m_device_features.dualSrcBlend == VK_TRUE);
 		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s, dual-src=%s), "
-					   "scissor road %s (clip-distance=%s, TileGpuScissorRoad=%d).",
+					   "scissor road %s (clip-distance=%s, TileGpuScissorRoad=%d), As factor road %s "
+					   "(TileGpuDualSrcRoad=%d).",
 			m_optional_extensions.tilegpu_device_capable ? "present" : "absent",
 			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
 			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no",
 			m_device_features.dualSrcBlend ? "yes" : "no",
 			m_optional_extensions.tilegpu_clip_scissor ? "clip planes" : "per-call scissor",
-			m_device_features.shaderClipDistance ? "yes" : "no", GSConfig.TileGpuScissorRoad);
+			m_device_features.shaderClipDistance ? "yes" : "no", GSConfig.TileGpuScissorRoad,
+			m_optional_extensions.tilegpu_dual_source ? "second output" : "alpha carrier",
+			GSConfig.TileGpuDualSrcRoad);
 
 		// Rule 2 (the tap reading a resident target instead of the bytes) needs one thing the rest
 		// of the contract does not: indexing the per-pass sampled-target array by the draw's slot.
@@ -6308,6 +6317,11 @@ bool GSDeviceVK::TileGpuBindlessTargets()
 // The declared in-pass destination read. Asked once, before any target is allocated, because the
 // answer changes how a colour target is CREATED: the read is an input attachment, so the image
 // needs that usage bit from the start and no later discovery can add it.
+bool GSDeviceVK::TileGpuDualSourceBlend()
+{
+	return m_optional_extensions.tilegpu_dual_source;
+}
+
 bool GSDeviceVK::TileGpuSelfRead()
 {
 	return m_optional_extensions.tilegpu_self_read;
@@ -6643,7 +6657,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	const std::string defines =
 		(m_tilegpu_tex ? form_defines : std::string()) +
 		GSTileGpuShaderVariant::DeviceDefines(m_tilegpu_tex, static_byte_sel,
-			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_clip_scissor);
+			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_clip_scissor,
+			m_optional_extensions.tilegpu_dual_source);
 	// Kept for the session: a pass's fragment module is compiled from this plus its variant defines,
 	// on first use of that (road, texel-arm) pair. Re-reading the file instead would risk compiling
 	// two variants from two different revisions of the shader, since the runtime shader tree is a
@@ -6694,7 +6709,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		{
 			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
 			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, 0xFu, full_roads,
-				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false, false, {});
+				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false, false, 0, {});
 			if (pipe == VK_NULL_HANDLE)
 				return false;
 		}
@@ -6851,7 +6866,7 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(
 // with everything above it: a masked channel of a blended draw leaves the destination alone, and a
 // draw masking all four still tests and writes depth.
 VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
-	u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads,
+	u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads, u32 dualsrc_road,
 	const GSDevice::GSTileGpuFragmentSpec& spec)
 {
 	static constexpr VkPrimitiveTopology kTopology[3] = {
@@ -6947,8 +6962,38 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 	else
 	{
 		const HWBlend b = GSDevice::GetBlend(blend_index);
-		gpb.SetBlendAttachment(0, true, kBlendFactors[b.src], kBlendFactors[b.dst], kBlendOps[b.op],
-			VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, channels);
+		// The As factor's road, decided per draw by the plan and carried in the blend key. On the
+		// dual-source road the table's SRC1_* factors stand as they are. On the two feature-free
+		// roads they do not exist in this pipeline at all:
+		//
+		//   fold     the fragment stage has already multiplied its own colour by the factor, so the
+		//            SOURCE factor is one. Only a row whose DESTINATION factor is not As can take
+		//            this, which is what the plan guarantees.
+		//   carrier  o_color.a holds the factor, so SRC1_COLOR reads back as SRC_ALPHA and
+		//            ONE_MINUS_SRC1_COLOR as ONE_MINUS_SRC_ALPHA -- exactly equal, because the
+		//            index-1 output was a broadcast of that same scalar.
+		//
+		// The ALPHA equation is ONE/ZERO everywhere else -- the GS stores the fragment's own alpha
+		// byte -- and CONSTANT_ALPHA/ZERO on the restore road, where the constant is 128/255 and
+		// undoes the 255/128 the carrier applied. The executor sets that constant's alpha component;
+		// no colour factor here reads it, because a row with a constant colour factor selects FIX,
+		// which is C = 2 and never names As.
+		const bool carrier = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrier ||
+							 dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrierRestore;
+		const bool fold = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcFold;
+		const auto factor = [&](u8 f) -> VkBlendFactor {
+			if (!IsDualSourceBlendFactor(f))
+				return kBlendFactors[f];
+			if (fold)
+				return VK_BLEND_FACTOR_ONE;
+			pxAssertMsg(carrier, "TileGpu pipeline names a dual-source factor with no road to carry it");
+			return (f == SRC1_COLOR || f == SRC1_ALPHA) ? VK_BLEND_FACTOR_SRC_ALPHA :
+														  VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		};
+		const bool restore = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrierRestore;
+		gpb.SetBlendAttachment(0, true, factor(b.src), factor(b.dst), kBlendOps[b.op],
+			restore ? VK_BLEND_FACTOR_CONSTANT_ALPHA : VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
+			channels);
 	}
 
 	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
@@ -7024,9 +7069,14 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 		color_write_mask == 0xFu)
 		return m_tilegpu_pipeline[topology][depth_mode];
 	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
+	// Which road the draw's As factor takes -- pipeline state, because it decides what the row's
+	// SRC1_* factors become and whether the alpha channel is blended. Read only where there IS a
+	// fixed-function blend, so a draw whose equation the shader owns cannot key two pipelines.
+	const u32 dualsrc_road = blend ? (blend_key & GSTileGpuPassPlan::kDualSrcRoadMask) : 0u;
 	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask, 20-22 the road mask,
 	// 23-28 the texel-arm mask, 32-34 the pass's self-read mask, 35 declares, 36 reads, 37 quantise,
-	// 38-55 the run's frozen per-draw GS state (the plan key's spec half, shifted down to 38).
+	// 38-55 the run's frozen per-draw GS state (the plan key's spec half, shifted down to 38),
+	// 56-57 the As factor's road.
 	const u64 spec_bits = static_cast<u64>((GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
 											   GSTileGpuPassPlan::kVariantSpecMask) >>
 										   13);
@@ -7035,12 +7085,13 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 					(static_cast<u64>(color_write_mask) << 16) | (static_cast<u64>(road_mask) << 20) |
 					(static_cast<u64>(texel_mask) << 23) | (static_cast<u64>(self_mask) << 32) |
 					(static_cast<u64>(declares ? 1u : 0u) << 35) | (static_cast<u64>(reads ? 1u : 0u) << 36) |
-					(static_cast<u64>(quantise ? 1u : 0u) << 37) | (spec_bits << 38);
+					(static_cast<u64>(quantise ? 1u : 0u) << 37) | (spec_bits << 38) |
+					(static_cast<u64>(dualsrc_road >> GSTileGpuPassPlan::kDualSrcRoadShift) << 56);
 	const auto it = m_tilegpu_blend_pipelines.find(key);
 	if (it != m_tilegpu_blend_pipelines.end())
 		return (it->second != VK_NULL_HANDLE) ? it->second : TileGpuPipelineFallback(topology, depth_mode, declares);
 	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write_mask, road_mask,
-		texel_mask, self_mask, quantise, declares, reads, spec);
+		texel_mask, self_mask, quantise, declares, reads, dualsrc_road, spec);
 	m_tilegpu_blend_pipelines.emplace(key, pipe);
 	return (pipe != VK_NULL_HANDLE) ? pipe : TileGpuPipelineFallback(topology, depth_mode, declares);
 }
@@ -8666,7 +8717,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.
 					const float fix = std::min(static_cast<float>((bkey >> 8) & 0xFFu) * (1.0f / 128.0f), 1.0f);
-					const float consts[4] = {fix, fix, fix, fix};
+					// ...and its ALPHA component is the carrier's undo factor, which the restore road
+					// asks for as CONSTANT_ALPHA. Nothing else reads it: the alpha equation is
+					// ONE/ZERO on every other road, and a colour factor that reads the constant
+					// belongs to a C = FIX row, which never names As.
+					const bool restore = (bkey & GSTileGpuPassPlan::kDualSrcRoadMask) ==
+										 GSTileGpuPassPlan::kDualSrcCarrierRestore;
+					const float consts[4] = {fix, fix, fix, restore ? GSDevice::kGSTileGpuAlphaRestore : fix};
 					vkCmdSetBlendConstants(cmd, consts);
 				}
 

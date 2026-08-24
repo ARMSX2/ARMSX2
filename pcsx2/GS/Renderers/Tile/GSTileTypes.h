@@ -277,6 +277,19 @@ constexpr u32 kGSTileBlendQuant16 = 1u << 20;
 /// discarded. A per-FRAGMENT write mask, which is why it rides the same arm the bit-granular FBMSK
 /// merge does; see gsTileGpuAfailKeepsAlpha for why the depth clause is not a conservatism.
 constexpr u32 kGSTileBlendAfailKeepAlpha = 1u << 21;
+/// Bits 22-23: what a device with no dual-source blending asks the fragment stage to do with the As
+/// blend factor min(As * 255/128, 1), which it can no longer hand to a second colour output.
+///
+/// Bit 22 FOLDS it into the finished colour, so the blend unit's source factor becomes one; bit 23
+/// says fold one minus it instead. Both apply to the value o_color would otherwise have written, at
+/// the very end of the fragment stage, because that is exactly where the blend unit would have
+/// applied the factor -- above the byte tail's write-mask merge, not below it.
+constexpr u32 kGSTileBlendFoldAs = 1u << 22;
+constexpr u32 kGSTileBlendFoldInvAs = 1u << 23;
+/// Bit 24: ...or CARRIES it in o_color.a, which the blend unit then reads as SRC_ALPHA. The alpha the
+/// draw would have stored is either masked off by the pipeline, given back by the alpha blend
+/// equation, or written by a companion draw -- see GSDevice::GSTileGpuDualSrcRoad.
+constexpr u32 kGSTileBlendAlphaCarrier = 1u << 24;
 
 /// Whether a draw's failing fragments can be served exactly by keeping the destination's alpha.
 ///

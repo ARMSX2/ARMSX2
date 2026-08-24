@@ -29,7 +29,8 @@ namespace GSTileGpuShaderVariant
 	/// It has to be a compile-time define and not a value the shader writes zeros into -- a vertex
 	/// module that merely DECLARES ClipDistance is a module a driver without shaderClipDistance may
 	/// refuse, whatever the values are.
-	inline std::string DeviceDefines(bool tex, bool static_byte_sel, bool bindless, bool vs_clip = true)
+	inline std::string DeviceDefines(
+		bool tex, bool static_byte_sel, bool bindless, bool vs_clip = true, bool dual_src = true)
 	{
 		return fmt::format("#define TILEGPU_TEX {}\n"
 						   "#define TILEGPU_STATIC_BYTE_SEL {}\n"
@@ -37,10 +38,11 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_MAX_TEX_SOURCES {}\n"
 						   "#define TILEGPU_TEX_SOURCES {}\n"
 						   "#define TILEGPU_MAX_SOURCES {}\n"
-						   "#define TILEGPU_VS_CLIP {}\n",
+						   "#define TILEGPU_VS_CLIP {}\n"
+						   "#define TILEGPU_DUAL_SRC {}\n",
 			tex ? 1 : 0, static_byte_sel ? 1 : 0, bindless ? 1 : 0,
 			GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass, bindless ? 1 : 0,
-			GSDevice::GSTileGpuPassPlan::kMaxSources, vs_clip ? 1 : 0);
+			GSDevice::GSTileGpuPassPlan::kMaxSources, vs_clip ? 1 : 0, dual_src ? 1 : 0);
 	}
 
 	/// The per-pass half: which texel roads and which of the byte road's decode arms this module

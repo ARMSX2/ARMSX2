@@ -2118,6 +2118,21 @@ public:
 		return GSTileGpuScissorRoad::ClipPlanes;
 	}
 
+	/// Whether TileGpu hands the As blend factor to a second fragment output on this device: what
+	/// EmuCore/GS/TileGpuDualSrcRoad says, or the device's own answer where it says nothing.
+	///
+	/// Three states, the shape the scissor road and the pass cap already have: zero asks the device,
+	/// a positive value forces the feature-free roads anywhere (the arm an A/B needs on a device that
+	/// would not otherwise take them), a negative one asks for the second output. A negative value
+	/// cannot conjure the feature, so a device without dualSrcBlend keeps the feature-free roads
+	/// whatever the setting says.
+	static constexpr bool gsTileGpuDualSourceRoad(int setting, bool has_dual_source)
+	{
+		if (setting > 0)
+			return false;
+		return has_dual_source;
+	}
+
 	/// Which of a blend row's two factors the GS's own SOURCE ALPHA supplies.
 	///
 	/// It is the one GS blend term Vulkan can express only as a dual-source (index 1) fragment
@@ -2126,8 +2141,9 @@ public:
 	/// different numbers that cannot share o_color.a while the draw writes both.
 	enum GSTileGpuDualSrcTerm : u32
 	{
-		kGSTileGpuDualSrcSource = 1u << 0, ///< the row's SOURCE factor is As
-		kGSTileGpuDualSrcDest = 1u << 1,   ///< the row's DESTINATION factor is As
+		kGSTileGpuDualSrcSource = 1u << 0,    ///< the row's SOURCE factor is As
+		kGSTileGpuDualSrcDest = 1u << 1,      ///< the row's DESTINATION factor is As
+		kGSTileGpuDualSrcSourceInv = 1u << 2, ///< ...and that source factor is ONE MINUS As
 	};
 
 	/// The dual-source terms a GS ALPHA index's blend row names, read off the row the executor
@@ -2135,6 +2151,64 @@ public:
 	/// selectors -- the map approximates several equations, and only the row says which of those
 	/// approximations still reaches for the second source.
 	static u32 gsTileGpuDualSrcTerms(u32 blend_index);
+
+	/// How one draw's As blend factor reaches the blend unit.
+	enum class GSTileGpuDualSrcRoad : u8
+	{
+		/// Its row names no As factor at all: nothing to carry.
+		None = 0,
+		/// The second colour output at index 1, which needs dualSrcBlend.
+		DualSource = 1,
+		/// As multiplies the SOURCE only, so the fragment stage folds it into its own finished
+		/// colour and the pipeline's source factor becomes one. Costs a multiply and nothing else:
+		/// the alpha channel is untouched, so no other decision about the draw moves.
+		FoldSource = 2,
+		/// As multiplies the DESTINATION, which the fragment stage cannot reach -- so o_color.a
+		/// carries the factor and the pipeline reads it as SRC_ALPHA. This draw does not write the
+		/// target's alpha byte, so the channel write mask throws the carrier away after the blend
+		/// has used it and nothing has to give the alpha back.
+		Carrier = 3,
+		/// ...and this draw DOES write it, but its factor never reaches the min(x, 1) clamp, so the
+		/// carrier is exactly As * 255/128 and the alpha blend equation gives the alpha back by
+		/// multiplying it by the constant 128/255.
+		CarrierRestore = 4,
+		/// ...and neither of those holds: the carrier still takes o_color.a, and a companion draw
+		/// over the same geometry writes the alpha channel alone with nothing borrowed.
+		CarrierCompanion = 5,
+	};
+
+	/// The alpha blend constant the CarrierRestore road divides the carrier back down by. The
+	/// carrier is As * 255/128 and the stored alpha is As, so this is 128/255 exactly.
+	static constexpr float kGSTileGpuAlphaRestore = 128.0f / 255.0f;
+
+	/// Which road one draw's As factor takes.
+	///
+	/// The order is cost, not preference: FoldSource touches nothing but the draw's own colour;
+	/// Carrier costs nothing either but needs the alpha channel free; CarrierRestore borrows the
+	/// alpha blend equation, which is exact only while the factor does not clamp; and the companion
+	/// is a second draw, so it is last. Every road is exact and none needs a device feature -- which
+	/// is the point, since the device this exists for has neither dual-source blending nor a
+	/// guaranteed way back to the fragment stage.
+	///
+	/// `alpha_is_the_shaders` covers the two ways the fragment stage owns the alpha byte it writes:
+	/// an AFAIL that keeps the destination's alpha per fragment, and an FBMSK that masks alpha in
+	/// PART. Both put a value in o_color.a that the carrier would overwrite, so both take the
+	/// companion, which writes that alpha with the carrier bit off.
+	static constexpr GSTileGpuDualSrcRoad gsTileGpuDualSrcRoad(
+		u32 terms, bool has_dual_source, bool writes_alpha, bool factor_unclamped, bool alpha_is_the_shaders)
+	{
+		if (terms == 0)
+			return GSTileGpuDualSrcRoad::None;
+		if (has_dual_source)
+			return GSTileGpuDualSrcRoad::DualSource;
+		if ((terms & kGSTileGpuDualSrcDest) == 0)
+			return GSTileGpuDualSrcRoad::FoldSource;
+		if (!writes_alpha)
+			return GSTileGpuDualSrcRoad::Carrier;
+		if (factor_unclamped && !alpha_is_the_shaders)
+			return GSTileGpuDualSrcRoad::CarrierRestore;
+		return GSTileGpuDualSrcRoad::CarrierCompanion;
+	}
 
 	/// A VkRect2D's worth of scissor: the GS scissor in target pixels, clamped into the pass's
 	/// render area.
@@ -2694,6 +2768,17 @@ public:
 		/// blending: a draw admitted only for its destination-alpha test still wants the executor's
 		/// blend, and turning it off there silently renders every composite sprite unblended.
 		static constexpr u32 kSelfBlend = 1u << 29;
+		/// Bits 20-21: which GSTileGpuDualSrcRoad this draw's As blend factor takes, as 0 for
+		/// "the index-1 output, or no As factor at all" and the three feature-free roads above it.
+		/// It is pipeline state -- it decides which Vulkan factors the row's SRC1_* become and
+		/// whether the alpha channel is blended -- so it belongs in the key that already cuts the
+		/// indirect run on pipeline state, and the executor's run cut needs no new stream.
+		static constexpr u32 kDualSrcRoadShift = 20;
+		static constexpr u32 kDualSrcRoadMask = 3u << kDualSrcRoadShift;
+		static constexpr u32 kDualSrcFold = 1u << kDualSrcRoadShift;    ///< source factor becomes one
+		static constexpr u32 kDualSrcCarrier = 2u << kDualSrcRoadShift; ///< SRC1_* become SRC_ALPHA
+		/// ...and the carrier with the alpha blend equation put to work giving the stored alpha back.
+		static constexpr u32 kDualSrcCarrierRestore = 3u << kDualSrcRoadShift;
 		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
 		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
 		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a
@@ -2930,6 +3015,13 @@ public:
 	/// from creation. False keeps every draw on the fixed-function blend, keeps the destination-alpha
 	/// test on its pre-pass snapshot copy, and declares no pass.
 	virtual bool TileGpuSelfRead() { return false; }
+
+	/// Whether this device's TileGpu fragment module declares a second colour output at index 1 and
+	/// its pipelines may name SRC1_* blend factors. Asked ONCE, before the first draw is planned,
+	/// because it decides which module was compiled -- and because the planner has to route every
+	/// As-factor draw down one of the feature-free roads when it is false, which changes the draw's
+	/// state row, its blend key and sometimes the number of draws in the plan.
+	virtual bool TileGpuDualSourceBlend() { return true; }
 
 	/// Whether this device would rather render MORE passes than see the depth write-enable or
 	/// depth compare-enable change inside one.

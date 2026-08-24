@@ -1395,6 +1395,20 @@ struct Pcsx2Config
 		// Shadow of the Colossus. Dev only.
 		int TileGpuScissorRoad = 0;
 
+		// Which road TileGpu's As blend factor takes. Zero -- the default -- asks the device: a
+		// second fragment output at index 1 where it offers dualSrcBlend, the alpha carrier where
+		// it does not. A POSITIVE value forces the carrier roads anywhere; a negative one asks for
+		// the second output, which a device without the feature still cannot give.
+		//
+		// The carrier roads are exact, so this is a byte-identity A/B, and the force value exists
+		// to run it on a device that would otherwise never take them. What differs is where the
+		// factor lives: folded into the fragment's own colour where As multiplies the source alone,
+		// otherwise in o_color.a, whose own value is then masked off, given back by the alpha blend
+		// equation, or written by a companion draw over the same geometry. Only that last road adds
+		// anything to the frame, and over the corpus it is zero draws on four dumps and 352 on the
+		// worst. Dev only.
+		int TileGpuDualSrcRoad = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

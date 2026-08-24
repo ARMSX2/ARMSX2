@@ -1091,6 +1091,11 @@ private:
 		/// scans (a blend with the destination in it and C = As); false everywhere else, including
 		/// where the answer was simply never asked.
 		bool as_unclamped;
+		/// What the fragment stage must do with the As blend factor when there is no second colour
+		/// output to hand it to: fold it into the finished colour, or carry it in o_color.a. State-row
+		/// bits (kGSTileBlendFoldAs / kGSTileBlendFoldInvAs / kGSTileBlendAlphaCarrier), zero on every
+		/// draw on a device with dual-source blending and on every draw whose row names no As factor.
+		u32 dualsrc_bits;
 		/// This draw's failing fragments land their RGB and keep the destination's alpha instead of
 		/// being discarded (gsTileGpuAfailKeepsAlpha). A per-fragment write mask, so it rides the same
 		/// fragment arm the bit-granular FBMSK merge does.
@@ -1336,6 +1341,11 @@ private:
 	/// The device serves a pass that reads its own colour attachment in rasterization order. Read once
 	/// at construction: it decides the target pool's image usage, so it cannot be discovered later.
 	bool m_self_read = false;
+	/// The device's fragment module declares a second colour output at index 1, so the As blend
+	/// factor rides there. Read once at construction: the module was compiled at device creation, and
+	/// a draw planned under one answer and executed under the other either loses its blend factor or
+	/// names a Vulkan factor the pipeline cannot have.
+	bool m_dual_source = true;
 	/// Test scaffolding (EmuCore/GS TileGpuForceSelfRead, gsrunner -tilermw): admit every draw the
 	/// classifier can name, not only the classes whose repairs have landed. Read once, like the other
 	/// levers here, because it moves pass boundaries.
@@ -2350,6 +2360,7 @@ private:
 		u32 dualsrc_readers = 0;   // ...served by neither: the shader-blend residue
 		u32 dualsrc_reader_runs = 0; // ...and the runs of consecutive such draws, one declared run each
 		u32 dualsrc_readers_unclamped = 0; // ...of that residue, the draws whose As factor never clamps
+		u32 dualsrc_companions = 0;        // alpha-only draws the carrier road added to the plan
 
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them

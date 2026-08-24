@@ -237,6 +237,14 @@ GSRendererTileGpu::GSRendererTileGpu()
 	m_self_read = g_gs_device && g_gs_device->TileGpuSelfRead();
 	m_target_pool.SetColorSelfReadable(m_self_read);
 
+	// Asked once for the same class of reason: the device compiled its fragment module at creation,
+	// either with an index-1 output or without one, and a plan built under the wrong answer would
+	// hand a factor to an output that is not there. Without it every draw whose blend row names As
+	// takes one of the feature-free roads instead -- see GSDevice::gsTileGpuDualSrcRoad.
+	m_dual_source = !g_gs_device || g_gs_device->TileGpuDualSourceBlend();
+	Console.WriteLn("TileGpu: the As blend factor rides %s.",
+		m_dual_source ? "the fragment stage's second colour output" : "the alpha carrier (no dual-source blending)");
+
 	// Validation scaffolding, read once like every other lever here: admit everything the classifier
 	// can name rather than only the classes whose repairs have landed. It is what lets the declared
 	// read be exercised over the whole corpus before anything depends on it.
@@ -1957,12 +1965,14 @@ void GSRendererTileGpu::ReportModelTraffic()
 		const auto dsr = stat([](const MF& f) { return f.dualsrc_readers; });
 		const auto dsu = stat([](const MF& f) { return f.dualsrc_readers_unclamped; });
 		const auto dsn = stat([](const MF& f) { return f.dualsrc_reader_runs; });
+		const auto dsk = stat([](const MF& f) { return f.dualsrc_companions; });
 		Console.WriteLn("  dual-src: draws %.2f / %u / %u worst (%.2f%% of plan draws)   As on the source alone "
 						"%.2f / %u   alpha channel free %.2f / %u   NO-FEATURE ROADS carry %.2f / %u (%.2f%%)   "
-						"residue %.2f / %u / %u worst in %.2f / %u runs, of which factor never clamps %.2f / %u",
+						"residue %.2f / %u / %u worst in %.2f / %u runs, of which factor never clamps %.2f / %u   "
+						"companion draws issued %.2f / %u / %u worst",
 			dsd.mean, dsd.p50, dsd.max, (pld.mean > 0.0) ? (dsd.mean * 100.0 / pld.mean) : 0.0, dss.mean, dss.p50,
 			dsa.mean, dsa.p50, dsc.mean, dsc.p50, (dsd.mean > 0.0) ? (dsc.mean * 100.0 / dsd.mean) : 0.0, dsr.mean,
-			dsr.p50, dsr.max, dsn.mean, dsn.p50, dsu.mean, dsu.p50);
+			dsr.p50, dsr.max, dsn.mean, dsn.p50, dsu.mean, dsu.p50, dsk.mean, dsk.p50, dsk.max);
 	}
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
@@ -4495,19 +4505,71 @@ void GSRendererTileGpu::AccumulateDraw()
 	// maps it through GSDevice::m_blendMap; As is the shader's dual-source alpha, FIX the blend
 	// constant, Ad the target's alpha). ABE off, or A == B with D == Cs, is no blend at all.
 	u32 blend_key = 0;
+	bool fixed_function_blend = false;
 	if (PRIM->ABE && color_written)
 	{
 		const GIFRegALPHA& al = ctx->ALPHA;
 		const bool identity = (al.A == al.B) && (al.D == 0); // (X - X)*C + Cs == Cs
 		if (!identity)
+		{
 			blend_key = GSDevice::GSTileGpuPassPlan::kBlendEnable | (al.A * 27u + al.B * 9u + al.C * 3u + al.D) |
 						((al.C == 2) ? (static_cast<u32>(al.FIX) << 8) : 0u);
+			// ...unless the fragment stage evaluates the whole equation, in which case the blend unit
+			// is switched off for this draw and names no factors at all.
+			fixed_function_blend = (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) == 0;
+		}
 	}
+
+	// The As blend factor's road. On a device with dual-source blending it rides as the fragment
+	// stage's index-1 output and nothing here fires. Without one it has to reach the blend unit
+	// another way, and which way is a per-draw question -- gsTileGpuDualSrcRoad asks it.
+	u32 write_mask = pd.color_mask;
+	bool alpha_companion = false;
+	if (fixed_function_blend && !m_dual_source)
+	{
+		const u32 terms = GSDevice::gsTileGpuDualSrcTerms(blend_key & 0x7Fu);
+		// The two ways the fragment stage owns the alpha byte it writes: a per-fragment AFAIL keep,
+		// and an FBMSK that masks alpha in PART so the shader merges the destination's bits. Both
+		// put a value in o_color.a that the carrier would overwrite.
+		const bool alpha_is_the_shaders =
+			pd.afail_keep_alpha || ((pd.self_mask & GSDevice::kGSTileGpuSelfMask) != 0 &&
+									   (pd.self_fbmsk & 0xFF000000u) != 0);
+		switch (GSDevice::gsTileGpuDualSrcRoad(
+			terms, false, (pd.color_mask & 0x8u) != 0, pd.as_unclamped, alpha_is_the_shaders))
+		{
+			case GSDevice::GSTileGpuDualSrcRoad::FoldSource:
+				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcFold;
+				pd.dualsrc_bits = kGSTileBlendFoldAs |
+								  ((terms & GSDevice::kGSTileGpuDualSrcSourceInv) ? kGSTileBlendFoldInvAs : 0u);
+				break;
+			case GSDevice::GSTileGpuDualSrcRoad::Carrier:
+				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcCarrier;
+				pd.dualsrc_bits = kGSTileBlendAlphaCarrier;
+				break;
+			case GSDevice::GSTileGpuDualSrcRoad::CarrierRestore:
+				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcCarrierRestore;
+				pd.dualsrc_bits = kGSTileBlendAlphaCarrier;
+				break;
+			case GSDevice::GSTileGpuDualSrcRoad::CarrierCompanion:
+				// The carrier takes o_color.a and the alpha channel comes off this draw's write mask,
+				// so a second draw over the same indices -- same geometry, same state, carrier bit
+				// off, alpha alone -- writes what the alpha byte was going to be. Immediately after,
+				// in the same pass, so nothing can read the target between the two.
+				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcCarrier;
+				pd.dualsrc_bits = kGSTileBlendAlphaCarrier;
+				write_mask &= ~0x8u;
+				alpha_companion = true;
+				break;
+			default:
+				break;
+		}
+	}
+
 	// The colour write mask rides the blend key, so the executor's per-draw pipeline pick carries
 	// it and a draw whose mask differs only splits the indirect run -- never breaks the pass. A
 	// depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or an FBMSK that keeps every stored bit) masks
 	// all four channels and still tests and writes depth in its pass.
-	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.color_mask);
+	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(write_mask);
 	// ...and so does the in-pass read, for the same reason: the executor's pipeline pick has to turn
 	// the fixed-function blend OFF for a draw whose equation the fragment stage evaluates instead,
 	// and the run cut has to fall where admission changes. One bit does both.
@@ -4522,6 +4584,42 @@ void GSRendererTileGpu::AccumulateDraw()
 	m_plan_depth_modes.push_back(pd.depth_mode);
 	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
+
+	if (alpha_companion)
+	{
+		// The alpha byte the draw above gave up to the carrier, written by a second draw over the
+		// SAME indices -- no vertices are copied and no index is, only one more indirect command
+		// pointing at the range that is already there. Alpha channel alone, no blend (the GS stores
+		// the fragment's alpha as-is), carrier bit off so the fragment stage writes the alpha it
+		// would have written, byte tail and all.
+		//
+		// It carries the same depth mode on purpose. A depth-writing draw writes the same values
+		// again, and where two of its own fragments overlap the second pass keeps the same winner
+		// the first did, because it tests against what the first left. Making it depth-less instead
+		// would let a fragment the depth test rejected land its alpha.
+		GSDevice::GSTileGpuIndirectDraw alpha_draw = draw;
+		alpha_draw.state_index = static_cast<u32>(m_plan_draws.size());
+		m_plan_draws.push_back(alpha_draw);
+		m_plan_topologies.push_back(topology);
+		u32 alpha_key = GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.color_mask & 0x8u);
+		if (pd.self_mask != 0)
+			alpha_key |= GSDevice::GSTileGpuPassPlan::kSelfRead;
+		m_plan_blend_keys.push_back(alpha_key);
+		m_plan_depth_modes.push_back(pd.depth_mode);
+		PendingDraw apd = pd;
+		apd.dualsrc_bits = 0;
+		apd.color_mask = static_cast<u8>(pd.color_mask & 0x8u);
+		apd.draw_index = alpha_draw.state_index;
+		// The prep ops belong to the draw above and have already run; this one names an empty range
+		// so the pass grouping cannot hoist them a second time.
+		apd.first_prep_op = pd.first_prep_op + pd.prep_op_count;
+		apd.prep_op_count = 0;
+		apd.break_before = false;
+		m_plan_pending.push_back(apd);
+		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
+		m_open_draw_count++;
+		m_frame.dualsrc_companions++;
+	}
 }
 
 // Every draw's fragment variant, and the guard that may withhold half of it.
@@ -4728,6 +4826,9 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				sr.blend |= kGSTileBlendQuant16;
 			if (pd.afail_keep_alpha)
 				sr.blend |= kGSTileBlendAfailKeepAlpha;
+			// ...and what to do with the As blend factor where there is no second output to put it
+			// in. Zero on every draw on a device that has one, so the arm is not even compiled there.
+			sr.blend |= pd.dualsrc_bits;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 			// The same rectangle the four state-row fields above carry, handed to the executor as
 			// its own stream: on a device without shaderClipDistance it is a Vulkan scissor and a

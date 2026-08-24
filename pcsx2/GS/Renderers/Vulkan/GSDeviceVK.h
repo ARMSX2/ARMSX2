@@ -67,6 +67,7 @@ public:
 		bool tilegpu_clip_scissor : 1; ///< The scissor rides as vertex clip planes; clear = a Vulkan scissor per indirect call.
 		bool tilegpu_bindless_targets : 1; ///< ...and dynamic indexing of a sampled-image array, which the rule-2 tap needs to bind targets.
 		bool tilegpu_self_read : 1; ///< ...and rasterization-order colour access, which the in-pass destination read needs.
+		bool tilegpu_dual_source : 1; ///< ...and dual-source blending, which the As blend factor rides as an index-1 output.
 	};
 
 	// Global state accessors
@@ -199,6 +200,7 @@ public:
 	bool TileGpuExecutorAvailable() override;
 	bool TileGpuBindlessTargets() override;
 	bool TileGpuSelfRead() override;
+	bool TileGpuDualSourceBlend() override;
 	bool TileGpuPrefersDepthUniformPasses() override;
 	u32 TileGpuMaxPassDraws() override;
 	u32 TileGpuMaxSpecializationBinds() override;
@@ -766,7 +768,7 @@ private:
 	/// attachment too); `reads` additionally puts the rasterization-order flag on the colour-blend
 	/// state, which is what makes THIS pipeline's destination reads ordered.
 	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
-		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads,
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads, u32 dualsrc_road,
 		const GSDevice::GSTileGpuFragmentSpec& spec);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by

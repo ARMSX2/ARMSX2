@@ -502,13 +502,19 @@ layout(location = 3) in vec2 v_uv;
 layout(location = 4) flat in uint v_row;
 layout(location = 5) in float v_fog;
 
-// Two fragment outputs: the colour that lands in the target (RAW GS values -- 0x80 stays 0x80;
-// the target's bytes are guest bytes, so no display scaling happens here), and the dual-source
-// blend factor: the fragment alpha in the GS's 0x80 = 1.0 convention (As * 255/128, clamped),
-// which the fixed-function blend takes as SRC1 when the ALPHA register selects As. The alpha
-// channel of o_color is written unblended (the GS writes the fragment alpha as-is).
+// The colour that lands in the target: RAW GS values -- 0x80 stays 0x80; the target's bytes are
+// guest bytes, so no display scaling happens here. The alpha channel is written unblended (the GS
+// writes the fragment alpha as-is), except on the road below that borrows it.
 layout(location = 0, index = 0) out vec4 o_color;
+
+#if TILEGPU_DUAL_SRC
+// ...and the dual-source blend factor: the fragment alpha in the GS's 0x80 = 1.0 convention
+// (As * 255/128, clamped), which the fixed-function blend takes as SRC1 when the ALPHA register
+// selects As. Declared only where the device has dualSrcBlend -- a module that names an index-1
+// output is a module a driver without the feature may refuse, so zeroing it would not have been
+// enough. Where it is absent the epilogue at the end of main() carries the same factor instead.
 layout(location = 0, index = 1) out vec4 o_blend;
+#endif
 
 // The pass's snapshot of its own colour target, taken before the pass opened: the destination
 // alpha the DATE test reads. Bound per pass (set 1); a pass without DATE draws binds a null
@@ -1211,8 +1217,15 @@ void main()
 		cv.rgb = vec3(cfog + (((ivec3(cv.rgb * 255.0f) - cfog) * f15) >> 15)) * (1.0f / 255.0f);
 	}
 
+	// The GS's As blend factor: the fragment alpha read in the 0x80 = 1.0 convention. Computed here,
+	// off the fragment's own alpha and above the byte tail, because that is the alpha the console's
+	// blend unit takes -- the tail's write-mask merge happens at the write, after the blend.
+	const float as_factor = min(cv.a * (255.0f / 128.0f), 1.0f);
+
 	o_color = cv;
-	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));
+#if TILEGPU_DUAL_SRC
+	o_blend = vec4(as_factor);
+#endif
 
 #if TILEGPU_BYTE_TAIL
 	// The fragment stage's integer tail: the blend the executor's fixed-function state cannot
@@ -1298,6 +1311,28 @@ void main()
 #endif
 
 		o_color = vec4(outc) * (1.0f / 255.0f);
+	}
+#endif
+
+#if !TILEGPU_DUAL_SRC
+	// The As factor with no second output to put it in. Runs on the FINISHED colour -- below the byte
+	// tail, because the blend unit runs below it too, so folding above the tail's merge would scale
+	// destination bits the mask told us to keep.
+	//
+	// Two shapes, and the plan picks per draw (GSDevice::gsTileGpuDualSrcRoad):
+	//
+	//   FOLD     As multiplies the source colour only, so the fragment stage does that multiply and
+	//            the pipeline's source factor becomes one. Nothing else about the draw moves.
+	//   CARRIER  As multiplies the DESTINATION, which the fragment stage cannot reach -- so the
+	//            factor goes in o_color.a, where the blend unit reads it as SRC_ALPHA. The alpha the
+	//            draw would have stored is masked off, given back by the alpha blend equation, or
+	//            written by a companion draw; the plan guarantees one of the three.
+	if ((sr.blend & 0x01400000u) != 0u)
+	{
+		if ((sr.blend & 0x00400000u) != 0u)
+			o_color.rgb *= ((sr.blend & 0x00800000u) != 0u) ? (1.0f - as_factor) : as_factor;
+		else
+			o_color.a = as_factor;
 	}
 #endif
 }
