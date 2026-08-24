@@ -41,6 +41,8 @@
 
 #include <ios>
 
+#include <ios>
+
 namespace
 {
 constexpr u32 kC32 = 0xFFFFFFFFu; // PSMCT32 / PSMZ32 stored bits
@@ -107,7 +109,14 @@ TEST(TileGpuFbmskMask, WholeByteMasksNameTheirChannels)
 	}
 }
 
-TEST(TileGpuFbmskMask, PartialChannelWritesTheWholeChannel)
+// ⚠️ The channel mask still writes a partly-masked channel WHOLE, and that is now deliberate
+// rather than an approximation: the fragment stage's destination read owns the bits inside it.
+// The two halves compose -- the pipeline drops the channels FBMSK covers entirely, which is exact
+// and free, and gsTileGpuFrameKeepMask names exactly the bits the channel mask over-writes, which
+// the shader merges back from the destination. The clause that ties them is the last EXPECT in
+// each pair below: every bit the register keeps is either in a channel the pipeline dropped or in
+// the keep mask. A landing that broke that would write a bit nothing put back.
+TEST(TileGpuFbmskMask, PartialChannelWritesTheWholeChannelAndTheKeepMaskOwnsTheBits)
 {
 	// bge's 1-LSB alpha preservation: byte 3 = 0x01. The channel lands whole.
 	EXPECT_EQ(gsTileFrameWriteMask(0x01000000u, kC32), kGSTileChannelsRGBA);
@@ -123,6 +132,31 @@ TEST(TileGpuFbmskMask, PartialChannelWritesTheWholeChannel)
 	// And on a 32-bit frame a dither-preserving low-bit mask writes everything.
 	EXPECT_EQ(gsTileFrameWriteMask(0x00F8F8F8u, kC32), kGSTileChannelsRGBA);
 	EXPECT_EQ(gsTileFrameWriteMask(0x0000000Fu, kC32), kGSTileChannelsRGBA);
+
+	// Katamari Damacy's punctuation glyph store: the game keeps glyph indices in the live frame
+	// buffer's alpha bits 24-30 and shields them with FBMSK=0x7f000000 on every draw of the frame,
+	// leaving only bit 31 writable. The channel mask cannot say that -- it writes alpha whole, which
+	// is what trashed the store -- so the keep mask has to, exactly.
+	EXPECT_EQ(gsTileFrameWriteMask(0x7F000000u, kC32), kGSTileChannelsRGBA);
+	EXPECT_FALSE(gsTileFrameWriteMaskIsExact(0x7F000000u, kC32));
+	EXPECT_EQ(gsTileGpuFrameKeepMask(0x7F000000u, kC32), 0x7F000000u);
+
+	// The composition, stated over every case above: a bit the register keeps is either in a channel
+	// the pipeline dropped, or in the keep mask the fragment stage merges. Nothing falls between.
+	for (const u32 fbmsk : {0x01000000u, 0x01FFFFFFu, 0x80000000u, 0xBFFFFFFFu, 0xDFFFFFFFu, 0x7F000000u,
+			 0x00F8F8F8u, 0x0000000Fu, 0x00003FFFu, 0xFF000000u, 0u})
+	{
+		const u32 stored_kept = fbmsk & kC32;
+		const u8 channels = gsTileFrameWriteMask(fbmsk, kC32);
+		u32 dropped_by_pipeline = 0;
+		for (u32 b = 0; b < 4; b++)
+		{
+			if ((channels & (1u << b)) == 0)
+				dropped_by_pipeline |= 0xFFu << (b * 8);
+		}
+		EXPECT_EQ(stored_kept & ~(dropped_by_pipeline | gsTileGpuFrameKeepMask(fbmsk, kC32)), 0u)
+			<< "FBMSK " << std::hex << fbmsk << " keeps a bit neither half preserves";
+	}
 }
 
 // The one place the two parent derivations disagreed, and the reason this rule is written

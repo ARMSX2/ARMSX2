@@ -1250,14 +1250,14 @@ u32 GSRendererTileGpu::SelfReadUses(
 	if (blend_needs_quantised_result)
 		uses |= GSDevice::kGSTileGpuSelfBlend;
 
-	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
-	// evidence -- so that a frame that moves can be attributed to one thing.
-	if (!m_force_self_read)
-		return uses;
-
-	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit.
+	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit. The pipeline
+	// still drops the channels FBMSK covers whole -- that half is exact and cheaper -- and the shader
+	// owns only the bits inside a channel the register masks in part.
 	if (!fbmsk_exact)
 		uses |= GSDevice::kGSTileGpuSelfMask;
+
+	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
+	// evidence -- so that a frame that moves can be attributed to one thing.
 	return uses;
 }
 
@@ -3223,7 +3223,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	const bool blend_needs_quantised_result =
 		blend_active && gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
 	const u32 self_mask =
-		(m_self_read && (m_force_self_read || date != 0 || PRIM->ABE)) ?
+		(m_self_read && (m_force_self_read || date != 0 || PRIM->ABE || !fbmsk_exact)) ?
 			SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result) :
 			0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
