@@ -7464,11 +7464,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	//
 	// ⚠️ It does NOT require the plan to carry GEOMETRY, and that is not a relaxation for its own
 	// sake. A plan can legitimately consist of nothing but reconciliation: the display materialise
-	// appends a pending draw that renders zero indices purely to carry a prep-op range, and a plan
-	// flushed with no ordinary draw in it then has an empty vertex stream. Gating the byte road on
-	// the geometry stream made the executor silently DISCARD such a plan's ops -- the renderer's
-	// model recorded the reconciliation as done and no bytes moved, which is the exact shape of a
-	// wrong pixel nothing downstream can correct.
+	// and the upload merge both append a pending draw that renders zero indices purely to carry a
+	// prep-op range, and a plan flushed with no ordinary draw in it then has an empty vertex stream.
+	// Gating the byte road on the geometry stream made the executor silently DISCARD such a plan's
+	// ops -- the renderer's model recorded the reconciliation as done and no bytes moved, which is
+	// the exact shape of a wrong pixel nothing downstream can correct.
 	const bool can_texture = pipelines_ok && m_tilegpu_tex && !plan.ring_pages.empty() && plan.epoch_count > 0;
 
 	EndRenderPass();
@@ -7493,6 +7493,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// per draw; base_row rebases first_instance into this frame's slice of the state ring.
 	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0;
 	u32 table_base_words = 0, pal_base_words = 0, entries_base_words = 0, masks_base_words = 0;
+	u32 keep_base_words = 0;
 	if (can_draw)
 	{
 		IASetVertexBuffer(plan.vertices.data(), sizeof(GSVertex), plan.vertices.size() / sizeof(GSVertex), 1);
@@ -7524,7 +7525,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	}
 
 	// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
-	//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries][palettes]
+	//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries]
+	//   [seed page masks][writeback keep masks][palettes]
 	// Slots the renderer named a source for are memcpy'd from it (the CPU shadow's bytes, or a
 	// version copy); the rest are left for the writeback compute to compose. Every table entry
 	// starts at the zero slot and each ring page then claims its epoch range, so a page the plan
@@ -7539,8 +7541,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// One 512-bit page mask per seed op, built below; reserve for every op (writebacks skip theirs).
 		const u32 mask_words = static_cast<u32>(plan.prep_ops.size()) * (GS_MAX_PAGES / 32);
 		const u32 mask_bytes = mask_words * sizeof(u32);
+		// The upload merge's per-page keep-mask tables, verbatim. Empty on every frame that
+		// plans no merge, which is most of them.
+		const u32 keep_bytes = static_cast<u32>(plan.writeback_keep_masks.size() * sizeof(u32));
 		const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
-		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + pal_bytes;
+		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + keep_bytes + pal_bytes;
 		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
@@ -7588,9 +7593,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			}
 		}
 
+		u8* const keeps = reinterpret_cast<u8*>(masks) + mask_bytes;
+		if (keep_bytes)
+			std::memcpy(keeps, plan.writeback_keep_masks.data(), keep_bytes);
+		keep_base_words = masks_base_words + mask_words;
+
 		if (pal_bytes)
-			std::memcpy(reinterpret_cast<u8*>(masks) + mask_bytes, plan.palettes.data(), pal_bytes);
-		pal_base_words = masks_base_words + mask_words;
+			std::memcpy(keeps + keep_bytes, plan.palettes.data(), pal_bytes);
+		pal_base_words = keep_base_words + keep_bytes / sizeof(u32);
 
 		m_tilegpu_vram_stream_buffer.CommitMemory(total);
 	}
@@ -8124,7 +8134,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					}
 
 					const u32 wpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.byte_mask,
-						entries_base_words, op.first_page_entry, op.page_entry_count};
+						entries_base_words, op.first_page_entry, op.page_entry_count, keep_base_words};
 					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
 						sizeof(wpush), wpush);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
@@ -8218,7 +8228,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 						&m_tilegpu_state_descriptor_set, 0, nullptr);
 					const u32 spush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw,
-						masks_base_words + o * (GS_MAX_PAGES / 32), 0, 0, 0};
+						masks_base_words + o * (GS_MAX_PAGES / 32), op.seed_blocks, 0, 0};
 					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(spush), spush);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);

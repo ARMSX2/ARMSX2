@@ -952,6 +952,9 @@ private:
 	std::vector<GSDevice::GSTileGpuSnapshotCopy> m_plan_snapshots;
 	std::vector<GSDevice::GSTileGpuPrepOp> m_plan_prep_ops;
 	std::vector<GSDevice::GSTileGpuPageEntry> m_plan_page_entries;
+	/// The keep tables a writeback page entry's `keep_mask_words` indexes. Empty until something
+	/// emits a writeback that does not own every byte of the blocks it writes.
+	std::vector<u32> m_plan_writeback_keep_masks;
 	std::vector<u32> m_plan_tex_sources; // per pass: the rule-2 targets its draws sample, as target indices
 	// The images this frame's Materialise prep ops build into (GSTileGpuPassPlan::prep_textures).
 	// Deliberately NOT the target list: a materialised source is nothing's render target, no target
@@ -1476,7 +1479,10 @@ private:
 
 	// Emit a prep op over `pages` for surface `id` (Writeback or Seed) on the pending draw being
 	// accumulated; block masks per page come from the model for writebacks, full for seeds.
-	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages);
+	// `seed_blocks` narrows a SEED to part of each page it names; the default is the whole page,
+	// which is what every road that seeds a target current wants (see GSTileGpuPrepOp::seed_blocks).
+	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages,
+		u32 seed_blocks = GSVramModel::kFullBlockMask);
 
 	// Truth on `pages` cannot reach the byte store at all: count it and warn once. The depth plane
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.

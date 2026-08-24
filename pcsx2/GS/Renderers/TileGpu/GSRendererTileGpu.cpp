@@ -277,6 +277,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_snapshots.clear();
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
+	m_plan_writeback_keep_masks.clear();
 	m_plan_targets.clear();
 	m_plan_prep_textures.clear();
 	m_plan_sources.clear();
@@ -2933,7 +2934,8 @@ void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages)
 	}
 }
 
-void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages)
+void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages,
+	u32 seed_blocks)
 {
 	if (pages.empty())
 		return;
@@ -2954,10 +2956,12 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	op.bw = surf.layout.bw;
 	op.psm = surf.layout.psm;
 	op.byte_mask = (surf.layout.psm == PSMCT24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+	op.seed_blocks = seed_blocks;
 	op.epoch = m_epoch;
 	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());
 	pages.forEachSetPage([&](u32 page) {
 		u32 mask = GSVramModel::kFullBlockMask;
+		const u32 keep = GSDevice::kGSTileGpuNoKeepMask;
 		if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
 		{
 			// The blocks this surface holds newest on the page, over the planes it owns there
@@ -2973,7 +2977,7 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 			if (mask == 0)
 				return;
 		}
-		m_plan_page_entries.push_back(GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask});
+		m_plan_page_entries.push_back(GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask, keep});
 	});
 	op.page_entry_count = static_cast<u32>(m_plan_page_entries.size()) - op.first_page_entry;
 	if (op.page_entry_count == 0)
@@ -4610,6 +4614,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.snapshots = m_plan_snapshots;
 		plan.prep_ops = m_plan_prep_ops;
 		plan.page_entries = m_plan_page_entries;
+		plan.writeback_keep_masks = m_plan_writeback_keep_masks;
 		plan.state_table = m_plan_states.data();
 		plan.state_stride = sizeof(StateRow);
 		plan.state_count = static_cast<u32>(m_plan_states.size());
@@ -4659,6 +4664,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_snapshots.clear();
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
+	m_plan_writeback_keep_masks.clear();
 	m_plan_targets.clear();
 	m_plan_prep_textures.clear();
 	m_plan_sources.clear();

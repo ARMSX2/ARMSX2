@@ -2076,15 +2076,37 @@ public:
 		const void* src; ///< 8 KB to prefill the slot with, or nullptr
 	};
 
+	/// A page entry's `keep_mask_words` when nothing on the page is somebody else's at byte
+	/// granularity — the op writes every byte of every block its `block_mask` names.
+	static constexpr u32 kGSTileGpuNoKeepMask = 0xFFFFFFFFu;
+	/// Words in one page's keep-mask table: 32 blocks x 8 words, one BIT per byte of the block's
+	/// 256. A block is 256 bytes in every format, so this table is format-independent.
+	static constexpr u32 kGSTileGpuKeepMaskWordsPerPage = 32 * 8;
+
 	/// One page of a prep op's page list: which page, and which of its 32 physical blocks the op
 	/// touches (a writeback writes only the blocks the surface holds newest; a seed reads whole pages
 	/// and carries kFullBlockMask).
+	///
+	/// `keep_mask_words` is the WRITEBACK's byte-granular exception, and it exists for one caller:
+	/// the CPU->GPU upload merge. A host->local transfer that covers only PART of a block leaves
+	/// that block's bytes split — some the CPU's new ones, the rest still the surface's — and the
+	/// block mask cannot say so, because it is per block. So the merge stages the page from the CPU
+	/// shadow (which carries the transfer's bytes) and then runs a writeback that must fill in the
+	/// surface's half WITHOUT overwriting the CPU's. This names the CPU's bytes: an index into the
+	/// plan's `writeback_keep_masks` of a kGSTileGpuKeepMaskWordsPerPage table, block-major, 8 words
+	/// a block, bit (word*4 + byte) set for a byte the writeback must leave alone. kGSTileGpuNoKeepMask
+	/// on every other page entry, which is every entry any other road emits.
 	struct GSTileGpuPageEntry
 	{
 		u16 page;
 		u16 pad_;
 		u32 block_mask;
+		u32 keep_mask_words;
 	};
+	/// The array is memcpy'd into the ring verbatim and indexed by the writeback shader as raw
+	/// words, so the shader's TILEGPU_WB_ENTRY_WORDS and this size are one fact spelled twice.
+	static_assert(sizeof(GSTileGpuPageEntry) == 3 * sizeof(u32),
+		"tilegpu_writeback.glsl walks page entries at TILEGPU_WB_ENTRY_WORDS words each");
 
 	/// The dispatches run at the head of a pass, before its render pass opens: the two
 	/// reconciliations between the byte store and a resident target, and the build of a
@@ -2212,6 +2234,16 @@ public:
 		/// numbers the reinterpretation needs; nothing else about the owner reaches the shader.
 		u32 owner_bp;
 		u32 owner_bwpg;
+		/// Seed / SeedDepth only: the in-page BLOCKS the seed may write, one bit each, the same form
+		/// the writeback's page entries carry — and uniform over the op, unlike theirs. kFullBlockMask
+		/// on every ordinary seed, because a seed exists to make a whole page current.
+		///
+		/// The upload merge is the exception it is here for: that seed is repairing the blocks ONE
+		/// surface holds after a CPU transfer landed in them, and the rest of the page belongs to the
+		/// CPU — whose bytes are perfectly correct in the byte store but are not this surface's
+		/// texels, and writing them over what the texture holds is a change nothing asked for. So the
+		/// merge emits one seed op per page and names that page's blocks.
+		u32 seed_blocks;
 		/// ClutBlockCopy only: the source rects in the owner's texture, copied in this order into
 		/// consecutive `copy_w` x `copy_h` word runs of the destination. Four 8x8 blocks for a
 		/// 256-entry palette, one 8x2 for a 16-entry one (GSTileSwizzleForms::LocateClutBlocks).
@@ -2687,6 +2719,10 @@ public:
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;
 		std::span<const GSTileGpuPageEntry> page_entries;
+		/// The keep-mask tables a page entry's `keep_mask_words` indexes: one
+		/// kGSTileGpuKeepMaskWordsPerPage run per page entry that has one, appended in the order the
+		/// entries were built. Empty on a frame with no upload merge, which is most of them.
+		std::span<const u32> writeback_keep_masks;
 
 		const void* state_table = nullptr; ///< state_count rows of state_stride bytes
 		u32 state_stride = 0;

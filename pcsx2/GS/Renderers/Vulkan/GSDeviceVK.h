@@ -627,7 +627,12 @@ private:
 	/// screen->NDC transform, the texture block) is a row of an indexed state table in a storage
 	/// buffer, selected by the indirect draw's first_instance. Indexed [GSTileGpuTopology][depth
 	/// mode]: outer is triangle/line/point, inner GSTileGpuDepthMode. Compiled on first use.
-	static constexpr u32 kTileGpuPushWords = 8; ///< push-constant range shared by every TileGpu layout
+	/// Push-constant range shared by every TileGpu layout. The WRITEBACK is what sizes it: it needs
+	/// all nine (the ring's table, entry and keep-mask bases plus the op's own five), where the seed
+	/// and the geometry program use five. Vulkan guarantees 128 bytes, so this is nowhere near a
+	/// limit -- but a shader declaring MORE words than the range is a validation error, so the two
+	/// move together.
+	static constexpr u32 kTileGpuPushWords = 9;
 	/// The donor build's own range: the two layouts it reinterprets between, and nothing else. It
 	/// has a layout of its own (one sampler, no state SSBO) because it reads no bytes, so it shares
 	/// neither the range above nor the reason for it.

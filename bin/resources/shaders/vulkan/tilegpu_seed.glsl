@@ -86,6 +86,11 @@ layout(push_constant) uniform cb
 	uint bp;         // the surface's base in blocks (page-aligned)
 	uint bw;         // the surface's stride in pages
 	uint mask_base;  // ring word of this op's 16-word page mask (bit page&31 of word page>>5)
+	// The in-page blocks this op may write, the same 32-bit form the writeback's page entries carry.
+	// 0xFFFFFFFF on an ordinary seed: a seed exists to make a whole page current. The upload merge
+	// is the exception -- it is repairing the blocks ONE surface holds, and the rest of the page
+	// belongs to the CPU, whose bytes the surface's texels are not supposed to start carrying.
+	uint block_mask;
 };
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
@@ -208,9 +213,13 @@ void main()
 #if TILEGPU_SEED_CT32
 	// The exact ring word tilegpu_writeback.glsl wrote (or the executor prefilled) for this texel.
 	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u) ^ TILEGPU_SEED_ZXOR;
+	if ((block_mask & (1u << bib)) == 0u)
+		discard;
 	const uint w = vram_words[slot + bib * 64u + tile_c32(x & 7u, y & 7u)];
 #else
 	const uint bib = tile_b16((x >> 4u) & 3u, (y >> 3u) & 7u) ^ TILEGPU_SEED_ZXOR;
+	if ((block_mask & (1u << bib)) == 0u)
+		discard;
 	const uint hw = tile_c16(x & 15u, y & 7u);
 	const uint c = tilegpu_half_sel(vram_words[slot + bib * 64u + (hw >> 1u)], hw);
 #endif

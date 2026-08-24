@@ -16,6 +16,14 @@
 // blocks over them). byte_mask does the same at byte granularity within a word: a PSMCT24 surface
 // owns bytes 0-2 and leaves the alpha byte to whoever holds that plane.
 //
+// A page entry's KEEP MASK is the third filter, and the only one that varies within a block. A
+// host->local transfer covering part of a block splits that block's bytes -- some are the CPU's new
+// ones, sitting in the slot's prefill, and the rest are still this surface's -- and neither the
+// block mask nor byte_mask can express that, one being per block and the other constant over the
+// op. So the entry may name a 256-word table (32 blocks x 8 words, one BIT per byte of the block's
+// 256 bytes) of bytes this pass must LEAVE ALONE. 0xFFFFFFFF means it names none, which is every
+// entry every road but the upload merge emits.
+//
 // The target is a Format::Color (RGBA8) image whose pixel space is its guest layout: page-aligned
 // base, width = bw * 64, page (base + row*bw + col) at pixel rect (col*64, row*pgh).
 //
@@ -66,10 +74,14 @@ layout(push_constant) uniform cb
 	uint bp;           // the surface's base in blocks (page-aligned)
 	uint bw;           // the surface's stride in pages
 	uint byte_mask;    // bytes of each word this surface owns (0xFFFFFFFF, or 0x00FFFFFF for CT24)
-	uint entries_base; // ring word of the plan's page-entry array ({page, pad}, block_mask pairs)
+	uint entries_base; // ring word of the plan's page-entry array (3 words per entry, below)
 	uint first_entry;  // this op's first entry index into that array
 	uint entry_count;
+	uint keep_base;    // ring word of the plan's keep-mask tables, indexed by the entry's third word
 };
+
+// One page entry is three words: {page | pad<<16}, block_mask, keep_mask_words.
+#define TILEGPU_WB_ENTRY_WORDS 3u
 
 // The swizzle forms, byte-identical to tilegpu.glsl's: block-in-page and unit-in-block column.
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
@@ -145,9 +157,10 @@ void main()
 	const uint entry_index = gl_WorkGroupID.z;
 	if (entry_index >= entry_count)
 		return;
-	const uint eword = entries_base + (first_entry + entry_index) * 2u;
+	const uint eword = entries_base + (first_entry + entry_index) * TILEGPU_WB_ENTRY_WORDS;
 	const uint page = vram_words[eword] & 0xFFFFu;
 	const uint block_mask = vram_words[eword + 1u];
+	const uint keep_words = vram_words[eword + 2u];
 
 	// The page's pixel rect in the target: pool row/column from its offset off the base page.
 	const uint rel = (page + 512u - (bp >> 5u)) & 511u;
@@ -166,7 +179,8 @@ void main()
 
 	// The exact ring word tilegpu_texel32(u, v, bp, bw, epoch) will read for this texel.
 	const uint slot = vram_words[table_base + epoch * 512u + page];
-	const uint rw = slot + bib * 64u + tile_c32(u & 7u, v & 7u);
+	const uint wib = tile_c32(u & 7u, v & 7u);
+	const uint rw = slot + bib * 64u + wib;
 
 	// Pack the finished pixel to a raw RGBA8888 word: the inverse of tilegpu_unpack, round to nearest.
 	const vec4 c = texelFetch(src, ivec2(int(u), int(v)), 0);
@@ -191,14 +205,27 @@ void main()
 
 	// The word both halves live in: the low texel's halfword is even, the high texel's is that + 1.
 	const uint slot = vram_words[table_base + epoch * 512u + page];
-	const uint rw = slot + bib * 64u + (tile_c16(u & 15u, v & 7u) >> 1u);
+	const uint wib = tile_c16(u & 15u, v & 7u) >> 1u;
+	const uint rw = slot + bib * 64u + wib;
 
 	const uint w = tilegpu_pack5551(texelFetch(src, ivec2(int(u), int(v)), 0))
 	             | (tilegpu_pack5551(texelFetch(src, ivec2(int(u + 8u), int(v)), 0)) << 16u);
 #endif
 
-	if (byte_mask == 0xFFFFFFFFu)
+	// The bytes of this word that are actually ours to write: the surface's own byte window, minus
+	// anything the entry's keep mask claims for the CPU. Word `wib` of the block owns nibble
+	// (wib & 7) of keep word (wib >> 3), one bit per byte, low byte first -- which is the guest byte
+	// order the slot's memcpy from the shadow put them in.
+	uint bytes = byte_mask;
+	if (keep_words != 0xFFFFFFFFu)
+	{
+		const uint nib = (vram_words[keep_base + keep_words + bib * 8u + (wib >> 3u)] >> ((wib & 7u) * 4u)) & 0xFu;
+		bytes &= ~(((nib & 1u) != 0u ? 0x000000FFu : 0u) | ((nib & 2u) != 0u ? 0x0000FF00u : 0u) |
+				   ((nib & 4u) != 0u ? 0x00FF0000u : 0u) | ((nib & 8u) != 0u ? 0xFF000000u : 0u));
+	}
+
+	if (bytes == 0xFFFFFFFFu)
 		vram_words[rw] = w;
-	else
-		vram_words[rw] = (vram_words[rw] & ~byte_mask) | (w & byte_mask);
+	else if (bytes != 0u)
+		vram_words[rw] = (vram_words[rw] & ~bytes) | (w & bytes);
 }
