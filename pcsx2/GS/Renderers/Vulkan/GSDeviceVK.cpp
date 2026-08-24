@@ -6336,6 +6336,33 @@ u32 GSDeviceVK::TileGpuMaxPassDraws()
 	return IsDeviceAdreno() ? 64u : 0u;
 }
 
+// How many pipeline binds a plan may add for fragment specialization before the planner stops
+// freezing state into the programs of the passes that add them.
+//
+// 300 sits inside a gap the SD865 round of 2026-08-24 left wide open. Measured added binds a frame,
+// specialized against the same binary's unspecialized arm: Shadow of the Colossus 141 and Gran
+// Turismo 4 150, both of which WIN (-20.5% and -7.6% frame time, GPU time falling); the two Ratchet
+// & Clank scenes 525 and 859, both of which LOSE (+8.4% and +9.2%, GPU time RISING). Across the rest
+// of the eighteen-dump corpus the highest is Gran Turismo 4's Online Public Beta at 72. So the
+// budget has a 3.5x gap to sit in and a 4x margin over every dump that is not one of the two losers,
+// which is what makes it a threshold rather than a fitted constant.
+//
+// ⚠️ What it is NOT: an instruction-cache size effect. That was the first hypothesis -- an Adreno
+// fragment-program change is an instruction-RAM DMA and the a650's cache holds 127 instrlen units --
+// and compiling every bound variant offline against the device's own Turnip refutes it outright. The
+// Ratchet gameplay scene's busiest pass alternates among five programs totalling 32 units, a quarter
+// of the cache, while Shadow of the Colossus runs 110-182-unit working sets and streams 2.6x the
+// program bytes a frame, and it is Shadow of the Colossus that wins. The cost tracks how OFTEN the
+// program changes, not how big the programs are.
+//
+// Adreno only, by vendor, like the two pass-boundary answers above. Everywhere else the guard is off,
+// because giving up wave128 to save a bind is a trade that only pays where a bind is expensive, and
+// nothing outside this round says it is.
+u32 GSDeviceVK::TileGpuMaxSpecializationBinds()
+{
+	return IsDeviceAdreno() ? 300u : 0u;
+}
+
 // Adreno charges every draw in a declaring pass for the declaration, so the readers have to be
 // alone in one.
 //

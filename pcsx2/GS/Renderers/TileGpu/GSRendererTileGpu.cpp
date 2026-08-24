@@ -190,6 +190,19 @@ GSRendererTileGpu::GSRendererTileGpu()
 			m_max_pass_draws, (GSConfig.TileGpuMaxPassDraws != 0) ? "FORCED by settings" : "the device's answer",
 			device_answer, GSConfig.TileGpuMaxPassDraws);
 	}
+	// ...and the SPECIALIZATION bind budget, asked once beside them. Not a pass boundary -- it moves
+	// no draw between passes -- but the same hazard class: it changes which fragment program a draw
+	// compiles, which is worth several milliseconds on the device and nothing at all in the frame. So
+	// it is named the same way, with both numbers and the word that says which one won.
+	{
+		const u32 device_answer = g_gs_device ? g_gs_device->TileGpuMaxSpecializationBinds() : 0u;
+		m_max_spec_binds = gsTileGpuMaxSpecializationBinds(GSConfig.TileGpuMaxSpecializationBinds, device_answer);
+		Console.WriteLn("TileGpu: a plan may add %u pipeline binds for fragment specialization (0 = no "
+						"guard), %s -- device answered %u, TileGpuMaxSpecializationBinds = %d.",
+			m_max_spec_binds,
+			(GSConfig.TileGpuMaxSpecializationBinds != 0) ? "FORCED by settings" : "the device's answer",
+			device_answer, GSConfig.TileGpuMaxSpecializationBinds);
+	}
 	// ...and the second pass-boundary policy, asked once beside it: whether a pass that declares the
 	// in-pass destination read may carry draws that do not need it.
 	m_segregate_self_read = g_gs_device && g_gs_device->TileGpuSegregatesSelfRead();
@@ -1454,6 +1467,7 @@ void GSRendererTileGpu::ReportPassStructure()
 {
 	ReportModelTraffic();
 	ReportVariantCensus();
+	ReportPassShapeCensus();
 	if (!m_pass_sim.IsActive())
 	{
 		// Say so rather than print nothing: a missing section reads as "the sim found nothing",
@@ -1565,7 +1579,10 @@ void GSRendererTileGpu::ReportVariantCensus()
 		Console.WriteLn("  %s (%zu variants over %llu draws):", what, hist.size(), static_cast<unsigned long long>(total));
 		for (const auto& [key, n] : hist)
 		{
-			Console.WriteLn("    %10llu  %5.1f%%  road=%u texel=%u self=%u q16=%u  %s",
+			// The raw key rides in front of the decoded name because the frozen-state half has no
+			// spelling in VariantName and an offline compile needs all thirty-one bits to reproduce
+			// the program. One hex word does that and reads back through VariantSpec.
+			Console.WriteLn("    key=0x%08X  %10llu  %5.1f%%  road=%u texel=%u self=%u q16=%u  %s%s", key,
 				static_cast<unsigned long long>(n), (total > 0) ? (static_cast<double>(n) * 100.0 / static_cast<double>(total)) : 0.0,
 				GSDevice::GSTileGpuPassPlan::VariantRoadMask(key), GSDevice::GSTileGpuPassPlan::VariantTexelMask(key),
 				GSDevice::GSTileGpuPassPlan::VariantSelfMask(key),
@@ -1574,12 +1591,94 @@ void GSRendererTileGpu::ReportVariantCensus()
 					GSDevice::GSTileGpuPassPlan::VariantTexelMask(key),
 					GSDevice::GSTileGpuPassPlan::VariantSelfMask(key),
 					GSDevice::GSTileGpuPassPlan::VariantQuantises(key))
-					.c_str());
+					.c_str(),
+				GSTileGpuShaderVariant::SpecName(GSDevice::GSTileGpuPassPlan::VariantSpec(key)).c_str());
 		}
 	};
 	Console.WriteLn("TileGpu fragment-variant draw census:");
 	report("draws by the variant they COMPILE (per run)", m_variant_census_own);
 	report("draws by their PASS's UNION (what they compiled before)", m_variant_census_union);
+}
+
+// One pass's distinct fragment programs, folded into the shape histogram. `keys` is consumed
+// (sorted in place) because the caller has no use for it afterwards and a pass is on the plan
+// build's hot path.
+void GSRendererTileGpu::PassShapeAdd(std::vector<u32>& keys, u64 draws, u64 runs, u64 runs_despec)
+{
+	std::sort(keys.begin(), keys.end());
+	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+	for (PassShape& s : m_pass_shape_census)
+	{
+		if (s.keys != keys)
+			continue;
+		s.passes++;
+		s.draws += draws;
+		s.runs += runs;
+		s.runs_despec += runs_despec;
+		return;
+	}
+	// A frame's passes come in a handful of shapes -- 39 on the Ratchet gameplay scene, 79 on Gran
+	// Turismo 4 -- but a pathological title could invent one per pass and turn this scan into a
+	// quadratic walk over thousands of entries. Past the cap the pass is COUNTED and not recorded.
+	// Deliberately not folded into some other shape's row: a shape's numbers have to mean that shape,
+	// and a census that quietly averages unrelated passes together is worse than one that says it
+	// stopped.
+	static constexpr size_t kMaxShapes = 512;
+	if (m_pass_shape_census.size() >= kMaxShapes)
+	{
+		m_pass_shapes_dropped++;
+		return;
+	}
+	PassShape s;
+	s.keys = keys;
+	s.passes = 1;
+	s.draws = draws;
+	s.runs = runs;
+	s.runs_despec = runs_despec;
+	m_pass_shape_census.push_back(std::move(s));
+}
+
+// What each pass ALTERNATES among, which is the question a program-DMA cost asks and the draw
+// census above cannot answer. A title binding thirty-five programs a frame is cheap if each pass
+// uses two of them and expensive if every pass cycles through all thirty-five, and those two
+// frames have the same frame-wide census.
+//
+// Printed with the raw keys so an offline a650 compile can turn the set into a working set in
+// instrlen units and compare it against the instruction cache (127 units on an a650). Nothing in
+// the renderer knows a program's size -- that is a driver fact, not a planner one -- so the join
+// happens outside and this line carries what the join needs.
+void GSRendererTileGpu::ReportPassShapeCensus()
+{
+	if (m_pass_shape_census.empty())
+		return;
+	std::sort(m_pass_shape_census.begin(), m_pass_shape_census.end(),
+		[](const PassShape& a, const PassShape& b) { return a.draws > b.draws; });
+	u64 total_passes = 0, total_draws = 0;
+	for (const PassShape& s : m_pass_shape_census)
+	{
+		total_passes += s.passes;
+		total_draws += s.draws;
+	}
+	// The biggest shapes by draws and no more: the tail is a long list of one-pass shapes that says
+	// nothing the head does not, and this runs at teardown into the same log everything else uses.
+	static constexpr size_t kPrintShapes = 48;
+	Console.WriteLn("TileGpu pass working-set census (%zu shapes over %llu passes, %llu draws; the %zu "
+					"biggest by draws; %llu passes past the shape cap, unrecorded):",
+		m_pass_shape_census.size(), static_cast<unsigned long long>(total_passes),
+		static_cast<unsigned long long>(total_draws), std::min(m_pass_shape_census.size(), kPrintShapes),
+		static_cast<unsigned long long>(m_pass_shapes_dropped));
+	size_t printed = 0;
+	for (const PassShape& s : m_pass_shape_census)
+	{
+		if (printed++ >= kPrintShapes)
+			break;
+		std::string keys;
+		for (const u32 k : s.keys)
+			keys += fmt::format("{}0x{:08X}", keys.empty() ? "" : " ", k);
+		Console.WriteLn("    shape progs=%2zu passes=%8llu draws=%10llu runs=%10llu runs_despec=%10llu : %s",
+			s.keys.size(), static_cast<unsigned long long>(s.passes), static_cast<unsigned long long>(s.draws),
+			static_cast<unsigned long long>(s.runs), static_cast<unsigned long long>(s.runs_despec), keys.c_str());
+	}
 }
 
 // The memory model's per-frame traffic: what the byte road actually moved, and every crossing
@@ -1663,6 +1762,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto vcalls = stat([](const MF& f) { return f.variant_extra_calls; });
 	const auto vnarrow = stat([](const MF& f) { return f.variant_narrowed_draws; });
 	const auto vfree = stat([](const MF& f) { return f.variant_byte_freeloaders; });
+	const auto vrunsd = stat([](const MF& f) { return f.variant_runs_despec; });
+	const auto vrunsu = stat([](const MF& f) { return f.variant_runs_unguarded; });
+	const auto vprog = stat([](const MF& f) { return f.variant_pass_programs; });
+	const auto vprogd = stat([](const MF& f) { return f.variant_pass_programs_despec; });
+	const auto sgp = stat([](const MF& f) { return f.specguard_passes; });
+	const auto sgd = stat([](const MF& f) { return f.specguard_draws; });
 	const auto bigpass = stat([](const MF& f) { return f.biggest_pass_draws; });
 	const auto capped = stat([](const MF& f) { return f.capped_passes; });
 	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
@@ -1731,6 +1836,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"(the COST, ~237 ns each)   narrowed draws %.2f / %u   off-byte-road draws inside a "
 					"byte-compiled pass %.2f / %u (the contamination the decoupling ends)",
 		vruns.mean, vruns.p50, vcalls.mean, vcalls.p50, vnarrow.mean, vnarrow.p50, vfree.mean, vfree.p50);
+	// The SPECIALIZATION half of that key, priced on its own, and what the pass guard did about it.
+	// `despec` is the same frame counted with the frozen state withheld -- the unspecialized arm's
+	// number, off this run rather than a second one -- so the shatter ratio between the two is the
+	// bind bill the frozen state adds, and the programs-per-pass pair is the working set behind it.
+	Console.WriteLn("  ...specialization's own share: runs %.2f / %u submitted, %.2f unguarded, %.2f / %u "
+					"de-specialized -- ADDED BINDS %.2f (budget %u)   programs per frame's passes %.2f vs "
+					"%.2f   guard de-specialized %.2f / %u passes carrying %.2f / %u draws",
+		vruns.mean, vruns.p50, vrunsu.mean, vrunsd.mean, vrunsd.p50, vrunsu.mean - vrunsd.mean, m_max_spec_binds,
+		vprog.mean, vprogd.mean, sgp.mean, sgp.p50, sgd.mean, sgd.p50);
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -4280,6 +4394,113 @@ void GSRendererTileGpu::AccumulateDraw()
 	m_plan_pending.push_back(pd);
 }
 
+// Every draw's fragment variant, and the guard that may withhold half of it.
+//
+// The variant has two halves and they are decided differently. The ROAD half -- which texel road the
+// draw takes, which decode arm, what it needs the destination read for, whether a 16-bit frame
+// stores its output -- is a fact about the draw and its pass, and narrowing it is free: a draw stops
+// executing a decoder it never enters. The SPECIALIZATION half freezes the draw's own GS state into
+// the program, which makes the program much smaller (247 of the corpus's 251 distinct variants at
+// eight registers or fewer on an Adreno 650, so wave128, against two of seventeen) and makes the
+// program part of the indirect-run key, so two consecutive draws differing only in their alpha
+// comparison stop being one run.
+//
+// On an SD865 that second half is not uniformly a win. It takes Shadow of the Colossus -20.5% and
+// Gran Turismo 4 -7.6% with GPU time falling, and both Ratchet & Clank scenes +9.2% and +8.4% with
+// GPU time RISING. The separator is the number of pipeline binds the freezing ADDS over what the
+// road half already required -- 141 and 150 a frame on the winners, 525 and 859 on the losers, with
+// the rest of the eighteen-dump corpus at 72 or below. Over the device's budget, the passes that add
+// those binds give the frozen state back.
+//
+// ⚠️ Two things this function's shape depends on, both established rather than assumed:
+//
+//  - It is a PLAN question, not a pass question. Shadow of the Colossus builds passes that are
+//    structurally identical to Ratchet's -- 64 draws, one road, fifty-odd binds -- and wins; it
+//    simply builds two of them a frame where Ratchet builds fifteen. So no per-pass number separates
+//    the two, and the guard is a budget over the whole submission with the passes that spend it
+//    picked afterwards. That is why the variant fill moved out of the grouping walk.
+//  - The withheld form is the DE-SPECIALIZED key, never the pass UNION. Both are pixel-inert, but
+//    the union also widens the road half back to the pass's, which is the contamination the per-draw
+//    variant was landed to end -- 1,499 draws a frame put back on a byte decoder they never enter on
+//    the Ratchet gameplay scene, and its draw-weighted program from 2,684 SPIR-V words to 11,000. The
+//    de-specialized key is bit-for-bit what EmuCore/GS/TileGpuUnspecializedFragmentVariant writes,
+//    which is the arm gated byte-identical over the corpus AND the arm that measured faster on the
+//    device for both losing scenes. The guard picks a proven program, and the better of the two.
+void GSRendererTileGpu::PlanFragmentVariants()
+{
+	const u32 count = static_cast<u32>(m_plan_draws.size());
+	m_spec_passes.clear();
+	if (count == 0)
+		return;
+	// The SAME cut the grouping walk below takes, off the same function, for the reason accumulation
+	// and the plan build share theirs: two spellings of "where does this pass end" would give a draw a
+	// program built against a pass it is not in. The grouping walk asserts the keys it finds here.
+	const auto key_of = [this](const PendingDraw& pd) {
+		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes,
+			pd.self_mask != 0, m_segregate_self_read);
+	};
+	// What cuts an indirect run for a reason that predates the fragment variant. Subtracting these
+	// is what makes the guard's number the SPECIALIZATION's bill rather than the submission's.
+	const auto other_cut = [this](u32 d) {
+		return m_plan_topologies[d] != m_plan_topologies[d - 1] ||
+			   m_plan_blend_keys[d] != m_plan_blend_keys[d - 1] ||
+			   m_plan_depth_modes[d] != m_plan_depth_modes[d - 1];
+	};
+
+	u32 added = 0, unguarded_runs = 0;
+	for (u32 i = 0; i < count;)
+	{
+		const u32 j = gsTileGpuPassEnd(i, count, m_max_pass_draws,
+			[&](u32 d) { return key_of(m_plan_pending[d]); },
+			[&](u32 d) { return m_plan_pending[d].break_before; });
+		// The pass's destination-read union, because two of the variant's axes are promoted to it --
+		// a DATE draw in a pass that declares for DATE has no snapshot to read, and the AFAIL alpha
+		// keep's row bit is set for every draw the fold names. Same union the grouping walk computes.
+		u32 self_union = 0;
+		for (u32 d = i; d < j; d++)
+			self_union |= m_plan_pending[d].self_mask;
+		for (u32 d = i; d < j; d++)
+			m_plan_variant_keys[d] = PlanVariantKeyAt(d, self_union);
+
+		const u32 runs = gsTileGpuRunCount(
+			i, j, [this](u32 d) { return m_plan_variant_keys[d]; }, other_cut);
+		const u32 runs_despec = gsTileGpuRunCount(
+			i, j, [this](u32 d) { return gsTileGpuDespecializeVariantKey(m_plan_variant_keys[d]); },
+			other_cut);
+		m_spec_passes.push_back(SpecPass{i, j, runs, runs_despec});
+		added += runs - runs_despec;
+		unguarded_runs += runs;
+		i = j;
+	}
+	m_frame.variant_runs_unguarded += unguarded_runs;
+
+	if (!gsTileGpuGuardsSpecialization(added, m_max_spec_binds))
+		return;
+	u32 guarded_passes = 0, guarded_draws = 0;
+	for (const SpecPass& p : m_spec_passes)
+	{
+		// A pass whose frozen state cut no run it would not otherwise have cut keeps it: that program
+		// is smaller for free, and taking it away would give up the wave size and save nothing. It
+		// also makes the guarded plan's bind total exactly the unspecialized arm's, since every pass
+		// then contributes its de-specialized run count whichever branch it took.
+		if (!gsTileGpuDespecializesPass(p.runs, p.runs_despec))
+			continue;
+		for (u32 d = p.first; d < p.end; d++)
+			m_plan_variant_keys[d] = gsTileGpuDespecializeVariantKey(m_plan_variant_keys[d]);
+		guarded_passes++;
+		guarded_draws += p.end - p.first;
+	}
+	m_frame.specguard_passes += guarded_passes;
+	m_frame.specguard_draws += guarded_draws;
+	if (!m_specguard_announced)
+	{
+		m_specguard_announced = true;
+		Console.WriteLn("TileGpu: fragment specialization added %u pipeline binds to a plan against a "
+						"budget of %u, so %u of %u passes (%u draws) give the frozen state back.",
+			added, m_max_spec_binds, guarded_passes, static_cast<u32>(m_spec_passes.size()), guarded_draws);
+	}
+}
+
 // Group the accumulated draws into passes, resolve targets and state rows, build the ring, and
 // submit. One FRAME/ZBUF pair per pass (break on target change, depth mode change, or a prep op);
 // scale 1. Consumes everything: the plan streams, the ring, and the model's synced claims (the
@@ -4408,6 +4629,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				 m_plan_variant_keys.size() == m_plan_draws.size() &&
 				 m_plan_pending.size() == m_plan_draws.size());
 
+		// Every draw's fragment variant, decided before the grouping walk below rather than inside
+		// it, because the SPECIALIZATION half is answered per PLAN and not per pass: the guard's
+		// question is how many pipeline binds the frozen state adds to the whole submission, and no
+		// pass knows that while it is being built. See PlanFragmentVariants.
+		PlanFragmentVariants();
+
 		u32 i = 0;
 		while (i < m_plan_draws.size())
 		{
@@ -4523,12 +4750,17 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					m_frame.texel_mixed_draws += byte_draws;
 				}
 			}
-			// The per-draw fragment variant, resolved now that the pass -- and so the DATE road the
-			// pass provided -- is known. Filled in a second walk rather than the one above because
-			// pass.self_mask is only complete when that walk has finished.
+			// The per-draw fragment variant, already resolved by PlanFragmentVariants -- which walks
+			// the same passes off the same cut and so hands this loop the same self_mask union. Checked
+			// rather than trusted, because the two walks disagreeing would put a draw on a program its
+			// pass does not describe, and that is a wrong pixel rather than a slow one. A guarded draw
+			// legitimately carries the de-specialized form of the same key and nothing else.
 			for (u32 d = i; d < j; d++)
 			{
-				m_plan_variant_keys[d] = PlanVariantKeyAt(d, pass.self_mask);
+				pxAssertMsg(m_plan_variant_keys[d] == PlanVariantKeyAt(d, pass.self_mask) ||
+								m_plan_variant_keys[d] ==
+									gsTileGpuDespecializeVariantKey(PlanVariantKeyAt(d, pass.self_mask)),
+					"TileGpu's two pass walks disagree about a draw's fragment variant");
 				const PendingDraw& pd = m_plan_pending[d];
 				const u32 v = m_plan_variant_keys[d];
 				// What this draw stops paying for: the union program is a superset of its own on every
@@ -4560,6 +4792,39 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			{
 				if (d == i || PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
 					m_frame.variant_runs++;
+			}
+			// ...and the same count with the SPECIALIZATION half withheld, which is what the
+			// unspecialized arm submits. Both off one run, so the difference is the frozen state's own
+			// bind bill rather than two scenes compared. A bind is an instruction-RAM DMA on Adreno,
+			// so this difference -- not the run total -- is what specialization is charged for.
+			//
+			// Alongside it, the two PROGRAM counts: how many distinct fragment programs this pass
+			// alternates among, with and without the frozen state. That is the working set an
+			// instruction cache holds or does not, while the run counts are how often it is cycled.
+			{
+				u32 runs_here = 0, runs_despec = 0;
+				m_shape_keys.clear();
+				m_shape_keys_despec.clear();
+				for (u32 d = i; d < j; d++)
+				{
+					const u32 own = m_plan_variant_keys[d];
+					const u32 despec = own & ~GSDevice::GSTileGpuPassPlan::kVariantSpecMask;
+					if (d == i || PlanRunKeyAt(d) != PlanRunKeyAt(d - 1))
+						runs_here++;
+					if (d == i || m_plan_topologies[d] != m_plan_topologies[d - 1] ||
+						m_plan_blend_keys[d] != m_plan_blend_keys[d - 1] ||
+						m_plan_depth_modes[d] != m_plan_depth_modes[d - 1] ||
+						despec != (m_plan_variant_keys[d - 1] & ~GSDevice::GSTileGpuPassPlan::kVariantSpecMask))
+						runs_despec++;
+					m_shape_keys.push_back(own);
+					m_shape_keys_despec.push_back(despec);
+				}
+				m_frame.variant_runs_despec += runs_despec;
+				m_frame.variant_pass_programs += gsTileGpuSortUniqueCount(m_shape_keys);
+				m_frame.variant_pass_programs_despec += gsTileGpuSortUniqueCount(m_shape_keys_despec);
+				// Both scratch vectors come back sorted and uniqued, so the shipped-key one is already
+				// the shape the census wants.
+				PassShapeAdd(m_shape_keys, pass.draw_count, runs_here, runs_despec);
 			}
 
 			// What the rule-3 half of the sampled-binding split COSTS, in calls -- the same

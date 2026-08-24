@@ -2894,6 +2894,34 @@ public:
 	/// tiler measurement asks for one. EmuCore/GS/TileGpuMaxPassDraws overrides this per run.
 	virtual u32 TileGpuMaxPassDraws() { return 0; }
 
+	/// The most extra pipeline binds one plan may pay for fragment SPECIALIZATION, or 0 for no limit.
+	///
+	/// Freezing a draw's own GS state into its fragment program (GSTileGpuFragmentSpec) buys a much
+	/// smaller program — on an Adreno 650, 247 of the corpus's 251 distinct variants at eight full
+	/// registers or fewer, so wave128, against two of seventeen unspecialized. It costs pipeline
+	/// binds, because the frozen state is part of the indirect-run key: two consecutive draws that
+	/// differ only in their alpha comparison used to be one run and are now two.
+	///
+	/// The SD865 round of 2026-08-24 says that trade is not uniform. Shadow of the Colossus (-20.5%
+	/// frame) and Gran Turismo 4 (-7.6%) win with GPU time falling; both Ratchet & Clank scenes lose
+	/// (+9.2%, +8.4%) with GPU time RISING, +59% on the gameplay scene. What separates them is not
+	/// the bind total — Shadow of the Colossus binds 763 a frame and wins where the gameplay scene
+	/// binds 905 and loses — but how many of those binds the freezing ADDED over what the per-draw
+	/// road narrowing already required: 141 and 150 on the winners against 525 and 859 on the losers,
+	/// a 3.5x gap with the rest of the eighteen-dump corpus at 72 or below.
+	///
+	/// ⚠️ It is NOT an instruction-cache capacity effect, which was the first hypothesis and is
+	/// refuted by its own arithmetic: compiled offline against the device's own Turnip, the Ratchet
+	/// gameplay scene's busiest pass shape alternates among five programs totalling 32 instrlen units
+	/// against an a650 instruction cache of 127, while Shadow of the Colossus — which WINS — runs
+	/// 110-182-unit working sets and streams 2.6x more program bytes a frame. The cost tracks the
+	/// number of switches, not the size of what is switched to, so the budget is counted in binds.
+	///
+	/// Zero everywhere nobody has measured, including every tiler: withholding the frozen state where
+	/// a bind is cheap is pure loss — it gives up the wave size and saves nothing.
+	/// EmuCore/GS/TileGpuMaxSpecializationBinds overrides this per run.
+	virtual u32 TileGpuMaxSpecializationBinds() { return 0; }
+
 	/// Whether declaring the in-pass destination read is charged to EVERY draw of the pass, reader
 	/// or not — so that a pass which declares must contain only the draws that need it.
 	///

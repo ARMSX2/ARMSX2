@@ -1302,6 +1302,28 @@ struct Pcsx2Config
 		// the built-in depth. Dev only.
 		int TileGpuSourceSetRingDepth = 0;
 
+		// Override the device's answer to "how many extra pipeline binds may one plan pay
+		// for fragment SPECIALIZATION?" (GSDevice::TileGpuMaxSpecializationBinds). Zero --
+		// the default -- asks the device, which is what ships: Adreno answers 300, every
+		// other vendor 0 = no guard. A NEGATIVE value forces the guard off whatever the
+		// device says; a positive one pins that budget on any device.
+		//
+		// Freezing a draw's GS state into its fragment program makes the program smaller
+		// (247 of 251 corpus variants run wave128 against 2 of 17 before) and makes the
+		// variant part of the indirect-run key, so a state change now costs a pipeline
+		// bind where it used to cost nothing. On an SD865 that trade wins big on Shadow of
+		// the Colossus (-20.5%) and Gran Turismo 4 (-7.6%) and LOSES on both Ratchet &
+		// Clank scenes (+9.2%, +8.4%), with their GPU time rising -- and the separator is
+		// how many binds the freezing ADDS: the losers pay 525 and 859 a frame, the winners
+		// 141 and 150. Over the budget, the planner withholds the frozen state from the
+		// passes that add the binds, which puts them back on exactly the program the
+		// unspecialized arm compiles.
+		//
+		// Same hazard class as the pass cap above -- it moves no pixel and it moves frame
+		// time -- so the renderer names the effective budget and its source in the emulog
+		// and reads it ONCE at construction. Dev only.
+		int TileGpuMaxSpecializationBinds = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

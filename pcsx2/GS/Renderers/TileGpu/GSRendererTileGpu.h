@@ -223,6 +223,79 @@ u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, Bre
 	return j;
 }
 
+/// The effective specialization bind budget: what EmuCore/GS/TileGpuMaxSpecializationBinds says, or
+/// the device's own answer where it says nothing. Zero out means NO GUARD.
+///
+/// Three states for the same reason the pass cap has three: "ask the device" and "force the guard
+/// off" are different instructions, and only the second gives an Adreno the un-guarded arm the
+/// deciding A/B needs. Zero asks; a negative forces off; a positive pins that budget anywhere.
+constexpr u32 gsTileGpuMaxSpecializationBinds(int setting, u32 device_answer)
+{
+	if (setting > 0)
+		return static_cast<u32>(setting);
+	if (setting < 0)
+		return 0;
+	return device_answer;
+}
+
+/// The same variant key with the frozen per-draw GS state withheld -- every axis back on the state
+/// row, the road/texel/self/quantise half untouched.
+///
+/// This is the ONE transform the guard performs, and it is pixel-inert by construction rather than
+/// by argument: it produces bit-for-bit the key PlanVariantKeyAt writes when
+/// EmuCore/GS/TileGpuUnspecializedFragmentVariant is set, which is the control arm the specialization
+/// landing gated byte-identical over the whole corpus. The guard picks a program that was already
+/// proved to render the same pixels; it does not invent one.
+///
+/// ⚠️ Deliberately NOT the pass UNION key, which would also be inert and is a much worse trade: the
+/// union widens the road, texel and self masks back to the pass's, which is exactly the contamination
+/// the per-draw variant was landed to end. On the Ratchet gameplay scene that is 1,499 draws a frame
+/// put back on a byte decoder they never enter, and the draw-weighted program goes 2,684 SPIR-V words
+/// to 11,000. De-specializing keeps the road narrowing and drops only the axis that was measured to
+/// cost.
+constexpr u32 gsTileGpuDespecializeVariantKey(u32 key)
+{
+	return key & ~GSDevice::GSTileGpuPassPlan::kVariantSpecMask;
+}
+
+/// Whether a plan paying `added_binds` extra pipeline binds for specialization is over `budget`.
+/// Budget 0 is no guard, and no number of binds crosses it.
+constexpr bool gsTileGpuGuardsSpecialization(u32 added_binds, u32 budget)
+{
+	return budget != 0 && added_binds > budget;
+}
+
+/// ...and, once a plan is over budget, whether THIS pass is one the guard acts on: only a pass whose
+/// frozen state actually cut a run it would not otherwise have cut.
+///
+/// A pass that adds no bind is left specialized, and that is not a micro-optimisation -- it is what
+/// keeps the guard from being the coarse whole-frame switch the config key already provides. Those
+/// passes get the smaller program for free; taking it away would give up the wave size and save
+/// nothing. It also makes the guarded plan's bind total exactly the unspecialized arm's, since every
+/// pass then contributes its de-specialized run count whichever branch it took.
+constexpr bool gsTileGpuDespecializesPass(u32 pass_runs, u32 pass_runs_despec)
+{
+	return pass_runs > pass_runs_despec;
+}
+
+/// How many indirect runs a stretch of draws makes: a run starts at `first`, wherever the rest of the
+/// run key cut anyway (`other_cut_at` -- topology, blend, depth mode), and wherever the fragment
+/// variant changes.
+///
+/// A function so the planner can ask it twice off one walk -- once with the shipped keys and once
+/// with the de-specialized ones -- and so a test can drive it with a key list instead of a device.
+template <typename VariantAt, typename OtherCutAt>
+u32 gsTileGpuRunCount(u32 first, u32 end, VariantAt variant_at, OtherCutAt other_cut_at)
+{
+	u32 runs = 0;
+	for (u32 d = first; d < end; d++)
+	{
+		if (d == first || other_cut_at(d) || variant_at(d) != variant_at(d - 1))
+			runs++;
+	}
+	return runs;
+}
+
 /// Whether the fragment stage truncates this draw's output to what a 16-bit frame stores.
 ///
 /// A TileGpu colour target is an RGBA8 image whatever the guest format is, and every road that puts
@@ -1141,6 +1214,15 @@ private:
 	// That composition is the point: the deciding device round is a four-arm crossing of the depth
 	// policy against this cap.
 	u32 m_max_pass_draws = 0;
+	// The most extra pipeline binds one plan may pay for freezing per-draw GS state into fragment
+	// programs, 0 meaning no guard (GSDevice::TileGpuMaxSpecializationBinds, overridable by
+	// EmuCore/GS/TileGpuMaxSpecializationBinds). Read once at construction like every other policy
+	// this expensive, so an archived log says which arm ran.
+	//
+	// Unlike the three above this is NOT a pass boundary -- it moves no draw between passes and only
+	// one grouping site reads it -- but it is held the same way because it has the same failure shape:
+	// a large, invisible effect on frame time with no symptom in the frame.
+	u32 m_max_spec_binds = 0;
 	// Whether declaring the in-pass destination read taxes every draw of the pass
 	// (GSDevice::TileGpuSegregatesSelfRead). Read once at construction and used through the same
 	// key function for the same reason: it is a pass boundary, and both grouping sites must agree.
@@ -1691,6 +1773,27 @@ private:
 		return GSDevice::GSTileGpuPassPlan::PackVariantKey(pd.road_mask, texel, self, pd.quantise_5551, spec);
 	}
 
+	// Fill m_plan_variant_keys for every accumulated draw, and apply the specialization bind guard.
+	//
+	// Runs before the grouping walk in BuildAndExecutePlan and over the same pass cut, because the
+	// guard's question is answered per PLAN and not per pass: how many pipeline binds does freezing
+	// per-draw GS state add to this whole submission? A pass cannot know that while it is being
+	// built, and the grouping walk emits each pass's draws as it goes.
+	void PlanFragmentVariants();
+	/// One pass, as PlanFragmentVariants measured it: its draw range and the runs its draws make with
+	/// and without the frozen state. Held so the guard's second phase does not walk the keys twice.
+	struct SpecPass
+	{
+		u32 first;
+		u32 end;
+		u32 runs;
+		u32 runs_despec;
+	};
+	std::vector<SpecPass> m_spec_passes;
+	/// Said once, the first time the guard actually withholds anything, so an archived log carries
+	/// that it ENGAGED and not merely that a budget was set.
+	bool m_specguard_announced = false;
+
 	// Copy one flushed batch's geometry into the frame streams, drive the memory model for its
 	// target and texture footprints (seeds, writebacks, claims), and record its indirect draw +
 	// PendingDraw. Fired from Draw() beside ObserveDraw().
@@ -2023,6 +2126,29 @@ private:
 		// nothing. The counter measures the PASS unions, so it reads the same on both arms -- it is
 		// the size of the population rescued, not a residue that shrinks.
 		u32 variant_byte_freeloaders = 0;
+		// The SPECIALIZATION half of the variant, priced on its own. A fragment-program change costs
+		// a pipeline bind, and on Adreno a bind is an instruction-RAM DMA -- so what the frozen state
+		// costs is not the runs it produces but the runs it produces THAT THE ROAD DID NOT ALREADY.
+		//
+		// `variant_runs_despec` is the run count the same frame would have had with the spec half
+		// withheld, which is exactly the TileGpuUnspecializedFragmentVariant arm's number. Counting
+		// both off ONE run is the whole point: the difference is the specialization's own bind bill,
+		// with no second scene to confound it.
+		u32 variant_runs_despec = 0;
+		// ...and the run count the guard DECIDED on: what the plan would have submitted with every
+		// pass left specialized. Equal to variant_runs on a run where the guard never fires, and the
+		// only way a guarded run can still report the pressure that made it fire.
+		u32 variant_runs_unguarded = 0;
+		// ...and the same before-and-after in PROGRAMS rather than binds: how many distinct fragment
+		// programs a pass alternates among, summed over the frame's passes. This is the working set an
+		// instruction cache either holds or does not, so it is the number the pass guard is about,
+		// while the run counts above are how often that set is cycled through.
+		u32 variant_pass_programs = 0;
+		u32 variant_pass_programs_despec = 0;
+		// The guard's own engagement: passes it de-specialized and the draws inside them. Zero on a
+		// title the guard never fires on, which is how a run says the winners were left alone.
+		u32 specguard_passes = 0;
+		u32 specguard_draws = 0;
 
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them
@@ -2074,6 +2200,42 @@ private:
 	/// variant ... N SPIR-V words" lines in the same log, which is what turns draws into a
 	/// draw-weighted program size.
 	void ReportVariantCensus();
+
+	// The PASS WORKING SET census: for each distinct set of fragment programs some pass alternates
+	// among, how many passes had that set and how many draws and runs they carried.
+	//
+	// The draw census above is frame-wide and cannot answer the question a bind cost asks, which is
+	// per pass: a title binding thirty-five programs a frame is cheap if each pass uses two of them
+	// and expensive if every pass cycles all thirty-five. Keyed on the SET rather than counted per
+	// pass because the sets repeat -- a title's passes come in a handful of shapes -- so the histogram
+	// stays small while carrying the keys an offline instrlen table joins against.
+	/// Sort, unique in place, and say how many distinct values were left. Free function because the
+	/// two callers want the sorted vector afterwards as much as they want the count.
+	static u32 gsTileGpuSortUniqueCount(std::vector<u32>& v)
+	{
+		std::sort(v.begin(), v.end());
+		v.erase(std::unique(v.begin(), v.end()), v.end());
+		return static_cast<u32>(v.size());
+	}
+	/// Scratch for the two counts above, held rather than local so a pass costs no allocation.
+	std::vector<u32> m_shape_keys;
+	std::vector<u32> m_shape_keys_despec;
+
+	struct PassShape
+	{
+		std::vector<u32> keys; ///< the pass's distinct variant keys, sorted
+		u64 passes = 0;
+		u64 draws = 0;
+		u64 runs = 0; ///< runs under the shipped key
+		u64 runs_despec = 0;
+	};
+	std::vector<PassShape> m_pass_shape_census;
+	/// Passes whose shape arrived after the census was full, counted rather than folded into some
+	/// other shape's row. Zero on every corpus dump; a non-zero one says read the census as partial.
+	u64 m_pass_shapes_dropped = 0;
+	void PassShapeAdd(std::vector<u32>& keys, u64 draws, u64 runs, u64 runs_despec);
+	void ReportPassShapeCensus();
+
 	bool m_warned_lossy = false;
 	bool m_warned_alias = false;
 

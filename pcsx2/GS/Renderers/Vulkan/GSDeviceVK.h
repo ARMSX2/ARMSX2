@@ -200,6 +200,7 @@ public:
 	bool TileGpuSelfRead() override;
 	bool TileGpuPrefersDepthUniformPasses() override;
 	u32 TileGpuMaxPassDraws() override;
+	u32 TileGpuMaxSpecializationBinds() override;
 	bool TileGpuSegregatesSelfRead() override;
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
