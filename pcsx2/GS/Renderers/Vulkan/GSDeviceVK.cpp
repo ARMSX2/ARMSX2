@@ -6267,6 +6267,37 @@ bool GSDeviceVK::TileGpuPrefersDepthUniformPasses()
 	return IsDeviceAdreno();
 }
 
+// Adreno charges every draw in a declaring pass for the declaration, so the readers have to be
+// alone in one.
+//
+// The measurement first: the suite's device round (SD865, Adreno 650, Turnip, 20260824-0814) found
+// +49% to +156% frame time on EVERY TileGpu dump against the arm before the read landed, with the
+// CPU flat, Classic flat and thermals controlled. The ranking tracks each dump's DECLARED-PASS
+// share rather than its reader count, which is the tell: Ratchet & Clank's effects scene is the
+// worst at +156% on six admitted alpha-test draws, because those six sit inside enormous effect
+// passes and the whole pass pays.
+//
+// The mechanism is in the Turnip source (mesa 26.1.2) and it is three steps:
+//   1. tu_render_pass_check_feedback_loop marks a subpass whose input attachment aliases its colour
+//      attachment as a colour feedback loop. That is exactly the shape of a declaring pass -- our
+//      set 3 binds the pass's own colour target as an input attachment.
+//   2. Every pipeline built against that subpass inherits the feedback-loop flag, whether or not
+//      its fragment stage reads anything (tu_pipeline).
+//   3. On sysmem, a feedback-loop or raster-order pipeline sets GRAS_SC_CNTL.single_prim_mode to
+//      FLUSH_PER_OVERLAP_AND_OVERWRITE -- a render-backend flush per overlapping primitive.
+// Our workload is 100% sysmem with heavy overdraw, so step 3 is charged against every draw of the
+// pass, per overlap.
+//
+// Segregating is not free: it costs a pass boundary on each side of every run of readers. That is
+// the right trade only where declaring is expensive, which is why this is a device question and not
+// the planner's. On Mali the opposite holds -- an in-pass read is free below stride-1 density
+// (measured 2026-08-17) and there is no analogous whole-pass mode -- so it keeps the merged
+// arrangement, and so does every vendor nobody has measured.
+bool GSDeviceVK::TileGpuSegregatesSelfRead()
+{
+	return IsDeviceAdreno();
+}
+
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;

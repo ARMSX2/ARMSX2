@@ -114,11 +114,15 @@ struct GSTileGpuPassKey
 	/// The depth pipeline variant, but only where the device asked for depth-uniform passes --
 	/// None everywhere else, so the field falls out of the comparison. See gsTileGpuPassKeyFor.
 	GSDevice::GSTileGpuDepthMode keyed_depth_mode = GSDevice::GSTileGpuDepthMode::None;
+	/// Whether this draw reads its own destination, but only where the device asked for the readers
+	/// to be segregated -- false everywhere else, so the field falls out of the comparison. An
+	/// independent dimension from the depth one: Adreno keys both. See gsTileGpuPassKeyFor.
+	bool keyed_self_read = false;
 
 	constexpr bool operator==(const GSTileGpuPassKey& o) const
 	{
 		return color == o.color && depth_used == o.depth_used && (!depth_used || depth == o.depth) &&
-			   keyed_depth_mode == o.keyed_depth_mode;
+			   keyed_depth_mode == o.keyed_depth_mode && keyed_self_read == o.keyed_self_read;
 	}
 	constexpr bool operator!=(const GSTileGpuPassKey& o) const { return !(*this == o); }
 };
@@ -150,11 +154,22 @@ struct GSTileGpuPassKey
 /// through here. Both grouping sites read the one bit, and the executor's run cut is unconditional:
 /// under depth-uniform passes every draw in a pass carries the same mode, so cutting on it cuts
 /// nowhere and the submission is byte-identical to not cutting at all.
+///
+/// `segregate_self_read` is the second negotiable half, and the same shape of question. A pass
+/// declares the in-pass destination read when ANY of its draws needs it, so a reader can otherwise
+/// join whatever pass is open and let the pass declare on its behalf -- the non-readers just do not
+/// read. Where declaring is free that is the cheapest arrangement, and where declaring changes how
+/// the whole pass rasterizes it makes every draw in the pass pay for the readers. Under this bit a
+/// reader never joins a non-reader's pass, at the price of a pass boundary each way. See
+/// GSDevice::TileGpuSegregatesSelfRead.
+///
+/// The two dimensions are keyed independently, because Adreno asks for both and a key that merged
+/// them would break passes where neither policy asked for a break.
 constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(GSTileSurfaceId color, GSTileSurfaceId depth,
-	GSDevice::GSTileGpuDepthMode mode, bool depth_uniform_passes)
+	GSDevice::GSTileGpuDepthMode mode, bool depth_uniform_passes, bool reads_self, bool segregate_self_read)
 {
 	return GSTileGpuPassKey{color, depth, mode != GSDevice::GSTileGpuDepthMode::None,
-		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None};
+		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None, segregate_self_read && reads_self};
 }
 
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
@@ -609,6 +624,10 @@ private:
 	// put a draw's prep ops in a pass the draw is not in. Both grouping sites read THIS member --
 	// accumulation's open-pass test and the plan build's cut -- so they cannot disagree.
 	bool m_depth_uniform_passes = false;
+	// Whether a declaring pass must hold only the draws that read
+	// (GSDevice::TileGpuSegregatesSelfRead). Read once at construction and used through the same
+	// key function for the same reason: it is a pass boundary, and both grouping sites must agree.
+	bool m_segregate_self_read = false;
 
 	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------
 	// The three library caches the materialised-source road is built out of. A direct-colour window
@@ -1168,6 +1187,11 @@ private:
 		// nothing at all and pay nothing at all.
 		u32 self_read_draws = 0;  // draws admitted to the in-pass destination read
 		u32 self_read_passes = 0; // passes that therefore declared it
+		// Draws sitting inside a declaring pass, reader or not. The one of these three a device that
+		// charges for declaring actually pays -- on Adreno every draw in a declaring pass rasterizes
+		// under FLUSH_PER_OVERLAP_AND_OVERWRITE, so six readers inside a giant effect pass tax the
+		// whole pass. Under GSDevice::TileGpuSegregatesSelfRead it converges on the reader count.
+		u32 self_read_pass_draws = 0;
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one

@@ -143,6 +143,9 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// Asked once for the same reason: it decides pass boundaries, and a boundary that moved
 	// mid-frame would leave a draw's prep ops hoisted into a pass the draw is not in.
 	m_depth_uniform_passes = g_gs_device && g_gs_device->TileGpuPrefersDepthUniformPasses();
+	// ...and the second pass-boundary policy, asked once beside it: whether a pass that declares the
+	// in-pass destination read may carry draws that do not need it.
+	m_segregate_self_read = g_gs_device && g_gs_device->TileGpuSegregatesSelfRead();
 
 	// Asked once because the answer changes how a colour target is CREATED -- the read is an input
 	// attachment and that usage cannot be added to an image later. Without it no draw is admitted to
@@ -1529,6 +1532,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	};
 	const auto srd = stat([](const MF& f) { return f.self_read_draws; });
 	const auto srp = stat([](const MF& f) { return f.self_read_passes; });
+	const auto srpd = stat([](const MF& f) { return f.self_read_pass_draws; });
 	const auto txp = stat([](const MF& f) { return f.texel_passes; });
 	const auto txm = stat([](const MF& f) { return f.texel_mixed_passes; });
 	const auto txmd = stat([](const MF& f) { return f.texel_mixed_draws; });
@@ -1560,8 +1564,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  alpha test that VARIES under a non-KEEP AFAIL: %.2f / %u draws   of which RGB_ONLY "
 					"%.2f / %u   of which depth-writing %.2f / %u",
 		afv.mean, afv.p50, afvr.mean, afvr.p50, afvz.mean, afvz.p50);
-	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared",
-		srd.mean, srd.p50, srp.mean, srp.p50);
+	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared, "
+					"%.2f / %u draws inside a declaring pass",
+		srd.mean, srd.p50, srp.mean, srp.p50, srpd.mean, srpd.p50);
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
 					"byte-road draws",
 		txp.mean, txp.p50, txm.mean, txm.p50, (txp.mean > 0.0) ? (txm.mean * 100.0 / txp.mean) : 0.0, txmd.mean,
@@ -3248,6 +3253,13 @@ void GSRendererTileGpu::AccumulateDraw()
 		(m_self_read && (m_force_self_read || date != 0 || PRIM->ABE || !fbmsk_exact)) ?
 			SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result) :
 			0;
+	// What this draw's self mask finally is: the classifier's answer plus the alpha keep, which is a
+	// per-fragment write mask and so rides the arm that already does one. Folded HERE, rather than
+	// where the mask is stored on the PendingDraw further down, because the pass key below asks
+	// whether this draw reads and the two have to be the same question. A draw keyed as a non-reader
+	// whose mask then unions into its pass would make that pass declare anyway, which is exactly
+	// what segregation exists to prevent.
+	const u32 draw_self_mask = self_mask | (afail_keep_alpha ? GSDevice::kGSTileGpuSelfMask : 0u);
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -3278,7 +3290,8 @@ void GSRendererTileGpu::AccumulateDraw()
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
 	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
 	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, z_write);
-	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes);
+	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
+		fb_id, z_id, depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
 	if (draw_key != m_open_pass)
 		BreakOpenPass();
 
@@ -3816,7 +3829,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.date = date;
 	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
 	pd.afail_keep_alpha = afail_keep_alpha;
-	pd.self_mask = self_mask | (afail_keep_alpha ? GSDevice::kGSTileGpuSelfMask : 0u);
+	pd.self_mask = draw_self_mask;
 	// The equation and the mask the fragment stage would need, whether or not this draw was admitted:
 	// two shifts and an AND, and a field that only sometimes carries a meaning is a field that gets
 	// read in the wrong state eventually.
@@ -4115,15 +4128,16 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		while (i < m_plan_draws.size())
 		{
 			const PendingDraw& first = m_plan_pending[i];
-			const GSTileGpuPassKey first_key = gsTileGpuPassKeyFor(
-				first.color_surface, first.z_surface, first.depth_mode, m_depth_uniform_passes);
+			const auto key_of = [this](const PendingDraw& pd) {
+				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode,
+					m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
+			};
+			const GSTileGpuPassKey first_key = key_of(first);
 			u32 j = i + 1;
 			while (j < m_plan_draws.size())
 			{
 				const PendingDraw& pd = m_plan_pending[j];
-				if (pd.break_before ||
-					gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes) !=
-						first_key)
+				if (pd.break_before || key_of(pd) != first_key)
 					break;
 				j++;
 			}
@@ -4144,15 +4158,29 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// the pass. Computed here rather than at accumulation on purpose: declaring is a property
 			// of a pass, never a reason to open one, so the read can only ever remove pass breaks.
 			pass.self_mask = 0;
+			u32 readers = 0;
 			for (u32 d = i; d < j; d++)
+			{
 				pass.self_mask |= m_plan_pending[d].self_mask;
+				readers += (m_plan_pending[d].self_mask != 0) ? 1u : 0u;
+			}
 			pass.declares_self_read = pass.self_mask != 0;
+			// Under segregation a declaring pass's readers ARE the pass: the key put every
+			// non-reader in some other pass, so nothing rides along paying for the declaration.
+			// Asserted rather than assumed, because the key and this union disagreeing is invisible
+			// in the frame and is the entire failure mode the policy exists to prevent.
+			pxAssertMsg(!m_segregate_self_read || readers == 0 || readers == pass.draw_count,
+				"TileGpu segregated the readers but a declaring pass still carries draws that do not read");
 			// A pass has ONE colour surface and therefore one frame format, so this is a property of
 			// the pass even though the decision that uses it is per draw.
 			pass.quantises_frame = false;
 			for (u32 d = i; d < j; d++)
 				pass.quantises_frame = pass.quantises_frame || m_plan_pending[d].quantise_5551;
 			m_frame.self_read_passes += pass.declares_self_read ? 1u : 0u;
+			// ...and the draws SITTING IN those passes, which is the number a device that charges
+			// for declaring actually pays. Under segregation it converges on the reader count;
+			// merged it is however many draws the readers happened to be standing among.
+			m_frame.self_read_pass_draws += pass.declares_self_read ? pass.draw_count : 0u;
 
 			// The pass's rule-2 bind table, rebuilt by walking its draws in order and appending each
 			// source the first time it appears. That is exactly how accumulation numbered the slots

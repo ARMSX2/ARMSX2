@@ -2602,6 +2602,19 @@ public:
 	/// the design targets, and a device that needs uniformity says so.
 	virtual bool TileGpuPrefersDepthUniformPasses() { return false; }
 
+	/// Whether a pass that declares the in-pass destination read must contain ONLY the draws that
+	/// need it.
+	///
+	/// Declaring is a property of the pass, so the cheap arrangement is to let a reader join
+	/// whatever pass is open and have the pass declare on its behalf — the non-readers simply do
+	/// not read. That is free on hardware where an in-pass read is free, and it is the wrong shape
+	/// where declaring changes how the whole pass rasterizes: there the readers have to be alone,
+	/// however many passes that costs.
+	///
+	/// False is the default, including for vendors nobody has measured: it is the arrangement with
+	/// no pass-count cost, and a device that charges for declaring says so.
+	virtual bool TileGpuSegregatesSelfRead() { return false; }
+
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.
 	virtual bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) { return false; }

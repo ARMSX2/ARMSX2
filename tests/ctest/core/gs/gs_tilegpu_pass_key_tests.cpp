@@ -50,17 +50,51 @@ constexpr GSTileSurfaceId kOtherColor = 2;
 constexpr GSTileSurfaceId kZ = 3;
 constexpr GSTileSurfaceId kOtherZ = 4;
 
-/// The two polarities, named so a failure says which one it was.
+/// The two depth polarities, named so a failure says which one it was.
 constexpr bool kMerged = false; ///< depth mode out of the key: the tiler answer, and the default
 constexpr bool kUniform = true; ///< depth mode in the key: the Adreno answer, and what shipped
 
+/// ...and the two reader polarities, the second independent dimension.
+constexpr bool kShared = false;     ///< readers share a pass with non-readers: the default
+constexpr bool kSegregated = true;  ///< a declaring pass holds only readers: the Adreno answer
+
 /// The pass key of a draw expressed the way the renderer holds it: the two surfaces plus the three
-/// depth facts it derives out of ZTE / ZTST / ZMSK and the alpha test's AFAIL fold.
-constexpr GSTileGpuPassKey KeyOf(
-	GSTileSurfaceId color, GSTileSurfaceId z, bool z_test, bool z_write, bool depth_uniform)
+/// depth facts it derives out of ZTE / ZTST / ZMSK and the alpha test's AFAIL fold, plus whether
+/// the draw reads its own destination.
+constexpr GSTileGpuPassKey KeyOf(GSTileSurfaceId color, GSTileSurfaceId z, bool z_test, bool z_write,
+	bool depth_uniform, bool reads_self = false, bool segregate = kShared)
 {
 	const bool z_used = z_test || z_write;
-	return gsTileGpuPassKeyFor(color, z, gsTileGpuDepthModeFor(z_used, z_test, z_write), depth_uniform);
+	return gsTileGpuPassKeyFor(
+		color, z, gsTileGpuDepthModeFor(z_used, z_test, z_write), depth_uniform, reads_self, segregate);
+}
+
+/// The passes a run of draws falls into, as [first, end) pairs, cut exactly where the key changes.
+/// Both grouping sites cut on nothing else, so this is what they produce.
+struct DrawRow
+{
+	GSTileSurfaceId color;
+	bool reads_self;
+	DepthMode depth;
+};
+
+std::vector<std::pair<u32, u32>> PassesOf(
+	const std::vector<DrawRow>& rows, bool depth_uniform, bool segregate)
+{
+	const auto key_of = [&](const DrawRow& r) {
+		return gsTileGpuPassKeyFor(r.color, kZ, r.depth, depth_uniform, r.reads_self, segregate);
+	};
+	std::vector<std::pair<u32, u32>> out;
+	const u32 end = static_cast<u32>(rows.size());
+	for (u32 i = 0; i < end;)
+	{
+		u32 j = i + 1;
+		while (j < end && key_of(rows[j]) == key_of(rows[i]))
+			j++;
+		out.emplace_back(i, j);
+		i = j;
+	}
+	return out;
 }
 
 /// A plan of n draws whose per-draw pipeline state the test sets by hand. Only the arrays RunKeyAt
@@ -236,11 +270,126 @@ TEST(TileGpuPassKeyUniform, EveryPairOfDistinctDepthModesEndsThePass)
 	{
 		for (const DepthMode b : kAll)
 		{
-			const GSTileGpuPassKey ka = gsTileGpuPassKeyFor(kColor, kZ, a, kUniform);
-			const GSTileGpuPassKey kb = gsTileGpuPassKeyFor(kColor, kZ, b, kUniform);
+			const GSTileGpuPassKey ka = gsTileGpuPassKeyFor(kColor, kZ, a, kUniform, false, kShared);
+			const GSTileGpuPassKey kb = gsTileGpuPassKeyFor(kColor, kZ, b, kUniform, false, kShared);
 			EXPECT_EQ(a == b, ka == kb) << static_cast<u32>(a) << " vs " << static_cast<u32>(b);
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The reader dimension: whether a draw that reads its own destination may share a pass with one
+// that does not.
+//
+// A pass that declares the in-pass destination read binds its own colour attachment as an input
+// attachment, and on Adreno that costs EVERY draw in the pass, reader or not: Turnip's
+// tu_render_pass_check_feedback_loop marks the subpass, tu_pipeline inherits the flag onto every
+// pipeline built against it, and on sysmem such a pipeline sets GRAS_SC_CNTL.single_prim_mode to
+// FLUSH_PER_OVERLAP_AND_OVERWRITE -- a render-backend flush per overlapping primitive. So on that
+// architecture six admitted draws sitting inside a giant effect pass tax the whole pass.
+//
+// Segregating costs passes and is the wrong trade on a tiler, where a pass boundary is a
+// tile-buffer resolve and reload and an in-pass read is free below stride-1 density. Hence a
+// device bit, and hence both polarities pinned here.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuPassKeyShared, AReaderJoinsANonReadersPass)
+{
+	// The default, and what a tiler wants: the read is a per-draw property, the pass just declares
+	// that someone in it reads.
+	EXPECT_EQ(KeyOf(kColor, kZ, true, true, kMerged, /*reads_self=*/false, kShared),
+		KeyOf(kColor, kZ, true, true, kMerged, /*reads_self=*/true, kShared));
+}
+
+TEST(TileGpuPassKeySegregated, AReaderDoesNotJoinANonReadersPass)
+{
+	// Same attachments, same depth mode; one draw reads its own destination and the other does not.
+	// Under segregation those are two passes, so only the reader's pass declares.
+	for (const bool depth_policy : {kMerged, kUniform})
+	{
+		EXPECT_NE(KeyOf(kColor, kZ, true, true, depth_policy, /*reads_self=*/false, kSegregated),
+			KeyOf(kColor, kZ, true, true, depth_policy, /*reads_self=*/true, kSegregated))
+			<< "depth_uniform_passes=" << depth_policy;
+	}
+}
+
+TEST(TileGpuPassKeySegregated, ConsecutiveReadersShareOnePass)
+{
+	// Segregation separates readers from non-readers, NOT readers from each other. A run of
+	// admitted draws is one declared pass, or the fix trades one toll for another.
+	for (const bool depth_policy : {kMerged, kUniform})
+	{
+		EXPECT_EQ(KeyOf(kColor, kZ, true, true, depth_policy, true, kSegregated),
+			KeyOf(kColor, kZ, true, true, depth_policy, true, kSegregated))
+			<< "depth_uniform_passes=" << depth_policy;
+	}
+}
+
+TEST(TileGpuPassKeySegregated, TheAttachmentHalfStillDominates)
+{
+	// Two readers into different colour surfaces are still two passes: segregation may only ever
+	// ADD boundaries.
+	EXPECT_NE(KeyOf(kColor, kZ, true, true, kMerged, true, kSegregated),
+		KeyOf(kOtherColor, kZ, true, true, kMerged, true, kSegregated));
+}
+
+TEST(TileGpuPassKeySegregated, TheTwoDimensionsAreIndependent)
+{
+	// Composition by construction rather than by inspection: Adreno turns BOTH bits on, so the key
+	// has to carry them separately. Over the four policy combinations, two keys are equal exactly
+	// when they agree on every dimension that policy keys.
+	for (const bool depth_policy : {kMerged, kUniform})
+	{
+		for (const bool reader_policy : {kShared, kSegregated})
+		{
+			for (const DepthMode a : {DepthMode::TestWrite, DepthMode::TestNoWrite})
+			{
+				for (const DepthMode b : {DepthMode::TestWrite, DepthMode::TestNoWrite})
+				{
+					for (const bool ra : {false, true})
+					{
+						for (const bool rb : {false, true})
+						{
+							const bool want = (!depth_policy || a == b) && (!reader_policy || ra == rb);
+							EXPECT_EQ(want,
+								gsTileGpuPassKeyFor(kColor, kZ, a, depth_policy, ra, reader_policy) ==
+									gsTileGpuPassKeyFor(kColor, kZ, b, depth_policy, rb, reader_policy))
+								<< "depth_uniform=" << depth_policy << " segregate=" << reader_policy
+								<< " modes " << static_cast<u32>(a) << "/" << static_cast<u32>(b)
+								<< " reads " << ra << "/" << rb;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+TEST(TileGpuPassKeySegregated, PassesAreMaximalConsecutiveRunsInDrawOrder)
+{
+	// The same load-bearing property the run cut has, for the new dimension: passes are maximal
+	// consecutive spans, never buckets. Sorting the readers together would move a later draw's
+	// output under an earlier one's, which is the whole of GS draw order.
+	constexpr DepthMode kW = DepthMode::TestWrite;
+	const std::vector<DrawRow> rows{{kColor, false, kW}, {kColor, true, kW}, {kColor, true, kW},
+		{kColor, false, kW}, {kColor, true, kW}};
+
+	EXPECT_EQ(PassesOf(rows, kMerged, kSegregated),
+		(std::vector<std::pair<u32, u32>>{{0, 1}, {1, 3}, {3, 4}, {4, 5}}));
+	// ...and with segregation off the same five draws are one pass, which is the arm that pays the
+	// Adreno toll on all five.
+	EXPECT_EQ(PassesOf(rows, kMerged, kShared), (std::vector<std::pair<u32, u32>>{{0, 5}}));
+}
+
+TEST(TileGpuPassKeySegregated, TheDisplaySeedPseudoDrawReadsNothing)
+{
+	// The pseudo-draw BuildAndExecutePlan appends for its prep ops carries no self mask and no
+	// depth attachment, so under segregation it keys as a non-reader and cannot pull a declaration
+	// onto a pass that renders nothing.
+	EXPECT_EQ(gsTileGpuPassKeyFor(kColor, kZ, DepthMode::None, kUniform, false, kSegregated),
+		gsTileGpuPassKeyFor(kColor, kOtherZ, DepthMode::None, kUniform, false, kSegregated));
+	EXPECT_NE(gsTileGpuPassKeyFor(kColor, kZ, DepthMode::None, kUniform, false, kSegregated),
+		gsTileGpuPassKeyFor(kColor, kZ, DepthMode::None, kUniform, true, kSegregated));
 }
 
 // ---------------------------------------------------------------------------------------------

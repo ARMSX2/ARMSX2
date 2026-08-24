@@ -193,6 +193,7 @@ public:
 	bool TileGpuBindlessTargets() override;
 	bool TileGpuSelfRead() override;
 	bool TileGpuPrefersDepthUniformPasses() override;
+	bool TileGpuSegregatesSelfRead() override;
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
