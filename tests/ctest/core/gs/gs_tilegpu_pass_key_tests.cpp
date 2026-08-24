@@ -70,12 +70,9 @@ constexpr bool kSegregated = true;  ///< a declaring pass holds only readers: th
 constexpr bool kDeclaringIsFree = false;
 constexpr bool kDeclaringIsTaxed = true;
 
-/// Whether the device serves an in-pass destination read at all, and whether -tilermw is arming
-/// the forced-admission instrument.
+/// Whether the device serves an in-pass destination read at all.
 constexpr bool kNoRoad = false;
 constexpr bool kRoad = true;
-constexpr bool kNatural = false;
-constexpr bool kForced = true;
 
 /// The pass key of a draw expressed the way the renderer holds it: the two surfaces plus the three
 /// depth facts it derives out of ZTE / ZTST / ZMSK and the alpha test's AFAIL fold, plus whether
@@ -489,134 +486,253 @@ TEST(TileGpuRunKey, AnAbsentBlendArrayReadsAsNoBlend)
 // ---------------------------------------------------------------------------------------------
 // The admission half of the same device bit: WHICH draws read, not which pass they read in.
 //
-// Segregation confines the declaration toll to the draws that need the read. It can do nothing at
-// all for a title whose passes are reader-SATURATED, because there the readers already are the
-// pass -- Xenosaga's counters are identical merged and segregated, 2,409 admitted draws inside
-// 1,930 declaring passes a frame, and the SD865 measured 303 ms a frame against ~32 ms before the
-// road existed, with a kernel-level GPU fault in two of two runs.
+// Segregation confines the declaration toll to the draws that need the read, and can do nothing for
+// a title whose passes are reader-SATURATED, because there the readers already are the pass. The
+// question is then which classes are worth their toll -- and the corpus says three times over that
+// it cannot be answered per class:
 //
-// One admission class produces that saturation, and only that one: a blended draw on a CT16/CT16S
-// frame, admitted not because its equation is inexpressible but because the console quantises the
-// blend's RESULT and a blend unit that runs after the fragment stage cannot. A 16-bit title blends
-// on nearly every draw, so nearly every draw is admitted. Every other class is tens of draws a
-// frame and segregation confines it.
+//   * Refusing the partial-FBMSK class buys Xenosaga its entire toll (1,930 declaring passes a frame
+//     down to 21.5) for TWO changed pixels, and costs Katamari its punctuation -- 395 pixels at up
+//     to 154 levels, exactly what C3 landed to repair.
+//   * Refusing the 16-bit-quantised-blend class buys Baldur's Gate Dark Alliance II its toll (477.88
+//     admitted draws a frame down to 0.88) for 0.14 of a channel level, and costs Katamari 2.1
+//     levels -- a single full-screen composite whose quantisation is the whole frame's.
 //
-// So where declaring is taxed, that one class is not admitted, and its draws go back to the
-// approximation they had before the road landed: fixed-function blending, and NO quantise on write,
-// because the blend unit touches the output afterwards. Both halves are pinned below, because
-// admitting without quantising and quantising without admitting are each a picture, not an error.
+// Same class, opposite right answers, and the variable that separates them is never the class. It is
+// the DENSITY, which only the renderer knows and only from the frame it just drew. Hence a per-class
+// budget, and hence the unit it is kept in: not the class's draw count and not its declaring-pass
+// count, but the draws that would stand BEHIND another draw of the class in a declaring pass, since
+// the tax is a render-backend flush per overlapping primitive and a pass holding one draw has
+// nothing to charge. FlatOut 2 puts 448 draws in 448 declaring passes and costs zero by that
+// measure; Baldur's Gate puts 478 in 4.88 and costs 473.
 // ---------------------------------------------------------------------------------------------
 
-TEST(TileGpuSelfReadAdmission, TheQuantisedBlendClassIsAdmittedWhereDeclaringIsFree)
+TEST(TileGpuAdmissionClass, EachClassAsksForTheUseItNeeds)
 {
-	// The default, and every device but Adreno: the exact blend is worth its pass, so take it.
-	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
-		gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
-			/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsFree, kNatural));
+	// Five classes, three uses. The many-to-one is the reason the budget is kept per CLASS: on
+	// FlatOut 2 the exotic blends are 448 draws a frame and the 16-bit blends are zero, and both want
+	// kGSTileGpuSelfBlend, so a budget kept per USE would price them together and get both wrong.
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfDate, gsTileGpuClassUses(kGSTileGpuClassDate));
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend, gsTileGpuClassUses(kGSTileGpuClassExoticBlend));
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend, gsTileGpuClassUses(kGSTileGpuClassQuantisedBlend));
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfMask, gsTileGpuClassUses(kGSTileGpuClassPartialMask));
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfMask, gsTileGpuClassUses(kGSTileGpuClassAfailKeep));
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfMaskAll, gsTileGpuClassUses(kGSTileGpuClassAll));
+	EXPECT_EQ(0u, gsTileGpuClassUses(0));
 }
 
-TEST(TileGpuSelfReadAdmission, TheQuantisedBlendClassIsRefusedWhereDeclaringTaxesThePass)
+TEST(TileGpuAdmissionClass, TheClassifierNamesTheReasonAndNothingElse)
 {
-	// The whole change: the same draw, on a device that charges every draw of a declaring pass.
-	EXPECT_EQ(0u,
-		gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
-			/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsTaxed, kNatural));
-}
-
-TEST(TileGpuSelfReadAdmission, TheForcedInstrumentReachesTheRoadOnATaxingDevice)
-{
-	// -tilermw exists to EXERCISE the road, so the narrowing may not be the thing that stops it.
-	// A forced run on a taxing device is a measurement instrument and not a shipping shape.
-	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
-		gsTileGpuSelfReadUses(0, false, true, /*blend_needs_quantised_result=*/true, kRoad,
-			kDeclaringIsTaxed, kForced));
-}
-
-TEST(TileGpuSelfReadAdmission, TheSparseClassesAreAdmittedOnEveryDevice)
-{
-	// DATE, a write mask the pipeline cannot reproduce bit for bit, and the five blend equations
-	// fixed function cannot express. Tens of draws a frame each, so segregation confines their toll
-	// and the accuracy is worth having on both polarities.
-	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	EXPECT_EQ(kGSTileGpuClassDate, gsTileGpuWantedClasses(0, /*date=*/true, true, false, false));
+	EXPECT_EQ(kGSTileGpuClassPartialMask, gsTileGpuWantedClasses(0, false, /*fbmsk_exact=*/false, false, false));
+	EXPECT_EQ(kGSTileGpuClassQuantisedBlend,
+		gsTileGpuWantedClasses(0, false, true, /*blend_needs_quantised_result=*/true, false));
+	EXPECT_EQ(kGSTileGpuClassAfailKeep, gsTileGpuWantedClasses(0, false, true, false, /*afail_keep_alpha=*/true));
+	for (const u32 flag : {GSTilePassSim::ReaderWrap, GSTilePassSim::ReaderPabe, GSTilePassSim::ReaderCoeffGt1,
+			 GSTilePassSim::ReaderAdFactor, GSTilePassSim::ReaderFacGt1})
 	{
-		EXPECT_EQ(GSDevice::kGSTileGpuSelfDate,
-			gsTileGpuSelfReadUses(0, /*date=*/true, true, false, kRoad, tax, kNatural))
-			<< "taxed=" << tax;
-		EXPECT_EQ(GSDevice::kGSTileGpuSelfMask,
-			gsTileGpuSelfReadUses(0, false, /*fbmsk_exact=*/false, false, kRoad, tax, kNatural))
-			<< "taxed=" << tax;
-		for (const u32 flag : {GSTilePassSim::ReaderWrap, GSTilePassSim::ReaderPabe,
-				 GSTilePassSim::ReaderCoeffGt1, GSTilePassSim::ReaderAdFactor, GSTilePassSim::ReaderFacGt1})
-		{
-			EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
-				gsTileGpuSelfReadUses(flag, false, true, false, kRoad, tax, kNatural))
-				<< "taxed=" << tax << " reader flag " << flag;
-		}
+		EXPECT_EQ(kGSTileGpuClassExoticBlend, gsTileGpuWantedClasses(flag, false, true, false, false))
+			<< "reader flag " << flag;
+	}
+	// The class next door, and the reason the classifier has to name classes rather than "blended
+	// draws": C=As at or below 0x80 is exactly what dual-source blending expresses, so it is worth
+	// nothing anywhere and is never wanted.
+	EXPECT_EQ(0u, gsTileGpuWantedClasses(GSTilePassSim::ReaderAsDualSource, false, true, false, false));
+	EXPECT_EQ(0u, gsTileGpuWantedClasses(0, false, true, false, false));
+}
+
+TEST(TileGpuAdmissionClass, TheClassifierTakesNoDeviceOpinion)
+{
+	// The load-bearing property, stated as a test because it is what stops the budget measuring its
+	// own output: what a draw WANTS is a function of the draw. A refused class must still be seen to
+	// want, or a class that declares nothing measures nothing and re-admits itself every second frame
+	// forever. The signature is the guarantee -- there is no device argument to pass -- so this pins
+	// the consequence: the same draw asks for the same thing whatever any budget last decided.
+	const u32 all_reasons = gsTileGpuWantedClasses(GSTilePassSim::ReaderWrap, true, false, true, true);
+	EXPECT_EQ(kGSTileGpuClassAll, all_reasons);
+	EXPECT_EQ(all_reasons, gsTileGpuWantedClasses(GSTilePassSim::ReaderWrap, true, false, true, true));
+}
+
+TEST(TileGpuSelfReadUses, AdmissionIsWhatWasWantedLessWhatTheBudgetRefused)
+{
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+		gsTileGpuSelfReadUses(kGSTileGpuClassQuantisedBlend, kGSTileGpuClassAll, kRoad));
+	EXPECT_EQ(0u, gsTileGpuSelfReadUses(kGSTileGpuClassQuantisedBlend,
+					  kGSTileGpuClassAll & ~kGSTileGpuClassQuantisedBlend, kRoad));
+	// Refusing one class does not refuse the draw's other reasons: a COLCLAMP-wrapping blend on a
+	// 16-bit frame is inexpressible whatever the format quantises, so it still reads.
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+		gsTileGpuSelfReadUses(kGSTileGpuClassQuantisedBlend | kGSTileGpuClassExoticBlend,
+			kGSTileGpuClassAll & ~kGSTileGpuClassQuantisedBlend, kRoad));
+	// ...and no road means no admission, whatever the budget says.
+	EXPECT_EQ(0u, gsTileGpuSelfReadUses(kGSTileGpuClassAll, kGSTileGpuClassAll, kNoRoad));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The budget itself.
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+/// Run one frame's worth of draws through a budget: `runs` runs of `per_run` draws each, all wanting
+/// `classes`, then the frame boundary. Returns the verdict now in force.
+u32 RunFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 runs, u32 per_run, bool taxes)
+{
+	for (u32 r = 0; r < runs; r++)
+	{
+		b.Charge(classes, /*opening=*/classes); // the run's first draw stands behind nobody
+		for (u32 d = 1; d < per_run; d++)
+			b.Charge(classes, /*opening=*/0);
+	}
+	b.Roll(taxes);
+	return b.admitted;
+}
+} // namespace
+
+TEST(TileGpuDeclaringBudget, ADeviceThatDoesNotChargeForDeclaringAdmitsEverythingAlways)
+{
+	// The gate on the whole mechanism. Nothing about the budget may be observable where declaring is
+	// free, however dense the frame -- that is the byte-identity the default polarity has to keep.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsFree);
+	EXPECT_EQ(kGSTileGpuClassAll, b.admitted);
+	for (int frame = 0; frame < 4; frame++)
+		EXPECT_EQ(kGSTileGpuClassAll, RunFrame(b, kGSTileGpuClassAll, 1, 100000, kDeclaringIsFree));
+}
+
+TEST(TileGpuDeclaringBudget, TheStartupPolarityRefusesOnlyTheClassesThatCanGoBulk)
+{
+	// Frame one runs before any measurement exists. The bet is taken toward not hanging the GPU: the
+	// two classes the census has seen reach thousands of draws a frame start off, the three it bounds
+	// at tens start on.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassQuantisedBlend);
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	EXPECT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate);
+	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(kGSTileGpuClassAfailKeep, b.admitted & kGSTileGpuClassAfailKeep);
+}
+
+TEST(TileGpuDeclaringBudget, TheFrameJustDrawnDecidesTheNextOne)
+{
+	// The handoff. A bulk-capable class starts refused and turns ON once a frame proves it sparse;
+	// a sparse class starts admitted and turns OFF once a frame proves it dense.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	// One run of 9 draws costs 8 -- comfortably under the budget.
+	EXPECT_EQ(kGSTileGpuClassPartialMask,
+		RunFrame(b, kGSTileGpuClassPartialMask, 1, 9, kDeclaringIsTaxed) & kGSTileGpuClassPartialMask);
+
+	GSTileGpuDeclaringBudget d;
+	d.Start(kDeclaringIsTaxed);
+	ASSERT_EQ(kGSTileGpuClassExoticBlend, d.admitted & kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u,
+		RunFrame(d, kGSTileGpuClassExoticBlend, 1, kGSTileGpuDeclaringRefuseAbove + 2, kDeclaringIsTaxed) &
+			kGSTileGpuClassExoticBlend);
+}
+
+TEST(TileGpuDeclaringBudget, ADrawThatOpensARunCostsNothing)
+{
+	// The cost measure, stated on its own: the tax is a flush per OVERLAPPING primitive, so the first
+	// draw of a declaring pass has nothing to overlap. A frame of N one-draw runs costs zero -- which
+	// is FlatOut 2, 448 draws in 448 declaring passes -- and one run of N costs N-1, which is Baldur's
+	// Gate, 478 draws in 4.88.
+	GSTileGpuDeclaringBudget spread;
+	spread.Start(kDeclaringIsTaxed);
+	for (u32 r = 0; r < 1000; r++)
+		spread.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	EXPECT_EQ(0u, spread.exposed[1]);
+
+	GSTileGpuDeclaringBudget dense;
+	dense.Start(kDeclaringIsTaxed);
+	dense.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	for (u32 d = 1; d < 1000; d++)
+		dense.Charge(kGSTileGpuClassExoticBlend, 0);
+	EXPECT_EQ(999u, dense.exposed[1]);
+}
+
+TEST(TileGpuDeclaringBudget, ARefusedClassKeepsMeasuringWhatItWouldHaveCost)
+{
+	// ⚠️ The property the whole design turns on. The budget is charged with what draws WANT, not with
+	// what they were admitted for, so a class that is refused goes on measuring its own density and
+	// stays refused. Charge it with its admitted population instead and it measures zero the moment
+	// it is refused, re-admits, floods, refuses -- a two-frame oscillator that renders a different
+	// picture every frame and is subtle enough to survive review, because both pictures are valid.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (int frame = 0; frame < 8; frame++)
+	{
+		const u32 verdict = RunFrame(b, kGSTileGpuClassPartialMask, 1, kGSTileGpuDeclaringRefuseAbove + 2,
+			kDeclaringIsTaxed);
+		EXPECT_EQ(0u, verdict & kGSTileGpuClassPartialMask) << "frame " << frame;
 	}
 }
 
-TEST(TileGpuSelfReadAdmission, AnExoticBlendOnASixteenBitFrameKeepsItsAdmission)
+TEST(TileGpuDeclaringBudget, HysteresisHoldsAClassHoveringAtTheBudget)
 {
-	// The narrowing removes ONE reason to read, not the draw's other reasons. A COLCLAMP-wrapping
-	// blend on a 16-bit frame is inexpressible whatever the format quantises, so it still reads --
-	// and having read, it still quantises its result.
-	const u32 uses = gsTileGpuSelfReadUses(GSTilePassSim::ReaderWrap, /*date=*/true, /*fbmsk_exact=*/false,
-		/*blend_needs_quantised_result=*/true, kRoad, kDeclaringIsTaxed, kNatural);
-	EXPECT_EQ(GSDevice::kGSTileGpuSelfMaskAll, uses);
-	EXPECT_TRUE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true,
-		(uses & GSDevice::kGSTileGpuSelfBlend) != 0));
-}
+	// Between the budget and twice it, whichever way the class is already set is the way it stays.
+	// Without the band a class sitting near the line changes what the frame is exact about every
+	// frame; both renderings are correct, so the flicker is subtle rather than broken.
+	const u32 hover = kGSTileGpuDeclaringAdmitAtOrUnder + 1; // above the admit line, below the refuse line
 
-TEST(TileGpuSelfReadAdmission, DualSourceBlendIsStillNeverAdmittedOnEitherDevice)
-{
-	// The class next door to the narrowed one, and the reason the narrowing has to name a class
-	// rather than "blended draws": C=As at or below 0x80 is exactly what dual-source blending
-	// expresses, so admitting it would buy nothing anywhere.
-	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	GSTileGpuDeclaringBudget on;
+	on.Start(kDeclaringIsTaxed); // exotic blend starts ADMITTED
+	for (int frame = 0; frame < 4; frame++)
+	{
+		EXPECT_EQ(kGSTileGpuClassExoticBlend,
+			RunFrame(on, kGSTileGpuClassExoticBlend, 1, hover + 1, kDeclaringIsTaxed) & kGSTileGpuClassExoticBlend)
+			<< "frame " << frame;
+	}
+
+	GSTileGpuDeclaringBudget off;
+	off.Start(kDeclaringIsTaxed); // partial FBMSK starts REFUSED
+	for (int frame = 0; frame < 4; frame++)
 	{
 		EXPECT_EQ(0u,
-			gsTileGpuSelfReadUses(GSTilePassSim::ReaderAsDualSource, false, true, false, kRoad, tax, kNatural))
-			<< "taxed=" << tax;
+			RunFrame(off, kGSTileGpuClassPartialMask, 1, hover + 1, kDeclaringIsTaxed) & kGSTileGpuClassPartialMask)
+			<< "frame " << frame;
 	}
 }
 
-TEST(TileGpuSelfReadAdmission, ADeviceWithoutTheRoadAdmitsNothingUnderEitherPolicy)
+TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
 {
-	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
+	// Two lean frames in a row must not add up to one fat one.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (int frame = 0; frame < 8; frame++)
 	{
-		for (const bool force : {kNatural, kForced})
-		{
-			EXPECT_EQ(0u,
-				gsTileGpuSelfReadUses(GSTilePassSim::kReaderStrict, /*date=*/true, /*fbmsk_exact=*/false,
-					/*blend_needs_quantised_result=*/true, kNoRoad, tax, force))
-				<< "taxed=" << tax << " forced=" << force;
-		}
+		const u32 verdict = RunFrame(b, kGSTileGpuClassQuantisedBlend, 1,
+			kGSTileGpuDeclaringAdmitAtOrUnder / 2, kDeclaringIsTaxed);
+		EXPECT_EQ(kGSTileGpuClassQuantisedBlend, verdict & kGSTileGpuClassQuantisedBlend) << "frame " << frame;
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+			EXPECT_EQ(0u, b.exposed[c]) << "class " << c << " frame " << frame;
 	}
 }
 
-TEST(TileGpuSelfReadAdmission, TheRefusedClassFallsBackToTheWholeApproximation)
+TEST(TileGpuDeclaringBudget, TheBudgetSitsWhereTheCorpusSeparates)
 {
-	// The composition, stated as one fact because getting half of it right is a picture. On a
-	// taxing device the plain 16-bit blend takes fixed-function blending AND is not quantised on
-	// write -- the console quantises the blend's result, and the blend unit runs after the shader,
-	// so a shader that truncated here would be truncating the wrong value. On a free device it
-	// takes the shader blend and quantises there, which is exact.
-	for (const bool tax : {kDeclaringIsFree, kDeclaringIsTaxed})
-	{
-		const u32 uses = gsTileGpuSelfReadUses(/*reader_flags=*/0, /*date=*/false, /*fbmsk_exact=*/true,
-			/*blend_needs_quantised_result=*/true, kRoad, tax, kNatural);
-		const bool shader_blend = (uses & GSDevice::kGSTileGpuSelfBlend) != 0;
-		EXPECT_EQ(!tax, shader_blend) << "taxed=" << tax;
-		EXPECT_EQ(!tax, gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, shader_blend))
-			<< "taxed=" << tax;
-	}
+	// The calibration, pinned where a retune will see it. These are measured per-class costs from the
+	// 18-dump corpus under the Adreno pass shape, and the budget has to fall between the two groups:
+	//
+	//   admitted   Katamari's FBMSK 97, GT4 Online Beta's 16-bit blend 41, Beyond Good & Evil's
+	//              FBMSK 40, OutRun's exotic blends 12, FlatOut 2's and MGS3's and Ratchet's 0
+	//   refused    Baldur's Gate's 16-bit blend 473, Xenosaga's FBMSK 479
+	//
+	// The gap between 97 and 473 is the widest in the whole distribution, and the budget is inside it.
+	// A change that moves the line out of that gap is a change of policy on real titles, so it should
+	// fail here and be argued rather than noticed later on a device.
+	EXPECT_LT(97u, kGSTileGpuDeclaringAdmitAtOrUnder);
+	EXPECT_GT(473u, kGSTileGpuDeclaringAdmitAtOrUnder);
+	EXPECT_GT(473u, kGSTileGpuDeclaringRefuseAbove);
 }
 
 // ---------------------------------------------------------------------------------------------
-// ...and the quantise-on-write half on its own. It executes on EVERY device, needs no read, and is
-// where most of the 16-bit accuracy lives: on an M2 with no read road at all it moved Yu-Gi-Oh from
-// 4.07 to 2.01 mean absolute channel error against the software golden, OutRun 10.77 to 6.04 and
-// FlatOut 2 14.42 to 12.73, against full-road values of 1.93 and 13.25.
+// ...and the quantise-on-write half, which is what a refused 16-bit blend falls back to. It
+// executes on EVERY device, needs no read, and is where most of the 16-bit accuracy lives: on an M2
+// with no read road at all it moved Yu-Gi-Oh from 4.07 to 2.01 mean absolute channel error against
+// the software golden, OutRun 10.77 to 6.04 and FlatOut 2 14.42 to 12.73.
 // ---------------------------------------------------------------------------------------------
 
 TEST(TileGpuQuantiseOnWrite, AnUnblendedDrawQuantisesWhateverTheDeviceSays)
@@ -646,5 +762,22 @@ TEST(TileGpuQuantiseOnWrite, AFrameThatStoresEightBitsQuantisesNobody)
 	{
 		for (const bool shader : {false, true})
 			EXPECT_FALSE(gsTileGpuQuantisesOnWrite(/*frame_quantises=*/false, blend, shader));
+	}
+}
+
+TEST(TileGpuQuantiseOnWrite, ARefusedSixteenBitBlendFallsBackToTheWHOLEApproximation)
+{
+	// The composition, as one fact, because getting half of it right is a picture rather than an
+	// error. A refused draw takes fixed-function blending AND is not truncated -- the console
+	// quantises the blend's result, and the blend unit runs after the shader, so a shader that
+	// truncated here would truncate the wrong value.
+	for (const bool admitted : {false, true})
+	{
+		const u32 verdict = admitted ? kGSTileGpuClassAll : (kGSTileGpuClassAll & ~kGSTileGpuClassQuantisedBlend);
+		const u32 uses = gsTileGpuSelfReadUses(kGSTileGpuClassQuantisedBlend, verdict, kRoad);
+		const bool shader_blend = (uses & GSDevice::kGSTileGpuSelfBlend) != 0;
+		EXPECT_EQ(admitted, shader_blend);
+		EXPECT_EQ(admitted,
+			gsTileGpuQuantisesOnWrite(/*frame_quantises=*/true, /*blend_active=*/true, shader_blend));
 	}
 }

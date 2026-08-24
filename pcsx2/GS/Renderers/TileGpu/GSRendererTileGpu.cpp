@@ -146,6 +146,9 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// ...and the second pass-boundary policy, asked once beside it: whether a pass that declares the
 	// in-pass destination read may carry draws that do not need it.
 	m_segregate_self_read = g_gs_device && g_gs_device->TileGpuSegregatesSelfRead();
+	// ...and the startup polarity of the density budget that bit also gates. Frame one runs before
+	// any measurement exists, so it is a bet, and it is taken toward not hanging the GPU.
+	m_declaring_budget.Start(m_segregate_self_read);
 
 	// Asked once because the answer changes how a colour target is CREATED -- the read is an input
 	// attachment and that usage cannot be added to an image later. Without it no draw is admitted to
@@ -268,8 +271,16 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	m_expand_cache.NextFrame();
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
+	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+		m_frame.class_refused[c] = (m_declaring_budget.admitted & (1u << c)) ? 0u : 1u;
 	m_model_frames.push_back(m_frame);
 	m_frame = ModelFrame{};
+
+	// The density budget's frame boundary, taken here so the verdict is constant for every draw of a
+	// frame and is decided from the frame that just finished. The counters it read reset with it.
+	m_declaring_budget.Roll(m_segregate_self_read);
+	m_budget_group = GSTileGpuPassKey{};
+	m_budget_prev_wanted = 0;
 
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
@@ -1203,15 +1214,41 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 	return reader_flags;
 }
 
-// The admission decision, against this renderer's three latched device answers. The decision itself
-// is gsTileGpuSelfReadUses in the header, beside the pass key, because it is policy a test can ask
-// directly and because both of GSDevice::TileGpuSegregatesSelfRead's consequences then read one bit
-// in one place.
-u32 GSRendererTileGpu::SelfReadUses(
-	u32 reader_flags, bool date, bool fbmsk_exact, bool blend_needs_quantised_result) const
+// Which classes this draw is admitted for. Everything, unless the device charges for declaring and
+// the budget has priced a class out -- and everything again under the forced-admission instrument,
+// which exists to exercise the road and so may not be the thing that stops it. A forced run on a
+// device that taxes declaring is a measurement, not a shipping shape.
+u32 GSRendererTileGpu::AdmittedClasses(u32 wanted_classes) const
 {
-	return gsTileGpuSelfReadUses(reader_flags, date, fbmsk_exact, blend_needs_quantised_result, m_self_read,
-		m_segregate_self_read, m_force_self_read);
+	if (m_force_self_read || !m_segregate_self_read)
+		return wanted_classes;
+	return wanted_classes & m_declaring_budget.admitted;
+}
+
+// Charge one draw against the budget, and record the per-class census.
+//
+// The run this draw might be continuing is a run within its ATTACHMENT group, not within the pass it
+// finally lands in. That distinction is the whole reason the budget converges: the passes depend on
+// which classes were admitted, so measuring the classes against the passes would measure the
+// budget's own output, and a refused class -- declaring nothing, measuring zero -- would re-admit
+// itself every second frame forever. Against the attachment group the answer is what the class WOULD
+// cost, which is the same whether or not it was admitted.
+void GSRendererTileGpu::ChargeDeclaringBudget(u32 wanted_classes, const GSTileGpuPassKey& group)
+{
+	if (group != m_budget_group)
+	{
+		m_budget_group = group;
+		m_budget_prev_wanted = 0;
+	}
+	const u32 opening = wanted_classes & ~m_budget_prev_wanted;
+	m_declaring_budget.Charge(wanted_classes, opening);
+	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+	{
+		const u32 bit = 1u << c;
+		m_frame.class_wanted[c] += (wanted_classes & bit) ? 1u : 0u;
+		m_frame.class_exposed[c] += ((wanted_classes & bit) && !(opening & bit)) ? 1u : 0u;
+	}
+	m_budget_prev_wanted = wanted_classes;
 }
 
 void GSRendererTileGpu::ObserveDraw()
@@ -1517,6 +1554,25 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared, "
 					"%.2f / %u draws inside a declaring pass",
 		srd.mean, srd.p50, srp.mean, srp.p50, srpd.mean, srpd.p50);
+	// ...and the same population broken out by the reason each draw asked, which is the only view that
+	// distinguishes a title whose readers are one dense class from one whose readers are spread thin.
+	// A total cannot: that is how Xenosaga came to be recorded as a 16-bit-saturated title when it
+	// renders to 32-bit frames and its bulk is a single-bit alpha FBMSK.
+	{
+		static constexpr const char* kClassNames[kGSTileGpuAdmissionClasses] = {
+			"DATE", "exotic blend", "16-bit blend", "partial FBMSK", "AFAIL alpha keep"};
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+		{
+			const auto want = stat([c](const MF& f) { return f.class_wanted[c]; });
+			if (want.mean == 0.0)
+				continue;
+			const auto expo = stat([c](const MF& f) { return f.class_exposed[c]; });
+			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
+			Console.WriteLn("    class %-17s wanted %.2f / %u draws   exposed %.2f / %u   "
+							"budget refused it in %.0f%% of frames",
+				kClassNames[c], want.mean, want.p50, expo.mean, expo.p50, refu.mean * 100.0);
+		}
+	}
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
 					"byte-road draws",
 		txp.mean, txp.p50, txm.mean, txm.p50, (txp.mean > 0.0) ? (txm.mean * 100.0 / txp.mean) : 0.0, txmd.mean,
@@ -3199,17 +3255,35 @@ void GSRendererTileGpu::AccumulateDraw()
 	// a frame goes to the shader whatever its equation is.
 	const bool blend_needs_quantised_result =
 		blend_active && gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
-	const u32 self_mask =
-		(m_self_read && (m_force_self_read || date != 0 || PRIM->ABE || !fbmsk_exact)) ?
-			SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result) :
-			0;
+	// What this draw would be admitted FOR, before any device has an opinion. Asked only where it can
+	// be non-zero: the classifier's blend arm costs a GetAlphaMinMax scan on every blended draw, which
+	// is real CPU work on a road that is CPU-bound, so the gate names the reasons that are live rather
+	// than asking unconditionally.
+	u32 wanted_classes = 0;
+	if (date != 0 || PRIM->ABE || !fbmsk_exact || afail_keep_alpha)
+	{
+		wanted_classes = gsTileGpuWantedClasses(
+			ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result, afail_keep_alpha);
+	}
+	const u32 admitted_classes = AdmittedClasses(wanted_classes);
+	// The classifier's answer WITHOUT the alpha keep, which is what the shipped reader counter has
+	// meant since the crossover study and must go on meaning, or the device runner's before-and-after
+	// numbers stop being comparable.
+	const u32 self_mask = gsTileGpuSelfReadUses(admitted_classes & ~kGSTileGpuClassAfailKeep,
+		kGSTileGpuClassAll, m_self_read);
 	// What this draw's self mask finally is: the classifier's answer plus the alpha keep, which is a
 	// per-fragment write mask and so rides the arm that already does one. Folded HERE, rather than
 	// where the mask is stored on the PendingDraw further down, because the pass key below asks
 	// whether this draw reads and the two have to be the same question. A draw keyed as a non-reader
 	// whose mask then unions into its pass would make that pass declare anyway, which is exactly
 	// what segregation exists to prevent.
-	const u32 draw_self_mask = self_mask | (afail_keep_alpha ? GSDevice::kGSTileGpuSelfMask : 0u);
+	//
+	// ⚠️ The keep is NOT gated on the road. It is a per-fragment write mask the state row has carried
+	// since before the read road existed, and a device with no road still gets it; where there IS a
+	// road it is one of the budget's classes like any other.
+	const bool keep_alpha_admitted =
+		afail_keep_alpha && (!m_self_read || (admitted_classes & kGSTileGpuClassAfailKeep) != 0);
+	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u);
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -3240,6 +3314,12 @@ void GSRendererTileGpu::AccumulateDraw()
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
 	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
 	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, z_write);
+	// The budget is charged HERE rather than where the classes were worked out, because a draw the
+	// surface pool refused above never becomes a pass and must not be priced as one. The group it is
+	// charged within is this same key with the reader dimension left out -- that dimension is what the
+	// budget decides, so measuring inside it would measure the budget's own output.
+	ChargeDeclaringBudget(wanted_classes,
+		gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
 	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
 		fb_id, z_id, depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
 	if (draw_key != m_open_pass)

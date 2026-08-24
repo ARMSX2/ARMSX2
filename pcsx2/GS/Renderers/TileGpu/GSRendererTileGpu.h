@@ -172,39 +172,6 @@ constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(GSTileSurfaceId color, GSTileSurf
 		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None, segregate_self_read && reads_self};
 }
 
-/// Whether a blended draw whose frame format quantises the blend's RESULT takes the shader blend.
-///
-/// The console quantises after the blend, and the executor's blend unit runs after the fragment
-/// stage, so only the shader can put those two in that order -- which means the whole blend has to
-/// move there, expressible or not. On a 16-bit frame that is the difference between the eight bits
-/// a colour target holds and the five the console stored.
-///
-/// It is also the one admission class that saturates a TITLE rather than costing it tens of draws a
-/// frame. A game whose every target is CT16/CT16S blends on nearly every draw, so nearly every draw
-/// is admitted and nearly every pass declares: Xenosaga admits 2,409 draws a frame into 1,930
-/// declaring passes, and those counters are identical merged and segregated, because its readers
-/// already ARE its passes. Where declaring taxes the whole pass
-/// (GSDevice::TileGpuSegregatesSelfRead) segregation has nothing left to confine and the title pays
-/// the full toll -- an SD865 measured Xenosaga at 303 ms a frame against ~32 ms before the read
-/// road existed, with a kernel-level GPU fault in two runs of two.
-///
-/// So on those devices this class is not admitted, and its draws keep the approximation they had
-/// before the road landed: fixed-function blending, and no quantise on write
-/// (gsTileGpuQuantisesOnWrite), because the blend unit touches the output afterwards. What is given
-/// up is the exact-blend increment ONLY. The quantise-on-write half needs no read, runs on every
-/// device, and already carries most of the 16-bit accuracy: measured on an M2 that has no read
-/// road, Yu-Gi-Oh 4.07 -> 2.01 mean absolute channel error against the software golden, OutRun
-/// 10.77 -> 6.04, FlatOut 2 14.42 -> 12.73, against full-road values of 1.93 and 13.25.
-///
-/// `force` is the test scaffolding (EmuCore/GS TileGpuForceSelfRead, gsrunner -tilermw) and it
-/// reaches past this, because the instrument exists to exercise the road: a forced run on a taxing
-/// device is a measurement, not a shipping shape.
-constexpr bool gsTileGpuAdmitsQuantisedBlend(
-	bool blend_needs_quantised_result, bool declaring_taxes_the_pass, bool force)
-{
-	return blend_needs_quantised_result && (force || !declaring_taxes_the_pass);
-}
-
 /// Whether the fragment stage truncates this draw's output to what a 16-bit frame stores.
 ///
 /// A TileGpu colour target is an RGBA8 image whatever the guest format is, and every road that puts
@@ -222,25 +189,52 @@ constexpr bool gsTileGpuQuantisesOnWrite(bool frame_quantises, bool blend_active
 	return frame_quantises && (shader_blend || !blend_active);
 }
 
-/// What a draw would USE the in-pass destination read for (GSDevice::kGSTileGpuSelf*), given why it
-/// needs one. Zero is the answer for the overwhelming majority of draws and for every draw on a
-/// device without the road, and zero is what keeps that draw's pipeline, its indirect run and its
-/// pass exactly what they were.
+/// The ADMISSION CLASSES: the five distinct reasons a draw asks for the in-pass destination read.
 ///
-/// This is the admission decision. GSRendererTileGpu::ReaderFlags says what fixed-function cannot
-/// express; this says which of those the fragment stage is actually built to serve, so a use that
-/// has not been built yet stays on today's approximation rather than silently reading a destination
-/// nothing does anything with -- and which of those the DEVICE is willing to pay for.
-constexpr u32 gsTileGpuSelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact,
-	bool blend_needs_quantised_result, bool self_read, bool declaring_taxes_the_pass, bool force_self_read)
+/// Finer than the three kGSTileGpuSelf* USES, and it has to be. Two classes can want the same use
+/// for entirely different reasons and cost entirely different amounts: the exotic-blend class and
+/// the 16-bit-quantised-blend class both want kGSTileGpuSelfBlend, and on FlatOut 2 the first is 448
+/// draws a frame while the second is zero; the partial-FBMSK class and the AFAIL alpha keep both
+/// want kGSTileGpuSelfMask, and on Xenosaga the first is 2,409 draws a frame while the second is
+/// none. A budget kept at USE granularity would price those together and get both wrong.
+///
+/// ⚠️ It took a per-class census to find that out, and the shipped counters did not have one: every
+/// title's readers looked alike, so Xenosaga was recorded for weeks as a 16-bit-saturated title when
+/// it renders to 32-bit frames and its bulk is a single-bit alpha FBMSK. That is why these are
+/// permanent counters and not a debugging scratch.
+enum : u32
 {
-	if (!self_read)
-		return 0;
+	kGSTileGpuClassDate = 1u << 0,           ///< TEST.DATE reads the live pixel, not a pass snapshot
+	kGSTileGpuClassExoticBlend = 1u << 1,    ///< the five blend equations fixed function cannot express
+	kGSTileGpuClassQuantisedBlend = 1u << 2, ///< a 16-bit frame quantises the blend's RESULT
+	kGSTileGpuClassPartialMask = 1u << 3,    ///< FBMSK masks a channel in PART
+	kGSTileGpuClassAfailKeep = 1u << 4,      ///< AFAIL keeps the destination alpha
+};
+static constexpr u32 kGSTileGpuAdmissionClasses = 5;
+static constexpr u32 kGSTileGpuClassAll = (1u << kGSTileGpuAdmissionClasses) - 1;
 
-	u32 uses = 0;
-	// The destination-alpha test, always, because there is nothing to trade: the live pixel is exact,
-	// where the pre-pass snapshot is only exact because the planner spends a pass break and a
-	// full-target copy making it so.
+/// The classes that can go BULK -- whose population is a property of the TITLE rather than of the
+/// scene, so that one game asks for them on tens of draws a frame and another on thousands.
+///
+/// Measured, not guessed. Over the 18-dump corpus the partial-FBMSK class runs from 0 to 2,409 draws
+/// a frame and the quantised-blend class from 0 to 478, while DATE tops out at 32, the exotic blends
+/// at 448 spread one-per-pass, and the alpha keep at 6. These two are therefore the ones that start
+/// REFUSED on a device that taxes declaring: the first frame runs before any measurement exists, and
+/// one frame of approximation is cheaper than one frame that hangs the GPU.
+static constexpr u32 kGSTileGpuBulkCapableClasses = kGSTileGpuClassQuantisedBlend | kGSTileGpuClassPartialMask;
+
+/// What this draw would be admitted FOR, whatever any device thinks of the price.
+///
+/// Deliberately free of policy: the budget below needs to know what a class WOULD cost even in a
+/// frame where it was refused, and a classifier that answered "nothing, it was refused" would make
+/// the budget measure its own output. That is not a subtlety -- it is the difference between a
+/// budget and a two-frame oscillator.
+constexpr u32 gsTileGpuWantedClasses(u32 reader_flags, bool date, bool fbmsk_exact,
+	bool blend_needs_quantised_result, bool afail_keep_alpha)
+{
+	u32 wanted = 0;
+	// The destination-alpha test. The live pixel is exact, where the pre-pass snapshot is only exact
+	// because the planner spends a pass break and a full-target copy making it so.
 	//
 	// ⚠️ Asked of the draw's own DATE fold rather than of the classifier's ReaderDate bit. The two
 	// differ in one case and the difference matters: the classifier answers for the pass-structure
@@ -248,10 +242,9 @@ constexpr u32 gsTileGpuSelfReadUses(u32 reader_flags, bool date, bool fbmsk_exac
 	// destination alpha to decide its DEPTH write. Widening the census would change what it has
 	// counted since the crossover study; widening here costs nothing and admits the draw.
 	if (date)
-		uses |= GSDevice::kGSTileGpuSelfDate;
+		wanted |= kGSTileGpuClassDate;
 
-	// The blend equations the executor's fixed-function state cannot express. Five classes, and the
-	// classifier is the same one the pass-structure census has counted since the crossover study:
+	// The blend equations the executor's fixed-function state cannot express:
 	//
 	//   ReaderAdFactor  C=Ad. Fixed-function DST_ALPHA is dest/255; the console's is dest/128.
 	//   ReaderFacGt1    C=As with a fragment alpha that can pass 0x80, or C=FIX above 0x80. Both
@@ -260,31 +253,146 @@ constexpr u32 gsTileGpuSelfReadUses(u32 reader_flags, bool date, bool fbmsk_exac
 	//   ReaderWrap      COLCLAMP = 0, which a blend unit cannot do at all -- it clamps.
 	//   ReaderPabe      PABE's per-pixel gate on the source alpha's MSB, likewise.
 	//
-	// Tens of draws a frame, all of them, so segregation confines their toll on a device that
-	// charges for declaring and they are admitted on every device.
-	//
 	// ⚠️ ReaderAsDualSource is deliberately NOT here. That class is exactly the one dual-source
 	// blending expresses exactly, and it is most of the corpus's blended draws -- admitting it would
 	// move the bulk of every blended frame onto the read for no accuracy at all.
 	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
 						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
-		uses |= GSDevice::kGSTileGpuSelfBlend;
+		wanted |= kGSTileGpuClassExoticBlend;
 
 	// ...and a blend whose equation IS expressible but whose RESULT the frame format quantises. The
-	// one class that saturates a title, and so the one class a device that taxes declaring refuses.
-	if (gsTileGpuAdmitsQuantisedBlend(blend_needs_quantised_result, declaring_taxes_the_pass, force_self_read))
-		uses |= GSDevice::kGSTileGpuSelfBlend;
+	// console quantises after the blend; the executor's blend unit runs after the fragment stage, so
+	// there is no point at which it could. The whole blend has to move to the shader, which can.
+	if (blend_needs_quantised_result)
+		wanted |= kGSTileGpuClassQuantisedBlend;
 
-	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit. The pipeline
-	// still drops the channels FBMSK covers whole -- that half is exact and cheaper -- and the shader
-	// owns only the bits inside a channel the register masks in part.
+	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit. The pipeline still
+	// drops the channels FBMSK covers whole -- that half is exact and cheaper -- and the shader owns
+	// only the bits inside a channel the register masks in part.
 	if (!fbmsk_exact)
-		uses |= GSDevice::kGSTileGpuSelfMask;
+		wanted |= kGSTileGpuClassPartialMask;
 
-	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
-	// evidence -- so that a frame that moves can be attributed to one thing.
+	// The alpha keep is a per-fragment write mask, so it rides the arm that already does one.
+	if (afail_keep_alpha)
+		wanted |= kGSTileGpuClassAfailKeep;
+
+	return wanted;
+}
+
+/// The kGSTileGpuSelf* uses a set of admitted classes needs out of the fragment stage.
+constexpr u32 gsTileGpuClassUses(u32 classes)
+{
+	u32 uses = 0;
+	if (classes & kGSTileGpuClassDate)
+		uses |= GSDevice::kGSTileGpuSelfDate;
+	if (classes & (kGSTileGpuClassExoticBlend | kGSTileGpuClassQuantisedBlend))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+	if (classes & (kGSTileGpuClassPartialMask | kGSTileGpuClassAfailKeep))
+		uses |= GSDevice::kGSTileGpuSelfMask;
 	return uses;
 }
+
+/// What a draw USES the in-pass destination read for: what it wanted, less what the budget refused.
+/// Zero for the overwhelming majority of draws and for every draw on a device without the road, and
+/// zero is what keeps that draw's pipeline, its indirect run and its pass exactly what they were.
+constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bool self_read)
+{
+	return self_read ? gsTileGpuClassUses(wanted_classes & admitted_classes) : 0u;
+}
+
+/// A class's cost, in the unit the tax is actually levied in: draws that would share a declaring
+/// pass with an earlier draw of the same class.
+///
+/// Not the class's draw count and not its declaring-pass count, because the mechanism is a render-
+/// backend flush PER OVERLAPPING PRIMITIVE inside a declaring pass
+/// (GRAS_SC_CNTL.single_prim_mode = FLUSH_PER_OVERLAP_AND_OVERWRITE). A declaring pass holding one
+/// draw has nothing for that mode to charge; a declaring pass holding ninety-eight overlapping draws
+/// is charged ninety-seven times. So the quantity is "how many draws are standing behind another
+/// draw in a declaring pass", which is (draws in the class) minus (consecutive runs of them), and
+/// the corpus separates cleanly on it where it does not on either half alone: FlatOut 2 puts 448
+/// draws in 448 declaring passes and costs ZERO by this measure, while Baldur's Gate Dark Alliance
+/// II puts 478 in 4.88 and costs 473.
+///
+/// ⚠️ A run is counted over the draws' ATTACHMENT group -- one colour surface, one depth surface,
+/// one depth mode -- and not over the passes as they finally came out, because those passes depend
+/// on the verdict this measurement decides. See GSTileGpuDeclaringBudget.
+constexpr u32 kGSTileGpuDeclaringAdmitAtOrUnder = 128;
+/// ...and the hysteresis band. A class hovering at the threshold would otherwise change what the
+/// frame is exact about every frame; both renderings are valid, so the flicker is subtle rather than
+/// broken, which is exactly the kind of defect that survives review. Twice the budget, because the
+/// band has to be wide enough to cover a scene breathing and no wider.
+constexpr u32 kGSTileGpuDeclaringRefuseAbove = 2 * kGSTileGpuDeclaringAdmitAtOrUnder;
+
+/// The per-class declaring budget: which admission classes are worth their tax this frame, decided
+/// from what each of them cost last frame.
+///
+/// A static per-class rule cannot work and the corpus says so three times over. Refusing the
+/// partial-FBMSK class buys Xenosaga its whole toll for two changed pixels and costs Katamari its
+/// punctuation; refusing the quantised-blend class buys Baldur's Gate Dark Alliance II its toll and
+/// costs Katamari the quantisation of a full-screen composite that, alone in its own segregated
+/// pass, has nothing to overlap and so is not being taxed at all. Two titles, opposite right
+/// answers, one class. The variable that separates them is never the class -- it is the DENSITY, and
+/// the renderer is the only thing that knows it.
+///
+/// One frame stale, deliberately. Targets persist across the frame boundary and content is stable
+/// frame to frame, so last frame's density is this frame's density; this is the same
+/// Classic-grade-staleness bet the rest of the design already makes. The alternative is deciding
+/// mid-frame, and a verdict that moved mid-frame would key two draws of one class into different
+/// passes and different pipelines.
+struct GSTileGpuDeclaringBudget
+{
+	/// What each class would cost if admitted, accumulated over the frame being built.
+	std::array<u32, kGSTileGpuAdmissionClasses> exposed{};
+	/// The verdict in force for the WHOLE of the frame being built.
+	u32 admitted = kGSTileGpuClassAll;
+
+	/// The first frame runs before any measurement exists, so the startup polarity is a bet rather
+	/// than a decision. It is taken toward not hanging the GPU: the two classes that can go bulk
+	/// start refused where declaring is taxed, and the three that the census bounds at tens of draws
+	/// a frame start admitted. One frame of approximation on a title that did not need it is cheaper
+	/// than one 303 ms frame on a title that did -- the SD865 took a kernel-level GPU fault on
+	/// Xenosaga twice in two runs, and that is the frame this polarity exists to not render.
+	constexpr void Start(bool declaring_taxes_the_pass)
+	{
+		admitted = declaring_taxes_the_pass ? (kGSTileGpuClassAll & ~kGSTileGpuBulkCapableClasses) : kGSTileGpuClassAll;
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+			exposed[c] = 0;
+	}
+
+	/// Charge one draw. `wanted` is every class it would be admitted for; `opening` is the subset of
+	/// those whose consecutive run this draw STARTS, and so is the subset it costs nothing for.
+	constexpr void Charge(u32 wanted, u32 opening)
+	{
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+		{
+			const u32 bit = 1u << c;
+			if ((wanted & bit) != 0 && (opening & bit) == 0)
+				exposed[c]++;
+		}
+	}
+
+	/// End of frame: this frame's costs decide the next frame's verdict, and the counters reset.
+	///
+	/// A device that does not tax declaring re-admits everything unconditionally rather than being
+	/// left at whatever the last verdict was -- the budget must be inert there, not merely idle.
+	constexpr void Roll(bool declaring_taxes_the_pass)
+	{
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+		{
+			const u32 bit = 1u << c;
+			if (!declaring_taxes_the_pass)
+				admitted |= bit;
+			else if ((admitted & bit) != 0)
+			{
+				if (exposed[c] > kGSTileGpuDeclaringRefuseAbove)
+					admitted &= ~bit;
+			}
+			else if (exposed[c] <= kGSTileGpuDeclaringAdmitAtOrUnder)
+				admitted |= bit;
+			exposed[c] = 0;
+		}
+	}
+};
 
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
 ///
@@ -438,10 +546,13 @@ private:
 	/// One reader for the pass-structure census and for admission to the actual read, so the two
 	/// cannot come to describe different renderers.
 	u32 ReaderFlags(bool color_written);
-	/// What the in-pass read would be USED for on this draw (GSDevice::kGSTileGpuSelf*), given the
-	/// reasons above. Zero where the device has no such road, or where fixed-function is exact.
-	/// gsTileGpuSelfReadUses against this renderer's latched device answers.
-	u32 SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exact, bool blend_needs_quantised_result) const;
+	/// Which of `wanted_classes` this draw is actually admitted for: the budget's verdict for this
+	/// frame, or everything where the device does not tax declaring or -tilermw is forcing.
+	u32 AdmittedClasses(u32 wanted_classes) const;
+	/// Charge one draw against the budget, and count it into the frame's per-class census. `group` is
+	/// the draw's attachment key -- colour surface, depth surface, depth mode -- which is what a run
+	/// of same-class draws is counted within.
+	void ChargeDeclaringBudget(u32 wanted_classes, const GSTileGpuPassKey& group);
 
 	// Mean/p50 of the accumulated per-frame pass structure and of the memory model's traffic,
 	// emitted at teardown.
@@ -748,10 +859,22 @@ private:
 	// key function for the same reason: it is a pass boundary, and both grouping sites must agree.
 	//
 	// ONE member for both of that bit's consequences -- a declaring pass holds only its readers, and
-	// the one admission class that saturates a title is not admitted at all. They come from one
-	// silicon fact, so a second member would be a second chance to disagree with it. The admission
-	// half reads it through gsTileGpuSelfReadUses; the pass-key half through gsTileGpuPassKeyFor.
+	// the admission classes are put on a per-frame density budget rather than admitted outright.
+	// They come from one silicon fact, so a second member would be a second chance to disagree with
+	// it. The pass-key half reads it through gsTileGpuPassKeyFor; the admission half through
+	// m_declaring_budget, which is inert unless this is true.
 	bool m_segregate_self_read = false;
+
+	// The per-class density budget (GSTileGpuDeclaringBudget). Rolled once per video frame, beside
+	// the model frame it is measured from, so the verdict is constant for every draw of a frame --
+	// including across a mid-frame plan build, because a verdict that moved mid-frame would key two
+	// draws of one class into different passes.
+	GSTileGpuDeclaringBudget m_declaring_budget;
+	// Run tracking for the budget's cost measure. A class's run is broken by the attachment group
+	// changing or by a draw that does not want the class, and both are answered by carrying the
+	// previous draw's group and wanted set.
+	GSTileGpuPassKey m_budget_group{};
+	u32 m_budget_prev_wanted = 0;
 
 	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------
 	// The three library caches the materialised-source road is built out of. A direct-colour window
@@ -1316,6 +1439,17 @@ private:
 		// under FLUSH_PER_OVERLAP_AND_OVERWRITE, so six readers inside a giant effect pass tax the
 		// whole pass. Under GSDevice::TileGpuSegregatesSelfRead it converges on the reader count.
 		u32 self_read_pass_draws = 0;
+		// The per-class admission census, which the three totals above cannot give: every title's
+		// readers look alike in a total, and that is how Xenosaga spent weeks recorded as a
+		// 16-bit-saturated title when its bulk is a single-bit alpha FBMSK on a 32-bit frame.
+		//   wanted   draws that would be admitted for the class, whatever the budget said
+		//   exposed  of those, the ones standing behind another draw of the class in what would be
+		//            one declaring pass -- the quantity the budget is kept in
+		//   refused  1 if the budget refused the class for this frame, so the mean is the fraction
+		//            of frames it was off
+		u32 class_wanted[kGSTileGpuAdmissionClasses] = {};
+		u32 class_exposed[kGSTileGpuAdmissionClasses] = {};
+		u32 class_refused[kGSTileGpuAdmissionClasses] = {};
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one
