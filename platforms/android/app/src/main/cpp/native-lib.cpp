@@ -848,6 +848,66 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getNominalFrameRate(JNIEnv*, jclass) {
     return VMManager::HasValidVM() ? static_cast<jfloat>(VMManager::GetFrameRate()) : 0.0f;
 }
 
+/*
+ * The rest of what the in-game OSD shows, for the second-screen panel.
+ *
+ * The panel could only reach getFPS(), so it could show frames and a percentage of nominal and
+ * nothing else -- "I would appreciate more info from the OSD available on the second screen"
+ * (Mike22). PerformanceMetrics already computes all of this for the OSD; none of it had a way
+ * across the JNI boundary. Each returns 0 with no VM rather than the last value, so a panel
+ * sitting in the library reads as idle instead of frozen on whatever the last game was doing.
+ */
+/*
+ * Hand the overlay the device temperatures the app layer read. See ImGuiOverlays.h for why the
+ * core cannot read them itself. Values use ARMSX2_THERMAL_NONE for "no reading", so a device
+ * that exposes no usable zone shows nothing rather than a plausible-looking zero.
+ */
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setThermals(JNIEnv*, jclass, jfloat cpu, jfloat gpu,
+                                                 jfloat battery, jboolean show) {
+    Armsx2Thermals::cpu.store(cpu, std::memory_order_relaxed);
+    Armsx2Thermals::gpu.store(gpu, std::memory_order_relaxed);
+    Armsx2Thermals::battery.store(battery, std::memory_order_relaxed);
+    Armsx2Thermals::show.store(show == JNI_TRUE, std::memory_order_relaxed);
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getVPS(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetInternalFPS()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getEmuSpeedPercent(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetSpeed()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getCpuThreadUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetCPUThreadUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGsThreadUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetGSThreadUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGpuUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetGPUUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getAverageFrameTime(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetAverageFrameTime()) : 0.0f;
+}
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getPauseGameTitle(JNIEnv *env, jclass clazz) {

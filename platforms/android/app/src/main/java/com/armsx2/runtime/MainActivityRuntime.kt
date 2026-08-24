@@ -2235,6 +2235,7 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.CoverRegionIndex.ensureBuilt(applicationContext)
         // Second-display utility panel (Ayn Thor / Retroid dual screen). No-op with one display.
         com.armsx2.SecondScreen.load()
+        runCatching { com.armsx2.Thermals.loadOsdEnabled(applicationContext) }
         com.armsx2.SecondScreenLayout.load()
         com.armsx2.SecondScreen.attach(applicationContext)
         com.armsx2.BatteryWatcher.load()

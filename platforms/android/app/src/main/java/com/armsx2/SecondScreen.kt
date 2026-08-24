@@ -79,12 +79,57 @@ object SecondScreen {
     const val BG_LIBRARY = 1
     const val BG_BLACK = 2
 
+    /** A user-supplied image, the fourth choice ("or perhaps an own background"). */
+    const val BG_CUSTOM = 3
+    private const val PREF_BACKGROUND_URI = "secondScreen.background.uri"
+
     val background = mutableStateOf(BG_THEME)
+    val backgroundUri = mutableStateOf<String?>(null)
+
+    /**
+     * Adopt a picked image. Takes the persistable read grant, exactly as the library's own
+     * background picker does -- without it the URI works until the process restarts and then
+     * silently resolves to nothing, which reads as "my background disappeared".
+     */
+    fun setBackgroundImage(context: Context, uri: android.net.Uri) {
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        backgroundUri.value = uri.toString()
+        runCatching {
+            MainActivityRuntime.prefs.edit().putString(PREF_BACKGROUND_URI, uri.toString()).apply()
+        }
+        setBackground(BG_CUSTOM)
+    }
+
+    // ---- Top bar ------------------------------------------------------------------------------
+    /** Clock and battery in a slim bar across the top rather than as grid tiles ("much cleaner to
+     *  just move the time and battery into a top bar similar to the ayn thors menu"). On by
+     *  default: it is the same information, and it gives the grid back two cells. */
+    private const val PREF_TOP_BAR = "secondScreen.topBar"
+    val topBar = mutableStateOf(true)
+
+    fun loadTopBar() {
+        topBar.value = runCatching {
+            MainActivityRuntime.prefs.getBoolean(PREF_TOP_BAR, true)
+        }.getOrDefault(true)
+    }
+
+    fun setTopBar(on: Boolean) {
+        topBar.value = on
+        runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_TOP_BAR, on).apply() }
+        rebuild()
+    }
 
     fun loadBackground() {
         background.value = runCatching {
             MainActivityRuntime.prefs.getInt(PREF_BACKGROUND, BG_THEME)
-        }.getOrDefault(BG_THEME).coerceIn(BG_THEME, BG_BLACK)
+        }.getOrDefault(BG_THEME).coerceIn(BG_THEME, BG_CUSTOM)
+        backgroundUri.value = runCatching {
+            MainActivityRuntime.prefs.getString(PREF_BACKGROUND_URI, null)
+        }.getOrNull()
     }
 
     // ---- Thermal polling interval -----------------------------------------------------------
@@ -109,7 +154,7 @@ object SecondScreen {
     private fun tempIntervalMs(): Long = tempIntervalSec.value * 1000L
 
     fun setBackground(value: Int) {
-        background.value = value.coerceIn(BG_THEME, BG_BLACK)
+        background.value = value.coerceIn(BG_THEME, BG_CUSTOM)
         runCatching { MainActivityRuntime.prefs.edit().putInt(PREF_BACKGROUND, background.value).apply() }
         rebuild()
     }
@@ -160,6 +205,8 @@ object SecondScreen {
         }
         loadBackground()
         loadTempInterval()
+        loadTopBar()
+        loadIgnoredDisplays()
     }
 
     fun set(context: Context, value: Boolean) {
@@ -255,9 +302,56 @@ object SecondScreen {
         }.getOrNull() ?: Display.DEFAULT_DISPLAY
     }
 
+    // ---- Per-display opt-out ------------------------------------------------------------------
+    /**
+     * Displays the user has told the panel to stay off.
+     *
+     * "The second screen also still appears on the external monitor when connected via usbc"
+     * (NiceRon). By the display-picking rule a USB-C monitor is a perfectly good second display,
+     * so this is not a bug to fix but a preference to record -- someone with a dual-screen
+     * handheld wants the panel on the bottom screen and NOT on the TV they occasionally plug in,
+     * and no rule about internal-vs-external gets that right for everyone. Android does not
+     * expose a stable public display type before API 34 either, so guessing would be wrong on
+     * old devices as well as on unusual ones.
+     *
+     * Keyed by NAME rather than displayId: ids are reassigned across replugs, names are not.
+     */
+    private const val PREF_IGNORED = "secondScreen.ignoredDisplays"
+    val ignoredDisplays = mutableStateOf<Set<String>>(emptySet())
+
+    fun loadIgnoredDisplays() {
+        ignoredDisplays.value = runCatching {
+            MainActivityRuntime.prefs.getStringSet(PREF_IGNORED, emptySet())?.toSet()
+        }.getOrNull() ?: emptySet()
+    }
+
+    private fun persistIgnored() {
+        runCatching {
+            MainActivityRuntime.prefs.edit().putStringSet(PREF_IGNORED, ignoredDisplays.value).apply()
+        }
+    }
+
+    /** Stop using [name] and take the panel down from it now. */
+    fun ignoreDisplay(name: String) {
+        if (name.isBlank()) return
+        ignoredDisplays.value = ignoredDisplays.value + name
+        persistIgnored()
+        detach()
+        MainActivityRuntime.instance?.let { refresh(it.applicationContext) }
+    }
+
+    /** Forget every opt-out, so the panel can use any second display again. */
+    fun clearIgnoredDisplays() {
+        ignoredDisplays.value = emptySet()
+        persistIgnored()
+        MainActivityRuntime.instance?.let { refresh(it.applicationContext) }
+    }
+
     private fun secondaryDisplay(context: Context): Display? {
         val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return null
         val hostId = hostDisplayId(context)
+        val ignored = ignoredDisplays.value
+        fun usable(d: Display) = d.displayId != hostId && d.name !in ignored
         // PRESENTATION category is the one Android intends for this; fall back to "any display the
         // app itself isn't on" because some handhelds don't tag their second panel. Both paths
         // exclude the host — a display can be PRESENTATION-tagged and still be the one showing the
@@ -265,9 +359,9 @@ object SecondScreen {
         val presentationDisplays = runCatching {
             dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
         }.getOrNull()
-        presentationDisplays?.firstOrNull { it.displayId != hostId }?.let { return it }
+        presentationDisplays?.firstOrNull { usable(it) }?.let { return it }
         return runCatching {
-            dm.displays?.firstOrNull { it.displayId != hostId }
+            dm.displays?.firstOrNull { usable(it) }
         }.getOrNull()
     }
 
@@ -292,6 +386,9 @@ object SecondScreen {
         private lateinit var stats: TextView
         private lateinit var idleLabel: TextView
         private lateinit var grid: android.widget.GridLayout
+        /** Null when the top bar is off; the clock and battery are grid tiles then instead. */
+        private var topBarClock: TextView? = null
+        private var topBarBattery: TextView? = null
         private var dp: Float = 1f
         private val tileViews = HashMap<SecondScreenTile, View>()
         /** Rows that only make sense with a game running; hidden in the library. */
@@ -329,6 +426,40 @@ object SecondScreen {
                 setPadding(pad, pad, pad, pad)
             }
 
+            // ---- Top bar: clock left, battery right -------------------------------------------
+            // A status strip rather than two grid cells. Same information, but it stops the
+            // clock competing for space with the things you actually press, and it gives the
+            // panel the shape of a menu instead of a wall of identical boxes.
+            if (topBar.value) {
+                val bar = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, 0, (dp * 10).toInt())
+                }
+                topBarClock = TextView(context).apply {
+                    setTextColor(TEXT)
+                    textSize = 15f
+                    gravity = Gravity.START
+                }
+                topBarBattery = TextView(context).apply {
+                    setTextColor(TEXT_DIM)
+                    textSize = 15f
+                    gravity = Gravity.END
+                }
+                bar.addView(topBarClock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                bar.addView(topBarBattery, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                rootView.addView(bar, lp())
+                // A hairline under it, so the bar reads as chrome and not as another tile.
+                rootView.addView(
+                    View(context).apply { setBackgroundColor(BORDER) },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (dp * 1).toInt())
+                        .apply { bottomMargin = (dp * 10).toInt() },
+                )
+            } else {
+                topBarClock = null
+                topBarBattery = null
+            }
+
             stats = TextView(context).apply {
                 setTextColor(TEXT_DIM)
                 textSize = 13f
@@ -355,10 +486,17 @@ object SecondScreen {
                 useDefaultMargins = false
             }
             SecondScreenLayout.tiles().forEach { tile ->
+                // The bar owns these two while it is on; leaving them in the grid as well would
+                // show the time twice.
+                if (topBar.value && (tile == SecondScreenTile.CLOCK || tile == SecondScreenTile.BATTERY))
+                    return@forEach
                 val view = buildTile(tile) ?: return@forEach
+                val fixedH = SecondScreenLayout.tileHeight()
                 val params = android.widget.GridLayout.LayoutParams().apply {
                     width = 0
-                    height = ViewGroup.LayoutParams.WRAP_CONTENT
+                    // 0 means "as tall as the text needs", which is what the panel always did.
+                    height = if (fixedH > 0) (dp * fixedH).toInt()
+                    else ViewGroup.LayoutParams.WRAP_CONTENT
                     columnSpec = android.widget.GridLayout.spec(
                         android.widget.GridLayout.UNDEFINED, 1, 1f,
                     )
@@ -437,6 +575,17 @@ object SecondScreen {
         private fun panelBackground(context: Context): android.graphics.drawable.Drawable =
             when (background.value) {
                 BG_BLACK -> android.graphics.drawable.ColorDrawable(Color.BLACK)
+                BG_CUSTOM -> runCatching {
+                    val uri = android.net.Uri.parse(backgroundUri.value ?: error("no image"))
+                    val art = context.contentResolver.openInputStream(uri).use { stream ->
+                        android.graphics.drawable.Drawable.createFromStream(stream, uri.toString())
+                    } ?: error("undecodable")
+                    // Same scrim as the library backdrop: an arbitrary photo has no contract to
+                    // be dark, and tile text has to stay readable over whatever was picked.
+                    android.graphics.drawable.LayerDrawable(
+                        arrayOf(art, android.graphics.drawable.ColorDrawable(0xB0000000.toInt())),
+                    )
+                }.getOrElse { themeGround() }
                 BG_LIBRARY -> runCatching {
                     val art = androidx.core.content.ContextCompat.getDrawable(
                         context, com.armsx2.R.drawable.library_bg_xmb,
@@ -496,6 +645,8 @@ object SecondScreen {
                         MainActivityRuntime.userHeldPause.value = true
                         MainActivityRuntime.pause()
                     }
+                // The panel knows its own display; the settings screen does not.
+                SecondScreenTile.NOT_HERE -> ignoreDisplay(display?.name.orEmpty())
                 SecondScreenTile.SCREENSHOT ->
                     MainActivityRuntime.instance?.applicationContext?.let { Screenshots.capture(it) }
                 SecondScreenTile.ASPECT -> {
@@ -596,6 +747,15 @@ object SecondScreen {
             val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(java.util.Date(System.currentTimeMillis()))
 
+            // The bar, when it is the one showing these. Temps ride along on the right when the
+            // user has them, because that is where a status strip is read from.
+            topBarClock?.text = clock
+            topBarBattery?.text = buildString {
+                val t = Thermals.format(Thermals.cpu)
+                if (t != null) append("CPU $t   ")
+                if (battery >= 0) append(batteryIcon(battery, charging)).append(" ").append(battery).append("%")
+            }
+
             tileViews.forEach { (tile, view) ->
                 val text: CharSequence? = when (tile) {
                     SecondScreenTile.TITLE -> title.ifBlank { I18n.get("secondScreen.tile.title") }
@@ -611,6 +771,23 @@ object SecondScreen {
                     SecondScreenTile.BATTERY ->
                         if (battery >= 0) batteryIcon(battery, charging) + "\n" + battery + "%" else null
                     SecondScreenTile.CLOCK -> clock
+                    SecondScreenTile.VPS ->
+                        if (inGame) "VPS\n" + runCatching { NativeApp.getVPS() }.getOrDefault(0f).toInt()
+                        else "VPS\n—"
+                    SecondScreenTile.CPU_LOAD ->
+                        if (inGame) "EE\n" + runCatching { NativeApp.getCpuThreadUsage() }.getOrDefault(0f).toInt() + "%"
+                        else "EE\n—"
+                    SecondScreenTile.GS_LOAD ->
+                        if (inGame) "GS\n" + runCatching { NativeApp.getGsThreadUsage() }.getOrDefault(0f).toInt() + "%"
+                        else "GS\n—"
+                    SecondScreenTile.GPU_LOAD ->
+                        if (inGame) "GPU\n" + runCatching { NativeApp.getGpuUsage() }.getOrDefault(0f).toInt() + "%"
+                        else "GPU\n—"
+                    SecondScreenTile.FRAME_TIME ->
+                        if (inGame) "FRAME\n" + String.format(
+                            java.util.Locale.US, "%.1f", runCatching { NativeApp.getAverageFrameTime() }.getOrDefault(0f),
+                        ) + "ms"
+                        else "FRAME\n—"
                     SecondScreenTile.CPU_TEMP -> "CPU\n" + (Thermals.format(Thermals.cpu) ?: "—")
                     SecondScreenTile.GPU_TEMP -> "GPU\n" + (Thermals.format(Thermals.gpu) ?: "—")
                     SecondScreenTile.BATTERY_TEMP -> "BATT\n" + (Thermals.format(Thermals.battery) ?: "—")

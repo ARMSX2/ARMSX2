@@ -39,6 +39,13 @@ enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Bool
     // Thermals (Cotcho, Mike22). Stat tiles like the rest -- a device with no readable zone
     // simply shows a dash rather than the tile being hidden, so the grid does not reflow
     // depending on what the kernel happens to expose.
+    // The rest of what the in-game OSD shows (Mike22). Backed by new JNI getters -- until those
+    // existed, FPS was the only figure the panel could reach.
+    VPS("vps", "secondScreen.tile.vps", stat = true),
+    CPU_LOAD("cpuload", "secondScreen.tile.cpuLoad", stat = true),
+    GS_LOAD("gsload", "secondScreen.tile.gsLoad", stat = true),
+    GPU_LOAD("gpuload", "secondScreen.tile.gpuLoad", stat = true),
+    FRAME_TIME("frametime", "secondScreen.tile.frameTime", stat = true),
     CPU_TEMP("cputemp", "secondScreen.tile.cpuTemp", stat = true),
     GPU_TEMP("gputemp", "secondScreen.tile.gpuTemp", stat = true),
     BATTERY_TEMP("battemp", "secondScreen.tile.batteryTemp", stat = true),
@@ -55,6 +62,9 @@ enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Bool
     // was running on, with no way to dismiss it from there (BrainBeat: "I wonder if there is a way
     // to toggle it on inside the panel"). Turns the whole feature off, same as the App setting.
     HIDE("hide", "secondScreen.tile.hide", icon = "✕"),
+    // "Not on THIS screen" as distinct from "off entirely" — the panel is the only place that
+    // knows which display it landed on, so the opt-out belongs on it.
+    NOT_HERE("nothere", "secondScreen.tile.notHere", icon = "⤫"),
 
     MACRO1("macro1", "secondScreen.tile.macro1", icon = "①"),
     MACRO2("macro2", "secondScreen.tile.macro2", icon = "②"),
@@ -87,14 +97,34 @@ object SecondScreenLayout {
     @Volatile private var tiles: List<SecondScreenTile> = DEFAULT
     @Volatile private var columnCount: Int = 3
 
+    /**
+     * Tile height in dp, or 0 for "as tall as the text needs".
+     *
+     * Asked for as "be able to size the tiles by myself based on a fixed max height/width"
+     * (NiceRon). Width is already the column count -- tiles share the row equally, so choosing
+     * columns IS choosing width, and a second width control would just be a way to disagree with
+     * it. Height had no control at all, which is why a panel could only ever be as tall as its
+     * text; this is the missing half.
+     */
+    private const val PREF_TILE_HEIGHT = "secondScreen.tileHeight"
+    @Volatile private var tileHeightDp: Int = 0
+
     fun tiles(): List<SecondScreenTile> = tiles
     fun columns(): Int = columnCount
+    fun tileHeight(): Int = tileHeightDp
+
+    fun setTileHeight(dp: Int) {
+        tileHeightDp = dp.coerceIn(0, 200)
+        runCatching { MainActivityRuntime.prefs.edit().putInt(PREF_TILE_HEIGHT, tileHeightDp).apply() }
+        generation.intValue++
+    }
 
     fun load() {
         runCatching {
             val raw = MainActivityRuntime.prefs.getString(PREF_TILES, null)
             tiles = if (raw == null) DEFAULT else parse(raw)
             columnCount = MainActivityRuntime.prefs.getInt(PREF_COLUMNS, 3).coerceIn(1, 6)
+            tileHeightDp = MainActivityRuntime.prefs.getInt(PREF_TILE_HEIGHT, 0).coerceIn(0, 200)
         }
     }
 
@@ -125,6 +155,7 @@ object SecondScreenLayout {
     fun reset() {
         tiles = DEFAULT
         columnCount = 3
+        tileHeightDp = 0
         runCatching {
             MainActivityRuntime.prefs.edit().remove(PREF_TILES).remove(PREF_COLUMNS).apply()
         }

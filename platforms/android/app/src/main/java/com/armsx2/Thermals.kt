@@ -111,6 +111,58 @@ object Thermals {
         }.getOrDefault(NONE)
     }
 
+    // ---- Feeding the in-game overlay -----------------------------------------------------
+    // The panel polls on its own tick, but the overlay runs whether or not a second screen
+    // exists, so it needs a poll of its own. Same interval, same readings; the only extra cost
+    // is the JNI push, and it stops entirely when the option is off.
+    private const val PREF_OSD = "osd.showTemps"
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var feeding = false
+
+    val osdEnabled = androidx.compose.runtime.mutableStateOf(false)
+
+    fun loadOsdEnabled(context: Context) {
+        osdEnabled.value = runCatching {
+            com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(PREF_OSD, false)
+        }.getOrDefault(false)
+        applyOsd(context)
+    }
+
+    fun setOsdEnabled(context: Context, on: Boolean) {
+        osdEnabled.value = on
+        runCatching {
+            com.armsx2.runtime.MainActivityRuntime.prefs.edit().putBoolean(PREF_OSD, on).apply()
+        }
+        applyOsd(context)
+    }
+
+    private fun applyOsd(context: Context) {
+        if (osdEnabled.value) start(context) else stop()
+    }
+
+    private fun start(context: Context) {
+        if (feeding) return
+        feeding = true
+        val app = context.applicationContext
+        val pump = object : Runnable {
+            override fun run() {
+                if (!feeding) return
+                val interval = com.armsx2.SecondScreen.tempIntervalSec.value * 1000L
+                poll(app, interval)
+                runCatching { kr.co.iefriends.pcsx2.NativeApp.setThermals(cpu, gpu, battery, true) }
+                handler.postDelayed(this, interval)
+            }
+        }
+        handler.post(pump)
+    }
+
+    private fun stop() {
+        feeding = false
+        handler.removeCallbacksAndMessages(null)
+        // Tell the overlay to stop drawing them, rather than leaving the last values frozen there.
+        runCatching { kr.co.iefriends.pcsx2.NativeApp.setThermals(NONE, NONE, NONE, false) }
+    }
+
     /** "48°" or null when there is no reading. */
     fun format(c: Float): String? = if (c == NONE) null else "${c.toInt()}°"
 }

@@ -167,6 +167,15 @@ fun OverlayTab(state: MutableState<Settings>) {
         }
         SettingsDivider()
         ToggleRow(str("overlay.toggle.cpuUsage"), s.osdShowCpu) { apply(s.copy(osdShowCpu = it)) }
+        // Device temperatures (Cotcho). Not a core setting like the rows around it: the core has
+        // no way to read a temperature, so the app polls and pushes the values in. Off by
+        // default — it is a sysfs read on a timer.
+        run {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            ToggleRow(str("osd.temps"), com.armsx2.Thermals.osdEnabled.value) {
+                com.armsx2.Thermals.setOsdEnabled(ctx, it)
+            }
+        }
         SettingsDivider()
         ToggleRow(str("overlay.toggle.fps"), s.osdShowFps) { apply(s.copy(osdShowFps = it)) }
         SettingsDivider()

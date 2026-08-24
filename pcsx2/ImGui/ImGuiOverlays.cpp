@@ -492,6 +492,25 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 #if defined(__ANDROID__)
 			if (const u32 skip = GSGetManualFrameSkip(); skip > 0)
 				s_speed_line.append_format("{}SKIP: {}", s_speed_line.empty() ? "" : " | ", skip);
+
+			// Device thermals, pushed in from the Android side (Cotcho: "temp sensor on
+			// applicable device as part of stats OSD"). The core cannot read them itself --
+			// there is no portable API, and on Android the only route is a vendor-specific
+			// sysfs the app layer already discovers. So this draws what it was given and knows
+			// nothing about where it came from; a sensor that could not be read is simply
+			// absent rather than shown as a zero.
+			if (Armsx2Thermals::show.load(std::memory_order_relaxed))
+			{
+				const float cpu_t = Armsx2Thermals::cpu.load(std::memory_order_relaxed);
+				const float gpu_t = Armsx2Thermals::gpu.load(std::memory_order_relaxed);
+				const float bat_t = Armsx2Thermals::battery.load(std::memory_order_relaxed);
+				if (cpu_t > ARMSX2_THERMAL_NONE)
+					s_speed_line.append_format("{}CPU {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", cpu_t);
+				if (gpu_t > ARMSX2_THERMAL_NONE)
+					s_speed_line.append_format("{}GPU {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", gpu_t);
+				if (bat_t > ARMSX2_THERMAL_NONE)
+					s_speed_line.append_format("{}BAT {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", bat_t);
+			}
 #endif
 
 			if (GSConfig.OsdShowFPS)
@@ -2065,6 +2084,18 @@ void SaveStateSelectorUI::ShowSlotOSDMessage()
 }
 
 #ifdef __ANDROID__
+// Device temperatures, written by the Android app layer and read by the perf overlay above.
+// Atomics because the writer is a UI-thread poll and the reader is the GS thread; relaxed
+// because these are three independent display values with no ordering relationship to
+// anything -- a torn read would at worst show one stale number for one frame.
+namespace Armsx2Thermals
+{
+	std::atomic<float> cpu{ARMSX2_THERMAL_NONE};
+	std::atomic<float> gpu{ARMSX2_THERMAL_NONE};
+	std::atomic<float> battery{ARMSX2_THERMAL_NONE};
+	std::atomic<bool> show{false};
+} // namespace Armsx2Thermals
+
 namespace {
 	// Reload-immune snapshot of the Android UI's OSD choice. VMManager::ApplySettings
 	// re-derives EmuConfig.GS from the layered settings interface (base + per-game) every

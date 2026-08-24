@@ -475,16 +475,68 @@ fun AppTab() {
             // The panel now takes its colours from whichever theme is selected, so this is only
             // about the GROUND behind the tiles: the theme's own, the library's backdrop for
             // continuity with the screen it sits beside, or black for an OLED second display.
+            if (com.armsx2.SecondScreen.ignoredDisplays.value.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val clear = { com.armsx2.SecondScreen.clearIgnoredDisplays() }
+                    OutlinedButton(
+                        onClick = clear,
+                        modifier = Modifier.controllerFocusable("secondScreen.displays.reset", onConfirm = clear),
+                    ) {
+                        Text(
+                            str("secondScreen.displays.reset") +
+                                " (" + com.armsx2.SecondScreen.ignoredDisplays.value.size + ")",
+                        )
+                    }
+                }
+            }
+
+            ToggleRow(
+                label = str("secondScreen.topBar"),
+                value = com.armsx2.SecondScreen.topBar.value,
+                description = str("secondScreen.topBar.desc"),
+                onChange = { com.armsx2.SecondScreen.setTopBar(it) },
+            )
+
+            val panelBgPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { picked -> picked?.let { com.armsx2.SecondScreen.setBackgroundImage(appContext, it) } }
+
             SegmentedRow(
                 label = str("secondScreen.background"),
                 options = listOf(
                     str("secondScreen.background.theme"),
                     str("secondScreen.background.library"),
                     str("secondScreen.background.black"),
+                    str("secondScreen.background.custom"),
                 ),
                 selectedIndex = com.armsx2.SecondScreen.background.value,
-                onChange = { com.armsx2.SecondScreen.setBackground(it) },
+                onChange = {
+                    // Picking "Custom" with nothing chosen yet opens the picker rather than
+                    // selecting a mode that would render as the theme ground and look broken.
+                    if (it == com.armsx2.SecondScreen.BG_CUSTOM &&
+                        com.armsx2.SecondScreen.backgroundUri.value == null
+                    ) {
+                        panelBgPicker.launch(arrayOf("image/*"))
+                    } else {
+                        com.armsx2.SecondScreen.setBackground(it)
+                    }
+                },
             )
+            if (com.armsx2.SecondScreen.background.value == com.armsx2.SecondScreen.BG_CUSTOM) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val pick = { panelBgPicker.launch(arrayOf("image/*")) }
+                    OutlinedButton(
+                        onClick = pick,
+                        modifier = Modifier.controllerFocusable("secondScreen.background.choose", onConfirm = pick),
+                    ) { Text(str("secondScreen.background.choose")) }
+                }
+            }
 
             // Only worth showing once a thermal tile is actually on the panel — otherwise it is
             // a control over something invisible.
@@ -593,6 +645,18 @@ fun AppTab() {
                 max = 6,
                 onChange = {
                     com.armsx2.SecondScreenLayout.setColumns(it)
+                    com.armsx2.SecondScreen.rebuild()
+                },
+            )
+            // Columns already decide width (tiles split the row equally), so this is the other
+            // axis. 0 keeps the old behaviour of being exactly as tall as the text.
+            IntSliderRow(
+                label = str("secondScreen.layout.tileHeight"),
+                value = com.armsx2.SecondScreenLayout.tileHeight(),
+                min = 0,
+                max = 160,
+                onChange = {
+                    com.armsx2.SecondScreenLayout.setTileHeight(it)
                     com.armsx2.SecondScreen.rebuild()
                 },
             )
