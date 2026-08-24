@@ -25,9 +25,10 @@
 //    which approximation still reaches for the second source. Including the structural fact the
 //    whole design rests on: every row that names a dual-source factor is a C = As row.
 //
-//  - The road table: which draw takes which road, and the two properties that make it safe --
-//    a row whose DESTINATION factor is As never takes the fold (the fragment stage cannot reach Cd),
-//    and every road other than the second output leaves no SRC1 factor in the pipeline.
+//  - The road table: which draw takes which road, and the property that makes it safe -- every row
+//    that names As comes back with a carrier road, so no SRC1 factor can reach a pipeline built
+//    without the feature. Including that WHICH factor is As does not change the answer, which is
+//    what the deleted fold road used to break.
 //
 //  - The ARITHMETIC of the carrier's restore road, over every alpha byte it can be chosen for. The
 //    carrier is As * 255/128 and the alpha blend equation multiplies it by 128/255 to give the
@@ -89,17 +90,15 @@ TEST(GSTileGpuDualSrcTerms, TheRowsThatNameAsAreTheOnesTheMapSays)
 {
 	// Standard alpha blending, Cs*As + Cd*(1 - As): both factors.
 	const u32 both = GSDevice::gsTileGpuDualSrcTerms(0 * 27 + 1 * 9 + 0 * 3 + 1); // 0101
-	EXPECT_EQ(both & (GSDevice::kGSTileGpuDualSrcSource | GSDevice::kGSTileGpuDualSrcDest),
-		GSDevice::kGSTileGpuDualSrcSource | GSDevice::kGSTileGpuDualSrcDest);
-	EXPECT_EQ(both & GSDevice::kGSTileGpuDualSrcSourceInv, 0u);
+	EXPECT_EQ(both, GSDevice::kGSTileGpuDualSrcSource | GSDevice::kGSTileGpuDualSrcDest);
 
 	// Cs*As + Cd, the accumulation shape: the SOURCE factor only.
 	const u32 src = GSDevice::gsTileGpuDualSrcTerms(0 * 27 + 2 * 9 + 0 * 3 + 1); // 0201
 	EXPECT_EQ(src, GSDevice::kGSTileGpuDualSrcSource);
 
-	// Cs*(1 - As): the source factor, inverted.
+	// Cs*(1 - As): still the source factor, and the inversion is the blend unit's business.
 	const u32 inv = GSDevice::gsTileGpuDualSrcTerms(2 * 27 + 0 * 9 + 0 * 3 + 0); // 2000
-	EXPECT_EQ(inv, GSDevice::kGSTileGpuDualSrcSource | GSDevice::kGSTileGpuDualSrcSourceInv);
+	EXPECT_EQ(inv, GSDevice::kGSTileGpuDualSrcSource);
 
 	// Cd*(1 - As): the DESTINATION factor alone.
 	const u32 dst = GSDevice::gsTileGpuDualSrcTerms(2 * 27 + 1 * 9 + 0 * 3 + 1); // 2101
@@ -154,15 +153,25 @@ TEST(GSTileGpuDualSrcRoad, TheFeatureWinsWhereverItExists)
 		Road::DualSource);
 }
 
-TEST(GSTileGpuDualSrcRoad, AsOnTheSourceAloneFolds)
+TEST(GSTileGpuDualSrcRoad, WhichFactorIsAsDoesNotChangeTheRoad)
 {
-	// The fold touches nothing but the draw's own colour, so nothing else about the draw can refuse
-	// it -- not a written alpha channel, not a clamping factor, not an alpha the shader owns.
+	// Both factors come off the same carrier, so the road is decided entirely by what happens to the
+	// alpha byte the carrier displaces. This is what the deleted fold road used to break -- it
+	// existed only for the source-alone rows -- and pinning the symmetry is what stops it coming
+	// back by accident.
 	const u32 src = GSDevice::kGSTileGpuDualSrcSource;
-	EXPECT_EQ(GSDevice::gsTileGpuDualSrcRoad(src, false, true, false, true), Road::FoldSource);
-	EXPECT_EQ(GSDevice::gsTileGpuDualSrcRoad(src, false, false, true, false), Road::FoldSource);
-	EXPECT_EQ(GSDevice::gsTileGpuDualSrcRoad(src | GSDevice::kGSTileGpuDualSrcSourceInv, false, true, false, false),
-		Road::FoldSource);
+	const u32 dst = GSDevice::kGSTileGpuDualSrcDest;
+	for (int shape = 0; shape < 8; shape++)
+	{
+		const bool writes_alpha = (shape & 1) != 0;
+		const bool unclamped = (shape & 2) != 0;
+		const bool shaders_alpha = (shape & 4) != 0;
+		const Road a = GSDevice::gsTileGpuDualSrcRoad(src, false, writes_alpha, unclamped, shaders_alpha);
+		const Road b = GSDevice::gsTileGpuDualSrcRoad(dst, false, writes_alpha, unclamped, shaders_alpha);
+		const Road c = GSDevice::gsTileGpuDualSrcRoad(src | dst, false, writes_alpha, unclamped, shaders_alpha);
+		EXPECT_EQ(a, b);
+		EXPECT_EQ(a, c);
+	}
 }
 
 TEST(GSTileGpuDualSrcRoad, AsOnTheDestinationTakesTheAlphaChannel)
@@ -180,12 +189,12 @@ TEST(GSTileGpuDualSrcRoad, AsOnTheDestinationTakesTheAlphaChannel)
 	EXPECT_EQ(GSDevice::gsTileGpuDualSrcRoad(dst, false, true, false, false), Road::CarrierCompanion);
 }
 
-TEST(GSTileGpuDualSrcRoad, NoRowWithADestinationFactorEverFolds)
+TEST(GSTileGpuDualSrcRoad, EveryAsRowGetsACarrierRoadWithNoFeature)
 {
-	// The substitution's safety property, executed over the whole map and every draw shape: the fold
-	// replaces the SOURCE factor with one, so a row whose DESTINATION factor is As must never reach
-	// it -- the fragment stage has no Cd to fold into. And on a device with no second output, a row
-	// that names As must always come back with a road that does something about it.
+	// The safety property, executed over the whole map and every draw shape rather than argued: on a
+	// device with no second output, no row that names As may come back without a road -- a draw that
+	// did would reach the pipeline builder still naming SRC1, which is a pipeline Vulkan refuses to
+	// create rather than a picture with a wrong pixel in it.
 	for (u32 index = 0; index < 81; index++)
 	{
 		const u32 terms = GSDevice::gsTileGpuDualSrcTerms(index);
@@ -197,12 +206,8 @@ TEST(GSTileGpuDualSrcRoad, NoRowWithADestinationFactorEverFolds)
 			const bool unclamped = (shape & 2) != 0;
 			const bool shaders_alpha = (shape & 4) != 0;
 			const Road road = GSDevice::gsTileGpuDualSrcRoad(terms, false, writes_alpha, unclamped, shaders_alpha);
-			EXPECT_NE(road, Road::None);
-			EXPECT_NE(road, Road::DualSource);
-			if (terms & GSDevice::kGSTileGpuDualSrcDest)
-				EXPECT_NE(road, Road::FoldSource) << "row " << index << " folds a destination factor";
-			else
-				EXPECT_EQ(road, Road::FoldSource) << "row " << index << " has nothing but a source factor";
+			EXPECT_TRUE(road == Road::Carrier || road == Road::CarrierRestore || road == Road::CarrierCompanion)
+				<< "row " << index << " shape " << shape << " came back with no carrier";
 		}
 	}
 }
@@ -239,40 +244,31 @@ TEST(GSTileGpuDualSrcRoad, TheCarrierIsTheSameNumberTheSecondOutputCarried)
 	}
 }
 
-TEST(GSTileGpuDualSrcRoad, TheFoldStaysInRangeSoNoClampCanDiffer)
+TEST(GSTileGpuDualSrcRoad, TheCarrierSurvivesTheBlendUnitsOwnClamp)
 {
-	// The fold moves the source multiply from the blend unit into the fragment stage, which is only
-	// a substitution while nothing between the two clamps. Vulkan clamps a fixed-point attachment's
-	// source components to [0, 1] BEFORE blending, so a fold whose product left that range would be
-	// clamped at a different point in the arithmetic than the blend unit clamps at. It cannot: the
-	// finished colour is already in range and both factors are too.
+	// Vulkan clamps a fixed-point attachment's source components to [0, 1] before blending, and the
+	// carrier is one of them -- so a carrier outside that range would be a different number by the
+	// time the blend unit read it back as SRC_ALPHA than the fragment stage wrote. It cannot be.
 	for (int a = 0; a <= 255; a++)
 	{
 		const float factor = AsFactor(static_cast<float>(a) / 255.0f);
-		ASSERT_GE(factor, 0.0f);
-		ASSERT_LE(factor, 1.0f);
-		for (int c = 0; c <= 255; c++)
-		{
-			const float colour = static_cast<float>(c) / 255.0f;
-			EXPECT_GE(colour * factor, 0.0f);
-			EXPECT_LE(colour * factor, 1.0f);
-			EXPECT_GE(colour * (1.0f - factor), 0.0f);
-			EXPECT_LE(colour * (1.0f - factor), 1.0f);
-		}
+		EXPECT_GE(factor, 0.0f);
+		EXPECT_LE(factor, 1.0f);
 	}
 }
 
-TEST(GSTileGpuDualSrcRoad, TheInvertedFoldIsOneMinusTheFactorNotOneMinusTheAlpha)
+TEST(GSTileGpuDualSrcRoad, TheCarrierIsNotTheStoredAlphaAndTheGapIsNearlyDouble)
 {
-	// The trap this exists for: ONE_MINUS_SRC1_COLOR is one minus the FACTOR, which is As * 255/128,
-	// and not one minus the alpha the draw stores. They differ by very nearly a factor of two, so
-	// folding the wrong one is a wrong picture rather than a wrong last bit -- and it is exactly the
-	// confusion the alpha carrier invites, since the two now live in the same channel.
+	// The trap the carrier invites, now that the factor and the stored alpha live in the same
+	// channel: ONE_MINUS_SRC_ALPHA over the carrier is one minus As * 255/128, and reading it as one
+	// minus the byte the draw stores would be wrong by very nearly a factor of two -- a wrong
+	// picture, not a wrong last bit. Which is also why the alpha has to be given back rather than
+	// left alone.
 	for (int a = 1; a <= 128; a++)
 	{
 		const float alpha = static_cast<float>(a) / 255.0f;
-		EXPECT_NE(1.0f - AsFactor(alpha), 1.0f - alpha);
+		EXPECT_NE(AsFactor(alpha), alpha);
 	}
-	// ...and at the ends they do agree, which is why a spot check would have missed it.
-	EXPECT_EQ(1.0f - AsFactor(0.0f), 1.0f - 0.0f);
+	// ...and at zero they agree, which is why a spot check would have missed it.
+	EXPECT_EQ(AsFactor(0.0f), 0.0f);
 }

@@ -6963,15 +6963,10 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 	{
 		const HWBlend b = GSDevice::GetBlend(blend_index);
 		// The As factor's road, decided per draw by the plan and carried in the blend key. On the
-		// dual-source road the table's SRC1_* factors stand as they are. On the two feature-free
-		// roads they do not exist in this pipeline at all:
-		//
-		//   fold     the fragment stage has already multiplied its own colour by the factor, so the
-		//            SOURCE factor is one. Only a row whose DESTINATION factor is not As can take
-		//            this, which is what the plan guarantees.
-		//   carrier  o_color.a holds the factor, so SRC1_COLOR reads back as SRC_ALPHA and
-		//            ONE_MINUS_SRC1_COLOR as ONE_MINUS_SRC_ALPHA -- exactly equal, because the
-		//            index-1 output was a broadcast of that same scalar.
+		// dual-source road the table's SRC1_* factors stand as they are. On the carrier road they do
+		// not exist in this pipeline at all: o_color.a holds the factor, so SRC1_COLOR reads back as
+		// SRC_ALPHA and ONE_MINUS_SRC1_COLOR as ONE_MINUS_SRC_ALPHA -- exactly equal, because the
+		// index-1 output was a broadcast of that same scalar.
 		//
 		// The ALPHA equation is ONE/ZERO everywhere else -- the GS stores the fragment's own alpha
 		// byte -- and CONSTANT_ALPHA/ZERO on the restore road, where the constant is 128/255 and
@@ -6980,12 +6975,9 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 		// which is C = 2 and never names As.
 		const bool carrier = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrier ||
 							 dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcCarrierRestore;
-		const bool fold = dualsrc_road == GSDevice::GSTileGpuPassPlan::kDualSrcFold;
 		const auto factor = [&](u8 f) -> VkBlendFactor {
 			if (!IsDualSourceBlendFactor(f))
 				return kBlendFactors[f];
-			if (fold)
-				return VK_BLEND_FACTOR_ONE;
 			if (carrier)
 			{
 				return (f == SRC1_COLOR || f == SRC1_ALPHA) ? VK_BLEND_FACTOR_SRC_ALPHA :

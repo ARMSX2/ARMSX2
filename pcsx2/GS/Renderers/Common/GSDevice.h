@@ -2141,9 +2141,8 @@ public:
 	/// different numbers that cannot share o_color.a while the draw writes both.
 	enum GSTileGpuDualSrcTerm : u32
 	{
-		kGSTileGpuDualSrcSource = 1u << 0,    ///< the row's SOURCE factor is As
-		kGSTileGpuDualSrcDest = 1u << 1,      ///< the row's DESTINATION factor is As
-		kGSTileGpuDualSrcSourceInv = 1u << 2, ///< ...and that source factor is ONE MINUS As
+		kGSTileGpuDualSrcSource = 1u << 0, ///< the row's SOURCE factor is As
+		kGSTileGpuDualSrcDest = 1u << 1,   ///< the row's DESTINATION factor is As
 	};
 
 	/// The dual-source terms a GS ALPHA index's blend row names, read off the row the executor
@@ -2159,22 +2158,18 @@ public:
 		None = 0,
 		/// The second colour output at index 1, which needs dualSrcBlend.
 		DualSource = 1,
-		/// As multiplies the SOURCE only, so the fragment stage folds it into its own finished
-		/// colour and the pipeline's source factor becomes one. Costs a multiply and nothing else:
-		/// the alpha channel is untouched, so no other decision about the draw moves.
-		FoldSource = 2,
-		/// As multiplies the DESTINATION, which the fragment stage cannot reach -- so o_color.a
-		/// carries the factor and the pipeline reads it as SRC_ALPHA. This draw does not write the
-		/// target's alpha byte, so the channel write mask throws the carrier away after the blend
-		/// has used it and nothing has to give the alpha back.
-		Carrier = 3,
+		/// o_color.a carries the factor and the pipeline reads it back as SRC_ALPHA -- exactly
+		/// equal, because the index-1 output was a broadcast of that same scalar. This draw does
+		/// not write the target's alpha byte, so the channel write mask throws the carrier away
+		/// after the blend has used it and nothing has to give the alpha back.
+		Carrier = 2,
 		/// ...and this draw DOES write it, but its factor never reaches the min(x, 1) clamp, so the
 		/// carrier is exactly As * 255/128 and the alpha blend equation gives the alpha back by
 		/// multiplying it by the constant 128/255.
-		CarrierRestore = 4,
+		CarrierRestore = 3,
 		/// ...and neither of those holds: the carrier still takes o_color.a, and a companion draw
 		/// over the same geometry writes the alpha channel alone with nothing borrowed.
-		CarrierCompanion = 5,
+		CarrierCompanion = 4,
 	};
 
 	/// The alpha blend constant the CarrierRestore road divides the carrier back down by. The
@@ -2183,12 +2178,21 @@ public:
 
 	/// Which road one draw's As factor takes.
 	///
-	/// The order is cost, not preference: FoldSource touches nothing but the draw's own colour;
-	/// Carrier costs nothing either but needs the alpha channel free; CarrierRestore borrows the
-	/// alpha blend equation, which is exact only while the factor does not clamp; and the companion
-	/// is a second draw, so it is last. Every road is exact and none needs a device feature -- which
-	/// is the point, since the device this exists for has neither dual-source blending nor a
-	/// guaranteed way back to the fragment stage.
+	/// It does not matter WHICH of the row's two factors is As -- both become SRC_ALPHA off the same
+	/// carrier -- so the only question is what happens to the alpha byte the carrier displaces.
+	/// Cheapest first: the write mask already drops it, or the alpha blend equation gives it back,
+	/// or a second draw writes it. Every road is exact and none needs a device feature, which is the
+	/// point: the device this exists for has neither dual-source blending nor a guaranteed way back
+	/// into the fragment stage.
+	///
+	/// ⚠️ There WAS a fourth road and it is deliberately gone. Where As multiplies the source alone
+	/// the fragment stage can fold the factor into its own colour and leave the alpha channel
+	/// untouched, which costs nothing and needs no companion -- and over the corpus it moved five
+	/// pixels by one level, because the shader's fp32 multiply and the blend unit's are not the same
+	/// multiply. Proven by substituting the companion road for the fold alone, which took the
+	/// divergence to zero pixels while substituting it for the restore left all five. Deleting it
+	/// costs 156 companion draws a frame corpus-wide (0.74% of plan draws; OutRun 2006 pays the most
+	/// at 9.25%) and buys a road that is byte-identical to the second output on all nineteen dumps.
 	///
 	/// `alpha_is_the_shaders` covers the two ways the fragment stage owns the alpha byte it writes:
 	/// an AFAIL that keeps the destination's alpha per fragment, and an FBMSK that masks alpha in
@@ -2201,8 +2205,6 @@ public:
 			return GSTileGpuDualSrcRoad::None;
 		if (has_dual_source)
 			return GSTileGpuDualSrcRoad::DualSource;
-		if ((terms & kGSTileGpuDualSrcDest) == 0)
-			return GSTileGpuDualSrcRoad::FoldSource;
 		if (!writes_alpha)
 			return GSTileGpuDualSrcRoad::Carrier;
 		if (factor_unclamped && !alpha_is_the_shaders)
@@ -2775,10 +2777,9 @@ public:
 		/// indirect run on pipeline state, and the executor's run cut needs no new stream.
 		static constexpr u32 kDualSrcRoadShift = 20;
 		static constexpr u32 kDualSrcRoadMask = 3u << kDualSrcRoadShift;
-		static constexpr u32 kDualSrcFold = 1u << kDualSrcRoadShift;    ///< source factor becomes one
-		static constexpr u32 kDualSrcCarrier = 2u << kDualSrcRoadShift; ///< SRC1_* become SRC_ALPHA
+		static constexpr u32 kDualSrcCarrier = 1u << kDualSrcRoadShift; ///< SRC1_* become SRC_ALPHA
 		/// ...and the carrier with the alpha blend equation put to work giving the stored alpha back.
-		static constexpr u32 kDualSrcCarrierRestore = 3u << kDualSrcRoadShift;
+		static constexpr u32 kDualSrcCarrierRestore = 2u << kDualSrcRoadShift;
 		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
 		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
 		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a

@@ -1315,25 +1315,16 @@ void main()
 #endif
 
 #if !TILEGPU_DUAL_SRC
-	// The As factor with no second output to put it in. Runs on the FINISHED colour -- below the byte
-	// tail, because the blend unit runs below it too, so folding above the tail's merge would scale
-	// destination bits the mask told us to keep.
+	// The As factor with no second output to put it in: it goes in the alpha channel, where the
+	// pipeline reads it as SRC_ALPHA. Below the byte tail, on the FINISHED colour, because that is
+	// where the blend unit would have taken the factor from.
 	//
-	// Two shapes, and the plan picks per draw (GSDevice::gsTileGpuDualSrcRoad):
-	//
-	//   FOLD     As multiplies the source colour only, so the fragment stage does that multiply and
-	//            the pipeline's source factor becomes one. Nothing else about the draw moves.
-	//   CARRIER  As multiplies the DESTINATION, which the fragment stage cannot reach -- so the
-	//            factor goes in o_color.a, where the blend unit reads it as SRC_ALPHA. The alpha the
-	//            draw would have stored is masked off, given back by the alpha blend equation, or
-	//            written by a companion draw; the plan guarantees one of the three.
-	if ((sr.blend & 0x01400000u) != 0u)
-	{
-		if ((sr.blend & 0x00400000u) != 0u)
-			o_color.rgb *= ((sr.blend & 0x00800000u) != 0u) ? (1.0f - as_factor) : as_factor;
-		else
-			o_color.a = as_factor;
-	}
+	// The alpha this displaces is the plan's problem, not the shader's, and it has three answers:
+	// the pipeline masks the channel off, the alpha blend equation multiplies the carrier back down
+	// by 128/255, or a companion draw over the same geometry writes the byte with this bit clear.
+	// GSDevice::gsTileGpuDualSrcRoad picks one for every draw that sets this.
+	if ((sr.blend & 0x00400000u) != 0u)
+		o_color.a = as_factor;
 #endif
 }
 

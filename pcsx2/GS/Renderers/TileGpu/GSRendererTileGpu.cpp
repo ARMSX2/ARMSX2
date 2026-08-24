@@ -4537,11 +4537,6 @@ void GSRendererTileGpu::AccumulateDraw()
 		switch (GSDevice::gsTileGpuDualSrcRoad(
 			terms, false, (pd.color_mask & 0x8u) != 0, pd.as_unclamped, alpha_is_the_shaders))
 		{
-			case GSDevice::GSTileGpuDualSrcRoad::FoldSource:
-				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcFold;
-				pd.dualsrc_bits = kGSTileBlendFoldAs |
-								  ((terms & GSDevice::kGSTileGpuDualSrcSourceInv) ? kGSTileBlendFoldInvAs : 0u);
-				break;
 			case GSDevice::GSTileGpuDualSrcRoad::Carrier:
 				blend_key |= GSDevice::GSTileGpuPassPlan::kDualSrcCarrier;
 				pd.dualsrc_bits = kGSTileBlendAlphaCarrier;

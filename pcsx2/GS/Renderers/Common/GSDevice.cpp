@@ -2345,6 +2345,5 @@ u32 GSDevice::gsTileGpuDualSrcTerms(u32 blend_index)
 		return 0;
 	const HWBlend b = m_blendMap[blend_index];
 	return (IsDualSourceBlendFactor(b.src) ? kGSTileGpuDualSrcSource : 0u) |
-		   (IsDualSourceBlendFactor(b.dst) ? kGSTileGpuDualSrcDest : 0u) |
-		   ((b.src == INV_SRC1_COLOR || b.src == INV_SRC1_ALPHA) ? kGSTileGpuDualSrcSourceInv : 0u);
+		   (IsDualSourceBlendFactor(b.dst) ? kGSTileGpuDualSrcDest : 0u);
 }

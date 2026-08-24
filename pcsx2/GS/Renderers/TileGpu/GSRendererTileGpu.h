@@ -1092,9 +1092,9 @@ private:
 		/// where the answer was simply never asked.
 		bool as_unclamped;
 		/// What the fragment stage must do with the As blend factor when there is no second colour
-		/// output to hand it to: fold it into the finished colour, or carry it in o_color.a. State-row
-		/// bits (kGSTileBlendFoldAs / kGSTileBlendFoldInvAs / kGSTileBlendAlphaCarrier), zero on every
-		/// draw on a device with dual-source blending and on every draw whose row names no As factor.
+		/// output to hand it to (kGSTileBlendAlphaCarrier: put it in o_color.a). Zero on every draw
+		/// on a device with dual-source blending, on every draw whose row names no As factor, and on
+		/// the companion draw that writes the alpha byte the carrier displaced.
 		u32 dualsrc_bits;
 		/// This draw's failing fragments land their RGB and keep the destination's alpha instead of
 		/// being discarded (gsTileGpuAfailKeepsAlpha). A per-fragment write mask, so it rides the same
