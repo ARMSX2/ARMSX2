@@ -3282,9 +3282,11 @@ void GSRendererTileGpu::AccumulateDraw()
 	// whose mask then unions into its pass would make that pass declare anyway, which is exactly
 	// what segregation exists to prevent.
 	//
-	// ⚠️ The keep is NOT gated on the road. It is a per-fragment write mask the state row has carried
-	// since before the read road existed, and a device with no road still gets it; where there IS a
-	// road it is one of the budget's classes like any other.
+	// The keep IS gated on the road -- afail_keep_alpha carries m_self_read from its computation,
+	// because the shader serves the keep out of the destination read and has nothing to serve it
+	// from on a device without one. The !m_self_read disjunct below is therefore never the deciding
+	// term; it is there so this expression stays correct if that upstream gate ever moves. Where
+	// there IS a road, the keep is one of the budget's classes like any other.
 	const bool keep_alpha_admitted =
 		afail_keep_alpha && (!m_self_read || (admitted_classes & kGSTileGpuClassAfailKeep) != 0);
 	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u);
