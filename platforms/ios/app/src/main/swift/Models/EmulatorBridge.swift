@@ -19,11 +19,13 @@ enum StikDebugLauncher {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.armsx2.ios"
         let encodedBundleID = bundleID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bundleID
         let appName = Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "ARMSX2iOS"
+        let scriptParam = (SettingsStore.shared.jitScriptProtocol == .legacy) ? "classic" : "universal"
+        let encodedScript = scriptParam.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? scriptParam
         let candidates = [
             "stikdebug://enable-jit?bundle-id=\(encodedBundleID)",
             "stikjit://enable-jit?bundle-id=\(encodedBundleID)",
             "stikdebug://",
-            "stosdebug://enableJIT?bundleId=\(encodedBundleID)&appName=\(appName)",
+            "stosdebug://enableJIT?bundleId=\(encodedBundleID)&appName=\(appName)&script=\(encodedScript)",
             "stosdebug://"
                     ].compactMap(URL.init(string:))
 
