@@ -1990,6 +1990,38 @@ public:
 		u32 zbuf_target;
 	};
 
+	/// Where a TileGpu pass may write, and the mapping its vertices arrive through.
+	struct GSTileGpuPassGeometry
+	{
+		/// The viewport: NDC -> device pixels. The other half of the vertex transform the
+		/// renderer built into each state row.
+		int viewport_width;
+		int viewport_height;
+		/// The render area, and the scissor that matches it: what the pass is allowed to touch.
+		/// A framebuffer may not be larger than the smallest attachment it carries, so a pass
+		/// pairing a tall colour target with a shorter depth one renders into the intersection.
+		int area_width;
+		int area_height;
+	};
+
+	/// The geometry of a pass rendering into this attachment pair.
+	///
+	/// One derivation rather than two expressions in the executor, so the render area, the
+	/// scissor and the viewport cannot drift apart, and so what each of them is FOR can be
+	/// stated once and tested.
+	static constexpr GSTileGpuPassGeometry gsTileGpuPassGeometry(bool has_color, int color_width,
+		int color_height, bool has_depth, int depth_width, int depth_height)
+	{
+		int aw = has_color ? color_width : depth_width;
+		int ah = has_color ? color_height : depth_height;
+		if (has_color && has_depth)
+		{
+			aw = (depth_width < aw) ? depth_width : aw;
+			ah = (depth_height < ah) ? depth_height : ah;
+		}
+		return GSTileGpuPassGeometry{aw, ah, aw, ah};
+	}
+
 	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
 	/// pass's draws sample, so a draw reads a pre-pass version of pixels the pass also writes
 	/// without a raster-order hazard. Taken before the pass it feeds opens; one per pass. Today

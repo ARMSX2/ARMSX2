@@ -7942,14 +7942,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		// The render area has to fit inside the smaller of the pair, not just the colour target:
 		// this planner does pair a big colour with a small depth, and the framebuffer built for
-		// that pair is clamped to match.
-		GSVector2i size = rt ? rt->GetSize() : ds->GetSize();
-		if (rt && ds)
-		{
-			const GSVector2i dsz = ds->GetSize();
-			size.x = std::min(size.x, dsz.x);
-			size.y = std::min(size.y, dsz.y);
-		}
+		// that pair is clamped to match. The viewport is a separate question -- see
+		// gsTileGpuPassGeometry.
+		const GSTileGpuPassGeometry geom = gsTileGpuPassGeometry(rt != nullptr, rt ? rt->GetWidth() : 0,
+			rt ? rt->GetHeight() : 0, ds != nullptr, ds ? ds->GetWidth() : 0, ds ? ds->GetHeight() : 0);
+		const GSVector2i size(geom.area_width, geom.area_height);
 		const GSVector4i area = GSVector4i::loadh(size);
 		OMSetRenderTargets(rt, ds, area);
 
@@ -8005,7 +8002,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		if (can_draw)
 		{
-			const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
+			const VkViewport vp{0.0f, 0.0f, static_cast<float>(geom.viewport_width),
+				static_cast<float>(geom.viewport_height), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
 			vkCmdSetScissor(cmd, 0, 1, &sc);
