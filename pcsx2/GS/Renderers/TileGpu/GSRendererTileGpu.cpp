@@ -390,6 +390,9 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	g_perfmon.Put(GSPerfMon::TileGpuScissorDraws, static_cast<double>(m_frame.scissor_draws));
 	g_perfmon.Put(GSPerfMon::TileGpuScissorCuts, static_cast<double>(m_frame.scissor_cuts));
 	g_perfmon.Put(GSPerfMon::TileGpuScissorExtraCalls, static_cast<double>(m_frame.scissor_extra_calls));
+	g_perfmon.Put(GSPerfMon::TileGpuDualSrcDraws, static_cast<double>(m_frame.dualsrc_draws));
+	g_perfmon.Put(GSPerfMon::TileGpuDualSrcCarrier, static_cast<double>(m_frame.dualsrc_carrier));
+	g_perfmon.Put(GSPerfMon::TileGpuDualSrcReaders, static_cast<double>(m_frame.dualsrc_readers));
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
@@ -1940,6 +1943,26 @@ void GSRendererTileGpu::ReportModelTraffic()
 			(scdraws.mean > 0.0) ? (scsub.mean * 100.0 / scdraws.mean) : 0.0, sccut.mean, sccut.p50,
 			(scdraws.mean > 0.0) ? (sccut.mean * 100.0 / scdraws.mean) : 0.0, scdist.mean, scdist.p50, scmax.mean,
 			scmax.p50, scmax.max, scex.mean, scex.p50, scex.max);
+	}
+	// ...and the As blend factor priced the same way: what the dual-source feature carries, and how
+	// much of that the two feature-free roads take between them.
+	{
+		// scissor_draws is the plan's own draw count -- every draw the state-row loop walks -- so it
+		// is what the dual-source population is a fraction OF.
+		const auto pld = stat([](const MF& f) { return f.scissor_draws; });
+		const auto dsd = stat([](const MF& f) { return f.dualsrc_draws; });
+		const auto dss = stat([](const MF& f) { return f.dualsrc_src_only; });
+		const auto dsa = stat([](const MF& f) { return f.dualsrc_alpha_free; });
+		const auto dsc = stat([](const MF& f) { return f.dualsrc_carrier; });
+		const auto dsr = stat([](const MF& f) { return f.dualsrc_readers; });
+		const auto dsu = stat([](const MF& f) { return f.dualsrc_readers_unclamped; });
+		const auto dsn = stat([](const MF& f) { return f.dualsrc_reader_runs; });
+		Console.WriteLn("  dual-src: draws %.2f / %u / %u worst (%.2f%% of plan draws)   As on the source alone "
+						"%.2f / %u   alpha channel free %.2f / %u   NO-FEATURE ROADS carry %.2f / %u (%.2f%%)   "
+						"residue %.2f / %u / %u worst in %.2f / %u runs, of which factor never clamps %.2f / %u",
+			dsd.mean, dsd.p50, dsd.max, (pld.mean > 0.0) ? (dsd.mean * 100.0 / pld.mean) : 0.0, dss.mean, dss.p50,
+			dsa.mean, dsa.p50, dsc.mean, dsc.p50, (dsd.mean > 0.0) ? (dsc.mean * 100.0 / dsd.mean) : 0.0, dsr.mean,
+			dsr.p50, dsr.max, dsn.mean, dsn.p50, dsu.mean, dsu.p50);
 	}
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
@@ -3703,10 +3726,12 @@ void GSRendererTileGpu::AccumulateDraw()
 	// is real CPU work on a road that is CPU-bound, so the gate names the reasons that are live rather
 	// than asking unconditionally.
 	u32 wanted_classes = 0;
+	u32 reader_flags = 0;
 	if (date != 0 || PRIM->ABE || !fbmsk_exact || afail_keep_alpha)
 	{
+		reader_flags = ReaderFlags(color_written);
 		wanted_classes = gsTileGpuWantedClasses(
-			ReaderFlags(color_written), date != 0, fbmsk_exact, blend_needs_quantised_result, afail_keep_alpha);
+			reader_flags, date != 0, fbmsk_exact, blend_needs_quantised_result, afail_keep_alpha);
 	}
 	const u32 admitted_classes = AdmittedClasses(wanted_classes);
 	// The classifier's answer WITHOUT the alpha keep, which is what the shipped reader counter has
@@ -4314,6 +4339,11 @@ void GSRendererTileGpu::AccumulateDraw()
 	// The equation and the mask the fragment stage would need, whether or not this draw was admitted:
 	// two shifts and an AND, and a field that only sometimes carries a meaning is a field that gets
 	// read in the wrong state eventually.
+	// The draw's own alpha never passes 0x80, so the As blend factor -- min(As * 255/128, 1) -- does
+	// not reach its clamp anywhere in this draw. That is the classifier's ReaderAsDualSource
+	// condition and nothing else, kept here because the dual-source-free road needs the same fact:
+	// a factor that does not clamp is a factor an alpha channel can carry and give back.
+	pd.as_unclamped = (reader_flags & GSTilePassSim::ReaderAsDualSource) != 0;
 	pd.self_blend = gsTileGpuPackBlend(PRIM->ABE && color_written, ctx->ALPHA.A, ctx->ALPHA.B, ctx->ALPHA.C,
 		ctx->ALPHA.D, ctx->ALPHA.FIX, m_draw_env->COLCLAMP.CLAMP != 0, m_draw_env->PABE.PABE != 0,
 		GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
@@ -4636,6 +4666,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// ...and the per-draw fragment variant, sized here and filled by the grouping below, which is
 		// where a draw's pass -- and so the DATE road its pass provided -- is finally known.
 		m_plan_variant_keys.assign(m_plan_pending.size(), 0u);
+		// The dual-source census's run state: the residue draws are counted in runs as well as in
+		// draws, and a run ends where the colour surface changes or a non-residue draw lands.
+		bool dualsrc_run_open = false;
+		GSTileSurfaceId dualsrc_run_surface = kGSTileNoSurface;
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
@@ -4709,6 +4743,53 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				m_frame.scissor_subrect++;
 			if (pd.scissor_cuts)
 				m_frame.scissor_cuts++;
+
+			// The dual-source census, asked of the blend row the executor will really build the
+			// pipeline from: the fixed-function blend has to be ON (a draw whose equation the fragment
+			// stage evaluates names no factors at all) and the row has to reach for the second source.
+			const u32 bkey = m_plan_blend_keys[i];
+			const bool ff_blend = (bkey & GSDevice::GSTileGpuPassPlan::kBlendEnable) != 0 &&
+								  (bkey & GSDevice::GSTileGpuPassPlan::kSelfBlend) == 0;
+			const u32 terms = ff_blend ? GSDevice::gsTileGpuDualSrcTerms(bkey & 0x7Fu) : 0u;
+			if (terms != 0)
+			{
+				m_frame.dualsrc_draws++;
+				// As multiplying the SOURCE only is the cheap case: the fragment stage can fold the
+				// factor into its own colour and hand the blend unit a factor of one, which touches
+				// nothing else about the draw. As multiplying the DESTINATION cannot be folded --
+				// the fragment stage does not have Cd unless it reads for it.
+				const bool src_only = (terms & GSDevice::kGSTileGpuDualSrcDest) == 0;
+				if (src_only)
+					m_frame.dualsrc_src_only++;
+				// ...and the other cheap case: a draw that does not write the target's alpha byte can
+				// put the factor in o_color.a and let the blend unit read it as SRC_ALPHA, because the
+				// channel write mask throws the carrier away after the blend has used it.
+				const bool alpha_free = (pd.color_mask & 0x8u) == 0;
+				if (alpha_free)
+					m_frame.dualsrc_alpha_free++;
+				if (src_only || alpha_free)
+				{
+					m_frame.dualsrc_carrier++;
+				}
+				else
+				{
+					m_frame.dualsrc_readers++;
+					// ...and of the residue, the half whose factor never reaches its clamp. That is
+					// the half an alpha channel could carry AND give back, if the alpha blend
+					// equation were made to undo the 255/128 the carrier applies.
+					if (pd.as_unclamped)
+						m_frame.dualsrc_readers_unclamped++;
+				}
+			}
+			// A run of consecutive residue draws into one colour surface declares one pass between
+			// them, so the residue's price is runs as much as draws -- the same two terms the
+			// declaring budget charges its classes in.
+			const bool residue = terms != 0 && (terms & GSDevice::kGSTileGpuDualSrcDest) != 0 &&
+								 (pd.color_mask & 0x8u) != 0;
+			if (residue && !(dualsrc_run_open && dualsrc_run_surface == pd.color_surface))
+				m_frame.dualsrc_reader_runs++;
+			dualsrc_run_open = residue;
+			dualsrc_run_surface = pd.color_surface;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one

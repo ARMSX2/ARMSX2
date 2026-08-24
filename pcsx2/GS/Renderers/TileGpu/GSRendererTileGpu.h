@@ -1086,6 +1086,11 @@ private:
 		/// set for a draw the fixed-function blend unit still has to touch: the console quantises the
 		/// blend's result, not its source, and the blend happens after the fragment stage.
 		bool quantise_5551;
+		/// No fragment of this draw carries an alpha byte above 0x80, so the As blend factor
+		/// min(As * 255/128, 1) does not clamp anywhere in it. Set only for the draws the classifier
+		/// scans (a blend with the destination in it and C = As); false everywhere else, including
+		/// where the answer was simply never asked.
+		bool as_unclamped;
 		/// This draw's failing fragments land their RGB and keep the destination's alpha instead of
 		/// being discarded (gsTileGpuAfailKeepsAlpha). A per-fragment write mask, so it rides the same
 		/// fragment arm the bit-granular FBMSK merge does.
@@ -2332,6 +2337,19 @@ private:
 		u32 scissor_distinct = 0;          // distinct scissor rects, summed over the frame's passes
 		u32 scissor_pass_distinct_max = 0; // ...the most any one pass of this frame carried
 		u32 scissor_extra_calls = 0;       // calls a per-call scissor adds: a cut nothing else makes
+
+		// The As blend factor, priced as a device question, the same way the scissor above is. It
+		// rides as a second fragment output (SRC1), which is a device FEATURE (dualSrcBlend) the Mali
+		// blob on the RG477V hardcodes absent -- and a pipeline naming a SRC1 factor there does not
+		// render wrongly, it fails to be created. These columns say how much of a frame the feature
+		// carries and what each of the roads that need no feature would have to take.
+		u32 dualsrc_draws = 0;     // fixed-function blended draws whose row names As as a factor
+		u32 dualsrc_src_only = 0;  // ...where As multiplies the SOURCE only: the shader can premultiply
+		u32 dualsrc_alpha_free = 0;// ...whose alpha channel the draw does not write: o_color.a is free
+		u32 dualsrc_carrier = 0;   // ...served by one of those two without reading the destination
+		u32 dualsrc_readers = 0;   // ...served by neither: the shader-blend residue
+		u32 dualsrc_reader_runs = 0; // ...and the runs of consecutive such draws, one declared run each
+		u32 dualsrc_readers_unclamped = 0; // ...of that residue, the draws whose As factor never clamps
 
 		// The CLUT gather. Every CLUT load is classified once (clut_loads), and the machinery has to
 		// be invisible on the loads it does not serve: sotc runs ~1789 a frame and not one of them

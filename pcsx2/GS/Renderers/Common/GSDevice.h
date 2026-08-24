@@ -2118,6 +2118,24 @@ public:
 		return GSTileGpuScissorRoad::ClipPlanes;
 	}
 
+	/// Which of a blend row's two factors the GS's own SOURCE ALPHA supplies.
+	///
+	/// It is the one GS blend term Vulkan can express only as a dual-source (index 1) fragment
+	/// output: the GS's As is the fragment's alpha byte read in the 0x80 = 1.0 convention, so it
+	/// reaches 1.99 where the alpha the draw STORES reaches 1.0, and the two are therefore
+	/// different numbers that cannot share o_color.a while the draw writes both.
+	enum GSTileGpuDualSrcTerm : u32
+	{
+		kGSTileGpuDualSrcSource = 1u << 0, ///< the row's SOURCE factor is As
+		kGSTileGpuDualSrcDest = 1u << 1,   ///< the row's DESTINATION factor is As
+	};
+
+	/// The dual-source terms a GS ALPHA index's blend row names, read off the row the executor
+	/// really builds the pipeline from (GSDevice::m_blendMap) rather than off the register
+	/// selectors -- the map approximates several equations, and only the row says which of those
+	/// approximations still reaches for the second source.
+	static u32 gsTileGpuDualSrcTerms(u32 blend_index);
+
 	/// A VkRect2D's worth of scissor: the GS scissor in target pixels, clamped into the pass's
 	/// render area.
 	struct GSTileGpuScissorRect

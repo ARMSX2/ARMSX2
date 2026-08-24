@@ -2336,3 +2336,14 @@ const std::array<HWBlend, 3*3*3*3> GSDevice::m_blendMap =
 	{ BLEND_CD                 , OP_ADD          , CONST_ZERO      , CONST_ONE}       , // 2221: (0  -  0)*F  + Cd ==> Cd
 	{ BLEND_NO_REC             , OP_ADD          , CONST_ZERO      , CONST_ZERO}      , // 2222: (0  -  0)*F  +  0 ==> 0
 }};
+
+// clang-format on
+
+u32 GSDevice::gsTileGpuDualSrcTerms(u32 blend_index)
+{
+	if (blend_index >= m_blendMap.size())
+		return 0;
+	const HWBlend b = m_blendMap[blend_index];
+	return (IsDualSourceBlendFactor(b.src) ? kGSTileGpuDualSrcSource : 0u) |
+		   (IsDualSourceBlendFactor(b.dst) ? kGSTileGpuDualSrcDest : 0u);
+}
