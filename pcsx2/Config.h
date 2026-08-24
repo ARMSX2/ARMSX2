@@ -1401,11 +1401,11 @@ struct Pcsx2Config
 		// the second output, which a device without the feature still cannot give.
 		//
 		// The carrier roads are exact, so this is a byte-identity A/B, and the force value exists
-		// to run it on a device that would otherwise never take them. What differs is where the
-		// factor lives: folded into the fragment's own colour where As multiplies the source alone,
-		// otherwise in o_color.a, whose own value is then masked off, given back by the alpha blend
-		// equation, or written by a companion draw over the same geometry. Only that last road adds
-		// anything to the frame, and over the corpus it is zero draws on four dumps and 352 on the
+		// to run it on a device that would otherwise never take them. The factor lives in
+		// o_color.a, and the alpha byte it displaces is masked off, given back by the alpha blend
+		// equation, or written by a companion draw over the same geometry (the fold-into-the-colour
+		// road is deliberately gone -- gsTileGpuDualSrcRoad says why). Only the companion adds
+		// anything to the frame, and over the corpus it is zero draws on five dumps and 354 on the
 		// worst. Dev only.
 		int TileGpuDualSrcRoad = 0;
 
