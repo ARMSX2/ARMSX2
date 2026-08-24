@@ -2164,11 +2164,14 @@ public:
 		u32 copy_x[4], copy_y[4];
 	};
 
-	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every
-	/// draw in a pass shares it — the planner breaks a pass whenever the GS z-write/z-test
-	/// changes, so a ZTST=ALWAYS write and a ZTST=GEQUAL test are never forced onto one pipeline.
-	/// GS depth grows towards the viewer, so the test is GREATER_OR_EQUAL when the draw tests and
-	/// ALWAYS when it only writes; the write follows ZMSK independently of the test.
+	/// A draw's depth configuration, which selects the depth pipeline variant. GS depth grows
+	/// towards the viewer, so the test is GREATER_OR_EQUAL when the draw tests and ALWAYS when it
+	/// only writes; the write follows ZMSK independently of the test.
+	///
+	/// PER DRAW, not per pass: it is two bits of VkPipelineDepthStencilStateCreateInfo, so the
+	/// executor binds it per indirect run exactly as it binds the topology and the blend. Whether a
+	/// pass is nonetheless kept depth-UNIFORM is the device's call — see
+	/// TileGpuPrefersDepthUniformPasses and GSTileGpuPassPlan::depth_modes.
 	enum class GSTileGpuDepthMode : u8
 	{
 		None = 0,        ///< no depth attachment (ZTE off, or neither test nor write)
@@ -2279,7 +2282,6 @@ public:
 		/// slow and a subset is wrong.
 		u32 texel_mask;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
-		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};
 
 	/// One frame, structured. The streams are CPU-side views the executor stages into its own
@@ -2310,6 +2312,15 @@ public:
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
 		std::span<const GSTileGpuTopology> topologies; ///< one per draw, parallel to `draws`
+		/// One per draw, parallel to `draws`: the draw's depth pipeline variant. Required, like the
+		/// topology and unlike the blend key — there is no per-pass depth mode to fall back to, and a
+		/// draw whose depth state the executor guessed would write depth it must not write.
+		///
+		/// A pass's depth ATTACHMENT is still uniform (a render pass cannot gain or lose one), so
+		/// None appears here exactly in the passes whose target pair carries no zbuf_target — the
+		/// executor asserts that per run. Whether the three depth-carrying modes are also uniform
+		/// within a pass depends on the device: see TileGpuPrefersDepthUniformPasses.
+		std::span<const GSTileGpuDepthMode> depth_modes;
 		/// One per draw, parallel to `draws`: the fixed-function blend the draw takes, or 0 for
 		/// none. Bit 31 set = blend enabled; bits 0-6 = the GS ALPHA (A,B,C,D) index into
 		/// GSDevice::m_blendMap (A*27 + B*9 + C*3 + D); bits 8-15 = ALPHA.FIX when C selects the
@@ -2365,10 +2376,11 @@ public:
 		{
 			GSTileGpuTopology topology = GSTileGpuTopology::Triangle;
 			u32 blend_key = 0;
+			GSTileGpuDepthMode depth_mode = GSTileGpuDepthMode::None;
 
 			constexpr bool operator==(const GSTileGpuRunKey& o) const
 			{
-				return topology == o.topology && blend_key == o.blend_key;
+				return topology == o.topology && blend_key == o.blend_key && depth_mode == o.depth_mode;
 			}
 			constexpr bool operator!=(const GSTileGpuRunKey& o) const { return !(*this == o); }
 		};
@@ -2377,8 +2389,29 @@ public:
 		/// that wants to predict its cuts cannot disagree about what a run is.
 		GSTileGpuRunKey RunKeyAt(u32 d) const
 		{
-			return GSTileGpuRunKey{topologies[d], (blend_keys.size() == draws.size()) ? blend_keys[d] : 0u};
+			return GSTileGpuRunKey{
+				topologies[d], (blend_keys.size() == draws.size()) ? blend_keys[d] : 0u, depth_modes[d]};
 		}
+
+		/// One past the last draw of the maximal run starting at `first`, bounded by `end`.
+		///
+		/// ⚠️ MAXIMAL and CONSECUTIVE, in submission order. Runs PARTITION a pass's draws — walking
+		/// this from the pass's first draw visits every draw exactly once, in the order the GS
+		/// issued them. Nothing here may ever sort or bucket by run key, however tempting it looks
+		/// when a pass interleaves two depth modes or two topologies: a later draw has to see an
+		/// earlier draw's output (that is the whole of GS draw order), and on hardware whose
+		/// depth rejection depends on the order fragments arrive, resequencing is also a large and
+		/// silent fragment-cost regression. Collapsing the call count is the submission's job;
+		/// reordering is not on the table.
+		u32 RunEndAt(u32 first, u32 end) const
+		{
+			const GSTileGpuRunKey key = RunKeyAt(first);
+			u32 run_end = first + 1;
+			while (run_end < end && RunKeyAt(run_end) == key)
+				run_end++;
+			return run_end;
+		}
+
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;
@@ -2458,6 +2491,26 @@ public:
 	/// device that then failed to bind the target would sample stale bytes. False keeps every
 	/// draw on the byte road.
 	virtual bool TileGpuBindlessTargets() { return false; }
+
+	/// Whether this device would rather render MORE passes than see the depth write-enable or
+	/// depth compare-enable change inside one.
+	///
+	/// The depth mode is pipeline state, so the planner is free to merge draws that differ only in
+	/// it into a single pass and let the executor rebind per indirect run. Whether that is a win is
+	/// a hardware property and nothing the planner can work out:
+	///
+	///  - On a tiler a pass boundary is a tile-buffer resolve and reload. Merging is worth 3-7x on
+	///    the scenes where it bites (measured on an M2 under Honeykrisp: Shadow of the Colossus
+	///    574.95 passes a frame down to 76.95, 35.0 ms down to 10.4).
+	///  - On Adreno the same merge is a net LOSS on every dump measured, even though the pass-count
+	///    deltas come out exactly as the model predicts. Something there charges more for mixed
+	///    depth state inside a pass than the boundaries cost. This is an empirical result and no
+	///    mechanism is claimed for it — see GSDeviceVK's answer for the measurement.
+	///
+	/// So: true keeps every pass depth-uniform, false merges. False is the default, including for
+	/// vendors nobody has measured — merging is the behaviour that is right on the two architectures
+	/// the design targets, and a device that needs uniformity says so.
+	virtual bool TileGpuPrefersDepthUniformPasses() { return false; }
 
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.

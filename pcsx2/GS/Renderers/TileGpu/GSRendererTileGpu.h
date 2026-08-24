@@ -111,27 +111,50 @@ struct GSTileGpuPassKey
 	GSTileSurfaceId color = kGSTileNoSurface;
 	GSTileSurfaceId depth = kGSTileNoSurface; ///< compared only when depth_used
 	bool depth_used = false;
-	/// The pass's depth pipeline variant. ⚠️ In the key only because GSTileGpuPass carries one
-	/// depth_mode and the executor binds it per pass; it is pipeline state, not attachment state.
-	GSDevice::GSTileGpuDepthMode depth_mode = GSDevice::GSTileGpuDepthMode::None;
+	/// The depth pipeline variant, but only where the device asked for depth-uniform passes --
+	/// None everywhere else, so the field falls out of the comparison. See gsTileGpuPassKeyFor.
+	GSDevice::GSTileGpuDepthMode keyed_depth_mode = GSDevice::GSTileGpuDepthMode::None;
 
 	constexpr bool operator==(const GSTileGpuPassKey& o) const
 	{
 		return color == o.color && depth_used == o.depth_used && (!depth_used || depth == o.depth) &&
-			   depth_mode == o.depth_mode;
+			   keyed_depth_mode == o.keyed_depth_mode;
 	}
 	constexpr bool operator!=(const GSTileGpuPassKey& o) const { return !(*this == o); }
 };
 
 /// The pass key of a draw rendering into `color` and `depth` with depth variant `mode`.
 ///
-/// The depth attachment's PRESENCE is `mode != None` rather than a fourth argument: the two are the
-/// same fact. gsTileGpuDepthModeFor returns None exactly when the draw neither tests nor writes
-/// depth, which is exactly when the pass needs no depth attachment.
-constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(
-	GSTileSurfaceId color, GSTileSurfaceId depth, GSDevice::GSTileGpuDepthMode mode)
+/// The depth attachment's PRESENCE is `mode != None` rather than a separate argument: the two are
+/// the same fact. gsTileGpuDepthModeFor returns None exactly when the draw neither tests nor writes
+/// depth, which is exactly when the pass needs no depth attachment. That half of the key is not
+/// negotiable -- a Vulkan render pass cannot gain or lose an attachment without ending.
+///
+/// `depth_uniform_passes` is the negotiable half, and it is the device's call rather than the
+/// planner's, because the two costs it trades sit on opposite sides of the hardware:
+///
+///  - Keeping the depth WRITE-ENABLE and COMPARE-ENABLE out of the key merges runs of draws that
+///    differ only in those two bits into one pass, and the executor rebinds the depth pipeline per
+///    indirect run instead. On a tiler a pass boundary is a tile-buffer resolve and reload -- ~50 us
+///    on an M2 -- and the merge costs no indirect calls at all, because a pass boundary already
+///    ended a run and this only moves where the cut is made (measured: identical calls/frame on all
+///    five dumps). So the merge is worth 3-7x on scenes where the alpha test's all-fail fold drops
+///    hundreds of depth writes a frame -- Shadow of the Colossus, 574.95 passes a frame merged back
+///    down to 76.95 and 34.7 ms down to 10.5.
+///  - Keeping them IN the key costs those passes but leaves every pass depth-uniform, and some
+///    hardware measures faster that way. On Adreno 650 the merge is a net LOSS on every dump tried,
+///    while the pass-count deltas match the model to the pass -- the passes really are saved and
+///    something else more than eats them. No mechanism is claimed; the trade is measured.
+///
+/// So the planner asks the device (GSDevice::TileGpuPrefersDepthUniformPasses) and takes the answer
+/// through here. Both grouping sites read the one bit, and the executor's run cut is unconditional:
+/// under depth-uniform passes every draw in a pass carries the same mode, so cutting on it cuts
+/// nowhere and the submission is byte-identical to not cutting at all.
+constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(GSTileSurfaceId color, GSTileSurfaceId depth,
+	GSDevice::GSTileGpuDepthMode mode, bool depth_uniform_passes)
 {
-	return GSTileGpuPassKey{color, depth, mode != GSDevice::GSTileGpuDepthMode::None, mode};
+	return GSTileGpuPassKey{color, depth, mode != GSDevice::GSTileGpuDepthMode::None,
+		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None};
 }
 
 /// Which BLOCKS of which GS pages a surface's pool texture actually holds texels for.
@@ -434,6 +457,10 @@ private:
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<u32> m_plan_blend_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::blend_keys)
 	std::vector<u32> m_plan_bind_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::bind_keys)
+	// One per m_plan_draws entry (GSTileGpuPassPlan::depth_modes): the draw's depth pipeline
+	// variant. Pipeline state like the topology and the blend key, so it cuts the indirect run and
+	// never the pass.
+	std::vector<GSDevice::GSTileGpuDepthMode> m_plan_depth_modes;
 	// Rule 3's frame-wide bind table: the (image, sampler) pairs this frame's draws sample, in the
 	// slot order a state row's tex_source names. Deduped on the pair -- one window sampled through two
 	// different TEX1/CLAMP settings is two slots, because the filtering and the wrap ride in the
@@ -520,6 +547,13 @@ private:
 	// window is never composed into the ring) -- asking late, or asking a device that then
 	// refuses, would leave the fragment stage decoding bytes nobody wrote.
 	bool m_bindless_targets = false;
+
+	// Whether this device would rather have MORE passes than mixed depth state inside one
+	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
+	// the pass sim's lever is: it decides pass boundaries, and boundaries that moved mid-frame would
+	// put a draw's prep ops in a pass the draw is not in. Both grouping sites read THIS member --
+	// accumulation's open-pass test and the plan build's cut -- so they cannot disagree.
+	bool m_depth_uniform_passes = false;
 
 	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------
 	// The three library caches the materialised-source road is built out of. A direct-colour window
@@ -963,7 +997,8 @@ private:
 	// those counters describe a submission shape the executor does not produce.
 	GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey PlanRunKeyAt(u32 d) const
 	{
-		return GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey{m_plan_topologies[d], m_plan_blend_keys[d]};
+		return GSDevice::GSTileGpuPassPlan::GSTileGpuRunKey{
+			m_plan_topologies[d], m_plan_blend_keys[d], m_plan_depth_modes[d]};
 	}
 
 	// Copy one flushed batch's geometry into the frame streams, drive the memory model for its

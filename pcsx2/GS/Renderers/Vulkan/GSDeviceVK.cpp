@@ -6114,6 +6114,32 @@ bool GSDeviceVK::TileGpuBindlessTargets()
 	return m_optional_extensions.tilegpu_bindless_targets;
 }
 
+// Adreno wants its passes depth-uniform, and it is the only architecture measured that does.
+//
+// Merging draws that differ only in the depth write-enable into one pass, with the executor
+// rebinding the depth pipeline per indirect run, is a 3-7x win on a tiler (M2/Honeykrisp: Shadow of
+// the Colossus 574.95 passes a frame down to 76.95, 35.0 ms down to 10.4) and a LOSS here. A
+// three-arm run on an SD865 (Adreno 650, Turnip, 2026-08-23) put the merged arm slowest or
+// near-slowest on all four dumps -- sotc 27.14 vs 25.91 ms, sotc-gate 30.69 vs 29.42, mgs3 29.49 vs
+// 19.79, ac3 27.73 vs 18.68 -- while the pass-count deltas matched the planner's model exactly, so
+// the passes really are saved and something else more than eats them.
+//
+// ⚠️ What that something is has NOT been established, and this comment deliberately names no
+// mechanism. Early-Z rejection was the first hypothesis and it is refuted (TU_DEBUG=nolrz moves
+// neither arm); a CPU-side cause is ruled out too. The investigation is open. What is not in doubt
+// is the measurement, and this gate exists to keep each architecture on the arm that measured
+// faster on it rather than on the arm a story predicts.
+//
+// Gated on the VENDOR rather than the driver, unlike the driver-bug workarounds elsewhere in this
+// file, because nothing so far points at the driver: the merged arm loses by a similar margin on
+// dumps whose Turnip-side behaviour is otherwise very different. The proprietary blob is therefore
+// given the same treatment and is UNMEASURED -- if it turns out to behave like a tiler, this is
+// where that gets narrowed.
+bool GSDeviceVK::TileGpuPrefersDepthUniformPasses()
+{
+	return IsDeviceAdreno();
+}
+
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
@@ -7979,12 +8005,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		if (can_draw)
 		{
-			// The depth variant is fixed for the whole pass: the planner breaks a pass whenever the
-			// GS z-write/z-test changes, so every draw here shares one depth pipeline. depth_mode is
-			// None exactly when no depth attachment is bound.
-			pxAssertMsg((pass.depth_mode == GSTileGpuDepthMode::None) == (ds == nullptr),
-				"TileGpu pass depth_mode disagrees with its depth attachment");
-			const u32 depth_idx = static_cast<u32>(pass.depth_mode);
 			const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
@@ -8061,13 +8081,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 
-			// One vkCmdDrawIndexedIndirect per maximal run of draws sharing pipeline state -- topology
-			// and blend key -- and, within a run, per stretch sharing a sampled-target slot. In draw
-			// order throughout: commands are laid out in draw order, each run is a contiguous slice,
-			// and runs issue in order -- so overdraw is identical to the per-draw path, at one
-			// submission per run instead of one per draw. A pipeline change (and, for a FIX-factor
-			// blend, a blend-constant set) is the only per-run cost; a slot change costs the call
-			// alone. This is the constant-cost submission the design bets on.
+			// One vkCmdDrawIndexedIndirect per maximal run of draws sharing pipeline state -- the run
+			// key: topology, blend key, depth mode -- and, within a run, per stretch sharing a
+			// sampled-target slot. In draw order throughout: commands are laid out in draw order, each
+			// run is a contiguous slice, and runs issue in order -- so overdraw is identical to the
+			// per-draw path, at one submission per run instead of one per draw. A pipeline change (and,
+			// for a FIX-factor blend, a blend-constant set) is the only per-run cost; a slot change
+			// costs the call alone. This is the constant-cost submission the design bets on.
+			//
 			// The sampled-binding key ends an indirect call too, but for a different reason: it is
 			// not pipeline state, it is the pair of indices the fragment shader reads the per-pass
 			// target array and the frame's source array at, and a descriptor array index has to be
@@ -8082,13 +8103,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			{
 				const GSTileGpuPassPlan::GSTileGpuRunKey rkey = plan.RunKeyAt(d);
 				const u32 bkey = rkey.blend_key;
-				u32 run_end = d + 1;
-				while (run_end < end && plan.RunKeyAt(run_end) == rkey)
-					run_end++;
+				const u32 run_end = plan.RunEndAt(d, end);
 
+				// The depth ATTACHMENT is uniform across the pass whatever the device's grouping policy --
+				// a render pass cannot gain or lose one -- so a run's None-ness and this pass's depth
+				// binding are the same fact. The three depth-carrying variants are per run.
+				pxAssertMsg((rkey.depth_mode == GSTileGpuDepthMode::None) == (ds == nullptr),
+					"TileGpu draw's depth mode disagrees with its pass's depth attachment");
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-					GetTileGpuPipeline(static_cast<u32>(rkey.topology), depth_idx, bkey, pass.road_mask,
-						pass.texel_mask));
+					GetTileGpuPipeline(static_cast<u32>(rkey.topology), static_cast<u32>(rkey.depth_mode), bkey,
+						pass.road_mask, pass.texel_mask));
 				if (bkey & GSTileGpuPassPlan::kBlendEnable)
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.

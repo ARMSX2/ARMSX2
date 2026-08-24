@@ -140,6 +140,10 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// that cannot bind targets has to be known before the first read window is (not) composed.
 	m_bindless_targets = g_gs_device && g_gs_device->TileGpuBindlessTargets();
 
+	// Asked once for the same reason: it decides pass boundaries, and a boundary that moved
+	// mid-frame would leave a draw's prep ops hoisted into a pass the draw is not in.
+	m_depth_uniform_passes = g_gs_device && g_gs_device->TileGpuPrefersDepthUniformPasses();
+
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
 	// draws and issues them at the plan, so a texture one of them names must survive to the end of
@@ -201,6 +205,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
+	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
@@ -347,6 +352,10 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		m_plan_draws.push_back(draw);
 		m_plan_topologies.push_back(GSDevice::GSTileGpuTopology::Triangle);
 		m_plan_blend_keys.push_back(0);
+		// No depth attachment: this pseudo-draw exists for its prep ops and renders nothing. Every
+		// per-draw plan array has to be appended to here as well as in AccumulateDraw -- the
+		// executor indexes them all by draw, and a short one reads the next draw's state.
+		m_plan_depth_modes.push_back(GSDevice::GSTileGpuDepthMode::None);
 		m_plan_pending.push_back(pd);
 
 		// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
@@ -3135,7 +3144,8 @@ void GSRendererTileGpu::AccumulateDraw()
 	// Which pass is open for this draw? A draw whose key differs from the open pass's starts a new
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
 	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
-	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(fb_id, z_id, gsTileGpuDepthModeFor(z_used, z_test, z_write));
+	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, z_write);
+	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes);
 	if (draw_key != m_open_pass)
 		BreakOpenPass();
 
@@ -3726,7 +3736,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.z_used = z_used;
 	pd.z_write = z_write;
 	pd.z_test = z_test;
-	pd.depth_mode = draw_key.depth_mode;
+	pd.depth_mode = depth_mode;
 	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
 	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
 	pd.rect = r;
@@ -3814,6 +3824,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	// all four channels and still tests and writes depth in its pass.
 	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.color_mask);
 	m_plan_blend_keys.push_back(blend_key);
+	// The depth variant rides beside them: pipeline state, so it cuts the executor's indirect run
+	// and never the pass. Under depth-uniform passes every draw of a pass carries the same one and
+	// the cut fires nowhere.
+	m_plan_depth_modes.push_back(pd.depth_mode);
 	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
 }
@@ -3912,17 +3926,29 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		//    and a writeback breaks only where it collides with what the open pass has already
 		//    written or sampled (WritebackHoistCollides). A non-breaking writeback therefore
 		//    belongs to a later draw and is hoisted BY DESIGN, having been proved invisible.
+		//
+		// Every per-draw array the plan hands the executor is indexed by draw. Two places append a
+		// draw -- AccumulateDraw and the display-seed pseudo-draw above -- so a new array added to
+		// one and not the other reads the next draw's state, silently and only on the dumps that
+		// take the second road.
+		pxAssert(m_plan_topologies.size() == m_plan_draws.size() &&
+				 m_plan_blend_keys.size() == m_plan_draws.size() &&
+				 m_plan_depth_modes.size() == m_plan_draws.size() &&
+				 m_plan_pending.size() == m_plan_draws.size());
+
 		u32 i = 0;
 		while (i < m_plan_draws.size())
 		{
 			const PendingDraw& first = m_plan_pending[i];
-			const GSTileGpuPassKey first_key = gsTileGpuPassKeyFor(first.color_surface, first.z_surface, first.depth_mode);
+			const GSTileGpuPassKey first_key = gsTileGpuPassKeyFor(
+				first.color_surface, first.z_surface, first.depth_mode, m_depth_uniform_passes);
 			u32 j = i + 1;
 			while (j < m_plan_draws.size())
 			{
 				const PendingDraw& pd = m_plan_pending[j];
 				if (pd.break_before ||
-					gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode) != first_key)
+					gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes) !=
+						first_key)
 					break;
 				j++;
 			}
@@ -4031,7 +4057,6 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					break;
 				}
 			}
-			pass.depth_mode = first_key.depth_mode;
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);
@@ -4093,6 +4118,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.topologies = m_plan_topologies;
 		plan.blend_keys = m_plan_blend_keys;
 		plan.bind_keys = m_plan_bind_keys;
+		plan.depth_modes = m_plan_depth_modes;
 		plan.target_pairs = m_plan_target_pairs;
 		plan.snapshots = m_plan_snapshots;
 		plan.prep_ops = m_plan_prep_ops;
@@ -4138,6 +4164,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
 	m_plan_bind_keys.clear();
+	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();

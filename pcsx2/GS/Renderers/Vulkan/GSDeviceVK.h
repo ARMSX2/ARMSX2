@@ -190,6 +190,7 @@ public:
 	bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level) override;
 	bool TileGpuExecutorAvailable() override;
 	bool TileGpuBindlessTargets() override;
+	bool TileGpuPrefersDepthUniformPasses() override;
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
@@ -609,7 +610,8 @@ private:
 	/// `sources` (every unused slot the null texture, so the shader's static use of the array never
 	/// needs descriptorBindingPartiallyBound). Returns its index, or kTileGpuSourceSets on failure.
 	u32 WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources);
-	// [topology][depth mode]; the depth index is GSTileGpuPass::depth_mode (GSTileGpuDepthMode).
+	// [topology][depth mode]; the depth index is the DRAW's GSTileGpuDepthMode, off the run key
+	// (GSTileGpuPassPlan::depth_modes), because the depth state is per draw and not per pass.
 	// These are the no-blend pipelines; blending variants are created on first use per
 	// (topology, depth mode, GS ALPHA index) and cached below -- the GS blend equation maps onto
 	// fixed-function factors through GSDevice::m_blendMap, with As as the shader's dual-source
