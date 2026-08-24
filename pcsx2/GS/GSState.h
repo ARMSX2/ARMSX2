@@ -655,6 +655,23 @@ public:
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);
 
+	// Front-end decode recorder (GS/GSFeDecode.h). One gather per seam, defined
+	// out of line in GSFeDecode.cpp so the seams themselves carry nothing but
+	// `if (GSFeDecode::IsActive()) [[unlikely]] FeDecodeOn*(...)`. They read the
+	// decode state the seam has already installed, so they must be called at the
+	// TOP of their seam — before the consumer mutates anything.
+	void FeDecodeOnDraw();
+	void FeDecodeOnTransfer(const GSBackQueue::TransferRecord& rec);
+	void FeDecodeOnMove(const GSBackQueue::MoveRecord& rec);
+	void FeDecodeOnClutLoad(const GSBackQueue::ClutLoadRecord& rec);
+	void FeDecodeOnLocalToHost(int len);
+	void FeDecodeOnVsync(u32 field, bool registers_written, bool idle_frame);
+
+	// Scratch for the draw record's two-array tail. A member so an armed run
+	// reuses one allocation instead of one per draw; never touched when the
+	// instrument is off.
+	std::vector<u8> m_fe_decode_tail;
+
 	// GV7-1: sampled from GSConfig.BackThreadMode at construction (the option is
 	// restart-required, so it can't change under a live GSState). Off = the
 	// front-side seam functions skip the record round-trip entirely and call the

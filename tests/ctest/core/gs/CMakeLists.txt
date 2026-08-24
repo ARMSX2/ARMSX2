@@ -53,6 +53,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_depth_seed_tests.cpp
 	gs_tilegpu_texture_shuffle_tests.cpp
 	gs_tilegpu_shader_budget_tests.cpp
+	gs_fe_decode_tests.cpp
 )
 
 # The TileGpu fragment size gate compiles the real shader source, so it needs to find it. The

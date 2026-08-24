@@ -37,6 +37,7 @@
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
+#include "pcsx2/GS/GSFeDecode.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Tile/GSTileOracle.h"
 #include "pcsx2/GSDumpReplayer.h"
@@ -199,6 +200,8 @@ static std::deque<std::function<void()>> s_cpu_thread_tasks;
 static std::string s_stats_json_path;
 static std::string s_drawlog_path;
 static std::string s_tile_oracle_path;
+static std::string s_fedump_path;
+static std::string s_fediff_path;
 static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
@@ -733,6 +736,13 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -tileoracle <path.csv>: Run the software rasterizer in lockstep against the Tile renderer's "
 						 "native route and record every per-draw divergence. Tile only, and orders of magnitude "
 						 "slower than a plain run.\n");
+	std::fprintf(stderr, "  -fedump <path>: Record the front-end decode surface -- every draw, upload, move, CLUT "
+						 "load, readback request and frame boundary the GIF decode hands the renderer, in stream "
+						 "order, as canonical bytes. The recording of the shipping decode is what a replacement "
+						 "front end is diffed against.\n");
+	std::fprintf(stderr, "  -fediff <path>: Replay under the same arm and byte-compare against a -fedump recording. "
+						 "Reports the FIRST divergence (event, record, field, byte) and exits non-zero. Record and "
+						 "diff must use the same dump, the same renderer arm and the same -loop count.\n");
 	std::fprintf(stderr, "  -tilepasssim: Score the GS-semantic minimum pass structure of the run (pass breaks, "
 						 "snapshots, syncs a fully-GPU-timeline backend would be forced to take) plus GIF stream "
 						 "volume; report at teardown. Tile and TileGpu; an attribution arm, never a timed one.\n");
@@ -1122,6 +1132,18 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_tile_oracle_path = argv[++i];
 				s_settings_interface.SetBoolValue("EmuCore/GS", "TileDrawOracle", true);
 				Console.WriteLn(fmt::format("Recording per-draw lockstep divergences to {}", s_tile_oracle_path));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-fedump"))
+			{
+				s_fedump_path = argv[++i];
+				Console.WriteLn(fmt::format("Recording the front-end decode surface to {}", s_fedump_path));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-fediff"))
+			{
+				s_fediff_path = argv[++i];
+				Console.WriteLn(fmt::format("Diffing the front-end decode surface against {}", s_fediff_path));
 				continue;
 			}
 			else if (CHECK_ARG("-tilepasssim"))
@@ -1653,6 +1675,14 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// Armed before the first packet, so rung zero is the state the freeze left
 			// and every later rung is named by the packet it follows.
 			GSLadder::Begin(s_ladder_opts);
+			// The front-end decode instrument arms here for the same reason: the
+			// stream must start at the first record the run produces, and nothing
+			// before this point emits one (the dump's initial state arrives as a
+			// savestate defrost, not as GIF traffic).
+			if (!s_fedump_path.empty())
+				GSFeDecode::BeginRecord(s_fedump_path, GIT_REV);
+			else if (!s_fediff_path.empty())
+				GSFeDecode::BeginDiff(s_fediff_path);
 			// The ledger's join key to the ladder. Only paid for when a ledger is being
 			// written, because it costs a queued store per packet.
 			GSDumpReplayer::SetPublishPacketMarks(!s_drawlog_path.empty());
@@ -1675,7 +1705,12 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
 			VMManager::Shutdown(false);
 			GSRunner::DumpStats();
-			ret->store(EXIT_SUCCESS);
+			// After Shutdown, so the last records are in: End() also reports a
+			// recording the replay never caught up with. A divergence is a failing
+			// run, not a note in the log -- this is a gate, so it must be readable
+			// from the exit code alone.
+			GSFeDecode::End();
+			ret->store(GSFeDecode::Diverged() ? EXIT_FAILURE : EXIT_SUCCESS);
 		}
 	}
 
