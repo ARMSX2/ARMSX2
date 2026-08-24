@@ -107,6 +107,45 @@ private:
 	std::unordered_map<u16, u32> m_masks;
 };
 
+/// ComposeRingPages' owner grouping: which surfaces must write back, over which pages, in the
+/// order the ops have to be emitted.
+///
+/// Every page/plane of a read window carrying unsynced truth joins its owner's bucket, and each
+/// bucket becomes one writeback op. This was a fixed eight-entry array, on the stated belief that
+/// a read window sees one or two owners. A game that tiles one buffer by walking FRAME.FBP breaks
+/// that belief outright -- one surface per tile, so owners-per-gather scales with the tile count:
+/// MGS3's post-process scratch is 55 one-page targets and its full-screen composite gathers 49
+/// owners at once. The ninth and later were dropped silently: no writeback emitted, the ring slot
+/// force-prefilled from the CPU shadow, the page marked synced anyway, and every later reader
+/// served stale guest memory (on screen, blocky garbage blended over the whole frame).
+///
+/// So the scratch is sized by the model's surface-id space rather than by a constant -- ids are
+/// dense u16s and the whole thing is reused across gathers, so it allocates once and clears only
+/// the entries it touched. A constant here is a silent cliff whatever its value; this one was
+/// blown by six times.
+class GSTileComposeBuckets
+{
+public:
+	/// Group `need`'s unsynced page truth by owning surface. An owner without a byte road is not
+	/// grouped -- nothing can carry its bytes -- and its page/plane hits are counted lossy instead.
+	void Gather(const GSVramModel& model, const GSPageBitmap& need);
+
+	u32 Count() const { return static_cast<u32>(m_order.size()); }
+	GSTileSurfaceId IdAt(u32 i) const { return m_order[i]; }
+	const GSPageBitmap& PagesAt(u32 i) const { return m_pages[m_order[i]]; }
+
+	u32 LossyPages() const { return m_lossy; }
+	u32 LossyDepthPages() const { return m_lossy_depth; }
+
+private:
+	std::vector<GSPageBitmap> m_pages; ///< by surface id; only the ids in m_order are this gather's
+	std::vector<u64> m_stamp; ///< by surface id: the gather serial that last touched it
+	std::vector<GSTileSurfaceId> m_order; ///< emission order == first page-ascending appearance
+	u64 m_serial = 0;
+	u32 m_lossy = 0;
+	u32 m_lossy_depth = 0;
+};
+
 // Stage-1 contract: wrong-fast where the executor is (no blending, no per-draw write masks);
 // EXACT where the model is -- every page's truth is named, every crossing is counted.
 class GSRendererTileGpu final : public GSRenderer
@@ -378,6 +417,10 @@ private:
 	// and unsupported-format owners have no writeback road yet: their bytes stay whatever the
 	// slot was prefilled with, counted as lossy.
 	void ComposeRingPages(const GSPageBitmap& pages);
+
+	// ComposeRingPages' scratch, a member so the per-surface-id arrays are allocated once and
+	// reused rather than sized by a constant that a game can walk past.
+	GSTileComposeBuckets m_compose_buckets;
 
 	// Ensure a surface for `layout` covering `pages` exists in the model and the pool (grown as
 	// needed). Returns kGSTileNoSurface on allocation failure.

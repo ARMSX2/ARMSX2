@@ -31,6 +31,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 namespace
 {
 constexpr u32 kFull = GSVramModel::kFullBlockMask;
@@ -257,4 +259,171 @@ TEST(TileGpuBlockFill, PagesAreIndependentAndClearResetsThem)
 	f.Clear();
 	EXPECT_EQ(f.BlocksOf(kPage), 0u);
 	EXPECT_FALSE(f.HoldsWhole(two));
+}
+
+// ---------------------------------------------------------------------------------------
+// GSTileComposeBuckets — which surfaces write back, and in what order.
+// ---------------------------------------------------------------------------------------
+//
+// The other way a ring slot ends up holding bytes nobody wrote, and the one that shipped for
+// months. ComposeRingPages grouped the writebacks it must emit by owning surface into a
+// hard-coded eight-entry array, commented "tiny in practice (one or two owners per read
+// window)". MGS3 tiles its post-process scratch by walking FRAME.FBP one page at a time, so it
+// has 55 one-page targets and its full-screen composite gathers 49 owners in one read. The ninth
+// and later were dropped: no writeback op, the slot force-prefilled from the CPU shadow, the page
+// marked synced anyway, and every later reader served stale guest memory. On screen that is
+// blocky garbage blended over the whole frame; against the software golden it was mad 47 instead
+// of 8.
+//
+// These pin the property the constant cannot have: every owner of the window gets a writeback,
+// whatever the count. Plus the two things the dynamic scratch itself could get wrong — the
+// emission order (array order is execution order at the pass head, so it must stay first
+// page-ascending appearance) and reuse across gathers (an entry left over from the last gather
+// would write back pages this one never asked for).
+
+namespace
+{
+constexpr GSTileSurfaceLayout Layout(u32 bp, u8 bw, u8 psm, GSTileSurfaceKind kind = GSTileSurfaceKind::Color)
+{
+	return GSTileSurfaceLayout{bp, bw, psm, kind};
+}
+
+// One CT32 page is 64x32 pixels. MGS3's scratch tile, exactly.
+constexpr u32 kBlocksPerPage = 32;
+GSVector4i OnePageRect()
+{
+	return GSVector4i(0, 0, 64, 32);
+}
+} // namespace
+
+TEST(TileGpuComposeBuckets, EveryOwnerOfTheWindowGetsAWriteback)
+{
+	// MGS3's gather: 49 one-page targets walked out of FRAME.FBP, all read by one composite.
+	GSVramModel m;
+	constexpr u32 kOwners = 49;
+	constexpr u32 kBasePage = 256; // GS pages 256.. — where MGS3 puts the scratch
+	GSPageBitmap window;
+	for (u32 i = 0; i < kOwners; i++)
+	{
+		const auto l = Layout((kBasePage + i) * kBlocksPerPage, 1, PSMCT32);
+		const GSTileSurfaceId id = m.Create(l, OnePageRect(), i + 1);
+		const GSPageBitmap p = GSVramModel::PagesForRect(l, OnePageRect());
+		ASSERT_EQ(p.count(), 1u) << "tile " << i;
+		m.OnNativeDraw(id, p, kGSTilePlanesColor);
+		window |= p;
+	}
+	ASSERT_EQ(window.count(), kOwners);
+
+	const GSPageBitmap need = m.ReadbackNeeded(window, kGSTilePlanesAll);
+	ASSERT_EQ(need.count(), kOwners);
+
+	GSTileComposeBuckets bk;
+	bk.Gather(m, need);
+
+	// The whole point. Eight buckets here means 41 of the 49 pages are served out of the CPU
+	// shadow instead of the target that actually holds them.
+	EXPECT_EQ(bk.Count(), kOwners);
+	EXPECT_EQ(bk.LossyPages(), 0u);
+	EXPECT_EQ(bk.LossyDepthPages(), 0u);
+
+	GSPageBitmap covered;
+	for (u32 b = 0; b < bk.Count(); b++)
+	{
+		EXPECT_EQ(bk.PagesAt(b).count(), 1u) << "bucket " << b;
+		EXPECT_FALSE(covered.intersects(bk.PagesAt(b))) << "bucket " << b;
+		covered |= bk.PagesAt(b);
+	}
+	EXPECT_TRUE(covered == window);
+}
+
+TEST(TileGpuComposeBuckets, EmissionOrderIsFirstPageAscendingAppearance)
+{
+	// Array order is execution order at the pass head, so the order the buckets come out in is
+	// part of the contract, not an implementation detail. Created back to front on purpose: the
+	// order must come from the pages, not from when the surface was made.
+	GSVramModel m;
+	constexpr u32 kOwners = 12; // past the old table, so this also exercises the growth path
+	constexpr u32 kBasePage = 64;
+	std::vector<GSTileSurfaceId> by_page(kOwners, kGSTileNoSurface);
+	GSPageBitmap window;
+	for (u32 i = kOwners; i-- > 0;)
+	{
+		const auto l = Layout((kBasePage + i) * kBlocksPerPage, 1, PSMCT32);
+		const GSTileSurfaceId id = m.Create(l, OnePageRect(), i + 1);
+		const GSPageBitmap p = GSVramModel::PagesForRect(l, OnePageRect());
+		m.OnNativeDraw(id, p, kGSTilePlanesColor);
+		by_page[i] = id;
+		window |= p;
+	}
+
+	GSTileComposeBuckets bk;
+	bk.Gather(m, m.ReadbackNeeded(window, kGSTilePlanesAll));
+	ASSERT_EQ(bk.Count(), kOwners);
+	for (u32 b = 0; b < kOwners; b++)
+	{
+		EXPECT_EQ(bk.IdAt(b), by_page[b]) << "bucket " << b;
+		EXPECT_TRUE(bk.PagesAt(b).test(kBasePage + b)) << "bucket " << b;
+	}
+}
+
+TEST(TileGpuComposeBuckets, AnOwnerWithoutAByteRoadIsCountedNotBucketed)
+{
+	// Depth has no writeback shader at all, so its truth cannot join a bucket — the page keeps
+	// its prefill and the loss is counted. Unchanged by the fix; pinned so the counter cannot
+	// quietly move when the dropped-writeback road stops feeding it.
+	GSVramModel m;
+	const auto colour = Layout(0, 1, PSMCT32);
+	const auto depth = Layout(kBlocksPerPage, 1, PSMZ32, GSTileSurfaceKind::Depth);
+	const GSTileSurfaceId cid = m.Create(colour, OnePageRect(), 1);
+	const GSTileSurfaceId did = m.Create(depth, OnePageRect(), 2);
+	const GSPageBitmap cpages = GSVramModel::PagesForRect(colour, OnePageRect());
+	const GSPageBitmap dpages = GSVramModel::PagesForRect(depth, OnePageRect());
+	m.OnNativeDraw(cid, cpages, kGSTilePlanesColor);
+	m.OnNativeDraw(did, dpages, GSTilePlaneZ);
+
+	GSTileComposeBuckets bk;
+	bk.Gather(m, m.ReadbackNeeded(cpages | dpages, kGSTilePlanesAll));
+	ASSERT_EQ(bk.Count(), 1u);
+	EXPECT_EQ(bk.IdAt(0), cid);
+	EXPECT_TRUE(bk.PagesAt(0) == cpages);
+	EXPECT_EQ(bk.LossyPages(), 1u);
+	EXPECT_EQ(bk.LossyDepthPages(), 1u);
+}
+
+TEST(TileGpuComposeBuckets, AGatherCarriesNothingOverFromTheLastOne)
+{
+	// The scratch is reused across gathers, so a bucket must hold this gather's pages and no
+	// others: a stale bit would write back a page the reader never asked about, over whatever the
+	// ring slot holds now.
+	GSVramModel m;
+	const auto l = Layout(0, 1, PSMCT32);
+	const GSVector4i two_pages(0, 0, 64, 64); // 64x32 per CT32 page, so two pages down the column
+	const GSTileSurfaceId id = m.Create(l, two_pages, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, two_pages);
+	ASSERT_EQ(pages.count(), 2u);
+	m.OnNativeDraw(id, pages, kGSTilePlanesColor);
+
+	GSTileComposeBuckets bk;
+	bk.Gather(m, m.ReadbackNeeded(pages, kGSTilePlanesAll));
+	ASSERT_EQ(bk.Count(), 1u);
+	ASSERT_EQ(bk.PagesAt(0).count(), 2u);
+
+	// Sync the second of them: the next gather over the same window needs only the first.
+	std::vector<u32> page_list;
+	pages.forEachSetPage([&](u32 page) { page_list.push_back(page); });
+	ASSERT_EQ(page_list.size(), 2u);
+	const u32 kept = page_list[0];
+	GSPageBitmap second;
+	second.set(page_list[1]);
+	m.OnReadback(second);
+
+	bk.Gather(m, m.ReadbackNeeded(pages, kGSTilePlanesAll));
+	ASSERT_EQ(bk.Count(), 1u);
+	EXPECT_EQ(bk.PagesAt(0).count(), 1u);
+	EXPECT_TRUE(bk.PagesAt(0).test(kept));
+
+	// And a gather that needs nothing leaves no buckets behind.
+	m.OnReadback(pages);
+	bk.Gather(m, m.ReadbackNeeded(pages, kGSTilePlanesAll));
+	EXPECT_EQ(bk.Count(), 0u);
 }

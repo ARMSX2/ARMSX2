@@ -2679,6 +2679,50 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	}
 }
 
+// See the declaration for why this is sized by the model's id space and not by a constant.
+//
+// Two vectors indexed by surface id, plus the list of ids this gather touched. The stamp is what
+// makes the reuse cheap: an entry belongs to this gather only when its stamp is this gather's
+// serial, so a gather clears the page bitmaps it actually uses and nothing else, and the arrays
+// stop growing once the biggest id the session ever allocates has been seen.
+void GSTileComposeBuckets::Gather(const GSVramModel& model, const GSPageBitmap& need)
+{
+	const u32 slots = model.SurfaceSlots();
+	if (m_stamp.size() < slots)
+	{
+		m_stamp.resize(slots, 0);
+		m_pages.resize(slots);
+	}
+	m_order.clear();
+	m_lossy = 0;
+	m_lossy_depth = 0;
+
+	const u64 serial = ++m_serial;
+	need.forEachSetPage([&](u32 page) {
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!model.Truth(pi).test(page) || model.SyncedPages(pi).test(page))
+				continue;
+			const GSTileSurfaceId owner = model.OwnerOf(page, pi);
+			pxAssert(owner != kGSTileNoSurface && owner < m_stamp.size());
+			const GSTileSurfaceLayout& owner_l = model.Get(owner).layout;
+			if (!gsTileSurfaceHasByteRoad(owner_l))
+			{
+				m_lossy++;
+				m_lossy_depth += (owner_l.kind == GSTileSurfaceKind::Depth) ? 1 : 0;
+				continue;
+			}
+			if (m_stamp[owner] != serial)
+			{
+				m_stamp[owner] = serial;
+				m_pages[owner].clear();
+				m_order.push_back(owner);
+			}
+			m_pages[owner].set(page);
+		}
+	});
+}
+
 // Every byte of `pages` reachable through the ring for the current epoch: a slot per page,
 // prefilled from S where any byte is CPU-newest, and a writeback of every surface holding
 // unsynced truth on them (in the ring's read-modify-write order, one op per owner). Marks what
@@ -2694,67 +2738,18 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 	if (need.empty())
 		return;
 
-	// Bucket by owner. Tiny in practice (one or two owners per read window).
-	struct Bucket
-	{
-		GSTileSurfaceId id;
-		GSPageBitmap pages;
-	};
-	Bucket buckets[8];
-	u32 num_buckets = 0;
-	u32 lossy = 0;
-	u32 lossy_depth = 0;
-	need.forEachSetPage([&](u32 page) {
-		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
-		{
-			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
-				continue;
-			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
-			pxAssert(owner != kGSTileNoSurface);
-			const GSTileSurfaceLayout& owner_l = m_vram_model.Get(owner).layout;
-			if (!HasByteRoad(owner_l))
-			{
-				lossy++;
-				lossy_depth += (owner_l.kind == GSTileSurfaceKind::Depth) ? 1 : 0;
-				continue;
-			}
-			u32 b = 0;
-			for (; b < num_buckets; b++)
-			{
-				if (buckets[b].id == owner)
-					break;
-			}
-			if (b == num_buckets)
-			{
-				if (num_buckets == std::size(buckets))
-				{
-					// Beyond the table: this owner's writeback is not emitted at all, and
-					// EnsureRingSlot could not know that when it decided -- it looked at the
-					// planes, not at the table. Force the prefill now, while the slot is still
-					// this frame's (the ring is built at plan time, so a later flag still lands).
-					// Counted as lost rather than mis-composed, which is only true once the slot
-					// carries S's bytes rather than the executor's zeros.
-					if (m_ring_live[page] != 0)
-						m_ring_entries[m_ring_live[page] - 1].prefill_s = true;
-					lossy++;
-					lossy_depth += (owner_l.kind == GSTileSurfaceKind::Depth) ? 1 : 0;
-					continue;
-				}
-				buckets[num_buckets].id = owner;
-				buckets[num_buckets].pages.clear();
-				num_buckets++;
-			}
-			buckets[b].pages.set(page);
-		}
-	});
+	// Bucket by owner: one writeback op each, in first page-ascending appearance order (array
+	// order is execution order at the pass head). Nothing here re-enters ComposeRingPages, so the
+	// scratch stays this gather's for the whole emit loop -- EmitPrepOp only reads the model, the
+	// plan arrays and the CLUT/version bookkeeping.
+	m_compose_buckets.Gather(m_vram_model, need);
+	for (u32 b = 0, n = m_compose_buckets.Count(); b < n; b++)
+		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Writeback, m_compose_buckets.IdAt(b), m_compose_buckets.PagesAt(b));
 
-	for (u32 b = 0; b < num_buckets; b++)
-		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Writeback, buckets[b].id, buckets[b].pages);
-
-	if (lossy)
+	if (const u32 lossy = m_compose_buckets.LossyPages())
 	{
 		m_frame.lossy_pages += lossy;
-		m_frame.lossy_pages_depth += lossy_depth;
+		m_frame.lossy_pages_depth += m_compose_buckets.LossyDepthPages();
 		if (!m_warned_lossy)
 		{
 			m_warned_lossy = true;
