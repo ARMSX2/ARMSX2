@@ -36,6 +36,12 @@ detect_compiler()
 #-------------------------------------------------------------------------------
 # Include specific module
 include(BuildParameters)
+
+# Build third-party dependencies
+if (BUILD_DEPENDENCIES)
+	include(BuildDependencies)
+endif()
+
 include(SearchForStuff)
 
 # Must be done after SearchForStuff
