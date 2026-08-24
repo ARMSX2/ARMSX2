@@ -154,7 +154,6 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// can name rather than only the classes whose repairs have landed. It is what lets the declared
 	// read be exercised over the whole corpus before anything depends on it.
 	m_force_self_read = m_self_read && GSConfig.TileGpuForceSelfRead;
-	m_self_read_blend = m_force_self_read;
 
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
@@ -1227,17 +1226,28 @@ u32 GSRendererTileGpu::SelfReadUses(u32 reader_flags, bool date, bool fbmsk_exac
 	if (date)
 		uses |= GSDevice::kGSTileGpuSelfDate;
 
+	// The blend equations the executor's fixed-function state cannot express. Five classes, and the
+	// classifier is the same one the pass-structure census has counted since the crossover study:
+	//
+	//   ReaderAdFactor  C=Ad. Fixed-function DST_ALPHA is dest/255; the console's is dest/128.
+	//   ReaderFacGt1    C=As with a fragment alpha that can pass 0x80, or C=FIX above 0x80. Both
+	//                   saturate at 1.0 in a blend factor and reach 1.99 on the console.
+	//   ReaderCoeffGt1  the D == A accumulation shapes, where a coefficient is 1 + C.
+	//   ReaderWrap      COLCLAMP = 0, which a blend unit cannot do at all -- it clamps.
+	//   ReaderPabe      PABE's per-pixel gate on the source alpha's MSB, likewise.
+	//
+	// ⚠️ ReaderAsDualSource is deliberately NOT here. That class is exactly the one dual-source
+	// blending expresses exactly, and it is most of the corpus's blended draws -- admitting it would
+	// move the bulk of every blended frame onto the read for no accuracy at all.
+	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
+						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
+		uses |= GSDevice::kGSTileGpuSelfBlend;
+
 	// The rest is the scaffolding's, until each class lands with its own repair and its own corpus
 	// evidence -- so that a frame that moves can be attributed to one thing.
 	if (!m_force_self_read)
 		return uses;
 
-	// The blend equations the executor's fixed-function state approximates. ReaderAsDualSource is
-	// deliberately NOT here: that class is exactly the one dual-source blending expresses, and it is
-	// most of the corpus's blended draws.
-	if (reader_flags & (GSTilePassSim::ReaderWrap | GSTilePassSim::ReaderPabe | GSTilePassSim::ReaderCoeffGt1 |
-						   GSTilePassSim::ReaderAdFactor | GSTilePassSim::ReaderFacGt1))
-		uses |= GSDevice::kGSTileGpuSelfBlend;
 	// A write mask the channel-granular pipeline mask cannot reproduce bit for bit.
 	if (!fbmsk_exact)
 		uses |= GSDevice::kGSTileGpuSelfMask;
@@ -3194,7 +3204,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// scan on every blended draw, which is real CPU work on a road that is CPU-bound. So the gate
 	// names the reasons that are live rather than asking unconditionally.
 	const bool fbmsk_exact = gsTileFrameWriteMaskIsExact(ctx->FRAME.FBMSK, fb_fmsk);
-	const u32 self_mask = (m_self_read && (m_force_self_read || date != 0)) ?
+	const u32 self_mask = (m_self_read && (m_force_self_read || date != 0 || PRIM->ABE)) ?
 							  SelfReadUses(ReaderFlags(color_written), date != 0, fbmsk_exact) :
 							  0;
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);

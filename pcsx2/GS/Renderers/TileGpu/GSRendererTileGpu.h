@@ -593,10 +593,6 @@ private:
 	/// classifier can name, not only the classes whose repairs have landed. Read once, like the other
 	/// levers here, because it moves pass boundaries.
 	bool m_force_self_read = false;
-	/// Whether the BLEND half of the read is admitted at all. Separate from m_self_read because the
-	/// classifier's blend arm costs a fragment-alpha scan per blended draw, which is real CPU work on
-	/// a road that is CPU-bound -- so it is not paid while nothing acts on the answer.
-	bool m_self_read_blend = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
