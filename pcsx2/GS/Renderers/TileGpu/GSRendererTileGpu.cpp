@@ -3021,7 +3021,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// the first case and the silhouettes over the picture in the second, and bge's alpha-only
 	// full-screen blit at the end of each frame then carries the damage into the other buffer --
 	// a ratchet to black over three frames. gsTileFrameColorWriteMask folds the AFAIL modes in
-	// on top and holds the deferred-alpha carve-out; a partly masked channel lands whole (the
+	// on top, alpha honoured like the other channels; a partly masked channel lands whole (the
 	// approximation, ledgered).
 	const u32 fb_fmsk = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk;
 	const u8 color_mask = gsTileFrameColorWriteMask(ctx->FRAME.FBMSK, fb_fmsk, atst_all_fail, afail);
