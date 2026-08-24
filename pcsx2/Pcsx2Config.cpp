@@ -957,6 +957,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(SaveFrameCount) &&
 		OpEqu(SaveFrameBy) &&
 		OpEqu(TileNativeDrawLimit) &&
+		OpEqu(TileGpuMaxPassDraws) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
 		OpEqu(ScreenshotSize) &&
@@ -1258,6 +1259,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(SaveFrameCount, "SaveFrameCount");
 	SettingsWrapBitfieldEx(SaveFrameBy, "SaveFrameBy");
 	SettingsWrapBitfieldEx(TileNativeDrawLimit, "TileNativeDrawLimit");
+	SettingsWrapBitfieldEx(TileGpuMaxPassDraws, "TileGpuMaxPassDraws");
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");

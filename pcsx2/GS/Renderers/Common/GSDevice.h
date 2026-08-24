@@ -2790,6 +2790,32 @@ public:
 	/// the design targets, and a device that needs uniformity says so.
 	virtual bool TileGpuPrefersDepthUniformPasses() { return false; }
 
+	/// The most draws this device wants inside ONE render pass, or 0 for no limit.
+	///
+	/// Unlike the depth question above this is not a choice between two arrangements — it is a
+	/// ceiling. A pass that reaches it is closed and another with the SAME key opens, so the same
+	/// draws run in the same order over more passes and not a pixel moves. The planner pays a pass
+	/// boundary per split and buys back whatever the architecture charges for a long pass.
+	///
+	/// It exists because Adreno charges for one, measured twice with different instruments:
+	///
+	///  - A device pass-size sweep on an SD865 (Turnip, 2026-08-24) found the driver's per-pass
+	///    occlusion-autotune term is concentrated entirely in a title's few giant passes, and a cap
+	///    at 64 deletes all of it — Armored Core 3 27.26 ms to 18.48, MGS3 29.35 to 26.58.
+	///  - A CPU-side census of the depth-policy A/B, on a different machine with no device access,
+	///    found the fraction of a frame's fill relocated into passes of 64 or more draws is what
+	///    ranks that A/B's per-title GPU cost, with the correlation peaking at the same 64.
+	///
+	/// The mechanism behind the second is NOT established, and this comment claims none. What is
+	/// established is that a conservative ceiling deletes the term on the dumps measured while
+	/// aggressive caps (below 8 draws) HARM two of three — so the answer is a ceiling well above
+	/// the knee, never "as small as possible".
+	///
+	/// Zero is the default, including for vendors nobody has measured: a cap is a cost (one pass
+	/// boundary per split) that only pays where an architecture charges for pass length, and no
+	/// tiler measurement asks for one. EmuCore/GS/TileGpuMaxPassDraws overrides this per run.
+	virtual u32 TileGpuMaxPassDraws() { return 0; }
+
 	/// Whether declaring the in-pass destination read is charged to EVERY draw of the pass, reader
 	/// or not — so that a pass which declares must contain only the draws that need it.
 	///

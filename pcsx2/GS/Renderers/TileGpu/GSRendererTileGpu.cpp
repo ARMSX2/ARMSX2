@@ -171,6 +171,25 @@ GSRendererTileGpu::GSRendererTileGpu()
 				device_wants ? "uniform" : "merged");
 		}
 	}
+	// ...and the pass-LENGTH policy, asked once for the same reason and independent of the polarity
+	// above: the most draws one pass may hold. A pass that reaches it closes and another with the same
+	// key opens -- same draws, same order, same attachments -- so this moves frame time and no pixel.
+	//
+	// The INI key overrides the device three ways rather than two, because "ask the device" and "force
+	// uncapped" are different instructions and only a three-state key can give both on a device that
+	// answers a cap. Every run names its effective cap and where it came from, which is what an
+	// archived log has to carry for a four-arm crossing's numbers to be attributable to their arm.
+	{
+		const u32 device_answer = g_gs_device ? g_gs_device->TileGpuMaxPassDraws() : 0u;
+		m_max_pass_draws = gsTileGpuMaxPassDraws(GSConfig.TileGpuMaxPassDraws, device_answer);
+		// Both numbers, always, and the word that says which one won. A log line carrying only the
+		// effective cap cannot distinguish "the device asked for 64" from "somebody forced 64", and
+		// those are different runs.
+		Console.WriteLn("TileGpu: max draws per pass %u (0 = uncapped), %s -- device answered %u, "
+						"TileGpuMaxPassDraws = %d.",
+			m_max_pass_draws, (GSConfig.TileGpuMaxPassDraws != 0) ? "FORCED by settings" : "the device's answer",
+			device_answer, GSConfig.TileGpuMaxPassDraws);
+	}
 	// ...and the second pass-boundary policy, asked once beside it: whether a pass that declares the
 	// in-pass destination read may carry draws that do not need it.
 	m_segregate_self_read = g_gs_device && g_gs_device->TileGpuSegregatesSelfRead();
@@ -1602,6 +1621,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto vcalls = stat([](const MF& f) { return f.variant_extra_calls; });
 	const auto vnarrow = stat([](const MF& f) { return f.variant_narrowed_draws; });
 	const auto vfree = stat([](const MF& f) { return f.variant_byte_freeloaders; });
+	const auto bigpass = stat([](const MF& f) { return f.biggest_pass_draws; });
+	const auto capped = stat([](const MF& f) { return f.capped_passes; });
 	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
 			   s_all = st(StallSite::SyncAll);
 	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
@@ -1612,6 +1633,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"version copies %.2f / %u, epochs %.2f / %u, prefilled for uncomposed blocks %.2f / %u)",
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
 		versions.p50, epochs.mean, epochs.p50, uncomp.mean, uncomp.p50);
+	// The pass-length distribution the cap acts on. Printed whether or not a cap is set, because the
+	// uncapped biggest-pass number is the thing a cap is chosen against.
+	Console.WriteLn("  max draws per pass %u (0 = uncapped)  biggest pass built %.2f / %-5u draws  "
+					"passes the cap ended %.2f / %u",
+		m_max_pass_draws, bigpass.mean, bigpass.p50, capped.mean, capped.p50);
 	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
 					"%8.2f / %-5u pages, %.2f / %u pass breaks (of the seeds, depth %.2f / %u ops, %.2f / %u pages)",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
@@ -3136,6 +3162,9 @@ void GSRendererTileGpu::BreakOpenPass()
 	m_open_z_written.clear();
 	m_open_read.clear();
 	m_open_tex_count = 0;
+	// The cap's count resets with everything else the open pass tracked, so it stays in step with the
+	// plan build's own (j - i).
+	m_open_draw_count = 0;
 }
 
 // A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
@@ -3440,7 +3469,13 @@ void GSRendererTileGpu::AccumulateDraw()
 		gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
 	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
 		fb_id, z_id, depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
-	if (draw_key != m_open_pass)
+	// The cap sits in the same test as the key because it answers the same question -- this draw does
+	// not join the open pass -- and it is placed HERE, before any prep op of this draw is emitted, for
+	// the reason a key mismatch is: everything below reads the open pass to decide what may be hoisted
+	// into it and which rule-2 slot this draw takes, and a break decided after those reads would leave
+	// the plan build's pass and accumulation's pass disagreeing about both. Mirrored in
+	// BuildAndExecutePlan through gsTileGpuPassEnd; the two count the same draws.
+	if (draw_key != m_open_pass || !gsTileGpuPassAdmitsMore(m_open_draw_count, m_max_pass_draws))
 		BreakOpenPass();
 
 	PendingDraw pd = {};
@@ -4032,6 +4067,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	// writeback can be tested against it. Last word in the function on pass structure -- nothing
 	// below here can still break the pass.
 	m_open_pass = draw_key;
+	// This draw is in the pass, so the cap counts it. No return stands between here and the
+	// m_plan_pending push at the end of the function, so one increment is exactly one plan entry --
+	// which is what makes this count and the plan build's (j - i) the same number.
+	m_open_draw_count++;
 	if (color_written)
 		m_open_color_written |= fb_pages;
 	if (z_write)
@@ -4261,6 +4300,16 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		//    written or sampled (WritebackHoistCollides). A non-breaking writeback therefore
 		//    belongs to a later draw and is hoisted BY DESIGN, having been proved invisible.
 		//
+		//    ...and, where the device asked for one, a LENGTH cap: a pass stops at m_max_pass_draws
+		//    draws and the next one opens with the same key. That is a pure split, and the two
+		//    per-pass mechanisms it touches narrow with it rather than change meaning. Each split
+		//    pass's union masks are computed over ITS draws, so the same pixels come out of a
+		//    narrower program. And a DATE run split in two takes a second snapshot, which sees the
+		//    first half's output -- still exact, because a DATE draw on the snapshot road already
+		//    breaks the pass whenever anything since the run started wrote under it (m_run_written,
+		//    in AccumulateDraw). So no draw of the first half ever wrote a pixel the second half's
+		//    DATE test reads, and the two snapshots agree everywhere either of them is looked at.
+		//
 		// Every per-draw array the plan hands the executor is indexed by draw. Two places append a
 		// draw -- AccumulateDraw and the display-seed pseudo-draw above -- so a new array added to
 		// one and not the other reads the next draw's state, silently and only on the dumps that
@@ -4280,15 +4329,9 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode,
 					m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
 			};
-			const GSTileGpuPassKey first_key = key_of(first);
-			u32 j = i + 1;
-			while (j < m_plan_draws.size())
-			{
-				const PendingDraw& pd = m_plan_pending[j];
-				if (pd.break_before || key_of(pd) != first_key)
-					break;
-				j++;
-			}
+			const u32 j = gsTileGpuPassEnd(i, static_cast<u32>(m_plan_draws.size()), m_max_pass_draws,
+				[&](u32 d) { return key_of(m_plan_pending[d]); },
+				[&](u32 d) { return m_plan_pending[d].break_before; });
 			const PendingDraw& last = m_plan_pending[j - 1];
 
 			GSDevice::GSTileGpuTargetPair tp = {};
@@ -4481,6 +4524,20 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					break;
 				}
 			}
+
+			// The cap, checked rather than trusted. Mechanical because the failure it guards against
+			// is not visible in a frame: accumulation and the plan build counting the same draws
+			// differently produces a pass one side thinks is shorter than the other, which surfaces
+			// as a hoisted prep op or a mis-numbered rule-2 slot, not as a wrong pixel.
+			pxAssertMsg(gsTileGpuPassAdmitsMore(pass.draw_count - 1, m_max_pass_draws),
+				"TileGpu built a pass longer than the max-pass-draws cap");
+			m_frame.biggest_pass_draws = std::max(m_frame.biggest_pass_draws, pass.draw_count);
+			// A pass the CAP ended, as against one that reached the cap and would have stopped there
+			// anyway. The distinction is the whole value of the counter: it is what says the cap
+			// engaged on this dump rather than merely being set.
+			if (m_max_pass_draws != 0 && pass.draw_count == m_max_pass_draws && j < m_plan_draws.size() &&
+				!m_plan_pending[j].break_before && key_of(m_plan_pending[j]) == key_of(first))
+				m_frame.capped_passes++;
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);

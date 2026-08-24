@@ -1263,6 +1263,21 @@ struct Pcsx2Config
 		// it and only shows in a plain run. Never a user setting.
 		int TileNativeDrawLimit = 0;
 
+		// Override the device's answer to "how many draws may one TileGpu render pass
+		// hold?" (GSDevice::TileGpuMaxPassDraws). Zero -- the default -- asks the
+		// device, which is what ships: Adreno answers 64, every other vendor 0. A
+		// NEGATIVE value forces no cap whatever the device says; a positive one pins
+		// that cap on any device.
+		//
+		// A cap is a pure split: the pass closes and another with the same key opens,
+		// same draws, same order, same attachments. It moves no pixel and it moves
+		// plenty of frame time, which is the same hazard class as the two depth-policy
+		// force keys above -- a run whose cap you cannot read off its log is a run whose
+		// number means nothing. So the renderer names the effective cap and its source
+		// in the emulog, and reads it ONCE at construction like every other pass-boundary
+		// policy. Dev only; a pass-boundary policy is not a user setting.
+		int TileGpuMaxPassDraws = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

@@ -46,6 +46,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_blend_tests.cpp
 	gs_tilegpu_alpha_test_fold_tests.cpp
 	gs_tilegpu_pass_key_tests.cpp
+	gs_tilegpu_pass_cap_tests.cpp
 	gs_tilegpu_pass_geometry_tests.cpp
 	gs_tilegpu_readback_store_tests.cpp
 	gs_tilegpu_pull_grouping_tests.cpp

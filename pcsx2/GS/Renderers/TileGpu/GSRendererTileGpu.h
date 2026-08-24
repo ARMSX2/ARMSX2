@@ -172,6 +172,57 @@ constexpr GSTileGpuPassKey gsTileGpuPassKeyFor(GSTileSurfaceId color, GSTileSurf
 		depth_uniform_passes ? mode : GSDevice::GSTileGpuDepthMode::None, segregate_self_read && reads_self};
 }
 
+/// The effective max-pass-draws cap: what EmuCore/GS/TileGpuMaxPassDraws says, or the device's own
+/// answer where it says nothing. Zero out means NO CAP.
+///
+/// Three states rather than two, because "ask the device" and "force uncapped" are different
+/// questions and a two-state key cannot ask the second on a device that answers 64. Zero is the
+/// shipped arm and asks; a negative forces no cap; a positive pins that cap on any device.
+constexpr u32 gsTileGpuMaxPassDraws(int setting, u32 device_answer)
+{
+	if (setting > 0)
+		return static_cast<u32>(setting);
+	if (setting < 0)
+		return 0;
+	return device_answer;
+}
+
+/// Whether a pass already holding `open_draws` draws may take another. `max_pass_draws` is 0 for no
+/// cap.
+///
+/// The third clause of "does this draw join the open pass", beside the key and the draw's own
+/// break_before -- and it lives here for the same reason the key does: two grouping sites ask, and a
+/// pass length they spell differently is a draw whose prep ops land in a pass the draw is not in.
+constexpr bool gsTileGpuPassAdmitsMore(u32 open_draws, u32 max_pass_draws)
+{
+	return max_pass_draws == 0 || open_draws < max_pass_draws;
+}
+
+/// Where the pass starting at draw `first` ends: the index of the first draw that refuses to join
+/// it, or `count`.
+///
+/// `key_at(d)` is draw d's pass key; `breaks_at(d)` is whether the draw forces a break of its own
+/// (a prep op that could not be hoisted over the open pass, a stale DATE snapshot, a full bind
+/// table). This IS the plan build's cut -- it is a function so a test can drive it with a draw list
+/// instead of a device, not a model of one.
+///
+/// The cap is tested BEFORE the draw is looked at, so a pass ends at exactly `max_pass_draws` draws
+/// and never at one more. A draw that both hits the cap and carries break_before produces one
+/// boundary, not two: both clauses cut in the same place.
+template <typename KeyAt, typename BreaksAt>
+u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, BreaksAt breaks_at)
+{
+	const GSTileGpuPassKey first_key = key_at(first);
+	u32 j = first + 1;
+	while (j < count && gsTileGpuPassAdmitsMore(j - first, max_pass_draws))
+	{
+		if (breaks_at(j) || key_at(j) != first_key)
+			break;
+		j++;
+	}
+	return j;
+}
+
 /// Whether the fragment stage truncates this draw's output to what a 16-bit frame stores.
 ///
 /// A TileGpu colour target is an RGBA8 image whatever the guest format is, and every road that puts
@@ -994,6 +1045,16 @@ private:
 	// put a draw's prep ops in a pass the draw is not in. Both grouping sites read THIS member --
 	// accumulation's open-pass test and the plan build's cut -- so they cannot disagree.
 	bool m_depth_uniform_passes = false;
+	// The most draws one pass may hold, 0 meaning no cap (GSDevice::TileGpuMaxPassDraws, overridable
+	// by EmuCore/GS/TileGpuMaxPassDraws). Read once at construction and held in a member for exactly
+	// the reason the bit above is: both grouping sites read THIS, so a pass length they disagree
+	// about is not expressible.
+	//
+	// Independent of every other boundary policy -- it is a ceiling, not a choice of arrangement, so
+	// it composes with the depth polarity and the reader segregation rather than replacing either.
+	// That composition is the point: the deciding device round is a four-arm crossing of the depth
+	// policy against this cap.
+	u32 m_max_pass_draws = 0;
 	// Whether declaring the in-pass destination read taxes every draw of the pass
 	// (GSDevice::TileGpuSegregatesSelfRead). Read once at construction and used through the same
 	// key function for the same reason: it is a pass boundary, and both grouping sites must agree.
@@ -1623,6 +1684,16 @@ private:
 	std::array<GSTileSurfaceId, GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass> m_open_tex_src{};
 	u32 m_open_tex_count = 0;
 
+	// How many draws the open pass already holds, for m_max_pass_draws. Counted where the draw joins
+	// the pass and reset with everything else in BreakOpenPass, so it stays in step with the plan
+	// build's own count of the pass it is cutting (j - i there).
+	//
+	// The two are the same number because accumulation pushes exactly one plan entry per draw it
+	// counts, with no return between the count and the push. The display-buffer seed pseudo-draws
+	// push plan entries accumulation never counts, but each carries break_before AND calls
+	// BreakOpenPass after itself, so no draw is ever counted against one on either side.
+	u32 m_open_draw_count = 0;
+
 	// The open pass is closed: the next draw accumulated is the first of a new one, so nothing
 	// recorded above constrains it. Idempotent, and the state it leaves matches no draw, so it
 	// also serves as the initial and between-frames state.
@@ -1807,6 +1878,15 @@ private:
 		u32 pull_calls = 0;
 		u32 flushes = 0;         // mid-frame plan submissions
 		u32 passes = 0;
+		// The pass-length distribution the max-pass-draws cap acts on, so a run says mechanically
+		// whether the cap engaged rather than leaving it to be eyeballed off a pass total.
+		//
+		// `capped_passes` counts passes the cap CLOSED -- a pass at exactly the cap whose next draw
+		// would have joined it. Not "passes of cap length": a pass can reach the cap and end there
+		// anyway because the key changed or the frame ran out, and counting those would report the
+		// cap as engaged on a frame it never touched.
+		u32 biggest_pass_draws = 0; // the longest pass built this frame
+		u32 capped_passes = 0;      // ...and how many the cap itself ended
 		// The texel-arm axis of the fragment variant (GSDevice::kGSTileGpuTexel*). A pass whose
 		// byte-road draws all decode through one arm gets a program carrying that arm alone; one
 		// that spans two carries both, and is the only case the shatter does not shrink all the way.

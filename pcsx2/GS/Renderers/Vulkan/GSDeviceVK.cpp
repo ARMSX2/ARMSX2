@@ -6292,6 +6292,41 @@ bool GSDeviceVK::TileGpuPrefersDepthUniformPasses()
 	return IsDeviceAdreno();
 }
 
+// Adreno charges for pass LENGTH, so a pass here holds at most 64 draws and the 65th opens another
+// with the same key.
+//
+// Two independent instruments put the number in the same place, which is the reason it is 64 and not
+// a round guess:
+//
+//  1. A pass-size sweep on an SD865 (Turnip, 2026-08-24) drove the cap from unset down to 1 draw and
+//     read the frame time at each stop. The driver's occlusion-query autotune term -- worth +2.69 ms
+//     on MGS3 and +9.05 ms on Armored Core 3 with no cap -- is ENTIRELY gone by 64, even though a
+//     64-draw pass is far above the driver's own 5-draw instrumentation gate. So the cost was never
+//     per-pass; it is concentrated in the handful of giant passes a frame has. Under shipping
+//     conditions the cap wins ac3 27.26 -> 18.48 ms and mgs3 29.35 -> 26.58.
+//  2. A CPU-side structural census of the depth-policy A/B, on a different machine with no device
+//     access, found that the fraction of a frame's fill relocated into passes of >= 64 draws is what
+//     ranks that A/B's per-title GPU outcome (rho +0.86, sign correct on both improving titles), and
+//     swept the threshold: the correlation peaks at 64.
+//
+// ⚠️ CONSERVATIVE ON PURPOSE. Smaller caps are not better: below 8 draws the same sweep HARMS two of
+// the three dumps it covered (ac3 +34.6%, sotc +9.1%), because each split costs a per-pass state
+// re-emit of a few microseconds and a frame capped at 1 draw pays it thousands of times. MGS3 keeps
+// falling all the way to N=1 (-39%) and nothing else does; that is something MGS3's passes contain,
+// not a size law, and it is not what this number is set from.
+//
+// ⚠️ The mechanism behind the residual is UNNAMED and this comment names none. The autotune term is
+// understood; what else concentrated fill costs is not. The cap deletes the term without explaining
+// it, which is worth having and is not the same as understanding it.
+//
+// Adreno only, and by VENDOR rather than by driver, for the same reason the depth answer above is:
+// nothing points at Turnip specifically. Every other vendor is uncapped -- a tiler has no measurement
+// asking for one, and a cap it does not need is pure pass-boundary cost.
+u32 GSDeviceVK::TileGpuMaxPassDraws()
+{
+	return IsDeviceAdreno() ? 64u : 0u;
+}
+
 // Adreno charges every draw in a declaring pass for the declaration, so the readers have to be
 // alone in one.
 //
