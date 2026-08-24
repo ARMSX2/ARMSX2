@@ -39,6 +39,14 @@ enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Bool
     // Thermals (Cotcho, Mike22). Stat tiles like the rest -- a device with no readable zone
     // simply shows a dash rather than the tile being hidden, so the grid does not reflow
     // depending on what the kernel happens to expose.
+    // The game's cover, and more of what RetroAchievements already knows. The panel had the
+    // title as text and a bare unlocked-count; on a screen sitting beside you, the cover is what
+    // makes it read as "this game" at a glance.
+    COVER("cover", "secondScreen.tile.cover", stat = true),
+    RA_POINTS("rapoints", "secondScreen.tile.raPoints", stat = true),
+    RA_RECENT("rarecent", "secondScreen.tile.raRecent", stat = true),
+    RICH_PRESENCE("presence", "secondScreen.tile.presence", stat = true),
+
     // The rest of what the in-game OSD shows (Mike22). Backed by new JNI getters -- until those
     // existed, FPS was the only figure the panel could reach.
     VPS("vps", "secondScreen.tile.vps", stat = true),

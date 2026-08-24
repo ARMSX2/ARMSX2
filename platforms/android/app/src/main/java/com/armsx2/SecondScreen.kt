@@ -526,6 +526,7 @@ object SecondScreen {
                 ) return null
                 return macroAction(id).styleAsTile(action = true)
             }
+            if (tile == SecondScreenTile.COVER) return buildCoverTile()
             if (tile.stat) {
                 return TextView(context).styleAsTile(action = false).also {
                     (it as TextView).text = I18n.get(tile.labelKey)
@@ -544,6 +545,65 @@ object SecondScreen {
             SecondScreenTile.MACRO3 -> com.armsx2.ui.touch.TouchButtonId.MACRO3
             SecondScreenTile.MACRO4 -> com.armsx2.ui.touch.TouchButtonId.MACRO4
             else -> null
+        }
+
+        /**
+         * The cover art tile: the only tile that is a picture rather than text.
+         *
+         * Loading goes through the same two sources the library uses -- a user-set custom cover
+         * file first, then the fetched cover URL -- so the panel shows whatever the library
+         * shows, including a per-game cover the user chose by hand. The URL path uses Coil's
+         * ImageLoader directly because a Presentation is plain Views; the file path decodes
+         * inline, since it is local and already on disk.
+         *
+         * Re-resolved on the panel tick rather than once at build, so it follows a game change
+         * without the panel being rebuilt.
+         */
+        private fun buildCoverTile(): View =
+            android.widget.ImageView(context).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                adjustViewBounds = true
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = dp * 14f
+                    setColor(TILE_STAT)
+                    setStroke((dp * 1f).toInt(), BORDER)
+                }
+                clipToOutline = true
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: android.graphics.Outline) {
+                        o.setRoundRect(0, 0, v.width, v.height, dp * 14f)
+                    }
+                }
+            }
+
+        /** The cover currently shown, so the tick only reloads when the game actually changes. */
+        private var coverKey: String? = null
+
+        private fun updateCover(view: android.widget.ImageView) {
+            val game = MainActivityRuntime.currentGame.value
+            val key = game?.serial ?: game?.title
+            if (key == coverKey) return
+            coverKey = key
+            if (game == null) { view.setImageDrawable(null); return }
+            val custom = runCatching { com.armsx2.CustomCovers.fileFor(context, game) }.getOrNull()
+            if (custom != null) {
+                runCatching {
+                    view.setImageBitmap(android.graphics.BitmapFactory.decodeFile(custom.absolutePath))
+                }
+                return
+            }
+            val url = game.coverUrl ?: run { view.setImageDrawable(null); return }
+            runCatching {
+                val loader = coil.ImageLoader(context)
+                val req = coil.request.ImageRequest.Builder(context)
+                    .data(url)
+                    .target(
+                        onSuccess = { d -> view.setImageDrawable(d) },
+                        onError = { _ -> view.setImageDrawable(null) },
+                    )
+                    .build()
+                loader.enqueue(req)
+            }
         }
 
         /**
@@ -732,6 +792,7 @@ object SecondScreen {
             // panel tick — that interval IS the mitigation Cotcho asked about. Cheap to call:
             // Thermals.poll returns immediately until the interval is up.
             runCatching { Thermals.poll(context, tempIntervalMs()) }
+            runCatching { trackAchievements() }
 
             // Read charge straight from BatteryManager rather than plumbing state over from the
             // main-display status cluster — this panel ticks on its own and the call is cheap.
@@ -792,6 +853,19 @@ object SecondScreen {
                     SecondScreenTile.GPU_TEMP -> "GPU\n" + (Thermals.format(Thermals.gpu) ?: "—")
                     SecondScreenTile.BATTERY_TEMP -> "BATT\n" + (Thermals.format(Thermals.battery) ?: "—")
                     SecondScreenTile.ACHIEVEMENTS -> achievementSummary()
+                    // The picture tile updates itself; the when only produces text.
+                    SecondScreenTile.COVER -> {
+                        (view as? android.widget.ImageView)?.let { updateCover(it) }
+                        null
+                    }
+                    SecondScreenTile.RA_POINTS -> raPoints()
+                    SecondScreenTile.RA_RECENT ->
+                        I18n.get(tile.labelKey) + "\n" + (lastUnlock ?: "—")
+                    // RetroAchievements' own description of where you are in the game. It is the
+                    // one line that says something a number cannot.
+                    SecondScreenTile.RICH_PRESENCE ->
+                        runCatching { NativeApp.getRichPresence() }.getOrDefault("").ifBlank { null }
+                            ?: (I18n.get(tile.labelKey) + "\n—")
                     // Action tiles that carry state show it, so the panel reads as a status
                     // display and not just a remote control.
                     // State is carried by the GLYPH, not by an extra line. Appending one was
@@ -831,20 +905,46 @@ object SecondScreen {
          *  recently THIS SESSION. RetroAchievements' own snapshot carries no unlock timestamp, so
          *  "recent" is tracked by watching the locked→unlocked edge on the panel's own tick rather
          *  than invented from list order. */
-        private fun achievementSummary(): String {
+        /**
+         * This tick's achievements, parsed ONCE.
+         *
+         * Three tiles read this now, and each used to parse the JSON for itself -- so placing all
+         * three meant three parses of the same string every tick, for identical results.
+         */
+        private var raItems: List<com.armsx2.ui.achievements.AchievementItem> = emptyList()
+
+        /**
+         * Refresh [raItems] and note any new unlock.
+         *
+         * Called once per tick regardless of which tiles are placed. It used to live inside the
+         * Achievements tile's own text builder, which meant the Latest-unlock tile read "—"
+         * forever unless the Achievements tile happened to be on the panel as well.
+         */
+        private fun trackAchievements() {
             val json = runCatching { NativeApp.getAchievementsJSON() }.getOrDefault("")
-            val items = runCatching { com.armsx2.ui.achievements.parseAchievementItems(json) }
+            raItems = runCatching { com.armsx2.ui.achievements.parseAchievementItems(json) }
                 .getOrDefault(emptyList())
-            if (items.isEmpty()) return I18n.get("secondScreen.tile.achievements") + "\n—"
-            val unlocked = items.filter { it.unlocked }
-            unlocked.map { it.id }.toSet().let { ids ->
-                val fresh = ids - seenUnlocked
-                if (seenUnlocked.isNotEmpty() && fresh.isNotEmpty())
-                    lastUnlock = unlocked.firstOrNull { it.id in fresh }?.title
-                seenUnlocked = ids
-            }
+            if (raItems.isEmpty()) return
+            val ids = raItems.filter { it.unlocked }.map { it.id }.toSet()
+            val fresh = ids - seenUnlocked
+            // The first poll of a session seeds the set without announcing: everything already
+            // unlocked is not news.
+            if (seenUnlocked.isNotEmpty() && fresh.isNotEmpty())
+                lastUnlock = raItems.firstOrNull { it.id in fresh }?.title
+            seenUnlocked = ids
+        }
+
+        /** Earned / total points, which is the figure RA itself leads with. */
+        private fun raPoints(): String {
+            if (raItems.isEmpty()) return I18n.get("secondScreen.tile.raPoints") + "\n—"
+            val earned = raItems.filter { it.unlocked }.sumOf { it.points }
+            return "RA\n$earned/${raItems.sumOf { it.points }}"
+        }
+
+        private fun achievementSummary(): String {
+            if (raItems.isEmpty()) return I18n.get("secondScreen.tile.achievements") + "\n—"
             return buildString {
-                append(unlocked.size).append('/').append(items.size)
+                append(raItems.count { it.unlocked }).append('/').append(raItems.size)
                 lastUnlock?.let { append('\n').append(it) }
             }
         }
