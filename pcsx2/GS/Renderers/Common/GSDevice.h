@@ -1990,11 +1990,14 @@ public:
 		u32 zbuf_target;
 	};
 
-	/// Where a TileGpu pass may write, and the mapping its vertices arrive through.
+	/// Where a TileGpu pass may write, and the mapping its vertices arrive through. Two
+	/// questions, and one number cannot answer both.
 	struct GSTileGpuPassGeometry
 	{
-		/// The viewport: NDC -> device pixels. The other half of the vertex transform the
-		/// renderer built into each state row.
+		/// The viewport: NDC -> device pixels. It is the other half of the vertex transform the
+		/// renderer built into each state row, and that transform is written against the COLOUR
+		/// target's OWN size -- guest row y is colour-image row y, because a surface's texture
+		/// row 0 is its base pointer's row 0. So the viewport spans exactly that.
 		int viewport_width;
 		int viewport_height;
 		/// The render area, and the scissor that matches it: what the pass is allowed to touch.
@@ -2006,20 +2009,31 @@ public:
 
 	/// The geometry of a pass rendering into this attachment pair.
 	///
-	/// One derivation rather than two expressions in the executor, so the render area, the
-	/// scissor and the viewport cannot drift apart, and so what each of them is FOR can be
-	/// stated once and tested.
+	/// The two answers differ exactly when the pair's sizes do, which this planner does produce:
+	/// a colour surface grows to whatever page set a texture read of it spans, while its depth
+	/// partner keeps the height its own draws asked for. FlatOut 2 renders its world into a
+	/// 640x448 PSMCT32 buffer and then composites it to the display buffer through a TW=1024
+	/// TH=512 texture read, so the colour surface becomes 640x512 and the depth stays 640x448.
+	/// Serving the viewport from the clamped size rescaled every guest row by 448/512: the world
+	/// sat 12.5% up the frame and ran out at row 392 with a black band under it, while the HUD --
+	/// sprites that need no depth, so they land in colour-only passes with nothing to clamp
+	/// against -- stayed exactly where it belonged.
+	///
+	/// Clipping at the clamped height loses nothing: both surfaces grew to cover every draw's
+	/// footprint, so no draw's bottom is below min(colour, depth). The planner asserts it.
 	static constexpr GSTileGpuPassGeometry gsTileGpuPassGeometry(bool has_color, int color_width,
 		int color_height, bool has_depth, int depth_width, int depth_height)
 	{
-		int aw = has_color ? color_width : depth_width;
-		int ah = has_color ? color_height : depth_height;
+		const int vw = has_color ? color_width : depth_width;
+		const int vh = has_color ? color_height : depth_height;
+		int aw = vw;
+		int ah = vh;
 		if (has_color && has_depth)
 		{
 			aw = (depth_width < aw) ? depth_width : aw;
 			ah = (depth_height < ah) ? depth_height : ah;
 		}
-		return GSTileGpuPassGeometry{aw, ah, aw, ah};
+		return GSTileGpuPassGeometry{vw, vh, aw, ah};
 	}
 
 	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
