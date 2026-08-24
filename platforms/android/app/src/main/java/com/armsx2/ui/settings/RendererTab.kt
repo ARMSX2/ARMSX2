@@ -399,16 +399,23 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(fxaa = it))
             }
             SettingsDivider()
-            val fsr1On = s.upscaler == Settings.UPSCALER_FSR1
-            ToggleRow(
-                str("renderer.fsr1.label"),
-                fsr1On,
-                description = str("renderer.fsr1.description"),
-            ) {
-                apply(s.copy(upscaler = if (it) Settings.UPSCALER_FSR1 else Settings.UPSCALER_OFF))
-            }
-            if (fsr1On) {
+            // A picker rather than the on/off toggle this was: with SGSR there are three
+            // mutually exclusive upscalers, and two toggles that silently turn each other off
+            // is a worse way to say that than one list. The UI index is NOT the enum value --
+            // MetalFX is 1 and is Apple-only, so it has no row here.
+            val upscalerValues = listOf(Settings.UPSCALER_OFF, Settings.UPSCALER_FSR1, Settings.UPSCALER_SGSR)
+            val upscalerOn = s.upscaler == Settings.UPSCALER_FSR1 || s.upscaler == Settings.UPSCALER_SGSR
+            SegmentedRow(
+                label = str("renderer.upscaler.label"),
+                options = listOf(str("common.off"), "FSR 1", "SGSR"),
+                selectedIndex = upscalerValues.indexOf(s.upscaler).coerceAtLeast(0),
+                onChange = { apply(s.copy(upscaler = upscalerValues[it])) },
+            )
+            if (upscalerOn) {
                 SettingsDivider()
+                // Shared slider. FSR1 maps it onto RCAS stops and SGSR onto its 0..2 edge
+                // sharpness, so the number means different things, but it is the same intent and
+                // a second slider would only invite disagreement between them.
                 IntSliderRow(
                     label = str("renderer.fsr1.sharpness.label"),
                     value = s.fsrSharpness.coerceIn(0, 100),
@@ -418,6 +425,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     onChange = { apply(s.copy(fsrSharpness = it)) },
                 )
             }
+            val fsr1On = upscalerOn
             // FSR's second pass IS RCAS, a contrast-adaptive sharpener, so the core runs one or
             // the other and never both. Showing CAS while FSR is on would offer a slider that
             // does nothing.

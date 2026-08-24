@@ -293,7 +293,7 @@ GSDevice::GSDevice()
 GSDevice::~GSDevice()
 {
 	// should've been cleaned up in Destroy()
-	pxAssert(m_pool[0].empty() && m_pool[1].empty() && !m_merge && !m_weavebob && !m_blend && !m_mad && !m_target_tmp && !m_cas && !m_mfx_output && !m_fsr1_easu && !m_fsr1_output);
+	pxAssert(m_pool[0].empty() && m_pool[1].empty() && !m_merge && !m_weavebob && !m_blend && !m_mad && !m_target_tmp && !m_cas && !m_mfx_output && !m_fsr1_easu && !m_fsr1_output && !m_sgsr_output);
 }
 
 GSVector2i GSDevice::GetPresentationSize() const
@@ -1230,6 +1230,7 @@ void GSDevice::ClearCurrent()
 	delete m_mfx_output;
 	delete m_fsr1_easu;
 	delete m_fsr1_output;
+	delete m_sgsr_output;
 
 	m_merge = nullptr;
 	m_weavebob = nullptr;
@@ -1240,6 +1241,7 @@ void GSDevice::ClearCurrent()
 	m_mfx_output = nullptr;
 	m_fsr1_easu = nullptr;
 	m_fsr1_output = nullptr;
+	m_sgsr_output = nullptr;
 }
 
 void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
@@ -1678,6 +1680,78 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	}
 
 	tex = m_fsr1_output;
+	src_rect = GSVector4i(0, 0, dst_width, dst_height);
+	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+}
+
+void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect)
+{
+	FlushDeferredDraws();
+	const int dst_width = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
+	const int dst_height = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
+	if (dst_width <= 0 || dst_height <= 0)
+		return;
+
+	GSTexture* src_tex = tex;
+
+	static int s_logged_w = 0, s_logged_h = 0;
+	if (s_logged_w != dst_width || s_logged_h != dst_height)
+	{
+		s_logged_w = dst_width;
+		s_logged_h = dst_height;
+		Console.WriteLnFmt("@@ANDROID_SGSR@@ upscaling {}x{} -> {}x{} (sharpness {})",
+			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.FSR_Sharpness);
+	}
+
+	// One target, unlike FSR1: SGSR is a single pass, so there is no intermediate to hand on.
+	if (!m_sgsr_output || m_sgsr_output->GetWidth() != dst_width || m_sgsr_output->GetHeight() != dst_height)
+	{
+		delete m_sgsr_output;
+		m_sgsr_output = CreateSurface(GSTexture::ShaderWriteTexture, dst_width, dst_height, 1, GSTexture::Format::Color);
+		if (!m_sgsr_output)
+		{
+			Console.Error("Failed to allocate SGSR output texture.");
+			return;
+		}
+	}
+
+	// The picture occupies src_rect inside a larger merge target, so the shader is told where it
+	// is rather than assuming the whole texture — the same problem FsrEasuConOffset solves for
+	// FSR1 by taking an offset.
+	const float src_tex_w = static_cast<float>(src_tex->GetWidth());
+	const float src_tex_h = static_cast<float>(src_tex->GetHeight());
+	const float uv_off_x = static_cast<float>(src_rect.x) / src_tex_w;
+	const float uv_off_y = static_cast<float>(src_rect.y) / src_tex_h;
+	const float uv_scale_x = static_cast<float>(src_rect.width()) / src_tex_w;
+	const float uv_scale_y = static_cast<float>(src_rect.height()) / src_tex_h;
+
+	// Qualcomm's edge sharpness runs 0..2 with 1.0 as its own default. Our slider is the 0..100
+	// one FSR1 already uses, so the two features share a control rather than growing a second
+	// one that means almost the same thing.
+	const float sharpness = std::clamp(static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f, 0.0f, 2.0f);
+
+	std::array<u32, NUM_SGSR_CONSTANTS> consts = {};
+	const auto put_f = [&consts](u32 i, float v) { std::memcpy(&consts[i], &v, sizeof(float)); };
+	consts[0] = static_cast<u32>(dst_width);
+	consts[1] = static_cast<u32>(dst_height);
+	put_f(2, uv_off_x);
+	put_f(3, uv_off_y);
+	put_f(4, uv_scale_x);
+	put_f(5, uv_scale_y);
+	put_f(6, src_tex_w);
+	put_f(7, src_tex_h);
+	put_f(8, 1.0f / src_tex_w);
+	put_f(9, 1.0f / src_tex_h);
+	put_f(10, sharpness);
+
+	if (!DoSGSR(src_tex, m_sgsr_output, consts))
+	{
+		// leave textures intact if we failed
+		Console.Warning("Applying SGSR failed.");
+		return;
+	}
+
+	tex = m_sgsr_output;
 	src_rect = GSVector4i(0, 0, dst_width, dst_height);
 	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
 }

@@ -1077,6 +1077,29 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			// present render pass is already open by the time DoBeginPresent runs.
 			// It is CAS's `if`, not a second branch beside it: FSR's second pass *is* RCAS, a
 			// contrast-adaptive sharpener, so letting CAS run afterward sharpens twice.
+			// SGSR sits in the same place and under the same rule as FSR1 below: a single
+			// compute pass before the present render pass opens, and inside CAS's `if` rather
+			// than beside it, because SGSR sharpens as part of upscaling and letting CAS run
+			// afterwards would sharpen twice.
+			if (GSConfig.Upscaler == GSUpscaler::SGSR)
+			{
+				static bool sgsr_log_once = false;
+				if (g_gs_device->Features().sgsr)
+				{
+					const int draw_w = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
+					const int draw_h = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
+					if (current->GetWidth() < draw_w && current->GetHeight() < draw_h)
+						g_gs_device->SGSRUpscale(current, src_rect, src_uv, draw_rect);
+				}
+				else if (!sgsr_log_once)
+				{
+					Host::AddIconOSDMessage("SGSRUnsupported", ICON_FA_TRIANGLE_EXCLAMATION,
+						TRANSLATE_SV("GS", "SGSR upscaling is not available, your graphics driver does not support the required functionality."),
+						10.0f);
+					sgsr_log_once = true;
+				}
+			}
+
 			if (GSConfig.Upscaler == GSUpscaler::FSR1)
 			{
 				static bool fsr1_log_once = false;

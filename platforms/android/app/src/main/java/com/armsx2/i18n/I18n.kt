@@ -1703,6 +1703,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "touch.editor.scopeGlobal" to "Editing Global Default touch layout",
     "touch.editor.show" to "Show",
     "touch.editor.tapHoldOff" to "Tap-Hold Off",
+    "renderer.upscaler.label" to "Display upscaler",
     "secondScreen.ra.hardcore" to "Hardcore",
     "secondScreen.ra.casual" to "Casual",
     "secondScreen.tile.cover" to "Cover",

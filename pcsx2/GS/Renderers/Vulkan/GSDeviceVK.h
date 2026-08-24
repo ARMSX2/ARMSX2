@@ -550,6 +550,9 @@ private:
 	VkDescriptorSetLayout m_fsr1_ds_layout = VK_NULL_HANDLE;
 	VkPipelineLayout m_fsr1_pipeline_layout = VK_NULL_HANDLE;
 	std::array<VkPipeline, NUM_FSR1_PIPELINES> m_fsr1_pipelines = {};
+	VkDescriptorSetLayout m_sgsr_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_sgsr_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline m_sgsr_pipeline = VK_NULL_HANDLE; ///< One pass, so one pipeline, unlike FSR1.
 	VkPipeline m_imgui_pipeline = VK_NULL_HANDLE;
 
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
@@ -590,6 +593,7 @@ private:
 
 	bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
 	bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
+	bool DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants) final;
 	/// Shared body of the two above: same layout, same push range, different pipeline and
 	/// different input-side synchronisation.
 	bool DoFSR1Pass(
@@ -620,6 +624,7 @@ private:
 	bool CompilePostProcessingPipelines();
 	bool CompileCASPipelines();
 	bool CompileFSR1Pipelines();
+	bool CompileSGSRPipeline();
 
 	bool CompileImGuiPipeline();
 	void RenderImGui();

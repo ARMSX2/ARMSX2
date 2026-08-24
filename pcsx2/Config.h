@@ -482,6 +482,7 @@ enum class GSUpscaler : u8
 	// Appended rather than inserted: this enum is persisted as an integer, so renumbering
 	// MetalFXSpatial would silently re-point every existing config at a different upscaler.
 	FSR1,          ///< AMD FidelityFX Super Resolution 1 (EASU + RCAS compute passes, Vulkan).
+	SGSR,          ///< Qualcomm Snapdragon Game Super Resolution 1 (single compute pass, Vulkan).
 };
 
 enum class GSHWAutoFlushLevel : u8

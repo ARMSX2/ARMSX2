@@ -619,7 +619,7 @@ data class Settings(
     val casMode: Int = 0,
     /** EmuCore/GS/CASSharpness — sharpening strength 0..100 (%). */
     val casSharpness: Int = 50,
-    /** EmuCore/GS/Upscaler — GSUpscaler: 0 Off / 1 MetalFX (Apple only) / 2 FSR1.
+    /** EmuCore/GS/Upscaler — GSUpscaler: 0 Off / 1 MetalFX (Apple only) / 2 FSR1 / 3 SGSR.
      *  1 is unreachable from this UI; the values are the core enum's, and it is persisted
      *  as an integer, so they must not be renumbered to close the gap. */
     val upscaler: Int = 0,
@@ -1448,9 +1448,11 @@ data class Settings(
             ShaderParams.push(shaderChainPreset, shaderChainParams[shaderChainPreset].orEmpty())
         put("EmuCore/GS", "CASMode", "int", casMode.coerceIn(0, 2).toString())
         put("EmuCore/GS", "CASSharpness", "int", casSharpness.coerceIn(0, 100).toString())
-        // Upper bound is UPSCALER_FSR1, not the count of options this UI shows — clamping to
-        // the visible choices would silently rewrite FSR1 back to Off.
-        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_FSR1).toString())
+        // Upper bound is the HIGHEST enum value, not the count of options this UI shows —
+        // clamping to the visible choices would silently rewrite the top one back to Off. This
+        // bound has to move every time the core enum grows, which is exactly the trap it was
+        // written to warn about: it was still UPSCALER_FSR1 when SGSR was added.
+        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR).toString())
         put("EmuCore/GS", "FSRSharpness", "int", fsrSharpness.coerceIn(0, 100).toString())
         put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
@@ -1923,6 +1925,7 @@ data class Settings(
          *  position in any Android picker — writing the picker index would select MetalFX. */
         const val UPSCALER_OFF = 0
         const val UPSCALER_FSR1 = 2
+        const val UPSCALER_SGSR = 3
 
         /** One-tap "Low-End" performance snapshot applied on top of [base].
          *  Only cheap, safe-for-most levers that already exist as fields:

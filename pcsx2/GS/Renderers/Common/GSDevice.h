@@ -1417,6 +1417,7 @@ public:
 		bool rov                  : 1; ///< Supports rasterizer ordered views for both depth and color.
 		bool metalfx_spatial      : 1; ///< Supports Apple MetalFX spatial upscaling (Metal backend, macOS 13+).
 		bool fsr1                 : 1; ///< Supports AMD FidelityFX Super Resolution 1 (two compute passes).
+		bool sgsr                 : 1; ///< Supports Qualcomm Snapdragon Game Super Resolution 1 (one compute pass).
 		bool dual_source_blend    : 1; ///< Supports a second fragment output (SRC1) as a hardware blend factor.
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		FeatureSupport()
@@ -1518,6 +1519,9 @@ protected:
 	// Sample, but Sample still decorates to byte offset 64, so both passes push all 80 bytes
 	// - a short push leaves Sample undefined and the shader squares the whole image.
 	static constexpr u32 NUM_FSR1_CONSTANTS = 20;
+	/// dstSize(2) + uvOffset(2) + uvScale(2) + srcSize(2) + invSrcSize(2) + edgeSharpness(1),
+	/// as u32 words. Mixed uint/float, so the host packs it rather than the type saying so.
+	static constexpr u32 NUM_SGSR_CONSTANTS = 11;
 	static constexpr u32 EXPAND_BUFFER_SIZE = sizeof(u16) * 16383 * 6;
 
 	WindowInfo m_window_info;
@@ -1539,6 +1543,7 @@ protected:
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
 	GSTexture* m_fsr1_easu = nullptr; ///< FSR1 EASU output, at display size; RCAS reads it back.
 	GSTexture* m_fsr1_output = nullptr; ///< FSR1 RCAS output, the texture actually presented.
+	GSTexture* m_sgsr_output = nullptr; ///< SGSR output. One pass, so one target, unlike FSR1.
 	GSTexture* m_colclip_rt = nullptr; ///< Temp hw colclip texture
 	GSTexture* m_ds_as_rt = nullptr; ///< Depth as color
 
@@ -1608,6 +1613,10 @@ protected:
 	/// Both no-op in the base class so only the backends that gate Features().fsr1 on need them.
 	virtual bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
 	virtual bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
+
+	/// SGSR: edge-directed spatial upsample from sTex to dTex's size, in a single dispatch.
+	/// No-op in the base class, like the FSR1 pair above.
+	virtual bool DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants) { return false; }
 
 	/// Perform texture operations for ImGui
 	void UpdateImGuiTextures();
@@ -2033,6 +2042,10 @@ public:
 
 	/// Same contract as MetalFXUpscale(), via FSR1's two compute passes.
 	void FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
+
+	/// Same contract again, via SGSR's single compute pass. Cheaper than FSR1 on mobile, which is
+	/// the point of having it: SGSR was designed for Adreno, FSR1's two passes were not.
+	void SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
 
 	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
 

@@ -2670,6 +2670,12 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	// Same non-fatal treatment as CAS above, and for the same reason: FSR1 is two more compute
 	// pipelines, so a driver that chokes on CAS's will likely choke on these too. Leaving
 	// Features().fsr1 false makes GSRenderer fall back to the plain bilinear present.
+	if (!CompileSGSRPipeline())
+	{
+		Console.Warning("VK: SGSR pipeline compilation failed - disabling SGSR upscaling.");
+		m_features.sgsr = false;
+	}
+
 	if (!CompileFSR1Pipelines())
 	{
 		Console.Warning("VK: FSR1 pipeline compilation failed - disabling FSR1 upscaling.");
@@ -6131,6 +6137,51 @@ bool GSDeviceVK::CompileFSR1Pipelines()
 	return true;
 }
 
+bool GSDeviceVK::CompileSGSRPipeline()
+{
+	VkDevice dev = m_device;
+	Vulkan::DescriptorSetLayoutBuilder dslb;
+	Vulkan::PipelineLayoutBuilder plb;
+
+	if (m_use_push_descriptors)
+		dslb.SetPushFlag();
+	// Combined image sampler for the same reason FSR1 needs one: SGSR reads through
+	// textureGather, which has to have a sampler bound to the image.
+	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+	dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+	if ((m_sgsr_ds_layout = dslb.Create(dev)) == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(dev, m_sgsr_ds_layout, "SGSR descriptor layout");
+
+	plb.AddPushConstants(VK_SHADER_STAGE_COMPUTE_BIT, 0, NUM_SGSR_CONSTANTS * sizeof(u32));
+	plb.AddDescriptorSet(m_sgsr_ds_layout);
+	if ((m_sgsr_pipeline_layout = plb.Create(dev)) == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(dev, m_sgsr_pipeline_layout, "SGSR pipeline layout");
+
+	// One module, no preprocessor gating: the whole filter is one function, so unlike FSR1 there
+	// is nothing to select before the preprocessor runs.
+	std::optional<std::string> sgsr_source = ReadShaderSource("shaders/vulkan/sgsr.glsl");
+	if (!sgsr_source.has_value())
+		return false;
+	sgsr_source->insert(0, "#version 460 core\n");
+
+	VkShaderModule mod = g_vulkan_shader_cache->GetComputeShader(sgsr_source->c_str());
+	if (mod == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard mod_guard = [this, &mod]() { vkDestroyShaderModule(m_device, mod, nullptr); };
+
+	Vulkan::ComputePipelineBuilder cpb;
+	cpb.SetPipelineLayout(m_sgsr_pipeline_layout);
+	cpb.SetShader(mod, "main");
+	m_sgsr_pipeline = cpb.Create(dev, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (!m_sgsr_pipeline)
+		return false;
+
+	m_features.sgsr = true;
+	return true;
+}
+
 bool GSDeviceVK::CompileImGuiPipeline()
 {
 	const std::optional<std::string> glsl = ReadShaderSource("shaders/vulkan/imgui.glsl");
@@ -6505,6 +6556,75 @@ bool GSDeviceVK::DoFSR1Pass(
 	return true;
 }
 
+bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants)
+{
+	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
+
+	EndRenderPass();
+
+	GSTextureVK* const sTexVK = static_cast<GSTextureVK*>(sTex);
+	GSTextureVK* const dTexVK = static_cast<GSTextureVK*>(dTex);
+	VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+
+	// Input arrives from a colour-attachment write, exactly as FSR1's EASU input does. There is
+	// no compute->compute case here because SGSR has no intermediate.
+	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+
+	if (dTexVK->GetLayout() == GSTextureVK::Layout::ComputeReadWriteImage)
+	{
+		// Every frame after the first: order this dispatch's writes against the previous frame's
+		// reads of the same texture by the present pass. TransitionToLayout early-outs when the
+		// layout already matches, so a same-layout dependency has to be stated by hand.
+		const VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+			dTexVK->GetImage(), {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u}};
+		vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+	else
+	{
+		dTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadWriteImage);
+	}
+
+	// Normalised coordinates and gathers, so linear/clamp-to-edge, like EASU.
+	const VkSampler sampler = m_linear_sampler;
+
+	Vulkan::DescriptorSetUpdateBuilder dsub;
+	if (m_use_push_descriptors)
+	{
+		dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 0, sTexVK->GetView(), sampler, sTexVK->GetVkLayout());
+		dsub.AddStorageImageDescriptorWrite(VK_NULL_HANDLE, 1, dTexVK->GetView(), dTexVK->GetVkLayout());
+		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_sgsr_pipeline_layout, 0, false);
+	}
+	else
+	{
+		VkDescriptorSet ds = AllocateDescriptorSetFromFramePool(m_sgsr_ds_layout);
+		if (ds == VK_NULL_HANDLE) [[unlikely]]
+			return false;
+		dsub.AddCombinedImageSamplerDescriptorWrite(ds, 0, sTexVK->GetView(), sampler, sTexVK->GetVkLayout());
+		dsub.AddStorageImageDescriptorWrite(ds, 1, dTexVK->GetView(), dTexVK->GetVkLayout());
+		dsub.Update(m_device);
+		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_sgsr_pipeline_layout, 0, 1, &ds, 0, nullptr);
+	}
+
+	// 8x8 local size, one pixel per invocation — not FSR1's 16, which comes from its 64 threads
+	// each writing four pixels.
+	static const int threadGroupWorkRegionDim = 8;
+	const int dispatchX = (dTex->GetWidth() + (threadGroupWorkRegionDim - 1)) / threadGroupWorkRegionDim;
+	const int dispatchY = (dTex->GetHeight() + (threadGroupWorkRegionDim - 1)) / threadGroupWorkRegionDim;
+
+	vkCmdPushConstants(cmdbuf, m_sgsr_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+		NUM_SGSR_CONSTANTS * sizeof(u32), constants.data());
+	vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_sgsr_pipeline);
+	vkCmdDispatch(cmdbuf, dispatchX, dispatchY, 1);
+
+	// Handed straight to the present pass, which samples it from the fragment stage.
+	dTexVK->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+
+	return true;
+}
+
 void GSDeviceVK::DestroyResources()
 {
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
@@ -6578,6 +6698,13 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyPipelineLayout(m_device, m_fsr1_pipeline_layout, nullptr);
 	if (m_fsr1_ds_layout != VK_NULL_HANDLE)
 		vkDestroyDescriptorSetLayout(m_device, m_fsr1_ds_layout, nullptr);
+
+	if (m_sgsr_pipeline != VK_NULL_HANDLE)
+		vkDestroyPipeline(m_device, m_sgsr_pipeline, nullptr);
+	if (m_sgsr_pipeline_layout != VK_NULL_HANDLE)
+		vkDestroyPipelineLayout(m_device, m_sgsr_pipeline_layout, nullptr);
+	if (m_sgsr_ds_layout != VK_NULL_HANDLE)
+		vkDestroyDescriptorSetLayout(m_device, m_sgsr_ds_layout, nullptr);
 
 	if (m_imgui_pipeline != VK_NULL_HANDLE)
 		vkDestroyPipeline(m_device, m_imgui_pipeline, nullptr);
