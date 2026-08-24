@@ -196,6 +196,19 @@ protected:
 	int m_exec_tr_x = 0;
 	int m_exec_tr_y = 0;
 
+	/// True only while an InvalidateVideoMem call describes a write whose ENTIRE rect the very next
+	/// thing this thread does lands in local memory: a host->local transfer arriving as one packet
+	/// (first slice and last), or a local->local Move, whose copy is always the whole rect.
+	///
+	/// It exists because the rect a renderer is handed is a CLAIM, not a record. A sliced transfer
+	/// passes the WHOLE image rect on every slice while each slice writes only its own part, and a
+	/// truncated one passes a rect the trimming heuristic guessed at. Everything the memory model
+	/// does with the rect is safe under an over-claim -- it invalidates more than it must. A consumer
+	/// that instead plans work on "the shadow is about to hold exactly these bytes and nobody else's"
+	/// needs the exact form, and gets a wrong pixel where the claim over-reaches. Today that is
+	/// TileGpu's upload merge; false is always the safe answer and every other caller reads false.
+	bool m_upload_writes_whole_rect = false;
+
 	static constexpr int INVALID_ALPHA_MINMAX = 500;
 	static constexpr int MAX_DRAW_BUFFERS = 3;
 
