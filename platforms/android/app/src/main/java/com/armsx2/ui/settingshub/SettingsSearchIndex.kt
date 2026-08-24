@@ -111,7 +111,9 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.textureFiltering.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.texturePreloading.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.displayFilter.label", true, SettingsCategory.Graphics),
-    SettingsSearchEntry("renderer.fsr1.label", true, SettingsCategory.Graphics),
+    // The FSR1 switch became the Display-upscaler picker when SGSR joined it; searching for the
+    // old key would land on a row that no longer exists.
+    SettingsSearchEntry("renderer.upscaler.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.cas.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.blendingAccuracy.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.trilinear.label", true, SettingsCategory.Graphics),

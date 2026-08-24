@@ -859,16 +859,23 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // "vulkan" hid this row from almost everyone — which is exactly what happened. Only OpenGL
     // and software genuinely cannot run it.
     if (settings.renderer != "opengl" && settings.renderer != "software") {
-        val fsr1On = settings.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1
-        MenuSwitchRow(
-            str("renderer.fsr1.label"),
-            fsr1On,
-            description = str("renderer.fsr1.description"),
-        ) { on ->
-            viewModel.updateSettings {
-                it.copy(upscaler = if (on) com.armsx2.config.Settings.UPSCALER_FSR1 else com.armsx2.config.Settings.UPSCALER_OFF)
-            }
-        }
+        // A picker, matching the Renderer tab. This was a switch while FSR1 was the only
+        // upscaler; with SGSR beside it there are three mutually exclusive choices, and this
+        // screen is the SECOND place that has to learn about a new one -- the settings tab has
+        // its own copy of the same control, and updating only that one leaves the in-game menu
+        // silently unable to reach the new option.
+        val fsr1On = settings.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1 ||
+            settings.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR
+        HorizontalOptions(
+            title = str("renderer.upscaler.label"),
+            options = listOf(
+                com.armsx2.config.Settings.UPSCALER_OFF to str("common.off"),
+                com.armsx2.config.Settings.UPSCALER_FSR1 to "FSR 1",
+                com.armsx2.config.Settings.UPSCALER_SGSR to "SGSR",
+            ),
+            selected = if (fsr1On) settings.upscaler else com.armsx2.config.Settings.UPSCALER_OFF,
+            onSelect = { v -> viewModel.updateSettings { it.copy(upscaler = v) } },
+        )
         if (fsr1On) {
             com.armsx2.ui.settings.IntSliderRow(
                 label = str("renderer.fsr1.sharpness.label"),
