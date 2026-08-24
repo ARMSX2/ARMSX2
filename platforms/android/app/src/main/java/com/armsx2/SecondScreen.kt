@@ -792,7 +792,18 @@ object SecondScreen {
             // panel tick — that interval IS the mitigation Cotcho asked about. Cheap to call:
             // Thermals.poll returns immediately until the interval is up.
             runCatching { Thermals.poll(context, tempIntervalMs()) }
-            runCatching { trackAchievements() }
+            // ONLY with a VM. getAchievementsJSON is VM-scoped -- the native side calls
+            // Achievements::GetAchievementsAsJSON() with no guard, and with no game loaded that
+            // dereferences null and takes the process down. The panel ticks whether or not a game
+            // is running, so calling it unconditionally crashed the app the moment the panel
+            // appeared. runCatching is no help here: a SIGSEGV is not a Throwable.
+            if (MainActivityRuntime.eState.value == EmuState.RUNNING ||
+                MainActivityRuntime.eState.value == EmuState.PAUSED
+            ) {
+                runCatching { trackAchievements() }
+            } else {
+                raItems = emptyList()
+            }
 
             // Read charge straight from BatteryManager rather than plumbing state over from the
             // main-display status cluster — this panel ticks on its own and the call is cheap.
@@ -864,8 +875,8 @@ object SecondScreen {
                     // RetroAchievements' own description of where you are in the game. It is the
                     // one line that says something a number cannot.
                     SecondScreenTile.RICH_PRESENCE ->
-                        runCatching { NativeApp.getRichPresence() }.getOrDefault("").ifBlank { null }
-                            ?: (I18n.get(tile.labelKey) + "\n—")
+                        (if (inGame) runCatching { NativeApp.getRichPresence() }.getOrDefault("") else "")
+                            .ifBlank { null } ?: (I18n.get(tile.labelKey) + "\n—")
                     // Action tiles that carry state show it, so the panel reads as a status
                     // display and not just a remote control.
                     // State is carried by the GLYPH, not by an extra line. Appending one was
