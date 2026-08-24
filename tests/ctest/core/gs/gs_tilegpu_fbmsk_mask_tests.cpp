@@ -23,11 +23,11 @@
 //    per colour channel, so FBMSK=0x000000F8 preserves the whole of red even though byte 0
 //    is not 0xFF; and a PSMCT24 frame under FBMSK=0x00FFFFFF keeps every bit it stores, so
 //    the draw writes nothing at all even though byte 3 reads as writable.
-//  - FBMSK's ALPHA half is DEFERRED. A live draw always writes alpha; only AFAIL RGB_ONLY
-//    takes it away. Preserving a target's alpha exposes unseeded pool bytes to a later
-//    TCC=1 read -- measured on Ace Combat 5 as a white band across the sky, 0.021 -> 0.080
-//    mean-abs against the software golden. These tests are what says the carve-out can go
-//    the day targets carry a seeded alpha.
+//  - FBMSK's ALPHA half is honoured per channel, exactly like its RGB half. It was deferred
+//    while nothing seeded a TileGpu target's alpha independently of its colour; once the
+//    16-bit colour road built the alias-pass and self-read roads and the seed path started
+//    handing targets real alpha bytes, the trade flipped sign and the carve-out went. AFAIL
+//    RGB_ONLY still removes alpha on top of whatever FBMSK left.
 //  - the register mask and the AFAIL fold COMPOSE; neither overrides the other.
 //  - the seed skip ("this sprite provably overwrites the page, do not bring the old bytes
 //    in first") is gated on gsTileFrameWriteIsTotal, NOT on the channel mask being RGBA. A
@@ -196,38 +196,61 @@ TEST(TileGpuFbmskMask, AgreesWithTheOldAllOrNothingPredicateOnEveryMask)
 }
 
 // ---------------------------------------------------------------------------------------
-// The deferred alpha half, and the AFAIL fold it composes with.
+// FBMSK's alpha half, and the AFAIL fold it composes with.
 // ---------------------------------------------------------------------------------------
 
-// ⚠️ The carve-out. FBMSK's alpha byte is NOT honoured: nothing seeds a TileGpu target's
-// alpha independently of its colour, so preserving it exposes stale pool bytes to a later
-// TCC=1 read (Ace Combat 5, 248 such draws a frame, 0.021 -> 0.080 mean-abs when it is
-// honoured). The day the seeding lands, THIS is the test that says the carve-out can go.
-TEST(TileGpuFbmskMask, AlphaHalfOfFbmskIsDeferred)
+// FBMSK's alpha byte is honoured per channel, the same rule as its RGB half: the channel is
+// dropped exactly where the mask covers every bit the frame format stores in it.
+//
+// It was deferred until the 16-bit colour road landed, because nothing seeded a TileGpu
+// target's alpha independently of its colour and preserving it exposed unseeded pool bytes to
+// a later TCC=1 read -- measured on Ace Combat 5 as a white band across the sky. That road
+// built the alias-pass and self-read roads the deferral named as missing, targets started
+// carrying real alpha bytes, and the trade flipped sign: ac5 goes 3.798 -> 2.026 mean-abs
+// against the software golden with the alpha half honoured.
+//
+// Ace Combat 5 is also what honouring it repairs. The game builds its light shafts in 128x128
+// scratch buffers: a texture-shuffle alias pass moves the glow's green channel INTO the alpha
+// byte, then RGB repaint draws carry FBMSK=0xFF000000 -- "write colour, keep alpha". Writing
+// alpha there zeroed the shuffled glow, the shaft sprites (TCC=1) then weighted by an empty
+// alpha plane, and the one stray saturated texel still above AREF became a bright vertical bar
+// per sprite -- the rainbow columns.
+TEST(TileGpuFbmskMask, AlphaHalfOfFbmskIsHonoured)
 {
-	// The honest derivation knows the alpha byte is masked...
+	// The AC5 shape: the whole alpha byte masked on a 32-bit frame. Colour lands, alpha does
+	// not, and the composed policy says the same thing the register derivation does.
 	EXPECT_EQ(gsTileFrameWriteMask(0xFF000000u, kC32), kGSTileChannelsRGB);
-	// ...and the composed policy writes it anyway.
-	EXPECT_EQ(Mask(0xFF000000u, kC32), kGSTileChannelsRGBA);
-	// A partial alpha mask is the same answer, from the other direction.
-	EXPECT_EQ(Mask(0x80000000u, kC32), kGSTileChannelsRGBA);
-	EXPECT_EQ(Mask(0x7F000000u, kC32), kGSTileChannelsRGBA);
-	// A 16-bit frame's single stored alpha bit, likewise.
+	EXPECT_EQ(Mask(0xFF000000u, kC32), kGSTileChannelsRGB);
+	// A 16-bit frame's single stored alpha bit is the same statement.
 	EXPECT_EQ(gsTileFrameWriteMask(0x80000000u, kC16), kGSTileChannelsRGB);
-	EXPECT_EQ(Mask(0x80000000u, kC16), kGSTileChannelsRGBA);
-	// The deferral never resurrects a draw that lands nothing.
+	EXPECT_EQ(Mask(0x80000000u, kC16), kGSTileChannelsRGB);
+	// A PARTIAL alpha mask still writes the whole channel. That approximation is a separate
+	// ledger row and this rule does not touch it: Katamari's 0x7F000000 punctuation store and
+	// Xenosaga's 0x80000000 draws land alpha whole, exactly as before.
+	EXPECT_EQ(Mask(0x7F000000u, kC32), kGSTileChannelsRGBA);
+	EXPECT_EQ(Mask(0x80000000u, kC32), kGSTileChannelsRGBA);
+	EXPECT_FALSE(gsTileFrameWriteMaskIsExact(0x7F000000u, kC32));
+	EXPECT_FALSE(gsTileFrameWriteMaskIsExact(0x80000000u, kC32));
+	// Masking a byte the format stores nothing in cannot drop the channel: PSMCT24 has no
+	// alpha bits, so FBMSK's alpha byte says nothing about it.
+	EXPECT_EQ(Mask(0xFF000000u, kC24), kGSTileChannelsRGBA);
+	// Honouring alpha neither resurrects a draw that lands nothing nor invents one.
 	EXPECT_EQ(Mask(0xFFFFFFFFu, kC32), 0);
 	EXPECT_EQ(Mask(0x00FFFFFFu, kC24), 0);
-	// Nor does it undo the AFAIL fold, which is the one thing that still removes alpha.
+	// AFAIL RGB_ONLY still removes alpha on top, and the two agree where both apply.
+	EXPECT_EQ(Mask(0x00000000u, kC32, true, AFAIL_RGB_ONLY), kGSTileChannelsRGB);
 	EXPECT_EQ(Mask(0xFF000000u, kC32, true, AFAIL_RGB_ONLY), kGSTileChannelsRGB);
 }
 
-// One colour channel at a time; alpha rides along with each of them (the deferred half).
+// One colour channel at a time. Alpha does not ride along: FBMSK masks it here like any other
+// channel, so these draws land exactly the one channel their mask leaves open.
 TEST(TileGpuFbmskMask, OneChannelAtATime)
 {
-	EXPECT_EQ(Mask(0xFFFFFF00u, kC32), static_cast<u8>(kR | kA));
-	EXPECT_EQ(Mask(0xFFFF00FFu, kC32), static_cast<u8>(kG | kA));
-	EXPECT_EQ(Mask(0xFF00FFFFu, kC32), static_cast<u8>(kB | kA));
+	EXPECT_EQ(Mask(0xFFFFFF00u, kC32), kR);
+	EXPECT_EQ(Mask(0xFFFF00FFu, kC32), kG);
+	EXPECT_EQ(Mask(0xFF00FFFFu, kC32), kB);
+	// With the alpha byte left writable it lands alongside them.
+	EXPECT_EQ(Mask(0x00FFFF00u, kC32), static_cast<u8>(kR | kA));
 	// The world-erasure draws: alpha alone, and this one FBMSK really does mask RGB.
 	EXPECT_EQ(Mask(0x00FFFFFFu, kC32), kA);
 }
@@ -251,7 +274,8 @@ TEST(TileGpuFbmskMask, AlphaTestNeverFoldsIntoTheMask)
 TEST(TileGpuFbmskMask, RegisterMaskAndAfailCompose)
 {
 	EXPECT_EQ(Mask(0x00FFFFFFu, kC32, true, AFAIL_FB_ONLY), kA);
-	EXPECT_EQ(Mask(0xFF000000u, kC32, true, AFAIL_FB_ONLY), kGSTileChannelsRGBA); // alpha half deferred
+	// FB_ONLY says "write the frame buffer"; FBMSK then keeps its alpha byte out of that.
+	EXPECT_EQ(Mask(0xFF000000u, kC32, true, AFAIL_FB_ONLY), kGSTileChannelsRGB);
 	// RGB_ONLY drops alpha on top of whatever FBMSK left.
 	EXPECT_EQ(Mask(0xFF000000u, kC32, true, AFAIL_RGB_ONLY), kGSTileChannelsRGB);
 	EXPECT_EQ(Mask(0x00FF0000u, kC32, true, AFAIL_RGB_ONLY), static_cast<u8>(kR | kG));
@@ -303,9 +327,10 @@ TEST(TileGpuFbmskMask, SeedSkipNeedsATotalWriteNotAFullChannelMask)
 	EXPECT_EQ(gsTileFrameWriteMask(0x80000000u, kC32), kGSTileChannelsRGBA);
 	EXPECT_FALSE(gsTileFrameWriteIsTotal(0x80000000u, kC32));
 
-	// And the deferred alpha half makes the trap worse, not better: the composed mask is
-	// RGBA for every FBMSK that touches alpha alone, total write or not.
-	EXPECT_EQ(Mask(0xFF000000u, kC32), kGSTileChannelsRGBA);
+	// Honouring FBMSK's alpha half narrows the trap but does not close it: a whole-byte alpha
+	// mask now drops the channel, and a PARTIAL one still reports every channel written while
+	// preserving bits inside alpha. The gate has to catch the second case on its own.
+	EXPECT_EQ(Mask(0xFF000000u, kC32), kGSTileChannelsRGB);
 	EXPECT_FALSE(gsTileFrameWriteIsTotal(0xFF000000u, kC32));
 
 	// A 16-bit frame masking only bits it does not store overwrites its cells in full, so it

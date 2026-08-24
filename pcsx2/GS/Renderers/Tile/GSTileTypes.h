@@ -266,7 +266,7 @@ constexpr bool gsTileColorLandsOnEveryFragment(GSTileAlphaTestFold fold, u32 afa
 }
 
 /// The colour write mask a draw actually gets: the FBMSK channels above, with the alpha
-/// test's AFAIL fold on top and with the one carve-out this road still owes.
+/// test's AFAIL fold on top.
 ///
 /// The two derivations COMPOSE, neither overrides the other. An alpha test every fragment
 /// fails never reaches the fragment stage, so AFAIL alone says what a failing pixel still
@@ -278,25 +278,19 @@ constexpr bool gsTileColorLandsOnEveryFragment(GSTileAlphaTestFold fold, u32 afa
 /// `atst_all_fail` is gsTileFoldAlphaTest's AllFail. It was ATST=NEVER alone when this was
 /// written; a comparison that provably fails is the same statement and takes the same road.
 ///
-/// ⚠️ **FBMSK's ALPHA byte is deliberately NOT honoured yet.** A draw that lands anything
-/// lands alpha, and only AFAIL RGB_ONLY takes it away — exactly what this renderer did
-/// before FBMSK was per channel at all. That is a staging decision with a measurement
-/// behind it, not an oversight. Preserving a target's alpha exposes whatever its pool
-/// image already held there, and nothing seeds a TileGpu target's alpha independently of
-/// its colour, so a later TCC=1 read of that target samples stale bytes. Ace Combat 5 is
-/// where it was measured: 248 draws a frame at FBMSK=0xFF000000 over cloud buffers whose
-/// alpha is established by a PSMCT16S alias pass and a self-read pass, neither of which
-/// this road serves. Honouring the alpha half there puts a white band across the sky and
-/// takes the frame from 0.021 to 0.080 mean-abs against the software golden, while every
-/// dump the RGB half repairs is unaffected by it either way. So alpha follows AFAIL alone
-/// until targets carry a seeded alpha. Rowed in the deferred-accuracy ledger, and pinned
-/// by `AlphaHalfOfFbmskIsDeferred` — that test is what says the carve-out can go, the day
-/// the seeding lands.
+/// FBMSK's ALPHA byte is honoured per channel like its RGB half — the channel is dropped
+/// exactly where the mask covers every bit the frame format stores in it. It was deferred
+/// (Ace Combat 5's white band across the sky, measured 2026-08-22 at `5cf3112226`) because
+/// nothing then seeded a TileGpu target's alpha independently of its colour, so preserving
+/// alpha exposed unseeded pool bytes to a later TCC=1 read. The 16-bit colour road
+/// (`aead2dc772..2767b5c667`) built the alias-pass roads that establish a target's alpha and
+/// the seed path started giving targets real alpha bytes, at which point the trade flipped
+/// sign: ac5 goes 3.798 → 2.026 mean-abs against the software golden with alpha honoured, at
+/// `c4b39749f9`. A PARTIAL alpha mask still writes the whole channel — that approximation is
+/// the same one the RGB half makes, and stays rowed in the deferred-accuracy ledger.
 constexpr u8 gsTileFrameColorWriteMask(u32 fbmsk, u32 fmsk, bool atst_all_fail, u32 afail)
 {
 	u8 m = gsTileFrameWriteMask(fbmsk, fmsk);
-	if (m != 0)
-		m |= kGSTileChannelAlpha; // the deferred alpha half: a live draw always writes alpha
 	if (atst_all_fail)
 	{
 		// Every pixel fails, so AFAIL alone decides what a failing pixel still lands.

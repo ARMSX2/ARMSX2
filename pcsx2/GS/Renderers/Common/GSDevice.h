@@ -2309,8 +2309,8 @@ public:
 		/// that is both the overwhelming majority of draws and what a plan carrying no blend keys
 		/// at all falls back to. 0xF is a depth-only draw (the GS AFAIL ZB_ONLY fold, or an FBMSK
 		/// that keeps every bit the frame format stores); 0x8 is RGB without alpha (AFAIL
-		/// RGB_ONLY — NOT FBMSK=0xFF000000, whose alpha half this road still writes, see
-		/// gsTileFrameColorWriteMask); and the partial-FBMSK population lives in between —
+		/// RGB_ONLY, and FBMSK=0xFF000000 — Ace Combat 5's "write colour, keep alpha" repaint,
+		/// see gsTileFrameColorWriteMask); and the partial-FBMSK population lives in between —
 		/// OutRun 2006's world-erasing post sprites and Beyond Good & Evil's alpha-mask
 		/// silhouettes are both 0x7, alpha alone.
 		static constexpr u32 kNoWriteShift = 16;
