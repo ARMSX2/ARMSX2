@@ -1684,6 +1684,13 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
 }
 
+// Qualcomm Snapdragon Game Super Resolution 1, "mobile" variant. A single compute pass, unlike
+// FSR1's two, and written by Qualcomm for Adreno — which is why it is here at all.
+//
+// Feature suggested by CamilleLaVey, who authored the upstream refinements this is based on
+// (eden-emu/eden PR #4293: wider sharpening range and explicit crop handling). The filter itself
+// is Qualcomm's, BSD-3-Clause; see shaders/vulkan/sgsr.glsl for the notices and for what the
+// fragment-to-compute conversion changed.
 void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect)
 {
 	FlushDeferredDraws();
