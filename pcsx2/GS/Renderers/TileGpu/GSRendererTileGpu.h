@@ -298,32 +298,53 @@ constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bo
 ///   taxed draws     a draw sharing a declaring pass with an earlier draw of the same class pays a
 ///                   render-backend flush, because on sysmem a declaring pass rasterizes under
 ///                   GRAS_SC_CNTL.single_prim_mode = FLUSH_PER_OVERLAP_AND_OVERWRITE.
-///   declared runs   ...and a declaring pass costs about 77 us of its OWN, whatever it holds --
-///                   transitions, load forcing, the input-attachment bind. The previous cost model
-///                   scored a run of one draw as FREE, and the device refuted it in the loudest
-///                   available way: FlatOut 2's exotic blends are 896 draws in 896 solo declared
-///                   passes, scored ZERO, admitted, and the frame came back at 122.04 ms -- +120%
-///                   against the arm before the budget existed and +383% against the arm before the
-///                   read road existed, with the pass count going 235 -> 1,100.
+///   declared runs   ...and a declaring pass costs of its OWN, whatever it holds -- transitions,
+///                   load forcing, the input-attachment bind. The first cost model scored a run of
+///                   one draw as FREE, and the device refuted it in the loudest available way:
+///                   FlatOut 2's exotic blends are 896 draws in 896 solo declared passes, scored
+///                   ZERO, admitted, and the frame came back at 122.04 ms -- +120% against the arm
+///                   before the budget existed and +383% against the arm before the read road
+///                   existed, with the pass count going 235 -> 1,100.
 ///
-/// So cost = taxed + alpha * runs.
+/// So cost = taxed + alpha * runs, and alpha = 8/5.
 ///
-/// ⚠️ alpha IS ONE, and the reason is not that a pass and an overlap happen to cost the same -- it
-/// is that alpha = 1 is the only value whose verdict does not depend on a number this planner
-/// cannot measure. At alpha = 1 the cost is arithmetically taxed + runs = the class's DRAW COUNT,
-/// which is invariant to how those draws fall into passes; at any other alpha the split matters,
-/// and the split is exactly what the run counter gets wrong. It counts runs broken by the
-/// attachment group changing, and cannot see the pass breaks a prep op or a texture bind makes
-/// later in the same draw -- on Ratchet & Clank's effects scene it counts SEVEN runs where the
-/// device declared 357 passes. Feed that error into a term with a coefficient and it moves
-/// verdicts; feed it into alpha = 1 and it cancels. The interval the device constrains is
-/// [0.75, 1] and this is the robust end of it.
+/// ⚠️ alpha WAS 1, on an argument that was principled and that the device then overruled. The
+/// argument: at alpha = 1 the cost is arithmetically taxed + runs = the class's draw count, which is
+/// invariant to how those draws fall into passes -- and that invariance is worth having, because the
+/// run counter is a number this planner cannot measure properly. It counts runs broken by the
+/// attachment group changing and cannot see the pass breaks a prep op or a texture bind makes later
+/// in the same draw; on Ratchet & Clank's effects it counts SEVEN runs where the device declared
+/// 357 passes.
 ///
-/// Kept as two terms with alpha named rather than collapsed to a draw count, because the two halves
-/// were measured separately and a device round that prices a declared pass differently should be
-/// able to say so here rather than reverse-engineer it.
-constexpr u32 kGSTileGpuRunCostNumerator = 1;
-constexpr u32 kGSTileGpuRunCostDenominator = 1;
+/// What overruled it: MGS3. Its exotic blends are 162 draws in 162 SOLO declared passes -- no
+/// overlap anywhere for the flush to charge -- and the alpha probe (manager scaffold 1dd0ed3edd,
+/// force-refusing that one class) took MGS3 from 29.1 ms to 19.734-19.745, which is the 19.725
+/// pre-regression floor to within 0.05%, with the device pass count dropping by exactly the class's
+/// own count, 633 -> 471. Its whole +48% residual was that class. At alpha = 1 it costs 162 and this
+/// line admits it; the run term is simply real, and about 59 us a pass by that arithmetic, which
+/// agrees with the ~77 us FlatOut 2's 896 declared passes implied.
+///
+/// The run-counter caveat survives the change, with its DIRECTION now stated: undercounting runs
+/// UNDERPRICES a class and never the reverse, so the failure mode is admitting something that should
+/// have been refused, and it is bounded by however badly the count is wrong. On the one class where
+/// the undercount is known to be enormous -- Ratchet's 7 counted against 357 declared -- the taxed
+/// term alone is 357 and already refuses it, so nothing there rides on the runs at all.
+///
+/// ⚠️ alpha is bounded on BOTH sides and 8/5 is chosen inside the window, not for tidiness:
+///
+///   a > 1.336   or MGS3 (162 runs) and Katamari's punctuation (195 taxed + 16 runs) cannot be
+///               separated by any line at all, whatever it is set to.
+///   a > 1.581   to put MGS3 past the refuse line where the device says it belongs, with the line
+///               left where the previous round fitted it.
+///   a <= 1.8125 or Katamari's 220 crosses the RE-ADMIT line, and a class that must be admitted
+///               stops being able to come back after a transient spike refuses it. alpha = 2 puts
+///               it at 227 and re-creates exactly the latch-off bug a 192 re-admit line would have
+///               caused at alpha = 1.
+///
+/// 8/5 is the fraction in that window that leaves BOTH lines exactly where they were; 3/2 would
+/// have needed the refuse line moved as well.
+constexpr u32 kGSTileGpuRunCostNumerator = 8;
+constexpr u32 kGSTileGpuRunCostDenominator = 5;
 
 constexpr u32 gsTileGpuClassCost(u32 taxed_draws, u32 declared_runs)
 {
@@ -332,21 +353,18 @@ constexpr u32 gsTileGpuClassCost(u32 taxed_draws, u32 declared_runs)
 
 /// The line, and it is a fit to a constraint set rather than a round number.
 ///
-/// Per-class costs over the 18-dump corpus under the Adreno pass shape, with the device's verdict
-/// on each where it ran:
+/// Per-class costs over the 18-dump corpus under the Adreno pass shape, at alpha = 8/5, with the
+/// device's verdict on each where it ran:
 ///
-///   must refuse   Xenosaga's alpha-MSB FBMSK 4805, FlatOut 2's exotic blends 896, Baldur's Gate's
-///                 16-bit blends 478, Ratchet & Clank's effect blends 364
-///   must admit    Katamari's punctuation FBMSK 211, Beyond Good & Evil's FBMSK 62, Shadow of the
-///                 Colossus' exotic blends 52, Yu-Gi-Oh's 16-bit blend 46, GT4 Online Beta's 45,
-///                 and twenty-odd classes under 32
+///   must refuse   Xenosaga's alpha-MSB FBMSK 7118, FlatOut 2's exotic blends 1433, Baldur's Gate's
+///                 16-bit blends 481, Ratchet & Clank's effect blends 368, MGS3's exotic blends 259
+///   must admit    Katamari's punctuation FBMSK 220, OutRun's exotic blends 170 and 151, Beyond
+///                 Good & Evil's FBMSK 74, Shadow of the Colossus' exotic blends 56, Yu-Gi-Oh's
+///                 16-bit blend 56, GT4 Online Beta's 46, and twenty-odd classes under 40
 ///
-/// 211 and 364 are the two that bind, and the line sits between them. MGS3's exotic blends are the
-/// one class in neither group: 162 draws in 162 solo declared passes, which this line admits. At
-/// ~77 us a declared pass that is around 12 ms of its 29.1 ms device frame, so it is a real
-/// question and not a settled one -- but no line on this metric separates 162 from Katamari's 211,
-/// and separating them needs alpha ABOVE one, which this device round does not pin. Named here so
-/// the next round can aim at it.
+/// MGS3's 259 and Katamari's 220 are the two that bind now, and they are what fixed ALPHA rather
+/// than this line -- see gsTileGpuClassCost. The line itself has not moved since it was fitted
+/// against Katamari and Ratchet, which is the point of having chosen 8/5 over 3/2.
 constexpr u32 kGSTileGpuDeclaringRefuseAbove = 256;
 /// ...and the re-admit line, the near edge of the hysteresis band.
 ///
@@ -460,6 +478,25 @@ struct GSTileGpuDeclaringBudget
 	/// being left at whatever the last verdict was -- the budget must be inert there, not merely idle.
 	constexpr void Roll()
 	{
+		// ⚠️ AN EMPTY FRAME IS NOT EVIDENCE. A title presenting at 30 Hz over a 60 Hz vsync draws
+		// nothing at all in every second frame, and letting those frames decay the peak says "the
+		// class got cheaper" when what happened is that nothing was drawn. It is the same trap the
+		// peak itself exists to avoid, one level down, and it is not hypothetical: MGS3's exotic
+		// blends cost 259 against a 256 line, one decay step takes that to 195, 195 is under the
+		// re-admit line, so the class came back on every off-frame -- and being re-admitted it was
+		// unpriced too, so the bootstrap then let 161 of its 162 draws through before the guard
+		// fired. Measured that way it was "refused in 100% of frames" and still paying 161 of its
+		// 162 declared passes.
+		//
+		// So a frame in which nothing was charged at all changes nothing: not the peak, not the
+		// verdict, not `priced`. A frame that DID draw but not this class still decays it, which is
+		// the case the decay is for.
+		bool charged = false;
+		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
+			charged = charged || taxed[c] != 0 || runs[c] != 0;
+		if (!charged)
+			return;
+
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
@@ -1543,8 +1580,11 @@ private:
 		//   wanted   draws that would be admitted for the class, whatever the budget said
 		//   exposed  of those, the ones standing behind another draw of the class in what would be
 		//            one declaring pass -- the quantity the budget is kept in
-		//   refused  1 if the budget refused the class for this frame, so the mean is the fraction
-		//            of frames it was off
+		//   refused  1 if the budget refused the class at the END of this frame, so the mean is the
+		//            fraction of frames it finished off. ⚠️ END of frame: under the bootstrap an
+		//            unpriced class can be admitted for most of a frame and still be recorded
+		//            refused for it. The admitted-draw total on the line above is what says how
+		//            much actually got through.
 		u32 class_wanted[kGSTileGpuAdmissionClasses] = {};
 		u32 class_taxed[kGSTileGpuAdmissionClasses] = {};  // of those, standing behind another of the class
 		u32 class_runs[kGSTileGpuAdmissionClasses] = {};   // ...and the declared runs they fall into
