@@ -467,3 +467,97 @@ TEST(GSTileGpuShaderBudget, EveryDepthSeedFormatCompiles)
 		std::printf("  colour seed format %u: %u SPIR-V words\n", f, words);
 	}
 }
+
+// The Mali arm of the fragment program: the one the ARM proprietary compiler gets, in which every
+// vector bitwise AND is done a component at a time because that compiler miscompiles the vector
+// form. Nobody builds it on a dev box, so nothing here would have said if an overload were missing
+// or a call site had a type no overload covers -- the failure would arrive as a Mali-only compile
+// error, or, if the site were left unwrapped, as scattered wrong pixels on that driver alone.
+//
+// Only the variants that carry the wrapped sites are built: the fog unpack is in every program, and
+// the byte tail's four -- the blend coefficients, the COLCLAMP mask, the 16-bit quantise and the
+// FBMSK merge -- come in with their own gates. The full road/arm set on top of each, so every
+// declaration the module can hold is in the compile.
+TEST(GSTileGpuShaderBudget, TheScalarizedVectorAndFormCompiles)
+{
+	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
+	ASSERT_TRUE(forms.valid) << "the page swizzle tables stopped fitting closed forms";
+
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	Shaderc sc;
+	if (!sc.Open())
+	{
+		GTEST_SKIP() << "shaderc is not loadable here, so no program can be compiled. This is a SKIP, not a pass: "
+						"the scalarized vector-AND form was NOT built on this machine.";
+	}
+
+	// The last argument is the workaround; everything before it is the a650 profile the rest of this
+	// file measures, so the two prologues differ in exactly one define.
+	const std::string plain = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+	                          GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, false);
+	const std::string scalar = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+	                           GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, true);
+
+	static constexpr u32 kAllRoads = GSDevice::kGSTileGpuRoadMaskAll;
+	static constexpr u32 kAllArms = GSDevice::kGSTileGpuTexelMaskAll;
+	const Variant cases[] = {
+		{kAllRoads, kAllArms, 0, false, 0}, // fog only
+		{kAllRoads, kAllArms, GSDevice::kGSTileGpuSelfBlend, false, 0}, // + the blend equation
+		{kAllRoads, kAllArms, GSDevice::kGSTileGpuSelfMask, false, 0}, // + the FBMSK merge
+		{kAllRoads, kAllArms, GSDevice::kGSTileGpuSelfMaskAll, true, 0}, // + the 16-bit quantise
+		{0, 0, GSDevice::kGSTileGpuSelfMaskAll, true, 0}, // the whole tail with no texture at all
+	};
+
+	std::printf("\nTileGpu fragment variants in both vector-AND forms (SPIR-V words)\n");
+	std::printf("  %-66s %8s %8s\n", "variant", "plain", "scalar");
+	for (const Variant& v : cases)
+	{
+		const std::string defines = GSTileGpuShaderVariant::VariantDefines(v.road, v.texel, v.self, v.quantise);
+		const std::string name = GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self, v.quantise);
+		std::string plain_error, scalar_error;
+		const u32 plain_words = sc.FragmentWords(plain + defines + body, plain_error);
+		const u32 scalar_words = sc.FragmentWords(scalar + defines + body, scalar_error);
+		EXPECT_NE(plain_words, 0u) << "variant " << name << " failed to compile: " << plain_error;
+		EXPECT_NE(scalar_words, 0u) << "variant " << name
+									<< " failed to compile with TILEGPU_SCALARIZE_VECTOR_AND on: " << scalar_error
+									<< "  (the Mali arm -- most likely a wrapped site whose type has no tilegpu_and "
+									   "overload)";
+		std::printf("  %-66s %8u %8u\n", name.c_str(), plain_words, scalar_words);
+	}
+}
+
+// The three parties that have to agree about the workaround: the driver database answers it, the
+// device puts the answer in the define block, and the shader reads that define. A rename on either
+// side of the block would leave the shader compiling its plain arm on the one driver that cannot run
+// it -- silently, because an undefined name in an `#if` is zero.
+TEST(GSTileGpuShaderBudget, TheScalarizedVectorAndDefineIsTheOneTheShaderReads)
+{
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	// The device's half, both ways. Off is the default so a caller that never heard of the workaround
+	// emits the program every other driver already gets.
+	const std::string off = GSTileGpuShaderVariant::DeviceDefines(true, true, true);
+	const std::string on = GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, true);
+	EXPECT_NE(off.find("#define TILEGPU_SCALARIZE_VECTOR_AND 0\n"), std::string::npos);
+	EXPECT_NE(on.find("#define TILEGPU_SCALARIZE_VECTOR_AND 1\n"), std::string::npos);
+
+	// ...and the shader's, quoted so a rename has to come here.
+	EXPECT_NE(body.find("#if TILEGPU_SCALARIZE_VECTOR_AND\n"), std::string::npos);
+	EXPECT_NE(body.find("#define tilegpu_and(a, b) ((a) & (b))\n"), std::string::npos);
+
+	// Every vector AND in the file goes through the wrapper, and this is the count of what does: three
+	// overloads, the off-arm macro, and seven call sites -- the fog colour unpack, the blend
+	// coefficients, the COLCLAMP mask, the 16-bit quantise, the FBMSK keep mask, and the two halves of
+	// the FBMSK merge. A new vector AND belongs in the wrapper too; adding one raw is a Mali-only
+	// wrong-pixel bug that nothing else in this suite can see, so the number is pinned rather than
+	// bounded.
+	size_t uses = 0;
+	for (size_t at = body.find("tilegpu_and("); at != std::string::npos; at = body.find("tilegpu_and(", at + 1))
+		uses++;
+	EXPECT_EQ(uses, 11u) << "tilegpu.glsl names tilegpu_and " << uses
+						 << " times, not the expected 3 overloads + 1 macro + 7 call sites. If a vector bitwise AND "
+							"was added, wrap it and update this count; if one was removed, just update the count.";
+}
