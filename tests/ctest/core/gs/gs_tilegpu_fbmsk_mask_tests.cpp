@@ -23,6 +23,14 @@
 //    per colour channel, so FBMSK=0x000000F8 preserves the whole of red even though byte 0
 //    is not 0xFF; and a PSMCT24 frame under FBMSK=0x00FFFFFF keeps every bit it stores, so
 //    the draw writes nothing at all even though byte 3 reads as writable.
+//  - a channel the format stores NOTHING in is not written at all. A PSMCT24 frame's alpha
+//    used to ride along with its RGB, on the premise that writeback masked that byte off
+//    anyway; every other reader of the image -- a TCC=1 sample, a target bind, the in-pass
+//    destination read -- took the fragment's alpha there as guest data, and under
+//    surface-identity containment the writeback carries the container's byte mask and stops
+//    masking it off. So the draw drops the channel instead. PSMT8H and the PSMT4H pair are
+//    the same rule pointing the other way: they store only the high byte, so they write only
+//    alpha.
 //  - FBMSK's ALPHA half is honoured per channel, exactly like its RGB half. It was deferred
 //    while nothing seeded a TileGpu target's alpha independently of its colour; once the
 //    16-bit colour road built the alias-pass and self-read roads and the seed path started
@@ -48,6 +56,9 @@ namespace
 constexpr u32 kC32 = 0xFFFFFFFFu; // PSMCT32 / PSMZ32 stored bits
 constexpr u32 kC24 = 0x00FFFFFFu; // PSMCT24 / PSMZ24
 constexpr u32 kC16 = 0x80F8F8F8u; // PSMCT16 / PSMCT16S and the Z twins
+constexpr u32 kT8H = 0xFF000000u; // PSMT8H -- the high byte alone
+constexpr u32 kT4HL = 0x0F000000u; // PSMT4HL -- half of it
+constexpr u32 kT4HH = 0xF0000000u; // PSMT4HH -- the other half
 
 constexpr u8 kR = 0x1, kG = 0x2, kB = 0x4, kA = 0x8;
 
@@ -69,10 +80,44 @@ TEST(TileGpuFbmskMask, UnmaskedWritesEveryChannel)
 {
 	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC32), kGSTileChannelsRGBA);
 	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC16), kGSTileChannelsRGBA);
-	// A 24-bit frame stores no alpha, so its alpha channel has nothing behind it and rides
-	// along with the ones that do: the target's alpha is not guest memory for this format
-	// (writeback byte-masks it away).
-	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC24), kGSTileChannelsRGBA);
+	// ...every channel the format STORES. A 24-bit frame stores no alpha, so an unmasked draw
+	// into one writes RGB and leaves the image's alpha byte to whoever owns it.
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC24), kGSTileChannelsRGB);
+}
+
+// A channel with no bits behind it is not written, whichever channel it is. The GS stores
+// nothing there, so a value landing in the image's byte is junk to every later reader of that
+// image -- and under surface-identity containment the writeback stops masking it off, at which
+// point the junk reaches guest memory too. GT4's is a PSMT8H palette index.
+TEST(TileGpuFbmskMask, AChannelTheFormatStoresNothingInIsNotWritten)
+{
+	// The 24-bit frames: RGB lands, alpha does not, whatever FBMSK's alpha byte says.
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC24), kGSTileChannelsRGB);
+	EXPECT_EQ(gsTileFrameWriteMask(0xFF000000u, kC24), kGSTileChannelsRGB);
+	EXPECT_EQ(gsTileFrameWriteMask(0x7F000000u, kC24), kGSTileChannelsRGB);
+	// A 32-bit frame is the control: its alpha byte is stored, so there it lands.
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC32), kGSTileChannelsRGBA);
+	// And a 16-bit frame's single stored alpha bit is enough to keep the channel.
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC16), kGSTileChannelsRGBA);
+	// The H formats are the same rule with the channels swapped: they store the high byte and
+	// nothing else, so they write alpha and nothing else. These are real frame targets on this
+	// road -- they swizzle as CT32, so PoolSupports takes them -- and writing their RGB put
+	// three bytes of junk under the CT32 view of the same pages.
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kT8H), kA);
+	EXPECT_EQ(gsTileFrameWriteMask(0x00FFFFFFu, kT8H), kA);
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kT4HL), kA);
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kT4HH), kA);
+	// Stated once over every format the tree names: a channel is in the mask only if the
+	// format stores bits in it.
+	for (const u32 fmsk : {kC32, kC24, kC16, kT8H, kT4HL, kT4HH})
+	{
+		const u8 m = gsTileFrameWriteMask(0x00000000u, fmsk);
+		for (u32 b = 0; b < 4; b++)
+		{
+			const bool stored = (fmsk & (0xFFu << (b * 8))) != 0;
+			EXPECT_EQ((m & (1u << b)) != 0, stored) << std::hex << "fmsk " << fmsk << " channel " << b;
+		}
+	}
 }
 
 TEST(TileGpuFbmskMask, FullyMaskedWritesNothing)
@@ -198,8 +243,10 @@ TEST(TileGpuFbmskMask, TheFormatOwnsTheAllOrNothingEdge)
 	EXPECT_EQ(gsTileFrameWriteMask(0x00FFFFFFu, kC24), 0);
 	// PSMZ24 is the same shape.
 	EXPECT_EQ(gsTileFrameWriteMask(0xAAFFFFFFu, kC24), 0);
-	// Masking a byte the format has no bits in is a no-op, and cannot drop the channel.
-	EXPECT_EQ(gsTileFrameWriteMask(0xFF000000u, kC24), kGSTileChannelsRGBA);
+	// Masking a byte the format has no bits in is a no-op: the channel was already out of the
+	// mask because nothing is stored there, and FBMSK has nothing to add either way.
+	EXPECT_EQ(gsTileFrameWriteMask(0xFF000000u, kC24), kGSTileChannelsRGB);
+	EXPECT_EQ(gsTileFrameWriteMask(0x00000000u, kC24), kGSTileChannelsRGB);
 	// A 16-bit frame whose stored bits are all masked, with the unstored ones left clear.
 	EXPECT_TRUE(gsTileFrameWritesNothing(0x80F8F8F8u, kC16));
 	EXPECT_EQ(gsTileFrameWriteMask(0x80F8F8F8u, kC16), 0);
@@ -265,9 +312,10 @@ TEST(TileGpuFbmskMask, AlphaHalfOfFbmskIsHonoured)
 	EXPECT_EQ(Mask(0x80000000u, kC32), kGSTileChannelsRGBA);
 	EXPECT_FALSE(gsTileFrameWriteMaskIsExact(0x7F000000u, kC32));
 	EXPECT_FALSE(gsTileFrameWriteMaskIsExact(0x80000000u, kC32));
-	// Masking a byte the format stores nothing in cannot drop the channel: PSMCT24 has no
-	// alpha bits, so FBMSK's alpha byte says nothing about it.
-	EXPECT_EQ(Mask(0xFF000000u, kC24), kGSTileChannelsRGBA);
+	// FBMSK's alpha byte says nothing about a PSMCT24 frame either way -- the format stores no
+	// alpha, so the channel is out of the mask whether the register masks it or not.
+	EXPECT_EQ(Mask(0xFF000000u, kC24), kGSTileChannelsRGB);
+	EXPECT_EQ(Mask(0x00000000u, kC24), kGSTileChannelsRGB);
 	// Honouring alpha neither resurrects a draw that lands nothing nor invents one.
 	EXPECT_EQ(Mask(0xFFFFFFFFu, kC32), 0);
 	EXPECT_EQ(Mask(0x00FFFFFFu, kC24), 0);
@@ -376,11 +424,17 @@ TEST(TileGpuFbmskMask, SeedSkipNeedsATotalWriteNotAFullChannelMask)
 TEST(TileGpuFbmskMask, TotalWriteImpliesEveryStoredChannelAndExactness)
 {
 	// A total write leaves nothing to preserve, so every channel the format actually stores
-	// must come back as written and the derivation must be exact. (A channel with no stored
-	// bits -- PSMCT24's alpha -- is exempt: nothing in guest memory depends on it, and
-	// writeback masks that byte away.)
-	for (u32 fmsk : {kC32, kC24, kC16})
+	// must come back as written and the derivation must be exact. A channel with no stored
+	// bits -- PSMCT24's alpha -- is not one of them: "total" is a statement about the guest's
+	// bytes, and the format has none there to write.
+	for (u32 fmsk : {kC32, kC24, kC16, kT8H})
 	{
+		u8 stored_channels = 0;
+		for (u32 b = 0; b < 4; b++)
+		{
+			if (fmsk & (0xFFu << (b * 8)))
+				stored_channels |= static_cast<u8>(1u << b);
+		}
 		for (u32 sel = 0; sel < 4096; sel++)
 		{
 			// Spread the sweep over whole bytes, single bits, and the format's own bit
@@ -389,7 +443,7 @@ TEST(TileGpuFbmskMask, TotalWriteImpliesEveryStoredChannelAndExactness)
 			if (!gsTileFrameWriteIsTotal(fbmsk, fmsk))
 				continue;
 			const u8 m = gsTileFrameWriteMask(fbmsk, fmsk);
-			EXPECT_EQ(m, kGSTileChannelsRGBA) << std::hex << "fmsk " << fmsk << " fbmsk " << fbmsk;
+			EXPECT_EQ(m, stored_channels) << std::hex << "fmsk " << fmsk << " fbmsk " << fbmsk;
 			EXPECT_TRUE(gsTileFrameWriteMaskIsExact(fbmsk, fmsk)) << std::hex << fbmsk;
 		}
 	}

@@ -114,12 +114,22 @@ constexpr bool gsTileFrameWritesNothing(u32 fbmsk, u32 fmsk)
 /// the all-or-nothing edge: a mask that keeps every stored bit writes no channel at all,
 /// even where a byte outside the format reads as writable (PSMCT24 + FBMSK=0x00FFFFFF).
 ///
-/// A channel the format stores NOTHING in — a 24-bit frame's alpha — rides along with the
-/// ones it does store. Those bytes are not guest data (writeback masks them off under the
-/// format's own byte mask), so reading "no bits here" as "fully masked" would take alpha
-/// out of every 24-bit draw for nothing. It cannot keep a draw alive on its own: when
-/// every channel the format DOES store is masked, nothing guest-visible lands and the
-/// mask is empty.
+/// A channel the format stores NOTHING in — a 24-bit frame's alpha, an 8H frame's RGB — is
+/// NOT written. The GS lands no bits there, so neither may we.
+///
+/// It used to ride along with the channels the format does store, on the premise that such
+/// a byte was not guest data because writeback masks it off under the format's own byte
+/// mask. Two things retire that premise. Writeback is not the image's only reader: a later
+/// TCC=1 sample, a rule-2 target bind and the in-pass destination read all take the byte as
+/// it stands, and a 24-bit draw's fragment alpha sitting in it is junk to every one of them.
+/// And surface-identity containment puts a 24-bit view and a 32-bit one in ONE surface,
+/// whose writeback carries the CONTAINER's byte mask — which does not mask that byte off, so
+/// the junk reaches guest memory. On GT4 the byte in question is a PSMT8H palette index, so
+/// the damage surfaces as wrong colours on draws unrelated to the one that wrote it.
+///
+/// The rule cannot silence a draw that still lands something. A mask empty under it is one
+/// where every channel the format DOES store is fully masked, which is bit for bit the
+/// gsTileFrameWritesNothing question asked above.
 ///
 /// ⚠️ A channel the mask covers only PARTLY is reported as written — the whole channel
 /// lands, and the bits inside it the GS would have kept are lost. A raster pipeline masks
@@ -136,7 +146,7 @@ constexpr u8 gsTileFrameWriteMask(u32 fbmsk, u32 fmsk)
 	for (u32 b = 0; b < 4; b++)
 	{
 		const u32 stored = fmsk & (0xFFu << (b * 8));
-		if (stored == 0 || (fbmsk & stored) != stored)
+		if (stored != 0 && (fbmsk & stored) != stored)
 			m |= static_cast<u8>(1u << b);
 	}
 	return m;

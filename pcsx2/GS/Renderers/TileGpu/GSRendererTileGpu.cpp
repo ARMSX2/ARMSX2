@@ -3488,7 +3488,8 @@ GSPageBitmap GSRendererTileGpu::PagesDepthSeedable(const GSPageBitmap& pages, co
 //
 // The byte half of that is not hypothetical padding. A PSMCT24 surface stores nothing in the alpha
 // byte, so its writeback masks that byte off -- while the model still hands it the alpha PLANES,
-// because a 24-bit draw's alpha rides along with the channels it does store. Every plane then
+// because a colour draw claims every colour plane of the pages it covers whatever its frame format
+// stores in them (the draw itself no longer WRITES that channel). Every plane then
 // passes the proxy, the block coverage is whole, and byte 3 of all 2048 words of the page is
 // written by nobody. Eight of the sixteen corpus titles shipped pages like that every frame (MGS3,
 // Ratchet & Clank UYA both scenes, Gran Turismo 4, Ace Combat 5, Dirge of Cerberus, both Katamari

@@ -407,12 +407,16 @@ TEST(TileGpuAlphaTestFold, NeverRoadIsUnchanged)
 	// AFAIL and every frame format.
 	for (u32 fmsk : {kC32, kC24})
 	{
+		// What the format stores is the ceiling on all of this: AFAIL says which channels a
+		// failing pixel still writes, and a 24-bit frame has no alpha for it to name.
+		const u8 stored = (fmsk == kC24) ? kGSTileChannelsRGB : kGSTileChannelsRGBA;
 		for (u32 afail = 0; afail < 4; afail++)
 		{
 			const u8 m = gsTileFrameColorWriteMask(0x00000000u, fmsk, /*all_fail*/ true, afail);
 			const u8 want = (afail == AFAIL_KEEP || afail == AFAIL_ZB_ONLY) ?
 								0 :
-								((afail == AFAIL_RGB_ONLY) ? kGSTileChannelsRGB : kGSTileChannelsRGBA);
+								static_cast<u8>(stored & ((afail == AFAIL_RGB_ONLY) ? kGSTileChannelsRGB :
+																					  kGSTileChannelsRGBA));
 			EXPECT_EQ(m, want) << std::hex << "fmsk " << fmsk << " afail " << afail;
 			EXPECT_EQ(gsTileDepthWriteSurvives(true, false, true, afail), afail == AFAIL_ZB_ONLY);
 		}
