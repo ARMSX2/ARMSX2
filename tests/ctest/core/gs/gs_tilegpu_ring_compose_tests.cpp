@@ -10,19 +10,23 @@
 //
 //  - EnsureRingSlot chose "nobody prefills" from WHOLE-PAGE, PER-PLANE state: every plane's
 //    owner holds full-block truth, unsynced, with a byte road.
-//  - EmitPrepOp gave the writeback a PER-BLOCK, PER-OWNER mask: the union of the truth masks of
-//    the planes that one surface owns on the page.
+//  - EmitPrepOp gave the writeback a PER-BLOCK, PER-OWNER, PER-BYTE reach: the union of the truth
+//    masks of the planes that one surface owns on the page, landed only in the bytes of a cell
+//    that surface's format stores.
 //
-// A block that is neither prefilled nor inside some writeback's mask keeps whatever the executor
-// left in the slot, and that is zero — not a stale guest byte, a byte that was never guest data.
-// The model counts the page composed either way, so nothing says so. On OutRun 2006 the same
-// class of hole, arriving through a different door, reads as fog index 0 (maximum haze) and
-// paints two 64x32 pages sky-lavender.
+// A byte that is neither prefilled nor inside some writeback's reach keeps whatever the PREVIOUS
+// TENANT of that ring offset left there. Only the zero slot is ever cleared, so it is neither a
+// zero nor a stale byte of this page: on a desktop allocator it is another page's bytes from an
+// earlier frame, and on one that recycles foreign pages it is arbitrary content. The model counts
+// the page composed either way, so nothing says so. On OutRun 2006 the same class of hole,
+// arriving through a different door, reads as fog index 0 (maximum haze) and paints two 64x32
+// pages sky-lavender.
 //
-// gsTileComposableBlocks states EmitPrepOp's rule once, as a pure function, and EnsureRingSlot
-// now asks it rather than trusting the proxy. These tests pin the rule itself: what the writebacks
-// cover, and — the case the proxy misses — a page where every plane looks composable and the
-// blocks still do not add up.
+// gsTileComposableBlocksPerByte states EmitPrepOp's rule once, as a pure function, and
+// EnsureRingSlot now asks it rather than trusting the proxy. These tests pin the rule itself: what
+// the writebacks cover, and — the cases the proxy misses — a page where every plane looks
+// composable and the blocks still do not add up, and a page whose blocks add up and whose BYTES
+// do not.
 
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
@@ -41,21 +45,27 @@ constexpr GSTileSurfaceId kB = 2;
 
 // All four planes owned by one surface, full truth, unsynced, with a road: the ordinary
 // "the GPU composes this whole page" case.
+//
+// `bytes` is the owner's writeback byte mask -- 0xFFFFFFFF for a surface whose format stores every
+// byte of the cell, 0x00FFFFFF for a PSMCT24 one, 0 for a surface with no writeback shader at all.
 struct Planes
 {
 	GSTileRingPlaneState p[kGSTilePlaneCount];
 
-	Planes(GSTileSurfaceId owner = kA, u32 mask = kFull, bool synced = false, bool road = true)
+	Planes(GSTileSurfaceId owner = kA, u32 mask = kFull, bool synced = false, bool road = true,
+		u32 bytes = 0xFFFFFFFFu)
 	{
 		for (GSTileRingPlaneState& s : p)
-			s = GSTileRingPlaneState{owner, mask, synced, road};
+			s = GSTileRingPlaneState{owner, mask, synced, road ? bytes : 0u};
 	}
-	Planes& Set(u32 pi, GSTileSurfaceId owner, u32 mask, bool synced = false, bool road = true)
+	Planes& Set(u32 pi, GSTileSurfaceId owner, u32 mask, bool synced = false, bool road = true,
+		u32 bytes = 0xFFFFFFFFu)
 	{
-		p[pi] = GSTileRingPlaneState{owner, mask, synced, road};
+		p[pi] = GSTileRingPlaneState{owner, mask, synced, road ? bytes : 0u};
 		return *this;
 	}
 	u32 Composable() const { return gsTileComposableBlocks(p); }
+	bool CoversWholePage() const { return gsTileComposeCoversWholePage(p); }
 };
 } // namespace
 
@@ -113,15 +123,19 @@ TEST(TileGpuRingCompose, ShortMasksLeaveTheirBlocksUncomposed)
 	EXPECT_NE(pl.Composable(), kFull);
 }
 
-TEST(TileGpuRingCompose, TheWholePageProxyImpliesFullCoverageToday)
+TEST(TileGpuRingCompose, TheWholePageProxyImpliesFullBlockCoverageToday)
 {
-	// Why the added test is free on today's corpus rather than a new source of prefills: when
-	// EVERY plane satisfies the per-plane proxy, every plane's owner is on the road and every
-	// plane's mask is full, so the union cannot be short. Measured to agree — outrun-b, four
-	// frames, 878 ring pages and 231 unprefilled slots per frame, zero disagreements.
+	// Why the BLOCK half of the added test costs no prefills on today's corpus: when EVERY plane
+	// satisfies the per-plane proxy, every plane's owner is on the road and every plane's mask is
+	// full, so the union cannot be short. Measured to agree — outrun-b, four frames, 878 ring pages
+	// and 231 unprefilled slots per frame, zero disagreements.
 	//
 	// This is a proof about the CONJUNCTION, which is exactly why the coverage test is worth
 	// having: it survives any one of those clauses being relaxed, and the proxy does not.
+	//
+	// ⚠️ It says nothing about BYTES, and that is where the proxy was actually wrong: every writer
+	// below stores all four, and a PSMCT24 writer satisfies the same conjunction while composing
+	// three. The lane tests further down are that case.
 	for (u32 mask : {kFull})
 	{
 		for (u32 split = 0; split < 4; split++)
@@ -152,6 +166,93 @@ TEST(TileGpuRingCompose, RelaxingAnyOneProxyClauseCanLeaveBlocksUncovered)
 	Planes road(kA, 0x000000FFu);
 	road.Set(3, kB, 0xFFFFFF00u, /*synced=*/false, /*road=*/false);
 	EXPECT_EQ(road.Composable(), 0x000000FFu);
+}
+
+// ---------------------------------------------------------------------------------------
+// The same hole one level down: every BLOCK covered, and a byte of every cell still unwritten.
+// ---------------------------------------------------------------------------------------
+//
+// A PSMCT24 surface stores nothing in the alpha byte, so its writeback's byte_mask is 0x00FFFFFF
+// and byte 3 of every word it touches is left for whoever does hold that byte. Nobody does: the
+// model hands a 24-bit draw the alpha PLANES along with the channels it stores (GSTileTypes.h says
+// why), so all four planes name the same owner, the block coverage is whole, and the page went
+// unprefilled. Byte 3 of all 2048 words then read the previous tenant of that ring offset — which
+// on this box is another page's bytes and on an allocator that recycles foreign pages is anything
+// at all. Eight of the sixteen corpus titles shipped such a page every frame; the
+// allocation-poison lever caught two of them consuming the bytes on the M2 box, MGS3 over 58% of
+// its pixels and Ratchet & Clank UYA over a 2461-pixel block of its effects scene.
+//
+// So the coverage question is per (block, byte), and the block-only answer is a fold of it.
+
+namespace
+{
+constexpr u32 kCT24Bytes = 0x00FFFFFFu;
+}
+
+TEST(TileGpuRingCompose, ATwentyFourBitOwnerComposesEveryBlockAndNotEveryByte)
+{
+	const Planes pl(kA, kFull, /*synced=*/false, /*road=*/true, kCT24Bytes);
+	// The block-level answer is unchanged, and on its own it says "prefill nothing".
+	EXPECT_EQ(pl.Composable(), kFull);
+	// The byte-level one is the truth: lane 3 is composed in no block at all.
+	u32 per_byte[4];
+	gsTileComposableBlocksPerByte(pl.p, per_byte);
+	EXPECT_EQ(per_byte[0], kFull);
+	EXPECT_EQ(per_byte[1], kFull);
+	EXPECT_EQ(per_byte[2], kFull);
+	EXPECT_EQ(per_byte[3], 0u);
+	EXPECT_FALSE(pl.CoversWholePage());
+}
+
+TEST(TileGpuRingCompose, AThirtyTwoBitCoOwnerSuppliesTheByteTheTwentyFourBitOneDoesNot)
+{
+	// The page's alpha planes belong to a surface that does store alpha, so its writeback fills the
+	// lane the 24-bit one masks off and the slot needs no prefill after all. The rule has to admit
+	// this case or it degenerates into "prefill every page any 24-bit surface touches".
+	Planes pl(kA, kFull, /*synced=*/false, /*road=*/true, kCT24Bytes);
+	pl.Set(1, kB, kFull); // AlphaLow
+	pl.Set(2, kB, kFull); // AlphaHigh
+	EXPECT_TRUE(pl.CoversWholePage());
+}
+
+TEST(TileGpuRingCompose, ATwentyFourBitOwnerShortOfBlocksIsShortInBothAnswers)
+{
+	Planes pl(kA, 0x0000FFFFu, /*synced=*/false, /*road=*/true, kCT24Bytes);
+	u32 per_byte[4];
+	gsTileComposableBlocksPerByte(pl.p, per_byte);
+	EXPECT_EQ(per_byte[0], 0x0000FFFFu);
+	EXPECT_EQ(per_byte[3], 0u);
+	EXPECT_FALSE(pl.CoversWholePage());
+}
+
+TEST(TileGpuRingCompose, TheWholePageAnswerIsTheFoldOfTheFourLanes)
+{
+	// gsTileComposableBlocks must stay exactly the union of the lanes, so the block-reach callers
+	// and the byte-reach callers read one computation. Checked over a spread of shapes rather than
+	// asserted in prose.
+	for (u32 mask : {kFull, 0x0000FFFFu, 0x000000FFu, 0u})
+	{
+		for (u32 bytes : {0xFFFFFFFFu, kCT24Bytes})
+		{
+			const Planes pl(kA, mask, /*synced=*/false, /*road=*/true, bytes);
+			u32 per_byte[4];
+			gsTileComposableBlocksPerByte(pl.p, per_byte);
+			EXPECT_EQ(pl.Composable(), per_byte[0] | per_byte[1] | per_byte[2] | per_byte[3])
+				<< "mask " << mask << " bytes " << bytes;
+			EXPECT_EQ(pl.CoversWholePage(), mask == kFull && bytes == 0xFFFFFFFFu)
+				<< "mask " << mask << " bytes " << bytes;
+		}
+	}
+}
+
+TEST(TileGpuRingCompose, NoWriterCoversNoLane)
+{
+	const Planes pl(kGSTileNoSurface, 0);
+	u32 per_byte[4];
+	gsTileComposableBlocksPerByte(pl.p, per_byte);
+	for (u32 b = 0; b < 4; b++)
+		EXPECT_EQ(per_byte[b], 0u) << "lane " << b;
+	EXPECT_FALSE(pl.CoversWholePage());
 }
 
 // ---------------------------------------------------------------------------------------

@@ -49,11 +49,11 @@ namespace
 		Planes(GSTileSurfaceId owner = kColour, u32 mask = kFull, bool synced = false, bool road = true)
 		{
 			for (GSTileRingPlaneState& s : p)
-				s = GSTileRingPlaneState{owner, mask, synced, road};
+				s = GSTileRingPlaneState{owner, mask, synced, road ? 0xFFFFFFFFu : 0u};
 		}
 		Planes& Set(u32 pi, GSTileSurfaceId owner, u32 mask, bool synced = false, bool road = true)
 		{
-			p[pi] = GSTileRingPlaneState{owner, mask, synced, road};
+			p[pi] = GSTileRingPlaneState{owner, mask, synced, road ? 0xFFFFFFFFu : 0u};
 			return *this;
 		}
 		bool Reachable() const { return gsTilePageByteTruthReachable(p); }

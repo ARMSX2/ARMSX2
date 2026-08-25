@@ -1850,7 +1850,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 
 	Console.WriteLn("TileGpu memory model over %u frames (mean / p50 per frame):", static_cast<u32>(m_model_frames.size()));
 	Console.WriteLn("  surfaces live %6.2f / %-4u  passes %7.2f / %-5u  ring pages %7.2f / %-5u (prefilled %.2f / %u, "
-					"version copies %.2f / %u, epochs %.2f / %u, prefilled for uncomposed blocks %.2f / %u)",
+					"version copies %.2f / %u, epochs %.2f / %u, prefilled for uncomposed bytes %.2f / %u)",
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
 		versions.p50, epochs.mean, epochs.p50, uncomp.mean, uncomp.p50);
 	// The pass-length distribution the cap acts on. Printed whether or not a cap is set, because the
@@ -3063,38 +3063,66 @@ u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
 
 // EmitPrepOp's writeback rule, stated as a pure function so the prefill decision below and the
 // op it predicts cannot drift apart. See the declaration for what it means.
-u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount])
+void gsTileComposableBlocksPerByte(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount], u32 (&out)[4])
 {
+	out[0] = out[1] = out[2] = out[3] = 0;
+
 	// Who writes back: an owner holding unsynced truth on some plane, with a road to carry it.
 	GSTileSurfaceId writers[kGSTilePlaneCount];
+	u32 writer_bytes[kGSTilePlaneCount];
 	u32 writer_count = 0;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
 		const GSTileRingPlaneState& p = planes[pi];
-		if (p.owner == kGSTileNoSurface || p.truth_mask == 0 || p.synced || !p.byte_road)
+		if (p.owner == kGSTileNoSurface || p.truth_mask == 0 || p.synced || !p.HasByteRoad())
 			continue;
 		u32 w = 0;
 		while (w < writer_count && writers[w] != p.owner)
 			w++;
 		if (w == writer_count)
-			writers[writer_count++] = p.owner;
+		{
+			writers[writer_count] = p.owner;
+			writer_bytes[writer_count] = p.write_bytes;
+			writer_count++;
+		}
 	}
 
 	// What each of them writes: the union over every plane it owns here, synced or not -- that is
-	// the mask EmitPrepOp puts on the page entry, and the shader honours no other filter.
-	u32 composed = 0;
+	// the mask EmitPrepOp puts on the page entry, and the shader honours no other filter -- landed
+	// only in the byte lanes its format stores.
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
 		for (u32 w = 0; w < writer_count; w++)
 		{
-			if (writers[w] == planes[pi].owner)
+			if (writers[w] != planes[pi].owner)
+				continue;
+			for (u32 b = 0; b < 4; b++)
 			{
-				composed |= planes[pi].truth_mask;
-				break;
+				if (writer_bytes[w] & (0xFFu << (b * 8)))
+					out[b] |= planes[pi].truth_mask;
 			}
+			break;
 		}
 	}
-	return composed;
+}
+
+u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount])
+{
+	u32 per_byte[4];
+	gsTileComposableBlocksPerByte(planes, per_byte);
+	return per_byte[0] | per_byte[1] | per_byte[2] | per_byte[3];
+}
+
+bool gsTileComposeCoversWholePage(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount])
+{
+	u32 per_byte[4];
+	gsTileComposableBlocksPerByte(planes, per_byte);
+	for (u32 b = 0; b < 4; b++)
+	{
+		if (per_byte[b] != GSVramModel::kFullBlockMask)
+			return false;
+	}
+	return true;
 }
 
 // See the declaration. GSTileComposeBuckets::Gather's lossy test, as a pure function of the same
@@ -3109,7 +3137,7 @@ bool gsTilePageByteTruthReachable(const GSTileRingPlaneState (&planes)[kGSTilePl
 		// holds it. Either way nothing has to move.
 		if (p.truth_mask == 0 || p.synced)
 			continue;
-		if (!p.byte_road)
+		if (!p.HasByteRoad())
 			return false;
 	}
 	return true;
@@ -3123,7 +3151,8 @@ void GSRendererTileGpu::RingPlaneStateFor(u32 page, GSTileRingPlaneState (&plane
 		planes[pi].owner = owner;
 		planes[pi].truth_mask = m_vram_model.TruthMask(page, pi);
 		planes[pi].synced = m_vram_model.SyncedPages(pi).test(page);
-		planes[pi].byte_road = owner != kGSTileNoSurface && HasByteRoad(m_vram_model.Get(owner).layout);
+		const bool road = owner != kGSTileNoSurface && HasByteRoad(m_vram_model.Get(owner).layout);
+		planes[pi].write_bytes = road ? gsTileWritebackByteMask(m_vram_model.Get(owner).layout.psm) : 0;
 	}
 }
 
@@ -3160,15 +3189,27 @@ GSPageBitmap GSRendererTileGpu::PagesDepthSeedable(const GSPageBitmap& pages, co
 // runs first and the writeback's blocks land over it, so the extra copy is harmless.
 //
 // ⚠️ The per-plane test above is a PROXY for the question that actually matters -- "will the
-// writebacks this compose emits cover all 32 blocks?" -- and a proxy is only as good as the rule
-// it stands in for. Nothing in the two functions makes them move together: the decision is
-// per-plane and whole-page, the writeback's mask is per-block and per-OWNER, and a block that is
-// neither prefilled nor inside some writeback's mask keeps whatever the executor left in the
-// slot, which is zero. That is a wrong colour, not a stale one, and the model counts the page
-// composed either way. So the coverage is computed too and both must agree: a slot goes
-// unprefilled only where the planned writebacks provably reach every block. Strictly more
-// prefill than the proxy alone, never less; the worst case it leaves is a byte one write old
-// instead of a byte that was never guest data at all.
+// writebacks this compose emits reach every BYTE of the page?" -- and a proxy is only as good as
+// the rule it stands in for. Nothing in the two functions makes them move together: the decision
+// is per-plane and whole-page, the writeback's reach is per-block, per-OWNER and per-BYTE, and a
+// byte that is neither prefilled nor inside some writeback's reach keeps whatever the previous
+// tenant of this ring OFFSET left there. Only the zero slot is ever cleared, so that is not a zero
+// and not a stale guest byte either: on a desktop allocator it is some other page's bytes from an
+// earlier frame, and on an allocator that recycles foreign pages (Android Mali page pools) it is
+// arbitrary content. The model counts the page composed either way.
+//
+// So the coverage is computed too and both must agree: a slot goes unprefilled only where the
+// planned writebacks provably reach every byte of every block. Strictly more prefill than the
+// proxy alone, never less.
+//
+// The byte half of that is not hypothetical padding. A PSMCT24 surface stores nothing in the alpha
+// byte, so its writeback masks that byte off -- while the model still hands it the alpha PLANES,
+// because a 24-bit draw's alpha rides along with the channels it does store. Every plane then
+// passes the proxy, the block coverage is whole, and byte 3 of all 2048 words of the page is
+// written by nobody. Eight of the sixteen corpus titles shipped pages like that every frame (MGS3,
+// Ratchet & Clank UYA both scenes, Gran Turismo 4, Ace Combat 5, Dirge of Cerberus, both Katamari
+// scenes); the allocation-poison lever caught two of them consuming the bytes on this box, and what
+// they consumed was another page's leftovers rather than anything guest-shaped.
 u32 GSRendererTileGpu::EnsureRingSlot(u32 page, bool force_prefill)
 {
 	GSTileRingPlaneState planes[kGSTilePlaneCount];
@@ -3177,10 +3218,10 @@ u32 GSRendererTileGpu::EnsureRingSlot(u32 page, bool force_prefill)
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 	{
 		if (planes[pi].owner == kGSTileNoSurface || planes[pi].truth_mask != GSVramModel::kFullBlockMask ||
-			planes[pi].synced || !planes[pi].byte_road)
+			planes[pi].synced || !planes[pi].HasByteRoad())
 			needs_prefill = true;
 	}
-	if (!force_prefill && !needs_prefill && gsTileComposableBlocks(planes) != GSVramModel::kFullBlockMask)
+	if (!force_prefill && !needs_prefill && !gsTileComposeCoversWholePage(planes))
 	{
 		needs_prefill = true;
 		m_frame.prefill_uncomposed++;
@@ -3257,7 +3298,7 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	op.bp = surf.layout.bp;
 	op.bw = surf.layout.bw;
 	op.psm = surf.layout.psm;
-	op.byte_mask = (surf.layout.psm == PSMCT24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+	op.byte_mask = gsTileWritebackByteMask(surf.layout.psm);
 	op.seed_blocks = seed_blocks;
 	op.epoch = m_epoch;
 	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());

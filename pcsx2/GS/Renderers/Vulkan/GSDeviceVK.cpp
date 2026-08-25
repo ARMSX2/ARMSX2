@@ -7835,10 +7835,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		//
 		// A slot the renderer named a source for was memcpy'd whole just above, so it is covered by
 		// construction and is skipped. An UNPREFILLED slot is covered only if the writebacks this
-		// frame emits reach all 32 of its blocks, which GSRendererTileGpu::EnsureRingSlot computes
-		// rather than knows; a block no writeback reached reads whatever the previous tenant of this
-		// ring offset left, because only the zero slot above is memset. Magenta turns that from a
+		// frame emits reach every BYTE of all 32 of its blocks, which GSRendererTileGpu::EnsureRingSlot
+		// computes rather than knows; a byte no writeback reached reads whatever the previous tenant of
+		// this ring offset left, because only the zero slot above is memset. Magenta turns that from a
 		// stale texel into a colour that names its own cause.
+		//
+		// With the coverage rule honest about bytes, poison ON must be BYTE-IDENTICAL to poison OFF on
+		// every title: that identity is the standing proof that no draw consumes an unwritten ring byte,
+		// and this lever is the tripwire that keeps it.
 		//
 		// ⚠️ The fill MUST skip the prefilled slots. The prefill is a host write to mapped memory and
 		// the fill is a GPU transfer; record order does not order those two, and a submission's host

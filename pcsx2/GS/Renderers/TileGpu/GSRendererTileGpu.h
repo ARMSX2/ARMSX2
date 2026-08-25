@@ -45,25 +45,45 @@
 // synchronisation story.
 //
 // One plane's state on one page, as the ring's compose sees it: who holds the newest bytes,
-// which of the page's 32 blocks they hold, whether the ring already carries them, and whether
-// that owner has a writeback shader at all.
+// which of the page's 32 blocks they hold, whether the ring already carries them, and which bytes
+// of a cell that owner's writeback shader actually writes.
 struct GSTileRingPlaneState
 {
 	GSTileSurfaceId owner = kGSTileNoSurface;
 	u32 truth_mask = 0; ///< GSVramModel::TruthMask for this page/plane (0 = no truth)
 	bool synced = false; ///< the ring already holds these bytes
-	bool byte_road = false; ///< the owner's layout has a writeback shader
+	/// gsTileWritebackByteMask for the owner's layout, or 0 when the owner has no writeback shader
+	/// at all. One field rather than a "has a road" bool beside a mask, because the two would be one
+	/// fact spelled twice and free to disagree.
+	u32 write_bytes = 0;
+
+	bool HasByteRoad() const { return write_bytes != 0; }
 };
 
 /// The blocks of a page that the writebacks ComposeRingPages is about to emit will actually
-/// compose, given the four planes' state.
+/// compose, PER BYTE LANE of the 32-bit cell: `out[b]` is the union of the block masks of the
+/// writers whose writeback writes byte `b`.
 ///
 /// This is EmitPrepOp's rule, stated once so the two cannot drift: an owner joins the compose
 /// when it holds UNSYNCED truth on some plane and has a byte road, and each owner that joins
-/// writes back the union of the truth masks of EVERY plane it owns on the page. Anything outside
-/// that union is a block no writeback covers, and the slot must be prefilled from S or those
-/// bytes are whatever the executor left in the slot -- which is zero.
+/// writes back the union of the truth masks of EVERY plane it owns on the page -- masked, within
+/// each cell, to the bytes its format stores.
+///
+/// Per lane and not per block, because a PSMCT24 surface composes a page's 32 blocks whole and
+/// still writes only three bytes in four. A (block, byte) pair outside every writer's reach is one
+/// the slot must carry from its prefill, or the draw reads whatever the previous tenant of that
+/// ring offset left there -- guest bytes from another page on a desktop allocator, arbitrary
+/// content on one that recycles foreign pages.
+void gsTileComposableBlocksPerByte(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount], u32 (&out)[4]);
+
+/// The blocks ANY of those writebacks touches: the fold of the above over the four lanes. A
+/// separate spelling only so the two cannot drift -- callers that care about block reach and
+/// callers that care about byte reach read one computation.
 u32 gsTileComposableBlocks(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
+
+/// Whether those writebacks reach EVERY byte of the page: every lane, every block. The exact
+/// condition under which a ring slot may go unprefilled.
+bool gsTileComposeCoversWholePage(const GSTileRingPlaneState (&planes)[kGSTilePlaneCount]);
 
 /// Whether a compose of this page will put the page's REAL guest bytes in its ring slot.
 ///
@@ -2095,9 +2115,10 @@ private:
 		u32 ring_prefill = 0;    // ...of which prefilled from S / a version copy
 		u32 ring_versions = 0;   // version copies taken (uploads superseding a live slot)
 		// Slots the per-plane proxy would have left for the GPU to compose whole, that the
-		// block-exact coverage test caught: their planned writebacks do not reach every block, so
-		// they take the S prefill instead of shipping executor zeros. Nonzero is not a fault --
-		// it is the class the two rules can disagree on, made visible.
+		// byte-exact coverage test caught: their planned writebacks do not reach every byte of every
+		// block, so they take the S prefill instead of shipping the ring offset's previous tenant.
+		// Nonzero is not a fault -- it is the class the two rules can disagree on, made visible, and
+		// on today's corpus it is a PSMCT24 surface's unwritten alpha byte in every case.
 		u32 prefill_uncomposed = 0;
 		u32 epochs = 0;
 		u32 writeback_ops = 0;

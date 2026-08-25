@@ -702,6 +702,21 @@ constexpr u32 gsTileByteRoadFormat(u32 psm)
 	}
 }
 
+/// The bytes of each 32-bit guest cell a surface's WRITEBACK writes, as the shader's `byte_mask`
+/// push constant. A PSMCT24 surface stores nothing in the alpha byte, so its writeback leaves that
+/// byte to whoever does hold it — which, when nobody on the GPU does, means the ring slot's PREFILL
+/// from the CPU shadow. That is why the prefill decision has to ask this and not just which BLOCKS
+/// the writebacks reach: a page a CT24 surface covers whole is still a quarter uncovered by bytes,
+/// and an unprefilled slot would hand its previous tenant's alpha to the next reader.
+///
+/// One rule, one place: EmitPrepOp puts this on the op and EnsureRingSlot's coverage test reads the
+/// same function, so the two cannot come apart. (They did: the coverage test was per BLOCK only, and
+/// every CT24-composed page shipped an unwritten alpha byte.)
+constexpr u32 gsTileWritebackByteMask(u32 psm)
+{
+	return (psm == PSMCT24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+}
+
 /// The writeback compute dispatch for ONE page of `psm`, in workgroups of 8x8 invocations.
 ///
 /// A 32-bit page is 64x32 texels and one word each, so the grid is the page. A 16-bit page is 64x64
