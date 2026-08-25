@@ -8683,7 +8683,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 									 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-					tex->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					// ComputeReadOnly, not ShaderReadOnly: the dispatch below samples this target from the
+					// COMPUTE stage, and ShaderReadOnly's barriers name the FRAGMENT stage on both sides. Under
+					// it the pass that filled this target is not ordered ahead of the read and its writes are
+					// not made visible to it, and the read is not ordered ahead of whatever binds the target as
+					// an attachment next -- so the slot this composes can hold the pixels from either side of
+					// the boundary, decided by how the device happened to overlap two kinds of job. The VkImage
+					// layout is the same SHADER_READ_ONLY_OPTIMAL, so no descriptor and no other reader moves.
+					tex->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadOnly);
 
 					Vulkan::DescriptorSetUpdateBuilder dsub;
 					if (m_use_push_descriptors)
@@ -10129,7 +10136,11 @@ bool GSDeviceVK::DoCAS(
 	GSTextureVK* const dTexVK = static_cast<GSTextureVK*>(dTex);
 	VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
 
-	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+	// The sharpen reads the source from the COMPUTE stage, so it needs a compute-scoped transition for
+	// the same reason the TileGpu writeback does -- ShaderReadOnly orders the fragment stage only, and
+	// the pass that rendered this source is a colour-attachment write the dispatch would not be
+	// waiting on. Same VkImage layout, so the descriptor written below is unaffected.
+	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadOnly);
 	dTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadWriteImage);
 
 	// only happening once a frame, so the update isn't a huge deal.
