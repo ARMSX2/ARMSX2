@@ -7759,7 +7759,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// before this point and reports the frame the planner intended. So the gate says which conjunct
 	// failed and with what values, once, and the totals go out at teardown; a device that renders black
 	// must never again be silent about why.
-	if (!can_draw)
+	//
+	// ⚠️ ...but only for a plan that HAS geometry to lose. A plan can legitimately consist of nothing
+	// but reconciliation: the display materialise and the upload merge each append a draw that renders
+	// zero indices purely to carry a prep-op range, so a plan flushed with no ordinary draw in it has an
+	// empty vertex stream, and refusing it costs exactly the nothing it would have drawn. Those are
+	// ordinary -- one turned up in the first mgs3 spot run this counter existed for -- and counting them
+	// would bury the frames that really did lose their geometry under the frames that never had any.
+	if (!can_draw && !plan.vertices.empty())
 	{
 		m_tilegpu_undrawn_frames++;
 		m_tilegpu_undrawn_draws += static_cast<u32>(plan.draws.size());
