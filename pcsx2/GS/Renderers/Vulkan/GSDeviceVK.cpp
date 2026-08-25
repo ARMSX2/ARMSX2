@@ -947,11 +947,23 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// attachment. Without it the renderer admits no draw to the read, declares no pass, and keeps
 		// the snapshot road for DATE, so a device that lacks it renders exactly what it rendered
 		// before.
-		m_optional_extensions.tilegpu_self_read = m_optional_extensions.tilegpu_device_capable &&
-												  m_optional_extensions.vk_ext_rasterization_order_attachment_access;
-		DevCon.WriteLn("VK: TileGpu in-pass destination read %s (rasterization-order colour access=%s).",
+		//
+		// EmuCore/GS/TileGpuDisableSelfRead holds it off whatever the device answers, which makes
+		// that read-less road reachable on a device that HAS the extension. The read is only as
+		// trustworthy as the driver's ROAA implementation, and the case this was written for is a
+		// proprietary mobile driver showing run-to-run pixel nondeterminism with the read engaged --
+		// set the key and the device answers as if the extension were absent, which isolates the
+		// read for an A/B. It moves ADMISSION, not just a road, so the two arms may legitimately
+		// differ in output; it is a diagnostic lever, not a pixel-inert switch. Folded in HERE for
+		// the same reason as the key above: the pipelines and the renderer must read one decision.
+		// Fail-closed: unset, the device's own answer stands.
+		m_optional_extensions.tilegpu_self_read =
+			m_optional_extensions.tilegpu_device_capable && !GSConfig.TileGpuDisableSelfRead &&
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		DevCon.WriteLn("VK: TileGpu in-pass destination read %s (rasterization-order colour access=%s%s).",
 			m_optional_extensions.tilegpu_self_read ? "enabled" : "disabled",
-			m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "no");
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "no",
+			GSConfig.TileGpuDisableSelfRead ? ", HELD OFF by TileGpuDisableSelfRead" : "");
 	}
 
 	if (m_optional_extensions.vk_ext_provoking_vertex)

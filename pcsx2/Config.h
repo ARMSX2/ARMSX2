@@ -1093,6 +1093,23 @@ struct Pcsx2Config
 					// shape this must never produce. Fail-closed: off means the device's
 					// own answer stands. Dev only.
 					TileGpuDisableBindlessTargets : 1,
+					// Hold TileGpu's in-pass destination read off, whatever the device
+					// answers about rasterization-order attachment access.
+					//
+					// The read rides VK_EXT_rasterization_order_attachment_access, so it
+					// is only as trustworthy as the driver's implementation of it. The
+					// case this was written for is a proprietary mobile driver that shows
+					// run-to-run pixel nondeterminism with the read engaged; the key
+					// isolates the read for that A/B. Set, the device answers as if the
+					// extension were absent and the renderer takes the road every
+					// ROAA-less device already takes: no draw admitted to the read, no
+					// declaring pass, snapshot road for DATE. That changes ADMISSION, so
+					// the output may legitimately differ from the read-on arm -- this is
+					// a diagnostic isolation lever, not a pixel-inert road switch. Read
+					// once in CreateDevice like the key above, so the device, the
+					// pipelines and the renderer all take one answer. Fail-closed: off
+					// means the device's own answer stands. Dev only.
+					TileGpuDisableSelfRead : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
