@@ -467,6 +467,23 @@ static constexpr std::array<DriverRule, 29> s_driver_rules = {{
 	// whole device down. Reading a separate copy is the only realization that never asks for
 	// the tile slot, which is why UseRenderTargetCopyForFeedback is the one workaround that
 	// held.
+	//
+	// ⚠️ TileGpu does not consult this row, deliberately. It declares its own in-pass destination
+	// reads and does not route them through the feedback-loop machinery this rule governs, so the
+	// workaround bit is Classic's and stays Classic's. Four things say the read itself is fine on
+	// this driver, measured on the RG477V's r44p1 blob in 2026-08:
+	//
+	//   - Xenosaga makes about 2,400 declared in-pass reads a frame there and does not fault.
+	//   - Its output is bit-stable across runs, which an unsynchronized racing fetch would not be.
+	//   - It scores within 0.1pp of the same title on Adreno, so nothing is being silently dropped.
+	//   - A three-arm device A/B moved the stability needle not at all with the read present or
+	//     absent, which rules the read out as the cause of the instability we were chasing.
+	//
+	// And the rule's founding evidence does not say what it was read as saying: the 2.6.6.5-era MGS3
+	// GL garbage was later root-caused to our own barrier ordering, not the driver's fetch. The row
+	// stands on the r44p1 Vulkan DEVICE_LOST above, which is its own evidence and is not in doubt.
+	// This note exists so the next person to find TileGpu ignoring a listed bug bit finds the reason
+	// beside the bit rather than concluding it is an oversight and "fixing" it.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,
