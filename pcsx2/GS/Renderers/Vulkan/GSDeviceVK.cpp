@@ -1656,6 +1656,21 @@ VkRenderPass GSDeviceVK::GetRenderPassForRestarting(VkRenderPass pass)
 	return pass;
 }
 
+VkExtent2D GSDeviceVK::GetRenderAreaGranularity(VkRenderPass pass)
+{
+	const auto it = m_render_area_granularity.find(pass);
+	if (it != m_render_area_granularity.end())
+		return it->second;
+
+	VkExtent2D granularity = {1, 1};
+	vkGetRenderAreaGranularity(m_device, pass, &granularity);
+	// An implementation may not return zero, but a zero would divide the caller's round-out.
+	granularity.width = std::max<u32>(granularity.width, 1);
+	granularity.height = std::max<u32>(granularity.height, 1);
+	m_render_area_granularity.emplace(pass, granularity);
+	return granularity;
+}
+
 VkCommandBuffer GSDeviceVK::GetCurrentInitCommandBuffer()
 {
 	FrameResources& res = m_frame_resources[m_current_frame];
@@ -8535,6 +8550,39 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (rp == VK_NULL_HANDLE)
 			return false;
 
+		// The pass's RENDER AREA: what its draws touch, not the whole attachment pair. On a tiler a
+		// pass costs a tile load and a tile store per pixel of it whether anything drew there or not,
+		// and the pass-structure census measured what the whole attachment costs a pass-heavy title --
+		// 134.8 Mpx a frame on Dirge of Cerberus, which alternates draw by draw between a 35x35 scratch
+		// surface and its 640x448 framebuffer, against a few percent of it touched.
+		//
+		// Restricted to a pass every attachment of which LOADs, and that is the whole of what makes it
+		// byte-inert. Outside the render area a LOAD/STORE attachment is neither loaded nor stored, so
+		// its memory keeps what it held; a CLEAR would leave the region outside uninitialized and a
+		// DONT_CARE undefined, and both of those are the attachment's FIRST bind -- a handful of passes
+		// a frame, against the hundreds that load. So a pass that does either keeps the full area and
+		// the backstop below stays exactly as true as it was.
+		//
+		// The union comes off the same gsTileGpuScissorRect the draw loop sets before each indirect
+		// call, so every draw is contained in it by construction. Nothing else in the pass renders: the
+		// prep ops, the snapshot copy and the seeds all closed their own passes before this one opened,
+		// and the declared in-pass read is a subpassLoad at the fragment's own coordinate.
+		const bool may_clamp =
+			gsTileGpuMayClampPassArea(rt != nullptr, rt_op == VK_ATTACHMENT_LOAD_OP_LOAD, ds != nullptr,
+				ds_op == VK_ATTACHMENT_LOAD_OP_LOAD) &&
+			// A pass naming draws the plan does not carry is malformed: take the whole attachment
+			// rather than an area built out of a range that is not there.
+			(!can_draw || (static_cast<size_t>(pass.first_draw) + pass.draw_count) <= plan.scissors.size());
+		GSVector4i pass_area = area;
+		if (may_clamp)
+		{
+			const VkExtent2D gran = GetRenderAreaGranularity(rp);
+			const GSTileGpuScissorRect pa = gsTileGpuPassArea(
+				can_draw ? plan.scissors.subspan(pass.first_draw, pass.draw_count) : std::span<const GSVector4i>(),
+				size.x, size.y, static_cast<int>(gran.width), static_cast<int>(gran.height));
+			pass_area = GSVector4i(pa.x, pa.y, pa.x + pa.width, pa.y + pa.height);
+		}
+
 		if (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
 		{
 			// Backstop: the clear only covers `area` = min(colour, depth). An attachment cleared on
@@ -8564,11 +8612,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				cv[n++].color = {{0.0f, 0.0f, 0.0f, 1.0f}}; // an empty framebuffer background
 			if (ds)
 				cv[n++].depthStencil = {0.0f, 0}; // farthest under GEQUAL
-			BeginClearRenderPass(rp, area, cv, n);
+			BeginClearRenderPass(rp, pass_area, cv, n);
 		}
 		else
 		{
-			BeginRenderPass(rp, area);
+			BeginRenderPass(rp, pass_area);
 		}
 
 		if (can_draw)
@@ -8576,10 +8624,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			const VkViewport vp{0.0f, 0.0f, static_cast<float>(geom.viewport_width),
 				static_cast<float>(geom.viewport_height), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
-			// The whole render area, as the opening value only: every indirect call below replaces
-			// it with that call's own rectangle. It still has to be set, because the pass's
-			// non-draw work (the seeds, the readbacks, the materialise blits) runs against it.
-			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
+			// The render area, as the opening value only: every indirect call below replaces it with
+			// that call's own rectangle, and no draw runs under this one. It is the render area rather
+			// than the attachment so that "nothing renders outside the render area" holds for whatever
+			// is issued here, not only for the calls that set their own.
+			const VkRect2D sc{{pass_area.x, pass_area.y},
+				{static_cast<u32>(pass_area.width()), static_cast<u32>(pass_area.height())}};
 			vkCmdSetScissor(cmd, 0, 1, &sc);
 
 			// Bind the vertex/index streams at this frame's base, so the indirect commands'
@@ -8815,6 +8865,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						count = n;
 						const GSTileGpuScissorRect r =
 							gsTileGpuScissorRect(want.x, want.y, want.z, want.w, size.x, size.y);
+						// Rendering outside the render area is undefined, and the area was built out of
+						// exactly these rectangles -- so this can only fire if the two walks stopped
+						// seeing the same draws, which is invisible in a frame until a driver acts on it.
+						pxAssertMsg(r.width <= 0 || r.height <= 0 ||
+										(r.x >= pass_area.x && r.y >= pass_area.y && (r.x + r.width) <= pass_area.z &&
+											(r.y + r.height) <= pass_area.w),
+							"TileGpu draw's scissor reaches outside its pass's render area");
 						const VkRect2D dsc{{r.x, r.y}, {static_cast<u32>(r.width), static_cast<u32>(r.height)}};
 						vkCmdSetScissor(cmd, 0, 1, &dsc);
 					}
@@ -10046,6 +10103,7 @@ void GSDeviceVK::DestroyResources()
 	for (auto& it : m_render_pass_cache)
 		vkDestroyRenderPass(m_device, it.second, nullptr);
 	m_render_pass_cache.clear();
+	m_render_area_granularity.clear();
 
 	if (m_allocator != VK_NULL_HANDLE)
 		vmaDestroyAllocator(m_allocator);

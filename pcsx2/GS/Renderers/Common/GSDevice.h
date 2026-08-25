@@ -2210,6 +2210,85 @@ public:
 		return GSTileGpuScissorRect{cx0, cy0, cx1 - cx0, cy1 - cy0};
 	}
 
+	/// Whether a pass may render into less than its whole attachment pair.
+	///
+	/// Only where every attachment it carries LOADs. Outside the render area an attachment is neither
+	/// loaded nor stored, so a LOAD/STORE one keeps exactly the bytes it held and shrinking the area
+	/// moves nothing. The other two load ops INITIALIZE the attachment, and they only initialize
+	/// inside the render area: a clamped CLEAR leaves the region outside it uninitialized -- which the
+	/// next pass to LOAD there reads as garbage -- and a clamped DONT_CARE leaves that region holding
+	/// whatever was in memory where the full-area form left it undefined. Both are an attachment's
+	/// FIRST bind after allocation, a handful of passes a frame, so the rule costs nothing and the
+	/// argument stays a proof rather than a probability.
+	static constexpr bool gsTileGpuMayClampPassArea(
+		bool has_color, bool color_loads, bool has_depth, bool depth_loads)
+	{
+		return (!has_color || color_loads) && (!has_depth || depth_loads);
+	}
+
+	/// The RENDER AREA of a pass: the union of its draws' scissors, rounded out to the device's
+	/// render-area granularity and clamped to the attachment pair.
+	///
+	/// A render pass on a tiler pays a tile load and a tile store for every pixel of its render area,
+	/// drawn or not -- so a pass's cost is its AREA, not its draw count. The pass-structure census
+	/// measured what taking the whole attachment costs: Dirge of Cerberus alternates draw by draw
+	/// between a 35x35 scratch surface and its 640x448 framebuffer and moves 134.8 Mpx of tile traffic
+	/// a frame, Gran Turismo 4's paletted road 50.3, against a few percent of it actually touched.
+	///
+	/// It is the union of the SAME rectangles the executor sets before each indirect call, so every
+	/// draw is contained in it by construction rather than by two sides agreeing. Rounding OUT is what
+	/// makes the area one the driver need not split a tile over; it is content-preserving only because
+	/// the caller restricts this to a pass whose attachments all LOAD -- outside the render area such
+	/// an attachment is neither loaded nor stored, and inside the round-out margin it is loaded and
+	/// stored back unchanged, because no draw's scissor reaches there.
+	///
+	/// An empty union (a pass whose draws all scissor away, or one the executor will issue no geometry
+	/// for) comes back as one granularity tile at the origin rather than a zero extent: still a
+	/// load-and-store of its own value, and it asks nothing of the driver about a degenerate area.
+	static GSTileGpuScissorRect gsTileGpuPassArea(std::span<const GSVector4i> scissors, int area_width,
+		int area_height, int granularity_width, int granularity_height)
+	{
+		const int gw = (granularity_width > 0) ? granularity_width : 1;
+		const int gh = (granularity_height > 0) ? granularity_height : 1;
+
+		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		bool any = false;
+		for (const GSVector4i& s : scissors)
+		{
+			// Through the executor's own transcription, so a scissor that admits nothing arrives as a
+			// zero extent and contributes nothing, and one reaching past the pair is already clamped.
+			const GSTileGpuScissorRect r = gsTileGpuScissorRect(s.x, s.y, s.z, s.w, area_width, area_height);
+			if (r.width <= 0 || r.height <= 0)
+				continue;
+			if (!any)
+			{
+				x0 = r.x;
+				y0 = r.y;
+				x1 = r.x + r.width;
+				y1 = r.y + r.height;
+				any = true;
+				continue;
+			}
+			x0 = (r.x < x0) ? r.x : x0;
+			y0 = (r.y < y0) ? r.y : y0;
+			x1 = ((r.x + r.width) > x1) ? (r.x + r.width) : x1;
+			y1 = ((r.y + r.height) > y1) ? (r.y + r.height) : y1;
+		}
+		if (!any)
+		{
+			x0 = y0 = 0;
+			x1 = y1 = 1;
+		}
+
+		const int lx = x0 - (x0 % gw);
+		const int ly = y0 - (y0 % gh);
+		int hx = ((x1 + gw - 1) / gw) * gw;
+		int hy = ((y1 + gh - 1) / gh) * gh;
+		hx = (hx > area_width) ? area_width : hx;
+		hy = (hy > area_height) ? area_height : hy;
+		return GSTileGpuScissorRect{lx, ly, (hx > lx) ? (hx - lx) : 0, (hy > ly) ? (hy - ly) : 0};
+	}
+
 	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
 	/// pass's draws sample, so a draw reads a pre-pass version of pixels the pass also writes
 	/// without a raster-order hazard. Taken before the pass it feeds opens; one per pass. Today

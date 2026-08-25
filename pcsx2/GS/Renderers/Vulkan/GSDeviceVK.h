@@ -158,6 +158,13 @@ public:
 	// Gets a non-clearing version of the specified render pass. Slow, don't call in hot path.
 	VkRenderPass GetRenderPassForRestarting(VkRenderPass pass);
 
+	/// The render-area granularity this render pass wants an area aligned to, memoized.
+	///
+	/// It is a driver query rather than a device constant -- vkGetRenderAreaGranularity takes the
+	/// render pass -- and the TileGpu executor asks it once per pass, hundreds of times a frame over
+	/// a handful of distinct passes, so the answer is kept.
+	VkExtent2D GetRenderAreaGranularity(VkRenderPass pass);
+
 	// These command buffers are allocated per-frame. They are valid until the command buffer
 	// is submitted, after that you should call these functions again.
 	__fi VkCommandBuffer GetCurrentCommandBuffer() const { return m_current_command_buffer; }
@@ -481,6 +488,7 @@ private:
 	bool m_last_submit_failed = false;
 
 	std::map<u32, VkRenderPass> m_render_pass_cache;
+	std::map<VkRenderPass, VkExtent2D> m_render_area_granularity;
 
 	VkDebugUtilsMessengerEXT m_debug_messenger_callback = VK_NULL_HANDLE;
 
