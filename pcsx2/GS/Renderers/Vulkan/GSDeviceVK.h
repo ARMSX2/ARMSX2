@@ -763,6 +763,22 @@ private:
 	// never reached the GPU.
 	bool m_tilegpu_abandoned_warned = false;
 	u32 m_tilegpu_abandoned_plans = 0;
+	// A fragment variant that failed to compile: its draws run the full module instead, which is a
+	// superset and so correct, and about twice the Adreno 650's instruction-size threshold. The only
+	// existing report of this is inside a PCSX2_DEVBUILD block, which is not what a device round runs.
+	bool m_tilegpu_variant_compile_warned = false;
+	u32 m_tilegpu_variant_compile_failures = 0;
+	// A pipeline that failed to build OUTSIDE a declaring pass: the run falls back to the eager
+	// full-road pipeline, which writes all four channels whatever the draw's FBMSK said.
+	bool m_tilegpu_pipeline_fallback_warned = false;
+	u32 m_tilegpu_pipeline_fallback_runs = 0;
+	// ...and INSIDE one, where there is no compatible fallback and the run's draws are dropped.
+	// TileGpuPipelineFallback already says so once; this is what a run lost.
+	u32 m_tilegpu_declared_build_dropped_draws = 0;
+	// A writeback the frame pool would give no descriptor set for. Its ring slot keeps what it was
+	// prefilled with while the renderer's model records the composition as done.
+	bool m_tilegpu_writeback_pool_warned = false;
+	u32 m_tilegpu_writeback_pool_dropped_ops = 0;
 	/// EmuCore/GS/TileGpuSerializeOps is announced once per run, not once per plan: a plan is a frame
 	/// and the line exists so a device log can testify the arm engaged, which one line does.
 	bool m_tilegpu_serialize_announced = false;

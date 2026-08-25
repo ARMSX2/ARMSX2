@@ -6953,6 +6953,22 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(
 	if (it != m_tilegpu_fs_variants.end())
 		return (it->second != VK_NULL_HANDLE) ? it->second : m_tilegpu_fs;
 	VkShaderModule mod = CompileTileGpuFragmentModule(road_mask, texel_mask, self_mask, quantise, spec);
+	if (mod == VK_NULL_HANDLE)
+	{
+		// The fallback is a superset, so the pixels stay right and only the size is wrong -- but on the
+		// Adreno 650 the full program is about twice the instruction-size threshold that swings the whole
+		// frame, so "it still renders" is not the same as "nothing happened". The compile log carries the
+		// FAILED marker only on a devbuild, which is exactly the build a device round is NOT.
+		m_tilegpu_variant_compile_failures++;
+		if (!m_tilegpu_variant_compile_warned)
+		{
+			m_tilegpu_variant_compile_warned = true;
+			Console.Error("TileGpu: fragment variant road=%u texel=%u self=%u q16=%u failed to compile; its draws "
+						  "run the full program instead -- correct, and past the size threshold that swings a "
+						  "frame. Totals at teardown.",
+				road_mask, texel_mask, self_mask, quantise ? 1u : 0u);
+		}
+	}
 	m_tilegpu_fs_variants.emplace(key, mod);
 	return (mod != VK_NULL_HANDLE) ? mod : m_tilegpu_fs;
 }
@@ -7211,7 +7227,20 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 VkPipeline GSDeviceVK::TileGpuPipelineFallback(u32 topology, u32 depth_mode, bool declares)
 {
 	if (!declares)
+	{
+		// Counted, because this fallback is not the cosmetic wrong-blend it was written for. It writes
+		// all four channels, so a masked draw that lands on it paints channels the GS preserves -- the
+		// Beyond Good & Evil ratchet -- and it carries the full program, which on the Adreno 650 is past
+		// the instruction-size threshold. Both are visible in a frame and neither says anything.
+		m_tilegpu_pipeline_fallback_runs++;
+		if (!m_tilegpu_pipeline_fallback_warned)
+		{
+			m_tilegpu_pipeline_fallback_warned = true;
+			Console.Error("TileGpu: a pipeline failed to build and its run fell back to the eager full-road "
+						  "pipeline, which writes all four channels whatever the draw's FBMSK. Totals at teardown.");
+		}
 		return m_tilegpu_pipeline[topology][depth_mode];
+	}
 	if (!m_tilegpu_declared_fallback_warned)
 	{
 		m_tilegpu_declared_fallback_warned = true;
@@ -8629,7 +8658,22 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						VkDescriptorSet wbset = AllocateDescriptorSetFromFramePool(m_tilegpu_writeback_ds_layout);
 						if (wbset == VK_NULL_HANDLE) [[unlikely]]
-							continue; // out of descriptor memory outright; skip, read stays as prefilled
+						{
+							// Out of descriptor memory outright. The op is skipped and the ring slot keeps
+							// whatever it was prefilled with, so a later draw samples the target's PREVIOUS
+							// bytes -- a wrong pixel the renderer's model has already recorded as composed.
+							// A device that does not push descriptors takes this road for every writeback of
+							// every frame, so the total is how a run testifies it never fired.
+							m_tilegpu_writeback_pool_dropped_ops++;
+							if (!m_tilegpu_writeback_pool_warned)
+							{
+								m_tilegpu_writeback_pool_warned = true;
+								Console.Error("TileGpu: the device would give no descriptor set for a writeback; the "
+											  "op is skipped and its ring slot keeps the bytes it was prefilled "
+											  "with. Totals at teardown.");
+							}
+							continue;
+						}
 						dsub.AddCombinedImageSamplerDescriptorWrite(
 							wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
 						dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -9142,8 +9186,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				if (run_pipe == VK_NULL_HANDLE)
 				{
 					// Either a pass whose descriptor sets the pool would not serve -- the two exhausted
-					// flags above -- or a declaring pass whose pipeline failed to build, where the eager
-					// fallback would be an incompatible render pass rather than a wrong blend.
+					// flags above, which counted their own draws at the pass -- or a declaring pass whose
+					// pipeline failed to build, where the eager fallback would be an incompatible render
+					// pass rather than a wrong blend. Only the second is uncounted here, and it drops a
+					// RUN rather than a pass, so it is the run's draws that go.
+					if (!declared_set_exhausted && !pass_set_exhausted)
+						m_tilegpu_declared_build_dropped_draws += run_end - d;
 					d = run_end;
 					continue;
 				}
@@ -10413,6 +10461,30 @@ void GSDeviceVK::DestroyResources()
 		Console.Error("TileGpu: %u plans were abandoned mid-frame this session; the passes after each were never "
 					  "recorded, and the renderer's byte model counted them as done.",
 			m_tilegpu_abandoned_plans);
+	}
+	if (m_tilegpu_variant_compile_failures != 0)
+	{
+		Console.Error("TileGpu: %u fragment variants failed to compile this session; their draws ran the full "
+					  "program, which is correct and past the size threshold that swings a frame.",
+			m_tilegpu_variant_compile_failures);
+	}
+	if (m_tilegpu_pipeline_fallback_runs != 0)
+	{
+		Console.Error("TileGpu: %u draw runs fell back to the eager full-road pipeline this session because their "
+					  "own pipeline would not build; that pipeline writes all four channels.",
+			m_tilegpu_pipeline_fallback_runs);
+	}
+	if (m_tilegpu_declared_build_dropped_draws != 0)
+	{
+		Console.Error("TileGpu: %u draws were dropped this session because a pipeline for a pass declaring the "
+					  "in-pass destination read would not build, and no fallback is render-pass compatible.",
+			m_tilegpu_declared_build_dropped_draws);
+	}
+	if (m_tilegpu_writeback_pool_dropped_ops != 0)
+	{
+		Console.Error("TileGpu: %u writebacks were skipped this session because the frame descriptor pool could not "
+					  "serve them; their ring slots kept the bytes they were prefilled with.",
+			m_tilegpu_writeback_pool_dropped_ops);
 	}
 
 	for (FrameResources& resources : m_frame_resources)
