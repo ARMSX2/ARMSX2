@@ -189,7 +189,7 @@ void main()
 	// plus the word-in-block is the linear guest word. The three alpha-byte views read the same
 	// word; they differ only in which of its bits are the index.
 	const uint page = (v >> 5u) * bw + (u >> 6u);
-	const uint blk = bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
+	const uint blk = (bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u)) & 16383u;
 	const uint w = mat_ring_word(blk * 64u + tile_c32(u & 7u, v & 7u));
 #endif
 
@@ -200,7 +200,7 @@ void main()
 	// PSMT8, identical to tilegpu_index8's: a page is 128x64 texels of 16x16 blocks and 16x16-texel
 	// columns, so a block is 256 bytes = 64 words and the column form gives the byte within it.
 	const uint page = (v >> 6u) * bw + (u >> 7u);
-	const uint blk = bp + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	const uint blk = (bp + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u)) & 16383u;
 	const uint byte_in_block = tile_c8(u & 15u, v & 15u);
 	const uint idx = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
 	// The index, replicated -- ps_tile_expand_palette reads .a, and an R8 view of a one-byte source
@@ -210,7 +210,7 @@ void main()
 	// PSMT4, identical to tilegpu_index4's: a page is 128x128 texels of 32x16 blocks; the column
 	// form gives the NIBBLE within the block's 512, its low bit choosing the half of its byte.
 	const uint page = (v >> 7u) * bw + (u >> 7u);
-	const uint blk = bp + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	const uint blk = (bp + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u)) & 16383u;
 	const uint nib = tile_c4(u & 31u, v & 15u);
 	const uint byte_in_block = nib >> 1u;
 	const uint byteval = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);

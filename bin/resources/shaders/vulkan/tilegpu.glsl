@@ -724,7 +724,8 @@ uint tilegpu_byte_sel(uint word, uint sel)
 uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 {
 	uint page = (v >> 6u) * tbw + (u >> 7u);
-	uint blk = tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	// & 16383 is bn()'s own `% GS_MAX_BLOCKS`, for the reason spelled out on the 32-bit arm.
+	uint blk = (tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u)) & 16383u;
 	uint byte_in_block = tile_c8(u & 15u, v & 15u);
 	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
 	return tilegpu_byte_sel(word, byte_in_block);
@@ -737,7 +738,8 @@ uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 {
 	uint page = (v >> 7u) * tbw + (u >> 7u);
-	uint blk = tbp0 + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	// & 16383 is bn()'s own `% GS_MAX_BLOCKS`, for the reason spelled out on the 32-bit arm.
+	uint blk = (tbp0 + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u)) & 16383u;
 	uint nib = tile_c4(u & 31u, v & 15u);
 	uint byte_in_block = nib >> 1u;
 	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
