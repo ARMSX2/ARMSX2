@@ -914,7 +914,7 @@ static void ARMSX2StartJITKeepalive()
                     Host::ReportErrorAsync("JIT Init Timeout",
                         "JIT memory setup took too long. This is a known issue with the Universal TXM "
                         "protocol on iOS 26. Try Settings → Emulator → JIT Script → Legacy, or relaunch "
-                        "via StikDebug.");
+                        "via StikDebug/StosDebug.");
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
                 });
                 ARMSX2ResolveIdleVMPrewarm();
