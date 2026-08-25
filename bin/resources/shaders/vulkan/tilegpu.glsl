@@ -495,6 +495,47 @@ void main()
 
 #ifdef FRAGMENT_SHADER
 
+// TILEGPU_SCALARIZE_VECTOR_AND (injected by the device from the driver-bug database): the Mali
+// proprietary compiler miscompiles a bitwise AND whose operands are VECTORS -- including the
+// broadcast form, where one side is a scalar -- so every vector AND in this file goes through here.
+// Under the gate it is done one component at a time; everywhere else it is the plain operator.
+//
+// Same shape and the same decision as the gpu_bitwise_and the classic renderer's tfx.glsl and
+// convert.glsl route their vector ANDs through: both are fed from the one ScalarizeVectorBitwiseAnd
+// answer the driver database gives for this device. It is spelled locally rather than shared for two
+// reasons. This shader is compiled from its own injected define block and nothing else -- the size
+// gate compiles it with exactly that block -- so a shared helper would mean the gate carrying a copy
+// of the thing it is supposed to be measuring. And the ivec4 arm below has no counterpart in the
+// shared set, which is Classic's; widening that set would recompile every classic pipeline for a
+// need only this file has.
+//
+// Off -- which is every driver but one -- it is a bare macro and not a function that returns the
+// same thing, for the reason the shared one is: an overload costs an OpFunctionCall per call site in
+// the SPIR-V, and this fragment program is held to an instruction-size budget that structure nobody
+// executes still counts against.
+#ifndef TILEGPU_SCALARIZE_VECTOR_AND
+#define TILEGPU_SCALARIZE_VECTOR_AND 0
+#endif
+
+#if TILEGPU_SCALARIZE_VECTOR_AND
+uvec3 tilegpu_and(uvec3 a, uvec3 b)
+{
+	return uvec3(a.x & b.x, a.y & b.y, a.z & b.z);
+}
+
+ivec3 tilegpu_and(ivec3 a, ivec3 b)
+{
+	return ivec3(a.x & b.x, a.y & b.y, a.z & b.z);
+}
+
+ivec4 tilegpu_and(ivec4 a, ivec4 b)
+{
+	return ivec4(a.x & b.x, a.y & b.y, a.z & b.z, a.w & b.w);
+}
+#else
+#define tilegpu_and(a, b) ((a) & (b))
+#endif
+
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_st;
 layout(location = 2) in float v_q;
@@ -1212,7 +1253,7 @@ void main()
 	// normalised guest units, so it scales to 0..255 for the walk and back afterwards.
 	if (TG_FGE(sr) != 0u)
 	{
-		const ivec3 cfog = ivec3(uvec3(sr.fogcol, sr.fogcol >> 8u, sr.fogcol >> 16u) & 0xFFu);
+		const ivec3 cfog = ivec3(tilegpu_and(uvec3(sr.fogcol, sr.fogcol >> 8u, sr.fogcol >> 16u), uvec3(0xFFu)));
 		const int f15 = int(v_fog * (255.0f * 128.0f));
 		cv.rgb = vec3(cfog + (((ivec3(cv.rgb * 255.0f) - cfog) * f15) >> 15)) * (1.0f / 255.0f);
 	}
@@ -1266,14 +1307,14 @@ void main()
 		{
 			// Four coefficients out of one vector shift: ka and kb are the {-1, 0, +1} the register's
 			// A and B add up to, ds and dd pick D. No selector chain anywhere.
-			const ivec4 k = (ivec4(sr.blend) >> ivec4(0, 2, 4, 5)) & ivec4(3, 3, 1, 1);
+			const ivec4 k = tilegpu_and(ivec4(sr.blend) >> ivec4(0, 2, 4, 5), ivec4(3, 3, 1, 1));
 			const uint c_mode = (sr.blend >> 6u) & 3u;
 			const int C = (c_mode == 0u) ? src.a : ((c_mode == 1u) ? dst.a : int((sr.blend >> 8u) & 0xFFu));
 			ivec3 v = ((((k.x - 1) * src.rgb + (k.y - 1) * dst.rgb) * C) >> 7) + k.z * src.rgb + k.w * dst.rgb;
 			// COLCLAMP, as one clamp rather than two paths: clamping to 0..255 makes the mask below a
 			// no-op, and widening the clamp past the equation's own range makes the mask the wrap.
 			const int lo = ((sr.blend & 0x00020000u) != 0u) ? -1024 : 0;
-			v = clamp(v, ivec3(lo), ivec3(255 - lo)) & 0xFF;
+			v = tilegpu_and(clamp(v, ivec3(lo), ivec3(255 - lo)), ivec3(0xFF));
 			// PABE gates the whole blend on the SOURCE alpha's bit 7, per pixel. The alpha byte is
 			// the fragment's either way, so only RGB is taken back.
 			if ((sr.blend & 0x00040000u) != 0u && src.a < 128)
@@ -1288,7 +1329,7 @@ void main()
 		// After the blend and before the write mask, which is the console's own order, and which is
 		// what makes the mask's low bits (the ones a 16-bit FBMSK cannot name) come out zero.
 		if ((sr.blend & 0x00100000u) != 0u)
-			outc &= ivec4(0xF8, 0xF8, 0xF8, 0x80);
+			outc = tilegpu_and(outc, ivec4(0xF8, 0xF8, 0xF8, 0x80));
 #endif
 
 #if TILEGPU_SELF_MASK
@@ -1301,12 +1342,12 @@ void main()
 			// One vector shift by a CONSTANT vector, not four scalar extracts: the amounts are
 			// literals, so this is not the computed sub-word shift the Honeykrisp workaround exists
 			// for, and it is a good deal smaller.
-			ivec4 keep = (ivec4(sr.fbmsk) >> ivec4(0, 8, 16, 24)) & 0xFF;
+			ivec4 keep = tilegpu_and(ivec4(sr.fbmsk) >> ivec4(0, 8, 16, 24), ivec4(0xFF));
 			// ...and the per-FRAGMENT half: a failing fragment under AFAIL=RGB_ONLY keeps the whole
 			// destination alpha byte, which is the same operation over a different mask.
 			if (afail_keep_alpha)
 				keep.a = 0xFF;
-			outc = (outc & ~keep) | (dst & keep);
+			outc = tilegpu_and(outc, ~keep) | tilegpu_and(dst, keep);
 		}
 #endif
 

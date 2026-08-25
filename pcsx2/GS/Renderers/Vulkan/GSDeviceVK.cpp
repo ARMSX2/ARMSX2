@@ -6657,6 +6657,12 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// constant shifts there. Gate on driverID, never vendorID, per the device-workaround
 	// rule above -- other Mesa drivers and the proprietary ones keep the straight form.
 	const bool static_byte_sel = TileGpuStaticByteSel();
+	// The second shader-compiler workaround: the Mali proprietary compiler miscompiles a bitwise AND
+	// whose operands are vectors, which in this shader is the fog colour unpack and the whole integer
+	// byte tail -- blend coefficients, the COLCLAMP mask, the 16-bit quantise and the FBMSK merge.
+	// TILEGPU_SCALARIZE_VECTOR_AND does them a component at a time there. Read out of the driver-bug
+	// database, so this shader and the classic renderer's tfx.glsl act on one answer rather than two.
+	const bool scalarize_vec_and = UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd);
 	// Rule 2's tap compiles in only where the device can index the sampled-target array by the
 	// draw's slot (TileGpuBindlessTargets, negotiated in CreateDevice). Elsewhere the array is not
 	// declared at all and the tap has no target branch: the renderer already refuses to bind
@@ -6670,7 +6676,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		(m_tilegpu_tex ? form_defines : std::string()) +
 		GSTileGpuShaderVariant::DeviceDefines(m_tilegpu_tex, static_byte_sel,
 			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_clip_scissor,
-			m_optional_extensions.tilegpu_dual_source);
+			m_optional_extensions.tilegpu_dual_source, scalarize_vec_and);
 	// Kept for the session: a pass's fragment module is compiled from this plus its variant defines,
 	// on first use of that (road, texel-arm) pair. Re-reading the file instead would risk compiling
 	// two variants from two different revisions of the shader, since the runtime shader tree is a

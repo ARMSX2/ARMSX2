@@ -29,8 +29,14 @@ namespace GSTileGpuShaderVariant
 	/// It has to be a compile-time define and not a value the shader writes zeros into -- a vertex
 	/// module that merely DECLARES ClipDistance is a module a driver without shaderClipDistance may
 	/// refuse, whatever the values are.
-	inline std::string DeviceDefines(
-		bool tex, bool static_byte_sel, bool bindless, bool vs_clip = true, bool dual_src = true)
+	///
+	/// `scalarize_vec_and` is the second shader-compiler workaround, beside `static_byte_sel`: the Mali
+	/// proprietary compiler miscompiles a bitwise AND on vector operands, so the fragment stage does
+	/// those a component at a time. It is the ScalarizeVectorBitwiseAnd answer out of the driver-bug
+	/// database -- the same one the classic renderer's tfx.glsl reads -- and it defaults OFF so a
+	/// caller that has not been taught to pass it emits the program every other driver already gets.
+	inline std::string DeviceDefines(bool tex, bool static_byte_sel, bool bindless, bool vs_clip = true,
+		bool dual_src = true, bool scalarize_vec_and = false)
 	{
 		return fmt::format("#define TILEGPU_TEX {}\n"
 						   "#define TILEGPU_STATIC_BYTE_SEL {}\n"
@@ -39,10 +45,12 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_TEX_SOURCES {}\n"
 						   "#define TILEGPU_MAX_SOURCES {}\n"
 						   "#define TILEGPU_VS_CLIP {}\n"
-						   "#define TILEGPU_DUAL_SRC {}\n",
+						   "#define TILEGPU_DUAL_SRC {}\n"
+						   "#define TILEGPU_SCALARIZE_VECTOR_AND {}\n",
 			tex ? 1 : 0, static_byte_sel ? 1 : 0, bindless ? 1 : 0,
 			GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass, bindless ? 1 : 0,
-			GSDevice::GSTileGpuPassPlan::kMaxSources, vs_clip ? 1 : 0, dual_src ? 1 : 0);
+			GSDevice::GSTileGpuPassPlan::kMaxSources, vs_clip ? 1 : 0, dual_src ? 1 : 0,
+			scalarize_vec_and ? 1 : 0);
 	}
 
 	/// The per-pass half: which texel roads and which of the byte road's decode arms this module
