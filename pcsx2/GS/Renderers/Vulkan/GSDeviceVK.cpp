@@ -8531,6 +8531,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// input-attachment reference.
 		const bool declares = pass.declares_self_read && rt != nullptr;
 		bool declared_set_exhausted = false;
+		// The same outcome for the per-pass set every drawing pass needs, on the road that allocates it
+		// from a pool rather than pushing it. A flag of its own so neither road can silence the other.
+		bool pass_set_exhausted = false;
 		pxAssertMsg(pass.declares_self_read == (pass.self_mask != 0),
 			"TileGpu pass declares the self-read without saying what for, or the other way round");
 		OMSetRenderTargets(rt, ds, area, declares ? FeedbackLoopFlag_TileGpuSelfRead : FeedbackLoopFlag_None);
@@ -8639,15 +8642,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &voff);
 			vkCmdBindIndexBuffer(cmd, m_index_stream_buffer.GetBuffer(),
 				static_cast<VkDeviceSize>(ibase) * sizeof(u16), VK_INDEX_TYPE_UINT16);
+			// The pass's sets are established in ASCENDING set order -- 0, then 1, then 2, then 3 -- and
+			// that order is load-bearing. Binding or pushing at set N leaves the HIGHER-numbered sets
+			// bound only if set N's PREVIOUS binding used a layout compatible for set N; otherwise they
+			// are disturbed. Set 1 is this layout's push set, and what last touched set 1 before this pass
+			// may be another layout's push at a different set number -- the utility blit pushes at set 0,
+			// which disturbs set 1 -- so writing set 1 is precisely the bind whose predecessor is not this
+			// layout's, and whatever was bound above it beforehand goes with it. Bound the other way round,
+			// set 2 was the casualty in every pass that followed a blit into the same command buffer.
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 				&m_tilegpu_state_descriptor_set, 0, nullptr);
-			// Set 2, the same frame-wide source array for every pass. Bound per pass because a
-			// mid-plan flush drops every binding, and because it costs one command.
-			if (source_set != VK_NULL_HANDLE)
-			{
-				vkCmdBindDescriptorSets(
-					cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 2, 1, &source_set, 0, nullptr);
-			}
 			{
 				// Set 1, both bindings at once. Binding 0 is the snapshot (or the null texture -- the
 				// shader only reads it under a per-draw flag, but the binding must be valid
@@ -8686,7 +8690,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				}
 				else
 				{
-					VkDescriptorSet sset = AllocateDescriptorSetFromFramePool(m_tilegpu_snapshot_ds_layout);
+					const VkDescriptorSet sset = AllocateDescriptorSetFromFramePool(m_tilegpu_snapshot_ds_layout);
 					if (sset != VK_NULL_HANDLE)
 					{
 						for (u32 i = 0; i < nw; i++)
@@ -8695,6 +8699,27 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 1,
 							&sset, 0, nullptr);
 					}
+					else
+					{
+						// No set means set 1 keeps whatever the LAST pass bound, and every draw below samples
+						// that pass's snapshot and targets instead of this one's -- a wrong pixel, not a slow
+						// one, and one nothing downstream corrects. So drop the pass's draws and say so, the
+						// way the declared read below already does. The pool grows on demand inside the
+						// allocator, so reaching here means the device refused more descriptor memory outright.
+						//
+						// A device that does not push descriptors takes this road for EVERY pass of every frame
+						// (Mali is gated off push descriptors), which is why the outcome is counted and not only
+						// warned: the totals at teardown are how a device run testifies that it never fired.
+						pass_set_exhausted = true;
+					}
+				}
+
+				// Set 2, the same frame-wide source array for every pass. Bound per pass because a
+				// mid-plan flush drops every binding, and because it costs one command.
+				if (source_set != VK_NULL_HANDLE)
+				{
+					vkCmdBindDescriptorSets(
+						cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 2, 1, &source_set, 0, nullptr);
 				}
 
 				// Set 3: this pass's colour attachment as an input attachment, in the layout the render
@@ -8774,6 +8799,18 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 								  "in-pass destination read; its draws are dropped. Totals at teardown.");
 				}
 			}
+			if (pass_set_exhausted)
+			{
+				m_tilegpu_pass_pool_dropped_passes++;
+				m_tilegpu_pass_pool_dropped_draws += pass.draw_count;
+				if (!m_tilegpu_pass_pool_warned)
+				{
+					m_tilegpu_pass_pool_warned = true;
+					Console.Error("TileGpu: the device would give no descriptor set for a pass's snapshot and "
+								  "sampled targets; its draws are dropped rather than sampling the previous pass's. "
+								  "Totals at teardown.");
+				}
+			}
 			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
 			// A plan that carries no variant stream leaves every run on its pass's union masks, which
 			// is what this loop did before the variant joined the run key.
@@ -8813,15 +8850,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				// binding are the same fact. The three depth-carrying variants are per run.
 				pxAssertMsg((rkey.depth_mode == GSTileGpuDepthMode::None) == (ds == nullptr),
 					"TileGpu draw's depth mode disagrees with its pass's depth attachment");
-				const VkPipeline run_pipe =
-					declared_set_exhausted ? VK_NULL_HANDLE :
-											 GetTileGpuPipeline(static_cast<u32>(rkey.topology),
-												 static_cast<u32>(rkey.depth_mode), bkey, run_road, run_texel,
-												 run_self, run_quantise, declares, run_spec);
+				const VkPipeline run_pipe = (declared_set_exhausted || pass_set_exhausted) ?
+												VK_NULL_HANDLE :
+												GetTileGpuPipeline(static_cast<u32>(rkey.topology),
+													static_cast<u32>(rkey.depth_mode), bkey, run_road, run_texel, run_self,
+													run_quantise, declares, run_spec);
 				if (run_pipe == VK_NULL_HANDLE)
 				{
-					// Only reachable inside a declaring pass whose pipeline failed to build, where the
-					// eager fallback would be an incompatible render pass rather than a wrong blend.
+					// Either a pass whose descriptor sets the pool would not serve -- the two exhausted
+					// flags above -- or a declaring pass whose pipeline failed to build, where the eager
+					// fallback would be an incompatible render pass rather than a wrong blend.
 					d = run_end;
 					continue;
 				}
@@ -10069,6 +10107,12 @@ void GSDeviceVK::DestroyResources()
 		Console.Error("TileGpu: %u draws in %u passes were dropped this session because the frame descriptor pool "
 					  "could not serve the in-pass destination read.",
 			m_tilegpu_declared_pool_dropped_draws, m_tilegpu_declared_pool_dropped_passes);
+	}
+	if (m_tilegpu_pass_pool_dropped_draws != 0)
+	{
+		Console.Error("TileGpu: %u draws in %u passes were dropped this session because the frame descriptor pool "
+					  "could not serve a pass's snapshot and sampled-target set.",
+			m_tilegpu_pass_pool_dropped_draws, m_tilegpu_pass_pool_dropped_passes);
 	}
 
 	for (FrameResources& resources : m_frame_resources)

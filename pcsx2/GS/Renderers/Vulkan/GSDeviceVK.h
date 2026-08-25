@@ -744,6 +744,12 @@ private:
 	bool m_tilegpu_declared_pool_warned = false;
 	u32 m_tilegpu_declared_pool_dropped_passes = 0;
 	u32 m_tilegpu_declared_pool_dropped_draws = 0;
+	// The per-pass set (snapshot + sampled targets) on the road that allocates it from the frame pool
+	// instead of pushing it. Every pass of every frame takes that road on a device without push
+	// descriptors, so it needs totals of its own rather than sharing the declared read's.
+	bool m_tilegpu_pass_pool_warned = false;
+	u32 m_tilegpu_pass_pool_dropped_passes = 0;
+	u32 m_tilegpu_pass_pool_dropped_draws = 0;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
 	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full module: the eager pipelines and the fallback
 	// One fragment module per (road mask, texel-arm mask) a pass has actually asked for, compiled on
