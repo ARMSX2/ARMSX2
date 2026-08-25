@@ -770,6 +770,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuDisableSelfRead = false;
 	TileGpuStrictMemory = false;
 	TileGpuPoisonAllocations = false;
+	TileGpuContainSurfaces = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -970,6 +971,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileGpuDualSrcRoad) &&
 		OpEqu(TileGpuSerializeOps) &&
 		OpEqu(TileGpuSerializeMask) &&
+		OpEqu(TileGpuContainPageBudget) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
 		OpEqu(ScreenshotSize) &&
@@ -1121,6 +1123,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuDisableSelfRead);
 	SettingsWrapBitBool(TileGpuStrictMemory);
 	SettingsWrapBitBool(TileGpuPoisonAllocations);
+	SettingsWrapBitBool(TileGpuContainSurfaces);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);
@@ -1284,6 +1287,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileGpuDualSrcRoad, "TileGpuDualSrcRoad");
 	SettingsWrapBitfieldEx(TileGpuSerializeOps, "TileGpuSerializeOps");
 	SettingsWrapBitfieldEx(TileGpuSerializeMask, "TileGpuSerializeMask");
+	SettingsWrapBitfieldEx(TileGpuContainPageBudget, "TileGpuContainPageBudget");
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");

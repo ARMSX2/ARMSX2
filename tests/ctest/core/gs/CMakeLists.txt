@@ -63,6 +63,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_texture_shuffle_tests.cpp
 	gs_tilegpu_shader_budget_tests.cpp
 	gs_tilegpu_serialize_mask_tests.cpp
+	gs_tilegpu_containment_tests.cpp
 	gs_fe_decode_tests.cpp
 )
 

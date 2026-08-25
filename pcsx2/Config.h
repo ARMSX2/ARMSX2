@@ -888,6 +888,10 @@ struct Pcsx2Config
 
 		union
 		{
+			// ⚠️ FULL: 128 one-bit flags in 128 bits of array. The next one added grows the struct
+			// past the array, and OptionsAreEqual -- which compares the two words and nothing else
+			// -- silently stops seeing the overflow. Widen this to bitsets[3] and add the third
+			// OpEqu row in the SAME commit as the flag that needs it.
 			u64 bitsets[2];
 
 			struct
@@ -1166,6 +1170,24 @@ struct Pcsx2Config
 					// per frame; it is an isolation lever, not a fix. Fail-closed: off
 					// records nothing at all and is the executor byte for byte. Dev only.
 					TileGpuPoisonAllocations : 1,
+					// Give a view of GS memory that lands INSIDE a live surface's page
+					// rectangle that surface, at a pixel offset, instead of a surface of
+					// its own. Two views of one image share a pass key, so the render pass
+					// they alternate in stops ending between them: on Gran Turismo 4 the
+					// palette buffer at 0x03de0 folds into the frame buffer at 0x01180 and
+					// 140 colour-key pass breaks a frame go away.
+					//
+					// Legality is gsTileContainView (GSRendererTileGpu.h) -- same kind,
+					// same swizzle family, same stride, both bases page-aligned, a forward
+					// page delta whose column does not run off the container's stride, and
+					// a container that can grow to hold the view without leaving GS memory
+					// or the page budget below. Cross-PSM within the family and a nonzero
+					// offset are ONE feature: measured over the corpus's draw streams,
+					// either half alone removes no break at all on either GT4 dump.
+					//
+					// Off is today's arrangement, byte for byte: every view keeps its own
+					// surface and every offset is (0, 0).
+					TileGpuContainSurfaces : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
@@ -1513,6 +1535,19 @@ struct Pcsx2Config
 		// rather than being merged into a grade, because an arm whose engagement you have to derive
 		// from a precedence rule is an arm nobody will believe. Dev only.
 		int TileGpuSerializeMask = 0;
+
+		// The largest page footprint a container may reach to admit a contained view, in 8 KB guest
+		// pages. Zero -- the default -- is the whole of GS memory, 512 pages, which is the only cap
+		// the geometry itself imposes.
+		//
+		// A cap is needed because the container grows to the union of its views and the space
+		// between them is a hole nothing ever drew: folding GT4's palette buffer 35 page rows past
+		// the frame buffer turns a 640x448 image into a 640x1632 one, 4.2 MB of which most is
+		// never written. Pages, not rows and not bytes, because the wrap clause the predicate
+		// already enforces is in pages and a second unit would let the two disagree.
+		//
+		// Read only by gsTileContainView, so it decides nothing while TileGpuContainSurfaces is off.
+		int TileGpuContainPageBudget = 0;
 
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;

@@ -243,6 +243,160 @@ u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, Bre
 	return j;
 }
 
+// -- surface-identity containment (EmuCore/GS/TileGpuContainSurfaces) --------------------------
+//
+// The pass key above is what makes this worth doing. A pass is its attachments, so two views of GS
+// memory that get two surfaces get two pass keys, and a game that alternates between them ends a
+// render pass every time it switches -- 140 times a frame on Gran Turismo 4, where the alternation
+// is a 65x33 palette buffer and the frame buffer it is drawn beside. Neither view moves; what
+// changes is which image holds them. Give the small one a rectangle inside the big one's texture
+// and the two share a surface id, the key stops changing, and the passes merge.
+//
+// Two rules, and they are worthless apart. Cross-PSM identity within a swizzle family (0x01a40 as
+// PSMCT24 and as PSMCT32 are one surface) removes no break on either GT4 dump on its own; nor does
+// a nonzero page offset with PSM equality still required. Together they remove 87% and 91% of the
+// colour-key breaks. Simulated over the corpus's own PS2 draw streams; the arithmetic is below.
+
+/// Where a contained view's origin lands inside its container, in the container's page grid and in
+/// its pixels. `end_row` is the page-row count the container must hold to admit the view -- what
+/// the growth budget is charged against, and what the pool must have allocated before a draw of
+/// this view is recorded.
+struct GSTileContainOffset
+{
+	u32 col = 0;
+	u32 row = 0;
+	u32 end_row = 0;
+	s32 x = 0;
+	s32 y = 0;
+};
+
+/// Why a container may not hold a view. In rule order, so the numerically largest refusal a
+/// candidate produced is the clause it got furthest before failing -- which is what a census of
+/// refusals wants to report.
+enum class GSTileContainRefusal : u8
+{
+	Admitted = 0,
+	Kind, ///< different attachment types, or a depth view (deferred: worth ~1 break/frame corpus-wide)
+	Family, ///< different page geometry or intra-page block order, so no rectangle expresses it
+	Stride, ///< a differing stride is a per-page-row remap (GSTileAliasTier::PageRemap), not an offset
+	Alignment, ///< a block-offset base starts mid-page, where the intra-page swizzle is unexpressible
+	Delta, ///< the view starts BEFORE the container; every road computes `blk - base` unsigned
+	Column, ///< the view's rows would wrap into the container's next page row
+	Extent, ///< the container cannot grow that far without leaving GS memory or the page budget
+	Wrap, ///< ...or without running off the end of GS memory from where the container itself starts
+};
+
+/// Whether `container` may hold `view` at a rectangle offset, and where.
+///
+/// `view_page_cols` / `view_page_rows` are the view's own footprint in pages, from the extent its
+/// draws actually reach (gsTileContainPageCols / gsTileContainPageRows). `page_budget` is the
+/// largest page footprint the container may reach, 0 for the whole of GS memory.
+///
+/// ⚠️ Legality only. It does not say the fold is a good idea -- which of several legal containers a
+/// view should take is a policy question the caller owns, and the wrong answer there costs GT4
+/// five-sixths of the win (a "nearest containing base" rule leaves it at 107.75 breaks a frame
+/// against the composite policy's 20.38).
+///
+/// ⚠️ Rule 8 of the design's predicate -- a PSMCT24 view under a PSMCT32 container writes back an
+/// alpha byte its own format does not store -- is NOT here, because it is not a legality question:
+/// it is satisfied by making a 24-bit frame stop writing the image's alpha at all, which moves
+/// pixels with or without containment and lands on its own.
+constexpr GSTileContainRefusal gsTileContainView(const GSTileSurfaceLayout& container,
+	const GSTileSurfaceLayout& view, u32 view_page_cols, u32 view_page_rows, u32 page_budget,
+	GSTileContainOffset& out)
+{
+	out = GSTileContainOffset{};
+	if (container.kind != view.kind || view.kind != GSTileSurfaceKind::Color)
+		return GSTileContainRefusal::Kind;
+	const GSTileSwizzleFamily family = gsTileSwizzleFamily(view.psm);
+	if (family == GSTileSwizzleFamily::Invalid || gsTileSwizzleFamily(container.psm) != family)
+		return GSTileContainRefusal::Family;
+	if (container.bw == 0 || container.bw != view.bw)
+		return GSTileContainRefusal::Stride;
+	if (((container.bp | view.bp) & 31) != 0)
+		return GSTileContainRefusal::Alignment;
+	if (view.bp < container.bp)
+		return GSTileContainRefusal::Delta;
+
+	const u32 bw = container.bw;
+	const u32 delta = (view.bp - container.bp) / 32;
+	const u32 col = delta % bw;
+	const u32 row = delta / bw;
+	// A zero-extent view still occupies the page its base names.
+	const u32 cols = (view_page_cols == 0) ? 1 : view_page_cols;
+	const u32 rows = (view_page_rows == 0) ? 1 : view_page_rows;
+	if (col + cols > bw)
+		return GSTileContainRefusal::Column;
+
+	const u32 end_row = row + rows;
+	const u32 budget = (page_budget == 0 || page_budget > GS_MAX_PAGES) ? GS_MAX_PAGES : page_budget;
+	// Divided rather than multiplied so the row count cannot overflow the product on the way to
+	// being refused for being too large.
+	if (end_row > budget / bw)
+		return GSTileContainRefusal::Extent;
+	if (container.bp / 32 + end_row * bw > GS_MAX_PAGES)
+		return GSTileContainRefusal::Wrap;
+
+	out.col = col;
+	out.row = row;
+	out.end_row = end_row;
+	out.x = static_cast<s32>(col * 64);
+	out.y = static_cast<s32>(row * gsTilePageHeight(container.psm));
+	return GSTileContainRefusal::Admitted;
+}
+
+/// A view's page footprint from the extent its draws reach, measured from the surface's own origin
+/// (a draw at x=600 of width 40 makes the view 640 wide, not 40).
+///
+/// Every format the target pool backs has 64-pixel-wide pages, so the column count is the same
+/// arithmetic for all of them; the row count is not, and takes the page height of the view's own
+/// PSM. Clamped to the stride, because a view wider than its own stride wraps rather than
+/// overflowing -- the column clause below is about where it STARTS, not about how wide it is.
+constexpr u32 gsTileContainPageCols(u32 width, u32 bw)
+{
+	if (bw == 0)
+		return 1;
+	const u32 cols = (width + 63) / 64;
+	return (cols == 0) ? 1 : ((cols > bw) ? bw : cols);
+}
+
+constexpr u32 gsTileContainPageRows(u32 height, u32 psm)
+{
+	const u32 page_height = gsTilePageHeight(psm);
+	if (page_height == 0)
+		return 1;
+	const u32 rows = (height + page_height - 1) / page_height;
+	return (rows == 0) ? 1 : rows;
+}
+
+/// The effective containment page budget: what EmuCore/GS/TileGpuContainPageBudget says, clamped to
+/// what the geometry allows. Zero -- the default -- is the whole of GS memory.
+constexpr u32 gsTileGpuContainPageBudget(int setting)
+{
+	if (setting <= 0 || static_cast<u32>(setting) > GS_MAX_PAGES)
+		return GS_MAX_PAGES;
+	return static_cast<u32>(setting);
+}
+
+/// A view folded into a container: the surface that holds it, and where its origin sits in that
+/// surface's pixel space. The offset is what the draw's XYOFFSET, scissor and rect are translated
+/// by; (0, 0) is a view that IS its container.
+struct GSTileContainedView
+{
+	GSTileSurfaceId id = kGSTileNoSurface;
+	s32 x_off = 0;
+	s32 y_off = 0;
+};
+
+/// layout.pack() -> the container that holds that layout's view.
+///
+/// Renderer-side rather than a second index in GSVramModel: the model's layout map is a bijection
+/// and its Destroy erases exactly one key, and making it a multimap would put the whole invariant
+/// suite at risk for a lookup only this road performs. An entry outlives the frame that installed
+/// it -- the fold has to be STICKY or a view drifts between containers with the draw order, which
+/// costs a surface create and a re-seed every frame -- and dies with its container.
+using GSTileViewAliasTable = std::unordered_map<u32, GSTileContainedView>;
+
 /// The effective specialization bind budget: what EmuCore/GS/TileGpuMaxSpecializationBinds says, or
 /// the device's own answer where it says nothing. Zero out means NO GUARD.
 ///
