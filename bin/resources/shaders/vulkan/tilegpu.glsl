@@ -347,9 +347,10 @@
 #define TILEGPU_BYTE_W32 (TILEGPU_BYTE_D32 || TILEGPU_BYTE_IDXHI)
 #define TILEGPU_BYTE_UNPACK (TILEGPU_BYTE_D32 || TILEGPU_BYTE_PAL)
 
-// Matches the executor's StateRow byte-for-byte (std430, 160 bytes). The transform and the scissor
-// are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
-// are pipeline state, carried for layout parity, not consumed by either.
+// Matches the executor's StateRow byte-for-byte (std430, 144 bytes). The transform is read in the
+// vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test are pipeline
+// state, carried for layout parity, not consumed by either. The GS scissor is NOT here: it is a
+// vkCmdSetScissor before each indirect call, which is command state and not shader state.
 struct StateRow
 {
 	vec2 vertex_scale;
@@ -378,9 +379,6 @@ struct StateRow
 	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
 	uint epoch;        // page-table epoch this draw's byte reads go through
 	uint date;         // destination-alpha test: 0 off, 1 = pass where alpha bit 7 clear (DATM 0), 2 = set (DATM 1)
-	int ofx, ofy;      // XYOFFSET, 12.4 fixed: the vertex-to-pixel origin the scissor is in
-	int sc_x0, sc_y0;  // the GS scissor in target pixels, [x0, x1) x [y0, y1)
-	int sc_x1, sc_y1;
 	uint fge;          // 1 = PRIM.FGE: walk the fragment's RGB toward the fog colour by the vertex F
 	uint fogcol;       // FOGCOL packed 0x00BBGGRR
 	uint atst;         // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
@@ -411,8 +409,11 @@ struct StateRow
 	                   // destination alpha. A PSMCT24 destination's C=Ad arrives as the constant 0x80
 	                   // (exactly 1.0); the enable bit is zero on every draw the executor blends for.
 	uint fbmsk;        // FBMSK reduced to the frame format's stored bits, as a per-channel KEEP mask
-	                   // on the expanded RGBA8 bytes. These two took the row's explicit tail padding;
-	                   // the C++ side's assert is what keeps the row 160 bytes on both strides.
+	                   // on the expanded RGBA8 bytes.
+	uint pad0, pad1;   // explicit tail padding, and it has to be explicit: alignas(16) rounds the
+	                   // C++ row up to 144 while std430's array stride over the fields above would
+	                   // be 136, and two sides on different strides read every row but the first
+	                   // from the wrong place. The C++ side's asserts are what keep them in step.
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -445,12 +446,12 @@ layout(location = 3) out vec2 v_uv;      // UV in texels (12.4 -> texel), for th
 layout(location = 4) flat out uint v_row; // this vertex's state row, so the fragment stage reads it
 layout(location = 5) out float v_fog;    // fog factor F/255, interpolated across the primitive
 
-#if TILEGPU_VS_CLIP
-// Declared only on the clip-plane scissor road. A module that names this array names the SPIR-V
-// ClipDistance capability, which a driver without shaderClipDistance may refuse outright -- so the
-// other road leaves the declaration out rather than writing zeros into it.
-out float gl_ClipDistance[4];
-#endif
+// The GS scissor is not in this stage. It is a vkCmdSetScissor before each indirect call, which is
+// what the silicon does: an integer rectangle test on rasterized pixels, with the primitive's
+// interpolation left alone. The clip-plane road this file used to carry did the test geometrically
+// -- it re-interpolated a cut primitive from its clipped vertices, so a fragment well inside the
+// rectangle could take an attribute value a ULP off the unclipped plane's, differently per GPU
+// vendor. See ExecuteTileGpuPassPlan in GSDeviceVK.cpp for the call-cutting the scissor now costs.
 
 void main()
 {
@@ -473,22 +474,6 @@ void main()
 	v_fog = a_f.r; // GSVertex::FOG holds F in its low byte, so the unpacked .r is F/255
 	// Point topology reads gl_PointSize; a GS point covers one pixel. Ignored for line/triangle.
 	gl_PointSize = 1.0f;
-
-#if TILEGPU_VS_CLIP
-	// The GS scissor as four clip planes in target pixel space: a pixel centre c is inside
-	// [x0, x1) exactly when c - x0 > 0 and x1 - c > 0, and the same in y. Per draw from the state
-	// row, so one indirect call carries any number of scissors -- SotC draws its full-screen
-	// post sprites eight times under eight column scissors.
-	//
-	// The other road cuts the indirect call at a scissor change and sets a Vulkan scissor per call
-	// instead. It rejects exactly these fragments: Vulkan tests the pixel's integer coordinate
-	// against the same half-open interval these planes select.
-	vec2 pix = (vec2(a_xy) - vec2(float(sr.ofx), float(sr.ofy))) * (1.0f / 16.0f);
-	gl_ClipDistance[0] = pix.x - float(sr.sc_x0);
-	gl_ClipDistance[1] = float(sr.sc_x1) - pix.x;
-	gl_ClipDistance[2] = pix.y - float(sr.sc_y0);
-	gl_ClipDistance[3] = float(sr.sc_y1) - pix.y;
-#endif
 }
 
 #endif

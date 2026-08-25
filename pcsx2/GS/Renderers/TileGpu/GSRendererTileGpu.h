@@ -954,7 +954,7 @@ private:
 	// --- the pass plan the executor consumes --------------------------------------------
 	// One row of the executor's indexed state table: the per-draw state a shader reads via
 	// gl_InstanceIndex (the indirect draw's first_instance). Its layout is this backend's
-	// contract with its own shader (tilegpu.glsl's StateRow, std430, 80 bytes), opaque to the
+	// contract with its own shader (tilegpu.glsl's StateRow, std430, 144 bytes), opaque to the
 	// executor (which stages it by state_stride). The transform is the HW tfx VertexScale/
 	// VertexOffset reused verbatim; the texture block is wrong-fast — direct 32-bit and
 	// paletted, MODULATE/DECAL, nearest — and grows to the rest of the fixed-function state.
@@ -978,9 +978,6 @@ private:
 		u32 pal_offset;         // word offset of this draw's palette in the frame stream
 		u32 epoch;              // page-table epoch this draw's byte reads go through
 		u32 date;               // destination-alpha test: 0 off, 1 pass on alpha bit 7 clear, 2 on set
-		s32 ofx, ofy;           // XYOFFSET, 12.4 fixed: the vertex-to-pixel origin the scissor is in
-		s32 sc_x0, sc_y0;       // the GS scissor in target pixels, [x0, x1) x [y0, y1) -- four VS clip planes
-		s32 sc_x1, sc_y1;
 		u32 fge;                // 1 = PRIM.FGE, the fragment's colour walks toward the fog colour
 		u32 fogcol;             // FOGCOL packed 0x00BBGGRR
 		u32 atst;               // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
@@ -1014,26 +1011,25 @@ private:
 		// 2 constant), 8-15 = the constant, bit 16 = blend at all, 17 = COLCLAMP is WRAP rather than
 		// clamp, 18 = PABE, 20 = quantise to the 16-bit frame's bits, 21 = AFAIL keeps the
 		// destination alpha. A PSMCT24 destination's C=Ad is packed as the constant 0x80 (exactly
-		// 1.0). The enable bit is zero on every draw the executor blends for. It took one of the
-		// row's two explicit tail padding words -- see below on why the tail is where a new field
-		// goes.
+		// 1.0). The enable bit is zero on every draw the executor blends for.
 		u32 blend;
 		// FRAME.FBMSK reduced to the bits the frame FORMAT actually stores (FBMSK & fmsk), as a
 		// per-channel KEEP mask on the target's expanded RGBA8 bytes. A 16-bit frame's mask lands
 		// here unchanged because the console packs FBMSK by the same 5551 packing as the colour, so
 		// bit k of a stored channel is bit k of the expanded byte. Read only by a draw that reads
 		// its destination; the channel-granular half of the same mask stays in the pipeline.
-		//
-		// It took the row's other explicit tail padding word. The padding was there because
-		// alignas(16) rounds the C++ row to 160 while std430's array stride over the fields above
-		// would have been 152, and two sides on different strides read every row but the first from
-		// the wrong place. Two real fields hold the stride at 160 just as well as two dead ones, and
-		// the assert below is what says the row still ENDS there.
 		u32 fbmsk;
+		// Explicit tail padding, and it has to be explicit: alignas(16) rounds the C++ row up to
+		// 144 while std430's array stride over the fields above is 136, and two sides on different
+		// strides read every row but the first from the wrong place. The asserts below are what
+		// say the row still ends where the shader thinks it does. A new field goes HERE, spending
+		// a padding word rather than appending past it -- which is what the scissor's four words
+		// and the pixel origin's two did in reverse when the clip-plane road was deleted.
+		u32 pad0, pad1;
 	};
-	static_assert(sizeof(StateRow) == 160, "TileGpu StateRow must be 160 bytes to match tilegpu.glsl std430");
-	static_assert(offsetof(StateRow, blend) == 152,
-		"TileGpu StateRow must end at 160 bytes with no implicit tail padding -- std430's stride would differ");
+	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
+	static_assert(offsetof(StateRow, pad0) == 136,
+		"TileGpu StateRow must end at 144 bytes with no implicit tail padding -- std430's stride would differ");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -2342,18 +2338,16 @@ private:
 		u32 specguard_passes = 0;
 		u32 specguard_draws = 0;
 
-		// The GS scissor, priced as a device question. It rides as four vertex-shader clip planes,
-		// which is a device FEATURE (shaderClipDistance) not every driver offers -- the Mali blob on
-		// the RG477V does not. The alternative that needs no feature is a per-call vkCmdSetScissor,
-		// and what it costs is one more indirect call wherever the scissor changes inside a run that
-		// nothing else cuts. These columns are that price, counted off the plan the executor
-		// actually submits and against the executor's own cut rule.
+		// The GS scissor, priced. It is a per-call vkCmdSetScissor on every device, and what that
+		// costs is one more indirect call wherever the scissor changes inside a run nothing else
+		// cuts. These columns are that price, counted off the plan the executor actually submits
+		// and against the executor's own cut rule.
 		u32 scissor_draws = 0;   // draws the plan carries
 		u32 scissor_subrect = 0; // ...whose scissor is narrower than their colour target
 		u32 scissor_cuts = 0;    // ...and rejects part of that draw's own geometry
 		u32 scissor_distinct = 0;          // distinct scissor rects, summed over the frame's passes
 		u32 scissor_pass_distinct_max = 0; // ...the most any one pass of this frame carried
-		u32 scissor_extra_calls = 0;       // calls a per-call scissor adds: a cut nothing else makes
+		u32 scissor_extra_calls = 0;       // calls the scissor adds: a cut nothing else makes
 
 		// The As blend factor, priced as a device question, the same way the scissor above is. It
 		// rides as a second fragment output (SRC1), which is a device FEATURE (dualSrcBlend) the Mali

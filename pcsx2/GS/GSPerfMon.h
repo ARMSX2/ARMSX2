@@ -71,13 +71,10 @@ public:
 		TileGpuDepthPolicySwitches,
 		TileGpuDepthPassesSaved,
 
-		// The TileGpu GS scissor, priced as a device question. The scissor rides as four
-		// vertex-shader clip planes, which needs shaderClipDistance; the road for a device without
-		// it sets the scissor per indirect call instead. ScissorDraws is the denominator,
-		// ScissorCuts the draws the scissor actually rejects part of, and ScissorExtraCalls the
-		// per-call road's whole price -- the boundaries where the scissor changes and neither the
-		// pipeline run nor the sampled-binding key already cut. Counted on both roads, so a run on
-		// either says what the other would have cost.
+		// The TileGpu GS scissor, priced. It is a vkCmdSetScissor before each indirect call.
+		// ScissorDraws is the denominator, ScissorCuts the draws the scissor actually rejects part
+		// of, and ScissorExtraCalls the whole price -- the boundaries where the scissor changes and
+		// neither the pipeline run nor the sampled-binding key already cut.
 		TileGpuScissorDraws,
 		TileGpuScissorCuts,
 		TileGpuScissorExtraCalls,

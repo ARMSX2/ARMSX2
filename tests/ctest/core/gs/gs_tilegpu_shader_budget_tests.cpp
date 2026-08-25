@@ -496,9 +496,9 @@ TEST(GSTileGpuShaderBudget, TheScalarizedVectorAndFormCompiles)
 	// The last argument is the workaround; everything before it is the a650 profile the rest of this
 	// file measures, so the two prologues differ in exactly one define.
 	const std::string plain = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
-	                          GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, false);
+	                          GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false);
 	const std::string scalar = kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
-	                           GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, true);
+	                           GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true);
 
 	static constexpr u32 kAllRoads = GSDevice::kGSTileGpuRoadMaskAll;
 	static constexpr u32 kAllArms = GSDevice::kGSTileGpuTexelMaskAll;
@@ -540,7 +540,7 @@ TEST(GSTileGpuShaderBudget, TheScalarizedVectorAndDefineIsTheOneTheShaderReads)
 	// The device's half, both ways. Off is the default so a caller that never heard of the workaround
 	// emits the program every other driver already gets.
 	const std::string off = GSTileGpuShaderVariant::DeviceDefines(true, true, true);
-	const std::string on = GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true, true);
+	const std::string on = GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, true);
 	EXPECT_NE(off.find("#define TILEGPU_SCALARIZE_VECTOR_AND 0\n"), std::string::npos);
 	EXPECT_NE(on.find("#define TILEGPU_SCALARIZE_VECTOR_AND 1\n"), std::string::npos);
 
@@ -560,4 +560,32 @@ TEST(GSTileGpuShaderBudget, TheScalarizedVectorAndDefineIsTheOneTheShaderReads)
 	EXPECT_EQ(uses, 11u) << "tilegpu.glsl names tilegpu_and " << uses
 						 << " times, not the expected 3 overloads + 1 macro + 7 call sites. If a vector bitwise AND "
 							"was added, wrap it and update this count; if one was removed, just update the count.";
+}
+
+// The scissor left the shader. It is a vkCmdSetScissor before each indirect call on every device,
+// because that is the test the GS applies: an integer rectangle over rasterized pixels, with the
+// primitive's interpolation untouched. The clip-plane road that used to serve devices with
+// shaderClipDistance did it geometrically, which re-interpolates a cut primitive and moves shaded
+// values by amounts that differ per GPU vendor -- so two devices could not be expected to agree on
+// a frame.
+//
+// Pinned as text because the failure mode of a partial revival is silent: an `#if` on a name
+// nothing defines is zero, so a shader that regrew the block would simply never write the planes,
+// and a define nothing reads would sit in the block unnoticed.
+TEST(GSTileGpuShaderBudget, TheScissorIsNotInTheShaderAtAll)
+{
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	EXPECT_EQ(body.find("gl_ClipDistance"), std::string::npos)
+		<< "tilegpu.glsl names gl_ClipDistance. The scissor is a Vulkan scissor per indirect call; a "
+		   "vertex module that merely DECLARES the SPIR-V ClipDistance capability is also one a driver "
+		   "without shaderClipDistance may refuse.";
+	EXPECT_EQ(body.find("TILEGPU_VS_CLIP"), std::string::npos) << "tilegpu.glsl still reads the deleted clip define";
+
+	// ...and the device's half: the block it injects must not carry the define either, whatever
+	// arguments it is given.
+	const std::string defines = GSTileGpuShaderVariant::DeviceDefines(true, true, true);
+	EXPECT_EQ(defines.find("TILEGPU_VS_CLIP"), std::string::npos)
+		<< "DeviceDefines still emits the deleted clip define";
 }

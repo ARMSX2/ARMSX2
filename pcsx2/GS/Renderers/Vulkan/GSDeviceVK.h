@@ -64,7 +64,6 @@ public:
 		bool vk_ext_descriptor_indexing : 1; ///< Indexed state tables addressed as storage-buffer arrays (TileGpu).
 		bool vk_khr_draw_indirect_count : 1; ///< Count-buffer indirect draws (TileGpu nicety, not part of the capability gate).
 		bool tilegpu_device_capable : 1; ///< The whole TileGpu device contract (descriptor indexing + indirect draw stream) is present.
-		bool tilegpu_clip_scissor : 1; ///< The scissor rides as vertex clip planes; clear = a Vulkan scissor per indirect call.
 		bool tilegpu_bindless_targets : 1; ///< ...and dynamic indexing of a sampled-image array, which the rule-2 tap needs to bind targets.
 		bool tilegpu_self_read : 1; ///< ...and rasterization-order colour access, which the in-pass destination read needs.
 		bool tilegpu_dual_source : 1; ///< ...and dual-source blending, which the As blend factor rides as an index-1 output.

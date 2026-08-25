@@ -1419,21 +1419,6 @@ struct Pcsx2Config
 		// and reads it ONCE at construction. Dev only.
 		int TileGpuMaxSpecializationBinds = 0;
 
-		// Which road TileGpu applies the per-draw GS scissor through. Zero -- the default --
-		// asks the device: four vertex-shader clip planes where it offers shaderClipDistance,
-		// a per-call vkCmdSetScissor where it does not. A POSITIVE value forces the per-call
-		// road anywhere; a negative one asks for the clip planes, which a device without the
-		// feature still cannot give, so the per-call road stands there regardless.
-		//
-		// The two roads reject the same fragments: a GS scissor is integer pixel bounds and
-		// Vulkan's scissor test is the same half-open interval the clip planes select, so this
-		// is a byte-identity A/B and the force value exists to run it on a device that would
-		// otherwise never take the second road. What differs is the submission -- the per-call
-		// road cuts an indirect call wherever the scissor changes inside a run, which over the
-		// corpus is nothing at all on seventeen of nineteen dumps and 229 calls a frame on
-		// Shadow of the Colossus. Dev only.
-		int TileGpuScissorRoad = 0;
-
 		// Which road TileGpu's As blend factor takes. Zero -- the default -- asks the device: a
 		// second fragment output at index 1 where it offers dualSrcBlend, the alpha carrier where
 		// it does not. A POSITIVE value forces the carrier roads anywhere; a negative one asks for

@@ -579,12 +579,6 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	// renderers. CreateDevice folds these into the TileGpu capability gate.
 	m_device_features.multiDrawIndirect = available_features.multiDrawIndirect;
 	m_device_features.drawIndirectFirstInstance = available_features.drawIndirectFirstInstance;
-	// ...and shaderClipDistance, where the device has it: the per-draw GS scissor rides as four
-	// vertex-shader clip planes, which is the cheap road because one indirect call then carries any
-	// number of scissors. It is NOT part of the capability gate -- a device without it takes the
-	// per-call scissor road instead (gsTileGpuScissorRoad) -- so this enables what is there and
-	// CreateDevice decides which road that buys.
-	m_device_features.shaderClipDistance = available_features.shaderClipDistance;
 	// ...and shaderSampledImageArrayDynamicIndexing: tilegpu.glsl's rule-2 tap reads ONE
 	// texelFetch out of the per-pass sampled-target array at an index that comes from the draw's
 	// state row. A chain of literal indices needs no feature, but it is eight fetch sites and the
@@ -901,9 +895,9 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// descriptor-indexing sub-features above and an indirect draw stream that carries a per-draw
 		// firstInstance. Recorded once.
 		//
-		// Dual-source blending LEFT this contract when the road below was built, for the same reason
-		// shaderClipDistance did: there is now a second road to the As blend factor and every device
-		// can take it. It was a real exclusion while it lasted -- tilegpu.glsl declared a second
+		// Dual-source blending LEFT this contract when the road below was built: there is now a
+		// second road to the As blend factor and every device can take it. It was a real exclusion
+		// while it lasted -- tilegpu.glsl declared a second
 		// colour output at index 1 unconditionally and the blend table named SRC1_* factors, which
 		// Vulkan forbids outright when dualSrcBlend is false, so a device without it did not render
 		// badly, it failed pipeline creation on the first draw.
@@ -916,33 +910,28 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
 													   m_device_features.multiDrawIndirect == VK_TRUE &&
 													   m_device_features.drawIndirectFirstInstance == VK_TRUE;
-		// The scissor is NOT part of that contract, because there are two roads to it and every
-		// device can take one of them. shaderClipDistance buys the cheaper one -- four clip planes
-		// out of the state row, so one indirect call carries any number of scissors. Without it the
-		// executor sets a Vulkan scissor per call and cuts the call where the scissor changes, which
-		// rejects exactly the same fragments and costs, over the corpus, nothing at all on seventeen
-		// of nineteen dumps. Decided once here, because the vertex module compiled below has to
-		// declare the ClipDistance capability or not, and a module that declares it is a module a
-		// driver without the feature may refuse.
-		m_optional_extensions.tilegpu_clip_scissor =
-			gsTileGpuScissorRoad(GSConfig.TileGpuScissorRoad, m_device_features.shaderClipDistance == VK_TRUE) ==
-			GSTileGpuScissorRoad::ClipPlanes;
-		// ...and the As blend factor, decided here for the same reason: the fragment module either
-		// declares an index-1 output or it does not, and a module that declares one is a module a
-		// driver without the feature may refuse. Three states as the scissor road has -- zero asks
-		// the device, positive forces the feature-free roads anywhere, negative asks for the second
-		// output, which a device without dualSrcBlend still cannot give.
+		// The scissor is not part of that contract either, and needs no device feature: it is a
+		// vkCmdSetScissor before each indirect call on every device, with the call cut wherever the
+		// rectangle changes. The vertex-clip-plane road it replaced was cheaper (one call could
+		// carry any number of scissors) but it was not the same test -- clipping is geometric, so a
+		// cut primitive is re-interpolated from its clipped vertices and a fragment well inside the
+		// rectangle can take an attribute value a ULP off the unclipped plane's, by float rules that
+		// differ per vendor. The GS scissor is an integer rectangle test on rasterized pixels and
+		// touches nothing else, which is what a Vulkan scissor is.
+		//
+		// ...and the As blend factor, which does need one and is decided here: the fragment module
+		// either declares an index-1 output or it does not, and a module that declares one is a
+		// module a driver without the feature may refuse. Three states -- zero asks the device,
+		// positive forces the feature-free roads anywhere, negative asks for the second output,
+		// which a device without dualSrcBlend still cannot give.
 		m_optional_extensions.tilegpu_dual_source =
 			gsTileGpuDualSourceRoad(GSConfig.TileGpuDualSrcRoad, m_device_features.dualSrcBlend == VK_TRUE);
 		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s, dual-src=%s), "
-					   "scissor road %s (clip-distance=%s, TileGpuScissorRoad=%d), As factor road %s "
-					   "(TileGpuDualSrcRoad=%d).",
+					   "As factor road %s (TileGpuDualSrcRoad=%d).",
 			m_optional_extensions.tilegpu_device_capable ? "present" : "absent",
 			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
 			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no",
 			m_device_features.dualSrcBlend ? "yes" : "no",
-			m_optional_extensions.tilegpu_clip_scissor ? "clip planes" : "per-call scissor",
-			m_device_features.shaderClipDistance ? "yes" : "no", GSConfig.TileGpuScissorRoad,
 			m_optional_extensions.tilegpu_dual_source ? "second output" : "alpha carrier",
 			GSConfig.TileGpuDualSrcRoad);
 
@@ -6703,8 +6692,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	const std::string defines =
 		(m_tilegpu_tex ? form_defines : std::string()) +
 		GSTileGpuShaderVariant::DeviceDefines(m_tilegpu_tex, static_byte_sel,
-			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_clip_scissor,
-			m_optional_extensions.tilegpu_dual_source, scalarize_vec_and);
+			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_dual_source,
+			scalarize_vec_and);
 	// Kept for the session: a pass's fragment module is compiled from this plus its variant defines,
 	// on first use of that (road, texel-arm) pair. Re-reading the file instead would risk compiling
 	// two variants from two different revisions of the shader, since the runtime shader tree is a
@@ -7640,17 +7629,17 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
 	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
 	// and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology run rather than one
-	// vkCmdDrawIndexed per draw. The state row carries the transform, the scissor, the texture
-	// block and the per-draw tests. The shader's StateRow is a fixed 160-byte layout, so
-	// state_stride must match it exactly.
+	// vkCmdDrawIndexed per draw. The state row carries the transform, the texture block and the
+	// per-draw tests; the scissor is a command, not a row field. The shader's StateRow is a fixed
+	// 144-byte layout, so state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
 	const bool pipelines_ok =
 		m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE && m_tilegpu_state_descriptor_set != VK_NULL_HANDLE;
 	const bool have_geometry = !plan.draws.empty() && plan.topologies.size() == plan.draws.size() &&
 							   plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-							   plan.state_table != nullptr && plan.state_stride == sizeof(float) * 40 &&
-							   plan.state_count > 0;
+							   plan.state_table != nullptr && plan.state_stride == sizeof(float) * 36 &&
+							   plan.scissors.size() == plan.draws.size() && plan.state_count > 0;
 	const bool can_draw = pipelines_ok && have_geometry;
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path
@@ -8552,9 +8541,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			const VkViewport vp{0.0f, 0.0f, static_cast<float>(geom.viewport_width),
 				static_cast<float>(geom.viewport_height), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
-			// The whole render area. On the clip-plane road that is the pass's scissor for good --
-			// the GS scissor is in the vertex stage. On the per-call road it is only the opening
-			// value, replaced before each indirect call by that call's own rectangle.
+			// The whole render area, as the opening value only: every indirect call below replaces
+			// it with that call's own rectangle. It still has to be set, because the pass's
+			// non-draw work (the seeds, the readbacks, the materialise blits) runs against it.
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
 			vkCmdSetScissor(cmd, 0, 1, &sc);
 
@@ -8701,14 +8690,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				}
 			}
 			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
-			// The per-call scissor road: the GS scissor is not in the vertex stage on this device, so
-			// it ends an indirect call the way the sampled-binding key does -- same reason in shape,
-			// different reason in kind. A slot has to be dynamically uniform; a scissor is not shader
-			// state at all, it is one command, and one command cannot say two rectangles. The cut is
-			// the whole cost: same pipeline, same fragments, one more vkCmdDrawIndexedIndirect and
-			// one vkCmdSetScissor wherever the rectangle changes.
-			const bool per_call_scissor =
-				!m_optional_extensions.tilegpu_clip_scissor && plan.scissors.size() == plan.draws.size();
 			// A plan that carries no variant stream leaves every run on its pass's union masks, which
 			// is what this loop did before the variant joined the run key.
 			const bool have_variants = plan.variant_keys.size() == plan.draws.size();
@@ -8785,7 +8766,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							n++;
 						count = n;
 					}
-					if (per_call_scissor)
+					// The GS scissor ends an indirect call the way the sampled-binding key does --
+					// same shape, different reason. A slot has to be dynamically uniform; a scissor
+					// is not shader state at all, it is one command, and one command cannot say two
+					// rectangles. The cut is the whole cost: same pipeline, same fragments, one more
+					// vkCmdDrawIndexedIndirect and one vkCmdSetScissor wherever the rectangle
+					// changes. Measured at about 0.054 ms a frame on the Adreno 650.
 					{
 						const GSVector4i& want = plan.scissors[first];
 						u32 n = 1;

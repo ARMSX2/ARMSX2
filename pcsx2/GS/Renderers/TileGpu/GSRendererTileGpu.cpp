@@ -4759,7 +4759,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// runs on the pair, and the state table's layout is not part of that contract
 		// (GSTileGpuPassPlan::bind_keys).
 		m_plan_bind_keys.resize(m_plan_pending.size());
-		// ...and the per-draw GS scissor, which one road needs as a command rather than as state.
+		// ...and the per-draw GS scissor, which is a command rather than shader state.
 		m_plan_scissors.resize(m_plan_pending.size());
 		// ...and the per-draw fragment variant, sized here and filled by the grouping below, which is
 		// where a draw's pass -- and so the DATE road its pass provided -- is finally known.
@@ -4793,12 +4793,6 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.pal_offset = pd.pal_offset;
 			sr.epoch = pd.epoch;
 			sr.date = pd.date;
-			sr.ofx = pd.ofx;
-			sr.ofy = pd.ofy;
-			sr.sc_x0 = pd.scissor.x;
-			sr.sc_y0 = pd.scissor.y;
-			sr.sc_x1 = pd.scissor.z;
-			sr.sc_y1 = pd.scissor.w;
 			sr.fge = pd.fge ? 1u : 0u;
 			sr.fogcol = pd.fogcol;
 			sr.atst = pd.atst;
@@ -4825,10 +4819,15 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// ...and what to do with the As blend factor where there is no second output to put it
 			// in. Zero on every draw on a device that has one, so the arm is not even compiled there.
 			sr.blend |= pd.dualsrc_bits;
+			// The rows are reused frame to frame, so the tail padding is written rather than left
+			// holding the previous frame's bytes: the shader never reads it, but a state buffer
+			// whose dead words differ between two runs of the same dump is a capture diff nobody
+			// can dismiss at a glance.
+			sr.pad0 = 0;
+			sr.pad1 = 0;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
-			// The same rectangle the four state-row fields above carry, handed to the executor as
-			// its own stream: on a device without shaderClipDistance it is a Vulkan scissor and a
-			// cut in the indirect run, neither of which the state table can express.
+			// The draw's GS scissor, handed to the executor as its own stream: it is a Vulkan
+			// scissor and a cut in the indirect run, neither of which the state table can express.
 			m_plan_scissors[i] = pd.scissor;
 
 			// The scissor census's per-draw half. `dim` is this draw's colour target, so a scissor
@@ -5130,12 +5129,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					m_frame.variant_extra_calls++;
 			}
 
-			// ...and the same arithmetic for the SCISSOR, which is not a cut today at all: it rides as
-			// four vertex clip planes, so one indirect call carries any number of scissors. A device
-			// without shaderClipDistance has to set it per call instead, and this is what that costs --
-			// the boundaries where the scissor changes and the pipeline run and the sampled-binding key
-			// both do not. Counted whichever road this device took, so the two arms report the same
-			// number off the same frame.
+			// ...and the same arithmetic for the SCISSOR, which is a cut on every device: the
+			// executor sets it per indirect call, so it ends a call the way the sampled-binding key
+			// does. This is what that costs -- the boundaries where the scissor changes and the
+			// pipeline run and the sampled-binding key both do not.
 			m_scissor_keys.clear();
 			for (u32 d = i; d < j; d++)
 			{
