@@ -25,7 +25,7 @@ enum StikDebugLauncher {
             "stikdebug://enable-jit?bundle-id=\(encodedBundleID)",
             "stikjit://enable-jit?bundle-id=\(encodedBundleID)",
             "stikdebug://",
-            "stosdebug://enableJIT?bundleId=\(encodedBundleID)&appName=\(appName)&script=\(encodedScript)",
+            "stosdebug://enableJIT?bundleId=\(encodedBundleID)&appName=\(appName)&relaunchApp=false&script=\(encodedScript)",
             "stosdebug://"
                     ].compactMap(URL.init(string:))
 
