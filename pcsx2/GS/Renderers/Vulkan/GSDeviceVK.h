@@ -753,6 +753,8 @@ private:
 	/// EmuCore/GS/TileGpuSerializeOps is announced once per run, not once per plan: a plan is a frame
 	/// and the line exists so a device log can testify the arm engaged, which one line does.
 	bool m_tilegpu_serialize_announced = false;
+	/// EmuCore/GS/TileGpuPoisonAllocations, announced once per run for the same reason.
+	bool m_tilegpu_poison_announced = false;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
 	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full module: the eager pipelines and the fallback
 	// One fragment module per (road mask, texel-arm mask) a pass has actually asked for, compiled on

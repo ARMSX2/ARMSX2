@@ -7663,6 +7663,14 @@ bool GSDeviceVK::CompileTileGpuClutGatherPipeline(u32 size_idx)
 	return true;
 }
 
+// EmuCore/GS/TileGpuPoisonAllocations: one loud colour per allocation class, so that a read of
+// memory nothing ever wrote is deterministic AND self-identifying -- the colour names the class
+// that was under-covered. The ring value is a raw dword because vkCmdFillBuffer takes one; RGBA8
+// is little-endian on the byte road, so 0xFFFF00FF is bytes FF 00 FF FF = opaque magenta.
+static constexpr u32 kTileGpuPoisonRingSlot = 0xFFFF00FFu;                                 // magenta
+static constexpr VkClearColorValue kTileGpuPoisonSource = {{0.0f, 1.0f, 1.0f, 1.0f}};      // cyan
+static constexpr VkClearColorValue kTileGpuPoisonSnapshot = {{1.0f, 1.0f, 0.0f, 1.0f}};    // yellow
+
 bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 {
 	if (!m_optional_extensions.tilegpu_device_capable)
@@ -7757,6 +7765,24 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		m_tilegpu_indirect_stream_buffer.CommitMemory(indirect_bytes);
 	}
 
+	// The allocation-poison lever, EmuCore/GS/TileGpuPoisonAllocations. Off is the shipped position
+	// and records NOTHING: every site below is behind this flag, so the command stream at the
+	// default is the one this executor emitted before the lever existed. Announced once per run,
+	// not once per plan -- a plan is a frame, and the line exists so a device log can testify the
+	// arm engaged, which one line does.
+	const bool poison = GSConfig.TileGpuPoisonAllocations;
+	if (poison && !m_tilegpu_poison_announced)
+	{
+		m_tilegpu_poison_announced = true;
+		Console.WriteLn("TileGpu allocation poison ENGAGED (EmuCore/GS/TileGpuPoisonAllocations): every GPU "
+						"allocation TileGpu owns is filled with a per-class sentinel as it enters service -- "
+						"MAGENTA an un-composed byte-slab ring slot, CYAN a region of a materialised source "
+						"image the build never covered, YELLOW a region of the per-pass snapshot scratch the "
+						"copy never covered. A sentinel colour in a frame is a read of memory nothing wrote, "
+						"and the colour names the class. The persistent target pool and the host-visible "
+						"stream buffers are deliberately not poisoned. Diagnostic only.");
+	}
+
 	// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
 	//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries]
 	//   [seed page masks][writeback keep masks][palettes]
@@ -7804,6 +7830,83 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			for (u32 e = rp.epoch_first; e <= e1; e++)
 				tables[e * GS_MAX_PAGES + rp.page] = slot_words;
 		}
+
+		// Poison class A -- magenta over every slot this plan left for the writeback compute.
+		//
+		// A slot the renderer named a source for was memcpy'd whole just above, so it is covered by
+		// construction and is skipped. An UNPREFILLED slot is covered only if the writebacks this
+		// frame emits reach all 32 of its blocks, which GSRendererTileGpu::EnsureRingSlot computes
+		// rather than knows; a block no writeback reached reads whatever the previous tenant of this
+		// ring offset left, because only the zero slot above is memset. Magenta turns that from a
+		// stale texel into a colour that names its own cause.
+		//
+		// ⚠️ The fill MUST skip the prefilled slots. The prefill is a host write to mapped memory and
+		// the fill is a GPU transfer; record order does not order those two, and a submission's host
+		// writes are all visible before any of its commands execute -- so a fill over a prefilled
+		// slot erases real bytes on the GPU timeline every time, not occasionally. The zero slot is
+		// skipped for a different reason: it is deliberately zero, and a page the plan never staged
+		// reads it on purpose, so poisoning it would report the design as a defect.
+		if (poison && !plan.ring_pages.empty())
+		{
+			// Read here, not from `cmd`: that is declared below, and the reservation retry above can
+			// have swapped the command buffer out from under an earlier read.
+			const VkCommandBuffer pcmd = GetCurrentCommandBuffer();
+			const VkBuffer ring = m_tilegpu_vram_stream_buffer.GetBuffer();
+			const VkDeviceSize base_bytes = m_tilegpu_vram_stream_buffer.GetCurrentOffset();
+			constexpr VkPipelineStageFlags kRingStages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+														 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+														 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			// The pair the CLUT block copy further down records around its own transfer, for the same
+			// reason: ring reads already recorded must finish before the fill overwrites any of it,
+			// and the fill must be visible to every stage that reads the ring after it.
+			const auto fill_barrier = [&](VkPipelineStageFlags src_stage, VkAccessFlags src_access,
+										  VkPipelineStageFlags dst_stage, VkAccessFlags dst_access) {
+				VkBufferMemoryBarrier bmb = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+				bmb.srcAccessMask = src_access;
+				bmb.dstAccessMask = dst_access;
+				bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bmb.buffer = ring;
+				bmb.offset = 0;
+				bmb.size = VK_WHOLE_SIZE;
+				vkCmdPipelineBarrier(pcmd, src_stage, dst_stage, 0, 0, nullptr, 1, &bmb, 0, nullptr);
+			};
+
+			// Adjacent unprefilled slots coalesce into one fill: a plan carries hundreds of ring
+			// pages and most of them are unprefilled on the frames that matter.
+			u32 run_first = 0, run_len = 0, filled_slots = 0;
+			const auto flush_run = [&]() {
+				if (run_len == 0)
+					return;
+				if (filled_slots == 0)
+				{
+					fill_barrier(kRingStages, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+						VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+				}
+				vkCmdFillBuffer(pcmd, ring, base_bytes + static_cast<VkDeviceSize>(1 + run_first) * kPageBytes,
+					static_cast<VkDeviceSize>(run_len) * kPageBytes, kTileGpuPoisonRingSlot);
+				filled_slots += run_len;
+				run_len = 0;
+			};
+			for (u32 i = 0; i < plan.ring_pages.size(); i++)
+			{
+				if (plan.ring_pages[i].src)
+				{
+					flush_run();
+					continue;
+				}
+				if (run_len == 0)
+					run_first = i;
+				run_len++;
+			}
+			flush_run();
+			if (filled_slots != 0)
+			{
+				fill_barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, kRingStages,
+					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+			}
+		}
+
 		table_base_words = base_words + slot_bytes / sizeof(u32);
 
 		u8* const entries = base + slot_bytes + table_bytes;
@@ -7893,6 +7996,27 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (serialize >= 3)
 			WaitForFenceCounter(submitted, GpuWaitCause::Sync);
 		cmd = GetCurrentCommandBuffer();
+	};
+
+	// Poison classes B and C -- one hand-rolled clear, because GSTextureVK::CommitClear pxFailRel's
+	// on a plain sampled texture and the snapshot scratch is one. Records nothing when the lever is
+	// off, and must be called with no render pass open: a clear is a transfer, not an attachment op.
+	//
+	// The state stamp is not bookkeeping. GetLoadOpForTexture turns State::Invalidated into
+	// LOAD_OP_DONT_CARE, and a DONT_CARE load discards this clear before the draw that was supposed
+	// to replace it -- so a fresh image would be poisoned and then un-poisoned in the same op. Dirty
+	// makes the build pass LOAD instead, which is what leaves the sentinel standing over exactly the
+	// region no draw covered. That is the whole question the lever asks.
+	const auto poison_clear = [&](GSTexture* tex, const VkClearColorValue& colour) {
+		if (!poison || !tex)
+			return;
+		pxAssertMsg(m_current_render_pass == VK_NULL_HANDLE, "TileGpu poison clear inside a render pass");
+		GSTextureVK* const vtex = static_cast<GSTextureVK*>(tex);
+		vtex->StampGpuTouch(GetCurrentFenceCounter());
+		vtex->TransitionToLayout(cmd, GSTextureVK::Layout::ClearDst);
+		static constexpr VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+		vkCmdClearColorImage(cmd, vtex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &srr);
+		vtex->SetState(GSTexture::State::Dirty);
 	};
 
 	// Every source into shader-read layout, which is what the descriptors just written promise.
@@ -8035,6 +8159,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					static_cast<GSTextureVK*>(eidx)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
 					static_cast<GSTextureVK*>(epal)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
 
+					// Poison class B, at the head of the build that is about to fill this image. On a
+					// build that RUNS the full-screen triangle below overwrites all of it; what this
+					// catches is the build that does not, and this arm has such a road -- the
+					// descriptor-pool guard further down leaves "a source nobody wrote" in its own
+					// words. Today that source is the pool's previous tenant; with the lever on it is
+					// cyan.
+					poison_clear(dst, kTileGpuPoisonSource);
+
 					// The whole image, one fragment per texel -- an expansion is exactly its index image.
 					const GSVector2i esize = dst->GetSize();
 					const GSVector4i earea = GSVector4i::loadh(esize);
@@ -8162,6 +8294,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// The read first, and its transition is also the execution dependency that orders
 					// whatever earlier pass rendered into the owner ahead of this build.
 					owner->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+
+					// Poison class B, for both kinds this arm serves. Same reasoning as the expand:
+					// the draw covers the whole destination, so the cyan only ever survives where a
+					// build did not happen -- and this arm's descriptor-pool guard is one such road.
+					poison_clear(dst, kTileGpuPoisonSource);
 
 					// The whole image, one fragment per texel: a source is exactly its window.
 					const GSVector2i dsize = dst->GetSize();
@@ -8311,6 +8448,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 					GSTextureVK* const dst = static_cast<GSTextureVK*>(plan.prep_textures[op.target]);
 					EndRenderPass();
+
+					// Poison class B. The materialise is the arm with no mid-build bail-out, so on this
+					// road the cyan is a check on the OTHER side of the contract: an image the source
+					// cache hands to a draw in a frame that queued no build for it at all.
+					poison_clear(dst, kTileGpuPoisonSource);
 
 					// The whole image, one fragment per texel: no scissor to trim to, because a
 					// source is exactly its window.
@@ -8545,6 +8687,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			if (snapshot)
 			{
 				EndRenderPass();
+				// Poison class C, at the fetch and before the copy. The scratch comes out of the
+				// texture pool carrying its previous tenant, and the copy covers only src_rect
+				// intersected with the target -- so anything outside that rect is the tenant, sampled
+				// by the pass as if it were the target's own pixels. Yellow says so out loud.
+				poison_clear(snapshot, kTileGpuPoisonSnapshot);
 				const GSVector4i copy_rect = sc.src_rect.rintersect(GSVector4i(0, 0, ssz.x, ssz.y));
 				CopyRect(rt, snapshot, copy_rect, copy_rect.x, copy_rect.y);
 				static_cast<GSTextureVK*>(snapshot)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);

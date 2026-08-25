@@ -1132,6 +1132,40 @@ struct Pcsx2Config
 					// nothing on a correct road; it is an isolation lever, not a fix.
 					// Fail-closed: off means today's behaviour, unchanged. Dev only.
 					TileGpuStrictMemory : 1,
+					// Fill every GPU allocation TileGpu owns with a loud, per-class
+					// sentinel at the moment it enters service, so a read of memory
+					// nothing ever wrote shows a known colour instead of allocation
+					// dirt -- and the COLOUR names the class that was under-covered.
+					//
+					//   magenta  a byte-slab ring slot, filled when the slot opens for
+					//            a plan and before anything composes it. Prefill,
+					//            writeback compose and the version copies are supposed
+					//            to cover every byte a road then reads.
+					//   cyan     a materialised source image, cleared at create and at
+					//            the head of every rebuild-in-place, before the build
+					//            draw. A sampled region the build never covered shows
+					//            through.
+					//   yellow   the per-pass snapshot scratch, cleared when it is
+					//            fetched from the pool and before its CopyRect. The
+					//            copy covers only the intersected source rect, so
+					//            anything outside it is the pool's previous tenant.
+					//
+					// The companion to the key above and the same case: a proprietary
+					// mobile driver rendering block-shaped garbage that does not repeat
+					// run-to-run, where sync validation is clean. Strict memory asks
+					// whether the read leaves the allocation; this asks whether the read
+					// is INSIDE an allocation nobody wrote. It makes that mechanism
+					// deterministic and self-identifying rather than random -- a
+					// mechanism that reproduces as a fixed colour has been caught, and
+					// garbage that stays random escaped every allocation named here.
+					//
+					// Deliberately NOT poisoned: the persistent target pool, whose
+					// tenants legitimately carry prior-frame content, and the
+					// host-visible stream buffers, where a fill would destroy the CPU
+					// writes it landed on. It costs a full-surface write per allocation
+					// per frame; it is an isolation lever, not a fix. Fail-closed: off
+					// records nothing at all and is the executor byte for byte. Dev only.
+					TileGpuPoisonAllocations : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
