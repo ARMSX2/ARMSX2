@@ -750,6 +750,13 @@ private:
 	bool m_tilegpu_pass_pool_warned = false;
 	u32 m_tilegpu_pass_pool_dropped_passes = 0;
 	u32 m_tilegpu_pass_pool_dropped_draws = 0;
+	// A whole frame the executor's draw gate refused: no pipelines, or a plan whose per-draw streams do
+	// not agree with each other. Its passes still open, clear or load, and store, so it costs almost
+	// what a drawn frame costs and comes out deterministically black -- and every column built before
+	// the executor reports the frame the planner intended. Counted because nothing else can see it.
+	bool m_tilegpu_undrawn_warned = false;
+	u32 m_tilegpu_undrawn_frames = 0;
+	u32 m_tilegpu_undrawn_draws = 0;
 	/// EmuCore/GS/TileGpuSerializeOps is announced once per run, not once per plan: a plan is a frame
 	/// and the line exists so a device log can testify the arm engaged, which one line does.
 	bool m_tilegpu_serialize_announced = false;

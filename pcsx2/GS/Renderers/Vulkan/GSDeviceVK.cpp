@@ -6503,6 +6503,17 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
 
+	// Every road out of this function ends in a renderer with no geometry pipelines, and the executor's
+	// whole symptom for that is a frame whose passes clear and store and draw nothing -- deterministic
+	// black, at a cost, with no other column moving. So each road names itself. This is the ONLY place
+	// that knows which step failed: the caller sees one null handle whatever the cause.
+	const auto fail = [](const char* what) {
+		Console.Error("TileGpu: pipeline build failed at %s; the renderer has no geometry pipelines and "
+					  "every frame will record its passes without draws.",
+			what);
+		return false;
+	};
+
 	// Per-draw state table (SSBO, binding 0) + the frame's ring (SSBO, binding 1) + their layout.
 	// The VS reads its transform row from the state table by the indirect draw's first_instance and
 	// forwards the row index, so both stages see binding 0; the FS reads texels out of the ring, so
@@ -6514,7 +6525,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
+			return fail("the state descriptor-set layout");
 		Vulkan::SetObjectName(m_device, m_tilegpu_ds_layout, "TileGpu state DS layout");
 
 		// Set 1, bound per pass: binding 0 is the pass's snapshot, binding 1 the pass's rule-2
@@ -6531,7 +6542,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		snap_dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			GSTileGpuPassPlan::kMaxTexSourcesPerPass, VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_snapshot_ds_layout = snap_dslb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
+			return fail("the per-pass descriptor-set layout");
 		Vulkan::SetObjectName(m_device, m_tilegpu_snapshot_ds_layout, "TileGpu per-pass DS layout");
 
 		// Set 2, written once per plan: rule 3's frame-wide materialised sources. Never a push set --
@@ -6544,7 +6555,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		src_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, GSTileGpuPassPlan::kMaxSources,
 			VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_source_ds_layout = src_dslb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
+			return fail("the source descriptor-set layout");
 		Vulkan::SetObjectName(m_device, m_tilegpu_source_ds_layout, "TileGpu source DS layout");
 
 		// Set 3, bound only by a pass that declares the in-pass destination read: the pass's own colour
@@ -6558,7 +6569,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		Vulkan::DescriptorSetLayoutBuilder dest_dslb;
 		dest_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_dest_ds_layout = dest_dslb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
+			return fail("the destination-read descriptor-set layout");
 		Vulkan::SetObjectName(m_device, m_tilegpu_dest_ds_layout, "TileGpu destination-read DS layout");
 
 		Vulkan::PipelineLayoutBuilder plb;
@@ -6568,7 +6579,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		plb.AddDescriptorSet(m_tilegpu_dest_ds_layout);
 		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * kTileGpuPushWords);
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
-			return false;
+			return fail("the pipeline layout");
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
 	}
 
@@ -6590,7 +6601,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		const VkDescriptorPoolCreateInfo src_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0,
 			depth, static_cast<u32>(std::size(src_pool_sizes)), src_pool_sizes};
 		if (vkCreateDescriptorPool(m_device, &src_pool_info, nullptr, &m_tilegpu_source_pool) != VK_SUCCESS)
-			return false;
+			return fail("the source descriptor pool");
 		Vulkan::SetObjectName(m_device, m_tilegpu_source_pool, "TileGpu source descriptor pool");
 		m_tilegpu_source_set_count = 0;
 		for (u32 i = 0; i < depth; i++)
@@ -6604,7 +6615,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			if (vkAllocateDescriptorSets(m_device, &ai, &m_tilegpu_source_sets[i]) != VK_SUCCESS)
 			{
 				if (i < kGSTileGpuSourceSetRingMin)
-					return false;
+					return fail("the source set ring, short of its minimum depth");
 				Console.Warning("TileGpu source set ring: only %u of %u sets allocated; running short.", i, depth);
 				break;
 			}
@@ -6628,7 +6639,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			ss.biln = (i & 4u) ? 1 : 0;
 			m_tilegpu_source_sampler[i] = GetSampler(ss);
 			if (m_tilegpu_source_sampler[i] == VK_NULL_HANDLE)
-				return false;
+				return fail("a source sampler");
 		}
 	}
 
@@ -6649,7 +6660,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		!m_tilegpu_vram_stream_buffer.Create(
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, TILEGPU_VRAM_BUFFER_SIZE))
 	{
-		return false;
+		return fail("the indirect, state and ring stream buffers");
 	}
 
 	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
@@ -6657,7 +6668,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// rewriting frame to frame.
 	m_tilegpu_state_descriptor_set = AllocatePersistentDescriptorSet(m_tilegpu_ds_layout);
 	if (m_tilegpu_state_descriptor_set == VK_NULL_HANDLE)
-		return false;
+		return fail("the persistent state descriptor set");
 	{
 		Vulkan::DescriptorSetUpdateBuilder dsub;
 		dsub.AddBufferDescriptorWrite(m_tilegpu_state_descriptor_set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -6717,7 +6728,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 
 	VkShaderModule vs = GetUtilityVertexShader(m_tilegpu_shader_source);
 	if (vs == VK_NULL_HANDLE)
-		return false;
+		return fail("the vertex module");
 	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
 
 	// The FULL module: every road this device can serve, and every one of the byte road's texel arms.
@@ -6738,7 +6749,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	VkShaderModule fs = CompileTileGpuFragmentModule(
 		full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, {});
 	if (fs == VK_NULL_HANDLE)
-		return false;
+		return fail("the full fragment module");
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
 
 	// The modules stay alive: blend variants are built lazily per GS ALPHA equation as draws
@@ -6761,7 +6772,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, 0xFu, full_roads,
 				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false, false, 0, {});
 			if (pipe == VK_NULL_HANDLE)
-				return false;
+				return fail("an eager no-blend pipeline");
 		}
 	}
 	return true;
@@ -7696,6 +7707,33 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							   plan.state_table != nullptr && plan.state_stride == sizeof(float) * 36 &&
 							   plan.scissors.size() == plan.draws.size() && plan.state_count > 0;
 	const bool can_draw = pipelines_ok && have_geometry;
+
+	// A frame that fails either half records not one draw, and NOTHING else about it changes: the pass
+	// loop below still opens every pass, still clears or loads it, still stores it, and the frame is
+	// presented. That is a deterministic black frame at close to the full tile bill, and every column
+	// outside the executor -- the planner census, the pass and draw counts, the pixel bill -- is built
+	// before this point and reports the frame the planner intended. So the gate says which conjunct
+	// failed and with what values, once, and the totals go out at teardown; a device that renders black
+	// must never again be silent about why.
+	if (!can_draw)
+	{
+		m_tilegpu_undrawn_frames++;
+		m_tilegpu_undrawn_draws += static_cast<u32>(plan.draws.size());
+		if (!m_tilegpu_undrawn_warned)
+		{
+			m_tilegpu_undrawn_warned = true;
+			Console.Error("TileGpu: a frame's %zu planned draws were not recorded -- pipelines=%s, "
+						  "state set=%s, draws=%zu, topologies=%zu, scissors=%zu, vertices=%zu bytes, "
+						  "vertex_stride=%u (want %zu), state_table=%s, state_stride=%u (want %zu), "
+						  "state_count=%u. Its passes still clear and store, so the frame is black rather "
+						  "than absent. Totals at teardown.",
+				plan.draws.size(), (m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE) ? "yes" : "no",
+				(m_tilegpu_state_descriptor_set != VK_NULL_HANDLE) ? "yes" : "no", plan.draws.size(),
+				plan.topologies.size(), plan.scissors.size(), plan.vertices.size(), plan.vertex_stride,
+				sizeof(GSVertex), (plan.state_table != nullptr) ? "yes" : "no", plan.state_stride,
+				sizeof(float) * 36, plan.state_count);
+		}
+	}
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path
 	// compiled in (the swizzle forms fitted). Without it the state rows' tex_enable is still set but
@@ -10330,6 +10368,12 @@ void GSDeviceVK::DestroyResources()
 		Console.Error("TileGpu: %u draws in %u passes were dropped this session because the frame descriptor pool "
 					  "could not serve a pass's snapshot and sampled-target set.",
 			m_tilegpu_pass_pool_dropped_draws, m_tilegpu_pass_pool_dropped_passes);
+	}
+	if (m_tilegpu_undrawn_frames != 0)
+	{
+		Console.Error("TileGpu: %u frames carrying %u draws recorded no geometry at all this session; their passes "
+					  "cleared and stored, so they rendered black.",
+			m_tilegpu_undrawn_frames, m_tilegpu_undrawn_draws);
 	}
 
 	for (FrameResources& resources : m_frame_resources)
