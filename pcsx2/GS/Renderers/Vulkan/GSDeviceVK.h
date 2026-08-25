@@ -779,9 +779,13 @@ private:
 	// prefilled with while the renderer's model records the composition as done.
 	bool m_tilegpu_writeback_pool_warned = false;
 	u32 m_tilegpu_writeback_pool_dropped_ops = 0;
-	/// EmuCore/GS/TileGpuSerializeOps is announced once per run, not once per plan: a plan is a frame
-	/// and the line exists so a device log can testify the arm engaged, which one line does.
+	/// EmuCore/GS/TileGpuSerializeOps and TileGpuSerializeMask are announced once per run, not once per
+	/// plan: a plan is a frame and the line exists so a device log can testify which arm engaged, which
+	/// one line does.
 	bool m_tilegpu_serialize_announced = false;
+	/// ...and the contradiction is said once too, on its own flag, because it fires on the road where
+	/// the announcement above reports the OTHER key.
+	bool m_tilegpu_serialize_mask_refused = false;
 	/// EmuCore/GS/TileGpuPoisonAllocations, announced once per run for the same reason.
 	bool m_tilegpu_poison_announced = false;
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants

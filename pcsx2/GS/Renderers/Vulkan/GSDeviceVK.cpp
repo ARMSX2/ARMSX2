@@ -8053,25 +8053,58 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// deep in one command buffer. Garbage that vanishes as the grade rises proves that on silicon;
 	// garbage that survives grade 3 kills it.
 	const u32 serialize = gsTileGpuSerializeOps(GSConfig.TileGpuSerializeOps);
-	if (serialize != 0 && !m_tilegpu_serialize_announced)
+	// ...and WHERE, EmuCore/GS/TileGpuSerializeMask: one bit per GSTileGpuSerializeSite, so a device
+	// round can bisect which of the seven boundaries the blanket is papering over instead of re-running
+	// blankets. The blanket WINS a contradiction rather than being merged with the mask: an arm whose
+	// engagement has to be derived from a precedence rule is an arm nobody will believe, so the two
+	// keys set together is an error that names itself and leaves the blanket standing.
+	const u32 mask_key = gsTileGpuSerializeMask(GSConfig.TileGpuSerializeMask);
+	const bool mask_refused = (serialize != 0 && mask_key != 0);
+	const u32 serialize_sites = (serialize != 0) ? kGSTileGpuSerializeMaskAll : mask_key;
+	if (serialize_sites != 0 && !m_tilegpu_serialize_announced)
 	{
 		m_tilegpu_serialize_announced = true;
-		Console.WriteLn("TileGpu op serialization: grade %u ENGAGED (EmuCore/GS/TileGpuSerializeOps = %d) -- %s "
-						"after every op recorded outside a pass and after every pass. Diagnostic only.",
-			serialize, GSConfig.TileGpuSerializeOps,
-			(serialize == 1) ? "full barrier" :
-			(serialize == 2) ? "full barrier + submit" :
-							   "full barrier + submit + fence wait");
+		if (serialize != 0)
+		{
+			Console.WriteLn("TileGpu op serialization: grade %u ENGAGED (EmuCore/GS/TileGpuSerializeOps = %d) -- %s "
+							"after every op recorded outside a pass and after every pass. Diagnostic only.",
+				serialize, GSConfig.TileGpuSerializeOps,
+				(serialize == 1) ? "full barrier" :
+				(serialize == 2) ? "full barrier + submit" :
+								   "full barrier + submit + fence wait");
+		}
+		else
+		{
+			Console.WriteLn("TileGpu op serialization: sites 0x%02X ENGAGED (EmuCore/GS/TileGpuSerializeMask = %d) -- "
+							"a full barrier at expand=%c donor=%c clutcopy=%c materialise=%c byteroad=%c snapshot=%c "
+							"passtail=%c. Diagnostic only.",
+				serialize_sites, GSConfig.TileGpuSerializeMask,
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteExpand)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteDonor)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteClutCopy)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteMaterialise)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteByteRoad)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSiteSnapshot)) ? 'Y' : 'n',
+				(serialize_sites & (1u << kGSTileGpuSerializeSitePassTail)) ? 'Y' : 'n');
+		}
+	}
+	if (mask_refused && !m_tilegpu_serialize_mask_refused)
+	{
+		m_tilegpu_serialize_mask_refused = true;
+		Console.Error("TileGpu: TileGpuSerializeOps (%d) and TileGpuSerializeMask (%d) are BOTH set; the mask is "
+					  "REFUSED and the blanket grade stands at every site. Clear one of them -- a per-site round "
+					  "run under the blanket measures the blanket.",
+			GSConfig.TileGpuSerializeOps, GSConfig.TileGpuSerializeMask);
 	}
 
-	// One op boundary, at the strength the grade asks for. The barrier is deliberately the bluntest
-	// one Vulkan can express: this is a discriminator, not a fix, so it must not be able to miss an
-	// edge. The cut from grade 2 takes the road the source-ring wrap already takes -- submit, retain
-	// the plan's stream reservations, re-read the command buffer -- which is sound here because
-	// MoveToNextCommandBuffer invalidates the framebuffer cache and every pass re-establishes its own
-	// vertex/index binds, sets, push constants and dynamic state before it draws.
-	const auto serialize_boundary = [&]() {
-		if (serialize == 0)
+	// One op boundary, at the strength the grade asks for, at the sites the mask names. The barrier is
+	// deliberately the bluntest one Vulkan can express: this is a discriminator, not a fix, so it must
+	// not be able to miss an edge. The cut from grade 2 takes the road the source-ring wrap already
+	// takes -- submit, retain the plan's stream reservations, re-read the command buffer -- which is
+	// sound here because MoveToNextCommandBuffer invalidates the framebuffer cache and every pass
+	// re-establishes its own vertex/index binds, sets, push constants and dynamic state before it draws.
+	const auto serialize_boundary = [&](GSTileGpuSerializeSite site) {
+		if (!(serialize_sites & (1u << site)))
 			return;
 		pxAssertMsg(m_current_render_pass == VK_NULL_HANDLE,
 			"TileGpu serialize boundary reached inside a render pass");
@@ -8350,7 +8383,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// (see the layout note above the set write); the transition is also the execution
 					// dependency ordering this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
-					serialize_boundary();
+					serialize_boundary(kGSTileGpuSerializeSiteExpand);
 					continue;
 				}
 
@@ -8476,7 +8509,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// Back to shader-read, which is what set 2's descriptors were written promising, and
 					// the dependency that orders this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
-					serialize_boundary();
+					serialize_boundary(kGSTileGpuSerializeSiteDonor);
 					continue;
 				}
 
@@ -8539,7 +8572,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
 							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-					serialize_boundary();
+					serialize_boundary(kGSTileGpuSerializeSiteClutCopy);
 					continue;
 				}
 
@@ -8607,7 +8640,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// build), and this transition is also the execution dependency that orders the
 					// build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
-					serialize_boundary();
+					serialize_boundary(kGSTileGpuSerializeSiteMaterialise);
 					continue;
 				}
 
@@ -8796,7 +8829,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 				// The writeback dispatch or the seed pass just above; the four kinds that `continue`
 				// out of this loop carry their own boundary at their own tail.
-				serialize_boundary();
+				serialize_boundary(kGSTileGpuSerializeSiteByteRoad);
 			}
 		}
 
@@ -8823,7 +8856,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				static_cast<GSTextureVK*>(snapshot)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
 				// A copy recorded outside a pass whose result the pass about to open samples: the
 				// same producer->consumer shape the lever is interrogating.
-				serialize_boundary();
+				serialize_boundary(kGSTileGpuSerializeSiteSnapshot);
 			}
 		}
 
@@ -9277,7 +9310,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		// Between consecutive passes -- after the recycle, so the scratch texture's reuse epoch is
 		// the submission that actually read it and not the one after.
-		serialize_boundary();
+		serialize_boundary(kGSTileGpuSerializeSitePassTail);
 	}
 
 	// These passes recorded raw, bypassing the device's state cache; force the present path and

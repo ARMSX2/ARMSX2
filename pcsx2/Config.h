@@ -1495,6 +1495,25 @@ struct Pcsx2Config
 		// result at grade 2 or 3 has to be read knowing the arm is not byte-inert. Dev only.
 		int TileGpuSerializeOps = 0;
 
+		// WHICH of the executor's op boundaries gets the grade-1 barrier, as a bitmask over
+		// GSTileGpuSerializeSite (GSDevice.h, which owns the numbering and is append-only so a mask
+		// quoted in a device record keeps meaning what it meant). Zero -- the default -- records
+		// nothing, exactly as grade 0 does; 0x7F is every site and is the same command stream as
+		// grade 1.
+		//
+		// It exists because the blanket grade cannot name an edge. Grade 1 collapsing FlatOut 2 from
+		// 79.7% run-to-run pixel diff to byte-identical says the hazard closes inside one command
+		// buffer under barriers alone; it does not say at which of seven boundaries, and finding out
+		// by re-running blankets is seven device rounds. A mask bisects it in three.
+		//
+		// Pixel-inert at every value, on the same evidence grade 1 is: the barrier orders work that
+		// is already in dependency order, so a device where it changes an image is a device where the
+		// dependency was not being honoured -- which is the finding, not a side effect. The BLANKET
+		// wins a contradiction: with TileGpuSerializeOps non-zero this key is refused and says so,
+		// rather than being merged into a grade, because an arm whose engagement you have to derive
+		// from a precedence rule is an arm nobody will believe. Dev only.
+		int TileGpuSerializeMask = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

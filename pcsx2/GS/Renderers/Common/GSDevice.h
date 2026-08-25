@@ -1516,6 +1516,50 @@ constexpr u32 gsTileGpuSerializeOps(int setting)
 	return static_cast<u32>(setting);
 }
 
+/// The executor's op boundaries, one bit each, for EmuCore/GS/TileGpuSerializeMask.
+///
+/// The blanket grade above answers "is this an ordering problem at all". It cannot say WHICH edge,
+/// and re-running blankets cannot either: seven boundaries take seven device rounds one at a time,
+/// or three by bisection, and only if the bit numbering is the same in every run record. So the
+/// numbering lives here rather than at the call sites, and it is APPEND-ONLY -- a mask value quoted
+/// in a device record has to keep meaning what it meant when it was written, so a boundary that
+/// goes away leaves its bit behind rather than renumbering the ones above it.
+///
+/// Each name is the op whose TAIL the boundary sits at, in the order the executor records them.
+enum GSTileGpuSerializeSite : u32
+{
+	/// A palette expand: the index and palette images sampled into a colour image.
+	kGSTileGpuSerializeSiteExpand = 0,
+	/// A donor build or a CLUT gather: a resident target read through the GS swizzle into a source.
+	kGSTileGpuSerializeSiteDonor = 1,
+	/// A CLUT block copy: a palette's blocks copied image-to-buffer into the frame's byte road.
+	kGSTileGpuSerializeSiteClutCopy = 2,
+	/// A source materialise: a texture window composed out of the byte road into a source image.
+	kGSTileGpuSerializeSiteMaterialise = 3,
+	/// The byte road proper -- a writeback compute dispatch, or a seed pass into a target.
+	kGSTileGpuSerializeSiteByteRoad = 4,
+	/// The pass snapshot: a copy of the colour target taken for the draws that read their own
+	/// destination through the scratch rather than in-pass.
+	kGSTileGpuSerializeSiteSnapshot = 5,
+	/// The tail of a geometry pass, between it and the next one.
+	kGSTileGpuSerializeSitePassTail = 6,
+	kGSTileGpuSerializeSiteCount = 7,
+};
+
+/// Every site engaged, which is what the blanket grade asks for.
+constexpr u32 kGSTileGpuSerializeMaskAll = (1u << kGSTileGpuSerializeSiteCount) - 1u;
+
+/// The effective site mask: what EmuCore/GS/TileGpuSerializeMask says, with the bits above the
+/// sites that exist dropped. Clamps rather than refuses for the same reason the grade does -- a
+/// diagnostic key must not be able to stop a run over a typo -- and a negative is off, not "all",
+/// because a bisection arm that silently became the blanket would read as the blanket's result.
+constexpr u32 gsTileGpuSerializeMask(int setting)
+{
+	if (setting <= 0)
+		return 0;
+	return static_cast<u32>(setting) & kGSTileGpuSerializeMaskAll;
+}
+
 class GSPassScheduler;
 
 class GSDevice : public GSAlignedClass<32>
