@@ -271,9 +271,13 @@ TEST(VuCaptureFormat, SnapshotConfigCapturesLiveEmuConfig)
 	EmuConfig.Cpu.Recompiler.vu0Overflow = true;
 	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = true;
 	EmuConfig.Cpu.Recompiler.vu0SignOverflow = false;
+	EmuConfig.Cpu.Recompiler.vu0ExactMode = false;
 	EmuConfig.Cpu.Recompiler.vu1Overflow = true;
 	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = false;
 	EmuConfig.Cpu.Recompiler.vu1SignOverflow = false;
+	// Per-VU exact mode (clamp mode 4) rides in the same word; the two VUs
+	// disagree here so a swapped pair of bits can't encode identically.
+	EmuConfig.Cpu.Recompiler.vu1ExactMode = true;
 	// Distinct per-VU FPCR attributes, set through the portable accessors
 	// (the raw bitmask representation is arch-specific). FTZ and DAZ are set
 	// together: aarch64 aliases both onto FPCR.FZ, so mixed values are not
@@ -293,7 +297,7 @@ TEST(VuCaptureFormat, SnapshotConfigCapturesLiveEmuConfig)
 	EXPECT_EQ(vu_capture::kSpeedhackVuFlagHack | vu_capture::kSpeedhackVu1Instant,
 		cfg.speedhacks);
 	EXPECT_EQ(vu_capture::kClampVu0Overflow | vu_capture::kClampVu0ExtraOverflow |
-				  vu_capture::kClampVu1Overflow,
+				  vu_capture::kClampVu1Overflow | vu_capture::kClampVu1ExactMode,
 		cfg.vu_clamp);
 	// ChopZero(3) + FTZ + DAZ / NegativeInfinity(1) bare, portable encoding.
 	EXPECT_EQ(3u | vu_capture::kFpcrFlushToZero | vu_capture::kFpcrDenormalsAreZero,
