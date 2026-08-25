@@ -7842,7 +7842,58 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// A multi-draw indirect covers at most this many commands; a longer topology run is split.
 	const u32 max_indirect = std::max<u32>(1u, GetDeviceProperties().limits.maxDrawIndirectCount);
 
-	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
+	// NOT const: from grade 2 the ordering lever below ends this command buffer mid-plan and
+	// continues on the next one, and every command the executor records goes through this handle.
+	// The lambdas that record barriers capture it by reference for the same reason.
+	VkCommandBuffer cmd = GetCurrentCommandBuffer();
+
+	// The ordering lever, EmuCore/GS/TileGpuSerializeOps. Grade 0 is the shipped position and
+	// records NOTHING: every call site is behind the grade, so the command stream at 0 is the one
+	// this executor emitted before the lever existed.
+	//
+	// It answers one question, and only on r44p1 Mali: TileGpu is run-to-run nondeterministic there
+	// and stable everywhere else on the same binary, with sync validation clean, so the standing
+	// theory is that the blob drops or weakens ordering edges inside a producer->consumer graph this
+	// deep in one command buffer. Garbage that vanishes as the grade rises proves that on silicon;
+	// garbage that survives grade 3 kills it.
+	const u32 serialize = gsTileGpuSerializeOps(GSConfig.TileGpuSerializeOps);
+	if (serialize != 0 && !m_tilegpu_serialize_announced)
+	{
+		m_tilegpu_serialize_announced = true;
+		Console.WriteLn("TileGpu op serialization: grade %u ENGAGED (EmuCore/GS/TileGpuSerializeOps = %d) -- %s "
+						"after every op recorded outside a pass and after every pass. Diagnostic only.",
+			serialize, GSConfig.TileGpuSerializeOps,
+			(serialize == 1) ? "full barrier" :
+			(serialize == 2) ? "full barrier + submit" :
+							   "full barrier + submit + fence wait");
+	}
+
+	// One op boundary, at the strength the grade asks for. The barrier is deliberately the bluntest
+	// one Vulkan can express: this is a discriminator, not a fix, so it must not be able to miss an
+	// edge. The cut from grade 2 takes the road the source-ring wrap already takes -- submit, retain
+	// the plan's stream reservations, re-read the command buffer -- which is sound here because
+	// MoveToNextCommandBuffer invalidates the framebuffer cache and every pass re-establishes its own
+	// vertex/index binds, sets, push constants and dynamic state before it draws.
+	const auto serialize_boundary = [&]() {
+		if (serialize == 0)
+			return;
+		pxAssertMsg(m_current_render_pass == VK_NULL_HANDLE,
+			"TileGpu serialize boundary reached inside a render pass");
+		VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+		mb.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb,
+			0, nullptr, 0, nullptr);
+		if (serialize < 2)
+			return;
+		// The counter this submission will carry, read before the submit moves it on.
+		const u64 submitted = GetCurrentFenceCounter();
+		ExecuteCommandBuffer(false);
+		RetainTileGpuStreamsForCurrentCommandBuffer();
+		if (serialize >= 3)
+			WaitForFenceCounter(submitted, GpuWaitCause::Sync);
+		cmd = GetCurrentCommandBuffer();
+	};
 
 	// Every source into shader-read layout, which is what the descriptors just written promise.
 	if (source_set != VK_NULL_HANDLE)
@@ -8056,6 +8107,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// (see the layout note above the set write); the transition is also the execution
 					// dependency ordering this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					serialize_boundary();
 					continue;
 				}
 
@@ -8176,6 +8228,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// Back to shader-read, which is what set 2's descriptors were written promising, and
 					// the dependency that orders this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					serialize_boundary();
 					continue;
 				}
 
@@ -8238,6 +8291,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
 							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+					serialize_boundary();
 					continue;
 				}
 
@@ -8300,6 +8354,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// build), and this transition is also the execution dependency that orders the
 					// build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					serialize_boundary();
 					continue;
 				}
 
@@ -8470,6 +8525,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					EndRenderPass();
 					tex->SetState(GSTexture::State::Dirty);
 				}
+
+				// The writeback dispatch or the seed pass just above; the four kinds that `continue`
+				// out of this loop carry their own boundary at their own tail.
+				serialize_boundary();
 			}
 		}
 
@@ -8489,6 +8548,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				const GSVector4i copy_rect = sc.src_rect.rintersect(GSVector4i(0, 0, ssz.x, ssz.y));
 				CopyRect(rt, snapshot, copy_rect, copy_rect.x, copy_rect.y);
 				static_cast<GSTextureVK*>(snapshot)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+				// A copy recorded outside a pass whose result the pass about to open samples: the
+				// same producer->consumer shape the lever is interrogating.
+				serialize_boundary();
 			}
 		}
 
@@ -8935,6 +8997,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			ds->SetState(GSTexture::State::Dirty);
 		if (snapshot)
 			Recycle(snapshot);
+
+		// Between consecutive passes -- after the recycle, so the scratch texture's reuse epoch is
+		// the submission that actually read it and not the one after.
+		serialize_boundary();
 	}
 
 	// These passes recorded raw, bypassing the device's state cache; force the present path and

@@ -1500,6 +1500,22 @@ constexpr u32 gsTileGpuSourceSetRingDepth(int setting, u32 builtin_default = kGS
 	return want;
 }
 
+/// The strongest ordering grade the TileGpu executor knows how to force.
+constexpr u32 kGSTileGpuSerializeMax = 3;
+
+/// The effective serialization grade: what EmuCore/GS/TileGpuSerializeOps says, clamped to the
+/// ladder the executor implements. Out of range clamps rather than refuses — a diagnostic key
+/// must not be able to stop a run over a typo — and anything at or below zero is off, which is
+/// the shipped position and the one that records nothing at all.
+constexpr u32 gsTileGpuSerializeOps(int setting)
+{
+	if (setting <= 0)
+		return 0;
+	if (static_cast<u32>(setting) > kGSTileGpuSerializeMax)
+		return kGSTileGpuSerializeMax;
+	return static_cast<u32>(setting);
+}
+
 class GSPassScheduler;
 
 class GSDevice : public GSAlignedClass<32>

@@ -1433,6 +1433,34 @@ struct Pcsx2Config
 		// worst. Dev only.
 		int TileGpuDualSrcRoad = 0;
 
+		// How hard the TileGpu plan executor forces GPU-side ordering between the ops it records.
+		// Zero -- the default, and the only thing that ships -- records nothing extra and is
+		// byte-for-byte the executor as written. 1, 2 and 3 are a diagnostic ladder, each grade
+		// containing the one below:
+		//
+		//   1  a full-scope pipeline barrier (ALL_COMMANDS -> ALL_COMMANDS, MEMORY_READ|WRITE both
+		//      ways) after every op recorded outside a render pass, and after every pass.
+		//   2  ...and the command buffer ends and submits there, continuing on a fresh one.
+		//   3  ...and the submission's fence is waited on, so every op fully retires before the
+		//      next records.
+		//
+		// It exists for ONE question, on r44p1 Mali only: TileGpu is run-to-run nondeterministic
+		// there and byte-identical everywhere else, with sync validation clean, so the standing
+		// theory is that the blob drops or weakens ordering edges inside a producer->consumer graph
+		// this deep in one command buffer. Garbage that vanishes as the grade rises proves the
+		// theory on silicon and gives the minimal-sync search a ceiling; garbage that survives
+		// grade 3 kills it. Grade 3 is unusably slow by construction -- that is the point of it.
+		//
+		// ⚠️ Only grades 0 and 1 are PIXEL-INERT. 0 is inert by construction and 1 measured
+		// byte-identical to it on MGS3, SotC and FlatOut 2 (M2 / Honeykrisp). Grades 2 and 3 move
+		// MGS3 by at most 1 per channel on 6% of its pixels, always in the same direction, and
+		// leave SotC and FlatOut 2 untouched. It is the SUBMIT that does it, not the state reset a
+		// cut performs (measured separately), and grades 2 and 3 produce the identical image -- so
+		// it is submission granularity and not a race our recording is losing. A delta that small
+		// cannot manufacture or erase the block-sized garbage the lever is hunting, but a device
+		// result at grade 2 or 3 has to be read knowing the arm is not byte-inert. Dev only.
+		int TileGpuSerializeOps = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;
