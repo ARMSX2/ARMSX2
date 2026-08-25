@@ -589,3 +589,40 @@ TEST(GSTileGpuShaderBudget, TheScissorIsNotInTheShaderAtAll)
 	EXPECT_EQ(defines.find("TILEGPU_VS_CLIP"), std::string::npos)
 		<< "DeviceDefines still emits the deleted clip define";
 }
+
+// The C++ state row and the shader's state row are one layout with two spellings, and nothing in
+// either language can compare them: the shader is read from disk at runtime, so the file compiled is
+// not necessarily the file this binary was built beside. The device parses the shader's own
+// declaration and refuses to build on a mismatch; this is the gate that says the parse is right about
+// the shader in THIS tree, so a member added to one side and not the other fails here rather than on
+// a device, where the symptom is every row but the first read from the wrong place.
+TEST(GSTileGpuShaderBudget, TheShaderStateRowIsTheBinarysStateRow)
+{
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	EXPECT_EQ(GSTileGpuShaderVariant::StateRowWordsIn(body), GSDevice::GSTileGpuPassPlan::kStateRowWords)
+		<< "tilegpu.glsl's struct StateRow is not the same number of 32-bit words as the C++ row. Two "
+		   "sides on different strides read every row but the first from the wrong place, and nothing "
+		   "at runtime fails -- every field lands somewhere plausible.";
+}
+
+// ...and that the parser earns that comparison. A parser that answered 0 for everything would pass
+// nothing above, but one that answered kStateRowWords for everything would pass it always, so the
+// counting is pinned on strings whose answers are known by hand.
+TEST(GSTileGpuShaderBudget, TheStateRowParserCountsWords)
+{
+	using GSTileGpuShaderVariant::StateRowWordsIn;
+
+	EXPECT_EQ(StateRowWordsIn("struct StateRow { vec2 a; uint b; };"), 3u);
+	EXPECT_EQ(StateRowWordsIn("struct StateRow { uint a, b, c; };"), 3u) << "a comma list is one word per name";
+	EXPECT_EQ(StateRowWordsIn("struct StateRow {\n\tvec4 a; // uint x; y;\n\tuint b;\n};"), 5u)
+		<< "a semicolon inside a line comment must not split a declaration";
+	EXPECT_EQ(StateRowWordsIn("struct StateRow { /* uint x; */ vec2 a; };"), 2u)
+		<< "a semicolon inside a block comment must not split a declaration";
+
+	// The answers that mean "cannot tell", which the device treats as a mismatch rather than a pass.
+	EXPECT_EQ(StateRowWordsIn("struct Other { uint a; };"), 0u) << "no StateRow declaration at all";
+	EXPECT_EQ(StateRowWordsIn("struct StateRow { mat4 m; };"), 0u) << "a type this cannot size in words";
+	EXPECT_EQ(StateRowWordsIn("struct StateRow { uint a; float b[4]; };"), 0u) << "an array member is not a word count";
+}

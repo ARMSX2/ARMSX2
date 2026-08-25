@@ -49,6 +49,107 @@ namespace GSTileGpuShaderVariant
 			GSDevice::GSTileGpuPassPlan::kMaxSources, dual_src ? 1 : 0, scalarize_vec_and ? 1 : 0);
 	}
 
+	/// How many 32-bit words tilegpu.glsl's own `struct StateRow` declares, or 0 if the declaration is
+	/// not there or names a type this cannot size.
+	///
+	/// The shader is read from disk at runtime, so the file the device compiles is not necessarily the
+	/// file this binary was built beside -- a staged resource tree that did not get re-pushed is a
+	/// shader from another revision, and nothing else notices. A row-size disagreement is the worst
+	/// shape that can take: the executor's own gate checks the PLAN's stride against the binary, which
+	/// still agrees, while the shader indexes `state_rows[]` at a different stride and reads every row
+	/// but the first from the wrong place. Every field lands somewhere plausible, no compile fails, no
+	/// counter moves, and the frame is wrong. So the shader's copy is counted and compared.
+	///
+	/// Deliberately a word count and not a byte count: what has to match is std430's array stride over
+	/// these members, every one of which is 4-byte-aligned, so counting words needs no alignment model.
+	inline u32 StateRowWordsIn(const std::string& source)
+	{
+		const size_t decl = source.find("struct StateRow");
+		if (decl == std::string::npos)
+			return 0;
+		const size_t open = source.find('{', decl);
+		if (open == std::string::npos)
+			return 0;
+		const size_t close = source.find('}', open);
+		if (close == std::string::npos)
+			return 0;
+
+		// Comments out first: every member here carries one, and a `;` inside a comment would split a
+		// declaration in half.
+		std::string body;
+		body.reserve(close - open);
+		for (size_t i = open + 1; i < close;)
+		{
+			if (source.compare(i, 2, "//") == 0)
+			{
+				i = source.find('\n', i);
+				if (i == std::string::npos)
+					break;
+				continue;
+			}
+			if (source.compare(i, 2, "/*") == 0)
+			{
+				const size_t end = source.find("*/", i + 2);
+				if (end == std::string::npos)
+					break;
+				i = end + 2;
+				continue;
+			}
+			body += source[i++];
+		}
+
+		u32 words = 0;
+		for (size_t at = 0; at < body.size();)
+		{
+			const size_t semi = body.find(';', at);
+			if (semi == std::string::npos)
+				break;
+			std::string decl_text = body.substr(at, semi - at);
+			at = semi + 1;
+			for (char& c : decl_text)
+			{
+				if (c == ',' || c == '\n' || c == '\t' || c == '\r')
+					c = ' ';
+			}
+			// "<type> <name> <name> ..." after the comma flattening; empty between the last member and
+			// the closing brace.
+			const size_t tstart = decl_text.find_first_not_of(' ');
+			if (tstart == std::string::npos)
+				continue;
+			const size_t tend = decl_text.find(' ', tstart);
+			if (tend == std::string::npos)
+				return 0; // a type with no name is not a member declaration this understands
+			const std::string type = decl_text.substr(tstart, tend - tstart);
+			u32 per_name = 0;
+			if (type == "float" || type == "int" || type == "uint" || type == "bool")
+				per_name = 1;
+			else if (type == "vec2" || type == "ivec2" || type == "uvec2")
+				per_name = 2;
+			else if (type == "vec3" || type == "ivec3" || type == "uvec3")
+				per_name = 3;
+			else if (type == "vec4" || type == "ivec4" || type == "uvec4")
+				per_name = 4;
+			else
+				return 0; // an aggregate or a matrix: std430 alignment is no longer a word count
+			u32 names = 0;
+			for (size_t n = tend; n < decl_text.size();)
+			{
+				const size_t nstart = decl_text.find_first_not_of(' ', n);
+				if (nstart == std::string::npos)
+					break;
+				const size_t nend = decl_text.find(' ', nstart);
+				const size_t len = ((nend == std::string::npos) ? decl_text.size() : nend) - nstart;
+				// An array member's stride is its own alignment question, not a word count.
+				if (decl_text.find('[', nstart) < nstart + len)
+					return 0;
+				names++;
+				n = nstart + len;
+			}
+			words += per_name * names;
+		}
+		return words;
+	}
+
 	/// The per-pass half: which texel roads and which of the byte road's decode arms this module
 	/// carries. Everything the mask does not name is not in the SPIR-V at all — on a tiler an
 	/// instruction that never executes still costs program size, and on the Adreno 650 crossing one

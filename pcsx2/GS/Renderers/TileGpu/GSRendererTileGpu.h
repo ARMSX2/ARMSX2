@@ -1047,9 +1047,10 @@ private:
 		// and the pixel origin's two did in reverse when the clip-plane road was deleted.
 		u32 pad0, pad1;
 	};
-	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
-	static_assert(offsetof(StateRow, pad0) == 136,
-		"TileGpu StateRow must end at 144 bytes with no implicit tail padding -- std430's stride would differ");
+	static_assert(sizeof(StateRow) == GSDevice::GSTileGpuPassPlan::kStateRowWords * sizeof(u32),
+		"TileGpu StateRow must be kStateRowWords words to match tilegpu.glsl std430");
+	static_assert(offsetof(StateRow, pad0) == (GSDevice::GSTileGpuPassPlan::kStateRowWords - 2) * sizeof(u32),
+		"TileGpu StateRow must end at its declared size with no implicit tail padding -- std430's stride would differ");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the

@@ -6683,7 +6683,21 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	if (!source)
 	{
 		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu.glsl.");
-		return false;
+		return fail("reading shaders/vulkan/tilegpu.glsl");
+	}
+
+	// The shader tree is read from disk, so the file compiled here need not be the file this binary was
+	// built beside. A row-size disagreement between the two is the one mismatch nothing else can see:
+	// the executor's gate checks the PLAN's stride against the binary and still agrees, while the shader
+	// indexes state_rows[] at its own stride and reads every row but the first from the wrong place --
+	// no compile error, no counter, a wrong frame. So refuse to build rather than render it.
+	const u32 shader_row_words = GSTileGpuShaderVariant::StateRowWordsIn(*source);
+	if (shader_row_words != GSDevice::GSTileGpuPassPlan::kStateRowWords)
+	{
+		Console.Error("TileGpu: shaders/vulkan/tilegpu.glsl declares a %u-word StateRow and this build is "
+					  "%u words. The shader tree is from another revision of the renderer.",
+			shader_row_words, GSDevice::GSTileGpuPassPlan::kStateRowWords);
+		return fail("the shader's StateRow layout");
 	}
 
 	// The byte sampling path compiles in only if the page-swizzle forms fitted closed forms — the
@@ -7697,14 +7711,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology run rather than one
 	// vkCmdDrawIndexed per draw. The state row carries the transform, the texture block and the
 	// per-draw tests; the scissor is a command, not a row field. The shader's StateRow is a fixed
-	// 144-byte layout, so state_stride must match it exactly.
+	// 144-byte layout (kStateRowWords), so state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
 	const bool pipelines_ok =
 		m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE && m_tilegpu_state_descriptor_set != VK_NULL_HANDLE;
 	const bool have_geometry = !plan.draws.empty() && plan.topologies.size() == plan.draws.size() &&
 							   plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-							   plan.state_table != nullptr && plan.state_stride == sizeof(float) * 36 &&
+							   plan.state_table != nullptr &&
+							   plan.state_stride == sizeof(u32) * GSTileGpuPassPlan::kStateRowWords &&
 							   plan.scissors.size() == plan.draws.size() && plan.state_count > 0;
 	const bool can_draw = pipelines_ok && have_geometry;
 
@@ -7731,7 +7746,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				(m_tilegpu_state_descriptor_set != VK_NULL_HANDLE) ? "yes" : "no", plan.draws.size(),
 				plan.topologies.size(), plan.scissors.size(), plan.vertices.size(), plan.vertex_stride,
 				sizeof(GSVertex), (plan.state_table != nullptr) ? "yes" : "no", plan.state_stride,
-				sizeof(float) * 36, plan.state_count);
+				sizeof(u32) * GSTileGpuPassPlan::kStateRowWords, plan.state_count);
 		}
 	}
 

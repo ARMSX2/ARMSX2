@@ -2774,6 +2774,14 @@ public:
 		static constexpr u32 kMaxSources = 128;
 		/// A state row's tex_source when the draw does not take rule 3.
 		static constexpr u32 kNoSourceSlot = 0xFFFFFFFFu;
+		/// How many 32-bit words one state row is. THREE things have to agree on this number and none
+		/// of them can check the others at compile time: the renderer's C++ StateRow, tilegpu.glsl's
+		/// std430 StateRow, and this executor gate. Two sides on different strides read every row but
+		/// the first from the wrong place -- silently, because a row is untyped bytes and every value
+		/// in it is in range for something. So it is one constant with three readers rather than three
+		/// literals, and the shader's own copy is parsed and compared at load (GSTileGpuShaderVariant::
+		/// StateRowWordsIn), which is the only check that can catch a shader tree from another revision.
+		static constexpr u32 kStateRowWords = 36;
 
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
