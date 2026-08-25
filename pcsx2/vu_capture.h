@@ -102,7 +102,7 @@ namespace vu_capture
 		u32 gamefixes;     // bit i = GamefixId(i) enabled.
 		u32 speedhacks;    // kSpeedhack* bits. Provenance only: replayers re-pin
 		                   // vuThread/vu1Instant/vuFlagHack (harness constraints).
-		u32 vu_clamp;      // kClamp* bits (the six Cpu.Recompiler.vu{0,1}* bools).
+		u32 vu_clamp;      // kClamp* bits (the eight Cpu.Recompiler.vu{0,1}* bools).
 		u32 vu0_fpcr;      // kFpcr* encoding (round mode + FTZ + DAZ). NOT the raw
 		                   // FPControlRegister::bitmask — that representation is
 		                   // arch-specific (MXCSR on x86, FPCR on aarch64) and
@@ -122,9 +122,11 @@ namespace vu_capture
 	inline constexpr u32 kClampVu0Overflow = 1u << 0;
 	inline constexpr u32 kClampVu0ExtraOverflow = 1u << 1;
 	inline constexpr u32 kClampVu0SignOverflow = 1u << 2;
+	inline constexpr u32 kClampVu0ExactMode = 1u << 3;
 	inline constexpr u32 kClampVu1Overflow = 1u << 4;
 	inline constexpr u32 kClampVu1ExtraOverflow = 1u << 5;
 	inline constexpr u32 kClampVu1SignOverflow = 1u << 6;
+	inline constexpr u32 kClampVu1ExactMode = 1u << 7;
 
 	// Portable FPCR encoding for CapturedConfig::vu{0,1}_fpcr.
 	inline constexpr u32 kFpcrRoundMask = 3u; // FPRoundMode enum value
