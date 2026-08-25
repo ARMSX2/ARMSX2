@@ -1160,6 +1160,8 @@ public:
 	// Calling this function is allowed even if a pass has not begun.
 	bool InRenderPass();
 	void StampRenderTargetTouch();
+	/// The frame's tile load-and-store bill, one pass at a time (GSPerfMon::RenderPassAreaPixels).
+	void CountRenderPassArea(const GSVector4i& rect);
 	void BeginRenderPass(VkRenderPass rp, const GSVector4i& rect);
 
 	/// Begin recording out-of-band work (see OutOfBandResources). Returns VK_NULL_HANDLE
