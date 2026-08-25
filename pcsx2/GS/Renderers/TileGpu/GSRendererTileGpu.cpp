@@ -295,6 +295,12 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_vram_model.Reset();
 	m_surface_texels.clear();
 	m_surface_version.clear();
+	// The containment census's containers ARE those surfaces, so its table names ids that no longer
+	// mean anything.
+	m_contain_alias.clear();
+	m_contain_rows.clear();
+	m_contain_view = kGSTileNoSurface;
+	m_contain_prev_valid = false;
 	// The source caches key on the model's write generations, which the reset just rewound, and
 	// the probe's window record on the same. Both die with it or a replay reaching equal counts
 	// under different bytes would look current.
@@ -410,6 +416,11 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	}
 	m_model_frames.push_back(m_frame);
 	m_frame = ModelFrame{};
+
+	// The containment census counts key changes WITHIN a frame, so the first draw of the next one
+	// follows nothing. The alias table and the container rows deliberately do NOT reset with it:
+	// the fold is sticky across frames, which is what keeps a view in one container.
+	m_contain_prev_valid = false;
 
 	// The density budget's frame boundary, taken here so the verdict is constant for every draw of a
 	// frame and is decided from the frame that just finished. The counters it read reset with it.
@@ -1886,6 +1897,64 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
+	// Surface-identity containment, counted and not taken. The two break columns are the same draw
+	// stream keyed twice -- on the surfaces the draws take, and on the containers they would take --
+	// so the difference is the passes the fold would remove and nothing else. Colour first because
+	// that is the column containment acts on; the full key adds the depth surface and its presence,
+	// which containment leaves alone, so the gap between the two columns is depth's own contribution.
+	//
+	// ⚠️ Per DRAWN frame, unlike every other line here, and the p50 is dropped for a max. A title
+	// that presents a frame it drew nothing into -- Yu-Gi-Oh! presents two for every one it draws --
+	// would otherwise report half the breaks it has, and this census exists to be compared against
+	// an off-line count over the same draw stream. Getting the denominator wrong there reads as the
+	// fold working twice as well as it does.
+	u32 ct_drawn = 0;
+	for (const MF& f : m_model_frames)
+		ct_drawn += (f.contain_draws != 0) ? 1u : 0u;
+	const double ct_n = static_cast<double>(std::max(ct_drawn, 1u));
+	const auto ctstat = [this, ct_n](auto get) {
+		double sum = 0.0;
+		u32 worst = 0;
+		for (const MF& f : m_model_frames)
+		{
+			const u32 v = get(f);
+			sum += v;
+			worst = std::max(worst, v);
+		}
+		struct
+		{
+			double mean;
+			u32 max;
+		} r{sum / ct_n, worst};
+		return r;
+	};
+	const auto ct_brk = ctstat([](const MF& f) { return f.contain_breaks; });
+	const auto ct_brkf = ctstat([](const MF& f) { return f.contain_breaks_folded; });
+	const auto ct_key = ctstat([](const MF& f) { return f.contain_full_breaks; });
+	const auto ct_keyf = ctstat([](const MF& f) { return f.contain_full_breaks_folded; });
+	const auto ct_fold = ctstat([](const MF& f) { return f.contain_folds; });
+	const auto ct_fdraw = ctstat([](const MF& f) { return f.contain_folded_draws; });
+	const auto ct_first = ctstat([](const MF& f) { return f.contain_first_sight; });
+	const auto ct_grow = ctstat([](const MF& f) { return f.contain_growth_pages; });
+	const auto ct_big = ctstat([](const MF& f) { return f.contain_max_pages; });
+	const auto ct_regrow = ctstat([](const MF& f) { return f.contain_regrow_refused; });
+	const auto ct_none = ctstat([](const MF& f) { return f.contain_ref_none; });
+	const auto ct_fam = ctstat([](const MF& f) { return f.contain_ref_family; });
+	const auto ct_str = ctstat([](const MF& f) { return f.contain_ref_stride; });
+	const auto ct_aln = ctstat([](const MF& f) { return f.contain_ref_align; });
+	const auto ct_dlt = ctstat([](const MF& f) { return f.contain_ref_delta; });
+	const auto ct_col = ctstat([](const MF& f) { return f.contain_ref_column; });
+	const auto ct_ext = ctstat([](const MF& f) { return f.contain_ref_extent; });
+	const auto ct_wrp = ctstat([](const MF& f) { return f.contain_ref_wrap; });
+	Console.WriteLn("  containment census (probed, NOT taken; mean per DRAWN frame, %u of %u): colour-key breaks "
+					"%8.2f today -> %8.2f folded   full key %8.2f -> %8.2f",
+		ct_drawn, static_cast<u32>(m_model_frames.size()), ct_brk.mean, ct_brkf.mean, ct_key.mean, ct_keyf.mean);
+	Console.WriteLn("    folds %.2f of %.2f first sights (%.2f draws land in a container), growth %.2f pages, "
+					"biggest container %u pages, outgrown %.2f",
+		ct_fold.mean, ct_first.mean, ct_fdraw.mean, ct_grow.mean, ct_big.max, ct_regrow.mean);
+	Console.WriteLn("    refused: no container %.2f  family %.2f  stride %.2f  align %.2f  delta %.2f  column %.2f  "
+					"budget %.2f  wrap %.2f",
+		ct_none.mean, ct_fam.mean, ct_str.mean, ct_aln.mean, ct_dlt.mean, ct_col.mean, ct_ext.mean, ct_wrp.mean);
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
@@ -2208,6 +2277,10 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 		BumpSurfaceVersion(id);
 		NoteClutSurfaceReplaced(id);
 		NoteTextureGeometry(id, height);
+		// The one moment containment would have done something else: this view is about to get a
+		// surface of its own, and a live container may have been able to hold it instead. Asked
+		// AFTER the create so the census sees the same road the renderer took.
+		ProbeContainment(layout, rect, id, true);
 		return id;
 	}
 	m_vram_model.GrowResidency(id, pages);
@@ -2220,7 +2293,218 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 	if (old_height != height)
 		BumpSurfaceVersion(id); // a re-allocated texture is a different image, whatever it copied
 	NoteTextureGeometry(id, height);
+	ProbeContainment(layout, rect, id, false);
 	return id;
+}
+
+void GSRendererTileGpu::NoteContainerRows(GSTileSurfaceId id, u32 end_row)
+{
+	if (m_contain_rows.size() <= id)
+		m_contain_rows.resize(id + 1, 0);
+	if (end_row > m_contain_rows[id])
+		m_contain_rows[id] = end_row;
+	const u32 pages = m_contain_rows[id] * m_vram_model.Get(id).layout.bw;
+	if (pages > m_frame.contain_max_pages)
+		m_frame.contain_max_pages = pages;
+}
+
+// See the declaration. Counted, never taken.
+//
+// The container-choice policy is the composite one, and it is not a detail: a view that is legal
+// inside more than one live container has to pick the one whose alternation it removes rather than
+// one that merely relocates it. Measured over the corpus draw streams, "nearest containing base"
+// leaves Gran Turismo 4 at 107.75 colour-key breaks a frame where preferring the container the
+// PREVIOUS draw rendered into gets it to 20.38 -- five-sixths of the win is in the choice. So:
+// a container that already covers the view first (no growth, nearest base among those), else the
+// container the previous draw took if it is legal and within the budget, else a new surface.
+//
+// ⚠️ A no-growth-only rule buys nothing anywhere on this corpus. Every fold here needs the
+// container to grow; growth is the feature, not an optimisation of it.
+void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
+	GSTileSurfaceId id, bool created)
+{
+	if (layout.kind != GSTileSurfaceKind::Color)
+		return;
+
+	// The view's footprint is the extent its draws reach from the surface's own origin -- what the
+	// container must hold, not what this draw covers.
+	const u32 cols = gsTileContainPageCols(static_cast<u32>(std::max(rect.z, 0)), layout.bw);
+	const u32 rows = gsTileContainPageRows(static_cast<u32>(std::max(rect.w, 0)), layout.psm);
+	const u32 budget = gsTileGpuContainPageBudget(GSConfig.TileGpuContainPageBudget);
+
+	// A recycled id is a different surface: the last tenant's rows go, and so does anything folded
+	// into it. Ids come back off the model's free list, so this is not hypothetical.
+	if (created)
+	{
+		if (m_contain_rows.size() <= id)
+			m_contain_rows.resize(id + 1, 0);
+		m_contain_rows[id] = 0;
+		for (auto it = m_contain_alias.begin(); it != m_contain_alias.end();)
+		{
+			if (it->second.id == id)
+				it = m_contain_alias.erase(it);
+			else
+				++it;
+		}
+	}
+
+	// Already folded, and the fold is sticky. It has to be: under containment no surface would ever
+	// have been created for this view, so the exact-match road below must not take it back. It is
+	// also what keeps a view from drifting between containers as the draw order shifts, which would
+	// cost a surface create and a re-seed every frame.
+	const auto hit = m_contain_alias.find(layout.pack());
+	if (hit != m_contain_alias.end())
+	{
+		const GSTileSurfaceId cid = hit->second.id;
+		if (m_vram_model.Get(cid).alive)
+		{
+			GSTileContainOffset off;
+			// Re-asked for THIS extent: the view may have grown since the draw that admitted it, and
+			// a growth the predicate would refuse is a fact about the admission, not about the view.
+			if (gsTileContainView(m_vram_model.Get(cid).layout, layout, cols, rows, budget, off) ==
+				GSTileContainRefusal::Admitted)
+				NoteContainerRows(cid, off.end_row);
+			else
+				m_frame.contain_regrow_refused++;
+			m_contain_view = cid;
+			m_frame.contain_folded_draws++;
+			return;
+		}
+		m_contain_alias.erase(hit);
+	}
+
+	// A surface that already existed is its own container. There is no retro-folding: a view that
+	// was not folded when it was created is not folded later, because moving it would mean moving
+	// page ownership and bumping two surface versions mid-frame.
+	if (!created)
+	{
+		NoteContainerRows(id, rows);
+		m_contain_view = id;
+		return;
+	}
+
+	m_frame.contain_first_sight++;
+	const GSTileSurfaceId open = m_contain_prev_valid ? m_contain_prev_folded : kGSTileNoSurface;
+	GSTileSurfaceId fit_id = kGSTileNoSurface, open_id = kGSTileNoSurface;
+	GSTileContainOffset fit_off, open_off;
+	u32 fit_base = 0;
+	u32 candidates = 0;
+	GSTileContainRefusal furthest = GSTileContainRefusal::Admitted;
+	for (u32 slot = 0; slot < m_vram_model.SurfaceSlots(); slot++)
+	{
+		const GSTileSurfaceId cid = static_cast<GSTileSurfaceId>(slot);
+		if (cid == id)
+			continue;
+		const GSVramModel::Surface& surf = m_vram_model.Get(cid);
+		if (!surf.alive || surf.layout.kind != GSTileSurfaceKind::Color)
+			continue;
+		// A view that is itself folded is not a container. Under containment it would never have
+		// had a surface at all, so admitting it here would offer a candidate that does not exist.
+		if (m_contain_alias.count(surf.layout.pack()) != 0)
+			continue;
+		candidates++;
+
+		GSTileContainOffset off;
+		const GSTileContainRefusal why = gsTileContainView(surf.layout, layout, cols, rows, budget, off);
+		if (why != GSTileContainRefusal::Admitted)
+		{
+			if (static_cast<u8>(why) > static_cast<u8>(furthest))
+				furthest = why;
+			continue;
+		}
+		const u32 held = (m_contain_rows.size() > cid) ? m_contain_rows[cid] : 0;
+		if (off.end_row <= held)
+		{
+			// Covers the view already. Nearest base among these, which is the tightest fit.
+			if (fit_id == kGSTileNoSurface || surf.layout.bp > fit_base)
+			{
+				fit_id = cid;
+				fit_off = off;
+				fit_base = surf.layout.bp;
+			}
+		}
+		else if (cid == open)
+		{
+			open_id = cid;
+			open_off = off;
+		}
+	}
+
+	const GSTileSurfaceId picked = (fit_id != kGSTileNoSurface) ? fit_id : open_id;
+	if (picked != kGSTileNoSurface)
+	{
+		const GSTileContainOffset& off = (fit_id != kGSTileNoSurface) ? fit_off : open_off;
+		m_contain_alias[layout.pack()] = GSTileContainedView{picked, off.x, off.y};
+		m_frame.contain_folds++;
+		m_frame.contain_folded_draws++;
+		const u32 held = (m_contain_rows.size() > picked) ? m_contain_rows[picked] : 0;
+		if (off.end_row > held)
+			m_frame.contain_growth_pages += (off.end_row - held) * m_vram_model.Get(picked).layout.bw;
+		NoteContainerRows(picked, off.end_row);
+		m_contain_view = picked;
+		return;
+	}
+
+	if (candidates == 0)
+		m_frame.contain_ref_none++;
+	else
+	{
+		switch (furthest)
+		{
+			case GSTileContainRefusal::Family:
+				m_frame.contain_ref_family++;
+				break;
+			case GSTileContainRefusal::Stride:
+				m_frame.contain_ref_stride++;
+				break;
+			case GSTileContainRefusal::Alignment:
+				m_frame.contain_ref_align++;
+				break;
+			case GSTileContainRefusal::Delta:
+				m_frame.contain_ref_delta++;
+				break;
+			case GSTileContainRefusal::Column:
+				m_frame.contain_ref_column++;
+				break;
+			case GSTileContainRefusal::Extent:
+				m_frame.contain_ref_extent++;
+				break;
+			case GSTileContainRefusal::Wrap:
+				m_frame.contain_ref_wrap++;
+				break;
+			default:
+				break;
+		}
+	}
+	NoteContainerRows(id, rows);
+	m_contain_view = id;
+}
+
+void GSRendererTileGpu::CountContainmentBreaks(GSTileSurfaceId fb_id, GSTileSurfaceId z_id, bool z_used)
+{
+	// A colour surface the census declined to answer for (a display materialise ran last, or the
+	// probe never saw this layout) falls back to the surface the draw actually takes, which counts
+	// as no fold rather than as a wrong one.
+	const GSTileSurfaceId folded = (m_contain_view != kGSTileNoSurface) ? m_contain_view : fb_id;
+	m_frame.contain_draws++;
+	if (m_contain_prev_valid)
+	{
+		// The depth half of the key is unchanged by containment -- depth is deferred -- so it is
+		// the same term on both sides and only decides whether a colour-identical pair still breaks.
+		const bool depth_same =
+			z_used == m_contain_prev_depth_used && (!z_used || z_id == m_contain_prev_depth);
+		const bool color_moved = fb_id != m_contain_prev_color;
+		const bool folded_moved = folded != m_contain_prev_folded;
+		m_frame.contain_breaks += color_moved ? 1 : 0;
+		m_frame.contain_breaks_folded += folded_moved ? 1 : 0;
+		m_frame.contain_full_breaks += (color_moved || !depth_same) ? 1 : 0;
+		m_frame.contain_full_breaks_folded += (folded_moved || !depth_same) ? 1 : 0;
+	}
+	m_contain_prev_color = fb_id;
+	m_contain_prev_folded = folded;
+	m_contain_prev_depth = z_id;
+	m_contain_prev_depth_used = z_used;
+	m_contain_prev_valid = true;
 }
 
 // "This surface's texels changed." The donor road's whole content identity rests on this counter,
@@ -3826,6 +4110,11 @@ void GSRendererTileGpu::AccumulateDraw()
 			return;
 		}
 	}
+
+	// The containment census's own boundary, counted here because it is a change BETWEEN draws.
+	// Placed after both EnsureSurface calls and before anything reads the pass key, so it sees the
+	// same pair of surfaces the pass structure below is built from -- and it decides nothing.
+	CountContainmentBreaks(fb_id, z_id, z_used);
 
 	// Which pass is open for this draw? A draw whose key differs from the open pass's starts a new
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build

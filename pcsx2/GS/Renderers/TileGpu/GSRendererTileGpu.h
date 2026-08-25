@@ -1987,6 +1987,43 @@ private:
 	SurfaceTexels& Texels(GSTileSurfaceId id);
 	void NoteTextureGeometry(GSTileSurfaceId id, int height);
 
+	// -- the containment census --------------------------------------------------------------
+	//
+	// What surface-identity containment WOULD do to this frame's pass structure, asked against the
+	// live draw stream and not acted on. Same discipline ProbeSourceRoad was built under: every
+	// refusal lands in its own counter, and the caller goes on to the exact-match road exactly as
+	// it did before this existed. Nothing is folded, no surface grows, no offset reaches a draw.
+	//
+	// It exists to be checked against a simulation of the same six titles' PS2 draw streams before
+	// any of the machinery that would act on it is built. The predicate and the policy are cheap;
+	// the offset geometry, the display path and the writeback mask are not, and a fold count that
+	// disagrees with the simulation means the model of the win is wrong.
+	//
+	// `created` is EnsureSurface's own road: false is a surface that already existed, which under
+	// containment is its own container, and true is one the exact road has just created -- the
+	// moment a fold would have happened instead. There is no retro-folding, so that is the only
+	// moment it can.
+	void ProbeContainment(const GSTileSurfaceLayout& layout, const GSVector4i& rect, GSTileSurfaceId id, bool created);
+	// A pass key change between consecutive draws, counted twice over: once on the surfaces the
+	// draws actually take, and once on the containers they would take. Their difference IS the
+	// saving, and it is only visible at this level -- EnsureSurface sees one draw at a time.
+	void CountContainmentBreaks(GSTileSurfaceId fb_id, GSTileSurfaceId z_id, bool z_used);
+	// The container's page-row count after admitting a view that reaches `end_row`.
+	void NoteContainerRows(GSTileSurfaceId id, u32 end_row);
+	GSTileViewAliasTable m_contain_alias;
+	/// Per surface id, the page ROWS its container would hold. Nothing grows, so this cannot be
+	/// read back off the pool: it is the census's own arithmetic, and it is what says whether a
+	/// later fold needs the container to grow or already fits inside it.
+	std::vector<u32> m_contain_rows;
+	GSTileSurfaceId m_contain_view = kGSTileNoSurface; ///< the last colour probe's answer
+	GSTileSurfaceId m_contain_prev_color = kGSTileNoSurface;
+	GSTileSurfaceId m_contain_prev_folded = kGSTileNoSurface;
+	GSTileSurfaceId m_contain_prev_depth = kGSTileNoSurface;
+	bool m_contain_prev_depth_used = false;
+	/// Cleared at the frame boundary: a break is a change WITHIN a frame, and the first draw of a
+	/// frame follows the last draw of the one before it in nothing but wall-clock order.
+	bool m_contain_prev_valid = false;
+
 	// Bring each enabled display buffer's texture up to date with its bytes, as a draw-less tail
 	// of the frame's plan. The present is the one reader that takes the texture instead of the
 	// bytes, so a page the display surface does not hold -- never written, or written into a
@@ -2423,6 +2460,36 @@ private:
 		// number cannot be both.
 		u32 lossy_pages_depth = 0;
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
+
+		// Surface-identity containment as probed (ProbeContainment): the fold the renderer did NOT
+		// take, counted. The two break pairs are the whole point -- the same draw stream keyed on
+		// today's surfaces and on the containers, so their difference is what the fold removes.
+		// ⚠️ The census's frame denominator, and it counts DRAWS and not surface lookups: a frame
+		// the game presents without drawing into it still materialises its display buffer, so a
+		// lookup count says every frame was drawn and halves every mean on a title that presents
+		// two frames per drawn one (Yu-Gi-Oh! does exactly this).
+		u32 contain_draws = 0;
+		u32 contain_first_sight = 0; // ...a view with no surface and no container yet
+		u32 contain_folds = 0; // ...that a live container could have held: the fold set
+		u32 contain_folded_draws = 0; // draws whose colour target would be a container, not their own
+		u32 contain_growth_pages = 0; // pages the containers grew by to admit them
+		u32 contain_max_pages = 0; // the largest page footprint any container reached (a MAX, not a sum)
+		// A view whose later draws outgrew the clause that admitted it. Nonzero says the fold was
+		// decided on an extent that did not hold, which is a first-sight problem no growth budget
+		// fixes -- the admission has to be re-asked, or the view has to be evicted.
+		u32 contain_regrow_refused = 0;
+		u32 contain_ref_none = 0; // no live colour surface to test at all
+		u32 contain_ref_family = 0;
+		u32 contain_ref_stride = 0;
+		u32 contain_ref_align = 0;
+		u32 contain_ref_delta = 0;
+		u32 contain_ref_column = 0;
+		u32 contain_ref_extent = 0;
+		u32 contain_ref_wrap = 0;
+		u32 contain_breaks = 0; // colour-surface changes between consecutive draws, today
+		u32 contain_breaks_folded = 0; // ...under containment
+		u32 contain_full_breaks = 0; // ...with the depth surface and its presence in the key
+		u32 contain_full_breaks_folded = 0;
 		// The alpha test decided at plan time, over the draws that would otherwise have carried a
 		// per-fragment test: a comparison the draw's constant fragment alpha provably fails, or
 		// provably passes. ATST NEVER and ALWAYS are NOT counted -- they never reached the fragment
