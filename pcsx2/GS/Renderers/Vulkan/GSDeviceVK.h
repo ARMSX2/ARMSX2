@@ -757,6 +757,12 @@ private:
 	bool m_tilegpu_undrawn_warned = false;
 	u32 m_tilegpu_undrawn_frames = 0;
 	u32 m_tilegpu_undrawn_draws = 0;
+	// A plan the executor left mid-flight because a render pass object could not be had. The caller
+	// discards the return value and the renderer has already recorded the plan as done, so this is the
+	// one road whose damage OUTLIVES the frame: the byte model believes reconciliations happened that
+	// never reached the GPU.
+	bool m_tilegpu_abandoned_warned = false;
+	u32 m_tilegpu_abandoned_plans = 0;
 	/// EmuCore/GS/TileGpuSerializeOps is announced once per run, not once per plan: a plan is a frame
 	/// and the line exists so a device log can testify the arm engaged, which one line does.
 	bool m_tilegpu_serialize_announced = false;

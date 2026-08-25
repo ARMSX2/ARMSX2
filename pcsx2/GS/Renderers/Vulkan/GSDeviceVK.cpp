@@ -8061,6 +8061,24 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		vtex->SetState(GSTexture::State::Dirty);
 	};
 
+	// The plan's mid-flight exits. Five sites below cannot get a render pass object and return from the
+	// executor, which skips every pass after them -- and the renderer discards this function's return
+	// value, having already recorded the whole plan as done. So the frame is wrong from the exit point
+	// on AND the next frame's byte model believes bytes moved that never did, with nothing said. Each
+	// exit names itself here.
+	const auto abandon = [this](const char* what) {
+		m_tilegpu_abandoned_plans++;
+		if (!m_tilegpu_abandoned_warned)
+		{
+			m_tilegpu_abandoned_warned = true;
+			Console.Error("TileGpu: a plan was abandoned mid-frame at %s. Every pass after it is skipped and the "
+						  "renderer still records the whole plan as done, so the byte model is now ahead of the "
+						  "GPU. Totals at teardown.",
+				what);
+		}
+		return false;
+	};
+
 	// Every source into shader-read layout, which is what the descriptors just written promise.
 	if (source_set != VK_NULL_HANDLE)
 	{
@@ -8219,7 +8237,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (erp == VK_NULL_HANDLE)
-						return false;
+						return abandon("a palette-expand op's render pass");
 					if (eload == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
 						VkClearValue cv = {};
@@ -8352,7 +8370,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (drp == VK_NULL_HANDLE)
-						return false;
+						return abandon("a donor or CLUT-gather build's render pass");
 					if (dload == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
 						VkClearValue cv = {};
@@ -8507,7 +8525,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (rp == VK_NULL_HANDLE)
-						return false;
+						return abandon("a source materialise's render pass");
 					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
 						VkClearValue cv = {};
@@ -8675,7 +8693,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
 													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (rp == VK_NULL_HANDLE)
-						return false;
+						return abandon("a seed op's render pass");
 					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
 						// A pool texture on its first bind. The clear covers the WHOLE attachment, not the
@@ -8802,7 +8820,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, false,
 			false, declares);
 		if (rp == VK_NULL_HANDLE)
-			return false;
+			return abandon("a geometry pass's render pass");
 
 		// The pass's RENDER AREA: what its draws touch, not the whole attachment pair. On a tiler a
 		// pass costs a tile load and a tile store per pixel of it whether anything drew there or not,
@@ -10374,6 +10392,12 @@ void GSDeviceVK::DestroyResources()
 		Console.Error("TileGpu: %u frames carrying %u draws recorded no geometry at all this session; their passes "
 					  "cleared and stored, so they rendered black.",
 			m_tilegpu_undrawn_frames, m_tilegpu_undrawn_draws);
+	}
+	if (m_tilegpu_abandoned_plans != 0)
+	{
+		Console.Error("TileGpu: %u plans were abandoned mid-frame this session; the passes after each were never "
+					  "recorded, and the renderer's byte model counted them as done.",
+			m_tilegpu_abandoned_plans);
 	}
 
 	for (FrameResources& resources : m_frame_resources)
