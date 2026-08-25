@@ -785,6 +785,13 @@ private:
 	VKStreamBuffer m_tilegpu_indirect_stream_buffer;
 	VKStreamBuffer m_tilegpu_state_stream_buffer;
 	VKStreamBuffer m_tilegpu_vram_stream_buffer;
+	/// Carry every stream a TileGpu plan stages into onto the command buffer now recording. Call it
+	/// at EVERY point the executor ends a command buffer partway through a plan -- the five streams
+	/// are the vertices, the indices, the state table, the indirect commands and the ring, and a
+	/// plan holds live references to all of them from the moment it stages until its last draw is
+	/// recorded. Without this the ring frees them at the first of the plan's submissions instead of
+	/// the last; VKStreamBuffer::RetainForCurrentCommandBuffer's comment has the mechanism.
+	void RetainTileGpuStreamsForCurrentCommandBuffer();
 	bool m_tilegpu_tried = false;
 	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the byte sampling path compiled in
 	bool CompileTileGpuPipeline();

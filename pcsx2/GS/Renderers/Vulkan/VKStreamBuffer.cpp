@@ -195,6 +195,19 @@ void VKStreamBuffer::CommitMemory(u32 final_num_bytes)
 	UpdateCurrentFencePosition();
 }
 
+void VKStreamBuffer::RetainForCurrentCommandBuffer()
+{
+	if (m_tracked_fences.empty())
+		return;
+
+	// Only the newest entry can still be under a live reader: everything older was committed
+	// before it and is covered by an earlier fence the ring already respects. Moving it forward
+	// keeps the deque sorted, because the back is by construction the largest counter.
+	const u64 counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
+	if (m_tracked_fences.back().first < counter)
+		m_tracked_fences.back().first = counter;
+}
+
 void VKStreamBuffer::UpdateCurrentFencePosition()
 {
 	// Has the offset changed since the last fence?

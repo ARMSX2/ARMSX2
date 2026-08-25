@@ -6789,6 +6789,37 @@ u32 GSDeviceVK::TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask)
 	return ((mask & GSDevice::kGSTileGpuTexelGeometryMask) != 0) ? mask : GSDevice::kGSTileGpuTexelMaskAll;
 }
 
+// Every stream a TileGpu plan stages into, carried onto the command buffer that is recording now.
+//
+// The stream ring's model of who is still reading a range is "the command buffer that was recording
+// when it was committed", and that is right for the classic renderer, which stages and then draws
+// without ever ending a buffer in between. The TileGpu executor does not work that way: it stages
+// the WHOLE frame -- vertices, indices, the state table, the indirect commands, the ring pages --
+// before it opens the first pass, and then records draws that reference those ranges for the rest of
+// the plan. Anything that ends the command buffer in that window leaves the ranges tracked against a
+// submission that retires FIRST, while the passes recorded after it are still reading them.
+//
+// What that costs is not a torn edge on one draw. UpdateGPUPosition treats "the tracked position
+// caught up with the write position" as the ring being wholly idle and resets it to offset zero, so
+// the next frame does not overwrite the tail of the live data -- it stages a new frame directly on
+// top of all of it. The pixels are then whatever the two frames' timing happened to produce, which
+// is how this presented: Ratchet & Clank drawing with other draws' textures, differently on every
+// run.
+//
+// So this is called at every one of the executor's mid-plan cuts, not only at the ones where a range
+// is known to be live. Two of them (the source-set take and the tile-expand descriptor refill) sit
+// outside the staging window today and get nothing out of it; they call it anyway, because the rule
+// that survives a later edit is "a cut retains", and the alternative is re-auditing all five sites
+// every time a reservation moves. Retention only ever delays a reuse, never permits one.
+void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer()
+{
+	m_vertex_stream_buffer.RetainForCurrentCommandBuffer();
+	m_index_stream_buffer.RetainForCurrentCommandBuffer();
+	m_tilegpu_state_stream_buffer.RetainForCurrentCommandBuffer();
+	m_tilegpu_indirect_stream_buffer.RetainForCurrentCommandBuffer();
+	m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
+}
+
 // The source set the frame's draws sample through, taken from the ring. A set is reusable once the
 // submission that last read it has completed; anything else would rewrite descriptors under an
 // in-flight pass. One write per PLAN, and a plan is usually a frame -- but not always: every stall
@@ -6812,6 +6843,7 @@ u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceB
 		// The ring came all the way round inside one command buffer: the set's last reader is still
 		// being recorded. Close the buffer so it becomes a submission that can be waited on.
 		ExecuteCommandBuffer(false, "TileGpu source descriptor ring wrapped inside one command buffer");
+		RetainTileGpuStreamsForCurrentCommandBuffer();
 	}
 	if (m_tilegpu_source_set_epoch[idx] > GetCompletedSubmitEpoch())
 		WaitForFenceCounter(m_tilegpu_source_set_epoch[idx], GpuWaitCause::SourceSet);
@@ -7689,6 +7721,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (!m_tilegpu_state_stream_buffer.ReserveMemory(state_bytes, plan.state_stride))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu state table");
+			RetainTileGpuStreamsForCurrentCommandBuffer();
 			if (!m_tilegpu_state_stream_buffer.ReserveMemory(state_bytes, plan.state_stride))
 				pxFailRel("Failed to reserve TileGpu state table");
 		}
@@ -7700,6 +7733,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (!m_tilegpu_indirect_stream_buffer.ReserveMemory(indirect_bytes, sizeof(u32)))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu draw commands");
+			RetainTileGpuStreamsForCurrentCommandBuffer();
 			if (!m_tilegpu_indirect_stream_buffer.ReserveMemory(indirect_bytes, sizeof(u32)))
 				pxFailRel("Failed to reserve TileGpu draw commands");
 		}
@@ -7733,6 +7767,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
+			RetainTileGpuStreamsForCurrentCommandBuffer();
 			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 				pxFailRel("Failed to reserve TileGpu ring");
 		}
@@ -9003,6 +9038,7 @@ bool GSDeviceVK::ApplyTileExpandState(bool already_execed)
 			}
 
 			ExecuteCommandBufferAndRestartRenderPass(false, "Out of tile-expand descriptors");
+			RetainTileGpuStreamsForCurrentCommandBuffer();
 			return ApplyTileExpandState(true);
 		}
 		dsub.AddCombinedImageSamplerDescriptorWrite(ds, 0, m_tile_expand_textures[0]->GetView(), m_point_sampler,
