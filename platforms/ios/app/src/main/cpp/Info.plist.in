@@ -301,6 +301,7 @@
     <array>
         <string>stikdebug</string>
         <string>stikjit</string>
+        <string>stosdebug</string>
     </array>
     <key>LSRequiresIPhoneOS</key>
     <true/>
