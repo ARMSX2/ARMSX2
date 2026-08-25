@@ -290,6 +290,10 @@ VkBuffer GSTextureVK::AllocateUploadStagingBuffer(const void* data, u32 pitch, u
 	VmaAllocationCreateInfo aci = {};
 	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+	// ...except under EmuCore/GS/TileGpuStrictMemory, which takes the flush below out of the
+	// picture for every host-visible allocation the CPU writes through, this one included.
+	if (GSDeviceVK::GetInstance()->StrictHostMemory())
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 	VmaAllocationInfo ai;
 	VkBuffer buffer;
@@ -922,6 +926,11 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 									 DriverWorkaround::PreferCoherentReadback);
 	aci.preferredFlags = prefer_coherent ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
 										 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	// EmuCore/GS/TileGpuStrictMemory overrides the readback preference outright: coherent, so the
+	// bytes the CPU reads out of the map do not depend on the invalidate in Map() covering the
+	// right range. Costs the ~12x cached-read win measured above; it is a diagnostic key.
+	if (GSDeviceVK::GetInstance()->StrictHostMemory())
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 	VmaAllocationInfo ai = {};
 	VmaAllocation allocation;

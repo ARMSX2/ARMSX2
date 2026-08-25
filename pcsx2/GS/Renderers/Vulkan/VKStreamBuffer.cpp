@@ -61,6 +61,13 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size)
 	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	// PREFERRED, not required: VMA weighs it against the DEVICE_LOCAL that CPU_TO_GPU adds, so on a
+	// device offering a cached-but-incoherent device-local type and a coherent host type this lands
+	// on whichever comes first in the type list, and the ring is then only as correct as the flush
+	// in CommitMemory. EmuCore/GS/TileGpuStrictMemory promotes it to required for the whole device,
+	// which takes the flush out of the picture and is the point of the key.
+	if (GSDeviceVK::GetInstance()->StrictHostMemory())
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 	VmaAllocationInfo ai = {};
 	VkBuffer new_buffer = VK_NULL_HANDLE;

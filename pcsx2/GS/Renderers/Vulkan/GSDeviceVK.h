@@ -81,6 +81,13 @@ public:
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
 
+	/// EmuCore/GS/TileGpuStrictMemory, read once at device creation. Set, every host-visible
+	/// allocation the CPU writes through must land on a HOST_COHERENT memory type rather than
+	/// merely preferring one -- so a CPU write reaches the GPU whether or not the flush that
+	/// follows it is correctly ranged. Paired with robustBufferAccess, which the same key turns
+	/// on. Diagnostic only; both cost performance and neither fixes anything.
+	__fi bool StrictHostMemory() const { return m_strict_host_memory; }
+
 	// The interaction between raster order attachment access and fbfetch is unclear.
 	__fi bool UseFeedbackLoopLayout() const
 	{
@@ -483,6 +490,7 @@ private:
 	VkPhysicalDeviceDriverPropertiesKHR m_device_driver_properties = {};
 	OptionalExtensions m_optional_extensions = {};
 	bool m_colorclip_fallback_to_hdr = false;
+	bool m_strict_host_memory = false;
 
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;

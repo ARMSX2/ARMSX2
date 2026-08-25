@@ -1110,6 +1110,28 @@ struct Pcsx2Config
 					// pipelines and the renderer all take one answer. Fail-closed: off
 					// means the device's own answer stands. Dev only.
 					TileGpuDisableSelfRead : 1,
+					// Take away the two things a driver is allowed to do differently with
+					// host memory and with a read that leaves its buffer.
+					//
+					// Set, the device asks for robustBufferAccess (core, and every
+					// implementation must offer it), so a storage-buffer read past the end
+					// of its binding returns zero instead of whatever the address space
+					// holds; and every host-visible stream buffer is REQUIRED to land on a
+					// HOST_COHERENT memory type instead of merely preferring one, so a CPU
+					// write is visible to the GPU without depending on the flush being
+					// correctly ranged and correctly ordered.
+					//
+					// The case this was written for is a proprietary mobile driver that
+					// renders block-shaped garbage texels and does not repeat itself
+					// run-to-run, on a device where the same dumps are clean and
+					// deterministic under another vendor's driver. Those are the two
+					// mechanisms that produce exactly that shape -- an out-of-bounds read
+					// whose result is undefined, and a stale page of host memory -- and the
+					// key collapses both at once so the device can say whether either is
+					// live. It costs performance on every allocation it touches and buys
+					// nothing on a correct road; it is an isolation lever, not a fix.
+					// Fail-closed: off means today's behaviour, unchanged. Dev only.
+					TileGpuStrictMemory : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

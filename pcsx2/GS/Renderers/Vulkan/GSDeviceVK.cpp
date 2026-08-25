@@ -594,6 +594,22 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.shaderSampledImageArrayDynamicIndexing =
 		available_features.shaderSampledImageArrayDynamicIndexing;
 
+	// ...and robustBufferAccess, under EmuCore/GS/TileGpuStrictMemory and nothing else. Left off,
+	// a buffer read that leaves its binding returns whatever the address space holds there, which
+	// is a different thing on every driver and can be a different thing on two runs of the same
+	// one. On it, the read returns zero: the wrong pixel becomes a REPEATABLE wrong pixel, which is
+	// what makes an out-of-bounds index distinguishable from a coherency fault. Core, and the spec
+	// requires every implementation to offer it, so the availability check below is a formality --
+	// it is here because silently not enabling a feature we told the log we enabled is worse than
+	// the missing feature would be.
+	if (GSConfig.TileGpuStrictMemory)
+	{
+		if (available_features.robustBufferAccess == VK_TRUE)
+			m_device_features.robustBufferAccess = VK_TRUE;
+		else
+			Console.Warning("VK: TileGpuStrictMemory asked for robustBufferAccess and the device does not offer it.");
+	}
+
 	return true;
 }
 
@@ -741,6 +757,18 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		return false;
 
 	device_info.pEnabledFeatures = &m_device_features;
+
+	// The other half of TileGpuStrictMemory, taken here so it is settled before the first
+	// allocation: every host-visible stream buffer REQUIRES a coherent memory type instead of
+	// preferring one. Read once into a member rather than at each allocation, so a setting changed
+	// mid-session cannot leave the device holding buffers on two different kinds of memory.
+	m_strict_host_memory = GSConfig.TileGpuStrictMemory;
+	if (m_strict_host_memory)
+	{
+		Console.WriteLn("VK: TileGpuStrictMemory engaged: robustBufferAccess %s, host-visible stream "
+						"buffers pinned to a HOST_COHERENT memory type.",
+			(m_device_features.robustBufferAccess == VK_TRUE) ? "on" : "UNAVAILABLE");
+	}
 
 	// Enable debug layer on debug builds
 	if (enable_validation_layer)

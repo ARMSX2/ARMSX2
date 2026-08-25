@@ -768,6 +768,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuIgnoreDeviceContract = false;
 	TileGpuDisableBindlessTargets = false;
 	TileGpuDisableSelfRead = false;
+	TileGpuStrictMemory = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1116,6 +1117,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuIgnoreDeviceContract);
 	SettingsWrapBitBool(TileGpuDisableBindlessTargets);
 	SettingsWrapBitBool(TileGpuDisableSelfRead);
+	SettingsWrapBitBool(TileGpuStrictMemory);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);
