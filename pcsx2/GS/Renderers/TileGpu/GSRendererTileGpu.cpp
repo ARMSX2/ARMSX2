@@ -4483,11 +4483,27 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (color_written)
 	{
 		GSPageBitmap seed = PagesNeedingSeed(fb_id, fb_pages, kGSTilePlanesColor);
-		// Plus whatever of this surface's texture has never been filled. The byte model would say
+		// Plus whatever of this surface's RESIDENCY has never been filled. The byte model would say
 		// those pages are fine -- their bytes live in the CPU shadow -- but the present reads the
 		// texture, so an unfilled page reaches the screen as allocator leftovers. Paid once per
 		// surface: after this the whole residency is materialised.
-		seed |= Texels(fb_id).filled.MissingFrom(Texels(fb_id).pages);
+		//
+		// Residency, not the texture rectangle, and they are not the same set. The pool texture is
+		// always bw pages wide and as tall as the highest page row any rect has reached, while the
+		// residency is the union of the rects themselves -- so a surface whose views are narrower
+		// than its stride, or whose tall view is a thin strip, carries a gap between the two. No
+		// view ever claimed a page in that gap, so nothing owns it, nothing samples it, nothing
+		// reads it back and nothing presents it: the display's own rect is claimed by
+		// MaterialiseDisplayBuffers, which grows residency over it and seeds it explicitly before
+		// the plan is built. Seeding the gap costs a writeback and a seed page apiece for pages
+		// nobody is going to look at.
+		//
+		// It matters more than it did. Surface-identity containment makes the gap the size of the
+		// container: fold a 65x33 palette buffer into the frame buffer 17 page-rows below it and
+		// the texture rectangle grows by every page between the two bases while the residency grows
+		// by two. Seeding the rectangle would put a full-image seed and hundreds of writebacks on
+		// the frame each container grows.
+		seed |= Texels(fb_id).filled.MissingFrom(Texels(fb_id).pages & m_vram_model.Get(fb_id).residency);
 		GSPageBitmap covered;
 		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
 			gsTileFrameWriteIsTotal(ctx->FRAME.FBMSK, fb_fmsk) &&

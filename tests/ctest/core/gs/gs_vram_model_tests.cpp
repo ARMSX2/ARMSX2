@@ -819,3 +819,66 @@ TEST(GSVramModel, GpuEpochIsMaxOverStampsAndOverTheSet)
 	EXPECT_EQ(m.GpuEpoch(10), 0u);
 	EXPECT_EQ(m.GpuEpoch(11), 0u);
 }
+
+// -- residency versus the texture rectangle ------------------------------------------
+//
+// The pool texture is always `bw` pages wide and as tall as the highest page row any
+// view has reached; the residency is the union of the view RECTANGLES. TileGpu's
+// unfilled-texture seed asks the second, not the first, and the whole reason it can is
+// that a page in the gap between them was claimed by nobody -- OwnerOf says so, which
+// is what makes it unreadable by anything downstream. Pinned here because the two sets
+// coincide on a full-width frame buffer, which is most of the corpus, so a change that
+// confused them would go unnoticed until a narrow view appeared.
+
+TEST(GSVramModel, ResidencyIsTheClaimedRectsNotTheTextureRectangle)
+{
+	// GT4's shape: a palette buffer 65 pixels wide on a stride-10 (640-pixel) surface.
+	// One page row tall, two page columns wide -- and the pool texture that backs it is
+	// the full ten.
+	const auto l = Layout(0, 10, PSMCT32);
+	const GSVector4i view(0, 0, 65, 32);
+	const GSVector4i texture(0, 0, 640, 32); // what the pool allocates for one page row
+
+	GSVramModel m;
+	const GSTileSurfaceId id = m.Create(l, view, 1);
+	const GSPageBitmap resident = m.Get(id).residency;
+	const GSPageBitmap spanned = GSVramModel::PagesForRect(l, texture);
+
+	EXPECT_EQ(resident.count(), 2u);
+	EXPECT_EQ(spanned.count(), 10u);
+	EXPECT_TRUE(resident.andnot(spanned).empty()) << "residency must live inside the texture";
+	EXPECT_EQ(spanned.andnot(resident).count(), 8u) << "the gap the seed no longer pays for";
+
+	// And the gap is unclaimed in the model's own terms: the view draws over its whole
+	// residency and still owns not one page of the rest.
+	m.OnNativeDraw(id, resident, kGSTilePlanesColor);
+	spanned.andnot(resident).forEachSetPage([&](u32 page) {
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+			EXPECT_EQ(m.OwnerOf(page, pi), kGSTileNoSurface) << "page " << page << " plane " << pi;
+	});
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+TEST(GSVramModel, ResidencyGrowsToTheUnionOfEveryViewsRect)
+{
+	// A second view of the same surface, further down: residency takes its rect too, so
+	// narrowing the seed to residency never drops a page some view has claimed. The rows
+	// BETWEEN them stay out of it, which is exactly the hole a contained view leaves.
+	const auto l = Layout(0, 10, PSMCT32);
+	GSVramModel m;
+	const GSTileSurfaceId id = m.Create(l, GSVector4i(0, 0, 640, 32), 1);
+	const GSPageBitmap first = m.Get(id).residency;
+	EXPECT_EQ(first.count(), 10u);
+
+	const GSPageBitmap far_row = GSVramModel::PagesForRect(l, GSVector4i(0, 160, 128, 192));
+	m.GrowResidency(id, far_row);
+	const GSPageBitmap grown = m.Get(id).residency;
+	EXPECT_EQ(grown.count(), 12u) << "ten pages plus the two the second view claimed";
+	EXPECT_TRUE(first.andnot(grown).empty());
+	EXPECT_TRUE(far_row.andnot(grown).empty());
+
+	// Six page rows of texture, sixty pages spanned, twelve of them claimed.
+	const GSPageBitmap spanned = GSVramModel::PagesForRect(l, GSVector4i(0, 0, 640, 192));
+	EXPECT_EQ(spanned.count(), 60u);
+	EXPECT_EQ(spanned.andnot(grown).count(), 48u);
+}
