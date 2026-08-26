@@ -14,6 +14,7 @@
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
 
+#include <algorithm>
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -242,6 +243,214 @@ u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, Bre
 		j++;
 	}
 	return j;
+}
+
+// -- draw reordering (EmuCore/GS/TileGpuReorderRuns) -------------------------------------------
+//
+// A pass is its attachments, so a game that alternates between two render targets ends a render
+// pass on every switch. Where the two targets share no GS page the alternation is a scheduling
+// accident and not a data dependency: the draws into each can be grouped and the passes collapse.
+// Dirge of Cerberus plans about a thousand passes a frame that way and would plan under sixty.
+//
+// This is the bookkeeping half -- which draws are staged in which RUN, and what order the runs come
+// out in. It holds no renderer state and does no page arithmetic beyond intersect, so the whole
+// thing is drivable from a test with a synthetic draw list (gs_tilegpu_reorder_tests.cpp).
+//
+// The standing invariant, which is the entire correctness argument:
+//
+//   Every pair of open runs is page-independent, because admission tested every draw against every
+//   other run at the moment it joined.
+//
+// That is what makes any flush legal -- the whole backlog, in open order -- because the only pairs
+// the concatenation can invert are cross-run pairs, and those were proved disjoint.
+class GSTileGpuReorderScheduler
+{
+public:
+	/// The ceiling on concurrent runs. Classic's own scheduler holds four; the corpus never wants
+	/// more than three.
+	static constexpr u32 kMaxRuns = 8;
+	static constexpr u32 kNoRun = ~0u;
+
+	/// Which way a draw collided with the runs it was not joining.
+	enum : u32
+	{
+		kHazardRaw = 1u << 0, ///< it reads pages a queued run writes
+		kHazardWar = 1u << 1, ///< it writes pages a queued run reads
+		kHazardWaw = 1u << 2, ///< it writes pages a queued run writes
+	};
+
+	/// Where a draw may go, and what making room for it cost.
+	struct Verdict
+	{
+		u32 run = 0;           ///< the run to stage it in
+		u32 hazards = 0;       ///< the channels that forced the backlog out first
+		u32 runs_emitted = 0;  ///< runs that flush emitted (0 when nothing had to be flushed)
+	};
+
+	void Reset(u32 max_runs)
+	{
+		m_max_runs = std::min(std::max(max_runs, 1u), kMaxRuns);
+		m_open = 0;
+		m_order.clear();
+		for (Run& r : m_runs)
+		{
+			r.draws.clear();
+			r.written.clear();
+			r.read.clear();
+		}
+	}
+
+	u32 MaxRuns() const { return m_max_runs; }
+	u32 OpenRuns() const { return m_open; }
+	u32 StagedDraws() const
+	{
+		u32 n = 0;
+		for (u32 r = 0; r < m_open; r++)
+			n += static_cast<u32>(m_runs[r].draws.size());
+		return n;
+	}
+
+	/// Which run will take a draw with this key and these footprints. Flushes the backlog where it
+	/// has to -- a hazard against another run, or a new key with no room -- so this MUTATES, and the
+	/// caller must act on the verdict before asking again.
+	///
+	/// The test is asked of every run but the draw's own: order inside a run is preserved, so a draw
+	/// may freely overlap the pages of the run it is joining. That is where a page bitmap beats a
+	/// texture-pointer comparison, which cannot tell which run a queued reader lives in.
+	Verdict Admit(const GSTileGpuPassKey& key, const GSPageBitmap& written, const GSPageBitmap& read)
+	{
+		Verdict v;
+		u32 mine = kNoRun;
+		for (u32 r = 0; r < m_open; r++)
+		{
+			if (m_runs[r].key == key)
+			{
+				mine = r;
+				break;
+			}
+		}
+		for (u32 r = 0; r < m_open; r++)
+		{
+			if (r == mine)
+				continue;
+			v.hazards |= written.intersects(m_runs[r].written) ? kHazardWaw : 0u;
+			v.hazards |= written.intersects(m_runs[r].read) ? kHazardWar : 0u;
+			v.hazards |= read.intersects(m_runs[r].written) ? kHazardRaw : 0u;
+		}
+		if (v.hazards != 0)
+		{
+			v.runs_emitted = FlushAll();
+			mine = kNoRun;
+		}
+		if (mine == kNoRun)
+			mine = OpenRun(key, &v.runs_emitted); // the cap flushes here, if there is no room
+		v.run = mine;
+		return v;
+	}
+
+	/// Open a run with this key and return its index, emitting the backlog first if the cap leaves no
+	/// room. `emitted` takes however many runs that cost.
+	u32 OpenRun(const GSTileGpuPassKey& key, u32* emitted = nullptr)
+	{
+		if (m_open == m_max_runs)
+		{
+			const u32 n = FlushAll();
+			if (emitted)
+				*emitted += n;
+		}
+		m_runs[m_open].key = key;
+		return m_open++;
+	}
+
+	/// Put draw `index` in run `run` and grow that run's footprints.
+	void Stage(u32 index, u32 run, const GSPageBitmap& written, const GSPageBitmap& read)
+	{
+		pxAssert(run < m_open);
+		Run& r = m_runs[run];
+		r.draws.push_back(index);
+		r.written |= written;
+		r.read |= read;
+	}
+
+	/// A draw nothing has proved independent of the backlog -- it can neither be deferred nor hopped
+	/// over. The backlog goes out and the draw follows it, in place. Returns the runs that emitted.
+	u32 EmitInPlace(u32 index)
+	{
+		const u32 emitted = FlushAll();
+		m_order.push_back(index);
+		return emitted;
+	}
+
+	/// Emit every open run, in open order, and start over. Returns how many emitted.
+	u32 FlushAll()
+	{
+		const u32 emitted = m_open;
+		for (u32 r = 0; r < m_open; r++)
+		{
+			Run& run = m_runs[r];
+			m_order.insert(m_order.end(), run.draws.begin(), run.draws.end());
+			run.draws.clear();
+			run.written.clear();
+			run.read.clear();
+		}
+		m_open = 0;
+		return emitted;
+	}
+
+	/// The emission order committed so far: a permutation of the draw indices handed in.
+	const std::vector<u32>& Order() const { return m_order; }
+	void ClearOrder() { m_order.clear(); }
+
+private:
+	struct Run
+	{
+		GSTileGpuPassKey key;
+		GSPageBitmap written;
+		GSPageBitmap read;
+		std::vector<u32> draws;
+	};
+
+	std::array<Run, kMaxRuns> m_runs;
+	u32 m_max_runs = 1;
+	u32 m_open = 0;
+	std::vector<u32> m_order;
+};
+
+/// Gather one per-draw array into the emission order: out[i] = src[order[i]]. Through a scratch
+/// vector the caller owns, so a frame's splice allocates nothing after the first.
+template <typename T>
+void gsTileGpuGatherByOrder(const std::vector<T>& src, const std::vector<u32>& order, std::vector<T>& out)
+{
+	out.clear();
+	out.reserve(order.size());
+	for (const u32 d : order)
+		out.push_back(src[d]);
+}
+
+/// Rebuild a prep-op array in `order`, moving whole op RECORDS and renumbering only the base each
+/// draw's slice starts at.
+///
+/// ⚠️ The side arrays an op names are NOT reindexed and must not be: `first_page_entry` addresses
+/// the plan's page entries, `target` the plan's target list, and a materialise names its
+/// destination in prep_textures. Nothing in those spaces moved, so an op record that carries its
+/// indices unchanged still names what it named.
+///
+/// `first_at(d)` / `count_at(d)` name draw d's slice in `src`; `set_first(d, base)` records where it
+/// landed. The slices must tile `src` -- every op belongs to exactly one draw, which is what the
+/// plan build's own contiguous-range arithmetic already requires.
+template <typename Op, typename FirstAt, typename CountAt, typename SetFirst>
+void gsTileGpuSplicePrepOps(const std::vector<Op>& src, const std::vector<u32>& order, FirstAt first_at,
+	CountAt count_at, SetFirst set_first, std::vector<Op>& out)
+{
+	out.clear();
+	out.reserve(src.size());
+	for (const u32 d : order)
+	{
+		const u32 first = first_at(d);
+		const u32 count = count_at(d);
+		set_first(d, static_cast<u32>(out.size()));
+		out.insert(out.end(), src.begin() + first, src.begin() + first + count);
+	}
 }
 
 // -- surface-identity containment (EmuCore/GS/TileGpuContainSurfaces) --------------------------
@@ -1740,27 +1949,35 @@ private:
 	// leave one frame's draws scheduled two ways.
 	int m_reorder_setting = 0;   ///< the raw lever, for the log line and the report
 	bool m_reorder_census = false; ///< run the model and report it, moving nothing (setting < 0)
-	u32 m_reorder_max_runs = 0;  ///< |setting|, clamped to kMaxReorderRuns; 0 when the lever is off
+	bool m_reorder_active = false; ///< stage and splice for real (setting > 0)
+	u32 m_reorder_max_runs = 0;  ///< |setting|, clamped to the scheduler's ceiling; 0 when off
 
-	/// One staged run. `draws` are indices into m_plan_pending, in stream order; `written` and `read`
-	/// are the unions of their footprints, which is what the admission test asks about.
-	struct ReorderRun
-	{
-		GSTileGpuPassKey key;
-		GSPageBitmap written;
-		GSPageBitmap read;
-		std::vector<u32> draws;
-	};
-	/// The ceiling on concurrent runs. Classic's scheduler holds four; the corpus never wants more
-	/// than three, and the array is held rather than allocated so a frame's scheduling costs nothing.
-	static constexpr u32 kMaxReorderRuns = 8;
-	std::array<ReorderRun, kMaxReorderRuns> m_reorder_backlog;
-	/// The emission order the model produced: a permutation of the plan's draw indices.
-	std::vector<u32> m_reorder_order;
+	/// The staging and the emission order, shared by the count-only model and the live road -- they
+	/// never both run, and one implementation is what keeps the census honest about the other.
+	GSTileGpuReorderScheduler m_reorder;
 
 	/// Run the admission model over the plan as it stands and record what it would have moved.
 	/// Decides nothing: the caller's plan is untouched, and only the ModelFrame counters change.
 	void ReorderCensus();
+
+	/// Stage draw `index` -- the plan entry just pushed -- in the run it belongs to. A no-op unless
+	/// the lever is positive. Every site that appends to m_plan_pending must call it, or the
+	/// emission order comes out short and the splice drops a draw.
+	void StageDraw(u32 index, const GSPageBitmap& written, const GSPageBitmap& read);
+
+	/// Emit the staged runs and put the plan's per-draw arrays in that order. A no-op unless the
+	/// lever is positive; with one run the permutation is the identity and the gather is a copy.
+	void SpliceRuns();
+
+	/// Scratch for the splice, held so a frame's gather allocates nothing. Filled and swapped in.
+	std::vector<GSDevice::GSTileGpuIndirectDraw> m_splice_draws;
+	std::vector<GSDevice::GSTileGpuTopology> m_splice_topologies;
+	std::vector<u32> m_splice_blend_keys;
+	std::vector<GSDevice::GSTileGpuDepthMode> m_splice_depth_modes;
+	std::vector<PendingDraw> m_splice_pending;
+	std::vector<GSPageBitmap> m_splice_write_pages;
+	std::vector<GSPageBitmap> m_splice_read_pages;
+	std::vector<GSDevice::GSTileGpuPrepOp> m_splice_prep_ops;
 
 	// The per-class density budget (GSTileGpuDeclaringBudget). Rolled once per video frame, beside
 	// the model frame it is measured from, so the verdict is constant for every draw of a frame --
@@ -2509,7 +2726,7 @@ private:
 	// ⚠️ It must be chosen BEFORE any prep op of that draw is emitted: everything below the choice
 	// reads the open pass to decide what may be hoisted into it and which rule-2 slot the draw
 	// takes, and a run picked after those reads would test them against the wrong pass.
-	std::array<OpenRun, kMaxReorderRuns> m_open_runs;
+	std::array<OpenRun, GSTileGpuReorderScheduler::kMaxRuns> m_open_runs;
 	u32 m_open_run = 0;
 	OpenRun& CurrentRun() { return m_open_runs[m_open_run]; }
 	const OpenRun& CurrentRun() const { return m_open_runs[m_open_run]; }

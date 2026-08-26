@@ -268,7 +268,10 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// ways. Negative is the census -- the model runs and reports and moves nothing.
 	m_reorder_setting = GSConfig.TileGpuReorderRuns;
 	m_reorder_census = m_reorder_setting < 0;
-	m_reorder_max_runs = std::min(static_cast<u32>(std::abs(m_reorder_setting)), kMaxReorderRuns);
+	m_reorder_active = m_reorder_setting > 0;
+	m_reorder_max_runs =
+		std::min(static_cast<u32>(std::abs(m_reorder_setting)), GSTileGpuReorderScheduler::kMaxRuns);
+	m_reorder.Reset(m_reorder_max_runs);
 	if (m_reorder_setting != 0)
 	{
 		Console.WriteLn("TileGpu: draw reordering %s, %u concurrent runs (TileGpuReorderRuns = %d).",
@@ -581,6 +584,7 @@ bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector
 	// later draw's entry shifted by one, silently.
 	m_plan_write_pages.push_back(write_pages);
 	m_plan_read_pages.emplace_back();
+	StageDraw(draw.state_index, write_pages, GSPageBitmap());
 
 	// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
 	// already done" must reset with it, exactly as AccumulateDraw's breaks do.
@@ -4066,7 +4070,7 @@ void GSRendererTileGpu::BreakOpenPass()
 
 void GSRendererTileGpu::ResetOpenRuns()
 {
-	for (m_open_run = 0; m_open_run < kMaxReorderRuns; m_open_run++)
+	for (m_open_run = 0; m_open_run < GSTileGpuReorderScheduler::kMaxRuns; m_open_run++)
 	{
 		BreakOpenPass();
 		CurrentRun().date_surface = kGSTileNoSurface;
@@ -5245,6 +5249,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	m_plan_pending.push_back(pd);
 	m_plan_write_pages.push_back(draw_write_pages);
 	m_plan_read_pages.push_back(draw_read_pages);
+	StageDraw(draw.state_index, draw_write_pages, draw_read_pages);
 
 	if (alpha_companion)
 	{
@@ -5286,6 +5291,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// not, so copying the pair is exact and not merely conservative.
 		m_plan_write_pages.push_back(draw_write_pages);
 		m_plan_read_pages.push_back(draw_read_pages);
+		StageDraw(alpha_draw.state_index, draw_write_pages, draw_read_pages);
 		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
 		CurrentRun().draw_count++;
 		m_frame.dualsrc_companions++;
@@ -5316,26 +5322,9 @@ void GSRendererTileGpu::ReorderCensus()
 			pd.self_mask != 0, m_segregate_self_read);
 	};
 
-	m_reorder_order.clear();
-	m_reorder_order.reserve(n);
-	u32 open = 0;
-	// Emit every open run, in OPEN order, and start over. That order is what the standing invariant is
-	// spent on: admission proved every pair of open runs page-independent, so any two draws the
-	// concatenation inverts touch no page in common.
-	const auto flush = [&]() {
-		for (u32 r = 0; r < open; r++)
-		{
-			ReorderRun& run = m_reorder_backlog[r];
-			m_reorder_order.insert(m_reorder_order.end(), run.draws.begin(), run.draws.end());
-			run.draws.clear();
-			run.written.clear();
-			run.read.clear();
-		}
-		m_frame.reorder_runs += open;
-		open = 0;
-	};
-
-	constexpr u32 kNoRun = ~0u;
+	// The same scheduler the live road stages with. It is reset here rather than carried, because a
+	// plan IS the reorder window and the model must not remember the previous one's runs.
+	m_reorder.Reset(m_reorder_max_runs);
 	for (u32 d = 0; d < n; d++)
 	{
 		const PendingDraw& pd = m_plan_pending[d];
@@ -5358,67 +5347,24 @@ void GSRendererTileGpu::ReorderCensus()
 			refusal = &m_frame.reorder_ref_feedback;
 		if (refusal)
 		{
-			// Nothing has proved it independent of the backlog, so it can neither be deferred nor
-			// hopped over: the backlog goes out and the draw follows it, in place.
 			(*refusal)++;
-			flush();
-			m_reorder_order.push_back(d);
+			m_frame.reorder_runs += m_reorder.EmitInPlace(d);
 			continue;
 		}
 
-		const GSTileGpuPassKey k = key_of(pd);
-		u32 mine = kNoRun;
-		for (u32 r = 0; r < open; r++)
-		{
-			if (m_reorder_backlog[r].key == k)
-			{
-				mine = r;
-				break;
-			}
-		}
-
-		// The hazard test, asked of every run but this draw's OWN. Order inside a run is preserved, so
-		// a draw may freely overlap the pages of the run it is joining -- which is where a page model
-		// beats a texture-pointer one, since a pointer cannot say which run a queued reader is in.
-		bool raw = false, war = false, waw = false;
-		for (u32 r = 0; r < open; r++)
-		{
-			if (r == mine)
-				continue;
-			const ReorderRun& run = m_reorder_backlog[r];
-			waw = waw || w.intersects(run.written);
-			war = war || w.intersects(run.read);
-			raw = raw || rd.intersects(run.written);
-		}
-		if (raw || war || waw)
-		{
-			m_frame.reorder_haz_raw += raw ? 1u : 0u;
-			m_frame.reorder_haz_war += war ? 1u : 0u;
-			m_frame.reorder_haz_waw += waw ? 1u : 0u;
-			flush();
-			mine = kNoRun;
-		}
-		if (mine == kNoRun)
-		{
-			if (open == m_reorder_max_runs)
-				flush(); // the run cap: a further key wants a run there is no room for
-			mine = open++;
-			m_reorder_backlog[mine].key = k;
-		}
-		ReorderRun& run = m_reorder_backlog[mine];
-		run.draws.push_back(d);
-		run.written |= w;
-		run.read |= rd;
+		const GSTileGpuReorderScheduler::Verdict v = m_reorder.Admit(key_of(pd), w, rd);
+		m_frame.reorder_haz_raw += (v.hazards & GSTileGpuReorderScheduler::kHazardRaw) ? 1u : 0u;
+		m_frame.reorder_haz_war += (v.hazards & GSTileGpuReorderScheduler::kHazardWar) ? 1u : 0u;
+		m_frame.reorder_haz_waw += (v.hazards & GSTileGpuReorderScheduler::kHazardWaw) ? 1u : 0u;
+		m_frame.reorder_runs += v.runs_emitted;
+		m_reorder.Stage(d, v.run, w, rd);
 		m_frame.reorder_admitted++;
-
-		u32 held = 0;
-		for (u32 r = 0; r < open; r++)
-			held += static_cast<u32>(m_reorder_backlog[r].draws.size());
-		m_frame.reorder_peak_draws = std::max(m_frame.reorder_peak_draws, held);
-		m_frame.reorder_peak_runs = std::max(m_frame.reorder_peak_runs, open);
+		m_frame.reorder_peak_draws = std::max(m_frame.reorder_peak_draws, m_reorder.StagedDraws());
+		m_frame.reorder_peak_runs = std::max(m_frame.reorder_peak_runs, m_reorder.OpenRuns());
 	}
-	flush();
-	pxAssertMsg(m_reorder_order.size() == n, "TileGpu's reorder model lost or duplicated a draw");
+	m_frame.reorder_runs += m_reorder.FlushAll();
+	const std::vector<u32>& order = m_reorder.Order();
+	pxAssertMsg(order.size() == n, "TileGpu's reorder model lost or duplicated a draw");
 
 	// Both counts off the same cut function and the same per-draw verdicts, so the pair is one
 	// arrangement against another and not two different questions.
@@ -5426,8 +5372,93 @@ void GSRendererTileGpu::ReorderCensus()
 	m_frame.reorder_passes += gsTileGpuCountPasses(n, m_max_pass_draws,
 		[&](u32 d) { return key_of(m_plan_pending[d]); }, breaks_at);
 	m_frame.reorder_passes_moved += gsTileGpuCountPasses(n, m_max_pass_draws,
-		[&](u32 i) { return key_of(m_plan_pending[m_reorder_order[i]]); },
-		[&](u32 i) { return m_plan_pending[m_reorder_order[i]].break_before; });
+		[&](u32 i) { return key_of(m_plan_pending[order[i]]); },
+		[&](u32 i) { return m_plan_pending[order[i]].break_before; });
+	m_reorder.ClearOrder();
+}
+
+void GSRendererTileGpu::StageDraw(u32 index, const GSPageBitmap& written, const GSPageBitmap& read)
+{
+	if (!m_reorder_active)
+		return;
+	// ONE run, whatever the lever's width says. The admission predicate that would choose among
+	// several is the next rung; until it exists every draw joins the one run in the order it arrived,
+	// so the emission order is the identity and the splice below is a copy of the plan onto itself.
+	// That is deliberate: it puts the gather and the renumbering on the corpus with the answer known,
+	// before anything is allowed to move.
+	if (m_reorder.OpenRuns() == 0)
+		m_reorder.OpenRun(GSTileGpuPassKey{});
+	m_reorder.Stage(index, 0, written, read);
+}
+
+// The splice: the plan's per-draw arrays, gathered into the order the runs came out in.
+//
+// Three things happen and one deliberately does not.
+//
+//  - The per-draw arrays move, through the index permutation. Every array the plan build's own
+//    assert names that is FILLED AT ACCUMULATION is here; the ones it resizes and fills afterwards
+//    (the state rows, the scissors, the bind keys, the variant keys) are not, because they are
+//    written against the spliced order in the first place.
+//  - The prep ops are rebuilt slice by slice, in the new order, and each draw's first_prep_op is
+//    renumbered to where its slice landed. The slices tile the array -- every op belongs to exactly
+//    one draw -- which is the same contiguity the plan build's pass range arithmetic already needs,
+//    so the rebuild comes out monotone and the ranges stay intact.
+//  - state_index and draw_index become the draw's new position, which is what the executor indexes
+//    the state table by. The dual-source companion is pushed immediately after its principal and
+//    joins the same run, so their adjacency survives and its zero-length op slice still lands
+//    exactly at the end of its principal's.
+//
+// ⚠️ And what does NOT move: the page entries, the target list, the source and prep-texture tables,
+// the vertex and index streams. An op record carries indices into all of those and none of them were
+// touched, so the record still names what it named. This is the whole reason reordering is cheap --
+// it moves RECORDS, never geometry and never a side array.
+void GSRendererTileGpu::SpliceRuns()
+{
+	if (!m_reorder_active)
+		return;
+	const u32 n = static_cast<u32>(m_plan_pending.size());
+	m_reorder.FlushAll();
+	const std::vector<u32>& order = m_reorder.Order();
+	pxAssertMsg(order.size() == n, "TileGpu staged a different number of draws than the plan holds");
+	if (order.size() != n)
+	{
+		m_reorder.ClearOrder();
+		return;
+	}
+
+	// The op slices first, because renumbering first_prep_op is what the gathered PendingDraw carries.
+	gsTileGpuSplicePrepOps(
+		m_plan_prep_ops, order, [this](u32 d) { return m_plan_pending[d].first_prep_op; },
+		[this](u32 d) { return m_plan_pending[d].prep_op_count; },
+		[this](u32 d, u32 base) { m_plan_pending[d].first_prep_op = base; }, m_splice_prep_ops);
+	pxAssertMsg(m_splice_prep_ops.size() == m_plan_prep_ops.size(),
+		"TileGpu's prep-op slices do not tile the op array: the splice would drop an op");
+
+	gsTileGpuGatherByOrder(m_plan_pending, order, m_splice_pending);
+	gsTileGpuGatherByOrder(m_plan_draws, order, m_splice_draws);
+	gsTileGpuGatherByOrder(m_plan_topologies, order, m_splice_topologies);
+	gsTileGpuGatherByOrder(m_plan_blend_keys, order, m_splice_blend_keys);
+	gsTileGpuGatherByOrder(m_plan_depth_modes, order, m_splice_depth_modes);
+	gsTileGpuGatherByOrder(m_plan_write_pages, order, m_splice_write_pages);
+	gsTileGpuGatherByOrder(m_plan_read_pages, order, m_splice_read_pages);
+	// The two indices that name a draw's own POSITION rather than anything it owns. Renumbered after
+	// the gather, from the position and not from the old index -- taking the old one is the mistake
+	// this is spelt out to avoid, and it reads another draw's state row rather than failing.
+	for (u32 pos = 0; pos < n; pos++)
+	{
+		m_splice_pending[pos].draw_index = pos;
+		m_splice_draws[pos].state_index = pos;
+	}
+
+	m_plan_pending.swap(m_splice_pending);
+	m_plan_draws.swap(m_splice_draws);
+	m_plan_topologies.swap(m_splice_topologies);
+	m_plan_blend_keys.swap(m_splice_blend_keys);
+	m_plan_depth_modes.swap(m_splice_depth_modes);
+	m_plan_write_pages.swap(m_splice_write_pages);
+	m_plan_read_pages.swap(m_splice_read_pages);
+	m_plan_prep_ops.swap(m_splice_prep_ops);
+	m_reorder.ClearOrder();
 }
 
 // Every draw's fragment variant, and the guard that may withhold half of it.
@@ -5550,6 +5581,11 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		PruneGpuPalettes();
 		return;
 	}
+
+	// The runs come out here, in open order, and the plan's per-draw arrays go into that order. Ahead
+	// of everything below, because everything below is written against the order the executor will
+	// see. A no-op with the lever off.
+	SpliceRuns();
 
 	if (g_gs_device->TileGpuExecutorAvailable())
 	{
