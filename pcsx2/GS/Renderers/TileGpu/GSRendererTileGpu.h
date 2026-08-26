@@ -257,6 +257,14 @@ u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, Bre
 // PSMCT24 and as PSMCT32 are one surface) removes no break on either GT4 dump on its own; nor does
 // a nonzero page offset with PSM equality still required. Together they remove 87% and 91% of the
 // colour-key breaks. Simulated over the corpus's own PS2 draw streams; the arithmetic is below.
+//
+// ⚠️ That paragraph is the DESIGN. What ships is its zero-offset half only -- see
+// kGSTileContainDisplacedViews below, which is the rule the placement actually applies and the
+// reasons the other half is not taken yet. The colour-key metric the two-rule claim was selected on
+// also mis-attributes where the saving is: measured in passes, the same-base merge alone is worth
+// -117.00 render passes a drawn frame on the Online Public Beta dump and the displaced fold beside
+// it is worth -13.00, because what the merge really removes is two views of one base stealing each
+// other's pages -- -130 seed ops and -130 writeback ops a frame, each seed carrying a pass break.
 
 /// Where a contained view's origin lands inside its container, in the container's page grid and in
 /// its pixels. `end_row` is the page-row count the container must hold to admit the view -- what
@@ -299,9 +307,11 @@ enum class GSTileContainRefusal : u8
 /// against the composite policy's 20.38).
 ///
 /// ⚠️ Rule 8 of the design's predicate -- a PSMCT24 view under a PSMCT32 container writes back an
-/// alpha byte its own format does not store -- is NOT here, because it is not a legality question:
-/// it is satisfied by making a 24-bit frame stop writing the image's alpha at all, which moves
-/// pixels with or without containment and lands on its own.
+/// alpha byte its own format does not store -- is NOT here, because it is not a legality question.
+/// Half of it was answered by making a 24-bit frame stop writing the image's alpha at all, which
+/// moves pixels with or without containment and landed on its own. The other half -- the WRITEBACK
+/// still carries the container's byte mask -- is open, and is one of the two reasons a displaced
+/// placement is refused (kGSTileContainDisplacedViews).
 constexpr GSTileContainRefusal gsTileContainView(const GSTileSurfaceLayout& container,
 	const GSTileSurfaceLayout& view, u32 view_page_cols, u32 view_page_rows, u32 page_budget,
 	GSTileContainOffset& out)
@@ -344,6 +354,49 @@ constexpr GSTileContainRefusal gsTileContainView(const GSTileSurfaceLayout& cont
 	out.x = static_cast<s32>(col * 64);
 	out.y = static_cast<s32>(row * gsTilePageHeight(container.psm));
 	return GSTileContainRefusal::Admitted;
+}
+
+/// Whether a view may be placed inside a container at a NONZERO offset. The predicate above is
+/// geometry; this is policy, and it is the one thing that decides what containment ships as.
+///
+/// False: a view is admitted only where it lands at (0, 0) -- the cross-PSM same-base merge, where
+/// the two views name exactly the same guest pages -- and every displaced placement is refused
+/// however legal the geometry. Measured over all 21 corpus dumps, the zero-offset rule is
+/// byte-identical to containment being off, and displacement is not: it breaks five titles, by two
+/// mechanisms that are both a displaced view and its container disagreeing about guest BYTES.
+///
+///   * The WRITEBACK carries the container's byte mask. EmitPrepOp stamps a writeback with the
+///     owning surface's layout and gsTileWritebackByteMask(psm), and under containment the owner is
+///     the container -- so a PSMCT24 view inside a PSMCT32 container has its pages written back with
+///     all four bytes, putting the image's alpha into guest memory the view's own surface would have
+///     masked off. (God of War II reads exactly that byte back as PSMT8H.) A zero-offset merge is
+///     exempt: both views cover the same pages, so no page is written under a mask that is not its
+///     own owner's. The fix is to bucket the writeback by byte mask, which is a rung of its own.
+///   * The READS stop matching. TargetForTextureRead wants the owner's layout to be the read's
+///     exactly, and DonorForTextureRead refuses when the owner is the drawing pass's own attachment.
+///     Displace a view and both start refusing reads they used to serve, and those draws fall to the
+///     byte road -- which decodes guest bytes a writeback assembled, where rule 2 and the donor
+///     sample the live image. Wherever the writeback is lossy those are different texels. On the
+///     Online Public Beta dump this collapses the donor road outright (468.50 eligible windows a
+///     frame to 1.00), because folding the palette buffer into the frame buffer makes the frame
+///     buffer the owner of the palette's pages and the frame buffer is what those draws render into.
+///     A same-base merge changes no read's layout match that was not already refused. The fix is the
+///     per-slot offset bind plus a page-granular donor clause, which is the other rung.
+///
+/// Flipping this to true is the arm that work measures against. It must not ship true until both
+/// fixes are in, and its gate is the 21-dump byte-identity comparison plus "the read-road counters
+/// did not move".
+constexpr bool kGSTileContainDisplacedViews = false;
+
+/// Whether a view may actually SIT at this pixel offset inside its container -- asked of a placement
+/// the predicate admitted, and of a fold already in the alias table. `view_held_to_zero` is the
+/// caller's own veto for this one view (EnsureSurface's `may_offset`, design rule 9); the standing
+/// rule above holds every view to the same thing while displacement is off.
+constexpr bool gsTileContainMayPlaceAt(s32 x_off, s32 y_off, bool view_held_to_zero)
+{
+	if (x_off == 0 && y_off == 0)
+		return true; // the same-base merge: nothing moves, so there is nothing to refuse
+	return kGSTileContainDisplacedViews && !view_held_to_zero;
 }
 
 /// A view's page footprint from the extent its draws reach, measured from the surface's own origin
@@ -1533,6 +1586,12 @@ private:
 	// subtracts, the hardware scissor, the draw rect) is translated by it. (0, 0) is a view that is
 	// its own surface, which is every view while the lever is off.
 	//
+	// ⚠️ While kGSTileContainDisplacedViews is false NO view is displaced, so `out_offset` is always
+	// (0, 0) and the fold is always the cross-PSM same-base merge. `may_offset` is the per-view half
+	// of the same refusal and is what the displaced road is gated on when it comes back; it decides
+	// nothing today, and it is kept live rather than deleted because deleting it would take the
+	// reasons with it.
+	//
 	// `may_offset` false says this caller's view may not be DISPLACED inside a container, whatever
 	// the predicate thinks, and says it permanently. Two callers say it, for the same underlying
 	// reason -- something outside this function reads the view's pixels at coordinates it works out
@@ -2063,7 +2122,9 @@ private:
 	// `first_sight` is EnsureSurface's own road -- true when the model holds no surface for this
 	// layout, which is the one moment a fold can be decided. `may_offset` is the caller's veto (see
 	// EnsureSurface); a false here holds the layout to zero-offset placements permanently, and
-	// unfolds it if it is already sitting at a nonzero one.
+	// unfolds it if it is already sitting at a nonzero one. While kGSTileContainDisplacedViews is
+	// false the standing rule holds EVERY layout to that, so the veto and the unfold it carries are
+	// both dead weight -- correct dead weight, which the displaced rung turns back on.
 	GSTileContainedView PlaceContainedView(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
 		bool first_sight, bool may_offset);
 	// The other half: this view took a surface of its own, so that surface is its own container and
@@ -2569,14 +2630,17 @@ private:
 		u32 contain_ref_column = 0;
 		u32 contain_ref_extent = 0;
 		u32 contain_ref_wrap = 0;
-		// First sights whose only legal containers wanted to DISPLACE them, on a view the caller
-		// holds to a zero offset: the display bases (design rule 9) and the views a depth-carrying
-		// draw named. Not a predicate refusal -- the geometry is perfectly legal -- so it is
-		// counted apart from the clauses above.
-		u32 contain_ref_vetoed = 0;
+		// First sights whose only legal containers wanted to DISPLACE them. Not a predicate refusal
+		// -- the geometry is perfectly legal -- so it is counted apart from the clauses above, and
+		// it is the census the displaced-containment rung reads to size its own work: while
+		// kGSTileContainDisplacedViews is false this is every displaced candidate the corpus has,
+		// and when it is true it goes back to being the per-view veto's own count (the display
+		// bases, design rule 9, and the views a depth-carrying draw named).
+		u32 contain_ref_displaced = 0;
 		// ...and folds undone, because the veto arrived after the displaced fold did. Every one of
 		// these re-seeds the view's pages into a surface of its own, so a number that does not
-		// settle to zero after the first frames is a policy that is thrashing.
+		// settle to zero after the first frames is a policy that is thrashing. Zero by construction
+		// while displacement is off: nothing is ever folded at a nonzero offset to undo.
 		u32 contain_unfolded = 0;
 		// Q5 of the design's open questions: draws where rule 2's target bind was legal in every
 		// respect but the base, because the window's pages are owned by the container the read's own

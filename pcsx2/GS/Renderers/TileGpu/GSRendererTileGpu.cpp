@@ -257,8 +257,9 @@ GSRendererTileGpu::GSRendererTileGpu()
 	m_contain_surfaces = GSConfig.TileGpuContainSurfaces;
 	if (m_contain_surfaces)
 	{
-		Console.WriteLn("TileGpu: surface-identity containment is ON -- one surface may hold two views, page "
-						"budget %u (TileGpuContainPageBudget = %d).",
+		Console.WriteLn("TileGpu: surface-identity containment is ON -- one surface may hold two views of the same "
+						"base%s, page budget %u (TileGpuContainPageBudget = %d).",
+			kGSTileContainDisplacedViews ? " and views displaced inside it" : " (zero offset only)",
 			gsTileGpuContainPageBudget(GSConfig.TileGpuContainPageBudget), GSConfig.TileGpuContainPageBudget);
 	}
 
@@ -594,6 +595,11 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 		// y_offset is -- the same number Classic derives from its own page delta. A column offset
 		// has nowhere to go, so it falls through to the base scan below and then to a black frame,
 		// which is what this returned before it consulted the table at all.
+		//
+		// While kGSTileContainDisplacedViews is false every fold is at (0, 0), so this road can only
+		// ever hand back the container at y_offset 0 -- the same bytes under a different PSM, which
+		// is what the base scan below would have found anyway. It is the displaced road's arm and it
+		// stays, because it is the half of the present that would be wrong without it.
 		const auto alias = m_contain_alias.find(disp_l.pack());
 		if (alias != m_contain_alias.end() && alias->second.x_off == 0 &&
 			m_vram_model.Get(alias->second.id).alive)
@@ -1986,7 +1992,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto ct_col = ctstat([](const MF& f) { return f.contain_ref_column; });
 	const auto ct_ext = ctstat([](const MF& f) { return f.contain_ref_extent; });
 	const auto ct_wrp = ctstat([](const MF& f) { return f.contain_ref_wrap; });
-	const auto ct_veto = ctstat([](const MF& f) { return f.contain_ref_vetoed; });
+	const auto ct_disp = ctstat([](const MF& f) { return f.contain_ref_displaced; });
 	const auto ct_unf = ctstat([](const MF& f) { return f.contain_unfolded; });
 	const auto ct_bind = ctstat([](const MF& f) { return f.contain_bind_refused; });
 	Console.WriteLn("  containment (%s; mean per DRAWN frame, %u of %u): colour-key breaks "
@@ -1997,9 +2003,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"biggest container %u pages, outgrown %.2f, unfolded %.2f",
 		ct_fold.mean, ct_first.mean, ct_fdraw.mean, ct_grow.mean, ct_big.max, ct_regrow.mean, ct_unf.mean);
 	Console.WriteLn("    refused: no container %.2f  family %.2f  stride %.2f  align %.2f  delta %.2f  column %.2f  "
-					"budget %.2f  wrap %.2f  displacement vetoed (display base / depth draw) %.2f",
+					"budget %.2f  wrap %.2f  legal but DISPLACED (only the zero-offset merge ships) %.2f",
 		ct_none.mean, ct_fam.mean, ct_str.mean, ct_aln.mean, ct_dlt.mean, ct_col.mean, ct_ext.mean, ct_wrp.mean,
-		ct_veto.mean);
+		ct_disp.mean);
 	// Q5: what the missing per-slot offset bind costs. Under ~20 a frame on the GT4 pair and the
 	// design defers building it; above, it is the next rung's first job.
 	Console.WriteLn("    rule-2 binds refused for the fold's base alone (the offset bind is not built) %.2f / %u draws",
@@ -2406,8 +2412,10 @@ void GSRendererTileGpu::NoteContainerRows(GSTileSurfaceId id, u32 end_row)
 // a container that already covers the view first (no growth, nearest base among those), else the
 // container the previous draw took if it is legal and within the budget, else a new surface.
 //
-// ⚠️ A no-growth-only rule buys nothing anywhere on this corpus. Every fold here needs the
-// container to grow; growth is the feature, not an optimisation of it.
+// ⚠️ A no-growth-only rule buys nothing for the DISPLACED road: every displaced fold on this corpus
+// needs the container to grow, so growth is that feature and not an optimisation of it. The
+// zero-offset folds this actually takes are the other way round -- a view that IS its container's
+// pages needs no growth at all, and the corpus grows a container by zero pages as it ships.
 GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLayout& layout,
 	const GSVector4i& rect, bool first_sight, bool may_offset)
 {
@@ -2427,21 +2435,28 @@ GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLay
 	// permanent for the layout, because both are reasons that can arrive AFTER the fold decision --
 	// a view first drawn without depth that later carries one, a base the PCRTC starts scanning out
 	// -- and a fold decided at first sight has no other way to be taken back.
+	//
+	// ⚠️ The STANDING rule (kGSTileContainDisplacedViews) holds every other view to the same thing,
+	// so what ships is the merge and nothing else: the two views of one base stop stealing each
+	// other's pages, and nothing moves in anyone's pixel space. Its two reasons are written out at
+	// the constant -- the container's writeback byte mask, and a displaced view's reads no longer
+	// matching the container -- and both are measured, not feared. This set and the unfold below
+	// are the per-view half of the same refusal, kept live for the rung that turns displacement
+	// back on; while it is off they decide nothing this function would not decide anyway.
 	if (!may_offset || IsDisplayBase(layout.bp))
 		m_contain_no_offset.insert(key);
 	const bool no_offset = m_contain_no_offset.count(key) != 0;
 	// A view already displaced when the refusal first arrives is unfolded, which costs it a surface
 	// create and a re-seed of its pages out of the container's writeback. That is the ordinary road
 	// for a page changing owner, so it is correct; it is counted because a count that does not
-	// settle to zero is a policy oscillating.
-	if (no_offset)
+	// settle to zero is a policy oscillating. Unreachable while displacement is off -- no fold is
+	// ever taken at a nonzero offset for this to undo.
+	const auto stale = m_contain_alias.find(key);
+	if (stale != m_contain_alias.end() &&
+		!gsTileContainMayPlaceAt(stale->second.x_off, stale->second.y_off, no_offset))
 	{
-		const auto stale = m_contain_alias.find(key);
-		if (stale != m_contain_alias.end() && (stale->second.x_off != 0 || stale->second.y_off != 0))
-		{
-			m_contain_alias.erase(stale);
-			m_frame.contain_unfolded++;
-		}
+		m_contain_alias.erase(stale);
+		m_frame.contain_unfolded++;
 	}
 
 	// Already folded, and the fold is sticky. It has to be: under containment no surface was ever
@@ -2482,7 +2497,7 @@ GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLay
 	GSTileContainOffset fit_off, open_off;
 	u32 fit_base = 0;
 	u32 candidates = 0;
-	bool vetoed_any = false;
+	bool displaced_any = false;
 	GSTileContainRefusal furthest = GSTileContainRefusal::Admitted;
 	for (u32 slot = 0; slot < m_vram_model.SurfaceSlots(); slot++)
 	{
@@ -2504,10 +2519,13 @@ GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLay
 				furthest = why;
 			continue;
 		}
-		// Legal, but this view may not be displaced (see the veto above), and this container would.
-		if (no_offset && (off.x != 0 || off.y != 0))
+		// Legal, and this container would displace the view -- which is refused, by the standing rule
+		// and by the caller's own veto alike (see above). Counted apart from the predicate's clauses:
+		// nothing about the geometry is wrong, and this is the census the displaced rung sizes its
+		// work from.
+		if (!gsTileContainMayPlaceAt(off.x, off.y, no_offset))
 		{
-			vetoed_any = true;
+			displaced_any = true;
 			continue;
 		}
 		const u32 held = (m_contain_rows.size() > cid) ? m_contain_rows[cid] : 0;
@@ -2546,8 +2564,8 @@ GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLay
 
 	if (candidates == 0)
 		m_frame.contain_ref_none++;
-	else if (vetoed_any)
-		m_frame.contain_ref_vetoed++;
+	else if (displaced_any)
+		m_frame.contain_ref_displaced++;
 	else
 	{
 		switch (furthest)
@@ -2779,6 +2797,11 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 		// byte road -- correct, three to four times the fragment instructions, and invisible
 		// without this. The PSM clause below is asked here too, so a window this rule would have
 		// refused anyway is not counted against the fold.
+		//
+		// Zero while displacement is off, and that is the point rather than an omission: a
+		// same-base merge leaves the container's base equal to the read's, so the clause this
+		// counts never fires and rule 2 serves the folded view's reads exactly as it did before
+		// the fold. This is what the displaced road costs, waiting for the road to come back.
 		if (m_contain_surfaces && HasCt32PixelSpace(surf.layout) && surf.layout.bw == tex_l.bw &&
 			(surf.layout.psm == tex_l.psm || (surf.layout.psm == PSMCT32 && tex_l.psm == PSMCT24)))
 		{

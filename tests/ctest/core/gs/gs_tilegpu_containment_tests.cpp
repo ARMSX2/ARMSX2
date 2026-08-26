@@ -25,6 +25,12 @@
 //           for a reason no offset rule can repair. The same 8 KB guest page is 64x64 texels in
 //           one pixel space and 64x32 in the other, so there is no rectangle of the container
 //           that is the view.
+//
+// ⚠️ The predicate is LEGALITY and it still admits every one of those. What the renderer takes is
+// narrower: gsTileContainMayPlaceAt refuses every displaced placement while
+// kGSTileContainDisplacedViews is false, so only the same-base merge ships. The offset arithmetic
+// below is tested all the same -- it is the road the displaced rung comes back on, and a wrong
+// offset there is the failure that writes unrelated guest pages.
 
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
@@ -492,13 +498,60 @@ TEST(TileGpuContainment, TheGt4FixturesDrawWhereTheirPagesAre)
 
 TEST(TileGpuContainment, AZeroOffsetTranslatesNothing)
 {
-	// The shipped arm: with the lever off every offset is (0, 0), so every one of these expressions
-	// runs and changes nothing. That is what makes the corpus byte-identical rather than merely
-	// unmeasurably different.
+	// The shipped arm: every offset is (0, 0) -- with the lever off because no view is folded at
+	// all, and with it on because only the same-base merge is admitted -- so every one of these
+	// expressions runs and changes nothing. That is what makes the corpus byte-identical rather
+	// than merely unmeasurably different.
 	const GSVector4i draw(3, 5, 641, 449);
 	EXPECT_TRUE((draw + GSVector4i(0, 0, 0, 0)).eq(draw));
 	EXPECT_EQ(gsTileContainVertexOffset(2048, 0), 2048);
 	EXPECT_EQ(gsTileContainVertexOffset(-1, 0), -1);
+}
+
+// -- what the renderer actually takes: the same-base merge and nothing else ----------------------
+
+TEST(TileGpuContainment, ADisplacedPlacementIsRefusedAdmissionHoweverLegalItIs)
+{
+	// The shipped rule. Displacement breaks five corpus titles by two measured mechanisms -- the
+	// writeback carries the CONTAINER's byte mask, and a displaced view's texture reads stop
+	// matching the container so they fall off rule 2 and the donor road onto the byte road -- and
+	// neither has a fix in the tree yet. So the placement takes the zero-offset merge only.
+	ASSERT_FALSE(kGSTileContainDisplacedViews);
+
+	// gt4opb's fold B, the displaced palette buffer: legal, admitted by the predicate, refused by
+	// the placement. Refused for BOTH kinds of view -- the standing rule does not care whether the
+	// caller vetoed this one (a depth-carrying draw, a display base) or not.
+	GSTileContainOffset off;
+	ASSERT_EQ(Contain(ColorAt(kGt4Target, 10, PSMCT32), ColorAt(kOpbPalette, 10, PSMCT32), kPaletteCols, kPaletteRows,
+				  off),
+		GSTileContainRefusal::Admitted);
+	EXPECT_NE(off.x | off.y, 0);
+	EXPECT_FALSE(gsTileContainMayPlaceAt(off.x, off.y, false));
+	EXPECT_FALSE(gsTileContainMayPlaceAt(off.x, off.y, true));
+
+	// gt4's fold, displaced in the other direction (row offset, column offset, and a container it
+	// has to grow): same answer.
+	ASSERT_EQ(Contain(ColorAt(kGt4Frame, 10, PSMCT24), ColorAt(kGt4Palette, 10, PSMCT32), kPaletteCols, kPaletteRows,
+				  off),
+		GSTileContainRefusal::Admitted);
+	EXPECT_FALSE(gsTileContainMayPlaceAt(off.x, off.y, false));
+
+	// A row offset alone and a column offset alone are both displacements. Neither half is the safe
+	// half: the column-only arm was measured and it breaks four of the five titles on its own.
+	EXPECT_FALSE(gsTileContainMayPlaceAt(64, 0, false));
+	EXPECT_FALSE(gsTileContainMayPlaceAt(0, 32, false));
+
+	// ...and the merge it keeps: gt4opb's 0x01a40 seen as PSMCT24 and as PSMCT32 is one surface at
+	// (0, 0), which is the placement worth -117.00 render passes a drawn frame on that dump.
+	ASSERT_EQ(Contain(ColorAt(kGt4Target, 10, PSMCT32), ColorAt(kGt4Target, 10, PSMCT24), 10, 14, off),
+		GSTileContainRefusal::Admitted);
+	EXPECT_EQ(off.x, 0);
+	EXPECT_EQ(off.y, 0);
+	EXPECT_TRUE(gsTileContainMayPlaceAt(off.x, off.y, false));
+	// A zero offset moves nothing, so even a view the caller holds to zero keeps it. That is what
+	// makes rule 9 and the depth veto cost nothing, and it is the same reason the standing rule can
+	// refuse displacement without refusing containment.
+	EXPECT_TRUE(gsTileContainMayPlaceAt(off.x, off.y, true));
 }
 
 // -- rule 9: the display base is never displaced -------------------------------------------------
