@@ -8281,6 +8281,27 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// one reservation exactly, region b at b * copy_w * copy_h words -- and nothing between them
 	// reads or writes the ring, because every other op kind closes the run below before it
 	// records anything.
+	//
+	// The same disjointness merges the run's COMMANDS: consecutive ops that pull from one source
+	// image compose into a single vkCmdCopyImageToBuffer carrying all their regions. That is the
+	// rest of the per-command fixed cost -- gt4opb's 1,251 copy commands become 283 -- and it is
+	// sound for exactly the same reason the hoist is. Regions inside one copy command may be
+	// executed in any order, which is why disjointness is the load-bearing clause and not a
+	// convenience.
+	static constexpr u32 kClutCopyBatchRegions = 64; // 16 ops' worth; the observed run is 8
+	GSTextureVK* clut_copy_owner = nullptr;
+	std::array<VkBufferImageCopy, kClutCopyBatchRegions> clut_copy_regions{};
+	u32 clut_copy_region_count = 0;
+	const auto flush_clut_copy_batch = [&]() {
+		if (clut_copy_region_count == 0)
+			return;
+		// The owner is still in TransferSrc: only this arm transitions it, only ever to TransferSrc,
+		// and a change of owner flushes the batch BEFORE the new owner's transition is recorded.
+		vkCmdCopyImageToBuffer(cmd, clut_copy_owner->GetImage(), clut_copy_owner->GetVkLayout(),
+			m_tilegpu_vram_stream_buffer.GetBuffer(), clut_copy_region_count, clut_copy_regions.data());
+		clut_copy_region_count = 0;
+		clut_copy_owner = nullptr;
+	};
 	bool clut_copy_run_open = false;
 	const auto open_clut_copy_run = [&]() {
 		if (clut_copy_run_open)
@@ -8293,6 +8314,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			VK_ACCESS_TRANSFER_WRITE_BIT);
 	};
 	const auto close_clut_copy_run = [&]() {
+		// Whatever the run staged is recorded before the barrier that publishes it, so the two can
+		// never be reordered by a caller getting the sequence wrong.
+		flush_clut_copy_batch();
 		if (!clut_copy_run_open)
 			return;
 		clut_copy_run_open = false;
@@ -8662,6 +8686,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						continue;
 
 					EndRenderPass();
+					// A batch names one source image, and the flush must precede the next owner's
+					// transition so the pending regions are recorded while their own owner still holds
+					// the layout the flush names.
+					if (clut_copy_owner != owner ||
+						clut_copy_region_count + count > kClutCopyBatchRegions)
+						flush_clut_copy_batch();
 					// The transition is also the execution dependency that orders whatever rendered the
 					// palette into the owner ahead of this copy. It is an IMAGE hazard and independent
 					// of the ring, so a mid-run owner change needs no ring barrier of its own.
@@ -8669,8 +8699,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// Opens the run on the first copy after a non-copy op; records nothing on the rest.
 					// A dropped op (count == 0 above) leaves it closed -- it writes nothing.
 					open_clut_copy_run();
-					vkCmdCopyImageToBuffer(cmd, owner->GetImage(), owner->GetVkLayout(),
-						m_tilegpu_vram_stream_buffer.GetBuffer(), count, regions);
+					clut_copy_owner = owner;
+					for (u32 b = 0; b < count; b++)
+						clut_copy_regions[clut_copy_region_count++] = regions[b];
+					// The lever's boundary has to fall AFTER this op's copy, not before it, so an
+					// engaged site puts the road back at one copy command per op.
+					if (serialize_sites & (1u << kGSTileGpuSerializeSiteClutCopy))
+						flush_clut_copy_batch();
 					serialize_boundary(kGSTileGpuSerializeSiteClutCopy);
 					continue;
 				}
