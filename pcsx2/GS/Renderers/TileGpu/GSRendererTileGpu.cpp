@@ -3002,9 +3002,10 @@ bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPage
 // so the slot half of WritebackHoistCollides has nothing to say about it.
 bool GSRendererTileGpu::DonorHoistCollides(GSTileSurfaceId owner, const GSPageBitmap& pages) const
 {
-	if (owner == m_open_pass.color && pages.intersects(m_open_color_written))
+	const OpenRun& run = CurrentRun();
+	if (owner == run.pass.color && pages.intersects(run.color_written))
 		return true;
-	if (m_open_pass.depth_used && owner == m_open_pass.depth && pages.intersects(m_open_z_written))
+	if (run.pass.depth_used && owner == run.pass.depth && pages.intersects(run.z_written))
 		return true;
 	return false;
 }
@@ -4050,14 +4051,28 @@ void GSRendererTileGpu::AliasSteal(const GSPageBitmap& pages)
 
 void GSRendererTileGpu::BreakOpenPass()
 {
-	m_open_pass = GSTileGpuPassKey{};
-	m_open_color_written.clear();
-	m_open_z_written.clear();
-	m_open_read.clear();
-	m_open_tex_count = 0;
+	OpenRun& run = CurrentRun();
+	run.pass = GSTileGpuPassKey{};
+	run.color_written.clear();
+	run.z_written.clear();
+	run.read.clear();
+	run.tex_count = 0;
 	// The cap's count resets with everything else the open pass tracked, so it stays in step with the
 	// plan build's own (j - i).
-	m_open_draw_count = 0;
+	run.draw_count = 0;
+	// date_surface / date_written deliberately survive: the DATE snapshot's run spans ordinary pass
+	// breaks and is reset only where the snapshot is genuinely retaken.
+}
+
+void GSRendererTileGpu::ResetOpenRuns()
+{
+	for (m_open_run = 0; m_open_run < kMaxReorderRuns; m_open_run++)
+	{
+		BreakOpenPass();
+		CurrentRun().date_surface = kGSTileNoSurface;
+		CurrentRun().date_written = GSVector4i::zero();
+	}
+	m_open_run = 0;
 }
 
 // A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
@@ -4081,6 +4096,10 @@ void GSRendererTileGpu::BreakOpenPass()
 // footprint), not the pages the draw's coordinates actually reach inside it.
 bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 {
+	// ⚠️ The run the ops will land in, which is the run whose pass they would be hoisted to the head
+	// of -- not "whichever run is newest". They are the same thing only because the draw's run is
+	// chosen before any of its prep ops is emitted; see m_open_run.
+	const OpenRun& run = CurrentRun();
 	for (u32 k = first_op; k < m_plan_prep_ops.size(); k++)
 	{
 		const GSDevice::GSTileGpuPrepOp& op = m_plan_prep_ops[k];
@@ -4096,14 +4115,14 @@ bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 			p.set(m_plan_page_entries[e].page);
 
 		bool hit = false;
-		(p & m_open_read).forEachSetPage([&](u32 page) { hit |= (m_open_read_slot[page] == m_ring_live[page]); });
+		(p & run.read).forEachSetPage([&](u32 page) { hit |= (run.read_slot[page] == m_ring_live[page]); });
 		if (hit)
 			return true;
 
 		const GSTileSurfaceId src = m_plan_target_surfaces[op.target];
-		if (src == m_open_pass.color && p.intersects(m_open_color_written))
+		if (src == run.pass.color && p.intersects(run.color_written))
 			return true;
-		if (m_open_pass.depth_used && src == m_open_pass.depth && p.intersects(m_open_z_written))
+		if (run.pass.depth_used && src == run.pass.depth && p.intersects(run.z_written))
 			return true;
 	}
 	return false;
@@ -4390,7 +4409,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// into it and which rule-2 slot this draw takes, and a break decided after those reads would leave
 	// the plan build's pass and accumulation's pass disagreeing about both. Mirrored in
 	// BuildAndExecutePlan through gsTileGpuPassEnd; the two count the same draws.
-	if (draw_key != m_open_pass || !gsTileGpuPassAdmitsMore(m_open_draw_count, m_max_pass_draws))
+	if (draw_key != CurrentRun().pass || !gsTileGpuPassAdmitsMore(CurrentRun().draw_count, m_max_pass_draws))
 		BreakOpenPass();
 
 	PendingDraw pd = {};
@@ -4921,30 +4940,31 @@ void GSRendererTileGpu::AccumulateDraw()
 	// A DATE draw reads the pass snapshot; if the run of draws into this surface since the last
 	// break has written pixels under it, the snapshot would be stale for those, so it opens a new
 	// pass. Disjoint column sprites (SotC's depth-of-field composite) share one snapshot.
-	if (m_run_surface != fb_id)
+	if (CurrentRun().date_surface != fb_id)
 	{
-		m_run_surface = fb_id;
-		m_run_written = GSVector4i::zero();
+		CurrentRun().date_surface = fb_id;
+		CurrentRun().date_written = GSVector4i::zero();
 	}
 	// ...and only on the snapshot road. A DATE draw served by the in-pass read sees the live pixel,
 	// including whatever this same pass has already written under it, so there is nothing for a break
 	// to make exact -- it would cost a pass and buy nothing.
 	//
 	// In the SURFACE's coordinates, not the view's: two views contained in one image share
-	// m_run_surface, so the run's written rect has to be a rect of the image they share. Disjoint
+	// date_surface, so the run's written rect has to be a rect of the image they share. Disjoint
 	// views then simply never intersect, which is the right answer -- the snapshot the second one
 	// reads genuinely does hold the first one's pixels.
 	const bool date_reads_live = (self_mask & GSDevice::kGSTileGpuSelfDate) != 0;
-	if (date != 0 && !date_reads_live && !m_run_written.rempty() && !m_run_written.rintersect(sr).rempty())
+	if (date != 0 && !date_reads_live && !CurrentRun().date_written.rempty() &&
+		!CurrentRun().date_written.rintersect(sr).rempty())
 	{
 		pd.break_before = true;
-		m_run_written = GSVector4i::zero();
+		CurrentRun().date_written = GSVector4i::zero();
 		m_frame.date_breaks++;
 		BreakOpenPass();
 	}
 	if (pd.break_before)
-		m_run_written = GSVector4i::zero();
-	m_run_written = m_run_written.rempty() ? sr : m_run_written.runion(sr);
+		CurrentRun().date_written = GSVector4i::zero();
+	CurrentRun().date_written = CurrentRun().date_written.rempty() ? sr : CurrentRun().date_written.runion(sr);
 	pd.date = date;
 	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
 	pd.afail_keep_alpha = afail_keep_alpha;
@@ -4978,28 +4998,29 @@ void GSRendererTileGpu::AccumulateDraw()
 	// this draw's own, which the eligibility test already excluded.
 	if (pd.tex_source != kGSTileNoSurface)
 	{
-		bool need_break = m_open_pass.color != kGSTileNoSurface &&
-						  (pd.tex_source == m_open_pass.color ||
-							  (m_open_pass.depth_used && pd.tex_source == m_open_pass.depth));
+		OpenRun& run = CurrentRun();
+		bool need_break = run.pass.color != kGSTileNoSurface &&
+						  (pd.tex_source == run.pass.color ||
+							  (run.pass.depth_used && pd.tex_source == run.pass.depth));
 		if (!need_break)
 		{
 			u32 s = 0;
-			while (s < m_open_tex_count && m_open_tex_src[s] != pd.tex_source)
+			while (s < run.tex_count && run.tex_src[s] != pd.tex_source)
 				s++;
-			need_break = (s == m_open_tex_count && m_open_tex_count == m_open_tex_src.size());
+			need_break = (s == run.tex_count && run.tex_count == run.tex_src.size());
 		}
 		if (need_break)
 		{
 			pd.break_before = true;
 			m_frame.tex_bind_breaks++;
-			m_run_written = sr;
+			run.date_written = sr;
 			BreakOpenPass();
 		}
 		u32 slot = 0;
-		while (slot < m_open_tex_count && m_open_tex_src[slot] != pd.tex_source)
+		while (slot < run.tex_count && run.tex_src[slot] != pd.tex_source)
 			slot++;
-		if (slot == m_open_tex_count)
-			m_open_tex_src[m_open_tex_count++] = pd.tex_source;
+		if (slot == run.tex_count)
+			run.tex_src[run.tex_count++] = pd.tex_source;
 		pd.tex_slot = slot;
 	}
 
@@ -5007,23 +5028,24 @@ void GSRendererTileGpu::AccumulateDraw()
 	// remember the pages it renders into and the ring pages it samples, so a later draw's
 	// writeback can be tested against it. Last word in the function on pass structure -- nothing
 	// below here can still break the pass.
-	m_open_pass = draw_key;
+	OpenRun& run = CurrentRun();
+	run.pass = draw_key;
 	// This draw is in the pass, so the cap counts it. No return stands between here and the
 	// m_plan_pending push at the end of the function, so one increment is exactly one plan entry --
 	// which is what makes this count and the plan build's (j - i) the same number.
-	m_open_draw_count++;
+	run.draw_count++;
 	if (color_written)
-		m_open_color_written |= fb_pages;
+		run.color_written |= fb_pages;
 	if (z_write)
-		m_open_z_written |= z_pages;
+		run.z_written |= z_pages;
 	if (pd.tex_enable && composed_tex)
 	{
 		// ComposeRingPages gave every page of the read window a live slot, and nothing between
 		// there and here closes one (only an upload does, and uploads do not land mid-draw), so
 		// m_ring_live still names the slot this draw's shader will read. A rule-2 draw and a
 		// donor-served one read no slot at all, so they constrain no later writeback.
-		m_open_read |= tex_pages;
-		tex_pages.forEachSetPage([&](u32 page) { m_open_read_slot[page] = m_ring_live[page]; });
+		run.read |= tex_pages;
+		tex_pages.forEachSetPage([&](u32 page) { run.read_slot[page] = m_ring_live[page]; });
 	}
 
 	pd.color_surface = fb_id;
@@ -5265,7 +5287,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_plan_write_pages.push_back(draw_write_pages);
 		m_plan_read_pages.push_back(draw_read_pages);
 		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
-		m_open_draw_count++;
+		CurrentRun().draw_count++;
 		m_frame.dualsrc_companions++;
 	}
 }
@@ -5667,7 +5689,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		//    pass's union masks are computed over ITS draws, so the same pixels come out of a
 		//    narrower program. And a DATE run split in two takes a second snapshot, which sees the
 		//    first half's output -- still exact, because a DATE draw on the snapshot road already
-		//    breaks the pass whenever anything since the run started wrote under it (m_run_written,
+		//    breaks the pass whenever anything since the run started wrote under it (OpenRun::date_written,
 		//    in AccumulateDraw). So no draw of the first half ever wrote a pixel the second half's
 		//    DATE test reads, and the two snapshots agree everywhere either of them is looked at.
 		//
@@ -5745,7 +5767,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 			// The pass's rule-2 bind table, rebuilt by walking its draws in order and appending each
 			// source the first time it appears. That is exactly how accumulation numbered the slots
-			// (its m_open_tex_src list resets on the same breaks this grouping does), so the slot a
+			// (the run's tex_src list resets on the same breaks this grouping does), so the slot a
 			// state row carries has to come out the same -- asserted, because a silent disagreement
 			// here would sample the wrong target rather than fail.
 			pass.first_tex_source = static_cast<u32>(m_plan_tex_sources.size());
@@ -6160,9 +6182,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	// do it -- a mid-frame flush ends a plan just as VSync does, and the pins have to clear with
 	// the plan and not with the video frame.
 	AdvanceSourcePinFrame();
-	m_run_surface = kGSTileNoSurface;
-	m_run_written = GSVector4i::zero();
-	BreakOpenPass();
+	ResetOpenRuns();
 	m_vram_model.ClearAllSynced();
 	// The one place a device palette may be recycled. Here, and only here, both conditions Tile's
 	// own predicate silently assumes are true by construction: there are no pending draws and every

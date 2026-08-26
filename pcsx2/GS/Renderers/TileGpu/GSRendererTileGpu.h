@@ -1454,7 +1454,7 @@ private:
 	//
 	// The read side is deliberately the WHOLE composed read window (the size-fixed TEX0 footprint,
 	// every mip), not the texels the draw's coordinates actually reach -- the same pessimism
-	// m_open_read already carries, and for the same reason: the window is what the sampler is free
+	// OpenRun::read already carries, and for the same reason: the window is what the sampler is free
 	// to fetch.
 	//
 	// 64 bytes each, so 128 bytes a draw -- about 220 KB a frame on the corpus's longest draw list.
@@ -2453,50 +2453,78 @@ private:
 	// phrased in terms of `synced` has to ask it on the far side of this, never before.
 	void FlushPendingPlan();
 
-	// The rect union a run of draws has written into the current colour surface since the last
-	// forced pass break: a DATE draw whose rect intersects it reads pixels the pass would also
-	// write, so it opens a new pass (a fresh snapshot). Reset on surface change and on break.
-	GSTileSurfaceId m_run_surface = kGSTileNoSurface;
-	GSVector4i m_run_written = GSVector4i::zero();
-
 	// --- the open pass, as accumulation sees it ----------------------------------------------
-	// The executor runs a pass's prep ops before the pass opens, so a writeback emitted for the
-	// draw being accumulated is hoisted over every draw of the open pass already planned. That
-	// is what these track: what those draws have done, so the hoist can be tested instead of
-	// assumed unsafe. A pass has exactly one colour and one depth surface (BuildAndExecutePlan
-	// groups on the pair), so two write bitmaps cover every surface its draws can render into.
-	// The read side is per RING SLOT, not per page: m_open_read says which pages the pass's
-	// draws sample and m_open_read_slot which slot each of them read (entry index + 1), because
-	// a page whose slot was superseded since is a different slot and rewriting it is invisible
-	// to the earlier read. m_open_pass is the grouping key itself, the same type the plan build
-	// groups on, so the two cannot drift; everything resets whenever a pass breaks.
-	GSTileGpuPassKey m_open_pass;
-	GSPageBitmap m_open_color_written;
-	GSPageBitmap m_open_z_written;
-	GSPageBitmap m_open_read;
-	std::array<u16, GS_MAX_PAGES> m_open_read_slot{}; // meaningful only where m_open_read is set
-
-	// The rule-2 targets the open pass's draws sample, in the order they were first bound -- which
-	// IS the slot numbering the executor and the shader use, so it is rebuilt the same way at plan
-	// build (asserted there). A pass binds at most kMaxTexSourcesPerPass of them; a draw whose
-	// source would be one too many opens a pass of its own.
-	std::array<GSTileSurfaceId, GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass> m_open_tex_src{};
-	u32 m_open_tex_count = 0;
-
-	// How many draws the open pass already holds, for m_max_pass_draws. Counted where the draw joins
-	// the pass and reset with everything else in BreakOpenPass, so it stays in step with the plan
-	// build's own count of the pass it is cutting (j - i there).
 	//
-	// The two are the same number because accumulation pushes exactly one plan entry per draw it
-	// counts, with no return between the count and the push. The display-buffer seed pseudo-draws
-	// push plan entries accumulation never counts, but each carries break_before AND calls
-	// BreakOpenPass after itself, so no draw is ever counted against one on either side.
-	u32 m_open_draw_count = 0;
+	// One of these per RUN. A run is a pass the planner is still adding draws to; there is exactly
+	// one until draw reordering opens more, and everything below is then per-run rather than global
+	// so a draw's prep ops are tested against the pass they will actually land in.
+	struct OpenRun
+	{
+		// The executor runs a pass's prep ops before the pass opens, so a writeback emitted for the
+		// draw being accumulated is hoisted over every draw of the open pass already planned. That
+		// is what the next four track: what those draws have done, so the hoist can be tested
+		// instead of assumed unsafe. A pass has exactly one colour and one depth surface
+		// (BuildAndExecutePlan groups on the pair), so two write bitmaps cover every surface its
+		// draws can render into.
+		//
+		// The read side is per RING SLOT, not per page: `read` says which pages the pass's draws
+		// sample and `read_slot` which slot each of them read (entry index + 1), because a page
+		// whose slot was superseded since is a different slot and rewriting it is invisible to the
+		// earlier read. `pass` is the grouping key itself, the same type the plan build groups on,
+		// so the two cannot drift; everything resets whenever the pass breaks.
+		GSTileGpuPassKey pass;
+		GSPageBitmap color_written;
+		GSPageBitmap z_written;
+		GSPageBitmap read;
+		std::array<u16, GS_MAX_PAGES> read_slot{}; // meaningful only where `read` is set
 
-	// The open pass is closed: the next draw accumulated is the first of a new one, so nothing
-	// recorded above constrains it. Idempotent, and the state it leaves matches no draw, so it
-	// also serves as the initial and between-frames state.
+		// The rule-2 targets the open pass's draws sample, in the order they were first bound --
+		// which IS the slot numbering the executor and the shader use, so it is rebuilt the same way
+		// at plan build (asserted there). A pass binds at most kMaxTexSourcesPerPass of them; a draw
+		// whose source would be one too many opens a pass of its own.
+		std::array<GSTileSurfaceId, GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass> tex_src{};
+		u32 tex_count = 0;
+
+		// How many draws the open pass already holds, for m_max_pass_draws. Counted where the draw
+		// joins the pass and reset with everything else in BreakOpenPass, so it stays in step with
+		// the plan build's own count of the pass it is cutting (j - i there).
+		//
+		// The two are the same number because accumulation pushes exactly one plan entry per draw it
+		// counts, with no return between the count and the push. The display-buffer seed
+		// pseudo-draws push plan entries accumulation never counts, but each carries break_before
+		// AND calls BreakOpenPass after itself, so no draw is ever counted against one on either
+		// side.
+		u32 draw_count = 0;
+
+		// The DATE snapshot's own run tracking, which outlives an ordinary pass break and so is NOT
+		// cleared by BreakOpenPass: the colour surface a stretch of draws has been rendering into,
+		// and the rect union they have written into it since the last FORCED break. A DATE draw
+		// whose rect intersects that union would read pixels the snapshot no longer has, so it opens
+		// a pass of its own. (These were m_run_surface / m_run_written.)
+		GSTileSurfaceId date_surface = kGSTileNoSurface;
+		GSVector4i date_written = GSVector4i::zero();
+	};
+
+	// One per run, in open order, and `m_open_run` is the one the draw being accumulated joins.
+	// ⚠️ It must be chosen BEFORE any prep op of that draw is emitted: everything below the choice
+	// reads the open pass to decide what may be hoisted into it and which rule-2 slot the draw
+	// takes, and a run picked after those reads would test them against the wrong pass.
+	std::array<OpenRun, kMaxReorderRuns> m_open_runs;
+	u32 m_open_run = 0;
+	OpenRun& CurrentRun() { return m_open_runs[m_open_run]; }
+	const OpenRun& CurrentRun() const { return m_open_runs[m_open_run]; }
+
+	// The CURRENT run's open pass is closed: the next draw accumulated into that run is the first of
+	// a new pass, so nothing recorded above constrains it. Idempotent, and the state it leaves
+	// matches no draw, so it also serves as the initial and between-frames state. It deliberately
+	// leaves the DATE snapshot's run alone -- that one spans ordinary pass breaks.
 	void BreakOpenPass();
+
+	// Every run goes back to its initial state and the current one is run 0. The plan boundary, and
+	// only the plan boundary: a plan build emits every run, so nothing any of them recorded can
+	// constrain a draw of the next plan -- the DATE snapshot's run included, since the snapshot is
+	// retaken with the pass.
+	void ResetOpenRuns();
 
 	// Would the writeback ops appended since `first_op` read or write something the open pass's
 	// draws already touched? Then they cannot run at that pass's head and their draw must open
