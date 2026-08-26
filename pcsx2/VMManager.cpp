@@ -48,6 +48,7 @@
 #include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/FPControl.h"
+#include "common/HostSys.h"
 #include "common/Perf.h"
 #include "common/ScopedGuard.h"
 #include "common/SettingsWrapper.h"
@@ -2510,10 +2511,11 @@ void VMManager::Internal::Throttle()
 	}
 
 	// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,
-	// spin the thread without sleeping until we finally reach our expected end time.
+	// spin the thread without sleeping until we finally reach our expected end time. Hint the
+	// spin with the calibrated pause bursts (pause on x86, isb on AArch64) instead of hammering
+	// the counter bare - the hint keeps the co-resident cores' throughput and cuts power.
 	while (GetCPUTicks() < uExpectedEnd)
-	{
-	}
+		ShortSpin();
 
 	// Finally, set our next frame start to when this one ends
 	s_limiter_frame_start = uExpectedEnd;
