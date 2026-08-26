@@ -296,11 +296,19 @@ namespace GSTileSwizzleForms
 	// -- The CLUT block copy: a palette read out of an owner target WITHOUT a gather pass ---
 	// A CSM1 32-bit CLUT load reads 256 contiguous words at CBP (four blocks) or 16 (the
 	// first quarter of one block). When those words are in a render target's texture, the
-	// cheapest way to put them where a byte-road draw can read them is not a gather pass per
-	// load — at a thousand loads a frame that is a thousand render passes — but a plain
+	// way to put them where a byte-road draw can read them is not a gather pass per load —
+	// at a thousand loads a frame that is a thousand render passes — but a plain
 	// image-to-buffer COPY of the blocks, block by block, into the frame's palette stream.
 	// The copy lands each block's 64 words in TEXEL ROW-MAJOR order, which is not entry
 	// order, so the consumer applies the CSM1 entry→word order at fetch time instead.
+	//
+	// ⚠️ The copy is cheaper than the gather pass only once the RING SYNCHRONISATION around
+	// it is amortised, and that is a property of the backend, not of this decision. Measured
+	// on Adreno 650 / Turnip (gt4opb, 1,251 loads in one frame): 1.4–1.5 µs for a copy
+	// standing alone, 14.3 µs for the same copy bracketed by a whole-buffer ring barrier
+	// pair, against 5.1 µs for a ClutGather pass. Barriered per copy this road LOSES to the
+	// pass it was chosen over, by 2.8×. GSDeviceVK brackets a whole contiguous run of copies
+	// with one pair; a backend that does not do the same should not take this road.
 
 	struct ClutBlockCopy
 	{

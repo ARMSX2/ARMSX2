@@ -8269,6 +8269,40 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 1, &bmb, 0, nullptr);
 	};
 
+	// ONE ring hazard pair per contiguous run of ClutBlockCopy ops, not one per copy. The ring
+	// barrier is whole-buffer against every shader stage, so on a tiler it is a cache flush plus
+	// invalidate plus a drain; measured on Adreno 650, a 1 KB CLUT copy inside the bracket costs
+	// 14.3 us against 1.4 us outside it, and gt4opb records 1,251 of them a frame in runs of eight.
+	//
+	// The interior pairs carry no hazard. Consecutive copies write DISJOINT slots -- every record's
+	// words are reserved by a bump allocation in CaptureClutRecordWords (stream_offset = the palette
+	// vector's size, then a resize; an offset is never handed out twice in a plan, and a record
+	// already in this plan's stream emits no second op), and within one op the regions tile that
+	// one reservation exactly, region b at b * copy_w * copy_h words -- and nothing between them
+	// reads or writes the ring, because every other op kind closes the run below before it
+	// records anything.
+	bool clut_copy_run_open = false;
+	const auto open_clut_copy_run = [&]() {
+		if (clut_copy_run_open)
+			return;
+		clut_copy_run_open = true;
+		// Ring reads already recorded must finish before the run's first copy overwrites any of it.
+		ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+						 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_ACCESS_TRANSFER_WRITE_BIT);
+	};
+	const auto close_clut_copy_run = [&]() {
+		if (!clut_copy_run_open)
+			return;
+		clut_copy_run_open = false;
+		// ...and the run's copies must be visible to every stage that reads the ring after it.
+		ring_barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+	};
+
 	for (const GSTileGpuPass& pass : plan.passes)
 	{
 		if (pass.target_pair_count == 0)
@@ -8333,6 +8367,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			for (u32 o = pass.first_prep_op; o < op_end; o++)
 			{
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
+				// Any other kind ends the copy run, ahead of the first command it records -- including
+				// the ones that record nothing and the ones that abandon the plan, so no arm below can
+				// reach the ring, or return, with the run's writes still unpublished.
+				if (op.kind != GSTileGpuPrepKind::ClutBlockCopy)
+					close_clut_copy_run();
 				if (op.kind != GSTileGpuPrepKind::Donor && op.kind != GSTileGpuPrepKind::ClutGather && !can_texture)
 					continue;
 
@@ -8576,11 +8615,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 				// The CLUT gather's byte-road half: the palette's blocks copied verbatim out of the
 				// owner target into the frame's palette stream, one image-to-buffer copy for the whole
-				// palette. Deliberately NOT a gather pass -- at six hundred to twelve hundred CLUT loads
-				// a frame a render pass each would double the frame's pass count, and a copy at a pass
-				// head costs none. It lands texels row-major rather than in CSM1 entry order, which is
-				// why the fragment shader has a palette-from-copied-block mode instead of the two sides
-				// agreeing on an order here.
+				// palette. NOT a gather pass -- at six hundred to twelve hundred CLUT loads a frame a
+				// render pass each would double the frame's pass count. It lands texels row-major
+				// rather than in CSM1 entry order, which is why the fragment shader has a
+				// palette-from-copied-block mode instead of the two sides agreeing on an order here.
+				//
+				// The copy is cheap; the SYNCHRONISATION around it was not. Adreno 650 / Turnip,
+				// gt4opb frame 2: 1.4-1.5 us for a copy standing alone, 14.3 us for the same copy
+				// inside a whole-buffer ring-barrier pair, against 5.1 us for a ClutGather pass. So
+				// "a copy at a pass head costs none" was true of the copy and false of the op, and
+				// the run bracketing above is what makes the road cost what it claims to.
 				if (op.kind == GSTileGpuPrepKind::ClutBlockCopy)
 				{
 					if (op.donor_target >= plan.targets.size() || !plan.targets[op.donor_target] ||
@@ -8619,20 +8663,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 					EndRenderPass();
 					// The transition is also the execution dependency that orders whatever rendered the
-					// palette into the owner ahead of this copy.
+					// palette into the owner ahead of this copy. It is an IMAGE hazard and independent
+					// of the ring, so a mid-run owner change needs no ring barrier of its own.
 					owner->TransitionToLayout(cmd, GSTextureVK::Layout::TransferSrc);
-					// Ring reads already recorded must finish before the copy overwrites any of it, and
-					// the copy must be visible to every stage that reads the ring after it.
-					ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-									 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-						VK_ACCESS_TRANSFER_WRITE_BIT);
+					// Opens the run on the first copy after a non-copy op; records nothing on the rest.
+					// A dropped op (count == 0 above) leaves it closed -- it writes nothing.
+					open_clut_copy_run();
 					vkCmdCopyImageToBuffer(cmd, owner->GetImage(), owner->GetVkLayout(),
 						m_tilegpu_vram_stream_buffer.GetBuffer(), count, regions);
-					ring_barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 					serialize_boundary(kGSTileGpuSerializeSiteClutCopy);
 					continue;
 				}
@@ -8900,6 +8938,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				serialize_boundary(kGSTileGpuSerializeSiteByteRoad);
 			}
 		}
+
+		// A run never crosses a pass: the pass about to be recorded samples the ring, so whatever
+		// prep ended in copies publishes them here. Which also leaves the flag false at every other
+		// road out of this loop body.
+		close_clut_copy_run();
 
 		// The pass snapshot: a copy of the colour target as it stands before the pass opens, for
 		// the draws that read their own destination (DATE today). Taken here, outside any render
