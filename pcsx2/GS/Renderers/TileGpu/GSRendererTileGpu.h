@@ -1435,6 +1435,24 @@ private:
 	// descriptor and not in the shader.
 	std::vector<GSDevice::GSTileGpuPassPlan::SourceBind> m_plan_sources;
 	std::vector<PendingDraw> m_plan_pending;
+	// The GS pages each pending draw WRITES and READS -- one entry per m_plan_pending entry, in the
+	// same order, so index d names the same draw in all three.
+	//
+	// Accumulation already builds every page set these are made of (fb_pages, z_pages, tex_pages,
+	// and the gathered palette's own load pages) and throws them away at the end of the draw. What
+	// the pair is FOR is a question those locals cannot answer once the draw is over: does this draw
+	// touch any GS page that some OTHER draw of this frame touches? That is the whole admission test
+	// draw reordering rests on -- two draws whose footprints are disjoint can be emitted in either
+	// order, and page disjointness is exact where a texture-pointer comparison is not.
+	//
+	// The read side is deliberately the WHOLE composed read window (the size-fixed TEX0 footprint,
+	// every mip), not the texels the draw's coordinates actually reach -- the same pessimism
+	// m_open_read already carries, and for the same reason: the window is what the sampler is free
+	// to fetch.
+	//
+	// 64 bytes each, so 128 bytes a draw -- about 220 KB a frame on the corpus's longest draw list.
+	std::vector<GSPageBitmap> m_plan_write_pages;
+	std::vector<GSPageBitmap> m_plan_read_pages;
 	std::vector<GSDevice::GSTileGpuPass> m_plan_passes;
 	std::vector<GSDevice::GSTileGpuTargetPair> m_plan_target_pairs;
 	std::vector<GSDevice::GSTileGpuSnapshotCopy> m_plan_snapshots;
@@ -2191,7 +2209,11 @@ private:
 	//
 	// `color` is the surface the pass binds -- a pass with no attachment at all is skipped by the
 	// executor. Returns false when the range is empty, having appended nothing.
-	bool AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op);
+	//
+	// `write_pages` is the guest footprint its ops land in, for m_plan_write_pages -- the pages of
+	// the surface the seeds fill. It reads nothing, so its read footprint is empty.
+	bool AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op,
+		const GSPageBitmap& write_pages);
 
 	// Truth on `pages` cannot reach the byte store at all: count it and warn once. The depth plane
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.

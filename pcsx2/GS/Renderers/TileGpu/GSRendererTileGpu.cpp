@@ -336,6 +336,8 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_variant_keys.clear();
 	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
+	m_plan_write_pages.clear();
+	m_plan_read_pages.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
 	m_plan_snapshots.clear();
@@ -519,7 +521,7 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		const u32 first_op = static_cast<u32>(m_plan_prep_ops.size());
 		ComposeRingPages(need);
 		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
-		if (!AppendPrepOnlyDraw(id, rect, first_op))
+		if (!AppendPrepOnlyDraw(id, rect, first_op, pages))
 			continue; // nothing was emitted at all, so this bail strands nothing
 		Texels(id).filled.MarkWhole(need);
 		m_frame.seed_breaks++;
@@ -529,7 +531,8 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 // See the declaration. Both callers need the same five per-draw plan arrays appended to and the
 // same pass break; the executor indexes every one of them by draw, and a short one reads the next
 // draw's state -- which is exactly the trap the pass-grouping assert exists to catch.
-bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op)
+bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector4i& rect, u32 first_prep_op,
+	const GSPageBitmap& write_pages)
 {
 	const u32 count = static_cast<u32>(m_plan_prep_ops.size()) - first_prep_op;
 	if (count == 0)
@@ -561,6 +564,11 @@ bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector
 	// No depth attachment: this pseudo-draw exists for its prep ops and renders nothing.
 	m_plan_depth_modes.push_back(GSDevice::GSTileGpuDepthMode::None);
 	m_plan_pending.push_back(pd);
+	// Its ops write the surface's pages and read nothing. Pushed here rather than at the two call
+	// sites for the reason the five arrays above are: an append site that forgets one leaves every
+	// later draw's entry shifted by one, silently.
+	m_plan_write_pages.push_back(write_pages);
+	m_plan_read_pages.emplace_back();
 
 	// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
 	// already done" must reset with it, exactly as AccumulateDraw's breaks do.
@@ -5121,6 +5129,34 @@ void GSRendererTileGpu::AccumulateDraw()
 	m_plan_depth_modes.push_back(pd.depth_mode);
 	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
+	// This draw's guest-page footprints, kept rather than dropped with the locals. Everything here is
+	// already computed above; the pair is the retention, not a second derivation.
+	//
+	// WRITE is what lands in GS memory: the colour footprint where any channel survives the masks and
+	// the folds, the depth footprint where the depth write survives them. READ is what the draw may
+	// fetch: the depth footprint where the draw TESTS depth, the whole composed texture window, and --
+	// where the palette's words come off the device rather than out of CPU RAM -- the pages that
+	// palette was loaded from. A CPU-road palette contributes nothing: its words were read out of the
+	// CLUT mirror at accumulate time and frozen into the plan's own palette stream, so no GPU read of
+	// GS memory carries them.
+	{
+		GSPageBitmap w, rd;
+		if (color_written)
+			w |= fb_pages;
+		if (z_write)
+			w |= z_pages;
+		if (z_test)
+			rd |= z_pages;
+		if (pd.tex_enable)
+			rd |= tex_pages;
+		if (pd.pal_record != 0) [[unlikely]]
+		{
+			if (const GpuPalette* const gp = FindGpuPalette(pd.pal_record))
+				rd |= gp->pages;
+		}
+		m_plan_write_pages.push_back(w);
+		m_plan_read_pages.push_back(rd);
+	}
 
 	if (alpha_companion)
 	{
@@ -5157,6 +5193,13 @@ void GSRendererTileGpu::AccumulateDraw()
 		apd.prep_op_count = 0;
 		apd.break_before = false;
 		m_plan_pending.push_back(apd);
+		// Same geometry, same state, same target: the companion's footprint is its principal's. Its
+		// write mask is narrower (the alpha byte alone), which cannot reach a page the principal did
+		// not, so copying the pair is exact and not merely conservative.
+		const GSPageBitmap principal_w = m_plan_write_pages[draw.state_index];
+		const GSPageBitmap principal_r = m_plan_read_pages[draw.state_index];
+		m_plan_write_pages.push_back(principal_w);
+		m_plan_read_pages.push_back(principal_r);
 		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
 		m_open_draw_count++;
 		m_frame.dualsrc_companions++;
@@ -5436,6 +5479,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				 m_plan_depth_modes.size() == m_plan_draws.size() &&
 				 m_plan_bind_keys.size() == m_plan_draws.size() &&
 				 m_plan_variant_keys.size() == m_plan_draws.size() &&
+				 m_plan_write_pages.size() == m_plan_draws.size() &&
+				 m_plan_read_pages.size() == m_plan_draws.size() &&
 				 m_plan_pending.size() == m_plan_draws.size());
 
 		// Every draw's fragment variant, decided before the grouping walk below rather than inside
@@ -5878,6 +5923,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_variant_keys.clear();
 	m_plan_depth_modes.clear();
 	m_plan_pending.clear();
+	m_plan_write_pages.clear();
+	m_plan_read_pages.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
 	m_plan_snapshots.clear();
@@ -6463,7 +6510,7 @@ void GSRendererTileGpu::EmitUploadMerge()
 		// The compose always emits at least the owner's writeback (the assert above), so the range is
 		// never empty -- and if it ever were, the ops would be inside no pass and would silently not
 		// run while the model below recorded the reconciliation as done.
-		const bool carried = AppendPrepOnlyDraw(g.owner, GSVector4i::zero(), first_op);
+		const bool carried = AppendPrepOnlyDraw(g.owner, GSVector4i::zero(), first_op, g.pages);
 		pxAssertMsg(carried, "TileGpu upload merge emitted no prep op to carry");
 		if (!carried)
 			continue;
