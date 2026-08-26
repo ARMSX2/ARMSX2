@@ -16,6 +16,7 @@
 
 #include <array>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // The GS-on-GPU backend (GSHWRendererVariant::TileGpu): pass-planned indirect submission
@@ -376,6 +377,37 @@ constexpr u32 gsTileGpuContainPageBudget(int setting)
 	if (setting <= 0 || static_cast<u32>(setting) > GS_MAX_PAGES)
 		return GS_MAX_PAGES;
 	return static_cast<u32>(setting);
+}
+
+/// The XYOFFSET a contained view's draws are transformed by, for one axis.
+///
+/// The vertex transform SUBTRACTS this from the guest vertex position, so putting the draw
+/// `pixels` further right (or further down) means taking those pixels OFF the offset. XYOFFSET is
+/// the register's own 4.4 fixed point and the pixel offset is not, which is the whole reason this
+/// is a named function and not a subtraction at the call site -- getting the shift wrong displaces
+/// the view by a sixteenth of where it belongs, which on the GT4 pair is a palette buffer landing
+/// inside the frame it should sit below.
+constexpr s32 gsTileContainVertexOffset(s32 xyoffset, s32 pixels)
+{
+	return xyoffset - (pixels << 4);
+}
+
+/// A circuit that is scanning nothing out. No view can carry it, because a base is 5 bits of BP
+/// shifted up and cannot reach the top of the word.
+constexpr u32 kGSTileNoDisplayBase = 0xFFFFFFFFu;
+
+/// Design rule 9: a base the PCRTC scans out is never a containee, whatever the geometry allows.
+///
+/// GetOutput hands the frontend a texture and a y_offset, with no column offset beside it, so a
+/// display view folded at a nonzero page column could not be presented at all -- and the display
+/// buffer is never the small view in any corpus dump, so refusing costs nothing measurable.
+///
+/// Asked of the BASE alone rather than the whole layout: the PCRTC scans a base out under its own
+/// FBW and PSM, and a view that shares only the base is the same bytes seen differently. Folding
+/// that view would move the pixels the present reads just as surely.
+constexpr bool gsTileContainIsDisplayBase(u32 view_bp, const std::array<u32, 2>& display_bp)
+{
+	return view_bp == display_bp[0] || view_bp == display_bp[1];
 }
 
 /// A view folded into a container: the surface that holds it, and where its origin sits in that
@@ -1493,7 +1525,31 @@ private:
 
 	// Ensure a surface for `layout` covering `pages` exists in the model and the pool (grown as
 	// needed). Returns kGSTileNoSurface on allocation failure.
-	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages);
+	//
+	// The returned surface is not always the view's own. Under TileGpuContainSurfaces a view whose
+	// pages sit a whole number of pages inside a live container renders into the CONTAINER, at the
+	// rectangle offset written to `out_offset` -- so the caller has to put its draw there: every
+	// coordinate that speaks in the surface's pixel space (the XYOFFSET the vertex transform
+	// subtracts, the hardware scissor, the draw rect) is translated by it. (0, 0) is a view that is
+	// its own surface, which is every view while the lever is off.
+	//
+	// `may_offset` false says this caller's view may not be DISPLACED inside a container, whatever
+	// the predicate thinks, and says it permanently. Two callers say it, for the same underlying
+	// reason -- something outside this function reads the view's pixels at coordinates it works out
+	// for itself:
+	//   * a draw carrying a depth attachment. One vertex transform serves both attachments, so
+	//     displacing the colour view displaces the depth rows with it, into guest Z that belongs to
+	//     other pixels. Fixing that means containing the depth view by the same delta, which is
+	//     deferred (design 0.5).
+	//   * the display base (design rule 9). GetOutput hands the frontend a texture and a y_offset,
+	//     with no column offset beside it, and MaterialiseDisplayBuffers' seed draw carries the
+	//     display rect untranslated.
+	// A ZERO offset displaces nothing, so both callers keep the cross-PSM same-base merge -- which
+	// is the half of containment gt4opb's win mostly rests on. A view already folded at a nonzero
+	// offset when the refusal first arrives is unfolded, which the seed road repairs like any other
+	// change of page owner.
+	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
+		const GSPageBitmap& pages, GSVector2i* out_offset = nullptr, bool may_offset = false);
 
 	// Pages of `pages` whose bytes surface `id`'s texture does not hold newest for every plane
 	// in `planes` (Tile's PagesNeedingUpload).
@@ -1508,8 +1564,11 @@ private:
 	//
 	// The draw's own targets are excluded here rather than checked later: a draw sampling what its
 	// pass renders into is the in-pass feedback road, and this stage does not have one.
+	//
+	// Not const only because one refusal is counted where it happens: the base clause, which
+	// surface-identity containment is the one thing that can break while every other clause holds.
 	GSTileSurfaceId TargetForTextureRead(const GSTileSurfaceLayout& tex_l, u32 tw, u32 th,
-		const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id) const;
+		const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id);
 
 	// Whether the device can bind a resident target as a draw's texture. Read once at
 	// construction, because a rule-2 draw is served by work the renderer DOES NOT DO (its read
@@ -1987,35 +2046,58 @@ private:
 	SurfaceTexels& Texels(GSTileSurfaceId id);
 	void NoteTextureGeometry(GSTileSurfaceId id, int height);
 
-	// -- the containment census --------------------------------------------------------------
+	// -- surface-identity containment ----------------------------------------------------------
 	//
-	// What surface-identity containment WOULD do to this frame's pass structure, asked against the
-	// live draw stream and not acted on. Same discipline ProbeSourceRoad was built under: every
-	// refusal lands in its own counter, and the caller goes on to the exact-match road exactly as
-	// it did before this existed. Nothing is folded, no surface grows, no offset reaches a draw.
+	// Where a view of GS memory goes: into a surface of its own, or into a rectangle of a container
+	// that already holds another view. The placement is decided here for every colour view the
+	// renderer looks up, and TileGpuContainSurfaces decides whether EnsureSurface acts on it or
+	// merely counts it. Off the lever every view is its own surface, every offset is (0, 0), and
+	// the frame is byte-identical -- the census arm this grew out of.
 	//
-	// It exists to be checked against a simulation of the same six titles' PS2 draw streams before
-	// any of the machinery that would act on it is built. The predicate and the policy are cheap;
-	// the offset geometry, the display path and the writeback mask are not, and a fold count that
-	// disagrees with the simulation means the model of the win is wrong.
+	// It is asked BEFORE the exact-match road creates anything, because a fold is precisely that
+	// create not happening: under containment the view never has a surface, so nothing may look one
+	// up for it later. The decision is taken at FIRST SIGHT and is sticky, held in m_contain_alias
+	// across frames. There is no retro-folding and no re-folding: moving a view between surfaces
+	// would move page ownership and re-seed the pages, every frame, as the draw order shifted.
 	//
-	// `created` is EnsureSurface's own road: false is a surface that already existed, which under
-	// containment is its own container, and true is one the exact road has just created -- the
-	// moment a fold would have happened instead. There is no retro-folding, so that is the only
-	// moment it can.
-	void ProbeContainment(const GSTileSurfaceLayout& layout, const GSVector4i& rect, GSTileSurfaceId id, bool created);
+	// `first_sight` is EnsureSurface's own road -- true when the model holds no surface for this
+	// layout, which is the one moment a fold can be decided. `may_offset` is the caller's veto (see
+	// EnsureSurface); a false here holds the layout to zero-offset placements permanently, and
+	// unfolds it if it is already sitting at a nonzero one.
+	GSTileContainedView PlaceContainedView(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
+		bool first_sight, bool may_offset);
+	// The other half: this view took a surface of its own, so that surface is its own container and
+	// holds the view's page rows. Split out of the placement because it needs the id, which the
+	// placement runs before the create to learn.
+	void NoteOwnContainer(GSTileSurfaceId id, const GSTileSurfaceLayout& layout, const GSVector4i& rect);
+	// ...and the id it took may be a slot an earlier surface used, whose rows and containees are
+	// not this one's.
+	void NoteSurfaceRecycled(GSTileSurfaceId id);
 	// A pass key change between consecutive draws, counted twice over: once on the surfaces the
 	// draws actually take, and once on the containers they would take. Their difference IS the
-	// saving, and it is only visible at this level -- EnsureSurface sees one draw at a time.
+	// saving, and it is only visible at this level -- EnsureSurface sees one draw at a time. (With
+	// the lever on the two columns are the same number, because the fold is the road taken.)
 	void CountContainmentBreaks(GSTileSurfaceId fb_id, GSTileSurfaceId z_id, bool z_used);
 	// The container's page-row count after admitting a view that reaches `end_row`.
 	void NoteContainerRows(GSTileSurfaceId id, u32 end_row);
+	/// Whether `bp` is an enabled PCRTC display base right now. Design rule 9, and the moment it is
+	/// asked at.
+	bool IsDisplayBase(u32 bp) const;
 	GSTileViewAliasTable m_contain_alias;
-	/// Per surface id, the page ROWS its container would hold. Nothing grows, so this cannot be
-	/// read back off the pool: it is the census's own arithmetic, and it is what says whether a
-	/// later fold needs the container to grow or already fits inside it.
+	/// Layouts that may only ever be placed at a ZERO offset, however legal the predicate finds a
+	/// displaced one: the display bases, and every view a draw has ever rendered with a depth
+	/// attachment. Permanent, because the reason arrives later than the fold decision does and a
+	/// view that folded and unfolded and folded again would re-seed its pages each time.
+	std::unordered_set<u32> m_contain_no_offset;
+	/// Per surface id, the page ROWS the surface holds as a container -- its own view's rows and
+	/// every folded view's. Off the lever nothing grows, so this cannot be read back off the pool;
+	/// on it, it is still the arithmetic that says whether a later fold needs the container to grow
+	/// or already fits inside it, which the pool's height alone cannot answer.
 	std::vector<u32> m_contain_rows;
-	GSTileSurfaceId m_contain_view = kGSTileNoSurface; ///< the last colour probe's answer
+	/// The lever, read once at construction like every other pass-shape lever here: a mid-run flip
+	/// would leave folded views with no surface and unfolded ones with no container.
+	bool m_contain_surfaces = false;
+	GSTileSurfaceId m_contain_view = kGSTileNoSurface; ///< the last colour placement's answer
 	GSTileSurfaceId m_contain_prev_color = kGSTileNoSurface;
 	GSTileSurfaceId m_contain_prev_folded = kGSTileNoSurface;
 	GSTileSurfaceId m_contain_prev_depth = kGSTileNoSurface;
@@ -2461,9 +2543,10 @@ private:
 		u32 lossy_pages_depth = 0;
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
 
-		// Surface-identity containment as probed (ProbeContainment): the fold the renderer did NOT
-		// take, counted. The two break pairs are the whole point -- the same draw stream keyed on
-		// today's surfaces and on the containers, so their difference is what the fold removes.
+		// Surface-identity containment as placed (PlaceContainedView): off the lever, the fold the
+		// renderer did NOT take; on it, the fold it did. The two break pairs are the whole point --
+		// the same draw stream keyed on today's surfaces and on the containers, so their difference
+		// is what the fold removes (and, on the lever, has removed).
 		// ⚠️ The census's frame denominator, and it counts DRAWS and not surface lookups: a frame
 		// the game presents without drawing into it still materialises its display buffer, so a
 		// lookup count says every frame was drawn and halves every mean on a title that presents
@@ -2486,6 +2569,20 @@ private:
 		u32 contain_ref_column = 0;
 		u32 contain_ref_extent = 0;
 		u32 contain_ref_wrap = 0;
+		// First sights whose only legal containers wanted to DISPLACE them, on a view the caller
+		// holds to a zero offset: the display bases (design rule 9) and the views a depth-carrying
+		// draw named. Not a predicate refusal -- the geometry is perfectly legal -- so it is
+		// counted apart from the clauses above.
+		u32 contain_ref_vetoed = 0;
+		// ...and folds undone, because the veto arrived after the displaced fold did. Every one of
+		// these re-seeds the view's pages into a surface of its own, so a number that does not
+		// settle to zero after the first frames is a policy that is thrashing.
+		u32 contain_unfolded = 0;
+		// Q5 of the design's open questions: draws where rule 2's target bind was legal in every
+		// respect but the base, because the window's pages are owned by the container the read's own
+		// view is folded into. The offset bind is not built (design 3.6), so the draw takes the byte
+		// road -- correct, three to four times the fragment instructions, and invisible without this.
+		u32 contain_bind_refused = 0;
 		u32 contain_breaks = 0; // colour-surface changes between consecutive draws, today
 		u32 contain_breaks_folded = 0; // ...under containment
 		u32 contain_full_breaks = 0; // ...with the depth surface and its presence in the key

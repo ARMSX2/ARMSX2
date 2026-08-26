@@ -250,6 +250,18 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// read be exercised over the whole corpus before anything depends on it.
 	m_force_self_read = m_self_read && GSConfig.TileGpuForceSelfRead;
 
+	// Surface-identity containment, read once for the strongest version of the reason the others
+	// are: it decides which surface a view's draws land in, and a flip mid-run would leave views
+	// already folded with no surface to fall back to and views already created with no container to
+	// fold into. Off, the placement still runs and still counts -- the census the fold grew out of.
+	m_contain_surfaces = GSConfig.TileGpuContainSurfaces;
+	if (m_contain_surfaces)
+	{
+		Console.WriteLn("TileGpu: surface-identity containment is ON -- one surface may hold two views, page "
+						"budget %u (TileGpuContainPageBudget = %d).",
+			gsTileGpuContainPageBudget(GSConfig.TileGpuContainPageBudget), GSConfig.TileGpuContainPageBudget);
+	}
+
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
 	// draws and issues them at the plan, so a texture one of them names must survive to the end of
@@ -295,9 +307,11 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_vram_model.Reset();
 	m_surface_texels.clear();
 	m_surface_version.clear();
-	// The containment census's containers ARE those surfaces, so its table names ids that no longer
-	// mean anything.
+	// Containment's containers ARE those surfaces, so its table names ids that no longer mean
+	// anything. The veto set goes with it: it names layouts, and the reasons it holds them for --
+	// a display base, a view a depth draw named -- are facts about a draw stream the reset ended.
 	m_contain_alias.clear();
+	m_contain_no_offset.clear();
 	m_contain_rows.clear();
 	m_contain_view = kGSTileNoSurface;
 	m_contain_prev_valid = false;
@@ -475,6 +489,14 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 			continue;
 		const GSVector4i rect(0, 0, size.x, size.y);
 		const GSPageBitmap pages = GSVramModel::PagesForRect(disp_l, rect);
+		// Design rule 9: the display base is never DISPLACED inside a container. This call takes
+		// EnsureSurface's default veto, which also unfolds a view displaced before the PCRTC pointed
+		// at it -- the seed below is what repairs the pages either way. GetOutput hands the frontend
+		// a texture and a y_offset with no column offset beside it, and the prep-only draw below
+		// carries `rect` untranslated, so a displaced display view could not be presented or seeded
+		// correctly; growing those two roads for a case no corpus dump has is not worth it. A
+		// zero-offset fold moves nothing and is left alone -- it is the same "a CT32 render scanned
+		// out as CT24 is the same bytes" road GetOutput's base scan already takes.
 		const GSTileSurfaceId id = EnsureSurface(disp_l, rect, pages);
 		if (id == kGSTileNoSurface)
 			continue;
@@ -561,7 +583,25 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 
 	const GSTileSurfaceLayout disp_l{static_cast<u32>(fb.Block()), static_cast<u8>(fb.FBW), static_cast<u8>(fb.PSM),
 		GSTileSurfaceKind::Color};
+	int contained_y = 0;
 	GSTileSurfaceId id = m_vram_model.FindExact(disp_l);
+	if (id == kGSTileNoSurface)
+	{
+		// ...or the surface that CONTAINS this view, which has no layout of its own to find. Rule 9
+		// keeps the display base out of containment, so this is the case rule 9 cannot reach: a view
+		// folded before the PCRTC pointed at it, presented in the same frame the materialise
+		// unfolds it. Serviceable exactly when the fold has no column offset, which is what
+		// y_offset is -- the same number Classic derives from its own page delta. A column offset
+		// has nowhere to go, so it falls through to the base scan below and then to a black frame,
+		// which is what this returned before it consulted the table at all.
+		const auto alias = m_contain_alias.find(disp_l.pack());
+		if (alias != m_contain_alias.end() && alias->second.x_off == 0 &&
+			m_vram_model.Get(alias->second.id).alive)
+		{
+			id = alias->second.id;
+			contained_y = alias->second.y_off;
+		}
+	}
 	if (id == kGSTileNoSurface)
 	{
 		for (u32 k = 0; k < m_vram_model.SurfaceSlots(); k++)
@@ -581,7 +621,7 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 	if (!surf.pool_handle)
 		return nullptr;
 	scale = 1.0f;
-	y_offset = 0;
+	y_offset = contained_y;
 	return m_target_pool.GetTexture(surf.pool_handle);
 }
 
@@ -1946,15 +1986,24 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto ct_col = ctstat([](const MF& f) { return f.contain_ref_column; });
 	const auto ct_ext = ctstat([](const MF& f) { return f.contain_ref_extent; });
 	const auto ct_wrp = ctstat([](const MF& f) { return f.contain_ref_wrap; });
-	Console.WriteLn("  containment census (probed, NOT taken; mean per DRAWN frame, %u of %u): colour-key breaks "
-					"%8.2f today -> %8.2f folded   full key %8.2f -> %8.2f",
-		ct_drawn, static_cast<u32>(m_model_frames.size()), ct_brk.mean, ct_brkf.mean, ct_key.mean, ct_keyf.mean);
+	const auto ct_veto = ctstat([](const MF& f) { return f.contain_ref_vetoed; });
+	const auto ct_unf = ctstat([](const MF& f) { return f.contain_unfolded; });
+	const auto ct_bind = ctstat([](const MF& f) { return f.contain_bind_refused; });
+	Console.WriteLn("  containment (%s; mean per DRAWN frame, %u of %u): colour-key breaks "
+					"%8.2f unfolded -> %8.2f folded   full key %8.2f -> %8.2f",
+		m_contain_surfaces ? "TAKEN" : "probed, NOT taken", ct_drawn, static_cast<u32>(m_model_frames.size()),
+		ct_brk.mean, ct_brkf.mean, ct_key.mean, ct_keyf.mean);
 	Console.WriteLn("    folds %.2f of %.2f first sights (%.2f draws land in a container), growth %.2f pages, "
-					"biggest container %u pages, outgrown %.2f",
-		ct_fold.mean, ct_first.mean, ct_fdraw.mean, ct_grow.mean, ct_big.max, ct_regrow.mean);
+					"biggest container %u pages, outgrown %.2f, unfolded %.2f",
+		ct_fold.mean, ct_first.mean, ct_fdraw.mean, ct_grow.mean, ct_big.max, ct_regrow.mean, ct_unf.mean);
 	Console.WriteLn("    refused: no container %.2f  family %.2f  stride %.2f  align %.2f  delta %.2f  column %.2f  "
-					"budget %.2f  wrap %.2f",
-		ct_none.mean, ct_fam.mean, ct_str.mean, ct_aln.mean, ct_dlt.mean, ct_col.mean, ct_ext.mean, ct_wrp.mean);
+					"budget %.2f  wrap %.2f  displacement vetoed (display base / depth draw) %.2f",
+		ct_none.mean, ct_fam.mean, ct_str.mean, ct_aln.mean, ct_dlt.mean, ct_col.mean, ct_ext.mean, ct_wrp.mean,
+		ct_veto.mean);
+	// Q5: what the missing per-slot offset bind costs. Under ~20 a frame on the GT4 pair and the
+	// design defers building it; above, it is the next rung's first job.
+	Console.WriteLn("    rule-2 binds refused for the fold's base alone (the offset bind is not built) %.2f / %u draws",
+		ct_bind.mean, ct_bind.max);
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
@@ -2257,14 +2306,32 @@ void GSRendererTileGpu::ReportModelTraffic()
 // -- the memory model's per-draw road ---------------------------------------------------------
 
 GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
-	const GSPageBitmap& pages)
+	const GSPageBitmap& pages, GSVector2i* out_offset, bool may_offset)
 {
+	if (out_offset)
+		*out_offset = GSVector2i(0, 0);
 	if (!PoolSupports(layout))
 		return kGSTileNoSurface;
-	const int height = GSTileTargetPool::HeightForPages(layout, pages);
+
 	GSTileSurfaceId id = m_vram_model.FindExact(layout);
-	if (id == kGSTileNoSurface)
+	const bool first_sight = (id == kGSTileNoSurface);
+	// Where this view belongs. Asked before the create, because a fold IS the create not happening.
+	// Off the lever the answer is counted and thrown away, and every road below is the one it was.
+	const GSTileContainedView placed = PlaceContainedView(layout, rect, first_sight, may_offset);
+	const bool folded = m_contain_surfaces && placed.id != kGSTileNoSurface;
+	if (folded)
 	{
+		// The view has no surface of its own and never will: it renders into the container, at a
+		// rectangle offset the caller puts its geometry at. Everything below is the growth road the
+		// container's own view takes -- the container is the surface, and it has to hold this
+		// view's pages, which sit further down its pixel space than they would down the view's.
+		id = placed.id;
+		if (out_offset)
+			*out_offset = GSVector2i(placed.x_off, placed.y_off);
+	}
+	else if (first_sight)
+	{
+		const int height = GSTileTargetPool::HeightForPages(layout, pages);
 		const u32 handle = m_target_pool.Allocate(layout, height);
 		if (handle == 0)
 			return kGSTileNoSurface;
@@ -2277,13 +2344,23 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 		BumpSurfaceVersion(id);
 		NoteClutSurfaceReplaced(id);
 		NoteTextureGeometry(id, height);
-		// The one moment containment would have done something else: this view is about to get a
-		// surface of its own, and a live container may have been able to hold it instead. Asked
-		// AFTER the create so the census sees the same road the renderer took.
-		ProbeContainment(layout, rect, id, true);
+		NoteSurfaceRecycled(id);
+		// Off the lever a view the placement folded still takes a surface of its own, and the
+		// placement has already put it in a container -- so only a view it left unplaced is one.
+		if (placed.id == kGSTileNoSurface)
+			NoteOwnContainer(id, layout, rect);
 		return id;
 	}
+	else if (placed.id == kGSTileNoSurface)
+	{
+		NoteOwnContainer(id, layout, rect);
+	}
+
 	m_vram_model.GrowResidency(id, pages);
+	// The height is asked of the surface the pages land IN, which for a folded view is the
+	// container: the same guest pages sit at a lower page row of the view's own pixel space than
+	// they do of the container's, and it is the container's texture that has to reach them.
+	const int height = GSTileTargetPool::HeightForPages(m_vram_model.Get(id).layout, pages);
 	// Growth copies the texture's content into a taller one on the device now -- before any of
 	// this frame's passes are recorded (the plan is built at VSync), so it moves last frame's
 	// pixels and every draw of this frame lands in the grown texture.
@@ -2293,8 +2370,19 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 	if (old_height != height)
 		BumpSurfaceVersion(id); // a re-allocated texture is a different image, whatever it copied
 	NoteTextureGeometry(id, height);
-	ProbeContainment(layout, rect, id, false);
 	return id;
+}
+
+bool GSRendererTileGpu::IsDisplayBase(u32 bp) const
+{
+	std::array<u32, 2> bases{kGSTileNoDisplayBase, kGSTileNoDisplayBase};
+	for (int i = 0; i < 2; i++)
+	{
+		const auto& fb = PCRTCDisplays.PCRTCDisplays[i];
+		if (fb.enabled && fb.FBW != 0)
+			bases[i] = static_cast<u32>(fb.Block());
+	}
+	return gsTileContainIsDisplayBase(bp, bases);
 }
 
 void GSRendererTileGpu::NoteContainerRows(GSTileSurfaceId id, u32 end_row)
@@ -2308,7 +2396,7 @@ void GSRendererTileGpu::NoteContainerRows(GSTileSurfaceId id, u32 end_row)
 		m_frame.contain_max_pages = pages;
 }
 
-// See the declaration. Counted, never taken.
+// See the declaration.
 //
 // The container-choice policy is the composite one, and it is not a detail: a view that is legal
 // inside more than one live container has to pick the one whose alternation it removes rather than
@@ -2320,39 +2408,47 @@ void GSRendererTileGpu::NoteContainerRows(GSTileSurfaceId id, u32 end_row)
 //
 // ⚠️ A no-growth-only rule buys nothing anywhere on this corpus. Every fold here needs the
 // container to grow; growth is the feature, not an optimisation of it.
-void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
-	GSTileSurfaceId id, bool created)
+GSTileContainedView GSRendererTileGpu::PlaceContainedView(const GSTileSurfaceLayout& layout,
+	const GSVector4i& rect, bool first_sight, bool may_offset)
 {
 	if (layout.kind != GSTileSurfaceKind::Color)
-		return;
+		return GSTileContainedView{};
 
 	// The view's footprint is the extent its draws reach from the surface's own origin -- what the
 	// container must hold, not what this draw covers.
 	const u32 cols = gsTileContainPageCols(static_cast<u32>(std::max(rect.z, 0)), layout.bw);
 	const u32 rows = gsTileContainPageRows(static_cast<u32>(std::max(rect.w, 0)), layout.psm);
 	const u32 budget = gsTileGpuContainPageBudget(GSConfig.TileGpuContainPageBudget);
+	const u32 key = layout.pack();
 
-	// A recycled id is a different surface: the last tenant's rows go, and so does anything folded
-	// into it. Ids come back off the model's free list, so this is not hypothetical.
-	if (created)
+	// The caller's veto, and design rule 9's. Both hold the view to a ZERO offset rather than out of
+	// containment altogether -- a fold that displaces nothing is invisible to everything outside
+	// this function, and the cross-PSM same-base merge it keeps is most of gt4opb's win. Both are
+	// permanent for the layout, because both are reasons that can arrive AFTER the fold decision --
+	// a view first drawn without depth that later carries one, a base the PCRTC starts scanning out
+	// -- and a fold decided at first sight has no other way to be taken back.
+	if (!may_offset || IsDisplayBase(layout.bp))
+		m_contain_no_offset.insert(key);
+	const bool no_offset = m_contain_no_offset.count(key) != 0;
+	// A view already displaced when the refusal first arrives is unfolded, which costs it a surface
+	// create and a re-seed of its pages out of the container's writeback. That is the ordinary road
+	// for a page changing owner, so it is correct; it is counted because a count that does not
+	// settle to zero is a policy oscillating.
+	if (no_offset)
 	{
-		if (m_contain_rows.size() <= id)
-			m_contain_rows.resize(id + 1, 0);
-		m_contain_rows[id] = 0;
-		for (auto it = m_contain_alias.begin(); it != m_contain_alias.end();)
+		const auto stale = m_contain_alias.find(key);
+		if (stale != m_contain_alias.end() && (stale->second.x_off != 0 || stale->second.y_off != 0))
 		{
-			if (it->second.id == id)
-				it = m_contain_alias.erase(it);
-			else
-				++it;
+			m_contain_alias.erase(stale);
+			m_frame.contain_unfolded++;
 		}
 	}
 
-	// Already folded, and the fold is sticky. It has to be: under containment no surface would ever
-	// have been created for this view, so the exact-match road below must not take it back. It is
-	// also what keeps a view from drifting between containers as the draw order shifts, which would
-	// cost a surface create and a re-seed every frame.
-	const auto hit = m_contain_alias.find(layout.pack());
+	// Already folded, and the fold is sticky. It has to be: under containment no surface was ever
+	// created for this view, so the exact-match road must not take it back. It is also what keeps a
+	// view from drifting between containers as the draw order shifts, which would cost a surface
+	// create and a re-seed every frame.
+	const auto hit = m_contain_alias.find(key);
 	if (hit != m_contain_alias.end())
 	{
 		const GSTileSurfaceId cid = hit->second.id;
@@ -2368,20 +2464,17 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 				m_frame.contain_regrow_refused++;
 			m_contain_view = cid;
 			m_frame.contain_folded_draws++;
-			return;
+			return hit->second;
 		}
 		m_contain_alias.erase(hit);
 	}
 
-	// A surface that already existed is its own container. There is no retro-folding: a view that
-	// was not folded when it was created is not folded later, because moving it would mean moving
-	// page ownership and bumping two surface versions mid-frame.
-	if (!created)
-	{
-		NoteContainerRows(id, rows);
-		m_contain_view = id;
-		return;
-	}
+	// A surface that already exists is its own container, and the caller notes its rows once it has
+	// the id. There is no retro-folding: a view that was not folded when it was created is not
+	// folded later, because moving it would mean moving page ownership and bumping two surface
+	// versions mid-frame.
+	if (!first_sight)
+		return GSTileContainedView{};
 
 	m_frame.contain_first_sight++;
 	const GSTileSurfaceId open = m_contain_prev_valid ? m_contain_prev_folded : kGSTileNoSurface;
@@ -2389,17 +2482,16 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 	GSTileContainOffset fit_off, open_off;
 	u32 fit_base = 0;
 	u32 candidates = 0;
+	bool vetoed_any = false;
 	GSTileContainRefusal furthest = GSTileContainRefusal::Admitted;
 	for (u32 slot = 0; slot < m_vram_model.SurfaceSlots(); slot++)
 	{
 		const GSTileSurfaceId cid = static_cast<GSTileSurfaceId>(slot);
-		if (cid == id)
-			continue;
 		const GSVramModel::Surface& surf = m_vram_model.Get(cid);
 		if (!surf.alive || surf.layout.kind != GSTileSurfaceKind::Color)
 			continue;
-		// A view that is itself folded is not a container. Under containment it would never have
-		// had a surface at all, so admitting it here would offer a candidate that does not exist.
+		// A view that is itself folded is not a container. Under containment it never had a surface
+		// at all, so admitting it here would offer a candidate that does not exist.
 		if (m_contain_alias.count(surf.layout.pack()) != 0)
 			continue;
 		candidates++;
@@ -2410,6 +2502,12 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 		{
 			if (static_cast<u8>(why) > static_cast<u8>(furthest))
 				furthest = why;
+			continue;
+		}
+		// Legal, but this view may not be displaced (see the veto above), and this container would.
+		if (no_offset && (off.x != 0 || off.y != 0))
+		{
+			vetoed_any = true;
 			continue;
 		}
 		const u32 held = (m_contain_rows.size() > cid) ? m_contain_rows[cid] : 0;
@@ -2434,7 +2532,8 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 	if (picked != kGSTileNoSurface)
 	{
 		const GSTileContainOffset& off = (fit_id != kGSTileNoSurface) ? fit_off : open_off;
-		m_contain_alias[layout.pack()] = GSTileContainedView{picked, off.x, off.y};
+		const GSTileContainedView view{picked, off.x, off.y};
+		m_contain_alias[key] = view;
 		m_frame.contain_folds++;
 		m_frame.contain_folded_draws++;
 		const u32 held = (m_contain_rows.size() > picked) ? m_contain_rows[picked] : 0;
@@ -2442,11 +2541,13 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 			m_frame.contain_growth_pages += (off.end_row - held) * m_vram_model.Get(picked).layout.bw;
 		NoteContainerRows(picked, off.end_row);
 		m_contain_view = picked;
-		return;
+		return view;
 	}
 
 	if (candidates == 0)
 		m_frame.contain_ref_none++;
+	else if (vetoed_any)
+		m_frame.contain_ref_vetoed++;
 	else
 	{
 		switch (furthest)
@@ -2476,8 +2577,36 @@ void GSRendererTileGpu::ProbeContainment(const GSTileSurfaceLayout& layout, cons
 				break;
 		}
 	}
-	NoteContainerRows(id, rows);
+	return GSTileContainedView{};
+}
+
+// See the declaration. The rows a surface holds in its own right, noted once EnsureSurface knows
+// which id the view took.
+void GSRendererTileGpu::NoteOwnContainer(GSTileSurfaceId id, const GSTileSurfaceLayout& layout,
+	const GSVector4i& rect)
+{
+	if (layout.kind != GSTileSurfaceKind::Color)
+		return;
+	NoteContainerRows(id, gsTileContainPageRows(static_cast<u32>(std::max(rect.w, 0)), layout.psm));
 	m_contain_view = id;
+}
+
+// A freshly created surface may be sitting in a slot an earlier one used, and that earlier surface
+// may have been a container: its rows go, and so does every view folded into it. Ids come back off
+// the model's free list, so this is not hypothetical -- though nothing in this renderer destroys a
+// surface today, and the free list only ever fills at a Reset that clears both tables anyway.
+void GSRendererTileGpu::NoteSurfaceRecycled(GSTileSurfaceId id)
+{
+	if (m_contain_rows.size() <= id)
+		m_contain_rows.resize(id + 1, 0);
+	m_contain_rows[id] = 0;
+	for (auto it = m_contain_alias.begin(); it != m_contain_alias.end();)
+	{
+		if (it->second.id == id)
+			it = m_contain_alias.erase(it);
+		else
+			++it;
+	}
 }
 
 void GSRendererTileGpu::CountContainmentBreaks(GSTileSurfaceId fb_id, GSTileSurfaceId z_id, bool z_used)
@@ -2616,7 +2745,7 @@ GSPageBitmap GSRendererTileGpu::PagesNeedingSeed(GSTileSurfaceId id, const GSPag
 // from it earlier. Anything that cannot be proved takes the byte road, which is slower and never
 // wrong; that is the whole reason the image road can be built one case at a time.
 GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayout& tex_l, u32 tw, u32 th,
-	const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id) const
+	const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id)
 {
 	if (!m_bindless_targets || tex_pages.empty())
 		return kGSTileNoSurface;
@@ -2641,7 +2770,24 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 	// index formats -- so widening this would be an untested road nothing takes. It goes with the
 	// 16-bit texture READ arm, which is where a caller for it first exists.
 	if (!HasCt32PixelSpace(surf.layout) || surf.layout.bp != tex_l.bp || surf.layout.bw != tex_l.bw)
+	{
+		// Q5 of the design's open questions, and the number that decides whether rule 2's per-slot
+		// offset bind gets built at all. Surface-identity containment can break exactly one clause
+		// of this rule while every other one holds: the window's pages are owned by the container
+		// the read's own view is folded into, so the BASE differs and nothing else does. The bind
+		// would be legal at the fold's own offset; there is no offset bind, so the draw takes the
+		// byte road -- correct, three to four times the fragment instructions, and invisible
+		// without this. The PSM clause below is asked here too, so a window this rule would have
+		// refused anyway is not counted against the fold.
+		if (m_contain_surfaces && HasCt32PixelSpace(surf.layout) && surf.layout.bw == tex_l.bw &&
+			(surf.layout.psm == tex_l.psm || (surf.layout.psm == PSMCT32 && tex_l.psm == PSMCT24)))
+		{
+			const auto it = m_contain_alias.find(tex_l.pack());
+			if (it != m_contain_alias.end() && it->second.id == src)
+				m_frame.contain_bind_refused++;
+		}
 		return kGSTileNoSurface;
+	}
 	// Byte-compatible formats. Equal PSM is the whole story except for a CT32 target read as CT24:
 	// same bytes, and the draw's TEXA already supplies the alpha the read must not take from the
 	// target's own alpha channel. A CT24 target read as CT32 is refused -- its alpha bytes belong
@@ -4095,7 +4241,16 @@ void GSRendererTileGpu::AccumulateDraw()
 	// Only the 32/16-bit colour and depth families have pool geometry: an 8/4-bit or
 	// zero-stride target has no surface on this road, and the draw is dropped before it can
 	// touch the model -- counted; the pass model still saw it.
-	const GSTileSurfaceId fb_id = EnsureSurface(fb_l, r, fb_pages);
+	//
+	// The colour surface is not always this view's own: under surface-identity containment it can
+	// be a container holding the view at a rectangle offset, and then everything below that speaks
+	// in the surface's pixel space is translated by `fb_off`. A draw carrying a depth attachment is
+	// refused a DISPLACED placement -- one vertex transform serves both attachments, so displacing
+	// the colour view would displace the depth rows with it, into guest Z belonging to other
+	// pixels, and depth containment is deferred. It keeps the zero-offset merge, which moves
+	// nothing and is where most of the corpus's win is.
+	GSVector2i fb_off(0, 0);
+	const GSTileSurfaceId fb_id = EnsureSurface(fb_l, r, fb_pages, &fb_off, !z_used);
 	if (fb_id == kGSTileNoSurface)
 	{
 		m_frame.skipped_draws++;
@@ -4111,6 +4266,11 @@ void GSRendererTileGpu::AccumulateDraw()
 			return;
 		}
 	}
+	// This draw's rect in the surface's own pixel space, which is the view's own only while the
+	// view is its own surface. The guest page footprints above are NOT translated and must not be:
+	// they name pages of GS memory, which is the one space containment does not move anything in.
+	const GSVector4i off4(fb_off.x, fb_off.y, fb_off.x, fb_off.y);
+	const GSVector4i sr = r + off4;
 
 	// The containment census's own boundary, counted here because it is a change BETWEEN draws.
 	// Placed after both EnsureSurface calls and before anything reads the pass key, so it sees the
@@ -4674,8 +4834,13 @@ void GSRendererTileGpu::AccumulateDraw()
 	// ...and only on the snapshot road. A DATE draw served by the in-pass read sees the live pixel,
 	// including whatever this same pass has already written under it, so there is nothing for a break
 	// to make exact -- it would cost a pass and buy nothing.
+	//
+	// In the SURFACE's coordinates, not the view's: two views contained in one image share
+	// m_run_surface, so the run's written rect has to be a rect of the image they share. Disjoint
+	// views then simply never intersect, which is the right answer -- the snapshot the second one
+	// reads genuinely does hold the first one's pixels.
 	const bool date_reads_live = (self_mask & GSDevice::kGSTileGpuSelfDate) != 0;
-	if (date != 0 && !date_reads_live && !m_run_written.rempty() && !m_run_written.rintersect(r).rempty())
+	if (date != 0 && !date_reads_live && !m_run_written.rempty() && !m_run_written.rintersect(sr).rempty())
 	{
 		pd.break_before = true;
 		m_run_written = GSVector4i::zero();
@@ -4684,7 +4849,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	}
 	if (pd.break_before)
 		m_run_written = GSVector4i::zero();
-	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
+	m_run_written = m_run_written.rempty() ? sr : m_run_written.runion(sr);
 	pd.date = date;
 	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
 	pd.afail_keep_alpha = afail_keep_alpha;
@@ -4732,7 +4897,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		{
 			pd.break_before = true;
 			m_frame.tex_bind_breaks++;
-			m_run_written = r;
+			m_run_written = sr;
 			BreakOpenPass();
 		}
 		u32 slot = 0;
@@ -4772,12 +4937,18 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.z_write = z_write;
 	pd.z_test = z_test;
 	pd.depth_mode = depth_mode;
-	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
-	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
-	pd.rect = r;
-	pd.scissor = ctx->scissor.in;
+	// The three things that speak in the colour surface's pixel space, all translated by the
+	// containment offset and all of them (0, 0) worth of translation for a view that is its own
+	// surface. Doing the vertex half through XYOFFSET rather than by rewriting the vertex stream is
+	// Classic's `v[i].XYZ.X += horizontal_offset << 4` one level up: cheaper, and it leaves the
+	// vertices byte-identical to what the guest handed us.
+	pd.ofx = gsTileContainVertexOffset(static_cast<s32>(ctx->XYOFFSET.OFX), fb_off.x);
+	pd.ofy = gsTileContainVertexOffset(static_cast<s32>(ctx->XYOFFSET.OFY), fb_off.y);
+	pd.rect = sr;
+	pd.scissor = ctx->scissor.in + off4;
 	// Whether the scissor rejects anything of THIS draw, which is not the same question as whether
 	// it is narrower than the target: the bbox is what the geometry covers, r is what survives.
+	// Both untranslated, because the question is about the two of them and not about where they sit.
 	pd.scissor_cuts = !bbox.eq(r);
 	pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
 	// Make sure the surfaces are in the plan's target list even when no prep op named them.
