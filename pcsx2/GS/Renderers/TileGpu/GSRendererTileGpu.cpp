@@ -553,6 +553,21 @@ bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector
 	if (count == 0)
 		return false;
 
+	// It renders nothing and exists to be a sequence point, so it is one for the reorder too: the
+	// backlog goes out and it gets a run of its own. Done BEFORE the entry is pushed, for the reason
+	// AccumulateDraw chooses its run early -- the ops are already emitted and they belong to this
+	// pseudo-draw's pass.
+	if (m_reorder_active)
+	{
+		m_frame.reorder_draws++;
+		m_frame.reorder_ref_prep++;
+		u32 emitted = 0;
+		const u32 joined = m_reorder.OpenBarrierRun(GSTileGpuPassKey{}, &emitted);
+		m_frame.reorder_runs += emitted;
+		CarryOpenPassAcrossFlush(emitted);
+		m_open_run = joined;
+	}
+
 	PendingDraw pd = {};
 	pd.tex_source = kGSTileNoSurface;
 	pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
@@ -2038,7 +2053,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// modelled nothing reads as a model that found nothing. Per DRAWN frame like the containment
 	// census above and for the same reason: a frame the game presents without drawing into halves
 	// every mean here.
-	if (m_reorder_census)
+	if (m_reorder_setting != 0)
 	{
 		u32 ro_drawn = 0;
 		for (const MF& f : m_model_frames)
@@ -2069,22 +2084,35 @@ void GSRendererTileGpu::ReportModelTraffic()
 		const auto ro_raw = rostat([](const MF& f) { return f.reorder_haz_raw; });
 		const auto ro_war = rostat([](const MF& f) { return f.reorder_haz_war; });
 		const auto ro_waw = rostat([](const MF& f) { return f.reorder_haz_waw; });
+		const auto ro_rar = rostat([](const MF& f) { return f.reorder_haz_rar; });
 		const auto ro_runs = rostat([](const MF& f) { return f.reorder_runs; });
 		const auto ro_pass = rostat([](const MF& f) { return f.reorder_passes; });
 		const auto ro_moved = rostat([](const MF& f) { return f.reorder_passes_moved; });
 		const auto ro_peakd = rostat([](const MF& f) { return f.reorder_peak_draws; });
 		const auto ro_peakr = rostat([](const MF& f) { return f.reorder_peak_runs; });
-		const double drop = (ro_pass.mean > 0.0) ? (100.0 * (ro_pass.mean - ro_moved.mean) / ro_pass.mean) : 0.0;
-		Console.WriteLn("  reorder (modelled, NOT taken; %u runs; mean per DRAWN frame, %u of %u): reorderable %.2f "
+		Console.WriteLn("  reorder (%s; %u runs; mean per DRAWN frame, %u of %u): reorderable %.2f "
 						"of %.2f draws, refused %.2f (feedback %.2f, DATE %.2f, ROAA %.2f, prep-only %.2f)",
-			m_reorder_max_runs, ro_drawn, static_cast<u32>(m_model_frames.size()), ro_ok.mean, ro_draws.mean,
-			ro_draws.mean - ro_ok.mean, ro_fb.mean, ro_date.mean, ro_roaa.mean, ro_prep.mean);
-		Console.WriteLn("    hazard rejects %.2f (RAW %.2f, WAR %.2f, WAW %.2f)   runs emitted %.2f   "
+			m_reorder_census ? "modelled, NOT taken" : "TAKEN", m_reorder_max_runs, ro_drawn,
+			static_cast<u32>(m_model_frames.size()), ro_ok.mean, ro_draws.mean, ro_draws.mean - ro_ok.mean,
+			ro_fb.mean, ro_date.mean, ro_roaa.mean, ro_prep.mean);
+		Console.WriteLn("    hazard rejects %.2f (RAW %.2f, WAR %.2f, WAW %.2f, RAR %.2f)   runs emitted %.2f   "
 						"backlog peak %u draws / %u runs",
-			ro_raw.mean + ro_war.mean + ro_waw.mean, ro_raw.mean, ro_war.mean, ro_waw.mean, ro_runs.mean,
-			ro_peakd.max, ro_peakr.max);
-		Console.WriteLn("    passes as planned %8.2f -> reordered %8.2f (%+.1f%%)", ro_pass.mean, ro_moved.mean,
-			-drop);
+			ro_raw.mean + ro_war.mean + ro_waw.mean + ro_rar.mean, ro_raw.mean, ro_war.mean, ro_waw.mean,
+			ro_rar.mean, ro_runs.mean, ro_peakd.max, ro_peakr.max);
+		// The model's own before-and-after. Only the count-only arm has it: on the taken arm the plan
+		// IS the reordered one, and its pass count is the `passes` column above.
+		//
+		// ⚠️ The projection is optimistic against what the taken arm then measures, by design and not
+		// by accident. It counts passes over the emission order using each draw's own break_before,
+		// while the road forces an extra break at every flush -- accumulation's pass and the plan
+		// build's have to agree about where a pass starts, and after a flush the draw follows the last
+		// emitted run rather than anything accumulation still holds.
+		if (ro_pass.mean > 0.0)
+		{
+			const double drop = 100.0 * (ro_pass.mean - ro_moved.mean) / ro_pass.mean;
+			Console.WriteLn("    passes as planned %8.2f -> reordered %8.2f (%+.1f%%), flush breaks not counted",
+				ro_pass.mean, ro_moved.mean, -drop);
+		}
 	}
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
@@ -4068,6 +4096,28 @@ void GSRendererTileGpu::BreakOpenPass()
 	// breaks and is reset only where the snapshot is genuinely retaken.
 }
 
+// The one piece of bookkeeping draw reordering adds to the pass model, and the one that is silent
+// when it is wrong.
+//
+// Accumulation's idea of "the open pass" and the plan build's cut have to name the same boundaries,
+// because a draw's rule-2 slot and its writeback hoist verdict are decided against the first and
+// checked against the second. The plan build cuts over the EMISSION order, so what a draw follows
+// there is the question -- and after a flush, what it follows is the LAST emitted run's last draw,
+// not anything the runs still hold.
+//
+// So the last emitted run's open pass carries into the run this draw joins (run zero, since the
+// flush emptied the backlog) and every other slot resets. The alternative -- reset everything and
+// force the draw to break -- is also consistent, and costs a pass at every flush: +44% on Shadow of
+// the Colossus, +39% on Armored Core 3, measured.
+void GSRendererTileGpu::CarryOpenPassAcrossFlush(u32 runs_emitted)
+{
+	if (runs_emitted == 0)
+		return; // nothing went out, so nothing the runs hold is stale
+	const OpenRun tail = m_open_runs[runs_emitted - 1];
+	ResetOpenRuns();
+	m_open_runs[0] = tail;
+}
+
 void GSRendererTileGpu::ResetOpenRuns()
 {
 	for (m_open_run = 0; m_open_run < GSTileGpuReorderScheduler::kMaxRuns; m_open_run++)
@@ -4459,6 +4509,72 @@ void GSRendererTileGpu::AccumulateDraw()
 		gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
 	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
 		fb_id, z_id, depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
+
+	// This draw's guest-page footprints. WRITE is what lands in GS memory: the colour footprint where
+	// any channel survives the masks and the folds, the depth footprint where the depth write
+	// survives them. READ is what it may fetch: the depth footprint where it TESTS depth, the whole
+	// composed texture window, and the pages a device-held palette was loaded from.
+	//
+	// Built HERE and not at the plan entry it is stored on, because the reorder's admission test is
+	// asked of both sets and it has to be asked before any prep op of this draw exists.
+	GSPageBitmap draw_write_pages, draw_read_pages;
+	if (color_written)
+		draw_write_pages |= fb_pages;
+	if (z_write)
+		draw_write_pages |= z_pages;
+	if (z_test)
+		draw_read_pages |= z_pages;
+	if (tex_sampleable)
+		draw_read_pages |= tex_pages;
+	if (m_reorder_setting != 0)
+		draw_read_pages |= LiveClutPages();
+	// Feedback, asked here because this is the one place the two sets are still apart. Against the
+	// WRITE set and not against the read set: a draw that tests depth and writes it has z_pages on
+	// both sides and is not sampling anything.
+	const bool tex_reads_own_target = tex_sampleable && tex_pages.intersects(draw_write_pages);
+
+	// Which RUN this draw joins, and it is settled here for the same reason the pass key is: below
+	// this point the draw emits prep ops, takes a rule-2 slot, and has its writeback and donor hoists
+	// tested -- all against the pass it lands in. A run picked after any of that would test them
+	// against the wrong one, and a wrong hoist is stale bytes rather than a fault.
+	//
+	// A draw the class test refuses gets a barrier run: the backlog goes out and it opens a run of its
+	// own, so nothing crosses it in either direction. Three of the four refusals are conservatism with
+	// the proof already written -- a DATE draw's snapshot difference is unobservable under its own
+	// rect, and declaring is pixel-inert for a pass's non-readers -- but they cost one pass apiece on
+	// this corpus and the first shipping rung should not rest on the proofs.
+	if (m_reorder_active)
+	{
+		m_frame.reorder_draws++;
+		u32 emitted = 0;
+		u32 joined = 0;
+		if (draw_self_mask != 0 || date != 0 || tex_reads_own_target)
+		{
+			if (draw_self_mask != 0)
+				m_frame.reorder_ref_roaa++;
+			else if (date != 0)
+				m_frame.reorder_ref_date++;
+			else
+				m_frame.reorder_ref_feedback++;
+			joined = m_reorder.OpenBarrierRun(draw_key, &emitted);
+		}
+		else
+		{
+			const GSTileGpuReorderScheduler::Verdict v =
+				m_reorder.Admit(draw_key, draw_write_pages, draw_read_pages);
+			m_frame.reorder_haz_raw += (v.hazards & GSTileGpuReorderScheduler::kHazardRaw) ? 1u : 0u;
+			m_frame.reorder_haz_war += (v.hazards & GSTileGpuReorderScheduler::kHazardWar) ? 1u : 0u;
+			m_frame.reorder_haz_waw += (v.hazards & GSTileGpuReorderScheduler::kHazardWaw) ? 1u : 0u;
+			m_frame.reorder_haz_rar += (v.hazards & GSTileGpuReorderScheduler::kHazardRar) ? 1u : 0u;
+			m_frame.reorder_admitted++;
+			joined = v.run;
+			emitted = v.runs_emitted;
+		}
+		m_frame.reorder_runs += emitted;
+		CarryOpenPassAcrossFlush(emitted);
+		m_open_run = joined;
+	}
+
 	// The cap sits in the same test as the key because it answers the same question -- this draw does
 	// not join the open pass -- and it is placed HERE, before any prep op of this draw is emitted, for
 	// the reason a key mismatch is: everything below reads the open pass to decide what may be hoisted
@@ -4469,6 +4585,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		BreakOpenPass();
 
 	PendingDraw pd = {};
+	pd.tex_reads_own_target = tex_reads_own_target;
 	pd.tex_source = kGSTileNoSurface;
 	pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
 	pd.src_slot = kNoSourceSlot;
@@ -4611,7 +4728,14 @@ void GSRendererTileGpu::AccumulateDraw()
 				u32 first_texel = 0;
 				GpuPalette* const gp = ResolveDrawPalette(tex0, pal_entries, first_texel, clut_synced);
 				if (clut_synced) [[unlikely]]
+				{
 					pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
+					// ...and the plan the flush built took every staged run with it, so the run this
+					// draw was admitted to is gone. It re-joins an empty scheduler, which is run zero,
+					// and it is the first draw of the new plan either way.
+					if (m_reorder_active)
+						m_open_run = m_reorder.OpenRun(draw_key);
+				}
 				if (gp)
 				{
 					pd.pal_record = gp->handle;
@@ -5252,34 +5376,9 @@ void GSRendererTileGpu::AccumulateDraw()
 	// the cut fires nowhere.
 	m_plan_depth_modes.push_back(pd.depth_mode);
 	pd.draw_index = draw.state_index;
-	// This draw's guest-page footprints, kept rather than dropped with the locals. Everything here is
-	// already computed above; the pair is the retention, not a second derivation.
-	//
-	// WRITE is what lands in GS memory: the colour footprint where any channel survives the masks and
-	// the folds, the depth footprint where the depth write survives them. READ is what the draw may
-	// fetch: the depth footprint where the draw TESTS depth, the whole composed texture window, and --
-	// where the palette's words come off the device rather than out of CPU RAM -- the pages that
-	// palette was loaded from. A CPU-road palette contributes nothing: its words were read out of the
-	// CLUT mirror at accumulate time and frozen into the plan's own palette stream, so no GPU read of
-	// GS memory carries them.
-	GSPageBitmap draw_write_pages, draw_read_pages;
-	if (color_written)
-		draw_write_pages |= fb_pages;
-	if (z_write)
-		draw_write_pages |= z_pages;
-	if (z_test)
-		draw_read_pages |= z_pages;
-	if (pd.tex_enable)
-		draw_read_pages |= tex_pages;
-	if (pd.pal_record != 0) [[unlikely]]
-	{
-		if (const GpuPalette* const gp = FindGpuPalette(pd.pal_record))
-			draw_read_pages |= gp->pages;
-	}
-	// Feedback, asked here because this is the one place the two sets are still apart. Against the
-	// WRITE set and not against the read set: a draw that tests depth and writes it has z_pages on
-	// both sides and is not sampling anything.
-	pd.tex_reads_own_target = pd.tex_enable && tex_pages.intersects(draw_write_pages);
+	// The footprints were built above, where the reorder's admission test had to ask about them. They
+	// are kept on the plan rather than dropped with the locals because the count-only model asks the
+	// same question of a plan nothing staged.
 	m_plan_pending.push_back(pd);
 	m_plan_write_pages.push_back(draw_write_pages);
 	m_plan_read_pages.push_back(draw_read_pages);
@@ -5382,7 +5481,10 @@ void GSRendererTileGpu::ReorderCensus()
 		if (refusal)
 		{
 			(*refusal)++;
-			m_frame.reorder_runs += m_reorder.EmitInPlace(d);
+			u32 emitted = 0;
+			const u32 run = m_reorder.OpenBarrierRun(key_of(pd), &emitted);
+			m_frame.reorder_runs += emitted;
+			m_reorder.Stage(d, run, w, rd);
 			continue;
 		}
 
@@ -5390,6 +5492,7 @@ void GSRendererTileGpu::ReorderCensus()
 		m_frame.reorder_haz_raw += (v.hazards & GSTileGpuReorderScheduler::kHazardRaw) ? 1u : 0u;
 		m_frame.reorder_haz_war += (v.hazards & GSTileGpuReorderScheduler::kHazardWar) ? 1u : 0u;
 		m_frame.reorder_haz_waw += (v.hazards & GSTileGpuReorderScheduler::kHazardWaw) ? 1u : 0u;
+		m_frame.reorder_haz_rar += (v.hazards & GSTileGpuReorderScheduler::kHazardRar) ? 1u : 0u;
 		m_frame.reorder_runs += v.runs_emitted;
 		m_reorder.Stage(d, v.run, w, rd);
 		m_frame.reorder_admitted++;
@@ -5411,18 +5514,25 @@ void GSRendererTileGpu::ReorderCensus()
 	m_reorder.ClearOrder();
 }
 
+GSPageBitmap GSRendererTileGpu::LiveClutPages() const
+{
+	GSPageBitmap p;
+	for (const u32 idx : m_clut_live)
+		p |= m_gpu_palettes[idx].pages;
+	return p;
+}
+
 void GSRendererTileGpu::StageDraw(u32 index, const GSPageBitmap& written, const GSPageBitmap& read)
 {
 	if (!m_reorder_active)
 		return;
-	// ONE run, whatever the lever's width says. The admission predicate that would choose among
-	// several is the next rung; until it exists every draw joins the one run in the order it arrived,
-	// so the emission order is the identity and the splice below is a copy of the plan onto itself.
-	// That is deliberate: it puts the gather and the renumbering on the corpus with the answer known,
-	// before anything is allowed to move.
-	if (m_reorder.OpenRuns() == 0)
-		m_reorder.OpenRun(GSTileGpuPassKey{});
-	m_reorder.Stage(index, 0, written, read);
+	// The run was chosen where the draw's pass was, which is before anything it emits. Staging is the
+	// bookkeeping half and happens here, at the plan entry, so an index is never staged for a draw
+	// that turned out not to be pushed.
+	pxAssert(m_open_run < m_reorder.OpenRuns());
+	m_reorder.Stage(index, m_open_run, written, read);
+	m_frame.reorder_peak_draws = std::max(m_frame.reorder_peak_draws, m_reorder.StagedDraws());
+	m_frame.reorder_peak_runs = std::max(m_frame.reorder_peak_runs, m_reorder.OpenRuns());
 }
 
 // The splice: the plan's per-draw arrays, gathered into the order the runs came out in.

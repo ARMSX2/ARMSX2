@@ -277,6 +277,12 @@ public:
 		kHazardRaw = 1u << 0, ///< it reads pages a queued run writes
 		kHazardWar = 1u << 1, ///< it writes pages a queued run reads
 		kHazardWaw = 1u << 2, ///< it writes pages a queued run writes
+		/// ...and it READS pages a queued run reads, which is a hazard here where it would not be in
+		/// a renderer that only reads memory. Reading a page in this design can BUILD something: the
+		/// first reader of a page in guest order is the one whose prep ops compose its ring slot,
+		/// materialise its source image, or gather its palette, and every reader after it is a cache
+		/// hit that emits nothing. Invert two readers and the hit runs before the build.
+		kHazardRar = 1u << 3,
 	};
 
 	/// Where a draw may go, and what making room for it cost.
@@ -317,6 +323,10 @@ public:
 	/// The test is asked of every run but the draw's own: order inside a run is preserved, so a draw
 	/// may freely overlap the pages of the run it is joining. That is where a page bitmap beats a
 	/// texture-pointer comparison, which cannot tell which run a queued reader lives in.
+	///
+	/// ⚠️ All four channels, read-against-read included. That last one is not the usual hazard
+	/// analysis and it is not conservatism -- see kHazardRar: a read here can be what BUILDS the
+	/// thing every later read of the same page hits in a cache.
 	Verdict Admit(const GSTileGpuPassKey& key, const GSPageBitmap& written, const GSPageBitmap& read)
 	{
 		Verdict v;
@@ -336,6 +346,7 @@ public:
 			v.hazards |= written.intersects(m_runs[r].written) ? kHazardWaw : 0u;
 			v.hazards |= written.intersects(m_runs[r].read) ? kHazardWar : 0u;
 			v.hazards |= read.intersects(m_runs[r].written) ? kHazardRaw : 0u;
+			v.hazards |= read.intersects(m_runs[r].read) ? kHazardRar : 0u;
 		}
 		if (v.hazards != 0)
 		{
@@ -372,13 +383,17 @@ public:
 		r.read |= read;
 	}
 
-	/// A draw nothing has proved independent of the backlog -- it can neither be deferred nor hopped
-	/// over. The backlog goes out and the draw follows it, in place. Returns the runs that emitted.
-	u32 EmitInPlace(u32 index)
+	/// A draw nothing has proved independent of the backlog: the backlog goes out, and the draw gets a
+	/// run of its own. That makes it a barrier both ways -- nothing before it can be deferred past it,
+	/// because the flush emitted all of it; and nothing after it can be floated ahead of it, because
+	/// every run opened later is emitted later. Returns the run to stage it in; `emitted` takes the
+	/// runs the flush put out.
+	u32 OpenBarrierRun(const GSTileGpuPassKey& key, u32* emitted = nullptr)
 	{
-		const u32 emitted = FlushAll();
-		m_order.push_back(index);
-		return emitted;
+		const u32 n = FlushAll();
+		if (emitted)
+			*emitted += n;
+		return OpenRun(key);
 	}
 
 	/// Emit every open run, in open order, and start over. Returns how many emitted.
@@ -1960,10 +1975,17 @@ private:
 	/// Decides nothing: the caller's plan is untouched, and only the ModelFrame counters change.
 	void ReorderCensus();
 
-	/// Stage draw `index` -- the plan entry just pushed -- in the run it belongs to. A no-op unless
-	/// the lever is positive. Every site that appends to m_plan_pending must call it, or the
-	/// emission order comes out short and the splice drops a draw.
+	/// Stage draw `index` -- the plan entry just pushed -- in the run AccumulateDraw put it in. A
+	/// no-op unless the lever is positive. Every site that appends to m_plan_pending must call it, or
+	/// the emission order comes out short and the splice drops a draw.
 	void StageDraw(u32 index, const GSPageBitmap& written, const GSPageBitmap& read);
+
+	/// The pages every device-held palette was loaded from. A draw whose palette the device holds
+	/// reads those pages through a prep op of its own, and which record it will name is not known
+	/// until its texel road is resolved -- which is after the run has to be chosen. So the reorder
+	/// takes the union: a superset can only refuse a move, never permit a wrong one. Empty on every
+	/// title that never gathers a CLUT, which is most of them.
+	GSPageBitmap LiveClutPages() const;
 
 	/// Emit the staged runs and put the plan's per-draw arrays in that order. A no-op unless the
 	/// lever is positive; with one run the permutation is the identity and the gather is a copy.
@@ -2737,6 +2759,11 @@ private:
 	// leaves the DATE snapshot's run alone -- that one spans ordinary pass breaks.
 	void BreakOpenPass();
 
+	// A flush emitted `runs_emitted` runs, so the pass the next draw follows is the LAST of them.
+	// Carry that run's open pass into run 0 -- the run the next draw joins, since the flush emptied
+	// the backlog -- and reset the rest. See the definition: getting this wrong is not a slow frame.
+	void CarryOpenPassAcrossFlush(u32 runs_emitted);
+
 	// Every run goes back to its initial state and the current one is run 0. The plan boundary, and
 	// only the plan boundary: a plan build emits every run, so nothing any of them recorded can
 	// constrain a draw of the next plan -- the DATE snapshot's run included, since the snapshot is
@@ -2971,6 +2998,11 @@ private:
 		u32 reorder_haz_raw = 0; // the draw reads pages a queued run writes
 		u32 reorder_haz_war = 0; // the draw writes pages a queued run reads
 		u32 reorder_haz_waw = 0; // the draw writes pages a queued run writes
+		// ...and the one that is not a hazard in an ordinary renderer: the draw READS pages a queued
+		// run reads. The first reader of a page in guest order is the one whose prep ops compose its
+		// ring slot, build its source image or gather its palette; every later reader emits nothing
+		// and hits what that one built. Invert two readers and the hit runs before the build.
+		u32 reorder_haz_rar = 0;
 		u32 reorder_runs = 0;         // runs emitted over the frame
 		u32 reorder_passes = 0;       // passes the plan cuts into as it stands
 		u32 reorder_passes_moved = 0; // ...and as the reordered emission order would cut into

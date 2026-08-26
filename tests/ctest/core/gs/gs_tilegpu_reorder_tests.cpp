@@ -98,13 +98,8 @@ std::vector<u32> Schedule(const std::vector<Draw>& draws, u32 max_runs)
 	for (u32 i = 0; i < draws.size(); i++)
 	{
 		const Draw& d = draws[i];
-		if (!d.reorderable)
-		{
-			s.EmitInPlace(i);
-			continue;
-		}
-		const Scheduler::Verdict v = s.Admit(KeyOf(d), d.written, d.read);
-		s.Stage(i, v.run, d.written, d.read);
+		const u32 run = d.reorderable ? s.Admit(KeyOf(d), d.written, d.read).run : s.OpenBarrierRun(KeyOf(d));
+		s.Stage(i, run, d.written, d.read);
 	}
 	s.FlushAll();
 	return s.Order();
@@ -292,6 +287,36 @@ TEST(GSTileGpuReorder, ARunMayOverlapItself)
 		EXPECT_EQ(v.run, 0u);
 		s.Stage(i, v.run, draws[i].written, draws[i].read);
 	}
+}
+
+/// Two draws that READ the same page may not be inverted, which is not the usual hazard analysis
+/// and is not conservatism. A read here can BUILD: the first reader of a page in guest order is the
+/// one whose prep ops compose its ring slot, materialise its source image or gather its palette,
+/// and every reader after it emits nothing and samples what that one built. Invert them and the
+/// cache hit runs before the build, sampling an image nothing has written yet.
+TEST(GSTileGpuReorder, TwoReadersOfOnePageAreNotInverted)
+{
+	std::vector<Draw> draws{
+		// the framebuffer, sampling a texture at page 200
+		Draw{kFrame, DepthMode::None, kZ, PageRange(0, 15), Pages({200})},
+		// a page-disjoint scratch buffer -- but it samples the SAME texture
+		Draw{kScratch, DepthMode::None, kZ, Pages({64}), Pages({200})},
+		Draw{kFrame, DepthMode::None, kZ, PageRange(0, 15), Pages({200})},
+		Draw{kScratch, DepthMode::None, kZ, Pages({64}), Pages({200})},
+	};
+	const std::vector<u32> order = Schedule(draws, 4);
+	ExpectPermutation(draws, order);
+	ExpectInversionsIndependent(draws, order);
+	std::vector<u32> identity(draws.size());
+	std::iota(identity.begin(), identity.end(), 0u);
+	EXPECT_EQ(order, identity) << "readers of one page were reordered against each other";
+
+	// ...and the channel says so rather than the refusal being a side effect of another one.
+	Scheduler s;
+	s.Reset(4);
+	s.Stage(0, s.Admit(KeyOf(draws[0]), draws[0].written, draws[0].read).run, draws[0].written, draws[0].read);
+	const Scheduler::Verdict v = s.Admit(KeyOf(draws[1]), draws[1].written, draws[1].read);
+	EXPECT_EQ(v.hazards, Scheduler::kHazardRar);
 }
 
 /// The run cap: a further key with no room for a run empties the backlog rather than dropping the
