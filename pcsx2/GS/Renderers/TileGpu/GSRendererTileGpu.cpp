@@ -4395,6 +4395,58 @@ void GSRendererTileGpu::AccumulateDraw()
 	// same pair of surfaces the pass structure below is built from -- and it decides nothing.
 	CountContainmentBreaks(fb_id, z_id, z_used);
 
+	// The read window this draw would sample, resolved before its pass is chosen.
+	//
+	// It is a pure function of the draw's own registers and its vertex trace -- the size-fixed TEX0,
+	// which of the three address geometries the format belongs to, and the guest pages the whole
+	// window covers -- so asking it early costs nothing and loses nothing. What it buys is that
+	// "which GS pages does this draw READ" is answerable before any decision that depends on the
+	// pass, which is what a draw's run has to be chosen from. The texture block far below takes these
+	// rather than deriving them a second time.
+	bool tex_mip = false;
+	GIFRegTEX0 tex0 = {};
+	u32 tex_psm = 0;
+	int d32_fmt = -1, idx_fmt = -1, d16_fmt = -1;
+	bool direct32 = false, direct32_depth = false, paletted = false, direct16 = false;
+	bool tex_sampleable = false; ///< TME on, and the format is one of the three this stage samples
+	u32 win_tw = 0, win_th = 0;
+	GSPageBitmap tex_pages;
+	if (PRIM->TME)
+	{
+		tex_mip = IsMipMapActive();
+		tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), tex_mip);
+		tex_psm = tex0.PSM;
+		// The direct 32-bit families: the CT32 pair, and their depth twins PSMZ32/PSMZ24, which are
+		// the same tables under one constant block XOR. Its own list beside the other two, and all
+		// three feed the single index_format numbering the fragment shader switches on.
+		d32_fmt = GSTileSwizzleForms::Direct32FormatFor(tex_psm);
+		direct32 = (d32_fmt >= 0);
+		direct32_depth = (d32_fmt == static_cast<int>(GSTileSwizzleForms::Direct32Format::Z32));
+		// Every format whose texel is a palette index: PSMT8/PSMT4 and the three alpha-byte views.
+		// IndexFormatFor is the one list -- the donor road's reinterpretation already keyed off it,
+		// and a second list here is how the two would come to disagree about what is sampleable.
+		idx_fmt = GSTileSwizzleForms::IndexFormatFor(tex_psm);
+		paletted = (idx_fmt >= 0);
+		// ...and the direct 16-bit families, whose texel is one halfword expanded by TEXA. Its own
+		// list beside that one, and both feed the single index_format numbering the fragment shader
+		// switches on.
+		d16_fmt = GSTileSwizzleForms::Direct16FormatFor(tex_psm);
+		direct16 = (d16_fmt >= 0);
+		tex_sampleable = direct32 || paletted || direct16;
+		if (tex_sampleable)
+		{
+			win_tw = 1u << std::min<u32>(tex0.TW, 10);
+			win_th = 1u << std::min<u32>(tex0.TH, 10);
+			// The whole (size-fixed) texture under its own layout, page-granular. Deliberately the
+			// window and not the texels the coordinates reach: the window is what the sampler is free
+			// to fetch.
+			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(tex_psm),
+				KindForPsm(tex_psm)};
+			tex_pages = GSVramModel::PagesForRect(
+				tex_l, GSVector4i(0, 0, static_cast<int>(win_tw), static_cast<int>(win_th)));
+		}
+	}
+
 	// Which pass is open for this draw? A draw whose key differs from the open pass's starts a new
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
 	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
@@ -4482,33 +4534,16 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.tex_enable = false;
 	pd.index_format = 0;
 	pd.pal_offset = 0;
-	GSPageBitmap tex_pages;
 	// Did this draw's read window get composed into the ring? Rule 2 and the donor road both leave it
 	// uncomposed -- they read an image, not bytes -- and the open pass's read set has to say so, or a
 	// later writeback would test itself against a slot nothing read.
 	bool composed_tex = false;
 	if (PRIM->TME)
 	{
-		const bool mip = IsMipMapActive();
-		const GIFRegTEX0 tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
-		const u32 psm = tex0.PSM;
-		// The direct 32-bit families: the CT32 pair, and their depth twins PSMZ32/PSMZ24, which are
-		// the same tables under one constant block XOR. Its own list beside the other two, and all
-		// three feed the single index_format numbering the fragment shader switches on.
-		const int d32_fmt = GSTileSwizzleForms::Direct32FormatFor(psm);
-		const bool direct32 = (d32_fmt >= 0);
-		const bool direct32_depth = (d32_fmt == static_cast<int>(GSTileSwizzleForms::Direct32Format::Z32));
-		// Every format whose texel is a palette index: PSMT8/PSMT4 and the three alpha-byte views.
-		// IndexFormatFor is the one list -- the donor road's reinterpretation already keyed off it,
-		// and a second list here is how the two would come to disagree about what is sampleable.
-		const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(psm);
-		const bool paletted = (idx_fmt >= 0);
-		// ...and the direct 16-bit families, whose texel is one halfword expanded by TEXA. Its own
-		// list beside that one, and both feed the single index_format numbering the fragment shader
-		// switches on.
-		const int d16_fmt = GSTileSwizzleForms::Direct16FormatFor(psm);
-		const bool direct16 = (d16_fmt >= 0);
-		if (direct32 || paletted || direct16)
+		// tex0, the format arms and the window's pages were all resolved above, before the pass was
+		// chosen. Everything from here on is what the read COSTS, which is a question about the pass.
+		const u32 psm = tex_psm;
+		if (tex_sampleable)
 		{
 			m_frame.tex_draws++;
 			if (paletted && GSLocalMemory::m_psm[psm].pgs.x == GSLocalMemory::m_psm[PSMCT32].pgs.x)
@@ -4522,8 +4557,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			// paletted and 64 wide, and halving its TBW would address the wrong page in every row
 			// but the first.
 			pd.tbw = TextureWindowBwPg(psm, tex0.TBW);
-			pd.tw = 1u << std::min<u32>(tex0.TW, 10);
-			pd.th = 1u << std::min<u32>(tex0.TH, 10);
+			pd.tw = win_tw;
+			pd.th = win_th;
 			pd.tfx = tex0.TFX;
 			pd.tcc = tex0.TCC;
 			pd.wms = ctx->CLAMP.WMS;
@@ -4597,12 +4632,11 @@ void GSRendererTileGpu::AccumulateDraw()
 				}
 			}
 
-			// The read window: the whole (size-fixed) texture under its own layout. Composed into
-			// the ring for this epoch -- prefilled from S where CPU-newest, written back from any
-			// target holding it newest -- BEFORE this draw's own claims move anything (a draw
-			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
+			// The read window (resolved above) is composed into the ring for this epoch -- prefilled
+			// from S where CPU-newest, written back from any target holding it newest -- BEFORE this
+			// draw's own claims move anything, because a draw sampling pages it also renders reads
+			// the pre-pass bytes: snapshot semantics.
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
-			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
 
 			// Rule 2 first. When one resident target owns the whole window at this exact layout the
 			// fragment stage samples it directly, and the byte road is not asked for anything: no
@@ -4646,7 +4680,7 @@ void GSRendererTileGpu::AccumulateDraw()
 				// they stand -- which is the only moment a page fingerprint is honest, since composing
 				// supersedes exactly the bytes it would hash.
 				const u32 src_window = m_bindless_targets ?
-										   ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip, donor_token) :
+										   ProbeSourceRoad(pd, tex0, tex_pages, paletted, tex_mip, donor_token) :
 										   kNoSourceSlot;
 
 				// The donor build, tried before the compose because skipping the compose IS the win.
