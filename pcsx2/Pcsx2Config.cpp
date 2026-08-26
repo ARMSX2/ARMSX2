@@ -770,7 +770,10 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuDisableSelfRead = false;
 	TileGpuStrictMemory = false;
 	TileGpuPoisonAllocations = false;
-	TileGpuContainSurfaces = false;
+	// Default TRUE: what it takes is the zero-offset merge and nothing else, which is
+	// byte-identical to off on all 21 corpus dumps and removes 117.00 render passes a drawn
+	// frame on the GT4 Online Public Beta. See Config.h for the rule and what it refuses.
+	TileGpuContainSurfaces = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;

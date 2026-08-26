@@ -1171,22 +1171,26 @@ struct Pcsx2Config
 					// records nothing at all and is the executor byte for byte. Dev only.
 					TileGpuPoisonAllocations : 1,
 					// Give a view of GS memory that lands INSIDE a live surface's page
-					// rectangle that surface, at a pixel offset, instead of a surface of
-					// its own. Two views of one image share a pass key, so the render pass
-					// they alternate in stops ending between them: on Gran Turismo 4 the
-					// palette buffer at 0x03de0 folds into the frame buffer at 0x01180 and
-					// 140 colour-key pass breaks a frame go away.
+					// rectangle that surface, instead of a surface of its own, so the two
+					// views share a pass key and the render pass they alternate in stops
+					// ending between them.
 					//
-					// Legality is gsTileContainView (GSRendererTileGpu.h) -- same kind,
-					// same swizzle family, same stride, both bases page-aligned, a forward
-					// page delta whose column does not run off the container's stride, and
-					// a container that can grow to hold the view without leaving GS memory
-					// or the page budget below. Cross-PSM within the family and a nonzero
-					// offset are ONE feature: measured over the corpus's draw streams,
-					// either half alone removes no break at all on either GT4 dump.
+					// DEFAULT ON, and what it takes is the ZERO-OFFSET half only: a view is
+					// admitted where it lands at (0, 0), which is the same base seen under
+					// two PSMs of one swizzle family, and every displaced placement is
+					// refused however legal the geometry
+					// (kGSTileContainDisplacedViews, GSRendererTileGpu.h, which carries the
+					// two measured reasons -- the container's writeback byte mask, and a
+					// displaced view's reads no longer matching it). Legality is
+					// gsTileContainView in the same header.
 					//
-					// Off is today's arrangement, byte for byte: every view keeps its own
-					// surface and every offset is (0, 0).
+					// Byte-identical to off on all 21 corpus dumps, five standing spot
+					// hashes included. What it buys is the two views no longer stealing each
+					// other's pages: -130 writeback ops and -130 seed ops a frame on the
+					// Gran Turismo 4 Online Public Beta dump, which is -117.00 render passes
+					// a drawn frame (-24.7%), and -1.00 on Dirge of Cerberus. Off is the
+					// pre-containment arrangement, byte for byte: every view keeps its own
+					// surface.
 					TileGpuContainSurfaces : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
@@ -1546,7 +1550,10 @@ struct Pcsx2Config
 		// never written. Pages, not rows and not bytes, because the wrap clause the predicate
 		// already enforces is in pages and a second unit would let the two disagree.
 		//
-		// Read only by gsTileContainView, so it decides nothing while TileGpuContainSurfaces is off.
+		// Read only by gsTileContainView, so it decides nothing while TileGpuContainSurfaces is
+		// off -- nor while the shipped rule refuses every displaced placement, since a view that
+		// lands at (0, 0) is inside its container's own pages and grows it by nothing. It is the
+		// displaced road's cap, waiting for that road.
 		int TileGpuContainPageBudget = 0;
 
 		s8 ExclusiveFullscreenControl = -1;
