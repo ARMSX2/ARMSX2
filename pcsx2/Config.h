@@ -1556,6 +1556,34 @@ struct Pcsx2Config
 		// displaced road's cap, waiting for that road.
 		int TileGpuContainPageBudget = 0;
 
+		// Draw REORDERING in the TileGpu pass planner: how many per-(colour, depth) runs of draws the
+		// planner may hold open at once, emitting each contiguously instead of in guest order.
+		//
+		// Three states, the same shape as TileGpuMaxPassDraws and for the same reason -- "count what
+		// it would do" and "do it" are different questions, and a bool cannot ask the second one at a
+		// chosen width:
+		//
+		//   0  -- OFF, and what ships. No census, no reorder, no cost.
+		//  <0  -- CENSUS ONLY. Run the admission model over |N| runs and report at teardown what it
+		//         would have moved. Nothing moves; the plan is the plan.
+		//  >0  -- REORDER, holding at most N runs open.
+		//
+		// What it is for: a pass ends whenever its attachments change, so a game that alternates
+		// between a framebuffer and a scratch buffer ends one on every switch -- Dirge of Cerberus
+		// plans about a thousand passes a frame that way, against sixty for the same draws. The draws
+		// into the two buffers touch no GS page in common, so they can be grouped instead of
+		// interleaved, and the passes collapse.
+		//
+		// ⚠️ Reordering is PIXEL-INERT by construction and a difference between the on and off arms is
+		// a DEFECT, not a trade: a draw is moved only where the page model proves it shares no GS page
+		// with anything it passes, and every decision about the draw -- its surfaces, its texel road,
+		// its seeds, its palette -- was taken in guest order before the move.
+		//
+		// It is also a one-title lever on today's corpus. Every dump but Dirge measures between 0%
+		// and -3% passes, because their alternations are data dependencies (a palette buffer rendered
+		// and then sampled) that no reordering can remove.
+		int TileGpuReorderRuns = 0;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

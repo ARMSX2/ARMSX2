@@ -975,6 +975,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileGpuSerializeOps) &&
 		OpEqu(TileGpuSerializeMask) &&
 		OpEqu(TileGpuContainPageBudget) &&
+		OpEqu(TileGpuReorderRuns) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
 		OpEqu(ScreenshotSize) &&
@@ -1291,6 +1292,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileGpuSerializeOps, "TileGpuSerializeOps");
 	SettingsWrapBitfieldEx(TileGpuSerializeMask, "TileGpuSerializeMask");
 	SettingsWrapBitfieldEx(TileGpuContainPageBudget, "TileGpuContainPageBudget");
+	SettingsWrapBitfieldEx(TileGpuReorderRuns, "TileGpuReorderRuns");
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");

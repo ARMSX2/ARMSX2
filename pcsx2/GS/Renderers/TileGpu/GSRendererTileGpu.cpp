@@ -263,6 +263,18 @@ GSRendererTileGpu::GSRendererTileGpu()
 			gsTileGpuContainPageBudget(GSConfig.TileGpuContainPageBudget), GSConfig.TileGpuContainPageBudget);
 	}
 
+	// Draw reordering, read once for the reason every pass-boundary policy here is: it decides which
+	// pass a draw lands in, and a value that moved mid-run would leave one frame's draws scheduled two
+	// ways. Negative is the census -- the model runs and reports and moves nothing.
+	m_reorder_setting = GSConfig.TileGpuReorderRuns;
+	m_reorder_census = m_reorder_setting < 0;
+	m_reorder_max_runs = std::min(static_cast<u32>(std::abs(m_reorder_setting)), kMaxReorderRuns);
+	if (m_reorder_setting != 0)
+	{
+		Console.WriteLn("TileGpu: draw reordering %s, %u concurrent runs (TileGpuReorderRuns = %d).",
+			m_reorder_census ? "COUNTED ONLY -- nothing moves" : "ON", m_reorder_max_runs, m_reorder_setting);
+	}
+
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
 	// draws and issues them at the plan, so a texture one of them names must survive to the end of
@@ -2018,6 +2030,58 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// design defers building it; above, it is the next rung's first job.
 	Console.WriteLn("    rule-2 binds refused for the fold's base alone (the offset bind is not built) %.2f / %u draws",
 		ct_bind.mean, ct_bind.max);
+	// Draw reordering, and only where the lever asked for it -- a census line printed on a run that
+	// modelled nothing reads as a model that found nothing. Per DRAWN frame like the containment
+	// census above and for the same reason: a frame the game presents without drawing into halves
+	// every mean here.
+	if (m_reorder_census)
+	{
+		u32 ro_drawn = 0;
+		for (const MF& f : m_model_frames)
+			ro_drawn += (f.reorder_draws != 0) ? 1u : 0u;
+		const double ro_n = static_cast<double>(std::max(ro_drawn, 1u));
+		const auto rostat = [this, ro_n](auto get) {
+			double sum = 0.0;
+			u32 worst = 0;
+			for (const MF& f : m_model_frames)
+			{
+				const u32 v = get(f);
+				sum += v;
+				worst = std::max(worst, v);
+			}
+			struct
+			{
+				double mean;
+				u32 max;
+			} r{sum / ro_n, worst};
+			return r;
+		};
+		const auto ro_draws = rostat([](const MF& f) { return f.reorder_draws; });
+		const auto ro_ok = rostat([](const MF& f) { return f.reorder_admitted; });
+		const auto ro_fb = rostat([](const MF& f) { return f.reorder_ref_feedback; });
+		const auto ro_date = rostat([](const MF& f) { return f.reorder_ref_date; });
+		const auto ro_roaa = rostat([](const MF& f) { return f.reorder_ref_roaa; });
+		const auto ro_prep = rostat([](const MF& f) { return f.reorder_ref_prep; });
+		const auto ro_raw = rostat([](const MF& f) { return f.reorder_haz_raw; });
+		const auto ro_war = rostat([](const MF& f) { return f.reorder_haz_war; });
+		const auto ro_waw = rostat([](const MF& f) { return f.reorder_haz_waw; });
+		const auto ro_runs = rostat([](const MF& f) { return f.reorder_runs; });
+		const auto ro_pass = rostat([](const MF& f) { return f.reorder_passes; });
+		const auto ro_moved = rostat([](const MF& f) { return f.reorder_passes_moved; });
+		const auto ro_peakd = rostat([](const MF& f) { return f.reorder_peak_draws; });
+		const auto ro_peakr = rostat([](const MF& f) { return f.reorder_peak_runs; });
+		const double drop = (ro_pass.mean > 0.0) ? (100.0 * (ro_pass.mean - ro_moved.mean) / ro_pass.mean) : 0.0;
+		Console.WriteLn("  reorder (modelled, NOT taken; %u runs; mean per DRAWN frame, %u of %u): reorderable %.2f "
+						"of %.2f draws, refused %.2f (feedback %.2f, DATE %.2f, ROAA %.2f, prep-only %.2f)",
+			m_reorder_max_runs, ro_drawn, static_cast<u32>(m_model_frames.size()), ro_ok.mean, ro_draws.mean,
+			ro_draws.mean - ro_ok.mean, ro_fb.mean, ro_date.mean, ro_roaa.mean, ro_prep.mean);
+		Console.WriteLn("    hazard rejects %.2f (RAW %.2f, WAR %.2f, WAW %.2f)   runs emitted %.2f   "
+						"backlog peak %u draws / %u runs",
+			ro_raw.mean + ro_war.mean + ro_waw.mean, ro_raw.mean, ro_war.mean, ro_waw.mean, ro_runs.mean,
+			ro_peakd.max, ro_peakr.max);
+		Console.WriteLn("    passes as planned %8.2f -> reordered %8.2f (%+.1f%%)", ro_pass.mean, ro_moved.mean,
+			-drop);
+	}
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
@@ -5128,7 +5192,6 @@ void GSRendererTileGpu::AccumulateDraw()
 	// the cut fires nowhere.
 	m_plan_depth_modes.push_back(pd.depth_mode);
 	pd.draw_index = draw.state_index;
-	m_plan_pending.push_back(pd);
 	// This draw's guest-page footprints, kept rather than dropped with the locals. Everything here is
 	// already computed above; the pair is the retention, not a second derivation.
 	//
@@ -5139,24 +5202,27 @@ void GSRendererTileGpu::AccumulateDraw()
 	// palette was loaded from. A CPU-road palette contributes nothing: its words were read out of the
 	// CLUT mirror at accumulate time and frozen into the plan's own palette stream, so no GPU read of
 	// GS memory carries them.
+	GSPageBitmap draw_write_pages, draw_read_pages;
+	if (color_written)
+		draw_write_pages |= fb_pages;
+	if (z_write)
+		draw_write_pages |= z_pages;
+	if (z_test)
+		draw_read_pages |= z_pages;
+	if (pd.tex_enable)
+		draw_read_pages |= tex_pages;
+	if (pd.pal_record != 0) [[unlikely]]
 	{
-		GSPageBitmap w, rd;
-		if (color_written)
-			w |= fb_pages;
-		if (z_write)
-			w |= z_pages;
-		if (z_test)
-			rd |= z_pages;
-		if (pd.tex_enable)
-			rd |= tex_pages;
-		if (pd.pal_record != 0) [[unlikely]]
-		{
-			if (const GpuPalette* const gp = FindGpuPalette(pd.pal_record))
-				rd |= gp->pages;
-		}
-		m_plan_write_pages.push_back(w);
-		m_plan_read_pages.push_back(rd);
+		if (const GpuPalette* const gp = FindGpuPalette(pd.pal_record))
+			draw_read_pages |= gp->pages;
 	}
+	// Feedback, asked here because this is the one place the two sets are still apart. Against the
+	// WRITE set and not against the read set: a draw that tests depth and writes it has z_pages on
+	// both sides and is not sampling anything.
+	pd.tex_reads_own_target = pd.tex_enable && tex_pages.intersects(draw_write_pages);
+	m_plan_pending.push_back(pd);
+	m_plan_write_pages.push_back(draw_write_pages);
+	m_plan_read_pages.push_back(draw_read_pages);
 
 	if (alpha_companion)
 	{
@@ -5196,14 +5262,150 @@ void GSRendererTileGpu::AccumulateDraw()
 		// Same geometry, same state, same target: the companion's footprint is its principal's. Its
 		// write mask is narrower (the alpha byte alone), which cannot reach a page the principal did
 		// not, so copying the pair is exact and not merely conservative.
-		const GSPageBitmap principal_w = m_plan_write_pages[draw.state_index];
-		const GSPageBitmap principal_r = m_plan_read_pages[draw.state_index];
-		m_plan_write_pages.push_back(principal_w);
-		m_plan_read_pages.push_back(principal_r);
+		m_plan_write_pages.push_back(draw_write_pages);
+		m_plan_read_pages.push_back(draw_read_pages);
 		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
 		m_open_draw_count++;
 		m_frame.dualsrc_companions++;
 	}
+}
+
+// The reordering admission model, run over the finished plan and taken by nothing. See the
+// declaration.
+//
+// Running it HERE rather than inside AccumulateDraw costs nothing and settles one thing: the plan is
+// exactly the reorder window. Every road that can observe a target's bytes -- a readback, a transfer
+// crossing a live surface, a CLUT load off GPU-newest pages -- goes through FlushPendingPlan first,
+// so a plan boundary is already the point past which nothing may be deferred. The model therefore
+// sees the same draw list, with the same bounds, that a scheduler wired into accumulation would.
+//
+// What it does NOT model is the seed set. `break_before` was decided in guest order against the pass
+// that was open then, and this replays those verdicts unchanged -- which is the load-bearing
+// assumption of the whole design (the same draws seed under either order) rather than a shortcut. If
+// it is wrong, the projected pass count here is optimistic and the on-arm's real count will say so.
+void GSRendererTileGpu::ReorderCensus()
+{
+	const u32 n = static_cast<u32>(m_plan_pending.size());
+	if (n == 0)
+		return;
+
+	const auto key_of = [this](const PendingDraw& pd) {
+		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes,
+			pd.self_mask != 0, m_segregate_self_read);
+	};
+
+	m_reorder_order.clear();
+	m_reorder_order.reserve(n);
+	u32 open = 0;
+	// Emit every open run, in OPEN order, and start over. That order is what the standing invariant is
+	// spent on: admission proved every pair of open runs page-independent, so any two draws the
+	// concatenation inverts touch no page in common.
+	const auto flush = [&]() {
+		for (u32 r = 0; r < open; r++)
+		{
+			ReorderRun& run = m_reorder_backlog[r];
+			m_reorder_order.insert(m_reorder_order.end(), run.draws.begin(), run.draws.end());
+			run.draws.clear();
+			run.written.clear();
+			run.read.clear();
+		}
+		m_frame.reorder_runs += open;
+		open = 0;
+	};
+
+	constexpr u32 kNoRun = ~0u;
+	for (u32 d = 0; d < n; d++)
+	{
+		const PendingDraw& pd = m_plan_pending[d];
+		const GSPageBitmap& w = m_plan_write_pages[d];
+		const GSPageBitmap& rd = m_plan_read_pages[d];
+		m_frame.reorder_draws++;
+
+		// The class test: is this draw reorderable at all. Three of the four refusals are conservatism
+		// with the proof already written -- a DATE draw's snapshot difference is unobservable under its
+		// own rect, and declaring is pixel-inert for a pass's non-readers -- but refusing costs one pass
+		// apiece on this corpus and the proofs are not what the first rung should rest on.
+		u32* refusal = nullptr;
+		if (m_plan_draws[d].index_count == 0)
+			refusal = &m_frame.reorder_ref_prep; // a prep-only pseudo-draw: it IS a sequence point
+		else if (pd.self_mask != 0)
+			refusal = &m_frame.reorder_ref_roaa;
+		else if (pd.date != 0)
+			refusal = &m_frame.reorder_ref_date;
+		else if (pd.tex_reads_own_target)
+			refusal = &m_frame.reorder_ref_feedback;
+		if (refusal)
+		{
+			// Nothing has proved it independent of the backlog, so it can neither be deferred nor
+			// hopped over: the backlog goes out and the draw follows it, in place.
+			(*refusal)++;
+			flush();
+			m_reorder_order.push_back(d);
+			continue;
+		}
+
+		const GSTileGpuPassKey k = key_of(pd);
+		u32 mine = kNoRun;
+		for (u32 r = 0; r < open; r++)
+		{
+			if (m_reorder_backlog[r].key == k)
+			{
+				mine = r;
+				break;
+			}
+		}
+
+		// The hazard test, asked of every run but this draw's OWN. Order inside a run is preserved, so
+		// a draw may freely overlap the pages of the run it is joining -- which is where a page model
+		// beats a texture-pointer one, since a pointer cannot say which run a queued reader is in.
+		bool raw = false, war = false, waw = false;
+		for (u32 r = 0; r < open; r++)
+		{
+			if (r == mine)
+				continue;
+			const ReorderRun& run = m_reorder_backlog[r];
+			waw = waw || w.intersects(run.written);
+			war = war || w.intersects(run.read);
+			raw = raw || rd.intersects(run.written);
+		}
+		if (raw || war || waw)
+		{
+			m_frame.reorder_haz_raw += raw ? 1u : 0u;
+			m_frame.reorder_haz_war += war ? 1u : 0u;
+			m_frame.reorder_haz_waw += waw ? 1u : 0u;
+			flush();
+			mine = kNoRun;
+		}
+		if (mine == kNoRun)
+		{
+			if (open == m_reorder_max_runs)
+				flush(); // the run cap: a further key wants a run there is no room for
+			mine = open++;
+			m_reorder_backlog[mine].key = k;
+		}
+		ReorderRun& run = m_reorder_backlog[mine];
+		run.draws.push_back(d);
+		run.written |= w;
+		run.read |= rd;
+		m_frame.reorder_admitted++;
+
+		u32 held = 0;
+		for (u32 r = 0; r < open; r++)
+			held += static_cast<u32>(m_reorder_backlog[r].draws.size());
+		m_frame.reorder_peak_draws = std::max(m_frame.reorder_peak_draws, held);
+		m_frame.reorder_peak_runs = std::max(m_frame.reorder_peak_runs, open);
+	}
+	flush();
+	pxAssertMsg(m_reorder_order.size() == n, "TileGpu's reorder model lost or duplicated a draw");
+
+	// Both counts off the same cut function and the same per-draw verdicts, so the pair is one
+	// arrangement against another and not two different questions.
+	const auto breaks_at = [this](u32 d) { return m_plan_pending[d].break_before; };
+	m_frame.reorder_passes += gsTileGpuCountPasses(n, m_max_pass_draws,
+		[&](u32 d) { return key_of(m_plan_pending[d]); }, breaks_at);
+	m_frame.reorder_passes_moved += gsTileGpuCountPasses(n, m_max_pass_draws,
+		[&](u32 i) { return key_of(m_plan_pending[m_reorder_order[i]]); },
+		[&](u32 i) { return m_plan_pending[m_reorder_order[i]].break_before; });
 }
 
 // Every draw's fragment variant, and the guard that may withhold half of it.
@@ -5773,6 +5975,18 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			i = j;
 		}
 		m_frame.passes += static_cast<u32>(m_plan_passes.size());
+
+		// What draw reordering would have done to this plan, taken by nothing. Gated, so the shipped
+		// default pays not one bitmap intersection for it.
+		if (m_reorder_census)
+		{
+			const u32 before = m_frame.reorder_passes;
+			ReorderCensus();
+			// The model's "as it stands" arm must reproduce the cut the grouping walk above just made,
+			// or the pair it reports is one arrangement against a different question.
+			pxAssertMsg(m_frame.reorder_passes - before == static_cast<u32>(m_plan_passes.size()),
+				"TileGpu's reorder census counted the plan's own passes differently from the plan");
+		}
 
 		// The depth predictor's observation of this plan: how many passes THIS draw list cuts into
 		// under each depth polarity, with everything else -- the cap, the reader segregation, every

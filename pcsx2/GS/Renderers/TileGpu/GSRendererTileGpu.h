@@ -1320,6 +1320,13 @@ private:
 		// samples (direct 32-bit and paletted); every other textured draw falls back to the
 		// vertex-colour path. See AccumulateDraw.
 		bool tex_enable;
+		/// This draw's composed read window covers a page it also renders into -- it samples its own
+		/// target. Not the same question as `self_mask`, which is the in-pass DESTINATION read (the
+		/// pixel under the fragment); this is the ordinary feedback shape, a game rendering into a
+		/// scratch buffer and reading it back through TEX0. Recorded because it is the one thing a
+		/// draw's write and read page sets cannot be asked apart: a draw that tests depth and writes
+		/// it has z_pages on both sides for a reason that is not feedback at all.
+		bool tex_reads_own_target;
 		bool fst;
 		u32 tbp0, tbw, tw, th, tfx, tcc, wms, wmt;
 		u32 index_format, pal_offset;
@@ -1721,6 +1728,39 @@ private:
 	// it. The pass-key half reads it through gsTileGpuPassKeyFor; the admission half through
 	// m_declaring_budget, which is inert unless this is true.
 	bool m_segregate_self_read = false;
+
+	// --- draw reordering (EmuCore/GS/TileGpuReorderRuns) ---------------------------------------
+	//
+	// A RUN is a group of draws sharing one pass key, staged so they can be emitted contiguously.
+	// The planner may hold several open at once and admits a draw to one only where the page model
+	// proves it touches nothing any OTHER open run touches -- so every pair of open runs is
+	// page-independent, which is what makes emitting them one after another legal.
+	//
+	// Read once at construction like every other boundary policy: a value that moved mid-run would
+	// leave one frame's draws scheduled two ways.
+	int m_reorder_setting = 0;   ///< the raw lever, for the log line and the report
+	bool m_reorder_census = false; ///< run the model and report it, moving nothing (setting < 0)
+	u32 m_reorder_max_runs = 0;  ///< |setting|, clamped to kMaxReorderRuns; 0 when the lever is off
+
+	/// One staged run. `draws` are indices into m_plan_pending, in stream order; `written` and `read`
+	/// are the unions of their footprints, which is what the admission test asks about.
+	struct ReorderRun
+	{
+		GSTileGpuPassKey key;
+		GSPageBitmap written;
+		GSPageBitmap read;
+		std::vector<u32> draws;
+	};
+	/// The ceiling on concurrent runs. Classic's scheduler holds four; the corpus never wants more
+	/// than three, and the array is held rather than allocated so a frame's scheduling costs nothing.
+	static constexpr u32 kMaxReorderRuns = 8;
+	std::array<ReorderRun, kMaxReorderRuns> m_reorder_backlog;
+	/// The emission order the model produced: a permutation of the plan's draw indices.
+	std::vector<u32> m_reorder_order;
+
+	/// Run the admission model over the plan as it stands and record what it would have moved.
+	/// Decides nothing: the caller's plan is untouched, and only the ModelFrame counters change.
+	void ReorderCensus();
 
 	// The per-class density budget (GSTileGpuDeclaringBudget). Rolled once per video frame, beside
 	// the model frame it is measured from, so the verdict is constant for every draw of a frame --
@@ -2669,6 +2709,28 @@ private:
 		// view is folded into. The offset bind is not built (design 3.6), so the draw takes the byte
 		// road -- correct, three to four times the fragment instructions, and invisible without this.
 		u32 contain_bind_refused = 0;
+		// Draw reordering, counted and not taken (TileGpuReorderRuns < 0). The scheduler runs over the
+		// finished plan exactly as it would over the open one -- a plan IS the reorder window, since
+		// every road that can observe a target's bytes flushes the plan before it asks anything -- so
+		// these are what the lever would do, not an approximation of it.
+		// ⚠️ Per DRAWN frame, like the containment census above and for the same reason.
+		u32 reorder_draws = 0;    // the census's frame denominator: draws the model saw
+		u32 reorder_admitted = 0; // ...that joined a run
+		u32 reorder_ref_feedback = 0; // refused: the draw samples pages it renders into
+		u32 reorder_ref_date = 0;     // refused: destination-alpha test on the pass-snapshot road
+		u32 reorder_ref_roaa = 0;     // refused: an in-pass destination read (self_mask)
+		u32 reorder_ref_prep = 0;     // refused: a prep-only pseudo-draw, which renders nothing
+		// Hazards, per REFUSED DRAW and not per conflicting run: a draw that collides with two runs on
+		// the same channel is one refusal, and counting it twice would say more draws were refused
+		// than the frame has.
+		u32 reorder_haz_raw = 0; // the draw reads pages a queued run writes
+		u32 reorder_haz_war = 0; // the draw writes pages a queued run reads
+		u32 reorder_haz_waw = 0; // the draw writes pages a queued run writes
+		u32 reorder_runs = 0;         // runs emitted over the frame
+		u32 reorder_passes = 0;       // passes the plan cuts into as it stands
+		u32 reorder_passes_moved = 0; // ...and as the reordered emission order would cut into
+		u32 reorder_peak_draws = 0;   // the most draws held across all open runs at once (a MAX)
+		u32 reorder_peak_runs = 0;    // ...and the most runs open at once (a MAX)
 		u32 contain_breaks = 0; // colour-surface changes between consecutive draws, today
 		u32 contain_breaks_folded = 0; // ...under containment
 		u32 contain_full_breaks = 0; // ...with the depth surface and its presence in the key
