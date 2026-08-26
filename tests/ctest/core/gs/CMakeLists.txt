@@ -43,6 +43,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_donor_road_tests.cpp
 	gs_tilegpu_clut_gather_tests.cpp
 	gs_tilegpu_fbmsk_mask_tests.cpp
+	gs_tilegpu_shader_write_mask_tests.cpp
 	gs_tilegpu_blend_tests.cpp
 	gs_tilegpu_alpha_test_fold_tests.cpp
 	gs_tilegpu_pass_key_tests.cpp

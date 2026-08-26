@@ -733,6 +733,7 @@ Pcsx2Config::GSOptions::GSOptions()
 {
 	bitsets[0] = 0;
 	bitsets[1] = 0;
+	bitsets[2] = 0;
 
 	PCRTCAntiBlur = true;
 	DisableInterlaceOffset = false;
@@ -774,6 +775,10 @@ Pcsx2Config::GSOptions::GSOptions()
 	// byte-identical to off on all 21 corpus dumps and removes 117.00 render passes a drawn
 	// frame on the GT4 Online Public Beta. See Config.h for the rule and what it refuses.
 	TileGpuContainSurfaces = true;
+	// Default FALSE: byte-identical to on across the 21-dump corpus, and what it trades is a
+	// pipeline bind and an indirect call per masked draw against a destination read per masked
+	// draw. Which way that comes out is a device question -- see Config.h.
+	TileGpuShaderWriteMask = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -894,6 +899,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 	return (
 		OpEqu(bitsets[0]) &&
 		OpEqu(bitsets[1]) &&
+		OpEqu(bitsets[2]) &&
 		// Pinning or unpinning changes what the GameDB is allowed to write, so it has to
 		// count as a settings change even when no hack value moved with it.
 		OpEqu(UserHackOverrides) &&
@@ -1128,6 +1134,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuStrictMemory);
 	SettingsWrapBitBool(TileGpuPoisonAllocations);
 	SettingsWrapBitBool(TileGpuContainSurfaces);
+	SettingsWrapBitBool(TileGpuShaderWriteMask);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

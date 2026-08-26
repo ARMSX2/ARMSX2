@@ -250,6 +250,19 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// read be exercised over the whole corpus before anything depends on it.
 	m_force_self_read = m_self_read && GSConfig.TileGpuForceSelfRead;
 
+	// The colour write mask served by the fragment stage instead of the pipeline, read once for the
+	// reason the pass-boundary levers below are: it decides whether a draw declares, and so which pass
+	// it keys into. ANDed with the device having the read road, because there is nothing to serve the
+	// destination read from without one -- and said out loud, because a lever whose effect is entirely
+	// in the run structure leaves no other trace in a log.
+	m_shader_write_mask = m_self_read && GSConfig.TileGpuShaderWriteMask;
+	if (GSConfig.TileGpuShaderWriteMask)
+	{
+		Console.WriteLn("TileGpu: the colour write mask rides the FRAGMENT stage%s -- draws differing only in "
+						"FRAME.FBMSK share a pipeline and merge into one indirect call.",
+			m_shader_write_mask ? "" : " (REFUSED: this device has no in-pass destination read)");
+	}
+
 	// Surface-identity containment, read once for the strongest version of the reason the others
 	// are: it decides which surface a view's draws land in, and a flip mid-run would leave views
 	// already folded with no surface to fall back to and views already created with no container to
@@ -2143,6 +2156,24 @@ void GSRendererTileGpu::ReportModelTraffic()
 							"cost peak %.2f / %u   budget refused it in %.0f%% of frames",
 				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, runs.mean, runs.p50, peak.mean,
 				peak.p50, refu.mean * 100.0);
+		}
+	}
+	// The colour write mask as a run key, and it is a funnel rather than three independent numbers:
+	// carried a mask -> the fragment stage could serve it exactly -> it did. The first two are counted
+	// on both arms on purpose, so an OFF run answers "is TileGpuShaderWriteMask worth a device round
+	// on this title" without a second build. The gap between the first two is the refusals -- a draw
+	// the executor's blend unit still has to touch, or one the shader's byte tail does not already
+	// own -- and those keep the pipeline mask whatever the lever says.
+	{
+		const auto mp = stat([](const MF& f) { return f.mask_partial_draws; });
+		if (mp.mean > 0.0)
+		{
+			const auto ms = stat([](const MF& f) { return f.mask_servable_draws; });
+			const auto mm = stat([](const MF& f) { return f.mask_shader_draws; });
+			Console.WriteLn("  colour write mask: %.2f / %u draws carry a partial one   the fragment stage could "
+							"serve %.2f / %u of them   it served %.2f / %u (TileGpuShaderWriteMask %s)",
+				mp.mean, mp.p50, ms.mean, ms.p50, mm.mean, mm.p50,
+				GSConfig.TileGpuShaderWriteMask ? (m_shader_write_mask ? "on" : "on, refused by the device") : "off");
 		}
 	}
 	Console.WriteLn("  byte-road passes %.2f / %u   of which mixed texel arms %.2f / %u (%.1f%%), carrying %.2f / %u "
@@ -4399,7 +4430,34 @@ void GSRendererTileGpu::AccumulateDraw()
 	// there IS a road, the keep is one of the budget's classes like any other.
 	const bool keep_alpha_admitted =
 		afail_keep_alpha && (!m_self_read || (admitted_classes & kGSTileGpuClassAfailKeep) != 0);
-	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u);
+	// ...and the colour write mask, where the lever moved it off the pipeline. Folded in HERE for the
+	// same reason the keep is: the pass key two dozen lines down asks whether this draw reads, and
+	// that has to be the same question the mask itself is answered by.
+	//
+	// NOT a per-class budget charge, and the reason is the road's own admission rule rather than an
+	// exemption: gsTileGpuMasksInShader takes only draws whose blend or whose FBMSK the fragment stage
+	// was ALREADY evaluating, so every draw it moves was already a declared reader and the budget has
+	// nothing new to price. That is what keeps the budget out of it. It also matters that it could not
+	// price this one if it were asked: the four classes it does price buy EXACTNESS, which it cannot
+	// measure, so it prices only their tax -- while this buys SPEED, whose size scales with the same
+	// draw count the tax does, and a line fitted to the first question would refuse exactly the
+	// population the second pays best on (Spider-Man 3's masked draws are ~3,400 in the budget's unit
+	// against a line of 256, on the one title the lever exists for).
+	//
+	// The last two arguments are spelt exactly as the state row will spell them further down -- the
+	// row's blend-enable bit and its fbmsk word -- because they decide whether this draw's colour
+	// already goes through the shader's byte tail. Two definitions of that would disagree eventually,
+	// and the disagreement is ±1 in a channel on a handful of pixels: the kind nothing notices for
+	// months. `self_mask` and not `draw_self_mask`, which is not merely the pre-keep value being
+	// convenient: the keep is a per-FRAGMENT mask, so a draw carrying only that one still leaves its
+	// passing fragments outside the tail, and they are the ones the write mask covers.
+	const bool shader_blend = (self_mask & GSDevice::kGSTileGpuSelfBlend) != 0;
+	const bool shader_fbmsk =
+		(self_mask & GSDevice::kGSTileGpuSelfMask) != 0 && gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk) != 0;
+	const bool mask_in_shader =
+		gsTileGpuMasksInShader(m_shader_write_mask, color_mask, blend_active, shader_blend, shader_fbmsk);
+	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u) |
+							   (mask_in_shader ? GSDevice::kGSTileGpuSelfMask : 0u);
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
 	GSPageBitmap z_pages;
 	if (z_used)
@@ -5143,13 +5201,31 @@ void GSRendererTileGpu::AccumulateDraw()
 		ctx->ALPHA.D, ctx->ALPHA.FIX, m_draw_env->COLCLAMP.CLAMP != 0, m_draw_env->PABE.PABE != 0,
 		GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt);
 	pd.self_fbmsk = gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk);
+	// ...plus, where the lever moved the channel mask off the pipeline, the channels the pipeline was
+	// dropping -- as WHOLE keep bytes, because that is what it was preserving. Unioned rather than
+	// substituted: a channel the register masks in part is still written and still owes those bits
+	// back. The AFAIL fold is inside color_mask, so an all-fail RGB_ONLY draw's alpha is kept here too.
+	pd.mask_in_shader = mask_in_shader;
+	if (mask_in_shader)
+		pd.self_fbmsk |= gsTileGpuChannelKeepMask(color_mask);
 	// What a 16-bit frame stores, truncated in the fragment stage wherever the fragment stage's
 	// output is what lands (gsTileGpuQuantisesOnWrite). A draw whose blend the executor's blend unit
 	// still has to run is quantised by the console after that blend, so it takes nothing here --
 	// which is where the refused 16-bit blend class lands on a device that taxes declaring.
 	pd.quantise_5551 = gsTileGpuQuantisesOnWrite(gsTileGpuFrameQuantises(GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt),
-		blend_active, (pd.self_mask & GSDevice::kGSTileGpuSelfBlend) != 0);
+		blend_active, shader_blend);
 	m_frame.self_read_draws += (self_mask != 0) ? 1u : 0u;
+	// The write mask's census, counted on BOTH arms -- the population is what says whether this title
+	// is worth a device round for the lever, and a counter that exists only in the arm that moved
+	// cannot answer that. `servable` asks the same predicate with the lever forced on, so the three
+	// read as one funnel: carried a mask -> the shader could serve it -> it did.
+	if (color_mask != 0 && color_mask != 0xF)
+	{
+		m_frame.mask_partial_draws++;
+		if (gsTileGpuMasksInShader(true, color_mask, blend_active, shader_blend, shader_fbmsk))
+			m_frame.mask_servable_draws++;
+	}
+	m_frame.mask_shader_draws += mask_in_shader ? 1u : 0u;
 
 	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
 	// numbering belongs to the pass and everything above may still have broken the pass. Two things
@@ -5362,7 +5438,15 @@ void GSRendererTileGpu::AccumulateDraw()
 	// it and a draw whose mask differs only splits the indirect run -- never breaks the pass. A
 	// depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or an FBMSK that keeps every stored bit) masks
 	// all four channels and still tests and writes depth in its pass.
-	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(write_mask);
+	//
+	// ...unless the fragment stage took the mask over, and then it must NOT also ride here: the whole
+	// point of the move is that the key stops carrying it, so consecutive draws differing only in
+	// FBMSK land in one run and one indirect call. The pipeline writes all four channels and
+	// StateRow::fbmsk keeps the dropped ones out. The carrier road's own use of the mask (dropping
+	// alpha for the companion draw) cannot collide with this: it needs a fixed-function blend, which
+	// gsTileGpuMasksInShader refuses.
+	pxAssert(!pd.mask_in_shader || write_mask == pd.color_mask);
+	blend_key |= GSDevice::GSTileGpuPassPlan::PackNoWrite(pd.mask_in_shader ? 0xFu : write_mask);
 	// ...and so does the in-pass read, for the same reason: the executor's pipeline pick has to turn
 	// the fixed-function blend OFF for a draw whose equation the fragment stage evaluates instead,
 	// and the run cut has to fall where admission changes. One bit does both.

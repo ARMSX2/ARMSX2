@@ -925,6 +925,78 @@ constexpr bool gsTileGpuQuantisesOnWrite(bool frame_quantises, bool blend_active
 	return frame_quantises && (shader_blend || !blend_active);
 }
 
+/// Whether this draw's COLOUR WRITE MASK leaves the pipeline and is served by the fragment stage
+/// instead (EmuCore/GS/TileGpuShaderWriteMask).
+///
+/// The mask is in the blend key, and the blend key is the run key -- so two otherwise identical
+/// draws with different FBMSK channels cost two pipelines and two indirect calls. A game that builds
+/// a buffer one channel group at a time therefore gets one call per draw: Spider-Man 3 cuts 2,841 of
+/// its 2,992 adjacent in-pass draw pairs on the mask alone, and taking it out of the key turns 3,624
+/// calls into 785.
+///
+/// Bit-exact either way, and the refusals below are what makes that true rather than nearly true:
+/// the shader's FBMSK arm already merges the destination at BIT granularity for the partial-mask
+/// road, and a mask covering whole channels is a strict subset of what that arm does -- but only for
+/// a draw the arm's own tail already owns end to end. What this decides is which of two exact
+/// realizations a draw takes; a draw it refuses keeps the pipeline mask and nothing about it moves.
+///
+/// The three refusals, all of which keep the pipeline mask for that one draw:
+///
+///   nothing to move   a draw writing all four channels has no mask; a draw writing none has no
+///                     colour for the merge to buy anything on, and would read its destination
+///                     only to write the same bytes back.
+///   the blend unit    ⚠️ the write mask applies AFTER blending. A shader that merged the
+///                     destination in first would then have the blend unit blend the destination
+///                     with itself, which is a different picture. So this is only for draws whose
+///                     FRAGMENT output is what lands -- no blend, or a blend the shader owns.
+///   the byte tail    ⚠️ and the one that is not obvious. The fragment stage's mask arm lives at the
+///                    end of a tail that first converts the colour to bytes at
+///                    floor(cv * 255 + 0.5), and a Vulkan UNORM8 attachment write rounds ties its
+///                    own way. For a draw whose colour ALREADY goes through that tail the two round
+///                    identically and the merge is bit-exact; for one that does not, moving the mask
+///                    would also move the rounding of the channels the mask does not even cover.
+///                    Measured, not feared: 17 pixels of Ace Combat 5, ±1 in one channel each, on 12
+///                    unblended 32-bit draws. So the last argument, and it is spelt as "this draw
+///                    already evaluates its own blend or its own FBMSK" rather than as the tail's
+///                    full entry condition on purpose -- see below.
+///
+/// ⚠️ THE INVARIANT, and it is what makes this lever cheap enough to reason about: a draw the road
+/// takes was ALREADY a declared in-pass reader. So the lever adds no reader, no declaring pass, no
+/// per-class budget charge and no reorder barrier run -- it can only stop the write mask cutting a
+/// run that was going to be cut anyway. Provable from the argument list rather than measured, which
+/// is why the third way into the tail (a 16-bit frame's quantise, which a draw reaches WITHOUT
+/// reading anything) is deliberately not here: admitting it would be exact, and would be the one
+/// shape that turns a non-reader into a reader. Zero draws on the 21-dump corpus, so it costs
+/// nothing today and it can come back behind a measurement when a title wants it.
+constexpr bool gsTileGpuMasksInShader(
+	bool lever, u8 color_mask, bool blend_active, bool shader_blend, bool shader_fbmsk)
+{
+	if (!lever || color_mask == 0 || color_mask == 0xF)
+		return false;
+	if (blend_active && !shader_blend)
+		return false;
+	return shader_blend || shader_fbmsk;
+}
+
+/// The channels a 4-bit colour write mask DROPS, as whole-byte keep bits on the expanded RGBA8
+/// target -- exactly what the pipeline's colour write mask was preserving before the fragment stage
+/// took the job over.
+///
+/// Whole bytes, including the bits a 16-bit frame does not store: the pipeline preserved the byte
+/// entire, so keeping only `fmsk`'s bits here would let the fragment's low bits land where the
+/// pipeline dropped them. It unions with gsTileGpuFrameKeepMask rather than replacing it, because a
+/// channel the register masks in PART is still written and still owes those bits to the destination.
+constexpr u32 gsTileGpuChannelKeepMask(u8 color_mask)
+{
+	u32 keep = 0;
+	for (u32 b = 0; b < 4; b++)
+	{
+		if ((color_mask & (1u << b)) == 0)
+			keep |= 0xFFu << (b * 8);
+	}
+	return keep;
+}
+
 /// The ADMISSION CLASSES: the five distinct reasons a draw asks for the in-pass destination read.
 ///
 /// Finer than the three kGSTileGpuSelf* USES, and it has to be. Two classes can want the same use
@@ -1602,6 +1674,10 @@ private:
 		                      // gsTileFrameColorWriteMask: FBMSK per channel, alpha included,
 		                      // with the all-fail AFAIL fold on top); the pipeline's colour
 		                      // write mask. Zero is a depth-only draw.
+		/// ...unless the FRAGMENT stage is serving that mask instead (gsTileGpuMasksInShader), in
+		/// which case the pipeline writes all four channels and self_fbmsk carries the dropped ones
+		/// as whole keep bytes. The point of the move is that the mask then stops cutting the run.
+		bool mask_in_shader;
 		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
 		u32 region_u, region_v; // CLAMP MIN | (MAX << 16) per axis, for the REGION wrap modes
 		bool ltf;             // TEX1 asks for LINEAR on the side of the LOD this draw sits on
@@ -1899,6 +1975,21 @@ private:
 	/// exercise the road and a device that refuses a class would otherwise leave it unexercised. A
 	/// forced run on a device that taxes declaring is a measurement, not a shipping shape.
 	bool m_force_self_read = false;
+	/// EmuCore/GS/TileGpuShaderWriteMask, ANDed with the device having the read road at all: a draw's
+	/// colour write mask leaves the pipeline and the fragment stage serves it, so two draws differing
+	/// only in FBMSK share a pipeline and merge into one indirect call. Read once at construction like
+	/// the levers above -- it decides which pass a draw keys into, and a lever that moved mid-frame
+	/// would split a pass on a question nothing asked.
+	///
+	/// ⚠️ Deliberately OUTSIDE the per-class declaring budget, which is the one judgement in this lever
+	/// and rests on gsTileGpuMasksInShader's invariant: it moves only draws that ALREADY declare, so
+	/// there is no new tax for the budget to price. That is also why it could not be priced there if it
+	/// were asked -- the budget weighs a class's declaring tax against a fixed line because what those
+	/// classes buy is exactness, which it cannot measure, while this buys SPEED, whose size scales with
+	/// the same draw count the tax does. A line fitted to the first question refuses exactly the
+	/// population the second pays best on: Spider-Man 3's masked draws are ~3,400 in the budget's unit
+	/// against a line of 256, on the title the lever exists for.
+	bool m_shader_write_mask = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -2841,6 +2932,17 @@ private:
 		u32 class_runs[kGSTileGpuAdmissionClasses] = {};   // ...and the declared runs they fall into
 		u32 class_peak[kGSTileGpuAdmissionClasses] = {};   // the decayed cost peak the verdict was made on
 		u32 class_refused[kGSTileGpuAdmissionClasses] = {};
+		// The colour write mask's own census, counted whether or not TileGpuShaderWriteMask is on --
+		// the population is what decides whether the lever is worth a device round on a title, and a
+		// counter that only exists in the arm that moved cannot answer that.
+		//   masked    draws carrying a partial colour write mask: the raw population, and the number
+		//             of run cuts it is worth is at most this
+		//   servable  of those, the ones whose FRAGMENT output is what lands, so the shader road is
+		//             bit-exact for them
+		//   moved     ...and the ones that actually took it this frame (zero with the lever off)
+		u32 mask_partial_draws = 0;
+		u32 mask_servable_draws = 0;
+		u32 mask_shader_draws = 0;
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one

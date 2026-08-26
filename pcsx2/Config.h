@@ -888,11 +888,12 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ FULL: 128 one-bit flags in 128 bits of array. The next one added grows the struct
-			// past the array, and OptionsAreEqual -- which compares the two words and nothing else
-			// -- silently stops seeing the overflow. Widen this to bitsets[3] and add the third
-			// OpEqu row in the SAME commit as the flag that needs it.
-			u64 bitsets[2];
+			// ⚠️ 129 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// OptionsAreEqual, which compares these words and nothing else, so a settings change
+			// that moved only that flag would not count as one. Widen the array and add the
+			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
+			// this last ran out.
+			u64 bitsets[3];
 
 			struct
 			{
@@ -1192,6 +1193,36 @@ struct Pcsx2Config
 					// pre-containment arrangement, byte for byte: every view keeps its own
 					// surface.
 					TileGpuContainSurfaces : 1,
+					// Serve a draw's COLOUR WRITE MASK in the fragment stage instead of on
+					// the pipeline, so consecutive draws differing only in FRAME.FBMSK share
+					// one pipeline and merge into one indirect call.
+					//
+					// The mask rides the blend key (GSTileGpuPassPlan::kNoWriteShift), and the
+					// blend key is the run key -- so a game that builds a buffer one channel
+					// group at a time gets a pipeline bind and an indirect call per draw.
+					// Spider-Man 3 does exactly that: 2,841 of 2,992 adjacent in-pass draw
+					// pairs are cut by the write mask and by nothing else, the masks rotating
+					// r -> rg -> gb -> ba, and taking the mask out of the key collapses 3,624
+					// indirect calls to 785 -- every 64x64 pass becomes one call. Measured on
+					// the SD865: a call carrying one sub-draw costs 9.90 us, a sub-draw folded
+					// into an existing call 2.66 us.
+					//
+					// PIXEL-INERT, and a difference between the arms is a DEFECT rather than a
+					// trade: the fragment stage already applies FBMSK at BIT granularity for
+					// the partial-mask road, and a whole-channel mask is a strict subset of
+					// that. Order is preserved too -- Vulkan guarantees primitive order across
+					// the entries of one vkCmdDrawIndexedIndirect -- so no draw moves.
+					//
+					// Preserving the unwritten channels in the shader needs the destination
+					// READ, so the road takes only draws already doing one -- already
+					// evaluating their own blend, or already merging their own FBMSK at bit
+					// granularity. It therefore declares no new reader, opens no new declaring
+					// pass and charges nothing new to the per-class budget; a draw it cannot
+					// serve exactly keeps the pipeline mask and nothing about it moves. What
+					// ships OFF is not a known cost, it is an UNMEASURED one: the call
+					// economics above are a capture census, and the frame-time claim needs a
+					// device A/B before it becomes the default.
+					TileGpuShaderWriteMask : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
