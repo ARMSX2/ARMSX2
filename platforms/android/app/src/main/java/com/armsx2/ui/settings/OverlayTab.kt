@@ -205,7 +205,11 @@ fun OverlayTab(state: MutableState<Settings>) {
         // OSD, pref-backed. Cancel-previous already stops them stacking; this switches
         // them off entirely for heavy fast-forward users.
         val ffToasts = remember { mutableStateOf(com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean("ui.hotkeyToasts", true)) }
-        ToggleRow(str("overlay.toggle.fastForwardPopups"), ffToasts.value) {
+        ToggleRow(
+            str("overlay.toggle.fastForwardPopups"),
+            ffToasts.value,
+            description = str("overlay.toggle.fastForwardPopups.desc"),
+        ) {
             ffToasts.value = it
             com.armsx2.runtime.MainActivityRuntime.prefs.edit { putBoolean("ui.hotkeyToasts", it) }
         }

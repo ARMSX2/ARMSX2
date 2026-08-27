@@ -528,7 +528,15 @@ public class NativeApp {
 			// No controller actuator handled it → fall back to the device's built-in
 			// haptic (issue #241), when permitted (Player 1 / explicit test) so a
 			// vibrator-less P2 pad never buzzes the handheld that P1 is holding.
-			if (!drove && allowSystemFallback) {
+			//
+			// ...but NOT when the pad is an EXTERNAL controller. Xbox pads over Bluetooth
+			// report hasVibrator() == false through InputDevice even though they rumble
+			// perfectly well by other means, so this fallback fired for them and buzzed the
+			// PHONE — sitting in a pocket or a stand — while the user held the controller
+			// (#433). The #241 case is the opposite shape: a handheld whose own built-in pad
+			// has no actuator, where the "device" and the thing in your hands are the same
+			// object and buzzing it is exactly right.
+			if (!drove && allowSystemFallback && !isExternalPad(dev)) {
 				rumbleOne(systemVibrator(), combined, ms);
 			}
 		} catch (Throwable ignored) {
@@ -540,6 +548,26 @@ public class NativeApp {
 	 *  "Vibration Strength" slider tames or boosts all of it. Set from Kotlin
 	 *  (ControllerMappings.setHapticIntensity) live and at app start. */
 	public static volatile float sHapticScale = 1.0f;
+
+	/**
+	 * True when [dev] is a controller the user is holding SEPARATELY from this device.
+	 *
+	 * InputDevice.isExternal() answers this exactly but is @hide, so it is reached by
+	 * reflection and may be refused on newer platforms. When it cannot be read this returns
+	 * false — meaning "assume built-in", which keeps the #241 handheld fallback working. The
+	 * cost of guessing wrong in that direction is a phone buzzing when it should not; the cost
+	 * of guessing wrong the other way is a handheld that stops rumbling at all. The first is
+	 * the better failure, and it is also the one the user can see and report.
+	 */
+	private static boolean isExternalPad(InputDevice dev) {
+		if (dev == null) return false;
+		try {
+			Object r = InputDevice.class.getMethod("isExternal").invoke(dev);
+			if (r instanceof Boolean) return (Boolean) r;
+		} catch (Throwable ignored) {
+		}
+		return false;
+	}
 
 	/** @return true if [v] is a real, usable vibrator that was driven (or cancelled). */
 	private static boolean rumbleOne(Vibrator v, float intensity, int ms) {

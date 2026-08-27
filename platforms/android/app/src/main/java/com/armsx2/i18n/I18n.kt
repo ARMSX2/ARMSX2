@@ -816,7 +816,12 @@ private val BASE_EN: Map<String, String> = mapOf(
     "overlay.toggle.cpuUsage" to "CPU usage",
     "overlay.toggle.emulationSpeed" to "Emulation speed %",
     "overlay.toggle.emulatorVersion" to "Emulator version",
-    "overlay.toggle.fastForwardPopups" to "Fast-Forward pop-ups",
+    // Named for what it actually governs. It reads "Fast-Forward" because that is the message
+    // people want rid of -- fast-forward gets toggled repeatedly mid-game and already has a
+    // corner icon saying so -- but the pref silences every hotkey pop-up, and someone hunting
+    // for the save-state ones has to be able to recognise it (#629).
+    "overlay.toggle.fastForwardPopups" to "Hotkey pop-ups (Fast-Forward, save states)",
+    "overlay.toggle.fastForwardPopups.desc" to "On-screen messages when a hotkey is pressed. Fast-Forward already shows an icon in the corner while it is active.",
     "overlay.toggle.fps" to "FPS",
     "overlay.master.label" to "On-screen display",
     "overlay.simple.label" to "Simple OSD (FPS only)",

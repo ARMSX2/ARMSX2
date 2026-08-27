@@ -113,6 +113,9 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.displayFilter.label", true, SettingsCategory.Graphics),
     // The FSR1 switch became the Display-upscaler picker when SGSR joined it; searching for the
     // old key would land on a row that no longer exists.
+    // Missing from the index entirely, so nobody could search their way to it -- which is
+    // exactly what #629 reported ("If one exists, I can't seem to find it").
+    SettingsSearchEntry("overlay.toggle.fastForwardPopups", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.upscaler.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.cas.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.blendingAccuracy.label", true, SettingsCategory.Graphics),
