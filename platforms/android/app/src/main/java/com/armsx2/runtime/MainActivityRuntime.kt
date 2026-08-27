@@ -3311,7 +3311,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (!down) triggerHotkeyClaimed.remove(kc)
                 return true
             }
-            when (ControllerMappings.matchHotkey(kc, matchKeys)) {
+            val matched = ControllerMappings.matchHotkey(kc, matchKeys)
+            when (matched) {
                 // Pressure modifier is a hold, handled (and consumed) earlier in
                 // dispatchKeyEvent; it never reaches this one-shot action switch.
                 ControllerMappings.SysHotkey.PRESSURE_MOD -> {}
@@ -3339,6 +3340,17 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
                 ControllerMappings.SysHotkey.CYCLE_SLOT -> {
                     if (down) cycleSaveSlot()
+                    return true
+                }
+                ControllerMappings.SysHotkey.PREV_SLOT -> {
+                    if (down) cycleSaveSlot(-1)
+                    return true
+                }
+                // The twenty per-slot save/load hotkeys share one branch — the slot and the
+                // direction both come out of the enum name, so adding slots later needs nothing
+                // here.
+                in slotHotkeys -> {
+                    if (down) matched?.let { fireSlotHotkey(it) }
                     return true
                 }
                 ControllerMappings.SysHotkey.TEXTURE_DUMP -> {
@@ -3440,6 +3452,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     return true
                 }
                 null -> {}
+                // The per-slot hotkeys are all handled by the `in slotHotkeys` branch above;
+                // the compiler cannot prove that covers them, so this closes the when.
+                else -> {}
             }
         }
         // Gameplay buttons take the shortest path after every higher-priority
@@ -3633,8 +3648,29 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    private fun cycleSaveSlot() {
-        val next = (currentSaveSlot.value + 1) % 10
+    /** Every per-slot save/load hotkey, for the dispatch branch above. */
+    private val slotHotkeys: Set<ControllerMappings.SysHotkey> by lazy {
+        ControllerMappings.SysHotkey.values()
+            .filter { ControllerMappings.slotForHotkey(it) >= 0 }
+            .toSet()
+    }
+
+    /** Save to or load from the slot named by [h], and make it the selected slot so the
+     *  Quick Save/Load pair and the panel's slot readout agree with what just happened. */
+    private fun fireSlotHotkey(h: ControllerMappings.SysHotkey) {
+        val slot = ControllerMappings.slotForHotkey(h)
+        if (slot < 0) return
+        currentSaveSlot.value = slot
+        val saving = ControllerMappings.isSaveSlotHotkey(h)
+        kotlin.concurrent.thread {
+            runCatching {
+                if (saving) NativeApp.saveStateToSlot(slot) else NativeApp.loadStateFromSlot(slot)
+            }
+        }
+    }
+
+    private fun cycleSaveSlot(step: Int = 1) {
+        val next = ((currentSaveSlot.value + step) % 10 + 10) % 10
         currentSaveSlot.value = next
         android.widget.Toast.makeText(this, "Save slot $next", android.widget.Toast.LENGTH_SHORT).show()
     }
@@ -4796,9 +4832,12 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.TOGGLE_OSD -> hotkeyToast(InGameOverlay.cycleOsd())
             ControllerMappings.SysHotkey.TOGGLE_KEYBOARD -> toggleSoftKeyboard()
             ControllerMappings.SysHotkey.DISPLAY_REFRESH -> cycleDisplayRefresh()
+            ControllerMappings.SysHotkey.PREV_SLOT -> cycleSaveSlot(-1)
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,
             ControllerMappings.SysHotkey.PRESSURE_MOD -> {}
+            // Per-slot save/load: same one-shot meaning on a stick edge as on a button.
+            else -> if (h in slotHotkeys) fireSlotHotkey(h)
         }
     }
 

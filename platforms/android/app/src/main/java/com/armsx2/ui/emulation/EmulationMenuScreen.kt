@@ -745,10 +745,35 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         ) { _ -> com.armsx2.ui.QuickMenuSide.set(!menuSide) }
     }
     SectionCard(str("savestate.title.loadManage")) {
+        // When each slot was last written. Ten chips numbered 1..10 say nothing about which
+        // hold anything or how old they are, so picking a slot to overwrite after a long
+        // session was guesswork -- the Save Manager has had the dates all along, but the quick
+        // picker is where the choice actually gets made. Read off disk once per menu open;
+        // SaveSlotLookup is blocking, hence produceState rather than a composition-time call.
+        val slotCtx = androidx.compose.ui.platform.LocalContext.current
+        val slotSerial = com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
+        val slotStamps by androidx.compose.runtime.produceState(
+            initialValue = emptyMap<Int, Long>(), slotSerial,
+        ) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.armsx2.SaveSlotLookup.slotsFor(slotCtx, slotSerial)
+                        .associate { it.slot to it.modified }
+                }.getOrDefault(emptyMap())
+            }
+        }
         Text(
             "${str("memcard.slot1").substringBefore(' ')} ${state.saveSlot + 1}",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            slotStamps[state.saveSlot]?.let {
+                java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(it))
+            } ?: str("savestate.slot.empty"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
         Row(
@@ -761,7 +786,9 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         ) {
             repeat(10) { slot ->
                 OptionChip(
-                    label = "${slot + 1}",
+                    // A dot marks a slot that holds something, so the row shows what is used
+                    // without having to select each one to find out.
+                    label = if (slotStamps.containsKey(slot)) "${slot + 1} •" else "${slot + 1}",
                     selected = slot == state.saveSlot,
                     controllerId = "pause.saveslot.$slot",
                     onClick = { viewModel.setSaveSlot(slot) },

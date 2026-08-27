@@ -862,6 +862,16 @@ object ControllerMappings {
         return targetKeyCode in runtimeBindings().latchTargets[if (player == P2) P2 else P1]
     }
 
+    /** The slot a per-slot save/load hotkey targets, or -1 for every other hotkey. */
+    fun slotForHotkey(h: SysHotkey): Int = when {
+        h.name.startsWith("SAVE_SLOT_") -> h.name.removePrefix("SAVE_SLOT_").toIntOrNull() ?: -1
+        h.name.startsWith("LOAD_SLOT_") -> h.name.removePrefix("LOAD_SLOT_").toIntOrNull() ?: -1
+        else -> -1
+    }
+
+    /** True for the save half of the per-slot pair. */
+    fun isSaveSlotHotkey(h: SysHotkey): Boolean = h.name.startsWith("SAVE_SLOT_")
+
     /** True when a physical button's PS2 target [targetKeyCode] is turbo-flagged. */
     fun isTurboTarget(targetKeyCode: Int, player: Int = 0): Boolean {
         return targetKeyCode in runtimeBindings().turboTargets[if (player == P2) P2 else P1]
@@ -902,6 +912,36 @@ object ControllerMappings {
         // MainActivityRuntime.dispatchKeyEvent (sets TouchControls.pressureModifierHeld), not as a
         // one-shot action like the others.
         PRESSURE_MOD("pad.pressuremod.keycode", "Pressure Modifier (hold)"),
+
+        // Per-slot save/load and a backwards slot step, matching what NetherSX2 exposes. The
+        // existing trio (Quick Save, Quick Load, Cycle Slot) only reaches the SELECTED slot and
+        // only cycles forwards, so getting to slot 7 meant seven presses and there was no way to
+        // bind "save to 3" outright.
+        //
+        // ★ APPENDED, never inserted. stickCodeForHotkey() is HOTKEY_STICK_CODE_BASE + ordinal,
+        // so an entry added in the middle silently re-points every stick-bound hotkey somebody
+        // already has.
+        PREV_SLOT("pad.prevslot.keycode", "Select Previous Save Slot"),
+        SAVE_SLOT_0("pad.saveslot0.keycode", "Save State To Slot 0"),
+        SAVE_SLOT_1("pad.saveslot1.keycode", "Save State To Slot 1"),
+        SAVE_SLOT_2("pad.saveslot2.keycode", "Save State To Slot 2"),
+        SAVE_SLOT_3("pad.saveslot3.keycode", "Save State To Slot 3"),
+        SAVE_SLOT_4("pad.saveslot4.keycode", "Save State To Slot 4"),
+        SAVE_SLOT_5("pad.saveslot5.keycode", "Save State To Slot 5"),
+        SAVE_SLOT_6("pad.saveslot6.keycode", "Save State To Slot 6"),
+        SAVE_SLOT_7("pad.saveslot7.keycode", "Save State To Slot 7"),
+        SAVE_SLOT_8("pad.saveslot8.keycode", "Save State To Slot 8"),
+        SAVE_SLOT_9("pad.saveslot9.keycode", "Save State To Slot 9"),
+        LOAD_SLOT_0("pad.loadslot0.keycode", "Load State From Slot 0"),
+        LOAD_SLOT_1("pad.loadslot1.keycode", "Load State From Slot 1"),
+        LOAD_SLOT_2("pad.loadslot2.keycode", "Load State From Slot 2"),
+        LOAD_SLOT_3("pad.loadslot3.keycode", "Load State From Slot 3"),
+        LOAD_SLOT_4("pad.loadslot4.keycode", "Load State From Slot 4"),
+        LOAD_SLOT_5("pad.loadslot5.keycode", "Load State From Slot 5"),
+        LOAD_SLOT_6("pad.loadslot6.keycode", "Load State From Slot 6"),
+        LOAD_SLOT_7("pad.loadslot7.keycode", "Load State From Slot 7"),
+        LOAD_SLOT_8("pad.loadslot8.keycode", "Load State From Slot 8"),
+        LOAD_SLOT_9("pad.loadslot9.keycode", "Load State From Slot 9"),
         // Gyro on/off (issue #337) — bind any spare button so gyro can be silenced
         // mid-game without opening settings. TOGGLE flips it and stays; HOLD is the
         // "only while aiming" binding (gyro live only while the button is held, so the
