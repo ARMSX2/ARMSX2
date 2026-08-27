@@ -369,6 +369,12 @@ private fun AutosaveTile(onPick: () -> Unit) {
     val gamePath by produceState<String?>(initialValue = null) {
         value = withContext(Dispatchers.IO) { runCatching { NativeApp.getAutosaveGamePath() }.getOrNull() }
     }
+    val stamp by produceState(initialValue = 0L, gamePath) {
+        val path = gamePath
+        value = if (path.isNullOrEmpty()) 0L else withContext(Dispatchers.IO) {
+            runCatching { java.io.File(path).takeIf { it.isFile }?.lastModified() ?: 0L }.getOrDefault(0L)
+        }
+    }
     val image by produceState<android.graphics.Bitmap?>(initialValue = null) {
         value = withContext(Dispatchers.IO) {
             runCatching {
@@ -389,7 +395,8 @@ private fun AutosaveTile(onPick: () -> Unit) {
         }
         BottomLabel(
             title = str("savestate.autosave.title"),
-            subtitle = gamePath?.substringAfterLast('/')?.substringBeforeLast('.')
+            subtitle = formatSlotStamp(stamp)
+                ?: gamePath?.substringAfterLast('/')?.substringBeforeLast('.')
                 ?: str("savestate.autosave.savedOnExit"),
             titleColor = Color(0xFFFFB347),
         )
@@ -416,6 +423,14 @@ private fun SlotTile(
             }.getOrNull()
         }
     }
+    // Same file getGamePathSlot names, stat'd for its mtime. Keyed on gamePath so it re-runs
+    // when a save lands in this slot; 0L means "no usable timestamp", never "the epoch".
+    val stamp by produceState(initialValue = 0L, gamePath, refreshKey) {
+        val path = gamePath
+        value = if (path.isNullOrEmpty()) 0L else withContext(Dispatchers.IO) {
+            runCatching { java.io.File(path).takeIf { it.isFile }?.lastModified() ?: 0L }.getOrDefault(0L)
+        }
+    }
     val empty = gamePath.isNullOrEmpty()
     // Load: empty slots disabled. Save: any slot is a valid target. Delete mode overrides both —
     // only an OCCUPIED slot can be deleted, whichever screen you came in on.
@@ -438,7 +453,8 @@ private fun SlotTile(
         BottomLabel(
             title = "${str("memcard.slot1").substringBefore(' ')} ${slot + 1}",
             subtitle = when {
-                !empty -> gamePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: ""
+                !empty -> formatSlotStamp(stamp)
+                    ?: gamePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: ""
                 mode == SaveMode.Save -> str("savestate.slot.emptyTapToSave")
                 else -> null
             },
@@ -473,6 +489,14 @@ private fun TileFrame(
         content = content,
     )
 }
+
+/** Slot timestamp for a tile subtitle, or null when the file gave us nothing usable. */
+private fun formatSlotStamp(stamp: Long): String? =
+    if (stamp <= 0L) null
+    else runCatching {
+        java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(stamp))
+    }.getOrNull()
 
 @Composable
 private fun BoxScope.BottomLabel(title: String, subtitle: String?, titleColor: Color) {
