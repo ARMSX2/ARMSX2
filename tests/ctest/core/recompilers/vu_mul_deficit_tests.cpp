@@ -22,10 +22,19 @@
 //                      the boundary term on bits 11..15, which closes the
 //                      zero-tail regime exactly
 //
-// Three tables sit outside the ft-only law: a long tail, which eeMulRound
-// declines as well; a tail under 0x8000, which still reaches the array; and a
-// product below 2^-79, whose FMLS residue has flushed. Neither emitter guards
-// the second.
+// Three tables cover operands the predicate over ft cannot decide on its own,
+// named by what the exact 48-bit mantissa product looks like:
+//
+//   long-tail    bits below the result's last bit, 0x8000 or more. eeMulRound
+//                does not decrement these either.
+//   short-tail   those bits non-zero but below 0x8000. The array's truncation
+//                still crosses, so only eeMulOneUlpLow decides.
+//   low-exp      product below 2^-79. The emitted exactness test does not work
+//                there, because the rounding error it measures has itself
+//                flushed to zero.
+//
+// Only the COP2 macro path calls eeMulOneUlpLow for the second, so that is the
+// one table where the two emitters differ.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -405,7 +414,7 @@ constexpr int kBad[kTableCount][5][2] = {
 	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {0,0}},       // zero-tail
 	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {500,500}},   // low-exp
 	{{0,0}, {0,0}, {0,0}, {0,0}, {0,0}},                         // long-tail
-	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {2744,2744}}, // short-tail
+	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,2744}},    // short-tail
 	{{0,0}, {3852,3512}, {3852,3436}, {3852,3276}, {2618,1922}}, // edges
 };
 
@@ -509,6 +518,8 @@ TEST(VuMulDeficit, BothEmittersAnswerAlike)
 	const Grid& g = Measured();
 	for (int t = 0; t < kEdges; t++)
 	{
+		if (t == kShortTail)
+			continue; // only the COP2 macro path calls eeMulOneUlpLow
 		for (int mode = 1; mode <= 4; mode++)
 		{
 			SCOPED_TRACE(::testing::Message() << kTableName[t] << " vuClampMode " << mode);
@@ -529,11 +540,25 @@ TEST(VuMulDeficit, TheRegimesItDoesNotReach)
 			EXPECT_EQ(g.bad[kLongTail][mode][e], 0) << "vuClampMode " << mode;
 		EXPECT_GT(g.bad[kLowExp][4][e], 0) << "the exponent floor no longer costs anything";
 		EXPECT_LT(g.bad[kLowExp][4][e], g.bad[kLowExp][1][e]) << "the floor swallowed the model";
-		for (int mode = 2; mode <= 4; mode++)
-			EXPECT_EQ(g.bad[kShortTail][mode][e], g.bad[kShortTail][1][e])
-				<< "vuClampMode " << mode;
-		EXPECT_GT(g.bad[kShortTail][4][e], 0) << "no emitter guards the band";
 	}
+}
+
+// Tails below 0x8000, and the clamp mode that gates the whole model.
+TEST(VuMulDeficit, TheShortTailBand)
+{
+	const Grid& g = Measured();
+	EXPECT_EQ(g.bad[kShortTail][4][0], 0) << "macro";
+	EXPECT_GT(g.lanes[kShortTail][4][0] - g.stale[kShortTail][4][0], 0) << "wrote nothing";
+	for (int mode = 1; mode <= 3; mode++)
+	{
+		EXPECT_EQ(g.bad[kShortTail][mode][0], g.bad[kShortTail][1][0])
+			<< "macro vuClampMode " << mode;
+		EXPECT_GT(g.bad[kShortTail][mode][0], 0) << "macro vuClampMode " << mode;
+	}
+	for (int mode = 1; mode <= 4; mode++)
+		EXPECT_EQ(g.bad[kShortTail][mode][1], g.bad[kShortTail][1][1])
+			<< "micro vuClampMode " << mode;
+	EXPECT_GT(g.bad[kShortTail][4][1], 0) << "micro carries no guard";
 }
 
 // Regenerates kBad, then prints the same grid split by op and dest field --
