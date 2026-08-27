@@ -411,14 +411,19 @@ data class Settings(
      *  only does anything on games that implement the prompt. Per-game because the same combo is
      *  a normal input elsewhere, and titles that ignore the prompt gain nothing from holding it. */
     val autoProgressiveScan: Boolean = false,
-    /** Affinity Control Mode (EXPERIMENTAL, default 0 = off). 0 Disabled · 1 EE>VU>GS ·
+    /** Affinity Control Mode (default 7 = Performance Cores). 0 Disabled · 1 EE>VU>GS ·
      *  2 EE>GS>VU · 3 VU>EE>GS · 4 VU>GS>EE · 5 GS>EE>VU · 6 GS>VU>EE · 7 Performance Cores.
      *  Pushed to native via NativeApp.setAffinityMode before runVMThread and consumed by
      *  VMManager::SetEmuThreadAffinities, so it applies on the next boot. Per-game because the
      *  best placement is workload-dependent: GS-bound titles want the GS thread on the prime
-     *  core, VU-bound ones want VU left free to float there. Off is still the recommended
-     *  default — Android's EAS scheduler usually beats hand-pinning. */
-    val affinityMode: Int = 0,
+     *  core, VU-bound ones want VU left free to float there.
+     *
+     *  Modes 1-6 hand out INDIVIDUAL cores and remain experimental — pinning VU to a mid-tier
+     *  big core measured ~1.4x slower than letting it float to the prime. Mode 7 is a different
+     *  thing: it confines the emu threads to the big/prime TIER and leaves EAS free to place
+     *  them within it, and it self-disables (unpinned) on any device where that tier can't be
+     *  read or is too narrow to hold them. That safety is why it can be the default. */
+    val affinityMode: Int = 7,
     /** EmuCore/GS FramerateNTSC — the emulated PS2 vsync rate for NTSC games
      *  (PCSX2 default 59.94). Lowering it slows the game's target rate; raising it
      *  speeds it up. Mirrors NetherSX2's "Framerate For NTSC". */

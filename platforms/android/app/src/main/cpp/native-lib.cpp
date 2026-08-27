@@ -2335,8 +2335,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAutoRendererGpuStrings(
     g_gs_android_prefer_vk = GSUtil::AndroidAutoPrefersVulkan(vendor_str, renderer_str, version_str);
 }
 
-// Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides (default), 1-6 = explicit
-// EE/VU/GS priority orders, 7 = Performance Cores. Read by SetEmuThreadAffinities when the VM
+// Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides, 1-6 = explicit
+// EE/VU/GS priority orders, 7 = Performance Cores (the default). Out-of-range values fall back
+// to 0 rather than the default: a bad value means a bug upstream, so do the least. Read by SetEmuThreadAffinities when the VM
 // boots, so the app sets it before runVMThread; changing it takes effect on the next boot.
 extern int g_android_affinity_mode;
 extern "C"

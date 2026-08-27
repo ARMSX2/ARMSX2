@@ -1411,7 +1411,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "perf.affinity.label" to "Affinity Control Mode",
     "perf.affinity.disabled" to "Disabled",
     "perf.affinity.performanceCores" to "Performance Cores",
-    "perf.affinity.description" to "Experimental. Pins the emulator's EE, VU and GS threads to specific CPU cores, in the priority order you pick (the first listed gets the fastest core). \"Performance Cores\" keeps all three on the big cluster without fixing individual cores. Disabled is recommended and is the default — Android's scheduler normally places these threads better than manual pinning, but GS-heavy games can benefit from putting GS first. Applies on the next boot.",
+    "perf.affinity.description" to "\"Performance Cores\" is the default: it keeps the emulator's EE, VU and GS threads on the big cores without tying them to specific ones, leaving Android's scheduler free to move them around. On devices where those cores can't be identified, or there are too few of them, it turns itself off. The numbered modes are experimental — they pin each thread to one fixed core in the order you pick (first listed gets the fastest), which can help GS-heavy games but often runs slower. Applies on the next boot.",
     "renderer.autoProgressive.label" to "Auto Progressive Scan",
     "renderer.autoProgressive.description" to "Holds Triangle + Cross while the game boots, the button combo some PS2 games use to offer 480p progressive scan for a sharper picture (for example Tekken 4). Only affects games that support it; applies on the next boot.",
     "renderer.orientation.landscape" to "Landscape",

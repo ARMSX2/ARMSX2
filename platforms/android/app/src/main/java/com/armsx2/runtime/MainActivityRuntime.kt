@@ -1870,6 +1870,7 @@ open class MainActivityRuntime : ComponentActivity() {
         runCatching { com.armsx2.config.ConfigStore.seedFreshInstallDefaults(applicationContext) }
         // One-time: existing capable devices also get the Low Latency default (matches fresh installs).
         runCatching { com.armsx2.config.ConfigStore.migrateLowLatencyOff(applicationContext) }
+        runCatching { com.armsx2.config.ConfigStore.migrateAffinityPerfCores(applicationContext) }
         // Steer the renderer's Auto resolution. Vulkan HW on Adreno (tile-memory framebuffer-fetch
         // fast path) and on any device whose GL driver cannot read the render target in-tile, where
         // OpenGL degrades to a tile flush per self-referential draw; a healthy Mali stays on
