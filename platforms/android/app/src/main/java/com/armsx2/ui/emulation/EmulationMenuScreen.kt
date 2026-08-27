@@ -750,15 +750,27 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         // session was guesswork -- the Save Manager has had the dates all along, but the quick
         // picker is where the choice actually gets made. Read off disk once per menu open;
         // SaveSlotLookup is blocking, hence produceState rather than a composition-time call.
-        val slotCtx = androidx.compose.ui.platform.LocalContext.current
-        val slotSerial = com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
+        // ★ getGamePathSlot, NOT SaveSlotLookup.
+        //
+        // SaveSlotLookup exists for the LIBRARY, where nothing is booted and the only way to
+        // find states is to match `<serial> (title).NN.p2s` on disk. In here a VM is running, so
+        // the native side already knows the exact path for each slot — and it is authoritative
+        // where the filename match is a guess that silently returns nothing when the serial is
+        // absent or formatted differently, which is what made this show "Empty" for every slot.
         val slotStamps by androidx.compose.runtime.produceState(
-            initialValue = emptyMap<Int, Long>(), slotSerial,
+            // Re-read when the menu's slot selection changes, which is the only thing that
+            // happens in here after a save; a save also bumps the file, and the menu is short-
+            // lived enough that one read per open is the right granularity.
+            initialValue = emptyMap<Int, Long>(), state.saveSlot,
         ) {
             value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching {
-                    com.armsx2.SaveSlotLookup.slotsFor(slotCtx, slotSerial)
-                        .associate { it.slot to it.modified }
+                    (0..9).mapNotNull { slot ->
+                        val path = kr.co.iefriends.pcsx2.NativeApp.getGamePathSlot(slot)
+                        if (path.isNullOrBlank()) return@mapNotNull null
+                        val f = java.io.File(path)
+                        if (f.isFile && f.lastModified() > 0L) slot to f.lastModified() else null
+                    }.toMap()
                 }.getOrDefault(emptyMap())
             }
         }
