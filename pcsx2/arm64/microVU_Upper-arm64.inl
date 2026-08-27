@@ -80,6 +80,16 @@ static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from,
 // the first multiplicand at once, so the product is computed twice rather than
 // parked; ft is `from`, and it is the operand the predicate reads.
 //
+// q30, the third of the trio, is free in a multiply body: the only other user
+// is the adder's guard mask, and no FMAC body runs both. So the operand the
+// model overwrites is kept in a register here, where the COP2 macro path has to
+// store it to memory.
+//
+// The two cases the model does not decide go to the same helper the COP2 macro
+// path calls. The scalar form needs no separate test: a scalar FMUL zeroes the
+// lanes above the first, so their product exponent is 0 and both conditions
+// below reject them.
+//
 // The AX-14 lane fold in setupFtReg cannot reach this: it needs !willClamp and
 // clampE is on from vuClampMode 2 up.
 static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& from, bool scalar)
@@ -92,7 +102,43 @@ static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& 
 			armAsm->Fmul(to.V4S(), to.V4S(), from.V4S());
 		return;
 	}
-	armEmitVuDefectiveMul(to, to, from, RQSCRATCH3, RQSCRATCH2, scalar);
+
+	const a64::VRegister& t = RQSCRATCH3;
+	const a64::VRegister& u = RQSCRATCH2;
+	const a64::VRegister& fs = RQSCRATCH;
+	const bool aliasFt = from.Is(to);
+
+	armAsm->Mov(fs.V16B(), to.V16B());
+	armEmitVuDefectiveMul(to, to, from, t, u, scalar, &RWARG2);
+
+	// As on the COP2 macro path, the condition below only has to avoid false
+	// negatives: eeMulOneUlpLow checks the tail itself, and a lane the model
+	// already decremented has a residue of exactly one ULP.
+	armAsm->Mov(t.V16B(), to.V16B());
+	armAsm->Fmls(t.V4S(), fs.V4S(), aliasFt ? fs.V4S() : from.V4S());
+
+	armAsm->Shl(t.V4S(), t.V4S(), 1);
+	armAsm->Ushr(t.V4S(), t.V4S(), 24);       // the residue's exponent
+	armAsm->Shl(u.V4S(), to.V4S(), 1);
+	armAsm->Ushr(u.V4S(), u.V4S(), 24);       // the product's
+	armAsm->Uqsub(u.V4S(), u.V4S(), t.V4S());
+	armAsm->Ushr(u.V4S(), u.V4S(), 5);        // exponents at least 32 apart
+	armAsm->Umin(u.V4S(), u.V4S(), t.V4S());  // and the residue is not zero
+	armAsm->Umaxv(u.S(), u.V4S());
+	armAsm->Fmov(RWARG1, u.S());
+	armAsm->Orr(RWARG1, RWARG1, RWARG2); // plus the lanes the exponent test cut
+
+	a64::Label done;
+	armAsm->Cbz(RWARG1, &done);
+	VuMulBandSlot* slot = &g_vuMulBand[mVU.index];
+	armMoveAddressToReg(a64::x8, slot);
+	armAsm->Str(fs, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, fs)));
+	armAsm->Str(aliasFt ? fs : from, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, ft)));
+	armAsm->Str(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
+	armEmitEeFpuModelCall(reinterpret_cast<const void*>(
+		mVU.index ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0));
+	armAsm->Ldr(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
+	armAsm->Bind(&done);
 }
 
 static void NEON_MULPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)

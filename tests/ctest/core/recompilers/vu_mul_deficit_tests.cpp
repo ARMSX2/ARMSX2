@@ -34,9 +34,6 @@
 //                    itself flushed to zero.
 //   low-short-tail   both at once. Both emitters call eeMulOneUlpLow for the
 //                    middle two; this one keeps the lanes they still miss.
-//
-// Only the COP2 macro path calls eeMulOneUlpLow, so the last three are where
-// the two emitters differ.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -472,17 +469,16 @@ const Grid& Measured()
 // The mismatches the in-range edge table still has at mode 4 come from the
 // result, not from the multiply array: the product, or the MADD sum it feeds,
 // lands above FLT_MAX and below 0x7FFFFFFF, which single precision cannot
-// represent. It used to have 80 more, from products below 2^-79, which
-// the COP2 macro path now passes to eeMulOneUlpLow and microVU does not; that
-// is the whole difference between the two columns.
+// represent. It used to have 80 more, from products below 2^-79; both emitters
+// now pass those to eeMulOneUlpLow.
 constexpr int kBad[kTableCount][5][2] = {
 	//  -        mode1          mode2          mode3        mode4
 	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {0,0}},       // zero-tail
-	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {0,500}},     // low-exp
+	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {0,0}},       // low-exp
 	{{0,0}, {0,0}, {0,0}, {0,0}, {0,0}},                         // long-tail
-	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,2744}},    // short-tail
-	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {20,2920}},   // low-short-tail
-	{{0,0}, {1110,1110}, {1110,1110}, {1110,1110}, {296,376}},   // edges
+	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,0}},       // short-tail
+	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {20,20}},     // low-short-tail
+	{{0,0}, {1110,1110}, {1110,1110}, {1110,1110}, {296,296}},   // edges
 	{{0,0}, {2742,2402}, {2742,2326}, {2742,2166}, {2242,1546}}, // top-binade
 };
 
@@ -582,8 +578,6 @@ TEST(VuMulDeficit, BothEmittersAnswerAlike)
 	const Grid& g = Measured();
 	for (int t = 0; t < kTopBinade; t++)
 	{
-		if (t == kShortTail || t == kLowExp || t == kLowShortTail || t == kEdges)
-			continue; // only the COP2 macro path calls eeMulOneUlpLow
 		for (int mode = 1; mode <= 4; mode++)
 		{
 			SCOPED_TRACE(::testing::Message() << kTableName[t] << " vuClampMode " << mode);
@@ -609,18 +603,19 @@ TEST(VuMulDeficit, NothingFiresOnALongTail)
 // Below 2^-79 the rounding error the exactness test measures has itself flushed
 // to zero, so the emitted model cannot distinguish an exact product from a
 // rounded one and its exponent test rejects the lane. eeMulOneUlpLow recomputes
-// the mantissa product instead. The COP2 macro path passes it these
-// lanes and matches the interpreter; microVU still rejects them.
+// the mantissa product instead, and both emitters pass it these lanes.
 TEST(VuMulDeficit, TheLowExponentRegime)
 {
 	const Grid& g = Measured();
-	EXPECT_EQ(g.bad[kLowExp][4][0], 0) << "macro";
-	EXPECT_GT(g.lanes[kLowExp][4][0] - g.stale[kLowExp][4][0], 0) << "wrote nothing";
-	for (int mode = 1; mode <= 3; mode++)
-		EXPECT_EQ(g.bad[kLowExp][mode][0], g.bad[kLowExp][1][0])
-			<< "macro vuClampMode " << mode;
-	EXPECT_GT(g.bad[kLowExp][4][1], 0) << "micro stops at the floor";
-	EXPECT_LT(g.bad[kLowExp][4][1], g.bad[kLowExp][1][1]) << "the floor swallowed the model";
+	for (int e = 0; e < 2; e++)
+	{
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_EQ(g.bad[kLowExp][4][e], 0);
+		EXPECT_GT(g.lanes[kLowExp][4][e] - g.stale[kLowExp][4][e], 0) << "wrote nothing";
+		for (int mode = 1; mode <= 3; mode++)
+			EXPECT_EQ(g.bad[kLowExp][mode][e], g.bad[kLowExp][1][e])
+				<< "vuClampMode " << mode;
+	}
 }
 
 // The lanes that selection still misses. Which lanes are passed to
@@ -635,30 +630,31 @@ TEST(VuMulDeficit, TheLowExponentRegime)
 TEST(VuMulDeficit, TheRoutingIsMasked)
 {
 	const Grid& g = Measured();
-	EXPECT_GT(g.bad[kLowShortTail][4][0], 0) << "macro closed the corner";
-	EXPECT_LT(g.bad[kLowShortTail][4][0], g.bad[kLowShortTail][4][1] / 10)
-		<< "macro no longer routes most of it";
-	for (int mode = 1; mode <= 3; mode++)
-		EXPECT_EQ(g.bad[kLowShortTail][mode][0], g.bad[kLowShortTail][1][0])
-			<< "macro vuClampMode " << mode;
+	for (int e = 0; e < 2; e++)
+	{
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_GT(g.bad[kLowShortTail][4][e], 0) << "the corner closed";
+		EXPECT_LT(g.bad[kLowShortTail][4][e], g.bad[kLowShortTail][1][e] / 100)
+			<< "most of it is no longer routed";
+	}
 }
 
 // Tails below 0x8000, and the clamp mode that gates the whole model.
 TEST(VuMulDeficit, TheShortTailBand)
 {
 	const Grid& g = Measured();
-	EXPECT_EQ(g.bad[kShortTail][4][0], 0) << "macro";
-	EXPECT_GT(g.lanes[kShortTail][4][0] - g.stale[kShortTail][4][0], 0) << "wrote nothing";
-	for (int mode = 1; mode <= 3; mode++)
+	for (int e = 0; e < 2; e++)
 	{
-		EXPECT_EQ(g.bad[kShortTail][mode][0], g.bad[kShortTail][1][0])
-			<< "macro vuClampMode " << mode;
-		EXPECT_GT(g.bad[kShortTail][mode][0], 0) << "macro vuClampMode " << mode;
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_EQ(g.bad[kShortTail][4][e], 0);
+		EXPECT_GT(g.lanes[kShortTail][4][e] - g.stale[kShortTail][4][e], 0) << "wrote nothing";
+		for (int mode = 1; mode <= 3; mode++)
+		{
+			EXPECT_EQ(g.bad[kShortTail][mode][e], g.bad[kShortTail][1][e])
+				<< "vuClampMode " << mode;
+			EXPECT_GT(g.bad[kShortTail][mode][e], 0) << "vuClampMode " << mode;
+		}
 	}
-	for (int mode = 1; mode <= 4; mode++)
-		EXPECT_EQ(g.bad[kShortTail][mode][1], g.bad[kShortTail][1][1])
-			<< "micro vuClampMode " << mode;
-	EXPECT_GT(g.bad[kShortTail][4][1], 0) << "micro carries no guard";
 }
 
 // Regenerates kBad, then prints the same grid split by op and dest field --

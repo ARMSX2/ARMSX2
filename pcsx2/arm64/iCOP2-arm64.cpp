@@ -11,6 +11,7 @@
 #include "arm64/EeFpuModelCall-arm64.h"
 
 #include "VUmicro.h" // CpuVU0 — VE-08 thin sync helpers
+#include "VuMulBand.h"
 
 #include "common/Assertions.h"
 
@@ -730,35 +731,13 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 // MSUB and A-forms -- has it free across its arithmetic.
 static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);
 
-// Applies eeMulRound's guards and then the multiply array, for the two cases
-// the emitted model does not decide: an exact mantissa product with fewer than
-// 0x8000 bits below the result's last bit, and a product below 2^-79, where the
-// FMLS residue has flushed and the emitted exponent test rejects every lane.
+// The COP2 macro path keeps its operands in the recompiler's own state, which
+// the pinned base register addresses with a plain offset. VuMulBand.h explains
+// why microVU needs a separate area.
 static EEFPU_MODEL_CALL void cop2MulShortTailBand()
 {
-	const EeCop2RecState& st = _cpuRegistersPack.cop2Rec;
-	for (int lane = 0; lane < 4; lane++)
-	{
-		const u32 fs = st.bandFs[lane];
-		const u32 ft = st.bandFt[lane];
-		const u32 product = st.bandProduct[lane];
-		const u32 exp = product & 0x7F800000u;
-		if ((fs & 0x7F800000u) == 0 || (ft & 0x7F800000u) == 0)
-			continue;
-		if (exp == 0 || exp == 0x7F800000u || (product & 0x7FFFFFFFu) == 0x00800000u)
-			continue;
-		const u64 ma = 0x800000u | (fs & 0x7FFFFFu);
-		const u64 mb = 0x800000u | (ft & 0x7FFFFFu);
-		const u64 exact = ma * mb;
-		const int k = (exact >> 47) ? 24 : 23;
-		// The emitted model has already decided lanes at or above its exponent
-		// test with no bits below the result's last bit. Every other lane here
-		// is one of the two cases named above.
-		if ((exp >> 23) >= 48u && (exact & ((1ull << k) - 1u)) == 0)
-			continue;
-		if (R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow(fs, ft))
-			_cpuRegistersPack.cop2Rec.bandProduct[lane] = product - 1u;
-	}
+	EeCop2RecState& st = _cpuRegistersPack.cop2Rec;
+	vuMulShortTailBandLanes(st.bandFs, st.bandFt, st.bandProduct);
 }
 
 static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
