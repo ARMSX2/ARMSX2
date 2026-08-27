@@ -219,6 +219,7 @@ public:
 	u32 TileGpuMaxSpecializationBinds() override;
 	bool TileGpuSegregatesSelfRead() override;
 	bool TileGpuClutMergeCompiled() override { return m_tilegpu_clut_merge; }
+	bool TileGpuClutMergePagesCompiled() override { return m_tilegpu_clut_merge_pages; }
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
@@ -850,6 +851,7 @@ private:
 	// TileGpuClutMergeRegions as it stood when this session's module source was assembled -- see
 	// GSDevice::TileGpuClutMergeCompiled for why the renderer reads this and not the setting.
 	bool m_tilegpu_clut_merge = false;
+	bool m_tilegpu_clut_merge_pages = false;
 	bool CompileTileGpuPipeline();
 	// Target -> bytes: a compute pass that reswizzles a resident colour target's listed pages into
 	// the ring slots the epoch page table names, block- and byte-masked, so a later draw sampling

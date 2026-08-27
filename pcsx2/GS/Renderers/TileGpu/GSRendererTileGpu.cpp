@@ -812,6 +812,10 @@ bool GSRendererTileGpu::ClutGatherServes()
 		// a mode-3 row in front of a module without the arm would read the palette in the wrong
 		// order. False also means the lever is simply off, which is the default.
 		m_clut_merge_serves = g_gs_device && g_gs_device->TileGpuClutMergeCompiled();
+		// ...and the page merge needs one more arm on top of that -- the per-draw stride. A module
+		// with the square arm and not the stride would read a page-merged palette at 16 instead of
+		// 64, which is a plausible-looking palette made of the wrong words.
+		m_clut_merge_pages_serves = m_clut_merge_serves && g_gs_device->TileGpuClutMergePagesCompiled();
 		// Deliberately NOT gated on bindless targets, unlike every other road that reads one: the
 		// consumer that carries 88% of the population is an image-to-buffer COPY into the frame's
 		// palette stream, which asks the device for nothing. Rule 3's N x 1 gather does need the
@@ -1039,6 +1043,138 @@ void GSRendererTileGpu::NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBi
 			continue;
 		CaptureClutRecordWords(gp);
 		gp.source_lost = true;
+	}
+}
+
+// TileGpuClutMergePages. See the declaration for why this is a plan-build pass and not a capture-side
+// one -- the short version is that the capture site can only ever see one 256-entry record at a time.
+//
+// What it looks for is a CONSECUTIVE run of merged-square copy ops that: pull from one owner, sit in
+// one guest page, reserved a contiguous run of 256-word slots, and cover whole rows of that page's
+// 4x2 grid of squares. Such a run becomes one 64x16 or 64x32 region writing exactly the words the run
+// reserved, and every draw that read one of those palettes is re-pointed at its square's origin
+// inside the region, at stride 64.
+//
+// Consecutive is load-bearing three times over. It is what makes the reservations contiguous, so the
+// region's write lands inside the run and nowhere else. It is what lets the run be replaced in place,
+// so no other op's index moves and no draw's prep-op range is disturbed. And it is what the executor
+// already relies on to batch the run into one command, so nothing about the ordering argument is new.
+// A frame whose reorder lever split the run simply does not merge it, which is a miss and not a bug.
+//
+// The in-bounds proof is the one the per-block copy already has: ClutLoadDefer proved every palette's
+// pages resident, residency is page-granular ("pages this surface's texture materializes") and the
+// target pool allocates whole page rows of whole pages -- so a copy that stays inside one resident
+// page is inside the image by the same clause the four-block copy passes. No new proof term, which
+// matters, because the executor DROPS an op whose rect leaves the image and a dropped page op would
+// zero every palette in the run at once.
+void GSRendererTileGpu::MergeClutCopiesIntoPages()
+{
+	if (!m_clut_merge_pages_serves || !GSConfig.TileGpuClutMergePages || m_plan_prep_ops.empty())
+		return;
+
+	const auto is_square = [](const GSDevice::GSTileGpuPrepOp& op) {
+		return op.kind == GSDevice::GSTileGpuPrepKind::ClutBlockCopy && op.copy_count == 1 && op.copy_w == 16 &&
+			   op.copy_h == 16;
+	};
+
+	// Every palette this pass moves, as (old stream offset -> new one). Collected across the WHOLE
+	// op array and applied to the draws once at the end, sorted, rather than re-walking the draw list
+	// per run: gt4opb merges 139 runs in a frame of thousands of draws, and the per-run shape is a
+	// multiply where this is an add.
+	m_clut_page_remap.clear();
+	std::array<u32, kClutPageSquares> rel_x{}, rel_y{};
+
+	const u32 op_count = static_cast<u32>(m_plan_prep_ops.size());
+	for (u32 i = 0; i < op_count;)
+	{
+		if (!is_square(m_plan_prep_ops[i]))
+		{
+			i++;
+			continue;
+		}
+		const GSDevice::GSTileGpuPrepOp& head = m_plan_prep_ops[i];
+		const u32 px = head.copy_x[0] & ~63u;
+		const u32 py = head.copy_y[0] & ~31u;
+		// How far the run of same-owner, same-page, contiguously-reserved squares reaches.
+		u32 n = 1;
+		while (i + n < op_count && n < kClutPageSquares)
+		{
+			const GSDevice::GSTileGpuPrepOp& op = m_plan_prep_ops[i + n];
+			if (!is_square(op) || op.donor_target != head.donor_target || (op.copy_x[0] & ~63u) != px ||
+				(op.copy_y[0] & ~31u) != py || op.bp != head.bp + n * 256)
+			{
+				break;
+			}
+			n++;
+		}
+
+		// Eight whole slots, or the four of one row. Nothing else tiles a band, and nothing else may
+		// be written -- see gsTileGpuClutPageBand.
+		u32 take = 0, band_y = 0, band_h = 0;
+		for (const u32 len : {kClutPageSquares, 4u})
+		{
+			if (len > n)
+				continue;
+			for (u32 k = 0; k < len; k++)
+			{
+				rel_x[k] = m_plan_prep_ops[i + k].copy_x[0] - px;
+				rel_y[k] = m_plan_prep_ops[i + k].copy_y[0] - py;
+			}
+			if (gsTileGpuClutPageBand(rel_x.data(), rel_y.data(), len, band_y, band_h))
+			{
+				take = len;
+				break;
+			}
+		}
+		if (take == 0)
+		{
+			i++;
+			continue;
+		}
+
+		// The run's reservation is [head.bp, head.bp + take * 256), and the region writes
+		// 64 * band_h words from head.bp. The predicate above is what says those are the same range.
+		const u32 base = head.bp;
+		for (u32 k = 0; k < take; k++)
+			m_clut_page_remap.push_back({m_plan_prep_ops[i + k].bp, base + (rel_y[k] - band_y) * 64 + rel_x[k]});
+
+		GSDevice::GSTileGpuPrepOp& page = m_plan_prep_ops[i];
+		page.copy_count = 1;
+		page.copy_w = 64;
+		page.copy_h = band_h;
+		page.copy_x[0] = px;
+		page.copy_y[0] = py + band_y;
+		page.bp = base;
+		// The rest of the run stays in the array so that no op index moves -- a draw's prep range is
+		// a slice of it -- and is neutered instead. copy_count 0 is the executor's own "drop this op"
+		// condition, taken before it records anything, so a neutered op does not even open a copy run.
+		for (u32 k = 1; k < take; k++)
+			m_plan_prep_ops[i + k].copy_count = 0;
+		m_frame.clut_copies -= (take - 1);
+		m_frame.clut_copy_regions -= (take - 1);
+		m_frame.clut_page_merges++;
+		i += take;
+	}
+
+	if (m_clut_page_remap.empty())
+		return;
+
+	// The draws. pal_offset is the record's stream offset, handed to the draw when it was accumulated;
+	// nothing else in the plan names a palette by its offset, so this is the whole fix-up. The stride
+	// goes to 64, in the two forms the fragment arm folds into bit positions.
+	std::sort(m_clut_page_remap.begin(), m_clut_page_remap.end(),
+		[](const std::pair<u32, u32>& a, const std::pair<u32, u32>& b) { return a.first < b.first; });
+	for (PendingDraw& pd : m_plan_pending)
+	{
+		if (pd.pal_mode != 3u) [[likely]]
+			continue;
+		const auto at = std::lower_bound(m_clut_page_remap.begin(), m_clut_page_remap.end(), pd.pal_offset,
+			[](const std::pair<u32, u32>& e, u32 v) { return e.first < v; });
+		if (at == m_clut_page_remap.end() || at->first != pd.pal_offset)
+			continue; // a square this pass did not merge: it still reads its own 16-wide tile
+		pd.pal_offset = at->second;
+		pd.pal_mul = 7u;
+		pd.pal_shift = 2u;
 	}
 }
 
@@ -2437,6 +2573,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto cr3r = stat([](const MF& f) { return f.clut_r3_refused; });
 	const auto ccp = stat([](const MF& f) { return f.clut_copies; });
 	const auto ccr = stat([](const MF& f) { return f.clut_copy_regions; });
+	const auto cpm = stat([](const MF& f) { return f.clut_page_merges; });
 	const auto cgp = stat([](const MF& f) { return f.clut_gathers; });
 	const auto cbrk = stat([](const MF& f) { return f.clut_breaks; });
 	const auto csy = stat([](const MF& f) { return f.clut_syncs; });
@@ -2457,10 +2594,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 		// The copy's REGIONS beside its ops, because a region is the unit the device charges: per-region
 		// copy cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so the merge levers move
 		// this number and leave the op count almost where it was.
-		Console.WriteLn("  block copies %.2f / %-5u  copy regions %.2f / %-5u  gather passes %.2f / %-4u  "
-						"pass breaks %.2f / %-4u  cpu syncs %.2f / %-4u  lost records %.2f / %-4u  pruned %.2f / %u",
-			ccp.mean, ccp.p50, ccr.mean, ccr.p50, cgp.mean, cgp.p50, cbrk.mean, cbrk.p50, csy.mean, csy.p50,
-			clost.mean, clost.p50, cpr.mean, cpr.p50);
+		Console.WriteLn("  block copies %.2f / %-5u  copy regions %.2f / %-5u  (page bands %.2f / %-4u)  "
+						"gather passes %.2f / %-4u  pass breaks %.2f / %-4u  cpu syncs %.2f / %-4u  "
+						"lost records %.2f / %-4u  pruned %.2f / %u",
+			ccp.mean, ccp.p50, ccr.mean, ccr.p50, cpm.mean, cpm.p50, cgp.mean, cgp.p50, cbrk.mean, cbrk.p50, csy.mean,
+			csy.p50, clost.mean, clost.p50, cpr.mean, cpr.p50);
 	}
 }
 
@@ -4943,8 +5081,13 @@ void GSRendererTileGpu::AccumulateDraw()
 						pd.pal_offset = pal_rec->stream_offset;
 						// The copy's own layout decides the fetch mode: a merged copy landed the
 						// words as one tile and is read at its stride, everything else as the run
-						// of row-major blocks mode 1 and mode 2 have always read.
+						// of row-major blocks mode 1 and mode 2 have always read. The fragment arm
+						// wants the tile's stride pre-chewed into the two forms it folds into bit
+						// positions: S/8 - 1 for the column multiply, log2(S) - 4 for the block
+						// shift. S is 16 or 64 and nothing else, so this is the whole map.
 						pd.pal_mode = (pal_rec->stream_stride != 0) ? 3u : ((pal_rec->entries == 256) ? 1u : 2u);
+						pd.pal_mul = (pal_rec->stream_stride == 64) ? 7u : 1u;
+						pd.pal_shift = (pal_rec->stream_stride == 64) ? 2u : 0u;
 						m_frame.clut_draws_byte++;
 					}
 					else
@@ -4957,6 +5100,8 @@ void GSRendererTileGpu::AccumulateDraw()
 						pd.pal_record = 0;
 						pd.pal_bias = 0;
 						pd.pal_mode = 0;
+						pd.pal_mul = 0;
+						pd.pal_shift = 0;
 						m_mem.m_clut.Read32(tex0, m_env.TEXA);
 						const u32* const clut = m_mem.m_clut;
 						pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
@@ -5839,6 +5984,11 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	// see. A no-op with the lever off.
 	SpliceRuns();
 
+	// ...and after it, because it reads the FINAL op array: a run of copies the splice pulled apart
+	// is a run this cannot merge, and asking before the splice would merge one the executor never
+	// sees consecutively. A no-op with the lever off.
+	MergeClutCopiesIntoPages();
+
 	if (g_gs_device->TileGpuExecutorAvailable())
 	{
 		// 1. Resolve the plan's target list: pool textures as they are NOW (any growth this
@@ -5915,12 +6065,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// ...and what to do with the As blend factor where there is no second output to put it
 			// in. Zero on every draw on a device that has one, so the arm is not even compiled there.
 			sr.blend |= pd.dualsrc_bits;
-			// The rows are reused frame to frame, so the tail padding is written rather than left
-			// holding the previous frame's bytes: the shader never reads it, but a state buffer
-			// whose dead words differ between two runs of the same dump is a capture diff nobody
-			// can dismiss at a glance.
-			sr.pad0 = 0;
-			sr.pad1 = 0;
+			// The row's last two words, which used to be its tail padding. Written on every row even
+			// though only pal_mode 3 reads them, for the reason the padding was written: the rows are
+			// reused frame to frame, and a state buffer whose unread words differ between two runs of
+			// the same dump is a capture diff nobody can dismiss at a glance.
+			sr.pal_mul = pd.pal_mul;
+			sr.pal_shift = pd.pal_shift;
 			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 			// The draw's GS scissor, handed to the executor as its own stream: it is a Vulkan
 			// scissor and a cut in the indirect run, neither of which the state table can express.

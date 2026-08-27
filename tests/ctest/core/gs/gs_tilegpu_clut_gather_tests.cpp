@@ -33,6 +33,7 @@
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
 #include <gtest/gtest.h>
 
@@ -350,6 +351,175 @@ TEST(TileGpuClutGather, OnlyAFourAlignedPaletteMergesIntoOneSquare)
 		EXPECT_EQ(b.stride, 0u) << "cbp " << cbp;
 		EXPECT_EQ(b.w, 8u) << "cbp " << cbp;
 		EXPECT_EQ(b.h, 2u) << "cbp " << cbp;
+	}
+}
+
+// The PAGE merge (TileGpuClutMergePages), which is the same map with a wider tile: a burst of
+// mergeable palettes sharing one owner page is copied as ONE 64x32 region, and each of them reads
+// its words out of that region at its square's page-relative origin, stride 64.
+//
+// Two things have to hold and both fail silently. The eight squares of a full page must land at the
+// eight distinct intra-page origins {0,16,32,48} x {0,16} -- two palettes claiming one origin would
+// read each other's words -- and each palette's entries must come back through
+// ClutEntryToMergedOffset at stride 64 with that origin added, which is what the renderer computes
+// as page_base + y_in_page * 64 + x_in_page.
+TEST_F(ClutGatherTest, EightPalettesTileOnePageAndReadBackOutOfIt)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	ASSERT_TRUE(f.clut_valid);
+
+	// One CT32 page of an owner four pages wide, holding eight 4-aligned 256-entry palettes: a page
+	// is 32 blocks, and a 4-aligned group is four of them, so CBP 0x20, 0x24 ... 0x3c tile page 1.
+	// (GT4's shape, one page over: a bank of palettes rendered into a strip of the frame buffer.)
+	const u32 owner_bp = 0x0000, owner_bw = 4;
+	SeedOwner({0x0020, owner_bp, owner_bw, 256}, owner_bw * 64, 128);
+
+	// The page copy itself: 64x32 texels out of the owner, row-major, exactly as the executor emits
+	// it for one region of copy_w 64 by copy_h 32.
+	std::vector<u32> page;
+	u32 page_px = 0, page_py = 0;
+	{
+		ClutBlockCopy first;
+		ASSERT_TRUE(LocateClutBlocks(f, 0x0020, owner_bp, owner_bw, 256, true, first));
+		page_px = first.x[0] & ~63u;
+		page_py = first.y[0] & ~31u;
+		for (u32 y = 0; y < 32; y++)
+		{
+			for (u32 x = 0; x < 64; x++)
+				page.push_back(SelfNaming(OwnerWord({0x0020, owner_bp, owner_bw, 256}, page_px + x, page_py + y)));
+		}
+	}
+	ASSERT_EQ(page.size(), 64u * 32u);
+
+	std::vector<bool> origin_seen(64u * 32u, false);
+	for (u32 k = 0; k < 8; k++)
+	{
+		const GatherCase c{0x0020 + k * 4, owner_bp, owner_bw, 256};
+		SCOPED_TRACE(testing::Message() << "cbp " << c.cbp);
+		ClutBlockCopy b;
+		ASSERT_TRUE(LocateClutBlocks(f, c.cbp, c.owner_bp, c.owner_bw, c.entries, true, b));
+		ASSERT_TRUE(b.merged);
+		// Every square of the group is in the same page as the first, which is what makes the group
+		// a group -- the renderer keys on exactly this.
+		ASSERT_EQ(b.x[0] & ~63u, page_px);
+		ASSERT_EQ(b.y[0] & ~31u, page_py);
+
+		// The renderer's own arithmetic for this palette's place in the page's reservation.
+		const u32 stream_offset = (b.y[0] - page_py) * 64 + (b.x[0] - page_px);
+		ASSERT_LT(stream_offset, page.size());
+		EXPECT_FALSE(origin_seen[stream_offset]) << "two palettes claim intra-page offset " << stream_offset;
+		origin_seen[stream_offset] = true;
+
+		const std::array<u32, 256> want = RealLoad(c);
+		for (u32 e = 0; e < 256; e++)
+		{
+			const u32 off = stream_offset + ClutEntryToMergedOffset(f, 256, 64, e);
+			ASSERT_LT(off, page.size()) << "entry " << e;
+			EXPECT_EQ(page[off], want[e]) << "entry " << e;
+		}
+	}
+
+	// The eight origins are the page's eight square slots and nothing else: four across, two down.
+	u32 seen = 0;
+	for (u32 y = 0; y < 32; y += 16)
+	{
+		for (u32 x = 0; x < 64; x += 16)
+			seen += origin_seen[y * 64 + x] ? 1u : 0u;
+	}
+	EXPECT_EQ(seen, 8u);
+}
+
+// The renderer hands the fragment stage the tile stride pre-chewed into two words, and the shader
+// folds the multiply into bit positions rather than doing it. That is a transcription with no
+// compiler between the two sides, so it is pinned here against the CPU spec at both strides the road
+// uses. A disagreement is a palette that is a permutation of itself: plausible colours, wrong ones.
+TEST(TileGpuClutGather, TheShadersFoldedOffsetIsTheSpecAtBothStrides)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	for (const u32 stride : {16u, 64u})
+	{
+		// GSRendererTileGpu's map from the copy's stride to the state row's two fields.
+		const u32 pal_mul = (stride == 64) ? 7u : 1u;
+		const u32 pal_shift = (stride == 64) ? 2u : 0u;
+		for (u32 e = 0; e < 256u; e++)
+		{
+			// tilegpu.glsl's merged arm, verbatim.
+			const u32 w = f.clut_i8_word.Eval(e);
+			const u32 c = f.inv_col32.Eval(w & 63);
+			const u32 shader = ((w & 0x80u) << pal_shift) | (c + pal_mul * (c & 0x38u)) | ((w & 0x40u) >> 3u);
+			EXPECT_EQ(shader, ClutEntryToMergedOffset(f, 256, stride, e)) << "stride " << stride << " entry " << e;
+		}
+	}
+}
+
+// The page merge's safety condition, which is the part of it that can silently corrupt.
+//
+// A run of n merged squares reserved n * 256 words. The region that replaces it is 64 wide by 16h
+// tall and writes 1024h words from the run's base. Those agree only at n == 4h -- every slot of h
+// whole rows of the page's 4x2 square grid, none of them twice -- so a run that covers a band only
+// partly must NOT merge: the region would write past the end of the run into whatever reserved next,
+// and the palettes there would come back as somebody else's texels.
+//
+// Not a threshold anyone chose. The arithmetic forces it, which is why the answer is a predicate with
+// a test and not a tunable.
+TEST(TileGpuClutGather, OnlyAWholeBandOfAPageMergesIntoOneRegion)
+{
+	u32 y = 0xdead, h = 0xbeef;
+
+	// The two shapes that tile: one row of four, and both rows.
+	{
+		const u32 x[4] = {0, 16, 32, 48}, sy[4] = {0, 0, 0, 0};
+		ASSERT_TRUE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+		EXPECT_EQ(y, 0u);
+		EXPECT_EQ(h, 16u);
+		EXPECT_EQ(4u * 256u, 64u * h); // the region writes exactly what the run reserved
+	}
+	{
+		const u32 x[4] = {48, 0, 32, 16}, sy[4] = {16, 16, 16, 16}; // order is the capture's, not the page's
+		ASSERT_TRUE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+		EXPECT_EQ(y, 16u);
+		EXPECT_EQ(h, 16u);
+	}
+	{
+		const u32 x[8] = {0, 16, 32, 48, 0, 16, 32, 48}, sy[8] = {0, 0, 0, 0, 16, 16, 16, 16};
+		ASSERT_TRUE(gsTileGpuClutPageBand(x, sy, 8, y, h));
+		EXPECT_EQ(y, 0u);
+		EXPECT_EQ(h, 32u);
+		EXPECT_EQ(8u * 256u, 64u * h);
+	}
+
+	// Four squares that are NOT a row: a 64x32 region would cover them and write twice what the run
+	// reserved; a 64x16 one would miss two of them.
+	{
+		const u32 x[4] = {0, 16, 0, 16}, sy[4] = {0, 0, 16, 16};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+	}
+	// A slot claimed twice -- two palettes reading each other's words -- even though the count is right.
+	{
+		const u32 x[4] = {0, 16, 16, 48}, sy[4] = {0, 0, 0, 0};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+	}
+	// Counts that cannot tile a band at all.
+	for (const u32 n : {1u, 2u, 3u, 5u, 6u, 7u})
+	{
+		const u32 x[8] = {0, 16, 32, 48, 0, 16, 32, 48}, sy[8] = {0, 0, 0, 0, 16, 16, 16, 16};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, n, y, h)) << "n " << n;
+	}
+	// Origins that are not square origins of a page: a 16-alignment or a page bound that stopped
+	// holding would otherwise index a slot that does not exist.
+	{
+		const u32 x[4] = {0, 8, 32, 48}, sy[4] = {0, 0, 0, 0};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+	}
+	{
+		const u32 x[4] = {0, 16, 32, 64}, sy[4] = {0, 0, 0, 0};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
+	}
+	{
+		const u32 x[4] = {0, 16, 32, 48}, sy[4] = {0, 0, 0, 32};
+		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
 	}
 }
 

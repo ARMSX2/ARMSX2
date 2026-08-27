@@ -6790,16 +6790,18 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// the shader computes. It is injected as its own define so the shader reads as three roads rather
 	// than two roads and a borrowed flag. The whole block is assembled by GSTileGpuShaderVariant so
 	// the size gate compiles the same programs this device does, rather than its own idea of them.
-	// The one setting in that block rather than a capability: the merged CLUT arm. Latched HERE and
-	// nowhere else, because every module of the session is compiled from this one string, and the
-	// renderer asks TileGpuClutMergeCompiled() rather than re-reading the setting -- a mid-session
-	// flip must not put a mode-3 state row in front of a module that has no mode-3 arm.
+	// The two settings in that block rather than capabilities: the merged CLUT arm and the per-draw
+	// stride its page half needs. Latched HERE and nowhere else, because every module of the session
+	// is compiled from this one string, and the renderer asks TileGpuClutMerge*Compiled() rather than
+	// re-reading the settings -- a mid-session flip must not put a mode-3 state row in front of a
+	// module that has no mode-3 arm, nor a 64-wide tile in front of an arm whose stride is 16.
 	m_tilegpu_clut_merge = GSConfig.TileGpuClutMergeRegions;
+	m_tilegpu_clut_merge_pages = m_tilegpu_clut_merge && GSConfig.TileGpuClutMergePages;
 	const std::string defines =
 		(m_tilegpu_tex ? form_defines : std::string()) +
 		GSTileGpuShaderVariant::DeviceDefines(m_tilegpu_tex, static_byte_sel,
 			m_optional_extensions.tilegpu_bindless_targets, m_optional_extensions.tilegpu_dual_source,
-			scalarize_vec_and, m_tilegpu_clut_merge);
+			scalarize_vec_and, m_tilegpu_clut_merge, m_tilegpu_clut_merge_pages);
 	// Kept for the session: a pass's fragment module is compiled from this plus its variant defines,
 	// on first use of that (road, texel-arm) pair. Re-reading the file instead would risk compiling
 	// two variants from two different revisions of the shader, since the runtime shader tree is a

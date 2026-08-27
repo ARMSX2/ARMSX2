@@ -997,6 +997,60 @@ constexpr u32 gsTileGpuChannelKeepMask(u8 color_mask)
 	return keep;
 }
 
+/// Does a run of `n` merged palette squares exactly tile a 64-wide BAND of one owner page?
+///
+/// A 256-entry palette that merges is a 16x16 square at a 16-aligned origin inside one 64x32 guest
+/// page, so a page holds eight of them: four columns by two rows. Where a run of copies covers whole
+/// ROWS of that grid it can be one region instead of n -- 64x16 for a row, 64x32 for both -- and per
+/// region copy cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so that is the whole
+/// saving.
+///
+/// ⚠️ WHOLE rows, and nothing less, because the destination is a reservation the run already made and
+/// the region writes 64 words a row over its whole height. n squares reserved n * 256 words; a
+/// 64 x 16h region writes 1024h. Those agree only at n == 4h, which is exactly "every slot of h whole
+/// rows, none of them twice" -- so a partial cover is not a smaller win here, it is a write past the
+/// end of the run into whatever reserved next. The predicate below IS that safety argument, which is
+/// why it is a function with a test rather than a condition inside the pass.
+///
+/// `x`/`y` are each square's PAGE-RELATIVE origin. On success `out_y` is the band's page-relative y
+/// origin and `out_h` its height in texels (16 or 32).
+constexpr bool gsTileGpuClutPageBand(const u32* x, const u32* y, u32 n, u32& out_y, u32& out_h)
+{
+	out_y = 0;
+	out_h = 0;
+	if (n != 4 && n != 8)
+		return false;
+	u32 slots = 0; // one bit per 16x16 slot of the page: column | (row << 2)
+	for (u32 i = 0; i < n; i++)
+	{
+		if ((x[i] & 15u) != 0 || (y[i] & 15u) != 0 || x[i] >= 64 || y[i] >= 32)
+			return false;
+		const u32 bit = 1u << ((x[i] >> 4) | ((y[i] >> 4) << 2));
+		if ((slots & bit) != 0)
+			return false; // two palettes in one slot: they would read each other's words
+		slots |= bit;
+	}
+	if (slots == 0x0Fu)
+	{
+		out_y = 0;
+		out_h = 16;
+		return true;
+	}
+	if (slots == 0xF0u)
+	{
+		out_y = 16;
+		out_h = 16;
+		return true;
+	}
+	if (slots == 0xFFu)
+	{
+		out_y = 0;
+		out_h = 32;
+		return true;
+	}
+	return false;
+}
+
 /// The ADMISSION CLASSES: the five distinct reasons a draw asks for the in-pass destination read.
 ///
 /// Finer than the three kGSTileGpuSelf* USES, and it has to be. Two classes can want the same use
@@ -1551,7 +1605,7 @@ private:
 		// Where this draw's palette words are. 0 = entry order at pal_offset, which is the CPU road
 		// and what every draw carried before the CLUT gather existed; 1 = a 256-entry palette's four
 		// copied blocks; 2 = a 16-entry one's single copied block; 3 = a 256-entry palette copied as
-		// one TILE 16 words per row. The gather's byte-road consumer gets its words by an
+		// one TILE, pal_mul/pal_shift words per row. The gather's byte-road consumer gets its words by an
 		// image-to-buffer COPY of the palette's blocks out of the owning target (no gather pass, at
 		// six hundred to twelve hundred loads a frame), and a copy lands texels row-major rather than
 		// in entry order -- so the CSM1 entry order is applied at fetch instead.
@@ -1575,17 +1629,26 @@ private:
 		// bit k of a stored channel is bit k of the expanded byte. Read only by a draw that reads
 		// its destination; the channel-granular half of the same mask stays in the pipeline.
 		u32 fbmsk;
-		// Explicit tail padding, and it has to be explicit: alignas(16) rounds the C++ row up to
-		// 144 while std430's array stride over the fields above is 136, and two sides on different
-		// strides read every row but the first from the wrong place. The asserts below are what
-		// say the row still ends where the shader thinks it does. A new field goes HERE, spending
-		// a padding word rather than appending past it -- which is what the scissor's four words
-		// and the pixel origin's two did in reverse when the clip-plane road was deleted.
-		u32 pad0, pad1;
+		// The merged tile's row stride S, in the two pre-chewed forms the fragment arm needs it in:
+		// S/8 - 1 (1 for a palette copied as its own 16-wide square, 7 for one read out of a 64-wide
+		// owner page) and log2(S) - 4 (0 and 2). One number in two fields because deriving either
+		// from the other costs 37 SPIR-V words in a program with one unit of Adreno instruction
+		// length to spare, and these two words were the row's tail padding anyway. Read only by
+		// pal_mode 3 in a module compiled with TILEGPU_CLUT_MERGE_PAGES; written on every row, so no
+		// word of the row is ever left holding the previous frame's bytes.
+		//
+		// ⚠️ They WERE the explicit tail padding, which was explicit because alignas(16) rounds the
+		// C++ row up to 144 while std430's array stride over the fields would otherwise be 136, and
+		// two sides on different strides read every row but the first from the wrong place. The row
+		// now ends on a real field, and that is still safe: 36 words after two vec2s is 144 bytes,
+		// a multiple of both std430's 8-byte struct alignment and the alignas(16), so there is no
+		// implicit tail pad to disagree about. A new field can no longer spend padding -- it has to
+		// grow the row on both sides and re-derive that, which is what the asserts below check.
+		u32 pal_mul, pal_shift;
 	};
 	static_assert(sizeof(StateRow) == GSDevice::GSTileGpuPassPlan::kStateRowWords * sizeof(u32),
 		"TileGpu StateRow must be kStateRowWords words to match tilegpu.glsl std430");
-	static_assert(offsetof(StateRow, pad0) == (GSDevice::GSTileGpuPassPlan::kStateRowWords - 2) * sizeof(u32),
+	static_assert(offsetof(StateRow, pal_shift) == (GSDevice::GSTileGpuPassPlan::kStateRowWords - 1) * sizeof(u32),
 		"TileGpu StateRow must end at its declared size with no implicit tail padding -- std430's stride would differ");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
@@ -1709,6 +1772,8 @@ private:
 		u32 pal_record;
 		u32 pal_bias;
 		u32 pal_mode;
+		/// pal_mode 3 only: the copied tile's row stride S, as the state row's two forms of it.
+		u32 pal_mul, pal_shift;
 		u64 pal_id;
 	};
 
@@ -2349,6 +2414,10 @@ private:
 		GSTexture* gather_tex = nullptr; ///< rule 3's N x 1 palette, gathered on demand
 	};
 
+	/// The longest run of square copies the page merge will look at: a guest page holds eight 16x16
+	/// palette squares (four columns by two rows) and a run longer than that cannot be one region.
+	static constexpr u32 kClutPageSquares = 8;
+
 	GSTileClutMirror m_clut_mirror;
 	std::vector<GpuPalette> m_gpu_palettes; ///< sorted by handle: handles only ever increase
 	std::vector<u32> m_clut_live; ///< indices of the records the mirror still names (at most sixteen)
@@ -2361,6 +2430,10 @@ private:
 	/// device at the same probe, because the modules read TileGpuClutMergeRegions once when they were
 	/// assembled and the setting can move afterwards. False = every copy takes the per-block road.
 	bool m_clut_merge_serves = false;
+	/// ...and whether it carries the per-draw STRIDE the page merge needs on top of that. Separate
+	/// because the two levers compile separately: a session that merges squares but not pages has a
+	/// constant-stride arm and would read a page-merged palette at the wrong stride.
+	bool m_clut_merge_pages_serves = false;
 	bool m_warned_clut_lost = false;
 	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
 	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's
@@ -2431,6 +2504,24 @@ private:
 	/// allocation: an offset is never handed out twice in a plan, which is the disjointness the
 	/// executor's copy run leans on to skip its interior ring barriers.
 	u32 ReserveClutStreamWords(u32 words);
+	/// TileGpuClutMergePages, at the plan build: a consecutive run of merged-square copies that
+	/// covers whole rows of one owner page becomes ONE wide region, and the draws that read those
+	/// palettes are re-pointed at their squares' places inside it.
+	///
+	/// ⚠️ It runs HERE, over the finished op array, and not where the copies are captured -- which is
+	/// where the design put it, and the design was wrong about the mechanism. The capture site sees
+	/// one record at a time: a 256-entry CSM1 load is only ever gathered at CSA 0, which stamps all
+	/// sixteen mirror slots, so the mirror names at most ONE 256-entry record and the "burst" in
+	/// NoteClutSourceWritten has exactly one candidate, always. The runs of eight the device capture
+	/// shows are eight consecutive DRAWS each capturing its own record, which the executor's batching
+	/// then merges into one command -- so the only place that can see eight is after they are all
+	/// emitted. Measured, not argued: instrumented on the GT4 Online Public Beta, every burst had one
+	/// candidate and 8,622 of 10,000 captures came from the per-draw site.
+	void MergeClutCopiesIntoPages();
+	/// MergeClutCopiesIntoPages' scratch: every palette it moved, as (old stream offset, new one),
+	/// sorted at the end and applied to the draws in one pass. A member so a frame that merges
+	/// hundreds of runs does not allocate hundreds of times.
+	std::vector<std::pair<u32, u32>> m_clut_page_remap;
 	/// The record's words in the frame's palette stream: a reservation the size of what the copy's
 	/// regions tile, and one image-to-buffer copy of the palette's blocks out of the owner.
 	/// Idempotent within a plan and emitted at the current op position, which is what makes it
@@ -3263,6 +3354,10 @@ private:
 		// region count and not its bytes. Four per 256-entry palette on the per-block road, one
 		// merged, one per owner page merged across a burst.
 		u32 clut_copy_regions = 0;
+		// ...and how many of those regions are a whole band of an owner page rather than one
+		// palette's square: TileGpuClutMergePages' own volume, which is the only thing that tells a
+		// frame where its regions went when both levers are on.
+		u32 clut_page_merges = 0;
 		u32 clut_gathers = 0;     // N x 1 gather passes emitted (rule 3's volume, not the loads')
 		u32 clut_breaks = 0;      // draws that opened a pass because a CLUT op could not hoist
 		u32 clut_syncs = 0;       // device palettes handed back to the CPU (seams + the two unservable roads)

@@ -783,6 +783,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	// gathered palette against a different word order in the frame's palette stream. Only two of
 	// the 21 corpus dumps gather a palette at all, so the corpus cannot price it -- see Config.h.
 	TileGpuClutMergeRegions = false;
+	TileGpuClutMergePages = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1140,6 +1141,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuContainSurfaces);
 	SettingsWrapBitBool(TileGpuShaderWriteMask);
 	SettingsWrapBitBool(TileGpuClutMergeRegions);
+	SettingsWrapBitBool(TileGpuClutMergePages);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

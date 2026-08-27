@@ -374,19 +374,27 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 // behind its per-draw pal_mode.
 //
 // TileGpuClutMergeRegions changes the word order a gathered palette lands in, so the fragment stage
-// grows a second offset expression. Measured at the landing, on the two variants the gate above
-// names as its worst: it costs 363 SPIR-V words, which is a whole unit of Adreno 650 instruction
-// length. That is affordable for a program that actually merges and NOT affordable for one that
-// does not, because dead code counts here -- four units of never-executed arithmetic once moved
-// Shadow of the Colossus from 21.8 to 30.7 ms with byte-identical frames. So the arm compiles in
-// only when the lever is on, the shipping default program is unchanged, and the two ceilings above
-// keep measuring what ships.
+// grows a second offset expression, and TileGpuClutMergePages then makes that expression's stride a
+// per-draw value. Measured at the landing, on the two variants the gate above names as its worst:
+// 304 SPIR-V words for the square arm and 72 more for the stride, together most of a unit of Adreno
+// 650 instruction length. That is affordable for a program that actually merges and NOT affordable
+// for one that does not, because dead code counts here -- four units of never-executed arithmetic
+// once moved Shadow of the Colossus from 21.8 to 30.7 ms with byte-identical frames. So each arm
+// compiles in only when its own lever is on, the shipping default program is unchanged, and the two
+// ceilings above keep measuring what ships.
 //
-// What this test pins is the merged program: it must stay on the safe side of the 123-unit CLIFF.
-// It is held to the cliff rather than to the two ceilings above because those carry margin for a
-// program every device runs and this one runs only where the lever was turned on deliberately --
-// and it is the FIRST thing to check if the lever's device A/B comes back slower rather than
-// faster, since one unit is exactly the size of the effect this whole file exists to catch.
+// What this test pins is the merged programs: they must stay on the safe side of the 123-unit CLIFF.
+// They are held to the cliff rather than to the two ceilings above because those carry margin for a
+// program every device runs and these run only where a lever was turned on deliberately -- and it is
+// the FIRST thing to check if either lever's device A/B comes back slower rather than faster, since
+// one unit is exactly the size of the effect this whole file exists to catch.
+//
+// ⚠️ THREE shapes, because the two levers pay separately. The square merge is a constant stride and
+// costs 304 words; the page merge makes the stride per-draw and costs 72 more, which lands the
+// destination-read variant TWO WORDS under the cliff. That is the tightest thing in this tree. It is
+// not a number to nudge: the next edit to tilegpu_palette_word will trip this test, and the answer
+// then is to make the arm cheaper or to take the device stats line that would let the calibration
+// above be redone, not to raise the cliff -- the cliff is hardware.
 TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 {
 	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
@@ -407,40 +415,51 @@ TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 	const u32 texel = GSDevice::kGSTileGpuTexelIndex4 | GSDevice::kGSTileGpuTexelPalGather;
 	const u32 selves[] = {0u, GSDevice::kGSTileGpuSelfMaskAll};
 
+	const auto words_for = [&](bool merge, bool pages, const std::string& defines, std::string& error) {
+		return sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+									GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false, merge, pages) +
+									defines + body,
+			error);
+	};
+
 	for (const u32 self : selves)
 	{
 		const std::string variant = GSTileGpuShaderVariant::VariantName(road, texel, self, true);
 		const std::string defines = GSTileGpuShaderVariant::VariantDefines(road, texel, self, true);
 		std::string error;
-		const u32 off_words = sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
-												   GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false,
-													   false) +
-												   defines + body,
-			error);
+		const u32 off_words = words_for(false, false, defines, error);
 		ASSERT_NE(off_words, 0u) << variant << " (merge off) failed to compile: " << error;
-		const u32 on_words = sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
-												  GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false,
-													  true) +
-												  defines + body,
-			error);
-		ASSERT_NE(on_words, 0u) << variant << " (merge on) failed to compile: " << error;
+		const u32 sq_words = words_for(true, false, defines, error);
+		ASSERT_NE(sq_words, 0u) << variant << " (squares) failed to compile: " << error;
+		const u32 pg_words = words_for(true, true, defines, error);
+		ASSERT_NE(pg_words, 0u) << variant << " (squares + pages) failed to compile: " << error;
 
-		std::printf("  %-66s %8u -> %8u words  (%u -> %u a650 units)\n", variant.c_str(), off_words, on_words,
-			PredictedUnits(off_words), PredictedUnits(on_words));
+		std::printf("  %-58s %6u off -> %6u squares -> %6u pages words  (%u -> %u -> %u a650 units)\n",
+			variant.c_str(), off_words, sq_words, pg_words, PredictedUnits(off_words), PredictedUnits(sq_words),
+			PredictedUnits(pg_words));
 
-		// The lever costs nothing where it is off. This is the claim the two ceilings above rest on
-		// once this arm exists, so it is asserted rather than assumed.
+		// The levers cost nothing where they are off. This is the claim the two ceilings above rest
+		// on once these arms exist, so it is asserted rather than assumed.
 		EXPECT_EQ(off_words, sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
 												  GSTileGpuShaderVariant::DeviceDefines(true, true, true) + defines +
 												  body,
 								 error))
 			<< variant << ": the merge-off program is not what the default DeviceDefines produce";
+		// ...and asking for pages without squares is not a shape, so it must not silently produce a
+		// third one: the page arm IS the square arm with a wider tile.
+		EXPECT_EQ(off_words, words_for(false, true, defines, error))
+			<< variant << ": TileGpuClutMergePages compiled an arm with TileGpuClutMergeRegions off";
 
-		EXPECT_LE(PredictedUnits(on_words), kCliffUnits)
-			<< "the merged CLUT arm puts " << variant << " at " << on_words << " SPIR-V words (~"
-			<< PredictedUnits(on_words) << " a650 units), past the " << kCliffUnits
+		EXPECT_LE(PredictedUnits(sq_words), kCliffUnits)
+			<< "the merged CLUT arm puts " << variant << " at " << sq_words << " SPIR-V words (~"
+			<< PredictedUnits(sq_words) << " a650 units), past the " << kCliffUnits
 			<< "-unit instruction-size cliff. Turning TileGpuClutMergeRegions on would then cost more in program "
 			   "size than the copy regions it saves; the arm needs a cheaper spelling, not a bigger number.";
+		EXPECT_LE(PredictedUnits(pg_words), kCliffUnits)
+			<< "the page merge's per-draw stride puts " << variant << " at " << pg_words << " SPIR-V words (~"
+			<< PredictedUnits(pg_words) << " a650 units), past the " << kCliffUnits
+			<< "-unit instruction-size cliff. This is the tightest program in the tree -- see the note above -- and "
+			   "the answer is a cheaper spelling, not a bigger number.";
 	}
 }
 

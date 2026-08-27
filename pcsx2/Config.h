@@ -888,7 +888,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 130 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 131 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1248,6 +1248,30 @@ struct Pcsx2Config
 					// flat-per-region price is a capture census, and the frame-time claim
 					// needs a device A/B before it becomes the default.
 					TileGpuClutMergeRegions : 1,
+					// ...and where a BURST of such palettes shares one owner page, copy
+					// the whole 64x32 page in one region and read them all out of it.
+					// A no-op unless TileGpuClutMergeRegions is also on, and a separate
+					// bit so the device A/B can bisect the two.
+					//
+					// A palette's 16x16 square is one eighth of a 64x32 owner page, so a
+					// game that renders a bank of palettes into a strip of the frame
+					// buffer and cycles it — which is what GT4 does — presents eight
+					// squares tiling one page. Measured on the same capture: all 139 of
+					// the frame's 32-region copy commands have their eight squares tiling
+					// page (0,0) of one image exactly. One region for eight palettes takes
+					// the frame's regions from 1,256 to 283, and the stream cost is zero
+					// (8 x 1,024 words IS one 2,048-word page).
+					//
+					// The threshold is four: at eight the merge is strictly better on both
+					// time and stream, at two it would reserve four times the stream to
+					// save one region. Which threshold is right is unmeasured.
+					//
+					// Also pixel-inert by the same argument, with one more clause: a page
+					// that only part of a burst covers is copied whole, so words no
+					// palette addresses land in stream slots no fetch reaches. Under
+					// TileGpuPoisonAllocations those words may be poison; they are never
+					// read, so the poison-on identity claim is untouched.
+					TileGpuClutMergePages : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

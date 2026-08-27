@@ -396,9 +396,9 @@ struct StateRow
 	                   // on why the padding is explicit.
 	uint pal_mode;     // where this draw's palette words are: 0 = entry order at pal_offset (the CPU
 	                   // road), 1 = a 256-entry palette's four copied blocks, 2 = a 16-entry one's
-	                   // single copied block, 3 = a 256-entry palette copied as ONE 16x16 tile.
-	                   // Every copied mode needs the CSM1 entry order applied at fetch, because an
-	                   // image-to-buffer copy lands texels row-major.
+	                   // single copied block, 3 = a 256-entry palette copied as ONE tile, pal_mul
+	                   // and pal_shift wide. Every copied mode needs the CSM1 entry order applied at
+	                   // fetch, because an image-to-buffer copy lands texels row-major.
 	uint pal_bias;     // entry bias inside a copied palette: a four-bit draw reading slot k of a
 	                   // 256-entry gathered load wants its entries 16k..16k+15.
 	uint blend;        // the GS blend equation for a draw that reads its own destination, packed as
@@ -411,10 +411,15 @@ struct StateRow
 	                   // (exactly 1.0); the enable bit is zero on every draw the executor blends for.
 	uint fbmsk;        // FBMSK reduced to the frame format's stored bits, as a per-channel KEEP mask
 	                   // on the expanded RGBA8 bytes.
-	uint pad0, pad1;   // explicit tail padding, and it has to be explicit: alignas(16) rounds the
-	                   // C++ row up to 144 while std430's array stride over the fields above would
-	                   // be 136, and two sides on different strides read every row but the first
-	                   // from the wrong place. The C++ side's asserts are what keep them in step.
+	uint pal_mul;      // the merged tile's row stride S, in the two pre-chewed forms the palette arm
+	uint pal_shift;    // needs it in: S/8 - 1 (1 for a 16-wide square, 7 for a 64-wide page) and
+	                   // log2(S) - 4 (0 and 2). One number in two fields because deriving either
+	                   // from the other costs 37 SPIR-V words in a program with a unit to spare,
+	                   // and these two words were the row's tail padding. The row now ends on a
+	                   // real field: that is still safe because 36 words after two vec2s is 144
+	                   // bytes, a multiple of both std430's 8-byte struct alignment and the C++
+	                   // side's alignas(16), so there is no implicit tail pad to disagree about --
+	                   // but the NEXT field added has to check that again rather than assume it.
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -814,13 +819,14 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 		//     off = (((b & 2) << 2) + (c >> 3)) * S + ((b & 1) << 3) + (c & 7)
 		//
 		// which is GSTileSwizzleForms::ClutEntryToMergedOffset, spelled there and pinned against
-		// GSClut's own loader. S is 16 on this road: a palette merges into its own 16x16 square and
-		// into nothing else. The line below is that expression with the multiply folded into the bit
-		// positions, because every one of its pieces lands in a DISJOINT bit range -- b1 at bit 7,
-		// cy at bits 4-6, b0 at bit 3, cx at bits 0-2 -- so the adds are ORs, and `c + (c & 0x38)`
-		// carries cy and cx in two operations rather than four: ((cy << 3) | cx) + (cy << 3) is
-		// (cy << 4) | cx. Only a 256-entry palette ever merges, so this arm reads the eight-bit
-		// entry form and nothing else.
+		// GSClut's own loader at both strides. Only a 256-entry palette ever merges, so this arm
+		// reads the eight-bit entry form and nothing else.
+		//
+		// The lines below are that expression with the multiply folded into bit positions, because
+		// every one of its pieces lands in a DISJOINT bit range: b1 at bit 3 + log2(S), cy at
+		// log2(S)..log2(S)+2, b0 at bit 3, cx at bits 0-2. So the adds are ORs, and
+		// `c + (S/8 - 1) * (c & 0x38)` carries cy and cx together -- ((cy << 3) | cx) plus
+		// (S/8 - 1) copies of (cy << 3) is (cy * S) | cx.
 		//
 		// ⚠️ Behind a MODULE define, not just behind its per-draw mode, and that is the whole reason
 		// the lever has one. DEAD CODE COUNTS on this hardware -- the size gate exists because four
@@ -841,7 +847,19 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 		const uint c = tile_ic32(w & 63u);
 		uint off = (w >> 6u) * 64u + c;
 		if (sr.pal_mode == 3u)
+#if TILEGPU_CLUT_MERGE_PAGES
+			// S is per draw here: 16 for a palette copied as its own square, 64 for one read out of
+			// a whole copied 64x32 owner page, where pal_offset carries its square's origin inside
+			// that page. The stride arrives pre-chewed in two fields -- see the state row -- because
+			// deriving one from the other costs 37 words and this program has a unit to spare.
+			off = ((w & 0x80u) << sr.pal_shift) | (c + sr.pal_mul * (c & 0x38u)) | ((w & 0x40u) >> 3u);
+#else
+			// S is 16: without the page merge a palette merges into its own 16x16 square and into
+			// nothing else, so the stride is a constant and the two state words go unread. That is
+			// worth 72 SPIR-V words, which is why the page merge has its own define rather than
+			// riding this one.
 			off = (w & 0x80u) | (c + (c & 0x38u)) | ((w & 0x40u) >> 3u);
+#endif
 		return vram_words[pal_base + sr.pal_offset + off];
 #else
 		const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);

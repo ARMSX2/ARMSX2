@@ -3250,6 +3250,13 @@ public:
 	/// the palette in the wrong order. It asks this instead.
 	virtual bool TileGpuClutMergeCompiled() { return false; }
 
+	/// ...and whether they also carry the per-draw STRIDE that arm needs to read a palette out of a
+	/// whole copied owner page (TileGpuClutMergePages). Separate from the above because the two
+	/// levers compile separately: without the page merge the merged arm's stride is a constant 16,
+	/// which is 72 SPIR-V words cheaper, and a module built that way would read a page-merged
+	/// palette at 16 instead of 64 -- a plausible-looking palette made of the wrong words.
+	virtual bool TileGpuClutMergePagesCompiled() { return false; }
+
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.
 	virtual bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) { return false; }
