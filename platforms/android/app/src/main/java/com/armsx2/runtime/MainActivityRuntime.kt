@@ -1317,6 +1317,25 @@ open class MainActivityRuntime : ComponentActivity() {
             runCatching { activity.swapDiscAction.launch(intent) }
         }
 
+        /**
+         * Open a file picker and boot whatever is chosen, without adding it to the library.
+         *
+         * bootDiscAction — the picker result handler that calls launchGame(uri, null) — has been
+         * here all along with nothing to trigger it, the same shape Swap Disc was in before it
+         * got promptSwapDisc(). So "pick a file and run it" was fully built and simply
+         * unreachable. Asked for repeatedly: it is how you try a disc that is not in a scanned
+         * folder, or test one file against another, without disturbing the library.
+         */
+        fun promptLaunchGame() {
+            val activity = instance ?: return
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            runCatching { activity.bootDiscAction.launch(intent) }
+        }
+
         /** ANGLE (GLES-on-Vulkan) for the OpenGL renderer. Ported from sashkinbro/EmuCoreX:
          *  when the AndroidUseAngleOpenGL setting is on AND the renderer is OpenGL, point the
          *  ARMSX2_ANGLE_EGL_LIBRARY / _GLES_LIBRARY env vars at the bundled ANGLE .so in the

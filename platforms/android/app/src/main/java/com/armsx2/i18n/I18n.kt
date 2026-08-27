@@ -1644,6 +1644,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "setup.step.bios.description" to "Pick a folder of PS2 BIOS files to start playing — every BIOS inside is added, along with any matching .mec and .nvm files.",
     "setup.step.bios.title" to "BIOS Location",
     "bios.boot.title" to "Boot BIOS",
+    "action.launchGame" to "Launch Game",
     "bios.perGame.menu" to "Per-game BIOS",
     "bios.thisGame" to "This game",
     "bios.thisGame.active" to "✓ This game",
