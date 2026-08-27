@@ -164,20 +164,39 @@ const std::vector<Row>& ShortTail()
 // Zeros, denormals, the smallest normal, both ends of the range and the two
 // exponent-255 words the VU reads as ordinary numbers -- crossed with a normal
 // operand and with each other. Nothing here may take a decrement.
+//
+// Split at exponent 255, because the two halves test different things. Below
+// it both emitters multiply the architectural words, so the deficit model
+// decides the result. At exponent 255 the word is an Inf or NaN to the host and
+// both emitters bound it before multiplying -- differently -- so those rows
+// score the operand clamp rather than this model.
+constexpr bool TopBinade(u32 w) { return ((w >> 23) & 0xFFu) == 0xFFu; }
+
+const u32 kEdgeWords[] = {
+	0x00000000u, 0x80000000u, 0x00000001u, 0x807FFFFFu, 0x00800000u,
+	0x80800000u, 0x3f800000u, 0xbf800000u, 0x7F7FFFFFu, 0xFF7FFFFFu,
+	0x7F800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x49998921u, 0x3fAAAAABu,
+};
+
+std::vector<Row> CrossEdgeWords(bool topBinade)
+{
+	std::vector<Row> out;
+	for (u32 a : kEdgeWords)
+		for (u32 b : kEdgeWords)
+			if ((TopBinade(a) || TopBinade(b)) == topBinade)
+				out.push_back({a, b});
+	return out;
+}
+
 const std::vector<Row>& Edges()
 {
-	static const std::vector<Row> v = [] {
-		static const u32 words[] = {
-			0x00000000u, 0x80000000u, 0x00000001u, 0x807FFFFFu, 0x00800000u,
-			0x80800000u, 0x3f800000u, 0xbf800000u, 0x7F7FFFFFu, 0xFF7FFFFFu,
-			0x7F800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x49998921u, 0x3fAAAAABu,
-		};
-		std::vector<Row> out;
-		for (u32 a : words)
-			for (u32 b : words)
-				out.push_back({a, b});
-		return out;
-	}();
+	static const std::vector<Row> v = CrossEdgeWords(false);
+	return v;
+}
+
+const std::vector<Row>& TopBinadeEdges()
+{
+	static const std::vector<Row> v = CrossEdgeWords(true);
 	return v;
 }
 
@@ -330,9 +349,10 @@ Score ScoreMicro(const std::vector<Row>& rows, const Shape& s, int mode)
 
 // ---- the grid ---------------------------------------------------------
 
-enum { kZeroTail, kLowExp, kLongTail, kShortTail, kEdges, kTableCount };
+enum { kZeroTail, kLowExp, kLongTail, kShortTail, kEdges, kTopBinade, kTableCount };
 
-const char* kTableName[] = {"zero-tail", "low-exp", "long-tail", "short-tail", "edges"};
+const char* kTableName[] = {"zero-tail", "low-exp", "long-tail", "short-tail", "edges",
+	"top-binade"};
 
 const std::vector<Row>& Table(int t)
 {
@@ -342,7 +362,8 @@ const std::vector<Row>& Table(int t)
 		case kLowExp:   return LowExponent();
 		case kLongTail: return LongTail();
 		case kShortTail: return ShortTail();
-		default:        return Edges();
+		case kEdges:    return Edges();
+		default:        return TopBinadeEdges();
 	}
 }
 
@@ -391,10 +412,9 @@ const Grid& Measured()
 // dest fields, as {macro, micro}. Regenerate from DISABLED_Measure; do not
 // hand-edit.
 //
-// The two emitters produce the same count wherever the deficit model decides
-// anything. Only the edge table separates them, and not over this model: every
-// row that does so has an operand at exponent 255, which the two paths bound
-// differently.
+// The two emitters produce the same count on every table but the last, which
+// holds the exponent-255 operands and scores the operand clamp rather than this
+// model.
 //
 // The macro path bounds what the mVU clampType row it mirrors names, at every
 // vuClampMode. Where the row names nothing -- mVU_MADD, mVU_MULA, mVU_MADDA,
@@ -409,13 +429,22 @@ const Grid& Measured()
 //
 // vu_micro_fmac_console_tests.cpp scores that clamp against the console; this
 // file only has to leave it alone.
+//
+// The mismatches the in-range edge table has at mode 4 fall into two groups.
+// Some are products below 2^-79, where the emitted exactness test does not work
+// and both emitters decline a decrement the interpreter takes; the low-exp
+// table samples the same case, and 1.0 against the same ft passes, which shows
+// the product's exponent is what changed. The rest come from the result rather
+// than the multiply array: the product, or the MADD sum it feeds, lands above
+// FLT_MAX and below 0x7FFFFFFF, which single precision cannot represent.
 constexpr int kBad[kTableCount][5][2] = {
 	//  -        mode1          mode2          mode3        mode4
 	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {0,0}},       // zero-tail
 	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {500,500}},   // low-exp
 	{{0,0}, {0,0}, {0,0}, {0,0}, {0,0}},                         // long-tail
 	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,2744}},    // short-tail
-	{{0,0}, {3852,3512}, {3852,3436}, {3852,3276}, {2618,1922}}, // edges
+	{{0,0}, {1110,1110}, {1110,1110}, {1110,1110}, {376,376}},   // edges
+	{{0,0}, {2742,2402}, {2742,2326}, {2742,2166}, {2242,1546}}, // top-binade
 };
 
 } // namespace
@@ -509,14 +538,15 @@ TEST(VuMulDeficit, OnlyModeFourEmitsIt)
 // a change which starts firing on them is visible. A product needing more than
 // 24 mantissa bits is eeMulOneUlpLow's to decide and is not tested here; a
 // product below 2^-79 has lost the residue the exactness test reads.
-// The same model on both emitters. The edge table is excluded for the reason
-// given above kBad; on every other table the COP2 macro path and microVU must
-// produce the same count at every mode. A difference would mean the model was
-// wired into one emitter and not the other.
+// The same model on both emitters. The top-binade table is excluded for the
+// reason given above kBad; on every other table, the in-range edge crossing
+// included, the COP2 macro path and microVU must produce the same count at
+// every mode. A difference would mean the model was wired into one emitter and
+// not the other.
 TEST(VuMulDeficit, BothEmittersAnswerAlike)
 {
 	const Grid& g = Measured();
-	for (int t = 0; t < kEdges; t++)
+	for (int t = 0; t < kTopBinade; t++)
 	{
 		if (t == kShortTail)
 			continue; // only the COP2 macro path calls eeMulOneUlpLow
@@ -582,6 +612,7 @@ TEST(VuMulDeficit, DISABLED_Measure)
 		{"long-tail", LongTail()},
 		{"short-tail", ShortTail()},
 		{"edges", Edges()},
+		{"top-binade", TopBinadeEdges()},
 	};
 	for (u32 dest : {0xFu, 0xEu})
 	{
