@@ -74,21 +74,22 @@ data class Settings(
      *  fpuOverflow/fpuExtraOverflow/fpuFullMode/fpuExactMode.
      *  4 is Full plus the rest of the EE multiplier's one-ULP deficit and a
      *  divide/sqrt/rsqrt that runs the unit's own recurrence out of line, so it
-     *  costs a call per divide. ⚠️ The GameDB overwrites this whole tier for any
-     *  title carrying an eeClampMode entry, and an entry below 4 CLEARS the
-     *  exact bit — so on those titles the choice is inert unless game fixes are
-     *  off. Keep any bound in the pickers in sync with this list. */
+     *  costs a call per divide. A title's own GameDB eeClampMode entry applies
+     *  only while game fixes are on and the mode was not set for that game —
+     *  a per-game setting outranks the database, and a GameDB entry below 4
+     *  clears the exact bit. Keep any bound in the pickers in sync with this
+     *  list. */
     val eeClampMode: Int = 1,
     /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact
      *  (PCSX2 default Normal). Unpacks to vu0/vu1 Overflow/ExtraOverflow/
      *  SignOverflow/ExactMode. 4 is Extra+Sign plus the VU's own arithmetic and
      *  status flags: the adder's guard mask, the divide unit's recurrence and
      *  the EFU's series, the multiplier's one-ULP deficit, and the FMAC's
-     *  saturation ceiling with its MAC U and MAC O. ⚠️ The GameDB overwrites
-     *  this whole tier for any title carrying a vu0/vu1/vuClampMode entry, and
-     *  an entry below 4 CLEARS the exact bit — so on those titles the choice is
-     *  inert unless game fixes are off. Keep any bound in the pickers in sync
-     *  with this list. */
+     *  saturation ceiling with its MAC U and MAC O. A title's own GameDB
+     *  vu0/vu1/vuClampMode entry applies only while game fixes are on and the
+     *  mode was not set for that game — a per-game setting outranks the
+     *  database, and a GameDB entry below 4 clears the exact bit. Keep any
+     *  bound in the pickers in sync with this list. */
     val vuClampMode: Int = 1,
     /** EmuCore/Speedhacks/vuThread — Multi-Threaded VU1 (MTVU).
      *  Kept on by default for the mac ARM64 backend, but persisted normally
