@@ -288,9 +288,16 @@ __fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
 // `scalar` is microVU's single-lane form. Only the two multiplies narrow: a
 // scalar FMUL zeroes the lanes above it, so the mask the rest of this builds
 // comes out zero there and adds nothing.
+//
+// `floorBlocked` is optional. When a caller passes a register, it is set to a
+// non-zero value if any lane satisfied the first two conditions but failed the
+// exponent test. Those are the lanes whose FMLS residue flushed to zero, so
+// the exactness test could not distinguish an exact product from a rounded
+// one. eeMulOneUlpLow recomputes the mantissa product and can, so a caller
+// that is able to call it should use this to select those lanes.
 __fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& t, const a64::VRegister& u,
-	bool scalar = false)
+	bool scalar = false, const a64::Register* floorBlocked = nullptr)
 {
 	for (const a64::VRegister& r : {t, u})
 		pxAssert(!r.Is(dst) && !r.Is(a) && !r.Is(b));
@@ -328,7 +335,22 @@ __fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRe
 	armAsm->Shl(t.V4S(), t.V4S(), 1); // drop the sign
 	armAsm->Ushr(t.V4S(), t.V4S(), 24);
 	armAsm->Movi(u.V4S(), 48);
-	armAsm->Cmhs(t.V4S(), t.V4S(), u.V4S());
 
-	armAsm->Add(dst.V4S(), dst.V4S(), t.V4S());
+	if (!floorBlocked)
+	{
+		armAsm->Cmhs(t.V4S(), t.V4S(), u.V4S());
+		armAsm->Add(dst.V4S(), dst.V4S(), t.V4S());
+		return;
+	}
+
+	// The comparison writes u rather than t so that t keeps the exponents: at
+	// this point t holds the product's biased exponent on lanes that satisfied
+	// the first two conditions and zero elsewhere. Clearing the lanes u accepted
+	// therefore leaves a non-zero value only where the exponent test was what
+	// rejected the lane.
+	armAsm->Cmhs(u.V4S(), t.V4S(), u.V4S());
+	armAsm->Add(dst.V4S(), dst.V4S(), u.V4S());
+	armAsm->Bic(t.V16B(), t.V16B(), u.V16B());
+	armAsm->Umaxv(t.S(), t.V4S());
+	armAsm->Fmov(*floorBlocked, t.S());
 }
