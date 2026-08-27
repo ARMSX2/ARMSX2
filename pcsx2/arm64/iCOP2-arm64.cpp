@@ -724,8 +724,8 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 // The model wants two scratch registers and every FMAC body has RQSCRATCH3
 // free across its arithmetic. The second is q28, which is also where a
 // multiply's MAC O predicate lands; that one is built before the operand clamp
-// and read after the arithmetic, so where it exists the deficit parks it in the
-// rec's own scratch for the eleven instructions it needs the register. q27 is
+// and read after the arithmetic, so where it exists the deficit saves it to the
+// rec's own scratch for as long as it needs the register. q27 is
 // the multiply's MAC U predicate; every body that has no U model -- the MADD,
 // MSUB and A-forms -- has it free across its arithmetic.
 static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);

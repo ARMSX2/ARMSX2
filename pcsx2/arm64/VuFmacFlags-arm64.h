@@ -248,7 +248,8 @@ __fi static void armEmitVuGuardMask(const a64::VRegister& outA, const a64::VRegi
 // 33554432 rows of the four-significand mul.s sweep where the console is low on
 // 8299538 -- a worse answer than the plain FMUL it would replace.
 
-// ft's half, into `dst`. `tmp` is a second scratch. Neither may be `b`.
+// Builds the ft half of the decrement condition into `dst`, as an all-ones
+// lane mask. `tmp` is a second scratch. Neither `dst` nor `tmp` may be `b`.
 __fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
 	const a64::VRegister& b, const a64::VRegister& tmp)
 {
