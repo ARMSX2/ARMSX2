@@ -774,8 +774,6 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	const a64::MemOperand bandProduct = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandProduct);
 	const a64::VRegister& t = RQSCRATCH3;
 
-	// Saved before the model runs, because it writes dst, and dst may be a or b.
-	//
 	// The words saved here are the ones the multiply consumed, which are not
 	// always VU0.VF[fs] and VU0.VF[ft]: callers pass broadcast lanes, VI[REG_Q],
 	// VI[REG_I], the rotated operands of the OP instructions, and copies that
@@ -788,8 +786,16 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	// here for an unrelated reason: single precision has no binade above
 	// FLT_MAX to represent it. vu_mul_deficit_tests.cpp scores those operands in
 	// a table of their own.
-	armAsm->Str(a, bandFs);
-	armAsm->Str(b, bandFt);
+	//
+	// Only an operand the model is about to overwrite has to be saved before it
+	// runs. The other is still in its register afterwards, so its store goes on
+	// the branch that calls the helper.
+	const bool aliasFs = dst.Is(a);
+	const bool aliasFt = dst.Is(b);
+	if (aliasFs)
+		armAsm->Str(a, bandFs);
+	if (aliasFt)
+		armAsm->Str(b, bandFt);
 
 	if (uLive)
 		armAsm->Str(u, park);
@@ -799,8 +805,6 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	// checks the tail itself, so a lane sent to it unnecessarily comes back
 	// unchanged. A lane the model already decremented has a residue of exactly
 	// one ULP, which the exponent difference rejects.
-	const bool aliasFs = dst.Is(a);
-	const bool aliasFt = dst.Is(b);
 	if (aliasFs)
 		armAsm->Ldr(u, bandFs);
 	else if (aliasFt)
@@ -814,13 +818,16 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	armAsm->Ushr(u.V4S(), u.V4S(), 24);       // the product's
 	armAsm->Uqsub(u.V4S(), u.V4S(), t.V4S());
 	armAsm->Ushr(u.V4S(), u.V4S(), 5);        // exponents at least 32 apart
-	armAsm->Cmtst(t.V4S(), t.V4S(), t.V4S());
-	armAsm->And(u.V16B(), u.V16B(), t.V16B());
+	armAsm->Umin(u.V4S(), u.V4S(), t.V4S());  // and the residue is not zero
 	armAsm->Umaxv(u.S(), u.V4S());
 	armAsm->Fmov(RWARG1, u.S());
 
 	a64::Label done;
 	armAsm->Cbz(RWARG1, &done);
+	if (!aliasFs)
+		armAsm->Str(a, bandFs);
+	if (!aliasFt)
+		armAsm->Str(b, bandFt);
 	armAsm->Str(dst, bandProduct);
 	armEmitEeFpuModelCall(reinterpret_cast<const void*>(&cop2MulShortTailBand));
 	armAsm->Ldr(dst, bandProduct);
