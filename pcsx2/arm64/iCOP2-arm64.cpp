@@ -775,6 +775,19 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	const a64::VRegister& t = RQSCRATCH3;
 
 	// Saved before the model runs, because it writes dst, and dst may be a or b.
+	//
+	// The words saved here are the ones the multiply consumed, which are not
+	// always VU0.VF[fs] and VU0.VF[ft]: callers pass broadcast lanes, VI[REG_Q],
+	// VI[REG_I], the rotated operands of the OP instructions, and copies that
+	// cop2ClampOperandInto has bounded. For most forms there is no architectural
+	// register the helper could read instead.
+	//
+	// That only differs from the architectural word for operands with a biased
+	// exponent of 255. EeFpuModel::Mul, which the interpreter uses, reads the
+	// unclamped word, but a product formed from an exponent-255 operand is wrong
+	// here for an unrelated reason: single precision has no binade above
+	// FLT_MAX to represent it. vu_mul_deficit_tests.cpp scores those operands in
+	// a table of their own.
 	armAsm->Str(a, bandFs);
 	armAsm->Str(b, bandFt);
 
