@@ -730,9 +730,10 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 // MSUB and A-forms -- has it free across its arithmetic.
 static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);
 
-// Applies eeMulRound's guards and then the multiply array, for the lanes whose
-// exact mantissa product has bits below the result's last bit but fewer than
-// 0x8000 of them. The predicate over ft does not decide those.
+// Applies eeMulRound's guards and then the multiply array, for the two cases
+// the emitted model does not decide: an exact mantissa product with fewer than
+// 0x8000 bits below the result's last bit, and a product below 2^-79, where the
+// FMLS residue has flushed and the emitted exponent test rejects every lane.
 static EEFPU_MODEL_CALL void cop2MulShortTailBand()
 {
 	const EeCop2RecState& st = _cpuRegistersPack.cop2Rec;
@@ -746,14 +747,15 @@ static EEFPU_MODEL_CALL void cop2MulShortTailBand()
 			continue;
 		if (exp == 0 || exp == 0x7F800000u || (product & 0x7FFFFFFFu) == 0x00800000u)
 			continue;
-		if ((exp >> 23) < 48u)
-			continue; // below this the emitted model rejects the lane anyway
 		const u64 ma = 0x800000u | (fs & 0x7FFFFFu);
 		const u64 mb = 0x800000u | (ft & 0x7FFFFFu);
 		const u64 exact = ma * mb;
 		const int k = (exact >> 47) ? 24 : 23;
-		if ((exact & ((1ull << k) - 1u)) == 0)
-			continue; // no bits below the last one: the emitted model decides it
+		// The emitted model has already decided lanes at or above its exponent
+		// test with no bits below the result's last bit. Every other lane here
+		// is one of the two cases named above.
+		if ((exp >> 23) >= 48u && (exact & ((1ull << k) - 1u)) == 0)
+			continue;
 		if (R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow(fs, ft))
 			_cpuRegistersPack.cop2Rec.bandProduct[lane] = product - 1u;
 	}
@@ -799,7 +801,7 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 
 	if (uLive)
 		armAsm->Str(u, park);
-	armEmitVuDefectiveMul(dst, a, b, t, u);
+	armEmitVuDefectiveMul(dst, a, b, t, u, false, &RWARG2);
 
 	// The condition below only has to avoid false negatives: eeMulOneUlpLow
 	// checks the tail itself, so a lane sent to it unnecessarily comes back
@@ -821,6 +823,7 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	armAsm->Umin(u.V4S(), u.V4S(), t.V4S());  // and the residue is not zero
 	armAsm->Umaxv(u.S(), u.V4S());
 	armAsm->Fmov(RWARG1, u.S());
+	armAsm->Orr(RWARG1, RWARG1, RWARG2); // plus the lanes the exponent test cut
 
 	a64::Label done;
 	armAsm->Cbz(RWARG1, &done);
