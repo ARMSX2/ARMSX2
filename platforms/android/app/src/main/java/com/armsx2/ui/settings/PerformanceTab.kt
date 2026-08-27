@@ -252,8 +252,8 @@ fun PerformanceTab(state: MutableState<Settings>) {
             SettingsDivider()
             SegmentedRow(
                 label = str("perf.vuClamping.label"),
-                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign")),
-                selectedIndex = s.vuClampMode.coerceIn(0, 3),
+                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact")),
+                selectedIndex = s.vuClampMode.coerceIn(0, 4),
                 description = str("perf.vuClamping.description"),
                 onChange = { apply(s.copy(vuClampMode = it)) },
             )

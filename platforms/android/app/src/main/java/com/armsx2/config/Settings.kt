@@ -79,8 +79,16 @@ data class Settings(
      *  exact bit — so on those titles the choice is inert unless game fixes are
      *  off. Keep any bound in the pickers in sync with this list. */
     val eeClampMode: Int = 1,
-    /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign (PCSX2 default Normal).
-     *  Unpacks to vu0/vu1 Overflow/ExtraOverflow/SignOverflow. */
+    /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact
+     *  (PCSX2 default Normal). Unpacks to vu0/vu1 Overflow/ExtraOverflow/
+     *  SignOverflow/ExactMode. 4 is Extra+Sign plus the VU's own arithmetic and
+     *  status flags: the adder's guard mask, the divide unit's recurrence and
+     *  the EFU's series, the multiplier's one-ULP deficit, and the FMAC's
+     *  saturation ceiling with its MAC U and MAC O. ⚠️ The GameDB overwrites
+     *  this whole tier for any title carrying a vu0/vu1/vuClampMode entry, and
+     *  an entry below 4 CLEARS the exact bit — so on those titles the choice is
+     *  inert unless game fixes are off. Keep any bound in the pickers in sync
+     *  with this list. */
     val vuClampMode: Int = 1,
     /** EmuCore/Speedhacks/vuThread — Multi-Threaded VU1 (MTVU).
      *  Kept on by default for the mac ARM64 backend, but persisted normally
@@ -794,6 +802,9 @@ data class Settings(
             put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (vuClampMode >= 1).toString())
             put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (vuClampMode >= 2).toString())
             put("EmuCore/CPU/Recompiler", "${vu}SignOverflow", "bool", (vuClampMode >= 3).toString())
+            // Cumulative like the FPU ladder above: emucore resets an
+            // ExactMode without SignOverflow back to defaults on load.
+            put("EmuCore/CPU/Recompiler", "${vu}ExactMode", "bool", (vuClampMode >= 4).toString())
         }
         put("EmuCore/Speedhacks", "vuThread", "bool", mtvu.toString())
         put("EmuCore/Speedhacks", "vu1Instant", "bool", vu1Instant.toString())
@@ -1040,14 +1051,17 @@ data class Settings(
             if (fo == null && fe == null && ff == null && fx == null) this.eeClampMode
             else if (fx == true) 4 else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
         }
-        // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign) — same packing on vu0*
-        // (applyTo writes vu0 and vu1 identically, so reading vu0 recovers the mode).
+        // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact) — same packing on
+        // vu0* (applyTo writes vu0 and vu1 identically, so reading vu0 recovers the mode).
+        // Treat the exact key's absence as an older core rather than as mode 3 — a build
+        // without it never wrote the key, and inferring 3 there would silently demote the setting.
         val vuClamp = run {
             val o = boolAt("EmuCore/CPU/Recompiler/vu0Overflow")
             val e = boolAt("EmuCore/CPU/Recompiler/vu0ExtraOverflow")
             val sgn = boolAt("EmuCore/CPU/Recompiler/vu0SignOverflow")
-            if (o == null && e == null && sgn == null) this.vuClampMode
-            else if (sgn == true) 3 else if (e == true) 2 else if (o == true) 1 else 0
+            val fx = boolAt("EmuCore/CPU/Recompiler/vu0ExactMode")
+            if (o == null && e == null && sgn == null && fx == null) this.vuClampMode
+            else if (fx == true) 4 else if (sgn == true) 3 else if (e == true) 2 else if (o == true) 1 else 0
         }
 
         // renderer + upscale aren't written by applyTo's put() — the core / renderUpscalemultiplier

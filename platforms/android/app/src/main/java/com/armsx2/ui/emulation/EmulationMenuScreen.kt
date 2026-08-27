@@ -1120,7 +1120,7 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     )
     HorizontalOptions(
         title = str("perf.vuClamping.label"),
-        options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"))
+        options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact"))
             .mapIndexed { index, label -> index to label },
         selected = settings.vuClampMode,
         onSelect = { value -> viewModel.updateSettings { it.copy(vuClampMode = value) } },
