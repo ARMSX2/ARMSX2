@@ -1172,7 +1172,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "perf.vu0RoundMode.label" to "VU0 Round Mode",
     "perf.vu1RoundMode.description" to "VU1 float rounding. Chop is the PS2 default. Restart the game to apply.",
     "perf.vu1RoundMode.label" to "VU1 Round Mode",
-    "perf.vuClamping.description" to "VU float clamping (both VU0 + VU1). Exact adds the VU's own arithmetic and status flags on top of Extra+Sign — the most accurate and slowest setting. Games that carry their own clamping entry in the game database keep that entry instead of this. Restart the game to apply.",
+    "perf.vuClamping.description" to "VU float clamping (both VU0 + VU1). Exact adds the VU's own arithmetic and status flags on top of Extra+Sign — the most accurate and slowest setting. Restart the game to apply.",
     "perf.vuClamping.label" to "VU Clamping",
     "ra.account.logout" to "Logout",
     "ra.account.signedIn" to "Signed in",

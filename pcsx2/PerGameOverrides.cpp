@@ -137,9 +137,9 @@ PerGameOverrideKeys::CoreKnobKeys PerGameOverrideKeys::ForCoreKnob(CoreGameDBKno
 		case CoreGameDBKnob::EEClampMode:
 			return {"EmuCore/CPU/Recompiler", {"fpuOverflow", "fpuExtraOverflow", "fpuFullMode", "fpuExactMode"}, 4};
 		case CoreGameDBKnob::VU0ClampMode:
-			return {"EmuCore/CPU/Recompiler", {"vu0Overflow", "vu0ExtraOverflow", "vu0SignOverflow"}, 3};
+			return {"EmuCore/CPU/Recompiler", {"vu0Overflow", "vu0ExtraOverflow", "vu0SignOverflow", "vu0ExactMode"}, 4};
 		case CoreGameDBKnob::VU1ClampMode:
-			return {"EmuCore/CPU/Recompiler", {"vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow"}, 3};
+			return {"EmuCore/CPU/Recompiler", {"vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode"}, 4};
 		default:
 			return {nullptr, {}, 0};
 	}
