@@ -33,8 +33,17 @@ namespace GSTileGpuShaderVariant
 	/// those a component at a time. It is the ScalarizeVectorBitwiseAnd answer out of the driver-bug
 	/// database -- the same one the classic renderer's tfx.glsl reads -- and it defaults OFF so a
 	/// caller that has not been taught to pass it emits the program every other driver already gets.
-	inline std::string DeviceDefines(
-		bool tex, bool static_byte_sel, bool bindless, bool dual_src = true, bool scalarize_vec_and = false)
+	///
+	/// `clut_merge` is the one entry here that is a SETTING rather than a capability
+	/// (TileGpuClutMergeRegions), and it is here rather than in the per-draw state row because dead
+	/// code is not free on this hardware: the merged palette arm costs 363 SPIR-V words -- a whole
+	/// unit of Adreno 650 instruction length -- in the widest paletted variants, and a lever that
+	/// ships OFF must not enlarge the program every device runs. It is read ONCE, when the session's
+	/// module source is assembled, so a mid-session settings flip changes nothing until the device is
+	/// rebuilt; the renderer asks the device whether the arm is actually compiled before it emits a
+	/// draw that needs it, rather than assuming the two read the same setting at the same moment.
+	inline std::string DeviceDefines(bool tex, bool static_byte_sel, bool bindless, bool dual_src = true,
+		bool scalarize_vec_and = false, bool clut_merge = false)
 	{
 		return fmt::format("#define TILEGPU_TEX {}\n"
 						   "#define TILEGPU_STATIC_BYTE_SEL {}\n"
@@ -43,10 +52,12 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_TEX_SOURCES {}\n"
 						   "#define TILEGPU_MAX_SOURCES {}\n"
 						   "#define TILEGPU_DUAL_SRC {}\n"
-						   "#define TILEGPU_SCALARIZE_VECTOR_AND {}\n",
+						   "#define TILEGPU_SCALARIZE_VECTOR_AND {}\n"
+						   "#define TILEGPU_CLUT_MERGE {}\n",
 			tex ? 1 : 0, static_byte_sel ? 1 : 0, bindless ? 1 : 0,
 			GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass, bindless ? 1 : 0,
-			GSDevice::GSTileGpuPassPlan::kMaxSources, dual_src ? 1 : 0, scalarize_vec_and ? 1 : 0);
+			GSDevice::GSTileGpuPassPlan::kMaxSources, dual_src ? 1 : 0, scalarize_vec_and ? 1 : 0,
+			clut_merge ? 1 : 0);
 	}
 
 	/// How many 32-bit words tilegpu.glsl's own `struct StateRow` declares, or 0 if the declaration is

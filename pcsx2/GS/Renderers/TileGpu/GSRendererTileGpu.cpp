@@ -806,6 +806,12 @@ bool GSRendererTileGpu::ClutGatherServes()
 		const bool forms_ok = g_gs_device && g_gs_device->TileSwizzleFormsFit(clut_ok);
 		m_clut_forms = GSTileSwizzleForms::Fit();
 		m_clut_gather_serves = forms_ok && clut_ok && m_clut_forms.valid && m_clut_forms.clut_valid;
+		// The merged copy's consumer is a MODULE arm, not just a state-row mode: the session's
+		// fragment modules were assembled once, from the setting as it stood then. So the question
+		// is "does the shader that will read this have the arm", not "is the setting on now" --
+		// a mode-3 row in front of a module without the arm would read the palette in the wrong
+		// order. False also means the lever is simply off, which is the default.
+		m_clut_merge_serves = g_gs_device && g_gs_device->TileGpuClutMergeCompiled();
 		// Deliberately NOT gated on bindless targets, unlike every other road that reads one: the
 		// consumer that carries 88% of the population is an image-to-buffer COPY into the frame's
 		// palette stream, which asks the device for nothing. Rule 3's N x 1 gather does need the
@@ -1070,14 +1076,17 @@ bool GSRendererTileGpu::CaptureClutRecordWords(GpuPalette& gp)
 		return false;
 
 	GSTileSwizzleForms::ClutBlockCopy blocks;
-	if (!GSTileSwizzleForms::LocateClutBlocks(m_clut_forms, gp.cbp, gp.owner_bp, gp.owner_bwpg, gp.entries, blocks))
+	if (!GSTileSwizzleForms::LocateClutBlocks(
+			m_clut_forms, gp.cbp, gp.owner_bp, gp.owner_bwpg, gp.entries, m_clut_merge_serves, blocks))
 		return false;
 
 	// A reservation, not an append: the words are zero until the copy fills them, and no CPU palette
-	// ever crosses into the stream for a draw on this record.
-	gp.stream_offset = static_cast<u32>(m_plan_palettes.size());
+	// ever crosses into the stream for a draw on this record. Its size is what the REGIONS tile,
+	// which the executor also assumes -- it puts region b at b * copy_w * copy_h words into the
+	// reservation, so a reservation smaller than that would overwrite the next record's words.
+	gp.stream_offset = ReserveClutStreamWords(blocks.region_count * blocks.w * blocks.h);
 	gp.stream_plan = m_source_frame;
-	m_plan_palettes.resize(m_plan_palettes.size() + gp.entries, 0);
+	gp.stream_stride = blocks.stride;
 
 	GSDevice::GSTileGpuPrepOp op = {};
 	op.kind = GSDevice::GSTileGpuPrepKind::ClutBlockCopy;
@@ -1093,7 +1102,15 @@ bool GSRendererTileGpu::CaptureClutRecordWords(GpuPalette& gp)
 	}
 	m_plan_prep_ops.push_back(op);
 	m_frame.clut_copies++;
+	m_frame.clut_copy_regions += blocks.region_count;
 	return true;
+}
+
+u32 GSRendererTileGpu::ReserveClutStreamWords(u32 words)
+{
+	const u32 at = static_cast<u32>(m_plan_palettes.size());
+	m_plan_palettes.resize(m_plan_palettes.size() + words, 0);
+	return at;
 }
 
 bool GSRendererTileGpu::EnsureClutStreamWords(GpuPalette& gp, PendingDraw& pd)
@@ -2419,6 +2436,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto cds = stat([](const MF& f) { return f.clut_draws_sync; });
 	const auto cr3r = stat([](const MF& f) { return f.clut_r3_refused; });
 	const auto ccp = stat([](const MF& f) { return f.clut_copies; });
+	const auto ccr = stat([](const MF& f) { return f.clut_copy_regions; });
 	const auto cgp = stat([](const MF& f) { return f.clut_gathers; });
 	const auto cbrk = stat([](const MF& f) { return f.clut_breaks; });
 	const auto csy = stat([](const MF& f) { return f.clut_syncs; });
@@ -2436,10 +2454,13 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  gathered draws %.2f / %-5u  (rule 3 %.2f / %-4u, byte road %.2f / %-5u, rule-3 refused "
 						"%.2f/%u)   mirror could not serve %.2f / %u draws",
 			cd.mean, cd.p50, cd3.mean, cd3.p50, cdb.mean, cdb.p50, cr3r.mean, cr3r.p50, cds.mean, cds.p50);
-		Console.WriteLn("  block copies %.2f / %-5u  gather passes %.2f / %-4u  pass breaks %.2f / %-4u  "
-						"cpu syncs %.2f / %-4u  lost records %.2f / %-4u  pruned %.2f / %u",
-			ccp.mean, ccp.p50, cgp.mean, cgp.p50, cbrk.mean, cbrk.p50, csy.mean, csy.p50, clost.mean, clost.p50,
-			cpr.mean, cpr.p50);
+		// The copy's REGIONS beside its ops, because a region is the unit the device charges: per-region
+		// copy cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so the merge levers move
+		// this number and leave the op count almost where it was.
+		Console.WriteLn("  block copies %.2f / %-5u  copy regions %.2f / %-5u  gather passes %.2f / %-4u  "
+						"pass breaks %.2f / %-4u  cpu syncs %.2f / %-4u  lost records %.2f / %-4u  pruned %.2f / %u",
+			ccp.mean, ccp.p50, ccr.mean, ccr.p50, cgp.mean, cgp.p50, cbrk.mean, cbrk.p50, csy.mean, csy.p50,
+			clost.mean, clost.p50, cpr.mean, cpr.p50);
 	}
 }
 
@@ -4920,7 +4941,10 @@ void GSRendererTileGpu::AccumulateDraw()
 					if (pal_rec && EnsureClutStreamWords(*pal_rec, pd))
 					{
 						pd.pal_offset = pal_rec->stream_offset;
-						pd.pal_mode = (pal_rec->entries == 256) ? 1u : 2u;
+						// The copy's own layout decides the fetch mode: a merged copy landed the
+						// words as one tile and is read at its stride, everything else as the run
+						// of row-major blocks mode 1 and mode 2 have always read.
+						pd.pal_mode = (pal_rec->stream_stride != 0) ? 3u : ((pal_rec->entries == 256) ? 1u : 2u);
 						m_frame.clut_draws_byte++;
 					}
 					else

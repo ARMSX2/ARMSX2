@@ -370,6 +370,80 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 		   "variant axis, not a bigger number.";
 }
 
+// The merged CLUT arm's own budget, which is why that arm is behind a MODULE define and not just
+// behind its per-draw pal_mode.
+//
+// TileGpuClutMergeRegions changes the word order a gathered palette lands in, so the fragment stage
+// grows a second offset expression. Measured at the landing, on the two variants the gate above
+// names as its worst: it costs 363 SPIR-V words, which is a whole unit of Adreno 650 instruction
+// length. That is affordable for a program that actually merges and NOT affordable for one that
+// does not, because dead code counts here -- four units of never-executed arithmetic once moved
+// Shadow of the Colossus from 21.8 to 30.7 ms with byte-identical frames. So the arm compiles in
+// only when the lever is on, the shipping default program is unchanged, and the two ceilings above
+// keep measuring what ships.
+//
+// What this test pins is the merged program: it must stay on the safe side of the 123-unit CLIFF.
+// It is held to the cliff rather than to the two ceilings above because those carry margin for a
+// program every device runs and this one runs only where the lever was turned on deliberately --
+// and it is the FIRST thing to check if the lever's device A/B comes back slower rather than
+// faster, since one unit is exactly the size of the effect this whole file exists to catch.
+TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
+{
+	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
+	ASSERT_TRUE(forms.valid) << "the page swizzle tables stopped fitting closed forms; there is no shader to size";
+	const std::string body = ReadShaderSourceFile("tilegpu.glsl");
+	ASSERT_FALSE(body.empty()) << "could not read tilegpu.glsl from " << ARMSX2_SHADER_SOURCE_DIR;
+
+	Shaderc sc;
+	if (!sc.Open())
+	{
+		GTEST_SKIP() << "shaderc is not loadable here, so no program can be sized. This is a SKIP, not a pass: "
+						"the merged CLUT arm's size was NOT checked on this machine.";
+	}
+
+	// The two the gate above reports as worst: all three read roads, the four-bit paletted geometry,
+	// the gathered-palette arm, the 16-bit quantise -- with and without the destination read.
+	const u32 road = GSDevice::kGSTileGpuRoadByte | GSDevice::kGSTileGpuRoadTarget | GSDevice::kGSTileGpuRoadSource;
+	const u32 texel = GSDevice::kGSTileGpuTexelIndex4 | GSDevice::kGSTileGpuTexelPalGather;
+	const u32 selves[] = {0u, GSDevice::kGSTileGpuSelfMaskAll};
+
+	for (const u32 self : selves)
+	{
+		const std::string variant = GSTileGpuShaderVariant::VariantName(road, texel, self, true);
+		const std::string defines = GSTileGpuShaderVariant::VariantDefines(road, texel, self, true);
+		std::string error;
+		const u32 off_words = sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+												   GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false,
+													   false) +
+												   defines + body,
+			error);
+		ASSERT_NE(off_words, 0u) << variant << " (merge off) failed to compile: " << error;
+		const u32 on_words = sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+												  GSTileGpuShaderVariant::DeviceDefines(true, true, true, true, false,
+													  true) +
+												  defines + body,
+			error);
+		ASSERT_NE(on_words, 0u) << variant << " (merge on) failed to compile: " << error;
+
+		std::printf("  %-66s %8u -> %8u words  (%u -> %u a650 units)\n", variant.c_str(), off_words, on_words,
+			PredictedUnits(off_words), PredictedUnits(on_words));
+
+		// The lever costs nothing where it is off. This is the claim the two ceilings above rest on
+		// once this arm exists, so it is asserted rather than assumed.
+		EXPECT_EQ(off_words, sc.FragmentWords(kStageHeader + GSTileSwizzleForms::ShaderDefines(forms) +
+												  GSTileGpuShaderVariant::DeviceDefines(true, true, true) + defines +
+												  body,
+								 error))
+			<< variant << ": the merge-off program is not what the default DeviceDefines produce";
+
+		EXPECT_LE(PredictedUnits(on_words), kCliffUnits)
+			<< "the merged CLUT arm puts " << variant << " at " << on_words << " SPIR-V words (~"
+			<< PredictedUnits(on_words) << " a650 units), past the " << kCliffUnits
+			<< "-unit instruction-size cliff. Turning TileGpuClutMergeRegions on would then cost more in program "
+			   "size than the copy regions it saves; the arm needs a cheaper spelling, not a bigger number.";
+	}
+}
+
 // The third party that has to agree about index_format: the renderer derives it, the fragment shader
 // switches on it, and GSDevice::GSTileGpuTexelArm decides which arm a module must carry for it. A
 // renumbering that moved one and not the others would compile a program without the arm the draw

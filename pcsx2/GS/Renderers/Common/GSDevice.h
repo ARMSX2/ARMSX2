@@ -3239,6 +3239,17 @@ public:
 	/// no pass-count cost and the more accurate one, and a device that charges for declaring says so.
 	virtual bool TileGpuSegregatesSelfRead() { return false; }
 
+	/// TileGpu: whether this session's fragment modules were compiled WITH the merged palette arm
+	/// (tilegpu.glsl's pal_mode 3, behind TILEGPU_CLUT_MERGE).
+	///
+	/// It is a module define rather than a per-draw branch alone because dead code is not free on
+	/// Adreno: the arm is a whole unit of instruction length in the widest paletted variants, and a
+	/// lever that ships OFF must not enlarge the program every device runs. So the renderer cannot
+	/// read TileGpuClutMergeRegions and assume the shader agrees -- the setting can move after the
+	/// modules were assembled, and a mode-3 state row in front of a module with no mode-3 arm reads
+	/// the palette in the wrong order. It asks this instead.
+	virtual bool TileGpuClutMergeCompiled() { return false; }
+
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.
 	virtual bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) { return false; }

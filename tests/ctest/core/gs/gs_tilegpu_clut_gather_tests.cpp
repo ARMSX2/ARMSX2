@@ -37,6 +37,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstring>
 #include <vector>
 
 using namespace GSTileSwizzleForms;
@@ -69,10 +70,15 @@ namespace
 
 	// The palette image the executor's copy produces: each region of LocateClutBlocks copied
 	// row-major, one after the other, out of an owner whose every texel holds its own word address.
-	std::vector<u32> CopyPaletteBlocks(const FormSet& f, const GatherCase& c)
+	// The merged arm needs nothing extra here -- it is one region of w x h texels copied by the same
+	// vkCmdCopyImageToBuffer with bufferRowLength = w, which is what this loop already is.
+	std::vector<u32> CopyPaletteBlocks(
+		const FormSet& f, const GatherCase& c, bool merge = false, ClutBlockCopy* out_blocks = nullptr)
 	{
 		ClutBlockCopy blocks;
-		EXPECT_TRUE(LocateClutBlocks(f, c.cbp, c.owner_bp, c.owner_bw, c.entries, blocks));
+		EXPECT_TRUE(LocateClutBlocks(f, c.cbp, c.owner_bp, c.owner_bw, c.entries, merge, blocks));
+		if (out_blocks)
+			*out_blocks = blocks;
 		std::vector<u32> out;
 		for (u32 b = 0; b < blocks.region_count; b++)
 		{
@@ -211,6 +217,142 @@ TEST(TileGpuClutGather, TheEntryOrderIsABijectionOntoTheCopiedRun)
 	}
 }
 
+// -- 1b. the entry order of a MERGED copy ------------------------------------------------------
+
+// The same round trip for TileGpuClutMergeRegions: the four blocks copied as ONE 16x16 region, and
+// every entry fetched back through ClutEntryToMergedOffset. This is the whole byte-truth of that
+// lever -- the offset formula is the only thing between a correct palette and silent wrong colour,
+// and it has exactly one other reader (tilegpu.glsl's merged palette mode, transcribed from here).
+//
+// The unaligned cases are in the list on purpose: asked to merge, they refuse, and the test then
+// checks the fallback the same way the renderer and the shader pick it -- off `merged`, not off the
+// lever.
+TEST_F(ClutGatherTest, EveryEntryComesBackThroughTheMergedSquare)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	ASSERT_TRUE(f.clut_valid);
+
+	const GatherCase cases[] = {
+		// Four-block aligned, so these merge.
+		{0x0000, 0x0000, 1, 256},
+		{0x0004, 0x0000, 1, 256},
+		{0x0008, 0x0000, 1, 256},
+		{0x001c, 0x0000, 1, 256}, // the page's last square
+		{0x0020, 0x0000, 4, 256}, // a page into a wider owner (GT4's shape)
+		{0x0040, 0x0000, 4, 256},
+		{0x0080 + 4, 0x0080, 2, 256},
+		// NOT aligned: the four blocks are not a square, the merge refuses, and the per-block order
+		// is what comes back.
+		{0x0001, 0x0000, 1, 256},
+		{0x0006, 0x0000, 1, 256},
+		{0x001d, 0x0000, 1, 256},
+		{0x0080 + 7, 0x0080, 2, 256},
+		// Sixteen-entry palettes never merge -- one region already, and a 8x2 rect is not a square.
+		{0x0000, 0x0000, 1, 16},
+		{0x0003, 0x0000, 1, 16},
+		{0x0025, 0x0020, 2, 16},
+	};
+
+	for (const GatherCase& c : cases)
+	{
+		SCOPED_TRACE(testing::Message() << "cbp " << c.cbp << " owner_bp " << c.owner_bp << " bw " << c.owner_bw
+										<< " entries " << c.entries);
+		SeedOwner(c, c.owner_bw * 64, 128);
+		const std::array<u32, 256> want = RealLoad(c);
+		ClutBlockCopy blocks{};
+		const std::vector<u32> copied = CopyPaletteBlocks(f, c, true, &blocks);
+		ASSERT_EQ(copied.size(), c.entries);
+		EXPECT_EQ(blocks.merged, c.entries == 256 && (c.cbp & 3) == 0);
+
+		for (u32 e = 0; e < c.entries; e++)
+		{
+			const u32 off = blocks.merged ? ClutEntryToMergedOffset(f, c.entries, blocks.stride, e) :
+											ClutEntryToCopyOffset(f, c.entries, e);
+			ASSERT_LT(off, copied.size()) << "entry " << e;
+			EXPECT_EQ(copied[off], want[e]) << "entry " << e;
+		}
+	}
+}
+
+// The merged mapping has to be a bijection too, and onto the same 256 words: an offset outside the
+// square would read the next reservation, and two entries sharing one would make one of them
+// silently wrong. Checked at both strides the road uses -- 16 for a palette copied as its own
+// square, 64 for one read out of a whole copied owner page, where the 256 words are the eight rows
+// of sixteen the square occupies inside the page.
+TEST(TileGpuClutGather, TheMergedEntryOrderIsABijectionOntoTheSquare)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	for (const u32 stride : {16u, 64u})
+	{
+		std::vector<bool> hit(16u * stride, false);
+		for (u32 e = 0; e < 256u; e++)
+		{
+			const u32 off = ClutEntryToMergedOffset(f, 256, stride, e);
+			// Sixteen rows of sixteen columns, wherever the stride puts the rows.
+			ASSERT_LT(off % stride, 16u) << "stride " << stride << " entry " << e;
+			ASSERT_LT(off / stride, 16u) << "stride " << stride << " entry " << e;
+			EXPECT_FALSE(hit[off]) << "stride " << stride << " entry " << e << " reuses offset " << off;
+			hit[off] = true;
+		}
+	}
+}
+
+// The merged shape, and the refusal. A 4-aligned 256-entry palette is one 16x16 region at a
+// 16-aligned origin; anything else keeps the four 8x8 blocks the road already ships, whatever the
+// lever says.
+TEST(TileGpuClutGather, OnlyAFourAlignedPaletteMergesIntoOneSquare)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	ClutBlockCopy b;
+
+	for (const u32 cbp : {0x0000u, 0x0004u, 0x0020u, 0x0044u})
+	{
+		SCOPED_TRACE(testing::Message() << "cbp " << cbp);
+		ASSERT_TRUE(LocateClutBlocks(f, cbp, 0x0000, 4, 256, true, b));
+		EXPECT_TRUE(b.merged);
+		EXPECT_EQ(b.region_count, 1u);
+		EXPECT_EQ(b.w, 16u);
+		EXPECT_EQ(b.h, 16u);
+		EXPECT_EQ(b.stride, 16u);
+		EXPECT_EQ(b.region_count * b.w * b.h, 256u); // still exactly the palette, no more and no less
+		// 16-aligned in both axes, which is what makes the square a square.
+		EXPECT_EQ(b.x[0] % 16, 0u);
+		EXPECT_EQ(b.y[0] % 16, 0u);
+	}
+
+	// The refusal road: these three are the cases the per-block copy exists for, and the lever must
+	// not touch them. 0x001d's blocks even cross into the next page.
+	for (const u32 cbp : {0x0001u, 0x0006u, 0x001du})
+	{
+		SCOPED_TRACE(testing::Message() << "cbp " << cbp);
+		ASSERT_TRUE(LocateClutBlocks(f, cbp, 0x0000, 1, 256, true, b));
+		EXPECT_FALSE(b.merged);
+		EXPECT_EQ(b.region_count, 4u);
+		EXPECT_EQ(b.w, 8u);
+		EXPECT_EQ(b.h, 8u);
+		EXPECT_EQ(b.stride, 0u);
+
+		// ...and the merged arm asked with the lever off is that same road, byte for byte.
+		ClutBlockCopy off;
+		ASSERT_TRUE(LocateClutBlocks(f, cbp, 0x0000, 1, 256, false, off));
+		EXPECT_EQ(std::memcmp(&off, &b, sizeof(off)), 0);
+	}
+
+	// A sixteen-entry palette is already one region and its 8x2 rect is not a square: it never
+	// merges, at any alignment.
+	for (const u32 cbp : {0x0000u, 0x0004u, 0x0007u})
+	{
+		ASSERT_TRUE(LocateClutBlocks(f, cbp, 0x0000, 1, 16, true, b)) << "cbp " << cbp;
+		EXPECT_FALSE(b.merged) << "cbp " << cbp;
+		EXPECT_EQ(b.stride, 0u) << "cbp " << cbp;
+		EXPECT_EQ(b.w, 8u) << "cbp " << cbp;
+		EXPECT_EQ(b.h, 2u) << "cbp " << cbp;
+	}
+}
+
 // -- 2. the copy geometry ----------------------------------------------------------------------
 
 // The regions have to cover exactly the words the load reads. One texel more and the copy runs off
@@ -222,13 +364,13 @@ TEST(TileGpuClutGather, TheCopyRegionsCoverExactlyThePalette)
 	ASSERT_TRUE(f.clut_valid);
 	ClutBlockCopy b;
 
-	ASSERT_TRUE(LocateClutBlocks(f, 0x40, 0x40, 1, 256, b));
+	ASSERT_TRUE(LocateClutBlocks(f, 0x40, 0x40, 1, 256, false, b));
 	EXPECT_EQ(b.region_count * b.w * b.h, 256u);
 	EXPECT_EQ(b.region_count, 4u); // 256 words = four blocks, contiguous from CBP
 	EXPECT_EQ(b.w, 8u);
 	EXPECT_EQ(b.h, 8u);
 
-	ASSERT_TRUE(LocateClutBlocks(f, 0x40, 0x40, 1, 16, b));
+	ASSERT_TRUE(LocateClutBlocks(f, 0x40, 0x40, 1, 16, false, b));
 	EXPECT_EQ(b.region_count * b.w * b.h, 16u);
 	EXPECT_EQ(b.region_count, 1u); // 16 words = the first two texel rows of one block
 	EXPECT_EQ(b.w, 8u);
@@ -236,14 +378,14 @@ TEST(TileGpuClutGather, TheCopyRegionsCoverExactlyThePalette)
 
 	// A palette below the owner's base is out of the reinterpretation's reach (the shader computes
 	// `blk - dst_bp` unsigned), and so is an entry count the CSM1 32-bit loaders never produce.
-	EXPECT_FALSE(LocateClutBlocks(f, 0x20, 0x40, 1, 256, b));
-	EXPECT_FALSE(LocateClutBlocks(f, 0x40, 0x40, 1, 64, b));
-	EXPECT_FALSE(LocateClutBlocks(f, 0x40, 0x40, 1, 0, b));
+	EXPECT_FALSE(LocateClutBlocks(f, 0x20, 0x40, 1, 256, false, b));
+	EXPECT_FALSE(LocateClutBlocks(f, 0x40, 0x40, 1, 64, false, b));
+	EXPECT_FALSE(LocateClutBlocks(f, 0x40, 0x40, 1, 0, false, b));
 
 	// Forms that did not fit turn the road off rather than addressing the wrong bytes.
 	FormSet unfit = f;
 	unfit.clut_valid = false;
-	EXPECT_FALSE(LocateClutBlocks(unfit, 0x40, 0x40, 1, 256, b));
+	EXPECT_FALSE(LocateClutBlocks(unfit, 0x40, 0x40, 1, 256, false, b));
 }
 
 // The prep op names TWO lists the way a Donor does -- the owner among the plan's targets -- and

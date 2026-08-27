@@ -310,23 +310,54 @@ namespace GSTileSwizzleForms
 	// pass it was chosen over, by 2.8×. GSDeviceVK brackets a whole contiguous run of copies
 	// with one pair; a backend that does not do the same should not take this road.
 
+	// -- The four-block MERGE ---------------------------------------------------------------
+	// A 256-entry palette's four blocks are CBP..CBP+3, and blockTable32 is a bit interleave:
+	// block bit 0 is x bit 0, bit 1 is y bit 0, bit 2 is x bit 1, bit 3 is y bit 1, bit 4 is
+	// x bit 2. A group {4k .. 4k+3} therefore shares bits 2, 3 and 4 and varies only x bit 0
+	// and y bit 0 — a 2×2 square of blocks, which is 16×16 texels at an origin 16-aligned in
+	// both axes and wholly inside one page (4-alignment forces that too). The condition is
+	// exactly `(cbp & 3) == 0`: owner_bp is page-aligned, so `rel & 3 == cbp & 3`.
+	//
+	// One region instead of four, and per-region copy cost on Adreno 650 is FLAT — measured in
+	// one frame out of one image, an 8×8 region costs 2.73–2.85 µs and a 64×32 one 1.35–1.46 µs,
+	// i.e. independent of bytes over a 32× size range. So the merge is the whole palette's copy
+	// cost rather than a quarter of it. A non-4-aligned CBP is not a square at all and keeps the
+	// four separate regions, which is the road that already ships.
+	//
+	// The merged image is a TILE, `stride` words per row, and its entry order is
+	// ClutEntryToMergedOffset's rather than ClutEntryToCopyOffset's. LocateClutBlocks only ever
+	// produces the 16-wide one; the stride is a parameter because the same permutation serves any
+	// power-of-two tile width, so a caller that copies a wider rect and reads several palettes out
+	// of it at their own offsets inside it needs no second map.
+
 	struct ClutBlockCopy
 	{
 		static constexpr u32 kMaxRegions = 4;
 		u32 region_count; ///< 4 for a 256-entry palette (four blocks), 1 for a 16-entry one
 		u32 x[kMaxRegions], y[kMaxRegions]; ///< each region's texel origin in the owner's pixel space
-		u32 w, h; ///< 8×8 per region; 8×2 for the single block of a 16-entry palette
+		u32 w, h; ///< 8×8 per region; 8×2 for the single block of a 16-entry palette; 16×16 merged
+		bool merged; ///< the four blocks were emitted as ONE 16×16 region — see the note above
+		u32 stride; ///< words per row of the copied image when `merged`; 0 otherwise
 	};
 
 	/// Where a CSM1 32-bit CLUT load's source blocks sit in the owner surface's pixel space.
 	/// `entries` is 256 or 16; `owner_bp`/`owner_bwpg` are the owner's page-aligned base and
-	/// its width in pages. False when the forms did not fit, the entry count is not one of the
-	/// two, or a block falls below the owner's base (the caller must have proved CBP ≥ owner_bp).
+	/// its width in pages. `merge` asks for the single-region form where the shape allows it
+	/// (256 entries at a 4-aligned CBP), and is the caller's lever, not a property of the load.
+	/// False when the forms did not fit, the entry count is not one of the two, or a block falls
+	/// below the owner's base (the caller must have proved CBP ≥ owner_bp).
 	bool LocateClutBlocks(const FormSet& forms, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
-		ClutBlockCopy& out);
+		bool merge, ClutBlockCopy& out);
 
 	/// Entry e of a CSM1 32-bit palette → its word offset in the image LocateClutBlocks
 	/// describes, once its regions have been copied out in order, each row-major. This is the
 	/// arithmetic tilegpu.glsl's palette-from-copied-block mode performs per fetch.
 	u32 ClutEntryToCopyOffset(const FormSet& forms, u32 entries, u32 e);
+
+	/// The same answer for a MERGED copy: entry e's word offset inside a tile `stride` words per
+	/// row, relative to the palette's own origin in that tile. `stride` is 16 for a palette copied
+	/// as its own 16×16 square, which is what LocateClutBlocks produces. This is the arithmetic
+	/// tilegpu.glsl's merged palette mode performs per fetch — spelled there with the multiply
+	/// folded into bit positions, because the pieces occupy disjoint bit ranges.
+	u32 ClutEntryToMergedOffset(const FormSet& forms, u32 entries, u32 stride, u32 e);
 } // namespace GSTileSwizzleForms

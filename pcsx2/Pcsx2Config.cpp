@@ -779,6 +779,10 @@ Pcsx2Config::GSOptions::GSOptions()
 	// pipeline bind and an indirect call per masked draw against a destination read per masked
 	// draw. Which way that comes out is a device question -- see Config.h.
 	TileGpuShaderWriteMask = false;
+	// Default FALSE: pixel-inert on the corpus, and what it trades is three copy regions per
+	// gathered palette against a different word order in the frame's palette stream. Only two of
+	// the 21 corpus dumps gather a palette at all, so the corpus cannot price it -- see Config.h.
+	TileGpuClutMergeRegions = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1135,6 +1139,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuPoisonAllocations);
 	SettingsWrapBitBool(TileGpuContainSurfaces);
 	SettingsWrapBitBool(TileGpuShaderWriteMask);
+	SettingsWrapBitBool(TileGpuClutMergeRegions);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

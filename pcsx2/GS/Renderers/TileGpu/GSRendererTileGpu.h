@@ -1550,10 +1550,11 @@ private:
 		u32 tex_source;
 		// Where this draw's palette words are. 0 = entry order at pal_offset, which is the CPU road
 		// and what every draw carried before the CLUT gather existed; 1 = a 256-entry palette's four
-		// copied blocks; 2 = a 16-entry one's single copied block. The gather's byte-road consumer
-		// gets its words by an image-to-buffer COPY of the palette's blocks out of the owning target
-		// (no gather pass, at six hundred to twelve hundred loads a frame), and a copy lands texels
-		// row-major rather than in entry order -- so the CSM1 entry order is applied at fetch instead.
+		// copied blocks; 2 = a 16-entry one's single copied block; 3 = a 256-entry palette copied as
+		// one TILE 16 words per row. The gather's byte-road consumer gets its words by an
+		// image-to-buffer COPY of the palette's blocks out of the owning target (no gather pass, at
+		// six hundred to twelve hundred loads a frame), and a copy lands texels row-major rather than
+		// in entry order -- so the CSM1 entry order is applied at fetch instead.
 		u32 pal_mode;
 		// The entry bias inside a copied palette: a four-bit draw reading mirror slot k of a
 		// 256-entry gathered load wants that palette's entries 16k..16k+15.
@@ -2341,6 +2342,10 @@ private:
 		bool source_lost = false;
 		u64 stream_plan = 0; ///< the plan its words were copied into the palette stream for (0 = none)
 		u32 stream_offset = 0; ///< ...and the word offset they landed at
+		/// ...and how the copy laid them out there: 0 = a run of row-major blocks, the shape
+		/// ClutEntryToCopyOffset reads; else the words per row of the one tile they were copied
+		/// as, which is ClutEntryToMergedOffset's `stride`.
+		u32 stream_stride = 0;
 		GSTexture* gather_tex = nullptr; ///< rule 3's N x 1 palette, gathered on demand
 	};
 
@@ -2352,6 +2357,10 @@ private:
 	/// fits a closed form, or a gather pipeline failed to build). Probed once, lazily.
 	bool m_clut_gather_serves = true;
 	bool m_clut_gather_probed = false;
+	/// ...and whether this session's fragment modules carry the MERGED palette arm. Latched from the
+	/// device at the same probe, because the modules read TileGpuClutMergeRegions once when they were
+	/// assembled and the setting can move afterwards. False = every copy takes the per-block road.
+	bool m_clut_merge_serves = false;
 	bool m_warned_clut_lost = false;
 	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
 	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's
@@ -2418,10 +2427,14 @@ private:
 	/// has emitted anything into its prep-op range.
 	GpuPalette* ResolveDrawPalette(const GIFRegTEX0& tex0, u32 pal_entries, u32& first_texel, bool& synced);
 
-	/// The record's words in the frame's palette stream: a reserved run of `entries` zero words and
-	/// one image-to-buffer copy of the palette's blocks out of the owner. Idempotent within a plan
-	/// and emitted at the current op position, which is what makes it usable both from a consumer
-	/// and from the write that is about to destroy the source.
+	/// A run of `words` zero words in the frame's palette stream, and where it starts. A bump
+	/// allocation: an offset is never handed out twice in a plan, which is the disjointness the
+	/// executor's copy run leans on to skip its interior ring barriers.
+	u32 ReserveClutStreamWords(u32 words);
+	/// The record's words in the frame's palette stream: a reservation the size of what the copy's
+	/// regions tile, and one image-to-buffer copy of the palette's blocks out of the owner.
+	/// Idempotent within a plan and emitted at the current op position, which is what makes it
+	/// usable both from a consumer and from the write that is about to destroy the source.
 	bool CaptureClutRecordWords(GpuPalette& gp);
 	/// The same, for a draw that is about to READ those words: adds the donor hoist test, so a copy
 	/// that cannot run at the open pass's head opens a new one. False when the source is gone.
@@ -3245,6 +3258,11 @@ private:
 		u32 clut_draws_sync = 0;  // paletted draws the mirror could not serve whole: synced to the CPU
 		u32 clut_r3_refused = 0;  // rule 3 refused a gathered palette (a sub-slot view, or no source)
 		u32 clut_copies = 0;      // block copies emitted (one per record per plan, at a pass head)
+		// ...and the REGIONS those copies carry, which is what the copy actually costs: per-region
+		// cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so an op's price is its
+		// region count and not its bytes. Four per 256-entry palette on the per-block road, one
+		// merged, one per owner page merged across a burst.
+		u32 clut_copy_regions = 0;
 		u32 clut_gathers = 0;     // N x 1 gather passes emitted (rule 3's volume, not the loads')
 		u32 clut_breaks = 0;      // draws that opened a pass because a CLUT op could not hoist
 		u32 clut_syncs = 0;       // device palettes handed back to the CPU (seams + the two unservable roads)

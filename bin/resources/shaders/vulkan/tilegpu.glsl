@@ -396,8 +396,9 @@ struct StateRow
 	                   // on why the padding is explicit.
 	uint pal_mode;     // where this draw's palette words are: 0 = entry order at pal_offset (the CPU
 	                   // road), 1 = a 256-entry palette's four copied blocks, 2 = a 16-entry one's
-	                   // single copied block. The two copied modes need the CSM1 entry order applied
-	                   // at fetch, because an image-to-buffer copy lands texels row-major.
+	                   // single copied block, 3 = a 256-entry palette copied as ONE 16x16 tile.
+	                   // Every copied mode needs the CSM1 entry order applied at fetch, because an
+	                   // image-to-buffer copy lands texels row-major.
 	uint pal_bias;     // entry bias inside a copied palette: a four-bit draw reading slot k of a
 	                   // 256-entry gathered load wants its entries 16k..16k+15.
 	uint blend;        // the GS blend equation for a draw that reads its own destination, packed as
@@ -803,8 +804,49 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 	if (sr.pal_mode != 0u)
 	{
 		const uint e = sr.pal_bias + index;
+#if TILEGPU_CLUT_MERGE
+		// Mode 3, the MERGED copy: the palette's four blocks came out of the owner as ONE region, so
+		// the words are a tile `S` wide and the word's block and its position inside that block
+		// compose as texel coordinates instead of concatenating. Block b sits at square-relative
+		// texel (8*(b&1), 8*((b>>1)&1)) -- x bit 0 is block bit 0, y bit 0 is block bit 1 -- so with
+		// b = w >> 6 and (cx, cy) = (c & 7, c >> 3):
+		//
+		//     off = (((b & 2) << 2) + (c >> 3)) * S + ((b & 1) << 3) + (c & 7)
+		//
+		// which is GSTileSwizzleForms::ClutEntryToMergedOffset, spelled there and pinned against
+		// GSClut's own loader. S is 16 on this road: a palette merges into its own 16x16 square and
+		// into nothing else. The line below is that expression with the multiply folded into the bit
+		// positions, because every one of its pieces lands in a DISJOINT bit range -- b1 at bit 7,
+		// cy at bits 4-6, b0 at bit 3, cx at bits 0-2 -- so the adds are ORs, and `c + (c & 0x38)`
+		// carries cy and cx in two operations rather than four: ((cy << 3) | cx) + (cy << 3) is
+		// (cy << 4) | cx. Only a 256-entry palette ever merges, so this arm reads the eight-bit
+		// entry form and nothing else.
+		//
+		// ⚠️ Behind a MODULE define, not just behind its per-draw mode, and that is the whole reason
+		// the lever has one. DEAD CODE COUNTS on this hardware -- the size gate exists because four
+		// units of never-executed arithmetic once moved Shadow of the Colossus from 21.8 to 30.7 ms
+		// with byte-identical frames -- and a lever that ships OFF must not enlarge the program every
+		// device runs. With TILEGPU_CLUT_MERGE 0 this function is the one that shipped before the
+		// merge existed, character for character. The same budget is why the spelling above is worth
+		// the paragraph it takes: in the widest paletted variant three operations of it are a whole
+		// unit of Adreno 650 instruction length.
+		//
+		// Mode 3 is always a 256-entry palette, so the eight-bit entry form serves modes 1 AND 3 and
+		// only mode 2 is the four-bit one -- which is why the select below reads the other way round
+		// from the one in the #else. The two arms SHARE w and its column split: computing them twice
+		// costs 2,183 words here, six times what the merged offset itself does, because the entry
+		// form is fourteen XOR terms and it is inlined at every texel of a bilinear sample. One load
+		// rather than one per arm is worth another 120 for the same reason.
+		const uint w = (sr.pal_mode == 2u) ? tile_clut4_word(e) : tile_clut8_word(e);
+		const uint c = tile_ic32(w & 63u);
+		uint off = (w >> 6u) * 64u + c;
+		if (sr.pal_mode == 3u)
+			off = (w & 0x80u) | (c + (c & 0x38u)) | ((w & 0x40u) >> 3u);
+		return vram_words[pal_base + sr.pal_offset + off];
+#else
 		const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
 		return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
+#endif
 	}
 #endif
 	return vram_words[pal_base + sr.pal_offset + index];

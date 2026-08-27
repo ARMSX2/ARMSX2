@@ -344,17 +344,20 @@ namespace GSTileSwizzleForms
 	}
 
 	bool LocateClutBlocks(const FormSet& forms, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
-		ClutBlockCopy& out)
+		bool merge, ClutBlockCopy& out)
 	{
 		out = {};
 		if (!forms.valid || !forms.clut_valid)
 			return false;
 		if (entries == 256)
 		{
-			// 256 words = four blocks, contiguous in memory from CBP.
-			out.region_count = 4;
-			out.w = 8;
-			out.h = 8;
+			// 256 words = four blocks, contiguous in memory from CBP -- or, where those four are
+			// 4-aligned and the caller asked for it, the single 16x16 square they form. See the
+			// merge note in the header for why 4-alignment is exactly the condition.
+			out.merged = merge && (cbp & 3) == 0;
+			out.region_count = out.merged ? 1 : 4;
+			out.w = out.merged ? 16 : 8;
+			out.h = out.w;
 		}
 		else if (entries == 16)
 		{
@@ -370,6 +373,8 @@ namespace GSTileSwizzleForms
 			return false;
 		}
 
+		out.stride = out.merged ? out.w : 0;
+
 		if (cbp < owner_bp)
 			return false;
 		const u32 bwpg = owner_bwpg ? owner_bwpg : 1;
@@ -377,7 +382,9 @@ namespace GSTileSwizzleForms
 		{
 			// The same owner-side arithmetic Locate performs, at block rather than texel
 			// granularity: the block relative to the owner's page-aligned base, then the
-			// inverse block form for its position inside its page.
+			// inverse block form for its position inside its page. Merged, the one region
+			// is the block at CBP itself, and that block IS the square's top-left corner:
+			// 4-alignment clears the two interleave bits that carry x bit 0 and y bit 0.
 			const u32 rel = (cbp + b) - owner_bp;
 			const u32 pg = rel >> 5;
 			const u32 bpk = forms.inv_block48.Eval(rel & 31);
@@ -394,5 +401,25 @@ namespace GSTileSwizzleForms
 		// the row-major offset, so the two halves compose with no repacking.
 		const u32 w = (entries == 256) ? forms.clut_i8_word.Eval(e) : forms.clut_i4_word.Eval(e);
 		return (w >> 6) * 64 + forms.inv_col32.Eval(w & 63);
+	}
+
+	u32 ClutEntryToMergedOffset(const FormSet& forms, u32 entries, u32 stride, u32 e)
+	{
+		// The same two halves as ClutEntryToCopyOffset -- entry -> the source word the CSM1 loader
+		// took it from, then that word's place in the copied image -- but the image is now one tile
+		// `stride` words per row instead of a run of 64-word blocks, so the word's block and its
+		// position inside that block have to be composed as texel coordinates rather than
+		// concatenated. Block b of a 4-aligned group sits at square-relative texel
+		// (8*(b&1), 8*((b>>1)&1)) -- x bit 0 is block bit 0 and y bit 0 is block bit 1 -- and
+		// inv_col32 packs the intra-block (cx, cy) as cx | (cy << 3). So
+		//   X = ((b & 1) << 3) + (c & 7)
+		//   Y = ((b & 2) << 2) + (c >> 3)
+		// and the offset is Y * stride + X. The palette's own origin inside the tile is the
+		// caller's: a 16x16 square starts at 0, a palette inside a copied page at its square's
+		// page-relative origin.
+		const u32 w = (entries == 256) ? forms.clut_i8_word.Eval(e) : forms.clut_i4_word.Eval(e);
+		const u32 b = w >> 6;
+		const u32 c = forms.inv_col32.Eval(w & 63);
+		return (((b & 2) << 2) + (c >> 3)) * stride + ((b & 1) << 3) + (c & 7);
 	}
 } // namespace GSTileSwizzleForms

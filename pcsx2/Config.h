@@ -888,7 +888,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 129 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 130 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1223,6 +1223,31 @@ struct Pcsx2Config
 					// economics above are a capture census, and the frame-time claim needs a
 					// device A/B before it becomes the default.
 					TileGpuShaderWriteMask : 1,
+					// Copy a 256-entry gathered palette out of its owner as ONE 16x16
+					// region instead of four 8x8 blocks.
+					//
+					// The four blocks of a CSM1 32-bit palette are CBP..CBP+3, and where
+					// CBP is 4-aligned they are a 2x2 block square — 16x16 texels at a
+					// 16-aligned origin, inside one page. Measured on the SD865 (Adreno
+					// 650 / Turnip, GT4 Online Public Beta): all 1,251 four-region groups
+					// in the frame are exact squares, no exceptions, and per-region copy
+					// cost there is FLAT at ~2.8 us whatever the region's size — an 8x8
+					// region costs 2.73-2.85 us and a 64x32 one 1.35-1.46 us out of the
+					// same image in the same frame. So four regions cost four times one,
+					// and the merge is the palette's whole copy bill instead of a quarter
+					// of it: 5,010 regions a frame become 1,256.
+					//
+					// PIXEL-INERT, and a difference between the arms is a DEFECT rather
+					// than a trade: what moves is the ORDER the palette's words land in
+					// the frame's stream, and the fragment stage reads them back through
+					// the matching order (GSTileSwizzleForms::ClutEntryToMergedOffset,
+					// pinned against GSClut's own loader). A CBP that is not 4-aligned is
+					// not a square at all and keeps the four regions verbatim.
+					//
+					// What ships OFF is not a known cost, it is an UNMEASURED one: the
+					// flat-per-region price is a capture census, and the frame-time claim
+					// needs a device A/B before it becomes the default.
+					TileGpuClutMergeRegions : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
