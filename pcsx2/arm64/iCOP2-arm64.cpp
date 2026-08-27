@@ -730,6 +730,35 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 // MSUB and A-forms -- has it free across its arithmetic.
 static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);
 
+// Applies eeMulRound's guards and then the multiply array, for the lanes whose
+// exact mantissa product has bits below the result's last bit but fewer than
+// 0x8000 of them. The predicate over ft does not decide those.
+static EEFPU_MODEL_CALL void cop2MulShortTailBand()
+{
+	const EeCop2RecState& st = _cpuRegistersPack.cop2Rec;
+	for (int lane = 0; lane < 4; lane++)
+	{
+		const u32 fs = st.bandFs[lane];
+		const u32 ft = st.bandFt[lane];
+		const u32 product = st.bandProduct[lane];
+		const u32 exp = product & 0x7F800000u;
+		if ((fs & 0x7F800000u) == 0 || (ft & 0x7F800000u) == 0)
+			continue;
+		if (exp == 0 || exp == 0x7F800000u || (product & 0x7FFFFFFFu) == 0x00800000u)
+			continue;
+		if ((exp >> 23) < 48u)
+			continue; // below this the emitted model rejects the lane anyway
+		const u64 ma = 0x800000u | (fs & 0x7FFFFFu);
+		const u64 mb = 0x800000u | (ft & 0x7FFFFFu);
+		const u64 exact = ma * mb;
+		const int k = (exact >> 47) ? 24 : 23;
+		if ((exact & ((1ull << k) - 1u)) == 0)
+			continue; // no bits below the last one: the emitted model decides it
+		if (R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow(fs, ft))
+			_cpuRegistersPack.cop2Rec.bandProduct[lane] = product - 1u;
+	}
+}
+
 static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& u, bool uLive)
 {
@@ -740,9 +769,50 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	}
 
 	const a64::MemOperand park = armCpuRegMem(&_cpuRegistersPack.cop2Rec.deficitPark);
+	const a64::MemOperand bandFs = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandFs);
+	const a64::MemOperand bandFt = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandFt);
+	const a64::MemOperand bandProduct = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandProduct);
+	const a64::VRegister& t = RQSCRATCH3;
+
+	// Saved before the model runs, because it writes dst, and dst may be a or b.
+	armAsm->Str(a, bandFs);
+	armAsm->Str(b, bandFt);
+
 	if (uLive)
 		armAsm->Str(u, park);
-	armEmitVuDefectiveMul(dst, a, b, RQSCRATCH3, u);
+	armEmitVuDefectiveMul(dst, a, b, t, u);
+
+	// The condition below only has to avoid false negatives: eeMulOneUlpLow
+	// checks the tail itself, so a lane sent to it unnecessarily comes back
+	// unchanged. A lane the model already decremented has a residue of exactly
+	// one ULP, which the exponent difference rejects.
+	const bool aliasFs = dst.Is(a);
+	const bool aliasFt = dst.Is(b);
+	if (aliasFs)
+		armAsm->Ldr(u, bandFs);
+	else if (aliasFt)
+		armAsm->Ldr(u, bandFt);
+	armAsm->Mov(t.V16B(), dst.V16B());
+	armAsm->Fmls(t.V4S(), aliasFs ? u.V4S() : a.V4S(), aliasFt ? u.V4S() : b.V4S());
+
+	armAsm->Shl(t.V4S(), t.V4S(), 1);
+	armAsm->Ushr(t.V4S(), t.V4S(), 24);       // the residue's exponent
+	armAsm->Shl(u.V4S(), dst.V4S(), 1);
+	armAsm->Ushr(u.V4S(), u.V4S(), 24);       // the product's
+	armAsm->Uqsub(u.V4S(), u.V4S(), t.V4S());
+	armAsm->Ushr(u.V4S(), u.V4S(), 5);        // exponents at least 32 apart
+	armAsm->Cmtst(t.V4S(), t.V4S(), t.V4S());
+	armAsm->And(u.V16B(), u.V16B(), t.V16B());
+	armAsm->Umaxv(u.S(), u.V4S());
+	armAsm->Fmov(RWARG1, u.S());
+
+	a64::Label done;
+	armAsm->Cbz(RWARG1, &done);
+	armAsm->Str(dst, bandProduct);
+	armEmitEeFpuModelCall(reinterpret_cast<const void*>(&cop2MulShortTailBand));
+	armAsm->Ldr(dst, bandProduct);
+	armAsm->Bind(&done);
+
 	if (uLive)
 		armAsm->Ldr(u, park);
 }
