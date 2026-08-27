@@ -796,6 +796,8 @@ static void PersistAndApplyAchievementsSettings() {
 // overwriting it. Turning hardcore back on by hand while the override is
 // active still works and still wins (see setHardcoreMode) — the dev-proxy
 // case keeps working, it just is not the default any more.
+//
+// Hardcore handling contributed by misantronic (PR #617).
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jclass clazz, jstring p_host) {

@@ -28,6 +28,8 @@ import com.armsx2.i18n.I18n
  * set. That is the whole security of this screen, and it is also why the launch has to be
  * startActivityForResult: a plain startActivity, or NEW_TASK, leaves it null, and a request that
  * cannot name its asker is refused rather than attributed to a guess.
+ *
+ * Feature contributed by misantronic (PR #616), following the provider itself (PR #566).
  */
 class RecentGamesAccessActivity : Activity() {
 
