@@ -548,6 +548,10 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.wideLines = available_features.wideLines;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.textureCompressionBC = available_features.textureCompressionBC;
+	// Enabled at logical-device creation, not merely queried: sampling an ASTC image
+	// without the feature bit enabled is a validation error and undefined behaviour on
+	// some drivers. SelectDeviceFeatures() runs before vkCreateDevice().
+	m_device_features.textureCompressionASTC_LDR = available_features.textureCompressionASTC_LDR;
 	m_device_features.geometryShader = available_features.geometryShader;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.pipelineStatisticsQuery = available_features.pipelineStatisticsQuery;
@@ -3956,6 +3960,38 @@ bool GSDeviceVK::CheckFeatures()
 	m_features.dxt_textures = m_device_features.textureCompressionBC;
 	m_features.bptc_textures = m_device_features.textureCompressionBC;
 
+	// ASTC LDR: the device feature must be enabled (SelectDeviceFeatures) AND every
+	// footprint the loader accepts must be sampleable with optimal tiling. All-or-nothing,
+	// because the loader is format-agnostic once a pack is installed.
+	m_features.astc_textures = false;
+	if (m_device_features.textureCompressionASTC_LDR)
+	{
+		static constexpr std::array<VkFormat, 14> s_astc_formats = {{
+			VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VK_FORMAT_ASTC_5x4_UNORM_BLOCK, VK_FORMAT_ASTC_5x5_UNORM_BLOCK,
+			VK_FORMAT_ASTC_6x5_UNORM_BLOCK, VK_FORMAT_ASTC_6x6_UNORM_BLOCK, VK_FORMAT_ASTC_8x5_UNORM_BLOCK,
+			VK_FORMAT_ASTC_8x6_UNORM_BLOCK, VK_FORMAT_ASTC_8x8_UNORM_BLOCK, VK_FORMAT_ASTC_10x5_UNORM_BLOCK,
+			VK_FORMAT_ASTC_10x6_UNORM_BLOCK, VK_FORMAT_ASTC_10x8_UNORM_BLOCK, VK_FORMAT_ASTC_10x10_UNORM_BLOCK,
+			VK_FORMAT_ASTC_12x10_UNORM_BLOCK, VK_FORMAT_ASTC_12x12_UNORM_BLOCK,
+		}};
+
+		bool all_ok = true;
+		for (const VkFormat fmt : s_astc_formats)
+		{
+			VkFormatProperties props = {};
+			vkGetPhysicalDeviceFormatProperties(m_physical_device, fmt, &props);
+			if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ||
+				!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT))
+			{
+				all_ok = false;
+				break;
+			}
+		}
+		m_features.astc_textures = all_ok;
+	}
+
+	DevCon.WriteLn("Vulkan: ASTC LDR texture replacements %s.",
+		m_features.astc_textures ? "active" : "not supported by this device/driver");
+
 	// The "no stencil buffer or texture barrier" warning is deliberately NOT shown on Android.
 	// UseRenderTargetCopyForFeedback turns texture barriers off by design on the mobile drivers
 	// this ships to (see the feedback notes above), so the condition is the NORMAL configuration
@@ -4067,6 +4103,20 @@ VkFormat GSDeviceVK::LookupNativeFormat(GSTexture::Format format) const
 		VK_FORMAT_BC2_UNORM_BLOCK, // BC2
 		VK_FORMAT_BC3_UNORM_BLOCK, // BC3
 		VK_FORMAT_BC7_UNORM_BLOCK, // BC7
+		VK_FORMAT_ASTC_4x4_UNORM_BLOCK, // ASTC4x4
+		VK_FORMAT_ASTC_5x4_UNORM_BLOCK, // ASTC5x4
+		VK_FORMAT_ASTC_5x5_UNORM_BLOCK, // ASTC5x5
+		VK_FORMAT_ASTC_6x5_UNORM_BLOCK, // ASTC6x5
+		VK_FORMAT_ASTC_6x6_UNORM_BLOCK, // ASTC6x6
+		VK_FORMAT_ASTC_8x5_UNORM_BLOCK, // ASTC8x5
+		VK_FORMAT_ASTC_8x6_UNORM_BLOCK, // ASTC8x6
+		VK_FORMAT_ASTC_8x8_UNORM_BLOCK, // ASTC8x8
+		VK_FORMAT_ASTC_10x5_UNORM_BLOCK, // ASTC10x5
+		VK_FORMAT_ASTC_10x6_UNORM_BLOCK, // ASTC10x6
+		VK_FORMAT_ASTC_10x8_UNORM_BLOCK, // ASTC10x8
+		VK_FORMAT_ASTC_10x10_UNORM_BLOCK, // ASTC10x10
+		VK_FORMAT_ASTC_12x10_UNORM_BLOCK, // ASTC12x10
+		VK_FORMAT_ASTC_12x12_UNORM_BLOCK, // ASTC12x12
 	}};
 
 	if (format == GSTexture::Format::ColorClip && m_colorclip_fallback_to_hdr)

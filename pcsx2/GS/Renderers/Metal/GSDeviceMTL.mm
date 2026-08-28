@@ -642,6 +642,22 @@ static constexpr MTLPixelFormat ConvertPixelFormat(GSTexture::Format format)
 		case GSTexture::Format::BC2:          return MTLPixelFormatBC2_RGBA;
 		case GSTexture::Format::BC3:          return MTLPixelFormatBC3_RGBA;
 		case GSTexture::Format::BC7:          return MTLPixelFormatBC7_RGBAUnorm;
+			// Metal ASTC is optional and unimplemented; the replacement loader rejects ASTC
+			// before anything can ask for a pixel format. Keep the switch exhaustive.
+		case GSTexture::Format::ASTC4x4:
+		case GSTexture::Format::ASTC5x4:
+		case GSTexture::Format::ASTC5x5:
+		case GSTexture::Format::ASTC6x5:
+		case GSTexture::Format::ASTC6x6:
+		case GSTexture::Format::ASTC8x5:
+		case GSTexture::Format::ASTC8x6:
+		case GSTexture::Format::ASTC8x8:
+		case GSTexture::Format::ASTC10x5:
+		case GSTexture::Format::ASTC10x6:
+		case GSTexture::Format::ASTC10x8:
+		case GSTexture::Format::ASTC10x10:
+		case GSTexture::Format::ASTC12x10:
+		case GSTexture::Format::ASTC12x12:    return MTLPixelFormatInvalid;
 	}
 }
 

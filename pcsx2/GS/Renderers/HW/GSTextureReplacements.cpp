@@ -813,8 +813,19 @@ void GSTextureReplacements::SetReplacementTextureAlphaMinMax(ReplacementTexture&
 			break;
 
 		default:
-			pxAssert(rtex.format == GSTexture::Format::Color);
-			rtex.alpha_minmax = GSGetRGBA8AlphaMinMax(rtex.data.data(), rtex.width, rtex.height, rtex.pitch);
+			if (GSTexture::IsASTCFormat(rtex.format))
+			{
+				// Determining the exact range requires decoding every block, which we do not
+				// do at load time. {0, 255} is the conservative choice: it may disable an
+				// alpha optimization, but it cannot classify a transparent texture as opaque.
+				// The compressed payload must never be scanned as RGBA8.
+				rtex.alpha_minmax = {0u, 255u};
+			}
+			else
+			{
+				pxAssert(rtex.format == GSTexture::Format::Color);
+				rtex.alpha_minmax = GSGetRGBA8AlphaMinMax(rtex.data.data(), rtex.width, rtex.height, rtex.pitch);
+			}
 			break;
 	}
 }
