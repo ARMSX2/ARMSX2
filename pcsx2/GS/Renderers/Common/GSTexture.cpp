@@ -134,21 +134,71 @@ const char* GSTexture::GetFormatName(Format format)
 		case Format::BC2:          return "BC2";
 		case Format::BC3:          return "BC3";
 		case Format::BC7:          return "BC7";
+		case Format::ASTC4x4:      return "ASTC4x4";
+		case Format::ASTC5x4:      return "ASTC5x4";
+		case Format::ASTC5x5:      return "ASTC5x5";
+		case Format::ASTC6x5:      return "ASTC6x5";
+		case Format::ASTC6x6:      return "ASTC6x6";
+		case Format::ASTC8x5:      return "ASTC8x5";
+		case Format::ASTC8x6:      return "ASTC8x6";
+		case Format::ASTC8x8:      return "ASTC8x8";
+		case Format::ASTC10x5:     return "ASTC10x5";
+		case Format::ASTC10x6:     return "ASTC10x6";
+		case Format::ASTC10x8:     return "ASTC10x8";
+		case Format::ASTC10x10:    return "ASTC10x10";
+		case Format::ASTC12x10:    return "ASTC12x10";
+		case Format::ASTC12x12:    return "ASTC12x12";
 	}
+}
+
+GSTexture::BlockInfo GSTexture::GetBlockInfo(Format format)
+{
+	switch (format)
+	{
+		default:
+			pxFailRel("Invalid texture format");
+			[[fallthrough]];
+		case Format::Invalid:      return {1, 1, 1};   // Invalid
+		case Format::Color:        return {1, 1, 4};   // Color/RGBA8
+		case Format::ColorHQ:      return {1, 1, 4};   // ColorHQ/RGB10A2
+		case Format::ColorHDR:     return {1, 1, 8};   // ColorHDR/RGBA16F
+		case Format::ColorClip:    return {1, 1, 8};   // ColorClip/RGBA16
+		case Format::DepthStencil: return {1, 1, 4};   // DepthStencil
+		case Format::DepthColor:   return {1, 1, 4};   // DepthColor/R32
+		case Format::UNorm8:       return {1, 1, 1};   // UNorm8/R8
+		case Format::UInt16:       return {1, 1, 2};   // UInt16/R16UI
+		case Format::UInt32:       return {1, 1, 4};   // UInt32/R32UI
+		case Format::PrimID:       return {1, 1, 4};   // PrimID/R32
+		case Format::BC1:          return {4, 4, 8};   // BC1 - 16 pixels in 64 bits
+		case Format::BC2:          return {4, 4, 16};  // BC2 - 16 pixels in 128 bits
+		case Format::BC3:          return {4, 4, 16};  // BC3 - 16 pixels in 128 bits
+		case Format::BC7:          return {4, 4, 16};  // BC7 - 16 pixels in 128 bits
+		case Format::ASTC4x4:      return {4, 4, 16};
+		case Format::ASTC5x4:      return {5, 4, 16};
+		case Format::ASTC5x5:      return {5, 5, 16};
+		case Format::ASTC6x5:      return {6, 5, 16};
+		case Format::ASTC6x6:      return {6, 6, 16};
+		case Format::ASTC8x5:      return {8, 5, 16};
+		case Format::ASTC8x6:      return {8, 6, 16};
+		case Format::ASTC8x8:      return {8, 8, 16};
+		case Format::ASTC10x5:     return {10, 5, 16};
+		case Format::ASTC10x6:     return {10, 6, 16};
+		case Format::ASTC10x8:     return {10, 8, 16};
+		case Format::ASTC10x10:    return {10, 10, 16};
+		case Format::ASTC12x10:    return {12, 10, 16};
+		case Format::ASTC12x12:    return {12, 12, 16};
+	}
+}
+
+bool GSTexture::IsASTCFormat(Format format)
+{
+	return format >= Format::ASTC4x4 && format <= Format::ASTC12x12;
 }
 
 bool GSTexture::IsBlockCompressedFormat(Format format)
 {
-	switch (format)
-	{
-		case Format::BC1:
-		case Format::BC2:
-		case Format::BC3:
-		case Format::BC7:
-			return true;
-		default:
-			return false;
-	}
+	const BlockInfo bi = GetBlockInfo(format);
+	return bi.width != 1 || bi.height != 1;
 }
 
 u32 GSTexture::GetCompressedBytesPerBlock() const
@@ -188,15 +238,18 @@ u32 GSTexture::GetCompressedBlockSize() const
 
 u32 GSTexture::GetCompressedBlockSize(Format format)
 {
-	return IsBlockCompressedFormat(format) ? 4 : 1;
+	// Scalar form: only meaningful for square blocks. Rectangular ASTC footprints must
+	// go through GetBlockInfo(); callers below are shared with ASTC and use that.
+	const BlockInfo bi = GetBlockInfo(format);
+	return (bi.width == bi.height) ? bi.width : 0;
 }
 
 u32 GSTexture::CalcUploadPitch(Format format, u32 width)
 {
-	if (format >= Format::BC1 && format <= Format::BC7)
-		width = Common::AlignUpPow2(width, 4) / 4;
-
-	return width * GetCompressedBytesPerBlock(format);
+	const BlockInfo bi = GetBlockInfo(format);
+	// Ordinary ceiling division: ASTC block dimensions (5, 6, 10, 12) are not powers of
+	// two, so AlignUpPow2-style rounding would corrupt the pitch.
+	return ((width + bi.width - 1) / bi.width) * bi.bytes;
 }
 
 u32 GSTexture::CalcUploadPitch(u32 width) const
@@ -211,9 +264,8 @@ u32 GSTexture::CalcUploadRowLengthFromPitch(u32 pitch) const
 
 u32 GSTexture::CalcUploadRowLengthFromPitch(Format format, u32 pitch)
 {
-	const u32 block_size = GetCompressedBlockSize(format);
-	const u32 bytes_per_block = GetCompressedBytesPerBlock(format);
-	return ((pitch + (bytes_per_block - 1)) / bytes_per_block) * block_size;
+	const BlockInfo bi = GetBlockInfo(format);
+	return ((pitch + bi.bytes - 1) / bi.bytes) * bi.width;
 }
 
 u32 GSTexture::CalcUploadSize(u32 height, u32 pitch) const
@@ -223,8 +275,8 @@ u32 GSTexture::CalcUploadSize(u32 height, u32 pitch) const
 
 u32 GSTexture::CalcUploadSize(Format format, u32 height, u32 pitch)
 {
-	const u32 block_size = GetCompressedBlockSize(format);
-	return pitch * ((static_cast<u32>(height) + (block_size - 1)) / block_size);
+	const BlockInfo bi = GetBlockInfo(format);
+	return pitch * ((static_cast<u32>(height) + bi.height - 1) / bi.height);
 }
 
 bool GSTexture::IsFeedbackFormat(Format format)
@@ -270,37 +322,34 @@ void GSDownloadTexture::CopyFromTexture(
 
 u32 GSDownloadTexture::GetBufferSize(u32 width, u32 height, GSTexture::Format format, u32 pitch_align /* = 1 */)
 {
-	const u32 block_size = GSTexture::GetCompressedBlockSize(format);
-	const u32 bytes_per_block = GSTexture::GetCompressedBytesPerBlock(format);
-	const u32 bw = (width + (block_size - 1)) / block_size;
-	const u32 bh = (height + (block_size - 1)) / block_size;
+	const GSTexture::BlockInfo bi = GSTexture::GetBlockInfo(format);
+	const u32 bw = (width + bi.width - 1) / bi.width;
+	const u32 bh = (height + bi.height - 1) / bi.height;
 
 	pxAssert(std::has_single_bit(pitch_align));
-	const u32 pitch = Common::AlignUpPow2(bw * bytes_per_block, pitch_align);
+	const u32 pitch = Common::AlignUpPow2(bw * bi.bytes, pitch_align);
 	return (pitch * bh);
 }
 
 u32 GSDownloadTexture::GetTransferPitch(u32 width, u32 pitch_align) const
 {
-	const u32 block_size = GSTexture::GetCompressedBlockSize(m_format);
-	const u32 bytes_per_block = GSTexture::GetCompressedBytesPerBlock(m_format);
-	const u32 bw = (width + (block_size - 1)) / block_size;
+	const GSTexture::BlockInfo bi = GSTexture::GetBlockInfo(m_format);
+	const u32 bw = (width + bi.width - 1) / bi.width;
 
 	pxAssert(std::has_single_bit(pitch_align));
-	return Common::AlignUpPow2(bw * bytes_per_block, pitch_align);
+	return Common::AlignUpPow2(bw * bi.bytes, pitch_align);
 }
 
 void GSDownloadTexture::GetTransferSize(const GSVector4i& rc, u32* copy_offset, u32* copy_size, u32* copy_rows) const
 {
-	const u32 block_size = GSTexture::GetCompressedBlockSize(m_format);
-	const u32 bytes_per_block = GSTexture::GetCompressedBytesPerBlock(m_format);
+	const GSTexture::BlockInfo bi = GSTexture::GetBlockInfo(m_format);
 	const u32 tw = static_cast<u32>(rc.width());
-	const u32 tb = ((tw + (block_size - 1)) / block_size);
+	const u32 tb = ((tw + bi.width - 1) / bi.width);
 
-	*copy_offset = (((static_cast<u32>(rc.y) + (block_size - 1)) / block_size) * m_current_pitch) +
-				   ((static_cast<u32>(rc.x) + (block_size - 1)) / block_size) * bytes_per_block;
-	*copy_size = tb * bytes_per_block;
-	*copy_rows = ((static_cast<u32>(rc.height()) + (block_size - 1)) / block_size);
+	*copy_offset = (((static_cast<u32>(rc.y) + bi.height - 1) / bi.height) * m_current_pitch) +
+				   (((static_cast<u32>(rc.x) + bi.width - 1) / bi.width) * bi.bytes);
+	*copy_size = tb * bi.bytes;
+	*copy_rows = ((static_cast<u32>(rc.height()) + bi.height - 1) / bi.height);
 }
 
 bool GSDownloadTexture::ReadTexels(const GSVector4i& rc, void* out_ptr, u32 out_stride)
@@ -311,15 +360,14 @@ bool GSDownloadTexture::ReadTexels(const GSVector4i& rc, void* out_ptr, u32 out_
 	if (!Map(rc))
 		return false;
 
-	const u32 block_size = GSTexture::GetCompressedBlockSize(m_format);
-	const u32 bytes_per_block = GSTexture::GetCompressedBytesPerBlock(m_format);
+	const GSTexture::BlockInfo bi = GSTexture::GetBlockInfo(m_format);
 	const u32 tw = static_cast<u32>(rc.width());
-	const u32 tb = ((tw + (block_size - 1)) / block_size);
+	const u32 tb = ((tw + bi.width - 1) / bi.width);
 
-	const u32 copy_offset = (((static_cast<u32>(rc.y) + (block_size - 1)) / block_size) * m_current_pitch) +
-							((static_cast<u32>(rc.x) + (block_size - 1)) / block_size) * bytes_per_block;
-	const u32 copy_size = tb * bytes_per_block;
-	const u32 copy_rows = ((static_cast<u32>(rc.height()) + (block_size - 1)) / block_size);
+	const u32 copy_offset = (((static_cast<u32>(rc.y) + bi.height - 1) / bi.height) * m_current_pitch) +
+							(((static_cast<u32>(rc.x) + bi.width - 1) / bi.width) * bi.bytes);
+	const u32 copy_size = tb * bi.bytes;
+	const u32 copy_rows = ((static_cast<u32>(rc.height()) + bi.height - 1) / bi.height);
 
 	StringUtil::StrideMemCpy(out_ptr, out_stride, m_map_pointer + copy_offset, m_current_pitch, copy_size, copy_rows);
 	return true;

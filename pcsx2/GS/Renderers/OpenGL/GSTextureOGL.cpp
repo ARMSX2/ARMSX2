@@ -21,6 +21,32 @@ static constexpr u32 TEXTURE_UPLOAD_ALIGNMENT = 64;
 // We need 32 here for AVX2, so 64 is also fine.
 static constexpr u32 TEXTURE_UPLOAD_PITCH_ALIGNMENT = 64;
 
+static GLenum GetGLCompressedAstcFormat(GSTexture::Format format)
+{
+	// clang-format off
+	switch (format)
+	{
+		case GSTexture::Format::ASTC4x4:   return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
+		case GSTexture::Format::ASTC5x4:   return GL_COMPRESSED_RGBA_ASTC_5x4_KHR;
+		case GSTexture::Format::ASTC5x5:   return GL_COMPRESSED_RGBA_ASTC_5x5_KHR;
+		case GSTexture::Format::ASTC6x5:   return GL_COMPRESSED_RGBA_ASTC_6x5_KHR;
+		case GSTexture::Format::ASTC6x6:   return GL_COMPRESSED_RGBA_ASTC_6x6_KHR;
+		case GSTexture::Format::ASTC8x5:   return GL_COMPRESSED_RGBA_ASTC_8x5_KHR;
+		case GSTexture::Format::ASTC8x6:   return GL_COMPRESSED_RGBA_ASTC_8x6_KHR;
+		case GSTexture::Format::ASTC8x8:   return GL_COMPRESSED_RGBA_ASTC_8x8_KHR;
+		case GSTexture::Format::ASTC10x5:  return GL_COMPRESSED_RGBA_ASTC_10x5_KHR;
+		case GSTexture::Format::ASTC10x6:  return GL_COMPRESSED_RGBA_ASTC_10x6_KHR;
+		case GSTexture::Format::ASTC10x8:  return GL_COMPRESSED_RGBA_ASTC_10x8_KHR;
+		case GSTexture::Format::ASTC10x10: return GL_COMPRESSED_RGBA_ASTC_10x10_KHR;
+		case GSTexture::Format::ASTC12x10: return GL_COMPRESSED_RGBA_ASTC_12x10_KHR;
+		case GSTexture::Format::ASTC12x12: return GL_COMPRESSED_RGBA_ASTC_12x12_KHR;
+		default:
+			pxFailRel("Not an ASTC format");
+			return GL_NONE;
+	}
+	// clang-format on
+}
+
 GSTextureOGL::GSTextureOGL(Usage usage, int width, int height, int levels, Format format)
 {
 	// OpenGL didn't like dimensions of size 0
@@ -61,7 +87,7 @@ GSTextureOGL::GSTextureOGL(Usage usage, int width, int height, int levels, Forma
 			m_int_type = GL_UNSIGNED_BYTE;
 			m_int_shift = 0;
 			break;
-		
+
 		// 1 channel float
 		case Format::DepthColor:
 			m_gl_format = GL_R32F;
@@ -132,6 +158,26 @@ GSTextureOGL::GSTextureOGL(Usage usage, int width, int height, int levels, Forma
 		case Format::BC7:
 			m_gl_format = GL_COMPRESSED_RGBA_BPTC_UNORM_ARB;
 			m_int_format = GL_COMPRESSED_RGBA_BPTC_UNORM_ARB;
+			m_int_type = GL_UNSIGNED_BYTE;
+			m_int_shift = 1;
+			break;
+
+		case Format::ASTC4x4:
+		case Format::ASTC5x4:
+		case Format::ASTC5x5:
+		case Format::ASTC6x5:
+		case Format::ASTC6x6:
+		case Format::ASTC8x5:
+		case Format::ASTC8x6:
+		case Format::ASTC8x8:
+		case Format::ASTC10x5:
+		case Format::ASTC10x6:
+		case Format::ASTC10x8:
+		case Format::ASTC10x10:
+		case Format::ASTC12x10:
+		case Format::ASTC12x12:
+			m_gl_format = GetGLCompressedAstcFormat(m_format);
+			m_int_format = m_gl_format;
 			m_int_type = GL_UNSIGNED_BYTE;
 			m_int_shift = 1;
 			break;
@@ -213,11 +259,17 @@ bool GSTextureOGL::DoUpdate(const GSVector4i& r, const void* data, int pitch, in
 	GLStreamBuffer* const sb = GSDeviceOGL::GetInstance()->GetTextureUploadBuffer();
 	if (IsCompressedFormat())
 	{
-		const u32 row_length = CalcUploadRowLengthFromPitch(pitch);
 		const u32 upload_size = CalcUploadSize(r.height(), pitch);
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+		// Compressed row-length state (GL_UNPACK_ROW_LENGTH applied to a compressed
+		// upload) is not portable across GLES drivers. Replacement textures are tightly
+		// packed, i.e. the pitch equals the natural block pitch for the width, so leave
+		// UNPACK_ROW_LENGTH alone whenever there is nothing to skip.
+		const bool tightly_packed = (pitch == GSTexture::CalcUploadPitch(m_format, r.width()));
+		if (!tightly_packed)
+			glPixelStorei(GL_UNPACK_ROW_LENGTH, CalcUploadRowLengthFromPitch(pitch));
 		glCompressedTextureSubImage2D(m_texture_id, layer, r.x, r.y, r.width(), r.height(), m_int_format, upload_size, data);
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		if (!tightly_packed)
+			glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 	}
 	else if (!sb || map_size > sb->GetChunkSize())
 	{
