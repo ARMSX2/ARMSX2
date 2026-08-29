@@ -18,9 +18,9 @@
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
     CORENAME: armsx2
-    # The core is emitted in the pcsx2-libretro/ subdirectory of the build
-    # tree; the ci-templates pick it up from $BUILD_DIR/$EXTRA_PATH/.
-    EXTRA_PATH: pcsx2-libretro
+    # CMake puts the finished core in bin/ inside the build tree; the
+    # ci-templates pick it up from $BUILD_DIR/$EXTRA_PATH/.
+    EXTRA_PATH: bin
     CORE_ARGS: >-
       -DCMAKE_C_COMPILER=clang-17
       -DCMAKE_CXX_COMPILER=clang++-17
@@ -48,18 +48,20 @@
     # The ci-template's script builds with `-j $NUMPROC`; its before_script
     # (which normally sets it) is replaced by this one.
     - export NUMPROC=$(($(nproc) / 2)); [ "$NUMPROC" -lt 1 ] && export NUMPROC=1
+    - export DEBIAN_FRONTEND=noninteractive
     - apt-get update
     - >-
-      DEBIAN_FRONTEND=noninteractive apt-get -y install
-      build-essential cmake curl git ninja-build nasm pkg-config wget
-      gnupg lsb-release software-properties-common
+      apt-get -y install
+      build-essential ca-certificates cmake curl git ninja-build nasm pkg-config
+      wget gnupg lsb-release software-properties-common
       zlib1g-dev libaio-dev libasound2-dev libcurl4-openssl-dev
-      libdbus-1-dev libdrm-dev libegl-dev libevdev-dev libgbm-dev
-      libgudev-1.0-dev libopengl-dev libpcap-dev libssl-dev libudev-dev
+      libdbus-1-dev libdrm-dev libegl-dev libevdev-dev libfontconfig1-dev
+      libgbm-dev libgudev-1.0-dev libinput-dev libjpeg-dev libopengl-dev
+      libpcap-dev libpulse-dev libssl-dev libudev-dev
     - wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
     - chmod +x /tmp/llvm.sh
     - /tmp/llvm.sh 17
-    - DEBIAN_FRONTEND=noninteractive apt-get -y install lld-17
+    - apt-get -y install lld-17
     - ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
 
 # Inclusion templates, required for the build to work
@@ -83,10 +85,16 @@ libretro-build-linux-x64:
   extends:
     - .libretro-linux-cmake-x86_64
     - .core-defs-linux
-  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  # Stock Ubuntu 22.04 rather than a buildbot image: the amd64 one is Ubuntu
+  # 18.04, whose libstdc++ predates the C++20 library the emulator needs and
+  # which ships neither libegl-dev nor libopengl-dev. Jammy is also what the
+  # project's own GitHub CI builds on, so the dependency script and the
+  # clang-17 packages are known to work there.
+  image: ubuntu:22.04
 
 # Linux 64-bit (ARM)
 libretro-build-linux-aarch64:
   extends:
     - .libretro-linux-cmake-aarch64
     - .core-defs-linux
+  image: ubuntu:22.04
