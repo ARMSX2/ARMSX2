@@ -775,15 +775,15 @@ Pcsx2Config::GSOptions::GSOptions()
 	// byte-identical to off on all 21 corpus dumps and removes 117.00 render passes a drawn
 	// frame on the GT4 Online Public Beta. See Config.h for the rule and what it refuses.
 	TileGpuContainSurfaces = true;
-	// Default FALSE: byte-identical to on across the 21-dump corpus, and what it trades is a
-	// pipeline bind and an indirect call per masked draw against a destination read per masked
-	// draw. Which way that comes out is a device question -- see Config.h.
-	TileGpuShaderWriteMask = false;
-	// Default FALSE: pixel-inert on the corpus, and what it trades is three copy regions per
-	// gathered palette against a different word order in the frame's palette stream. Only two of
-	// the 21 corpus dumps gather a palette at all, so the corpus cannot price it -- see Config.h.
-	TileGpuClutMergeRegions = false;
-	TileGpuClutMergePages = false;
+	// Default TRUE: byte-identical to off across the 21-dump corpus. On Adreno the per-class
+	// budget refuses its population and it is inert (-0.6%, Spider-Man 3 SD865); elsewhere the
+	// population is live and it merges runs. Nothing measured says off is faster -- see Config.h.
+	TileGpuShaderWriteMask = true;
+	// Default TRUE, both: pixel-inert on the corpus, and the GT4 Online Public Beta device A/B is
+	// -16.8% frame time with the first and -28.6% with both (SD865, 2026-08-26). Only five of the
+	// 21 corpus dumps gather a palette at all; the rest never reach the arm -- see Config.h.
+	TileGpuClutMergeRegions = true;
+	TileGpuClutMergePages = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;

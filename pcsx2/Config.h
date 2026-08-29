@@ -1218,10 +1218,17 @@ struct Pcsx2Config
 					// evaluating their own blend, or already merging their own FBMSK at bit
 					// granularity. It therefore declares no new reader, opens no new declaring
 					// pass and charges nothing new to the per-class budget; a draw it cannot
-					// serve exactly keeps the pipeline mask and nothing about it moves. What
-					// ships OFF is not a known cost, it is an UNMEASURED one: the call
-					// economics above are a capture census, and the frame-time claim needs a
-					// device A/B before it becomes the default.
+					// serve exactly keeps the pipeline mask and nothing about it moves.
+					//
+					// Default ON. The device A/B (Spider-Man 3, SD865, 2026-08-26) found it
+					// INERT on Adreno at this shape -- -0.6%, because the per-class declaring
+					// budget refuses the masked class there, so the population it serves is
+					// a handful of draws -- and live wherever the budget does not tax (every
+					// non-Adreno device, where it is byte-identical with the population
+					// live). Nothing measured says off is faster anywhere: on costs nothing
+					// where it is inert and merges runs where it is not. The real Adreno win
+					// (~15 ms on that title, isolated by force arms) needs the masked class
+					// DECLARED, which is the scoped-admission successor to this lever.
 					TileGpuShaderWriteMask : 1,
 					// Copy a 256-entry gathered palette out of its owner as ONE 16x16
 					// region instead of four 8x8 blocks.
@@ -1244,33 +1251,48 @@ struct Pcsx2Config
 					// pinned against GSClut's own loader). A CBP that is not 4-aligned is
 					// not a square at all and keeps the four regions verbatim.
 					//
-					// What ships OFF is not a known cost, it is an UNMEASURED one: the
-					// flat-per-region price is a capture census, and the frame-time claim
-					// needs a device A/B before it becomes the default.
+					// Default ON. The device A/B (GT4 Online Public Beta, SD865, 3 reps,
+					// 2026-08-26): frame 42.88 -> 35.69 ms with this alone (-16.8%) and
+					// 30.61 ms with TileGpuClutMergePages as well (-28.6%), the region
+					// counter exact at every arm and byte-identity holding on all 21 corpus
+					// dumps. A title that gathers no palette never reaches the arm; the one
+					// price it pays is the merged fetch's ~300 SPIR-V words in the widest
+					// paletted variants (gs_tilegpu_shader_budget_tests holds them under the
+					// a650 cliff), unmeasured on those titles and accepted.
 					TileGpuClutMergeRegions : 1,
-					// ...and where a BURST of such palettes shares one owner page, copy
+					// ...and where a RUN of such palettes tiles whole rows of one owner page, copy
 					// the whole 64x32 page in one region and read them all out of it.
 					// A no-op unless TileGpuClutMergeRegions is also on, and a separate
 					// bit so the device A/B can bisect the two.
 					//
 					// A palette's 16x16 square is one eighth of a 64x32 owner page, so a
 					// game that renders a bank of palettes into a strip of the frame
-					// buffer and cycles it — which is what GT4 does — presents eight
+					// buffer and cycles it -- which is what GT4 does -- presents eight
 					// squares tiling one page. Measured on the same capture: all 139 of
 					// the frame's 32-region copy commands have their eight squares tiling
-					// page (0,0) of one image exactly. One region for eight palettes takes
-					// the frame's regions from 1,256 to 283, and the stream cost is zero
-					// (8 x 1,024 words IS one 2,048-word page).
+					// page (0,0) of one image exactly.
 					//
-					// The threshold is four: at eight the merge is strictly better on both
-					// time and stream, at two it would reserve four times the stream to
-					// save one region. Which threshold is right is unmeasured.
+					// The merge is a plan-build pass over the finished op array
+					// (MergeClutCopiesIntoPages, after the runs are spliced): a CONSECUTIVE
+					// run of merged squares from one owner, in one page, reserving
+					// contiguous stream slots and covering WHOLE rows of the page's 4x2
+					// square grid becomes one 64x16 or 64x32 region, and the draws reading
+					// those palettes are re-pointed at their squares' origins inside it at
+					// stride 64. Whole rows is forced, not tuned: n squares reserved n*256
+					// words and a 64x16h region writes 1024h, which agree only at n == 4h;
+					// a partial cover would write past the run into the next reservation
+					// (gsTileGpuClutPageBand, its own test). It was NOT built where it was
+					// first designed -- grouping at the source-overwrite site -- because
+					// that site only ever sees one 256-entry record at a time (the gather
+					// admits eight-bit palettes only at CSA 0, and a CSA-0 load restamps
+					// every mirror slot); the eight-square runs a capture shows are eight
+					// consecutive draws the executor batches into one command.
 					//
-					// Also pixel-inert by the same argument, with one more clause: a page
-					// that only part of a burst covers is copied whole, so words no
-					// palette addresses land in stream slots no fetch reaches. Under
-					// TileGpuPoisonAllocations those words may be poison; they are never
-					// read, so the poison-on identity claim is untouched.
+					// Pixel-inert by the same argument as the square merge: the band is
+					// exactly its squares' words, every one addressed by its own palette's
+					// fetch. Default ON, on the same A/B as TileGpuClutMergeRegions: it is
+					// the -16.8% -> -28.6% step on GT4 Online Public Beta, faster than
+					// regions-only on both wall and GPU time.
 					TileGpuClutMergePages : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
