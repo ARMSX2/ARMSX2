@@ -310,6 +310,12 @@ if(USE_OPENGL)
 	list(APPEND PCSX2_DEFS ENABLE_OPENGL)
 endif()
 
+if(ENABLE_LIBRETRO)
+	# Guards the pieces that only exist for the core - the frontend-owned GL
+	# context, for one - so a Qt or SDL build never compiles them.
+	list(APPEND PCSX2_DEFS ENABLE_LIBRETRO)
+endif()
+
 if(USE_VULKAN)
 	list(APPEND PCSX2_DEFS ENABLE_VULKAN)
 endif()
