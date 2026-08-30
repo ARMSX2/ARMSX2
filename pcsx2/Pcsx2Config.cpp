@@ -817,6 +817,13 @@ Pcsx2Config::GSOptions::GSOptions()
 	// frame on the SD865. Device A/B 2026-08-30 (SD865): gt4opb -14.6%, gt4 -12.8%, Spider-Man 3
 	// -3.3%, nothing slower; numbers and the mechanism in Config.h.
 	TileGpuKickReadbackFrames = true;
+	// Default TRUE: it is a correctness road, not a trade. A live alpha test answered by discarding
+	// the failing fragment drops writes the console makes under every AFAIL but KEEP, and the exact
+	// answer is a draw split that needs nothing from the device -- the one Classic and the shared
+	// Tile lowering already ship. It costs at most one extra indirect command over the same index
+	// range on the draws it serves; the three shapes it cannot serve exactly keep the discard and
+	// are censused. See Config.h.
+	TileGpuAfailSplit = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1189,6 +1196,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutBlockGather);
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
+	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

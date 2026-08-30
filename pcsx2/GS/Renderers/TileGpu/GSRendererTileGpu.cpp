@@ -275,6 +275,11 @@ GSRendererTileGpu::GSRendererTileGpu()
 			m_shader_write_mask ? "" : " (REFUSED: this device has no in-pass destination read)");
 	}
 
+	// The sound varies road, read once for the same reason: the split's second draw carries its own
+	// depth variant, which is a pass boundary on a device that asked for depth-uniform passes. Needs
+	// nothing from the device, so nothing narrows it here.
+	m_afail_split = GSConfig.TileGpuAfailSplit;
+
 	// The sixteen-bit CLUT gather, said out loud for the same reason the write mask above is: a
 	// lever whose whole effect is that a readback DOESN'T happen leaves no other trace in a log, and
 	// the population it serves is one title of twenty-one.
@@ -2544,6 +2549,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto afv = stat([](const MF& f) { return f.afail_varies; });
 	const auto afvr = stat([](const MF& f) { return f.afail_varies_rgb_only; });
 	const auto afvz = stat([](const MF& f) { return f.afail_varies_depth; });
+	const auto afss = stat([](const MF& f) { return f.afail_split_served; });
+	const auto afsr = stat([](const MF& f) { return f.afail_split_reordered; });
+	const auto afsd = stat([](const MF& f) { return f.afail_split_discard; });
+	const auto afsn = stat([](const MF& f) { return f.afail_split_refused_no_ztest; });
+	const auto afsx = stat([](const MF& f) { return f.afail_split_draws; });
+	const auto afso = stat([](const MF& f) { return f.afail_split_overlap_asked; });
 	const auto st = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.stalls[static_cast<u32>(s)]; });
 	};
@@ -2764,6 +2775,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  alpha test that VARIES under a non-KEEP AFAIL: %.2f / %u draws   of which RGB_ONLY "
 					"%.2f / %u   of which depth-writing %.2f / %u",
 		afv.mean, afv.p50, afvr.mean, afvr.p50, afvz.mean, afvz.p50);
+	// ...and of those, the ones whose failing fragments the DISCARD would drop a write for, which is
+	// the population the draw split exists for. The discard line is what the road still owes: every
+	// draw on it loses something the console writes. Counted on both arms -- an OFF run reports the
+	// same population an ON run does, or the two are not comparable.
+	Console.WriteLn("    of which the discard would drop a write: split exactly %.2f / %u   split with the "
+					"fragments reordered %.2f / %u   still discarding %.2f / %u (no depth test %.2f)   "
+					"extra draws %.2f / %u, overlap asked %.2f (TileGpuAfailSplit %s)",
+		afss.mean, afss.p50, afsr.mean, afsr.p50, afsd.mean, afsd.p50, afsn.mean, afsx.mean, afsx.p50,
+		afso.mean, m_afail_split ? "on" : "off");
 	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared, "
 					"%.2f / %u draws inside a declaring pass",
 		srd.mean, srd.p50, srp.mean, srp.p50, srpd.mean, srpd.p50);
@@ -5076,15 +5096,25 @@ void GSRendererTileGpu::AccumulateDraw()
 	//   * A palette the device holds and the CPU has not synced. The scan reads the CPU's CLUT
 	//     RAM, which is stale for those slots, and a verdict off the wrong palette is unsound --
 	//     the same failure GSRendererTile::BuildLoweringInput guards with its cpu_current check.
-	//     Asked of the slot mirror here (this road's ResolveDrawPalette is the same question in
-	//     its precise per-window form, and runs much further down), and asked about every slot
-	//     rather than the draw's window: conservative can only cost a fold, unsound moves pixels.
-	//     A readback would cost far more than the verdict is worth.
+	//     Asked of the slot mirror about THIS DRAW'S OWN SLOTS, the same window ResolveDrawPalette
+	//     resolves further down. A readback would cost far more than the verdict is worth.
+	//
+	// ⚠️ WIDENING IS NOT THE CONSERVATIVE ANSWER HERE, and the comment that used to stand in this
+	// place said it was ("conservative can only cost a fold, unsound moves pixels"). Both halves
+	// were wrong. Asking about every slot rather than the draw's window made ONE gathered palette
+	// un-bound every later palettised alpha test in the frame; and a fold that answers Varies is a
+	// SECOND APPROXIMATION rather than the safe one whenever AFAIL is not KEEP, because the
+	// fragment stage answers a live test by DISCARDING, which drops writes the console makes. That
+	// is what cost LEGO Star Wars both of its floor-reflection draws. What makes the widening safe
+	// is not the widening: it is gsTileGpuPlanAlphaSplit below, which realizes a varying test
+	// exactly. The contrast with ReaderFlags, where widening IS free, is that its conservative
+	// branch paints and this one discards.
 	u32 alpha_min = 0, alpha_max = 255;
 	if (ctx->TEST.ATE && ctx->TEST.ATST != ATST_ALWAYS && ctx->TEST.ATST != ATST_NEVER && !PRIM->AA1)
 	{
-		const bool palettised = PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0;
-		if (!palettised || !m_clut_mirror.AnyUnsynced())
+		const u32 tex_pal = PRIM->TME ? GSLocalMemory::m_psm[ctx->TEX0.PSM].pal : 0;
+		const bool palettised = tex_pal > 0;
+		if (m_clut_mirror.DrawSlotsCpuCurrent(tex_pal, ctx->TEX0.CSA))
 		{
 			if (palettised)
 				m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
@@ -5114,10 +5144,12 @@ void GSRendererTileGpu::AccumulateDraw()
 	// for every fragment is already exact (the fold moved it into the write flags); what is left is
 	// the draws that genuinely straddle AREF under an AFAIL that keeps something, where the fragment
 	// stage's discard drops what the console still writes.
-	// ...and the sliver of it this road can serve exactly: RGB_ONLY on a draw that writes no depth,
-	// where landing the failing fragment's colour costs nothing at the depth stage. Everything else
-	// keeps the discard.
-	const bool afail_keep_alpha = m_self_read && gsTileGpuAfailKeepsAlpha(atst_fold, afail, z_write);
+	// ...and the sliver of it the DESTINATION READ can serve exactly: RGB_ONLY on a draw that writes
+	// no depth, where landing the failing fragment's colour costs nothing at the depth stage. It is
+	// the road that predates the draw split below, and where the split serves the same draw the
+	// split wins -- it needs no read, so it declares nothing and taxes no pass. Settled once the
+	// split is planned, a few dozen lines down.
+	const bool afail_keep_alpha_road = m_self_read && gsTileGpuAfailKeepsAlpha(atst_fold, afail, z_write);
 	if (atst_fold == GSTileAlphaTestFold::Varies && ctx->TEST.ATE && afail != AFAIL_KEEP)
 	{
 		m_frame.afail_varies++;
@@ -5160,6 +5192,82 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (date_fold == GSTileDateFold::DropDraw)
 		return;
 	const u32 date = gsTileGpuDateRow(date_fold);
+
+	// -- the sound varies road -----------------------------------------------------------------
+	//
+	// A live alpha test is answered by the fragment stage DISCARDING the fragments that fail it,
+	// which is exact under AFAIL=KEEP and drops writes the console makes under the other three.
+	// gsTileGpuPlanAlphaSplit realizes it by splitting the draw instead -- Classic's
+	// `split_rgb_only` and `PASS_THEN_FAIL`, and the shared Tile lowering's `atst_split`, none of
+	// which needs anything from the device. What it needs from HERE is the order proof, which LABELS
+	// the result rather than gating it: the split happens either way, because every alternative was
+	// measured and this is the least wrong of them.
+	//
+	//  - DEPTH. The exact channel split's colour pass writes no depth, so a fragment it lands is
+	//    tested against the depth the draw FOUND rather than against what an earlier primitive of
+	//    the same draw wrote.
+	//  - COLOUR. The alpha byte moves to the other pass, so anything reading DESTINATION ALPHA in
+	//    the first -- a C=Ad blend factor, and on this renderer DATE, which can read the live pixel
+	//    where the device serves the in-pass read -- reads what the draw found rather than what an
+	//    earlier primitive of the same draw wrote. Classic guards the blend half; the DATE half is
+	//    ours, and Classic's own answer to it (swap the stencil DATE for a PrimID one) has no
+	//    analogue here.
+	//
+	// Both clauses are about primitives of this draw OVERLAPPING, so the overlap test settles
+	// either of them. It walks the vertex list, so it is asked only where the cheap clauses have
+	// already failed -- the same discipline GSRendererTile::BuildLoweringInput applies to the same
+	// question. What it buys is the census's exact-versus-reordered line, which is how much of this
+	// road's population it serves with no approximation at all, and the fact a per-draw rule for
+	// the reordered remainder would hang off.
+	//
+	// ⚠️ GetPrimitiveOverlapDrawlist, NOT PrimitiveOverlap. The latter answers UNKNOW for every
+	// triangle draw that is not a single quad, by POLICY rather than by cost: it exists for
+	// Classic's barrier decisions, where UNKNOW is the safe answer. Every draw whose cheap proof
+	// fails over the whole corpus is a triangle draw, so the cheap question would call the entire
+	// population reordered -- and the real answer proves twice as many exact (R&C UYA effects
+	// 60 -> 120 a frame, SotC 41 -> 64, dirge 10 -> 25).
+	const bool blend_reads_dest_alpha = PRIM->ABE && ctx->ALPHA.C == 1;
+	const bool cheap_z = !z_test || (ctx->TEST.ZTST == ZTST_GEQUAL && m_vt.m_eq.z);
+	const bool cheap_colour = !blend_reads_dest_alpha && date == 0;
+	GSTileAlphaSplit split = gsTileGpuPlanAlphaSplit(atst_fold, ctx->TEST.ATST, ctx->TEST.AREF, afail,
+		color_mask, z_write, z_test, cheap_z, cheap_colour, m_afail_split);
+	if (split.reorders_fragments)
+	{
+		m_frame.afail_split_overlap_asked++;
+		if (GetPrimitiveOverlapDrawlist(false) == PRIM_OVERLAP_NO)
+		{
+			split = gsTileGpuPlanAlphaSplit(atst_fold, ctx->TEST.ATST, ctx->TEST.AREF, afail, color_mask,
+				z_write, z_test, true, true, m_afail_split);
+		}
+	}
+	// The census of what became of the varying non-KEEP population. The number the design owes is
+	// the DISCARD line -- draws still losing a write the console makes -- and the reorder line
+	// beside it is the population served with the failing fragments arriving after the passing
+	// ones, which is an approximation but not a lost write.
+	if (split.discards_a_write)
+	{
+		if (split.refusal == GSTileAlphaSplitRefusal::NoDepthTest)
+		{
+			m_frame.afail_split_refused_no_ztest++;
+			m_frame.afail_split_discard++;
+		}
+		else if (!m_afail_split)
+			m_frame.afail_split_discard++;
+		else if (split.reorders_fragments)
+			m_frame.afail_split_reordered++;
+		else
+			m_frame.afail_split_served++;
+	}
+
+	// Where the split serves the draw it supersedes the destination read's alpha keep, which is the
+	// same repair bought with a declaration this does not need.
+	const bool afail_keep_alpha = afail_keep_alpha_road && split.pass_count == 1;
+	// What the PRINCIPAL draw -- the one the rest of this function builds -- writes and tests. The
+	// unsplit `color_mask` and `z_write` above stay the draw's own and go on driving every piece of
+	// page and seed bookkeeping below, because those describe what the draw lands in GS memory and
+	// the split's two passes union back to exactly that.
+	const u8 draw_color_mask = split.pass[0].color_mask;
+	const bool draw_z_write = split.pass[0].z_write;
 
 	// Admission to the in-pass destination read. The classifier is asked only where it can change the
 	// answer: without the road there is nothing to admit to, and its blend arm costs a GetAlphaMinMax
@@ -5233,8 +5341,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	const bool shader_blend = (self_mask & GSDevice::kGSTileGpuSelfBlend) != 0;
 	const bool shader_fbmsk =
 		(self_mask & GSDevice::kGSTileGpuSelfMask) != 0 && gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk) != 0;
-	const bool mask_in_shader =
-		gsTileGpuMasksInShader(m_shader_write_mask, color_mask, blend_active, shader_blend, shader_fbmsk);
+	// The PRINCIPAL's mask, not the draw's: this decides what the pipeline binds for the draw the
+	// rest of this function builds, and the split's second draw answers it for itself.
+	const bool mask_in_shader = gsTileGpuMasksInShader(
+		m_shader_write_mask, draw_color_mask, blend_active, shader_blend, shader_fbmsk);
 	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u) |
 							   (mask_in_shader ? GSDevice::kGSTileGpuSelfMask : 0u);
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
@@ -5337,7 +5447,11 @@ void GSRendererTileGpu::AccumulateDraw()
 	// Which pass is open for this draw? A draw whose key differs from the open pass's starts a new
 	// pass, and nothing the earlier draws did constrains its prep ops. Same key type the plan build
 	// groups on (gsTileGpuPassKeyFor), which is what keeps the two in step.
-	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, z_write);
+	// `z_used` is the DRAW's, so the depth ATTACHMENT is present for both halves of a split -- a
+	// render pass cannot gain or lose one -- while the write-enable is the principal's alone. The
+	// three depth-carrying variants are per indirect run, so the two halves differing there cuts a
+	// run and, only where the device asked for depth-uniform passes, a pass.
+	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, draw_z_write);
 	// The budget is charged HERE rather than where the classes were worked out, because a draw the
 	// surface pool refused above never becomes a pass and must not be priced as one. The group it is
 	// charged within is this same key with the reader dimension left out -- that dimension is what the
@@ -5435,40 +5549,21 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.fogcol = static_cast<u32>(m_env.FOGCOL.FCR) | (static_cast<u32>(m_env.FOGCOL.FCG) << 8) |
 				(static_cast<u32>(m_env.FOGCOL.FCB) << 16);
 
-	// The alpha test. A test the fold decided never reaches the fragment stage: every fragment
-	// takes the same road, so the write flags above already carry it (an all-fail draw's AFAIL
-	// decides what it lands; an all-pass one writes everything). What is left is a genuine
-	// per-fragment split, and it is worth emitting only where the two sides actually land
-	// differently -- AFAIL=FB_ONLY keeps the whole colour and drops only the depth write, so a
-	// draw that writes no depth is unaffected by its own test, which is most of a game's blended
-	// geometry.
-	//
-	// ⚠️ Wrong-fast: the fragment stage discards a failing fragment outright. That is exact for
-	// AFAIL=KEEP; for the three modes that still write something on failure it drops that write.
-	// The exact form needs the draw split in two -- one draw per side of the test, each with its
-	// own write masks and depth mode -- which costs an indirect run split per draw, so it waits
-	// until the run structure is measured rather than guessed. Rowed in the deferred-accuracy
-	// ledger. The fold above takes the decidable draws out of that population entirely: where the
-	// alpha INTERVAL cannot cross AREF there is no split to make, and the answer is exact. What
-	// is left in the approximation is the draw whose alpha genuinely straddles the reference --
-	// R&C UYA's flare was not one of those, and neither is Armored Core 3's HUD.
-	const bool ate_real = (atst_fold == GSTileAlphaTestFold::Varies);
-	bool needs_test = false;
-	if (ate_real)
+	// The alpha test, as the plan resolved it above. A test the fold decided never reaches the
+	// fragment stage: every fragment takes the same road, so the write flags already carry it (an
+	// all-fail draw's AFAIL decides what it lands; an all-pass one writes everything). A test that
+	// varies is emitted only where the two sides of it land differently -- AFAIL=FB_ONLY keeps the
+	// whole colour and drops only the depth write, so a draw that writes no depth is unaffected by
+	// its own test, which is most of a game's blended geometry -- and where they DO land
+	// differently, gsTileGpuPlanAlphaSplit has already decided whether this draw is the whole of
+	// itself or the first half of a channel or fragment split. Its comparison rides the row as
+	// ATST + 1, with zero meaning no test at all.
+	if (split.pass[0].atst != ATST_ALWAYS)
 	{
-		switch (afail)
-		{
-			case AFAIL_FB_ONLY: needs_test = z_write; break;
-			case AFAIL_ZB_ONLY: needs_test = color_written; break;
-			default: needs_test = true; break; // KEEP writes nothing on failure; RGB_ONLY drops alpha
-		}
+		pd.atst = static_cast<u32>(split.pass[0].atst) + 1;
+		pd.aref = split.pass[0].aref;
 	}
-	if (needs_test)
-	{
-		pd.atst = static_cast<u32>(ctx->TEST.ATST) + 1;
-		pd.aref = ctx->TEST.AREF;
-	}
-	pd.color_mask = color_mask;
+	pd.color_mask = draw_color_mask;
 
 	// Texture inputs. Three address geometries are sampled at this stage: the CT32 one (PSMCT32 and
 	// PSMCT24 as direct colour, their depth twins PSMZ32/PSMZ24 under one block XOR, and the
@@ -5997,7 +6092,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// back. The AFAIL fold is inside color_mask, so an all-fail RGB_ONLY draw's alpha is kept here too.
 	pd.mask_in_shader = mask_in_shader;
 	if (mask_in_shader)
-		pd.self_fbmsk |= gsTileGpuChannelKeepMask(color_mask);
+		pd.self_fbmsk |= gsTileGpuChannelKeepMask(draw_color_mask);
 	// What a 16-bit frame stores, truncated in the fragment stage wherever the fragment stage's
 	// output is what lands (gsTileGpuQuantisesOnWrite). A draw whose blend the executor's blend unit
 	// still has to run is quantised by the console after that blend, so it takes nothing here --
@@ -6009,10 +6104,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	// is worth a device round for the lever, and a counter that exists only in the arm that moved
 	// cannot answer that. `servable` asks the same predicate with the lever forced on, so the three
 	// read as one funnel: carried a mask -> the shader could serve it -> it did.
-	if (color_mask != 0 && color_mask != 0xF)
+	if (draw_color_mask != 0 && draw_color_mask != 0xF)
 	{
 		m_frame.mask_partial_draws++;
-		if (gsTileGpuMasksInShader(true, color_mask, blend_active, shader_blend, shader_fbmsk))
+		if (gsTileGpuMasksInShader(true, draw_color_mask, blend_active, shader_blend, shader_fbmsk))
 			m_frame.mask_servable_draws++;
 	}
 	m_frame.mask_shader_draws += mask_in_shader ? 1u : 0u;
@@ -6121,7 +6216,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.color_surface = fb_id;
 	pd.z_surface = z_id;
 	pd.z_used = z_used;
-	pd.z_write = z_write;
+	pd.z_write = draw_z_write;
 	pd.z_test = z_test;
 	pd.depth_mode = depth_mode;
 	// The three things that speak in the colour surface's pixel space, all translated by the
@@ -6344,6 +6439,101 @@ void GSRendererTileGpu::AccumulateDraw()
 		// One increment per plan entry, or the pass cap and the plan build's (j - i) stop agreeing.
 		CurrentRun().draw_count++;
 		m_frame.dualsrc_companions++;
+	}
+
+	if (split.pass_count == 2)
+	{
+		// THE SECOND HALF OF THE ALPHA-TEST SPLIT: what only a fragment on one side of the test may
+		// write. One more indirect command over the SAME index range -- no vertex is copied and no
+		// index is -- exactly as the carrier's alpha companion above is, and immediately after the
+		// principal so nothing can read the target between the two.
+		//
+		// Under RGB_ONLY and FB_ONLY the principal wrote colour for EVERY fragment with no test at
+		// all, and this one adds the alpha and the depth the passing fragments own. Under ZB_ONLY
+		// the split is by fragment instead -- the principal kept the real test and this one carries
+		// the inverted comparison and the depth write alone, because a channel split would have the
+		// first pass's depth be what the second tests against.
+		const GSTileAlphaSplitPass& p1 = split.pass[1];
+		const GSDevice::GSTileGpuDepthMode p1_depth =
+			gsTileGpuDepthModeFor(z_used, z_test, p1.z_write);
+		PendingDraw spd = pd;
+		spd.color_mask = p1.color_mask;
+		spd.z_write = p1.z_write;
+		spd.depth_mode = p1_depth;
+		spd.atst = (p1.atst != ATST_ALWAYS) ? (static_cast<u32>(p1.atst) + 1u) : 0u;
+		spd.aref = (p1.atst != ATST_ALWAYS) ? p1.aref : 0u;
+		// It writes the alpha byte the console stores, which is the fragment's own and never a
+		// blended value -- so no carrier may ride in it and the write mask stays on the pipeline
+		// where this draw's own channels are named.
+		spd.dualsrc_bits = 0;
+		spd.dualsrc_terms = 0;
+		spd.dualsrc_road = static_cast<u8>(GSDevice::GSTileGpuDualSrcRoad::None);
+		spd.mask_in_shader = false;
+		spd.self_fbmsk = gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk);
+		// The prep ops belong to the principal and have already run; this names an empty range so
+		// the pass grouping cannot hoist them a second time.
+		spd.first_prep_op = pd.first_prep_op + pd.prep_op_count;
+		spd.prep_op_count = 0;
+		spd.break_before = false;
+
+		// The depth WRITE-ENABLE differs between the two halves under the channel splits, and where
+		// the device asked for depth-uniform passes that is a pass BOUNDARY rather than a run cut.
+		// Taken here in accumulation's own idiom, and with all of the open pass's bookkeeping, so
+		// that its notion of where a pass ends and the plan build's cut go on naming the same
+		// boundaries: they are compared, and a disagreement puts a draw's prep ops in a pass the
+		// draw is not in. The pass cap is asked for the same reason -- this is one more plan entry.
+		const GSTileGpuPassKey p1_key = gsTileGpuPassKeyFor(
+			fb_id, z_id, p1_depth, m_depth_uniform_passes, spd.self_mask != 0, m_segregate_self_read);
+		if (p1_key != draw_key || !gsTileGpuPassAdmitsMore(CurrentRun().draw_count, m_max_pass_draws))
+		{
+			spd.break_before = true;
+			BreakOpenPass();
+			OpenRun& p1_run = CurrentRun();
+			// Everything BreakOpenPass cleared that this draw itself establishes in the new pass.
+			// The rule-2 bind first: a slot number belongs to the pass, so the principal's is not
+			// this one's, and an empty table makes it slot zero.
+			p1_run.date_written = sr;
+			if (spd.tex_source != kGSTileNoSurface)
+			{
+				p1_run.tex_src[0] = spd.tex_source;
+				p1_run.tex_count = 1;
+				spd.tex_slot = 0;
+			}
+			const u32 p1_arm = gsTileGpuClutGatherArm(spd.pal_mode);
+			if (p1_arm != 0)
+				p1_run.gather_arm = p1_arm;
+			p1_run.target_road = (spd.road_mask & GSDevice::kGSTileGpuRoadTarget) != 0;
+			if (spd.tex_enable && composed_tex)
+			{
+				p1_run.read |= tex_pages;
+				tex_pages.forEachSetPage([&](u32 page) { p1_run.read_slot[page] = m_ring_live[page]; });
+			}
+		}
+		CurrentRun().pass = p1_key;
+
+		GSDevice::GSTileGpuIndirectDraw split_draw = draw;
+		split_draw.state_index = static_cast<u32>(m_plan_draws.size());
+		m_plan_draws.push_back(split_draw);
+		m_plan_topologies.push_back(topology);
+		u32 split_key = GSDevice::GSTileGpuPassPlan::PackNoWrite(p1.color_mask);
+		if (spd.self_mask != 0)
+			split_key |= GSDevice::GSTileGpuPassPlan::kSelfRead;
+		m_plan_blend_keys.push_back(split_key);
+		m_plan_depth_modes.push_back(p1_depth);
+		spd.draw_index = split_draw.state_index;
+		m_plan_pending.push_back(spd);
+		// Same geometry, same target: this half's footprint is the principal's. Its write mask is
+		// narrower and its depth write is a subset of the draw's own, so copying the pair is exact
+		// rather than merely conservative -- neither half can reach a page the draw did not.
+		m_plan_write_pages.push_back(draw_write_pages);
+		m_plan_read_pages.push_back(draw_read_pages);
+		StageDraw(split_draw.state_index, draw_write_pages, draw_read_pages);
+		CurrentRun().draw_count++;
+		if (p1.z_write)
+			CurrentRun().z_written |= z_pages;
+		if (p1.color_mask != 0)
+			CurrentRun().color_written |= fb_pages;
+		m_frame.afail_split_draws++;
 	}
 }
 

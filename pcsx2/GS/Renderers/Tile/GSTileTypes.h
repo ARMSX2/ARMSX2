@@ -316,6 +316,209 @@ constexpr bool gsTileGpuAfailKeepsAlpha(GSTileAlphaTestFold fold, u32 afail, boo
 	return fold == GSTileAlphaTestFold::Varies && afail == AFAIL_RGB_ONLY && !depth_write;
 }
 
+/// The GS alpha comparison that accepts exactly the fragments this one rejects.
+constexpr u8 gsTileInvertAtst(u8 atst)
+{
+	constexpr u8 inverted[8] = {ATST_ALWAYS, ATST_NEVER, ATST_GEQUAL, ATST_GREATER, ATST_NOTEQUAL,
+		ATST_LESS, ATST_LEQUAL, ATST_EQUAL};
+	return inverted[atst & 7];
+}
+
+/// Why a draw whose alpha test genuinely varies under a non-KEEP AFAIL could not be split at all,
+/// for the census. A refused draw is the only one left on the discarding road.
+enum class GSTileAlphaSplitRefusal : u8
+{
+	None = 0,
+	/// ZTST=ALWAYS with a depth write. Both split shapes give one of their two passes no depth
+	/// write, and with no depth TEST either that pass carries no depth ATTACHMENT -- which its
+	/// partner needs, and which a render pass cannot gain or lose in the middle. There is no
+	/// "test always, write nothing" depth variant to lend it.
+	NoDepthTest,
+};
+
+/// One pass of a draw the alpha test splits: the channels it writes, whether it writes depth, and
+/// the comparison it runs. `atst == ATST_ALWAYS` means no test at all.
+struct GSTileAlphaSplitPass
+{
+	u8 color_mask;
+	bool z_write;
+	u8 atst;
+	u8 aref;
+};
+
+/// How a draw's alpha test is realized: one pass (`pass[0]` is the draw as it always was) or two.
+struct GSTileAlphaSplit
+{
+	u8 pass_count;
+	GSTileAlphaSplitPass pass[2];
+	GSTileAlphaSplitRefusal refusal;
+	/// The two passes land exactly the channels the console lands for every fragment -- that is the
+	/// contract, and both split shapes keep it. This says the ORDER they land in is not the
+	/// console's: the draw's own primitives overlap in a way the proof below could not rule out, so
+	/// the failing fragments arrive after the passing ones rather than interleaved with them. It is
+	/// the approximation Classic ships as PASS_THEN_FAIL, and it is strictly less wrong than the
+	/// discard it replaces, which drops those fragments outright.
+	bool reorders_fragments;
+	/// Whether the ONE-DRAW road -- a live test answered by discarding the fragments that fail it --
+	/// drops a write the console makes for this draw. Computed whatever the lever says, because it
+	/// is the population the road exists for and an OFF arm has to report the same number an ON arm
+	/// does or the two are not comparable.
+	bool discards_a_write;
+};
+
+/// How to realize an alpha test the fold could not decide, under an AFAIL that still writes
+/// something when a fragment fails.
+///
+/// ⚠️ THE DEFECT THIS EXISTS TO CLOSE. A raster fragment stage answers a live alpha test by
+/// DISCARDING the failing fragment, which is exact for AFAIL=KEEP and wrong for the other three:
+/// under RGB_ONLY the console paints the failing fragment's colour and drops only its alpha and
+/// depth writes, under FB_ONLY it paints the whole colour and drops the depth write, under ZB_ONLY
+/// it writes depth and drops the colour. A discard drops all of it. So "Varies" is not the
+/// conservative answer to "what is this draw's alpha test" — it is a SECOND APPROXIMATION, and the
+/// caller that widens an alpha bound it cannot compute walks straight into it. That is how LEGO
+/// Star Wars lost both of its floor-reflection draws (48,590 of 52,408 diverging pixels) the day
+/// the CLUT gather started leaving palettes on the device.
+///
+/// The exact realization needs nothing from the device: no dual-source blending, no in-pass
+/// destination read. It is a DRAW SPLIT, and it is the one Classic ships as `split_rgb_only`
+/// (GSRendererHW.cpp) and the shared Tile lowering ships as `atst_split` (GSTileDrawLowering.h).
+/// Under RGB_ONLY every fragment writes RGB and only the passing ones write A and Z, so one pass
+/// with the test OFF writing RGB and one with the test ON writing A and Z is exact — and strictly
+/// better than splitting by pass/fail, which would put RGB in both passes and composite
+/// overlapping primitives out of order. FB_ONLY is the same split with the whole colour in the
+/// first pass; ZB_ONLY is the one that cannot be split by channel, because the depth its first
+/// pass writes is what the second would then test against, so it splits by FRAGMENT on the
+/// inverted comparison instead.
+///
+/// Both halves of the ORDER PROOF are Classic's (`independent_z` / `independent_rgb`) and both ask
+/// about the draw's OWN fragments, because a split walks them twice:
+///
+///  - `independent_z`. The colour pass writes no depth, so a fragment it lands is tested against
+///    the depth the draw FOUND rather than against what an earlier primitive of the same draw
+///    wrote. It holds when nothing writes depth, when the test is ALWAYS, when every vertex sits
+///    at one depth under GEQUAL (rewriting a pixel with the depth it already holds still passes),
+///    or when no two of the draw's primitives touch a pixel.
+///  - `independent_colour`. The alpha byte moves to the second pass, so anything reading
+///    DESTINATION ALPHA in the first — a C=Ad blend factor, and on this renderer the DATE test —
+///    reads what the draw found rather than what an earlier primitive of the same draw wrote.
+///
+/// ⚠️ AND WHERE THE PROOF FAILS THE SPLIT STILL HAPPENS. It is labelled `reorders_fragments` and
+/// nothing else changes, because the alternatives were measured and this is the least wrong of
+/// them. The proof cannot be met on a triangle draw -- the overlap test answers YES or UNKNOWN for
+/// every one of them on the whole corpus -- and LEGO Star Wars' floor reflection is a triangle
+/// draw, so a road that refused on it would be a road that does not fix the defect it was written
+/// for. Whole-frame mean absolute error against Classic, four frames, this arm vs refusing:
+/// LEGO Star Wars 8.377 -> 1.764, R&C UYA gameplay 5.088 -> 4.717, FlatOut 2 12.381 -> 11.140,
+/// R&C UYA effects 7.561 -> 7.208, SotC 6.248 -> 6.190, dirge and GoW II and GT4 smaller, ac3
+/// 0.3869 -> 0.3884. ⚠️ MGS3 is the one that goes the other way, 5.455 -> 8.011, and it is booked:
+/// 44.5 FB_ONLY triangle draws a frame whose own primitives occlude each other, so the colour pass
+/// paints fragments a later primitive of the same draw would have hidden. Two other realizations
+/// were measured and are worse than this one on every title including MGS3 -- Classic's pass/fail
+/// (MGS3 14.772, SotC 7.540, LEGO 4.400) and the same channel split with the depth pass emitted
+/// first (MGS3 15.390, LEGO 4.484). The refusal is kept for the one shape no split expresses at
+/// all, and `reorders_fragments` is what a future per-draw rule for MGS3's population hangs off.
+///
+/// `color_mask` and `z_write` are the draw's own, after FBMSK and after the fold's AFAIL edit; the
+/// two returned passes always union back to them.
+constexpr GSTileAlphaSplit gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold fold, u32 atst, u32 aref, u32 afail,
+	u8 color_mask, bool z_write, bool z_test, bool independent_z, bool independent_colour, bool lever)
+{
+	const bool varies = (fold == GSTileAlphaTestFold::Varies);
+	// The one-draw answer first, and it is today's unchanged: the draw's own mask and depth write,
+	// carrying a live test only where the two sides of it land differently at all.
+	bool live_test = false;
+	if (varies)
+	{
+		switch (afail)
+		{
+			case AFAIL_FB_ONLY: live_test = z_write; break;
+			case AFAIL_ZB_ONLY: live_test = color_mask != 0; break;
+			default: live_test = true; break; // KEEP writes nothing on failure; RGB_ONLY drops alpha
+		}
+	}
+	GSTileAlphaSplit s{1,
+		{{color_mask, z_write, static_cast<u8>(live_test ? atst : ATST_ALWAYS),
+			 static_cast<u8>(live_test ? aref : 0u)},
+			{}},
+		GSTileAlphaSplitRefusal::None, false, false};
+	if (!varies || afail == AFAIL_KEEP)
+		return s; // under KEEP the discard IS what the console does
+
+	// What a FAILING fragment still writes, after the register algebra that turns an AFAIL edit
+	// removing a write the draw does not make into no edit at all. The shared Tile lowering makes
+	// the same three simplifications, in the same order.
+	u32 af = afail;
+	if (af == AFAIL_RGB_ONLY && !(color_mask & kGSTileChannelAlpha))
+		af = AFAIL_FB_ONLY; // no alpha write to suppress
+	const bool fail_writes_same =
+		(af == AFAIL_FB_ONLY && !z_write) || (af == AFAIL_ZB_ONLY && color_mask == 0);
+	const bool fail_writes_nothing =
+		(af == AFAIL_FB_ONLY && color_mask == 0) ||
+		(af == AFAIL_RGB_ONLY && !(color_mask & kGSTileChannelsRGB)) ||
+		(af == AFAIL_ZB_ONLY && !z_write);
+	// The one-draw road drops a write only where it actually emits a discarding test AND the
+	// failing fragment still had something to write. A draw whose two sides write the same channels
+	// never got a test in the first place (FB_ONLY with no depth write, ZB_ONLY with no colour), so
+	// it is not in this population -- OutRun 2006's 19.88 varying draws a frame are all that shape.
+	s.discards_a_write = live_test && !fail_writes_nothing;
+	if (!lever)
+		return s;
+	if (fail_writes_same)
+	{
+		// Passing and failing fragments write the same channels, so the test decides nothing and
+		// the DISCARD is the only thing it can still do — which is exactly the wrong thing. It goes
+		// away entirely, for one draw and no split. (The population is an RGB_ONLY draw whose alpha
+		// channel is masked off and which writes no depth: the shape gsTileGpuAfailKeepsAlpha
+		// serves where a destination read is admitted, and nothing serves where it is not.)
+		s.pass[0].atst = ATST_ALWAYS;
+		s.pass[0].aref = 0;
+		return s;
+	}
+	if (fail_writes_nothing)
+		return s; // the discard is exact
+
+	if (z_write && !z_test)
+	{
+		// One pass of either split shape writes no depth, and with no depth TEST either it carries
+		// no depth attachment at all. Nothing here can express that, so this one draw keeps the
+		// discard -- the only case that does.
+		s.refusal = GSTileAlphaSplitRefusal::NoDepthTest;
+		return s;
+	}
+
+	// A draw that writes no depth has no depth ordering to lose, whatever the caller could prove
+	// about the clauses it can see. Folded in here rather than left to every caller, because a
+	// caller that forgets it mislabels draws that were never at risk.
+	const bool z_order_ok = independent_z || !z_write;
+
+	s.pass_count = 2;
+	const u8 atst8 = static_cast<u8>(atst);
+	const u8 aref8 = static_cast<u8>(aref);
+	if (af == AFAIL_ZB_ONLY)
+	{
+		// By FRAGMENT, and it is the only road for this mode: the depth a channel split's first
+		// pass writes is what its second would then test against.
+		s.reorders_fragments = !z_order_ok;
+		s.pass[0] = {color_mask, z_write, atst8, aref8};
+		s.pass[1] = {0, z_write, gsTileInvertAtst(atst8), aref8};
+	}
+	else if (af == AFAIL_RGB_ONLY)
+	{
+		// By CHANNEL: RGB for every fragment, then what only a passing fragment may write.
+		s.reorders_fragments = !(z_order_ok && independent_colour);
+		s.pass[0] = {static_cast<u8>(color_mask & kGSTileChannelsRGB), false, ATST_ALWAYS, 0};
+		s.pass[1] = {static_cast<u8>(color_mask & kGSTileChannelAlpha), z_write, atst8, aref8};
+	}
+	else // AFAIL_FB_ONLY
+	{
+		// By channel again: the whole colour for everyone, depth for the fragments that pass.
+		s.reorders_fragments = !z_order_ok;
+		s.pass[0] = {color_mask, false, ATST_ALWAYS, 0};
+		s.pass[1] = {0, z_write, atst8, aref8};
+	}
+	return s;
+}
+
 /// The source-alpha bound the blend classifier may use for a C=As draw.
 ///
 /// The classifier asks whether the blend factor can exceed 1, which is a question about the draw's

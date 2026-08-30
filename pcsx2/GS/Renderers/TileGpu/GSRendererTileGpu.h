@@ -2221,6 +2221,11 @@ private:
 	/// population the second pays best on: Spider-Man 3's masked draws are ~3,400 in the budget's unit
 	/// against a line of 256, on the title the lever exists for.
 	bool m_shader_write_mask = false;
+	/// EmuCore/GS/TileGpuAfailSplit: realize an alpha test the plan could not decide by SPLITTING the
+	/// draw instead of discarding the fragments that fail it. Read once at construction like the
+	/// levers above, and for the same reason -- the split's second draw carries its own depth
+	/// variant, which is a pass boundary on a device that asked for depth-uniform passes.
+	bool m_afail_split = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -3526,6 +3531,17 @@ private:
 		u32 afail_varies = 0;           // fold == Varies and AFAIL != KEEP
 		u32 afail_varies_rgb_only = 0;  // ...of which AFAIL == RGB_ONLY (the alpha-keep half)
 		u32 afail_varies_depth = 0;     // ...of which the draw also uses depth (the half a colour read cannot serve)
+		// ...and what became of that population once the draw split landed. `served` is the draws the
+		// split realized exactly (two draws, or one whose test decided nothing and went away);
+		// `discard` is what is left on the approximate road, which is the number the design owes and
+		// the three refusals below say why. served + discard is not afail_varies: a varying draw whose
+		// two sides write the same channels anyway was always exact and is in neither.
+		u32 afail_split_served = 0;    // ...split exactly, order and all
+		u32 afail_split_reordered = 0; // ...split, with the failing fragments landing after the passing ones
+		u32 afail_split_discard = 0;   // ...still discarding: a write the console makes is lost
+		u32 afail_split_refused_no_ztest = 0; // ZTST=ALWAYS + depth write: no attachment for the second pass
+		u32 afail_split_overlap_asked = 0;    // overlap tests the split's order proof paid for
+		u32 afail_split_draws = 0;            // the extra plan entries the split emitted
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
 		// Which ROAD each site's pool calls took, off the pool's own counters rather than a

@@ -568,3 +568,329 @@ TEST(TileGpuAlphaTestFold, AfailAlphaKeepIsServedOnlyWhereTheDrawWritesNoDepth)
 		EXPECT_FALSE(gsTileGpuAfailKeepsAlpha(Fold::Varies, afail, true)) << afail;
 	}
 }
+
+// ============================================================================================
+// THE SOUND VARIES ROAD -- what a draw the fold could NOT decide actually lands.
+//
+// A raster fragment stage answers a live alpha test by discarding the failing fragment. That is
+// exact under AFAIL=KEEP and wrong under the other three, which is why "Varies" is not the
+// conservative answer to "what is this draw's test": it is a SECOND APPROXIMATION. The caller that
+// widens an alpha bound it cannot compute -- which is what a palette left on the device makes it
+// do -- walks straight into it, and that is how LEGO Star Wars lost both of its floor-reflection
+// draws: 48,590 of 52,408 diverging pixels, on a lever that ships ON.
+//
+// gsTileGpuPlanAlphaSplit is the repair, and it needs nothing from the device. The contract it
+// owes is one sentence: for a fragment of ANY alpha, what the plan lands is what the console
+// lands. The sweep below states it that way rather than pinning field values, because the plan is
+// allowed to reach the answer with one draw or with two.
+// ============================================================================================
+
+namespace
+{
+/// What one pixel of the draw ends up with: the colour channels written, and whether depth was.
+struct Landed
+{
+	u8 color;
+	bool depth;
+	constexpr bool operator==(const Landed& o) const { return color == o.color && depth == o.depth; }
+};
+
+constexpr bool AtstPasses(u8 atst, u8 aref, u32 alpha)
+{
+	switch (atst)
+	{
+		case ATST_NEVER: return false;
+		case ATST_ALWAYS: return true;
+		case ATST_LESS: return alpha < aref;
+		case ATST_LEQUAL: return alpha <= aref;
+		case ATST_EQUAL: return alpha == aref;
+		case ATST_GEQUAL: return alpha >= aref;
+		case ATST_GREATER: return alpha > aref;
+		default: return alpha != aref; // NOTEQUAL
+	}
+}
+
+/// The console's own answer, straight off the AFAIL table: a passing fragment writes everything
+/// the masks let through, and a failing one writes what its AFAIL mode still allows.
+constexpr Landed ConsoleLands(u32 atst, u8 aref, u32 afail, u8 cm, bool zw, u32 alpha)
+{
+	if (AtstPasses(static_cast<u8>(atst), aref, alpha))
+		return {cm, zw};
+	switch (afail)
+	{
+		case AFAIL_KEEP: return {0, false};
+		case AFAIL_FB_ONLY: return {cm, false};
+		case AFAIL_ZB_ONLY: return {0, zw};
+		default: return {static_cast<u8>(cm & kGSTileChannelsRGB), false}; // RGB_ONLY
+	}
+}
+
+/// What the PLAN lands for the same fragment: the union over its passes, with a pass whose test
+/// rejects the fragment contributing nothing -- which is the fragment stage's discard, modelled.
+///
+/// ⚠️ ORDER-BLIND on purpose. It answers "which channels does this fragment end up writing", which
+/// is the contract every split shape owes; whether the passes land in the console's ORDER is
+/// `reorders_fragments`, and the pass/fail shape gives that up deliberately.
+constexpr Landed PlanLands(const GSTileAlphaSplit& s, u32 alpha)
+{
+	Landed l{0, false};
+	for (u32 p = 0; p < s.pass_count; p++)
+	{
+		const GSTileAlphaSplitPass& q = s.pass[p];
+		if (!AtstPasses(q.atst, q.aref, alpha))
+			continue;
+		l.color = static_cast<u8>(l.color | q.color_mask);
+		l.depth = l.depth || q.z_write;
+	}
+	return l;
+}
+
+constexpr u32 kRealAtsts[] = {ATST_LESS, ATST_LEQUAL, ATST_EQUAL, ATST_GEQUAL, ATST_GREATER, ATST_NOTEQUAL};
+constexpr u32 kAfails[] = {AFAIL_KEEP, AFAIL_FB_ONLY, AFAIL_ZB_ONLY, AFAIL_RGB_ONLY};
+} // namespace
+
+// ⚠️ THE CONTRACT, and the whole point of the road. Every draw the plan does not REFUSE must land,
+// for every fragment alpha, exactly the channels the console lands -- whichever split shape it
+// took. Red on the discarding road: it drops the failing fragment's colour under RGB_ONLY and
+// FB_ONLY and its depth under ZB_ONLY.
+TEST(TileGpuAlphaTestFold, EveryVaryingDrawThePlanAcceptsLandsWhatTheConsoleLands)
+{
+	u32 checked = 0, split = 0;
+	for (u32 atst : kRealAtsts)
+	{
+		for (u8 aref : {u8(0), u8(1), u8(64), u8(125), u8(128), u8(200), u8(255)})
+		{
+			for (u32 afail : kAfails)
+			{
+				for (u8 cm = 0; cm <= 0xF; cm++)
+				{
+					for (bool zw : {false, true})
+					{
+						for (bool zt : {false, true})
+						{
+							const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies,
+								atst, aref, afail, cm, zw, zt, true, true, true);
+							if (s.refusal != GSTileAlphaSplitRefusal::None)
+								continue;
+							split += (s.pass_count == 2) ? 1 : 0;
+							// The two passes always union back to the draw's own writes.
+							if (s.pass_count == 2)
+							{
+								EXPECT_EQ(u8(s.pass[0].color_mask | s.pass[1].color_mask), cm);
+								EXPECT_EQ(s.pass[0].z_write || s.pass[1].z_write, zw);
+							}
+							for (u32 alpha : {0u, 1u, 63u, 64u, 124u, 125u, 126u, 128u, 199u, 200u, 255u})
+							{
+								checked++;
+								EXPECT_TRUE(PlanLands(s, alpha) == ConsoleLands(atst, aref, afail, cm, zw, alpha))
+									<< "atst=" << atst << " aref=" << u32(aref) << " afail=" << afail
+									<< " cm=" << u32(cm) << " zw=" << zw << " zt=" << zt
+									<< " alpha=" << alpha << " passes=" << u32(s.pass_count);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	EXPECT_GT(checked, 10000u);
+	EXPECT_GT(split, 0u);
+}
+
+// LEGO Star Wars' floor reflection, the draw the filed defect is made of: PSMT4 sprite,
+// ATST=GEQUAL AREF=125, AFAIL=RGB_ONLY, ZTE=1 ZTST=GEQUAL ZMSK=0, FBMSK=0xFF000000 (so the alpha
+// channel is masked out by the register and RGB is not). Its palette is the one the 16-bit CLUT
+// gather leaves on the device, so the caller cannot bound its alpha and the fold answers Varies.
+TEST(TileGpuAlphaTestFold, LegoswFloorReflectionPaintsItsColourWithNoBoundOnItsAlpha)
+{
+	// FBMSK=0xFF000000 on a PSMCT32 frame keeps the alpha byte and writes RGB.
+	const u8 cm = gsTileFrameColorWriteMask(0xFF000000u, kC32, false, AFAIL_RGB_ONLY);
+	ASSERT_EQ(cm, kGSTileChannelsRGB);
+	const bool zw = gsTileDepthWriteSurvives(true, false, false, AFAIL_RGB_ONLY);
+	ASSERT_TRUE(zw);
+
+	// ARM A -- the palette is the CPU's, so the interval is computable, and it lies entirely below
+	// AREF (the record: "an interval entirely below AREF=125"). The fold decides all-fail: no test
+	// at all, RGB painted, no depth write.
+	const Fold arm_a = gsTileFoldAlphaTest(true, ATST_GEQUAL, 125, 0, 124);
+	EXPECT_EQ(arm_a, Fold::AllFail);
+	EXPECT_EQ(gsTileFrameColorWriteMask(0xFF000000u, kC32, true, AFAIL_RGB_ONLY), kGSTileChannelsRGB);
+	EXPECT_FALSE(gsTileDepthWriteSurvives(true, false, true, AFAIL_RGB_ONLY));
+
+	// ARM B -- the palette is on the device, so the caller hands the whole range over and the fold
+	// can decide nothing. The draw must still PAINT: one pass writing RGB with no test, then one
+	// writing the alpha the register masks off anyway plus the depth, for the fragments that pass.
+	const Fold arm_b = gsTileFoldAlphaTest(true, ATST_GEQUAL, 125, kAnyLo, kAnyHi);
+	EXPECT_EQ(arm_b, Fold::Varies);
+	const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(
+		arm_b, ATST_GEQUAL, 125, AFAIL_RGB_ONLY, cm, zw, /*z_test=*/true, true, true, true);
+	ASSERT_EQ(s.refusal, GSTileAlphaSplitRefusal::None);
+	ASSERT_EQ(s.pass_count, 2u);
+	EXPECT_EQ(s.pass[0].color_mask, kGSTileChannelsRGB);
+	EXPECT_EQ(s.pass[0].atst, u8(ATST_ALWAYS)); // no test: every fragment paints its colour
+	EXPECT_FALSE(s.pass[0].z_write);
+	EXPECT_EQ(s.pass[1].color_mask, 0u); // the register already masked this draw's alpha off
+	EXPECT_EQ(s.pass[1].atst, u8(ATST_GEQUAL));
+	EXPECT_EQ(s.pass[1].aref, 125u);
+	EXPECT_TRUE(s.pass[1].z_write);
+
+	// ...and the two arms land the SAME thing for every fragment of the draw, which is the property
+	// the gather owes and the discarding road broke.
+	for (u32 alpha = 0; alpha <= 124; alpha++)
+	{
+		EXPECT_TRUE(PlanLands(s, alpha) == (Landed{kGSTileChannelsRGB, false})) << alpha;
+	}
+}
+
+// The order proof, and what it decides. It never decides WHETHER the draw splits -- the split is
+// the least wrong realization available either way, measured -- only whether the result is EXACT or
+// carries the reorder of the draw's own overlapping fragments. Only one shape refuses outright, and
+// no split can express it.
+TEST(TileGpuAlphaTestFold, TheOrderProofLabelsTheSplitAndNeverRefusesIt)
+{
+	using Refusal = GSTileAlphaSplitRefusal;
+	const auto plan = [](u32 afail, bool zw, bool zt, bool iz, bool ic) {
+		return gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128, afail,
+			kGSTileChannelsRGBA, zw, zt, iz, ic, true);
+	};
+	// Depth the split would reorder: still split, still two passes, and the row says it reorders.
+	for (u32 afail : {u32(AFAIL_RGB_ONLY), u32(AFAIL_FB_ONLY), u32(AFAIL_ZB_ONLY)})
+	{
+		const GSTileAlphaSplit s = plan(afail, true, true, false, true);
+		EXPECT_EQ(s.refusal, Refusal::None) << afail;
+		EXPECT_EQ(s.pass_count, 2u) << afail;
+		EXPECT_TRUE(s.reorders_fragments) << afail;
+	}
+	// ...and with the proof met, the same shapes come out exact.
+	for (u32 afail : {u32(AFAIL_RGB_ONLY), u32(AFAIL_FB_ONLY), u32(AFAIL_ZB_ONLY)})
+	{
+		const GSTileAlphaSplit s = plan(afail, true, true, true, true);
+		EXPECT_EQ(s.pass_count, 2u) << afail;
+		EXPECT_FALSE(s.reorders_fragments) << afail;
+	}
+	// The channel splits put the whole colour in a pass with no test and no depth write; the
+	// fragment split ZB_ONLY needs keeps the real comparison and adds its inverse.
+	EXPECT_EQ(plan(AFAIL_FB_ONLY, true, true, true, true).pass[0].atst, u8(ATST_ALWAYS));
+	EXPECT_EQ(plan(AFAIL_RGB_ONLY, true, true, true, true).pass[0].atst, u8(ATST_ALWAYS));
+	EXPECT_EQ(plan(AFAIL_ZB_ONLY, true, true, true, true).pass[0].atst, u8(ATST_GEQUAL));
+	EXPECT_EQ(plan(AFAIL_ZB_ONLY, true, true, true, true).pass[1].atst, u8(ATST_LESS));
+	// Destination alpha the split would reorder -- only the RGB_ONLY channel split moves the alpha
+	// write, so only it is labelled by that clause.
+	EXPECT_TRUE(plan(AFAIL_RGB_ONLY, true, true, true, false).reorders_fragments);
+	EXPECT_FALSE(plan(AFAIL_FB_ONLY, true, true, true, false).reorders_fragments);
+	EXPECT_FALSE(plan(AFAIL_ZB_ONLY, true, true, true, false).reorders_fragments);
+	// A draw that writes no depth has no depth order to lose either way.
+	EXPECT_FALSE(plan(AFAIL_RGB_ONLY, false, false, false, true).reorders_fragments);
+	EXPECT_EQ(plan(AFAIL_RGB_ONLY, false, false, false, true).pass_count, 2u);
+	// ZTST=ALWAYS with a depth write is the one shape no split expresses: one of the two passes
+	// would have to carry no depth attachment, which its partner needs.
+	for (u32 afail : {u32(AFAIL_RGB_ONLY), u32(AFAIL_FB_ONLY), u32(AFAIL_ZB_ONLY)})
+	{
+		const GSTileAlphaSplit s = plan(afail, true, false, true, true);
+		EXPECT_EQ(s.refusal, Refusal::NoDepthTest) << afail;
+		EXPECT_EQ(s.pass_count, 1u) << afail;
+		EXPECT_EQ(s.pass[0].atst, u8(ATST_GEQUAL)) << afail; // left on the discarding road
+		EXPECT_TRUE(s.discards_a_write) << afail;
+	}
+}
+
+// The lever off is today's road, to the field: one draw, the live test wherever the two sides of
+// it land differently, and nothing else touched. That is what makes the A/B a clean one.
+TEST(TileGpuAlphaTestFold, TheLeverOffIsTheOneDrawRoadExactly)
+{
+	for (u32 atst : kRealAtsts)
+	{
+		for (u32 afail : kAfails)
+		{
+			for (u8 cm = 0; cm <= 0xF; cm++)
+			{
+				for (bool zw : {false, true})
+				{
+					const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, atst,
+						128, afail, cm, zw, true, true, true, false);
+					EXPECT_EQ(s.pass_count, 1u);
+					EXPECT_EQ(s.pass[0].color_mask, cm);
+					EXPECT_EQ(s.pass[0].z_write, zw);
+					bool live = true;
+					if (afail == AFAIL_FB_ONLY)
+						live = zw;
+					else if (afail == AFAIL_ZB_ONLY)
+						live = cm != 0;
+					EXPECT_EQ(s.pass[0].atst, u8(live ? atst : ATST_ALWAYS));
+					EXPECT_EQ(s.pass[0].aref, u8(live ? 128 : 0));
+				}
+			}
+		}
+	}
+	// A fold that decided needs no test whatever the lever says.
+	for (bool lever : {false, true})
+	{
+		const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::AllPass, ATST_GEQUAL, 128,
+			AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, true, true, true, lever);
+		EXPECT_EQ(s.pass_count, 1u);
+		EXPECT_EQ(s.pass[0].atst, u8(ATST_ALWAYS));
+	}
+}
+
+// The comparison that accepts exactly what its partner rejects, which is what the ZB_ONLY split
+// needs and the only place a fragment split is the exact one.
+TEST(TileGpuAlphaTestFold, TheInvertedComparisonPartitionsEveryAlpha)
+{
+	for (u32 atst = 0; atst < 8; atst++)
+	{
+		const u8 inv = gsTileInvertAtst(static_cast<u8>(atst));
+		for (u32 aref = 0; aref < 256; aref++)
+		{
+			for (u32 alpha = 0; alpha < 256; alpha++)
+			{
+				EXPECT_NE(AtstPasses(static_cast<u8>(atst), static_cast<u8>(aref), alpha),
+					AtstPasses(inv, static_cast<u8>(aref), alpha))
+					<< atst << " " << aref << " " << alpha;
+			}
+		}
+	}
+}
+
+// The census predicate: which draws the one-draw road actually loses a write on. It is the number
+// the road is judged by, so it must not count a draw that was never discarding anything -- OutRun
+// 2006's 19.88 varying draws a frame are AFAIL=FB_ONLY with no depth write, whose two sides write
+// the same channels, so the test was never emitted and nothing was ever dropped.
+TEST(TileGpuAlphaTestFold, TheDiscardCensusCountsOnlyDrawsThatActuallyLoseAWrite)
+{
+	const auto plan = [](u32 afail, u8 cm, bool zw, bool lever) {
+		return gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128, afail, cm, zw,
+			/*z_test=*/true, true, true, lever);
+	};
+	for (bool lever : {false, true})
+	{
+		// OutRun's shape: FB_ONLY, no depth write. Passing and failing fragments write the same
+		// colour, so the one-draw road emits no test at all.
+		EXPECT_FALSE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever).discards_a_write);
+		EXPECT_EQ(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever).pass[0].atst, u8(ATST_ALWAYS));
+		// ZB_ONLY with no colour write is the same statement the other way round.
+		EXPECT_FALSE(plan(AFAIL_ZB_ONLY, 0, true, lever).discards_a_write);
+		// KEEP is what the discard already does exactly.
+		EXPECT_FALSE(plan(AFAIL_KEEP, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		// A failing fragment with nothing left to write: the mask already took it.
+		EXPECT_FALSE(plan(AFAIL_RGB_ONLY, kGSTileChannelAlpha, true, lever).discards_a_write);
+
+		// ...and the three that do lose something.
+		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_ZB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		// The RGB_ONLY draw whose alpha the register already masked and which writes no depth: the
+		// test decides nothing and yet the one-draw road still discarded on it. Repaired without a
+		// split at all, by dropping the test.
+		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, lever).discards_a_write);
+	}
+	EXPECT_EQ(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, true).pass_count, 1u);
+	EXPECT_EQ(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, true).pass[0].atst, u8(ATST_ALWAYS));
+	EXPECT_EQ(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, false).pass[0].atst, u8(ATST_GEQUAL));
+	// A fold that decided is never in the population, whatever the AFAIL.
+	for (u32 afail : kAfails)
+	{
+		EXPECT_FALSE(gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::AllFail, ATST_GEQUAL, 128, afail,
+			kGSTileChannelsRGBA, true, true, true, true, true)
+						 .discards_a_write);
+	}
+}

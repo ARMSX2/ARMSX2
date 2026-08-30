@@ -1602,6 +1602,83 @@ struct Pcsx2Config
 					// threshold), queued behind removing the pulls themselves (the 16-bit
 					// CLUT gather), which is the only thing that helps that title.
 					TileGpuKickReadbackFrames : 1,
+					// Serve an alpha test the plan could not decide EXACTLY, by splitting the
+					// draw, instead of discarding the fragments that fail it.
+					//
+					// ⚠️ THE DEFECT. A raster fragment stage answers a live alpha test by
+					// discarding the failing fragment. That is exact under AFAIL=KEEP and
+					// wrong under the other three: RGB_ONLY paints the failing fragment's
+					// colour and drops only its alpha and depth writes, FB_ONLY paints the
+					// whole colour and drops the depth write, ZB_ONLY writes depth and drops
+					// the colour. So "Varies" was never the conservative answer to "what is
+					// this draw's alpha test" — it is a SECOND APPROXIMATION, and any caller
+					// that widens an alpha bound it cannot compute walks into it. That is
+					// what cost LEGO Star Wars both of its floor-reflection draws, 48,590 of
+					// 52,408 diverging pixels, the day the CLUT gather started leaving
+					// palettes on the device and the fold stopped being able to bound them.
+					//
+					// The exact realization needs NOTHING from the device — no dual-source
+					// blending, no in-pass destination read — and both of this tree's other
+					// renderers already ship it: Classic as `split_rgb_only`
+					// (GSRendererHW.cpp) and the shared Tile lowering as `atst_split`
+					// (GSTileDrawLowering.h). Under RGB_ONLY every fragment writes RGB and
+					// only the passing ones write A and Z, so one pass with the test OFF
+					// writing RGB and one with the test ON writing A and Z is exact — and
+					// strictly better than splitting by pass/fail, which puts RGB in both
+					// passes and composites overlapping primitives out of order. FB_ONLY is
+					// the same split with the whole colour in the first pass. ZB_ONLY cannot
+					// be split by channel (the depth its first pass writes is what the second
+					// would test against), so it splits by FRAGMENT on the inverted
+					// comparison. gsTileGpuPlanAlphaSplit is the one decision and
+					// gs_tilegpu_alpha_test_fold_tests sweeps its whole domain against the
+					// console's AFAIL table, per fragment alpha.
+					//
+					// ONE shape is refused and keeps the discard, with its own census line:
+					// a ZTST=ALWAYS draw that writes depth. Both split shapes give one of
+					// their passes no depth write, and with no depth TEST either that pass
+					// carries no depth ATTACHMENT — which its partner needs, and which a
+					// render pass cannot gain or lose in the middle. Zero draws a frame on
+					// the whole corpus.
+					//
+					// The ORDER PROOF (Classic's independent_z / independent_rgb, plus DATE
+					// which on this renderer can read the live pixel) LABELS the result
+					// rather than gating it. It cannot be met on a triangle draw — the
+					// overlap test answers YES or UNKNOWN for every one of them on this
+					// corpus — and LEGO Star Wars' floor reflection is a triangle draw, so a
+					// road that refused there would not fix the defect it was written for.
+					// Whole-frame mean absolute error against Classic, four frames, splitting
+					// the unproved draws vs refusing them: LEGO Star Wars 8.377 -> 1.764,
+					// R&C UYA gameplay 5.088 -> 4.717, FlatOut 2 12.381 -> 11.140, R&C UYA
+					// effects 7.561 -> 7.208, SotC 6.248 -> 6.190; dirge, God of War II and
+					// GT4 smaller; AC3 0.3869 -> 0.3884.
+					//
+					// ⚠️ MGS3 GOES THE OTHER WAY AND IS A FILED DEFECT, NOT A REASON TO HOLD
+					// THIS OFF: 5.455 -> 8.011. Its 44.5 FB_ONLY triangle draws a frame have
+					// primitives that occlude each other, so the colour pass paints fragments
+					// a later primitive of the same draw would have hidden. Two other
+					// realizations were measured and are worse than this one on EVERY title
+					// including MGS3 — Classic's pass/fail (MGS3 14.772, SotC 7.540, LEGO
+					// 4.400) and the same channel split with the depth pass emitted first
+					// (MGS3 15.390, LEGO 4.484). The next move on that population is a
+					// per-draw rule, and the census's exact-versus-reordered line is what it
+					// hangs off.
+					//
+					// COSTS AT MOST ONE EXTRA DRAW on the draws it serves, and no extra pass
+					// except where the device asked for depth-uniform passes (Adreno) and the
+					// two halves carry different depth variants. Nothing else moves: the
+					// second draw is one more indirect command over the SAME index range, the
+					// way the dual-source alpha companion already is.
+					//
+					// Default TRUE. The population is the corpus's varying non-KEEP AFAIL
+					// draws whose failing fragments the discard would drop — 531 a frame on
+					// R&C UYA's effects scene, 421 on its gameplay one, 124 SotC, 64 MGS3, 50
+					// God of War II, 46 dirge, 18 FlatOut 2, 14.6 LEGO Star Wars, 5 GT4, 5
+					// Ace Combat 5, 2 AC3, 2 GT4 Online Public Beta. Seven dumps have none
+					// and are byte-identical by construction, and OutRun 2006's 19.9 varying
+					// draws a frame are the shape whose two sides write the same channels, so
+					// they never carried a test and are byte-identical too. OFF reproduces
+					// the pre-split tree hash for hash on all 21.
+					TileGpuAfailSplit : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella
