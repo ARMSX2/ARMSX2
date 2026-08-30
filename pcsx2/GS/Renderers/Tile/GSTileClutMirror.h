@@ -114,6 +114,24 @@ public:
 		return true;
 	}
 
+	/// The same question asked about the slots ONE DRAW reads: the slot at CSA for a four-bit
+	/// index, all sixteen for an eight-bit one at CSA 0. `pal_entries` is
+	/// `GSLocalMemory::m_psm[TEX0.PSM].pal` — 0 (not palettised), 16, or 256.
+	///
+	/// An eight-bit draw at a NON-ZERO CSA reads a window these sixteen slots cannot name, so it
+	/// falls back to asking about every slot. That is the same answer or a stricter one, never a
+	/// wider one, which is the only direction a caller widening its bound can afford.
+	bool DrawSlotsCpuCurrent(u32 pal_entries, u32 csa) const
+	{
+		if (pal_entries == 0)
+			return true;
+		if (pal_entries == 16)
+			return CpuCurrent(csa & 15, 1);
+		if ((csa & 15) == 0)
+			return CpuCurrent(0, kSlots);
+		return !AnyUnsynced();
+	}
+
 	bool AnyGpu() const
 	{
 		for (const Slot& s : m_slots)

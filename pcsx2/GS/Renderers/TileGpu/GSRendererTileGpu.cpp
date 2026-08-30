@@ -2070,12 +2070,32 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 				// (the base trace's Update only zeroes m_alpha.valid; the renderer computes
 				// the range lazily, which the plain-GSRenderer base does not do for us). A
 				// palettised draw needs the CLUT's decoded read buffer current first or the
-				// scan reads the previous draw's palette; there is no GPU-resident palette on
-				// this road yet, so the Tile feeder's conservative not-cpu-current branch does
-				// not apply here.
-				if (PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
-					m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
-				const int amax = GetAlphaMinMax().max;
+				// scan reads the previous draw's palette.
+				//
+				// ⚠️ And "current" is a question about the DRAW'S OWN SLOTS, not about the
+				// CLUT RAM's age. The gathers leave a palette the game rendered on the device
+				// and the RAM stale for its slots, so the scan would fold the wrong palette's
+				// alpha in — and this road is reached on every blended draw of a title that
+				// gathers. Where the mirror says the slots are not the CPU's, the scan is
+				// skipped outright (it would cache a wrong answer for the fold further down
+				// as well) and the bound widens to the whole range.
+				//
+				// Widening is what Classic does with the same fact, and it is sound HERE
+				// because the conservative branch PAINTS: ReaderFacGt1 admits the draw to a
+				// destination read it may not need, which costs a read and never a pixel.
+				// That asymmetry is the whole lesson of the alpha-test fold's own guard,
+				// where the conservative branch DISCARDS instead.
+				const u32 pal_entries = PRIM->TME ? GSLocalMemory::m_psm[ctx->TEX0.PSM].pal : 0;
+				const bool palettised = pal_entries > 0;
+				const bool clut_cpu_current = m_clut_mirror.DrawSlotsCpuCurrent(pal_entries, ctx->TEX0.CSA);
+				u32 scanned_max = 0;
+				if (clut_cpu_current)
+				{
+					if (palettised)
+						m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+					scanned_max = static_cast<u32>(std::clamp(GetAlphaMinMax().max, 0, 255));
+				}
+				const u32 amax = gsTileGpuReaderSourceAlphaMax(palettised, clut_cpu_current, scanned_max);
 				if (amax > 0x80)
 					reader_flags |= GSTilePassSim::ReaderFacGt1;
 				else

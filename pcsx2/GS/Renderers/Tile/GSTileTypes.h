@@ -315,6 +315,26 @@ constexpr bool gsTileGpuAfailKeepsAlpha(GSTileAlphaTestFold fold, u32 afail, boo
 {
 	return fold == GSTileAlphaTestFold::Varies && afail == AFAIL_RGB_ONLY && !depth_write;
 }
+
+/// The source-alpha bound the blend classifier may use for a C=As draw.
+///
+/// The classifier asks whether the blend factor can exceed 1, which is a question about the draw's
+/// POST-texture-function alpha, and on a palettised draw the answer is folded out of the CPU's
+/// decoded CLUT. The CLUT gathers leave that RAM stale for every slot a device palette wrote, so a
+/// scan of it answers off the WRONG palette. Where the mirror says the draw's own slots are not
+/// CPU-current the bound therefore widens to the whole range — which is what Classic does with the
+/// same fact (GSRendererHW::CalcAlphaMinMax(0, 255) when the CLUT has a GPU texture).
+///
+/// ⚠️ Widening is sound HERE and unsound at the alpha-test fold, and the difference is what the two
+/// fallbacks DO. This one admits the draw to a destination read it may not need: it costs a read and
+/// never a pixel. The fold's fallback hands the draw a live DISCARDING test, which under an AFAIL
+/// that still writes something drops writes the console makes — so that site owes a sound road for
+/// a varying test before it may widen, and this one does not.
+constexpr u32 gsTileGpuReaderSourceAlphaMax(bool palettised, bool clut_cpu_current, u32 scanned_max)
+{
+	return (palettised && !clut_cpu_current) ? 255u : scanned_max;
+}
+
 /// Pack the ALPHA register (plus COLCLAMP, PABE and the frame format) into the row. `fmt` is
 /// `GSLocalMemory::m_psm[FRAME.PSM].fmt` -- 0 = 32-bit, 1 = 24-bit, 2 = 16-bit.
 constexpr u32 gsTileGpuPackBlend(bool abe, u32 a, u32 b, u32 c, u32 d, u32 fix, bool colclamp, bool pabe, u32 fmt)

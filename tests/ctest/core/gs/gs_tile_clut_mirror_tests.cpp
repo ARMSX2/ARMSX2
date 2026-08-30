@@ -16,6 +16,7 @@
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSTileTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -101,6 +102,55 @@ TEST(GSTileClutMirror, SyncingMakesTheCpuCurrentWithoutChangingTheVerdict)
 		visited++;
 	});
 	EXPECT_EQ(visited, 1u);
+}
+
+// The draw's own window, which is the question every CONSUMER of the CPU's CLUT bytes has to ask.
+// AnyUnsynced() is the whole mirror: one gathered palette makes it true for every later palettised
+// draw in the frame, whatever that draw reads.
+TEST(GSTileClutMirror, ADrawAsksAboutItsOwnSlots)
+{
+	GSTileClutMirror m;
+	m.OnGpuLoad(3, 1, 5); // a four-bit load at CSA 3 gathered off a target
+
+	EXPECT_TRUE(m.AnyUnsynced()); // the whole-mirror question is now true for everyone
+	EXPECT_FALSE(m.DrawSlotsCpuCurrent(16, 3)); // ...and rightly so for the draw that reads slot 3
+	EXPECT_TRUE(m.DrawSlotsCpuCurrent(16, 4));  // ...but not for one reading any other slot
+	EXPECT_TRUE(m.DrawSlotsCpuCurrent(0, 0));   // an untextured or direct-format draw reads none
+	// An eight-bit draw at CSA 0 reads every slot, so it sees the gathered one.
+	EXPECT_FALSE(m.DrawSlotsCpuCurrent(256, 0));
+	// ...and one at a non-zero CSA reads a window the sixteen slots cannot name, so it takes the
+	// whole-mirror answer rather than guessing a narrower one.
+	EXPECT_FALSE(m.DrawSlotsCpuCurrent(256, 4));
+}
+
+// ⚠️ THE DEFECT THIS PINS. GSRendererTileGpu::ReaderFlags decides a C=As blend's self-read class
+// from the draw's post-texture-function alpha maximum, which it folds out of the CPU's decoded
+// CLUT. Once a gather leaves the palette on the device those bytes are stale for the draw's slots,
+// and the scan answers off whatever palette the CPU last held — picking ReaderAsDualSource for a
+// draw whose real factor may exceed 1. The bound has to widen to the sound whole range instead,
+// which is what Classic does with the same fact.
+TEST(GSTileClutMirror, AGatheredPaletteWidensTheCAsBlendBound)
+{
+	GSTileClutMirror m;
+	// legosw's shape: a four-bit index at CSA 0 whose palette the 16-bit gather took.
+	m.OnGpuLoad(0, 1, 9);
+	const bool cpu_current = m.DrawSlotsCpuCurrent(16, 0);
+	EXPECT_FALSE(cpu_current);
+
+	// The stale CPU palette scans a maximum of 0x7F, which is at or below the 0x80 that means a
+	// factor of 1 — so the unguarded road calls the blend expressible. The guarded one cannot.
+	constexpr u32 kStaleScan = 0x7F;
+	EXPECT_EQ(gsTileGpuReaderSourceAlphaMax(true, cpu_current, kStaleScan), 255u);
+	EXPECT_GT(gsTileGpuReaderSourceAlphaMax(true, cpu_current, kStaleScan), 0x80u);
+
+	// A palette the CPU still owns keeps its scanned bound: the widening is the guard firing, not
+	// the classifier giving up on every palettised draw.
+	m.MarkSynced(9);
+	EXPECT_TRUE(m.DrawSlotsCpuCurrent(16, 0));
+	EXPECT_EQ(gsTileGpuReaderSourceAlphaMax(true, m.DrawSlotsCpuCurrent(16, 0), kStaleScan), kStaleScan);
+	// ...and an unpalettised draw is never widened, whatever the mirror says.
+	m.OnGpuLoad(0, 1, 9);
+	EXPECT_EQ(gsTileGpuReaderSourceAlphaMax(false, m.DrawSlotsCpuCurrent(0, 0), kStaleScan), kStaleScan);
 }
 
 namespace
