@@ -1354,21 +1354,38 @@ struct Pcsx2Config
 					// dirge's are a depth owner; neither is served by this and both are
 					// separate designs.
 					//
-					// ⚠️ LEGO STAR WARS IS NOT BYTE-IDENTICAL, and the cause is NOT this road.
-					// Removing the CLUT pulls stops them poisoning m_cpu_read_pages, so upload
-					// spills that used to take the blocking road take the GPU merge instead
-					// (1.50 -> 0.00 upload stalls a frame, 0.25 -> 1.75 pages merged on the
-					// GPU) — and the two roads are not producing the same bytes there, which
-					// is the merge's own standing claim. Proof it is not the palette: with
-					// TileGpuUploadSpillReadback ON, forcing that spill down the blocking road,
-					// BOTH arms reproduce the off-arm hash exactly. The pages are 389 and 391,
-					// a PSMCT32 FBW-1 transfer into a PSMCT16 FBW-8 owner. Nothing else on the
-					// corpus moves.
+					// ⚠️ LEGO STAR WARS IS NOT BYTE-IDENTICAL, and the cause is NOT the merge.
+					// RenderDoc shows the merge's bytes are exact. A dedicated investigation
+					// refuted the old merge-defect story here; its "proof" was invalid because
+					// TileGpuUploadSpillReadback ON silences the gather AND the merge
+					// together, so it could not separate them. The real cause is a
+					// PRE-EXISTING alpha-test-fold unsoundness this lever exposes: leaving the
+					// palette on the GPU makes GSTileClutMirror::AnyUnsynced() true over the
+					// pages the PSMCT32 FBW-1 transfer wrote into the PSMCT16 FBW-8 owner
+					// (pages 389 and 391), so AccumulateDraw skips GetAlphaMinMax() for two
+					// reflection draws (d134, d135). The fold then sees alpha bounds 0..255,
+					// classifies the test "Varies", and the live test DISCARDS failing
+					// fragments, which is unsound whenever AFAIL is not KEEP since RGB_ONLY
+					// must still paint colour and drop only alpha/depth. Those two draws
+					// vanishing is 48,590 of the 52,408 diverging pixels. Filed as a TileGpu
+					// unsoundness, not a merge bug; the fix is a sound GPU "varies" road: an
+					// in-pass destination-alpha read, or depth handled without a sync stall,
+					// never sync-on-demand. The upload numbers this section used to cite (1.50
+					// -> 0.00 upload stalls a frame, 0.25 -> 1.75 pages merged) still happen
+					// once the CLUT pulls stop poisoning m_cpu_read_pages; they were never
+					// evidence about correctness. Suite-quantified cost of shipping this ON:
+					// worst-wrong-pixel +3.32pp SD865, +4.19pp rg477v, +3.33pp local, uniform
+					// across all three roots.
 					//
-					// ⚠️ Device A/B PENDING: everything above is M2/lavapipe plus a build-time
-					// shader-size gate. What M2 does say, directionally: Spider-Man 3's frame
-					// p50 124.41 -> 78.59 ms, readbacks 1969 -> 673, blocking waits 246 -> 84
-					// a frame.
+					// ⚠️ Device A/B DONE (SD865, 2026-08-30, record
+					// devs/bmdhacks/perf/tilegpu-clut16-sm3-sd865-18aac48637/ in the
+					// umbrella). Spider-Man 3 frame p50 92.54 -> 61.42 ms (-33.6%), GPU 54.47
+					// -> 40.18 ms, GS-thread CPU 39.60 -> 28.97 ms, sync wait 23.28 -> 1.32
+					// ms. Out-of-band wait is UNMOVED: 28.78 -> 28.60 ms (173 -> 52 calls at
+					// 0.17 -> 0.55 ms each). Total blocking 55.16 -> 33.10 ms. The frame is
+					// left CPU-thread-bound (29 + 33 ≈ 61); the remaining 52 pulls a frame are
+					// 42 upload spills plus 10 multi/partial CLUT loads, the population round
+					// C then attacked.
 					TileGpuClut16Gather : 1,
 					// Ask the CLUT gather's owner question about the palette's OWN BLOCKS
 					// rather than about whole pages, and stop pulling a block nothing reads.
