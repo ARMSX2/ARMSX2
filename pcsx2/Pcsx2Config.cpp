@@ -797,6 +797,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// 21 corpus dumps gather a palette at all; the rest never reach the arm -- see Config.h.
 	TileGpuClutMergeRegions = true;
 	TileGpuClutMergePages = true;
+	// Default TRUE: byte-identical to off on 20 of 21 corpus dumps, and what it removes is the
+	// whole reason Spider-Man 3 blocks -- 162 CLUT pulls a frame, which are 100% of its CLUT
+	// refusals and the only writer poisoning its upload merges. The 21st (LEGO Star Wars) moves,
+	// and NOT because of this road: it unblocks the GPU upload merge, whose two arms disagree
+	// there. Both facts, and the proof, in Config.h.
+	TileGpuClut16Gather = true;
 	// Default TRUE: pixel-inert by construction (it moves only WHEN recorded work is submitted),
 	// and what it attacks is the whole drain-road readback bill -- 54.5 ms of a 94 ms Spider-Man 3
 	// frame on the SD865. Device A/B 2026-08-30 (SD865): gt4opb -14.6%, gt4 -12.8%, Spider-Man 3
@@ -1169,6 +1175,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuShaderWriteMask);
 	SettingsWrapBitBool(TileGpuClutMergeRegions);
 	SettingsWrapBitBool(TileGpuClutMergePages);
+	SettingsWrapBitBool(TileGpuClut16Gather);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);

@@ -709,6 +709,53 @@ TEST_F(ClutGatherTest, EveryEntryComesBackThroughTheSixteenBitOwner)
 	}
 }
 
+// ...and the same oracle with the palette a whole number of PAGES into the owner, which the matrix
+// above never reaches: it puts every case at CBP = owner_bp + 4..7 blocks, so the relative page index
+// is zero and the two terms that turn it into a texel origin -- `(pg % bwpg) * 64` for x and
+// `(pg / bwpg) * 64` for y -- are multiplied by nothing. A 16-bit page is 64 texels TALL where a
+// 32-bit one is 32, so the y term is exactly the transcription a reader coming from LocateClutBlocks
+// would get wrong, and it would be wrong ONLY here.
+//
+// The shapes are the real ones. LEGO Star Wars loads a 16-entry palette at CBP 0x30a0 off a PSMCT16
+// target based at 0x2320 with FBW 8 -- 108 pages in, which lands at texel (256, 832) -- and it is the
+// only title on the corpus besides Spider-Man 3 that gathers off a 16-bit owner at all.
+TEST_F(ClutGatherTest, TheSixteenBitOwnerSurvivesAPageOffsetIntoIt)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut16_valid);
+
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		// (owner_bw, pages in) pairs: down one page row, across one page, and both -- so a swapped
+		// pair of page terms is caught rather than cancelling out.
+		const struct
+		{
+			u32 bw, pages;
+		} at[] = {{1u, 1u}, {2u, 1u}, {2u, 2u}, {2u, 3u}, {4u, 5u}};
+		for (const auto& a : at)
+		{
+			for (const u32 entries : {256u, 16u})
+			{
+				const GatherCase16 c{0x0000u + a.pages * 32u + 1u, 0x0000u, a.bw, entries, psm};
+				SCOPED_TRACE(testing::Message() << "psm " << psm << " bw " << a.bw << " pages in " << a.pages
+												<< " cbp " << c.cbp << " entries " << entries);
+				SeedOwner16(c, a.bw * 64, (a.pages / a.bw + 2) * 64);
+				const std::array<u32, 256> want = RealLoad16(c);
+				ClutBlockCopy blocks{};
+				const std::vector<u32> copied = CopyPaletteCells(f, c, blocks);
+				// The page terms actually moved the origin, or this case is the pg == 0 one again.
+				EXPECT_TRUE(blocks.x[0] >= 64 || blocks.y[0] >= 64) << "the page offset did not move the rect";
+				for (u32 e = 0; e < entries; e++)
+				{
+					const u32 off = ClutEntryToCt16Offset(f, entries, blocks.stride, e);
+					ASSERT_LT(off + 8, copied.size()) << "entry " << e;
+					EXPECT_EQ(gsTileClut16Word(copied[off], copied[off + 8]), want[e]) << "entry " << e;
+				}
+			}
+		}
+	}
+}
+
 // The 16-bit mapping has to be a bijection onto the tile, and it is the PAIR that has to be one: the
 // low cell at `off` and the high cell at `off + 8` are both read, so a collision on either is an
 // entry made of somebody else's cells and an offset past the end is the next palette's.
@@ -1110,6 +1157,165 @@ TEST(TileGpuClutGather, APlacedCopyTilesItsReservationExactly)
 				}
 			}
 		}
+	}
+}
+
+// The state row the renderer hands the fragment stage for a gathered palette, against the arithmetic
+// the shader will do with it. Three numbers, and every one of them is silent when it is wrong: a
+// mode names the entry order, and mul/shift name the tile's row stride in the two forms the arm folds
+// into bit positions. Get any of them wrong and the palette is a permutation of itself.
+//
+// The 16-bit half is the new claim; the 32-bit half is the pin that says moving this derivation into
+// a function did not move a number.
+TEST(TileGpuClutGather, TheStateRowNamesTheOrderTheShaderWillFetchIn)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	ASSERT_TRUE(f.clut16_valid);
+
+	// The 32-bit road, term for term as the renderer spelled it inline: an unmerged copy is mode 1 or
+	// 2 by entry count and reads neither stride form; a merged one is mode 3 at stride 16 or 64.
+	const struct
+	{
+		u32 entries, stride, mode, mul, shift;
+	} ct32[] = {
+		{256u, 0u, 1u, 1u, 0u},
+		{16u, 0u, 2u, 1u, 0u},
+		{256u, 16u, 3u, 1u, 0u},
+		{256u, 64u, 3u, 7u, 2u},
+	};
+	for (const auto& t : ct32)
+	{
+		const GSTileGpuPalRow row = gsTileGpuClutPalRow(false, t.entries, t.stride);
+		EXPECT_EQ(row.mode, t.mode) << "entries " << t.entries << " stride " << t.stride;
+		EXPECT_EQ(row.mul, t.mul) << "entries " << t.entries << " stride " << t.stride;
+		EXPECT_EQ(row.shift, t.shift) << "entries " << t.entries << " stride " << t.stride;
+		EXPECT_LT(row.mode, 4u) << "a 32-bit owner must never ask for the sixteen-bit arm";
+	}
+	// ...and mode 3's two strides really are the merged order at that stride.
+	for (const u32 stride : {16u, 64u})
+	{
+		const GSTileGpuPalRow row = gsTileGpuClutPalRow(false, 256, stride);
+		for (u32 e = 0; e < 256; e++)
+		{
+			const u32 w = f.clut_i8_word.Eval(e);
+			const u32 c = f.inv_col32.Eval(w & 63);
+			const u32 shader = ((w & 0x80u) << row.shift) | (c + row.mul * (c & 0x38u)) | ((w & 0x40u) >> 3u);
+			EXPECT_EQ(shader, ClutEntryToMergedOffset(f, 256, stride, e)) << "stride " << stride << " entry " << e;
+		}
+	}
+
+	// The 16-bit road. The shapes are LocateClutBlocks16's own, so this cannot drift from what the
+	// copy actually produces: a 256-entry palette is always stride 32 and a 16-entry one always 16.
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (const u32 entries : {16u, 256u})
+		{
+			ClutBlockCopy blocks;
+			ASSERT_TRUE(LocateClutBlocks16(f, psm, 0x0041, 0x0040, 1, entries, blocks));
+			const GSTileGpuPalRow row = gsTileGpuClutPalRow(true, entries, blocks.stride);
+			EXPECT_EQ(row.mode, (entries == 256) ? 4u : 5u) << "psm " << psm << " entries " << entries;
+			for (u32 e = 0; e < entries; e++)
+			{
+				const u32 w = (entries == 256) ? f.clut_i8_word.Eval(e) : f.clut_i4_word.Eval(e);
+				const u32 c = f.inv_col32.Eval(w & 63);
+				// tilegpu.glsl's mode 4/5 arm verbatim, including the y shift it spells as
+				// `pal_shift + 1` rather than carrying a state-row word for.
+				const u32 shader =
+					((w & 0x40u) << (row.shift + 1u)) | (c + row.mul * (c & 0x38u)) | ((w & 0x80u) >> 3u);
+				EXPECT_EQ(shader, ClutEntryToCt16Offset(f, entries, blocks.stride, e))
+					<< "psm " << psm << " entries " << entries << " entry " << e;
+			}
+		}
+	}
+}
+
+// The pass-split guard, which no corpus dump exercises. Spider-Man 3 is the only title that gathers
+// a 16-bit palette at all and its target-road draws are 16 of 43,747 a frame, so this predicate ships
+// with a measured count of zero -- which is exactly why it is a function with a test and not three
+// conditions inside AccumulateDraw.
+//
+// What it protects: a pass's fragment program is the union of its draws' texel arms, and two of those
+// unions are past the Adreno 650's instruction cliff. It must break for those two and for nothing
+// else, because every needless break costs a render pass.
+TEST(TileGpuClutGather, APassCarriesOneGatherArmAndNeverTheSixteenBitOneOverTheTargetRoad)
+{
+	// The mode -> arm map, against the modes the shader actually switches on.
+	EXPECT_EQ(gsTileGpuClutGatherArm(0), 0u);
+	EXPECT_EQ(gsTileGpuClutGatherArm(1), 1u); // 256-entry, blocks as a run
+	EXPECT_EQ(gsTileGpuClutGatherArm(2), 1u); // 16-entry, ditto
+	EXPECT_EQ(gsTileGpuClutGatherArm(3), 1u); // merged tile
+	EXPECT_EQ(gsTileGpuClutGatherArm(4), 2u); // 16-bit owner, 256 entries
+	EXPECT_EQ(gsTileGpuClutGatherArm(5), 2u); // 16-bit owner, 16 entries
+	// ...and the map is the one the renderer's own derivation produces, at every stride either road
+	// emits, so the two spellings cannot drift apart.
+	EXPECT_EQ(gsTileGpuClutGatherArm(gsTileGpuClutPalRow(false, 256, 0).mode), 1u);
+	EXPECT_EQ(gsTileGpuClutGatherArm(gsTileGpuClutPalRow(false, 16, 0).mode), 1u);
+	EXPECT_EQ(gsTileGpuClutGatherArm(gsTileGpuClutPalRow(false, 256, 64).mode), 1u);
+	EXPECT_EQ(gsTileGpuClutGatherArm(gsTileGpuClutPalRow(true, 256, 32).mode), 2u);
+	EXPECT_EQ(gsTileGpuClutGatherArm(gsTileGpuClutPalRow(true, 16, 16).mode), 2u);
+
+	// An empty pass takes anything, and so does a draw that asks for nothing.
+	for (u32 arm = 0; arm <= 2; arm++)
+	{
+		for (const bool tgt : {false, true})
+		{
+			EXPECT_FALSE(gsTileGpuClutArmBreaks(0, false, arm, tgt)) << "arm " << arm << " target " << tgt;
+			EXPECT_FALSE(gsTileGpuClutArmBreaks(arm, tgt, 0, false)) << "arm " << arm << " target " << tgt;
+		}
+	}
+
+	// THE TWO IT MUST BREAK ON.
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(1, false, 2, false)); // 32-bit pass, 16-bit draw
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(2, false, 1, false)); // and the other way round
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(0, true, 2, false)); // target-road pass, 16-bit gather draw
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(2, false, 0, true)); // 16-bit pass, target-road draw
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(2, false, 1, true));
+	EXPECT_TRUE(gsTileGpuClutArmBreaks(1, true, 2, true));
+
+	// AND THE ONES IT MUST NOT, which is where a lazier predicate would cost passes for nothing. The
+	// 32-bit order with the target road is 109 units at byte+target[IDX4+PALGATHER] and 114 with the
+	// source road on top -- both comfortably under, so it is deliberately unrestricted.
+	EXPECT_FALSE(gsTileGpuClutArmBreaks(1, false, 1, false));
+	EXPECT_FALSE(gsTileGpuClutArmBreaks(1, true, 1, true));
+	EXPECT_FALSE(gsTileGpuClutArmBreaks(1, false, 1, true));
+	EXPECT_FALSE(gsTileGpuClutArmBreaks(0, true, 1, true));
+	EXPECT_FALSE(gsTileGpuClutArmBreaks(2, false, 2, false)); // two 16-bit gathers share a pass
+
+	// The whole accumulator loop, folded over the worst sequence there is: a 16-bit gather, a
+	// target-road draw, a 16-bit gather again, a 32-bit gather. Two things have to hold, and neither
+	// is visible from the rows above.
+	//
+	//  - A break is never needed TWICE for one draw. BreakOpenPass empties the pass, and the emptied
+	//    pass has to accept the draw that forced the break; a predicate that refused it again would
+	//    spin the accumulator, and it would spin only on a title nothing in the corpus exercises.
+	//  - The state (16-bit arm AND target road in one pass) is never reached, which is what makes the
+	//    over-cliff union unreachable rather than merely unlikely. It is also why one such DRAW is
+	//    not a case: rule 2 binds a target only where the read's own layout IS the target's, and a
+	//    palettised read of a colour surface never is (TargetForTextureRead), so no single draw
+	//    carries both.
+	const struct
+	{
+		u32 arm;
+		bool target;
+	} sequence[] = {{2, false}, {0, true}, {2, false}, {2, false}, {1, false}, {0, true}, {1, false}, {0, false}};
+	u32 open_arm = 0;
+	bool open_target = false;
+	for (const auto& d : sequence)
+	{
+		if (gsTileGpuClutArmBreaks(open_arm, open_target, d.arm, d.target))
+		{
+			open_arm = 0;
+			open_target = false;
+			ASSERT_FALSE(gsTileGpuClutArmBreaks(open_arm, open_target, d.arm, d.target))
+				<< "the break did not admit the draw that forced it: arm " << d.arm << " target " << d.target;
+		}
+		if (d.arm != 0)
+			open_arm = d.arm;
+		open_target = open_target || d.target;
+		EXPECT_FALSE(open_arm == 2u && open_target)
+			<< "a pass came to carry the sixteen-bit gather arm AND the rule-2 target road, which is the "
+			   "over-cliff union this guard exists to make unreachable";
 	}
 }
 

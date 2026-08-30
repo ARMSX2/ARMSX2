@@ -997,6 +997,73 @@ constexpr u32 gsTileGpuChannelKeepMask(u8 color_mask)
 	return keep;
 }
 
+/// The three state-row words that tell the fragment stage where a GATHERED palette's words are and
+/// in what order: the fetch mode, and the copied tile's row stride S pre-chewed into the two forms
+/// the arm folds into bit positions.
+///
+/// One function for both roads because the two spellings have to stay in step with one shader:
+///
+///   mode 0        no gathered palette (the CPU words, in entry order at pal_offset)
+///   modes 1, 2    a 32-bit owner's blocks as a run, row-major -- 256 entries and 16
+///   mode 3        a 32-bit owner's blocks MERGED into one tile of `stride` words a row
+///   modes 4, 5    a SIXTEEN-BIT owner's cells as one tile -- 256 entries at stride 32 and 16 at 16
+///
+/// `mul` is S/8 - 1 (the column multiply) and `shift` is log2(S) - 4 (the block shift). The 16-bit
+/// arm wants log2(S) - 3 and spells it `shift + 1` rather than spending a state-row word on it, so
+/// the same two numbers serve both. Modes 1 and 2 read neither; they are written anyway, because the
+/// rows are reused frame to frame and an unread word that differs between two runs of one dump is a
+/// capture diff nobody can dismiss at a glance.
+struct GSTileGpuPalRow
+{
+	u32 mode;
+	u32 mul;
+	u32 shift;
+};
+
+constexpr GSTileGpuPalRow gsTileGpuClutPalRow(bool ct16, u32 entries, u32 stride)
+{
+	// ⚠️ The 16-bit road's two strides are spelled out rather than divided: `stride / 8 - 1` is the
+	// same answer for 32 and 16 and underflows for anything else, and the point of a closed set is
+	// that a third stride is a compile-time question rather than a wrapped multiply at runtime.
+	if (ct16)
+		return {(entries == 256) ? 4u : 5u, (stride == 32u) ? 3u : 1u, (stride == 32u) ? 1u : 0u};
+	return {(stride != 0) ? 3u : ((entries == 256) ? 1u : 2u), (stride == 64u) ? 7u : 1u,
+		(stride == 64u) ? 2u : 0u};
+}
+
+/// Which palette entry order a draw's state row asks its pass's fragment program to carry: 0 none,
+/// 1 the thirty-two-bit order (pal_mode 1-3), 2 the sixteen-bit one (pal_mode 4/5).
+constexpr u32 gsTileGpuClutGatherArm(u32 pal_mode)
+{
+	return (pal_mode >= 4u) ? 2u : ((pal_mode != 0u) ? 1u : 0u);
+}
+
+/// Must a draw carrying `arm` and `target_road` open a NEW pass rather than join one that already
+/// carries `open_arm` / `open_target`?
+///
+/// A pass's fragment program is the union of its draws' texel arms, and two unions are past the
+/// Adreno 650's 123-unit instruction cliff:
+///
+///  - BOTH palette orders (145 units, 151 with the destination read). They are alternatives — a
+///    gathered palette's words came off a 32-bit owner or a 16-bit one — so no pass wants the pair.
+///  - the SIXTEEN-BIT order with the rule-2 TARGET road: byte+target[IDX4+PALGATHER16] is 118 units
+///    against a 118-unit ceiling by words and byte+target+source[IDX4+PALGATHER16] is 123 with
+///    nothing left, both past their ceiling. The 32-bit order in the same shapes is 109 and 114 and
+///    is deliberately NOT restricted.
+///
+/// The answer is a pass split because it is the only answer available: by the time a draw is
+/// accumulated its gathered palette has no CPU words to fall back to, so "refuse the gather for this
+/// draw" cannot be done here. A break costs a pass and never a pixel.
+///
+/// A predicate with a test rather than a condition inside AccumulateDraw, because it is the one piece
+/// of this road no corpus dump exercises: Spider-Man 3, the only title that gathers a 16-bit palette
+/// at all, takes the target road on 16 of its 43,747 draws a frame and never meets either union.
+constexpr bool gsTileGpuClutArmBreaks(u32 open_arm, bool open_target, u32 arm, bool target_road)
+{
+	return (arm != 0 && open_arm != 0 && open_arm != arm) || (arm == 2u && open_target) ||
+		   (target_road && open_arm == 2u);
+}
+
 /// Does a run of `n` merged palette squares exactly tile a 64-wide BAND of one owner page?
 ///
 /// A 256-entry palette that merges is a 16x16 square at a 16-aligned origin inside one 64x32 guest
@@ -2397,6 +2464,12 @@ private:
 		u32 entries = 0; ///< 16 or 256
 		u32 first_slot = 0; ///< the first mirror slot the load wrote
 		u32 owner_bp = 0, owner_bwpg = 0;
+		/// The owner's PSM, taken at the defer. It decides which geometry the copy takes
+		/// (LocateClutBlocks for a CT32/CT24 owner, LocateClutBlocks16 for a CT16/CT16S one) and
+		/// therefore which entry order the consumer must apply -- so it is recorded with the record
+		/// rather than re-read from the surface, which may have been replaced by the time the copy
+		/// is emitted.
+		u32 owner_psm = 0;
 		GSPageBitmap pages; ///< the load's source pages
 		u64 pal_id = 0; ///< namespace-tagged content identity, for the expanded cache
 		GIFRegTEX0 tex0 = {}; ///< the load's registers, for the CPU sync seam
@@ -2411,6 +2484,10 @@ private:
 		/// ClutEntryToCopyOffset reads; else the words per row of the one tile they were copied
 		/// as, which is ClutEntryToMergedOffset's `stride`.
 		u32 stream_stride = 0;
+		/// ...and whether that tile holds SIXTEEN-BIT cells, two to a word. Separate from
+		/// stream_stride because both roads produce a stride and the two orders are different
+		/// functions: a 16-bit tile is read by pal_mode 4/5 and a 32-bit one by pal_mode 3.
+		bool stream_ct16 = false;
 		GSTexture* gather_tex = nullptr; ///< rule 3's N x 1 palette, gathered on demand
 	};
 
@@ -2434,6 +2511,12 @@ private:
 	/// because the two levers compile separately: a session that merges squares but not pages has a
 	/// constant-stride arm and would read a page-merged palette at the wrong stride.
 	bool m_clut_merge_pages_serves = false;
+	/// ...and whether a palette off a SIXTEEN-BIT owner may be gathered at all
+	/// (TileGpuClut16Gather, and the CT16 block inverses fitted). Latched at the same probe as the
+	/// two above, for the same reason: this decides the word order a state row asks for, and a
+	/// setting that moved mid-session would put a mode-4 row in front of records copied the other
+	/// way round.
+	bool m_clut16_serves = false;
 	bool m_warned_clut_lost = false;
 	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
 	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's
@@ -2464,6 +2547,7 @@ private:
 		GSPageBitmap pages; ///< the deferred blocks' pages
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 owner_bp = 0, owner_bwpg = 0;
+		u32 owner_psm = 0; ///< ...and its format, which decides the copy geometry (see GpuPalette)
 	};
 	ClutPendingLoad m_clut_pending;
 
@@ -2774,7 +2858,12 @@ private:
 		if (pd.tex_enable && (pd.road_mask & GSDevice::kGSTileGpuRoadByte) != 0)
 		{
 			texel = GSDevice::GSTileGpuTexelArm(pd.index_format);
-			if (pd.pal_mode != 0)
+			// One palette entry order or the other, never both: modes 4 and 5 are a sixteen-bit
+			// owner's tile and modes 1-3 a thirty-two-bit one's, and the two are different functions
+			// rather than variations. Accumulation guarantees a pass carries at most one of them.
+			if (pd.pal_mode >= 4u)
+				texel |= GSDevice::kGSTileGpuTexelPalGather16;
+			else if (pd.pal_mode != 0)
 				texel |= GSDevice::kGSTileGpuTexelPalGather;
 		}
 		u32 self = pd.self_mask;
@@ -2924,6 +3013,24 @@ private:
 		// whose source would be one too many opens a pass of its own.
 		std::array<GSTileSurfaceId, GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass> tex_src{};
 		u32 tex_count = 0;
+
+		// What the open pass's fragment program will have to carry that this draw might not be
+		// allowed to join. Both reset with everything else in BreakOpenPass.
+		//
+		// The pass's texel mask is the OR over its draws, and TWO unions of it are past the Adreno
+		// 650's 123-unit instruction cliff: the two palette entry orders together (145 units), and
+		// the 16-bit order in a pass that also samples a resident target directly (118 units at
+		// byte+target[IDX4], 123 at byte+target+source[IDX4], and past the destination-read ceiling
+		// with either). Neither is a program worth compiling, and the answer to both is a pass
+		// SPLIT: the draw that would have unioned them starts a pass of its own, which costs a pass
+		// and never a pixel. The alternative -- refusing the gather for that draw -- is not
+		// available, because a deferred palette's words never reached the CPU and there is nothing
+		// to fall back to by the time the draw is accumulated.
+		//
+		// `gather_arm` is 0 for none, 1 for the 32-bit entry order (pal_mode 1-3) and 2 for the
+		// 16-bit one (pal_mode 4/5). `target_road` says a draw of the pass samples a target.
+		u32 gather_arm = 0;
+		bool target_road = false;
 
 		// How many draws the open pass already holds, for m_max_pass_draws. Counted where the draw
 		// joins the pass and reset with everything else in BreakOpenPass, so it stays in step with
@@ -3355,6 +3462,8 @@ private:
 		u32 clut_loads = 0;       // CLUT loads seen
 		u32 clut_no_stall = 0;    // ...whose source pages no target holds newest: the CPU road, untouched
 		u32 clut_gathered = 0;    // ...served by the gather: no flush, no readback, no CPU words
+		u32 clut16_gathered = 0;  // ...of which off a SIXTEEN-BIT owner, which is TileGpuClut16Gather's
+		                          //    whole population: zero on every title with no 16-bit palette owner
 		u32 clut_ref_shape = 0;   // ...owner conditions held, the load's shape is not one the gather serves
 		u32 clut_ref_owner = 0;   // ...the owner conditions did not hold: today's readback road
 		u32 clut_ro[kClutRefCount] = {}; // ...bucketed by the clause that refused
@@ -3380,6 +3489,20 @@ private:
 		u32 clut_draws_byte = 0;  // ...served on the byte road, out of the copied blocks in the stream
 		u32 clut_draws_sync = 0;  // paletted draws the mirror could not serve whole: synced to the CPU
 		u32 clut_r3_refused = 0;  // rule 3 refused a gathered palette (a sub-slot view, or no source)
+		// ...of which because the record came off a SIXTEEN-BIT owner. Rule 3's N x 1 gather reads
+		// its owner through the CT32 block form and has no 16-bit leg, so a 16-bit record is refused
+		// there rather than read out of the wrong bytes -- and the draw falls back to the byte road,
+		// which serves it. Its own counter because "how much of the population does rule 3 carry"
+		// is what decides whether that leg is worth building.
+		u32 clut16_r3_refused = 0;
+		// Passes opened because the draw would have unioned two palette entry orders into one
+		// fragment program, or the 16-bit order with the rule-2 target road. Both unions are past
+		// the Adreno 650 instruction cliff; see OpenRun::gather_arm. Expected zero on Spider-Man 3.
+		u32 clut16_arm_breaks = 0;
+		// The frame's palette stream, in words, at the plan build. A 16-bit gather reserves twice
+		// the words a 32-bit one does (512 for a 256-entry palette, 32 for a 16-entry one), so this
+		// is the column that says whether the ring upload is anywhere near a bound.
+		u32 clut_stream_words = 0;
 		u32 clut_copies = 0;      // block copies emitted (one per record per plan, at a pass head)
 		// ...and the REGIONS those copies carry, which is what the copy actually costs: per-region
 		// cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so an op's price is its

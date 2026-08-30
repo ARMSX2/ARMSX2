@@ -217,41 +217,55 @@ namespace
 
 	/// The masks a planner can actually produce: at least one geometry, a palette-order arm only where
 	/// a paletted geometry is present (the device normalises it away otherwise, so a module for it
-	/// would never be compiled), and never BOTH palette orders at once.
+	/// would never be compiled), never BOTH palette orders at once, and never the SIXTEEN-BIT order
+	/// in a pass that also samples a resident target directly.
 	///
-	/// That last one is the design of the 16-bit arm rather than a shortcut through the enumeration. A
-	/// gathered palette's words come off either a 32-bit owner or a 16-bit one; the two entry orders
-	/// are alternatives, so a pass carries one arm or the other and the widest paletted variant pays
-	/// for one gather either way. The union is measured anyway, in TheMergedClutArmStaysUnderTheCliff,
-	/// precisely because it is the shape a renderer change could produce by accident.
-	bool Plannable(u32 texel_mask)
+	/// The last two are the design of the 16-bit arm rather than a shortcut through the enumeration,
+	/// and the renderer enforces both by SPLITTING the pass — a draw that would union either pair
+	/// starts a pass of its own (GSRendererTileGpu::AccumulateDraw, counted as clut16_arm_breaks).
+	/// A break costs a pass and never a pixel, and by the time a draw is accumulated its gathered
+	/// palette has no CPU words to fall back to, so a split is the only move available.
+	///
+	///  - BOTH orders. A gathered palette's words come off either a 32-bit owner or a 16-bit one, so
+	///    a pass has no reason to want the pair: it is 145 units, and 151 with the destination read.
+	///  - THE 16-BIT ORDER WITH THE TARGET ROAD. The arm costs a flat ~920 words wherever it lands,
+	///    which every variant this corpus plans can afford and two shapes cannot:
+	///    byte+target[IDX4+PALGATHER16] q16 is 12,970 words against the 12,951-word ceiling and
+	///    byte+target+source[IDX4+PALGATHER16] q16 is 13,506, with the destination-read twins past
+	///    their own ceiling too. Without the target road the worst of the whole population is
+	///    byte+source[IDX4+PALGATHER16] q16 at 12,408 and its destination-read twin at 13,062 —
+	///    543 and 328 words of headroom. The 32-bit order in the same shapes is 109 and 114 units
+	///    and is untouched by this.
+	///
+	/// Both unions are measured anyway, in TheMergedClutArmStaysUnderTheCliff, precisely because they
+	/// are the shapes a renderer change could produce by accident.
+	bool Plannable(u32 road_mask, u32 texel_mask)
 	{
 		if ((texel_mask & GSDevice::kGSTileGpuTexelGeometryMask) == 0)
 			return false;
 		if ((texel_mask & GSDevice::kGSTileGpuTexelPalGatherMask) == GSDevice::kGSTileGpuTexelPalGatherMask)
 			return false;
+		if ((texel_mask & GSDevice::kGSTileGpuTexelPalGather16) != 0 &&
+			(road_mask & GSDevice::kGSTileGpuRoadTarget) != 0)
+		{
+			return false;
+		}
 		return (texel_mask & GSDevice::kGSTileGpuTexelPalGatherMask) == 0 ||
 		       (texel_mask & GSDevice::kGSTileGpuTexelPalettedMask) != 0;
 	}
 
 	/// Which of the plannable masks the two CEILINGS below hold, as against the ones that are compiled
-	/// and reported only. Two exclusions, for two different reasons:
+	/// and reported only. ONE exclusion: a mask spanning two address GEOMETRIES carries both, and
+	/// which of those a title produces is a fact about the title (1.6% of the corpus's byte-road
+	/// passes); pinning a ceiling on it would be pinning the wrong number.
 	///
-	///  - a mask spanning two address GEOMETRIES carries both, and which of those a title produces is
-	///    a fact about the title (1.6% of the corpus's byte-road passes); pinning a ceiling on it
-	///    would be pinning the wrong number. That exclusion is as old as this file.
-	///  - the SIXTEEN-BIT gather arm, because nothing sets its bit. It is compiled and reported on the
-	///    table above -- and on the two widest three-road unions it is over, see
-	///    TheMergedClutArmStaysUnderTheCliff -- but no pass can plan it, so it is not part of the
-	///    population the shipping ceilings are denominated in.
-	///
-	/// ⚠️ The first renderer that sets kGSTileGpuTexelPalGather16 deletes the second clause in the
-	/// SAME commit, and this gate then has to pass with it deleted. That is the whole point of the
-	/// clause being here rather than the arm being left out of the enumeration: the number is on the
-	/// table above, and the day it starts mattering is a line of source away.
+	/// The sixteen-bit gather arm used to be excluded here too, because nothing set its bit. It is
+	/// set now (TileGpuClut16Gather), so the exclusion is gone and every variant carrying that arm is
+	/// held to the same ceilings as everything else. What makes that pass is Plannable() above: the
+	/// two masks the arm cannot afford are ones the renderer splits a pass rather than produce.
 	bool Gated(u32 texel_mask)
 	{
-		return GeometryCount(texel_mask) <= 1 && (texel_mask & GSDevice::kGSTileGpuTexelPalGather16) == 0;
+		return GeometryCount(texel_mask) <= 1;
 	}
 } // namespace
 
@@ -278,8 +292,9 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	                             GSTileGpuShaderVariant::DeviceDefines(true, true, true);
 
 	// The plannable space: a road mask without the byte bit names no arm, and one with it names at
-	// least one geometry (plus, optionally, ONE of the two palette-order arms). 4 + 4 * 87 = 352
-	// programs.
+	// least one geometry (plus, optionally, ONE of the two palette-order arms -- and the 16-bit one
+	// only on a road mask with no rule-2 target in it, which the renderer enforces by splitting the
+	// pass; see Plannable).
 	//
 	// Crossed with what a pass reads its own destination FOR: zero (the overwhelming majority, and
 	// the program every pass compiled before that road existed), each use alone, and the full set.
@@ -308,7 +323,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 				}
 				for (u32 texel = 1u; texel <= GSDevice::kGSTileGpuTexelMaskAll; texel++)
 				{
-					if (Plannable(texel))
+					if (Plannable(road, texel))
 						variants.push_back({road, texel, self, q != 0, 0});
 				}
 			}
@@ -362,9 +377,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	{
 		const u32 units = PredictedUnits(v.words);
 		const char* verdict = (units > kCliffUnits) ? "OVER THE CLIFF" : (v.words > kWordCeiling ? "over budget" : "ok");
-		const char* why = Gated(v.texel)               ? "" :
-		                  (GeometryCount(v.texel) > 1) ? "  (mixed geometries)" :
-		                                                 "  (16-bit gather: nothing plans it)";
+		const char* why = Gated(v.texel) ? "" : "  (mixed geometries)";
 		over_cliff += (units > kCliffUnits) ? 1 : 0;
 		over_cliff_gated += (units > kCliffUnits && Gated(v.texel)) ? 1 : 0;
 		std::printf("  %-66s %8u %7u %s%s\n",
@@ -532,22 +545,30 @@ TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 		// widest the corpus plans -- byte+source[IDX8] -- is 109 against 101. Spider-Man 3, the one
 		// title this arm exists for, draws through exactly those.
 		//
-		// Two do not, and both are three-road unions no dump in the corpus plans:
-		// byte+target+source[IDX4+PALGATHER16] q16 lands EXACTLY on the 123-unit cliff with nothing
-		// left, and its destination-read twin lands five units past it. A ceiling that only holds for
-		// the variants eighteen dumps happen to produce is not a ceiling, so those two are the answer
-		// to "does the fragment arm fit", and the answer is no.
+		// What it cannot afford is the rule-2 TARGET road underneath it. byte+target[IDX4+PALGATHER16]
+		// q16 is 12,970 words against the 12,951-word ceiling and byte+target+source[IDX4+PALGATHER16]
+		// q16 is 13,506 -- EXACTLY the 123-unit cliff with nothing left -- and both destination-read
+		// twins are past their own ceiling as well. A ceiling that only holds for the variants
+		// twenty-one dumps happen to produce is not a ceiling, so those shapes had to be answered
+		// rather than reported.
 		//
-		// The budget number does not move for it -- the cliff is hardware -- and the finer-axis answer
-		// is already spent, because this arm IS its own axis, measured alone with both merge levers
-		// off. What is left is a choice for whoever ships the road: refuse the 16-bit gather on a pass
-		// that unions all three texel roads (it would never fire on the title the lever is for), or
-		// take the entry-order compute gather, which feeds pal_mode 0 and costs the fragment stage
-		// nothing at all. The second is a new synchronisation surface, and this campaign has already
-		// paid once for one of those.
+		// THE ANSWER SHIPPED IS A PASS SPLIT, not a bigger number and not the compute gather. The
+		// renderer refuses to let one pass union the 16-bit arm with the target road, or the two
+		// palette orders with each other, and starts a new pass for the draw that would
+		// (GSRendererTileGpu::AccumulateDraw; counted as clut16_arm_breaks, zero on Spider-Man 3,
+		// whose target-road draws are 16 of 43,747 a frame). A break costs a pass and never a pixel.
+		// Plannable() above encodes both refusals, which is what lets EveryPlannableVariantFitsThe...
+		// hold every 16-bit variant to the ordinary ceilings: without the target road the worst of
+		// the population is byte+source[IDX4+PALGATHER16] q16 at 12,408 words and its destination-read
+		// twin at 13,062, with 543 and 328 words to spare.
 		//
-		// And the union of the two gather orders is never a shape: 145 and 151 units. Plannable()
-		// refuses it above; this is what that refusal is worth.
+		// The entry-order compute gather (feeding pal_mode 0, costing the fragment stage nothing)
+		// stays the fallback if the split is ever found to bind on a real title. It adds a new
+		// synchronisation surface, and this campaign has already paid once for one of those.
+		//
+		// The two shapes below are therefore what the refusals are WORTH, measured rather than
+		// argued: the three-road union at 123 and 128 units, and the union of both gather orders --
+		// which is never a shape at all -- at 145 and 151.
 		if (self == 0)
 		{
 			EXPECT_LE(PredictedUnits(g16_words), kCliffUnits)
@@ -560,8 +581,9 @@ TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 			EXPECT_GT(PredictedUnits(g16_words), kCliffUnits)
 				<< variant16 << " at " << g16_words << " words now FITS under the " << kCliffUnits
 				<< "-unit cliff, where it was 128 units when it was measured. That is good news and this expectation "
-				   "is what makes you read this: re-take the number, put it in the dossier, and the fragment road "
-				   "(design stage 3a) is open again -- delete this branch when you do.";
+				   "is what makes you read this: re-take the number, and the pass split that keeps this shape out of "
+				   "the plannable set (Plannable, and the guard in AccumulateDraw) can be relaxed -- delete this "
+				   "branch when you do.";
 		}
 	}
 }

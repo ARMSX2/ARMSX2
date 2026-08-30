@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 132 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 133 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1300,6 +1300,76 @@ struct Pcsx2Config
 					// the -16.8% -> -28.6% step on GT4 Online Public Beta, faster than
 					// regions-only on both wall and GPU time.
 					TileGpuClutMergePages : 1,
+					// Gather a CLUT palette whose owner is a SIXTEEN-BIT colour target,
+					// which the road refuses today.
+					//
+					// A CSM1 32-bit palette read out of a PSMCT16/PSMCT16S surface is a byte
+					// REINTERPRETATION: the surface stores two 5551 cells to a guest word, so
+					// a palette word is two texels — and they are texel (cx, cy) and
+					// (cx + 8, cy), because columnTable16[y][x] is 2*columnTable32[y][x] and
+					// columnTable16[y][x + 8] is that halfword plus one. So the copy goes out
+					// twice as wide, the fetch reads `off` and `off + 8`, and each is packed
+					// with gsTilePack5551 — which is GSLocalMemory::WriteFrame16 verbatim, and
+					// therefore the same bytes the readback road would have stored.
+					//
+					// The pull road existed only because the OWNER PREDICATE refused 16-bit
+					// owners: every road that reads an owner's texture reads it through CT32
+					// block and column forms, so one predicate said "not CT32" and the whole
+					// load fell back to a CPU readback. That is the entire refusal. Spider-Man
+					// 3 loads 162 of them a frame — 100% of its CLUT refusals, all of which
+					// would be served — and they are the head of the title's whole blocking
+					// bill: 172 CLUT stalls poison m_cpu_read_pages, which then refuses 42
+					// upload merges a frame, and the two together are 214 pool calls and
+					// 54 ms of a 94 ms frame (SD865, standing suite round 20260826-0157).
+					//
+					// A 256-entry palette is four blocks at CBP..CBP+3, and where CBP is not
+					// 4-aligned they are scattered rather than square. They still land as ONE
+					// 32x16 tile, through the copy op's per-region destination offsets, so the
+					// consumer has one word order and not two — which is not an optimization
+					// here: every one of Spider-Man 3's 256-entry loads sits at CBP & 3 == 1
+					// and none at 0, so the scattered case is the only case on the title the
+					// lever exists for. A 16-entry palette is one 16x2 rect at stride 16.
+					//
+					// SHADER BUDGET. The fetch arm is its own variant bit
+					// (kGSTileGpuTexelPalGather16) rather than a mode inside the 32-bit one,
+					// so a pass gathering a 16-bit palette compiles it INSTEAD of modes 1-3.
+					// It costs a flat 920-924 SPIR-V words — about eight Adreno 650 units — on
+					// every paletted variant, and every variant this corpus plans fits with
+					// room (Spider-Man 3 draws byte[IDX4] / byte[IDX8] / byte+source, 104 to
+					// 113 units against a 123-unit cliff). What does NOT fit is the arm on a
+					// pass that also samples a resident target directly: byte+target[IDX4] is
+					// 118 units and byte+target+source[IDX4] is 123 with nothing left. So the
+					// renderer refuses to put both in one pass and SPLITS the pass instead —
+					// see gs_tilegpu_shader_budget_tests, which holds the whole plannable set
+					// under the ceilings with that rule assumed. On Spider-Man 3 the split
+					// never fires: 16 of its 43,747 draws a frame take the target road.
+					//
+					// Default TRUE. HONEST COVERAGE: one dump exercises it hard and one
+					// barely. Per-frame psm-clause refusals over the 21-dump corpus are
+					// Spider-Man 3 162.00, LEGO Star Wars 0.25 and zero everywhere else, so
+					// nineteen dumps are identity by construction and prove nothing — but
+					// Spider-Man 3 exercises it hard, since those palettes feed the
+					// byte[IDX4]/byte[IDX8] variants that carry ~63% of its draws, and it is
+					// byte-identical there. GT4's CLUT stalls are the multi/partial clause and
+					// dirge's are a depth owner; neither is served by this and both are
+					// separate designs.
+					//
+					// ⚠️ LEGO STAR WARS IS NOT BYTE-IDENTICAL, and the cause is NOT this road.
+					// Removing the CLUT pulls stops them poisoning m_cpu_read_pages, so upload
+					// spills that used to take the blocking road take the GPU merge instead
+					// (1.50 -> 0.00 upload stalls a frame, 0.25 -> 1.75 pages merged on the
+					// GPU) — and the two roads are not producing the same bytes there, which
+					// is the merge's own standing claim. Proof it is not the palette: with
+					// TileGpuUploadSpillReadback ON, forcing that spill down the blocking road,
+					// BOTH arms reproduce the off-arm hash exactly. The pages are 389 and 391,
+					// a PSMCT32 FBW-1 transfer into a PSMCT16 FBW-8 owner. Nothing else on the
+					// corpus moves.
+					//
+					// ⚠️ Device A/B PENDING: everything above is M2/lavapipe plus a build-time
+					// shader-size gate. What M2 does say, directionally: Spider-Man 3's frame
+					// p50 124.41 -> 78.59 ms, readbacks 1969 -> 673, blocking waits 246 -> 84
+					// a frame.
+					TileGpuClut16Gather : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.
