@@ -33,6 +33,7 @@
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSVramModel.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
@@ -306,6 +307,203 @@ TEST_F(ClutGatherTest, EveryEntryComesBackThroughTheCopiedBlocks)
 			const u32 off = ClutEntryToCopyOffset(f, c.entries, e);
 			ASSERT_LT(off, copied.size()) << "entry " << e;
 			EXPECT_EQ(copied[off], want[e]) << "entry " << e;
+		}
+	}
+}
+
+// -- 1a. the block-granular admission ---------------------------------------------------------
+
+// TileGpuClutBlockGather's whole claim, both halves, with the memory model and the copy road asked
+// together: a page whose truth the CPU has taken back BLOCK BY BLOCK still holds the palette, and
+// the bytes gathered out of it are the loader's own.
+//
+// The refusal half is the one that matters. A containment written the wrong way round admits a
+// palette whose blocks the owner does NOT hold, and the gather then copies whatever those texels
+// happen to be -- a whole frame in plausible, wrong colours, with nothing to catch it.
+TEST_F(ClutGatherTest, APaletteSurvivesItsPageBeingTakenBackBlockByBlock)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	ASSERT_TRUE(f.clut_valid);
+
+	// A 16-entry palette four blocks into a one-page-wide CT32 owner: sixteen words of block 4, and
+	// nothing else in that page belongs to it.
+	const GatherCase c{0x0004, 0x0000, 1, 16};
+	const GSTileSurfaceLayout owner{c.owner_bp, static_cast<u8>(c.owner_bw), PSMCT32, GSTileSurfaceKind::Color};
+	const GSVector4i rect(0, 0, 64, 32);
+	const GSPageBitmap owner_pages = GSVramModel::PagesForRect(owner, rect);
+
+	// The load's own footprint, as InvalidateLocalMem builds it: one block at CBP, addressed through
+	// a block-granular base of its own.
+	const GSTileSurfaceLayout load{c.cbp, 1, PSMCT32, GSTileSurfaceKind::Color};
+	const GSVector4i one_block(0, 0, 8, 8);
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(load, one_block, fp);
+	ASSERT_FALSE(fp.overflowed);
+	ASSERT_EQ(fp.pages.count(), 1u);
+	const GSVramModel::RectFootprint::Edge* e = fp.FindEdge(0);
+	ASSERT_NE(e, nullptr);
+	ASSERT_EQ(e->blocks, u32(1) << 4);
+
+	// Everything of page 0 except the palette's block goes back to the CPU. Written as a footprint
+	// directly rather than as a rect, because "every block but this one" is not a rectangle.
+	GSVramModel::RectFootprint taken;
+	taken.pages.set(0);
+	taken.edge_count = 1;
+	taken.edges[0].page = 0;
+	taken.edges[0].blocks = GSVramModel::kFullBlockMask & ~e->blocks;
+	taken.edges[0].full = taken.edges[0].blocks;
+
+	{
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(owner, rect, 1);
+		m.OnNativeDraw(id, owner_pages, kGSTilePlanesAll);
+		m.OnReadback(owner_pages); // synced, so the write below is lossless
+		m.OnCpuWrite(taken, kGSTilePlanesAll);
+		ASSERT_EQ(m.TruthMask(0, GSVramModel::PlaneIndex(GSTilePlaneRGB)), e->blocks);
+
+		// The two questions, side by side. This is the whole lever.
+		EXPECT_EQ(m.SoleGpuOwner(fp.pages, kGSTilePlanesAll), kGSTileNoSurface);
+		ASSERT_EQ(m.SoleGpuOwnerOfBlocks(fp, kGSTilePlanesAll), id);
+		EXPECT_TRUE(m.CheckInvariants());
+	}
+
+	// ...and admitted, the bytes are the loader's. The owner is seeded with a self-naming image and
+	// the gather's copy is compared entry for entry against a real GSClut load of the same palette,
+	// which is the same oracle the whole-page road is held to.
+	SeedOwner(c, c.owner_bw * 64, 128);
+	const std::array<u32, 256> want = RealLoad(c);
+	const std::vector<u32> copied = CopyPaletteBlocks(f, c);
+	ASSERT_EQ(copied.size(), c.entries);
+	for (u32 en = 0; en < c.entries; en++)
+	{
+		const u32 off = ClutEntryToCopyOffset(f, c.entries, en);
+		ASSERT_LT(off, copied.size()) << "entry " << en;
+		EXPECT_EQ(copied[off], want[en]) << "entry " << en;
+	}
+
+	// THE REFUSAL, half one: the CPU took back the palette's OWN block and left the rest. Nothing
+	// about the page has changed except which block, and the answer has to flip.
+	{
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(owner, rect, 1);
+		m.OnNativeDraw(id, owner_pages, kGSTilePlanesAll);
+		m.OnReadback(owner_pages);
+		GSVramModel::RectFootprint just_the_palette;
+		just_the_palette.pages.set(0);
+		just_the_palette.edge_count = 1;
+		just_the_palette.edges[0].page = 0;
+		just_the_palette.edges[0].blocks = e->blocks;
+		just_the_palette.edges[0].full = e->blocks;
+		m.OnCpuWrite(just_the_palette, kGSTilePlanesAll);
+		EXPECT_EQ(m.SoleGpuOwnerOfBlocks(fp, kGSTilePlanesAll), kGSTileNoSurface);
+		// ...and the rest of the page is still wholly the owner's, so this is a refusal about the
+		// palette's blocks and not about the page having any CPU bytes at all.
+		GSVramModel::RectFootprint rest;
+		rest.pages.set(0);
+		rest.edge_count = 1;
+		rest.edges[0].page = 0;
+		rest.edges[0].blocks = GSVramModel::kFullBlockMask & ~e->blocks;
+		rest.edges[0].full = rest.edges[0].blocks;
+		EXPECT_EQ(m.SoleGpuOwnerOfBlocks(rest, kGSTilePlanesAll), id);
+		EXPECT_TRUE(m.CheckInvariants());
+	}
+
+	// THE REFUSAL, half two: a load spanning two owners. A 256-entry palette is four blocks, and a
+	// window whose blocks are two targets' has no single texture whatever the block masks say.
+	{
+		GSVramModel m;
+		const auto a = GSTileSurfaceLayout{0, 1, PSMCT32, GSTileSurfaceKind::Color};
+		const auto b = GSTileSurfaceLayout{32, 1, PSMCT32, GSTileSurfaceKind::Color};
+		const GSTileSurfaceId ida = m.Create(a, rect, 1);
+		const GSTileSurfaceId idb = m.Create(b, rect, 2);
+		const GSPageBitmap pa = GSVramModel::PagesForRect(a, rect);
+		const GSPageBitmap pb = GSVramModel::PagesForRect(b, rect);
+		ASSERT_FALSE(pa.intersects(pb));
+		m.OnNativeDraw(ida, pa, kGSTilePlanesAll);
+		m.OnNativeDraw(idb, pb, kGSTilePlanesAll);
+
+		// A 256-entry palette at block 30 of page 0: blocks 30, 31 of page 0 and 0, 1 of page 1.
+		const GSTileSurfaceLayout across{30, 1, PSMCT32, GSTileSurfaceKind::Color};
+		GSVramModel::RectFootprint two;
+		two.pages.clear();
+		two.edge_count = 0;
+		for (u32 blk = 0; blk < 4; blk++)
+		{
+			GSVramModel::RectFootprint one;
+			GSVramModel::FootprintForRect(
+				GSTileSurfaceLayout{across.bp + blk, 1, PSMCT32, GSTileSurfaceKind::Color}, one_block, one);
+			ASSERT_EQ(one.edge_count, 1u);
+			bool merged = false;
+			for (u32 i = 0; i < two.edge_count; i++)
+			{
+				if (two.edges[i].page == one.edges[0].page)
+				{
+					two.edges[i].blocks |= one.edges[0].blocks;
+					two.edges[i].full |= one.edges[0].full;
+					merged = true;
+				}
+			}
+			if (!merged)
+				two.edges[two.edge_count++] = one.edges[0];
+			two.pages |= one.pages;
+		}
+		ASSERT_EQ(two.pages.count(), 2u);
+		EXPECT_EQ(m.SoleGpuOwnerOfBlocks(two, kGSTilePlanesAll), kGSTileNoSurface);
+		EXPECT_TRUE(m.CheckInvariants());
+	}
+}
+
+// The claim the HELD SECOND CALL rests on, and it is a claim about the loaders, not about the model:
+// a sixteen-entry CSM1 32-bit palette is sixteen words at the top of the block at CBP and nothing
+// else, on both gather roads. GSState invalidates TWO blocks for that shape (its `blocks` count is
+// halved once for a 16-bit CPSM and once for a four-bit index, so a 32-bit CPSM with a four-bit
+// index lands on two), and the second one is read by nobody -- which is why letting it refuse the
+// load refuses the whole population.
+TEST(TileGpuClutGather, ASixteenEntryPaletteLivesEntirelyInTheBlockAtCbp)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	ASSERT_TRUE(f.clut16_valid);
+
+	for (const u32 cbp : {0x0000u, 0x0001u, 0x0003u, 0x001fu, 0x0025u})
+	{
+		SCOPED_TRACE(testing::Message() << "cbp " << cbp);
+		// A 32-bit owner: one 8x2 region, sixteen words, inside the 8x8 block at CBP.
+		ClutBlockCopy b32{};
+		ASSERT_TRUE(LocateClutBlocks(f, cbp, 0, 1, 16, false, b32));
+		EXPECT_EQ(b32.region_count, 1u);
+        EXPECT_EQ(b32.w * b32.h, 16u);
+		// The region's texels all address block CBP itself, which is what "the loader reads one
+		// block" means in the unit the memory model tracks truth in.
+		const GSOffset o32 = GSOffset::fromKnownPSM(0, 1, PSMCT32);
+		for (u32 y = 0; y < b32.h; y++)
+		{
+			for (u32 x = 0; x < b32.w; x++)
+			{
+				EXPECT_EQ(static_cast<u32>(o32.bn(static_cast<int>(b32.x[0] + x), static_cast<int>(b32.y[0] + y))),
+					cbp)
+					<< "x " << x << " y " << y;
+			}
+		}
+
+		// ...and a 16-bit owner: one 16x2 region, thirty-two cells, again inside the block at CBP.
+		for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+		{
+			ClutBlockCopy b16{};
+			ASSERT_TRUE(LocateClutBlocks16(f, psm, cbp, 0, 1, 16, b16));
+			EXPECT_EQ(b16.region_count, 1u);
+			EXPECT_EQ(b16.w * b16.h, 32u);
+			const GSOffset o16 = GSOffset::fromKnownPSM(0, 1, static_cast<GS_PSM>(psm));
+			for (u32 y = 0; y < b16.h; y++)
+			{
+				for (u32 x = 0; x < b16.w; x++)
+				{
+					EXPECT_EQ(
+						static_cast<u32>(o16.bn(static_cast<int>(b16.x[0] + x), static_cast<int>(b16.y[0] + y))), cbp)
+						<< "psm " << psm << " x " << x << " y " << y;
+				}
+			}
 		}
 	}
 }

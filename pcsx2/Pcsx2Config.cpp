@@ -803,6 +803,11 @@ Pcsx2Config::GSOptions::GSOptions()
 	// and NOT because of this road: it unblocks the GPU upload merge, whose two arms disagree
 	// there. Both facts, and the proof, in Config.h.
 	TileGpuClut16Gather = true;
+	// Default FALSE, measured: it takes Spider-Man 3's blocking GPU waits from 84.25 a frame to 0.50
+	// and its frame p50 from 76.5 ms to 92.3, because the CLUT pulls it removes are what kept the
+	// upload merge off those pages and the un-poisoned merge costs 2,075 render passes. The device
+	// A/B is the deciding measurement and this is one INI line. Full numbers in Config.h.
+	TileGpuClutBlockGather = false;
 	// Default TRUE: pixel-inert by construction (it moves only WHEN recorded work is submitted),
 	// and what it attacks is the whole drain-road readback bill -- 54.5 ms of a 94 ms Spider-Man 3
 	// frame on the SD865. Device A/B 2026-08-30 (SD865): gt4opb -14.6%, gt4 -12.8%, Spider-Man 3
@@ -1177,6 +1182,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutMergeRegions);
 	SettingsWrapBitBool(TileGpuClutMergePages);
 	SettingsWrapBitBool(TileGpuClut16Gather);
+	SettingsWrapBitBool(TileGpuClutBlockGather);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);

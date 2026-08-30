@@ -1370,6 +1370,116 @@ struct Pcsx2Config
 					// p50 124.41 -> 78.59 ms, readbacks 1969 -> 673, blocking waits 246 -> 84
 					// a frame.
 					TileGpuClut16Gather : 1,
+					// Ask the CLUT gather's owner question about the palette's OWN BLOCKS
+					// rather than about whole pages, and stop pulling a block nothing reads.
+					//
+					// The gather refuses a load when no single live target holds GPU-newest
+					// truth for every plane of every page the palette sits in. A palette is
+					// one to four blocks of a 32-block page, and the rest of that page is
+					// nothing to do with it: a target that rendered the palette and then had
+					// part of its page written back to the CPU fails the page question with
+					// every byte the palette needs sitting in its texture. This asks
+					// GSVramModel::SoleGpuOwnerOfBlocks instead — one owner over the blocks
+					// the loader reads — which is the same all-or-nothing rule in the unit
+					// the model already tracks truth in. Nothing about the copy geometry,
+					// the stream layout or the shader moves; LocateClutBlocks already
+					// addresses blocks.
+					//
+					// AND the second call is held. GSState invalidates TWO blocks for a
+					// four-bit-index CSM1 palette (GSState.cpp's `blocks` loop) and the
+					// loader reads sixteen entries — 64 bytes — out of the FIRST one, so the
+					// second block is over-invalidation nothing reads. Today it refuses the
+					// load and its bytes get pulled off the device; here its verdict is held
+					// until TEX0 says whether the palette includes it, and for a sixteen-
+					// entry palette it is simply dropped. That one block is most of the
+					// prize: on Spider-Man 3 the block question serves 1.12 loads a frame
+					// over the invalidated blocks and 50.00 over the read ones.
+					//
+					// Population, per drawn frame, from the census this shipped with
+					// (multi/partial refusals that would be served, over the read blocks):
+					// Spider-Man 3 50.00 of 50.00 (47.75 off a 16-bit owner), dirge 1.00 of
+					// 1.00, yugioh 0.38 of 0.38. GT4 0.00 of 25.75, GT4 Online Public Beta
+					// 0.00 of 2.62, MGS3 0.00 of 0.50 — their palettes are 256 entries over
+					// four blocks of which only some are GPU truth, which is a stitch across
+					// GPU and CPU bytes and no narrowing of the unit reaches it. What they
+					// DO get is the held call: GT4 Online Public Beta's 2.62 CLUT stalls a
+					// frame are entirely the over-invalidated block, and drop to 0.00.
+					// Fifteen dumps have no multi/partial population at all and are identity
+					// by construction.
+					//
+					// ⚠️ DEFAULT FALSE, and that is a MEASUREMENT and not a doubt about the
+					// road. It removes every blocking wait it was built to remove and the
+					// frame still gets slower here, because of what the removal UNLOCKS.
+					// Spider-Man 3, M2 Max under Honeykrisp, per drawn frame, off -> on:
+					//
+					//   CLUT owner refusals   50.00 -> 0.00      (all of them)
+					//   palettes gathered    168.00 -> 553.00
+					//   pool calls the stalls issued 83.75 -> 0.00
+					//   BLOCKING GPU WAITS    84.25 -> 0.50 /frame
+					//     of which out-of-band 81.75 (24.69 ms) -> 0.00 (0.00 ms)
+					//   upload sub-block stalls 33.75 -> 0.00
+					//   readbacks (8-frame run)  673 -> 3
+					//   ---- and the bill ----
+					//   upload merge served   40.00 -> 173.25 pages
+					//   render passes (run)     6951 -> 9026
+					//   render pass area  430 Mpx -> 561 Mpx
+					//   mid-frame flushes   109.25 -> 192.50
+					//   GS thread CPU per draw  6.87 -> 11.58 us
+					//   frame p50 (median of 3)  76.5 -> 92.3 ms
+					//
+					// ⚠️ The us-per-draw row is the one to read before predicting the device.
+					// The bill is not GPU time, it is GS THREAD time -- +175 ms over an
+					// eight-frame run, ~22 ms a frame, building the merge's writeback and
+					// seed ops. An A77 will not do that work faster than an M2 Max does, so
+					// "the round trips cost more on a phone" is only half the trade.
+					//
+					// The bill is the UPLOAD MERGE's, not the gather's. A CLUT pull marks
+					// its pages as CPU-wanted and that mark is what keeps the upload merge
+					// off them (TileGpuMergeCpuReadWindow); serve the palette on the GPU and
+					// the mark never happens, so the merge takes 4x the pages and its
+					// writeback-plus-seed per page splits the frame into 2,075 more render
+					// passes. That is the same coupling round C1 measured from the other
+					// side, where lifting the mark cost 150 CLUT stalls a frame. Removing
+					// the pulls is worth ~25 ms of device round trips and costs 2,075 passes
+					// on a tiler, and the two do not have the same price on the two rigs --
+					// which is exactly why this is a key and not a rewrite.
+					//
+					// The census's cheap early-out survives: sotc runs 1,788 CLUT loads a
+					// frame that need nothing, none of them build a footprint, and its GS
+					// thread CPU per draw is 16.35 -> 16.51 us with the key ON -- inside the
+					// +2% the design set as the kill line, and its pass, draw and readback
+					// counts do not move at all.
+					//
+					// Also measured, and not noise: Yu-Gi-Oh loses 11.6 ms on ONE frame of
+					// eight. It gathers 0.38 palettes a frame and then meets a load shape
+					// the sixteen-slot mirror cannot model, which makes the CLUT RAM whole
+					// through SyncClutToCpu -- a drain the off arm never pays because it had
+					// nothing on the device to sync. Its pass count, draw count, readback
+					// count and blocking waits are otherwise identical between the arms.
+					// dirge, GT4, GT4 Online Public Beta and MGS3 are inside the rig's noise
+					// (God of War II, whose counters are byte-identical on both arms, moves
+					// 21.6 -> 24.4 ms between runs).
+					//
+					// ⚠️ SPIDER-MAN 3 IS NOT BYTE-IDENTICAL with this on (79e8a170 ->
+					// 56bdab91; 1,192-1,914 pixels of 307,200 a frame, max channel delta 14,
+					// alpha never). The gathered PALETTE WORDS are not the cause and that is
+					// proved twice: a runtime oracle compared 1,500 live gathered records
+					// against a real GSClut load of the same palette out of guest memory made
+					// fresh and found zero wrong entries; and holding the readback constant
+					// in both arms -- so stalls, merges and plan structure are identical and
+					// only the road the consumers read the words by differs -- leaves 4
+					// pixels in one frame of four. The rest follows the upload merge going
+					// 40 -> 173 pages, which is the same road round C1 filed a byte defect
+					// in on this same title. The other 20 corpus dumps are identical.
+					//
+					// ⚠️ Device A/B pending at the time of writing. Everything above is one
+					// M2 Max. The stall counts are model-level and deterministic, so they
+					// transfer as counts whatever a round trip costs; the milliseconds do
+					// not, and the whole question is whether 25 ms of removed round trips
+					// outweighs 2,075 render passes on an Adreno 650. On device the CLUT
+					// stall census is Spider-Man 3 10 a frame, GT4 29 (~7.1 of 23.3 ms) and
+					// GT4 Online Public Beta 3.
+					TileGpuClutBlockGather : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.

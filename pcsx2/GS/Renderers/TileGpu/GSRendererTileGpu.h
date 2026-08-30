@@ -2575,6 +2575,11 @@ private:
 	/// setting that moved mid-session would put a mode-4 row in front of records copied the other
 	/// way round.
 	bool m_clut16_serves = false;
+	/// TileGpuClutBlockGather, latched at construction like every other lever here: it decides which
+	/// question ClutLoadDefer asks and whether the second call is held, both of which have to be the
+	/// same for every load of a session or a palette gathered under one rule is consumed under
+	/// another.
+	bool m_clut_block_gather = false;
 	bool m_warned_clut_lost = false;
 	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
 	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's
@@ -2625,6 +2630,14 @@ private:
 		GSTileSurfaceId call_owner[kMaxClutCalls] = {
 			kGSTileNoSurface, kGSTileNoSurface, kGSTileNoSurface, kGSTileNoSurface};
 		u16 call_psm[kMaxClutCalls] = {}; ///< ...and that owner's format, for the copy geometry
+		/// The SECOND call, HELD: recorded, not decided, and its readback not taken. It is the one
+		/// call whose membership of the palette TEX0 alone can settle -- calls 0, 2 and 3 are always
+		/// the loader's, because GSState only ever makes two calls for a four-bit index and four for
+		/// an eight-bit one. Its shape is kept so PreClutLoad can take its readback after all when
+		/// the palette turns out to include it.
+		bool call1_held = false;
+		GSTileSurfaceLayout call1_layout = {};
+		GSVector4i call1_rect = GSVector4i::zero();
 		GSPageBitmap pages; ///< the deferred blocks' pages
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 owner_bp = 0, owner_bwpg = 0;
@@ -2660,10 +2673,16 @@ private:
 	/// folded into m_clut_pending. Runs for every block, including after the page-granular road has
 	/// latched a refusal, because the answer is a property of the load's whole block set.
 	void ProbeClutBlockOwner(const GSVramModel::RectFootprint& fp, const GSPageBitmap& pages);
+	/// The owner clauses asked about whole PAGES -- the road before TileGpuClutBlockGather, and the
+	/// lever's off arm. kClutRefNone when the load would be served, and `owner` is who would serve it.
+	u32 ClutOwnerRefusalForPages(const GSPageBitmap& pages, GSTileSurfaceId& owner);
 	/// The per-call verdicts resolved over the first `blocks` of them — the blocks somebody actually
 	/// reads. Returns a ClutRefusal (kClutRefNone = every one of them is one owner's GPU truth) and
 	/// hands back that owner's format and, under kClutRefMulti, which of the three causes refused.
 	static u32 ResolveClutBlockGather(const ClutPendingLoad& p, u32 blocks, u32& owner_psm, u32& cause);
+	/// The held second call, settled now that TEX0 names the palette: dropped where nothing reads it,
+	/// and otherwise folded into the load's verdict and its readback taken after all.
+	void SettleHeldClutCall(const GIFRegTEX0& TEX0);
 
 	GpuPalette* FindGpuPalette(u32 handle);
 	/// Rebuild the short list of records the mirror still names, after anything that changes it.

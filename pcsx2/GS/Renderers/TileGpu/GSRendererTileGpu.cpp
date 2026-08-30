@@ -284,6 +284,16 @@ GSRendererTileGpu::GSRendererTileGpu()
 						"(TileGpuClut16Gather) -- two 5551 cells to a word, packed at fetch.");
 	}
 
+	// ...and the CLUT gather's owner question in BLOCKS rather than in pages, said out loud for the
+	// same reason: what it does is stop a readback happening, which leaves no other trace in a log.
+	m_clut_block_gather = GSConfig.TileGpuClutBlockGather;
+	if (m_clut_block_gather)
+	{
+		Console.WriteLn("TileGpu: a palette is gathered off a target that holds its OWN BLOCKS, not the whole "
+						"page (TileGpuClutBlockGather) -- and the block GSState invalidates but the loader "
+						"never reads is not pulled.");
+	}
+
 	// The upload merge's CPU-read window, read once so that every page of a session is judged by one
 	// rule and a run's window can be read off its log. Said out loud on every position including the
 	// default, because this is a WAIT-COUNT heuristic whose whole effect is which of two byte-
@@ -984,6 +994,63 @@ u32 GSRendererTileGpu::ResolveClutBlockGather(const ClutPendingLoad& p, u32 bloc
 	return kClutRefNone;
 }
 
+// The page-granular owner clauses: the road as it stood before TileGpuClutBlockGather, kept whole
+// so the lever's off arm is the same code and not a re-derivation of it. Returns kClutRefNone when
+// every clause holds, and fills `owner` with the surface that would serve the load.
+u32 GSRendererTileGpu::ClutOwnerRefusalForPages(const GSPageBitmap& pages, GSTileSurfaceId& owner)
+{
+	ClutPendingLoad& p = m_clut_pending;
+	GSVramModel::SoleOwnerRefusal why = GSVramModel::SoleOwnerRefusal::kServed;
+	owner = m_vram_model.SoleGpuOwner(pages, kGSTilePlanesAll, why);
+	if (owner == kGSTileNoSurface)
+	{
+		p.multi_cause = static_cast<u32>(why);
+		return kClutRefMulti;
+	}
+
+	const GSVramModel::Surface& s = m_vram_model.Get(owner);
+	if (!s.alive || !s.pool_handle)
+		return kClutRefDead;
+	if (m_clut16_serves ? !HasClutGatherPixelSpace(s.layout) : !HasCt32PixelSpace(s.layout))
+	{
+		// Which of the three tests refused, carried to PreClutLoad where the total is counted.
+		//
+		// ⚠️ Always the NARROW predicate's clause, whichever predicate decided above. Its contract is
+		// that it returns None exactly when the narrow predicate is true, and the census is
+		// denominated in it -- so on the wide road the psm bucket becomes the population this lever
+		// SERVED rather than the one it refused, and the reading of the counter changes with the
+		// lever rather than the counter's own meaning drifting.
+		p.layout_clause = gsTileSurfaceCt32PixelSpaceClause(s.layout);
+		pxAssert(p.layout_clause != kGSTileCt32ClauseNone);
+		// On the PSM test -- a page-aligned colour owner in a 16-bit format, the one population a
+		// wider gather could take -- keep going and record which of the clauses below would have
+		// refused next. Census only: the refusal is already settled and none of this changes it.
+		//
+		// ⚠️ The three tests below are a VERBATIM copy of the three that follow this if, and have to
+		// stay one. The question they answer is "what would this load meet if the layout clause
+		// admitted it", which is only worth asking while the two spellings agree.
+		if (p.layout_clause == kGSTileCt32ClausePsm)
+		{
+			if (!s.residency.contains(pages))
+				p.psm_next_clause = kClutRefResidency;
+			else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
+				p.psm_next_clause = kClutRefTexels;
+			else if (p.deferred_blocks != 0 && p.owner != owner)
+				p.psm_next_clause = kClutRefMixedOwner;
+			else
+				p.psm_next_clause = kClutRefNone;
+		}
+		return kClutRefLayout;
+	}
+	if (!s.residency.contains(pages))
+		return kClutRefResidency;
+	if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
+		return kClutRefTexels;
+	if (p.deferred_blocks != 0 && p.owner != owner)
+		return kClutRefMixedOwner;
+	return kClutRefNone;
+}
+
 bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const GSVector4i& r, const GSPageBitmap& pages)
 {
 	ClutPendingLoad& p = m_clut_pending;
@@ -993,6 +1060,15 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const G
 	p.stalling = true;
 	if (!ClutGatherServes())
 		return false;
+	// GSState makes at most four calls for one load (GSState.cpp's `blocks`). More would mean the
+	// per-call verdicts no longer describe the load, so the whole thing falls to today's road.
+	const u32 j = p.calls - 1;
+	if (j >= ClutPendingLoad::kMaxClutCalls) [[unlikely]]
+	{
+		p.refused = true;
+		p.refusal = kClutRefMulti;
+		return false;
+	}
 
 	// The BLOCK-granular question, and the census that sizes it. Below the cheap early-out because
 	// building a footprint is not free and sotc's ~1789 loads a frame must keep costing one bitmap
@@ -1002,59 +1078,40 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const G
 	GSVramModel::FootprintForRect(layout, r, fp);
 	ProbeClutBlockOwner(fp, pages);
 
+	// THE SECOND CALL IS HELD, and most of the lever's prize is here. GSState invalidates two blocks
+	// for a four-bit-index CSM1 palette and the loader reads sixteen entries -- 64 bytes -- out of
+	// the FIRST one, so the second is over-invalidation nothing reads. TEX0 has not arrived yet and
+	// the load could equally be an eight-bit one whose four calls are all the palette's, so the
+	// verdict is recorded and nothing is decided: no refusal, and no readback taken. Deferring a
+	// readback is always safe -- truth does not move, so any later reader of those bytes still pulls
+	// them. SettleHeldClutCall finishes it once TEX0 says which.
+	if (m_clut_block_gather && j == 1)
+	{
+		p.call1_held = true;
+		p.call1_layout = layout;
+		p.call1_rect = r;
+		return true;
+	}
+
 	if (p.refused)
 		return false;
 
-	u32 refusal = kClutRefNone;
-	GSVramModel::SoleOwnerRefusal why = GSVramModel::SoleOwnerRefusal::kServed;
-	GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(pages, kGSTilePlanesAll, why);
-	if (owner == kGSTileNoSurface)
+	u32 refusal;
+	GSTileSurfaceId owner;
+	if (m_clut_block_gather)
 	{
-		refusal = kClutRefMulti;
-		p.multi_cause = static_cast<u32>(why);
+		// The owner question in BLOCKS. ProbeClutBlockOwner asked it and every clause below it just
+		// above, so this reads that verdict rather than spelling the clauses a second time.
+		refusal = p.call_ref[j];
+		owner = p.call_owner[j];
+		if (refusal == kClutRefMulti)
+			p.multi_cause = p.call_cause[j];
+		else if (refusal == kClutRefNone && p.deferred_blocks != 0 && p.owner != owner)
+			refusal = kClutRefMixedOwner;
 	}
 	else
 	{
-		const GSVramModel::Surface& s = m_vram_model.Get(owner);
-		if (!s.alive || !s.pool_handle)
-			refusal = kClutRefDead;
-		else if (m_clut16_serves ? !HasClutGatherPixelSpace(s.layout) : !HasCt32PixelSpace(s.layout))
-		{
-			refusal = kClutRefLayout;
-			// Which of the three tests refused, carried to PreClutLoad where the total is counted.
-			//
-			// ⚠️ Always the NARROW predicate's clause, whichever predicate decided above. Its
-			// contract is that it returns None exactly when the narrow predicate is true, and the
-			// census is denominated in it -- so on the wide road the psm bucket becomes the
-			// population this lever SERVED rather than the one it refused, and the reading of the
-			// counter changes with the lever rather than the counter's own meaning drifting.
-			p.layout_clause = gsTileSurfaceCt32PixelSpaceClause(s.layout);
-			pxAssert(p.layout_clause != kGSTileCt32ClauseNone);
-			// On the PSM test -- a page-aligned colour owner in a 16-bit format, the one population a
-			// wider gather could take -- keep going and record which of the clauses below would have
-			// refused next. Census only: `refusal` is already set and none of this changes it.
-			//
-			// ⚠️ The three tests below are a VERBATIM copy of the three that follow this else-if, and
-			// have to stay one. The question they answer is "what would this load meet if the layout
-			// clause admitted it", which is only worth asking while the two spellings agree.
-			if (p.layout_clause == kGSTileCt32ClausePsm)
-			{
-				if (!s.residency.contains(pages))
-					p.psm_next_clause = kClutRefResidency;
-				else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
-					p.psm_next_clause = kClutRefTexels;
-				else if (p.deferred_blocks != 0 && p.owner != owner)
-					p.psm_next_clause = kClutRefMixedOwner;
-				else
-					p.psm_next_clause = kClutRefNone;
-			}
-		}
-		else if (!s.residency.contains(pages))
-			refusal = kClutRefResidency;
-		else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
-			refusal = kClutRefTexels;
-		else if (p.deferred_blocks != 0 && p.owner != owner)
-			refusal = kClutRefMixedOwner;
+		refusal = ClutOwnerRefusalForPages(pages, owner);
 	}
 	if (refusal != kClutRefNone)
 	{
@@ -1080,6 +1137,67 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const G
 	return true;
 }
 
+// The held second call, settled. TEX0 finally says how many blocks the palette is, and that is the
+// only thing the call was waiting for: a sixteen-entry CSM1 32-bit palette is the sixteen words at
+// the top of block CBP and nothing else (LocateClutBlocks' 8x2 region, LocateClutBlocks16's 16x2
+// one), so the block at CBP+1 that GSState invalidated alongside it is read by nobody. It is
+// dropped -- no refusal, and no readback, which is where GT4 Online Public Beta's whole CLUT stall
+// count lives.
+//
+// Any other shape does include it: an eight-bit index reads all four of its blocks, and a load the
+// gather does not serve at all reads whatever GSState said it would. So the call rejoins the load,
+// its verdict decides with the rest, and its readback is taken here instead of at the call.
+void GSRendererTileGpu::SettleHeldClutCall(const GIFRegTEX0& TEX0)
+{
+	ClutPendingLoad& p = m_clut_pending;
+	if (!p.call1_held)
+		return;
+	p.call1_held = false;
+	if (ClutGatherServesLoad(TEX0) && GSLocalMemory::m_psm[TEX0.PSM].pal != 256)
+		return; // nothing reads it
+
+	if (!p.refused)
+	{
+		const u32 refusal = p.call_ref[1];
+		const GSTileSurfaceId owner = p.call_owner[1];
+		if (refusal != kClutRefNone)
+		{
+			p.refused = true;
+			p.refusal = refusal;
+			if (refusal == kClutRefMulti)
+				p.multi_cause = p.call_cause[1];
+		}
+		else if (p.deferred_blocks != 0 && p.owner != owner)
+		{
+			p.refused = true;
+			p.refusal = kClutRefMixedOwner;
+		}
+		else
+		{
+			if (p.deferred_blocks == 0)
+			{
+				const GSVramModel::Surface& s = m_vram_model.Get(owner);
+				p.owner = owner;
+				p.owner_bp = s.layout.bp;
+				p.owner_bwpg = s.layout.bw;
+				p.owner_psm = s.layout.psm;
+			}
+			p.pages |= GSVramModel::PagesForRect(p.call1_layout, p.call1_rect);
+			p.deferred_blocks++;
+		}
+	}
+	if (p.refused)
+	{
+		// The readback ClutLoadDefer did not take. Block-refined, exactly as the call would have
+		// taken it: this is the same road, one step later.
+		const u32 before = m_frame.stalls[static_cast<u32>(StallSite::Clut)];
+		ReadbackToShadow(p.call1_layout, p.call1_rect,
+			GSVramModel::PagesForRect(p.call1_layout, p.call1_rect), StallSite::Clut);
+		if (m_frame.stalls[static_cast<u32>(StallSite::Clut)] != before)
+			p.readback = true;
+	}
+}
+
 // The load is about to run against the CPU's local memory. Two things have to be settled first: a
 // load of a shape the sixteen-slot mirror does not model rewrites the CLUT RAM in units it cannot
 // name, so the RAM is made whole before it; and blocks whose readback was deferred come back after
@@ -1088,6 +1206,10 @@ void GSRendererTileGpu::PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT&
 {
 	ClutPendingLoad& p = m_clut_pending;
 	m_frame.clut_loads++;
+
+	// Before anything else that can pull, so the held call's readback keeps the place in the order it
+	// would have had at the call.
+	SettleHeldClutCall(TEX0);
 
 	const bool csm1_32 = TEX0.CSM == 0 && (TEX0.CPSM & 0x2) == 0;
 	if (!csm1_32 && m_clut_mirror.AnyGpu()) [[unlikely]]
