@@ -513,6 +513,183 @@ TEST(GSVramModel, SoleGpuOwnerRefusesPartiallyShrunkPage)
 	EXPECT_TRUE(m.CheckInvariants());
 }
 
+// The block-granular sole-owner question, which is what a CLUT gather actually needs: a palette
+// reads four blocks of a page, and whether the page's other twenty-eight went back to the CPU says
+// nothing about the bytes it will read. Every case here is a REFUSAL branch except the first, and a
+// containment written the wrong way round would gather out of a texture that does not hold the
+// palette — a whole wrongly-coloured frame, silently.
+TEST(GSVramModel, SoleGpuOwnerOfBlocksServesAWindowInsideAShrunkPage)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+
+	m.OnNativeDraw(id, pages, kGSTilePlanesAll);
+	m.OnReadback(pages); // synced, so the CPU write below is lossless
+
+	// A CPU transfer over the first block of page 0: that page is GPU-newest for its other
+	// thirty-one blocks only.
+	GSVramModel::RectFootprint written;
+	GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 8, 8), written);
+	ASSERT_FALSE(written.overflowed);
+	m.OnCpuWrite(written, kGSTilePlanesAll);
+	const u32 truth = m.TruthMask(0, GSVramModel::PlaneIndex(GSTilePlaneRGB));
+	ASSERT_NE(truth, GSVramModel::kFullBlockMask);
+	ASSERT_NE(truth, 0u);
+
+	// A read of blocks the CPU write did not touch. The page-granular question refuses it and the
+	// block-granular one serves it, and that difference is the whole change.
+	GSVramModel::RectFootprint keep;
+	GSVramModel::FootprintForRect(l, GSVector4i(8, 0, 16, 8), keep);
+	ASSERT_FALSE(keep.overflowed);
+	const GSVramModel::RectFootprint::Edge* ke = keep.FindEdge(0);
+	ASSERT_NE(ke, nullptr);
+	ASSERT_EQ(ke->blocks & truth, ke->blocks);
+	EXPECT_EQ(m.SoleGpuOwner(keep.pages, kGSTilePlanesAll), kGSTileNoSurface);
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesAll), id);
+
+	// ...and a read of the block the CPU DOES hold is refused by both. This is the half that
+	// matters: it is the test a containment written the wrong way round fails.
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(written, kGSTilePlanesAll), kGSTileNoSurface);
+
+	// A read straddling the two is refused as well — one block of it is the CPU's.
+	GSVramModel::RectFootprint both;
+	GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 16, 8), both);
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(both, kGSTilePlanesAll), kGSTileNoSurface);
+
+	// An unowned page is unowned however small the window inside it: the block question narrows the
+	// truth test, not the ownership one.
+	GSVramModel m2;
+	const GSTileSurfaceId id2 = m2.Create(l, rect, 1);
+	EXPECT_EQ(m2.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesAll), kGSTileNoSurface);
+	m2.OnNativeDraw(id2, pages, kGSTilePlanesColor); // Z never claimed
+	EXPECT_EQ(m2.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesColor), id2);
+	EXPECT_EQ(m2.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesAll), kGSTileNoSurface);
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+TEST(GSVramModel, SoleGpuOwnerOfBlocksRefusesTwoOwnersAndAnOverflowedFootprint)
+{
+	// Two disjoint surfaces, and a window over both. Block granularity must not turn a split window
+	// into a served one — there is still no single texture, whatever the block masks say.
+	GSVramModel m;
+	const auto la = Layout(0, 8, PSMCT32);
+	const auto lb = Layout(56 * 32, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 224);
+	const GSTileSurfaceId a = m.Create(la, rect, 1);
+	const GSTileSurfaceId b = m.Create(lb, rect, 2);
+	const GSPageBitmap pa = GSVramModel::PagesForRect(la, rect);
+	const GSPageBitmap pb = GSVramModel::PagesForRect(lb, rect);
+	ASSERT_FALSE(pa.intersects(pb));
+	m.OnNativeDraw(a, pa, kGSTilePlanesAll);
+	m.OnNativeDraw(b, pb, kGSTilePlanesAll);
+
+	GSVramModel::RectFootprint fa, fb;
+	GSVramModel::FootprintForRect(la, rect, fa);
+	GSVramModel::FootprintForRect(lb, rect, fb);
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(fa, kGSTilePlanesAll), a);
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(fb, kGSTilePlanesAll), b);
+
+	GSVramModel::RectFootprint both = fa;
+	both.pages |= fb.pages;
+	EXPECT_EQ(m.SoleGpuOwnerOfBlocks(both, kGSTilePlanesAll), kGSTileNoSurface);
+
+	// An overflowed footprint carries no block detail, so it must fall back to the whole-page
+	// question rather than to "no edge entry, so nothing is required".
+	GSVramModel m3;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i full(0, 0, 512, 448);
+	const GSTileSurfaceId id = m3.Create(l, full, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, full);
+	m3.OnNativeDraw(id, pages, kGSTilePlanesAll);
+	m3.OnReadback(pages);
+	GSVramModel::RectFootprint written;
+	GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 8, 8), written);
+	m3.OnCpuWrite(written, kGSTilePlanesAll);
+
+	GSVramModel::RectFootprint keep;
+	GSVramModel::FootprintForRect(l, GSVector4i(8, 0, 16, 8), keep);
+	ASSERT_EQ(m3.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesAll), id);
+	keep.overflowed = true;
+	EXPECT_EQ(m3.SoleGpuOwnerOfBlocks(keep, kGSTilePlanesAll), kGSTileNoSurface);
+}
+
+// One refusal counter over three causes is what made the CLUT gather's multi/partial bucket
+// unsizeable. The classification is a strict partition in obstruction order, and it has to be a
+// property of the WHOLE window rather than of the first page that happens to obstruct — so a window
+// carrying two causes reports the harder one wherever the pages sit in scan order.
+TEST(GSVramModel, SoleGpuOwnerSaysWhichOfTheThreeCausesRefused)
+{
+	using Why = GSVramModel::SoleOwnerRefusal;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+	const GSPageBitmap top = GSVramModel::PagesForRect(l, GSVector4i(0, 0, 512, 224));
+
+	{
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(l, rect, 1);
+		Why why = Why::kNoOwner;
+		m.OnNativeDraw(id, pages, kGSTilePlanesAll);
+		EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll, why), id);
+		EXPECT_EQ(why, Why::kServed);
+
+		// Truth shrunk on one page: one owner everywhere, and only the unit is wrong.
+		m.OnReadback(pages);
+		GSVramModel::RectFootprint written;
+		GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 8, 8), written);
+		m.OnCpuWrite(written, kGSTilePlanesAll);
+		EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll, why), kGSTileNoSurface);
+		EXPECT_EQ(why, Why::kBlockSubset);
+	}
+	{
+		// Half the window never drawn. An unowned plane outranks a shrunk mask: no narrowing of the
+		// unit reaches it, and the two cost completely different work to serve.
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(l, rect, 1);
+		m.OnNativeDraw(id, top, kGSTilePlanesAll);
+		m.OnReadback(top);
+		GSVramModel::RectFootprint written;
+		GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 8, 8), written);
+		m.OnCpuWrite(written, kGSTilePlanesAll);
+		Why why = Why::kServed;
+		EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll, why), kGSTileNoSurface);
+		EXPECT_EQ(why, Why::kNoOwner);
+		// ...and the shrunk page on its own still reports the granularity cause.
+		GSPageBitmap one;
+		one.set(0);
+		EXPECT_EQ(m.SoleGpuOwner(one, kGSTilePlanesAll, why), kGSTileNoSurface);
+		EXPECT_EQ(why, Why::kBlockSubset);
+	}
+	{
+		// Two owners, every page whole. The scan must reach the second owner's pages even though the
+		// first page it visits is unremarkable, which is the reason the classifying scan does not
+		// stop at the first obstruction.
+		GSVramModel m;
+		const auto la = Layout(0, 8, PSMCT32);
+		const auto lb = Layout(56 * 32, 8, PSMCT32);
+		const GSVector4i half(0, 0, 512, 224);
+		const GSTileSurfaceId a = m.Create(la, half, 1);
+		const GSTileSurfaceId b = m.Create(lb, half, 2);
+		const GSPageBitmap pa = GSVramModel::PagesForRect(la, half);
+		const GSPageBitmap pb = GSVramModel::PagesForRect(lb, half);
+		m.OnNativeDraw(a, pa, kGSTilePlanesAll);
+		m.OnNativeDraw(b, pb, kGSTilePlanesAll);
+		Why why = Why::kServed;
+		EXPECT_EQ(m.SoleGpuOwner(pa | pb, kGSTilePlanesAll, why), kGSTileNoSurface);
+		EXPECT_EQ(why, Why::kTwoOwners);
+	}
+	{
+		// An empty window has no owner, and the caller must not read that as served.
+		GSVramModel m;
+		Why why = Why::kServed;
+		EXPECT_EQ(m.SoleGpuOwner(GSPageBitmap(), kGSTilePlanesAll, why), kGSTileNoSurface);
+		EXPECT_EQ(why, Why::kNoOwner);
+	}
+}
+
 TEST(GSVramModel, StealBetweenAliasedSurfaces)
 {
 	GSVramModel m;

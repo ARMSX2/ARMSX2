@@ -361,34 +361,94 @@ GSPageBitmap GSVramModel::ReadbackNeeded(const GSPageBitmap& pages, u8 planes) c
 
 GSTileSurfaceId GSVramModel::SoleGpuOwner(const GSPageBitmap& pages, u8 planes) const
 {
+	return SoleGpuOwnerScan(pages, planes, nullptr, nullptr);
+}
+
+GSTileSurfaceId GSVramModel::SoleGpuOwner(const GSPageBitmap& pages, u8 planes, SoleOwnerRefusal& why) const
+{
+	return SoleGpuOwnerScan(pages, planes, nullptr, &why);
+}
+
+GSTileSurfaceId GSVramModel::SoleGpuOwnerOfBlocks(const RectFootprint& fp, u8 planes) const
+{
+	return SoleGpuOwnerScan(fp.pages, planes, &fp, nullptr);
+}
+
+GSTileSurfaceId GSVramModel::SoleGpuOwnerOfBlocks(const RectFootprint& fp, u8 planes, SoleOwnerRefusal& why) const
+{
+	return SoleGpuOwnerScan(fp.pages, planes, &fp, &why);
+}
+
+GSTileSurfaceId GSVramModel::SoleGpuOwnerScan(
+	const GSPageBitmap& pages, u8 planes, const RectFootprint* fp, SoleOwnerRefusal* why) const
+{
 	GSTileSurfaceId sole = kGSTileNoSurface;
-	bool split = false;
+	bool unowned = false, shrunk = false, split = false;
 	pages.forEachSetPage([&](u32 page) {
-		if (split)
+		// The early exit. A classifying caller wants every page visited, because "which of the
+		// three refused" is a property of the whole window; everybody else has its answer as soon
+		// as one page obstructs, and this runs over texture-read windows of hundreds of pages.
+		if (!why && (unowned || shrunk || split))
 			return;
 		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		{
 			if (!(planes & (1u << pi)))
 				continue;
 			// No owner means the CPU holds this plane's newest bytes, so no GPU texture
-			// carries them; a shrunk mask means only part of the page is GPU-newest.
-			// Either way there is no single authoritative texture for the window.
+			// carries them.
 			const GSTileSurfaceId owner = m_planes[pi].owner[page];
-			if (owner == kGSTileNoSurface || TruthMask(page, pi) != kFullBlockMask)
+			if (owner == kGSTileNoSurface)
 			{
-				split = true;
-				return;
+				unowned = true;
+				if (!why)
+					return;
+				continue;
+			}
+			// ...and a truth mask that does not cover what the caller will read means only part
+			// of what it wants is GPU-newest. `required` is every block of the page unless a
+			// footprint names fewer: with no footprint this is the whole-page test verbatim.
+			const u32 truth = TruthMask(page, pi);
+			u32 required = kFullBlockMask;
+			if (fp && !fp->overflowed && truth != kFullBlockMask)
+			{
+				const RectFootprint::Edge* e = fp->FindEdge(page);
+				if (e)
+					required = e->blocks;
+			}
+			if ((truth & required) != required)
+			{
+				shrunk = true;
+				if (!why)
+					return;
 			}
 			if (sole == kGSTileNoSurface)
 				sole = owner;
 			else if (owner != sole)
 			{
 				split = true;
-				return;
+				if (!why)
+					return;
 			}
 		}
 	});
-	return split ? kGSTileNoSurface : sole;
+	if (!unowned && !shrunk && !split && sole != kGSTileNoSurface)
+	{
+		if (why)
+			*why = SoleOwnerRefusal::kServed;
+		return sole;
+	}
+	if (why)
+	{
+		// Obstruction order, not discovery order, and it is the order of how much work serving the
+		// window would be: an unowned plane needs a stitch across GPU and CPU bytes, two owners
+		// need a record that names both, and what is left over is the granularity question alone.
+		// An empty window has no owner and reports as such — the caller must not read it as served.
+		*why = unowned ? SoleOwnerRefusal::kNoOwner :
+			   split  ? SoleOwnerRefusal::kTwoOwners :
+			   shrunk ? SoleOwnerRefusal::kBlockSubset :
+						SoleOwnerRefusal::kNoOwner;
+	}
+	return kGSTileNoSurface;
 }
 
 void GSVramModel::OnReadback(const GSPageBitmap& pages)

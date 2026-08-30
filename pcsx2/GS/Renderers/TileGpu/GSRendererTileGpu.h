@@ -1533,6 +1533,11 @@ public:
 	u32 BlocksOf(u32 page) const;
 	/// Does every page of `pages` hold texels in all 32 blocks?
 	bool HoldsWhole(const GSPageBitmap& pages) const { return pages.andnot(m_whole).empty(); }
+	/// Does every BLOCK the footprint names hold texels? The same question HoldsWhole asks, in the
+	/// unit the model answers in — for a reader that only touches part of a page, "the rest of the
+	/// page is allocator leftovers" is not an answer about the bytes it will read. An overflowed
+	/// footprint carries no block detail, so it falls back to the whole-page question.
+	bool HoldsBlocks(const GSVramModel::RectFootprint& fp) const;
 	/// The pages of `pages` that do not: what a seed has to bring in.
 	GSPageBitmap MissingFrom(const GSPageBitmap& pages) const { return pages.andnot(m_whole); }
 
@@ -2597,6 +2602,29 @@ private:
 		/// clauses BELOW the layout one would have refused next, or kClutRefNone for "would be served".
 		/// Census only: nothing decides on it, and it is 0 on every other path.
 		u32 psm_next_clause = 0; ///< a ClutRefusal; 0 is kClutRefNone, declared just below
+		/// ...and under kClutRefMulti, which of the three causes that share that one counter refused
+		/// (a GSVramModel::SoleOwnerRefusal). Recorded at the refusal, counted in PreClutLoad.
+		u32 multi_cause = 0;
+		/// The BLOCK-granular sole-owner question, asked of every call of the load and kept PER CALL
+		/// rather than folded, because how many of them the load actually reads is not known until
+		/// TEX0 arrives at PreClutLoad. GSState invalidates two blocks for a four-bit index and the
+		/// loader reads sixteen entries out of the first one, so a load's second call is over
+		/// sixteen-bit-index bytes nothing reads — and letting it refuse is what makes the
+		/// block-granular question look useless (Spider-Man 3: 1.62 of 50 loads a frame served over
+		/// the invalidated blocks, and essentially all of them over the read ones).
+		///
+		/// Call `j` covers block CBP + j, in order, so the loader's blocks are always calls
+		/// [0, 1) for a sixteen-entry palette and [0, 4) for a 256-entry one.
+		static constexpr u32 kMaxClutCalls = 4;
+		/// A ClutRefusal per call; kClutRefMulti by default, which is the honest answer for a call
+		/// that early-outed (nothing on the GPU holds its blocks, so nothing can gather them).
+		u8 call_ref[kMaxClutCalls] = {1, 1, 1, 1}; // kClutRefMulti
+		/// ...and, under kClutRefMulti, a GSVramModel::SoleOwnerRefusal. kNoOwner by default, which
+		/// is what a call that early-outed found: nothing on the GPU holds any of its pages.
+		u8 call_cause[kMaxClutCalls] = {2, 2, 2, 2}; // SoleOwnerRefusal::kNoOwner
+		GSTileSurfaceId call_owner[kMaxClutCalls] = {
+			kGSTileNoSurface, kGSTileNoSurface, kGSTileNoSurface, kGSTileNoSurface};
+		u16 call_psm[kMaxClutCalls] = {}; ///< ...and that owner's format, for the copy geometry
 		GSPageBitmap pages; ///< the deferred blocks' pages
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 owner_bp = 0, owner_bwpg = 0;
@@ -2621,10 +2649,21 @@ private:
 
 	/// One InvalidateLocalMem(clut) call's block, asked the donor road's own owner questions. True
 	/// when its readback is DEFERRED to PostClutLoad; false leaves the caller on today's road, which
-	/// is always correct.
-	bool ClutLoadDefer(const GSPageBitmap& pages);
+	/// is always correct. Takes the layout and rect as well as their page set because the owner
+	/// question is asked of the block the load actually reads, and the block sidecar is what names
+	/// it — `pages` is passed in rather than recomputed because the caller already has it and the
+	/// cheap early-out is denominated in it.
+	bool ClutLoadDefer(const GSTileSurfaceLayout& layout, const GSVector4i& r, const GSPageBitmap& pages);
 	/// Whether the device can serve the gather at all (the CLUT loaders' word order fits). Asked once.
 	bool ClutGatherServes();
+	/// The same owner questions as ClutLoadDefer's, asked in BLOCK units of one block of the load and
+	/// folded into m_clut_pending. Runs for every block, including after the page-granular road has
+	/// latched a refusal, because the answer is a property of the load's whole block set.
+	void ProbeClutBlockOwner(const GSVramModel::RectFootprint& fp, const GSPageBitmap& pages);
+	/// The per-call verdicts resolved over the first `blocks` of them — the blocks somebody actually
+	/// reads. Returns a ClutRefusal (kClutRefNone = every one of them is one owner's GPU truth) and
+	/// hands back that owner's format and, under kClutRefMulti, which of the three causes refused.
+	static u32 ResolveClutBlockGather(const ClutPendingLoad& p, u32 blocks, u32& owner_psm, u32& cause);
 
 	GpuPalette* FindGpuPalette(u32 handle);
 	/// Rebuild the short list of records the mirror still names, after anything that changes it.
@@ -3561,6 +3600,33 @@ private:
 		// clut_ro[residency/texels/mixed-owner] is zero on these loads BY CONSTRUCTION rather than by
 		// measurement, and "how much of the psm population is actually reachable" is otherwise unknown.
 		u32 clut_rol16_next[kClutRefCount] = {};
+		// ...and clut_ro[kClutRefMulti] split into the THREE causes that share it. They are not
+		// equally hard and the undivided counter cannot tell them apart: a page with no owner at all
+		// needs a stitch across GPU and CPU bytes (GSVramModel.h refuses stitching on purpose), two
+		// owners need a palette record that names both, and a page whose truth is a block subset
+		// needs nothing but the question being asked in blocks. Indexed by
+		// GSVramModel::SoleOwnerRefusal; [kServed] is zero by construction.
+		u32 clut_multi_cause[4] = {};
+		// ...and, over the same population, what the BLOCK-granular question would have met:
+		// kClutRefNone is the load TileGpuClutBlockGather serves, kClutRefMulti one whose own blocks
+		// are not one owner's GPU truth either, and the rest are the clauses below the owner one.
+		u32 clut_multi_next[kClutRefCount] = {};
+		// ...and of the served ones, whether the owner is a 32-bit surface or a 16-bit one, because
+		// the two take different copy geometries (LocateClutBlocks vs LocateClutBlocks16) and only
+		// the second needs TileGpuClut16Gather on as well.
+		u32 clut_multi_ct16 = 0;
+		// ...and the same question asked over the blocks the LOADER READS rather than the ones GSState
+		// invalidates. The two differ by exactly one block, on four-bit-index loads only, and that one
+		// block is the whole difference between a lever that serves nothing and one that serves the
+		// population: nothing reads it, and letting it refuse refuses the load.
+		u32 clut_loader_next[kClutRefCount] = {};
+		u32 clut_loader_ct16 = 0; ///< ...of the served ones, off a 16-bit owner
+		u32 clut_loader_shape = 0; ///< ...loads whose SHAPE the gather does not serve, so the column
+		                           ///  above says nothing about them (CSM2, a 16-bit palette, CSA)
+		// ...and the BLOCK question's own refusals split the same three ways. [kBlockSubset] is the
+		// load whose own blocks are only partly one owner's GPU truth -- the shape no narrowing of the
+		// unit can reach, and so the ceiling on what a block-granular gather could ever serve.
+		u32 clut_block_cause[4] = {};
 		u32 clut_draws = 0;       // paletted draws whose every slot came from ONE device palette
 		u32 clut_draws_r3 = 0;    // ...served by rule 3, off the N x 1 gather
 		u32 clut_draws_byte = 0;  // ...served on the byte road, out of the copied blocks in the stream

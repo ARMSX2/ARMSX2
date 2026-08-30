@@ -200,6 +200,41 @@ public:
 	/// wrong-output this model exists to make impossible.
 	GSTileSurfaceId SoleGpuOwner(const GSPageBitmap& pages, u8 planes) const;
 
+	/// Why SoleGpuOwner refused, for a caller sizing what a narrower question would
+	/// serve. Three causes share one refusal today and they are not equally hard: one
+	/// is a stitch across GPU and CPU bytes, one needs a record naming two sources, and
+	/// the third is only the question being asked in whole pages when the caller cares
+	/// about blocks.
+	enum class SoleOwnerRefusal : u8
+	{
+		kServed = 0, ///< it did not refuse
+		kBlockSubset, ///< one owner everywhere; some page's truth is a block subset
+		kNoOwner, ///< some plane of some page is entirely CPU-newest (or the window is empty)
+		kTwoOwners, ///< two live surfaces across the window
+	};
+
+	/// SoleGpuOwner, and why. Same answer; `why` also decides how far the scan runs,
+	/// because a cause is a property of the WHOLE window and the first obstruction in
+	/// page order is only the first one. Without it the scan stops there, which is what
+	/// the texture-read path wants over a window of hundreds of pages.
+	GSTileSurfaceId SoleGpuOwner(const GSPageBitmap& pages, u8 planes, SoleOwnerRefusal& why) const;
+
+	/// SoleGpuOwner asked of the footprint's BLOCKS instead of whole pages: the one live
+	/// surface holding GPU-newest truth for every block `fp` names, on every plane in
+	/// `planes`.
+	///
+	/// Same all-or-nothing rule, and for the same reason — this is still one texture that
+	/// has to be authoritative for everything the caller will read. What moves is the
+	/// unit. A caller reading four blocks out of a page does not care that the page's
+	/// other twenty-eight went back to the CPU, and the whole-page question makes it
+	/// drain a page whose bytes it never touches. An overflowed footprint carries no
+	/// block detail, so it falls back to the whole-page question.
+	GSTileSurfaceId SoleGpuOwnerOfBlocks(const RectFootprint& fp, u8 planes) const;
+	/// ...and why it refused, on the same terms as the page-granular overload. kBlockSubset here
+	/// means the footprint's OWN blocks are not all one owner's GPU truth, which is the case no
+	/// narrowing of the unit can reach.
+	GSTileSurfaceId SoleGpuOwnerOfBlocks(const RectFootprint& fp, u8 planes, SoleOwnerRefusal& why) const;
+
 	// -- Queries -------------------------------------------------------------------
 
 	static constexpr u32 PlaneIndex(GSTilePlane plane) { return std::countr_zero(static_cast<u32>(plane)); }
@@ -235,6 +270,11 @@ private:
 
 	void ClearTruthPage(PlaneState& ps, u32 page, u32 plane_idx);
 	void ShrinkTruthPage(PlaneState& ps, u32 page, u32 written_blocks, u32 plane_idx);
+	/// The one spelling of the sole-owner scan, for all three entry points above. `fp`
+	/// narrows the truth each page must hold from every block down to the ones the
+	/// footprint names; `why` turns the early exit off and classifies the refusal.
+	GSTileSurfaceId SoleGpuOwnerScan(
+		const GSPageBitmap& pages, u8 planes, const RectFootprint* fp, SoleOwnerRefusal* why) const;
 
 	std::array<PlaneState, kGSTilePlaneCount> m_planes;
 	std::array<PageGen, GS_MAX_PAGES> m_gen;

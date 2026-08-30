@@ -811,7 +811,7 @@ void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	const GSPageBitmap pages = GSVramModel::PagesForRect(layout, r);
-	if (!clut || !ClutLoadDefer(pages))
+	if (!clut || !ClutLoadDefer(layout, r, pages))
 	{
 		// Bracketed on the clut road so the census counts the same population `stalls[Clut]` does.
 		// "Did a target hold these pages" is the question the gather has to ask (it is the only one
@@ -895,21 +895,123 @@ bool GSRendererTileGpu::ClutGatherServes()
 // hold these pages newest" is exactly that, where "does a readback need to happen" is not (a synced
 // claim the ring vouches for dies with the flush, which is why the design probe had to measure from
 // inside ReadbackToShadow and this does not).
-bool GSRendererTileGpu::ClutLoadDefer(const GSPageBitmap& pages)
+// One block of a CLUT load, asked the SAME owner questions in BLOCK units, and folded into the
+// pending load's running answer. The whole point is the unit: a palette lives in four blocks (or
+// one, or two) of a page whose other twenty-eight the CPU may well own, and the page-granular
+// question then says "drain the page" about bytes the load never reads.
+//
+// Two things it does that the page-granular road does not. It runs for EVERY block of the load,
+// including after that road has latched a refusal -- the answer is over the whole block set, and a
+// load half of which is one owner's and half another's is a mixed-owner refusal here just as it is
+// there. And the texels test is narrowed the same way as the truth test, because the two are read
+// against each other: "the rest of the page is allocator leftovers" is not an answer about the
+// blocks this load reads.
+void GSRendererTileGpu::ProbeClutBlockOwner(const GSVramModel::RectFootprint& fp, const GSPageBitmap& pages)
+{
+	ClutPendingLoad& p = m_clut_pending;
+	const u32 j = p.calls - 1; // p.calls was bumped on entry, and call j covers block CBP + j
+	if (j >= ClutPendingLoad::kMaxClutCalls)
+		return;
+
+	GSVramModel::SoleOwnerRefusal why = GSVramModel::SoleOwnerRefusal::kServed;
+	const GSTileSurfaceId owner = m_vram_model.SoleGpuOwnerOfBlocks(fp, kGSTilePlanesAll, why);
+
+	u32 next;
+	if (owner == kGSTileNoSurface)
+	{
+		next = kClutRefMulti;
+		p.call_cause[j] = static_cast<u8>(why);
+	}
+	else
+	{
+		// ⚠️ A VERBATIM copy of the clauses below the owner question in ClutLoadDefer, narrowed to
+		// blocks where the unit differs, and they have to stay one. What it answers is "what would
+		// this call meet if the owner question were asked in blocks", which is only worth asking
+		// while the two spellings agree. The MIXED-OWNER clause is not here: whether two calls
+		// disagree is a question about the load, and which calls are part of the load is not settled
+		// until TEX0 arrives.
+		const GSVramModel::Surface& s = m_vram_model.Get(owner);
+		if (!s.alive || !s.pool_handle)
+			next = kClutRefDead;
+		else if (m_clut16_serves ? !HasClutGatherPixelSpace(s.layout) : !HasCt32PixelSpace(s.layout))
+			next = kClutRefLayout;
+		else if (!s.residency.contains(pages))
+			next = kClutRefResidency;
+		else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsBlocks(fp))
+			next = kClutRefTexels;
+		else
+			next = kClutRefNone;
+		p.call_owner[j] = owner;
+		p.call_psm[j] = static_cast<u16>(s.layout.psm);
+	}
+	p.call_ref[j] = static_cast<u8>(next);
+}
+
+u32 GSRendererTileGpu::ResolveClutBlockGather(const ClutPendingLoad& p, u32 blocks, u32& owner_psm, u32& cause)
+{
+	// ClutPendingLoad's per-call arrays are brace-initialised with the numbers, because a member
+	// array cannot name an enumerator declared after it. These pin the numbers.
+	static_assert(kClutRefMulti == 1, "ClutPendingLoad::call_ref's default must stay kClutRefMulti");
+	static_assert(static_cast<u32>(GSVramModel::SoleOwnerRefusal::kNoOwner) == 2,
+		"ClutPendingLoad::call_cause's default must stay kNoOwner");
+
+	owner_psm = 0;
+	cause = static_cast<u32>(GSVramModel::SoleOwnerRefusal::kServed);
+	if (blocks == 0 || blocks > p.calls || blocks > ClutPendingLoad::kMaxClutCalls)
+		return kClutRefMulti; // a block somebody reads that no call ever classified
+
+	GSTileSurfaceId sole = kGSTileNoSurface;
+	for (u32 j = 0; j < blocks; j++)
+	{
+		if (p.call_ref[j] != kClutRefNone)
+		{
+			cause = p.call_cause[j];
+			return p.call_ref[j];
+		}
+		if (sole == kGSTileNoSurface)
+		{
+			sole = p.call_owner[j];
+			owner_psm = p.call_psm[j];
+		}
+		else if (p.call_owner[j] != sole)
+		{
+			// Two of the load's own blocks off different targets. The copy road names one owner per
+			// record, so this is the multi-owner serve and not this one.
+			owner_psm = 0;
+			return kClutRefMixedOwner;
+		}
+	}
+	return kClutRefNone;
+}
+
+bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const GSVector4i& r, const GSPageBitmap& pages)
 {
 	ClutPendingLoad& p = m_clut_pending;
 	p.calls++;
 	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
 		return false; // the CPU shadow is authoritative here; today's road early-outs on the same test
 	p.stalling = true;
-	if (p.refused || !ClutGatherServes())
+	if (!ClutGatherServes())
+		return false;
+
+	// The BLOCK-granular question, and the census that sizes it. Below the cheap early-out because
+	// building a footprint is not free and sotc's ~1789 loads a frame must keep costing one bitmap
+	// AND; above the refusal latch because the answer is over the load's WHOLE block set and the
+	// page-granular road stops asking after its first refusal.
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(layout, r, fp);
+	ProbeClutBlockOwner(fp, pages);
+
+	if (p.refused)
 		return false;
 
 	u32 refusal = kClutRefNone;
-	GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(pages, kGSTilePlanesAll);
+	GSVramModel::SoleOwnerRefusal why = GSVramModel::SoleOwnerRefusal::kServed;
+	GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(pages, kGSTilePlanesAll, why);
 	if (owner == kGSTileNoSurface)
 	{
 		refusal = kClutRefMulti;
+		p.multi_cause = static_cast<u32>(why);
 	}
 	else
 	{
@@ -1012,6 +1114,40 @@ void GSRendererTileGpu::PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT&
 	{
 		m_frame.clut_ref_owner++;
 		m_frame.clut_ro[p.refusal < kClutRefCount ? p.refusal : 0u]++;
+		// The multi/partial bucket, split into its three causes and priced against the block-granular
+		// question. One counter over three populations is what made this bucket unsizeable: only one
+		// of the three is a granularity question, and it is the only one anything cheap can serve.
+		if (p.refusal == kClutRefMulti)
+		{
+			m_frame.clut_multi_cause[p.multi_cause < 4 ? p.multi_cause : 0u]++;
+
+			// Asked over the blocks GSState INVALIDATED, which is the unit the road speaks in today.
+			u32 psm = 0, cause = 0;
+			const u32 inval = ResolveClutBlockGather(p, p.calls, psm, cause);
+			m_frame.clut_multi_next[inval < kClutRefCount ? inval : 0u]++;
+			if (inval == kClutRefMulti)
+				m_frame.clut_block_cause[cause < 4 ? cause : 0u]++;
+			if (inval == kClutRefNone && (psm == PSMCT16 || psm == PSMCT16S))
+				m_frame.clut_multi_ct16++;
+
+			// ...and over the blocks the LOADER READS. A CSM1 32-bit load reads one block for sixteen
+			// entries (64 of its 256 bytes) and four for 256; GSState invalidates two and four. So the
+			// two columns differ by one block on four-bit-index loads, and that block is the whole
+			// difference. Only asked of a shape the gather serves at all -- for the others the block
+			// set is not CBP..CBP+n and the answer would be meaningless.
+			if (!ClutGatherServesLoad(TEX0))
+			{
+				m_frame.clut_loader_shape++;
+			}
+			else
+			{
+				const u32 read_blocks = (GSLocalMemory::m_psm[TEX0.PSM].pal == 256) ? 4u : 1u;
+				const u32 loader = ResolveClutBlockGather(p, read_blocks, psm, cause);
+				m_frame.clut_loader_next[loader < kClutRefCount ? loader : 0u]++;
+				if (loader == kClutRefNone && (psm == PSMCT16 || psm == PSMCT16S))
+					m_frame.clut_loader_ct16++;
+			}
+		}
 		// The layout clause's own split, a strict partition of clut_ro[kClutRefLayout].
 		if (p.refusal == kClutRefLayout && p.layout_clause < kGSTileCt32ClauseCount)
 		{
@@ -2783,6 +2919,22 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// and 16 are two texel rows wherever they sit.
 	const auto p16 = [&](u32 e256, u32 al) { return stat([e256, al](const MF& f) { return f.clut_rol16[e256][al]; }); };
 	const auto pn = [&](u32 c) { return stat([c](const MF& f) { return f.clut_rol16_next[c]; }); };
+	// The multi/partial bucket's three causes, and what the same loads would meet if the owner
+	// question were asked in BLOCKS. `bnext[kClutRefNone]` is the population a block-granular gather
+	// serves; it is a subset of the block-subset cause by construction.
+	const auto mcause = [&](GSVramModel::SoleOwnerRefusal c) {
+		const u32 i = static_cast<u32>(c);
+		return stat([i](const MF& f) { return f.clut_multi_cause[i]; });
+	};
+	const auto bnext = [&](u32 c) { return stat([c](const MF& f) { return f.clut_multi_next[c]; }); };
+	const auto mct16 = stat([](const MF& f) { return f.clut_multi_ct16; });
+	const auto lnext = [&](u32 c) { return stat([c](const MF& f) { return f.clut_loader_next[c]; }); };
+	const auto lct16 = stat([](const MF& f) { return f.clut_loader_ct16; });
+	const auto lshape = stat([](const MF& f) { return f.clut_loader_shape; });
+	const auto bcause = [&](GSVramModel::SoleOwnerRefusal c) {
+		const u32 i = static_cast<u32>(c);
+		return stat([i](const MF& f) { return f.clut_block_cause[i]; });
+	};
 	const auto cres = stat([](const MF& f) { return f.clut_ro[kClutRefResidency]; });
 	const auto ctex = stat([](const MF& f) { return f.clut_ro[kClutRefTexels]; });
 	const auto cmix = stat([](const MF& f) { return f.clut_ro[kClutRefMixedOwner]; });
@@ -2819,6 +2971,41 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  owner refusals: multi/partial %.2f  dead %.2f  layout %.2f (kind %.2f, base %.2f, "
 						"psm %.2f)  residency %.2f  texels %.2f  mixed-owner %.2f",
 			cmulti.mean, cdead.mean, clay.mean, clk.mean, clb.mean, clp.mean, cres.mean, ctex.mean, cmix.mean);
+		if (cmulti.mean > 0.0)
+		{
+			// The one bucket that carries three populations, split. Only the block-subset cause is a
+			// granularity question: the other two need a stitch across GPU and CPU bytes, or a
+			// palette record naming two owners, and GSVramModel refuses the first on purpose.
+			Console.WriteLn("  multi/partial by cause: block subset %.2f  no owner %.2f  two owners %.2f",
+				mcause(GSVramModel::SoleOwnerRefusal::kBlockSubset).mean,
+				mcause(GSVramModel::SoleOwnerRefusal::kNoOwner).mean,
+				mcause(GSVramModel::SoleOwnerRefusal::kTwoOwners).mean);
+			// ...and the same loads asked in blocks. "served" is what TileGpuClutBlockGather takes;
+			// "own blocks split" is a load whose OWN blocks are not one owner's GPU truth either, so
+			// the narrower question does not help it.
+			Console.WriteLn("  ...asked in blocks: served %.2f (of which a 16-bit owner %.2f)  own blocks split "
+							"%.2f  dead %.2f  layout %.2f  residency %.2f  texels %.2f  mixed-owner %.2f",
+				bnext(kClutRefNone).mean, mct16.mean, bnext(kClutRefMulti).mean, bnext(kClutRefDead).mean,
+				bnext(kClutRefLayout).mean, bnext(kClutRefResidency).mean, bnext(kClutRefTexels).mean,
+				bnext(kClutRefMixedOwner).mean);
+			// ...and the block question's own refusals split the same three ways. kBlockSubset here is
+			// the load whose OWN blocks are partly the CPU's, which is the one shape no narrowing of
+			// the unit reaches -- so it is the number that says whether the block serve is worth it.
+			Console.WriteLn("  ...and those splits by cause: own blocks not all GPU %.2f  no owner %.2f  "
+							"two owners %.2f",
+				bcause(GSVramModel::SoleOwnerRefusal::kBlockSubset).mean,
+				bcause(GSVramModel::SoleOwnerRefusal::kNoOwner).mean,
+				bcause(GSVramModel::SoleOwnerRefusal::kTwoOwners).mean);
+			// ...and the same question over the blocks the LOADER READS. The gap between this line
+			// and the one two above is GSState's second invalidated block on a four-bit index, which
+			// the loader never touches.
+			Console.WriteLn("  ...asked over the READ blocks: served %.2f (of which a 16-bit owner %.2f)  own "
+							"blocks split %.2f  dead %.2f  layout %.2f  residency %.2f  texels %.2f  mixed-owner "
+							"%.2f  (shape the gather never serves %.2f)",
+				lnext(kClutRefNone).mean, lct16.mean, lnext(kClutRefMulti).mean, lnext(kClutRefDead).mean,
+				lnext(kClutRefLayout).mean, lnext(kClutRefResidency).mean, lnext(kClutRefTexels).mean,
+				lnext(kClutRefMixedOwner).mean, lshape.mean);
+		}
 		if (clp.mean > 0.0)
 		{
 			// The 16-bit owners, split the two ways that decide whether a gather off one is worth
@@ -3268,6 +3455,22 @@ u32 GSTileBlockFill::BlocksOf(u32 page) const
 		return GSVramModel::kFullBlockMask;
 	const auto it = m_masks.find(static_cast<u16>(page));
 	return it == m_masks.end() ? 0u : it->second;
+}
+
+bool GSTileBlockFill::HoldsBlocks(const GSVramModel::RectFootprint& fp) const
+{
+	if (fp.overflowed)
+		return HoldsWhole(fp.pages);
+	bool holds = true;
+	fp.pages.forEachSetPage([&](u32 page) {
+		if (!holds || m_whole.test(page))
+			return;
+		const GSVramModel::RectFootprint::Edge* e = fp.FindEdge(page);
+		const u32 required = e ? e->blocks : GSVramModel::kFullBlockMask;
+		if ((BlocksOf(page) & required) != required)
+			holds = false;
+	});
+	return holds;
 }
 
 GSRendererTileGpu::SurfaceTexels& GSRendererTileGpu::Texels(GSTileSurfaceId id)
