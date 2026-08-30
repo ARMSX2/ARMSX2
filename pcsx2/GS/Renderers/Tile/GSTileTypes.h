@@ -770,6 +770,20 @@ constexpr u32 gsTileUnpack5551(u16 c)
 		   (static_cast<u32>(c & 0x03E0u) << 6) | (static_cast<u32>(c & 0x001Fu) << 3);
 }
 
+/// The 32-bit CLUT word a CSM1 loader reads out of a 16-bit surface, from the two RGBA8 cells that
+/// hold it. A guest word of a PSMCT16/PSMCT16S surface is two cells, and in that surface's texel
+/// space they are the texel at (x, y) and the one at (x + 8, y) — so a gather off a 16-bit owner
+/// fetches two texels per palette entry and packs each back to the halfword the console stored.
+///
+/// The pack is gsTilePack5551 above, which is GSLocalMemory::WriteFrame16 verbatim, so the word this
+/// produces is the word GSClut's own loader would have read out of the guest bytes the readback road
+/// would have written. That is the whole correctness argument for the 16-bit gather, and the suite
+/// pins it end to end against a real GSClut load rather than against this function.
+constexpr u32 gsTileClut16Word(u32 low_cell, u32 high_cell)
+{
+	return static_cast<u32>(gsTilePack5551(low_cell)) | (static_cast<u32>(gsTilePack5551(high_cell)) << 16);
+}
+
 /// Whether a surface can travel the TileGpu byte road — the writeback that reswizzles its finished
 /// pixels into guest bytes and the seed that reads bytes back into it. A COLOUR surface in one of
 /// the four swizzle universes the road has a program for, with a page-aligned base: both shaders
@@ -910,6 +924,23 @@ constexpr GSTileCt32Clause gsTileSurfaceCt32PixelSpaceClause(const GSTileSurface
 	if (layout.psm != PSMCT32 && layout.psm != PSMCT24)
 		return kGSTileCt32ClausePsm;
 	return kGSTileCt32ClauseNone;
+}
+
+/// The WIDER question the CLUT gather asks once it has a 16-bit road: is this surface's pixel space
+/// one the gather has a copy geometry AND a fetch arm for? That is the CT32 pair the two functions
+/// above admit, plus the two 16-bit colour formats — the ones GSTileSwizzleForms::LocateClutBlocks16
+/// serves.
+///
+/// ⚠️ A THIRD predicate, not a widening of gsTileSurfaceHasCt32PixelSpace, and the pair above keeps
+/// its own contract untouched (the clause function returns None exactly when the narrow predicate is
+/// true, and that must go on being exactly the narrow one). The narrow predicate has three other
+/// callers — the donor build and the rule-2 bind — that read an owner's texture through CT32 block
+/// and column forms, and a 16-bit owner reaching one of those produces texels out of the wrong bytes
+/// with no error anywhere. Always a subset of the byte road.
+constexpr bool gsTileSurfaceHasClutGatherPixelSpace(const GSTileSurfaceLayout& layout)
+{
+	return layout.kind == GSTileSurfaceKind::Color && (layout.bp & 31) == 0 &&
+	       (layout.psm == PSMCT32 || layout.psm == PSMCT24 || layout.psm == PSMCT16 || layout.psm == PSMCT16S);
 }
 
 // Cross-layout alias resolution tiers, cheapest first. M2 classifies every alias and

@@ -147,12 +147,27 @@ namespace GSTileSwizzleForms
 		bool clut_valid = false;
 		XorForm1 clut_i8_word;
 		XorForm1 clut_i4_word;
+
+		/// The CT16 block forms' inverses: in-page block 0..31 → bx | (by << 2), one per 16-bit
+		/// block table. Only the CLUT gather off a SIXTEEN-BIT owner needs them — the writeback and
+		/// the seed go the forward way — and they are what turns "the palette is at CBP+b" into "that
+		/// block is at texel (bx*16, by*8) of the owner's page".
+		///
+		/// ⚠️ Fitted under their OWN flag, never `valid`, on the same precedent as `clut_valid`
+		/// immediately above: `valid` gates the whole byte road (writeback, seed, reinterpret), and an
+		/// inverse that stopped fitting must turn off only the 16-bit CLUT gather. It is gated on
+		/// `valid` in the other direction, because inverting a form that did not fit is not an answer
+		/// — it is a zero form that would address block 0 for every block.
+		bool clut16_valid = false;
+		XorForm1 inv_block84; ///< blockTable16 / blockTable4 (PSMCT16)
+		XorForm1 inv_block84s; ///< blockTable16S (PSMCT16S)
 	};
 
 	/// Fits every form from the tree's tables. `valid` is false if any swizzle table
 	/// fails to fit, or blockTable8 is no longer blockTable32, or blockTable16 is no longer
 	/// blockTable4 (the shaders share one form for each pair); `clut_valid` is false if the
-	/// CLUT loaders' word order does not fit.
+	/// CLUT loaders' word order does not fit; `clut16_valid` is false if the two 16-bit block
+	/// tables do not invert.
 	FormSet Fit();
 
 	/// The fitted constants as GLSL `#define`s (one per basis entry, zero entries
@@ -330,6 +345,30 @@ namespace GSTileSwizzleForms
 	// power-of-two tile width, so a caller that copies a wider rect and reads several palettes out
 	// of it at their own offsets inside it needs no second map.
 
+	// -- The SIXTEEN-BIT owner -------------------------------------------------------------------
+	// Everything above assumes the palette's words are texels of a CT32-shaped surface: one guest
+	// word is one texel, so a copy of the blocks IS a copy of the words. A 16-bit owner stores two
+	// cells to a word, so a palette word is a byte REINTERPRETATION of two texels — and the two are
+	// texel (cx, cy) and (cx + 8, cy), because columnTable16[y][x] == 2*columnTable32[y][x] and
+	// columnTable16[y][x + 8] == the same halfword plus one (checked exhaustively; the same identity
+	// tilegpu_writeback.glsl states in prose). So the road is: copy twice as wide, fetch the word at
+	// `off` and the one at `off + 8`, and pack each with gsTilePack5551 — which is
+	// GSLocalMemory::WriteFrame16 verbatim, and therefore the same bytes the readback road stores.
+	//
+	// The geometry is the CT32 geometry with x doubled and the two low block bits SWAPPED.
+	// blockTable32's bit 0 is x bit 0 and its bit 1 is y bit 0; blockTable16's and blockTable16S's
+	// bit 0 is y bit 0 and their bit 1 is x bit 0. Transcribing the 32-bit form by analogy produces a
+	// plausible palette made of the wrong words, which is why nothing here is shared with it. A CT16
+	// block is 16×8 texels and a CT16 page is 64×64, not 64×32.
+	//
+	// A 4-aligned group {4k..4k+3} is a 2×2 block square in all three tables, so a 256-entry palette
+	// at a 4-aligned CBP is one 32×16 rect. At any other CBP the four blocks are scattered, and the
+	// road does NOT fall back to four independent runs the way the 32-bit one does: each region gets
+	// a destination offset into a shared 32×16 tile, block j landing at (x = (j>>1)*16, y = (j&1)*8),
+	// which is exactly the quadrant the entry map's block bits select. One consumer, one word order,
+	// whatever the alignment — and that matters because the title this exists for (Spider-Man 3)
+	// loads every one of its 256-entry palettes at CBP & 3 == 1 and none at all at 0.
+
 	struct ClutBlockCopy
 	{
 		static constexpr u32 kMaxRegions = 4;
@@ -338,6 +377,12 @@ namespace GSTileSwizzleForms
 		u32 w, h; ///< 8×8 per region; 8×2 for the single block of a 16-entry palette; 16×16 merged
 		bool merged; ///< the four blocks were emitted as ONE 16×16 region — see the note above
 		u32 stride; ///< words per row of the copied image when `merged`; 0 otherwise
+		/// Each region's WORD offset inside the copied image, when the regions do not simply follow
+		/// one another. Zero on every 32-bit road — there the executor derives region b's destination
+		/// as `b * w * h`, which is what consecutive runs are — and that is the only thing that keeps
+		/// this field from changing what already ships. The 16-bit road sets it, because its four
+		/// scattered blocks land as quadrants of ONE tile rather than as four runs.
+		u32 copy_off[kMaxRegions];
 	};
 
 	/// Where a CSM1 32-bit CLUT load's source blocks sit in the owner surface's pixel space.
@@ -360,4 +405,30 @@ namespace GSTileSwizzleForms
 	/// tilegpu.glsl's merged palette mode performs per fetch — spelled there with the multiply
 	/// folded into bit positions, because the pieces occupy disjoint bit ranges.
 	u32 ClutEntryToMergedOffset(const FormSet& forms, u32 entries, u32 stride, u32 e);
+
+	/// Where a CSM1 32-bit CLUT load's source cells sit in a SIXTEEN-BIT owner's pixel space, as one
+	/// tile `stride` words per row — see the note above for why there is no per-block fallback here.
+	/// `psm` must be PSMCT16 or PSMCT16S; `entries` 256 or 16; `owner_bp`/`owner_bwpg` the owner's
+	/// page-aligned base and its width in pages. False when the forms did not fit (`clut16_valid`),
+	/// the psm or the entry count is not one of the two, or a block falls below the owner's base.
+	///
+	/// A SIBLING of LocateClutBlocks rather than an argument to it, deliberately: every one of the
+	/// six numbers differs — region extents, block table, page height, the destination offsets, the
+	/// stride, and whether a `merge` lever applies at all — so the two share the struct and nothing
+	/// else. The 32-bit road is then untouched by construction, which is the only guarantee that
+	/// matters for a road three levers already ship on.
+	bool LocateClutBlocks16(const FormSet& forms, u32 psm, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
+		ClutBlockCopy& out);
+
+	/// Entry e of a CSM1 32-bit palette gathered out of a SIXTEEN-BIT owner: the word offset of the
+	/// entry's LOW cell inside a tile `stride` words per row. The HIGH cell is ALWAYS at `off + 8`,
+	/// in every layout LocateClutBlocks16 produces, because the two cells of a guest word are texels
+	/// eight apart in x. The palette word is then
+	/// `gsTilePack5551(words[off]) | (gsTilePack5551(words[off + 8]) << 16)` — gsTileClut16Word in
+	/// GSTileTypes.h.
+	///
+	/// ⚠️ `stride` must be 32 for a 256-entry palette. At 16 the block term lands on bit 4 and
+	/// collides with cy, so the answer is silently a permutation of itself; LocateClutBlocks16 never
+	/// produces that pair and the suite pins the refusal.
+	u32 ClutEntryToCt16Offset(const FormSet& forms, u32 entries, u32 stride, u32 e);
 } // namespace GSTileSwizzleForms

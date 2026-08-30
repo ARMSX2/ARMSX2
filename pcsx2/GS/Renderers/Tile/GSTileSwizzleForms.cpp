@@ -121,6 +121,16 @@ namespace GSTileSwizzleForms
 
 		f.valid = ok;
 
+		// The two 16-bit block tables' inverses, for the CLUT gather off a 16-bit owner. Their own
+		// flag: `valid` gates the whole byte road, and an inverse that stopped fitting has to turn off
+		// only the gather. Gated on `ok` in the other direction because these invert forms fitted
+		// above -- Invert2 of a form that did not fit succeeds trivially on a zero-bit domain and
+		// answers "block 0" for every block, which is worse than refusing.
+		bool clut16_ok = ok;
+		clut16_ok &= Invert2(f.block84, f.inv_block84);
+		clut16_ok &= Invert2(f.block84s, f.inv_block84s);
+		f.clut16_valid = clut16_ok;
+
 		u16 i8[256];
 		u16 i4[16];
 		GSClut::EntryToWordCSM1_32(i8, i4);
@@ -421,5 +431,85 @@ namespace GSTileSwizzleForms
 		const u32 b = w >> 6;
 		const u32 c = forms.inv_col32.Eval(w & 63);
 		return (((b & 2) << 2) + (c >> 3)) * stride + ((b & 1) << 3) + (c & 7);
+	}
+
+	bool LocateClutBlocks16(const FormSet& forms, u32 psm, u32 cbp, u32 owner_bp, u32 owner_bwpg, u32 entries,
+		ClutBlockCopy& out)
+	{
+		out = {};
+		if (!forms.valid || !forms.clut_valid || !forms.clut16_valid)
+			return false;
+		if (psm != PSMCT16 && psm != PSMCT16S)
+			return false;
+
+		if (entries == 256)
+		{
+			// 512 cells = four blocks from CBP, and a CT16 block is 16x8 texels. 4-aligned they are a
+			// 2x2 block square, so one 32x16 region says the whole palette; otherwise they are four
+			// separate 16x8 regions that still land as the four quadrants of one 32x16 tile, through
+			// copy_off. Either way the consumer reads ONE 32-wide tile and needs no second word order.
+			out.region_count = ((cbp & 3) == 0) ? 1u : 4u;
+			out.w = (out.region_count == 1) ? 32u : 16u;
+			out.h = (out.region_count == 1) ? 16u : 8u;
+			out.stride = 32;
+		}
+		else if (entries == 16)
+		{
+			// 32 cells = the first two texel ROWS of the block at CBP, all sixteen columns wide.
+			// columnTable16 puts halfwords 0..31 -- words 0..15 -- in rows 0 and 1 and nothing else
+			// there, so a 16x2 rect is exactly the loaded words, no more and no fewer.
+			out.region_count = 1;
+			out.w = 16;
+			out.h = 2;
+			out.stride = 16;
+		}
+		else
+		{
+			return false;
+		}
+
+		if (cbp < owner_bp)
+			return false;
+		const u32 bwpg = owner_bwpg ? owner_bwpg : 1;
+		const XorForm1& inv_block = (psm == PSMCT16) ? forms.inv_block84 : forms.inv_block84s;
+		for (u32 b = 0; b < out.region_count; b++)
+		{
+			// The owner-side arithmetic at block granularity, as LocateClutBlocks does it, with the
+			// three numbers a 16-bit surface changes: the block inverse is the 16-bit table's (packed
+			// bx | (by << 2), because block84 has two x bits and three y bits), a block is 16x8 texels
+			// rather than 8x8, and a page is 64 texels TALL rather than 32.
+			const u32 rel = (cbp + b) - owner_bp;
+			const u32 pg = rel >> 5;
+			const u32 bpk = inv_block.Eval(rel & 31);
+			out.x[b] = (pg % bwpg) * 64 + (bpk & 3) * 16;
+			out.y[b] = (pg / bwpg) * 64 + (bpk >> 2) * 8;
+			// Where region b lands in the tile. Relative block j of a 4-aligned group sits at
+			// (bx0 + (j >> 1), by0 + (j & 1)) in blocks -- bit 1 is x, bit 0 is y, the opposite way
+			// round from CT32 -- so in texels that is (16 * (j >> 1), 8 * (j & 1)), which is the same
+			// quadrant ClutEntryToCt16Offset's block bits select. The single-region forms start at 0.
+			out.copy_off[b] = (b & 1) * 8 * out.stride + (b >> 1) * 16;
+		}
+		return true;
+	}
+
+	u32 ClutEntryToCt16Offset(const FormSet& forms, u32 entries, u32 stride, u32 e)
+	{
+		// The same two halves as ClutEntryToMergedOffset -- entry -> the source word the CSM1 loader
+		// took it from, then that word's place in the copied image -- against a 16-bit owner, where a
+		// word is two texels rather than one. inv_col32 still serves: columnTable16's halfword index
+		// is 2*columnTable32's word index for x < 8 and that plus one for x + 8, so the intra-block
+		// (cx, cy) of the word's LOW cell is exactly what the 32-bit column inverse answers, and the
+		// high cell is the texel eight to its right.
+		//
+		// The block bits are the ones that differ. blockTable16 and blockTable16S both put block bit 0
+		// on y and bit 1 on x -- the OPPOSITE of blockTable32 -- and a CT16 block is 16x8 texels, so
+		// block b of the four sits at square-relative texel (16 * ((b >> 1) & 1), 8 * (b & 1)):
+		//   X = ((b >> 1) & 1) * 16 + (c & 7)
+		//   Y =  (b       & 1) *  8 + (c >> 3)
+		// and the offset is Y * stride + X. The palette's own origin inside the tile is the caller's.
+		const u32 w = (entries == 256) ? forms.clut_i8_word.Eval(e) : forms.clut_i4_word.Eval(e);
+		const u32 b = w >> 6;
+		const u32 c = forms.inv_col32.Eval(w & 63);
+		return ((b & 1) * 8 + (c >> 3)) * stride + ((b >> 1) & 1) * 16 + (c & 7);
 	}
 } // namespace GSTileSwizzleForms

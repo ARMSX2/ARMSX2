@@ -33,6 +33,7 @@
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 
 #include <gtest/gtest.h>
@@ -92,6 +93,63 @@ namespace
 		return out;
 	}
 
+	// -- the SIXTEEN-BIT owner's half of the same three helpers -------------------------------
+
+	// One 16-bit owner surface a palette was rendered into. `psm` is PSMCT16 or PSMCT16S; owner_bw is
+	// the FBW, which for a 16-bit surface is pages per row directly (a 16-bit page is 64 wide too).
+	struct GatherCase16
+	{
+		u32 cbp;
+		u32 owner_bp;
+		u32 owner_bw;
+		u32 entries;
+		u32 psm;
+	};
+
+	// The texel content the owner's TEXTURE holds, as an RGBA8 word. Built by UNPACKING a self-naming
+	// 5551 cell, so that packing it back is exactly that cell -- the round trip gsTileUnpack5551 /
+	// gsTilePack5551 is pinned as exact in gs_tilegpu_ct16_road_tests, which is what lets a test seed
+	// guest memory and a target image from one number.
+	u16 SelfNamingCell(u32 halfword_addr)
+	{
+		// The alpha bit set, and fifteen bits of the address: distinct over any footprint smaller than
+		// 32 K halfwords, which every palette's is. The test asserts distinctness anyway.
+		return static_cast<u16>(0x8000u | (halfword_addr & 0x7FFFu));
+	}
+
+	// The halfword address of owner texel (x, y), by GSOffset -- the same address WritePixel16 uses,
+	// so the seed below IS the pull road's store.
+	u32 OwnerHalfword(const GatherCase16& c, u32 x, u32 y)
+	{
+		const GSOffset off = GSOffset::fromKnownPSM(c.owner_bp, c.owner_bw, static_cast<GS_PSM>(c.psm));
+		return static_cast<u32>(off.pa(static_cast<int>(x), static_cast<int>(y)));
+	}
+
+	// The palette image the executor's copy produces off a 16-bit owner: each region of
+	// LocateClutBlocks16 read row-major out of the RGBA8 target image into a `stride`-wide tile at
+	// that region's copy_off. That is what vkCmdCopyImageToBuffer does with bufferRowLength = stride
+	// and bufferOffset = base + copy_off, which is the whole reason copy_off exists.
+	std::vector<u32> CopyPaletteCells(const FormSet& f, const GatherCase16& c, ClutBlockCopy& blocks)
+	{
+		EXPECT_TRUE(LocateClutBlocks16(f, c.psm, c.cbp, c.owner_bp, c.owner_bw, c.entries, blocks));
+		const u32 words = blocks.region_count * blocks.w * blocks.h;
+		std::vector<u32> out(words, 0u);
+		for (u32 b = 0; b < blocks.region_count; b++)
+		{
+			for (u32 y = 0; y < blocks.h; y++)
+			{
+				for (u32 x = 0; x < blocks.w; x++)
+				{
+					// The target is RGBA8, so a copied word is R | G<<8 | B<<16 | A<<24 -- which is
+					// exactly the u32 the image holds.
+					const u32 cell = gsTileUnpack5551(SelfNamingCell(OwnerHalfword(c, blocks.x[b] + x, blocks.y[b] + y)));
+					out[blocks.copy_off[b] + y * blocks.stride + x] = cell;
+				}
+			}
+		}
+		return out;
+	}
+
 	class ClutGatherTest : public ::testing::Test
 	{
 	protected:
@@ -121,6 +179,59 @@ namespace
 
 		// What GSClut's own CSM1 32-bit loader makes of that palette: entry e's 32-bit value.
 		std::array<u32, 256> RealLoad(const GatherCase& c)
+		{
+			GIFRegTEX0 t = {};
+			t.CBP = c.cbp;
+			t.CPSM = PSMCT32;
+			t.CSM = 0;
+			t.CSA = 0;
+			t.CLD = 1;
+			t.PSM = (c.entries == 256) ? PSMT8 : PSMT4;
+			const GIFRegTEXCLUT tc = {};
+			m_clut->Reset();
+			m_clut->WriteDecision(t, tc);
+			m_clut->WriteLoad(t, tc);
+			m_clut->Read32(t, m_texa);
+			std::array<u32, 256> out{};
+			for (u32 e = 0; e < c.entries; e++)
+				out[e] = (*m_clut)[e];
+			return out;
+		}
+
+		// The 16-bit twin of SeedOwner, and it is the PULL ROAD'S OWN STORE: GSTileTargetPool's
+		// readback calls WriteFrame16 with the target's RGBA8 pixel, and gsTilePack5551 is that
+		// function's arithmetic. So the guest bytes this leaves behind are by definition the bytes a
+		// readback of this target would have written -- which is what makes the comparison below byte
+		// identity with the pull road rather than an argument about it.
+		void SeedOwner16(const GatherCase16& c, u32 w, u32 h)
+		{
+			for (u32 y = 0; y < h; y++)
+			{
+				for (u32 x = 0; x < w; x++)
+				{
+					const u32 rgba = gsTileUnpack5551(SelfNamingCell(OwnerHalfword(c, x, y)));
+					// ⚠️ WritePixel16 is PSMCT16's address function alone -- the two 16-bit families
+					// have DIFFERENT block tables, and the S one has its own writer. Seeding both
+					// through the plain one is a test that measures the CT16 road twice and never
+					// touches the 16S one.
+					if (c.psm == PSMCT16)
+					{
+						m_mem->WritePixel16(static_cast<int>(x), static_cast<int>(y), gsTilePack5551(rgba),
+							c.owner_bp, c.owner_bw);
+					}
+					else
+					{
+						m_mem->WritePixel16S(static_cast<int>(x), static_cast<int>(y), gsTilePack5551(rgba),
+							c.owner_bp, c.owner_bw);
+					}
+				}
+			}
+		}
+
+		// What GSClut's own CSM1 32-bit loader makes of a palette sitting in those bytes. The load's
+		// CPSM is PSMCT32 whatever the owner stores -- that is the whole point: the palette is a byte
+		// REINTERPRETATION of a 16-bit surface, never a texel read of one.
+		std::array<u32, 256> RealLoad16(const GatherCase16& c)
 		{
 			GIFRegTEX0 t = {};
 			t.CBP = c.cbp;
@@ -521,6 +632,315 @@ TEST(TileGpuClutGather, OnlyAWholeBandOfAPageMergesIntoOneRegion)
 		const u32 x[4] = {0, 16, 32, 48}, sy[4] = {0, 0, 0, 32};
 		EXPECT_FALSE(gsTileGpuClutPageBand(x, sy, 4, y, h));
 	}
+}
+
+// -- 1c. the entry order off a SIXTEEN-BIT owner -----------------------------------------------
+
+// The whole 16-bit road, end to end on the CPU, and the ORACLE is the pull road itself.
+//
+// A palette loaded off a 16-bit target is never "entry = texel": it is 32-bit guest words read out
+// of a surface that stores two cells to a word, so a palette word is the pack of two texels eight
+// apart in x. Every step below is one of the real roads rather than a restatement of it --
+//
+//   step 1  the target's texel content, as an RGBA8 image
+//   step 2  stored into guest memory with WritePixel16(gsTilePack5551(rgba)), which IS what
+//           GSTileTargetPool's readback does (it calls WriteFrame16, whose arithmetic gsTilePack5551
+//           is), so the guest bytes are by definition what a pull of this target would have written
+//   step 3  the executor's copy simulated: each region of LocateClutBlocks16 read row-major into a
+//           tile, honouring stride and copy_off
+//   step 4  every entry fetched through ClutEntryToCt16Offset and assembled by gsTileClut16Word
+//   step 5  compared against GSClut's real WriteLoad + Read32 over the bytes from step 2
+//
+// -- so agreement here is byte identity with the pull road, proved rather than argued. The one thing
+// it cannot catch is a wrong idea shared by steps 2 and 5, and there is none available: step 5 is a
+// stock GSClut load of ordinary guest memory.
+//
+// PSMCT16 and PSMCT16S both, because they differ only in the block table and a design that "handles
+// 16-bit" with one of them mis-addresses every surface of the other silently. CBP & 3 over all four
+// values, because the non-4-aligned 256-entry case is what Spider-Man 3 actually loads -- all 48 of
+// its 256-entry palettes a frame sit at CBP & 3 == 1 and none at 0 -- so it is the main case here,
+// not an edge.
+TEST_F(ClutGatherTest, EveryEntryComesBackThroughTheSixteenBitOwner)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	ASSERT_TRUE(f.clut_valid);
+	ASSERT_TRUE(f.clut16_valid);
+
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (const u32 bw : {1u, 4u})
+		{
+			for (const u32 align : {0u, 1u, 2u, 3u})
+			{
+				for (const u32 entries : {256u, 16u})
+				{
+					// A base four blocks in plus the alignment under test, so the palette is never at
+					// the owner's own origin and the page arithmetic is exercised.
+					const GatherCase16 c{0x0004u + align, 0x0000u, bw, entries, psm};
+					SCOPED_TRACE(testing::Message() << "psm " << psm << " bw " << bw << " cbp " << c.cbp
+													<< " (cbp&3 " << (c.cbp & 3) << ") entries " << entries);
+					// Big enough to hold every page the palette's blocks can land in. A 16-bit page is
+					// 64x64, and four blocks from CBP never leave the second one.
+					SeedOwner16(c, bw * 64, 128);
+					const std::array<u32, 256> want = RealLoad16(c);
+
+					// The seed has to name every entry differently, or a wrong offset could pass by
+					// reading a word that happens to hold the same value.
+					for (u32 i = 0; i < entries; i++)
+					{
+						for (u32 j = i + 1; j < entries; j++)
+							ASSERT_NE(want[i], want[j]) << "the seed is degenerate at entries " << i << " and " << j;
+					}
+
+					ClutBlockCopy blocks{};
+					const std::vector<u32> copied = CopyPaletteCells(f, c, blocks);
+					ASSERT_EQ(copied.size(), (entries == 256) ? 512u : 32u);
+
+					for (u32 e = 0; e < entries; e++)
+					{
+						const u32 off = ClutEntryToCt16Offset(f, entries, blocks.stride, e);
+						ASSERT_LT(off + 8, copied.size()) << "entry " << e;
+						EXPECT_EQ(gsTileClut16Word(copied[off], copied[off + 8]), want[e]) << "entry " << e;
+					}
+				}
+			}
+		}
+	}
+}
+
+// The 16-bit mapping has to be a bijection onto the tile, and it is the PAIR that has to be one: the
+// low cell at `off` and the high cell at `off + 8` are both read, so a collision on either is an
+// entry made of somebody else's cells and an offset past the end is the next palette's.
+TEST(TileGpuClutGather, TheSixteenBitEntryOrderIsABijectionOntoTheTile)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	ASSERT_TRUE(f.clut16_valid);
+	// (entries, stride, tile height) -- the two shapes LocateClutBlocks16 produces.
+	const struct
+	{
+		u32 entries, stride, h;
+	} shapes[] = {{256u, 32u, 16u}, {16u, 16u, 2u}};
+	for (const auto& sh : shapes)
+	{
+		std::vector<bool> hit(sh.stride * sh.h, false);
+		for (u32 e = 0; e < sh.entries; e++)
+		{
+			const u32 off = ClutEntryToCt16Offset(f, sh.entries, sh.stride, e);
+			ASSERT_LT(off, hit.size()) << "entries " << sh.entries << " entry " << e;
+			ASSERT_LT(off + 8, hit.size()) << "entries " << sh.entries << " entry " << e << " twin";
+			// The twin is the texel eight to the right, so it must stay on the same tile ROW.
+			ASSERT_EQ(off / sh.stride, (off + 8) / sh.stride) << "entries " << sh.entries << " entry " << e;
+			EXPECT_FALSE(hit[off]) << "entries " << sh.entries << " entry " << e << " reuses low cell " << off;
+			EXPECT_FALSE(hit[off + 8]) << "entries " << sh.entries << " entry " << e << " reuses high cell";
+			hit[off] = true;
+			hit[off + 8] = true;
+		}
+		// ...and between them the entries name every word of the tile, which is what makes the copy's
+		// extent exactly the palette.
+		for (size_t i = 0; i < hit.size(); i++)
+			EXPECT_TRUE(hit[i]) << "entries " << sh.entries << " word " << i << " is copied and never read";
+	}
+}
+
+// The folded form the shader will spell, against the CPU spec, at both strides. The pieces occupy
+// disjoint bit ranges -- cx at 0-2, the +8 twin at bit 3, the block's x bit at 4, cy at 5-7 for
+// stride 32, the block's y bit at 8 -- so every add in the spec is an OR here, and a transcription
+// error is a palette that is a permutation of itself.
+TEST(TileGpuClutGather, TheSixteenBitFoldedOffsetIsTheSpecAtBothStrides)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+	ASSERT_TRUE(f.clut16_valid);
+	const struct
+	{
+		u32 entries, stride, pal_mul, pal_shift16;
+	} shapes[] = {
+		{256u, 32u, 3u, 2u}, // S/8 - 1 = 3, log2(S) - 3 = 2
+		{16u, 16u, 1u, 1u}, // S/8 - 1 = 1, log2(S) - 3 = 1
+	};
+	for (const auto& sh : shapes)
+	{
+		for (u32 e = 0; e < sh.entries; e++)
+		{
+			const u32 w = (sh.entries == 256) ? f.clut_i8_word.Eval(e) : f.clut_i4_word.Eval(e);
+			const u32 c = f.inv_col32.Eval(w & 63);
+			// The shader's arm, verbatim: block bit 1 (w bit 7) carries x and bit 0 (w bit 6) carries
+			// y, the opposite way round from the 32-bit merged arm one line of source away.
+			const u32 shader = ((w & 0x40u) << sh.pal_shift16) | (c + sh.pal_mul * (c & 0x38u)) | ((w & 0x80u) >> 3u);
+			EXPECT_EQ(shader, ClutEntryToCt16Offset(f, sh.entries, sh.stride, e))
+				<< "stride " << sh.stride << " entry " << e;
+		}
+	}
+
+	// ...and the refusal the folded form rests on. At stride 16 a 256-entry palette's block x bit
+	// lands on bit 4 and collides with cy, so the answer is a permutation of itself with no symptom.
+	// LocateClutBlocks16 never produces that pair: a 256-entry palette is always stride 32.
+	ClutBlockCopy b;
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (const u32 cbp : {0x0000u, 0x0001u, 0x0004u, 0x0007u})
+		{
+			ASSERT_TRUE(LocateClutBlocks16(f, psm, cbp, 0x0000, 1, 256, b)) << "cbp " << cbp;
+			EXPECT_EQ(b.stride, 32u) << "cbp " << cbp;
+			ASSERT_TRUE(LocateClutBlocks16(f, psm, cbp, 0x0000, 1, 16, b)) << "cbp " << cbp;
+			EXPECT_EQ(b.stride, 16u) << "cbp " << cbp;
+		}
+	}
+	// The collision itself, stated as a fact rather than trusted: at stride 16 the 256 entries do not
+	// even land on 256 distinct words.
+	std::vector<bool> hit(16u * 32u, false);
+	u32 distinct = 0;
+	for (u32 e = 0; e < 256u; e++)
+	{
+		const u32 off = ClutEntryToCt16Offset(f, 256, 16, e);
+		ASSERT_LT(off, hit.size());
+		distinct += hit[off] ? 0u : 1u;
+		hit[off] = true;
+	}
+	EXPECT_LT(distinct, 256u) << "stride 16 with 256 entries is a bijection after all; the refusal above "
+								 "rests on it not being one";
+}
+
+// The 16-bit copy's regions have to cover exactly the words the load reads, and land as the four
+// quadrants of ONE tile rather than as four runs. That second half is what copy_off buys and what
+// makes one shader arm serve both alignments.
+TEST(TileGpuClutGather, TheSixteenBitCopyRegionsCoverExactlyTheTile)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut16_valid);
+	ClutBlockCopy b;
+
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		SCOPED_TRACE(testing::Message() << "psm " << psm);
+		// 4-aligned: the four blocks ARE a 2x2 block square, so one 32x16 region says the whole
+		// palette and there is nothing to offset.
+		ASSERT_TRUE(LocateClutBlocks16(f, psm, 0x0040, 0x0040, 1, 256, b));
+		EXPECT_EQ(b.region_count, 1u);
+		EXPECT_EQ(b.w, 32u);
+		EXPECT_EQ(b.h, 16u);
+		EXPECT_EQ(b.stride, 32u);
+		EXPECT_EQ(b.copy_off[0], 0u);
+		EXPECT_EQ(b.region_count * b.w * b.h, 512u); // exactly the 512 cells of a 256-entry palette
+		EXPECT_EQ(b.x[0] % 32, 0u); // 32-aligned in x and 16 in y, which is what makes it a square
+		EXPECT_EQ(b.y[0] % 16, 0u);
+
+		// NOT 4-aligned: four 16x8 regions with destination offsets into the same 32x16 tile.
+		ASSERT_TRUE(LocateClutBlocks16(f, psm, 0x0041, 0x0040, 1, 256, b));
+		EXPECT_EQ(b.region_count, 4u);
+		EXPECT_EQ(b.w, 16u);
+		EXPECT_EQ(b.h, 8u);
+		EXPECT_EQ(b.stride, 32u);
+		EXPECT_EQ(b.region_count * b.w * b.h, 512u);
+		// Block j at (x = (j>>1)*16, y = (j&1)*8) of the tile -- the quadrant the entry map selects.
+		EXPECT_EQ(b.copy_off[0], 0u);
+		EXPECT_EQ(b.copy_off[1], 8u * 32u);
+		EXPECT_EQ(b.copy_off[2], 16u);
+		EXPECT_EQ(b.copy_off[3], 8u * 32u + 16u);
+
+		// Sixteen entries: two texel rows of one block, all sixteen columns.
+		ASSERT_TRUE(LocateClutBlocks16(f, psm, 0x0043, 0x0040, 1, 16, b));
+		EXPECT_EQ(b.region_count, 1u);
+		EXPECT_EQ(b.w, 16u);
+		EXPECT_EQ(b.h, 2u);
+		EXPECT_EQ(b.stride, 16u);
+		EXPECT_EQ(b.copy_off[0], 0u);
+		EXPECT_EQ(b.region_count * b.w * b.h, 32u);
+
+		// Every word of the tile is written exactly once by the regions, at both alignments -- one
+		// word more and the copy runs into the next reservation, one fewer and an entry reads it.
+		for (const u32 cbp : {0x0040u, 0x0041u, 0x0042u, 0x0043u})
+		{
+			ASSERT_TRUE(LocateClutBlocks16(f, psm, cbp, 0x0040, 1, 256, b)) << "cbp " << cbp;
+			std::vector<u32> written(512u, 0u);
+			for (u32 r = 0; r < b.region_count; r++)
+			{
+				for (u32 y = 0; y < b.h; y++)
+				{
+					for (u32 x = 0; x < b.w; x++)
+					{
+						const u32 at = b.copy_off[r] + y * b.stride + x;
+						ASSERT_LT(at, written.size()) << "cbp " << cbp;
+						written[at]++;
+					}
+				}
+			}
+			for (size_t i = 0; i < written.size(); i++)
+				EXPECT_EQ(written[i], 1u) << "cbp " << cbp << " word " << i;
+		}
+	}
+
+	// The refusals. A 32-bit owner does not come down this road at all -- that is the whole reason it
+	// is a separate function -- and neither does an entry count the CSM1 loaders never produce or a
+	// palette below the owner's base.
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMCT32, 0x0040, 0x0040, 1, 256, b));
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMCT24, 0x0040, 0x0040, 1, 256, b));
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMZ16, 0x0040, 0x0040, 1, 256, b));
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMCT16, 0x0020, 0x0040, 1, 256, b));
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMCT16, 0x0040, 0x0040, 1, 64, b));
+	EXPECT_FALSE(LocateClutBlocks16(f, PSMCT16, 0x0040, 0x0040, 1, 0, b));
+
+	// Forms that did not fit turn the road off rather than addressing the wrong bytes -- and
+	// clut16_valid does it ALONE, without touching the two flags the other roads read.
+	FormSet unfit = f;
+	unfit.clut16_valid = false;
+	EXPECT_FALSE(LocateClutBlocks16(unfit, PSMCT16, 0x0040, 0x0040, 1, 256, b));
+	EXPECT_TRUE(LocateClutBlocks(unfit, 0x0040, 0x0040, 1, 256, false, b))
+		<< "clut16_valid gated the 32-bit road, which it must never do";
+}
+
+// The 32-bit road is BYTE-IDENTICAL to what it was before the 16-bit one existed.
+//
+// LocateClutBlocks16 is a sibling rather than an argument to LocateClutBlocks precisely so this is
+// true by construction, but "by construction" is what everybody says before the regression. The
+// golden below was taken from the tree at 54be736885, before a line of the 16-bit road was written,
+// over a sweep that crosses three owner bases, three owner widths, both entry counts, both merge
+// answers and 64 CBPs each -- 2,304 calls -- folding every field of every result.
+//
+// If this trips, something changed the shipped copy geometry. The answer is not to re-take the
+// number: three levers already ship on that geometry and a frame is what says whether it moved.
+TEST(TileGpuClutGather, TheCt32CopyIsUnmovedByTheSixteenBitRoad)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	ASSERT_TRUE(f.clut_valid);
+	u64 h = 0xCBF29CE484222325ull;
+	const auto fold = [&h](u32 v) { h ^= v; h *= 0x100000001B3ull; };
+	for (const u32 owner_bp : {0x0000u, 0x0080u, 0x0800u})
+	{
+		for (const u32 bwpg : {1u, 2u, 4u})
+		{
+			for (const u32 entries : {256u, 16u})
+			{
+				for (int merge = 0; merge < 2; merge++)
+				{
+					for (u32 d = 0; d < 64; d++)
+					{
+						ClutBlockCopy b;
+						const bool ok = LocateClutBlocks(f, owner_bp + d, owner_bp, bwpg, entries, merge != 0, b);
+						fold(ok ? 1u : 0u);
+						fold(b.region_count);
+						fold(b.w);
+						fold(b.h);
+						fold(b.merged ? 1u : 0u);
+						fold(b.stride);
+						for (u32 i = 0; i < ClutBlockCopy::kMaxRegions; i++)
+						{
+							fold(b.x[i]);
+							fold(b.y[i]);
+						}
+						// ...and the new field is zero on this road, which is what makes it invisible
+						// to an executor that goes on deriving region b's destination as b * w * h.
+						for (u32 i = 0; i < ClutBlockCopy::kMaxRegions; i++)
+							EXPECT_EQ(b.copy_off[i], 0u) << "cbp " << (owner_bp + d) << " region " << i;
+					}
+				}
+			}
+		}
+	}
+	EXPECT_EQ(h, 0xa2f1be67c0b2fcc5ull) << "the 32-bit CLUT copy geometry moved";
 }
 
 // -- 2. the copy geometry ----------------------------------------------------------------------

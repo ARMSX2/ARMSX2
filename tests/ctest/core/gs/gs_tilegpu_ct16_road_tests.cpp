@@ -21,6 +21,8 @@
 
 #include <gtest/gtest.h>
 
+#include <ios>
+
 namespace
 {
 constexpr GSTileSurfaceLayout Layout(u32 bp, u8 bw, u8 psm, GSTileSurfaceKind kind)
@@ -88,6 +90,55 @@ TEST(TileGpuByteRoad, TheCt32PixelSpaceQuestionStaysNarrow)
 		{
 			const GSTileSurfaceLayout l = Layout(0x1180, 10, psm, k);
 			EXPECT_TRUE(!gsTileSurfaceHasCt32PixelSpace(l) || gsTileSurfaceHasByteRoad(l)) << int(psm);
+		}
+	}
+}
+
+// ...and the THIRD predicate, which is the one the CLUT gather asks once it has a 16-bit copy
+// geometry. It admits the two 16-bit colour formats; the narrow one above still refuses them, and
+// that is the guard against somebody noticing the two look alike and folding them into one.
+TEST(TileGpuByteRoad, TheClutGatherPixelSpaceQuestionIsWiderAndTheNarrowOneIsNot)
+{
+	for (u8 psm : {u8(PSMCT32), u8(PSMCT24), u8(PSMCT16), u8(PSMCT16S)})
+	{
+		const GSTileSurfaceLayout l = Layout(0x1180, 10, psm, GSTileSurfaceKind::Color);
+		EXPECT_TRUE(gsTileSurfaceHasClutGatherPixelSpace(l)) << int(psm);
+	}
+	// The pair the wider one adds, and the narrow one must GO ON refusing: three other callers read
+	// an owner's texture through CT32 block and column forms, and a 16-bit owner reaching one of them
+	// produces texels out of the wrong bytes with nothing to say so.
+	EXPECT_FALSE(gsTileSurfaceHasCt32PixelSpace(Layout(0x1180, 10, PSMCT16, GSTileSurfaceKind::Color)));
+	EXPECT_FALSE(gsTileSurfaceHasCt32PixelSpace(Layout(0x1180, 10, PSMCT16S, GSTileSurfaceKind::Color)));
+
+	// Everything else is refused by both: the base test and the kind test are unchanged, and the
+	// 16-bit DEPTH pair has no gather geometry any more than it has a byte road.
+	for (u8 psm : {u8(PSMCT32), u8(PSMCT24), u8(PSMCT16), u8(PSMCT16S)})
+	{
+		EXPECT_FALSE(gsTileSurfaceHasClutGatherPixelSpace(Layout(0x1184, 10, psm, GSTileSurfaceKind::Color)))
+			<< int(psm);
+		EXPECT_FALSE(gsTileSurfaceHasClutGatherPixelSpace(Layout(0x1180, 10, psm, GSTileSurfaceKind::Depth)))
+			<< int(psm);
+	}
+	for (u8 psm : {u8(PSMZ32), u8(PSMZ24), u8(PSMZ16), u8(PSMZ16S), u8(PSMT8), u8(PSMT4)})
+	{
+		EXPECT_FALSE(gsTileSurfaceHasClutGatherPixelSpace(Layout(0x1180, 10, psm, GSTileSurfaceKind::Color)))
+			<< int(psm);
+	}
+
+	// ...and it is a superset of the narrow one and a subset of the byte road, in that order. The
+	// three predicates are a chain, and a change that broke the chain would let one road admit a
+	// layout the road under it cannot carry.
+	for (u8 psm : {u8(PSMCT32), u8(PSMCT24), u8(PSMCT16), u8(PSMCT16S), u8(PSMZ32), u8(PSMZ24), u8(PSMZ16)})
+	{
+		for (GSTileSurfaceKind k : {GSTileSurfaceKind::Color, GSTileSurfaceKind::Depth})
+		{
+			for (u32 bp : {0x1180u, 0x1184u})
+			{
+				const GSTileSurfaceLayout l = Layout(bp, 10, psm, k);
+				EXPECT_TRUE(!gsTileSurfaceHasCt32PixelSpace(l) || gsTileSurfaceHasClutGatherPixelSpace(l))
+					<< int(psm);
+				EXPECT_TRUE(!gsTileSurfaceHasClutGatherPixelSpace(l) || gsTileSurfaceHasByteRoad(l)) << int(psm);
+			}
 		}
 	}
 }
@@ -198,6 +249,34 @@ TEST(TileGpuCT16Road, DrawQuantisationIsTheWritebackAndSeedRoundTrip)
 			// what the writeback would have stored for the draw before this existed.
 			EXPECT_EQ(gsTileUnpack5551(gsTilePack5551(px)), q) << "r=" << r << " a=" << a;
 		}
+	}
+}
+
+// The CLUT gather's own use of the same pair: a palette word read off a 16-bit owner is TWO cells,
+// packed and concatenated. Pinned here rather than in the gather's own file because it is the pack
+// pair's statement, and the pair is this file's business -- and because the low/high order is the one
+// thing about it that is not derivable from either half alone.
+TEST(TileGpuCT16Road, AClutWordIsTheLowCellThenTheHigh)
+{
+	// A guest word of a 16-bit surface is halfword 2n in its low half and 2n+1 in its high half, so a
+	// palette word is pack(low) | pack(high) << 16 and never the other way round. Swapping them is a
+	// palette of plausible colours in the wrong order, which is exactly the failure this file's
+	// round-trip test cannot see.
+	const u32 samples[][2] = {{0x00000000u, 0xFFFFFFFFu}, {0xFFFFFFFFu, 0x00000000u}, {0x80402010u, 0x01020304u},
+		{0x00FFFFFFu, 0xFF000000u}, {0xF8F8F8F8u, 0x12345678u}};
+	for (const auto& s : samples)
+	{
+		const u32 want = static_cast<u32>(gsTilePack5551(s[0])) | (static_cast<u32>(gsTilePack5551(s[1])) << 16);
+		EXPECT_EQ(gsTileClut16Word(s[0], s[1]), want);
+		EXPECT_EQ(gsTileClut16Word(s[0], s[1]) & 0xFFFFu, gsTilePack5551(s[0]));
+		EXPECT_EQ(gsTileClut16Word(s[0], s[1]) >> 16, gsTilePack5551(s[1]));
+	}
+	// ...and the whole 16-bit value space round-trips through the pair, which is what makes the
+	// gather's test able to seed a target image from one number.
+	for (u32 v = 0; v < 0x10000u; v++)
+	{
+		const u32 cell = gsTileUnpack5551(static_cast<u16>(v));
+		ASSERT_EQ(gsTilePack5551(cell), static_cast<u16>(v)) << "cell 0x" << std::hex << v;
 	}
 }
 
