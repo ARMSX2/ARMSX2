@@ -2131,6 +2131,9 @@ private:
 	/// same page composes it again from a model that already accounts for the transfer, and giving
 	/// that writeback the keep mask would leave the CPU's bytes standing over the target's own.
 	bool m_merge_emitting = false;
+	/// ...and the same idea for the SEED half: EmitPrepOp stamps the op as the merge's so the
+	/// executor can count the render passes it opens for one. Nothing else uses it.
+	bool m_merge_seeding = false;
 
 	// Ensure a surface for `layout` covering `pages` exists in the model and the pool (grown as
 	// needed). Returns kGSTileNoSurface on allocation failure.

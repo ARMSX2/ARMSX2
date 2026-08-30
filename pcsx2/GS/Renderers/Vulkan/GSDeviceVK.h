@@ -41,6 +41,8 @@ public:
 	u64 GetSourceSetWaitCalls() const override { return m_source_set_wait_calls; }
 	u64 GetTileGpuKicksOffered() const override { return m_tilegpu_kicks_offered; }
 	u64 GetTileGpuKicksTaken() const override { return m_tilegpu_kicks_taken; }
+	u64 GetTileGpuSeedRenderPasses() const override { return m_tilegpu_seed_render_passes; }
+	u64 GetTileGpuMergeSeedRenderPasses() const override { return m_tilegpu_merge_seed_render_passes; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -1359,6 +1361,12 @@ private:
 	u64 m_tilegpu_kicks_offered = 0;
 	u64 m_tilegpu_kicks_taken = 0;
 	bool m_tilegpu_kick_announced = false;
+
+	// Render passes opened for a Seed or SeedDepth op, and the merge's share of them. Counted at
+	// the BeginRenderPass itself rather than off the op array, so a seed the executor declines
+	// (no pipeline, an empty scissor) is not counted as a pass nobody paid for.
+	u64 m_tilegpu_seed_render_passes = 0;
+	u64 m_tilegpu_merge_seed_render_passes = 0;
 
 	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
 	// A draw INTO one of these is almost certainly the producer of the next readback,

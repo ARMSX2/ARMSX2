@@ -2900,6 +2900,14 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"owner %.2f, a CPU read already wanted it %.2f, half a byte %.2f, rect is a claim %.2f, "
 					"footprint overflow %.2f",
 		mrg.mean, mrg.p50, mrgp.mean, mrgp.p50, mref_o.mean, mref_c.mean, mref_b.mean, mref_s.mean, mref_f.mean);
+	// ...and what those merges COST in render passes, which no other number here can show: the pass
+	// count above it is the PLAN's, and a seed runs at a pass head inside no plan pass. Counted in
+	// the executor at the BeginRenderPass itself. Read the merge's column against merge_pages above
+	// -- today they are the same number, one seed pass per merged page -- and read the total beside
+	// the plan-pass line, which has never included any of these.
+	Console.WriteLn("  seed render passes: %.2f /frame, of which the upload merge's %.2f /frame",
+		static_cast<double>(g_gs_device->GetTileGpuSeedRenderPasses()) / n,
+		static_cast<double>(g_gs_device->GetTileGpuMergeSeedRenderPasses()) / n);
 	if (mref_c.mean > 0.0)
 	{
 		// The CPU-read refusals, priced. The clause fires first and returns, so "no sole byte-road
@@ -4686,6 +4694,7 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	op.psm = surf.layout.psm;
 	op.byte_mask = gsTileWritebackByteMask(surf.layout.psm);
 	op.seed_blocks = seed_blocks;
+	op.seed_from_merge = (is_seed && m_merge_seeding) ? 1u : 0u;
 	op.epoch = m_epoch;
 	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());
 	pages.forEachSetPage([&](u32 page) {
@@ -8078,6 +8087,7 @@ void GSRendererTileGpu::EmitUploadMerge()
 		// writing them over this surface's texels would change texels nothing asked about --
 		// measured as the whole of the difference this road made to the frame before it was
 		// narrowed (6132 bytes of one SotC page, all of them blocks the target does not hold).
+		m_merge_seeding = true;
 		g.pages.forEachSetPage([&](u32 page) {
 			u32 own_blocks = 0;
 			for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
@@ -8092,6 +8102,7 @@ void GSRendererTileGpu::EmitUploadMerge()
 			EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, g.owner, one, own_blocks);
 			Texels(g.owner).filled.Mark(page, own_blocks);
 		});
+		m_merge_seeding = false;
 		// The compose always emits at least the owner's writeback (the assert above), so the range is
 		// never empty -- and if it ever were, the ops would be inside no pass and would silently not
 		// run while the model below recorded the reconciliation as done.

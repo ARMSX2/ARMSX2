@@ -2081,6 +2081,14 @@ public:
 	/// statement from the lever being off.
 	virtual u64 GetTileGpuKicksOffered() const { return 0; }
 	virtual u64 GetTileGpuKicksTaken() const { return 0; }
+	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and
+	/// how many of those were the upload merge's. Counted HERE because nothing else can see them:
+	/// the renderer's pass census counts PLAN passes (`m_frame.passes += m_plan_passes.size()`), and
+	/// a seed is a render pass the executor opens at a pass HEAD, outside every plan pass. The
+	/// merge's seed bill — the largest single thing the widened merge added to a GPU-bound frame —
+	/// was invisible to every number this campaign took until these two existed.
+	virtual u64 GetTileGpuSeedRenderPasses() const { return 0; }
+	virtual u64 GetTileGpuMergeSeedRenderPasses() const { return 0; }
 
 	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
 	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
@@ -2611,6 +2619,11 @@ public:
 		/// texels, and writing them over what the texture holds is a change nothing asked for. So the
 		/// merge emits one seed op per page and names that page's blocks.
 		u32 seed_blocks;
+		/// Seed only: this seed is the upload merge's. Carried for the census alone — the executor
+		/// counts the render passes it opens for one, which is the only place they can be counted:
+		/// the plan-pass counter cannot see a seed pass, and the merge's pass bill was invisible to
+		/// every number this campaign took until it was.
+		u32 seed_from_merge;
 		/// ClutBlockCopy only: the source rects in the owner's texture, copied in this order into
 		/// consecutive `copy_w` x `copy_h` word runs of the destination. Four 8x8 blocks for a
 		/// 256-entry palette, one 8x2 for a 16-entry one (GSTileSwizzleForms::LocateClutBlocks).

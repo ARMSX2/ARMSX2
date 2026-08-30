@@ -8999,6 +8999,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						BeginRenderPass(rp, area);
 					}
+					// Counted at the pass, not off the op array: everything above this line can decline a
+					// seed, and a declined op costs no pass. This is the only place a seed's render passes
+					// can be counted at all -- the renderer's census counts PLAN passes, and a seed runs at
+					// a pass head, inside no plan pass.
+					m_tilegpu_seed_render_passes++;
+					m_tilegpu_merge_seed_render_passes += (op.seed_from_merge != 0) ? 1 : 0;
 
 					const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 					vkCmdSetViewport(cmd, 0, 1, &vp);
