@@ -2456,6 +2456,11 @@ private:
 		bool refused = false; ///< ...and some block's owner conditions did not hold
 		u32 refusal = 0; ///< which clause (ClutRefusal), for the counters
 		u32 layout_clause = 0; ///< ...and under kClutRefLayout, which of its three (GSTileCt32Clause)
+		/// ...and under the layout clause's PSM test -- a page-aligned colour owner in a format the
+		/// CT32 forms cannot read, which is the population a 16-bit gather would serve -- which of the
+		/// clauses BELOW the layout one would have refused next, or kClutRefNone for "would be served".
+		/// Census only: nothing decides on it, and it is 0 on every other path.
+		u32 psm_next_clause = 0; ///< a ClutRefusal; 0 is kClutRefNone, declared just below
 		GSPageBitmap pages; ///< the deferred blocks' pages
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 owner_bp = 0, owner_bwpg = 0;
@@ -3358,6 +3363,18 @@ private:
 		// 16-bit colour owner is a population a wider gather could take, an unaligned base or a depth
 		// surface is not, and the undivided counter cannot tell them apart.
 		u32 clut_rol[kGSTileCt32ClauseCount] = {};
+		// ...and clut_rol[kGSTileCt32ClausePsm] -- the 16-bit colour owners -- split once more by the
+		// two things that decide what a gather off one would have to COPY: whether the palette has 256
+		// entries or 16, and CBP's low two bits. A 4-aligned 256-entry palette is four blocks that form
+		// one square and can be copied as one region; a non-aligned one is four scattered blocks and
+		// needs per-region destination offsets. The pair says whether a 4-aligned fast path is worth
+		// writing at all, which the undivided psm count cannot.
+		u32 clut_rol16[2][4] = {}; // [entries == 256][cbp & 3]
+		// ...and, over the same population, which clause would have refused NEXT had the layout clause
+		// admitted it (kClutRefNone = it would have been served). The layout clause fires third, so
+		// clut_ro[residency/texels/mixed-owner] is zero on these loads BY CONSTRUCTION rather than by
+		// measurement, and "how much of the psm population is actually reachable" is otherwise unknown.
+		u32 clut_rol16_next[kClutRefCount] = {};
 		u32 clut_draws = 0;       // paletted draws whose every slot came from ONE device palette
 		u32 clut_draws_r3 = 0;    // ...served by rule 3, off the N x 1 gather
 		u32 clut_draws_byte = 0;  // ...served on the byte road, out of the copied blocks in the stream

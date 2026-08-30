@@ -863,6 +863,24 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSPageBitmap& pages)
 			// Which of the three tests refused, carried to PreClutLoad where the total is counted.
 			p.layout_clause = gsTileSurfaceCt32PixelSpaceClause(s.layout);
 			pxAssert(p.layout_clause != kGSTileCt32ClauseNone);
+			// On the PSM test -- a page-aligned colour owner in a 16-bit format, the one population a
+			// wider gather could take -- keep going and record which of the clauses below would have
+			// refused next. Census only: `refusal` is already set and none of this changes it.
+			//
+			// ⚠️ The three tests below are a VERBATIM copy of the three that follow this else-if, and
+			// have to stay one. The question they answer is "what would this load meet if the layout
+			// clause admitted it", which is only worth asking while the two spellings agree.
+			if (p.layout_clause == kGSTileCt32ClausePsm)
+			{
+				if (!s.residency.contains(pages))
+					p.psm_next_clause = kClutRefResidency;
+				else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
+					p.psm_next_clause = kClutRefTexels;
+				else if (p.deferred_blocks != 0 && p.owner != owner)
+					p.psm_next_clause = kClutRefMixedOwner;
+				else
+					p.psm_next_clause = kClutRefNone;
+			}
 		}
 		else if (!s.residency.contains(pages))
 			refusal = kClutRefResidency;
@@ -926,7 +944,18 @@ void GSRendererTileGpu::PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT&
 		m_frame.clut_ro[p.refusal < kClutRefCount ? p.refusal : 0u]++;
 		// The layout clause's own split, a strict partition of clut_ro[kClutRefLayout].
 		if (p.refusal == kClutRefLayout && p.layout_clause < kGSTileCt32ClauseCount)
+		{
 			m_frame.clut_rol[p.layout_clause]++;
+			// ...and the PSM bucket split again by the load's own shape. TEX0 is the first place the
+			// entry count and CBP are known -- ClutLoadDefer sees blocks, not loads -- which is why
+			// this sits here rather than beside the clause that produced it.
+			if (p.layout_clause == kGSTileCt32ClausePsm)
+			{
+				const u32 entries = GSLocalMemory::m_psm[TEX0.PSM].pal;
+				m_frame.clut_rol16[(entries == 256) ? 1u : 0u][TEX0.CBP & 3u]++;
+				m_frame.clut_rol16_next[p.psm_next_clause < kClutRefCount ? p.psm_next_clause : 0u]++;
+			}
+		}
 	}
 	else
 	{
@@ -2611,6 +2640,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto clk = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClauseKind]; });
 	const auto clb = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClauseBase]; });
 	const auto clp = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClausePsm]; });
+	// The psm bucket by (entry count, CBP & 3), which is the shape a 16-bit-owner gather would have to
+	// copy: 256 entries at a 4-aligned CBP are one square, 256 elsewhere are four scattered blocks,
+	// and 16 are two texel rows wherever they sit.
+	const auto p16 = [&](u32 e256, u32 al) { return stat([e256, al](const MF& f) { return f.clut_rol16[e256][al]; }); };
+	const auto pn = [&](u32 c) { return stat([c](const MF& f) { return f.clut_rol16_next[c]; }); };
 	const auto cres = stat([](const MF& f) { return f.clut_ro[kClutRefResidency]; });
 	const auto ctex = stat([](const MF& f) { return f.clut_ro[kClutRefTexels]; });
 	const auto cmix = stat([](const MF& f) { return f.clut_ro[kClutRefMixedOwner]; });
@@ -2636,6 +2670,21 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  owner refusals: multi/partial %.2f  dead %.2f  layout %.2f (kind %.2f, base %.2f, "
 						"psm %.2f)  residency %.2f  texels %.2f  mixed-owner %.2f",
 			cmulti.mean, cdead.mean, clay.mean, clk.mean, clb.mean, clp.mean, cres.mean, ctex.mean, cmix.mean);
+		if (clp.mean > 0.0)
+		{
+			// The 16-bit owners, split the two ways that decide whether a gather off one is worth
+			// building: what it would have to copy, and what it would meet after the layout clause.
+			Console.WriteLn("  psm clause by (entries, cbp&3): 16 @0 %.2f  @1 %.2f  @2 %.2f  @3 %.2f   "
+							"256 @0 %.2f  @1 %.2f  @2 %.2f  @3 %.2f",
+				p16(0, 0).mean, p16(0, 1).mean, p16(0, 2).mean, p16(0, 3).mean, p16(1, 0).mean, p16(1, 1).mean,
+				p16(1, 2).mean, p16(1, 3).mean);
+			// Zero by construction in every counter above, because the layout clause fires before all
+			// three: this is the only place they are actually asked of the 16-bit population.
+			Console.WriteLn("  psm clause, would refuse next: none (served) %.2f  residency %.2f  texels %.2f  "
+							"mixed-owner %.2f",
+				pn(kClutRefNone).mean, pn(kClutRefResidency).mean, pn(kClutRefTexels).mean,
+				pn(kClutRefMixedOwner).mean);
+		}
 		Console.WriteLn("  gathered draws %.2f / %-5u  (rule 3 %.2f / %-4u, byte road %.2f / %-5u, rule-3 refused "
 						"%.2f/%u)   mirror could not serve %.2f / %u draws",
 			cd.mean, cd.p50, cd3.mean, cd3.p50, cdb.mean, cdb.p50, cr3r.mean, cr3r.p50, cds.mean, cds.p50);
