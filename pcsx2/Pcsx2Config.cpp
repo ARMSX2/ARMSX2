@@ -824,6 +824,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// range on the draws it serves; the three shapes it cannot serve exactly keep the discard and
 	// are censused. See Config.h.
 	TileGpuAfailSplit = true;
+	// Default TRUE: the split's two halves differ in one pipeline bit and the run key already
+	// carries it, so putting that bit in the PASS key as well bought nothing and cost a pass
+	// boundary each way on every device that keys passes on depth. Pixel-inert -- where a pass ends
+	// decides no pixel -- and it is what took both R&C UYA dumps' depth predictor into the merged
+	// state the day the split landed. See Config.h.
+	TileGpuSplitSharesPassKey = true;
 	// Default TRUE: it is a pure re-expression of the merge's seed, not a trade. One render pass
 	// per merged PAGE existed only because the seed's block mask was an op-level push constant;
 	// moved to the page entry, one pass serves any number of pages and the bytes it writes are the
@@ -1208,6 +1214,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
+	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileGpuNarrowSeedPassArea);
 	SettingsWrapBitBool(TileFastShading);

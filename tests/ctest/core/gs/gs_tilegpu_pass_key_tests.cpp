@@ -317,6 +317,184 @@ TEST(TileGpuPassKeyUniform, EveryPairOfDistinctDepthModesEndsThePass)
 }
 
 // ---------------------------------------------------------------------------------------------
+// The alpha split's second half, and why its depth write is a RUN cut and not a PASS one.
+//
+// gsTileGpuPlanAlphaSplit realizes an alpha test the plan could not decide as two draws over the
+// same index range, and under the channel splits the principal writes no depth while the half
+// writes it. That difference has to reach the PIPELINE, and it does: GSTileGpuRunKey carries the
+// depth mode unconditionally, so the executor cuts an indirect run at the half and binds its
+// variant whatever the pass key says. Putting the same difference in the PASS key as well bought
+// nothing and cost a pass boundary each way on every device that keys passes on depth -- enough of
+// them on R&C UYA that the per-frame depth predictor flipped the whole frame to merged keying to
+// escape a 3.3x pass explosion (454 -> 1496 passes a frame under forced-uniform keying), and merged
+// is itself a measured loss on Adreno.
+//
+// EmuCore/GS/TileGpuSplitSharesPassKey takes it back out: both halves key on the DRAW's own depth
+// write, which the split's two passes union back to by its own contract. What follows pins that
+// equality, that the run key still cuts, and that the key changes nothing off the split.
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+/// One draw's alpha-split shape, and the two pass keys the two halves come out with.
+struct SplitKeys
+{
+	u8 pass_count;
+	GSTileGpuPassKey principal;
+	GSTileGpuPassKey half;
+	DepthMode principal_pipeline;
+	DepthMode half_pipeline;
+};
+
+/// The renderer's own derivation, in the order AccumulateDraw runs it: plan the split, take the
+/// principal's depth write from pass[0], and ask gsTileGpuPassDepthModeFor for each half's PASS
+/// variant with the DRAW's write alongside the half's own.
+SplitKeys SplitKeysFor(u32 afail, u8 color_mask, bool z_write, bool z_test, bool shares_pass_key,
+	bool depth_uniform = kUniform)
+{
+	const GSTileAlphaSplit split = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL,
+		0x80, afail, color_mask, z_write, z_test, /*independent_z=*/true, /*independent_colour=*/true,
+		/*lever=*/true);
+	const bool z_used = z_write || z_test;
+	const bool p1_z_write = (split.pass_count == 2) ? split.pass[1].z_write : split.pass[0].z_write;
+	const auto key = [&](bool half_z_write) {
+		return gsTileGpuPassKeyFor(kColor, kZ,
+			gsTileGpuPassDepthModeFor(z_used, z_test, z_write, half_z_write, shares_pass_key),
+			depth_uniform, false, kShared);
+	};
+	return SplitKeys{split.pass_count, key(split.pass[0].z_write), key(p1_z_write),
+		gsTileGpuDepthModeFor(z_used, z_test, split.pass[0].z_write),
+		gsTileGpuDepthModeFor(z_used, z_test, p1_z_write)};
+}
+
+/// The three AFAIL modes the split serves, with a shape that actually splits under each. KEEP is
+/// absent because the discard is exact there and no split is planned.
+struct SplitShape
+{
+	const char* name;
+	u32 afail;
+	u8 color_mask;
+	bool z_write;
+};
+constexpr SplitShape kSplitShapes[] = {
+	// The whole colour for every fragment, depth for the ones that pass. Needs a depth write, or
+	// the two sides write the same channels and the test goes away instead of splitting.
+	{"FB_ONLY", AFAIL_FB_ONLY, kGSTileChannelsRGBA, true},
+	// RGB for every fragment, alpha and depth for the ones that pass.
+	{"RGB_ONLY", AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true},
+	// By fragment on the inverted comparison, because a channel split's first pass would write the
+	// depth its second then tests against. Both halves write depth, so this one never differed.
+	{"ZB_ONLY", AFAIL_ZB_ONLY, kGSTileChannelsRGBA, true},
+};
+} // namespace
+
+TEST(TileGpuSplitPassKey, TheSecondHalfKeysItsPassLikeThePrincipal)
+{
+	// The whole point, under the polarity that can see it: on a device that keys passes on the
+	// depth mode, the split must not cut one.
+	for (const SplitShape& shape : kSplitShapes)
+	{
+		const SplitKeys k = SplitKeysFor(shape.afail, shape.color_mask, shape.z_write,
+			/*z_test=*/true, /*shares_pass_key=*/true);
+		EXPECT_EQ(k.pass_count, 2) << shape.name << " did not split";
+		EXPECT_EQ(k.principal, k.half) << shape.name;
+	}
+}
+
+TEST(TileGpuSplitPassKey, WithTheKeyOffTheChannelSplitsStillCutAPass)
+{
+	// The shipped-tip road, kept reachable and pinned so the OFF arm is a real revert rather than a
+	// second spelling of the ON one. ZB_ONLY is not in this list: it splits by fragment and both of
+	// its halves write depth, so it never cut a pass under either arm.
+	for (const SplitShape& shape : {kSplitShapes[0], kSplitShapes[1]})
+	{
+		const SplitKeys k = SplitKeysFor(shape.afail, shape.color_mask, shape.z_write,
+			/*z_test=*/true, /*shares_pass_key=*/false);
+		EXPECT_EQ(k.pass_count, 2) << shape.name;
+		EXPECT_NE(k.principal, k.half) << shape.name;
+	}
+	const SplitKeys zb = SplitKeysFor(AFAIL_ZB_ONLY, kGSTileChannelsRGBA, /*z_write=*/true,
+		/*z_test=*/true, /*shares_pass_key=*/false);
+	EXPECT_EQ(zb.principal, zb.half);
+}
+
+TEST(TileGpuSplitPassKey, TheDifferenceStillRidesTheRunKey)
+{
+	// What makes the pass-key merge sound: the halves' real difference is still in the PIPELINE,
+	// so the executor cuts a run at the half and binds the variant that writes depth. The pass key
+	// is not where that fact was being carried.
+	for (const SplitShape& shape : {kSplitShapes[0], kSplitShapes[1]})
+	{
+		const SplitKeys k = SplitKeysFor(shape.afail, shape.color_mask, shape.z_write,
+			/*z_test=*/true, /*shares_pass_key=*/true);
+		EXPECT_NE(k.principal_pipeline, k.half_pipeline) << shape.name;
+		const RunPlan plan{{Topology::Triangle, 0u, k.principal_pipeline},
+			{Topology::Triangle, 0u, k.half_pipeline}};
+		EXPECT_NE(plan.At(0), plan.At(1)) << shape.name;
+		EXPECT_EQ(plan.Runs().size(), 2u) << shape.name;
+	}
+}
+
+TEST(TileGpuSplitPassKey, TheDepthAttachmentIsTheSameFactUnderBothArms)
+{
+	// A render pass cannot gain or lose an attachment, so whatever else the key does, the two
+	// halves must agree on whether there IS a depth attachment -- which is `depth_mode != None`,
+	// and which comes off the DRAW's z_used under both arms. Checked on the shape where the
+	// principal writes no depth at all.
+	for (const bool shares : {false, true})
+	{
+		const SplitKeys k = SplitKeysFor(AFAIL_FB_ONLY, kGSTileChannelsRGBA, /*z_write=*/true,
+			/*z_test=*/true, shares);
+		EXPECT_TRUE(k.principal.depth_used) << "shares=" << shares;
+		EXPECT_TRUE(k.half.depth_used) << "shares=" << shares;
+	}
+}
+
+TEST(TileGpuSplitPassKey, ADrawThatDoesNotSplitKeysTheSameUnderBothArms)
+{
+	// The key's blast radius is the split and nothing else: where the plan returns one pass,
+	// pass[0].z_write IS the draw's z_write, so both arms ask gsTileGpuDepthModeFor the same
+	// question. This is why the corpus grid is byte-identical on the dumps with no splits.
+	constexpr u32 kAfails[] = {AFAIL_KEEP, AFAIL_FB_ONLY, AFAIL_RGB_ONLY, AFAIL_ZB_ONLY};
+	for (const u32 afail : kAfails)
+	{
+		for (const u8 mask : {u8(0), kGSTileChannelsRGB, kGSTileChannelsRGBA})
+		{
+			for (const bool z_write : {false, true})
+			{
+				for (const bool z_test : {false, true})
+				{
+					const SplitKeys on = SplitKeysFor(afail, mask, z_write, z_test, true);
+					const SplitKeys off = SplitKeysFor(afail, mask, z_write, z_test, false);
+					if (on.pass_count != 1)
+						continue;
+					EXPECT_EQ(on.principal, off.principal)
+						<< "afail " << afail << " mask " << u32(mask) << " zw " << z_write
+						<< " zt " << z_test;
+				}
+			}
+		}
+	}
+}
+
+TEST(TileGpuSplitPassKey, UnderMergedKeyingTheKeyChangesNothing)
+{
+	// On every device that does not key passes on the depth mode -- which is every device but
+	// Adreno -- the two halves already shared a pass, so this key is inert there. Stated because it
+	// is also why the M2 corpus grid cannot see the change and the device grid has to.
+	for (const SplitShape& shape : kSplitShapes)
+	{
+		const SplitKeys on = SplitKeysFor(shape.afail, shape.color_mask, shape.z_write,
+			/*z_test=*/true, /*shares_pass_key=*/true, kMerged);
+		const SplitKeys off = SplitKeysFor(shape.afail, shape.color_mask, shape.z_write,
+			/*z_test=*/true, /*shares_pass_key=*/false, kMerged);
+		EXPECT_EQ(on.principal, on.half) << shape.name;
+		EXPECT_EQ(off.principal, off.half) << shape.name;
+		EXPECT_EQ(on.principal, off.principal) << shape.name;
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
 // The reader dimension: whether a draw that reads its own destination may share a pass with one
 // that does not.
 //

@@ -279,6 +279,11 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// depth variant, which is a pass boundary on a device that asked for depth-uniform passes. Needs
 	// nothing from the device, so nothing narrows it here.
 	m_afail_split = GSConfig.TileGpuAfailSplit;
+	// ...and whether that second draw's depth variant is allowed to be a pass boundary at all. The
+	// run key carries it either way, so this decides only where the cut is made, and it is read here
+	// rather than per draw for the reason the polarity below is: both grouping sites ask it and a
+	// mid-frame answer would have them disagree.
+	m_split_shares_pass_key = GSConfig.TileGpuSplitSharesPassKey;
 
 	// The merge's seed batch, said out loud on BOTH positions for the reason the write mask above
 	// is: its whole effect is how many render passes carry the same bytes, and a pass the executor
@@ -5482,16 +5487,22 @@ void GSRendererTileGpu::AccumulateDraw()
 	// `z_used` is the DRAW's, so the depth ATTACHMENT is present for both halves of a split -- a
 	// render pass cannot gain or lose one -- while the write-enable is the principal's alone. The
 	// three depth-carrying variants are per indirect run, so the two halves differing there cuts a
-	// run and, only where the device asked for depth-uniform passes, a pass.
+	// run. Under EmuCore/GS/TileGpuSplitSharesPassKey that is ALL it cuts; with the key off it also
+	// cuts a pass wherever the device asked for depth-uniform passes.
 	const GSDevice::GSTileGpuDepthMode depth_mode = gsTileGpuDepthModeFor(z_used, z_test, draw_z_write);
+	// ...and the variant this draw's PASS is keyed on, which is the same one unless the split took
+	// the depth write off the principal. Then the pass keys on the DRAW's own write and the two
+	// halves come out equal, so the split cuts a run and not a pass. See gsTileGpuPassDepthModeFor.
+	const GSDevice::GSTileGpuDepthMode pass_depth_mode =
+		gsTileGpuPassDepthModeFor(z_used, z_test, z_write, draw_z_write, m_split_shares_pass_key);
 	// The budget is charged HERE rather than where the classes were worked out, because a draw the
 	// surface pool refused above never becomes a pass and must not be priced as one. The group it is
 	// charged within is this same key with the reader dimension left out -- that dimension is what the
 	// budget decides, so measuring inside it would measure the budget's own output.
 	ChargeDeclaringBudget(wanted_classes,
-		gsTileGpuPassKeyFor(fb_id, z_id, depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
+		gsTileGpuPassKeyFor(fb_id, z_id, pass_depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
 	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
-		fb_id, z_id, depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
+		fb_id, z_id, pass_depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
 
 	// This draw's guest-page footprints. WRITE is what lands in GS memory: the colour footprint where
 	// any channel survives the masks and the folds, the depth footprint where the depth write
@@ -6251,6 +6262,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.z_write = draw_z_write;
 	pd.z_test = z_test;
 	pd.depth_mode = depth_mode;
+	pd.pass_depth_mode = pass_depth_mode;
 	// The three things that speak in the colour surface's pixel space, all translated by the
 	// containment offset and all of them (0, 0) worth of translation for a view that is its own
 	// surface. Doing the vertex half through XYOFFSET rather than by rewriting the vertex stream is
@@ -6488,10 +6500,17 @@ void GSRendererTileGpu::AccumulateDraw()
 		const GSTileAlphaSplitPass& p1 = split.pass[1];
 		const GSDevice::GSTileGpuDepthMode p1_depth =
 			gsTileGpuDepthModeFor(z_used, z_test, p1.z_write);
+		// The PASS's depth variant, which is the principal's under
+		// EmuCore/GS/TileGpuSplitSharesPassKey and this half's own with the key off. Asked with the
+		// draw's own write, the same way the principal asked, so the two answers are equal by
+		// construction rather than by a comparison that could be got wrong here.
+		const GSDevice::GSTileGpuDepthMode p1_pass_depth =
+			gsTileGpuPassDepthModeFor(z_used, z_test, z_write, p1.z_write, m_split_shares_pass_key);
 		PendingDraw spd = pd;
 		spd.color_mask = p1.color_mask;
 		spd.z_write = p1.z_write;
 		spd.depth_mode = p1_depth;
+		spd.pass_depth_mode = p1_pass_depth;
 		spd.atst = (p1.atst != ATST_ALWAYS) ? (static_cast<u32>(p1.atst) + 1u) : 0u;
 		spd.aref = (p1.atst != ATST_ALWAYS) ? p1.aref : 0u;
 		// It writes the alpha byte the console stores, which is the fragment's own and never a
@@ -6508,14 +6527,18 @@ void GSRendererTileGpu::AccumulateDraw()
 		spd.prep_op_count = 0;
 		spd.break_before = false;
 
-		// The depth WRITE-ENABLE differs between the two halves under the channel splits, and where
-		// the device asked for depth-uniform passes that is a pass BOUNDARY rather than a run cut.
+		// The depth WRITE-ENABLE differs between the two halves under the channel splits, and with
+		// EmuCore/GS/TileGpuSplitSharesPassKey off, on a device that asked for depth-uniform passes,
+		// that was a pass BOUNDARY rather than a run cut. Under the key p1_key equals draw_key and
+		// the block below is dead for this path -- the pass cap is then the only thing that can
+		// break here, which is why the test is kept rather than removed.
+		//
 		// Taken here in accumulation's own idiom, and with all of the open pass's bookkeeping, so
 		// that its notion of where a pass ends and the plan build's cut go on naming the same
 		// boundaries: they are compared, and a disagreement puts a draw's prep ops in a pass the
 		// draw is not in. The pass cap is asked for the same reason -- this is one more plan entry.
 		const GSTileGpuPassKey p1_key = gsTileGpuPassKeyFor(
-			fb_id, z_id, p1_depth, m_depth_uniform_passes, spd.self_mask != 0, m_segregate_self_read);
+			fb_id, z_id, p1_pass_depth, m_depth_uniform_passes, spd.self_mask != 0, m_segregate_self_read);
 		if (p1_key != draw_key || !gsTileGpuPassAdmitsMore(CurrentRun().draw_count, m_max_pass_draws))
 		{
 			spd.break_before = true;
@@ -6589,8 +6612,8 @@ void GSRendererTileGpu::ReorderCensus()
 		return;
 
 	const auto key_of = [this](const PendingDraw& pd) {
-		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes,
-			pd.self_mask != 0, m_segregate_self_read);
+		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
+			m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
 	};
 
 	// The same scheduler the live road stages with. It is reset here rather than carried, because a
@@ -6785,8 +6808,8 @@ void GSRendererTileGpu::PlanFragmentVariants()
 	// and the plan build share theirs: two spellings of "where does this pass end" would give a draw a
 	// program built against a pass it is not in. The grouping walk asserts the keys it finds here.
 	const auto key_of = [this](const PendingDraw& pd) {
-		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, m_depth_uniform_passes,
-			pd.self_mask != 0, m_segregate_self_read);
+		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
+			m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
 	};
 	// What cuts an indirect run for a reason that predates the fragment variant. Subtracting these
 	// is what makes the guard's number the SPECIALIZATION's bill rather than the submission's.
@@ -7041,7 +7064,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		{
 			const PendingDraw& first = m_plan_pending[i];
 			const auto key_of = [this](const PendingDraw& pd) {
-				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode,
+				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
 					m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
 			};
 			const u32 j = gsTileGpuPassEnd(i, static_cast<u32>(m_plan_draws.size()), m_max_pass_draws,
@@ -7357,10 +7380,15 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		{
 			const u32 count = static_cast<u32>(m_plan_draws.size());
 			const auto breaks_at = [this](u32 d) { return m_plan_pending[d].break_before; };
+			// ⚠️ The PASS-key depth mode, not the pipeline one. Both counterfactuals have to see the
+			// boundaries the grouping walk above actually made, or the predictor answers a question
+			// about a cut nobody takes -- and the assert below, which recounts the active polarity
+			// against the plan, is what would catch it. Before
+			// EmuCore/GS/TileGpuSplitSharesPassKey the two were the same field.
 			const auto key_under = [this](u32 d, bool depth_uniform) {
 				const PendingDraw& pd = m_plan_pending[d];
-				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.depth_mode, depth_uniform,
-					pd.self_mask != 0, m_segregate_self_read);
+				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
+					depth_uniform, pd.self_mask != 0, m_segregate_self_read);
 			};
 			const u32 under_uniform = gsTileGpuCountPasses(count, m_max_pass_draws,
 				[&](u32 d) { return key_under(d, true); }, breaks_at);

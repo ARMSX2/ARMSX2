@@ -1679,6 +1679,93 @@ struct Pcsx2Config
 					// they never carried a test and are byte-identical too. OFF reproduces
 					// the pre-split tree hash for hash on all 21.
 					TileGpuAfailSplit : 1,
+					// The alpha split's second half keys its render pass like its
+					// principal, so the split cuts an indirect RUN and never a PASS.
+					//
+					// The two halves differ in exactly one pipeline bit — the depth
+					// write-enable — and on a device that asked for depth-uniform
+					// passes (Adreno) that bit is in the PASS key, so every split draw
+					// opened a pass going in and another coming out. The difference
+					// does not need to be there: GSTileGpuRunKey carries the depth mode
+					// unconditionally, so it already cuts a run and binds the second
+					// half's own pipeline whatever the pass key says. Under this key
+					// both halves key on the DRAW's own depth write — the write the
+					// draw lands in GS memory, which the two halves union back to — and
+					// only the run cut remains.
+					//
+					// ⚠️ WHAT IT COSTS: a pass on Adreno now holds a two-draw depth-mode
+					// excursion, which is the one thing depth-uniform keying exists to
+					// avoid. That is the trade, and the alternative was measured: R&C
+					// UYA's effects scene under forced-uniform keying with the split on
+					// goes 454 -> 1496 render passes a frame and 80 -> 302 Mpx of
+					// declared area. Which is why the per-frame depth predictor escaped
+					// to MERGED keying on both R&C dumps the day the split landed — and
+					// merged is itself a measured loss on Adreno, so escaping cost 5.14
+					// ms a frame of ring backpressure. Dirge of Cerberus' 46 splits a
+					// frame are too few to move the predictor's ratio, so it paid the
+					// +50 passes and +11.5 Mpx directly.
+					//
+					// PIXEL-INERT, and by the same argument uniform keying rests on:
+					// where a pass boundary falls decides nothing about pixel results —
+					// a pass carrying two depth modes is what MERGED keying does on
+					// every non-Adreno device all day. Uniform is a performance
+					// preference (GSRendererTileGpu.h), not a correctness one. Both
+					// arms are byte-identical on all 22 corpus dumps under the shipped
+					// (merged) keying AND under TileGpuForceDepthUniformPasses, which
+					// is the arm where the pass merge actually happens.
+					//
+					// ⚠️ THE M2 CANNOT SEE THIS KEY AT SHIPPED DEFAULTS, because
+					// Honeykrisp asks for merged keying and the depth mode is then out
+					// of the pass comparison anyway. Forcing uniform is what makes the
+					// mechanism observable off-device, and it reproduces the device's
+					// numbers to the pass — render passes a frame, key off -> on with
+					// TileGpuForceDepthUniformPasses=true: R&C UYA effects 1496.25 ->
+					// 454.25 (302.4 -> 80.4 Mpx of declared area), R&C UYA gameplay
+					// 912.00 -> 83.00, MGS3 719.00 -> 472.00, SotC 787.25 -> 596.25,
+					// dirge 1163.50 -> 1117.50, LEGO Star Wars 63.12 -> 49.50,
+					// Stuntman 2756.80 -> 2685.40. Every one of those ON figures is the
+					// pass structure the tree had before the split landed. What the
+					// device reads at shipped defaults is the DECISION: the per-frame
+					// depth predictor's verdict returns to 0 merged frames on R&C UYA
+					// effects, R&C UYA gameplay and God of War II, and nothing else in
+					// the corpus moves.
+					//
+					// PRE-REGISTERED DEVICE TARGET, so a later reading cannot be fitted
+					// to whatever came back. SD865 p50, shipped tip -> this key on:
+					// dirge 24.51 -> 22.9-23.2, R&C UYA effects 23.15 -> 22.9-23.2,
+					// R&C UYA gameplay 12.10 -> 12.0-12.2, MGS3 15.25 and SotC 16.45
+					// within spread, everything else flat. Ace Combat 5 (7.89) and
+					// Yu-Gi-Oh (6.41) must NOT move at all.
+					//
+					// ⚠️ ONLY DIRGE IS PREDICTED TO RECOVER, AND THAT IS NOT THE PRICE
+					// REPORT'S NUMBER. It predicted 3.5-5.0 ms off R&C UYA effects on
+					// the reading that the merged state was most of that title's bill.
+					// The device has since priced that state directly: the peer's
+					// alpha-split A/B carried a third arm, split OFF plus
+					// TileGpuForceDepthMergedPasses, and it came back at 16.229 ms
+					// against 16.274 for split OFF under uniform keying. Merged costs
+					// R&C UYA effects nothing. Its steady-state pass count and declared
+					// area are the same on both arms already (466 passes and 85.8 Mpx
+					// with the split, 469 and 86.5 without), so there are no split pass
+					// breaks there for this key to remove -- the predictor had already
+					// escaped them, and escaping was free. What remains is 735 extra
+					// draw calls a frame of re-rasterized fill and the 5.21 ms of ring
+					// backpressure that comes with it, and neither is this key's.
+					//
+					// Dirge is the title whose predictor never flipped, so it pays the
+					// pass breaks directly and this key removes them: steady state 1165
+					// -> ~1118 render passes a frame and 165.4 -> ~154.7 Mpx, against
+					// only 48 extra draw calls, which is why nearly all of its +1.80 ms
+					// is expected back.
+					//
+					// THE STRUCTURAL PREDICTIONS ARE THE DISCRIMINATING ONES and they
+					// are billing-independent: both R&C dumps' depth predictor returns
+					// to 0/40 merged frames, their two ~1500-pass warm-up frames go
+					// away, and dirge's steady-state render_passes returns to ~1118.
+					// Device timing numbers PENDING; the structure is what falsifies.
+					//
+					// Default TRUE. OFF is the shipped-tip road, byte for byte.
+					TileGpuSplitSharesPassKey : 1,
 					// Let ONE seed render pass repair a batch of the upload merge's pages,
 					// instead of one render pass per page.
 					//

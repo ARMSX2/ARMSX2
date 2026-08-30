@@ -121,6 +121,31 @@ constexpr GSDevice::GSTileGpuDepthMode gsTileGpuDepthModeFor(bool z_used, bool z
 	return z_write ? GSDevice::GSTileGpuDepthMode::TestWrite : GSDevice::GSTileGpuDepthMode::TestNoWrite;
 }
 
+/// The depth variant a draw's PASS is keyed on, which is not always the one its PIPELINE binds.
+///
+/// They differ on exactly one population: the second half of an alpha-test split
+/// (gsTileGpuPlanAlphaSplit). Its depth write is its own -- under the channel splits the principal
+/// writes no depth and the half writes it -- and its pipeline must bind that, which the run key
+/// already arranges because GSTileGpuRunKey carries the depth mode unconditionally. Its PASS is a
+/// different question: where the device asked for depth-uniform passes, keying the half on its own
+/// write puts a pass boundary each side of every split draw, for a difference the run key had
+/// already made.
+///
+/// `EmuCore/GS/TileGpuSplitSharesPassKey` takes that back: both halves key on `draw_z_write`, the
+/// write the DRAW lands in GS memory, which the two halves union back to by the split's own
+/// contract. With the key off each half asks with `half_z_write` and the boundaries stay.
+///
+/// One function rather than the condition spelt out at each of the five sites that ask it --
+/// accumulation's open-pass test, the declaring budget's group, the split half's own key, the plan
+/// build's cut and the depth predictor's two counterfactual counts. They must produce the same
+/// boundaries; a site left behind puts a draw's prep ops in a pass the draw is not in, which is the
+/// disagreement GSTileGpuPassKey exists to prevent.
+constexpr GSDevice::GSTileGpuDepthMode gsTileGpuPassDepthModeFor(
+	bool z_used, bool z_test, bool draw_z_write, bool half_z_write, bool split_shares_pass_key)
+{
+	return gsTileGpuDepthModeFor(z_used, z_test, split_shares_pass_key ? draw_z_write : half_z_write);
+}
+
 /// What a draw must share with the pass ahead of it to join it rather than open a new one.
 ///
 /// Two places group draws into passes -- accumulation, which needs to know the open pass while it
@@ -1819,6 +1844,11 @@ private:
 		// (gsTileGpuDepthModeFor) and read by everything downstream. The three bools above stay
 		// because the draw's state row carries them to the shader.
 		GSDevice::GSTileGpuDepthMode depth_mode;
+		// ...and the variant this draw's PASS is keyed on, which is the same one except on the
+		// second half of an alpha-test split, where it is the principal's. See
+		// gsTileGpuPassDepthModeFor. Stored rather than re-derived because the four sites that group
+		// draws into passes run after accumulation, where `z_write` and the split are both gone.
+		GSDevice::GSTileGpuDepthMode pass_depth_mode;
 		bool break_before;    // this draw's prep ops cannot be hoisted over the open pass: it opens a new one
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
@@ -2259,6 +2289,12 @@ private:
 	/// levers above, and for the same reason -- the split's second draw carries its own depth
 	/// variant, which is a pass boundary on a device that asked for depth-uniform passes.
 	bool m_afail_split = false;
+	/// EmuCore/GS/TileGpuSplitSharesPassKey: the split's second half keys its pass like its
+	/// principal, so the split cuts an indirect run and never a render pass. Read once at
+	/// construction like the levers above, and for the sharpest version of their reason -- this one
+	/// IS the pass boundary, and a lever that moved mid-frame would leave accumulation's notion of
+	/// where a pass ends and the plan build's cut naming different draws.
+	bool m_split_shares_pass_key = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
