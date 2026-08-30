@@ -2009,22 +2009,28 @@ private:
 		GSTileSurfaceId owner;
 		GSPageBitmap pages;
 	};
-	/// Pages a CPU READ has already had to pull off the GPU (a local read or a CLUT load), from the
-	/// start of the session. The merge refuses them, and that refusal is what keeps it from trading
-	/// one wait for several.
+	/// The video-frame clock the CPU-read marks below are stamped against. Bumped once in VSync and
+	/// nowhere else -- NOT m_source_frame, which counts plans (a mid-frame flush moves it), and not
+	/// m_model_frames.size(), which is a census vector and must not become load-bearing.
+	u32 m_frame_index = 0;
+
+	/// When a CPU READ last had to pull each page off the GPU (a local read or a CLUT load), as
+	/// m_frame_index + 1 so that 0 means "never read" and Reset stays a fill(0). The merge refuses a
+	/// page whose mark is recent, and that refusal is what keeps it from trading one wait for
+	/// several.
 	///
 	/// The road it replaces did the CPU a favour on the side: draining a page for an upload spill
 	/// also handed truth back, so every later CPU read of that page was free. Keeping truth on the
 	/// GPU takes that away, and on a title whose palettes live in the tail blocks of a framebuffer
 	/// page -- Dirge of Cerberus does exactly this -- the CLUT loads then pay for it over and over.
-	/// Measured, before this bitmap existed: dirge's upload stalls fell 4.62 -> 0.88 a frame and its
+	/// Measured, before this mark existed: dirge's upload stalls fell 4.62 -> 0.88 a frame and its
 	/// CLUT stalls rose 2.00 -> 10.25, a net LOSS of 4.5 waits a frame.
 	///
 	/// So the merge does not guess which pages the CPU wants: it waits to be told. The first read
-	/// that has to pull a page marks it, and from then on uploads to it take the blocking road and
-	/// leave it where the CPU can reach it. Monotonic, so it cannot oscillate, and every entry in it
-	/// was paid for by a wait that already happened.
-	GSPageBitmap m_cpu_read_pages;
+	/// that has to pull a page marks it, and while that mark is inside the window uploads to it take
+	/// the blocking road and leave it where the CPU can reach it. Every entry in it was paid for by a
+	/// wait that already happened.
+	std::array<u32, GS_MAX_PAGES> m_cpu_read_frame{};
 	std::vector<UploadMergeGroup> m_merge_groups;
 	std::vector<UploadPageBytes> m_merge_bytes; ///< one entry per page of this merge
 	std::vector<u32> m_merge_words;             ///< their keep tables, before the plan rebases them
@@ -3085,6 +3091,35 @@ private:
 
 	// The model's per-frame traffic, mean/p50 at teardown beside the pass structure. These are
 	// the structural counters the stage-1 gate reads.
+	/// Which clause of PlanUploadMerge's per-page lambda decides a page, BELOW the CPU-read one.
+	///
+	/// The CPU-read test is the first clause and it returns, so the clauses under it are never asked
+	/// about a page it refuses -- and "what would those pages have met" is the only question that
+	/// prices lifting it. The lambda therefore computes this for EVERY page, before the CPU-read test,
+	/// and a refusal records it (merge_ref_cpu_next) instead of throwing it away.
+	///
+	/// Not a partition of every merge refusal: the byte-mask clause (merge_ref_bytes) is asked once
+	/// over the whole take set after the loop, so no per-page answer exists for it.
+	enum MergeRefusal : u32
+	{
+		kMergeRefNone = 0, ///< every clause below the CPU-read one admits it: the page would be served
+		kMergeRefOwner,    ///< no single live surface holds every plane of the page that has truth
+		kMergeRefRoad,     ///< that owner has no pool texture, no byte road, or no texels over the page
+		kMergeRefCount
+	};
+
+	/// How old the CPU-read mark that refused a page is, in video frames, bucketed:
+	/// 0 = this frame, 1 = last frame, 2 = 2-3, 3 = 4-15, 4 = older.
+	///
+	/// The bucket the window has to cover is the one dirge's marks land in -- it reads its palettes
+	/// out of framebuffer tail blocks every frame, so its marks are fresh -- against Spider-Man 3's,
+	/// which are the accumulated union of every CLUT load since Reset.
+	static constexpr u32 kMergeCpuAgeBuckets = 5;
+	static constexpr u32 gsMergeCpuAgeBucket(u32 age)
+	{
+		return (age == 0) ? 0u : ((age == 1) ? 1u : ((age <= 3) ? 2u : ((age <= 15) ? 3u : 4u)));
+	}
+
 	struct ModelFrame
 	{
 		u32 surfaces_live = 0;
@@ -3117,6 +3152,13 @@ private:
 		u32 merge_pages = 0;
 		u32 merge_ref_owner = 0;    // no single byte-road owner holding every plane of the page
 		u32 merge_ref_cpu = 0;      // a CPU read has already had to pull this page down once
+		// ...and, over that same population, which clause would have refused it NEXT had the
+		// CPU-read one admitted it (kMergeRefNone = it would have been served). merge_ref_owner is
+		// zero on these pages BY CONSTRUCTION rather than by measurement, so without this the
+		// fraction of a refused population that would actually convert is unknown.
+		u32 merge_ref_cpu_next[kMergeRefCount] = {};
+		// ...and how old the mark that refused it was, in video frames (gsMergeCpuAgeBucket).
+		u32 merge_ref_cpu_age[kMergeCpuAgeBuckets] = {};
 		u32 merge_ref_bytes = 0;    // the write owns half a byte somewhere: no byte mask expresses it
 		u32 merge_ref_slice = 0;    // the rect is a claim, not a record (a sliced or truncated upload)
 		u32 merge_ref_overflow = 0; // the footprint lost its block masks, so coverage is unknown

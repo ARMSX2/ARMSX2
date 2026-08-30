@@ -407,7 +407,8 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_merge_bytes.clear();
 	m_merge_words.clear();
 	m_merge_emitting = false;
-	m_cpu_read_pages.clear();
+	m_cpu_read_frame.fill(0);
+	m_frame_index = 0;
 	AdvanceSourcePinFrame();
 	// The surfaces the open pass named died with the model, so its ids would alias whatever takes
 	// them next.
@@ -498,6 +499,11 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 	// Nothing consumes the transfer log yet; clear it so it cannot grow without bound.
 	m_draw_transfers.clear();
+
+	// The video-frame clock the upload merge's CPU-read marks are stamped against. Last thing in
+	// VSync, so every stamp taken during a frame carries that frame's index and an age of zero
+	// means "read since the last present".
+	m_frame_index++;
 }
 
 void GSRendererTileGpu::Draw()
@@ -2187,6 +2193,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto mref_b = stat([](const MF& f) { return f.merge_ref_bytes; });
 	const auto mref_s = stat([](const MF& f) { return f.merge_ref_slice; });
 	const auto mref_f = stat([](const MF& f) { return f.merge_ref_overflow; });
+	const auto mnext = [&stat](u32 c) { return stat([c](const MF& f) { return f.merge_ref_cpu_next[c]; }); };
+	const auto mage = [&stat](u32 b) { return stat([b](const MF& f) { return f.merge_ref_cpu_age[b]; }); };
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
@@ -2543,6 +2551,22 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"owner %.2f, a CPU read already wanted it %.2f, half a byte %.2f, rect is a claim %.2f, "
 					"footprint overflow %.2f",
 		mrg.mean, mrg.p50, mrgp.mean, mrgp.p50, mref_o.mean, mref_c.mean, mref_b.mean, mref_s.mean, mref_f.mean);
+	if (mref_c.mean > 0.0)
+	{
+		// The CPU-read refusals, priced. The clause fires first and returns, so "no sole byte-road
+		// owner 0.00" above describes the pages that got PAST it, not the ones it refused -- and how
+		// much of a lifted clause would actually convert is otherwise unknown. `served` is the
+		// fraction that converts.
+		Console.WriteLn("  cpu-read refusals, would refuse next: none (served) %.2f  no sole owner %.2f  "
+						"no byte road / no texels %.2f",
+			mnext(kMergeRefNone).mean, mnext(kMergeRefOwner).mean, mnext(kMergeRefRoad).mean);
+		// ...and how old the marks that refused them are, which is what a window has to cover. A
+		// title that re-reads its palettes every frame refuses on FRESH marks and any window keeps
+		// its protection; a title refused by the accumulated union of every read since Reset refuses
+		// on old ones, and a window collects them.
+		Console.WriteLn("  cpu-read mark age (frames): this %.2f  1 %.2f  2-3 %.2f  4-15 %.2f  older %.2f",
+			mage(0).mean, mage(1).mean, mage(2).mean, mage(3).mean, mage(4).mean);
+	}
 
 	// The wait bill, which the stall census above cannot show: a stall is one CONSUMER asking, and
 	// what costs the frame is the number of times the GS thread blocked on the GPU to answer it.
@@ -6922,12 +6946,16 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	m_frame.stalls[static_cast<u32>(site)]++;
 	m_frame.stall_pages[static_cast<u32>(site)] += need.count();
 
-	// A CPU READ had to pull these pages: remember it, so the upload merge stops keeping them on the
-	// GPU. See m_cpu_read_pages -- the upload road is excluded because that is the merge's own road
-	// and marking it would switch the merge off the first time it declined a page, and the savestate
-	// sync is excluded because it pulls everything and means nothing about what the game reads.
+	// A CPU READ had to pull these pages: remember WHEN, so the upload merge stops keeping them on
+	// the GPU while the mark is fresh. See m_cpu_read_frame -- the upload road is excluded because
+	// that is the merge's own road and marking it would switch the merge off the first time it
+	// declined a page, and the savestate sync is excluded because it pulls everything and means
+	// nothing about what the game reads.
 	if (site == StallSite::LocalRead || site == StallSite::Clut)
-		m_cpu_read_pages |= need;
+	{
+		const u32 stamp = m_frame_index + 1;
+		need.forEachSetPage([&](u32 page) { m_cpu_read_frame[page] = stamp; });
+	}
 
 	// One pool call per (owner surface, truth block mask) -- NOT one per plane, and NOT one per
 	// page.
@@ -7342,20 +7370,22 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 	}
 
 	GSPageBitmap take;
+	const u32 now = m_frame_index + 1;
 	spill.forEachSetPage([&](u32 page) {
-		// A page a CPU read has already had to pull once goes back down the blocking road: see
-		// m_cpu_read_pages for the measurement that put this clause here.
-		if (m_cpu_read_pages.test(page))
-		{
-			m_frame.merge_ref_cpu++;
-			return;
-		}
+		// THE OWNER CLAUSES FIRST, for every page, and only then the CPU-read one -- which reads
+		// backwards and is deliberate. The CPU-read test decides nothing the owner clauses can undo,
+		// so the order it is ASKED in is free, and asking it last means a page it refuses can still
+		// say what it would have met. That is the only way to price lifting it: today the clause
+		// returns, so merge_ref_owner is zero over the refused population by construction rather
+		// than by measurement.
+		//
 		// ONE live surface must hold every plane of the page that has truth at all. Not a
 		// simplification: the compose can only carry a plane whose owner has a writeback shader, and
 		// it marks the page composed either way -- so a page whose Z a depth buffer holds would get
 		// the stale shadow's bytes for the Z half, the seed would write that into the colour target's
 		// cells, and the model would go on saying the ring has the page. Every plane one owner, or
 		// the blocking road, which moves all of it.
+		u32 next = kMergeRefNone;
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		bool split = false;
 		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
@@ -7368,14 +7398,35 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		}
 		if (split || owner == kGSTileNoSurface)
 		{
-			m_frame.merge_ref_owner++;
+			next = kMergeRefOwner;
+		}
+		else
+		{
+			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+			// A byte road both ways (the writeback that composes the page and the seed that reads it
+			// back), a pool texture to run them against, and a texture rectangle that actually spans
+			// the page -- the seed's scissor comes off the page's row and column in that rectangle.
+			// The texel record is read WITHOUT Texels()'s grow, so a page whose owner has no record
+			// yet answers the same "no texels" it would have, and asking about a refused page costs
+			// nothing.
+			if (!surf.pool_handle || !HasByteRoad(surf.layout) || owner >= m_surface_texels.size() ||
+				!m_surface_texels[owner].pages.test(page))
+			{
+				next = kMergeRefRoad;
+			}
+		}
+
+		// A page a CPU read has recently had to pull goes back down the blocking road: see
+		// m_cpu_read_frame for the measurement that put this clause here.
+		const u32 mark = m_cpu_read_frame[page];
+		if (mark != 0)
+		{
+			m_frame.merge_ref_cpu++;
+			m_frame.merge_ref_cpu_next[next]++;
+			m_frame.merge_ref_cpu_age[gsMergeCpuAgeBucket(now - mark)]++;
 			return;
 		}
-		const GSVramModel::Surface& surf = m_vram_model.Get(owner);
-		// A byte road both ways (the writeback that composes the page and the seed that reads it
-		// back), a pool texture to run them against, and a texture rectangle that actually spans
-		// the page -- the seed's scissor comes off the page's row and column in that rectangle.
-		if (!surf.pool_handle || !HasByteRoad(surf.layout) || !Texels(owner).pages.test(page))
+		if (next != kMergeRefNone)
 		{
 			m_frame.merge_ref_owner++;
 			return;
