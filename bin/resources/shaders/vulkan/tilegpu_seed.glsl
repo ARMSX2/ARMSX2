@@ -91,6 +91,15 @@ layout(push_constant) uniform cb
 	// is the exception -- it is repairing the blocks ONE surface holds, and the rest of the page
 	// belongs to the CPU, whose bytes the surface's texels are not supposed to start carrying.
 	uint block_mask;
+	// ...and where the merge's pages disagree about that -- which they do, one page to the next --
+	// the mask rides PER PAGE instead: the ring word of a 512-entry table indexed by guest page,
+	// staged beside the page mask above, or 0 when `block_mask` is uniform over the op. One draw
+	// then repairs a batch of pages in ONE render pass rather than a pass each, which is what
+	// EmuCore/GS/TileGpuMergeSeedBatch buys. GSDevice::SeedBlocksOnPage is the same rule in C++.
+	//
+	// Zero is not a legal table offset and so needs no flag beside it: the ring's first 8 KB is the
+	// zero slot and every table starts past it.
+	uint block_base;
 };
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
@@ -209,16 +218,18 @@ void main()
 		discard;
 
 	const uint slot = vram_words[table_base + epoch * 512u + page];
+	// Uniform over the op, or this page's own -- see `block_base`.
+	const uint blocks = (block_base != 0u) ? vram_words[block_base + page] : block_mask;
 
 #if TILEGPU_SEED_CT32
 	// The exact ring word tilegpu_writeback.glsl wrote (or the executor prefilled) for this texel.
 	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u) ^ TILEGPU_SEED_ZXOR;
-	if ((block_mask & (1u << bib)) == 0u)
+	if ((blocks & (1u << bib)) == 0u)
 		discard;
 	const uint w = vram_words[slot + bib * 64u + tile_c32(x & 7u, y & 7u)];
 #else
 	const uint bib = tile_b16((x >> 4u) & 3u, (y >> 3u) & 7u) ^ TILEGPU_SEED_ZXOR;
-	if ((block_mask & (1u << bib)) == 0u)
+	if ((blocks & (1u << bib)) == 0u)
 		discard;
 	const uint hw = tile_c16(x & 15u, y & 7u);
 	const uint c = tilegpu_half_sel(vram_words[slot + bib * 64u + (hw >> 1u)], hw);

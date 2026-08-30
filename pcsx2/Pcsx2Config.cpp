@@ -824,6 +824,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// range on the draws it serves; the three shapes it cannot serve exactly keep the discard and
 	// are censused. See Config.h.
 	TileGpuAfailSplit = true;
+	// Default TRUE: it is a pure re-expression of the merge's seed, not a trade. One render pass
+	// per merged PAGE existed only because the seed's block mask was an op-level push constant;
+	// moved to the page entry, one pass serves any number of pages and the bytes it writes are the
+	// same ones. It buys nothing on today's corpus (the merge's groups are one page each) and ships
+	// so that batching the seeds across a run of transfers has something to batch. See Config.h.
+	TileGpuMergeSeedBatch = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1197,6 +1203,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
+	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

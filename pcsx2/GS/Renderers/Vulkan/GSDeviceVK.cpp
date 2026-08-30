@@ -8097,7 +8097,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
 	//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries]
-	//   [seed page masks][writeback keep masks][palettes]
+	//   [seed page masks][seed per-page block masks][writeback keep masks][palettes]
 	// Slots the renderer named a source for are memcpy'd from it (the CPU shadow's bytes, or a
 	// version copy); the rest are left for the writeback compute to compose. Every table entry
 	// starts at the zero slot and each ring page then claims its epoch range, so a page the plan
@@ -8112,11 +8112,26 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// One 512-bit page mask per seed op, built below; reserve for every op (writebacks skip theirs).
 		const u32 mask_words = static_cast<u32>(plan.prep_ops.size()) * (GS_MAX_PAGES / 32);
 		const u32 mask_bytes = mask_words * sizeof(u32);
+		// ...and one 512-ENTRY block-mask table per seed op that carries a mask per page, which is
+		// the upload merge's batched seed and nothing else. Indexed by guest page like the mask
+		// above, so it is dense and 2 KB; counted rather than reserved for every op because a frame
+		// carries hundreds of ordinary seeds whose mask is uniform and needs no table at all.
+		u32 block_table_ops = 0;
+		for (const GSTileGpuPrepOp& op : plan.prep_ops)
+		{
+			if ((op.kind == GSTileGpuPrepKind::Seed || op.kind == GSTileGpuPrepKind::SeedDepth) &&
+				op.seed_blocks_per_page != 0)
+			{
+				block_table_ops++;
+			}
+		}
+		const u32 block_words = block_table_ops * GS_MAX_PAGES;
+		const u32 block_bytes = block_words * sizeof(u32);
 		// The upload merge's per-page keep-mask tables, verbatim. Empty on every frame that
 		// plans no merge, which is most of them.
 		const u32 keep_bytes = static_cast<u32>(plan.writeback_keep_masks.size() * sizeof(u32));
 		const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
-		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + keep_bytes + pal_bytes;
+		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + block_bytes + keep_bytes + pal_bytes;
 		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
@@ -8232,6 +8247,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		u32* const masks = reinterpret_cast<u32*>(entries + entry_bytes);
 		masks_base_words = entries_base_words + entry_bytes / sizeof(u32);
+		u32* const blocks = masks + mask_words;
+		const u32 blocks_base_words = masks_base_words + mask_words;
+		m_tilegpu_seed_block_bases.assign(plan.prep_ops.size(), 0);
+		u32 block_table = 0;
 		for (u32 o = 0; o < plan.prep_ops.size(); o++)
 		{
 			u32* const m = masks + o * (GS_MAX_PAGES / 32);
@@ -8239,17 +8258,30 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			const GSTileGpuPrepOp& op = plan.prep_ops[o];
 			if (op.kind != GSTileGpuPrepKind::Seed && op.kind != GSTileGpuPrepKind::SeedDepth)
 				continue;
+			// A page the op does not name reads a zero block mask as well as a clear page-mask bit,
+			// so the table is zeroed whole rather than only where the entries land: a stale mask
+			// left by the previous tenant of this ring offset would seed a page nothing asked about.
+			u32* const b = (op.seed_blocks_per_page != 0) ? (blocks + block_table * GS_MAX_PAGES) : nullptr;
+			if (b)
+			{
+				std::memset(b, 0, GS_MAX_PAGES * sizeof(u32));
+				m_tilegpu_seed_block_bases[o] = blocks_base_words + block_table * GS_MAX_PAGES;
+				block_table++;
+			}
 			for (u32 k = 0; k < op.page_entry_count; k++)
 			{
-				const u32 page = plan.page_entries[op.first_page_entry + k].page;
-				m[page >> 5] |= 1u << (page & 31);
+				const GSTileGpuPageEntry& e = plan.page_entries[op.first_page_entry + k];
+				m[e.page >> 5] |= 1u << (e.page & 31);
+				if (b)
+					b[e.page] = e.block_mask;
 			}
 		}
+		pxAssert(block_table == block_table_ops);
 
-		u8* const keeps = reinterpret_cast<u8*>(masks) + mask_bytes;
+		u8* const keeps = reinterpret_cast<u8*>(blocks) + block_bytes;
 		if (keep_bytes)
 			std::memcpy(keeps, plan.writeback_keep_masks.data(), keep_bytes);
-		keep_base_words = masks_base_words + mask_words;
+		keep_base_words = blocks_base_words + block_words;
 
 		if (pal_bytes)
 			std::memcpy(keeps + keep_bytes, plan.palettes.data(), pal_bytes);
@@ -8999,12 +9031,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						BeginRenderPass(rp, area);
 					}
-					// Counted at the pass, not off the op array: everything above this line can decline a
-					// seed, and a declined op costs no pass. This is the only place a seed's render passes
-					// can be counted at all -- the renderer's census counts PLAN passes, and a seed runs at
-					// a pass head, inside no plan pass.
-					m_tilegpu_seed_render_passes++;
-					m_tilegpu_merge_seed_render_passes += (op.seed_from_merge != 0) ? 1 : 0;
 
 					const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 					vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -9201,6 +9227,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					{
 						BeginRenderPass(rp, area);
 					}
+					// Counted at the pass, not off the op array: everything above this line can decline a
+					// seed, and a declined op costs no pass. This is the only place a seed's render passes
+					// can be counted at all -- the renderer's census counts PLAN passes, and a seed runs at
+					// a pass head, inside no plan pass.
+					m_tilegpu_seed_render_passes++;
+					m_tilegpu_merge_seed_render_passes += (op.seed_from_merge != 0) ? 1 : 0;
 
 					const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 					vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -9209,8 +9241,18 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdSetScissor(cmd, 0, 1, &sc);
 					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 						&m_tilegpu_state_descriptor_set, 0, nullptr);
+					// Read only where the OP declares a table, and bounds-checked on top of that. Both
+					// clauses are locally provable rather than provable at a distance: the table is
+					// staged under `can_texture` and a seed op cannot reach this line with it false
+					// (the kind filter at the head of the loop drops it), but a base that came from
+					// anywhere but this op's own declaration would hand the shader a per-page table for
+					// an op whose mask is uniform -- which is not a crash, it is a seed reading some
+					// other plan's block masks.
+					const u32 block_base = (op.seed_blocks_per_page != 0 && o < m_tilegpu_seed_block_bases.size()) ?
+											   m_tilegpu_seed_block_bases[o] :
+											   0u;
 					const u32 spush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw,
-						masks_base_words + o * (GS_MAX_PAGES / 32), op.seed_blocks, 0, 0};
+						masks_base_words + o * (GS_MAX_PAGES / 32), op.seed_blocks, block_base, 0};
 					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(spush), spush);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);

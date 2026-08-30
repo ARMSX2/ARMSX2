@@ -35,8 +35,11 @@
 
 #include <gtest/gtest.h>
 
+#include "fmt/format.h"
+
 #include <array>
 #include <bit>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -410,4 +413,124 @@ TEST(GSTileGpuUploadMerge, TheCpuReadAgeBucketsAreWhatTheCensusPrints)
 	// Every age lands in exactly one of the five the census prints.
 	for (const u32 age : {0u, 1u, 2u, 3u, 4u, 7u, 15u, 16u, 100u, 1u << 20})
 		EXPECT_LT(gsTileGpuMergeCpuAgeBucket(age), kGSTileGpuMergeCpuAgeBuckets);
+}
+
+// -- the seed half: EmuCore/GS/TileGpuMergeSeedBatch ------------------------------------------
+//
+// The merge's seed used to be one op -- and so one full Vulkan RENDER PASS -- per merged page, for
+// one structural reason: the blocks a seed may write rode in the op's push constant, and the merge
+// is the only caller whose answer differs from page to page. Moving the mask into the page entry
+// lets one op name them all.
+//
+// That is a pass-structure change and it must be PIXEL-INERT. What makes it inert is a single
+// equality: for every page, the blocks the shader ends up honouring are the same on both roads.
+// GSRendererTileGpu::MergeSeedMaskFor is the two roads' one difference and GSDevice::
+// SeedBlocksOnPage is how the shader reads either of them back, so the equality is checkable here
+// with no device, no renderer and no plan.
+//
+// ⚠️ RED CHECK, run 2026-08-30. Inverting the batched road's entry mask -- `MergeSeedMask{kFull,
+// ~own_blocks, 1u}` in GSRendererTileGpu.h, everything else final -- fails both of the tests below
+// on every non-trivial mask, which is what says they would catch a batched road that seeded the
+// wrong blocks rather than merely agreeing with themselves.
+namespace
+{
+/// The block masks a merged page's owner can hold: none, all, the halves and quarters the writeback
+/// produces, and the ragged ones a partial transfer leaves.
+const u32 kOwnBlockMasks[] = {0x00000000u, 0xFFFFFFFFu, 0x0000FFFFu, 0xFFFF0000u, 0x000000FFu,
+	0x0F0F0F0Fu, 0x00000001u, 0x80000000u, 0xDEADBEEFu, 0x12345678u, 0xAAAAAAAAu, 0x55555555u};
+
+/// What the shader honours for a page whose owner holds `own_blocks` of it, on `batch`'s road.
+u32 BlocksSeeded(bool batch, u32 own_blocks)
+{
+	const GSRendererTileGpu::MergeSeedMask m = GSRendererTileGpu::MergeSeedMaskFor(batch, own_blocks);
+	return GSDevice::SeedBlocksOnPage(m.op_blocks, m.per_page, m.entry_blocks);
+}
+} // namespace
+
+// The byte contract, stated as the equality it is: over every mask an owner can hold, the two roads
+// seed the same blocks, and both seed exactly the blocks the owner holds. A road that seeded MORE
+// writes the CPU's bytes over texels nothing asked about (the 6132-byte SotC defect that made the
+// mask per-block in the first place); one that seeded FEWER drops the repair the merge exists for.
+TEST(GSTileGpuUploadMerge, TheBatchedSeedNamesTheSameBlocksAsOneSeedPerPage)
+{
+	for (const u32 own : kOwnBlockMasks)
+	{
+		SCOPED_TRACE(fmt::format("own_blocks 0x{:08X}", own));
+		EXPECT_EQ(BlocksSeeded(false, own), own) << "the per-page road must seed the owner's blocks";
+		EXPECT_EQ(BlocksSeeded(true, own), own) << "...and the batched road the same ones";
+		EXPECT_EQ(BlocksSeeded(true, own), BlocksSeeded(false, own));
+	}
+
+	// ...and the two roads put the mask in DIFFERENT places, which is the whole change. Pinned so
+	// that a batched op cannot quietly go back to carrying its blocks in the push constant, where
+	// the executor would stage no per-page table for it and the shader would read a uniform mask
+	// for pages that do not agree.
+	const GSRendererTileGpu::MergeSeedMask per_page = GSRendererTileGpu::MergeSeedMaskFor(false, 0x0000FFFFu);
+	const GSRendererTileGpu::MergeSeedMask batched = GSRendererTileGpu::MergeSeedMaskFor(true, 0x0000FFFFu);
+	EXPECT_EQ(per_page.per_page, 0u);
+	EXPECT_EQ(per_page.op_blocks, 0x0000FFFFu);
+	EXPECT_EQ(per_page.entry_blocks, GSVramModel::kFullBlockMask);
+	EXPECT_EQ(batched.per_page, 1u);
+	EXPECT_EQ(batched.entry_blocks, 0x0000FFFFu);
+	EXPECT_EQ(batched.op_blocks, GSVramModel::kFullBlockMask);
+}
+
+// The same equality over a whole GROUP rather than a page, which is the shape the two roads
+// actually differ in: N ops of one page each against ONE op of N pages. The seeded set is the same
+// (page, block) pairs, and a page the owner holds nothing of is in neither -- on the per-page road
+// because EmitUploadMerge skips it before emitting, on the batched road because EmitPrepOp drops a
+// page whose per-page mask is zero. kFullBlockMask is a LEGITIMATE answer here (an owner holding
+// all 32 blocks of a partially-overwritten page), which is why the batched op flags itself instead
+// of the executor reading kFullBlockMask as a sentinel.
+TEST(GSTileGpuUploadMerge, ABatchedGroupSeedsTheSamePagesAndBlocksAsItsPerPageOps)
+{
+	struct GroupPage
+	{
+		u32 page;
+		u32 own_blocks;
+	};
+	static const GroupPage group[] = {
+		{0, 0xFFFFFFFFu},  // the owner holds the whole page
+		{1, 0x0000FFFFu},  // ...half of it
+		{5, 0x00000000u},  // ...none: seeded by neither road
+		{7, 0x80000001u},  // ...its two end blocks
+		{511, 0x0F0F0F0Fu} // ...and the last guest page, so the index is exercised at the top
+	};
+
+	std::map<u32, u32> per_page_road, batched_road;
+	for (const GroupPage& g : group)
+	{
+		// The per-page road: one op per page, dropped before it is emitted when the mask is empty.
+		if (g.own_blocks != 0)
+			per_page_road[g.page] = BlocksSeeded(false, g.own_blocks);
+		// The batched road: one op naming every page, dropping the empty ones inside EmitPrepOp.
+		const GSRendererTileGpu::MergeSeedMask m = GSRendererTileGpu::MergeSeedMaskFor(true, g.own_blocks);
+		if (m.entry_blocks != 0)
+			batched_road[g.page] = GSDevice::SeedBlocksOnPage(m.op_blocks, m.per_page, m.entry_blocks);
+	}
+
+	EXPECT_EQ(per_page_road, batched_road);
+	EXPECT_EQ(per_page_road.size(), 4u) << "the page the owner holds nothing of is in neither road";
+	EXPECT_EQ(per_page_road.count(5), 0u);
+}
+
+// ...and every seed that is NOT the merge's is untouched by the whole arrangement: it carries its
+// op-level kFullBlockMask, sets no per-page flag, and the executor stages no table for it. This is
+// what keeps the 2 KB-per-op table off the hundreds of ordinary seeds a frame carries.
+TEST(GSTileGpuUploadMerge, AnOrdinarySeedKeepsItsOpLevelMask)
+{
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = GSDevice::GSTileGpuPrepKind::Seed;
+	op.seed_blocks = GSVramModel::kFullBlockMask;
+	op.seed_blocks_per_page = 0;
+	// The entry an ordinary seed gets from EmitPrepOp, which the shader must then ignore.
+	const GSDevice::GSTileGpuPageEntry entry{0, 0, GSVramModel::kFullBlockMask, GSDevice::kGSTileGpuNoKeepMask};
+	EXPECT_EQ(GSDevice::SeedBlocksOnPage(op.seed_blocks, op.seed_blocks_per_page, entry.block_mask),
+		GSVramModel::kFullBlockMask);
+
+	// The reading rule is a CHOICE, not an AND: an op that says "per page" must take the entry's
+	// mask even where the op's own is narrower, and vice versa. Spelled out because an `&` here
+	// would pass every test above -- both roads agree wherever one of the two is kFullBlockMask.
+	EXPECT_EQ(GSDevice::SeedBlocksOnPage(0x000000FFu, 0, 0x0000FF00u), 0x000000FFu);
+	EXPECT_EQ(GSDevice::SeedBlocksOnPage(0x000000FFu, 1, 0x0000FF00u), 0x0000FF00u);
 }

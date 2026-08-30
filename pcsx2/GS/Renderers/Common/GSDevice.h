@@ -2459,8 +2459,10 @@ public:
 	static constexpr u32 kGSTileGpuKeepMaskWordsPerPage = 32 * 8;
 
 	/// One page of a prep op's page list: which page, and which of its 32 physical blocks the op
-	/// touches (a writeback writes only the blocks the surface holds newest; a seed reads whole pages
-	/// and carries kFullBlockMask).
+	/// touches (a writeback writes only the blocks the surface holds newest; an ordinary seed reads
+	/// whole pages and carries kFullBlockMask). A seed reads this field only when its op sets
+	/// `seed_blocks_per_page`, which is the upload merge's batched road and nothing else — see
+	/// GSTileGpuPrepOp::seed_blocks.
 	///
 	/// `keep_mask_words` is the WRITEBACK's byte-granular exception, and it exists for one caller:
 	/// the CPU->GPU upload merge. A host->local transfer that covers only PART of a block leaves
@@ -2616,9 +2618,20 @@ public:
 		/// The upload merge is the exception it is here for: that seed is repairing the blocks ONE
 		/// surface holds after a CPU transfer landed in them, and the rest of the page belongs to the
 		/// CPU — whose bytes are perfectly correct in the byte store but are not this surface's
-		/// texels, and writing them over what the texture holds is a change nothing asked for. So the
-		/// merge emits one seed op per page and names that page's blocks.
+		/// texels, and writing them over what the texture holds is a change nothing asked for. So a
+		/// merge seed names blocks, and the blocks differ from page to page.
 		u32 seed_blocks;
+		/// ...and when that is set, the mask above is not the answer: each page entry carries its own
+		/// `block_mask` and the op names them all in ONE render pass instead of one pass per page.
+		/// The executor stages a per-page table beside the op's page mask and the seed shader reads
+		/// it; `seed_blocks` is kFullBlockMask and unread. EmuCore/GS/TileGpuMergeSeedBatch, and the
+		/// only road that sets it is GSRendererTileGpu's upload merge.
+		///
+		/// ⚠️ It is a SEPARATE field rather than a sentinel value of `seed_blocks` because
+		/// kFullBlockMask is a legitimate answer for a merged page — an owner that holds all 32
+		/// blocks of a partially-overwritten page — and a sentinel would silently seed the whole
+		/// page from the CPU's bytes there.
+		u32 seed_blocks_per_page;
 		/// Seed only: this seed is the upload merge's. Carried for the census alone — the executor
 		/// counts the render passes it opens for one, which is the only place they can be counted:
 		/// the plan-pass counter cannot see a seed pass, and the merge's pass bill was invisible to
@@ -2654,6 +2667,18 @@ public:
 			return (copy_stride != 0) ? copy_off[b] : (b * copy_w * copy_h);
 		}
 	};
+
+	/// The blocks a seed may write on the page one of its entries names. The op's uniform
+	/// `seed_blocks` is the answer for every seed but the upload merge's batched one, which carries
+	/// the mask per page in the entry.
+	///
+	/// It is stated here because tilegpu_seed.glsl spells the same rule and the two must not drift:
+	/// a seed that read the wrong mask does not fail, it writes the CPU's bytes over a surface's
+	/// texels (or drops the repair the merge exists to make) and the frame looks nearly right.
+	static constexpr u32 SeedBlocksOnPage(u32 seed_blocks, u32 seed_blocks_per_page, u32 entry_block_mask)
+	{
+		return (seed_blocks_per_page != 0) ? entry_block_mask : seed_blocks;
+	}
 
 	/// A draw's depth configuration, which selects the depth pipeline variant. GS depth grows
 	/// towards the viewer, so the test is GREATER_OR_EQUAL when the draw tests and ALWAYS when it

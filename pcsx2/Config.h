@@ -1679,6 +1679,52 @@ struct Pcsx2Config
 					// they never carried a test and are byte-identical too. OFF reproduces
 					// the pre-split tree hash for hash on all 21.
 					TileGpuAfailSplit : 1,
+					// Let ONE seed render pass repair a batch of the upload merge's pages,
+					// instead of one render pass per page.
+					//
+					// A writeback is one compute dispatch with the page count in its Z, so
+					// it costs the same whether it composes one page or forty. A SEED is a
+					// full Vulkan render pass, and the merge emitted one PER PAGE for a
+					// single structural reason: the blocks a seed may write rode in
+					// `seed_blocks`, an OP-LEVEL push constant, while everything else about
+					// a seed op was already per-op-general (the op carries a 512-bit page
+					// mask precisely so one draw can serve any page subset). The merge is
+					// the only caller that needs a DIFFERENT block mask per page — it is
+					// repairing the blocks one surface holds after a CPU transfer landed in
+					// them, and the rest of the page is the CPU's — so it emitted one op per
+					// page to say so.
+					//
+					// The mask moves to the page ENTRY, which already carried an unused
+					// `block_mask` field, and the seed shader reads it per page out of a
+					// small per-page table beside the op's page mask. One op then names any
+					// number of pages, each narrowed to its own blocks.
+					//
+					// PIXEL-INERT BY CONSTRUCTION and a difference between the arms is a
+					// DEFECT, not a trade: the (page, block) pairs the seed writes are
+					// identical, and GSRendererTileGpu::MergeSeedMaskFor states the two
+					// roads' one difference as a single function so the equality can be
+					// tested without a device (gs_tilegpu_upload_merge_tests). What changes
+					// is how many render passes carry them, and — for free — how many times
+					// the merge bumps the owner's surface version, which is what invalidates
+					// every donor/source content token and every gathered palette id keyed on
+					// it.
+					//
+					// ⚠️ MEASURED ON THE CORPUS, AND IT IS NOT WHAT THE DESIGN STUDY
+					// PREDICTED. The merge's groups are ONE PAGE EACH on every title that
+					// reaches the road — Spider-Man 3 173.25 groups / 173.25 pages a frame,
+					// GT4 10.00 / 11.00, Dirge of Cerberus 3.62 / 3.62 — because a group is
+					// per owner within ONE host->local transfer, and those transfers are
+					// single-page. So this collapses 173 seed render passes to 173 on
+					// today's road and the frame does not move. It ships ON anyway because
+					// it is the ENABLER: batching the merge's seeds ACROSS a run of
+					// transfers is what removes the passes, and that road cannot exist
+					// until a seed op can carry a mask per page. The blocker for it is
+					// named in the record — InvalidateVideoMem flushes the pending plan per
+					// spilling transfer, so consecutive merges are in different plans by
+					// construction.
+					//
+					// Default TRUE. OFF is the one-pass-per-page road, byte for byte.
+					TileGpuMergeSeedBatch : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

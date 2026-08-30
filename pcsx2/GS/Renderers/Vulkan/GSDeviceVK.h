@@ -1368,6 +1368,12 @@ private:
 	u64 m_tilegpu_seed_render_passes = 0;
 	u64 m_tilegpu_merge_seed_render_passes = 0;
 
+	// One entry per prep op of the plan being executed: the ring word of that op's 512-entry
+	// per-page block-mask table, or 0 for the ops that carry no table (every op but a batched merge
+	// seed). A member rather than a local so the staging pass and the record pass agree on it
+	// without either re-deriving a running offset the other's `continue` paths would break.
+	std::vector<u32> m_tilegpu_seed_block_bases;
+
 	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
 	// A draw INTO one of these is almost certainly the producer of the next readback,
 	// so DoRenderHW kicks the command buffer first: the queued backlog drains while the

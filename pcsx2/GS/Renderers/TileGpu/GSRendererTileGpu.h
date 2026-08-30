@@ -2089,6 +2089,27 @@ public:
 	static bool BuildUploadByteMask(const GSTileSurfaceLayout& layout, const GSVector4i& r,
 		const GSPageBitmap& pages, std::vector<UploadPageBytes>& out, std::vector<u32>& words);
 
+	/// What a merge seed op and its page entry carry, for a page whose owner holds `own_blocks` of
+	/// it, on each of the merge's two roads.
+	///
+	/// The WHOLE difference between the roads is this pair, which is why it is one function: the
+	/// per-page road puts the blocks in the OP and emits an op (and so a render pass) per page; the
+	/// batched road puts them in the ENTRY and emits one op for all of them. GSDevice::
+	/// SeedBlocksOnPage reads the same value back either way, and THAT EQUALITY IS THE BYTE
+	/// CONTRACT -- it is what says the batch is a pass-structure change and not a pixel one, and it
+	/// is testable with no device (gs_tilegpu_upload_merge_tests).
+	struct MergeSeedMask
+	{
+		u32 op_blocks;    ///< the op's uniform GSTileGpuPrepOp::seed_blocks
+		u32 entry_blocks; ///< the page entry's GSTileGpuPageEntry::block_mask
+		u32 per_page;     ///< the op's GSTileGpuPrepOp::seed_blocks_per_page
+	};
+	static constexpr MergeSeedMask MergeSeedMaskFor(bool batch, u32 own_blocks)
+	{
+		return batch ? MergeSeedMask{GSVramModel::kFullBlockMask, own_blocks, 1u} :
+					   MergeSeedMask{own_blocks, GSVramModel::kFullBlockMask, 0u};
+	}
+
 private:
 	/// One owner's share of a merge: every page whose planes it alone holds truth of.
 	struct UploadMergeGroup
@@ -2134,6 +2155,15 @@ private:
 	/// ...and the same idea for the SEED half: EmitPrepOp stamps the op as the merge's so the
 	/// executor can count the render passes it opens for one. Nothing else uses it.
 	bool m_merge_seeding = false;
+
+	/// EmuCore/GS/TileGpuMergeSeedBatch: let ONE seed render pass repair a batch of the merge's
+	/// pages instead of a pass per page. Read once at construction, like every other policy here.
+	bool m_merge_seed_batch = false;
+	/// The batched seed's per-page block masks, indexed by guest page. A member because it is 2 KB
+	/// and per merge group; NOT cleared between groups, and it does not need to be -- EmitPrepOp
+	/// reads it only at the pages of the bitmap it is handed, and the loop below writes every one of
+	/// those before it calls.
+	std::array<u32, GS_MAX_PAGES> m_merge_seed_blocks{};
 
 	// Ensure a surface for `layout` covering `pages` exists in the model and the pool (grown as
 	// needed). Returns kGSTileNoSurface on allocation failure.
@@ -2924,8 +2954,13 @@ private:
 	// accumulated; block masks per page come from the model for writebacks, full for seeds.
 	// `seed_blocks` narrows a SEED to part of each page it names; the default is the whole page,
 	// which is what every road but the upload merge wants (see GSTileGpuPrepOp::seed_blocks).
+	//
+	// `seed_page_blocks`, where it is given, narrows the seed PER PAGE instead: a table indexed by
+	// guest page, read only at the pages of `pages`, and a page it answers 0 for is dropped from the
+	// op. That is the batched merge seed, and it is the only caller that has a different answer from
+	// one page to the next. `seed_blocks` is then unread and the op says so to the executor.
 	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages,
-		u32 seed_blocks = GSVramModel::kFullBlockMask);
+		u32 seed_blocks = GSVramModel::kFullBlockMask, const u32* seed_page_blocks = nullptr);
 
 	// Append a pending draw that renders nothing and exists only to carry the prep ops emitted
 	// since `first_prep_op`. The executor runs a pass's op range at the pass head, and it takes

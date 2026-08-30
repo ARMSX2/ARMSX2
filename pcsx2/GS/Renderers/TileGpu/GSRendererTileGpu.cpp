@@ -280,6 +280,17 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// nothing from the device, so nothing narrows it here.
 	m_afail_split = GSConfig.TileGpuAfailSplit;
 
+	// The merge's seed batch, said out loud on BOTH positions for the reason the write mask above
+	// is: its whole effect is how many render passes carry the same bytes, and a pass the executor
+	// opens at a pass head leaves no trace in the plan-pass census. The seed-render-pass line the
+	// merge census now prints is the only place either arm can be read, and a number with no arm
+	// beside it in the log is a number nobody can attribute.
+	m_merge_seed_batch = GSConfig.TileGpuMergeSeedBatch;
+	Console.WriteLn("TileGpu: the upload merge's seed repairs %s (TileGpuMergeSeedBatch %s) -- the blocks it may "
+					"write ride %s.",
+		m_merge_seed_batch ? "a BATCH of pages in one render pass" : "ONE PAGE per render pass",
+		m_merge_seed_batch ? "on" : "off", m_merge_seed_batch ? "in each page's entry" : "in the op");
+
 	// The sixteen-bit CLUT gather, said out loud for the same reason the write mask above is: a
 	// lever whose whole effect is that a readback DOESN'T happen leaves no other trace in a log, and
 	// the population it serves is one title of twenty-one.
@@ -2902,10 +2913,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 		mrg.mean, mrg.p50, mrgp.mean, mrgp.p50, mref_o.mean, mref_c.mean, mref_b.mean, mref_s.mean, mref_f.mean);
 	// ...and what those merges COST in render passes, which no other number here can show: the pass
 	// count above it is the PLAN's, and a seed runs at a pass head inside no plan pass. Counted in
-	// the executor at the BeginRenderPass itself. Read the merge's column against merge_pages above
-	// -- today they are the same number, one seed pass per merged page -- and read the total beside
+	// the executor at the BeginRenderPass itself. Read the merge's column against merge_ops above --
+	// batched they are equal, per-page it is one pass per merged PAGE -- and read the total beside
 	// the plan-pass line, which has never included any of these.
-	Console.WriteLn("  seed render passes: %.2f /frame, of which the upload merge's %.2f /frame",
+	Console.WriteLn("  seed render passes (TileGpuMergeSeedBatch %s): %.2f /frame, of which the upload merge's "
+					"%.2f /frame",
+		m_merge_seed_batch ? "on" : "off",
 		static_cast<double>(g_gs_device->GetTileGpuSeedRenderPasses()) / n,
 		static_cast<double>(g_gs_device->GetTileGpuMergeSeedRenderPasses()) / n);
 	if (mref_c.mean > 0.0)
@@ -4672,7 +4685,7 @@ void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages)
 }
 
 void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages,
-	u32 seed_blocks)
+	u32 seed_blocks, const u32* seed_page_blocks)
 {
 	if (pages.empty())
 		return;
@@ -4694,13 +4707,23 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 	op.psm = surf.layout.psm;
 	op.byte_mask = gsTileWritebackByteMask(surf.layout.psm);
 	op.seed_blocks = seed_blocks;
+	op.seed_blocks_per_page = (is_seed && seed_page_blocks) ? 1u : 0u;
 	op.seed_from_merge = (is_seed && m_merge_seeding) ? 1u : 0u;
 	op.epoch = m_epoch;
 	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());
 	pages.forEachSetPage([&](u32 page) {
 		u32 mask = GSVramModel::kFullBlockMask;
 		u32 keep = GSDevice::kGSTileGpuNoKeepMask;
-		if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
+		if (op.seed_blocks_per_page != 0)
+		{
+			// The batched merge seed: the blocks are this page's, not the op's. A page the owner
+			// holds nothing of is dropped rather than carried with a zero mask, so the op's page set
+			// is exactly the per-page road's set of ops.
+			mask = seed_page_blocks[page];
+			if (mask == 0)
+				return;
+		}
+		else if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
 		{
 			// The blocks this surface holds newest on the page, over the planes it owns there
 			// (they agree except after a CPU write that shrank one plane's claim differently --
@@ -8082,26 +8105,60 @@ void GSRendererTileGpu::EmitUploadMerge()
 		m_merge_emitting = true;
 		ComposeRingPages(g.pages);
 		m_merge_emitting = false;
-		// One seed per page, each narrowed to the blocks the owner holds. Not a whole-page seed:
+		// The seed, narrowed to the blocks the owner holds on each page. Not a whole-page seed:
 		// the rest of the page is the CPU's, its bytes are already right in the byte store, and
 		// writing them over this surface's texels would change texels nothing asked about --
 		// measured as the whole of the difference this road made to the frame before it was
 		// narrowed (6132 bytes of one SotC page, all of them blocks the target does not hold).
+		//
+		// TileGpuMergeSeedBatch decides whether that is ONE render pass for the group or one per
+		// page. The bytes are the same either way -- see MergeSeedMaskFor, which is the two roads'
+		// only difference and is where the equality is tested.
 		m_merge_seeding = true;
-		g.pages.forEachSetPage([&](u32 page) {
-			u32 own_blocks = 0;
-			for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		if (m_merge_seed_batch)
+		{
+			// The pages whose blocks are the owner's, and what those blocks are. Gathered first
+			// because the op names them all at once; a page the owner holds nothing of is left out
+			// of the bitmap rather than handed over with a zero mask.
+			GSPageBitmap seed_pages;
+			g.pages.forEachSetPage([&](u32 page) {
+				u32 own_blocks = 0;
+				for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+				{
+					if (m_vram_model.OwnerOf(page, pi) == g.owner)
+						own_blocks |= m_vram_model.TruthMask(page, pi);
+				}
+				if (own_blocks == 0)
+					return;
+				m_merge_seed_blocks[page] = MergeSeedMaskFor(true, own_blocks).entry_blocks;
+				seed_pages.set(page);
+			});
+			if (!seed_pages.empty())
 			{
-				if (m_vram_model.OwnerOf(page, pi) == g.owner)
-					own_blocks |= m_vram_model.TruthMask(page, pi);
+				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, g.owner, seed_pages,
+					MergeSeedMaskFor(true, 0).op_blocks, m_merge_seed_blocks.data());
+				seed_pages.forEachSetPage(
+					[&](u32 page) { Texels(g.owner).filled.Mark(page, m_merge_seed_blocks[page]); });
 			}
-			if (own_blocks == 0)
-				return;
-			GSPageBitmap one;
-			one.set(page);
-			EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, g.owner, one, own_blocks);
-			Texels(g.owner).filled.Mark(page, own_blocks);
-		});
+		}
+		else
+		{
+			g.pages.forEachSetPage([&](u32 page) {
+				u32 own_blocks = 0;
+				for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+				{
+					if (m_vram_model.OwnerOf(page, pi) == g.owner)
+						own_blocks |= m_vram_model.TruthMask(page, pi);
+				}
+				if (own_blocks == 0)
+					return;
+				GSPageBitmap one;
+				one.set(page);
+				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, g.owner, one,
+					MergeSeedMaskFor(false, own_blocks).op_blocks);
+				Texels(g.owner).filled.Mark(page, own_blocks);
+			});
+		}
 		m_merge_seeding = false;
 		// The compose always emits at least the owner's writeback (the assert above), so the range is
 		// never empty -- and if it ever were, the ops would be inside no pass and would silently not
