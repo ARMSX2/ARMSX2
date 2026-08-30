@@ -109,7 +109,7 @@ TEST(TileGpuSourceRoad, RoadMaskFitsThePipelineKeyWithoutCollision)
 	EXPECT_LT(below, 1ull << kRoadShift) << "the fields below the road mask no longer fit under it";
 	EXPECT_EQ(kRoadField, 0x700000ull);
 
-	// ...and the fields ABOVE it, which the road mask must equally not run into: six texel-arm bits
+	// ...and the fields ABOVE it, which the road mask must equally not run into: seven texel-arm bits
 	// at 23, then the destination-read axis in the upper word.
 	const u64 texel_field = static_cast<u64>(GSDevice::kGSTileGpuTexelMaskAll) << 23;
 	const u64 self_field = static_cast<u64>(GSDevice::kGSTileGpuSelfMaskAll) << 32;
@@ -118,7 +118,7 @@ TEST(TileGpuSourceRoad, RoadMaskFitsThePipelineKeyWithoutCollision)
 	const u64 above = texel_field | self_field | declares_field | reads_field;
 	EXPECT_EQ(above & kRoadField, 0u) << "a pipeline key field above the road mask overlaps it";
 	EXPECT_EQ(above & below, 0u) << "the pipeline key's fields overlap each other";
-	EXPECT_EQ(GSDevice::kGSTileGpuTexelMaskAll, 0x3Fu); // six arms, so the field ends at bit 28
+	EXPECT_EQ(GSDevice::kGSTileGpuTexelMaskAll, 0x7Fu); // seven arms, so the field ends at bit 29
 	EXPECT_EQ(GSDevice::kGSTileGpuSelfMaskAll, 0x7u); // three uses, so the field ends at bit 34
 }
 

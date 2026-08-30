@@ -2666,15 +2666,26 @@ public:
 	/// Two of the eighteen corpus dumps ever gather a palette, and this bit is what keeps the other
 	/// sixteen from carrying the machinery — which is the commit that crossed the a650 cliff.
 	static constexpr u32 kGSTileGpuTexelPalGather = 1u << 5;
+	/// The same statement for a palette gathered off a SIXTEEN-BIT owner, which is a different entry
+	/// order and a different fetch: a 16-bit surface stores two cells per guest word, so a palette
+	/// word is the pack of two texels eight apart in x rather than one texel read.
+	///
+	/// Its OWN arm rather than a widening of the one above, and the reason is the a650 budget: the two
+	/// orders are alternatives, never a union. A pass gathering a 16-bit palette compiles this arm
+	/// INSTEAD of the 32-bit one, so the widest paletted variant carries one gather's arithmetic
+	/// either way. A shared bit would have made it carry both.
+	static constexpr u32 kGSTileGpuTexelPalGather16 = 1u << 6;
 	/// Just the address geometries: the population "does this pass mix formats" is asked about.
 	static constexpr u32 kGSTileGpuTexelGeometryMask = kGSTileGpuTexelDirect32 | kGSTileGpuTexelIndex8 |
 													   kGSTileGpuTexelIndex4 | kGSTileGpuTexelIndexHi |
 													   kGSTileGpuTexelDirect16;
-	/// The paletted geometries: the ones the gather arm means anything for.
+	/// The paletted geometries: the ones the gather arms mean anything for.
 	static constexpr u32 kGSTileGpuTexelPalettedMask =
 		kGSTileGpuTexelIndex8 | kGSTileGpuTexelIndex4 | kGSTileGpuTexelIndexHi;
-	static constexpr u32 kGSTileGpuTexelMaskAll = kGSTileGpuTexelGeometryMask | kGSTileGpuTexelPalGather;
-	static constexpr u32 kGSTileGpuTexelArms = 6;
+	/// Both gather orders. Never both set on one pass -- see the note on the 16-bit arm.
+	static constexpr u32 kGSTileGpuTexelPalGatherMask = kGSTileGpuTexelPalGather | kGSTileGpuTexelPalGather16;
+	static constexpr u32 kGSTileGpuTexelMaskAll = kGSTileGpuTexelGeometryMask | kGSTileGpuTexelPalGatherMask;
+	static constexpr u32 kGSTileGpuTexelArms = 7;
 
 	/// What the in-pass destination read is FOR, as a bit per use. A pass's self_mask is the OR over
 	/// the draws it admitted to the read, and it selects the fragment variant beside road_mask and
@@ -3002,21 +3013,28 @@ public:
 		/// Empty leaves every run on its PASS's union masks, which is exactly what the executor did
 		/// before this stream existed.
 		std::span<const u32> variant_keys;
-		/// The variant's packing: road mask at 0 (3 bits), texel-arm mask at 3 (6), self-read mask at
-		/// 9 (3), the 16-bit quantise at 12, and the frozen per-draw GS state
-		/// (GSDevice::GSTileGpuFragmentSpec) from 13 up — its presence flag at 13 and its ten fields
-		/// in bits 14-30; bit 31 is unused. One packer so the renderer, the executor and the run key
-		/// cannot disagree about which bit is which.
+		/// The variant's packing: road mask at 0 (3 bits), texel-arm mask at 3 (7), self-read mask at
+		/// 10 (3), the 16-bit quantise at 13, and the frozen per-draw GS state
+		/// (GSDevice::GSTileGpuFragmentSpec) from 14 up — its presence flag at 14 and its ten fields
+		/// in bits 15-31. One packer so the renderer, the executor and the run key cannot disagree
+		/// about which bit is which.
+		///
+		/// ⚠️ THE WORD IS NOW FULL. The seventh texel arm spent the spare bit the layout carried at 31;
+		/// everything above the arms moved up by one when it landed. An eighth arm, a fourth
+		/// destination-read use or an eleventh frozen field has nowhere to go and needs a wider key or
+		/// a narrower field, not a shuffle. Nothing persists this key -- the Vulkan module and pipeline
+		/// caches are keyed by the shader SOURCE TEXT and by the driver's own pipeline blob, so a
+		/// repack costs nothing on disk and nothing across sessions.
 		///
 		/// The alpha test's field is `atst - 2`, not `atst`, so "no test" plus the six comparisons
 		/// that can reach the fragment stage fit three bits instead of four. NEVER and ALWAYS are
 		/// folded into the write flags by the renderer and never arrive here.
-		static constexpr u32 kVariantSpecValid = 1u << 13;
-		static constexpr u32 kVariantSpecMask = 0x7FFFE000u; ///< bits 13-30: the whole frozen-state half
+		static constexpr u32 kVariantSpecValid = 1u << 14;
+		static constexpr u32 kVariantSpecMask = 0xFFFFC000u; ///< bits 14-31: the whole frozen-state half
 		static constexpr u32 PackVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise)
 		{
 			return (road_mask & kGSTileGpuRoadMaskAll) | ((texel_mask & kGSTileGpuTexelMaskAll) << 3) |
-				   ((self_mask & kGSTileGpuSelfMaskAll) << 9) | (quantise ? (1u << 12) : 0u);
+			       ((self_mask & kGSTileGpuSelfMaskAll) << 10) | (quantise ? (1u << 13) : 0u);
 		}
 		static constexpr u32 PackVariantKey(
 			u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSTileGpuFragmentSpec& spec)
@@ -3024,33 +3042,33 @@ public:
 			const u32 key = PackVariantKey(road_mask, texel_mask, self_mask, quantise);
 			if (!spec.valid)
 				return key;
-			return key | kVariantSpecValid | ((spec.fst & 1u) << 14) | ((spec.ltf & 1u) << 15) |
-				   ((spec.tfx & 3u) << 16) | ((spec.tcc & 1u) << 18) |
-				   (((spec.atst != 0) ? (spec.atst - 2u) : 0u) << 19) | ((spec.fge & 1u) << 22) |
-				   ((spec.date & 3u) << 23) | ((spec.wms & 3u) << 25) | ((spec.wmt & 3u) << 27) |
-				   ((spec.texa & 3u) << 29);
+			return key | kVariantSpecValid | ((spec.fst & 1u) << 15) | ((spec.ltf & 1u) << 16) |
+			       ((spec.tfx & 3u) << 17) | ((spec.tcc & 1u) << 19) |
+			       (((spec.atst != 0) ? (spec.atst - 2u) : 0u) << 20) | ((spec.fge & 1u) << 23) |
+			       ((spec.date & 3u) << 24) | ((spec.wms & 3u) << 26) | ((spec.wmt & 3u) << 28) |
+			       ((spec.texa & 3u) << 30);
 		}
 		static constexpr u32 VariantRoadMask(u32 key) { return key & kGSTileGpuRoadMaskAll; }
 		static constexpr u32 VariantTexelMask(u32 key) { return (key >> 3) & kGSTileGpuTexelMaskAll; }
-		static constexpr u32 VariantSelfMask(u32 key) { return (key >> 9) & kGSTileGpuSelfMaskAll; }
-		static constexpr bool VariantQuantises(u32 key) { return (key & (1u << 12)) != 0; }
+		static constexpr u32 VariantSelfMask(u32 key) { return (key >> 10) & kGSTileGpuSelfMaskAll; }
+		static constexpr bool VariantQuantises(u32 key) { return (key & (1u << 13)) != 0; }
 		static constexpr GSTileGpuFragmentSpec VariantSpec(u32 key)
 		{
 			GSTileGpuFragmentSpec spec;
 			if ((key & kVariantSpecValid) == 0)
 				return spec;
 			spec.valid = true;
-			spec.fst = static_cast<u8>((key >> 14) & 1u);
-			spec.ltf = static_cast<u8>((key >> 15) & 1u);
-			spec.tfx = static_cast<u8>((key >> 16) & 3u);
-			spec.tcc = static_cast<u8>((key >> 18) & 1u);
-			const u32 at = (key >> 19) & 7u;
+			spec.fst = static_cast<u8>((key >> 15) & 1u);
+			spec.ltf = static_cast<u8>((key >> 16) & 1u);
+			spec.tfx = static_cast<u8>((key >> 17) & 3u);
+			spec.tcc = static_cast<u8>((key >> 19) & 1u);
+			const u32 at = (key >> 20) & 7u;
 			spec.atst = static_cast<u8>((at != 0) ? (at + 2u) : 0u);
-			spec.fge = static_cast<u8>((key >> 22) & 1u);
-			spec.date = static_cast<u8>((key >> 23) & 3u);
-			spec.wms = static_cast<u8>((key >> 25) & 3u);
-			spec.wmt = static_cast<u8>((key >> 27) & 3u);
-			spec.texa = static_cast<u8>((key >> 29) & 3u);
+			spec.fge = static_cast<u8>((key >> 23) & 1u);
+			spec.date = static_cast<u8>((key >> 24) & 3u);
+			spec.wms = static_cast<u8>((key >> 26) & 3u);
+			spec.wmt = static_cast<u8>((key >> 28) & 3u);
+			spec.texa = static_cast<u8>((key >> 30) & 3u);
 			return spec;
 		}
 

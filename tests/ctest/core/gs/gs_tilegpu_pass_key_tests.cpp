@@ -1292,10 +1292,11 @@ TEST(TileGpuVariantKey, TheFrozenStateRoundTripsAndNoneCollides)
 	std::sort(keys.begin(), keys.end());
 	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 	EXPECT_EQ(keys.size(), total);
-	// The spec half lives entirely in bits 13-30 -- bit 31 stays free for the next axis, and
-	// nothing below 13 moves.
+	// The spec half lives entirely in bits 14-31 and nothing below 14 moves. The word is FULL now:
+	// the seventh texel arm spent the bit that used to sit free at 31, so the next axis needs a wider
+	// key rather than another shuffle.
 	for (const u32 key : keys)
-		ASSERT_EQ(key & ~(0x1FFFu | Plan::kVariantSpecMask), 0u);
+		ASSERT_EQ(key & ~(0x3FFFu | Plan::kVariantSpecMask), 0u);
 }
 
 TEST(TileGpuVariantKey, AnUnspecializedKeyIsTheKeyThatShippedBefore)

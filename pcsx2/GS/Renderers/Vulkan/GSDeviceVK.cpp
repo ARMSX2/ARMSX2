@@ -7042,10 +7042,11 @@ u32 GSDeviceVK::TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask)
 	if ((road_mask & GSDevice::kGSTileGpuRoadByte) == 0)
 		return 0;
 	u32 mask = plan_texel_mask & GSDevice::kGSTileGpuTexelMaskAll;
-	// The palette-order arm means nothing without a paletted geometry to fetch through, and leaving it
-	// set would make two masks that compile the identical program into two modules.
+	// The palette-order arms mean nothing without a paletted geometry to fetch through, and leaving one
+	// set would make two masks that compile the identical program into two modules. Both of them: the
+	// 32-bit order and the 16-bit one are alternatives, and neither survives with no palette to order.
 	if ((mask & GSDevice::kGSTileGpuTexelPalettedMask) == 0)
-		mask &= ~GSDevice::kGSTileGpuTexelPalGather;
+		mask &= ~GSDevice::kGSTileGpuTexelPalGatherMask;
 	pxAssertMsg((mask & GSDevice::kGSTileGpuTexelGeometryMask) != 0,
 		"TileGpu pass takes the byte road but names no texel arm");
 	return ((mask & GSDevice::kGSTileGpuTexelGeometryMask) != 0) ? mask : GSDevice::kGSTileGpuTexelMaskAll;
@@ -7420,12 +7421,12 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	// fixed-function blend, so a draw whose equation the shader owns cannot key two pipelines.
 	const u32 dualsrc_road = blend ? (blend_key & GSTileGpuPassPlan::kDualSrcRoadMask) : 0u;
 	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask, 20-22 the road mask,
-	// 23-28 the texel-arm mask, 32-34 the pass's self-read mask, 35 declares, 36 reads, 37 quantise,
+	// 23-29 the texel-arm mask, 32-34 the pass's self-read mask, 35 declares, 36 reads, 37 quantise,
 	// 38-55 the run's frozen per-draw GS state (the plan key's spec half, shifted down to 38),
 	// 56-57 the As factor's road.
 	const u64 spec_bits = static_cast<u64>((GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
 											   GSTileGpuPassPlan::kVariantSpecMask) >>
-										   13);
+										   14);
 	const u64 key = static_cast<u64>(topology) | (static_cast<u64>(depth_mode) << 2) |
 					(static_cast<u64>(blend ? (blend_key & 0x7Fu) : 0x80u) << 8) |
 					(static_cast<u64>(color_write_mask) << 16) | (static_cast<u64>(road_mask) << 20) |

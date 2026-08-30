@@ -320,6 +320,20 @@
 #define TILEGPU_FMT_PALGATHER 1
 #endif
 
+// The seventh arm is the same statement for a palette gathered off a SIXTEEN-BIT owner. That surface
+// stores two cells to a guest word, so a palette word is not a texel at all -- it is the pack of the
+// texel at (x, y) and the one at (x + 8, y), which is where columnTable16 puts the two halves of one
+// word. Two loads and two packs per entry instead of one load.
+//
+// Its OWN arm rather than a wider PALGATHER, and that is a budget decision rather than a taxonomy
+// one: the two entry orders are ALTERNATIVES. A pass whose gathered palettes come off a 16-bit owner
+// compiles this and not modes 1-3; a pass whose palettes come off a 32-bit one compiles those and not
+// this. Sharing a bit would have made the widest paletted variant carry both, which is the shape the
+// size gate exists to refuse.
+#ifndef TILEGPU_FMT_PALGATHER16
+#define TILEGPU_FMT_PALGATHER16 1
+#endif
+
 // The gates the body actually uses. A road compiles in only where the device can serve it at all, so
 // a stray mask bit can never resurrect a path TILEGPU_TEX or TILEGPU_TEX_TARGETS took out; and with
 // no road at all (an untextured pass) the whole texture block goes, which is the smallest variant.
@@ -344,6 +358,9 @@
 // texel is a halfword with its own TEXA rule).
 #define TILEGPU_BYTE_PAL (TILEGPU_BYTE_IDX8 || TILEGPU_BYTE_IDX4 || TILEGPU_BYTE_IDXHI)
 #define TILEGPU_BYTE_PALGATHER (TILEGPU_BYTE_PAL && TILEGPU_FMT_PALGATHER)
+#define TILEGPU_BYTE_PALGATHER16 (TILEGPU_BYTE_PAL && TILEGPU_FMT_PALGATHER16)
+// Either gather order: what the shared entry forms and the palette-fetch branch exist for.
+#define TILEGPU_BYTE_PALGATHER_ANY (TILEGPU_BYTE_PALGATHER || TILEGPU_BYTE_PALGATHER16)
 #define TILEGPU_BYTE_W32 (TILEGPU_BYTE_D32 || TILEGPU_BYTE_IDXHI)
 #define TILEGPU_BYTE_UNPACK (TILEGPU_BYTE_D32 || TILEGPU_BYTE_PAL)
 
@@ -771,7 +788,7 @@ uint tilegpu_index_hi(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint fmt)
 }
 #endif // TILEGPU_BYTE_IDXHI
 
-#if TILEGPU_BYTE_PALGATHER
+#if TILEGPU_BYTE_PALGATHER_ANY
 // The CLUT gather's consumer half. A palette whose words were rendered by a native draw is not in
 // the CPU's CLUT RAM at all; the executor copies its BLOCKS out of the owning target into this
 // draw's reserved run of the palette stream, which lands them in texel row-major order rather than
@@ -796,7 +813,25 @@ uint tile_clut4_word(uint e)
 {
 	return XB(e, 0u, TILE_SWZ_CLUT4_0) ^ XB(e, 1u, TILE_SWZ_CLUT4_1) ^ XB(e, 2u, TILE_SWZ_CLUT4_2) ^ XB(e, 3u, TILE_SWZ_CLUT4_3);
 }
-#endif // TILEGPU_BYTE_PALGATHER
+#endif // TILEGPU_BYTE_PALGATHER_ANY
+
+#if TILEGPU_BYTE_PALGATHER16
+// A 32-bit RGBA word packed to the 16-bit colour formats' A1B5G5R5: the top five bits of each colour
+// byte and the MSB of alpha. GSLocalMemory::WriteFrame16's arithmetic, and therefore the byte the
+// readback road would have stored for this pixel.
+//
+// A TWIN of tilegpu_writeback.glsl's tilegpu_pack5551 and NOT the same function: that one takes the
+// float vec4 a fragment produces and rounds; this one takes the integer word an image-to-buffer copy
+// produced, which has already been rounded once. Rounding again would move a cell by a bit. The CPU
+// spelling of this one is gsTilePack5551 in GSTileTypes.h, which the suite pins against
+// GSLocalMemory itself.
+uint tilegpu_pack5551_word(uint c)
+{
+	const uint rb = c & 0x00F800F8u;
+	const uint ga = c & 0x8000F800u;
+	return ((ga >> 16u) | (rb >> 9u) | (ga >> 6u) | (rb >> 3u)) & 0xFFFFu;
+}
+#endif // TILEGPU_BYTE_PALGATHER16
 
 #if TILEGPU_BYTE_PAL
 // The palette word for `index`, whichever road put the words in the stream. pal_mode is per draw and
@@ -805,10 +840,47 @@ uint tile_clut4_word(uint e)
 // which is the same statement one preprocessor level up.
 uint tilegpu_palette_word(StateRow sr, uint index)
 {
-#if TILEGPU_BYTE_PALGATHER
+#if TILEGPU_BYTE_PALGATHER_ANY
 	if (sr.pal_mode != 0u)
 	{
 		const uint e = sr.pal_bias + index;
+#if TILEGPU_BYTE_PALGATHER16
+		// Modes 4 and 5, a palette gathered off a SIXTEEN-BIT owner. The copied image is a tile S
+		// words per row -- 32 for a 256-entry palette, 16 for a 16-entry one -- and a palette word is
+		// TWO cells of it: the low one at `off` and the high one always at `off + 8`, because the two
+		// halves of a guest word are the texels at x and x + 8.
+		//
+		// The offset is ClutEntryToCt16Offset, spelled with the multiply folded into bit positions.
+		// With b = w >> 6 and (cx, cy) = (c & 7, c >> 3):
+		//
+		//     off = (((b & 1) * 8) + cy) * S + ((b >> 1) & 1) * 16 + cx
+		//
+		// and the pieces land in disjoint ranges -- cx at 0-2, the +8 twin at bit 3, the block's x bit
+		// at 4, cy at log2(S)..log2(S)+2, the block's y bit at 3 + log2(S) -- so every add is an OR.
+		//
+		// ⚠️ The block bits go the OPPOSITE way round from mode 3 one screen down: blockTable16 and
+		// blockTable16S put block bit 0 on Y and bit 1 on X, where blockTable32 puts bit 0 on X. That
+		// is the whole difference between a correct palette and a permutation of itself, and it is why
+		// this is transcribed from the CPU spec rather than from the arm beside it.
+		//
+		// The y shift is pal_shift + 1 rather than a field of its own: pal_shift is log2(S) - 4 and
+		// this wants log2(S) - 3, so a state row word is saved for an add the compiler folds into the
+		// shift. pal_mul is S/8 - 1 unchanged, exactly as mode 3 reads it.
+		//
+		// Two modes rather than one because the MODE carries the entry count here, as it does for
+		// modes 1 and 2: a 256-entry palette reads the eight-bit entry form at stride 32, a 16-entry
+		// one the four-bit form at stride 16, and the two forms are different tables.
+		if (sr.pal_mode >= 4u)
+		{
+			const uint w16 = (sr.pal_mode == 5u) ? tile_clut4_word(e) : tile_clut8_word(e);
+			const uint c16 = tile_ic32(w16 & 63u);
+			const uint off16 = ((w16 & 0x40u) << (sr.pal_shift + 1u)) | (c16 + sr.pal_mul * (c16 & 0x38u)) |
+			                   ((w16 & 0x80u) >> 3u);
+			const uint base16 = pal_base + sr.pal_offset + off16;
+			return tilegpu_pack5551_word(vram_words[base16]) | (tilegpu_pack5551_word(vram_words[base16 + 8u]) << 16u);
+		}
+#endif
+#if TILEGPU_BYTE_PALGATHER
 #if TILEGPU_CLUT_MERGE
 		// Mode 3, the MERGED copy: the palette's four blocks came out of the owner as ONE region, so
 		// the words are a tile `S` wide and the word's block and its position inside that block
@@ -865,8 +937,9 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 		const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
 		return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
 #endif
+#endif // TILEGPU_BYTE_PALGATHER
 	}
-#endif
+#endif // TILEGPU_BYTE_PALGATHER_ANY
 	return vram_words[pal_base + sr.pal_offset + index];
 }
 #endif // TILEGPU_BYTE_PAL

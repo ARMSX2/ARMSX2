@@ -215,15 +215,43 @@ namespace
 		return n;
 	}
 
-	/// The masks a planner can actually produce: at least one geometry, and the palette-order arm
-	/// only where a paletted geometry is present (the device normalises it away otherwise, so a
-	/// module for it would never be compiled).
+	/// The masks a planner can actually produce: at least one geometry, a palette-order arm only where
+	/// a paletted geometry is present (the device normalises it away otherwise, so a module for it
+	/// would never be compiled), and never BOTH palette orders at once.
+	///
+	/// That last one is the design of the 16-bit arm rather than a shortcut through the enumeration. A
+	/// gathered palette's words come off either a 32-bit owner or a 16-bit one; the two entry orders
+	/// are alternatives, so a pass carries one arm or the other and the widest paletted variant pays
+	/// for one gather either way. The union is measured anyway, in TheMergedClutArmStaysUnderTheCliff,
+	/// precisely because it is the shape a renderer change could produce by accident.
 	bool Plannable(u32 texel_mask)
 	{
 		if ((texel_mask & GSDevice::kGSTileGpuTexelGeometryMask) == 0)
 			return false;
-		return (texel_mask & GSDevice::kGSTileGpuTexelPalGather) == 0 ||
+		if ((texel_mask & GSDevice::kGSTileGpuTexelPalGatherMask) == GSDevice::kGSTileGpuTexelPalGatherMask)
+			return false;
+		return (texel_mask & GSDevice::kGSTileGpuTexelPalGatherMask) == 0 ||
 		       (texel_mask & GSDevice::kGSTileGpuTexelPalettedMask) != 0;
+	}
+
+	/// Which of the plannable masks the two CEILINGS below hold, as against the ones that are compiled
+	/// and reported only. Two exclusions, for two different reasons:
+	///
+	///  - a mask spanning two address GEOMETRIES carries both, and which of those a title produces is
+	///    a fact about the title (1.6% of the corpus's byte-road passes); pinning a ceiling on it
+	///    would be pinning the wrong number. That exclusion is as old as this file.
+	///  - the SIXTEEN-BIT gather arm, because nothing sets its bit. It is compiled and reported on the
+	///    table above -- and on the two widest three-road unions it is over, see
+	///    TheMergedClutArmStaysUnderTheCliff -- but no pass can plan it, so it is not part of the
+	///    population the shipping ceilings are denominated in.
+	///
+	/// ⚠️ The first renderer that sets kGSTileGpuTexelPalGather16 deletes the second clause in the
+	/// SAME commit, and this gate then has to pass with it deleted. That is the whole point of the
+	/// clause being here rather than the arm being left out of the enumeration: the number is on the
+	/// table above, and the day it starts mattering is a line of source away.
+	bool Gated(u32 texel_mask)
+	{
+		return GeometryCount(texel_mask) <= 1 && (texel_mask & GSDevice::kGSTileGpuTexelPalGather16) == 0;
 	}
 } // namespace
 
@@ -250,7 +278,8 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	                             GSTileGpuShaderVariant::DeviceDefines(true, true, true);
 
 	// The plannable space: a road mask without the byte bit names no arm, and one with it names at
-	// least one geometry (plus, optionally, the palette-order arm). 4 + 4 * 59 = 240 programs.
+	// least one geometry (plus, optionally, ONE of the two palette-order arms). 4 + 4 * 87 = 352
+	// programs.
 	//
 	// Crossed with what a pass reads its own destination FOR: zero (the overwhelming majority, and
 	// the program every pass compiled before that road existed), each use alone, and the full set.
@@ -301,7 +330,7 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 		ASSERT_NE(v.words, 0u) << "variant "
 							   << GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self, v.quantise)
 							   << " failed to compile: " << error;
-		if (GeometryCount(v.texel) > 1)
+		if (!Gated(v.texel))
 			continue;
 		if (v.self == 0 && v.words > worst_single)
 		{
@@ -328,19 +357,22 @@ TEST(GSTileGpuShaderBudget, EveryPlannableVariantFitsTheAdreno650Budget)
 	std::printf("  destination-read arms: %u words = %u units (the margin is spent there, on purpose)\n",
 		kSelfReadWordCeiling, kSelfReadCliffUnits);
 	std::printf("  %-66s %8s %7s %s\n", "variant", "words", "units", "verdict");
-	u32 over_cliff = 0;
+	u32 over_cliff = 0, over_cliff_gated = 0;
 	for (const Variant& v : variants)
 	{
 		const u32 units = PredictedUnits(v.words);
-		const bool gated = GeometryCount(v.texel) <= 1;
 		const char* verdict = (units > kCliffUnits) ? "OVER THE CLIFF" : (v.words > kWordCeiling ? "over budget" : "ok");
+		const char* why = Gated(v.texel)               ? "" :
+		                  (GeometryCount(v.texel) > 1) ? "  (mixed geometries)" :
+		                                                 "  (16-bit gather: nothing plans it)";
 		over_cliff += (units > kCliffUnits) ? 1 : 0;
+		over_cliff_gated += (units > kCliffUnits && Gated(v.texel)) ? 1 : 0;
 		std::printf("  %-66s %8u %7u %s%s\n",
 			GSTileGpuShaderVariant::VariantName(v.road, v.texel, v.self, v.quantise).c_str(), v.words, units, verdict,
-			gated ? "" : "  (mixed geometries)");
+			why);
 	}
-	std::printf("  %u of %zu variants predicted past the %u-unit cliff; all of them mix geometries.\n", over_cliff,
-		variants.size(), kCliffUnits);
+	std::printf("  %u of %zu variants predicted past the %u-unit cliff, %u of them in the gated population.\n",
+		over_cliff, variants.size(), kCliffUnits, over_cliff_gated);
 
 	// The gate. A pass that decodes ONE texel arm is 98.4% of the corpus's byte-road passes, and every
 	// pass that takes no byte road at all is trivially smaller -- so this is the population the
@@ -413,6 +445,13 @@ TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 	// the gathered-palette arm, the 16-bit quantise -- with and without the destination read.
 	const u32 road = GSDevice::kGSTileGpuRoadByte | GSDevice::kGSTileGpuRoadTarget | GSDevice::kGSTileGpuRoadSource;
 	const u32 texel = GSDevice::kGSTileGpuTexelIndex4 | GSDevice::kGSTileGpuTexelPalGather;
+	// ...and the same variant carrying the SIXTEEN-BIT gather order instead, which is the fourth
+	// shape: a pass gathering off a 16-bit owner compiles this arm and not modes 1-3. The union of
+	// both orders is measured too, as information -- it is not a shape any pass plans (Plannable
+	// refuses it above), and it is here so the cost of ever letting one through is a number rather
+	// than a guess.
+	const u32 texel16 = GSDevice::kGSTileGpuTexelIndex4 | GSDevice::kGSTileGpuTexelPalGather16;
+	const u32 texel_both = texel | GSDevice::kGSTileGpuTexelPalGather16;
 	const u32 selves[] = {0u, GSDevice::kGSTileGpuSelfMaskAll};
 
 	const auto words_for = [&](bool merge, bool pages, const std::string& defines, std::string& error) {
@@ -460,6 +499,70 @@ TEST(GSTileGpuShaderBudget, TheMergedClutArmStaysUnderTheCliff)
 			<< PredictedUnits(pg_words) << " a650 units), past the " << kCliffUnits
 			<< "-unit instruction-size cliff. This is the tightest program in the tree -- see the note above -- and "
 			   "the answer is a cheaper spelling, not a bigger number.";
+
+		// The FOURTH shape: the same variant with the 16-bit gather order in place of the 32-bit one.
+		// It is not a merge lever -- it is a texel arm, so it rides the variant defines rather than the
+		// device ones, and the two merge levers are OFF underneath it exactly as they are for any pass
+		// that does not merge squares. That is what makes this the number the road's own decision
+		// rests on: does a pass gathering a 16-bit palette fit, standing alone, on its own axis.
+		const std::string variant16 = GSTileGpuShaderVariant::VariantName(road, texel16, self, true);
+		const std::string defines16 = GSTileGpuShaderVariant::VariantDefines(road, texel16, self, true);
+		const u32 g16_words = words_for(false, false, defines16, error);
+		ASSERT_NE(g16_words, 0u) << variant16 << " failed to compile: " << error;
+
+		// ...and, for information only, the union of both gather orders. No pass plans it.
+		const std::string defines_both = GSTileGpuShaderVariant::VariantDefines(road, texel_both, self, true);
+		const u32 both_words = words_for(false, false, defines_both, error);
+		ASSERT_NE(both_words, 0u) << "the two-gather union failed to compile: " << error;
+
+		std::printf("  %-58s %6u palgather16 -> %6u both orders  (%u -> %u a650 units)\n", variant16.c_str(),
+			g16_words, both_words, PredictedUnits(g16_words), PredictedUnits(both_words));
+
+		// THE ANSWER, measured rather than argued, and asserted in BOTH directions so it cannot rot
+		// into a comment nobody re-reads.
+		//
+		// The arm costs a FLAT 920-924 SPIR-V words -- about eight a650 units -- on every paletted
+		// variant, whatever else that variant carries. Three times what the square merge costs, and
+		// for a plain reason: it is two vram_words loads, two packs and a wider offset per tap, inlined
+		// at four texels of a bilinear sample. The cost does not vary with the road mask, so the whole
+		// question is which variants had eight units of headroom.
+		//
+		// Most did. Every variant the corpus actually plans fits with room: byte[IDX8+PALGATHER16] q16
+		// is 104 units against 96 with the 32-bit order, byte[IDX4+PALGATHER16] q16 is 108, and the
+		// widest the corpus plans -- byte+source[IDX8] -- is 109 against 101. Spider-Man 3, the one
+		// title this arm exists for, draws through exactly those.
+		//
+		// Two do not, and both are three-road unions no dump in the corpus plans:
+		// byte+target+source[IDX4+PALGATHER16] q16 lands EXACTLY on the 123-unit cliff with nothing
+		// left, and its destination-read twin lands five units past it. A ceiling that only holds for
+		// the variants eighteen dumps happen to produce is not a ceiling, so those two are the answer
+		// to "does the fragment arm fit", and the answer is no.
+		//
+		// The budget number does not move for it -- the cliff is hardware -- and the finer-axis answer
+		// is already spent, because this arm IS its own axis, measured alone with both merge levers
+		// off. What is left is a choice for whoever ships the road: refuse the 16-bit gather on a pass
+		// that unions all three texel roads (it would never fire on the title the lever is for), or
+		// take the entry-order compute gather, which feeds pal_mode 0 and costs the fragment stage
+		// nothing at all. The second is a new synchronisation surface, and this campaign has already
+		// paid once for one of those.
+		//
+		// And the union of the two gather orders is never a shape: 145 and 151 units. Plannable()
+		// refuses it above; this is what that refusal is worth.
+		if (self == 0)
+		{
+			EXPECT_LE(PredictedUnits(g16_words), kCliffUnits)
+				<< variant16 << " at " << g16_words << " words is past the " << kCliffUnits
+				<< "-unit cliff even without the destination read. It was exactly AT it when the arm landed, with "
+				   "nothing to spare, so anything added to tilegpu_palette_word since then is what moved it.";
+		}
+		else
+		{
+			EXPECT_GT(PredictedUnits(g16_words), kCliffUnits)
+				<< variant16 << " at " << g16_words << " words now FITS under the " << kCliffUnits
+				<< "-unit cliff, where it was 128 units when it was measured. That is good news and this expectation "
+				   "is what makes you read this: re-take the number, put it in the dossier, and the fragment road "
+				   "(design stage 3a) is open again -- delete this branch when you do.";
+		}
 	}
 }
 

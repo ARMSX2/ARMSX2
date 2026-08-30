@@ -815,16 +815,16 @@ private:
 	/// no arms, and a byte road that named none takes the whole set — a superset is slow, a subset is
 	/// wrong, and a plan that says "byte road, no arms" is a bug the shader must not render around.
 	static u32 TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask);
-	/// The normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-8,
-	/// what the pass reads its own destination for in bits 9-11.
-	/// ...and whether its frame format quantises, at bit 12, and the run's frozen per-draw GS state
-	/// in bits 13-30 -- the SAME bit positions GSTileGpuPassPlan::PackVariantKey puts them in, so the
+	/// The normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-9,
+	/// what the pass reads its own destination for in bits 10-12.
+	/// ...and whether its frame format quantises, at bit 13, and the run's frozen per-draw GS state
+	/// in bits 14-31 -- the SAME bit positions GSTileGpuPassPlan::PackVariantKey puts them in, so the
 	/// two keys cannot drift apart. The masks arrive normalised; the spec half does not need it.
 	static constexpr u32 TileGpuVariantKey(
 		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec)
 	{
-		return road_mask | (texel_mask << 3) | (self_mask << 9) | (quantise ? (1u << 12) : 0u) |
-			   (GSDevice::GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
+		return road_mask | (texel_mask << 3) | (self_mask << 10) | (quantise ? (1u << 13) : 0u) |
+		       (GSDevice::GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
 				   GSDevice::GSTileGpuPassPlan::kVariantSpecMask);
 	}
 	VkShaderModule GetTileGpuFragmentShader(
