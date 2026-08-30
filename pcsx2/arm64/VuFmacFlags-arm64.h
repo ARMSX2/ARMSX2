@@ -248,7 +248,12 @@ __fi static void armEmitVuGuardMask(const a64::VRegister& outA, const a64::VRegi
 // 33554432 rows of the four-significand mul.s sweep where the console is low on
 // 8299538 -- a worse answer than the plain FMUL it would replace.
 
-// ft's half, into `dst`. `tmp` is a second scratch. Neither may be `b`.
+// Builds the ft half of the decrement condition into `dst`. The result is a
+// bit pattern, not an all-ones lane mask: the caller combines it with the
+// exactness mask using Cmtst, which tests for any set bit, so there is no need
+// to widen it here.
+//
+// `tmp` is a second scratch. Neither `dst` nor `tmp` may be `b`.
 __fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
 	const a64::VRegister& b, const a64::VRegister& tmp)
 {
@@ -258,22 +263,25 @@ __fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
 	// term b15 & ~(b14 & b13), then ^ b11, which wants an XOR against a shifted
 	// operand; NEON has no such form, so the same bit comes out of
 	// (b ^ (b << 4)) ^ (b13 & b14 & b15).
-	armAsm->Shl(dst.V4S(), b.V4S(), 1);
-	armAsm->And(dst.V16B(), dst.V16B(), b.V16B());
-	armAsm->Shl(dst.V4S(), dst.V4S(), 1);
-	armAsm->And(dst.V16B(), dst.V16B(), b.V16B()); // bit 15 = b13 & b14 & b15
+	armAsm->Shl(tmp.V4S(), b.V4S(), 1);
+	armAsm->And(tmp.V16B(), tmp.V16B(), b.V16B());
+	armAsm->Shl(tmp.V4S(), tmp.V4S(), 1);
+	armAsm->And(tmp.V16B(), tmp.V16B(), b.V16B()); // bit 15 = b13 & b14 & b15
 
-	armAsm->Shl(tmp.V4S(), b.V4S(), 4);
-	armAsm->Eor(tmp.V16B(), tmp.V16B(), b.V16B()); // bit 15 = b15 ^ b11
+	armAsm->Shl(dst.V4S(), b.V4S(), 4);
+	armAsm->Eor(dst.V16B(), dst.V16B(), b.V16B()); // bit 15 = b15 ^ b11
 	armAsm->Eor(tmp.V16B(), tmp.V16B(), dst.V16B());
-	armAsm->Shl(tmp.V4S(), tmp.V4S(), 16);
-	armAsm->Ushr(tmp.V4S(), tmp.V4S(), 31); // the boundary term, as 0 or 1
+	armAsm->Shl(tmp.V4S(), tmp.V4S(), 16); // the boundary term, at bit 31
 
 	armAsm->Movi(dst.V4S(), 0x02, a64::LSL, 8);
 	armAsm->Orr(dst.V4S(), 0xAA); // mantissa bits 1,3,5,7,9
 	armAsm->And(dst.V16B(), dst.V16B(), b.V16B());
-	armAsm->Orr(dst.V16B(), dst.V16B(), tmp.V16B());
-	armAsm->Cmtst(dst.V4S(), dst.V4S(), dst.V4S());
+
+	// SRI shifts right and inserts, leaving the top `shift` bits of the
+	// destination unchanged. The boundary term is at bit 31, so a shift of 31
+	// writes it into bit 0 and leaves the Booth bits at 1..9 alone. That
+	// replaces a mask and an OR.
+	armAsm->Sri(dst.V4S(), tmp.V4S(), 31);
 }
 
 // `dst = a * b`, decremented where the array comes up short. `b` is the recoded
@@ -287,9 +295,16 @@ __fi static void armEmitVuMulDeficitPredicate(const a64::VRegister& dst,
 // `scalar` is microVU's single-lane form. Only the two multiplies narrow: a
 // scalar FMUL zeroes the lanes above it, so the mask the rest of this builds
 // comes out zero there and adds nothing.
+//
+// `floorBlocked` is optional. When a caller passes a register, it is set to a
+// non-zero value if any lane satisfied the first two conditions but failed the
+// exponent test. Those are the lanes whose FMLS residue flushed to zero, so
+// the exactness test could not distinguish an exact product from a rounded
+// one. eeMulOneUlpLow recomputes the mantissa product and can, so a caller
+// that is able to call it should use this to select those lanes.
 __fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& t, const a64::VRegister& u,
-	bool scalar = false)
+	bool scalar = false, const a64::Register* floorBlocked = nullptr)
 {
 	for (const a64::VRegister& r : {t, u})
 		pxAssert(!r.Is(dst) && !r.Is(a) && !r.Is(b));
@@ -316,7 +331,7 @@ __fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRe
 	}
 	armAsm->Fmls(t.V4S(), a.V4S(), b.V4S()); // the rounding's exact error
 	armAsm->Fcmeq(t.V4S(), t.V4S(), 0.0);
-	armAsm->And(t.V16B(), t.V16B(), u.V16B());
+	armAsm->Cmtst(t.V4S(), t.V4S(), u.V4S()); // ft's half is bits, not a mask
 
 	if (aliased)
 		product(dst);
@@ -327,7 +342,22 @@ __fi static void armEmitVuDefectiveMul(const a64::VRegister& dst, const a64::VRe
 	armAsm->Shl(t.V4S(), t.V4S(), 1); // drop the sign
 	armAsm->Ushr(t.V4S(), t.V4S(), 24);
 	armAsm->Movi(u.V4S(), 48);
-	armAsm->Cmhs(t.V4S(), t.V4S(), u.V4S());
 
-	armAsm->Add(dst.V4S(), dst.V4S(), t.V4S());
+	if (!floorBlocked)
+	{
+		armAsm->Cmhs(t.V4S(), t.V4S(), u.V4S());
+		armAsm->Add(dst.V4S(), dst.V4S(), t.V4S());
+		return;
+	}
+
+	// The comparison writes u rather than t so that t keeps the exponents: at
+	// this point t holds the product's biased exponent on lanes that satisfied
+	// the first two conditions and zero elsewhere. Clearing the lanes u accepted
+	// therefore leaves a non-zero value only where the exponent test was what
+	// rejected the lane.
+	armAsm->Cmhs(u.V4S(), t.V4S(), u.V4S());
+	armAsm->Add(dst.V4S(), dst.V4S(), u.V4S());
+	armAsm->Bic(t.V16B(), t.V16B(), u.V16B());
+	armAsm->Umaxv(t.S(), t.V4S());
+	armAsm->Fmov(*floorBlocked, t.S());
 }

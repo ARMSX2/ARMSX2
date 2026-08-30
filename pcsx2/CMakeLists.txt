@@ -222,6 +222,7 @@ set(pcsx2Headers
 	VuEfuModel.h
 	VUflags.h
 	VUmicro.h
+	VuMulBand.h
 	VUops.h)
 
 # CDVD sources
