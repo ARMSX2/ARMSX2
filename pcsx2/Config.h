@@ -1871,31 +1871,60 @@ struct Pcsx2Config
 		// window, not a deletion -- keep the protection for pages the CPU is still reading, collect
 		// the ones it read once and left.
 		//
-		// THE DEFAULT IS 2, from the M2 age census (per drawn frame, the three of twenty-one corpus
-		// dumps whose counter is non-zero; the other eighteen never reach this clause):
+		// ⚠️ THE DEFAULT IS 65535 -- the mark never expires -- because EVERY FINITE WINDOW MEASURED
+		// WORSE THAN THE ROAD IT REPLACES, on every title that reaches the clause, monotonically in
+		// the knob. The key exists so the arms are one INI line apart, not because a window won.
+		//
+		// The un-poison and the CLUT pull road are fighting over THE SAME PAGES. Spider-Man 3's
+		// spill pages are its palette pages: 50 CLUT loads a frame cannot be gathered (the owner
+		// census's "multi/partial" bucket), and today they are free because the upload spill's drain
+		// hands the page's truth back on the side. Take the drain away and each of them pays its own
+		// round trip -- and the count then grows past 50, because leaving truth on the GPU splits
+		// more page-owner sets (multi/partial 50.00 -> 200.25) and shatters the batching (mid-frame
+		// flushes 109 -> 321). M2, Spider-Man 3, per drawn frame:
+		//
+		//   window   upload stalls   CLUT stalls   blocking waits   blocking ms   readbacks   p50 ms
+		//    65535           33.75         50.00            84.25         28.82         673    77.49
+		//        4           28.25        100.00           128.75         43.06        1029    99.01
+		//        2           17.25        200.25           218.00         68.59        1743   142.73
+		//        1            0.00        352.25           352.75        103.24        2821   171.95
+		//        0            0.00        352.25           352.75        105.78        2821   167.86
+		//
+		// Dirge of Cerberus and yugioh, the other two dumps that reach the clause, move the same way
+		// and smaller: total waits a frame 7.75 -> 9.62 -> 11.62 and 3.25 -> 4.00 -> 4.00 over the
+		// same windows. Window 0 reproduces the header's pre-bitmap dirge numbers to the digit
+		// (upload stalls 4.25 -> 0.88), which is the check that this arm really is the deletion.
+		//
+		// So the clause is not a poison to be lifted; it is economics that hold. THE ORDER IS
+		// INVERTED: the multi/partial CLUT population has to be served on the GPU FIRST, and only
+		// then is there anything to win here. Until then a window just moves the wait onto a road
+		// that charges more for it.
+		//
+		// What the census does say, and it stands: 100% of the pages a lifted clause frees are
+		// mergeable -- over the refused population the clause below this one would refuse 0.00 on
+		// Spider-Man 3 and yugioh and 0.12 on dirge. The merge is not what stops them. Refusals by
+		// the age of the mark that refused them, per drawn frame, at the monotone default:
 		//
 		//   refusals by mark age    this frame    1    2-3    4-15
 		//     spiderman3   33.75          0.00  5.50  11.00  17.25
 		//     dirge         4.25          1.12  0.50   1.00   1.62
 		//     yugioh        0.38          0.00  0.00   0.12   0.25
 		//
-		// Spider-Man 3 refuses on NOTHING it read this frame, so its whole population is historical
-		// and a window collects it: 84% at 2, 100% at 1. Dirge refuses on fresh marks -- 1.12 a frame
-		// read this frame and 0.50 read last frame -- and 2 is the smallest window that covers both
-		// the every-frame and the every-other-frame read. It costs Spider-Man 3 5.50 refusals a frame
-		// (16% of its prize) to keep the title this clause was built for whole.
-		//
-		// And 100% of what a lifted clause frees is actually mergeable: over the refused population
-		// the clause below it would refuse 0.00 on Spider-Man 3 and yugioh and 0.12 on dirge.
-		//
 		// ⚠️ The age census is bounded by the corpus: a dump is 8 model frames, so no mark can be
-		// older than 7 and the "older than 15" bucket cannot fire. A real session's marks are older,
-		// which moves the answer towards a SMALLER window, not a larger one.
+		// older than 7 and the "older than 15" bucket cannot fire.
 		//
-		// ⚠️ Device A/B pending at the time of writing. The M2 numbers are lavapipe and direction
-		// only; the device record this came from is Spider-Man 3 on the SD865, where 42 of 52
+		// ⚠️ A FINITE WINDOW ALSO MOVES SPIDER-MAN 3's PIXELS, and that is a filed defect in the GPU
+		// merge road rather than a trade -- the two spill roads claim to be byte-identical (see
+		// TileGpuUploadSpillReadback). 37 to 788 pixels of 307,200 a frame, max channel delta 14,
+		// alpha never; the same pixels at windows 0, 1 and 2 despite serving 173 pages against 105,
+		// so the population is bounded. At 65535 all 21 corpus dumps are byte-identical to the road
+		// before this key existed.
+		//
+		// ⚠️ Device A/B pending at the time of writing. The numbers above are M2/lavapipe, but the
+		// stall COUNTS are model-level and deterministic, so they transfer as counts whatever a pull
+		// costs. The device record this came from is Spider-Man 3 on the SD865, where 42 of 52
 		// out-of-band pulls a frame are upload spills this clause refused.
-		int TileGpuMergeCpuReadWindow = 2;
+		int TileGpuMergeCpuReadWindow = 65535;
 
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
