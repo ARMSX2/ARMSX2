@@ -86,7 +86,7 @@ struct EmulatorSettingsView: View {
             }
 
             Section(settings.localized("StikDebug")) {
-                Toggle(settings.localized("Auto-open StikDebug"), isOn: $settings.autoOpenStikDebug)
+                Toggle(settings.localized("Auto-open StikDebug/StosDebug"), isOn: $settings.autoOpenStikDebug)
 
                 Picker(settings.localized("JIT Script"), selection: $settings.jitScriptProtocol) {
                     ForEach(JITScriptProtocol.allCases) { scriptProtocol in
@@ -107,16 +107,16 @@ struct EmulatorSettingsView: View {
                         stikDebugOpenFailed = !success
                     }
                 } label: {
-                    Label(settings.localized("Open StikDebug"), systemImage: "bolt.horizontal.circle")
+                    Label(settings.localized("Open StikDebug/StosDebug"), systemImage: "bolt.horizontal.circle")
                 }
                 .disabled(stikDebugOpenInProgress)
 
-                Text(settings.localized("Select the same script here that you run in StikDebug. This only changes the debugger breakpoint protocol used to prepare JIT memory. Fully close and relaunch ARMSX2 after switching scripts."))
+                Text(settings.localized("Select the same script here that you run in StikDebug/StosDebug. This only changes the debugger breakpoint protocol used to prepare JIT memory. Fully close and relaunch ARMSX2 after switching scripts."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if stikDebugOpenFailed {
-                    Text(settings.localized("Open StikDebug manually, then run the selected script and relaunch ARMSX2."))
+                    Text(settings.localized("Open StikDebug/StosDebug manually, then run the selected script and relaunch ARMSX2."))
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
