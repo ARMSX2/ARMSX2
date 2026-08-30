@@ -1424,10 +1424,13 @@ struct Pcsx2Config
 					// Fifteen dumps have no multi/partial population at all and are identity
 					// by construction.
 					//
-					// ⚠️ DEFAULT FALSE, and that is a MEASUREMENT and not a doubt about the
-					// road. It removes every blocking wait it was built to remove and the
-					// frame still gets slower here, because of what the removal UNLOCKS.
-					// Spider-Man 3, M2 Max under Honeykrisp, per drawn frame, off -> on:
+					// ⚠️ DEFAULT TRUE. The pre-registered SD865 decider fired at -17.1% with
+					// gs_cpu FALLING (the device numbers are below, after the M2 table). The
+					// M2 numbers that follow are kept as the record of why the M2 was not the
+					// authority for this trade, not as a live warning: on the M2 the lever
+					// removes every blocking wait it was built to remove and the frame still
+					// got slower there, because of what the removal UNLOCKS. Spider-Man 3, M2
+					// Max under Honeykrisp, per drawn frame, off -> on:
 					//
 					//   CLUT owner refusals   50.00 -> 0.00      (all of them)
 					//   palettes gathered    168.00 -> 553.00
@@ -1444,11 +1447,13 @@ struct Pcsx2Config
 					//   GS thread CPU per draw  6.87 -> 11.58 us
 					//   frame p50 (median of 3)  76.5 -> 92.3 ms
 					//
-					// ⚠️ The us-per-draw row is the one to read before predicting the device.
-					// The bill is not GPU time, it is GS THREAD time -- +175 ms over an
-					// eight-frame run, ~22 ms a frame, building the merge's writeback and
-					// seed ops. An A77 will not do that work faster than an M2 Max does, so
-					// "the round trips cost more on a phone" is only half the trade.
+					// ⚠️ The us-per-draw row is the one that drove the M2-era prediction, and
+					// the prediction was wrong. The bill is not GPU time, it is GS THREAD
+					// time -- +175 ms over an eight-frame run, ~22 ms a frame, building the
+					// merge's writeback and seed ops, on the M2. The read at the time was "an
+					// A77 will not do that work faster than an M2 Max does, so the round trips
+					// cost more on a phone" -- the SD865 decider below says otherwise: gs_cpu
+					// FELL on the device this bill was supposed to hit hardest.
 					//
 					// The bill is the UPLOAD MERGE's, not the gather's. A CLUT pull marks
 					// its pages as CPU-wanted and that mark is what keeps the upload merge
@@ -1468,11 +1473,13 @@ struct Pcsx2Config
 					// counts do not move at all.
 					//
 					// Also measured, and not noise: Yu-Gi-Oh loses 11.6 ms on ONE frame of
-					// eight. It gathers 0.38 palettes a frame and then meets a load shape
-					// the sixteen-slot mirror cannot model, which makes the CLUT RAM whole
-					// through SyncClutToCpu -- a drain the off arm never pays because it had
-					// nothing on the device to sync. Its pass count, draw count, readback
-					// count and blocking waits are otherwise identical between the arms.
+					// eight (M2, 4.5 -> 16.1 ms). It gathers 0.38 palettes a frame and then
+					// meets a load shape the sixteen-slot mirror cannot model, which makes
+					// the CLUT RAM whole through SyncClutToCpu -- a drain the off arm never
+					// paid because it had nothing on the device to sync. Its pass count,
+					// draw count, readback count and blocking waits are otherwise identical
+					// between the arms. This now ships: the cost is real and is priced by
+					// the next standing suite, not waived away.
 					// dirge, GT4, GT4 Online Public Beta and MGS3 are inside the rig's noise
 					// (God of War II, whose counters are byte-identical on both arms, moves
 					// 21.6 -> 24.4 ms between runs).
@@ -1487,15 +1494,23 @@ struct Pcsx2Config
 					// only the road the consumers read the words by differs -- leaves 4
 					// pixels in one frame of four. The rest follows the upload merge going
 					// 40 -> 173 pages, which is the same road round C1 filed a byte defect
-					// in on this same title. The other 20 corpus dumps are identical.
+					// in on this same title. The other 20 corpus dumps are identical. This is
+					// a FILED DEFECT on the upload-merge-composition road, not a reason to
+					// hold the key back -- per the campaign's standing rule, a mover ships as
+					// a filed defect, it is never a reason to keep a proven-faster lever off.
+					// It ships ON with this key.
 					//
-					// ⚠️ Device A/B pending at the time of writing. Everything above is one
-					// M2 Max. The stall counts are model-level and deterministic, so they
-					// transfer as counts whatever a round trip costs; the milliseconds do
-					// not, and the whole question is whether 25 ms of removed round trips
-					// outweighs 2,075 render passes on an Adreno 650. On device the CLUT
-					// stall census is Spider-Man 3 10 a frame, GT4 29 (~7.1 of 23.3 ms) and
-					// GT4 Online Public Beta 3.
+					// ⚠️ Device A/B DONE (SD865, 2026-08-30, record
+					// devs/bmdhacks/perf/tilegpu-roundc-sm3-sd865-1069742aed/ in the
+					// umbrella). Spider-Man 3, OFF vs ON, per drawn frame: frame p50
+					// 60.787 -> 50.412 ms (-17.1%, spread <0.5 ms across 3 reps/arm), gs_cpu
+					// 29.54 -> 26.68 ms (CPU FELL -- the M2's predicted +~22 ms/frame of
+					// merge-op building did NOT reproduce on the A77), total blocking
+					// 32.53 -> 21.59 ms, out-of-band wait calls 52.08 -> 0, CLUT stalls
+					// 10.00 -> 0, upload sub-block stalls 41.95 -> 0, readbacks 52.15 -> 0,
+					// merge pages served 24.80 -> 189.85, mid-frame flushes 56.85 -> 211.30.
+					// The pre-registered decider fired: this is what settles the default, not
+					// the M2 table above it.
 					TileGpuClutBlockGather : 1,
 					// Do not read back the block GSState invalidates for a CLUT load that
 					// the CLUT loader never reads.

@@ -803,11 +803,11 @@ Pcsx2Config::GSOptions::GSOptions()
 	// and NOT because of this road: it unblocks the GPU upload merge, whose two arms disagree
 	// there. Both facts, and the proof, in Config.h.
 	TileGpuClut16Gather = true;
-	// Default FALSE, measured: it takes Spider-Man 3's blocking GPU waits from 84.25 a frame to 0.50
-	// and its frame p50 from 76.5 ms to 92.3, because the CLUT pulls it removes are what kept the
-	// upload merge off those pages and the un-poisoned merge costs 2,075 render passes. The device
-	// A/B is the deciding measurement and this is one INI line. Full numbers in Config.h.
-	TileGpuClutBlockGather = false;
+	// Default TRUE: the pre-registered SD865 device A/B is the decider and it fired -- Spider-Man 3
+	// frame p50 60.787 -> 50.412 ms (-17.1%), gs_cpu FELL 29.54 -> 26.68 ms, every blocking-wait
+	// count to zero. The M2's predicted CPU bill from the un-poisoned upload merge did not transfer
+	// to the A77. Full numbers in Config.h.
+	TileGpuClutBlockGather = true;
 	// Default TRUE: it only ever removes work -- a readback of the block GSState invalidates for a
 	// four-bit-index CLUT load and the loader never reads -- and it is the whole of GT4 Online Public
 	// Beta's CLUT stall count, 2.62 a frame to zero. Byte-identical on all 21 corpus dumps.
