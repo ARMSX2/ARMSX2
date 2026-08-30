@@ -799,7 +799,8 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileGpuClutMergePages = true;
 	// Default TRUE: pixel-inert by construction (it moves only WHEN recorded work is submitted),
 	// and what it attacks is the whole drain-road readback bill -- 54.5 ms of a 94 ms Spider-Man 3
-	// frame on the SD865. The device A/B is pending; the ceiling is in Config.h.
+	// frame on the SD865. Device A/B 2026-08-30 (SD865): gt4opb -14.6%, gt4 -12.8%, Spider-Man 3
+	// -3.3%, nothing slower; numbers and the mechanism in Config.h.
 	TileGpuKickReadbackFrames = true;
 	TileFastShading = true;
 	TileExactColour = false;

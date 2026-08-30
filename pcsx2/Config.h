@@ -1315,22 +1315,34 @@ struct Pcsx2Config
 					// that road at ~1.07 ms each — 54.5 ms of a 94 ms frame — against
 					// ~37 us for an out-of-band round trip.
 					//
-					// The kick submits at a pass boundary instead, which does two things:
-					// the GPU starts executing while the GS thread is still recording, and
-					// every image the plan has touched so far becomes "complete on the
-					// GPU", so the next pull takes the out-of-band road. It never blocks —
-					// it fires only when the NEXT command buffer has already retired, the
-					// gate Classic's comment records as declining ~3,300 of ~3,400 offers
-					// on Rogue Galaxy. A kick that blocks is worse than no kick.
+					// The kick submits at a pass boundary so the GPU starts executing while
+					// the GS thread is still recording; the drain COUNT barely moves
+					// (Spider-Man 3 52 -> 47 drains a frame on the SD865, the same on the
+					// M2) because the pull that follows a pass reads that very pass, so its
+					// source is touched by the recording buffer whatever was kicked before
+					// it — what the kick buys is a head start on the drain's PRICE, and the
+					// out-of-band pulls behind it then queue behind the kicked submissions.
+					// It never blocks — it fires only when the NEXT command buffer has
+					// already retired, the gate Classic's comment records as declining
+					// ~3,300 of ~3,400 offers on Rogue Galaxy. A kick that blocks is worse
+					// than no kick.
 					//
 					// PIXEL-INERT by construction: what changes is WHEN recorded work is
 					// submitted, never what is recorded. A byte difference between the arms
 					// is a pre-existing ordering defect, not a trade.
 					//
-					// Default ON. Ceiling from the design study, which is max(gs_cpu, gpu)
-					// against today's gs_cpu + wait: Spider-Man 3 −33% to −45%, gt4opb
-					// −35%, gt4 −43%, outrun-a −32%, dirge −34%. ⚠️ Those are CEILINGS off
-					// a serialized-replay upper bound; the device A/B numbers are PENDING.
+					// Default ON. Device A/B, SD865, 3 reps/arm, 2026-08-30 (dossier
+					// changelog, record perf/tilegpu-readback-kick-sd865-92f0e375d8): gt4opb
+					// 32.04 -> 27.35 ms (-14.6%), gt4 26.71 -> 23.29 (-12.8%), Spider-Man 3
+					// 94.66 -> 91.53 (-3.3%); readbacks and blocking-wait counts identical
+					// both arms on all three; GPU time flat. It is a WAIT-OVERLAP lever: it
+					// wins where the pull chain is loose and cannot shorten Spider-Man 3's
+					// chain, which is serial (GPU busy 54 ms, GS thread blocked 55 ms of a
+					// 92 ms frame, zero overlap; ~50 pass->pull->pass dependencies a frame).
+					// Costs that came with it: ~85 kicks a frame there = +5 ms of GS-thread
+					// submit overhead, and a 3-4 ms ring wait; both are tuning (kick
+					// threshold), queued behind removing the pulls themselves (the 16-bit
+					// CLUT gather), which is the only thing that helps that title.
 					TileGpuKickReadbackFrames : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
