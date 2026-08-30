@@ -882,6 +882,36 @@ constexpr bool gsTileSurfaceHasCt32PixelSpace(const GSTileSurfaceLayout& layout)
 		   (layout.psm == PSMCT32 || layout.psm == PSMCT24);
 }
 
+/// Which of the predicate above's three tests fails FIRST. Census only -- nothing decides on it.
+///
+/// A refusal counter that says no more than "the layout clause refused it" cannot separate a 16-bit
+/// colour owner, which a wider gather could be built to serve, from an unaligned base or a depth
+/// surface, which it could not. That separation is the whole input to "is a 16-bit CLUT gather worth
+/// building", so it is measured rather than reasoned about.
+///
+/// ⚠️ Lives here, immediately below the predicate, because its clause ORDER has to match it: a
+/// reordering above with no matching edit here silently renames every count. The pair's contract is
+/// that this returns None exactly when the predicate returns true.
+enum GSTileCt32Clause : u32
+{
+	kGSTileCt32ClauseNone = 0,
+	kGSTileCt32ClauseKind, ///< not a colour surface at all (a depth surface)
+	kGSTileCt32ClauseBase, ///< colour, but its base is not page-aligned
+	kGSTileCt32ClausePsm, ///< colour and page-aligned, but the format is not CT32/CT24
+	kGSTileCt32ClauseCount
+};
+
+constexpr GSTileCt32Clause gsTileSurfaceCt32PixelSpaceClause(const GSTileSurfaceLayout& layout)
+{
+	if (layout.kind != GSTileSurfaceKind::Color)
+		return kGSTileCt32ClauseKind;
+	if ((layout.bp & 31) != 0)
+		return kGSTileCt32ClauseBase;
+	if (layout.psm != PSMCT32 && layout.psm != PSMCT24)
+		return kGSTileCt32ClausePsm;
+	return kGSTileCt32ClauseNone;
+}
+
 // Cross-layout alias resolution tiers, cheapest first. M2 classifies every alias and
 // implements only Spill (always correct, counted); the cheaper tiers get realized as
 // their consumers land.

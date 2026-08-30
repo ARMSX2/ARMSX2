@@ -858,7 +858,12 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSPageBitmap& pages)
 		if (!s.alive || !s.pool_handle)
 			refusal = kClutRefDead;
 		else if (!HasCt32PixelSpace(s.layout))
+		{
 			refusal = kClutRefLayout;
+			// Which of the three tests refused, carried to PreClutLoad where the total is counted.
+			p.layout_clause = gsTileSurfaceCt32PixelSpaceClause(s.layout);
+			pxAssert(p.layout_clause != kGSTileCt32ClauseNone);
+		}
 		else if (!s.residency.contains(pages))
 			refusal = kClutRefResidency;
 		else if (m_surface_texels.size() <= owner || !m_surface_texels[owner].filled.HoldsWhole(pages))
@@ -919,6 +924,9 @@ void GSRendererTileGpu::PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT&
 	{
 		m_frame.clut_ref_owner++;
 		m_frame.clut_ro[p.refusal < kClutRefCount ? p.refusal : 0u]++;
+		// The layout clause's own split, a strict partition of clut_ro[kClutRefLayout].
+		if (p.refusal == kClutRefLayout && p.layout_clause < kGSTileCt32ClauseCount)
+			m_frame.clut_rol[p.layout_clause]++;
 	}
 	else
 	{
@@ -2105,8 +2113,23 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto sgd = stat([](const MF& f) { return f.specguard_draws; });
 	const auto bigpass = stat([](const MF& f) { return f.biggest_pass_draws; });
 	const auto capped = stat([](const MF& f) { return f.capped_passes; });
+	const auto road_oob = [&stat](StallSite s) {
+		return stat([s](const MF& f) { return f.pull_oob[static_cast<u32>(s)]; });
+	};
+	const auto road_drain = [&stat](StallSite s) {
+		return stat([s](const MF& f) { return f.pull_drain[static_cast<u32>(s)]; });
+	};
+	const auto road_idle = [&stat](StallSite s) {
+		return stat([s](const MF& f) { return f.pull_idle[static_cast<u32>(s)]; });
+	};
 	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
 			   s_all = st(StallSite::SyncAll);
+	const auto ro_up = road_oob(StallSite::UploadSubBlock), ro_rd = road_oob(StallSite::LocalRead),
+			   ro_cl = road_oob(StallSite::Clut), ro_all = road_oob(StallSite::SyncAll);
+	const auto rd_up = road_drain(StallSite::UploadSubBlock), rd_rd = road_drain(StallSite::LocalRead),
+			   rd_cl = road_drain(StallSite::Clut), rd_all = road_drain(StallSite::SyncAll);
+	const auto ri_up = road_idle(StallSite::UploadSubBlock), ri_rd = road_idle(StallSite::LocalRead),
+			   ri_cl = road_idle(StallSite::Clut), ri_all = road_idle(StallSite::SyncAll);
 	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
 			   p_all = stp(StallSite::SyncAll);
 
@@ -2386,6 +2409,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
 		s_all.p50, p_all.mean);
+	// ...and what those stalls' pool calls actually COST, which the counts above cannot show. A drain
+	// submits the frame's command buffer and waits for the whole recorded plan; an out-of-band call
+	// submits its own tiny buffer and waits only behind what was already queued. Measured ~1.07 ms
+	// against ~37 us on the SD865, so a site with a few drains can outweigh one with a hundred
+	// out-of-band trips. `idle` reached the device for neither and is free.
+	Console.WriteLn("  stall pool calls by road (oob / drain / idle): upload sub-block %.2f/%.2f/%.2f  "
+					"local-read %.2f/%.2f/%.2f  clut %.2f/%.2f/%.2f  sync-all %.2f/%.2f/%.2f",
+		ro_up.mean, rd_up.mean, ri_up.mean, ro_rd.mean, rd_rd.mean, ri_rd.mean, ro_cl.mean, rd_cl.mean, ri_cl.mean,
+		ro_all.mean, rd_all.mean, ri_all.mean);
 	// The other half of the upload-sub-block population: the spills served on the device instead.
 	// Read it beside the stall line above -- the two add up to the spills the frame takes, and the
 	// refusals say which clause sent the rest down the blocking road.
@@ -2563,6 +2595,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto cmulti = stat([](const MF& f) { return f.clut_ro[kClutRefMulti]; });
 	const auto cdead = stat([](const MF& f) { return f.clut_ro[kClutRefDead]; });
 	const auto clay = stat([](const MF& f) { return f.clut_ro[kClutRefLayout]; });
+	// The layout clause, split three ways: `kind` is a depth owner, `base` a colour owner whose base
+	// is not page-aligned, `psm` a page-aligned colour owner in a format the CT32 forms cannot read
+	// -- the 16-bit population, and the only one of the three a wider gather could ever take.
+	const auto clk = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClauseKind]; });
+	const auto clb = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClauseBase]; });
+	const auto clp = stat([](const MF& f) { return f.clut_rol[kGSTileCt32ClausePsm]; });
 	const auto cres = stat([](const MF& f) { return f.clut_ro[kClutRefResidency]; });
 	const auto ctex = stat([](const MF& f) { return f.clut_ro[kClutRefTexels]; });
 	const auto cmix = stat([](const MF& f) { return f.clut_ro[kClutRefMixedOwner]; });
@@ -2585,9 +2623,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  loads %.2f / %-5u  no-stall %.2f / %-5u  gathered %.2f / %-5u  refused: shape %.2f/%u  "
 						"owner %.2f/%u",
 			cl.mean, cl.p50, cnos.mean, cnos.p50, cgat.mean, cgat.p50, crs.mean, crs.p50, cro.mean, cro.p50);
-		Console.WriteLn("  owner refusals: multi/partial %.2f  dead %.2f  layout %.2f  residency %.2f  texels %.2f  "
-						"mixed-owner %.2f",
-			cmulti.mean, cdead.mean, clay.mean, cres.mean, ctex.mean, cmix.mean);
+		Console.WriteLn("  owner refusals: multi/partial %.2f  dead %.2f  layout %.2f (kind %.2f, base %.2f, "
+						"psm %.2f)  residency %.2f  texels %.2f  mixed-owner %.2f",
+			cmulti.mean, cdead.mean, clay.mean, clk.mean, clb.mean, clp.mean, cres.mean, ctex.mean, cmix.mean);
 		Console.WriteLn("  gathered draws %.2f / %-5u  (rule 3 %.2f / %-4u, byte road %.2f / %-5u, rule-3 refused "
 						"%.2f/%u)   mirror could not serve %.2f / %u draws",
 			cd.mean, cd.p50, cd3.mean, cd3.p50, cdb.mean, cdb.p50, cr3r.mean, cr3r.p50, cds.mean, cds.p50);
@@ -6714,11 +6752,25 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	// Pages are disjoint guest memory, so the two halves cannot interact with each other whatever
 	// order they run in. Aliased pages are rare -- the alias-steal counter is zero on most of the
 	// corpus -- and the coalescible ones are the whole population that matters.
+	// Which ROAD each call took, attributed to the SITE that asked for it. The pool knows which road
+	// it took and the site does not, so the two are joined here, the one place both are in scope --
+	// by delta rather than by a return value, because the roads are internal to ReadbackPages and a
+	// call that falls off the out-of-band road onto the drain must be counted as the drain it became.
+	// A call takes at most one road, so the three buckets partition the calls exactly.
 	PlanPull(m_vram_model, need, m_pull_calls);
+	const u32 site_index = static_cast<u32>(site);
 	for (const PullCall& c : m_pull_calls)
 	{
 		const GSVramModel::Surface& surf = m_vram_model.Get(c.owner);
+		const u32 oob_before = m_target_pool.OutOfBandCopies();
+		const u32 drains_before = m_target_pool.Drains();
 		m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, c.pages, c.write_mask, c.block_mask);
+		if (m_target_pool.OutOfBandCopies() != oob_before)
+			m_frame.pull_oob[site_index]++;
+		else if (m_target_pool.Drains() != drains_before)
+			m_frame.pull_drain[site_index]++;
+		else
+			m_frame.pull_idle[site_index]++;
 	}
 	m_frame.pull_calls += static_cast<u32>(m_pull_calls.size());
 	m_vram_model.OnReadback(need);

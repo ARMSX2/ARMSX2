@@ -2455,6 +2455,7 @@ private:
 		bool readback = false; ///< ...and a readback actually happened for one of them
 		bool refused = false; ///< ...and some block's owner conditions did not hold
 		u32 refusal = 0; ///< which clause (ClutRefusal), for the counters
+		u32 layout_clause = 0; ///< ...and under kClutRefLayout, which of its three (GSTileCt32Clause)
 		GSPageBitmap pages; ///< the deferred blocks' pages
 		GSTileSurfaceId owner = kGSTileNoSurface;
 		u32 owner_bp = 0, owner_bwpg = 0;
@@ -3235,6 +3236,15 @@ private:
 		u32 afail_varies_depth = 0;     // ...of which the draw also uses depth (the half a colour read cannot serve)
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
 		u32 stall_pages[static_cast<u32>(StallSite::Count)] = {};
+		// Which ROAD each site's pool calls took, off the pool's own counters rather than a
+		// prediction. The two roads cost about thirty times differently -- an out-of-band round trip
+		// is ~37 us on the SD865 against ~1.07 ms for a drain -- so a site's stall count says almost
+		// nothing about what it costs the frame until it is split this way. `idle` is a call that
+		// reached the device for neither: its pages collected to no runs, or the layout is one the
+		// store road cannot address. The three add up to pull_calls.
+		u32 pull_oob[static_cast<u32>(StallSite::Count)] = {};
+		u32 pull_drain[static_cast<u32>(StallSite::Count)] = {};
+		u32 pull_idle[static_cast<u32>(StallSite::Count)] = {};
 		// Pool calls the stalls issued. Not derivable from either column above: one consumer ask
 		// becomes one call per (owner, block mask, byte window) over the whole page set it needs,
 		// and the device round trip is charged per CALL -- so this is the number a coalescing
@@ -3343,6 +3353,11 @@ private:
 		u32 clut_ref_shape = 0;   // ...owner conditions held, the load's shape is not one the gather serves
 		u32 clut_ref_owner = 0;   // ...the owner conditions did not hold: today's readback road
 		u32 clut_ro[kClutRefCount] = {}; // ...bucketed by the clause that refused
+		// ...and clut_ro[kClutRefLayout] split again by WHICH of the layout predicate's three tests
+		// failed first (gsTileSurfaceCt32PixelSpaceClause). A strict partition of that one bucket: a
+		// 16-bit colour owner is a population a wider gather could take, an unaligned base or a depth
+		// surface is not, and the undivided counter cannot tell them apart.
+		u32 clut_rol[kGSTileCt32ClauseCount] = {};
 		u32 clut_draws = 0;       // paletted draws whose every slot came from ONE device palette
 		u32 clut_draws_r3 = 0;    // ...served by rule 3, off the N x 1 gather
 		u32 clut_draws_byte = 0;  // ...served on the byte road, out of the copied blocks in the stream
