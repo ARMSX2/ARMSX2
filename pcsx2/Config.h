@@ -1847,6 +1847,56 @@ struct Pcsx2Config
 		// and then sampled) that no reordering can remove.
 		int TileGpuReorderRuns = 0;
 
+		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
+		// that spills into it takes the blocking road instead.
+		//
+		//    0   -- the clause never refuses. Delete-equivalent, and the control arm.
+		//   1..N -- a page read within the last N frames is refused; older is merged.
+		//  >=65535 -- the mark never expires: session-monotone, exactly the road that shipped before
+		//            this key existed. The OFF arm of the A/B.
+		//  negative -- meaningless here, treated as 0.
+		//
+		// ⚠️ This is a WAIT-COUNT HEURISTIC, not an invariant. Nothing about the merge needs it: it is
+		// only ever asked about pages that are GPU truth and NOT synced, and serving one leaves them
+		// that way -- pinned by AWriteServedOnTheGpuMovesNoTruth in
+		// tests/ctest/core/gs/gs_tilegpu_upload_merge_tests.cpp, which asserts the page is still
+		// unsynced and still returned by ReadbackNeeded after the merge takes it. So a later CPU read
+		// still pulls, whatever this is set to, and the two spill roads are byte-identical by the
+		// merge's own standing claim (see TileGpuUploadSpillReadback). The key trades one wait now
+		// against several later, and nothing else.
+		//
+		// It exists because DELETING the clause is a measured regression on Dirge of Cerberus, which
+		// reads its palettes out of the tail blocks of a framebuffer page every frame: upload stalls
+		// 4.62 -> 0.88 a frame, CLUT stalls 2.00 -> 10.25, a net LOSS of 4.5 waits. So the answer is a
+		// window, not a deletion -- keep the protection for pages the CPU is still reading, collect
+		// the ones it read once and left.
+		//
+		// THE DEFAULT IS 2, from the M2 age census (per drawn frame, the three of twenty-one corpus
+		// dumps whose counter is non-zero; the other eighteen never reach this clause):
+		//
+		//   refusals by mark age    this frame    1    2-3    4-15
+		//     spiderman3   33.75          0.00  5.50  11.00  17.25
+		//     dirge         4.25          1.12  0.50   1.00   1.62
+		//     yugioh        0.38          0.00  0.00   0.12   0.25
+		//
+		// Spider-Man 3 refuses on NOTHING it read this frame, so its whole population is historical
+		// and a window collects it: 84% at 2, 100% at 1. Dirge refuses on fresh marks -- 1.12 a frame
+		// read this frame and 0.50 read last frame -- and 2 is the smallest window that covers both
+		// the every-frame and the every-other-frame read. It costs Spider-Man 3 5.50 refusals a frame
+		// (16% of its prize) to keep the title this clause was built for whole.
+		//
+		// And 100% of what a lifted clause frees is actually mergeable: over the refused population
+		// the clause below it would refuse 0.00 on Spider-Man 3 and yugioh and 0.12 on dirge.
+		//
+		// ⚠️ The age census is bounded by the corpus: a dump is 8 model frames, so no mark can be
+		// older than 7 and the "older than 15" bucket cannot fire. A real session's marks are older,
+		// which moves the answer towards a SMALLER window, not a larger one.
+		//
+		// ⚠️ Device A/B pending at the time of writing. The M2 numbers are lavapipe and direction
+		// only; the device record this came from is Spider-Man 3 on the SD865, where 42 of 52
+		// out-of-band pulls a frame are upload spills this clause refused.
+		int TileGpuMergeCpuReadWindow = 2;
+
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;

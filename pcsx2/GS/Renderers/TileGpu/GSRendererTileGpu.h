@@ -1064,6 +1064,48 @@ constexpr bool gsTileGpuClutArmBreaks(u32 open_arm, bool open_target, u32 arm, b
 		   (target_road && open_arm == 2u);
 }
 
+/// Does a CPU-read mark refuse this page to the upload merge?
+///
+/// `mark` is the page's m_cpu_read_frame entry and `now` is m_frame_index + 1, both in the same
+/// encoding: 0 means "never read", otherwise the frame the read happened in plus one. So the age in
+/// frames is `now - mark`, and the page is refused while that age is under `window`.
+///
+/// `window` is EmuCore/GS/TileGpuMergeCpuReadWindow, whose three positions are all here:
+///   <= 0     the clause never refuses -- delete-equivalent, the control arm
+///   1..65534 refused at ages 0..window-1, admitted at window
+///   >= 65535 the mark never expires -- session-monotone, the road before this key existed
+///
+/// A free function with a test because none of this is checkable from a corpus run: three dumps of
+/// twenty-one reach the clause at all, an off-by-one in the comparison halves Dirge of Cerberus's
+/// protection silently, and the monotone position has to reproduce the old road EXACTLY for the A/B
+/// to mean anything.
+///
+/// The subtraction is unsigned and deliberately so: modulo 2^32 it is the EXACT frame delta for any
+/// true age below 2^32, so a mark taken before the frame counter wrapped and read after it still
+/// reads at its real age. Nothing here needs a wrap case; there is not one.
+constexpr bool gsTileGpuMergeRefusesForCpuRead(u32 mark, u32 now, int window)
+{
+	if (mark == 0 || window <= 0)
+		return false;
+	if (window >= 65535)
+		return true;
+	return (now - mark) < static_cast<u32>(window);
+}
+
+/// How old the CPU-read mark that refused a page is, in video frames, bucketed:
+/// 0 = this frame, 1 = last frame, 2 = 2-3, 3 = 4-15, 4 = older.
+///
+/// The window is chosen off this histogram, so the buckets have to be the ones the census's labels
+/// claim: a boundary that drifts turns "dirge refuses on FRESH marks" into a different sentence with
+/// the same printout. Dirge of Cerberus reads its palettes out of framebuffer tail blocks every
+/// frame and lands in buckets 0 and 1; Spider-Man 3's refusals are the accumulated union of every
+/// CLUT load since Reset and land in 2 and 3.
+constexpr u32 kGSTileGpuMergeCpuAgeBuckets = 5;
+constexpr u32 gsTileGpuMergeCpuAgeBucket(u32 age)
+{
+	return (age == 0) ? 0u : ((age == 1) ? 1u : ((age <= 3) ? 2u : ((age <= 15) ? 3u : 4u)));
+}
+
 /// Does a run of `n` merged palette squares exactly tile a 64-wide BAND of one owner page?
 ///
 /// A 256-entry palette that merges is a 16x16 square at a 16-aligned origin inside one 64x32 guest
@@ -2009,6 +2051,11 @@ private:
 		GSTileSurfaceId owner;
 		GSPageBitmap pages;
 	};
+	/// EmuCore/GS/TileGpuMergeCpuReadWindow, read ONCE at construction like every other policy this
+	/// renderer reads from GSConfig -- so a run's window can be read off its log, and so every page
+	/// of a session is judged by one rule. See gsTileGpuMergeRefusesForCpuRead for the encoding.
+	int m_merge_cpu_read_window = 0;
+
 	/// The video-frame clock the CPU-read marks below are stamped against. Bumped once in VSync and
 	/// nowhere else -- NOT m_source_frame, which counts plans (a mid-frame flush moves it), and not
 	/// m_model_frames.size(), which is a census vector and must not become load-bearing.
@@ -3108,18 +3155,6 @@ private:
 		kMergeRefCount
 	};
 
-	/// How old the CPU-read mark that refused a page is, in video frames, bucketed:
-	/// 0 = this frame, 1 = last frame, 2 = 2-3, 3 = 4-15, 4 = older.
-	///
-	/// The bucket the window has to cover is the one dirge's marks land in -- it reads its palettes
-	/// out of framebuffer tail blocks every frame, so its marks are fresh -- against Spider-Man 3's,
-	/// which are the accumulated union of every CLUT load since Reset.
-	static constexpr u32 kMergeCpuAgeBuckets = 5;
-	static constexpr u32 gsMergeCpuAgeBucket(u32 age)
-	{
-		return (age == 0) ? 0u : ((age == 1) ? 1u : ((age <= 3) ? 2u : ((age <= 15) ? 3u : 4u)));
-	}
-
 	struct ModelFrame
 	{
 		u32 surfaces_live = 0;
@@ -3157,8 +3192,8 @@ private:
 		// zero on these pages BY CONSTRUCTION rather than by measurement, so without this the
 		// fraction of a refused population that would actually convert is unknown.
 		u32 merge_ref_cpu_next[kMergeRefCount] = {};
-		// ...and how old the mark that refused it was, in video frames (gsMergeCpuAgeBucket).
-		u32 merge_ref_cpu_age[kMergeCpuAgeBuckets] = {};
+		// ...and how old the mark that refused it was, in video frames (gsTileGpuMergeCpuAgeBucket).
+		u32 merge_ref_cpu_age[kGSTileGpuMergeCpuAgeBuckets] = {};
 		u32 merge_ref_bytes = 0;    // the write owns half a byte somewhere: no byte mask expresses it
 		u32 merge_ref_slice = 0;    // the rect is a claim, not a record (a sliced or truncated upload)
 		u32 merge_ref_overflow = 0; // the footprint lost its block masks, so coverage is unknown

@@ -284,6 +284,31 @@ GSRendererTileGpu::GSRendererTileGpu()
 						"(TileGpuClut16Gather) -- two 5551 cells to a word, packed at fetch.");
 	}
 
+	// The upload merge's CPU-read window, read once so that every page of a session is judged by one
+	// rule and a run's window can be read off its log. Said out loud on every position including the
+	// default, because this is a WAIT-COUNT heuristic whose whole effect is which of two byte-
+	// identical roads a spill takes -- it leaves no other trace in a log, and its two extreme
+	// positions are the control arms of an A/B whose numbers are worthless if the arm is a guess.
+	m_merge_cpu_read_window = GSConfig.TileGpuMergeCpuReadWindow;
+	if (m_merge_cpu_read_window <= 0)
+	{
+		Console.WriteLn("TileGpu: a CPU read keeps a page off the upload merge for NO TIME AT ALL -- the clause "
+						"never refuses (TileGpuMergeCpuReadWindow = %d).",
+			GSConfig.TileGpuMergeCpuReadWindow);
+	}
+	else if (m_merge_cpu_read_window >= 65535)
+	{
+		Console.WriteLn("TileGpu: a CPU read keeps a page off the upload merge for the REST OF THE SESSION -- the "
+						"mark never expires (TileGpuMergeCpuReadWindow = %d).",
+			GSConfig.TileGpuMergeCpuReadWindow);
+	}
+	else
+	{
+		Console.WriteLn("TileGpu: a CPU read keeps a page off the upload merge for %d frame(s) "
+						"(TileGpuMergeCpuReadWindow).",
+			m_merge_cpu_read_window);
+	}
+
 	// Surface-identity containment, read once for the strongest version of the reason the others
 	// are: it decides which surface a view's draws land in, and a flip mid-run would leave views
 	// already folded with no surface to fall back to and views already created with no container to
@@ -7417,13 +7442,19 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		}
 
 		// A page a CPU read has recently had to pull goes back down the blocking road: see
-		// m_cpu_read_frame for the measurement that put this clause here.
+		// m_cpu_read_frame for the measurement that put this clause here, and
+		// TileGpuMergeCpuReadWindow for how long "recently" is.
+		//
+		// ⚠️ So the two counters this branch feeds -- the "would refuse next" split and the mark-age
+		// histogram -- describe what the window STILL refuses, not the whole marked population. The
+		// monotone arm (window >= 65535) is what reports the latter, which is what makes the pair an
+		// A/B rather than two unrelated numbers.
 		const u32 mark = m_cpu_read_frame[page];
-		if (mark != 0)
+		if (gsTileGpuMergeRefusesForCpuRead(mark, now, m_merge_cpu_read_window))
 		{
 			m_frame.merge_ref_cpu++;
 			m_frame.merge_ref_cpu_next[next]++;
-			m_frame.merge_ref_cpu_age[gsMergeCpuAgeBucket(now - mark)]++;
+			m_frame.merge_ref_cpu_age[gsTileGpuMergeCpuAgeBucket(now - mark)]++;
 			return;
 		}
 		if (next != kMergeRefNone)

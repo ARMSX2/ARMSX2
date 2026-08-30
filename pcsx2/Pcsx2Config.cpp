@@ -1012,6 +1012,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileGpuSerializeOps) &&
 		OpEqu(TileGpuSerializeMask) &&
 		OpEqu(TileGpuContainPageBudget) &&
+		OpEqu(TileGpuMergeCpuReadWindow) &&
 		OpEqu(TileGpuReorderRuns) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
@@ -1346,6 +1347,10 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileGpuSerializeMask, "TileGpuSerializeMask");
 	SettingsWrapBitfieldEx(TileGpuContainPageBudget, "TileGpuContainPageBudget");
 	SettingsWrapBitfieldEx(TileGpuReorderRuns, "TileGpuReorderRuns");
+
+	// A plain int entry, not a bitfield one: it is a frame COUNT with a non-zero default, and the
+	// two wrappers round-trip it identically (GetIntValue / SetIntValue either way).
+	SettingsWrapEntryEx(TileGpuMergeCpuReadWindow, "TileGpuMergeCpuReadWindow");
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");

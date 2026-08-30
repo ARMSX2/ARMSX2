@@ -340,4 +340,74 @@ TEST(GSTileGpuUploadMerge, AWriteServedOnTheGpuMovesNoTruth)
 	EXPECT_EQ(m.TruthMask(0, GSVramModel::PlaneIndex(GSTilePlaneRGB)), GSVramModel::kFullBlockMask);
 	EXPECT_FALSE(m.SyncedPages(GSVramModel::PlaneIndex(GSTilePlaneRGB)).test(0));
 	EXPECT_TRUE(m.CheckInvariants());
+
+	// ...and the other half of the same statement, which is what makes the CPU-read window a
+	// heuristic rather than an invariant: a page the merge served is STILL one a later CPU read has
+	// to pull. Serving it moved no truth, so it did not move the answer to "what does the shadow not
+	// have" either. Nothing about TileGpuMergeCpuReadWindow can hand anybody stale bytes; all it can
+	// do is trade one wait now against several later.
+	EXPECT_TRUE(m.ReadbackNeeded(page, kGSTilePlanesAll).test(0));
+}
+
+// EmuCore/GS/TileGpuMergeCpuReadWindow, over the whole table it has to answer. None of this is
+// checkable from a corpus run: three dumps of twenty-one reach the clause at all, so an off-by-one
+// that halves Dirge of Cerberus's protection, or a monotone arm that does not reproduce the old
+// road, would both go green on the grid and be wrong on a device.
+TEST(GSTileGpuUploadMerge, TheCpuReadRefusalIsWindowed)
+{
+	// A page nothing has ever read is admitted at every window, including the monotone one. This is
+	// the population the merge lives on and no setting may take it away.
+	for (const int w : {-1, 0, 1, 2, 4, 65535, 1 << 20})
+		EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(0, 100, w)) << "window " << w;
+
+	// The window is a count of frames the mark survives: refused at ages 0..w-1, admitted at w.
+	// `now` and the mark are both frame + 1, so a mark of `now` is age 0 -- read this frame.
+	for (const int w : {1, 2, 4, 16})
+	{
+		for (u32 age = 0; age < static_cast<u32>(w); age++)
+			EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(1000 - age, 1000, w)) << "window " << w << " age " << age;
+		for (u32 age = static_cast<u32>(w); age < static_cast<u32>(w) + 4; age++)
+			EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(1000 - age, 1000, w)) << "window " << w << " age " << age;
+	}
+
+	// The two control arms. 0 (and anything below it) is delete-equivalent: the clause never refuses,
+	// however fresh the mark. 65535 and above is session-monotone: it refuses for ever, which is the
+	// road that shipped before this key existed and the only arm an A/B against it can be read from.
+	for (const u32 age : {0u, 1u, 5u, 1000u, 1u << 20})
+	{
+		EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(1u << 21, (1u << 21) + age, 0));
+		EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(1u << 21, (1u << 21) + age, -1));
+		EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(1u << 21, (1u << 21) + age, 65535));
+		EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(1u << 21, (1u << 21) + age, 1 << 20));
+	}
+
+	// The frame counter wraps at 2^32, and the age survives it EXACTLY: modulo 2^32 the unsigned
+	// subtraction is the true frame delta, so a mark stamped 20 frames before the wrap and read 4
+	// frames after it reads as age 20 and no earlier. There is no wrap case to get wrong, which is
+	// the thing worth pinning -- a signed or clamped spelling would have one.
+	EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFF0u, 4, 2));   // age 20, window 2: cold
+	EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFF0u, 4, 21));   // age 20, window 21: fresh
+	EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFF0u, 4, 20));  // age 20, window 20: the edge
+	EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFF0u, 4, 65535));
+	// ...and the same either side of it, un-wrapped.
+	EXPECT_TRUE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFFEu, 0xFFFFFFFFu, 2));
+	EXPECT_FALSE(gsTileGpuMergeRefusesForCpuRead(0xFFFFFFFCu, 0xFFFFFFFFu, 2));
+}
+
+// The age histogram the window was chosen from is only worth reading if its buckets are the ones its
+// labels claim. A bucket boundary that drifts turns "dirge refuses on fresh marks" into a different
+// sentence with the same printout.
+TEST(GSTileGpuUploadMerge, TheCpuReadAgeBucketsAreWhatTheCensusPrints)
+{
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(0), 0u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(1), 1u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(2), 2u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(3), 2u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(4), 3u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(15), 3u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(16), 4u);
+	EXPECT_EQ(gsTileGpuMergeCpuAgeBucket(~0u), 4u);
+	// Every age lands in exactly one of the five the census prints.
+	for (const u32 age : {0u, 1u, 2u, 3u, 4u, 7u, 15u, 16u, 100u, 1u << 20})
+		EXPECT_LT(gsTileGpuMergeCpuAgeBucket(age), kGSTileGpuMergeCpuAgeBuckets);
 }
