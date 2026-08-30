@@ -830,6 +830,11 @@ Pcsx2Config::GSOptions::GSOptions()
 	// same ones. It buys nothing on today's corpus (the merge's groups are one page each) and ships
 	// so that batching the seeds across a run of transfers has something to batch. See Config.h.
 	TileGpuMergeSeedBatch = true;
+	// Default TRUE: the seed's scissor already confined every write to the pages it repairs, and
+	// the render AREA -- which is what a tiler loads and stores whole tiles for -- was the entire
+	// attachment anyway. On Spider-Man 3 the seed passes are 57% of the frame's render-pass area
+	// and 91% of that is area the scissor discards. See Config.h.
+	TileGpuNarrowSeedPassArea = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1204,6 +1209,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
+	SettingsWrapBitBool(TileGpuNarrowSeedPassArea);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);
