@@ -6,6 +6,13 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 
+/// A constant id on purpose. The panel's body re-runs on every fingerprint change, and an
+/// item-bound sheet whose identity moved would rebuild the browser's search field under the
+/// keyboard, which is the tearing the global section documents at its own save sheet.
+private struct ShaderPresetBrowserRequest: Identifiable {
+    let id = "shader-preset-browser"
+}
+
 struct PerGameSettingsPanel: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsStore.shared
@@ -48,6 +55,9 @@ struct PerGameSettingsPanel: View {
             }
         }
     }
+
+    /// A compile-time fact, cached here so the Graphics tab never has to name the bridge.
+    private static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
 
     private static let useGlobalSentinel = -1
     private static let upscaleUseGlobalSentinel: Float = -1.0
@@ -131,6 +141,9 @@ struct PerGameSettingsPanel: View {
     @State private var perGameShadeBoostContrast: Int
     @State private var perGameShadeBoostSaturation: Int
     @State private var perGameShadeBoostGamma: Int
+    @State private var perGameShaderChain: Int
+    @State private var perGameShaderPresetRef: String
+    @State private var shaderPresetRequest: ShaderPresetBrowserRequest?
     @State private var perGameDithering: Int
     @State private var perGameFastForwardVolume: Int
     @State private var perGameIOP: Int
@@ -300,6 +313,8 @@ struct PerGameSettingsPanel: View {
         _perGameShadeBoostContrast = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "ShadeBoost_Contrast", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO))
         _perGameShadeBoostSaturation = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "ShadeBoost_Saturation", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO))
         _perGameShadeBoostGamma = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "ShadeBoost_Gamma", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO))
+        _perGameShaderChain = State(initialValue: PerGameShaderSelection.loadedChain(useCurrent: useCurrent, iso: perGameISO))
+        _perGameShaderPresetRef = State(initialValue: PerGameShaderSelection.loadedPresetRef(useCurrent: useCurrent, iso: perGameISO))
         _perGameDithering = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "dithering_ps2", globalDefault: 2, useCurrent: useCurrent, iso: perGameISO))
         _perGameFastForwardVolume = State(initialValue: Self.clampedPerGameInt(Self.loadedPerGameInt("SPU2/Output", "FastForwardVolume", globalDefault: 100, useCurrent: useCurrent, iso: perGameISO), to: SettingsStore.fastForwardVolumeRange))
         _perGameIOP = State(initialValue: Self.loadedPerGameBool("EmuCore/CPU/Recompiler", "EnableIOP", useCurrent: useCurrent, iso: perGameISO))
@@ -346,7 +361,7 @@ struct PerGameSettingsPanel: View {
     /// there is never anything of its own left for Save to commit.
     private func perGameFingerprint() -> String {
         let fixes = SettingsStore.gameFixOptions.map { "\($0.key):\(perGameFixes[$0.key] ?? -1)" }.joined(separator: ",")
-        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSprite)|\(mergeSprite)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameDisableDepth)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
+        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSprite)|\(mergeSprite)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameDisableDepth)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameShaderChain)|\(perGameShaderPresetRef)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
     }
 
     private var hasPendingChanges: Bool {
@@ -422,6 +437,17 @@ struct PerGameSettingsPanel: View {
                 onDismiss: { showPadLayoutEditor = false },
                 context: perGamePadLayoutEditorContext
             )
+        }
+        .sheet(item: $shaderPresetRequest) { _ in
+            NavigationStack {
+                ShaderPresetBrowserView(
+                    title: settings.localized("Shader Presets"),
+                    folder: nil,
+                    selectedToken: perGameShaderPresetRef,
+                    localized: { settings.localized($0) },
+                    onSelect: { perGameShaderPresetRef = $0 }
+                )
+            }
         }
         .fullScreenCover(isPresented: $showCheatsManager) {
             CheatsPatchesManagerView(
@@ -645,6 +671,8 @@ struct PerGameSettingsPanel: View {
             perGameShadeBoostContrast: $perGameShadeBoostContrast,
             perGameShadeBoostSaturation: $perGameShadeBoostSaturation,
             perGameShadeBoostGamma: $perGameShadeBoostGamma,
+            perGameShaderChain: $perGameShaderChain,
+            perGameShaderPresetRef: $perGameShaderPresetRef,
             perGameDithering: $perGameDithering,
             perGameTVShader: $perGameTVShader,
             perGameCASMode: $perGameCASMode,
@@ -664,6 +692,8 @@ struct PerGameSettingsPanel: View {
             perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
             perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
             savesToRunningGame: savesToRunningGame,
+            shaderChainSupported: Self.shaderChainSupported,
+            onBrowseShaderPreset: { shaderPresetRequest = ShaderPresetBrowserRequest() },
             settings: settings
         )
     }
@@ -1269,6 +1299,12 @@ struct PerGameSettingsPanel: View {
             Self.setPerGameIntValue("EmuCore/GS", "dithering_ps2", perGameDithering, useCurrent: useCurrent, iso: iso)
         } else {
             Self.clearPerGameValue("EmuCore/GS", "dithering_ps2", useCurrent: useCurrent, iso: iso)
+        }
+        // All three shader keys go through the one type that knows what each state means.
+        if enabled && perGameShaderChain != -1 {
+            PerGameShaderSelection.write(chain: perGameShaderChain, presetRef: perGameShaderPresetRef, useCurrent: useCurrent, iso: iso)
+        } else {
+            PerGameShaderSelection.clear(useCurrent: useCurrent, iso: iso)
         }
         if enabled && perGameFastForwardVolume != -1 {
             Self.setPerGameIntValue("SPU2/Output", "FastForwardVolume", perGameFastForwardVolume, useCurrent: useCurrent, iso: iso)

@@ -1075,6 +1075,21 @@ void FolderMemoryCard::NextFrame()
 	}
 }
 
+void FolderMemoryCard::FlushNow()
+{
+	if (!m_isEnabled)
+		{
+			return;
+		}
+
+	// The countdown above is driven by NextFrame(), which runs off vsync -- so while the VM is
+	// paused it does not advance at all and the pending flush is never reached, rather than
+	// merely being late. Clear it so a resumed VM does not immediately repeat this work.
+	// Flush() itself is a no-op when nothing is cached, so calling this on a quiet card is free.
+	m_framesUntilFlush = 0;
+	Flush();
+}
+
 void FolderMemoryCard::Flush()
 {
 	if (m_cache.empty())
@@ -2310,6 +2325,14 @@ void FolderMemoryCardAggregator::Close()
 	for (int i = 0; i < TotalCardSlots; ++i)
 	{
 		m_cards[i].Close();
+	}
+}
+
+void FolderMemoryCardAggregator::Flush()
+{
+	for (int i = 0; i < TotalCardSlots; ++i)
+	{
+		m_cards[i].FlushNow();
 	}
 }
 

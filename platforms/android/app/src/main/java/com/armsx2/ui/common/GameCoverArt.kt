@@ -31,6 +31,10 @@ fun GameCoverArt(game: GameInfo, modifier: Modifier = Modifier) {
     val customCover = remember(game.uri, CustomCovers.version.value) {
         CustomCovers.fileFor(context, game)
     }
+    // Subscribe to the Cover Region choice so a change re-resolves the URL here too — game.coverUrl
+    // hides the dependency inside a plain getter, which Compose cannot see.
+    com.armsx2.CoverRegionIndex.region.intValue
+    com.armsx2.CoverRegionIndex.perGameGeneration.intValue
     SubcomposeAsyncImage(
         model = ImageRequest.Builder(context)
             .data(customCover ?: game.coverUrl)

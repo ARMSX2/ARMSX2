@@ -62,10 +62,37 @@ public:
 		BC2,          ///< BC2, aka DXT2/3 compressed texture for replacements
 		BC3,          ///< BC3, aka DXT4/5 compressed texture for replacements
 		BC7,          ///< BC7, aka BPTC compressed texture for replacements
-		Last = BC7,
+		ASTC4x4,      ///< ASTC LDR 4x4 block footprint for replacements
+		ASTC5x4,      ///< ASTC LDR 5x4 block footprint for replacements
+		ASTC5x5,      ///< ASTC LDR 5x5 block footprint for replacements
+		ASTC6x5,      ///< ASTC LDR 6x5 block footprint for replacements
+		ASTC6x6,      ///< ASTC LDR 6x6 block footprint for replacements
+		ASTC8x5,      ///< ASTC LDR 8x5 block footprint for replacements
+		ASTC8x6,      ///< ASTC LDR 8x6 block footprint for replacements
+		ASTC8x8,      ///< ASTC LDR 8x8 block footprint for replacements
+		ASTC10x5,     ///< ASTC LDR 10x5 block footprint for replacements
+		ASTC10x6,     ///< ASTC LDR 10x6 block footprint for replacements
+		ASTC10x8,     ///< ASTC LDR 10x8 block footprint for replacements
+		ASTC10x10,    ///< ASTC LDR 10x10 block footprint for replacements
+		ASTC12x10,    ///< ASTC LDR 12x10 block footprint for replacements
+		ASTC12x12,    ///< ASTC LDR 12x12 block footprint for replacements
+		Last = ASTC12x12,
 	};
 
 	static bool ValidateUsageAndFormat(Usage usage, Format format);
+
+	/// Compressed block descriptor. ASTC footprints are rectangular, so one scalar block
+	/// size cannot describe them: pitch, row count, and transfer geometry all need both
+	/// dimensions plus the bytes-per-block separately. Uncompressed formats report a
+	/// degenerate {1, 1, bytes_per_texel} block.
+	struct BlockInfo
+	{
+		u32 width;
+		u32 height;
+		u32 bytes;
+	};
+
+	static BlockInfo GetBlockInfo(Format format);
 
 	enum class State : u8
 	{
@@ -148,6 +175,7 @@ public:
 
 	static const char* GetFormatName(Format format);
 	static bool IsBlockCompressedFormat(Format format);
+	static bool IsASTCFormat(Format format);
 	static u32 GetCompressedBytesPerBlock(Format format);
 	static u32 GetCompressedBlockSize(Format format);
 	static u32 CalcUploadPitch(Format format, u32 width);
@@ -300,7 +328,10 @@ public:
 	u32 GetMemUsage() const { return m_size.x * m_size.y * (m_format == Format::UNorm8 ? 1 : 4); }
 
 	// Helper routines for formats/types
-	static bool IsCompressedFormat(Format format) { return (format >= Format::BC1 && format <= Format::BC7); }
+	static bool IsCompressedFormat(Format format)
+	{
+		return (format >= Format::BC1 && format <= Format::BC7) || IsASTCFormat(format);
+	}
 };
 
 class GSDownloadTexture

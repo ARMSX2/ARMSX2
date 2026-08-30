@@ -1139,6 +1139,15 @@ bool GSDeviceOGL::CheckFeatures()
 	m_features.dxt_textures = GLAD_GL_EXT_texture_compression_s3tc;
 	m_features.bptc_textures =
 		GLAD_GL_VERSION_4_2 || GLAD_GL_ARB_texture_compression_bptc || GLAD_GL_EXT_texture_compression_bptc;
+	// ASTC LDR from the live context. GL_KHR_texture_compression_astc_hdr is a superset of
+	// the LDR profiles, so accepting its 2D-LDR portion here is correct; the desktop-GL
+	// extensions are accepted too but no shipping desktop driver needs them.
+	m_features.astc_textures = m_is_gles
+		? (GLAD_GL_ES_VERSION_3_2 || GLAD_GL_OES_texture_compression_astc ||
+			  GLAD_GL_KHR_texture_compression_astc_ldr || GLAD_GL_KHR_texture_compression_astc_hdr)
+		: (GLAD_GL_KHR_texture_compression_astc_ldr || GLAD_GL_KHR_texture_compression_astc_hdr);
+	DevCon.WriteLn("GL: ASTC LDR texture replacements %s.",
+		m_features.astc_textures ? "active" : "not supported by this context");
 	m_features.prefer_new_textures = false;
 	m_features.stencil_buffer = true;
 	m_features.test_and_sample_depth = true;

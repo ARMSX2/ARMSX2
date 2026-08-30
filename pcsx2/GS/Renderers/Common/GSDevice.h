@@ -1599,6 +1599,7 @@ public:
 		bool prefer_new_textures  : 1; ///< Allocate textures up to the pool size before reusing them, to avoid render pass restarts.
 		bool dxt_textures         : 1; ///< Supports DXTn texture compression, i.e. S3TC and BC1-3.
 		bool bptc_textures        : 1; ///< Supports BC6/7 texture compression.
+		bool astc_textures        : 1; ///< Can create and sample every standard 2D ASTC LDR UNORM format used by the replacement loader.
 		bool framebuffer_fetch    : 1; ///< Can sample from the framebuffer without texture barriers.
 		bool framebuffer_fetch_orders_overlap : 1; ///< Framebuffer fetch also orders overlapping primitives *within* a single draw, so a full barrier is redundant. Vulkan's rasterization-order attachment access, Metal's programmable blending and GL's ARM_shader_framebuffer_fetch all guarantee this by spec; GL's EXT_shader_framebuffer_fetch does not deliver it in practice.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
@@ -1609,6 +1610,8 @@ public:
 		bool aa1                  : 1; ///< Supports the GS AA1 feature.
 		bool rov                  : 1; ///< Supports rasterizer ordered views for both depth and color.
 		bool metalfx_spatial      : 1; ///< Supports Apple MetalFX spatial upscaling (Metal backend, macOS 13+).
+		bool fsr1                 : 1; ///< Supports AMD FidelityFX Super Resolution 1 (two compute passes).
+		bool sgsr                 : 1; ///< Supports Qualcomm Snapdragon Game Super Resolution 1 (one compute pass).
 		bool dual_source_blend    : 1; ///< Supports a second fragment output (SRC1) as a hardware blend factor.
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		FeatureSupport()
@@ -1706,11 +1709,22 @@ protected:
 	static constexpr u32 MAX_POOLED_TEXTURES = 300;
 	static constexpr u32 MAX_TEXTURE_AGE = 10;
 	static constexpr u32 NUM_CAS_CONSTANTS = 12; // 8 plus src offset x/y, 16 byte alignment
+	// Five uvec4s: EASU's con0..con3 plus FSR's "Sample" vector. RCAS only reads con0 and
+	// Sample, but Sample still decorates to byte offset 64, so both passes push all 80 bytes
+	// - a short push leaves Sample undefined and the shader squares the whole image.
+	static constexpr u32 NUM_FSR1_CONSTANTS = 20;
+	/// dstSize(2) + uvOffset(2) + uvScale(2) + srcSize(2) + invSrcSize(2) + edgeSharpness(1),
+	/// as u32 words. Mixed uint/float, so the host packs it rather than the type saying so.
+	static constexpr u32 NUM_SGSR_CONSTANTS = 11;
+	/// Plain and edge-direction. Two modules from one file, like FSR1's two passes: the variant
+	/// is a preprocessor gate, so it cannot be a specialization constant.
+	static constexpr u32 NUM_SGSR_PIPELINES = 2;
 	static constexpr u32 EXPAND_BUFFER_SIZE = sizeof(u16) * 16383 * 6;
 
 	WindowInfo m_window_info;
 	GSVSyncMode m_vsync_mode = GSVSyncMode::Disabled;
 	bool m_allow_present_throttle = false;
+	bool m_present_has_new_frame = false;
 	u64 m_last_frame_displayed_time = 0;
 
 	GSTexture* m_merge = nullptr;
@@ -1719,8 +1733,14 @@ protected:
 	GSTexture* m_mad = nullptr;
 	GSTexture* m_target_tmp = nullptr;
 	GSTexture* m_current = nullptr;
+	/// Whether a chain is loaded in the backend, so ApplyShaderChain can free it on the
+	/// frame the player turns shaders off rather than polling for it.
+	bool m_shader_chain_loaded = false;
 	GSTexture* m_cas = nullptr;
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
+	GSTexture* m_fsr1_easu = nullptr; ///< FSR1 EASU output, at display size; RCAS reads it back.
+	GSTexture* m_fsr1_output = nullptr; ///< FSR1 RCAS output, the texture actually presented.
+	GSTexture* m_sgsr_output = nullptr; ///< SGSR output. One pass, so one target, unlike FSR1.
 	GSTexture* m_colclip_rt = nullptr; ///< Temp hw colclip texture
 	GSTexture* m_ds_as_rt = nullptr; ///< Depth as color
 
@@ -1753,6 +1773,12 @@ protected:
 	/// the Vulkan/OpenGL devices override it, everything else keeps the no-op.
 	virtual bool DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex) { return false; }
 
+	/// Free whatever the chain is holding. A loaded chain owns a render target and a
+	/// pipeline per pass and the collection runs to forty of them, so leaving it resident
+	/// after the player turns shaders off is the memory that matters on a handheld. Same
+	/// override rule as above: only the librashader-capable backends implement it.
+	virtual void ReleaseShaderChain() {}
+
 	/// Generation of the parameter-override store, bumped on every SetShaderChainParams.
 	/// A backend compares this against its own last-applied generation to decide whether
 	/// there is anything to do — it is an atomic load, so the per-frame check costs no
@@ -1773,6 +1799,22 @@ protected:
 	/// Upscales sTex into dTex using a backend-specific spatial upscaler (MetalFX on Metal).
 	/// Base implementation is a no-op; only the Metal backend overrides it.
 	virtual bool DoMetalFXSpatial(GSTexture* sTex, GSTexture* dTex) { return false; }
+
+	/// Resolves FSR1 shader includes for the specified source, and prepends the #version line
+	/// plus the FSR_PASS_EASU gate. The pass cannot be a specialization constant: it decides
+	/// which function bodies ffx_fsr1.h emits at all, which is a preprocessor-time question.
+	static bool GetFSR1ShaderSource(std::string* source, bool easu_pass);
+
+	/// FSR1 pass 1 (EASU): edge-adaptive spatial upsample from sTex to dTex's size.
+	/// FSR1 pass 2 (RCAS): robust contrast-adaptive sharpen, same size in and out.
+	/// Both no-op in the base class so only the backends that gate Features().fsr1 on need them.
+	virtual bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
+	virtual bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
+
+	/// SGSR: edge-directed spatial upsample from sTex to dTex's size, in a single dispatch.
+	/// No-op in the base class, like the FSR1 pair above.
+	virtual bool DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants,
+		bool edge_direction) { return false; }
 
 	/// Perform texture operations for ImGui
 	void UpdateImGuiTextures();
@@ -1955,8 +1997,21 @@ public:
 	PresentResult BeginPresent(bool frame_skip)
 	{
 		FlushDeferredDraws();
+		// Assume nothing until the frame is actually composited. Several presents legitimately
+		// carry no new game output — see NotePresentHasNewFrame.
+		m_present_has_new_frame = false;
 		return DoBeginPresent(frame_skip);
 	}
+
+	/// Record that the present being built carries a game frame the GS has just produced. Called
+	/// from the one place that knows — GSRenderer::VSync, where "there is something to draw" is
+	/// already decided as `current && !blank_frame`. Read by the Vulkan backend, which must not
+	/// hand frame generation a frame the game never drew.
+	///
+	/// A pause-menu repaint re-presents the PREVIOUS frame and deliberately does NOT set this: it
+	/// goes through PresentCurrentFrame, which draws the same image again. Neither does a blank,
+	/// a skipped duplicate, or a boot screen with no GS output yet.
+	void NotePresentHasNewFrame() { m_present_has_new_frame = true; }
 
 	/// Presents the frame to the display.
 	virtual void EndPresent() = 0;
@@ -3476,6 +3531,14 @@ public:
 	/// Spatially upscales the merged display texture (MetalFX) to the draw-rect size, rewriting
 	/// tex/src_rect/src_uv to point at the upscaled result, mirroring CAS().
 	void MetalFXUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
+
+	/// Same contract as MetalFXUpscale(), via FSR1's two compute passes.
+	void FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
+
+	/// Same contract again, via SGSR's single compute pass. Cheaper than FSR1 on mobile, which is
+	/// the point of having it: SGSR was designed for Adreno, FSR1's two passes were not.
+	void SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect,
+		bool edge_direction);
 
 	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
 

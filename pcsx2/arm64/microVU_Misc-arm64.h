@@ -13,10 +13,10 @@ struct microVU;
 // Global Variables
 //------------------------------------------------------------------
 
-// Combined sign/zero lane-weight vectors for the single-ADDV MAC/status flag
-// pack in mVUupdateFlags (see armEmitPackSignZeroBits). `byMask` is indexed by
-// [reverse][dest-field mask]; `bySSShift` holds the four single-scalar
-// variants, which keep lane 0 alone and additionally fold SHIFT_XYZW's rotate.
+// Combined lane-weight vectors for the single-ADDV MAC/status flag pack in
+// mVUupdateFlags (see armEmitPackSignZeroBits). `byMask` is indexed by
+// [variant][reverse][dest-field mask]; `bySSShift` holds the four single-scalar
+// shifts, which keep lane 0 alone and additionally fold SHIFT_XYZW's rotate.
 //
 // These used to be materialised per call site as a vixl literal-pool load,
 // which burned a fresh 16-byte pool slot for every flag-writing FMAC in the
@@ -24,25 +24,41 @@ struct microVU;
 // program, 12.8% of its host code, every one of them on its own cache line.
 // Living in mVUglob they ride the pinned gprMVUglob base as a single
 // `Ldr q, [x25, #imm]` and share a handful of D-cache lines.
+
+// Which MAC nibbles the op packs, as an index into the tables below: bit 0 the
+// O nibble, bit 1 the U nibble. An op that models neither indexes 0.
+enum mVUmacWeightVariant
+{
+	mVUmacW_ZS   = 0,
+	mVUmacW_ZSO  = 1,
+	mVUmacW_ZSU  = 2,
+	mVUmacW_ZSUO = 3,
+};
+
 struct mVU_MacWeights
 {
-	u32 byMask[2][16][4];
-	u32 bySSShift[4][4];
+	u32 byMask[4][2][16][4];
+	u32 bySSShift[4][4][4];
 };
 
 static constexpr mVU_MacWeights mVUmakeMacWeights()
 {
 	mVU_MacWeights t{};
-	for (int rev = 0; rev < 2; rev++)
-		for (u32 mask = 0; mask < 16; mask++)
+	for (int v = 0; v < 4; v++)
+	{
+		const bool wu = (v & mVUmacW_ZSU) != 0;
+		const bool wo = (v & mVUmacW_ZSO) != 0;
+		for (int rev = 0; rev < 2; rev++)
+			for (u32 mask = 0; mask < 16; mask++)
+				for (int lane = 0; lane < 4; lane++)
+					t.byMask[v][rev][mask][lane] = armPackLaneWeight(lane, mask, rev != 0, 0, wu, wo);
+		// Single-scalar: the result sits in lane 0 and SHIFT_XYZW rotates it
+		// into the field's own MAC bit. shift <= 3 keeps the zero half inside
+		// the low nibble, so the SLI trick still holds.
+		for (int shift = 0; shift < 4; shift++)
 			for (int lane = 0; lane < 4; lane++)
-				t.byMask[rev][mask][lane] = armPackLaneWeight(lane, mask, rev != 0, 0);
-	// Single-scalar: the result sits in lane 0 and SHIFT_XYZW rotates it into
-	// the field's own MAC bit. shift <= 3 keeps the zero half inside the low
-	// nibble, so the SLI trick still holds.
-	for (int shift = 0; shift < 4; shift++)
-		for (int lane = 0; lane < 4; lane++)
-			t.bySSShift[shift][lane] = armPackLaneWeight(lane, 1, false, shift);
+				t.bySSShift[v][shift][lane] = armPackLaneWeight(lane, 1, false, shift, wu, wo);
+	}
 	return t;
 }
 
@@ -55,7 +71,9 @@ struct mVU_Globals
 	u32   maxvals [4] = __four(0x7f7fffff);
 	u32   exponent[4] = __four(0x7f800000);
 	u32   one     [4] = __four(0x3f800000);
-	u32   Pi4     [4] = __four(0x3f490fdb);
+	// EATAN's series ends on this. The EFU's pi/4 is 0x3f490fda, a ULP below
+	// the correctly-rounded value that x86/microVU_Misc.h still holds.
+	u32   Pi4     [4] = __four(0x3f490fda);
 	// EATAN's odd-power atan series, c1 c3 c5 ... c15. ⚠️ This table is a COPY of the
 	// one in x86/microVU_Misc.h and the two must stay name-for-name identical: the
 	// arm64 build reads this one, the x86 build reads that one, and mVU_EATAN_arm and
@@ -112,14 +130,15 @@ static_assert(offsetof(mVU_Globals, macWeights) % 16 == 0,
 
 // Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
 // single-scalar path, which always keeps lane 0 alone in forward bit order.
-__fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift)
+__fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant)
 {
+	pxAssert(variant >= 0 && variant < 4);
 	if (shift != 0)
 	{
 		pxAssert(keepMask == 1 && !reverse && shift < 4);
-		return &mVUglob.macWeights.bySSShift[shift][0];
+		return &mVUglob.macWeights.bySSShift[variant][shift][0];
 	}
-	return &mVUglob.macWeights.byMask[reverse ? 1 : 0][keepMask & 0xF][0];
+	return &mVUglob.macWeights.byMask[variant][reverse ? 1 : 0][keepMask & 0xF][0];
 }
 
 static const uint _Ibit_ = 1 << 31;

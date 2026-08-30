@@ -279,10 +279,10 @@ object TexturePackInstaller {
         return parts.joinToString("/")
     }
 
-    /** The core only loads PNG and DDS; anything else is a readme or a stray thumbnail. */
+    /** The core only loads PNG, DDS and ASTC; anything else is a readme or a stray thumbnail. */
     private fun isTextureFile(name: String): Boolean {
         val lower = name.lowercase()
-        return lower.endsWith(".png") || lower.endsWith(".dds")
+        return lower.endsWith(".png") || lower.endsWith(".dds") || lower.endsWith(".astc")
     }
 
     private fun isJunkEntry(name: String): Boolean {

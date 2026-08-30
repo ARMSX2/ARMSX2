@@ -20,6 +20,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 using namespace recompiler_tests;
 using namespace mips;
 
@@ -207,43 +209,100 @@ TEST(EeRecTraps, BreakInDelaySlotSetsCauseBdAndBranchEpc)
 	EXPECT_EQ(h.GetCp0Jit(14), RecompilerTestEnvironment::kProgramPc);
 }
 
-TEST(EeRecTraps, LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpc)
+// The memory-op raiser: a LW from an unmapped vaddr in a delay slot. Only the
+// interpreter raises it, so the engines diverge here and neither test below can
+// use Run()'s paired diff. The divert the rec is meant to grow is pinned,
+// disabled, in ee_rec_tlb_divert_tests.cpp.
+//
+// The recompiler half runs softmem: the test binary installs no host SIGSEGV
+// handler, so a fastmem probe of the unmapped page would kill the process
+// instead of backpatching (same constraint as CallerSavedPinsSurviveVtlbSlowPath).
+namespace {
+std::vector<u32> DelaySlotTlbMissProgram()
 {
-	// The memory-op raiser: a LW from an unmapped vaddr in a delay slot. The
-	// inline load path has no recEmitInterpTlbMissCheck — the divert to the
-	// exception vector rides the bracket epilogue, so this test also fails if
-	// the epilogue is dropped for memory delay slots.
-	// Softmem emit: the test binary installs no host SIGSEGV handler, so a
-	// fastmem probe of the unmapped page would kill the process instead of
-	// backpatching (same constraint as CallerSavedPinsSurviveVtlbSlowPath).
-	// The softmem slow path reaches the identical vtlb_Miss → cpuTlbMiss →
-	// cpuException(bd) machinery under test.
-	EeRecTestHarness h;
-	const bool old_fastmem = EmuConfig.Cpu.Recompiler.EnableFastmem;
-	EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-	h.LoadProgram({
+	return {
 		LUI(reg::a0, 0x4000),            // +0x0: a0 = 0x40000000 (no TLB entry)
 		BEQ(reg::zero, reg::zero, 2),    // +0x4: taken branch to +0x10
 		LW(reg::v1, 0, reg::a0),         // +0x8: delay slot — TLB refill miss
 		ADDIU(reg::v0, reg::zero, 99),   // +0xC: skipped by the branch
-		ADDIU(reg::a1, reg::zero, 77),   // +0x10: target — exception preempts it
-	});
-	h.Run();
-	EmuConfig.Cpu.Recompiler.EnableFastmem = old_fastmem;
-	h.ExpectGpr64(reg::v0, 0ull);
-	h.ExpectGpr64(reg::v1, 0ull);        // faulting load must not write rt
-	h.ExpectGpr64(reg::a1, 0ull);
+		ADDIU(reg::a1, reg::zero, 77),   // +0x10: branch target
+	};
+}
+} // namespace
+
+TEST(EeRecTraps, LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpcOnTheInterpreter)
+{
+	EeRecTestHarness h;
+	h.LoadProgram(DelaySlotTlbMissProgram());
+	h.RunInterpOnly();
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0), 0ull);
+	EXPECT_EQ(h.GetGpr64Interp(reg::v1), 0ull); // faulting load must not write rt
+	EXPECT_EQ(h.GetGpr64Interp(reg::a1), 0ull); // vector preempts the target
 	// TLBL: ExcCode=2, Cause.ExcCode<<2 = 0x08. BadVAddr (CP0 r8) = the vaddr.
 	EXPECT_EQ(h.GetCp0Interp(13) & 0xFFu, 0x08u);
-	EXPECT_NE(h.GetCp0Interp(13) & 0x80000000u, 0u) << "interp CAUSE.BD";
+	EXPECT_NE(h.GetCp0Interp(13) & 0x80000000u, 0u) << "CAUSE.BD";
 	EXPECT_EQ(h.GetCp0Interp(14), RecompilerTestEnvironment::kProgramPc + 4)
-		<< "interp EPC = branch address";
+		<< "EPC = branch address, not the delay slot";
 	EXPECT_EQ(h.GetCp0Interp(8), 0x40000000u);
-	EXPECT_EQ(h.GetCp0Jit(13) & 0xFFu, 0x08u);
-	EXPECT_NE(h.GetCp0Jit(13) & 0x80000000u, 0u) << "JIT CAUSE.BD";
-	EXPECT_EQ(h.GetCp0Jit(14), RecompilerTestEnvironment::kProgramPc + 4)
-		<< "JIT EPC must be the branch, not the delay slot";
-	EXPECT_EQ(h.GetCp0Jit(8), 0x40000000u);
+}
+
+TEST(EeRecTraps, LoadTlbMissDoesNotRaiseOnTheRecompiler)
+{
+	// x86 parity: the miss is reported and the block runs on, so the load reads
+	// zero, the branch target executes, and no CP0 state moves. Status.EXL is
+	// the one that matters — once it latches, cpuException stops writing EPC.
+	EeRecTestHarness h;
+	const bool old_fastmem = EmuConfig.Cpu.Recompiler.EnableFastmem;
+	EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+	h.LoadProgram(DelaySlotTlbMissProgram());
+	h.RunJitNoDiff();
+	EmuConfig.Cpu.Recompiler.EnableFastmem = old_fastmem;
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0), 0ull);  // still skipped by the branch
+	EXPECT_EQ(h.GetGpr64Jit(reg::v1), 0ull);  // unmapped read returns zero
+	EXPECT_EQ(h.GetGpr64Jit(reg::a1), 77ull); // branch target runs
+	EXPECT_EQ(h.GetCp0Jit(12) & 0x2u, 0u) << "Status.EXL must not latch";
+	EXPECT_EQ(h.GetCp0Jit(13), 0u) << "CAUSE";
+	EXPECT_EQ(h.GetCp0Jit(14), 0u) << "EPC";
+	EXPECT_EQ(h.GetCp0Jit(8), 0u) << "BadVAddr";
+}
+
+// 0xBF801000 is kseg1, so no TLB entry: it translates to 0x1f801000, IOP
+// hardware, whose 64-bit reader is _ext_memRead64<2> (Memory.cpp).
+namespace {
+std::vector<u32> UnknownMmioLoadProgram()
+{
+	return {
+		LUI(reg::a0, 0xBF80),            // +0x0
+		ee::LD(reg::v1, 0x1000, reg::a0),// +0x4
+		ADDIU(reg::v0, reg::zero, 99),   // +0x8
+	};
+}
+} // namespace
+
+TEST(EeRecTraps, UnknownMmioAccessRaisesOnTheInterpreter)
+{
+	EeRecTestHarness h;
+	h.LoadProgram(UnknownMmioLoadProgram());
+	h.RunInterpOnly();
+	EXPECT_EQ(h.GetGpr64Interp(reg::v1), 0ull);
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0), 0ull) << "vector preempts the next op";
+	EXPECT_EQ(h.GetCp0Interp(13) & 0xFFu, 0x08u) << "TLBL";
+	EXPECT_NE(h.GetCp0Interp(12) & 0x2u, 0u) << "Status.EXL";
+	EXPECT_EQ(h.GetCp0Interp(14), RecompilerTestEnvironment::kProgramPc + 4);
+	EXPECT_EQ(h.GetCp0Interp(8), 0x1f801000u) << "BadVAddr = the paddr";
+}
+
+TEST(EeRecTraps, UnknownMmioAccessDoesNotRaiseOnTheRecompiler)
+{
+	EeRecTestHarness h;
+	h.LoadProgram(UnknownMmioLoadProgram());
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetGpr64Jit(reg::v1), 0ull);
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0), 99ull) << "the block must run on";
+	EXPECT_EQ(h.GetCp0Jit(12) & 0x2u, 0u) << "Status.EXL must not latch";
+	EXPECT_EQ(h.GetCp0Jit(13), 0u) << "CAUSE";
+	EXPECT_EQ(h.GetCp0Jit(14), 0u) << "EPC";
+	EXPECT_EQ(h.GetCp0Jit(8), 0u) << "BadVAddr";
 }
 
 TEST(EeRecTraps, AluDelaySlotBranchSemanticsSurviveWithoutBracket)

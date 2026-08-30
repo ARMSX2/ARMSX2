@@ -10,8 +10,11 @@
 #include "common/TextureDecompress.h" // CPU BC1/2/3/BC7 decode when the GPU lacks BC support
 
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/HW/GSTextureASTC.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cinttypes>
 #include <csetjmp>
 #include <cstring>
 #include <png.h>
@@ -24,10 +27,12 @@ struct LoaderDefinition
 
 static bool PNGLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 static bool DDSLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
+static bool ASTCLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 
 static constexpr LoaderDefinition s_loaders[] = {
 	{"png", PNGLoader},
 	{"dds", DDSLoader},
+	{"astc", ASTCLoader},
 };
 
 
@@ -39,8 +44,13 @@ GSTextureReplacements::ReplacementTextureLoader GSTextureReplacements::GetLoader
 
 	for (const LoaderDefinition& defn : s_loaders)
 	{
-		if (StringUtil::Strncasecmp(extension.data(), defn.extension, extension.size()) == 0)
+		// Exact extension match. A bare Strncasecmp() against the caller's length would
+		// accept a prefix of a registered extension ("png" matching ".pngfoo").
+		if (extension.size() == std::strlen(defn.extension) &&
+			StringUtil::Strncasecmp(extension.data(), defn.extension, extension.size()) == 0)
+		{
 			return defn.loader;
+		}
 	}
 
 	return nullptr;
@@ -674,6 +684,108 @@ static bool ReadDDSMipLevel(std::FILE* fp, const std::string& filename, u32 mip_
 	// Apply conversion function for uncompressed textures.
 	if (info.conversion_function)
 		info.conversion_function(width, height, data, pitch);
+
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// ASTC Handlers
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static bool ASTCLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image)
+{
+	if (!g_gs_device || !g_gs_device->Features().astc_textures)
+	{
+		// One warning for the pack rather than one per texture; the game's original
+		// texture remains in use.
+		static std::atomic<bool> warned{false};
+		if (!warned.exchange(true))
+		{
+			Console.Warning("Skipping ASTC replacement textures (e.g. %s): the active GS backend "
+							"does not support native ASTC LDR compression.",
+				filename.c_str());
+		}
+		return false;
+	}
+
+	u8 header[ASTC::HEADER_SIZE];
+	{
+		auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "rb");
+		if (!fp || std::fread(header, 1, ASTC::HEADER_SIZE, fp.get()) != ASTC::HEADER_SIZE)
+		{
+			Console.Warning("Failed to read ASTC replacement texture header %s", filename.c_str());
+			return false;
+		}
+	}
+
+	ASTC::HeaderInfo info;
+	const ASTC::ParseResult pres =
+		ASTC::ParseHeader(header, ASTC::HEADER_SIZE, &info, g_gs_device->GetMaxTextureSize());
+	if (pres != ASTC::ParseResult::Ok)
+	{
+		const char* reason;
+		switch (pres)
+		{
+			case ASTC::ParseResult::BadMagic:
+				reason = "bad magic";
+				break;
+			case ASTC::ParseResult::BadBlockFootprint:
+				reason = "unsupported block footprint";
+				break;
+			case ASTC::ParseResult::NotTwoDimensional:
+				reason = "not a 2D image";
+				break;
+			case ASTC::ParseResult::BadImageDimensions:
+				reason = "zero image dimension";
+				break;
+			case ASTC::ParseResult::TruncatedHeader:
+				reason = "truncated header";
+				break;
+			case ASTC::ParseResult::TooLarge:
+				reason = "dimensions exceed the device texture size limit";
+				break;
+			default:
+				reason = "unknown error";
+				break;
+		}
+		Console.Warning("Rejecting ASTC replacement texture %s: %s.", filename.c_str(), reason);
+		return false;
+	}
+
+	u32 pitch = 0;
+	u32 payload_size = 0;
+	if (!ASTC::CalculatePayloadSize(info, &pitch, &payload_size))
+	{
+		Console.Warning("Rejecting ASTC replacement texture %s: payload size overflows.", filename.c_str());
+		return false;
+	}
+
+	// Exact file size: a truncated payload or trailing bytes are both corrupt containers,
+	// and the header alone cannot tell us — it carries no size field.
+	const s64 expected_size = static_cast<s64>(ASTC::HEADER_SIZE) + static_cast<s64>(payload_size);
+	const s64 file_size = FileSystem::GetPathFileSize(filename.c_str());
+	if (!ASTC::ValidateFileSize(info, file_size))
+	{
+		Console.Warning("Rejecting ASTC replacement texture %s: file is %" PRId64
+						" bytes, expected %" PRId64 " for a %ux%u image at %ux%u blocks.",
+			filename.c_str(), file_size, expected_size, info.width, info.height, info.block_width,
+			info.block_height);
+		return false;
+	}
+
+	tex->width = info.width;
+	tex->height = info.height;
+	tex->format = info.format;
+	tex->pitch = pitch;
+	tex->data.resize(payload_size);
+
+	auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "rb");
+	if (!fp || (std::fseek(fp.get(), ASTC::HEADER_SIZE, SEEK_SET) != 0) ||
+		std::fread(tex->data.data(), 1, payload_size, fp.get()) != payload_size)
+	{
+		Console.Warning("Failed to read ASTC replacement texture payload %s", filename.c_str());
+		return false;
+	}
 
 	return true;
 }

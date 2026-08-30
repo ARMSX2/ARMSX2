@@ -6,8 +6,8 @@
 #include "GS.h"
 #include "Gif_Unit.h"
 #include "MTVU.h"
-
-#include <cmath>
+#include "EeFpuModel.h"
+#include "VuEfuModel.h"
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -54,12 +54,13 @@ static __ri bool _vuFMACflush(VURegs* VU)
 		if (VU->fmac[i].flagreg & (1 << REG_CLIP_FLAG))
 			VU->VI[REG_CLIP_FLAG].UL = VU->fmac[i].clipflag;
 
-		// Normal FMAC instructoins only affectx Z/S/I/O, D/I are modified only by FDIV instructions
-		// Sticky flags (Affected by FSSET)
+		// An FMAC owns Z/S/U/O in both halves of STATUS. D/I belong to the
+		// divide unit, which publishes both halves from its own pipe; FSSET is
+		// the exception and writes the whole sticky field.
 		if (VU->fmac[i].flagreg & (1 << REG_STATUS_FLAG))
 			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0x30) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
 		else
-			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0x3C0) | (VU->fmac[i].statusflag & 0xF);
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
@@ -158,12 +159,13 @@ void _vuFlushAll(VURegs* VU)
 		if (VU->fmac[i].flagreg & (1 << REG_CLIP_FLAG))
 			VU->VI[REG_CLIP_FLAG].UL = VU->fmac[i].clipflag;
 
-		// Normal FMAC instructoins only affectx Z/S/I/O, D/I are modified only by FDIV instructions
-		// Sticky flags (Affected by FSSET)
+		// An FMAC owns Z/S/U/O in both halves of STATUS. D/I belong to the
+		// divide unit, which publishes both halves from its own pipe; FSSET is
+		// the exception and writes the whole sticky field.
 		if (VU->fmac[i].flagreg & (1 << REG_STATUS_FLAG))
 			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0x30) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
 		else
-			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0x3C0) | (VU->fmac[i].statusflag & 0xF);
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
@@ -367,7 +369,7 @@ static __ri void _vuEFUAdd(VURegs* VU, int cycles)
 	VU->efu.enable = 1;
 	VU->efu.sCycle = VU->cycle;
 	VU->efu.Cycle = cycles;
-	VU->efu.reg.F = VU->p.F;
+	VU->efu.reg.UL = VU->p.UL;
 }
 
 static __ri void _vuAddIALUStalls(VURegs* VU, _VURegsNum* VUregsn)
@@ -462,34 +464,34 @@ static __fi float vuDouble(u32 f)
 }
 #endif
 
-static __fi float vuADD_TriAceHack(u32 a, u32 b)
+// One lane of an FMAC: the word, plus the two facts the flag registers need
+// that the word cannot carry (VUflags.h). mulSticky is the multiply stage's
+// own cause nibble on a MADD/MSUB, which the cause field does not show.
+struct VuMacValue
 {
-	// On VU0 TriAce Games use ADDi and expects these bit-perfect results:
-	//if (a == 0xb3e2a619 && b == 0x42546666) return vuDouble(0x42546666);
-	//if (a == 0x8b5b19e9 && b == 0xc7f079b3) return vuDouble(0xc7f079b3);
-	//if (a == 0x4b1ed4a8 && b == 0x43a02666) return vuDouble(0x4b1ed5e7);
-	//if (a == 0x7d1ca47b && b == 0x42f23333) return vuDouble(0x7d1ca47b);
+	u32 bits;
+	bool overflow;
+	bool underflow;
+	u32 mulSticky;
+};
 
-	// In the 3rd case, some other rounding error is giving us incorrect
-	// operands ('a' is wrong); and therefor an incorrect result.
-	// We're getting:        0x4b1ed4a8 + 0x43a02666 = 0x4b1ed5e8
-	// We should be getting: 0x4b1ed4a7 + 0x43a02666 = 0x4b1ed5e7
-	// microVU gets the correct operands and result. The interps likely
-	// don't get it due to rounding towards nearest in other calculations.
+// The multiply stage's contribution to the sticky field, in VU_STAT_UPDATE's
+// bit order. S is the product's sign bit and is independent of the other
+// three: a negative product whose sum comes back positive leaves the MAC flag
+// clear and sticky S set.
+static __fi u32 vuProductSticky(const EeFpuModel::Result& s)
+{
+	const u32 sign = (s.bits >> 30) & 0x2u;
+	if (s.overflow)
+		return sign | 0x8u;
+	if (s.underflow)
+		return sign | 0x5u;
+	return sign | ((s.bits & 0x7FFFFFFFu) == 0 ? 0x1u : 0u);
+}
 
-	// microVU uses something like this to get TriAce games working,
-	// but VU interpreters don't seem to need it currently:
-
-	// Update Sept 2021, now the interpreters don't suck, they do - Refraction
-	s32 aExp = (a >> 23) & 0xff;
-	s32 bExp = (b >> 23) & 0xff;
-	if (aExp - bExp >= 25) b &= 0x80000000;
-	if (aExp - bExp <=-25) a &= 0x80000000;
-	float ret = vuDouble(a) + vuDouble(b);
-	//DevCon.WriteLn("aExp = %d, bExp = %d", aExp, bExp);
-	//DevCon.WriteLn("0x%08x + 0x%08x = 0x%08x", a, b, (u32&)ret);
-	//DevCon.WriteLn("%f + %f = %f", vuDouble(a), vuDouble(b), ret);
-	return ret;
+static __fi VuMacValue vuMacValue(const EeFpuModel::Result& s, u32 mulSticky = 0)
+{
+	return {s.bits, s.overflow, s.underflow, mulSticky};
 }
 
 template <u32(*Fn)(u32)>
@@ -527,31 +529,33 @@ static __fi VECTOR* _getDst(VURegs* VU)
 		return &VU->VF[_Fd_];
 }
 
-template <float(*Fn)(u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w)); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
-template <float(*Fn)(u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->VF[_Fs_].i.x, bc)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->VF[_Fs_].i.y, bc)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->VF[_Fs_].i.z, bc)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->VF[_Fs_].i.w, bc)); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
-static __fi float _vuOpADD(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpADD(u32 fs, u32 ft)
 {
-	return vuDouble(fs) + vuDouble(ft);
+	return vuMacValue(EeFpuModel::AddSub(fs, ft, false));
 }
 
 static __fi void _vuADD(VURegs* VU)
@@ -564,17 +568,13 @@ static __fi void vuADDbc(VURegs* VU, u32 bc)
 	applyBinaryMACOpBroadcast<_vuOpADD, MACOpDst::Fd>(VU, bc);
 }
 
-static __fi void vuADDbc_addsubhack(VURegs* VU, u32 bc)
-{
-	if (CHECK_VUADDSUBHACK)
-		applyBinaryMACOpBroadcast<vuADD_TriAceHack, MACOpDst::Fd>(VU, bc);
-	else
-		applyBinaryMACOpBroadcast<_vuOpADD, MACOpDst::Fd>(VU, bc);
-}
-
+// The tri-ace ADDi gamefix flushed whichever operand sat 25 or more exponents
+// below the other. That is the last row of the adder's own guard mask
+// (fpuGuardMask, FPU.cpp), which is modelled here at every separation, so the
+// gamefix has nothing left to add and ADDi takes one path either way.
 static __fi void _vuADDi(VURegs* VU)
 {
-	vuADDbc_addsubhack(VU, VU->VI[REG_I].UL);
+	vuADDbc(VU, VU->VI[REG_I].UL);
 }
 
 static __fi void _vuADDq(VURegs* VU) { vuADDbc(VU, VU->VI[REG_Q].UL); }
@@ -600,9 +600,9 @@ static __fi void _vuADDAy(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuADDAz(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuADDAw(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpSUB(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpSUB(u32 fs, u32 ft)
 {
-	return vuDouble(fs) - vuDouble(ft);
+	return vuMacValue(EeFpuModel::AddSub(fs, ft, true));
 }
 
 static __fi void _vuSUB(VURegs* VU)
@@ -639,9 +639,9 @@ static __fi void _vuSUBAy(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuSUBAz(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuSUBAw(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpMUL(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMUL(u32 fs, u32 ft)
 {
-	return vuDouble(fs) * vuDouble(ft);
+	return vuMacValue(EeFpuModel::Mul(fs, ft));
 }
 
 static __fi void _vuMUL(VURegs* VU)
@@ -679,31 +679,34 @@ static __fi void _vuMULAy(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuMULAz(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMULAw(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.w); }
 
-template <float(*Fn)(u32, u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w)); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
-template <float(*Fn)(u32, u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc)); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
-static __fi float _vuOpMADD(u32 acc, u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMADD(u32 acc, u32 fs, u32 ft)
 {
-	return vuDouble(acc) + vuDouble(fs) * vuDouble(ft);
+	const EeFpuModel::Accumulate r = EeFpuModel::MulAccumulate(acc, fs, ft, false);
+	return vuMacValue(r.result, vuProductSticky(r.product));
 }
 
 static __fi void _vuMADD(VURegs* VU)
@@ -740,9 +743,10 @@ static __fi void _vuMADDAy(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuMADDAz(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMADDAw(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpMSUB(u32 acc, u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMSUB(u32 acc, u32 fs, u32 ft)
 {
-	return vuDouble(acc) - vuDouble(fs) * vuDouble(ft);
+	const EeFpuModel::Accumulate r = EeFpuModel::MulAccumulate(acc, fs, ft, true);
+	return vuMacValue(r.result, vuProductSticky(r.product));
 }
 
 static __fi void _vuMSUB(VURegs* VU)
@@ -838,35 +842,46 @@ static __fi void _vuMINIy(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[
 static __fi void _vuMINIz(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMINIw(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[_Ft_].i.w); }
 
+// The OP ops are ordinary four-lane FMACs whose operands are rotated:
+//
+//     fsRot = (Fs.y, Fs.z, Fs.x, Fs.w)
+//     ftRot = (Ft.z, Ft.x, Ft.y, +0.0)
+//
+// Lane w's second multiplicand is a hard +0, not Ft.w, so the product there is
+// a zero carrying Fs.w's sign and nothing of Ft: a negative Fs.w raises MAC S
+// on w, and a negative Ft.w moves nothing.
+struct VuOpOperands
+{
+	u32 fs[4], ft[4];
+};
+
+static __fi VuOpOperands _vuOpRotate(const VURegs* VU)
+{
+	return {{VU->VF[_Fs_].i.y, VU->VF[_Fs_].i.z, VU->VF[_Fs_].i.x, VU->VF[_Fs_].i.w},
+		{VU->VF[_Ft_].i.z, VU->VF[_Ft_].i.x, VU->VF[_Ft_].i.y, 0}};
+}
+
 static __fi void _vuOPMULA(VURegs* VU)
 {
-	VU->ACC.i.x = VU_MACx_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Ft_].i.z));
-	VU->ACC.i.y = VU_MACy_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Ft_].i.x));
-	VU->ACC.i.z = VU_MACz_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Ft_].i.y));
-	VU_STAT_UPDATE(VU);
+	const VuOpOperands op = _vuOpRotate(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = _vuOpMUL(op.fs[0], op.ft[0]); VU->ACC.i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = _vuOpMUL(op.fs[1], op.ft[1]); VU->ACC.i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = _vuOpMUL(op.fs[2], op.ft[2]); VU->ACC.i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = _vuOpMUL(op.fs[3], op.ft[3]); VU->ACC.i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi void _vuOPMSUB(VURegs* VU)
 {
-	VECTOR* dst;
-	float ftx, fty, ftz;
-	float fsx, fsy, fsz;
-	if (_Fd_ == 0)
-		dst = &RDzero;
-	else
-		dst = &VU->VF[_Fd_];
-
-	ftx = vuDouble(VU->VF[_Ft_].i.x);
-	fty = vuDouble(VU->VF[_Ft_].i.y);
-	ftz = vuDouble(VU->VF[_Ft_].i.z);
-	fsx = vuDouble(VU->VF[_Fs_].i.x);
-	fsy = vuDouble(VU->VF[_Fs_].i.y);
-	fsz = vuDouble(VU->VF[_Fs_].i.z);
-
-	dst->i.x = VU_MACx_UPDATE(VU, vuDouble(VU->ACC.i.x) - fsy * ftz);
-	dst->i.y = VU_MACy_UPDATE(VU, vuDouble(VU->ACC.i.y) - fsz * ftx);
-	dst->i.z = VU_MACz_UPDATE(VU, vuDouble(VU->ACC.i.z) - fsx * fty);
-	VU_STAT_UPDATE(VU);
+	VECTOR* dst = _getDst<MACOpDst::Fd>(VU);
+	const VuOpOperands op = _vuOpRotate(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = _vuOpMSUB(VU->ACC.i.x, op.fs[0], op.ft[0]); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = _vuOpMSUB(VU->ACC.i.y, op.fs[1], op.ft[1]); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = _vuOpMSUB(VU->ACC.i.z, op.fs[2], op.ft[2]); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = _vuOpMSUB(VU->ACC.i.w, op.fs[3], op.ft[3]); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi void _vuNOP(VURegs* VU)
@@ -945,30 +960,30 @@ static __fi void VU_STICKY_DI(VURegs* VU)
 	VU->statusflag |= (VU->statusflag & 0x30) << 6;
 }
 
+/*	The div unit is the EE FPU's, so all three ops read EeFpuModel rather than
+	a host divide: a digit recurrence with no rounding step, over a range that
+	runs to 0x7FFFFFFF. Operands go in as words -- vuDouble would cost the top
+	binade -- and the model flushes denormal operands and underflowing
+	quotients to a signed zero itself.
+
+	Each op answers a zero divisor before calling: DIV and RSQRT disagree about
+	the sign it saturates with. */
 static __fi void _vuDIV(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
-	float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
-	if (ft == 0.0)
+	if ((ft & 0x7F800000) == 0)
 	{
-		if (fs == 0.0)
-			VU->statusflag |= 0x10;
-		else
-			VU->statusflag |= 0x20;
-
-		if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-			(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-			VU->q.UL = 0xFF7FFFFF;
-		else
-			VU->q.UL = 0x7F7FFFFF;
+		// Exclusive: 0/0 is invalid, x/0 is a divide by zero.
+		VU->statusflag |= ((fs & 0x7F800000) == 0) ? 0x10 : 0x20;
+		VU->q.UL = ((fs ^ ft) & 0x80000000) | 0x7FFFFFFF;
 	}
 	else
 	{
-		VU->q.F = fs / ft;
-		VU->q.F = vuDouble(VU->q.UL);
+		VU->q.UL = EeFpuModel::Divide(fs, ft);
 	}
 
 	VU_STICKY_DI(VU);
@@ -976,47 +991,46 @@ static __fi void _vuDIV(VURegs* VU)
 
 static __fi void _vuSQRT(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
-	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the denormals vuDouble
-	// has already flushed to it.
-	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the negative denormals,
+	// which come back as an ordinary +0.
+	if (ft & 0x80000000)
 		VU->statusflag |= 0x10;
-	VU->q.F = sqrt(fabs(ft));
-	VU->q.F = vuDouble(VU->q.UL);
+
+	VU->q.UL = EeFpuModel::SqrtBits(ft);
 
 	VU_STICKY_DI(VU);
 }
 
 static __fi void _vuRSQRT(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
-	float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-	float temp;
+	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
 	// RSQRT is a square root then a divide, so I comes from the divisor's sign
 	// bit before the zero test and independently of it: -0 raises I for the
 	// root and D below for the division.
-	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+	if (ft & 0x80000000)
 		VU->statusflag |= 0x10;
 
-	if (ft == 0.0)
+	if ((ft & 0x7F800000) == 0)
 	{
 		// Exclusive, as in DIV: 0/0 is invalid, x/0 is a divide by zero.
-		VU->statusflag |= (fs == 0.0) ? 0x10 : 0x20;
+		VU->statusflag |= ((fs & 0x7F800000) == 0) ? 0x10 : 0x20;
 
 		// Sign of the dividend alone -- the divisor is a root, never negative.
-		VU->q.UL = (VU->VF[_Fs_].UL[_Fsf_] & 0x80000000) | 0x7F7FFFFF;
+		VU->q.UL = (fs & 0x80000000) | 0x7FFFFFFF;
 	}
 	else
 	{
-		temp = sqrt(fabs(ft));
-		VU->q.F = fs / temp;
-		VU->q.F = vuDouble(VU->q.UL);
+		// An ordinary single in between, which is where the recompilers' own
+		// fsqrt+fdiv parts company with this by a ULP.
+		VU->q.UL = EeFpuModel::RecipSqrt(fs, ft);
 	}
 
 	VU_STICKY_DI(VU);
@@ -1660,181 +1674,249 @@ static __ri void _vuWAITP(VURegs* VU)
 {
 }
 
+/*	The EFU's divide and square root are the same unit, so the sums the length
+	ops root are built from the FMAC model rather than from host floats.
+
+	A zero divisor never reaches the recurrence. Only ERCPR can see a negative
+	one: a root and a sum of squares are never below zero. */
+static __fi u32 _vuEfuDiv(u32 a, u32 b)
+{
+	if ((b & 0x7F800000) == 0)
+		return ((a ^ b) & 0x80000000) | 0x7FFFFFFF;
+
+	return EeFpuModel::Divide(a, b);
+}
+
+static __fi u32 _vuEfuRecip(u32 d) { return _vuEfuDiv(0x3F800000, d); }
+static __fi u32 _vuEfuMul(u32 a, u32 b) { return EeFpuModel::Mul(a, b).bits; }
+static __fi u32 _vuEfuAdd(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, false).bits; }
+static __fi u32 _vuEfuSub(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, true).bits; }
+
+// x*x + y*y + z*z, accumulated left to right.
+static __fi u32 _vuEfuSquareSum(u32 x, u32 y, u32 z)
+{
+	return _vuEfuAdd(_vuEfuAdd(_vuEfuMul(x, x), _vuEfuMul(y, y)), _vuEfuMul(z, z));
+}
+
+/*	The EFU's three series, in the order the recompilers emit them: single
+	precision multiplies and adds through the FMAC model, each power reached by
+	multiplying rather than by a pow() call in double. The coefficients are
+	mVU_Globals' own words (microVU_Misc-arm64.h), so the two engines evaluate
+	the same numbers. T1..T8 there are c1, c3, c5 ... c15 in ascending order.
+
+	Three details of the accumulation are worth a ULP each:
+
+	  - The constant term is not the last addend. It goes one slot earlier,
+	    between the second-to-last power and the last.
+	  - Operand order matters. The multiplier is not commutative: its deficit
+	    depends on ft's mantissa, so c * x^n and x^n * c differ. The power
+	    leads every term except EATAN's first, where the coefficient does.
+	  - Each power comes from one multiply by x*x, not two by x. The square
+	    leads that multiply the first time round and trails it afterwards.
+
+	EEXP puts its 1.0 in the constant term's slot. ESIN has no constant term:
+	its x is the first-order term and goes first. */
+static constexpr u32 kEatanC[8] = {
+	0x3F7FFFF5, 0xBEAAA61C, 0x3E4C40A6, 0xBE0E6C63,
+	0x3DC577DF, 0xBD6501C4, 0x3CB31652, 0xBB84D7E7};
+static constexpr u32 kEatanPi4 = 0x3F490FDA;
+static constexpr u32 kEsinC[4] = {0xBE2AAAA4, 0x3C08873E, 0xB94FB21F, 0x362E9C14};
+static constexpr u32 kEexpC[6] = {
+	0x3E7FFFA8, 0x3D0007F4, 0x3B29D3FF, 0x3933E553, 0x36B63510, 0x353961AC};
+static constexpr u32 kEfuOne = 0x3F800000;
+
+static __ri u32 _vuCalculateEATAN(u32 x)
+{
+	const u32 xx = _vuEfuMul(x, x);
+
+	u32 xn = _vuEfuMul(xx, x);
+	u32 p = _vuEfuAdd(_vuEfuMul(kEatanC[0], x), _vuEfuMul(xn, kEatanC[1]));
+
+	for (int i = 2; i < 8; ++i)
+	{
+		xn = _vuEfuMul(xn, xx);
+		if (i == 7)
+			p = _vuEfuAdd(p, kEatanPi4);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEatanC[i]));
+	}
+
+	return p;
+}
+
+namespace VuEfuModel
+{
+EEFPU_MODEL_CALL u32 Sum(u32 x, u32 y, u32 z, u32 w)
+{
+	return _vuEfuAdd(_vuEfuAdd(_vuEfuAdd(x, y), z), w);
+}
+
+EEFPU_MODEL_CALL u32 SquareSum(u32 x, u32 y, u32 z)
+{
+	return _vuEfuSquareSum(x, y, z);
+}
+
+EEFPU_MODEL_CALL u32 RecipSquareSum(u32 x, u32 y, u32 z)
+{
+	return _vuEfuRecip(_vuEfuSquareSum(x, y, z));
+}
+
+EEFPU_MODEL_CALL u32 Length(u32 x, u32 y, u32 z)
+{
+	return EeFpuModel::SqrtBits(_vuEfuSquareSum(x, y, z));
+}
+
+EEFPU_MODEL_CALL u32 RecipLength(u32 x, u32 y, u32 z)
+{
+	return _vuEfuRecip(EeFpuModel::SqrtBits(_vuEfuSquareSum(x, y, z)));
+}
+
+EEFPU_MODEL_CALL u32 Recip(u32 fs)
+{
+	return _vuEfuRecip(fs);
+}
+
+/*	The EFU square root takes the operand's magnitude: a negative input is
+	rooted as if positive, not passed through unchanged. The recompilers' host
+	path ands the raw bits with absclip ahead of FSQRT; here the same mask is
+	the recurrence's argument. */
+EEFPU_MODEL_CALL u32 Sqrt(u32 fs)
+{
+	return EeFpuModel::SqrtBits(fs & 0x7FFFFFFF);
+}
+
+EEFPU_MODEL_CALL u32 RecipSqrt(u32 fs)
+{
+	return _vuEfuRecip(EeFpuModel::SqrtBits(fs & 0x7FFFFFFF));
+}
+
+// x + s2*x^3 + s3*x^5 + s4*x^7 + s5*x^9, the odd powers reached by squaring
+// once and multiplying up.
+EEFPU_MODEL_CALL u32 Sin(u32 fs)
+{
+	const u32 xx = _vuEfuMul(fs, fs);
+
+	u32 xn = _vuEfuMul(xx, fs);
+	u32 p = _vuEfuAdd(fs, _vuEfuMul(xn, kEsinC[0]));
+
+	for (int i = 1; i < 4; ++i)
+	{
+		xn = _vuEfuMul(xn, xx);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEsinC[i]));
+	}
+
+	return p;
+}
+
+// The reciprocal of a sixth-order series raised to the fourth: 1 + e1*x +
+// e2*x^2 + ... + e6*x^6, squared twice, then divided into one.
+EEFPU_MODEL_CALL u32 Exp(u32 fs)
+{
+	u32 p = _vuEfuMul(fs, kEexpC[0]);
+	u32 xn = fs;
+
+	for (int i = 1; i < 6; ++i)
+	{
+		xn = _vuEfuMul(xn, fs);
+		if (i == 5)
+			p = _vuEfuAdd(p, kEfuOne);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[i]));
+	}
+
+	p = _vuEfuMul(p, p);
+	p = _vuEfuMul(p, p);
+
+	return _vuEfuRecip(p);
+}
+
+/*	The pi/4 the series carries is only correct as the second half of the
+	range-reduction identity
+
+	    atan(x) = pi/4 + atan((x - 1) / (x + 1))
+
+	so the polynomial is fed the reduced argument. The xy/xz forms reduce the
+	same identity for atan(b/a), where (b/a - 1) / (b/a + 1) == (b - a) / (b + a).
+	The quotient is the divide unit's, so a zero denominator saturates into the
+	series rather than reaching it as a host infinity. */
+EEFPU_MODEL_CALL u32 Atan(u32 fs)
+{
+	return _vuCalculateEATAN(
+		_vuEfuDiv(_vuEfuSub(fs, kEfuOne), _vuEfuAdd(fs, kEfuOne)));
+}
+
+EEFPU_MODEL_CALL u32 AtanRatio(u32 a, u32 b)
+{
+	return _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(b, a), _vuEfuAdd(a, b)));
+}
+} // namespace VuEfuModel
+
 static __ri void _vuESADD(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::SquareSum(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
 }
 
 static __ri void _vuERSADD(VURegs* VU)
 {
-	float p = (vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x)) + (vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y)) + (vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z));
-
-	if (p != 0.0)
-		p = 1.0f / p;
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::RecipSquareSum(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
 }
 
 static __ri void _vuELENG(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	if (p >= 0)
-	{
-		p = sqrt(p);
-	}
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::Length(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
 }
 
 static __ri void _vuERLENG(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	if (p >= 0)
-	{
-		p = sqrt(p);
-		if (p != 0)
-		{
-			p = 1.0f / p;
-		}
-	}
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::RecipLength(
+		VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[2]);
 }
 
-
-// These are the EFU's atan series, the same table microVU keeps in
-// mVU_Globals as T1/T5/T2/T3/T4/T6/T7/T8 + Pi4 (microVU_Misc.h) -- all nine
-// re-encode to those globals bit for bit, so if one ever stops doing so,
-// suspect the transcription rather than the hardware. eatanconst[3] did
-// exactly that: it read -0.13085337519646f (0xBE05FE6D), T3's decimal
-// -0.139085337519646 with the first 9 dropped, and it cost up to 3383 ULP
-// against the ps2autotests EFU capture (worst at CVF_3PI_OVER2, since the
-// error goes as the reduced argument to the seventh power).
-static __ri float _vuCalculateEATAN(float inputvalue) {
-	float eatanconst[9] = { 0.999999344348907f, -0.333298563957214f, 0.199465364217758f, -0.139085337519646f,
-							0.096420042216778f, -0.055909886956215f, 0.021861229091883f, -0.004054057877511f,
-							0.785398185253143f };
-
-	float result = (eatanconst[0] * inputvalue) + (eatanconst[1] * pow(inputvalue, 3)) + (eatanconst[2] * pow(inputvalue, 5))
-					+ (eatanconst[3] * pow(inputvalue, 7)) + (eatanconst[4] * pow(inputvalue, 9)) + (eatanconst[5] * pow(inputvalue, 11))
-					+ (eatanconst[6] * pow(inputvalue, 13)) + (eatanconst[7] * pow(inputvalue, 15));
-
-	result += eatanconst[8];
-
-	result = vuDouble(*(u32*)&result);
-
-	return result;
-}
-
-// _vuCalculateEATAN evaluates the EFU's atan polynomial and then adds
-// eatanconst[8] = 0.785398185 = pi/4. That constant is only correct as the
-// second half of the range-reduction identity
-//
-//     atan(x) = pi/4 + atan((x - 1) / (x + 1))
-//
-// so the polynomial must be fed the REDUCED argument, not the raw one. Both
-// recompilers do exactly that -- arm64 `mVU_EATAN` computes (Fs-1)/(Fs+1)
-// before calling mVU_EATAN_arm, x86 `mVU_EATAN` the identical SUBSS/ADDSS/
-// DIVSS -- and the interpreter did not, so it was adding a pi/4 offset that
-// nothing had earned. Confirmed by arithmetic rather than by reading: for
-// Fs = 1.0 the unreduced expression evaluates to 0x3FCA1D99, which is
-// bit-for-bit the value the interpreter produced, while the reduced one gives
-// 0x3F490FDB, bit-for-bit the recompilers' (console: 0x3F490FDA).
-//
-// The xy/xz forms reduce the same identity for atan(y/x):
-//     (y/x - 1) / (y/x + 1) == (y - x) / (y + x)
-// which is the form both recompilers emit, and it removes the need for the
-// old `if (x != 0)` guard -- that guard returned +0 where both recompilers
-// and the console return a NaN pattern.
 static __ri void _vuEATAN(VURegs* VU)
 {
-	const float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-	VU->p.F = _vuCalculateEATAN((fs - 1.0f) / (fs + 1.0f));
+	VU->p.UL = VuEfuModel::Atan(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuEATANxy(VURegs* VU)
 {
-	const float x = vuDouble(VU->VF[_Fs_].i.x);
-	const float y = vuDouble(VU->VF[_Fs_].i.y);
-	VU->p.F = _vuCalculateEATAN((y - x) / (y + x));
+	VU->p.UL = VuEfuModel::AtanRatio(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1]);
 }
 
 static __ri void _vuEATANxz(VURegs* VU)
 {
-	const float x = vuDouble(VU->VF[_Fs_].i.x);
-	const float z = vuDouble(VU->VF[_Fs_].i.z);
-	VU->p.F = _vuCalculateEATAN((z - x) / (z + x));
+	VU->p.UL = VuEfuModel::AtanRatio(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[2]);
 }
 
 static __ri void _vuESUM(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) + vuDouble(VU->VF[_Fs_].i.w);
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::Sum(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1],
+		VU->VF[_Fs_].UL[2], VU->VF[_Fs_].UL[3]);
 }
 
 static __ri void _vuERCPR(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-
-	if (p != 0)
-	{
-		p = 1.0 / p;
-	}
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::Recip(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
-// The EFU square root takes the operand's MAGNITUDE: a negative input is rooted
-// as if positive, it is not passed through unchanged. Both recompilers do this
-// by ANDing the raw bits with absclip before FSQRT (mVU_ESQRT / mVU_ERSQRT);
-// the `p >= 0` guard here returned the operand untouched instead, so ESQRT and
-// ERSQRT of -1.0 gave -1.0 where the console gives 1.0. Masking the sign off the
-// raw bits before vuDouble is the same order the recompilers use.
 static __ri void _vuESQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
-
-	p = sqrt(p);
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::Sqrt(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuERSQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
-
-	p = sqrt(p);
-	if (p)
-	{
-		p = 1.0f / p;
-	}
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::RecipSqrt(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuESIN(VURegs* VU)
 {
-	float sinconsts[5] = {1.0f, -0.166666567325592f, 0.008333025500178f, -0.000198074136279f, 0.000002601886990f};
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-
-	p = (sinconsts[0] * p) + (sinconsts[1] * pow(p, 3)) + (sinconsts[2] * pow(p, 5)) + (sinconsts[3] * pow(p, 7)) + (sinconsts[4] * pow(p, 9));
-	VU->p.F = vuDouble(*(u32*)&p);
+	VU->p.UL = VuEfuModel::Sin(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuEEXP(VURegs* VU)
 {
-	float consts[6] = {0.249998688697815f, 0.031257584691048f, 0.002591371303424f,
-						0.000171562001924f, 0.000005430199963f, 0.000000690600018f};
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-
-	p = 1.0f + (consts[0] * p) + (consts[1] * pow(p, 2)) + (consts[2] * pow(p, 3)) + (consts[3] * pow(p, 4)) + (consts[4] * pow(p, 5)) + (consts[5] * pow(p, 6));
-	p = pow(p, 4);
-	p = vuDouble(*(u32*)&p);
-	p = 1 / p;
-
-	VU->p.F = p;
+	VU->p.UL = VuEfuModel::Exp(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 static __ri void _vuXITOP(VURegs* VU)
@@ -2295,15 +2377,20 @@ VUREGS_FDFSFTy(MINIy, 0);
 VUREGS_FDFSFTz(MINIz, 0);
 VUREGS_FDFSFTw(MINIw, 0);
 
+// Which source lane feeds each dest lane, following _vuOpRotate. Lane w reads
+// no Ft lane at all.
+static __ri u8 _vuOpFsRead(u8 xyzw) { return ((xyzw & 0xC) >> 1) | ((xyzw & 0x2) << 2) | (xyzw & 0x1); }
+static __ri u8 _vuOpFtRead(u8 xyzw) { return ((xyzw & 0x8) >> 2) | ((xyzw & 0x6) << 1); }
+
 static __ri void _vuRegsOPMULA(const VURegs* VU, _VURegsNum* VUregsn)
 {
 	VUregsn->pipe = VUPIPE_FMAC;
 	VUregsn->VFwrite = 0;
-	VUregsn->VFwxyzw= 0xE;
+	VUregsn->VFwxyzw= _XYZW;
 	VUregsn->VFread0 = _Fs_;
-	VUregsn->VFr0xyzw= 0xE;
+	VUregsn->VFr0xyzw= _vuOpFsRead(_XYZW);
 	VUregsn->VFread1 = _Ft_;
-	VUregsn->VFr1xyzw= 0xE;
+	VUregsn->VFr1xyzw= _vuOpFtRead(_XYZW);
 	VUregsn->VIwrite = 1<<REG_ACC_FLAG;
 	VUregsn->VIread  = GET_VF0_FLAG(_Fs_)|GET_VF0_FLAG(_Ft_)|(1<<REG_ACC_FLAG);
 }
@@ -2312,11 +2399,11 @@ static __ri void _vuRegsOPMSUB(const VURegs* VU, _VURegsNum* VUregsn)
 {
 	VUregsn->pipe = VUPIPE_FMAC;
 	VUregsn->VFwrite = _Fd_;
-	VUregsn->VFwxyzw= 0xE;
+	VUregsn->VFwxyzw= _XYZW;
 	VUregsn->VFread0 = _Fs_;
-	VUregsn->VFr0xyzw= 0xE;
+	VUregsn->VFr0xyzw= _vuOpFsRead(_XYZW);
 	VUregsn->VFread1 = _Ft_;
-	VUregsn->VFr1xyzw= 0xE;
+	VUregsn->VFr1xyzw= _vuOpFtRead(_XYZW);
 	VUregsn->VIwrite = 0;
 	VUregsn->VIread  = GET_VF0_FLAG(_Fs_)|GET_VF0_FLAG(_Ft_)|(1<<REG_ACC_FLAG);
 }
@@ -3921,14 +4008,14 @@ _vuRegsTables(VU1, VU1regs, FnPtr_VuRegsN)
 
 // An FMAC owns only the ZSUO cause nibble; it replaces that and ORs the
 // matching stickies in. The D/I cause pair (0x30) belongs to the div unit and
-// survives untouched -- VU_STAT_UPDATE assigns statusflag outright, so the
-// previous values have to come from VI, not from statusflag. Preserving only
-// 0xFC0 here dropped the D/I cause on every macro FMAC, against both the
-// console (VUSTICKY_FMAC_KEEPS_DI) and the arm64 recompiler, which keeps its
-// denormalized bits 18-19 across cop2EmitFlagUpdate for x86 parity.
+// survives untouched, and it lives in VI rather than in statusflag.
+//
+// The sticky field comes from statusflag rather than being re-derived from
+// the cause nibble: a multiply-accumulate's product stage raises flags the
+// cause nibble never shows.
 static __fi void SYNCMSFLAGS()
 {
-	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU0.statusflag & 0xF) | ((VU0.statusflag & 0xF) << 6);
+	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU0.statusflag & 0xFCF);
 	VU0.VI[REG_MAC_FLAG].UL = VU0.macflag;
 }
 

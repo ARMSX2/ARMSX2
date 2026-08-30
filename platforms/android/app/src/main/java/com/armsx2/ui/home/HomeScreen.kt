@@ -77,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -109,6 +110,8 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import com.armsx2.CustomCovers
 import com.armsx2.GameInfo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.armsx2.i18n.str
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.common.ArmsBackdrop
@@ -143,6 +146,19 @@ fun HomeScreen(
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
+    // The animated background switched itself off because the last run died with it on screen
+    // (LibraryBackground.armSaver). Say so -- silently reverting a setting the user chose reads
+    // as the setting being broken, and the name tells them which one to avoid.
+    LaunchedEffect(LibraryBackground.crashedSaver.value) {
+        LibraryBackground.crashedSaver.value?.let { kind ->
+            LibraryBackground.crashedSaver.value = null
+            Toast.makeText(
+                context,
+                "Animated background turned off: ${LibraryBackground.saverName(kind)} crashed last time.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         picked?.let { LibraryBackground.set(context, it) }
     }
@@ -180,7 +196,29 @@ fun HomeScreen(
                 // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
                 // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
                 // sits hidden behind it). Custom backgrounds below override all of this.
-                if (LibraryBackground.animated2D.value) {
+                if (LibraryBackground.flurry.value) {
+                    // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
+                    // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
+                    var flurryGl by remember { mutableStateOf<Boolean?>(null) }
+                    if (flurryGl == false) {
+                        LibraryWaveBackground(Modifier.fillMaxSize())
+                    } else {
+                        AndroidView(
+                            factory = {
+                                // currentSpec() resolves which saver AND resolves a "random"
+                                // preset to a concrete one — read once here, at view creation,
+                                // so random means once per library open and not once per frame.
+                                SaverGlView(it, LibraryBackground.currentSpec()).apply {
+                                    onGlStatus = { ok -> flurryGl = ok }
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                            // Stops the render thread. Without it the EGL thread outlives the
+                            // composition and keeps drawing to a dead surface.
+                            onRelease = { it.stop() },
+                        )
+                    }
+                } else if (LibraryBackground.animated2D.value) {
                     // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
                     // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
                     LibraryWaveBackground(Modifier.fillMaxSize())
@@ -765,6 +803,27 @@ fun HomeScreen(
                     menuGame = null
                     viewModel.launch(game)
                 }
+                // Save states for this game, straight from the library. Only offered when some
+                // exist — a "Load state" row that opens onto nothing is worse than no row.
+                val slots by androidx.compose.runtime.produceState(initialValue = emptyList<com.armsx2.SaveSlotLookup.Slot>(), game.serial) {
+                    value = withContext(Dispatchers.IO) {
+                        com.armsx2.SaveSlotLookup.slotsFor(context, game.serial)
+                    }
+                }
+                if (slots.isNotEmpty())
+                {
+                    GameMenuAction("💾", str("games.loadState"), "game-menu.loadstate") {
+                        menuGame = null
+                        // ★ The real Save Manager, not a bespoke list.
+                        //
+                        // It already renders slots as a grid with preview thumbnails and has its
+                        // own back button — which is both what was asked for and the answer to a
+                        // modal with no touch exit. contextGame exists for exactly this: it is how
+                        // the Save Manager already operates on a game that is not running.
+                        com.armsx2.runtime.MainActivityRuntime.contextGame.value = game
+                        com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.SaveManager)
+                    }
+                }
                 GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {
                     menuGame = null
                     onOpenGameSettings(game)
@@ -774,6 +833,52 @@ fun HomeScreen(
                 GameMenuAction("📀", str("bios.perGame.menu"), "game-menu.bios") {
                     menuGame = null
                     com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.BiosManager(game))
+                }
+                // Cover art from another region, for THIS game only. The library-wide switch
+                // in the overflow menu is the wrong grain by itself: wanting the Japanese cover
+                // for a couple of games does not mean wanting every Western cover swapped. Only
+                // offered for a game we can actually look up — the index is keyed by serial.
+                game.serial?.takeIf { it.isNotBlank() }?.let { gameSerial ->
+                    val coverCtx = context
+                    // Read the generation so this row (and the grid behind it) recomposes on a pin.
+                    com.armsx2.CoverRegionIndex.perGameGeneration.intValue
+                    val pinned = com.armsx2.CoverRegionIndex.regionFor(gameSerial)
+                    GameMenuAction(
+                        "A/あ",
+                        str("games.overflow.coverRegion"),
+                        "game-menu.coverregion",
+                        trailing = str(
+                            when (pinned) {
+                                1 -> "games.overflow.coverRegion.usa"
+                                2 -> "games.overflow.coverRegion.eur"
+                                3 -> "games.overflow.coverRegion.jpn"
+                                0 -> "games.overflow.coverRegion.disc"
+                                else -> "games.coverRegion.library"
+                            },
+                        ),
+                    ) {
+                        // Cycles Library -> Disc -> USA -> EUR -> Jpn -> Library. "Library" is the
+                        // absence of a pin, which is why it is null and not a fifth region.
+                        val next = when (pinned) {
+                            null -> 0
+                            3 -> null
+                            else -> pinned + 1
+                        }
+                        com.armsx2.CoverRegionIndex.setFor(gameSerial, next)
+                        if (next != null && next != 0)
+                            com.armsx2.CoverRegionIndex.ensureBuilt(coverCtx)
+                        // Menu stays open: picking a region is a cycle, and closing after every
+                        // press would mean re-opening the menu three times to reach Japan.
+                    }
+                }
+                // Per-game memory cards without booting the game. The card picker already
+                // does per-game assignment whenever it is handed a game — until now the only
+                // caller that handed it one was the in-game menu, so from the library you got
+                // the global slots and no way to reach the per-game ones.
+                GameMenuAction("🗃️", str("memcard.perGame.menu"), "game-menu.memcard") {
+                    menuGame = null
+                    com.armsx2.navigation.UiNavigator.navigate(
+                        com.armsx2.navigation.AppRoute.MemoryCardManager(game))
                 }
                 // Pin to the launcher (issue #242). The action was lost when this menu was
                 // rebuilt, leaving HomeShortcuts with no call site at all (issue #335).
@@ -804,7 +909,13 @@ fun HomeScreen(
 }
 
 @Composable
-private fun GameMenuAction(glyph: String, label: String, id: String, onClick: () -> Unit) {
+private fun GameMenuAction(
+    glyph: String,
+    label: String,
+    id: String,
+    trailing: String? = null,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         modifier = Modifier
@@ -820,7 +931,14 @@ private fun GameMenuAction(glyph: String, label: String, id: String, onClick: ()
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(glyph, color = MaterialTheme.colorScheme.primary, fontSize = 20.sp)
-            Text(label, style = MaterialTheme.typography.titleMedium)
+            Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            trailing?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
@@ -1109,9 +1227,14 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onDetails),
         shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = LibraryChromePreferences.libraryOpacity.value / 100f),
+        // Same contrast problem as coverFrame: primary-on-themed-background disappears when the
+        // two share a hue. A thicker stroke blended toward inverseSurface keeps it readable on
+        // any theme without abandoning the accent colour entirely.
         border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
+            if (selected) 3.dp else 1.dp,
+            if (selected)
+                lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.inverseSurface, 0.35f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
         ),
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1227,10 +1350,25 @@ private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f el
  * cover; do the same here, so 3D gets a selection frame and nothing else.
  */
 @Composable
+/**
+ * The selection frame.
+ *
+ * ★ Two rings, not one. A single ring in [selectedColor] is the theme's primary, and the library
+ * background is themed from the same palette — so on a blue theme the highlight was blue on blue
+ * and effectively invisible when navigating by controller, which is the only way it is navigated.
+ *
+ * The outer ring is drawn in a colour derived from the SURFACE rather than the accent, so it
+ * contrasts with the background whatever hue the user picked; the accent ring sits inside it and
+ * keeps the theme's identity. Whichever of the two the background happens to match, the other one
+ * still reads.
+ */
 private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color): Modifier {
     val idle = !CoverArtStyle.use3d.value
+    val contrast = MaterialTheme.colorScheme.inverseSurface
     return when {
-        selected -> this.border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
+        selected -> this
+            .border(selectedWidth + 2.dp, contrast, RoundedCornerShape(13.dp))
+            .border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
         idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
         else -> this
     }
@@ -1251,10 +1389,15 @@ private fun GameCover(
     // skipped when a custom cover wins) so EVERY card — the Recently Played shelf
     // included — is subscribed and re-resolves when the toolbar toggle flips.
     val use3d = CoverArtStyle.use3d.value
+    // Same reasoning for Cover Region: game.coverUrl resolves it internally, so nothing here was
+    // subscribed to a region change and cards kept their old art until something else happened to
+    // recompose them. Both the library-wide setting and the per-game pins are read.
+    val coverRegion = com.armsx2.CoverRegionIndex.region.intValue
+    val coverPins = com.armsx2.CoverRegionIndex.perGameGeneration.intValue
     val customCoverMap = LocalCustomCoverMap.current
     val custom = remember(game.uri, customCoverMap) { CustomCovers.matchIn(customCoverMap, game) }
     val model = custom ?: game.coverUrl
-    val request = remember(model, use3d) {
+    val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
             .data(model)
             .size(360, 500)

@@ -1,0 +1,73 @@
+Guard the integer prescale in crt-aperture and sharp-bilinear against zero.
+
+Both shaders derive a whole-number prescale from output height over source height,
+then divide by it. RetroArch only ever feeds them a small console framebuffer being
+scaled up, so the ratio is never below one. PCSX2 renders internally at up to 8x, and
+above roughly 1.5x on a phone the source is taller than the screen: the ratio drops
+under one, floor() returns zero, and the divide yields NaN. The whole frame goes black.
+
+Reported on an iPhone SE 2 (1334x750) where 1.5x worked and 2x did not, then reproduced
+in the simulator at 3x. Fixed by clamping the prescale to one, which is what the sibling
+sharp-bilinear-simple already does with max(floor(...), vec2(1.0)) and what crt-geom does
+with clamp(floor(...), 1.0, 2.0).
+
+Each file also gains a five-line notice under its #version line saying it was changed,
+when, and why. shaders/ATTRIBUTION.md already records the change for the bundle, and that
+is enough while the file sits inside the .app. It stops being enough the moment the same
+two files travel in a catalogue zip with no ATTRIBUTION beside them, so the notice goes in
+the file, which is where GPL section 2(a) asks for it anyway.
+
+This diverges from the pinned upstream commit, so it is recorded here and in
+shaders/ATTRIBUTION.md. Reverse it to recover the upstream bytes:
+
+    git apply -R platforms/ios/patches/slang-shaders-prescale-zero-guard.patch
+
+test_ios_shader_prescale_guard.py fails if either guard is dropped, which is what a
+re-sync from upstream would otherwise do silently.
+
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
+index 8ca5192..9463c32 100755
+--- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ /*
+     CRT Shader by EasyMode
+@@ -142,7 +147,7 @@ layout(set = 0, binding = 2) uniform sampler2D Source;
+ 
+ void main()
+ {
+-    float scale = floor(params.OutputSize.y * params.SourceSize.w);
++    float scale = max(floor(params.OutputSize.y * params.SourceSize.w), 1.0);
+     float offset = 1.0 / scale * 0.5;
+     
+     if (bool(mod(scale, 2.0))) offset = 0.0;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang b/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
+index 90508aa..083b790 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ layout(push_constant) uniform Push
+ {
+@@ -47,7 +52,7 @@ void main()
+    vec2 texel = vTexCoord * params.SourceSize.xy;
+    vec2 texel_floored = floor(texel);
+    vec2 s = fract(texel);
+-   float scale = (params.AUTO_PRESCALE > 0.5) ? floor(params.OutputSize.y / params.SourceSize.y + 0.01) : params.SHARP_BILINEAR_PRE_SCALE;
++   float scale = max((params.AUTO_PRESCALE > 0.5) ? floor(params.OutputSize.y / params.SourceSize.y + 0.01) : params.SHARP_BILINEAR_PRE_SCALE, 1.0);
+    float region_range = 0.5 - 0.5 / scale;
+ 
+    // Figure out where in the texel to sample to get correct pre-scaled bilinear.

@@ -69,7 +69,7 @@ struct Options
 	bool perf_jitdump = false;  // emit Linux perf jitdump for `perf inject --jit` (profiling)
 	u32 dump_count = 64;
 	u32 cycle_override = 0;  // 0 = use captured budget
-	int vu_clamp_mode = -1;  // -1 = leave EmuConfig default (mode 1); 0..3 = force VU clamp mode
+	int vu_clamp_mode = -1;  // -1 = leave EmuConfig default (mode 1); 0..4 = force VU clamp mode
 	bool no_game_config = false; // ignore recorded config snapshots AND --game
 	std::string game_serial;     // --game <serial>: replay under this GameDB entry
 	std::string cache_dir;   // empty = persisted-JIT program cache off
@@ -117,7 +117,7 @@ void PrintUsage(const char* argv0)
 		"                config snapshot; overrides the snapshot when both exist.\n"
 		"  --no-game-config  Ignore recorded config snapshots and --game; replay\n"
 		"                under the pinned harness config only (pre-v2 behavior).\n"
-		"  --vu-clamp-mode N  Force VU clamp mode 0..3 (gamedb vuClampMode mapping)\n"
+		"  --vu-clamp-mode N  Force VU clamp mode 0..4 (gamedb vuClampMode mapping)\n"
 		"                on both VUs; wins over snapshot/--game.\n"
 		"  --hash-pipeline / --no-hash-pipeline\n"
 		"                Include (default) / exclude the carried microVU flag\n"
@@ -295,13 +295,13 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			if (i + 1 >= argc)
 			{
-				std::fprintf(stderr, "vurunner: --vu-clamp-mode requires an argument (0..3)\n");
+				std::fprintf(stderr, "vurunner: --vu-clamp-mode requires an argument (0..4)\n");
 				return false;
 			}
 			const long n = std::strtol(argv[++i], nullptr, 10);
-			if (n < 0 || n > 3)
+			if (n < 0 || n > 4)
 			{
-				std::fprintf(stderr, "vurunner: --vu-clamp-mode must be in [0, 3]\n");
+				std::fprintf(stderr, "vurunner: --vu-clamp-mode must be in [0, 4]\n");
 				return false;
 			}
 			opts.vu_clamp_mode = static_cast<int>(n);
@@ -348,7 +348,7 @@ struct ReplayConfigState
 {
 	bool active = false; // armed in main() once the baseline is captured
 	Pcsx2Config::GamefixOptions base_gamefixes;
-	bool base_clamp[6] = {};
+	bool base_clamp[8] = {}; // vu0 O/E/S/X in 0..3, vu1 in 4..7
 	FPControlRegister base_vu0_fpcr;
 	FPControlRegister base_vu1_fpcr;
 	// --game: the GameDB entry's effect, synthesized ONCE in main() into the
@@ -379,9 +379,11 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 	rc.vu0Overflow = st.base_clamp[0];
 	rc.vu0ExtraOverflow = st.base_clamp[1];
 	rc.vu0SignOverflow = st.base_clamp[2];
-	rc.vu1Overflow = st.base_clamp[3];
-	rc.vu1ExtraOverflow = st.base_clamp[4];
-	rc.vu1SignOverflow = st.base_clamp[5];
+	rc.vu0ExactMode = st.base_clamp[3];
+	rc.vu1Overflow = st.base_clamp[4];
+	rc.vu1ExtraOverflow = st.base_clamp[5];
+	rc.vu1SignOverflow = st.base_clamp[6];
+	rc.vu1ExactMode = st.base_clamp[7];
 	EmuConfig.Cpu.VU0FPCR = st.base_vu0_fpcr;
 	EmuConfig.Cpu.VU1FPCR = st.base_vu1_fpcr;
 
@@ -411,9 +413,11 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 		rc.vu0Overflow = (cfg->vu_clamp & vu_capture::kClampVu0Overflow) != 0;
 		rc.vu0ExtraOverflow = (cfg->vu_clamp & vu_capture::kClampVu0ExtraOverflow) != 0;
 		rc.vu0SignOverflow = (cfg->vu_clamp & vu_capture::kClampVu0SignOverflow) != 0;
+		rc.vu0ExactMode = (cfg->vu_clamp & vu_capture::kClampVu0ExactMode) != 0;
 		rc.vu1Overflow = (cfg->vu_clamp & vu_capture::kClampVu1Overflow) != 0;
 		rc.vu1ExtraOverflow = (cfg->vu_clamp & vu_capture::kClampVu1ExtraOverflow) != 0;
 		rc.vu1SignOverflow = (cfg->vu_clamp & vu_capture::kClampVu1SignOverflow) != 0;
+		rc.vu1ExactMode = (cfg->vu_clamp & vu_capture::kClampVu1ExactMode) != 0;
 		const auto decode_fpcr = [](FPControlRegister base, u32 enc) {
 			// Portable kFpcr* encoding onto the baseline register, preserving
 			// uncaptured attributes (exception masks).
@@ -447,6 +451,8 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 		rc.vu1ExtraOverflow = (m >= 2);
 		rc.vu0SignOverflow = (m >= 3);
 		rc.vu1SignOverflow = (m >= 3);
+		rc.vu0ExactMode = (m >= 4);
+		rc.vu1ExactMode = (m >= 4);
 	}
 	if (st.xgkick_env >= 0)
 		EmuConfig.Gamefixes.XgKickHack = (st.xgkick_env != 0);
@@ -465,8 +471,9 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 	// diffable and a mixed-game corpus still shows its config transitions.
 	const u32 clamp_bits =
 		(rc.vu0Overflow ? 1u : 0) | (rc.vu0ExtraOverflow ? 2u : 0) |
-		(rc.vu0SignOverflow ? 4u : 0) | (rc.vu1Overflow ? 8u : 0) |
-		(rc.vu1ExtraOverflow ? 16u : 0) | (rc.vu1SignOverflow ? 32u : 0);
+		(rc.vu0SignOverflow ? 4u : 0) | (rc.vu0ExactMode ? 8u : 0) |
+		(rc.vu1Overflow ? 16u : 0) | (rc.vu1ExtraOverflow ? 32u : 0) |
+		(rc.vu1SignOverflow ? 64u : 0) | (rc.vu1ExactMode ? 128u : 0);
 	const auto enc_fpcr = [](const FPControlRegister& r) -> u32 {
 		return (static_cast<u32>(r.GetRoundMode()) & vu_capture::kFpcrRoundMask) |
 			   (r.GetFlushToZero() ? vu_capture::kFpcrFlushToZero : 0) |
@@ -482,14 +489,16 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 	{
 		st.last_logged_fingerprint = fingerprint;
 		std::fprintf(stderr, "vurunner: replay config [%s]: serial=%.16s "
-			"xgkickhack=%d gamefixes=0x%05x clamp=vu0:%c%c%c/vu1:%c%c%c "
+			"xgkickhack=%d gamefixes=0x%05x clamp=vu0:%c%c%c%c/vu1:%c%c%c%c "
 			"fpcr=vu0:0x%x/vu1:0x%x (round|ftz|daz)\n",
 			source,
 			serial,
 			EmuConfig.Gamefixes.XgKickHack ? 1 : 0,
 			static_cast<u32>(EmuConfig.Gamefixes.bitset),
-			rc.vu0Overflow ? 'O' : '-', rc.vu0ExtraOverflow ? 'E' : '-', rc.vu0SignOverflow ? 'S' : '-',
-			rc.vu1Overflow ? 'O' : '-', rc.vu1ExtraOverflow ? 'E' : '-', rc.vu1SignOverflow ? 'S' : '-',
+			rc.vu0Overflow ? 'O' : '-', rc.vu0ExtraOverflow ? 'E' : '-',
+			rc.vu0SignOverflow ? 'S' : '-', rc.vu0ExactMode ? 'X' : '-',
+			rc.vu1Overflow ? 'O' : '-', rc.vu1ExtraOverflow ? 'E' : '-',
+			rc.vu1SignOverflow ? 'S' : '-', rc.vu1ExactMode ? 'X' : '-',
 			fpcr0, fpcr1);
 	}
 }
@@ -1518,9 +1527,11 @@ int main(int argc, char** argv)
 		st.base_clamp[0] = rc.vu0Overflow;
 		st.base_clamp[1] = rc.vu0ExtraOverflow;
 		st.base_clamp[2] = rc.vu0SignOverflow;
-		st.base_clamp[3] = rc.vu1Overflow;
-		st.base_clamp[4] = rc.vu1ExtraOverflow;
-		st.base_clamp[5] = rc.vu1SignOverflow;
+		st.base_clamp[3] = rc.vu0ExactMode;
+		st.base_clamp[4] = rc.vu1Overflow;
+		st.base_clamp[5] = rc.vu1ExtraOverflow;
+		st.base_clamp[6] = rc.vu1SignOverflow;
+		st.base_clamp[7] = rc.vu1ExactMode;
 		st.base_vu0_fpcr = EmuConfig.Cpu.VU0FPCR;
 		st.base_vu1_fpcr = EmuConfig.Cpu.VU1FPCR;
 		st.vu_clamp_mode = opts.vu_clamp_mode;
@@ -1561,9 +1572,11 @@ int main(int argc, char** argv)
 			EmuConfig.Cpu.Recompiler.vu0Overflow = st.base_clamp[0];
 			EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = st.base_clamp[1];
 			EmuConfig.Cpu.Recompiler.vu0SignOverflow = st.base_clamp[2];
-			EmuConfig.Cpu.Recompiler.vu1Overflow = st.base_clamp[3];
-			EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = st.base_clamp[4];
-			EmuConfig.Cpu.Recompiler.vu1SignOverflow = st.base_clamp[5];
+			EmuConfig.Cpu.Recompiler.vu0ExactMode = st.base_clamp[3];
+			EmuConfig.Cpu.Recompiler.vu1Overflow = st.base_clamp[4];
+			EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = st.base_clamp[5];
+			EmuConfig.Cpu.Recompiler.vu1SignOverflow = st.base_clamp[6];
+			EmuConfig.Cpu.Recompiler.vu1ExactMode = st.base_clamp[7];
 			EmuConfig.Cpu.VU0FPCR = st.base_vu0_fpcr;
 			EmuConfig.Cpu.VU1FPCR = st.base_vu1_fpcr;
 			EmuConfig.Speedhacks.vuFlagHack = false;
@@ -1577,8 +1590,8 @@ int main(int argc, char** argv)
 		{
 			const int m = opts.vu_clamp_mode;
 			std::fprintf(stderr, "vurunner: forced VU clamp mode = %d "
-				"(overflow=%d extra=%d sign=%d)\n",
-				m, (m >= 1), (m >= 2), (m >= 3));
+				"(overflow=%d extra=%d sign=%d exact=%d)\n",
+				m, (m >= 1), (m >= 2), (m >= 3), (m >= 4));
 		}
 
 		st.active = true;

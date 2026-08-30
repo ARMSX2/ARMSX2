@@ -232,7 +232,7 @@ TEST(VuPqBoundary, DivByZeroFlagReachesStatusWhenProgramEndsInsideLatency)
 		<< "mVUendProgram must fold the pending divide-by-zero flag into STATUS "
 		   "when the program ends before the FDIV flag latency elapses";
 	// The quotient itself still has to be committed on the way out.
-	EXPECT_EQ(h.GetViJit(REG_Q), 0x7F7FFFFFu);
+	EXPECT_EQ(h.GetViJit(REG_Q), 0x7FFFFFFFu);
 }
 
 TEST(VuPqBoundary, DivInvalidFlagReachesStatusWhenProgramEndsInsideLatency)
@@ -253,7 +253,7 @@ TEST(VuPqBoundary, DivInvalidFlagReachesStatusWhenProgramEndsInsideLatency)
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x10u, 0u)
 		<< "mVUendProgram must fold the pending invalid-operation flag into "
 		   "STATUS when the program ends before the FDIV flag latency elapses";
-	EXPECT_EQ(h.GetViJit(REG_Q), 0x7F7FFFFFu);
+	EXPECT_EQ(h.GetViJit(REG_Q), 0x7FFFFFFFu);
 }
 
 // =========================================================================

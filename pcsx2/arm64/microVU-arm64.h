@@ -22,6 +22,9 @@
 #include "common/Perf.h"
 
 #include "microVU_Misc-arm64.h"
+#include "VuFmacFlags-arm64.h"
+#include "EeFpuModelCall-arm64.h"
+#include "VuEfuModel.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 
@@ -100,7 +103,18 @@
 //       of the accumulate; only shapes compiled under vuClampMode:2 change.
 //  18 — RSQRT's zero path ORs its D/I into divFlag instead of assigning over
 //       it, so the sign test's I survives. Only RSQRT changes shape.
-static constexpr u32 kMvuCompilerAbiVersion = 18;
+//  19 — the console-exact VU models. Every divide-unit block changes shape at
+//       any mode: the zero-divisor Q is built with one MVNI, the zero tests
+//       read the exponent field, and the denormal flush is emitted only where
+//       the unit's own FPCR clears FZ. So does every FMAC: macWeights gains a
+//       variant dimension, moving every weight load's [x25, #imm], and the I
+//       immediate is stored unclamped. At vuClampMode 4 a flag-writing multiply
+//       adds its MAC U predicate ahead of the operand clamp, every FMAC adds
+//       MAC O and the 0x7FFFFFFF substitution it feeds (so a flag-dead FMAC
+//       changes shape too), ADD and SUB mask their operands through the guard
+//       mask, and the divide unit and all thirteen EFU ops become out-of-line
+//       model calls.
+static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

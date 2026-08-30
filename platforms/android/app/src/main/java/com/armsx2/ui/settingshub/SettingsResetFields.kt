@@ -30,12 +30,16 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "intcStat", "mtvu", "nominalSpeedPercent", "skipDuplicateFrames", "vu0RoundMode",
         "vu1Instant", "vu1RoundMode", "vuClampMode", "vuDeferredWrites", "vuFlagHack",
         "vuNeonFusions", "vuSkipStallSim", "waitLoop",
+        // LsfgSection lives on this tab. lsfgDllPath is deliberately NOT here: Reset restores
+        // settings, and forgetting which file the user imported is not a setting being restored,
+        // it is making them go and find their Lossless.dll again.
+        "lsfgEnabled", "lsfgMultiplier", "lsfgPerformance", "lsfgFlowScale", "lsfgTargetRate",
     ),
     // RendererTab.kt
     SettingsCategory.Graphics to listOf(
         "accurateBlendingUnit", "adrenoFbFetch", "aspectRatio", "casMode", "casSharpness",
         "customAspectRatio", "deinterlaceMode", "displayBilinear", "dumpReplaceableTextures", "fmvAspectRatio",
-        "forceMaliFbFetch", "fxaa", "gpuProfile", "gsBackThreadMode", "hardwareDownloadMode",
+        "forceMaliFbFetch", "fsrSharpness", "fxaa", "gpuProfile", "gsBackThreadMode", "hardwareDownloadMode",
         "hwAa1", "hwAccurateAlphaTest", "hwMipmap", "hwRov", "loadTextureReplacements",
         "loadTextureReplacementsAsync", "maxAnisotropy", "orientation",
         "osdShowTextureReplacements", "portraitRenderTop", "landscapeRenderTop", "autoProgressiveScan",
@@ -43,7 +47,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "shadeBoost", "shadeBoostBrightness", "shadeBoostContrast", "shadeBoostGamma",
         "shadeBoostSaturation", "shaderChainEnabled", "shaderChainParams", "shaderChainPreset",
         "textureFiltering", "texturePreloading", "triFilter", "tvShader", "upscaleFloat",
-        "vsyncEnable",
+        "upscaler", "vsyncEnable",
     ),
     // AudioTab.kt
     SettingsCategory.Audio to listOf(
@@ -60,7 +64,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     ),
     // OverlayTab.kt
     SettingsCategory.OnScreen to listOf(
-        "osdColor", "osdScale", "osdShowCpu", "osdShowFps", "osdShowFrameTimes", "osdShowGpu",
+        "osdColor", "osdPosition", "osdScale", "osdShowCpu", "osdShowFps", "osdShowFrameTimes", "osdShowGpu",
         "osdShowGpuStats", "osdShowGsStats", "osdShowHardwareInfo", "osdShowInputs",
         "osdShowMessages", "osdShowResolution", "osdShowSettings", "osdShowSpeed",
         "osdShowVersion", "osdShowVps",
@@ -69,7 +73,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     // from Performance and from the retired Recompiler tab.
     SettingsCategory.Advanced to listOf(
         "enableFastBoot", "enableGameFixes", "pineEnabled", "pineSlot",
-        "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming", "gamefixFpuMul",
+        "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming",
         "gamefixFullVu0Sync", "gamefixGifFifo", "gamefixGoemonTlb", "gamefixIbit",
         "gamefixInstantDma", "gamefixOphFlag", "gamefixSkipMpeg",
         "gamefixSoftwareRendererFmv", "gamefixVif1Stall", "gamefixVuAddSub",

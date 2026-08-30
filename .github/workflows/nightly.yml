@@ -293,8 +293,28 @@ jobs:
       - uses: actions/checkout@v7
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app
+
+      # RetroAchievements grants hardcore on the client name and version in the HTTP user
+      # agent, and pcsx2/Host.cpp reads that version from a gitignored header. Without this
+      # step the nightly identifies as stock PCSX2 and every unlock is softcore. Add the
+      # repo secret IOS_RA_UA_VERSION (the bare version, no leading v) to turn it on; the
+      # script warns and continues when it is absent.
+      - name: Embed the RetroAchievements client identity
+        env:
+          IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
+        run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
+
       - name: Build unsigned IPA
         run: ./platforms/ios/scripts/build-ios-ipa.sh
+
+      # Nothing on the client reports a rejected agent, so a nightly that lost the identity
+      # looks healthy until a player loses an unlock. Fail here instead.
+      - name: Verify the client identity reached the binary
+        env:
+          IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
+        run: >
+          bash .github/workflows/scripts/common/verify-ra-ua-agent.sh
+          platforms/ios/build-ios-xcode/Release-iphoneos/ARMSX2iOS.app/ARMSX2iOS
 
       - name: Upload IPA
         uses: actions/upload-artifact@v7

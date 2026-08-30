@@ -38,6 +38,7 @@
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
 
+#include "EeFpuModel.h"
 #include "VU.h"
 #include "VUmicro.h"
 #include "Config.h"
@@ -98,6 +99,35 @@ struct DigestSet
 	u64 maddClampE;
 	// MSUBA/MSUB, the other half of that pair (added at abi 18).
 	u64 msubClampE;
+	// A multiply and an add under vuClampMode:3, the mode where mVUclamp2's
+	// sign-preserving operand clamp emits, which every probe above misses. 0 in
+	// a pin row = probe absent.
+	u64 signClampMulAdd;
+	// The same pair with a single-lane dest field, which is the only shape that
+	// reads mVUglob.macWeights.bySSShift -- a different row of the table from
+	// the one signClampMulAdd loads.
+	u64 signClampSS;
+	// The same two programs at vuClampMode:4, where the FMAC's exact models are
+	// emitted -- all but one. CompileAndDigest forces vuFlagHack on to match
+	// production and these programs leave the multiply's flags dead, so
+	// mVUwantExactU comes back false and MAC U is in no digest in this table;
+	// mVUwantExactO does not read flag liveness, because the ceiling
+	// substitution reads its predicate, so MAC O and the ceiling are.
+	// 0 in a pin row = probe absent.
+	u64 exactMulAdd;
+	u64 exactSS;
+	// The divUnit probe at vuClampMode:3, where it keeps the host divide, and
+	// again at 4, where the three ops call the model instead. divUnit itself
+	// compiles below both. 0 in a pin row = probe absent.
+	u64 signClampDivUnit;
+	u64 exactDivUnit;
+	// Three EFU ops at vuClampMode:3, where the recompiler still evaluates its
+	// series in host arithmetic, and again at 4, where each calls one model
+	// entry point. The EFU is VU1-only, so this is the one probe that is not
+	// VU0 -- where the thirteen ops are NOPs. 0 in a pin row = probe absent.
+	u64 signClampEfu;
+	u64 exactEfu;
+
 };
 
 struct AbiPin
@@ -208,9 +238,38 @@ constexpr AbiPin kPins[] = {
 	// never reach an RSQRT. msubClampE is new here; a probe changes no emitted
 	// code, so it needs no bump of its own.
 	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
+	// v19: DIV's and RSQRT's zero paths build 0x7FFFFFFF with one MVNI instead
+	// of loading the signbit/maxvals pair, so each loses two instructions and
+	// two mVUglob operands; the three ops' zero tests read the operand's
+	// exponent field instead of comparing it against 0.0, which costs a Umov
+	// apiece, and RSQRT's divisor test is on the radicand rather than the
+	// root. Every FMAC changes shape too: the weight table gains a variant
+	// dimension so every weight load's [x25, #imm] moves, the I immediate is
+	// stored whole, and at vuClampMode:4 a flag-writing multiply emits its MAC U
+	// predicate ahead of the operand clamp, every FMAC its MAC O the same way
+	// and then substitutes the FMAC's ceiling for the clamp's FLT_MAX, ADD and
+	// SUB mask their guard bits, and the three divide-unit ops and the thirteen
+	// EFU ops call their models out of line.
+	// The ten fields above compile below mode 3 with a full dest field, so only
+	// divUnit moves among them; the eight new probes pin the two gated modes
+	// from here on. The value flush that rides with the zero tests is in none
+	// of these rows: they compile under the default VU FPCR, which sets FZ, and
+	// it is emitted only when that is clear.
+	//
+	// The multiplier's one-ULP deficit (armEmitVuDefectiveMul) rides in this
+	// row rather than a bump of its own. It changes shape only at vuClampMode
+	// 4, and vuClampMode 4 arrived with abi 19: the options sentinel carries
+	// vu{0,1}ExactMode, so a cache that could hold a mode-4 shape was written
+	// by an abi-19 build or none at all, and the ABI field already separates
+	// every earlier one. exactMulAdd and exactSS carry it; the mode-3 pair does
+	// not, a multiply below 4 being a bare FMUL, and neither does the EFU pair,
+	// whose polynomials keep the plain multiply at either mode. Once 19 ships,
+	// a mode-4 change needs its own bump like any other.
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0xc2e9cfd45890fa7e, 0xc3849c63941bff5f, 0x6b119d8d1e4fd199, 0x97c76bda811bc8e4, 0xd933afa738820832, 0xa7ad93456cba5eb2}},
 };
 
-u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
+u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu0Divergence = nullptr)
 {
 	// The ABI digest pins the emitted shape that lands in the on-disk cache in
 	// PRODUCTION, where vuFlagHack defaults on (and the options sentinel keeps
@@ -226,7 +285,10 @@ u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
 	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f);
 	h.SetVi(1, 1);
 	h.LoadProgram(pairs);
-	h.Run();
+	if (requireVu0Divergence)
+		h.RunRequiringDivergence(requireVu0Divergence);
+	else
+		h.Run();
 	h.RunJitPreserveBlockCache();
 	u64 digest = 0;
 	EXPECT_TRUE(mVUPersist::TestComputeEmitDigest(0, digest));
@@ -238,7 +300,8 @@ u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
 
 // Same contract as CompileAndDigest, on VU1. Kept separate rather than
 // parameterised so the VU0 pins above can't shift if this one is edited.
-u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs)
+u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu1Divergence = nullptr)
 {
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
 	EmuConfig.Speedhacks.vuFlagHack = true;
@@ -248,7 +311,10 @@ u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs)
 	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f);
 	h.SetVi(1, 1);
 	h.LoadProgram(pairs);
-	h.Run();
+	if (requireVu1Divergence)
+		h.RunRequiringDivergence(requireVu1Divergence);
+	else
+		h.Run();
 	h.RunJitPreserveBlockCache();
 	u64 digest = 0;
 	EXPECT_TRUE(mVUPersist::TestComputeEmitDigest(1, digest));
@@ -274,6 +340,60 @@ u64 CompileAndDigestClampE(std::initializer_list<vu::VuOp> pairs)
 	EmuConfig.Cpu.Recompiler.vu0Overflow     = savedOverflow;
 	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = savedExtra;
 	EmuConfig.Cpu.Recompiler.vu0SignOverflow = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestSignClamp(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedOverflow = EmuConfig.Cpu.Recompiler.vu0Overflow;
+	const bool savedExtra    = EmuConfig.Cpu.Recompiler.vu0ExtraOverflow;
+	const bool savedSign     = EmuConfig.Cpu.Recompiler.vu0SignOverflow;
+	EmuConfig.Cpu.Recompiler.vu0Overflow      = true;
+	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = true;
+	EmuConfig.Cpu.Recompiler.vu0SignOverflow  = true;
+
+	const u64 digest = CompileAndDigest(pairs);
+
+	EmuConfig.Cpu.Recompiler.vu0Overflow      = savedOverflow;
+	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = savedExtra;
+	EmuConfig.Cpu.Recompiler.vu0SignOverflow  = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestExact(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedExact = EmuConfig.Cpu.Recompiler.vu0ExactMode;
+	EmuConfig.Cpu.Recompiler.vu0ExactMode = true;
+	const u64 digest = CompileAndDigestSignClamp(pairs);
+	EmuConfig.Cpu.Recompiler.vu0ExactMode = savedExact;
+	return digest;
+}
+
+// vuClampMode:3 on VU1, which the EFU needs: its ops NOP on VU0.
+u64 CompileAndDigestVu1SignClamp(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu1Divergence = nullptr)
+{
+	const bool savedOverflow = EmuConfig.Cpu.Recompiler.vu1Overflow;
+	const bool savedExtra    = EmuConfig.Cpu.Recompiler.vu1ExtraOverflow;
+	const bool savedSign     = EmuConfig.Cpu.Recompiler.vu1SignOverflow;
+	EmuConfig.Cpu.Recompiler.vu1Overflow      = true;
+	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = true;
+	EmuConfig.Cpu.Recompiler.vu1SignOverflow  = true;
+
+	const u64 digest = CompileAndDigestVu1(pairs, requireVu1Divergence);
+
+	EmuConfig.Cpu.Recompiler.vu1Overflow      = savedOverflow;
+	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = savedExtra;
+	EmuConfig.Cpu.Recompiler.vu1SignOverflow  = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestVu1Exact(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedExact = EmuConfig.Cpu.Recompiler.vu1ExactMode;
+	EmuConfig.Cpu.Recompiler.vu1ExactMode = true;
+	const u64 digest = CompileAndDigestVu1SignClamp(pairs);
+	EmuConfig.Cpu.Recompiler.vu1ExactMode = savedExact;
 	return digest;
 }
 
@@ -309,7 +429,12 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(VMADDAy_U(mask::xyzw, vf::vf4, vf::vf2)),
 		UpperOnly(VMSUBAz_U(mask::xyzw, vf::vf5, vf::vf2)),
 		UpperOnly(bits::E | VMADDw_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf2)),
-	});
+	},
+		// vf5 is zero and vf2.z is -1.0, so the VMSUBAz stage multiplies out a
+		// -0. The interpreter carries the multiply stage's sign into the status
+		// flag's sticky S; neither emitter does.
+		"the status sticky field takes S from the result alone, not from the "
+		"multiply stage");
 	// Taken branch with a taken conditional branch in its delay slot. The
 	// E-bit stays OUT of the evil continuation window (one plain op at #1's
 	// target, then #2 lands on a common E-bit tail) — E-bit inside an evil
@@ -366,6 +491,47 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VMSUB_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
 	});
 
+	// The two gated modes, which no probe above reaches: vuClampMode:3, where
+	// the sign-preserving operand clamp emits, and 4, where the FMAC's exact
+	// models do. A multiply and an add, and the second pair with a single-lane
+	// dest field, which is the only shape that reads the bySSShift half of the
+	// weight table.
+	const std::initializer_list<vu::VuOp> mulAddProgram = {
+		UpperOnly(VMUL_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf2)),
+	};
+	const std::initializer_list<vu::VuOp> ssProgram = {
+		UpperOnly(VMULy_U(mask::z, vf::vf3, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::z, vf::vf4, vf::vf1, vf::vf2)),
+	};
+	actual.signClampMulAdd = CompileAndDigestSignClamp(mulAddProgram);
+	actual.signClampSS = CompileAndDigestSignClamp(ssProgram);
+	actual.exactMulAdd = CompileAndDigestExact(mulAddProgram);
+	actual.exactSS = CompileAndDigestExact(ssProgram);
+
+	// The divUnit program under the same mode. Its three ops keep the host
+	// divide everywhere below it, so the arm that calls the model is emitted
+	// only here.
+	actual.signClampDivUnit = CompileAndDigestSignClamp({
+		LowerOnly(VDIV_L(vf::vf1, /*fsf=*/0, vf::vf2, /*ftf=*/0)),
+		LowerOnly(VSQRT_L(vf::vf2, /*ftf=*/1)),
+		LowerOnly(VRSQRT_L(vf::vf1, /*fsf=*/2, vf::vf2, /*ftf=*/3)),
+		VuOp{VWAITQ_L(), VNOP_U()},
+		UpperOnly(bits::E | VADDq_U(mask::xyzw, vf::vf3, vf::vf1)),
+	});
+
+	// The divUnit program under the same two modes, where the arm that calls the
+	// model is the only thing between them.
+	const std::initializer_list<vu::VuOp> divUnitProgram = {
+		LowerOnly(VDIV_L(vf::vf1, /*fsf=*/0, vf::vf2, /*ftf=*/0)),
+		LowerOnly(VSQRT_L(vf::vf2, /*ftf=*/1)),
+		LowerOnly(VRSQRT_L(vf::vf1, /*fsf=*/2, vf::vf2, /*ftf=*/3)),
+		VuOp{VWAITQ_L(), VNOP_U()},
+		UpperOnly(bits::E | VADDq_U(mask::xyzw, vf::vf3, vf::vf1)),
+	};
+	actual.signClampDivUnit = CompileAndDigestSignClamp(divUnitProgram);
+	actual.exactDivUnit = CompileAndDigestExact(divUnitProgram);
+
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
 	// the shape the ABI-15 E-bit lookahead forcing touches. Every other probe
 	// here is VU0, so without this one a VU1-only emitter change moves no digest.
@@ -376,6 +542,23 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		NopPair(),
 		UpperOnly(bits::E | VMUL_U(mask::xyzw, vf::vf6, vf::vf1, vf::vf2)),
 	});
+
+	// The EFU under the same two modes, on the only VU that has one. A scalar
+	// form, a four-lane form and a two-lane form, so a change to how the
+	// operands reach the call moves the digest whichever shape it touches.
+	const std::initializer_list<vu::VuOp> efuProgram = {
+		LowerOnly(VESQRT_L(vf::vf1, /*fsf=*/2)),
+		LowerOnly(VESUM_L(vf::vf2)),
+		LowerOnly(VEATANXY_L(vf::vf1)),
+		VuOp{VWAITP_L(), VNOP_U()},
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+	};
+	// One mode below the models, the recompiler evaluates all thirteen series in
+	// host arithmetic and the interpreter still runs VuEfuModel, so P parts by a
+	// couple of ULP. That is the gate doing its job, not a compile fault.
+	actual.signClampEfu = CompileAndDigestVu1SignClamp(efuProgram,
+		"the EFU's models are a mode above this one");
+	actual.exactEfu = CompileAndDigestVu1Exact(efuProgram);
 
 	mVUPersist::SetRecordingEnabled(false);
 
@@ -388,6 +571,14 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.divUnit, 0u);
 	ASSERT_NE(actual.maddClampE, 0u);
 	ASSERT_NE(actual.msubClampE, 0u);
+	ASSERT_NE(actual.signClampMulAdd, 0u);
+	ASSERT_NE(actual.signClampSS, 0u);
+	ASSERT_NE(actual.exactMulAdd, 0u);
+	ASSERT_NE(actual.exactSS, 0u);
+	ASSERT_NE(actual.signClampDivUnit, 0u);
+	ASSERT_NE(actual.exactDivUnit, 0u);
+	ASSERT_NE(actual.signClampEfu, 0u);
+	ASSERT_NE(actual.exactEfu, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -422,7 +613,15 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.vu1BranchToEbit
 		<< ", 0x" << actual.divUnit
 		<< ", 0x" << actual.maddClampE
-		<< ", 0x" << actual.msubClampE << "}";
+		<< ", 0x" << actual.msubClampE
+		<< ", 0x" << actual.signClampMulAdd
+		<< ", 0x" << actual.signClampSS
+		<< ", 0x" << actual.exactMulAdd
+		<< ", 0x" << actual.exactSS
+		<< ", 0x" << actual.signClampDivUnit
+		<< ", 0x" << actual.exactDivUnit
+		<< ", 0x" << actual.signClampEfu
+		<< ", 0x" << actual.exactEfu << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -473,6 +672,52 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.msubClampE, pin->digests.msubClampE)
 			<< explain("msubClampE", actual.msubClampE, pin->digests.msubClampE);
+	}
+	if (pin->digests.signClampMulAdd != 0) // probes added at abi 19; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampMulAdd, pin->digests.signClampMulAdd)
+			<< explain("signClampMulAdd", actual.signClampMulAdd, pin->digests.signClampMulAdd);
+		EXPECT_EQ(actual.signClampSS, pin->digests.signClampSS)
+			<< explain("signClampSS", actual.signClampSS, pin->digests.signClampSS);
+		EXPECT_EQ(actual.exactMulAdd, pin->digests.exactMulAdd)
+			<< explain("exactMulAdd", actual.exactMulAdd, pin->digests.exactMulAdd);
+		EXPECT_EQ(actual.exactSS, pin->digests.exactSS)
+			<< explain("exactSS", actual.exactSS, pin->digests.exactSS);
+	}
+	// The exact-mode probes are the two that call the EE FPU model, and a call
+	// site spills what EEFPU_MODEL_CALL does not spare (EeFpuModel.h). The
+	// compiler picks that: clang-cl has no mangling for preserve_all and takes
+	// the wide spill, a shape the pin table carries no row for.
+	const bool modelCallShapePinned = EEFPU_MODEL_CALL_SPARES_MOST != 0;
+	if (pin->digests.signClampDivUnit != 0) // probes added at abi 19; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
+			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
+		if (modelCallShapePinned)
+		{
+			EXPECT_EQ(actual.exactDivUnit, pin->digests.exactDivUnit)
+				<< explain("exactDivUnit", actual.exactDivUnit, pin->digests.exactDivUnit);
+		}
+	}
+	if (pin->digests.signClampEfu != 0) // probes added at abi 19; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
+			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
+		if (modelCallShapePinned)
+		{
+			EXPECT_EQ(actual.exactEfu, pin->digests.exactEfu)
+				<< explain("exactEfu", actual.exactEfu, pin->digests.exactEfu);
+		}
+	}
+	if (pin->digests.signClampDivUnit != 0) // probe added at abi 23; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
+			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
+	}
+	if (pin->digests.signClampEfu != 0) // probe added at abi 24; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
+			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }

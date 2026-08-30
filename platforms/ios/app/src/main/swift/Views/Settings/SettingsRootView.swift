@@ -8,6 +8,7 @@ import UIKit
 
 private enum SettingsStaticInfo {
     static let buildVersion = ARMSX2Bridge.buildVersion()
+    static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
 }
 
 private enum SettingsPane: String, CaseIterable, Identifiable {
@@ -16,6 +17,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     case appIcon
     case emulator
     case graphics
+    case shaders
     case framePacing
     case audio
     case network
@@ -45,6 +47,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "Emulator"
         case .graphics:
             return "Graphics"
+        case .shaders:
+            return "Shaders"
         case .framePacing:
             return "Frame Pacing"
         case .audio:
@@ -88,6 +92,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "cpu"
         case .graphics:
             return "paintbrush"
+        case .shaders:
+            return "camera.filters"
         case .framePacing:
             return "speedometer"
         case .audio:
@@ -161,6 +167,8 @@ struct SettingsRootView: View {
     var body: some View {
 #if targetEnvironment(macCatalyst)
         NavigationSplitView {
+            // Left iterating allCases, so a build without librashader still lists Shaders here;
+            // settingsDetail answers for that rather than the enum learning a runtime capability.
             List(SettingsPane.allCases, selection: $selectedPane) { pane in
                 Label(settings.localized(pane.title), systemImage: pane.icon)
                     .tag(pane)
@@ -214,6 +222,12 @@ struct SettingsRootView: View {
                     Label(settings.localized("Graphics"), systemImage: "paintbrush")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
+                if SettingsStaticInfo.shaderChainSupported {
+                    NavigationLink(value: SettingsPane.shaders) {
+                        Label(settings.localized("Shaders"), systemImage: "camera.filters")
+                    }
+                    .gameCardTintMenuBackgroundListRow(backgroundActive)
+                }
                 NavigationLink(value: SettingsPane.framePacing) {
                     Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
                 }
@@ -465,6 +479,8 @@ struct SettingsRootView: View {
             EmulatorSettingsView()
         case .graphics:
             GraphicsSettingsView()
+        case .shaders:
+            ShaderSettingsView()
         case .framePacing:
             FramePacingSettingsView()
         case .audio:

@@ -14,6 +14,8 @@
 #include <initializer_list>
 #include <vector>
 
+class BaseVUmicroCPU;
+
 namespace recompiler_tests {
 
 // VU recompiler test harness. Drives one VU instance (0 or 1) through a short
@@ -53,6 +55,13 @@ public:
 	u32  ReadMemU32(u32 addr) const;
 	void TrackMemWindow(u32 addr, size_t bytes);
 
+	// Sets this harness's VU clamp mode (GameDB vu0ClampMode / vu1ClampMode)
+	// for the VU it drives: the three Recompiler bits GameDatabase derives from
+	// it. The harness otherwise runs at the RecompilerOptions() default of 1,
+	// and microVU's exact MAC U and MAC O models emit only at 3. Restored in
+	// the dtor.
+	void SetVuClampMode(int mode);
+
 	// Skip a VI register in the JIT-vs-interp auto-diff. Use sparingly: this
 	// is the right tool when JIT and interp legitimately disagree on a
 	// bookkeeping register (e.g. REG_TPC after an M-bit mid-program break)
@@ -87,10 +96,30 @@ public:
 	// EeRecTestHarness::RunJitNoDiff.
 	void RunNoDiff();
 
+	// Run() with the diff inverted: it still runs, but the test fails when it
+	// comes back EMPTY. Records a gap the recompiler still has -- `why` names
+	// what it lacks -- so the test trips on the day it catches up instead of
+	// passing quietly through the change that closed it. Unlike RunNoDiff
+	// above, nothing is left unchecked.
+	void RunRequiringDivergence(const char* why);
+
 	// One-sided execution against the interpreter only. Both `JitSnapshot()`
 	// and `InterpSnapshot()` reflect the interpreter result. Use when
 	// authoring a new test before the JIT path is ready.
 	void RunInterpOnly();
+
+	// Re-enter the engine until the running bit clears, instead of taking a
+	// single Execute(), for the rest of this harness's life.
+	//
+	// Execute() returns at the first break the engine takes, and an M-bit
+	// pause is one: the microprogram is still running, VPU_STAT bit 0 is
+	// still set, and the next entry carries on from where it stopped.
+	// Production does the re-entry in `_vu0run`, and the console probes did
+	// it too -- vbprobe.c spins on `cfc2 $vi29` until the running bit clears
+	// and only then reads anything back. A test scored against one of those
+	// captures has to wait the same way or it is comparing a mid-program
+	// pause against a terminated program.
+	void ResumeUntilTerminated();
 
 	// JIT-only re-run from the SAME pre-state as the last Run(), WITHOUT
 	// resetting the VU block cache first — compiled (or hydrated) blocks
@@ -98,6 +127,11 @@ public:
 	// Used by the persisted-JIT round-trip tests, where the whole point is
 	// asserting the pre-seeded block graph runs without a recompile.
 	void RunJitPreserveBlockCache();
+
+private:
+	void RunDiffing(const char* require_why);
+
+public:
 
 	// ---- Post-run accessors ----
 	u32 GetVfBitsInterp(u32 reg_idx, char lane) const;
@@ -143,6 +177,7 @@ private:
 	void SeedEntryState(bool reset_block_cache = true);
 	void RunInterpFromSeeded();
 	void RunJitFromSeeded();
+	void ExecuteEngine(BaseVUmicroCPU* cpu);
 	void WriteProgramToMicro();
 	void MergeTrackedWindow(u32 addr, size_t bytes);
 
@@ -155,6 +190,14 @@ private:
 	std::vector<u8> path1_packets_jit_;
 	std::vector<u8> path1_packets_interp_;
 
+	bool resume_until_terminated_ = false;
+
+	bool clamp_mode_changed_ = false;
+	bool prev_overflow_ = false;
+	bool prev_extra_overflow_ = false;
+	bool prev_sign_overflow_ = false;
+	bool prev_exact_mode_ = false;
+
 	VuSnapshot pre_snapshot_;
 	VuSnapshot jit_snapshot_;
 	VuSnapshot interp_snapshot_;
@@ -164,6 +207,10 @@ private:
 	// Real microprograms can run thousands of cycles but the harness's
 	// E-bit terminator caps every test deterministically.
 	static constexpr u32 kCycleBudget = 4096;
+
+	// Bound on ResumeUntilTerminated's re-entries. A program that has not
+	// terminated by then is reported rather than quietly truncated.
+	static constexpr int kMaxResumes = 16;
 };
 
 } // namespace recompiler_tests

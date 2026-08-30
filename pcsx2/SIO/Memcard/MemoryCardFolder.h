@@ -318,6 +318,10 @@ public:
 	void Open(std::string fullPath, const Pcsx2Config::McdOptions& mcdOptions, const u32 sizeInClusters, const bool enableFiltering, std::string filter, bool simulateFileWrites = false);
 	// Close the memory card and flush changes to the file system. Set flush to false to not store changes.
 	void Close(bool flush = true);
+	// Write any cached writes out to the file system now, rather than waiting out the
+	// post-write frame countdown -- which only advances while frames are being drawn, so a
+	// paused VM never reaches it.
+	void FlushNow();
 	// Checks whether the Memory Card is formatted.
 	bool IsFormatted() const;
 
@@ -546,6 +550,8 @@ public:
 
 	void Open();
 	void Close();
+	// Flush every slot's cached writes without closing anything.
+	void Flush();
 
 	void SetFiltering(const bool enableFiltering);
 

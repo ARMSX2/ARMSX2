@@ -67,7 +67,11 @@ public:
 	// a hand-computed double-mode value rather than the auto-diffing Run(). Restored
 	// to its previous value in the dtor.
 	void EnableFpuFullMode();
-	void EnableFpuMulHack();
+
+	// Enables "Exact" (CHECK_FPU_EXACT / GameDB eeClampMode:4): mode 3 plus the
+	// rest of the EE multiplier's one-ULP deficit. Implies EnableFpuFullMode();
+	// restored in the dtor.
+	void EnableFpuExactMode();
 
 	// Turns ON the (default-OFF) fpuExtraOverflow Recompiler option — GameDB
 	// eeClampMode >= 2, CHECK_FPU_EXTRA_OVERFLOW — so the JIT clamps each fpr
@@ -95,6 +99,12 @@ public:
 	// opt-out perf path. Off makes the JIT bit-identical to the single-precision
 	// interpreter (which never masks). Restored to its previous value in the dtor.
 	void DisableFpuGuarded();
+
+	// Sets the VU0 clamp mode (GameDB vu0ClampMode / vuClampMode) for this run:
+	// the three Recompiler bits GameDatabase derives from it. The harness
+	// otherwise runs at the RecompilerOptions() default of 1, and the COP2
+	// macro adder emits its guard mask only from 2 up. Restored in the dtor.
+	void SetVu0ClampMode(int mode);
 
 	// ---- Memory ----
 
@@ -232,6 +242,26 @@ public:
 	// DiffVu's ignored_vi parameter.
 	void IgnoreVu0Vi(u32 reg_idx) { vu0_ignored_vi_.push_back(static_cast<int>(reg_idx)); }
 
+	// Drop Run()'s VU0 JIT-vs-interp auto-diff entirely. Only for tests that
+	// score each engine against an EXTERNAL reference -- a hardware capture --
+	// where the two engines being wrong in different ways is the subject
+	// rather than the failure. A test that calls this and then compares the
+	// two engines to each other has disabled its own assertion; compare each
+	// one to the reference instead.
+	void ExpectVu0Divergence() { vu0_expect_divergence_ = true; }
+
+	// Records a divergence that has to still be there. The diff runs as usual,
+	// but the test fails when it comes back EMPTY. Unlike ExpectVu0Divergence
+	// above, which drops the assertion, this inverts it: the test now says "the
+	// recompiler is still behind the interpreter here, for this reason", and it
+	// trips on the day the recompiler catches up rather than passing quietly
+	// through the change that closed the gap.
+	//
+	// `why` names what the recompiler lacks, not what the test does.
+	void RequireEeDivergence(const char* why) { ee_require_divergence_ = why; }
+	void RequireVu0Divergence(const char* why) { vu0_require_divergence_ = why; }
+	void RequireVu1Divergence(const char* why) { vu1_require_divergence_ = why; }
+
 	void SeedVu0Vf(u32 reg_idx, float x, float y, float z, float w);
 	void SeedVu0VfBits(u32 reg_idx, u32 x, u32 y, u32 z, u32 w);
 	void SeedVu0Acc(float x, float y, float z, float w);
@@ -338,6 +368,10 @@ private:
 	EeSnapshot interp_snapshot_;
 
 	bool capture_vu0_ = false;
+	bool vu0_expect_divergence_ = false;
+	const char* ee_require_divergence_ = nullptr;
+	const char* vu0_require_divergence_ = nullptr;
+	const char* vu1_require_divergence_ = nullptr;
 	std::vector<int> vu0_ignored_vi_;
 	VuSnapshot vu0_pre_snapshot_;
 	VuSnapshot vu0_jit_snapshot_;
@@ -381,14 +415,19 @@ private:
 
 	bool fpu_full_mode_changed_ = false;
 	bool prev_fpu_full_mode_ = false;
-	bool fpu_mul_hack_changed_ = false;
-	bool prev_fpu_mul_hack_ = false;
+	bool fpu_exact_mode_changed_ = false;
+	bool prev_fpu_exact_mode_ = false;
 	bool fpu_guarded_changed_ = false;
 	bool prev_fpu_guarded_ = false;
 	bool fpu_extra_overflow_changed_ = false;
 	bool prev_fpu_extra_overflow_ = false;
 	bool fpu_overflow_changed_ = false;
 	bool prev_fpu_overflow_ = false;
+	bool vu0_clamp_changed_ = false;
+	bool prev_vu0_overflow_ = false;
+	bool prev_vu0_extra_overflow_ = false;
+	bool prev_vu0_sign_overflow_ = false;
+	bool prev_vu0_exact_mode_ = false;
 };
 
 } // namespace recompiler_tests

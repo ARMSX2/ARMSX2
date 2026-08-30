@@ -7,9 +7,9 @@
 // operand grid; this is the readable form, and it names which engine had each
 // case wrong.
 //
-// Q's magnitude is the engines' 0x7F7FFFFF where the console gives 0x7FFFFFFF
-// -- the VU clamp mode, left alone here as it is there. The sign is not part
-// of that difference and is asserted against the console.
+// Q is the console's word and every engine is held to it directly; where a
+// quotient is instead reached by dividing, VuDivUnitConsole scores what the
+// host's ceiling leaves.
 
 #include <gtest/gtest.h>
 
@@ -49,24 +49,24 @@ struct Row
 	u32 fs;
 	u32 ft;
 	u32 di; // expected STATUS & kDiMask
-	u32 q;
+	u32 q;  // the console's
 };
 
 // Every row is checked on all four engines. 0/0 goes to its own test below.
 constexpr Row kRows[] = {
 	// Under xor both quotients would come back with the opposite sign, so this
 	// pair alone refutes it.
-	{"+1 / -0",      0x3F800000u, 0x80000000u, kI | kD, 0x7F7FFFFFu},
-	{"-1 / -0",      0xBF800000u, 0x80000000u, kI | kD, 0xFF7FFFFFu},
+	{"+1 / -0",      0x3F800000u, 0x80000000u, kI | kD, 0x7FFFFFFFu},
+	{"-1 / -0",      0xBF800000u, 0x80000000u, kI | kD, 0xFFFFFFFFu},
 
 	// Positive divisor, D alone: says the pair above moved for the sign bit
 	// and not because the whole zero branch changed.
-	{"+1 / +0",      0x3F800000u, 0x00000000u, kD,      0x7F7FFFFFu},
-	{"-1 / +0",      0xBF800000u, 0x00000000u, kD,      0xFF7FFFFFu},
+	{"+1 / +0",      0x3F800000u, 0x00000000u, kD,      0x7FFFFFFFu},
+	{"-1 / +0",      0xBF800000u, 0x00000000u, kD,      0xFFFFFFFFu},
 
 	// Zero exponent, nonzero mantissa: the VU has no denormals, so this
 	// reaches the zero branch too.
-	{"+1 / -denorm", 0x3F800000u, 0x80000001u, kI | kD, 0x7F7FFFFFu},
+	{"+1 / -denorm", 0x3F800000u, 0x80000001u, kI | kD, 0x7FFFFFFFu},
 
 	// Nonzero divisors: the sign bit still decides I, and nothing raises D.
 	{"+1 / -4",      0x3F800000u, 0xC0800000u, kI,      0x3F000000u},
@@ -166,18 +166,17 @@ TEST(VuRsqrtDivisorSign, MatchesTheConsoleRowForOneOverNegativeZero)
 	h.RunJitNoDiff();
 	EXPECT_EQ(h.GetGprJit(kRStatus) & kDiMask, 0xC30u);
 	EXPECT_EQ(h.GetGprJit(kRQ) & 0x80000000u, 0x00000000u);
-	EXPECT_EQ(0x7FFFFFFFu & 0x80000000u, h.GetGprJit(kRQ) & 0x80000000u)
-		<< "console returned 0x7FFFFFFF; the magnitude is the VU clamp mode, the sign is not";
+	EXPECT_EQ(h.GetGprJit(kRQ), 0x7FFFFFFFu);
 }
 
 // Three of the four engines used to raise both causes here and return ±0.
 TEST(VuRsqrtDivisorSign, ZeroOverZeroRaisesInvalidWithoutDivideByZero)
 {
 	struct { const char* what; u32 fs; u32 ft; u32 q; } rows[] = {
-		{"+0 / +0", 0x00000000u, 0x00000000u, 0x7F7FFFFFu},
-		{"+0 / -0", 0x00000000u, 0x80000000u, 0x7F7FFFFFu},
-		{"-0 / +0", 0x80000000u, 0x00000000u, 0xFF7FFFFFu},
-		{"-0 / -0", 0x80000000u, 0x80000000u, 0xFF7FFFFFu},
+		{"+0 / +0", 0x00000000u, 0x00000000u, 0x7FFFFFFFu},
+		{"+0 / -0", 0x00000000u, 0x80000000u, 0x7FFFFFFFu},
+		{"-0 / +0", 0x80000000u, 0x00000000u, 0xFFFFFFFFu},
+		{"-0 / -0", 0x80000000u, 0x80000000u, 0xFFFFFFFFu},
 	};
 
 	for (const auto& r : rows)

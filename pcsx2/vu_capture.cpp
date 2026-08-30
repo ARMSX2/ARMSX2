@@ -190,12 +190,16 @@ namespace vu_capture
 			out.vu_clamp |= kClampVu0ExtraOverflow;
 		if (rec.vu0SignOverflow)
 			out.vu_clamp |= kClampVu0SignOverflow;
+		if (rec.vu0ExactMode)
+			out.vu_clamp |= kClampVu0ExactMode;
 		if (rec.vu1Overflow)
 			out.vu_clamp |= kClampVu1Overflow;
 		if (rec.vu1ExtraOverflow)
 			out.vu_clamp |= kClampVu1ExtraOverflow;
 		if (rec.vu1SignOverflow)
 			out.vu_clamp |= kClampVu1SignOverflow;
+		if (rec.vu1ExactMode)
+			out.vu_clamp |= kClampVu1ExactMode;
 
 		const auto encode_fpcr = [](const FPControlRegister& r) -> u32 {
 			return (static_cast<u32>(r.GetRoundMode()) & kFpcrRoundMask) |

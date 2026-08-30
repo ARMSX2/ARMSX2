@@ -18,6 +18,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -220,13 +228,73 @@ fun PadModalHost() {
                 val anchor = entry.anchor.value
                 // Absorb taps on the panel itself, or the scrim's dismiss fires through it and
                 // the modal closes as you press its own buttons.
+                // Swipe-to-dismiss, for bottom-aligned panels only.
+                //
+                // PadModal replaced ModalBottomSheet because that is its own focused Android
+                // window and every row inside it was unreachable by pad. The one thing lost in the
+                // trade was the swipe — and a panel that rises from the bottom edge with a rounded
+                // top and a drag handle is *promising* a swipe, so its absence reads as broken
+                // rather than as a deliberate omission. Restored here without giving up focus.
+                //
+                // Only for BottomCenter: on a centred or anchored menu a downward drag means
+                // nothing, and hijacking it would break scrolling inside those panels.
+                val bottomAligned = entry.alignment.value == Alignment.BottomCenter
                 val absorbTaps = @Composable { inner: @Composable () -> Unit ->
+                    var dragOffset by remember { mutableFloatStateOf(0f) }
+                    val density = LocalDensity.current
+                    val dismissThresholdPx = with(density) { 110.dp.toPx() }
+                    // Only a drag STARTING in this top strip owns the gesture. The strip is where
+                    // the drag handle sits, which is where people grab a sheet anyway.
+                    val handleStripPx = with(density) { 64.dp.toPx() }
+                    val slopPx = with(density) { 8.dp.toPx() }
                     Box(
-                        Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {},
-                        ),
+                        Modifier
+                            .then(
+                                if (!bottomAligned) Modifier
+                                else Modifier
+                                    .offset { IntOffset(0, dragOffset.roundToInt()) }
+                                    .pointerInput(entry.key) {
+                                        // ★ INITIAL pass, and a top-strip guard.
+                                        //
+                                        // Compose delivers pointer events to CHILDREN first, so a
+                                        // detector on this Box never saw the drag — every row in
+                                        // the sheet is clickable and consumed it in the Main pass.
+                                        // That is why the first attempt at swipe-to-dismiss did
+                                        // nothing at all. Watching the Initial pass is the only
+                                        // way a parent can win.
+                                        //
+                                        // Winning it everywhere would be worse than not having it:
+                                        // it would eat scrolling inside any modal that scrolls. So
+                                        // the gesture is claimed only when it STARTS in the top
+                                        // strip, and only once it has clearly gone downward.
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false,
+                                                pass = PointerEventPass.Initial)
+                                            if (down.position.y > handleStripPx) return@awaitEachGesture
+                                            var claimed = false
+                                            var total = 0f
+                                            while (true) {
+                                                val ev = awaitPointerEvent(PointerEventPass.Initial)
+                                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!ch.pressed) break
+                                                total += ch.positionChange().y
+                                                if (!claimed && total > slopPx) claimed = true
+                                                if (claimed) {
+                                                    ch.consume()
+                                                    dragOffset = total.coerceAtLeast(0f)
+                                                }
+                                            }
+                                            if (claimed && dragOffset > dismissThresholdPx) PadModals.dismissTop()
+                                            dragOffset = 0f
+                                        }
+                                    }
+                            )
+                            // Absorb taps LAST so the drag detector above sees the gesture first.
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {},
+                            ),
                     ) {
                         CompositionLocalProvider(LocalNavLayer provides entry.key) { inner() }
                     }

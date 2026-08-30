@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -322,20 +324,15 @@ static const void* _DynGen_EnterRecompiledCode()
 	armAsm->Ldr(a64::s8, FLT_MAX);
 	armAsm->Ldr(a64::s9, -FLT_MAX);
 
-	// Same convention, one register along: d10 = 0x2AA, the Booth-digit mask
-	// of the EE multiplier's one-ULP deficit (NEON_RESERVED_FPU_MULMASK; the
-	// contract is on the constant, the consumer is emitDefectiveFmul in
-	// iFPUd-arm64.cpp). Parking it here is what makes the mode-3 multiply
-	// sequence 4 instructions instead of 6 — every consumer reads it, none
-	// materializes it, and because the low 64 bits of d8-d15 are callee-saved
-	// there is no C-call seam, branch fork, superblock side exit or
-	// backpatched fastmem thunk that can invalidate it.
+	// Same convention, three registers along: d11 = 2^kEeFprScaleExp, which
+	// turns a slot into the value it denotes. The contract is on
+	// NEON_RESERVED_EEFPU_UNSCALE; iFPUd-arm64.cpp is the consumer.
 	//
 	// Emitted unconditionally rather than under CHECK_FPU_FULL: two
 	// instructions once per JIT entry are not worth a dispatcher that goes
 	// stale if the clamp mode changes without a recompiler reset.
-	armAsm->Mov(RXSCRATCH, UINT64_C(0x2AA));
-	armAsm->Fmov(a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64), RXSCRATCH);
+	armAsm->Mov(RXSCRATCH, kEeFprUnscaleBits);
+	armAsm->Fmov(a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64), RXSCRATCH);
 
 	// Load fastmem base into x19 if enabled
 	if (CHECK_FASTMEM)
@@ -530,11 +527,13 @@ void iFlushCall(int flushtype)
 		}
 	}
 
-	// GE-15: 32-bit FPR-class slots (NEONTYPE_FPREG/FPACC) in the
-	// callee-saved q10-q15 range survive plain C-helper seams — AAPCS64
-	// preserves the LOWER 64 bits of v8-v15, and this class only ever
-	// reads/writes lane 0 (S register; _writebackNEONreg stores S-width, so
-	// post-call garbage in the upper lanes is never observed). Writeback if
+	// GE-15: FPR-class slots (NEONTYPE_FPREG/FPACC) in the callee-saved
+	// q10-q15 range survive plain C-helper seams — AAPCS64 preserves the
+	// LOWER 64 bits of v8-v15, and this class only ever reads/writes lane 0,
+	// at S width, or at D width where eeClampMode 3 and up put a relocated
+	// double in the slot. Both fit the preserved half, and _writebackNEONreg stores
+	// the same width it filled, so post-call garbage above it is never
+	// observed. Writeback if
 	// dirty but KEEP mapped — 4248's writeback-dirty-but-keep passes, whose
 	// type-mask 0x482 likewise excludes the 128-bit classes: GPRREG quads /
 	// VFREG upper lanes are caller-saved and must still flush
@@ -627,29 +626,6 @@ static void armClearCauseBD()
 	armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.CP0.n.Cause));
 }
 
-// Flag set by cpuTlbMiss to signal that a TLB exception occurred during
-// an interpreter call. The JIT block checks this after recCall and exits
-// to the dispatcher if set, so the exception vector gets dispatched.
-u32 s_recTlbMissOccurred = 0;
-
-// Emit the post-interpreter-call TLB-miss exception dispatch. cpuTlbMiss sets
-// s_recTlbMissOccurred and moves cpuRegs.pc to the exception vector; when set we
-// clear the flag and exit to DispatcherReg rather than continue the block at the
-// wrong PC. DispatcherReg/s_recTlbMissOccurred are file-local here, so this is
-// the shared entry point used by recCall and recVTLB-arm64.cpp's recUnalignedCall.
-void recEmitInterpTlbMissCheck()
-{
-	// Dispatch to DispatcherReg (not DispatcherEvent, which runs event
-	// processing that may interfere with the pending exception state).
-	a64::Label noException;
-	armMoveAddressToReg(RSCRATCHADDR, &s_recTlbMissOccurred);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RSCRATCHADDR));
-	armAsm->Cbz(RWSCRATCH, &noException);
-	armAsm->Str(a64::wzr, a64::MemOperand(RSCRATCHADDR)); // clear flag
-	armEmitJmp(DispatcherReg);
-	armAsm->Bind(&noException);
-}
-
 // Interp-called ops assume the interpreter's post-fetch convention:
 // cpuRegs.pc = op + 4 at handler entry (trap()/SYSCALL/BREAK subtract 4 to
 // find the faulting op). Non-delay-slot compiles advance `pc` before the
@@ -693,9 +669,6 @@ void recCall(void (*func)())
 
 	// The interpreter writes guest GPRs in memory — refresh the pin mirrors.
 	armReloadEEGPRPins();
-
-	// After interpreter calls, dispatch a pending TLB-miss exception.
-	recEmitInterpTlbMissCheck();
 }
 
 void recBranchCall(void (*func)())
@@ -1755,11 +1728,10 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 // observe cpuRegs.branch at runtime, i.e. can reach cpuException (which takes
 // it as bd) or the bracket epilogue's exception divert. Fork-verified raiser
 // inventory (2026-07-07):
-//   - memory ops: TLB miss via vtlb_Miss → cpuTlbMissR/W(addr, cpuRegs.branch)
-//     (vtlb.cpp) from BOTH fastmem slow path and softmem, plus the MMIO
-//     fallback _ext_memRead/Write (Memory.cpp). The inline load/store paths
-//     have no recEmitInterpTlbMissCheck — the vector divert rides the bracket
-//     epilogue, so these must keep the bracket.
+//   - memory ops: the MMIO fallback _ext_memRead/Write (Memory.cpp) calls
+//     cpuTlbMissR/W(addr, cpuRegs.branch) from BOTH the fastmem slow path and
+//     softmem. The inline load/store paths poll nothing, so the vector divert
+//     rides the bracket epilogue and these must keep the bracket.
 //   - SYSCALL (IS_BRANCH|BRANCHTYPE_SYSCALL), BREAK, and the trap family
 //     TGE..TNE / TGEI..TNEI — all recBranchCall/recCall interpreter fallbacks
 //     whose bodies call cpuException(_, cpuRegs.branch). BREAK and the traps
@@ -1838,12 +1810,17 @@ namespace EERecFallback
 	}
 
 	static u32 s_cop2VuCensus[kCop2VuIdCount];
+	static u32 s_cop2VuCensusTotal;
+	static u32 s_cop2VuCensusLogged;
 
 	void NoteCop2VuCompiled(u32 code)
 	{
 		const int id = Cop2VuOpId(code);
 		if (id >= 0)
+		{
 			s_cop2VuCensus[id]++;
+			s_cop2VuCensusTotal++;
+		}
 	}
 
 	std::string DescribeCop2VuCensus()
@@ -1863,6 +1840,48 @@ namespace EERecFallback
 		if (s.empty())
 			return "no VU macro ops compiled";
 		return fmt::format("{} (total {})", s, total);
+	}
+
+	void InitFromEnvOnce()
+	{
+		static bool s_done = false;
+		if (s_done)
+			return;
+		s_done = true;
+
+		const char* list = std::getenv("ARMSX2_REC_FALLBACK");
+		if (!list || !*list)
+			return;
+
+		u32 groups = 0;
+		u32 reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+		u64 vu_mask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
+		std::string error;
+		if (!ParseGroups(list, &groups, reg_masks, vu_mask, &error))
+		{
+			Console.Error("ARMSX2_REC_FALLBACK: %s", error.c_str());
+			return;
+		}
+
+		g_groups = groups;
+		std::memcpy(g_cop2RegMask, reg_masks, sizeof(g_cop2RegMask));
+		std::memcpy(g_cop2VuMask, vu_mask, sizeof(g_cop2VuMask));
+		Console.WriteLn(Color_Yellow, "EERecFallback: forcing %s to the interpreter",
+			DescribeGroups(g_groups).c_str());
+	}
+
+	void MaybeLogCop2VuCensus(bool end_of_run)
+	{
+		const char* want = std::getenv("ARMSX2_REC_FALLBACK_CENSUS");
+		if (!want || *want == '0')
+			return;
+		// A reset with nothing new to report is a boot artifact: the first
+		// resets fire before a block has reached the emitter, and an empty
+		// census there reads as "this game compiles no VU macro ops".
+		if (!end_of_run && s_cop2VuCensusTotal == s_cop2VuCensusLogged)
+			return;
+		s_cop2VuCensusLogged = s_cop2VuCensusTotal;
+		Console.WriteLn(Color_Yellow, "COP2VU CENSUS: %s", DescribeCop2VuCensus().c_str());
 	}
 
 	bool Selected(u32 code)
@@ -2361,9 +2380,8 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			// cpuException zeroes cpuRegs.branch; still-1 means the delay
 			// slot completed without raising. On an exception, divert to the
 			// dispatcher on the vector PC before the enclosing branch's
-			// static dispatch can clobber it (same contract as
-			// recEmitInterpTlbMissCheck; cycle undercount on this exceptional
-			// path is accepted the same way). (AX-05)
+			// static dispatch can clobber it. Cycle undercount on this
+			// exceptional path is accepted. (AX-05)
 			a64::Label noException;
 			armAsm->Ldr(RWSCRATCH, armCpuRegMem(&cpuRegs.branch));
 			armAsm->Cbnz(RWSCRATCH, &noException);
@@ -3034,6 +3052,15 @@ static void recResetRaw()
 	s_curBlockContSites.clear();
 #endif
 
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Before the first block compiles: a group forced to the interpreter here
+	// changes what every later block emits. The census runs to the same beat
+	// but reports the generation being thrown away, so a run long enough to
+	// exhaust the cache leaves a trail even if it never shuts down cleanly.
+	EERecFallback::InitFromEnvOnce();
+	EERecFallback::MaybeLogCop2VuCensus(false);
+#endif
+
 	// COP2 macro-mode emitters read their clamp/mask constants from the pack
 	// ([RSTATE, #imm]) — (re)write them before any block compiles.
 	cop2RecWritePackConstants();
@@ -3152,6 +3179,12 @@ static void recResetRaw()
 
 static void recShutdown()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	// The only dump a short run reaches: every reset it saw came before the
+	// first block compiled.
+	EERecFallback::MaybeLogCop2VuCensus(true);
+#endif
+
 	s_eeConstantPool.Destroy();
 	recRAMCopy.deallocate();
 	recLutReserve_RAM.deallocate();
@@ -3215,11 +3248,9 @@ static void recSafeExitExecution()
 
 static void recCancelInstruction()
 {
-	// Called by interpreter functions (e.g. RaiseAddressError) when an
-	// exception occurs mid-instruction. For the interpreter, this does a
-	// longjmp. For the recompiler, set the TLB miss flag so that recCall's
-	// post-call check dispatches to the exception vector.
-	s_recTlbMissOccurred = 1;
+	// The interpreter's version longjmps out of the instruction it is inside;
+	// a recompiled block has no such seam. x86 asserts here instead; its only
+	// rec-reachable caller is RaiseAddressError, which just logs.
 }
 
 static void recExecute()

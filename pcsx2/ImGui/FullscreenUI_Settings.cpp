@@ -1649,6 +1649,7 @@ void FullscreenUI::SwitchToSettings()
 {
 	s_game_settings_entry.reset();
 	s_game_settings_interface.reset();
+	s_game_settings_serial.clear();
 	s_game_patch_list = {};
 	s_enabled_game_patch_cache = {};
 	s_game_cheats_list = {};
@@ -1662,6 +1663,7 @@ void FullscreenUI::SwitchToSettings()
 void FullscreenUI::SwitchToGameSettings(const std::string_view serial, u32 crc)
 {
 	s_game_settings_entry.reset();
+	s_game_settings_serial = serial;
 	s_game_settings_interface = std::make_unique<INISettingsInterface>(VMManager::GetGameSettingsPath(serial, crc));
 	s_game_settings_interface->Load();
 	PopulatePatchesAndCheatsList(serial, crc);
@@ -1737,7 +1739,7 @@ void FullscreenUI::DoCopyGameSettings()
 	if (!s_game_settings_interface)
 		return;
 
-	Pcsx2Config::CopyConfiguration(s_game_settings_interface.get(), *GetEditingSettingsInterface(false));
+	Pcsx2Config::CopyConfiguration(s_game_settings_interface.get(), *GetEditingSettingsInterface(false), s_game_settings_serial);
 	Pcsx2Config::ClearInvalidPerGameConfiguration(s_game_settings_interface.get());
 
 	SetSettingsChanged(s_game_settings_interface.get());
@@ -2678,6 +2680,8 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 	std::optional<bool> default_false = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(false);
 	std::optional<bool> default_true = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(true);
 
+	std::optional<bool> fourth = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler",
+		(vunum >= 0 ? ((vunum == 0) ? "vu0ExactMode" : "vu1ExactMode") : "fpuExactMode"), default_false);
 	std::optional<bool> third = bsi->GetOptionalBoolValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0SignOverflow" : "vu1SignOverflow") : "fpuFullMode"), default_false);
 	std::optional<bool> second = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler",
@@ -2686,7 +2690,9 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), default_true);
 
 	int index;
-	if (third.has_value() && third.value())
+	if (fourth.has_value() && fourth.value())
+		index = base + 4;
+	else if (third.has_value() && third.value())
 		index = base + 3;
 	else if (second.has_value() && second.value())
 		index = base + 2;
@@ -2703,6 +2709,7 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		FSUI_NSTR("Normal (Default)"),
 		FSUI_NSTR("Extra + Preserve Sign"),
 		FSUI_NSTR("Full"),
+		FSUI_NSTR("Exact"),
 	};
 	static constexpr const char* vu_clamping_mode_settings[] = {
 		FSUI_NSTR("Use Global Setting"),
@@ -2710,15 +2717,17 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		FSUI_NSTR("Normal (Default)"),
 		FSUI_NSTR("Extra"),
 		FSUI_NSTR("Extra + Preserve Sign"),
+		FSUI_NSTR("Exact"),
 	};
 	const char* const* options = (vunum >= 0) ? vu_clamping_mode_settings : ee_clamping_mode_settings;
+	const int option_count = static_cast<int>((vunum >= 0) ? std::size(vu_clamping_mode_settings) : std::size(ee_clamping_mode_settings));
 	const int setting_offset = IsEditingGameSettings(bsi) ? 0 : 1;
 
 	if (MenuButtonWithValue(title, summary, Host::TranslateToCString(TR_CONTEXT, options[index + setting_offset])))
 	{
 		ImGuiFullscreen::ChoiceDialogOptions cd_options;
-		cd_options.reserve(std::size(ee_clamping_mode_settings));
-		for (int i = setting_offset; i < static_cast<int>(std::size(ee_clamping_mode_settings)); i++)
+		cd_options.reserve(option_count);
+		for (int i = setting_offset; i < option_count; i++)
 			cd_options.emplace_back(Host::TranslateToString(TR_CONTEXT, options[i]), (i == (index + setting_offset)));
 		OpenChoiceDialog(title, false, std::move(cd_options),
 			[game_settings = IsEditingGameSettings(bsi), vunum](s32 index, const std::string& title, bool checked) {
@@ -2726,11 +2735,12 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 				{
 					auto lock = Host::GetSettingsLock();
 
-					std::optional<bool> first, second, third;
+					std::optional<bool> first, second, third, fourth;
 
 					if (!game_settings || index > 0)
 					{
 						const bool base = game_settings ? 1 : 0;
+						fourth = (index >= (base + 4));
 						third = (index >= (base + 3));
 						second = (index >= (base + 2));
 						first = (index >= (base + 1));
@@ -2743,6 +2753,8 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 						(vunum >= 0 ? ((vunum == 0) ? "vu0ExtraOverflow" : "vu1ExtraOverflow") : "fpuExtraOverflow"), second);
 					bsi->SetOptionalBoolValue(
 						"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), first);
+					bsi->SetOptionalBoolValue("EmuCore/CPU/Recompiler",
+						(vunum >= 0 ? ((vunum == 0) ? "vu0ExactMode" : "vu1ExactMode") : "fpuExactMode"), fourth);
 					SetSettingsChanged(bsi);
 				}
 
@@ -2806,59 +2818,56 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		FSUI_NSTR("Adaptive (Top Field First)"),
 		FSUI_NSTR("Adaptive (Bottom Field First)"),
 	};
-	static const char* s_resolution_options[] = {
-		FSUI_NSTR("Native (PS2)"),
-		FSUI_NSTR("2x Native (~720px/HD)"),
-		FSUI_NSTR("3x Native (~1080px/FHD)"),
-		FSUI_NSTR("4x Native (~1440px/QHD)"),
-		FSUI_NSTR("5x Native (~1800px/QHD+)"),
-		FSUI_NSTR("6x Native (~2160px/4K UHD)"),
-		FSUI_NSTR("7x Native (~2520px)"),
-		FSUI_NSTR("8x Native (~2880px/5K UHD)"),
-		FSUI_NSTR("9x Native (~3240px)"),
-		FSUI_NSTR("10x Native (~3600px/6K UHD)"),
-		FSUI_NSTR("11x Native (~3960px)"),
-		FSUI_NSTR("12x Native (~4320px/8K UHD)"),
-		FSUI_NSTR("13x Native (~4680px)"),
-		FSUI_NSTR("14x Native (~5040px)"),
-		FSUI_NSTR("15x Native (~5400px)"),
-		FSUI_NSTR("16x Native (~5760px)"),
-		FSUI_NSTR("17x Native (~6120px)"),
-		FSUI_NSTR("18x Native (~6480px/12K UHD)"),
-		FSUI_NSTR("19x Native (~6840px)"),
-		FSUI_NSTR("20x Native (~7200px)"),
-		FSUI_NSTR("21x Native (~7560px)"),
-		FSUI_NSTR("22x Native (~7920px)"),
-		FSUI_NSTR("23x Native (~8280px)"),
-		FSUI_NSTR("24x Native (~8640px/16K UHD)"),
-		FSUI_NSTR("25x Native (~9000px)"),
+	// The Internal Resolution picker, in list order. The set at and below 8x is the one the
+	// Android UI offers: quarter steps up to 3x, then half, then whole. Sub-native is there
+	// because fewer pixels is a large win on low/mid handhelds, and the GS only clamps the
+	// upper bound (GSClampUpscaleMultiplier), so those apply as-is.
+	//
+	// Above 8x is gated on Extended Upscaling Multipliers, and on the GPU actually reaching
+	// it -- max texture size / 1280, so 12x on the usual 16K-texture part.
+	struct ResolutionEntry
+	{
+		const char* name;
+		const char* value; // must match StringUtil::ToChars(), which is what writes the INI
+		float multiplier;
 	};
-	static const char* s_resolution_values[] = {
-		"1",
-		"2",
-		"3",
-		"4",
-		"5",
-		"6",
-		"7",
-		"8",
-		"9",
-		"10",
-		"11",
-		"12",
-		"13",
-		"14",
-		"15",
-		"16",
-		"17",
-		"18",
-		"19",
-		"20",
-		"21",
-		"22",
-		"23",
-		"24",
-		"25",
+	static constexpr float max_non_extended_multiplier = 8.0f;
+	static constexpr ResolutionEntry s_resolution_entries[] = {
+		{FSUI_NSTR("0.25x Native"), "0.25", 0.25f},
+		{FSUI_NSTR("0.5x Native"), "0.5", 0.5f},
+		{FSUI_NSTR("0.75x Native"), "0.75", 0.75f},
+		{FSUI_NSTR("Native (PS2)"), "1", 1.0f},
+		{FSUI_NSTR("1.25x Native"), "1.25", 1.25f},
+		{FSUI_NSTR("1.5x Native"), "1.5", 1.5f},
+		{FSUI_NSTR("1.75x Native"), "1.75", 1.75f},
+		{FSUI_NSTR("2x Native (~720px/HD)"), "2", 2.0f},
+		{FSUI_NSTR("2.25x Native"), "2.25", 2.25f},
+		{FSUI_NSTR("2.5x Native"), "2.5", 2.5f},
+		{FSUI_NSTR("2.75x Native"), "2.75", 2.75f},
+		{FSUI_NSTR("3x Native (~1080px/FHD)"), "3", 3.0f},
+		{FSUI_NSTR("3.5x Native"), "3.5", 3.5f},
+		{FSUI_NSTR("4x Native (~1440px/QHD)"), "4", 4.0f},
+		{FSUI_NSTR("5x Native (~1800px/QHD+)"), "5", 5.0f},
+		{FSUI_NSTR("6x Native (~2160px/4K UHD)"), "6", 6.0f},
+		{FSUI_NSTR("7x Native (~2520px)"), "7", 7.0f},
+		{FSUI_NSTR("8x Native (~2880px/5K UHD)"), "8", 8.0f},
+		{FSUI_NSTR("9x Native (~3240px)"), "9", 9.0f},
+		{FSUI_NSTR("10x Native (~3600px/6K UHD)"), "10", 10.0f},
+		{FSUI_NSTR("11x Native (~3960px)"), "11", 11.0f},
+		{FSUI_NSTR("12x Native (~4320px/8K UHD)"), "12", 12.0f},
+		{FSUI_NSTR("13x Native (~4680px)"), "13", 13.0f},
+		{FSUI_NSTR("14x Native (~5040px)"), "14", 14.0f},
+		{FSUI_NSTR("15x Native (~5400px)"), "15", 15.0f},
+		{FSUI_NSTR("16x Native (~5760px)"), "16", 16.0f},
+		{FSUI_NSTR("17x Native (~6120px)"), "17", 17.0f},
+		{FSUI_NSTR("18x Native (~6480px/12K UHD)"), "18", 18.0f},
+		{FSUI_NSTR("19x Native (~6840px)"), "19", 19.0f},
+		{FSUI_NSTR("20x Native (~7200px)"), "20", 20.0f},
+		{FSUI_NSTR("21x Native (~7560px)"), "21", 21.0f},
+		{FSUI_NSTR("22x Native (~7920px)"), "22", 22.0f},
+		{FSUI_NSTR("23x Native (~8280px)"), "23", 23.0f},
+		{FSUI_NSTR("24x Native (~8640px/16K UHD)"), "24", 24.0f},
+		{FSUI_NSTR("25x Native (~9000px)"), "25", 25.0f},
 	};
 	static constexpr const char* s_bilinear_options[] = {
 		FSUI_NSTR("Nearest"),
@@ -2969,38 +2978,52 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		if (!current_adapter_info && !s_graphics_adapter_list_cache.empty())
 			current_adapter_info = &s_graphics_adapter_list_cache.front();
 		if (current_adapter_info)
-			max_upscale_multiplier = std::clamp<u32>(current_adapter_info->max_upscale_multiplier, 12, std::size(s_resolution_options));
-
-		supports_extended_upscales = max_upscale_multiplier > 12u;
+			max_upscale_multiplier = std::clamp<u32>(current_adapter_info->max_upscale_multiplier, 12,
+				static_cast<u32>(s_resolution_entries[std::size(s_resolution_entries) - 1].multiplier));
 	}
 
-	size_t max_shown_multiplier = static_cast<size_t>(
-		(supports_extended_upscales && bsi->GetBoolValue("EmuCore/GS", "ExtendedUpscalingMultipliers", false)) ? max_upscale_multiplier : 12u);
+	// The toggle now unlocks everything past 8x rather than past 12x, so the usual 16K-texture
+	// GPU can still reach its 12x -- it just has to ask for it. With no adapter info at all we
+	// keep the standing assumption above, that the GPU is good for 12x.
+	supports_extended_upscales = is_hardware && static_cast<float>(max_upscale_multiplier) > max_non_extended_multiplier;
+
+	const float max_shown_multiplier =
+		(supports_extended_upscales && bsi->GetBoolValue("EmuCore/GS", "ExtendedUpscalingMultipliers", false)) ?
+			static_cast<float>(max_upscale_multiplier) :
+			max_non_extended_multiplier;
 	std::optional<float> saved_multiplier;
 	if (const std::optional<SmallString> config_value = bsi->GetOptionalSmallStringValue("EmuCore/GS", "upscale_multiplier"))
 	{
 		saved_multiplier = StringUtil::FromChars<float>(config_value->c_str());
 	}
 
-	static const char* s_shown_resolution_options[std::size(s_resolution_options)];
-	static const char* s_shown_resolution_values[std::size(s_resolution_values)];
+	static const char* s_shown_resolution_options[std::size(s_resolution_entries)];
+	static const char* s_shown_resolution_values[std::size(s_resolution_entries)];
 	size_t num_resolutions = 0;
 
-	for (num_resolutions = 0; num_resolutions < max_shown_multiplier; num_resolutions++)
+	for (const ResolutionEntry& entry : s_resolution_entries)
 	{
-		s_shown_resolution_options[num_resolutions] = s_resolution_options[num_resolutions];
-		s_shown_resolution_values[num_resolutions] = s_resolution_values[num_resolutions];
+		if (entry.multiplier > max_shown_multiplier)
+			break;
+
+		s_shown_resolution_options[num_resolutions] = entry.name;
+		s_shown_resolution_values[num_resolutions] = entry.value;
+		num_resolutions++;
 	}
 
 	if (saved_multiplier)
 	{
-		// if saved multiplier goes above the current UI cap, expose it temporarily.
-		const size_t saved_count = static_cast<size_t>(saved_multiplier.value());
-		if (saved_count > max_shown_multiplier && saved_count <= std::size(s_resolution_options) && static_cast<float>(saved_count) == *saved_multiplier)
+		// if the saved multiplier goes above the current UI cap, expose it temporarily -- the
+		// quarter steps are all exact in binary, so an equality test is safe here.
+		for (const ResolutionEntry& entry : s_resolution_entries)
 		{
-			s_shown_resolution_options[num_resolutions] = s_resolution_options[saved_count - 1];
-			s_shown_resolution_values[num_resolutions] = s_resolution_values[saved_count - 1];
-			num_resolutions++;
+			if (entry.multiplier > max_shown_multiplier && entry.multiplier == saved_multiplier.value())
+			{
+				s_shown_resolution_options[num_resolutions] = entry.name;
+				s_shown_resolution_values[num_resolutions] = entry.value;
+				num_resolutions++;
+				break;
+			}
 		}
 	}
 
@@ -3072,7 +3095,7 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 	{
 		DrawStringListSetting(bsi, FSUI_ICONSTR(ICON_FA_ARROW_UP_RIGHT_FROM_SQUARE, "Internal Resolution"),
 			FSUI_CSTR("Multiplies the render resolution by the specified factor (upscaling)."), "EmuCore/GS", "upscale_multiplier",
-			"1.000000", s_shown_resolution_options, s_shown_resolution_values, num_resolutions, true);
+			"1", s_shown_resolution_options, s_shown_resolution_values, num_resolutions, true);
 		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_TABLE_CELLS_LARGE, "Texture Filtering"),
 			FSUI_CSTR("Selects where bilinear filtering is utilized when rendering textures."), "EmuCore/GS", "filter",
 			static_cast<int>(BiFiltering::PS2), s_bilinear_options, std::size(s_bilinear_options), true);
@@ -5876,7 +5899,6 @@ void FullscreenUI::DrawGameFixesSettingsPage()
 		FSUI_CSTR("Game fixes should not be modified unless you are aware of what each option does and the implications of doing so."),
 		false, false, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
 
-	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WRENCH, "FPU Multiply Hack"), FSUI_CSTR("For Tales of Destiny."), "EmuCore/Gamefixes", "FpuMulHack", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Use Software Renderer For FMVs"),
 		FSUI_CSTR("Needed for some games with complex FMV rendering."), "EmuCore/Gamefixes", "SoftwareRendererFMVHack", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_FORWARD_FAST, "Skip MPEG Hack"), FSUI_CSTR("Skips videos/FMVs in games to avoid game hanging/freezes."),
@@ -6330,7 +6352,6 @@ TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable 
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
-TRANSLATE_NOOP("FullscreenUI", "For Tales of Destiny.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");
 TRANSLATE_NOOP("FullscreenUI", "Skips videos/FMVs in games to avoid game hanging/freezes.");
 TRANSLATE_NOOP("FullscreenUI", "To avoid TLB miss on Goemon.");
@@ -6453,6 +6474,7 @@ TRANSLATE_NOOP("FullscreenUI", "2 Frames");
 TRANSLATE_NOOP("FullscreenUI", "3 Frames");
 TRANSLATE_NOOP("FullscreenUI", "Extra + Preserve Sign");
 TRANSLATE_NOOP("FullscreenUI", "Full");
+TRANSLATE_NOOP("FullscreenUI", "Exact");
 TRANSLATE_NOOP("FullscreenUI", "Extra");
 TRANSLATE_NOOP("FullscreenUI", "Automatic (Default)");
 TRANSLATE_NOOP("FullscreenUI", "Direct3D 11 (Legacy)");
@@ -6474,9 +6496,19 @@ TRANSLATE_NOOP("FullscreenUI", "Blend (Top Field First, Half FPS)");
 TRANSLATE_NOOP("FullscreenUI", "Blend (Bottom Field First, Half FPS)");
 TRANSLATE_NOOP("FullscreenUI", "Adaptive (Top Field First)");
 TRANSLATE_NOOP("FullscreenUI", "Adaptive (Bottom Field First)");
+TRANSLATE_NOOP("FullscreenUI", "0.25x Native");
+TRANSLATE_NOOP("FullscreenUI", "0.5x Native");
+TRANSLATE_NOOP("FullscreenUI", "0.75x Native");
 TRANSLATE_NOOP("FullscreenUI", "Native (PS2)");
+TRANSLATE_NOOP("FullscreenUI", "1.25x Native");
+TRANSLATE_NOOP("FullscreenUI", "1.5x Native");
+TRANSLATE_NOOP("FullscreenUI", "1.75x Native");
 TRANSLATE_NOOP("FullscreenUI", "2x Native (~720px/HD)");
+TRANSLATE_NOOP("FullscreenUI", "2.25x Native");
+TRANSLATE_NOOP("FullscreenUI", "2.5x Native");
+TRANSLATE_NOOP("FullscreenUI", "2.75x Native");
 TRANSLATE_NOOP("FullscreenUI", "3x Native (~1080px/FHD)");
+TRANSLATE_NOOP("FullscreenUI", "3.5x Native");
 TRANSLATE_NOOP("FullscreenUI", "4x Native (~1440px/QHD)");
 TRANSLATE_NOOP("FullscreenUI", "5x Native (~1800px/QHD+)");
 TRANSLATE_NOOP("FullscreenUI", "6x Native (~2160px/4K UHD)");
@@ -6945,7 +6977,6 @@ TRANSLATE_NOOP("FullscreenUI", "Enable PINE");
 TRANSLATE_NOOP("FullscreenUI", "PINE Slot");
 TRANSLATE_NOOP("FullscreenUI", "Show Cheats For All CRCs");
 TRANSLATE_NOOP("FullscreenUI", "Show Patches For All CRCs");
-TRANSLATE_NOOP("FullscreenUI", "FPU Multiply Hack");
 TRANSLATE_NOOP("FullscreenUI", "Use Software Renderer For FMVs");
 TRANSLATE_NOOP("FullscreenUI", "Skip MPEG Hack");
 TRANSLATE_NOOP("FullscreenUI", "Preload TLB Hack");

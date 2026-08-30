@@ -128,7 +128,8 @@ static std::string s_iso_path;
 static std::string s_savestate_path;
 static uint32_t s_frames = 300;
 static bool s_no_console = false;
-static bool s_contmem_vu0_interp = false; // --vu0-interp modifier for --contmem
+static bool s_vu0_interp = false; // --vu0-interp: VU0 on its interpreter (every --contmem pass, --liverun)
+static bool s_vu1_interp = false; // --vu1-interp: VU1 on its interpreter (--liverun)
 static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null default; vk for Intel/headless)
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
@@ -144,6 +145,9 @@ static bool s_perf_jitdump = false; // --perf-jitdump: emit Linux perf jitdump f
 static std::string s_gsdump_path;         // --gsdump <path.png>: dump basename (extension replaced)
 static uint32_t s_gsdump_frames = 0;      // number of frames to record
 static uint32_t s_gsdump_at = 30;         // --gsdump-at F: start recording after frame F
+static std::string s_shots_prefix;         // --shots <prefix>: per-frame PNG basename
+static uint32_t s_shots_every = 1;        // --shots-every N: one PNG every N frames
+static uint32_t s_shots_from = 0;         // --shots-from F: first frame to capture
 
 // twindiff (cross-BUILD divergence finder) state — see the big comment above
 // RunTwinDump. The same byte-identical runner is built in two trees (working
@@ -571,12 +575,20 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               there. --mkstate prints a COP2VU CENSUS of the macro ops actually compiled;\n");
 	std::fprintf(stderr, "               bisect over that list, since an op never compiled cannot be the bug.\n");
 	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
+	std::fprintf(stderr, "  --vu0-interp / --vu1-interp: run that VU on its interpreter with everything else\n");
+	std::fprintf(stderr, "               left on the JIT. Under --contmem, --vu0-interp applies to every pass. Under\n");
+	std::fprintf(stderr, "               --liverun, the pair attributes a trajectory move to one VU engine; turn MTVU\n");
+	std::fprintf(stderr, "               off with EERUNNER_MTVU=0 when interpreting VU1.\n");
 	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
 	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
 	std::fprintf(stderr, "               Replaying that dump in pcsx2-gsrunner is the only honest way to A/B the GS across\n");
 	std::fprintf(stderr, "               builds: it drives the GS with no emulator in front of it, so the MTGS ring and the\n");
 	std::fprintf(stderr, "               SW job queue can't spin-wait a faster EE into a bogus GS instruction-count delta.\n");
 	std::fprintf(stderr, "  --gsdump-at <frame>: frame after which --gsdump starts recording (default 30).\n");
+	std::fprintf(stderr, "  --shots <prefix> [--shots-every N] [--shots-from F]: with --liverun and a real renderer,\n");
+	std::fprintf(stderr, "               write <prefix>fNNNNN.png every N frames from frame F. A visual oracle for a\n");
+	std::fprintf(stderr, "               bug whose only symptom is on screen: the PNG series is what a headless run\n");
+	std::fprintf(stderr, "               can be judged on.\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --statereport: load the savestate, print a field-level decode of every serialized timebase\n");
@@ -713,6 +725,35 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_gsdump_at = n.value();
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--shots"))
+			{
+				// Written from the GS thread at the point --gsdump arms, so the
+				// frame numbering is the one the run reports.
+				s_shots_prefix = argv[++i];
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--shots-every"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--shots-every expects a frame count above zero.");
+					return false;
+				}
+				s_shots_every = n.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--shots-from"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value())
+				{
+					Console.Error("--shots-from expects a frame number.");
+					return false;
+				}
+				s_shots_from = n.value();
+				continue;
+			}
 			else if (CHECK_ARG("--perf-jitdump"))
 			{
 				// Emit a Linux perf jitdump so `perf inject --jit` can resolve EE_/VU1_/...
@@ -739,7 +780,12 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG("--vu0-interp"))
 			{
-				s_contmem_vu0_interp = true;
+				s_vu0_interp = true;
+				continue;
+			}
+			else if (CHECK_ARG("--vu1-interp"))
+			{
+				s_vu1_interp = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--memdump"))
@@ -930,6 +976,20 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 	}
 
+	if (!s_shots_prefix.empty())
+	{
+		if (s_mode != RunMode::LiveRun)
+		{
+			Console.Error("--shots needs --liverun: the diff modes suppress the real GS, so nothing is drawn.");
+			return false;
+		}
+		if (s_renderer_explicit && s_renderer == GSRendererType::Null)
+		{
+			Console.Error("--shots cannot use --renderer null: Null draws nothing.");
+			return false;
+		}
+	}
+
 	if (s_iso_path.empty())
 	{
 		Console.Error("No ISO provided (use --iso <file>); the savestate needs its disc mounted.");
@@ -1017,6 +1077,15 @@ void EERunner::SettingsOverride()
 		if (const char* e = std::getenv("EERUNNER_EE"))
 			ee_jit = !(e[0] == 'i' || e[0] == 'I' || e[0] == '0');
 		s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", ee_jit);
+
+		// --vu0-interp / --vu1-interp run that VU on its interpreter with
+		// everything else left on the JIT, so a PCSX2_VU_TRAJ_OUT A/B attributes a
+		// trajectory move to one VU engine. Turn MTVU off with EERUNNER_MTVU=0 when
+		// interpreting VU1.
+		if (s_vu0_interp)
+			s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
+		if (s_vu1_interp)
+			s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
 	}
 
 	// EERUNNER_FPUFULL=1 forces CHECK_FPU_FULL (eeClampMode:3) so the EE-FPU JIT uses
@@ -1577,9 +1646,9 @@ static bool NonGprDiffers(const ee_divtrace::FullSnap& jit, const ee_divtrace::F
 	if (!ee_divtrace::g_fp_exclude)
 	{
 		for (int i = 0; i < 32; ++i)
-			if (jit.fpu.fpr[i].UL != interp.fpu.fpr[i].UL)
+			if (jit.fpu.fpr[i].Word() != interp.fpu.fpr[i].Word())
 				return true;
-		if (jit.fpu.ACC.UL != interp.fpu.ACC.UL)
+		if (jit.fpu.ACC.Word() != interp.fpu.ACC.Word())
 			return true;
 	}
 	if (jit.cpu.sa != interp.cpu.sa)
@@ -1624,8 +1693,8 @@ static std::vector<std::string> DiffFullSnaps(const ee_divtrace::FullSnap& jit,
 	if (!ee_divtrace::g_fp_exclude)
 	{
 		for (int i = 0; i < 32; ++i)
-			d32(fmt::format("fpr[{}]", i), jit.fpu.fpr[i].UL, interp.fpu.fpr[i].UL);
-		d32("ACC", jit.fpu.ACC.UL, interp.fpu.ACC.UL);
+			d32(fmt::format("fpr[{}]", i), jit.fpu.fpr[i].Word(), interp.fpu.fpr[i].Word());
+		d32("ACC", jit.fpu.ACC.Word(), interp.fpu.ACC.Word());
 	}
 	// VU0 macro state — reported only when it participates in alignment
 	// (EERUNNER_VU0FP), so the default report set stays what the benign-class
@@ -2440,8 +2509,8 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 				Console.WriteLn("STEPDIFF zoom: offending-block ENTRY FPRs (interp | jit; f0-f3,f12 + diffs):");
 				for (int f = 0; f < 32; ++f)
 				{
-					const u32 iv = ientry.fpu.fpr[f].UL;
-					const u32 jv = jentry.fpu.fpr[f].UL;
+					const u32 iv = ientry.fpu.fpr[f].Word();
+					const u32 jv = jentry.fpu.fpr[f].Word();
 					if (iv != jv || f <= 3 || f == 12)
 						Console.WriteLn(fmt::format("    f{:<2} {:#010x} | {:#010x}{}", f, iv, jv,
 							iv != jv ? "   <-- DIFFERS" : ""));
@@ -2520,7 +2589,7 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 static int RunContinuousMemTrajectory()
 {
 	Error error;
-	const bool force_vu0_interp = s_contmem_vu0_interp;
+	const bool force_vu0_interp = s_vu0_interp;
 	auto runPass = [&](bool jit, std::vector<uint64_t>* cycles = nullptr) -> std::vector<uint64_t> {
 		std::vector<uint64_t> hashes;
 		if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
@@ -4050,8 +4119,11 @@ static int RunLiveRun()
 #endif
 
 	Console.WriteLn(fmt::format(
-		"LIVERUN: EE=jit, MTVU=on, real GS — running up to {} frames (10s no-progress watchdog)...",
-		s_frames));
+		"LIVERUN: EE={}, VU0={}, VU1={}, MTVU={}, real GS — running up to {} frames (10s no-progress watchdog)...",
+		EmuConfig.Cpu.Recompiler.EnableEE ? "jit" : "interp",
+		EmuConfig.Cpu.Recompiler.EnableVU0 ? "jit" : "interp",
+		EmuConfig.Cpu.Recompiler.EnableVU1 ? "jit" : "interp",
+		EmuConfig.Speedhacks.vuThread ? "on" : "off", s_frames));
 
 	std::thread watchdog([]() {
 		uint32_t last = 0;
@@ -4175,6 +4247,12 @@ static int RunLiveRun()
 			const std::string path = s_gsdump_path;
 			const u32 nframes = s_gsdump_frames;
 			MTGS::RunOnGSThread([path, nframes]() { GSQueueSnapshot(path, nframes); });
+		}
+
+		if (!s_shots_prefix.empty() && (f + 1) >= s_shots_from && ((f + 1) - s_shots_from) % s_shots_every == 0)
+		{
+			const std::string path = fmt::format("{}f{:05d}.png", s_shots_prefix, f + 1);
+			MTGS::RunOnGSThread([path]() { GSQueueSnapshot(path, 0); });
 		}
 
 		if (watch_addr)

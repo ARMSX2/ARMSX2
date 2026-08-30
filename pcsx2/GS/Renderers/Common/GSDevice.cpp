@@ -293,7 +293,7 @@ GSDevice::GSDevice()
 GSDevice::~GSDevice()
 {
 	// should've been cleaned up in Destroy()
-	pxAssert(m_pool[0].empty() && m_pool[1].empty() && !m_merge && !m_weavebob && !m_blend && !m_mad && !m_target_tmp && !m_cas && !m_mfx_output);
+	pxAssert(m_pool[0].empty() && m_pool[1].empty() && !m_merge && !m_weavebob && !m_blend && !m_mad && !m_target_tmp && !m_cas && !m_mfx_output && !m_fsr1_easu && !m_fsr1_output && !m_sgsr_output);
 }
 
 GSVector2i GSDevice::GetPresentationSize() const
@@ -1228,6 +1228,9 @@ void GSDevice::ClearCurrent()
 	delete m_target_tmp;
 	delete m_cas;
 	delete m_mfx_output;
+	delete m_fsr1_easu;
+	delete m_fsr1_output;
+	delete m_sgsr_output;
 
 	m_merge = nullptr;
 	m_weavebob = nullptr;
@@ -1236,6 +1239,9 @@ void GSDevice::ClearCurrent()
 	m_target_tmp = nullptr;
 	m_cas = nullptr;
 	m_mfx_output = nullptr;
+	m_fsr1_easu = nullptr;
+	m_fsr1_output = nullptr;
+	m_sgsr_output = nullptr;
 }
 
 void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
@@ -1333,7 +1339,15 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	FlushDeferredDraws();
 	// Guarded here rather than in the backends so a device that never overrides
 	// DoApplyShaderChain (software, or a build without librashader) costs nothing.
-	if (!GSConfig.ShaderChainEnabled || GSConfig.ShaderChainPreset.empty() || !m_current)
+	const bool wanted = GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty();
+	// On the edge, not every frame: turning the chain off used to leave every pass's target
+	// and pipeline resident until the preset changed or the device died.
+	if (!wanted && m_shader_chain_loaded)
+	{
+		ReleaseShaderChain();
+		m_shader_chain_loaded = false;
+	}
+	if (!wanted || !m_current)
 		return false;
 
 	// A minimised or mid-resize window yields a degenerate rect; never build a 0-sized target.
@@ -1352,6 +1366,7 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	if (!DoApplyShaderChain(m_current, dTex))
 		return false;
 
+	m_shader_chain_loaded = true;
 	m_current = dTex;
 	return true;
 }
@@ -1474,6 +1489,11 @@ void GSDevice::EndDSAsRT()
 #define A_CPU 1
 #include "bin/resources/shaders/common/ffx_a.h"
 #include "bin/resources/shaders/common/ffx_cas.h"
+// FSR needs the 2021 revision of ffx_a.h on the GPU side, but its CPU-side constant setup
+// (FsrEasuConOffset/FsrRcasCon) is satisfied by the 2019 header above - which is the one
+// PCSX2 patched locally for Metal (A16/A_MSL/A_MAYBE_UNUSED) and that ffx_cas.h depends on.
+// So only the shader gets the 2021 copy; nothing here includes ffx_a_fsr1.h.
+#include "bin/resources/shaders/common/ffx_fsr1.h"
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -1491,6 +1511,25 @@ bool GSDevice::GetCASShaderSource(std::string* source)
 	// Since our shader compilers don't support includes, and OpenGL doesn't at all... we'll do a really cheeky string replace.
 	StringUtil::ReplaceAll(source, "#include \"ffx_a.h\"", ffx_a_source.value());
 	StringUtil::ReplaceAll(source, "#include \"ffx_cas.h\"", ffx_cas_source.value());
+	return true;
+}
+
+bool GSDevice::GetFSR1ShaderSource(std::string* source, bool easu_pass)
+{
+	std::optional<std::string> ffx_a_source = ReadShaderSource("shaders/common/ffx_a_fsr1.h");
+	std::optional<std::string> ffx_fsr1_source = ReadShaderSource("shaders/common/ffx_fsr1.h");
+	if (!ffx_a_source.has_value() || !ffx_fsr1_source.has_value())
+		return false;
+
+	// FSR_EASU_F/FSR_RCAS_F gate which function bodies ffx_fsr1.h emits at all, so the pass has
+	// to be chosen before the preprocessor runs. That is why this takes easu_pass rather than
+	// letting the backend pick with a specialization constant the way cas.glsl does.
+	source->insert(0, easu_pass ? "#version 460 core\n#define FSR_PASS_EASU 1\n"
+	                            : "#version 460 core\n#define FSR_PASS_EASU 0\n");
+
+	// Same cheeky string replace as CAS above - our shader compilers don't support includes.
+	StringUtil::ReplaceAll(source, "#include \"ffx_a_fsr1.h\"", ffx_a_source.value());
+	StringUtil::ReplaceAll(source, "#include \"ffx_fsr1.h\"", ffx_fsr1_source.value());
 	return true;
 }
 
@@ -1561,6 +1600,168 @@ void GSDevice::MetalFXUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& 
 	}
 
 	tex = m_mfx_output;
+	src_rect = GSVector4i(0, 0, dst_width, dst_height);
+	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+}
+
+void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect)
+{
+	FlushDeferredDraws();
+	const int dst_width = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
+	const int dst_height = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
+	if (dst_width <= 0 || dst_height <= 0)
+		return;
+
+	// Anchored inside FSR1Upscale explicitly: the first attempt at this matched an identical
+	// "GSTexture* src_tex = tex;" line in GSDevice::CAS, which FSR REPLACES, so the log could
+	// never fire and made a working pass look dead.
+	static int s_logged_w = 0, s_logged_h = 0;
+	if (s_logged_w != dst_width || s_logged_h != dst_height)
+	{
+		s_logged_w = dst_width;
+		s_logged_h = dst_height;
+		Console.WriteLnFmt("@@ANDROID_FSR1@@ upscaling {}x{} -> {}x{} (sharpness {})",
+			tex->GetWidth(), tex->GetHeight(), dst_width, dst_height, GSConfig.FSR_Sharpness);
+	}
+
+	GSTexture* src_tex = tex;
+
+	// Two targets, not one: RCAS is a separate dispatch that reads EASU's whole output, so it
+	// cannot write in place.
+	if (!m_fsr1_easu || m_fsr1_easu->GetWidth() != dst_width || m_fsr1_easu->GetHeight() != dst_height)
+	{
+		delete m_fsr1_easu;
+		m_fsr1_easu = CreateSurface(GSTexture::ShaderWriteTexture, dst_width, dst_height, 1, GSTexture::Format::Color);
+		if (!m_fsr1_easu)
+		{
+			Console.Error("Failed to allocate FSR1 EASU texture.");
+			return;
+		}
+	}
+	if (!m_fsr1_output || m_fsr1_output->GetWidth() != dst_width || m_fsr1_output->GetHeight() != dst_height)
+	{
+		delete m_fsr1_output;
+		m_fsr1_output = CreateSurface(GSTexture::ShaderWriteTexture, dst_width, dst_height, 1, GSTexture::Format::Color);
+		if (!m_fsr1_output)
+		{
+			Console.Error("Failed to allocate FSR1 RCAS texture.");
+			return;
+		}
+	}
+
+	// Zero-initialised, and pushed whole by both passes: the shader reads the fifth vector
+	// ("Sample") unconditionally to pick AMD's gamma2 output path, which we never want.
+	std::array<u32, NUM_FSR1_CONSTANTS> consts = {};
+
+	// EASU distinguishes the displayed region from the resource holding it: the viewport is the
+	// cropped src_rect, the size is the whole texture, and the offset puts the two together.
+	FsrEasuConOffset(&consts[0], &consts[4], &consts[8], &consts[12],
+		static_cast<AF1>(src_rect.width()), static_cast<AF1>(src_rect.height()),
+		static_cast<AF1>(src_tex->GetWidth()), static_cast<AF1>(src_tex->GetHeight()),
+		static_cast<AF1>(dst_width), static_cast<AF1>(dst_height),
+		static_cast<AF1>(src_rect.x), static_cast<AF1>(src_rect.y));
+
+	if (!DoFSR1EASU(src_tex, m_fsr1_easu, consts))
+	{
+		// leave textures intact if we failed
+		Console.Warning("Applying FSR1 EASU failed.");
+		return;
+	}
+
+	// RCAS takes sharpness in stops - 0 is the maximum and each stop halves it - so the 0..100
+	// slider runs backwards across the 2..0 range AMD's own sample exposes.
+	std::array<u32, NUM_FSR1_CONSTANTS> rcas_consts = {};
+	FsrRcasCon(&rcas_consts[0], 2.0f - (static_cast<float>(GSConfig.FSR_Sharpness) * 0.02f));
+
+	if (!DoFSR1RCAS(m_fsr1_easu, m_fsr1_output, rcas_consts))
+	{
+		Console.Warning("Applying FSR1 RCAS failed.");
+		return;
+	}
+
+	tex = m_fsr1_output;
+	src_rect = GSVector4i(0, 0, dst_width, dst_height);
+	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+}
+
+// Qualcomm Snapdragon Game Super Resolution 1, "mobile" variant. A single compute pass, unlike
+// FSR1's two, and written by Qualcomm for Adreno — which is why it is here at all.
+//
+// Feature suggested by CamilleLaVey, who authored the upstream refinements this is based on
+// (eden-emu/eden PR #4293: wider sharpening range and explicit crop handling). The filter itself
+// is Qualcomm's, BSD-3-Clause; see shaders/vulkan/sgsr.glsl for the notices and for what the
+// fragment-to-compute conversion changed.
+void GSDevice::SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect,
+	bool edge_direction)
+{
+	FlushDeferredDraws();
+	const int dst_width = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
+	const int dst_height = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
+	if (dst_width <= 0 || dst_height <= 0)
+		return;
+
+	GSTexture* src_tex = tex;
+
+	static int s_logged_w = 0, s_logged_h = 0;
+	if (s_logged_w != dst_width || s_logged_h != dst_height)
+	{
+		s_logged_w = dst_width;
+		s_logged_h = dst_height;
+		Console.WriteLnFmt("@@ANDROID_SGSR@@ upscaling {}x{} -> {}x{} (sharpness {}{})",
+			src_rect.width(), src_rect.height(), dst_width, dst_height, GSConfig.SGSR_Sharpness,
+			edge_direction ? ", edge-direction" : "");
+	}
+
+	// One target, unlike FSR1: SGSR is a single pass, so there is no intermediate to hand on.
+	if (!m_sgsr_output || m_sgsr_output->GetWidth() != dst_width || m_sgsr_output->GetHeight() != dst_height)
+	{
+		delete m_sgsr_output;
+		m_sgsr_output = CreateSurface(GSTexture::ShaderWriteTexture, dst_width, dst_height, 1, GSTexture::Format::Color);
+		if (!m_sgsr_output)
+		{
+			Console.Error("Failed to allocate SGSR output texture.");
+			return;
+		}
+	}
+
+	// The picture occupies src_rect inside a larger merge target, so the shader is told where it
+	// is rather than assuming the whole texture — the same problem FsrEasuConOffset solves for
+	// FSR1 by taking an offset.
+	const float src_tex_w = static_cast<float>(src_tex->GetWidth());
+	const float src_tex_h = static_cast<float>(src_tex->GetHeight());
+	const float uv_off_x = static_cast<float>(src_rect.x) / src_tex_w;
+	const float uv_off_y = static_cast<float>(src_rect.y) / src_tex_h;
+	const float uv_scale_x = static_cast<float>(src_rect.width()) / src_tex_w;
+	const float uv_scale_y = static_cast<float>(src_rect.height()) / src_tex_h;
+
+	// Its OWN setting, 0..200, where 100 is Qualcomm's default of 1.0. Sharing FSR's would mean
+	// an existing FSR configuration quietly means something different under SGSR, and widening
+	// FSR's to reach 2.0 would change what every FSR value already in the wild means. Neither is
+	// worth saving one setting. See Pcsx2Config::GSOptions::SGSR_Sharpness.
+	const float sharpness = std::clamp(static_cast<float>(GSConfig.SGSR_Sharpness) * 0.01f, 0.0f, 2.0f);
+
+	std::array<u32, NUM_SGSR_CONSTANTS> consts = {};
+	const auto put_f = [&consts](u32 i, float v) { std::memcpy(&consts[i], &v, sizeof(float)); };
+	consts[0] = static_cast<u32>(dst_width);
+	consts[1] = static_cast<u32>(dst_height);
+	put_f(2, uv_off_x);
+	put_f(3, uv_off_y);
+	put_f(4, uv_scale_x);
+	put_f(5, uv_scale_y);
+	put_f(6, src_tex_w);
+	put_f(7, src_tex_h);
+	put_f(8, 1.0f / src_tex_w);
+	put_f(9, 1.0f / src_tex_h);
+	put_f(10, sharpness);
+
+	if (!DoSGSR(src_tex, m_sgsr_output, consts, edge_direction))
+	{
+		// leave textures intact if we failed
+		Console.Warning("Applying SGSR failed.");
+		return;
+	}
+
+	tex = m_sgsr_output;
 	src_rect = GSVector4i(0, 0, dst_width, dst_height);
 	src_uv = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
 }

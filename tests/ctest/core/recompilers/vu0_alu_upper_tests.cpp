@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include <set>
+
 namespace recompiler_tests {
 
 using namespace vu;
@@ -491,6 +493,81 @@ TEST(Vu0AddSubHack, AddiLargeFsSmallIFlushesI)
 	});
 	h.Run();
 	EXPECT_EQ(h.GetVfBitsJit(2, 'x'), kBigBits); // I flushed -> result is the large Fs
+}
+
+// The interpreter no longer has a gamefix path of its own. The flush at 25
+// exponents is the last row of the adder's guard mask, which it now carries at
+// every separation, so pre-applying the gamefix's own masking to the operands
+// changes nothing about the answer. That is what this runs: the same ADDi
+// twice, once as given and once with the smaller operand already flushed, over
+// separations either side of 25 in both polarities.
+//
+// The rows that decide it are the unlike-signed ones. A same-signed add at
+// these separations chops back to the larger operand whether the smaller was
+// masked or not; a subtraction renormalises left and pulls the hole the mask
+// made up into the result.
+//
+// The recompiler is not swept here -- its two forms above are what pin the
+// emitted flush, and the gamefix does change what it emits.
+TEST(Vu0AddSubHack, InterpreterAlreadyFlushesWhatTheFixWouldHave)
+{
+	static constexpr u32 kPairs[][2] = {
+		{0x3F800001u, 0x3F800001u}, // no separation
+		{0x3F800001u, 0x3E800001u}, // 2 exponents
+		{0x3F800001u, 0x33800001u}, // 24 -- one below the flush
+		{0x3F800001u, 0x33000001u}, // 25 -- the flush itself
+		{0x3F800001u, 0x00800001u}, // far below it
+		{0x33800001u, 0x3F800001u}, // the mirror of each
+		{0x33000001u, 0x3F800001u},
+		{0x00800001u, 0x3F800001u},
+		{0x3F800000u, 0xB3800001u}, // 24, unlike signs
+		{0x3F800000u, 0xB3000001u}, // 25
+		{0x3F800000u, 0xB2800001u}, // 26
+		{0xBF800000u, 0x33000001u}, // and their mirrors
+		{0xB3000001u, 0x3F800000u},
+	};
+	// x86 ADD_SS_TriAceHack, which the interpreter's own copy ported.
+	auto flushTheSmaller = [](u32& a, u32& b) {
+		const s32 ae = static_cast<s32>((a >> 23) & 0xFF);
+		const s32 be = static_cast<s32>((b >> 23) & 0xFF);
+		if (ae - be >= 25) b &= 0x80000000u;
+		if (ae - be <= -25) a &= 0x80000000u;
+	};
+	auto addi = [](u32 fs, u32 i) {
+		VuTestHarness h(0);
+		h.SetVfBits(vf::vf1, fs, fs, fs, fs);
+		h.LoadProgram({
+			IBit(VuOp{VLitI(i), VNOP_U()}),
+			VuOp{0u, VADDi_U(mask::x, vf::vf2, vf::vf1)},
+			EBitNopPair(),
+		});
+		// One engine's answer against itself. The unlike-signed rows are exactly
+		// where the emitters, which carry no guard mask, part company with the
+		// interpreter, so the cross-engine diff would fire on the rows that make
+		// this test say anything.
+		h.RunNoDiff();
+		return h.GetVfBitsInterp(2, 'x');
+	};
+
+	int checked = 0, differed = 0;
+	std::set<u32> distinct;
+	for (const auto& p : kPairs)
+	{
+		u32 fs = p[0], i = p[1];
+		flushTheSmaller(fs, i);
+		const u32 plain = addi(p[0], p[1]);
+		const u32 preflushed = addi(fs, i);
+		SCOPED_TRACE(::testing::Message()
+			<< std::hex << "fs=" << p[0] << " I=" << p[1]);
+		EXPECT_EQ(plain, preflushed);
+		if (plain != preflushed)
+			++differed;
+		distinct.insert(plain);
+		++checked;
+	}
+	EXPECT_EQ(checked, static_cast<int>(std::size(kPairs)));
+	EXPECT_EQ(differed, 0);
+	EXPECT_GT(distinct.size(), 1u) << "the read-back does not vary with the operands";
 }
 
 } // namespace recompiler_tests

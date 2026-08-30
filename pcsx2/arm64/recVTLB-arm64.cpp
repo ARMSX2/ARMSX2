@@ -432,11 +432,9 @@ static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign, bool forceEventTe
 	// its const-MMIO sites flush nothing at all (FLUSH_FULLVTLB).
 	//
 	// FLUSH_PC only when the const address resolves to an UNMAPPED handler:
-	// its vtlb_Miss > cpuTlbMiss > cpuException path computes EPC from the
-	// cpuRegs.pc this seam flushes (pinned by
-	// EeRecTraps.LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpc). Hardware
-	// handlers never raise guest exceptions and tolerate a stale cpuRegs.pc
-	// (x86 parity again: it never flushes pc at MMIO sites), so their per-access
+	// its vtlb_Miss path reads the cpuRegs.pc this seam flushes. Hardware
+	// handlers never read cpuRegs.pc and tolerate a stale one (x86 parity
+	// again: it never flushes pc at MMIO sites), so their per-access
 	// mov/movk/str pc store would be dead weight in MMIO bursts.
 	//
 	// EXCEPTION: forceEventTest (EE-counter reads). The caller ends the block
@@ -700,13 +698,13 @@ static bool recStoreConstPaddrMMIOShortcut(u32 bits)
 	const u32 paddr = vmv.assumeHandlerGetPAddr(addr_const);
 
 	// FLUSH_VTLB, plus FLUSH_PC only for unmapped handlers — see
-	// recLoadConstPaddrMMIOShortcut for both halves (PC feeds the
-	// unmapped-page TLB-miss EPC; hardware handlers never read it).
+	// recLoadConstPaddrMMIOShortcut for both halves (vtlb_Miss reads PC;
+	// hardware handlers never do).
 	// Keeping const marks is what lets a GS-priv store burst (5x sd to
 	// 0x120000xx off one LUI) emit five direct BLs instead of one BL +
 	// four dynamic-path stores.
-	const bool canRaiseException = vtlb_IsUnmappedHandlerID(vmv.assumeHandlerGetID());
-	iFlushCall(canRaiseException ? (FLUSH_VTLB | FLUSH_PC) : FLUSH_VTLB);
+	const bool isUnmapped = vtlb_IsUnmappedHandlerID(vmv.assumeHandlerGetID());
+	iFlushCall(isUnmapped ? (FLUSH_VTLB | FLUSH_PC) : FLUSH_VTLB);
 
 	int szidx = 0;
 	switch (bits)
@@ -1047,6 +1045,14 @@ void recLWC1()
 		// is-load-dest skip excludes it from the save set).
 		const int ftreg = _allocFPtoNEONreg(_Rt_, MODE_WRITE);
 		vtlbFastmemReadFPR32(9, ftreg);
+		if (CHECK_FPU_FULL)
+		{
+			// The load lands the architectural word; on the double tier the
+			// slot holds it relocated. Emitted after the backpatch site so it
+			// runs on the thunk's return path too (the slow path ends in the
+			// same Fmov S<n>, w0).
+			armEmitEeFprFromS(armDRegister(ftreg), armSRegister(ftreg), RXSCRATCH);
+		}
 	}
 	else
 	{
@@ -1057,7 +1063,7 @@ void recLWC1()
 		// (if any) is now stale and must not flush back over the write.
 		_deleteFPtoNEONreg(_Rt_, DELETE_REG_FREE_NO_WRITEBACK);
 		// Store to fpuRegs.fpr[ft]
-		armStoreEERegPtr(a64::w0, &fpuRegs.fpr[_Rt_].UL);
+		armEmitEeFprSlotMemFromWord(armCpuRegMem(&fpuRegs.fpr[_Rt_]), a64::w0, RXSCRATCH);
 	}
 }
 
@@ -1072,9 +1078,9 @@ void recSWC1()
 	// after w10 already holds the value).
 	const int fslot = _checkNEONreg(NEONTYPE_FPREG, _Rt_, 0);
 	if (fslot >= 0)
-		armAsm->Fmov(a64::w10, armSRegister(fslot));
+		armEmitEeFprWordFromSlot(a64::w10, armDRegister(fslot), RXSCRATCH);
 	else
-		armLoadEERegPtr(a64::w10, &fpuRegs.fpr[_Rt_].UL);
+		armEmitEeFprWordFromSlotMem(a64::w10, armCpuRegMem(&fpuRegs.fpr[_Rt_]), RXSCRATCH);
 
 	// Inline STR off RFASTMEMBASE + backpatch on the fast path, softmem
 	// fallback otherwise.

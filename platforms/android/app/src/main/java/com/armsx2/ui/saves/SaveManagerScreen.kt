@@ -94,6 +94,7 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
                 items(state.saves, key = { it.file.absolutePath }) { save ->
                     SaveStateCard(
                         save = save,
+                        canSave = state.hasActiveVm,
                         onSave = { save.slot?.let(viewModel::save) },
                         onLoad = { viewModel.load(save) },
                         onDelete = { viewModel.delete(save) },
@@ -163,6 +164,10 @@ private fun SaveManagerEmptyState() {
 @Composable
 private fun SaveStateCard(
     save: SaveStateItem,
+    /** Only true while a VM is running — see SaveManagerUiState.hasActiveVm. Reached from the
+     *  library's long-press menu nothing is booted, and offering Save there is nonsense: there is
+     *  no running game to snapshot. */
+    canSave: Boolean,
     onSave: () -> Unit,
     onLoad: () -> Unit,
     onDelete: () -> Unit,
@@ -203,7 +208,15 @@ private fun SaveStateCard(
             }
             Spacer(Modifier.height(9.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (save.canUseWithActiveGame && save.slot != null) {
+                // Save and Load have DIFFERENT conditions and must not share one guard.
+                //
+                // Load only needs the state to belong to the game in context — with no VM running
+                // it boots the game and loads into it, which is the whole point of reaching this
+                // screen from the library. Save additionally needs a live VM, because there is
+                // nothing to snapshot otherwise. They were one `if`, so gating Save correctly
+                // also hid Load.
+                val usable = save.canUseWithActiveGame && save.slot != null
+                if (usable && canSave) {
                     OutlinedButton(
                         onClick = onSave,
                         contentPadding = PaddingValues(horizontal = 14.dp),
@@ -212,6 +225,8 @@ private fun SaveStateCard(
                         Text(str("action.save"))
                     }
                     Spacer(Modifier.width(7.dp))
+                }
+                if (usable) {
                     OutlinedButton(
                         onClick = onLoad,
                         contentPadding = PaddingValues(horizontal = 14.dp),

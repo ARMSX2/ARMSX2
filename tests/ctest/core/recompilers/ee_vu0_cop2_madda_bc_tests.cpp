@@ -70,13 +70,41 @@ const BcOp kMsubaOps[] = {
 	{"VMSUBAz", VMSUBAz_C2, 'z'}, {"VMSUBAw", VMSUBAw_C2, 'w'},
 };
 
+// The interpreter folds the multiply stage's own sign bit into the status
+// flag's sticky S, and neither VU emitter does yet. That bit is one per op, so
+// the two only part company when some written lane's product is negative and
+// no written lane's RESULT is -- otherwise the result's own S raises it on
+// both sides and the gap stays hidden.
+bool OnlyTheProductGoesNegative(const BcOp& op, u32 mask, bool sub,
+	const float (&fs)[4], const float (&ft)[4], const float (&acc)[4])
+{
+	const int bc = op.lane == 'x' ? 0 : op.lane == 'y' ? 1 : op.lane == 'z' ? 2 : 3;
+	bool product_negative = false, result_negative = false;
+	for (int l = 0; l < 4; l++)
+	{
+		if (!(mask & (8u >> l)))
+			continue;
+		const float p = fs[l] * ft[bc];
+		const float r = sub ? acc[l] - p : acc[l] + p;
+		product_negative |= p < 0.0f;
+		result_negative |= r < 0.0f;
+	}
+	return product_negative && !result_negative;
+}
+
 // Run one op at one dest mask and report the JIT-vs-interpreter ACC diff.
-void CheckOneCase(const BcOp& op, u32 mask,
+void CheckOneCase(const BcOp& op, u32 mask, bool sub,
 	const float (&fs)[4], const float (&ft)[4], const float (&acc)[4])
 {
 	EeRecTestHarness h;
 	h.EnableVu0Capture();
 	h.EnableCop1();
+	if (OnlyTheProductGoesNegative(op, mask, sub, fs, ft, acc))
+	{
+		h.RequireVu0Divergence(
+			"the status sticky field takes S from the result alone, not from "
+			"the multiply stage");
+	}
 	h.SeedVu0Vf(1, fs[0], fs[1], fs[2], fs[3]);
 	h.SeedVu0Vf(2, ft[0], ft[1], ft[2], ft[3]);
 	h.SeedVu0Acc(acc[0], acc[1], acc[2], acc[3]);
@@ -107,11 +135,12 @@ TEST(EeVu0Cop2MaddaBc, EveryLaneEveryDestMaskMatchesInterp)
 	for (int i = 0; i < 4; i++)
 	{
 		const BcOp& op = ops[i];
+		const bool sub = (ops == kMsubaOps);
 		for (u32 mask = 0; mask <= 0xF; mask++)
 		{
 			SCOPED_TRACE(::testing::Message()
 				<< op.name << " mask=0x" << std::hex << mask);
-			CheckOneCase(op, mask, kFs, kFt, kAcc);
+			CheckOneCase(op, mask, sub, kFs, kFt, kAcc);
 		}
 	}
 }
@@ -183,6 +212,12 @@ TEST(EeVu0Cop2MaddaBc, ExpFfFsAgainstZeroBroadcastMatchesInterp)
 			// Ft is zero in every lane, so any broadcast lane multiplies by 0.
 			h.SeedVu0Vf(2, 0.0f, 0.0f, 0.0f, 0.0f);
 			h.SeedVu0Acc(1.0f, 2.0f, 3.0f, 4.0f);
+			// The product is zero in every lane, and the interpreter now
+			// carries a zero product's Z into the sticky field where the
+			// emitters do not (vu0_macro_fmac_range_console_tests case 27).
+			// This test pins the ACC value.
+			h.IgnoreVu0Vi(REG_STATUS_FLAG);
+			h.IgnoreVu0Vi(REG_MAC_FLAG);
 
 			h.LoadProgram({op.encode(/*mask*/0xF, /*fs*/1, /*ft*/2)});
 			h.Run();

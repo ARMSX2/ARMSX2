@@ -836,6 +836,32 @@ object ControllerMappings {
         invalidateRuntimeCaches()
     }
 
+    // A latch-flagged button toggles on a TAP instead of following the physical button: press
+    // once to hold the PS2 button down, press again to release. The on-screen controls have had
+    // this ("tap to hold") since they existed; physical buttons never did, so a game that wants a
+    // button held while you do something else with the d-pad is unplayable for anyone who cannot
+    // hold two controls at once. Requested by bobo123g (#612), who cannot hold R1 and aim at the
+    // same time in Metal Gear Solid 2.
+    //
+    // Global rather than per-game, and stored the same way turbo is, because it describes the
+    // player rather than the title.
+    private const val LATCH_PREFIX = "pad.latch."
+    private fun latchKey(action: Action, player: Int) = playerPrefix(player) + LATCH_PREFIX + action.id
+    fun isLatchAction(action: Action, player: Int = 0): Boolean =
+        MainActivityRuntime.prefs.getBoolean(latchKey(action, player), false)
+    fun setLatchAction(action: Action, player: Int, on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(latchKey(action, player), on) }
+        invalidateRuntimeCaches()
+        // Changing this mid-game must not stand a button up permanently: if it is latched down
+        // right now, the tap that would have released it no longer toggles anything.
+        MainActivityRuntime.releaseLatches()
+    }
+
+    /** True when a physical button's PS2 target [targetKeyCode] is latch-flagged. */
+    fun isLatchTarget(targetKeyCode: Int, player: Int = 0): Boolean {
+        return targetKeyCode in runtimeBindings().latchTargets[if (player == P2) P2 else P1]
+    }
+
     /** True when a physical button's PS2 target [targetKeyCode] is turbo-flagged. */
     fun isTurboTarget(targetKeyCode: Int, player: Int = 0): Boolean {
         return targetKeyCode in runtimeBindings().turboTargets[if (player == P2) P2 else P1]
@@ -896,6 +922,12 @@ object ControllerMappings {
         // Also useful for rotation-vector steering after shifting position mid-race.
         // Appended last for the same persisted-by-ordinal reason as TOGGLE_KEYBOARD above.
         GYRO_RECENTER("pad.gyrorecenter.keycode", "Motion Recenter"),
+        // Cycles the PANEL between its supported refresh rates (120 → 90 → 60 → …) without
+        // leaving the game. Distinct from the low-latency frame-rate vote in EmulationSurface:
+        // that one is a hint the compositor may ignore, this is a window mode request.
+        // Requested for battery — dropping a 120Hz panel to 60 while a 60fps game runs costs
+        // nothing visually. Appended last for the persisted-by-ordinal reason above.
+        DISPLAY_REFRESH("pad.displayrefresh.keycode", "Cycle Display Refresh Rate"),
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is
@@ -918,6 +950,7 @@ object ControllerMappings {
         val serial: String?,
         val targets: Array<Map<Int, Int>>,
         val turboTargets: Array<Set<Int>>,
+        val latchTargets: Array<Set<Int>>,
         val hotkeys: List<RuntimeHotkey>,
         val dpadAsLeftStick: Boolean,
     )
@@ -943,6 +976,12 @@ object ControllerMappings {
                 .map { it.targetKeyCode }
                 .toSet()
         }
+        val latchTargets = Array(2) { player ->
+            actions.asSequence()
+                .filter { isLatchAction(it, player) }
+                .map { it.targetKeyCode }
+                .toSet()
+        }
         val hotkeys = SysHotkey.values().map { action ->
             RuntimeHotkey(action, hotkeyCode(action), hotkeyModCode(action))
         }
@@ -950,6 +989,7 @@ object ControllerMappings {
             serial,
             targets,
             turboTargets,
+            latchTargets,
             hotkeys,
             resolveBoolean(KEY_DPAD_AS_LSTICK, false),
         )

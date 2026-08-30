@@ -166,13 +166,15 @@ struct Divergence
 // Recorded from an actual run of both engines, never derived from a rule. Each
 // row names its own cause.
 //
-// Twenty-eight of these rows are one defect: `cop2EmitFlagUpdate`
-// (pcsx2/arm64/iCOP2-arm64.cpp) extracts a sign bit (CMLT) and a zero bit
-// (FCMEQ) per lane and nothing else, so the arm64 COP2 macro path cannot raise
-// MAC U or MAC O, and does not raise Z where hardware does -- an underflowing
-// product reaches the flag update as a live denormal, which FCMEQ calls
-// non-zero. DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow below states
-// that once, with a minimal witness, and prices what an extraction would cost.
+// Twenty-eight of these rows are one defect, and this table is the DAZ-off half
+// of it. `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) reads Z off an
+// FCMEQ against zero, and with denormals live an underflowing product arrives
+// as a live denormal, which FCMEQ calls non-zero -- so neither Z nor the
+// multiply's U comes out, whatever the clamp mode. The mode-4 U and O models
+// are scored where they work, in the production environment, by
+// AllMacroStatusMatchesConsole.
+// DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow below states the defect
+// once, with a minimal witness.
 //
 // The remaining three rows fail on BOTH engines and are a different bug:
 // VRSQRT of -0 raises only D where hardware raises D and I, and slots 2-3 are
@@ -293,11 +295,12 @@ constexpr Divergence kMacroMacDivergences[] = {
 // produced, instead of leaving them to be re-derived from a stale cause nibble
 // at flush time -- which was what resurrected a bit FSSET had just cleared).
 constexpr Divergence kMicroDivergences[] = {
-	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
-	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
-	 "and O (the configured clamp mode saturates below exp 255)"},
-	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, true, true,
-	 "micro FMAC loses U on the flush-to-zero underflow, as above"},
+	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, false, true,
+	 "the recompiler loses U on a flush-to-zero and O to the clamp, which "
+	 "saturates below exp 255; the interpreter reads both off the exact result"},
+	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, false, true,
+	 "the recompiler loses U on the flush-to-zero underflow; the interpreter "
+	 "classifies it from the operands and matches"},
 };
 
 const Divergence* FindDivergence(const Divergence* table, size_t n, const char* tag, int slot)
@@ -350,12 +353,14 @@ u32 CauseFromMac(u32 mac)
 // ---------------------------------------------------------------------------
 
 // The console capture was taken on hardware, which has no denormals and
-// saturates on overflow; PCSX2 reproduces its U and O bits only with denormals
-// live and overflow reaching Inf, i.e. with DenormalsAreZero off. Under the
-// default (production) FP environment both engines lose those bits TOGETHER --
-// see ProductionFpEnvironmentErasesUnderflowAndOverflow below, which pins that
-// state so it cannot change unnoticed. This test is the DAZ-off configuration,
-// which is a supported user setting and the one that matches the console.
+// saturates on overflow; the recompiler reproduces its U and O bits here only
+// with denormals live and overflow reaching Inf, i.e. with DenormalsAreZero
+// off. Under the default (production) FP environment it loses O outright and
+// gets U back at vuClampMode 4 -- see
+// ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode below, which pins
+// that state so it cannot change unnoticed. This test is the DAZ-off
+// configuration, which is a supported user setting and the one the console
+// capture was taken under.
 TEST(VuStickyConsoleConformance, MacroStatusMatchesConsole)
 {
 	const ScopedFpEnv fp_env; // needs live denormals and Inf -- see above
@@ -446,22 +451,20 @@ TEST(VuStickyConsoleConformance, MacroMacClipMatchConsole)
 // engines the day the emitter learns U/O.
 //
 // `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) builds the MAC flag from
-// exactly two per-lane predicates -- CMLT for the sign bit and FCMEQ for the
-// zero bit -- and clears the U/O positions outright. So on the arm64 COP2 macro
-// path a product that underflows raises neither U nor Z (the result arrives as
-// a live denormal, which FCMEQ calls non-zero), and a product that overflows
-// raises no O (the +/-FLT_MAX clamp runs BEFORE the flag update and has already
-// folded Inf's exponent away).
+// per-lane predicates -- CMLT for the sign bit, FCMEQ for the zero bit, and at
+// vuClampMode 4 a multiply's U and O as well. The O comes away here: it is read
+// from the operands, which the exponent scale keeps in range whatever the FP
+// environment is doing. The two underflow rows do not, and this is the
+// configuration that is why -- with denormals live the product reaches the flag
+// update as a live denormal, which FCMEQ calls neither zero nor underflowed, so
+// neither Z nor U comes out.
 //
-// Both halves need the IEEE environment to be observable at all: FZ erases the
-// mantissa U is defined over, and ChopZero saturates an overflow to FLT_MAX so
-// nothing is ever exp 255. That is a property of the FP environment, not of the
-// extraction -- the extraction is what would make DAZ-off match the console.
-// TRIPWIRE -- the arm64 COP2 macro flag update extracts sign and zero only.
-// An exponent-field extraction adding MAC U/O costs ~+19 host insns per FMAC
-// for bits unreachable under the shipping FPCR, and would split VU0 macro from
-// VU0 micro (which computes O only under Fix_VUOverflow and never computes U).
-// Enable when a redesign lands a costed version.
+// That half is not a gap in the production environment: there FZ has already
+// flushed the product to the console's signed zero and mode 4 reads the U off
+// it, which ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode pins. What
+// is left for this configuration is the software flush of
+// DISABLED_Arm64Cop2MacroFlushesDenormalResultsToSignedZero.
+// TRIPWIRE -- no MAC U or Z with denormals live.
 TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow)
 {
 	const ScopedFpEnv fp_env; // needs live denormals and Inf
@@ -483,6 +486,7 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroExtractsUnderflowAndOver
 	{
 		SCOPED_TRACE(w.what);
 		const auto build = [&](EeRecTestHarness& h) {
+			h.SetVu0ClampMode(4); // where both the U and the O model are reached
 			h.EnableVu0Capture();
 			h.SeedVu0VfBits(4, w.fs, w.fs, w.fs, w.fs);
 			h.SeedVu0VfBits(5, w.ft, w.ft, w.ft, w.ft);
@@ -555,29 +559,56 @@ TEST(VuStickyConsoleConformance, Arm64Cop2MacroEmptyDestMaskRetiresTheMacFlag)
 
 // The default FP environment, pinned. Everything above that carries a
 // ScopedFpEnv is describing the DAZ-off configuration; this describes the one a
-// game actually gets, and it is deliberately an EQUALITY between the engines
-// rather than a comparison against the console.
+// game actually gets.
 //
-// Both statements matter. "The engines agree" is the property the project
-// actually defends. "They agree on a value the console contradicts" is the cost
-// of the default FP environment, recorded here so that nobody re-derives the
-// U/O work from a green suite and concludes it is reachable in a game.
-TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesUnderflowAndOverflow)
+// It used to be an equality between the engines, on the grounds that they agreed
+// on a value the console contradicts and that the agreement was worth recording.
+// The interpreter classifies the underflow from its operands rather than from
+// the flushed result, and reads the overflow off the exact magnitude rather than
+// off an exponent field the clamp never lets reach 255, so it raises U and O and
+// matches the console on both rows at every mode.
+//
+// The recompiler reaches both at vuClampMode 4. Under FZ its multiply already
+// writes the console's signed zero, so "the result is zero and neither operand
+// was" recovers the U exactly. The O cannot be read off
+// the result at all -- the clamp saturates it to +FLT_MAX and the exponent field
+// never carries one -- so it is taken from the operands instead, on a scale that
+// keeps the VU's top binade inside single precision. Both polarities of each
+// gate are here because a test that only ran at the gate's own mode would pass
+// with the gate stuck on.
+TEST(VuStickyConsoleConformance, ProductionFpEnvironmentGatesTheJitsUnderflowOnItsMode)
 {
 	struct Witness
 	{
 		const char* what;
 		u32 fs, ft;
-		u32 want_mac;   // what BOTH engines produce under FPUFPCR
+		u32 want_interp;
+		int gate;            // the lowest vuClampMode that carries this bit
+		u32 want_jit_below;  // every mode under it
+		u32 want_jit_gated;
 		u32 console_mac;
 	};
 	static const Witness kWitnesses[] = {
-		// FZ flushes the denormal before the flag update sees a mantissa, so U
-		// is gone and only Z survives.
-		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0008u, 0x0808u},
-		// ChopZero saturates the overflow to +FLT_MAX (exp 254). Nothing is
-		// ever exp 255, so O is not merely missed -- it is unreachable.
-		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x0000u, 0x8000u},
+		// FZ flushes the product to the console's signed zero before the flag
+		// update sees a mantissa. Below mode 4 only Z survives; at 4 the
+		// operands say the zero was not exact and U comes back.
+		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0808u, 4, 0x0008u, 0x0808u, 0x0808u},
+		// The product is 2^254, and the result the flag update sees is an
+		// ordinary +FLT_MAX. Below mode 4 that is the end of it; at 4 the
+		// operands are scaled down by 96 exponents each and multiplied there,
+		// where 2^254 is 2^62 and still says so.
+		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x8000u, 4, 0x0000u, 0x8000u, 0x8000u},
+	};
+	const auto run_jit = [](const Witness& w, int mode) {
+		EeRecTestHarness hj;
+		hj.SetVu0ClampMode(mode);
+		hj.EnableVu0Capture();
+		hj.SeedVu0VfBits(4, w.fs, w.fs, w.fs, w.fs);
+		hj.SeedVu0VfBits(5, w.ft, w.ft, w.ft, w.ft);
+		hj.LoadProgram({CTC2(0, REG_STATUS_FLAG), VMUL_C2(0x8, 6, 4, 5),
+		                CFC2(kRMac[0], REG_MAC_FLAG)});
+		hj.RunJitNoDiff();
+		return hj.GetGprJit(kRMac[0]);
 	};
 	for (const Witness& w : kWitnesses)
 	{
@@ -589,20 +620,56 @@ TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesUnderflowAndOverfl
 		hi.LoadProgram({CTC2(0, REG_STATUS_FLAG), VMUL_C2(0x8, 6, 4, 5),
 		                CFC2(kRMac[0], REG_MAC_FLAG)});
 		hi.RunInterpOnly();
+		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), w.want_interp) << "[interp]";
+
+		for (int mode = 1; mode < w.gate; ++mode)
+			EXPECT_EQ(run_jit(w, mode), w.want_jit_below) << "[jit] vuClampMode " << mode;
+		for (int mode = w.gate; mode <= 4; ++mode)
+			EXPECT_EQ(run_jit(w, mode), w.want_jit_gated) << "[jit] vuClampMode " << mode;
+		EXPECT_NE(w.want_jit_below, w.console_mac)
+			<< "the recompiler matches the console below the gate, so the gated "
+			   "row proves nothing";
+	}
+}
+
+// The multiply's U is a claim about a zero result, and the lane that must NOT
+// raise it is in the same op as the lanes that must. A denormal operand is
+// flushed on the way in, so its product is an exact zero and the console raises
+// Z alone (autocases_vusat.h "denormal operand *2"); a normal operand pair whose
+// product falls below 2^-126 is flushed on the way OUT and raises Z and U (rows
+// "2^-126*0.5" and "-2^-126*0.5"). Same word in the register either way, so an
+// emitter reading only the result cannot tell the four lanes apart.
+//
+// x: denormal * 2, y: 0 * 1, z: 2^-126 * 0.5, w: -2^-126 * 0.5. MAC counts
+// lanes from bit 0 = w, so Z is 0x000F, S is lane w alone and U is lanes z and w.
+TEST(VuStickyConsoleConformance, OnlyTheFlushedProductsRaiseUInTheSameOp)
+{
+	constexpr u32 kZS = 0x001Fu;         // Z on all four lanes, S on w
+	constexpr u32 kZSU = kZS | 0x0300u;  // ... and U on z and w
+	for (int mode = 1; mode <= 4; ++mode)
+	{
+		SCOPED_TRACE(::testing::Message() << "vuClampMode " << mode);
+		const auto build = [](EeRecTestHarness& h, int m) {
+			h.SetVu0ClampMode(m);
+			h.EnableVu0Capture();
+			h.SeedVu0VfBits(4, 0x00000001u, 0x00000000u, 0x00800000u, 0x80800000u);
+			h.SeedVu0VfBits(5, 0x40000000u, 0x3F800000u, 0x3F000000u, 0x3F000000u);
+			h.LoadProgram({CTC2(0, REG_STATUS_FLAG), VMUL_C2(0xF, 6, 4, 5),
+			               CFC2(kRMac[0], REG_MAC_FLAG),
+			               CFC2(kRStatus[0], REG_STATUS_FLAG)});
+		};
+		EeRecTestHarness hi;
+		build(hi, mode);
+		hi.RunInterpOnly();
 		EeRecTestHarness hj;
-		hj.EnableVu0Capture();
-		hj.SeedVu0VfBits(4, w.fs, w.fs, w.fs, w.fs);
-		hj.SeedVu0VfBits(5, w.ft, w.ft, w.ft, w.ft);
-		hj.LoadProgram({CTC2(0, REG_STATUS_FLAG), VMUL_C2(0x8, 6, 4, 5),
-		                CFC2(kRMac[0], REG_MAC_FLAG)});
+		build(hj, mode);
 		hj.RunJitNoDiff();
 
-		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), hj.GetGprJit(kRMac[0]))
-			<< "the two engines must agree in the environment a game runs in";
-		EXPECT_EQ(hj.GetGprJit(kRMac[0]), w.want_mac);
-		EXPECT_NE(w.want_mac, w.console_mac)
-			<< "if this ever matches the console, the default environment changed "
-			   "and the ScopedFpEnv tags above are stale";
+		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), kZSU) << "[interp] MAC";
+		EXPECT_EQ(hi.GetGprInterp(kRStatus[0]) & kCauseZsuo, 0x7u) << "[interp] STATUS cause";
+		EXPECT_EQ(hj.GetGprJit(kRMac[0]), mode >= 4 ? kZSU : kZS) << "[jit] MAC";
+		EXPECT_EQ(hj.GetGprJit(kRStatus[0]) & kCauseZsuo, mode >= 4 ? 0x7u : 0x3u)
+			<< "[jit] STATUS cause";
 	}
 }
 
@@ -666,7 +733,14 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroFlushesDenormalResultsTo
 		{"VSUB .xyzw   -2^-126 - -1.5*2^-126", SUB, 0xF, 'x', kNegTiny, kNegBig, 0x00000000u},
 		{"VMULx .x     -2^-126 * 0.5", MULBC, 0x8, 'x', kNegTiny, kHalf, 0x80000000u},
 		{"VMULx .xyzw   2^-126 * 0.5", MULBC, 0xF, 'y', kPosTiny, kHalf, 0x00000000u},
-		{"VMADD .y     0 + -2^-126 * 0.5", MADD, 0x4, 'y', kNegTiny, kHalf, 0x80000000u},
+		// The MADD pair asks a narrower question than the rows above it. The
+		// product still has to flush, but its sign cannot reach the result:
+		// the accumulator is +0, and a zero sum whose addends disagree in sign
+		// is +0 on the console however the flushed product is signed. What
+		// these two catch is a denormal left standing, not a sign dropped --
+		// the signed-zero accumulator that does separate the two is measured
+		// in Vu0MacroZeroSignConsole.
+		{"VMADD .y     0 + -2^-126 * 0.5", MADD, 0x4, 'y', kNegTiny, kHalf, 0x00000000u},
 		{"VMADD .xyzw  0 + 2^-126 * 0.5", MADD, 0xF, 'x', kPosTiny, kHalf, 0x00000000u},
 		{"VMULAx .z    -2^-126 * 0.5 -> ACC", MULA, 0x2, 'z', kNegTiny, kHalf, 0x80000000u},
 		{"VMULAx .xyzw  2^-126 * 0.5 -> ACC", MULA, 0xF, 'w', kPosTiny, kHalf, 0x00000000u},
@@ -875,11 +949,16 @@ TEST(VuStickyMicroConsoleConformance, MicroPathControlRuns)
 // Tripwires
 // ---------------------------------------------------------------------------
 
-TEST(VuStickyConsoleConformance, DISABLED_AllMacroStatusMatchesConsole)
+// The production environment, where the exact models are reachable, so the
+// recompiler is scored at vuClampMode 4 -- the mode they are gated on. Every one
+// of the twenty-eight rows the DAZ-off table above records comes away here:
+// twenty-one to the multiply's U and the last seven to MAC O.
+TEST(VuStickyConsoleConformance, AllMacroStatusMatchesConsole)
 {
 	for (const VuStickyCase& c : kVuStickyCases)
 	{
 		EeRecTestHarness h;
+		h.SetVu0ClampMode(4);
 		BuildProgram(h, c);
 		h.RunJitNoDiff();
 		EeRecTestHarness hi;
@@ -894,11 +973,12 @@ TEST(VuStickyConsoleConformance, DISABLED_AllMacroStatusMatchesConsole)
 	}
 }
 
-TEST(VuStickyMicroConsoleConformance, DISABLED_AllMicroStatusMatchesConsole)
+TEST(VuStickyMicroConsoleConformance, AllMicroStatusMatchesConsole)
 {
 	for (const VuStickyProgram& p : kVuStickyPrograms)
 	{
 		VuTestHarness h(0);
+		h.SetVuClampMode(4);
 		SeedMicro(h, p);
 		h.LoadProgram(ProgramPairs(p));
 		h.RunNoDiff();
@@ -909,32 +989,38 @@ TEST(VuStickyMicroConsoleConformance, DISABLED_AllMicroStatusMatchesConsole)
 	}
 }
 
-// The div unit has no denormal encoding either -- the same defect class as
-// Arm64Cop2MacroFlushesDenormalResultsToSignedZero, one pipe over. The
-// interpreter post-processes every div-unit result through vuDouble --
+// The div unit has no denormal encoding. The interpreter runs it on the bit
+// model in FPU.cpp, which says so in three places:
 //
-//     _vuDIV / _vuSQRT / _vuRSQRT:   VU->q.F = vuDouble(VU->q.UL);
+//     eeDivide:    ea == 0  ->  sign        a denormal dividend is a zero
+//                  e  <  1  ->  sign        no binade below 2^-126 to land in
+//     eeSqrtBits:  E  == 0  ->  0           and the operand's sign goes with it
 //
-// -- and vuDouble's `case 0x0:` returns `f & 0x80000000` (VUops.cpp), so a
-// denormal Q lands as signed zero exactly the way a denormal FMAC result does.
-// Both arm64 pipes write the raw quotient: COP2 macro through cop2EmitSyncFDiv,
-// micro through writeQreg. Each is the single tail all three of its ops pass
-// through, so the class is one site per pipe.
+// and a divisor with a zero exponent field never reaches eeDivide at all --
+// _vuDIV and _vuRSQRT test `(ft & 0x7F800000) == 0`, not `ft == 0.0f`, so a
+// denormal divisor saturates Q and raises D or I like a true zero.
 //
-// The clamp tier is not an axis: vuDouble's denormal arm never consults
-// CHECK_VU_OVERFLOW, unlike its exp-255 sibling, and arm64's Fminnm/Fmaxnm clamp
-// is emitted unconditionally. Swept across all four VU0 tiers (none / Overflow /
-// +Extra / +Sign): identical results, on both engines and both pipes.
+// Both arm64 pipes ran that on host floats: a pair of Fcmps against 0.0 for
+// the two zero tests, and the hardware's FPCR.FZ for the flush. Which is
+// right, exactly and only while FZ is set. The tests below therefore come in
+// two halves -- one per FP environment -- because each pins a different thing:
 //
-// The environment is the axis, and it once made this file lie. At the default FZ
-// the host flushes the quotient before either engine can differ. The tripwire
-// these tests replace carried `jit 00400000 / interp 00000000`, captured before
-// commit 9c05f75019 moved the harness into the production FP environment;
-// afterwards it passed silently, as a disabled test, while the defect it named
-// stood. Hence the ScopedFpEnv below and the asserted premise.
+//   FZ off: the software model. Every row here failed on both pipes before
+//           the exponent-field tests and the flush landed; 19 Q and 8 D/I of
+//           the 26 rows, per pipe.
+//   FZ on:  that the hardware's answer and the model's are the same one, and
+//           that the flush the emitters skip there was not carrying anything.
 //
-// 12 of the 17 rows below fail on each pipe -- 24 [jit] legs, 0 [interp]. The
-// five that hold are the four controls and the labelled already-zero row.
+// The clamp tier is not an axis: nothing on this path consults
+// CHECK_VU_OVERFLOW, and arm64's Fminnm/Fmaxnm clamp is emitted
+// unconditionally. Swept across all four VU0 tiers (none / Overflow / +Extra
+// / +Sign): identical results, on both engines and both pipes.
+//
+// The environment once made this file lie. The tripwire these tests replace
+// carried `jit 00400000 / interp 00000000`, captured before commit 9c05f75019
+// moved the harness into the production FP environment; afterwards it passed
+// silently, as a disabled test, while the defect it named stood. Hence the
+// asserted premise in each half.
 namespace
 {
 struct DivDenormCase
@@ -943,45 +1029,79 @@ struct DivDenormCase
 	enum { kDiv, kSqrt, kRsqrt } op;
 	u32 fs, ft;
 	u32 want_q;
+	u32 want_di; // STATUS D/I, mask 0x30
 };
 
-// Dimensions crossed: op family x operand signs x how far the result falls past
-// the denormal boundary x the negative-ft branch, plus four controls that must
-// not move.
+// Dimensions crossed: op family x which operand is denormal (neither, the
+// dividend, the divisor, both) x operand signs x how far a denormal result
+// falls past the boundary x the negative-ft branch, plus five controls that
+// must not move.
 constexpr DivDenormCase kDivDenormCases[] = {
-	// Quotient lands mid-denormal.
-	{"DIV 2^-126 / 2.0", DivDenormCase::kDiv, 0x00800000u, 0x40000000u, 0x00000000u},
-	{"DIV -2^-126 / 2.0", DivDenormCase::kDiv, 0x80800000u, 0x40000000u, 0x80000000u},
-	{"DIV 2^-126 / -2.0", DivDenormCase::kDiv, 0x00800000u, 0xC0000000u, 0x80000000u},
-	{"DIV -2^-126 / -2.0", DivDenormCase::kDiv, 0x80800000u, 0xC0000000u, 0x00000000u},
-	{"DIV 2^-126 / 4.0", DivDenormCase::kDiv, 0x00800000u, 0x40800000u, 0x00000000u},
+	// Quotient lands mid-denormal, from operands that are both normal.
+	{"DIV 2^-126 / 2.0", DivDenormCase::kDiv, 0x00800000u, 0x40000000u, 0x00000000u, 0x00u},
+	{"DIV -2^-126 / 2.0", DivDenormCase::kDiv, 0x80800000u, 0x40000000u, 0x80000000u, 0x00u},
+	{"DIV 2^-126 / -2.0", DivDenormCase::kDiv, 0x00800000u, 0xC0000000u, 0x80000000u, 0x00u},
+	{"DIV -2^-126 / -2.0", DivDenormCase::kDiv, 0x80800000u, 0xC0000000u, 0x00000000u, 0x00u},
+	{"DIV 2^-126 / 4.0", DivDenormCase::kDiv, 0x00800000u, 0x40800000u, 0x00000000u, 0x00u},
 	// Boundary: the largest denormal (0x007FFFFF, one ulp below the smallest
 	// normal) and the smallest (0x00000001). A predicate that tested the
 	// exponent with the wrong comparison would let one of these through.
-	{"DIV 2^-126 / (1+2^-23)", DivDenormCase::kDiv, 0x00800000u, 0x3F800001u, 0x00000000u},
-	{"DIV 2^-126 / 2^23", DivDenormCase::kDiv, 0x00800000u, 0x4B000000u, 0x00000000u},
+	{"DIV 2^-126 / (1+2^-23)", DivDenormCase::kDiv, 0x00800000u, 0x3F800001u, 0x00000000u, 0x00u},
+	{"DIV 2^-126 / 2^23", DivDenormCase::kDiv, 0x00800000u, 0x4B000000u, 0x00000000u, 0x00u},
 	// The far side of the boundary, and not a witness: 2^-150 is half the
 	// smallest denormal, so it rounds to a true zero on its own and the two
 	// engines agree here either way. Kept to bound the sweep.
-	{"DIV 2^-126 / 2^24 (already zero, agrees either way)", DivDenormCase::kDiv, 0x00800000u, 0x4B800000u, 0x00000000u},
+	{"DIV 2^-126 / 2^24 (already zero, agrees either way)", DivDenormCase::kDiv, 0x00800000u, 0x4B800000u, 0x00000000u, 0x00u},
 	// RSQRT: fs / sqrt(|ft|), so the sign is fs's alone.
-	{"RSQRT 2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x40800000u, 0x00000000u},
-	{"RSQRT -2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0x40800000u, 0x80000000u},
-	{"RSQRT 2^-126 / sqrt(16.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x41800000u, 0x00000000u},
+	{"RSQRT 2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x40800000u, 0x00000000u, 0x00u},
+	{"RSQRT -2^-126 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0x40800000u, 0x80000000u, 0x00u},
+	{"RSQRT 2^-126 / sqrt(16.0)", DivDenormCase::kRsqrt, 0x00800000u, 0x41800000u, 0x00000000u, 0x00u},
 	// Negative ft takes the abs-and-raise-I branch before the flush.
-	{"RSQRT 2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0xC0800000u, 0x00000000u},
-	{"RSQRT -2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0xC0800000u, 0x80000000u},
+	{"RSQRT 2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x00800000u, 0xC0800000u, 0x00000000u, 0x10u},
+	{"RSQRT -2^-126 / sqrt(-4.0)", DivDenormCase::kRsqrt, 0x80800000u, 0xC0800000u, 0x80000000u, 0x10u},
+
+	// Denormal dividend over a normal divisor. Not reachable from the result:
+	// over a near-minimal divisor a denormal divides out to an ordinary
+	// single, which no test of the quotient alone would flush.
+	{"DIV denorm / 2^-126", DivDenormCase::kDiv, 0x00400000u, 0x00800000u, 0x00000000u, 0x00u},
+	{"DIV -denorm / 2^-126", DivDenormCase::kDiv, 0x80400000u, 0x00800000u, 0x80000000u, 0x00u},
+	{"DIV mindenorm / 2^-126", DivDenormCase::kDiv, 0x00000001u, 0x00800000u, 0x00000000u, 0x00u},
+	{"RSQRT denorm / sqrt(2^-126)", DivDenormCase::kRsqrt, 0x00400000u, 0x00800000u, 0x00000000u, 0x00u},
+
+	// Denormal divisor: a zero divisor, so Q saturates and D or I is raised.
+	// The far end of the class -- the host quotient here is not a ulp out, it
+	// is sixty binades out.
+	{"DIV 1.0 / denorm", DivDenormCase::kDiv, 0x3F800000u, 0x00400000u, 0x7FFFFFFFu, 0x20u},
+	{"DIV 1.0 / -denorm", DivDenormCase::kDiv, 0x3F800000u, 0x80400000u, 0xFFFFFFFFu, 0x20u},
+	{"DIV -1.0 / denorm", DivDenormCase::kDiv, 0xBF800000u, 0x00400000u, 0xFFFFFFFFu, 0x20u},
+	{"DIV denorm / denorm", DivDenormCase::kDiv, 0x00400000u, 0x00400000u, 0x7FFFFFFFu, 0x10u},
+	{"RSQRT 1.0 / sqrt(denorm)", DivDenormCase::kRsqrt, 0x3F800000u, 0x00400000u, 0x7FFFFFFFu, 0x20u},
+	{"RSQRT denorm / sqrt(denorm)", DivDenormCase::kRsqrt, 0x00400000u, 0x00400000u, 0x7FFFFFFFu, 0x10u},
+	// A denormal dividend over a true zero picks D, not I: the flag is a
+	// question about the exponent field, and 0/0 is exclusive with x/0.
+	{"DIV denorm / 0.0", DivDenormCase::kDiv, 0x00400000u, 0x00000000u, 0x7FFFFFFFu, 0x10u},
+	{"RSQRT denorm / sqrt(0)", DivDenormCase::kRsqrt, 0x00400000u, 0x00000000u, 0x7FFFFFFFu, 0x10u},
+
+	// A denormal radicand is a zero radicand, and eeSqrtBits drops its sign.
+	{"SQRT denorm", DivDenormCase::kSqrt, 0x00000000u, 0x00400000u, 0x00000000u, 0x00u},
+	{"SQRT mindenorm", DivDenormCase::kSqrt, 0x00000000u, 0x00000001u, 0x00000000u, 0x00u},
+	{"SQRT -denorm", DivDenormCase::kSqrt, 0x00000000u, 0x80400000u, 0x00000000u, 0x10u},
+
 	// Controls. 2^-125 / 2.0 is the smallest normal, exponent 1, and must
 	// survive untouched: it fails if the predicate tests exp <= 1 rather than
 	// exp == 0. SQRT cannot produce a denormal from a normal operand at all
 	// (sqrt of the smallest normal is 2^-63), so it pins the flush as a no-op
-	// on the one div-unit op that never needs it. A denormal SQRT *operand* is
-	// a different, still-open item.
-	{"DIV 2^-125 / 2.0 (smallest normal survives)", DivDenormCase::kDiv, 0x01000000u, 0x40000000u, 0x00800000u},
-	{"DIV 8.0 / 2.0", DivDenormCase::kDiv, 0x41000000u, 0x40000000u, 0x40800000u},
-	{"SQRT 2^-126", DivDenormCase::kSqrt, 0x00000000u, 0x00800000u, 0x20000000u},
-	{"SQRT 4.0", DivDenormCase::kSqrt, 0x00000000u, 0x40800000u, 0x40000000u},
+	// on the one div-unit op that never needs it. 1.0 / 0.0 pins the true-zero
+	// divisor the denormal rows above join.
+	{"DIV 2^-125 / 2.0 (smallest normal survives)", DivDenormCase::kDiv, 0x01000000u, 0x40000000u, 0x00800000u, 0x00u},
+	{"DIV 8.0 / 2.0", DivDenormCase::kDiv, 0x41000000u, 0x40000000u, 0x40800000u, 0x00u},
+	{"DIV 1.0 / 0.0", DivDenormCase::kDiv, 0x3F800000u, 0x00000000u, 0x7FFFFFFFu, 0x20u},
+	{"SQRT 2^-126", DivDenormCase::kSqrt, 0x00000000u, 0x00800000u, 0x20000000u, 0x00u},
+	{"SQRT 4.0", DivDenormCase::kSqrt, 0x00000000u, 0x40800000u, 0x40000000u, 0x00u},
+	{"RSQRT 1.0 / sqrt(4.0)", DivDenormCase::kRsqrt, 0x3F800000u, 0x40800000u, 0x3F000000u, 0x00u},
 };
+
+constexpr u32 kDivDI = 0x30;
 
 // `which` names the register the pipe under test actually runs under: COP2
 // macro ops execute on the EE thread under FPUFPCR, micro programs under the
@@ -993,10 +1113,62 @@ void RequireDenormalsLive(const FPControlRegister& fpcr, const char* which)
 		<< "before either engine sees it and every case below passes for a reason "
 		<< "unrelated to the code under test";
 }
+
+void RequireDenormalsFlushed(const FPControlRegister& fpcr, const char* which)
+{
+	ASSERT_TRUE(fpcr.GetDenormalsAreZero())
+		<< which << " has DenormalsAreZero clear, so this half is testing the "
+		<< "software model rather than the hardware's agreement with it";
+}
+
+// COP2 macro: VDIV/VSQRT/VRSQRT -> Q, read out of the VU0 snapshot rather than
+// through a CFC2, whose EE-side result would diverge on exactly the rows under
+// test and fail the harness's own GPR diff first.
+void RunMacroDivCase(const DivDenormCase& c)
+{
+	EeRecTestHarness h;
+	h.EnableVu0Capture();
+	h.ExpectVu0Divergence();
+	h.SeedVu0VfBits(4, c.fs, c.fs, c.fs, c.fs);
+	h.SeedVu0VfBits(5, c.ft, c.ft, c.ft, c.ft);
+	h.LoadProgram({
+		CTC2(0, REG_STATUS_FLAG),
+		c.op == DivDenormCase::kDiv     ? VDIV_C2(0, 0, 4, 5)
+		: c.op == DivDenormCase::kSqrt  ? VSQRT_C2(0, 5)
+										: VRSQRT_C2(0, 0, 4, 5),
+	});
+	h.Run();
+	EXPECT_EQ(h.GetVu0ViInterp(REG_Q), c.want_q) << "[interp] Q";
+	EXPECT_EQ(h.GetVu0ViJit(REG_Q), c.want_q) << "[jit] Q";
+	EXPECT_EQ(h.GetVu0ViInterp(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[interp] D/I";
+	EXPECT_EQ(h.GetVu0ViJit(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[jit] D/I";
+}
+
+// The micro pipe reaches the same three ops through a different emitter and a
+// different destination -- writeQreg's insert into the Q-pipeline's pending
+// lane, drained here by VWAITQ.
+void RunMicroDivCase(const DivDenormCase& c)
+{
+	VuTestHarness h(0);
+	h.SetVfBits(1, c.fs, c.fs, c.fs, c.fs);
+	h.SetVfBits(2, c.ft, c.ft, c.ft, c.ft);
+	h.LoadProgram({
+		vu::VuOp{c.op == DivDenormCase::kDiv     ? vu::VDIV_L(vu::vf::vf1, 0, vu::vf::vf2, 0)
+				 : c.op == DivDenormCase::kSqrt  ? vu::VSQRT_L(vu::vf::vf2, 0)
+												 : vu::VRSQRT_L(vu::vf::vf1, 0, vu::vf::vf2, 0),
+			vu::VNOP_U()},
+		vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
+		vu::EBitNopPair(),
+	});
+	h.RunNoDiff();
+	EXPECT_EQ(h.GetViInterp(REG_Q), c.want_q) << "[interp] Q";
+	EXPECT_EQ(h.GetViJit(REG_Q), c.want_q) << "[jit] Q";
+	EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[interp] D/I";
+	EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & kDivDI, c.want_di) << "[jit] D/I";
+}
 } // namespace
 
-// TRIPWIRE -- as above, for the COP2 div unit (VDIV/VSQRT/VRSQRT -> Q).
-TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2DivUnitFlushesDenormalQToSignedZero)
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitHasNoDenormals)
 {
 	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
 	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
@@ -1004,35 +1176,22 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2DivUnitFlushesDenormalQToSign
 	for (const DivDenormCase& c : kDivDenormCases)
 	{
 		SCOPED_TRACE(c.what);
-		EeRecTestHarness h;
-		h.EnableVu0Capture();
-		h.SeedVu0VfBits(4, c.fs, c.fs, c.fs, c.fs);
-		h.SeedVu0VfBits(5, c.ft, c.ft, c.ft, c.ft);
-		h.LoadProgram({
-			CTC2(0, REG_STATUS_FLAG),
-			c.op == DivDenormCase::kDiv     ? VDIV_C2(0, 0, 4, 5)
-			: c.op == DivDenormCase::kSqrt  ? VSQRT_C2(0, 5)
-											: VRSQRT_C2(0, 0, 4, 5),
-			CFC2(kRQ[0], REG_Q),
-		});
-		h.Run();
-		EXPECT_EQ(static_cast<u32>(h.GetGpr64Interp(kRQ[0])), c.want_q) << "[interp] Q";
-		EXPECT_EQ(static_cast<u32>(h.GetGpr64Jit(kRQ[0])), c.want_q) << "[jit] Q";
+		RunMacroDivCase(c);
 	}
 }
 
-// The micro pipe reaches the same three ops through a different emitter and a
-// different destination -- writeQreg's insert into the Q-pipeline's pending
-// lane, drained here by VWAITQ.
-// TRIPWIRE -- microVU writeQreg does not software-flush a denormal Q.
-// Reverted with the COP2 pair: +4 ARM64 insns on every DIV/SQRT/RSQRT for
-// something the VU FPCR's FZ already does, in every shipping configuration
-// (DEFAULT_VU_FP_CONTROL_REGISTER is DAZ+FTZ+ChopZero and neither GameDB nor
-// the UI ever clears it). It only half-closed the wider gap: with FZ off the
-// interpreter runs both operands through vuDouble, so a denormal divisor still
-// diverges in value and in STATUS D/I. The redesign should settle whether the
-// VU is simply always-FZ rather than patch symptoms.
-TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitFlushesDenormalQToSignedZero)
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitHasNoDenormalsWithHardwareFlush)
+{
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsFlushed(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
+
+	for (const DivDenormCase& c : kDivDenormCases)
+	{
+		SCOPED_TRACE(c.what);
+		RunMacroDivCase(c);
+	}
+}
+
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitHasNoDenormals)
 {
 	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
 	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
@@ -1040,20 +1199,99 @@ TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitFlushesDenormalQToSig
 	for (const DivDenormCase& c : kDivDenormCases)
 	{
 		SCOPED_TRACE(c.what);
-		VuTestHarness h(0);
-		h.SetVfBits(1, c.fs, c.fs, c.fs, c.fs);
-		h.SetVfBits(2, c.ft, c.ft, c.ft, c.ft);
-		h.LoadProgram({
-			vu::VuOp{c.op == DivDenormCase::kDiv     ? vu::VDIV_L(vu::vf::vf1, 0, vu::vf::vf2, 0)
-					 : c.op == DivDenormCase::kSqrt  ? vu::VSQRT_L(vu::vf::vf2, 0)
-													 : vu::VRSQRT_L(vu::vf::vf1, 0, vu::vf::vf2, 0),
-				vu::VNOP_U()},
-			vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
-			vu::EBitNopPair(),
-		});
-		h.Run();
-		EXPECT_EQ(h.GetViInterp(REG_Q), c.want_q) << "[interp] Q";
-		EXPECT_EQ(h.GetViJit(REG_Q), c.want_q) << "[jit] Q";
+		RunMicroDivCase(c);
+	}
+}
+
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitHasNoDenormalsWithHardwareFlush)
+{
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsFlushed(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
+
+	for (const DivDenormCase& c : kDivDenormCases)
+	{
+		SCOPED_TRACE(c.what);
+		RunMicroDivCase(c);
+	}
+}
+
+// Every row above seeds all four lanes alike, so none of them can see an fsf
+// or ftf that reads the wrong one. The div unit's operands are scalars picked
+// out of a quadword, and the flush reloads its operand words rather than
+// reusing the ones the divide consumed -- two more places to index. Here the
+// four lanes hold four different denormals over four different divisors, so
+// each (fsf, ftf) pair has an answer no other pair shares.
+namespace
+{
+// Lane x is a denormal, y the smallest normal, z a denormal one bit wide, w
+// negative: the sign, the exponent-field test and the boundary all differ by
+// lane, and the divisors below turn each into a different quotient.
+constexpr u32 kLaneFs[4] = {0x00400000u, 0x00800000u, 0x00000001u, 0x80400000u};
+constexpr u32 kLaneFt[4] = {0x40000000u, 0x00400000u, 0x40800000u, 0x00000000u};
+} // namespace
+
+TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitReadsTheAddressedLane)
+{
+	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.FPUFPCR, "FPUFPCR"));
+
+	for (u32 fsf = 0; fsf < 4; ++fsf)
+	{
+		for (u32 ftf = 0; ftf < 4; ++ftf)
+		{
+			SCOPED_TRACE(::testing::Message() << "fsf " << fsf << " ftf " << ftf);
+			for (int op = 0; op < 3; ++op)
+			{
+				SCOPED_TRACE(op == 0 ? "VDIV" : op == 1 ? "VSQRT" : "VRSQRT");
+				EeRecTestHarness h;
+				h.EnableVu0Capture();
+				h.ExpectVu0Divergence();
+				h.SeedVu0VfBits(4, kLaneFs[0], kLaneFs[1], kLaneFs[2], kLaneFs[3]);
+				h.SeedVu0VfBits(5, kLaneFt[0], kLaneFt[1], kLaneFt[2], kLaneFt[3]);
+				h.LoadProgram({
+					CTC2(0, REG_STATUS_FLAG),
+					op == 0 ? VDIV_C2(fsf, ftf, 4, 5)
+					: op == 1 ? VSQRT_C2(ftf, 5)
+							  : VRSQRT_C2(fsf, ftf, 4, 5),
+				});
+				h.Run();
+				EXPECT_EQ(h.GetVu0ViJit(REG_Q), h.GetVu0ViInterp(REG_Q)) << "Q";
+				EXPECT_EQ(h.GetVu0ViJit(REG_STATUS_FLAG) & kDivDI,
+					h.GetVu0ViInterp(REG_STATUS_FLAG) & kDivDI) << "D/I";
+			}
+		}
+	}
+}
+
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitReadsTheAddressedLane)
+{
+	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
+
+	for (u32 fsf = 0; fsf < 4; ++fsf)
+	{
+		for (u32 ftf = 0; ftf < 4; ++ftf)
+		{
+			SCOPED_TRACE(::testing::Message() << "fsf " << fsf << " ftf " << ftf);
+			for (int op = 0; op < 3; ++op)
+			{
+				SCOPED_TRACE(op == 0 ? "DIV" : op == 1 ? "SQRT" : "RSQRT");
+				VuTestHarness h(0);
+				h.SetVfBits(1, kLaneFs[0], kLaneFs[1], kLaneFs[2], kLaneFs[3]);
+				h.SetVfBits(2, kLaneFt[0], kLaneFt[1], kLaneFt[2], kLaneFt[3]);
+				h.LoadProgram({
+					vu::VuOp{op == 0 ? vu::VDIV_L(vu::vf::vf1, fsf, vu::vf::vf2, ftf)
+							 : op == 1 ? vu::VSQRT_L(vu::vf::vf2, ftf)
+									   : vu::VRSQRT_L(vu::vf::vf1, fsf, vu::vf::vf2, ftf),
+						vu::VNOP_U()},
+					vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
+					vu::EBitNopPair(),
+				});
+				h.RunNoDiff();
+				EXPECT_EQ(h.GetViJit(REG_Q), h.GetViInterp(REG_Q)) << "Q";
+				EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & kDivDI,
+					h.GetViInterp(REG_STATUS_FLAG) & kDivDI) << "D/I";
+			}
+		}
 	}
 }
 

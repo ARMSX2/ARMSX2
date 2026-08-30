@@ -69,27 +69,27 @@
           "properties": {
             "eeClampMode": {
               "type": "integer",
-              "description": "0 (Disables), 1 (Normally), 2 (Extra+Preserve Sign), 3 (Full Clamping)",
+              "description": "0 (Disables), 1 (Normally), 2 (Extra+Preserve Sign), 3 (Full Clamping), 4 (Exact)",
               "minimum": 0,
-              "maximum": 3
+              "maximum": 4
             },
             "vuClampMode": {
               "type": "integer",
-              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign)",
+              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign), 4 (Exact)",
               "minimum": 0,
-              "maximum": 3
+              "maximum": 4
             },
             "vu0ClampMode": {
               "type": "integer",
-              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign)",
+              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign), 4 (Exact)",
               "minimum": 0,
-              "maximum": 3
+              "maximum": 4
             },
             "vu1ClampMode": {
               "type": "integer",
-              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign)",
+              "description": "0 (Disables), 1 (Normally), 2 (Extra), 3 (Extra+Preserve Sign), 4 (Exact)",
               "minimum": 0,
-              "maximum": 3
+              "maximum": 4
             }
           },
           "additionalProperties": false
@@ -101,7 +101,6 @@
               "BlitInternalFPSHack",
               "DMABusyHack",
               "EETimingHack",
-              "FpuMulHack",
               "GIFFIFOHack",
               "GoemonTlbHack",
               "IbitHack",

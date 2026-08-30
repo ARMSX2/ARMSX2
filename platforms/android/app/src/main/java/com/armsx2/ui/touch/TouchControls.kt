@@ -104,6 +104,9 @@ object TouchControls {
      *  No-op if the VM isn't paused. */
     fun exitEditMode() {
         editMode.value = false
+        // Next time the editor opens it should have its controls, not the collapsed grip the
+        // user happened to leave behind.
+        editorCollapsed.value = false
         if (MainActivityRuntime.eState.value == EmuState.PAUSED) MainActivityRuntime.resume()
     }
 
@@ -113,6 +116,20 @@ object TouchControls {
      *  awkward to pinch-zoom. Tap a widget to select; tap the dim
      *  backdrop to deselect. */
     val selectedButton = mutableStateOf<TouchButtonId?>(null)
+
+    /**
+     * Editor panel collapsed to just its grip.
+     *
+     * The panel covers a real part of the screen, and to select a widget under it you have to
+     * touch that widget first -- which the panel is in the way of. Moving it out of the way
+     * REACTIVELY cannot help with that, because the obstruction happens before there is anything
+     * to react to. This is the way out that does not involve dragging: one tap uncovers
+     * everything, one tap brings the controls back.
+     *
+     * Not persisted. It is a momentary "let me see under this", and a session that opened the
+     * editor to a panel with no controls on it would look broken.
+     */
+    val editorCollapsed = mutableStateOf(false)
 
     /** Profile picker / save-as dialog shown over the editor. */
     val profileDialogOpen = mutableStateOf(false)
@@ -594,6 +611,45 @@ object TouchControls {
             override fun run() {
                 pressed = !pressed
                 buttons.forEach { emit(it, pressed) }
+                macroHandler.postDelayed(this, periodMs)
+            }
+        }
+        macroRunnables[runKey] = runnable
+        macroHandler.post(runnable)
+    }
+
+    /**
+     * Rapid-fire for ONE button (#619), on the same timer and the same sampling floor as a
+     * macro's Frequency.
+     *
+     * Separate from [fireMacro] rather than folded into it because a macro is a SET of codes
+     * plus a pressure modifier, and collapsing a single button into that shape would mean
+     * building a list to throw it away. What matters is that both share [macroRunnables], so a
+     * release always finds and cancels the toggle it started, and [MACRO_MIN_STATE_MS], so the
+     * fastest settings still produce presses the VM actually samples.
+     *
+     * [key] namespaces concurrent users of the same button the way it does for macros.
+     */
+    fun fireTurboButton(keycode: Int, key: String, down: Boolean, frames: Int, emit: (Int, Boolean) -> Unit) {
+        val runKey = "btn$keycode:$key"
+        if (!down) {
+            macroRunnables.remove(runKey)?.let { macroHandler.removeCallbacks(it) }
+            // Always emit the up, even mid-cycle: let go on the "on" half and the button would
+            // otherwise stay down in the emulator.
+            emit(keycode, false)
+            return
+        }
+        if (frames <= 0) {
+            emit(keycode, true)
+            return
+        }
+        if (macroRunnables.containsKey(runKey)) return // already firing
+        val periodMs = (frames * MACRO_FRAME_MS).toLong().coerceAtLeast(MACRO_MIN_STATE_MS)
+        var pressed = false
+        val runnable = object : Runnable {
+            override fun run() {
+                pressed = !pressed
+                emit(keycode, pressed)
                 macroHandler.postDelayed(this, periodMs)
             }
         }
@@ -1307,6 +1363,12 @@ data class TouchButtonCfg(
     /** Tap-to-hold / latch: a tap toggles the button held (stays pressed until
      *  tapped again) instead of momentary press. Per-button, opt-in. */
     val tapToHold: Boolean = false,
+    /** Rapid-fire while held (#619), in frames between toggles; 0 = off, which stays the
+     *  default. Same unit and machinery as a macro's Frequency, because it is the same idea
+     *  applied to one button: physical buttons already had turbo and the on-screen ones did
+     *  not, which is exactly the asymmetry the request was about. Composes with [tapToHold] —
+     *  set both and a tap starts the autofire and the next tap stops it. */
+    val turbo: Int = 0,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id.name)
@@ -1315,6 +1377,7 @@ data class TouchButtonCfg(
         put("size", sizeDp.toDouble())
         put("on", enabled)
         put("hold", tapToHold)
+        put("turbo", turbo)
     }
 
     companion object {
@@ -1328,6 +1391,7 @@ data class TouchButtonCfg(
                 sizeDp = json.optDouble("size", 64.0).toFloat().coerceIn(28f, 220f),
                 enabled = json.optBoolean("on", true),
                 tapToHold = json.optBoolean("hold", false),
+                turbo = json.optInt("turbo", 0).coerceIn(0, TouchControls.MACRO_FREQ_MAX),
             )
         }
     }

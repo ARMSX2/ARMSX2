@@ -26,12 +26,12 @@
 //   quotient takes the xor of the operand signs, VRSQRT's takes the dividend's
 //   alone, because its divisor is a square root and never negative.
 //
-//   Q. Not settled, and not asserted row by row. PCSX2 saturates a binade low
-//   of the console (0x7F7FFFFF against 0x7FFFFFFF -- the VU clamp mode), and
-//   its DIV/SQRT/RSQRT go through a host divide rather than through the EE's
-//   divide-unit model in FPU.cpp. Both gaps are pinned here as exact tallies
-//   per engine so that neither can move unnoticed, and so that whoever ports
-//   eeDivide/eeSqrtBits to these call sites has a number to move.
+//   Q. Settled on the interpreters, which read the EE's divide-unit model and
+//   match every row. The recompilers run a host divide, so their two gaps --
+//   the ceiling and the arithmetic -- are pinned as exact tallies instead, for
+//   whoever emits the model there to move. Both engines' zero-divisor paths
+//   return the console's 0x7FFFFFFF; what still comes back a binade low is
+//   every quotient either engine reaches by dividing.
 
 #include <gtest/gtest.h>
 
@@ -130,6 +130,44 @@ void ScoreQ(QTally& t, const VursCase& c, u32 got)
 	else
 		t.unit++;
 }
+
+struct DivUnitScore
+{
+	QTally macro;
+	QTally micro;
+	int consoleSaturated = 0;
+};
+
+// Both recompilers' Q over the whole capture. A clamp mode of 0 leaves each
+// harness on its own default, which is what the tallies below were taken at.
+DivUnitScore ScoreDivUnit(int clamp_mode)
+{
+	DivUnitScore s;
+	for (const VursCase& c : kVursCases)
+	{
+		if ((c.q & 0x7FFFFFFFu) == 0x7FFFFFFFu)
+			++s.consoleSaturated;
+
+		EeRecTestHarness hj;
+		if (clamp_mode != 0)
+			hj.SetVu0ClampMode(clamp_mode);
+		BuildMacro(hj, c);
+		hj.RunJitNoDiff();
+		ScoreQ(s.macro, c, hj.GetGprJit(kRQ));
+
+		if (c.seed != 0)
+			continue;
+		VuTestHarness m(0);
+		if (clamp_mode != 0)
+			m.SetVuClampMode(clamp_mode);
+		m.IgnoreViInDiff(REG_STATUS_FLAG);
+		m.IgnoreViInDiff(REG_Q);
+		BuildMicro(m, c);
+		m.Run();
+		ScoreQ(s.micro, c, m.GetViJit(REG_Q));
+	}
+	return s;
+}
 } // namespace
 
 TEST(VuDivUnitConsole, MacroStatusMatchesConsoleOnEveryRow)
@@ -175,64 +213,100 @@ TEST(VuDivUnitConsole, MicroCauseAndStickyMatchConsole)
 	EXPECT_EQ(checked, 422);
 }
 
-// The console's saturated quotient is the EE maximum 0x7FFFFFFF; PCSX2's is
-// FLT_MAX, one binade lower. The sign is not part of that difference, so the
-// class is defined with the sign carried over -- which is what makes it a
-// statement about the clamp and not a place for a sign bug to hide.
-TEST(VuDivUnitConsole, QSaturatesABinadeLowOfTheConsole)
+TEST(VuDivUnitConsole, InterpreterQMatchesConsoleOnEveryRow)
 {
-	QTally mj, mi, uj, ui;
-	int consoleSaturated = 0;
+	int macro = 0, micro = 0;
 	for (const VursCase& c : kVursCases)
 	{
-		if ((c.q & 0x7FFFFFFFu) == 0x7FFFFFFFu)
-			++consoleSaturated;
-
-		EeRecTestHarness hj;
-		BuildMacro(hj, c);
-		hj.RunJitNoDiff();
-		ScoreQ(mj, c, hj.GetGprJit(kRQ));
+		SCOPED_TRACE(c.tag);
 
 		EeRecTestHarness hi;
 		BuildMacro(hi, c);
 		hi.RunInterpOnly();
-		ScoreQ(mi, c, hi.GetGprInterp(kRQ));
+		EXPECT_EQ(hi.GetGprInterp(kRQ), c.q) << "[macro interp] Q";
+		++macro;
 
 		if (c.seed != 0)
 			continue;
 		VuTestHarness m(0);
 		m.IgnoreViInDiff(REG_STATUS_FLAG);
-		m.IgnoreViInDiff(REG_Q);
+		m.IgnoreViInDiff(REG_Q); // the JIT column diverges by class, scored below
 		BuildMicro(m, c);
 		m.Run();
-		ScoreQ(uj, c, m.GetViJit(REG_Q));
-		ScoreQ(ui, c, m.GetViInterp(REG_Q));
+		EXPECT_EQ(m.GetViInterp(REG_Q), c.q) << "[micro interp] Q";
+		++micro;
 	}
+	EXPECT_EQ(macro, static_cast<int>(std::size(kVursCases)));
+	EXPECT_EQ(micro, 422);
+}
 
-	EXPECT_EQ(consoleSaturated, 226);
+// The console's saturated quotient is the EE maximum 0x7FFFFFFF. Where a
+// recompiler writes that word outright -- the zero-divisor branch -- it can
+// carry it, and all four of recCOP2_VDIV, recCOP2_VRSQRT, mVU_DIV and mVU_RSQRT
+// do. Where it arrives by dividing, the ceiling is whatever the host clamp
+// holds -- FLT_MAX, one binade lower -- and that is all `sat` has left: the
+// same fourteen rows on either engine. The sign is not part of the
+// difference, so the class is defined with the sign carried over -- which is
+// what makes it a statement about the clamp and not a place for a sign bug to
+// hide. What is left over is the host divide's arithmetic.
+TEST(VuDivUnitConsole, OnlyDividedQuotientsSaturateABinadeLowOfTheConsole)
+{
+	const DivUnitScore s = ScoreDivUnit(0);
+	const QTally& mj = s.macro;
+	const QTally& uj = s.micro;
 
-	// Two rows saturate on the console and come back from the emulator as
-	// something other than the sign-matched FLT_MAX; they fall in `unit`
-	// below rather than being counted as clamp-mode misses.
-	EXPECT_EQ(mj.sat, 224);
-	EXPECT_EQ(mi.sat, 226);
-	EXPECT_EQ(uj.sat, 176);
-	EXPECT_EQ(ui.sat, 178);
+	EXPECT_EQ(s.consoleSaturated, 226);
 
-	// The arithmetic gap. The JIT is worse than the interpreter by 30 rows in
-	// each mode -- its clamp runs before anything else can look at the result.
+	// Rows that saturate on the console and come back as something other than
+	// the sign-matched ceiling fall in `unit` below rather than being counted as
+	// clamp misses.
+	EXPECT_EQ(mj.sat, 14);
+	EXPECT_EQ(uj.sat, 14);
+
+	// The arithmetic gap left once the ceiling is accounted for.
 	EXPECT_EQ(mj.unit, 86);
-	EXPECT_EQ(mi.unit, 56);
 	EXPECT_EQ(uj.unit, 82);
-	EXPECT_EQ(ui.unit, 52);
 
-	EXPECT_EQ(mj.ok, 192);
-	EXPECT_EQ(mi.ok, 220);
-	EXPECT_EQ(uj.ok, 164);
-	EXPECT_EQ(ui.ok, 192);
+	EXPECT_EQ(mj.ok, 402);
+	EXPECT_EQ(uj.ok, 326);
 
 	EXPECT_EQ(mj.ok + mj.sat + mj.unit, static_cast<int>(std::size(kVursCases)));
 	EXPECT_EQ(uj.ok + uj.sat + uj.unit, 422);
+}
+
+// Where the two gaps above go. vuClampMode 4 reads the divide unit's own
+// arithmetic out of line instead of the host's Fdiv and Fsqrt, and both halves
+// close together: `unit` because the recurrence is what silicon runs, and `sat`
+// because the model's ceiling is the VU's 0x7FFFFFFF rather than the FLT_MAX
+// the clamp it replaces holds. Modes 1 to 3 are asserted alongside so the
+// counts are pinned as a step and not as a single reading -- an emitter that
+// took the model unconditionally would pass the mode-4 half on its own.
+TEST(VuDivUnitConsole, TheDivideUnitsArithmeticLandsAtClampModeFour)
+{
+	for (int mode = 1; mode <= 4; ++mode)
+	{
+		SCOPED_TRACE(::testing::Message() << "vuClampMode " << mode);
+		const DivUnitScore s = ScoreDivUnit(mode);
+
+		EXPECT_EQ(s.macro.ok + s.macro.sat + s.macro.unit, static_cast<int>(std::size(kVursCases)));
+		EXPECT_EQ(s.micro.ok + s.micro.sat + s.micro.unit, 422);
+
+		if (mode < 4)
+		{
+			EXPECT_EQ(s.macro.sat, 14);
+			EXPECT_EQ(s.micro.sat, 14);
+			EXPECT_EQ(s.macro.unit, 86);
+			EXPECT_EQ(s.micro.unit, 82);
+			continue;
+		}
+
+		EXPECT_EQ(s.macro.sat, 0);
+		EXPECT_EQ(s.micro.sat, 0);
+		EXPECT_EQ(s.macro.unit, 0);
+		EXPECT_EQ(s.micro.unit, 0);
+		EXPECT_EQ(s.macro.ok, static_cast<int>(std::size(kVursCases)));
+		EXPECT_EQ(s.micro.ok, 422);
+	}
 }
 
 // The two ops' saturated quotients take their sign by different rules, and the

@@ -439,4 +439,86 @@ TEST(Vu1AluUpper, VaddwMaskZWritesOnlyZWithFtW)
 	EXPECT_FLOAT_EQ(h.GetVfJit(3, 'w'), -4.0f);
 }
 
+// -------- VOPMULA / VOPMSUB (cross-product FMACs) --------
+//
+// The OP ops rotate their operands -- fs.yzxw against ft.zxy0 -- and are
+// otherwise ordinary four-lane FMACs: the dest field picks the lanes written
+// and the MAC lanes cleared, and lane w multiplies fs.w by a hard +0, so its
+// product is a zero carrying fs.w's sign. EeVu0Cop2Macro.OpOpsAreFourLaneFmacs
+// carries the console rows for that and scores the interpreter against them;
+// what is left here is whether microVU agrees with the interpreter at every
+// dest field a microprogram can encode. Run()'s auto-diff compares ACC
+// bit-exactly, so it is also what watches the sign of OPMULA's zero -- reaching
+// ACC from a VF costs an add, which erases it.
+
+namespace {
+
+constexpr u32 kOpMasks[] = {mask::xyzw, mask::xyz, mask::x | mask::y,
+	mask::x, mask::y, mask::z, mask::w, mask::none};
+
+} // namespace
+
+TEST(Vu1AluUpper, OpmsubHonoursEveryDestField)
+{
+	for (u32 m : kOpMasks)
+	{
+		SCOPED_TRACE(::testing::Message() << "dest field " << (m >> 21));
+		VuTestHarness h(1);
+		// The zero product raises Z, and a standalone program of this length
+		// does not spill the flag pipeline (see the file header).
+		h.IgnoreViInDiff(REG_STATUS_FLAG);
+		h.IgnoreViInDiff(REG_MAC_FLAG);
+		h.SetVf(1, 2.0f, 3.0f, 5.0f, -7.0f);       // fs -- w negative for the zero's sign
+		h.SetVf(2, 11.0f, 13.0f, 17.0f, 19.0f);    // ft
+		h.SetVf(3, 100.0f, 200.0f, 300.0f, 400.0f);
+		h.SetVf(4, 1.0f, 1.0f, 1.0f, 1.0f);
+		h.SetVfBits(5, 0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u);
+		h.LoadProgram({
+			UpperOnly(VMULA_U(mask::xyzw, vf::vf3, vf::vf4)), // ACC = 100,200,300,400
+			UpperOnly(VOPMSUB_U(m, vf::vf5, vf::vf1, vf::vf2)),
+			EBitNopPair(),
+		});
+		h.Run();
+		// fd = ACC - (fs.y*ft.z, fs.z*ft.x, fs.x*ft.y, fs.w*+0)
+		//    = 100-51, 200-55, 300-26, 400-(-0), in the lanes the field selects.
+		const u32 want[4] = {
+			(m & mask::x) ? 0x42440000u : 0x11111111u, //  49
+			(m & mask::y) ? 0x43110000u : 0x22222222u, // 145
+			(m & mask::z) ? 0x43890000u : 0x33333333u, // 274
+			(m & mask::w) ? 0x43C80000u : 0x44444444u, // 400
+		};
+		static const char kLane[4] = {'x', 'y', 'z', 'w'};
+		for (int l = 0; l < 4; ++l)
+			EXPECT_EQ(h.GetVfBitsJit(5, kLane[l]), want[l]) << "lane " << kLane[l];
+	}
+}
+
+TEST(Vu1AluUpper, OpmulaHonoursEveryDestField)
+{
+	for (u32 m : kOpMasks)
+	{
+		SCOPED_TRACE(::testing::Message() << "dest field " << (m >> 21));
+		VuTestHarness h(1);
+		h.IgnoreViInDiff(REG_STATUS_FLAG);
+		h.IgnoreViInDiff(REG_MAC_FLAG);
+		h.SetVf(1, 2.0f, 3.0f, 5.0f, -7.0f);
+		h.SetVf(2, 11.0f, 13.0f, 17.0f, 19.0f);
+		h.SetVf(3, 100.0f, 200.0f, 300.0f, 400.0f);
+		h.SetVf(4, 1.0f, 1.0f, 1.0f, 1.0f);
+		h.LoadProgram({
+			UpperOnly(VMULA_U(mask::xyzw, vf::vf3, vf::vf4)), // ACC = 100,200,300,400
+			UpperOnly(VOPMULA_U(m, vf::vf1, vf::vf2)),
+			// VF0 is (0,0,0,1), so this reads ACC back one lane short of itself.
+			UpperOnly(VMSUB_U(mask::xyzw, vf::vf5, vf::vf0, vf::vf0)),
+			EBitNopPair(),
+		});
+		h.Run();
+		// ACC = (fs.y*ft.z, fs.z*ft.x, fs.x*ft.y, fs.w*+0) = 51, 55, 26, -0.
+		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'x'), (m & mask::x) ?  51.0f : 100.0f);
+		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'y'), (m & mask::y) ?  55.0f : 200.0f);
+		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'z'), (m & mask::z) ?  26.0f : 300.0f);
+		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'w'), (m & mask::w) ?  -1.0f : 399.0f);
+	}
+}
+
 } // namespace recompiler_tests

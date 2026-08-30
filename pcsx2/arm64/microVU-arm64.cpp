@@ -294,15 +294,15 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		u8  doWholeProgCompare_;
 		u8  pad0;
 
-		// Clamp modes (Cpu.Recompiler.vu{0,1}{Overflow,ExtraOverflow,SignOverflow,Underflow}).
+		// Clamp modes (Cpu.Recompiler.vu{0,1}{Overflow,ExtraOverflow,SignOverflow,ExactMode}).
 		u8  vu0Overflow;
 		u8  vu0ExtraOverflow;
 		u8  vu0SignOverflow;
-		u8  vu0Underflow;
+		u8  vu0ExactMode;
 		u8  vu1Overflow;
 		u8  vu1ExtraOverflow;
 		u8  vu1SignOverflow;
-		u8  vu1Underflow;
+		u8  vu1ExactMode;
 
 		// Speedhacks / Gamefixes that gate emit shape.
 		u8  vuFlagHack;
@@ -355,11 +355,11 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu0Overflow      = EmuConfig.Cpu.Recompiler.vu0Overflow      ? 1 : 0;
 	s.vu0ExtraOverflow = EmuConfig.Cpu.Recompiler.vu0ExtraOverflow ? 1 : 0;
 	s.vu0SignOverflow  = EmuConfig.Cpu.Recompiler.vu0SignOverflow  ? 1 : 0;
-	s.vu0Underflow     = EmuConfig.Cpu.Recompiler.vu0Underflow     ? 1 : 0;
+	s.vu0ExactMode     = EmuConfig.Cpu.Recompiler.vu0ExactMode     ? 1 : 0;
 	s.vu1Overflow      = EmuConfig.Cpu.Recompiler.vu1Overflow      ? 1 : 0;
 	s.vu1ExtraOverflow = EmuConfig.Cpu.Recompiler.vu1ExtraOverflow ? 1 : 0;
 	s.vu1SignOverflow  = EmuConfig.Cpu.Recompiler.vu1SignOverflow  ? 1 : 0;
-	s.vu1Underflow     = EmuConfig.Cpu.Recompiler.vu1Underflow     ? 1 : 0;
+	s.vu1ExactMode     = EmuConfig.Cpu.Recompiler.vu1ExactMode     ? 1 : 0;
 
 	s.vuFlagHack      = EmuConfig.Speedhacks.vuFlagHack ? 1 : 0;
 	s.EECycleRate     = static_cast<s8>(EmuConfig.Speedhacks.EECycleRate);
@@ -1770,6 +1770,17 @@ void* mVUlookupProg_VU0(u32 startPC, u32 cycles)
 	microVU0.cycles      = cycles;
 	microVU0.totalCycles = cycles;
 	const u32 maskedPC = startPC & 0xff8;
+#ifdef PCSX2_RECOMPILER_TESTS
+	// The capture probe in mVUexecute only sees a program-cache miss: the
+	// dispatcher calls this wrapper first and jumps straight to the compiled
+	// block on a hit, which on a settled scene is a handful of dispatches out
+	// of thousands. Capturing here sees every dispatch, a miss twice, which
+	// reservoir sampling makes harmless.
+	vu_capture::MaybeCapture(0, maskedPC, cycles,
+		microVU0.regs().Micro, microVU0.microMemSize,
+		microVU0.regs().Mem, microVU0.microMemSize,
+		microVU0.regs());
+#endif
 	return mVUlookupProg<0>(maskedPC, (uptr)&microVU0.prog.lpState);
 }
 void* mVUlookupProg_VU1(u32 startPC, u32 cycles)
@@ -1777,6 +1788,12 @@ void* mVUlookupProg_VU1(u32 startPC, u32 cycles)
 	microVU1.cycles      = cycles;
 	microVU1.totalCycles = cycles;
 	const u32 maskedPC = startPC & 0x3ff8;
+#ifdef PCSX2_RECOMPILER_TESTS
+	vu_capture::MaybeCapture(1, maskedPC, cycles,
+		microVU1.regs().Micro, microVU1.microMemSize,
+		microVU1.regs().Mem, microVU1.microMemSize,
+		microVU1.regs());
+#endif
 	return mVUlookupProg<1>(maskedPC, (uptr)&microVU1.prog.lpState);
 }
 

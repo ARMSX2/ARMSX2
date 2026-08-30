@@ -2,6 +2,7 @@ package com.armsx2.update
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -276,7 +277,7 @@ private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: S
             // never prompt it — and never offer it a stable (that would be a versionCode downgrade).
             if (BuildConfig.VERSION_CODE > NIGHTLY_VC_THRESHOLD) return@withContext UpdateState.UpToDate
             val obj = JSONObject(httpGet(LATEST_URL))
-            val apkUrl = firstApkAsset(obj) ?: return@withContext UpdateState.UpToDate
+            val apkUrl = apkAssetForThisDevice(obj) ?: return@withContext UpdateState.UpToDate
             val tag = obj.getString("tag_name")
             return@withContext if (isNewer(tag, BuildConfig.VERSION_NAME))
                 UpdateState.Available(tag, obj.optString("body", ""), apkUrl)
@@ -294,7 +295,7 @@ private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: S
         for (i in 0 until arr.length()) {
             val rel = arr.getJSONObject(i)
             if (rel.optBoolean("draft", false)) continue
-            val apkUrl = firstApkAsset(rel) ?: continue
+            val apkUrl = apkAssetForThisDevice(rel) ?: continue
             val tag = rel.getString("tag_name")
             val isNightlyRel = rel.optBoolean("prerelease", false) || tag.startsWith("nightly-", ignoreCase = true)
             val newer = if (isNightlyRel) {
@@ -310,15 +311,89 @@ private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: S
     }
 }
 
-/** First `.apk` asset download URL in a release JSON object, or null if it has none. */
-private fun firstApkAsset(release: JSONObject): String? {
+// Release tier markers. A release carries four APKs and their names are the only thing
+// distinguishing them, so these are a contract with build-release-targets.sh:
+//   -sdk26   legacy — armv8.1-a.               The build every device can run.
+//   -sdk30   a11    — armv8.2-a+fp16+dotprod.
+//   -sdk33   a13    — same codegen.
+//   -sdk35   a15    — same codegen, newest NDK.
+// Keyed off the minSdk suffix alone because those four strings are mutually exclusive.
+// The previous scheme keyed off "-v82" and "-v82-sdk35", where one marker was a substring
+// of the other and only a carefully ordered `when` kept Android 15 devices off the wrong
+// build — a hazard that grows with every tier added. Nothing here can overlap.
+private const val LEGACY_MARKER = "-sdk26"
+private const val A11_MARKER = "-sdk30"
+private const val A13_MARKER = "-sdk33"
+private const val A15_MARKER = "-sdk35"
+
+/**
+ * Does this CPU implement the ARMv8.2 extensions the a11/a13/a15 builds are compiled against?
+ *
+ * Read off `/proc/cpuinfo`'s Features line, which exposes the kernel's HWCAP names:
+ * `asimdhp` = FEAT_FP16, `asimddp` = FEAT_DotProd. Both are OPTIONAL at ARMv8.2 — a core can
+ * be v8.2 and have neither — so the architecture level is not a usable proxy and the flags
+ * have to be read directly.
+ *
+ * **Fails closed.** Anything unexpected — unreadable file, unparseable Features line, a
+ * feature missing — returns false and the device gets the baseline build. That asymmetry is
+ * deliberate: handing the v8.2 APK to a CPU without these instructions is a SIGILL on the
+ * first hot path, and a user whose emulator no longer launches cannot reach the updater to
+ * get back off it. A device that merely misses out on the faster build is unharmed.
+ */
+private fun supportsV82Build(): Boolean = runCatching {
+    val features = File("/proc/cpuinfo").useLines { lines ->
+        lines.firstOrNull { it.startsWith("Features", ignoreCase = true) }
+    } ?: return@runCatching false
+    // Match whole tokens: a substring test would accept "asimddp" as evidence of "asimd".
+    val tokens = features.substringAfter(':', "").trim().split(Regex("\\s+")).toHashSet()
+    "asimdhp" in tokens && "asimddp" in tokens
+}.getOrDefault(false)
+
+/**
+ * Download URL of the `.apk` asset this device should install, or null if the release has none.
+ *
+ * A release carries four APKs — one baseline and three ARMv8.2 tiers — so taking the first
+ * asset GitHub happened to list would hand out an arbitrary one. Prefer the highest tier this
+ * device satisfies on BOTH gates, and fall back down the list from there. If the only APKs
+ * present are ones this device cannot run, offer nothing rather than an update that bricks
+ * the install.
+ *
+ * An APK whose name carries no recognised marker counts as legacy. That is what makes older
+ * releases — published before tiering, as a single `ARMSX2-<version>.apk` — still resolve.
+ */
+private fun apkAssetForThisDevice(release: JSONObject): String? {
     val assets = release.optJSONArray("assets") ?: return null
+    var legacy: String? = null
+    var a11: String? = null
+    var a13: String? = null
+    var a15: String? = null
     for (i in 0 until assets.length()) {
         val a = assets.getJSONObject(i)
-        if (a.getString("name").endsWith(".apk", ignoreCase = true))
-            return a.getString("browser_download_url")
+        val name = a.getString("name")
+        if (!name.endsWith(".apk", ignoreCase = true)) continue
+        val url = a.getString("browser_download_url")
+        when {
+            name.contains(A15_MARKER, ignoreCase = true) -> if (a15 == null) a15 = url
+            name.contains(A13_MARKER, ignoreCase = true) -> if (a13 == null) a13 = url
+            name.contains(A11_MARKER, ignoreCase = true) -> if (a11 == null) a11 = url
+            // -sdk26 and "no marker at all" are the same tier; see the KDoc above.
+            else -> if (legacy == null) legacy = url
+        }
     }
-    return null
+
+    // Walk DOWN from the best tier this device qualifies for, so a release that omits a tier
+    // degrades to the next one rather than offering nothing. Two independent gates: the CPU
+    // must have the instructions the v8.2 builds are compiled against, and the OS must be at
+    // least the build's minSdk — installing below it fails at the package manager with an
+    // error no user can act on, which is a worse outcome than staying on the current build.
+    val cpuOk = supportsV82Build()
+    val sdk = Build.VERSION.SDK_INT
+    return when {
+        cpuOk && sdk >= 35 -> a15 ?: a13 ?: a11 ?: legacy
+        cpuOk && sdk >= 33 -> a13 ?: a11 ?: legacy
+        cpuOk && sdk >= 30 -> a11 ?: legacy
+        else -> legacy
+    }
 }
 
 /** "nightly-YYYYMMDD" -> YYYYMMDD as an int (0 if the tag isn't a dated nightly). */

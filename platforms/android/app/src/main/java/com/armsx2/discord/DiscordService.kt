@@ -99,10 +99,7 @@ class DiscordService : Service() {
         when (msg.what) {
             DiscordIpc.MSG_START -> {
                 if (!loaded) return
-                val token = msg.data?.getString(DiscordIpc.DATA_TOKEN).orEmpty()
-                runCatching { DiscordNative.start(token) }
-                    .onSuccess { started = true }
-                    .onFailure { Log.w(TAG, "start failed: ${it.message}") }
+                startWhenEngineBound(msg.data?.getString(DiscordIpc.DATA_TOKEN).orEmpty())
             }
 
             DiscordIpc.MSG_AUTHORIZE -> {
@@ -112,6 +109,7 @@ class DiscordService : Service() {
                 // reference the SDK here cannot use. DiscordAuthActivity exists only to be that.
                 runCatching {
                     val i = Intent(this, DiscordAuthActivity::class.java)
+                        .putExtra(DiscordAuthActivity.EXTRA_AUTHORIZE, true)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(i)
                 }.onFailure { Log.w(TAG, "auth activity failed: ${it.message}") }
@@ -138,6 +136,45 @@ class DiscordService : Service() {
 
             DiscordIpc.MSG_QUERY -> reply(msg.replyTo)
         }
+    }
+
+    /**
+     * Start the SDK, but not before it has an Activity in this process.
+     *
+     * The SDK's connect() resolves the Discord app through
+     * DiscordSocialSdkInit.getEngineActivity() and passes the result straight to
+     * Context.getPackageManager() with no null check, so starting before that Activity exists
+     * takes :discord down with an NPE. Android then restarts the service, which starts again and
+     * dies again -- a crash loop the app process cannot see, because it only ever polls for state.
+     * The UI sat on "Connecting" forever.
+     *
+     * The Activity used to be created only by the sign-in flow, so this hit every launch that had
+     * a cached token -- i.e. every launch after the first. It is not specific to signing in: the
+     * SDK's statics are per-process and Android restarts :discord whenever it likes, so the
+     * binding has to be re-established on demand rather than assumed.
+     */
+    private fun startWhenEngineBound(token: String) {
+        if (DiscordAuthActivity.engineBound) {
+            doStart(token)
+            return
+        }
+        DiscordAuthActivity.onEngineBound = { handler.post { doStart(token) } }
+        runCatching {
+            startActivity(
+                Intent(this, DiscordAuthActivity::class.java)
+                    .putExtra(DiscordAuthActivity.EXTRA_AUTHORIZE, false)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure {
+            DiscordAuthActivity.onEngineBound = null
+            Log.w(TAG, "could not hand the SDK an Activity: ${it.message}")
+        }
+    }
+
+    private fun doStart(token: String) {
+        runCatching { DiscordNative.start(token) }
+            .onSuccess { started = true }
+            .onFailure { Log.w(TAG, "start failed: ${it.message}") }
     }
 
     /** One snapshot, on request. Everything the app's UI renders comes through here. */

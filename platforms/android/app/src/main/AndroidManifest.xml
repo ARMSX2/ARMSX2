@@ -124,6 +124,11 @@
             </intent-filter>
         </receiver>
 
+        <provider
+            android:name=".data.library.RecentGamesContentProvider"
+            android:authorities="${applicationId}.romlibrary"
+            android:exported="true" />
+
         <!--
             Discord Social SDK's OAuth landing activity. Declared here rather than inherited from
             the vendor .aar on purpose: that .aar's manifest also declares RECORD_AUDIO, three

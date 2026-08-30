@@ -185,15 +185,20 @@ void armLoadConstant128(const vixl::aarch64::VRegister& reg, const void* ptr);
 // mask (x86's AND_XYZW) costs nothing; `shift` likewise absorbs x86's
 // single-scalar SHIFT_XYZW rotate. Both are emit-time constants.
 //
+// `withUnderflow` and `withOverflow` add the MAC U and O nibbles at bit + 8 and
+// bit + 12, for the callers that pass armEmitPackSignZeroBits a third or fourth
+// predicate.
+//
 // The caller must keep `bit + shift <= 3` so the zero half stays inside the
 // low nibble — see the SLI note in armEmitPackSignZeroBits.
-static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int shift)
+static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int shift,
+	bool withUnderflow = false, bool withOverflow = false)
 {
 	const int bit = reverse ? (3 - lane) : lane;
 	if (!(keepMask & (1u << bit)))
 		return 0;
 	const u32 w = 1u << (bit + shift);
-	return w | (w << 4);
+	return w | (w << 4) | (withUnderflow ? (w << 8) : 0) | (withOverflow ? (w << 12) : 0);
 }
 
 // Pack the sign and zero predicates of a 4-lane float vector into one GPR as
@@ -217,20 +222,115 @@ static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int
 // callers choose their cheapest route to it (a pinned-base Ldr in microVU, a
 // literal in the EE's COP2 macro path).
 //
-// Emits 6 insns + the weight load.
+// `vExactZero`, when given, is a third temporary holding all-ones per lane
+// where a zero result is an exact zero rather than a flushed underflow; it is
+// turned into the U predicate here and inserted at nibble 2. `vOverflow` is the
+// same for the O nibble, and is read rather than clobbered. Weights for either
+// must come from armPackLaneWeight with the matching flag set.
+//
+// Each SLI keeps the destination bits below its shift, so the three inserts run
+// in ascending order — 4, 8, 12 — and a skipped one leaves its nibble holding
+// whatever the previous insert shifted through. The weight vector clears that.
+//
+// Emits 6 insns + the weight load, 8 with vExactZero, 9 with vOverflow.
 template <typename LoadWeightsFn>
 __fi static void armEmitPackSignZeroBits(const vixl::aarch64::Register& dst,
 	const vixl::aarch64::VRegister& src, const vixl::aarch64::VRegister& vSign,
 	const vixl::aarch64::VRegister& vZero, const vixl::aarch64::VRegister& weights,
-	LoadWeightsFn&& load_weights)
+	LoadWeightsFn&& load_weights,
+	const vixl::aarch64::VRegister& vExactZero = vixl::aarch64::NoVReg,
+	const vixl::aarch64::VRegister& vOverflow = vixl::aarch64::NoVReg)
 {
 	armAsm->Cmlt(vSign.V4S(), src.V4S(), 0);    // all-1s where negative
 	armAsm->Fcmeq(vZero.V4S(), src.V4S(), 0.0); // all-1s where zero
+	if (vExactZero.IsValid())
+		armAsm->Bic(vExactZero.V16B(), vZero.V16B(), vExactZero.V16B()); // zero, not exactly
 	armAsm->Sli(vZero.V4S(), vSign.V4S(), 4);   // [31:4] = sign, [3:0] = zero
+	if (vExactZero.IsValid())
+		armAsm->Sli(vZero.V4S(), vExactZero.V4S(), 8); // [31:8] = underflow
+	if (vOverflow.IsValid())
+		armAsm->Sli(vZero.V4S(), vOverflow.V4S(), 12); // [31:12] = overflow
 	load_weights(weights);
 	armAsm->And(vZero.V16B(), vZero.V16B(), weights.V16B());
 	armAsm->Addv(vixl::aarch64::VRegister(vZero.GetCode(), 32), vZero.V4S());
 	armAsm->Fmov(dst, vixl::aarch64::VRegister(vZero.GetCode(), 32));
+}
+
+// The EE FPR word <-> stored double relocation of EeFpuFormat.h, emitted.
+//
+// Sign-extending the word puts its sign bit at 63 but also fills 62..60; this
+// clears those three. 61 contiguous ones under rotation, so a logical immediate.
+static constexpr u64 kEeFprWidenMask = 0x8FFFFFFFFFFFFFFFULL;
+
+// dst = widen(word). `tmp` is an X scratch and may be `word`'s X form. Only
+// the low 32 bits of `word` are read.
+__fi static void armEmitEeFprWiden(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Sbfiz(tmp.X(), word.X(), 29, 32);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Fmov(dst.D(), tmp.X());
+}
+
+// dst = widen(*src). Ldrsw does the sign extension the widen needs anyway.
+__fi static void armEmitEeFprWidenFromMem(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::MemOperand& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Ldrsw(tmp.X(), src);
+	armAsm->Lsl(tmp.X(), tmp.X(), 29);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Fmov(dst.D(), tmp.X());
+}
+
+// dst = narrow(src), zero-extended: dst.W() is the word and dst.X() is that
+// word with the top half clear. `tmp` is an X scratch and must not be `dst`.
+__fi static void armEmitEeFprNarrow(const vixl::aarch64::Register& dst,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Fmov(tmp.X(), src.D());
+	armAsm->Lsr(dst.X(), tmp.X(), 32);
+	armAsm->Bfxil(dst.X(), tmp.X(), 29, 31);
+}
+
+// *dst = narrow(src). `word` receives the narrowed word; neither scratch may
+// be the other.
+__fi static void armEmitEeFprNarrowToMem(const vixl::aarch64::MemOperand& dst,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& word,
+	const vixl::aarch64::Register& tmp)
+{
+	armEmitEeFprNarrow(word, src, tmp);
+	armAsm->Str(word.W(), dst);
+}
+
+// The same relocation against an fpuRegs slot: memory holds the stored double
+// and a register holds the architectural word.
+
+// dst = the word in *slot, zero-extended. `tmp` is an X scratch, not `dst`.
+__fi static void armEmitEeFprLoadSlotWord(const vixl::aarch64::Register& dst,
+	const vixl::aarch64::MemOperand& slot, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Ldr(tmp.X(), slot);
+	armAsm->Lsr(dst.X(), tmp.X(), 32);
+	armAsm->Bfxil(dst.X(), tmp.X(), 29, 31);
+}
+
+// *slot = `word`. `tmp` is an X scratch and may be `word`'s X form.
+__fi static void armEmitEeFprStoreSlotWord(const vixl::aarch64::MemOperand& slot,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Sbfiz(tmp.X(), word.X(), 29, 32);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Str(tmp.X(), slot);
+}
+
+// Bridge for emitters holding a result as the architectural single in an S
+// register while the slot they store it to holds the stored double: iFPUd's
+// bodies, the fast path's SQRT, and LWC1's fastmem load. Clobbers `tmp`.
+__fi static void armEmitEeFprFromS(const vixl::aarch64::VRegister& slot,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Fmov(tmp.W(), src.S());
+	armEmitEeFprWiden(slot, tmp, tmp);
 }
 
 // may clobber RSCRATCH/RSCRATCH2. they shouldn't be inputs.

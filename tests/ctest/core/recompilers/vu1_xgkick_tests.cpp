@@ -249,14 +249,20 @@ TEST(Vu1Xgkick, DivOneOverThreeFmacChainPreservesXgkickAddr)
 	for (u32 q = 0; q < 1024; ++q)
 		h.WriteMemU128(q * 16, kEopOnlyTagLower, 0u, q, 0u);
 
-	h.SetVfBits(vf::vf1, 0x3F800000u, 0u, 0u, 0u); // 1.0
+	// 1 + 2^-23 rather than 1.0: the multiplier's one-ULP deficit is a property
+	// of Ft's mantissa AND of the exact product having no tail below the ULP,
+	// and 1.0 * Q leaves no tail. The interpreter models the deficit and the
+	// emitters do not, so a bare 1.0 here would send the two engines to
+	// different qwords and this test would be reporting that instead of whether
+	// the XGKICK address survives the chain.
+	h.SetVfBits(vf::vf1, 0x3F800001u, 0u, 0u, 0u); // 1 + 2^-23
 	h.SetVfBits(vf::vf2, 0x40400000u, 0u, 0u, 0u); // 3.0
 	h.LoadProgram({
 		// Q = 1.0 / 3.0  (irrational; FP rounding in DIV may diverge)
 		VuOp{VDIV_L(vf::vf1, /*fsf=x*/0, vf::vf2, /*ftf=x*/0), VNOP_U()},
 		BareNopPair(), BareNopPair(), BareNopPair(), BareNopPair(),
 		BareNopPair(), BareNopPair(), BareNopPair(),
-		// vf3.x = vf1.x * Q = 1.0 * 0.333…
+		// vf3.x = vf1.x * Q
 		VuOp{VNOP_U(), VMULq_U(mask::x, vf::vf3, vf::vf1)},
 		BareNopPair(),
 		// MTIR.x vi5 = low-16(vf3.x bits)
@@ -302,19 +308,22 @@ TEST(Vu1Xgkick, ClampAfterXgkickMatchesInterp)
 		IBit(VuOp{VLitZero(), VMUL_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf2)}), // overflow -> clamp
 		EBitNopPair(),
 	});
-	h.Run();
+	// The interpreter saturates an overflow at 0x7FFFFFFF -- the VU's largest
+	// value, and what the console returns -- so it is no longer the reference
+	// for where mVUclamp1 lands. The clamped word is asserted directly instead,
+	// which is what says the clamp survived the call.
+	h.RunRequiringDivergence(
+		"the clamp knobs bind the emitters only; the interpreter saturates at "
+		"0x7FFFFFFF");
 
 	EmuConfig.Cpu.Recompiler.vu1Overflow = prevOv;
 	EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = prevEx;
 
-	EXPECT_EQ(h.GetVfBitsJit(vf::vf1, 'x'), h.GetVfBitsInterp(vf::vf1, 'x'))
-		<< "clamp after XGKICK diverged — the mVU_XGKICK_DELAY C call disturbed "
-		   "what mVUclamp1 clamps against";
-	EXPECT_EQ(h.GetVfBitsJit(vf::vf1, 'y'), h.GetVfBitsInterp(vf::vf1, 'y'));
-	EXPECT_EQ(h.GetVfBitsJit(vf::vf1, 'z'), h.GetVfBitsInterp(vf::vf1, 'z'));
-	EXPECT_EQ(h.GetVfBitsJit(vf::vf1, 'w'), h.GetVfBitsInterp(vf::vf1, 'w'));
-	// Proves the clamp actually engaged (both engines reach +MAX_FLOAT).
-	EXPECT_EQ(h.GetVfBitsInterp(vf::vf1, 'x'), 0x7F7FFFFFu);
+	for (char l : {'x', 'y', 'z', 'w'})
+		EXPECT_EQ(h.GetVfBitsJit(vf::vf1, l), 0x7F7FFFFFu)
+			<< "lane " << l
+			<< ": clamp after XGKICK -- the mVU_XGKICK_DELAY C call disturbed "
+			   "what mVUclamp1 clamps against";
 }
 
 } // namespace recompiler_tests

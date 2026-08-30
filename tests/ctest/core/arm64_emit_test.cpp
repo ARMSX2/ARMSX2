@@ -19,6 +19,8 @@
 #include "Config.h"
 #include "vtlb.h"
 
+#include "Arm64JitBuffer.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -27,46 +29,7 @@
 #include <cstring>
 #include <vector>
 
-#include <sys/mman.h>
-
 using namespace vixl::aarch64;
-
-namespace
-{
-	// RAII executable buffer, allocated exactly like PCSX2's macOS JIT regions
-	// (SharedMemoryMappingArea::Create with jit=true): MAP_JIT so that
-	// pthread_jit_write_protect_np can flip it between writable and executable.
-	class JitBuffer
-	{
-	public:
-		explicit JitBuffer(size_t size)
-			: m_size(size)
-		{
-			int flags = MAP_ANONYMOUS | MAP_PRIVATE;
-#ifdef __APPLE__
-			flags |= MAP_JIT;
-#endif
-			void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
-			m_ptr = (ptr == MAP_FAILED) ? nullptr : ptr;
-		}
-
-		~JitBuffer()
-		{
-			if (m_ptr)
-				munmap(m_ptr, m_size);
-		}
-
-		JitBuffer(const JitBuffer&) = delete;
-		JitBuffer& operator=(const JitBuffer&) = delete;
-
-		void* ptr() const { return m_ptr; }
-		size_t size() const { return m_size; }
-
-	private:
-		void* m_ptr = nullptr;
-		size_t m_size;
-	};
-} // namespace
 
 // int add(int a, int b) { return a + b; }
 // Args arrive in w0/w1, return value in w0 (AAPCS64).

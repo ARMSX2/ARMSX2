@@ -216,6 +216,75 @@ fun AppTab() {
                 description = str("app.bg.simple.desc"),
                 onChange = { com.armsx2.ui.home.LibraryBackground.setAnimated2D(it) },
             )
+            // Flurry: Calum Robinson's 2002 screensaver, ported from ARMSX3 and offered as the
+            // backdrop.
+            //
+            // Off by default and said plainly in the description, because it is a live particle
+            // simulation rather than a still: this library shipped a looping video once and lost
+            // it in 2.5.9 when the continuous decode turned out to cost real performance. Opt-in
+            // for the same reason.
+            ToggleRow(
+                label = str("app.bg.flurry"),
+                value = com.armsx2.ui.home.LibraryBackground.flurry.value,
+                description = str("app.bg.flurry.desc"),
+                onChange = { com.armsx2.ui.home.LibraryBackground.setFlurry(it) },
+            )
+            if (com.armsx2.ui.home.LibraryBackground.flurry.value) {
+                // Which saver runs. They share one on/off above because only one background can
+                // draw at a time, and "animated background: on" reads better than seven switches.
+                // Flurry is Calum Robinson's (BSD-3-clause); the rest are Terry Welsh's Really
+                // Slick Screensavers (GPL-2.0-or-later).
+                val kind = com.armsx2.ui.home.LibraryBackground.saverKind.value
+                SegmentedGridRow(
+                    label = str("app.bg.saver"),
+                    options = listOf("Flurry", "Flux", "Plasma", "SolarWinds", "Hyperspace", "Lattice", "Skyrocket"),
+                    selectedIndex = kind,
+                    columns = 4,
+                    onChange = { com.armsx2.ui.home.LibraryBackground.setSaverKind(it) },
+                )
+                if (kind == 0) {
+                    // Values are Flurry's own preset enum; -1 is "insane" upstream and 99 is this
+                    // port's "pick one each time", so the list is not an index range.
+                    val presetValues = listOf(99, 0, 1, 2, 3, 4, 5, -1)
+                    SegmentedGridRow(
+                        label = str("app.bg.flurry.preset"),
+                        options = listOf(
+                            str("app.bg.flurry.random"), "Water", "Fire", "Psychedelic",
+                            "RGB", "Binary", "Classic", "Insane",
+                        ),
+                        selectedIndex = presetValues
+                            .indexOf(com.armsx2.ui.home.LibraryBackground.flurryPreset.value)
+                            .coerceAtLeast(0),
+                        columns = 4,
+                        onChange = {
+                            com.armsx2.ui.home.LibraryBackground.setFlurryPreset(presetValues[it])
+                        },
+                    )
+                } else if (kind != 4 && kind != 6) {
+                    // Hyperspace and Skyrocket ship no presets upstream, so they show no picker.
+                    // Six presets plus this port's 99 for "pick one each time", so not an index
+                    // range. Flux and SolarWinds ship their own named defaults; Plasma had none
+                    // upstream, so those are built from the settings its config dialog exposed.
+                    val rssValues = listOf(99, 1, 2, 3, 4, 5, 6)
+                    val names = when (kind) {
+                        1 -> listOf("Regular", "Hypnotic", "Insane", "Sparklers", "Paradigm", "Galactic")
+                        2 -> listOf("Classic", "Tight", "Wide", "Fast", "Slow drift", "Coarse")
+                        5 -> listOf("Regular", "Chainmail", "Brass Mesh", "Computer", "Slick", "Tasty")
+                        else -> listOf("Regular", "Cosmic Strings", "Cold Pricklies", "Space Fur", "Jiggly", "Undertow")
+                    }
+                    SegmentedGridRow(
+                        label = str("app.bg.flux.preset"),
+                        options = listOf(str("app.bg.flurry.random")) + names,
+                        selectedIndex = rssValues
+                            .indexOf(com.armsx2.ui.home.LibraryBackground.rssPreset.value)
+                            .coerceAtLeast(0),
+                        columns = 4,
+                        onChange = {
+                            com.armsx2.ui.home.LibraryBackground.setRssPreset(rssValues[it])
+                        },
+                    )
+                }
+            }
             // Colour of the BAR itself (the rounded header pill), as opposed to the animated
             // backdrop the rest of this section controls. Requested because the background picker
             // is labelled "Library Bar Color" but recolours the background — so there was no way to
@@ -402,6 +471,235 @@ fun AppTab() {
                 description = str("secondScreen.moveOsd.desc"),
                 onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
             )
+
+            // The panel now takes its colours from whichever theme is selected, so this is only
+            // about the GROUND behind the tiles: the theme's own, the library's backdrop for
+            // continuity with the screen it sits beside, or black for an OLED second display.
+            if (com.armsx2.SecondScreen.ignoredDisplays.value.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val clear = { com.armsx2.SecondScreen.clearIgnoredDisplays() }
+                    OutlinedButton(
+                        onClick = clear,
+                        modifier = Modifier.controllerFocusable("secondScreen.displays.reset", onConfirm = clear),
+                    ) {
+                        Text(
+                            str("secondScreen.displays.reset") +
+                                " (" + com.armsx2.SecondScreen.ignoredDisplays.value.size + ")",
+                        )
+                    }
+                }
+            }
+
+            ToggleRow(
+                label = str("secondScreen.topBar"),
+                value = com.armsx2.SecondScreen.topBar.value,
+                description = str("secondScreen.topBar.desc"),
+                onChange = { com.armsx2.SecondScreen.setTopBar(it) },
+            )
+
+            val panelBgPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { picked -> picked?.let { com.armsx2.SecondScreen.setBackgroundImage(appContext, it) } }
+
+            SegmentedRow(
+                label = str("secondScreen.background"),
+                options = listOf(
+                    str("secondScreen.background.theme"),
+                    str("secondScreen.background.library"),
+                    str("secondScreen.background.black"),
+                    str("secondScreen.background.custom"),
+                ),
+                selectedIndex = com.armsx2.SecondScreen.background.value,
+                onChange = {
+                    // Picking "Custom" with nothing chosen yet opens the picker rather than
+                    // selecting a mode that would render as the theme ground and look broken.
+                    if (it == com.armsx2.SecondScreen.BG_CUSTOM &&
+                        com.armsx2.SecondScreen.backgroundUri.value == null
+                    ) {
+                        panelBgPicker.launch(arrayOf("image/*"))
+                    } else {
+                        com.armsx2.SecondScreen.setBackground(it)
+                    }
+                },
+            )
+            if (com.armsx2.SecondScreen.background.value == com.armsx2.SecondScreen.BG_CUSTOM) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val pick = { panelBgPicker.launch(arrayOf("image/*")) }
+                    OutlinedButton(
+                        onClick = pick,
+                        modifier = Modifier.controllerFocusable("secondScreen.background.choose", onConfirm = pick),
+                    ) { Text(str("secondScreen.background.choose")) }
+                }
+            }
+
+            // Only worth showing once a thermal tile is actually on the panel — otherwise it is
+            // a control over something invisible.
+            if (com.armsx2.SecondScreenLayout.tiles().any {
+                    it == com.armsx2.SecondScreenTile.CPU_TEMP ||
+                        it == com.armsx2.SecondScreenTile.GPU_TEMP ||
+                        it == com.armsx2.SecondScreenTile.BATTERY_TEMP
+                }
+            ) {
+                val seconds = listOf(1, 2, 3, 5)
+                SegmentedRow(
+                    label = str("secondScreen.tempInterval"),
+                    options = seconds.map { "${it}s" },
+                    selectedIndex = seconds.indexOf(com.armsx2.SecondScreen.tempIntervalSec.value)
+                        .coerceAtLeast(0),
+                    onChange = { com.armsx2.SecondScreen.setTempInterval(seconds[it]) },
+                )
+            }
+
+            // Panel layout editor. Chips for what is on the panel, arrows for the order, a column
+            // count for the shape of the grid. Asked for as "a grid which can be filled with boxes
+            // containing the things one need" (NiceRon) — the point is that the panel is different
+            // for a save-scummer and for someone watching frame pacing, so it cannot be one fixed
+            // arrangement.
+            //
+            // Reading the generation subscribes this whole block, so a toggle re-renders the chips
+            // AND the order list without either one owning the state.
+            com.armsx2.SecondScreenLayout.generation.intValue
+            val placed = com.armsx2.SecondScreenLayout.tiles()
+            Text(
+                str("secondScreen.layout"),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+            Text(
+                str("secondScreen.layout.desc"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.armsx2.SecondScreenTile.entries.forEach { tile ->
+                    val toggle = {
+                        com.armsx2.SecondScreenLayout.toggle(tile)
+                        com.armsx2.SecondScreen.rebuild()
+                    }
+                    FilterChip(
+                        selected = tile in placed,
+                        onClick = toggle,
+                        label = { Text(str(tile.labelKey)) },
+                        shape = RoundedCornerShape(11.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "secondScreen.tile.${tile.id}",
+                            RoundedCornerShape(11.dp),
+                            onConfirm = toggle,
+                        ),
+                    )
+                }
+            }
+            // Order, one row per placed tile. Only shown once there is something to order.
+            if (placed.size > 1) {
+                placed.forEachIndexed { index, tile ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${index + 1}. ${str(tile.labelKey)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        val up = {
+                            com.armsx2.SecondScreenLayout.move(tile, -1)
+                            com.armsx2.SecondScreen.rebuild()
+                        }
+                        val down = {
+                            com.armsx2.SecondScreenLayout.move(tile, 1)
+                            com.armsx2.SecondScreen.rebuild()
+                        }
+                        OutlinedButton(
+                            onClick = up,
+                            enabled = index > 0,
+                            modifier = Modifier.controllerFocusable(
+                                "secondScreen.up.${tile.id}",
+                                RoundedCornerShape(11.dp),
+                                onConfirm = up,
+                            ),
+                        ) { Text("▲") }
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedButton(
+                            onClick = down,
+                            enabled = index < placed.lastIndex,
+                            modifier = Modifier.controllerFocusable(
+                                "secondScreen.down.${tile.id}",
+                                RoundedCornerShape(11.dp),
+                                onConfirm = down,
+                            ),
+                        ) { Text("▼") }
+                    }
+                }
+            }
+            IntSliderRow(
+                label = str("secondScreen.layout.columns"),
+                value = com.armsx2.SecondScreenLayout.columns(),
+                min = 1,
+                max = 6,
+                onChange = {
+                    com.armsx2.SecondScreenLayout.setColumns(it)
+                    com.armsx2.SecondScreen.rebuild()
+                },
+            )
+            // Columns already decide width (tiles split the row equally), so this is the other
+            // axis. 0 keeps the old behaviour of being exactly as tall as the text.
+            IntSliderRow(
+                label = str("secondScreen.layout.tileHeight"),
+                value = com.armsx2.SecondScreenLayout.tileHeight(),
+                min = 0,
+                max = 160,
+                onChange = {
+                    com.armsx2.SecondScreenLayout.setTileHeight(it)
+                    com.armsx2.SecondScreen.rebuild()
+                },
+            )
+            val resetLayout = {
+                com.armsx2.SecondScreenLayout.reset()
+                com.armsx2.SecondScreen.rebuild()
+            }
+            OutlinedButton(
+                onClick = resetLayout,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .controllerFocusable(
+                        "secondScreen.layout.reset",
+                        RoundedCornerShape(11.dp),
+                        onConfirm = resetLayout,
+                    ),
+            ) { Text(str("secondScreen.layout.reset")) }
+        }
+
+        // Companion-app access to the recently-played list, over the RecentGamesContentProvider.
+        // Off by default and deliberately so: the provider is exported without a permission (it
+        // has to be, for a third-party companion to reach it), so while this is on, any app on
+        // the device can read the list — including the file URIs, which carry your folder layout.
+        run {
+            val shareKey = com.armsx2.data.library.RecentGamesContentProvider.KEY_SHARE_ENABLED
+            val shareRecent = remember {
+                mutableStateOf(
+                    com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(shareKey, false),
+                )
+            }
+            ToggleRow(
+                label = str("app.shareRecentGames"),
+                value = shareRecent.value,
+                description = str("app.shareRecentGames.desc"),
+            ) { on ->
+                shareRecent.value = on
+                // commit(), not apply(): the reader is a DIFFERENT process that can be queried
+                // the moment this returns, and apply() only guarantees the in-memory value.
+                runCatching {
+                    com.armsx2.runtime.MainActivityRuntime.prefs.edit()
+                        .putBoolean(shareKey, on).commit()
+                }
+            }
         }
 
         ToggleRow(

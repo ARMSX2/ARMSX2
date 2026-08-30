@@ -1375,70 +1375,58 @@ TEST(EeRecFpu, DivSAfterAddSReadsLiveOperands)
 	h.ExpectFpr(4, FloatBits(5.0f));
 }
 
-// ---- FpuMulHack (Tales of Destiny Remake gamefix) --------------------------
-// JIT-only: the interpreter MUL_S has no hack, so a hack-hit legitimately
-// diverges from interp — assert GetFprBitsJit() under RunJitNoDiff(). The hack
-// patches exactly 0.25 * (π) (0x3e800000 * 0x40490fdb) to 0x3f490fda. The
-// shared emitFpuMul helper wires it into all of MUL/MULA/MADD/MSUB/MADDA/MSUBA.
-
-TEST(EeRecFpu, MulSFpuMulHackPatchesMagicProduct)
+// ---- The FpuMulHack pair (Tales of Destiny Remake gamefix) -----------------
+// Upstream's FpuMulHack patches one product, 0.25 * (pi), from the
+// correctly-rounded 0x3F490FDB to 0x3F490FDA. Measured on SCPH-90000
+// (captures/fpmul/): 0x3E800000 * 0x40490FDB returns 0x3F490FDA, and the same
+// two words reversed return 0x3F490FDB. fs = 2^-2 makes the product zero-tailed
+// and ft fires the Booth predicate, so this is one sample of the multiplier's
+// own deficit, and the gamefix's compare against two fixed constants is why it
+// did not fire reversed.
+//
+// Both orders on every engine: what replaces the gamefix has to reproduce the
+// asymmetry as well as the value. The single-precision tier carries no cut of
+// the law, so modes 1 and 2 are pinned at the IEEE product.
+TEST(EeRecFpu, MulHackPairIsTheMultiplierDeficitFromModeThree)
 {
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.EnableFpuMulHack();
-	h.SetFprBits(0, 0x3e800000u);
-	h.SetFprBits(1, 0x40490fdbu);
-	h.LoadProgram({ee::MUL_S(2, 0, 1)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x3f490fdau);
-}
-
-TEST(EeRecFpu, MulSFpuMulHackOffStillReachesTheConsoleValueOnInterp)
-{
-	// This test used to assert the opposite -- that with the gamefix off the
-	// "ordinary" product comes out, and that JIT and interp agree on it. Its
-	// premise was that the IEEE product is the console's. It is not.
-	//
-	// Measured on SCPH-90000 (captures/fpmul/): mul.s of 0x3E800000 by
-	// 0x40490FDB returns 0x3F490FDA, and the same two words in the reverse
-	// operand order return 0x3F490FDB. FpuMulHack is a one-point sample of the
-	// multiplier's own one-ULP deficit, not a game kludge -- which is why it
-	// compares fs and ft against their own constants and so does not fire
-	// reversed, exactly as the console behaves.
-	//
-	// The interpreter models the deficit itself (eeMulRound in FPU.cpp), so it
-	// lands on the console value with the gamefix off. The single-precision fast
-	// path does not, so the two legitimately diverge here and this cannot be a
-	// Run() diff -- and RunJitNoDiff() never runs the interpreter at all, so
-	// each engine needs its own harness.
-	EeRecTestHarness hi;
-	hi.EnableCop1();
-	hi.SetFprBits(0, 0x3e800000u);
-	hi.SetFprBits(1, 0x40490fdbu);
-	hi.LoadProgram({ee::MUL_S(2, 0, 1)});
-	hi.RunInterpOnly();
-	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x3f490fdau) << "interp should reach silicon unaided";
-
-	// Reversed: the console returns the un-decremented product, because the
-	// predicate reads ft alone. This is the half that pins it as an operand
-	// order effect rather than a constant fudge.
-	EeRecTestHarness hr;
-	hr.EnableCop1();
-	hr.SetFprBits(0, 0x40490fdbu);
-	hr.SetFprBits(1, 0x3e800000u);
-	hr.LoadProgram({ee::MUL_S(2, 0, 1)});
-	hr.RunInterpOnly();
-	EXPECT_EQ(hr.GetFprBitsInterp(2), 0x3f490fdbu) << "reversed operands: no deficit";
-
-	// The fast path, gamefix off, still produces the IEEE product. Recorded so
-	// the divergence is pinned rather than discovered later as a surprise.
-	EeRecTestHarness hj;
-	hj.EnableCop1();
-	hj.SetFprBits(0, 0x3e800000u);
-	hj.SetFprBits(1, 0x40490fdbu);
-	hj.LoadProgram({ee::MUL_S(2, 0, 1)});
-	hj.RunJitNoDiff();
-	EXPECT_EQ(hj.GetFprBitsJit(2), 0x3f490fdbu);
+	struct Leg { u32 fs, ft, want, want_fast; const char* what; };
+	static const Leg legs[] = {
+		{0x3e800000u, 0x40490fdbu, 0x3f490fdau, 0x3f490fdbu, "0.25 * pi"},
+		{0x40490fdbu, 0x3e800000u, 0x3f490fdbu, 0x3f490fdbu, "reversed: predicate off"},
+	};
+	auto run = [](const Leg& l, int mode, bool interp) {
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else if (mode >= 3)
+			h.EnableFpuFullMode();
+		else if (mode >= 2)
+			h.EnableFpuExtraOverflow();
+		h.SetFprBits(0, l.fs);
+		h.SetFprBits(1, l.ft);
+		h.LoadProgram({ee::MUL_S(2, 0, 1)});
+		if (interp)
+		{
+			h.RunInterpOnly();
+			return h.GetFprBitsInterp(2);
+		}
+		h.RunJitNoDiff();
+		return h.GetFprBitsJit(2);
+	};
+	for (const Leg& l : legs)
+	{
+		SCOPED_TRACE(l.what);
+		EXPECT_EQ(run(l, 1, true), l.want) << "interp";
+		EXPECT_EQ(run(l, 1, false), l.want_fast) << "eeClampMode 1, the fast path";
+		EXPECT_EQ(run(l, 2, false), l.want_fast) << "eeClampMode 2, still the fast path";
+		EXPECT_EQ(run(l, 3, false), l.want) << "eeClampMode 3";
+		EXPECT_EQ(run(l, 4, false), l.want) << "eeClampMode 4";
+	}
+	// Liveness: the two orders have to disagree, or neither the asymmetry nor
+	// the fast path's gap is being tested.
+	ASSERT_NE(legs[0].want, legs[1].want);
+	ASSERT_NE(legs[0].want, legs[0].want_fast);
 }
 
 TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
@@ -1519,6 +1507,12 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 	// 2^15 and kept reading ft passes the first group and fails the next two;
 	// the old zero-tail form fails the first two and passes the last two. The
 	// corpus contains no row in any of them.
+	//
+	// Mode 4 guards for this band and calls the same eeMulOneUlpLow as the
+	// interpreter, so the two answer it alike. Mode 3's predicate is the Booth
+	// term on a zero tail and every row here has a non-zero one, so it returns
+	// the correctly-rounded product, read off mode 1 rather than hand-derived.
+	// This band is what the array call buys over mode 3.
 	struct Row { u32 fs, ft, want; };
 	static const Row rows[] = {
 		// One ULP low with a non-zero tail: the old ft-only form said "exact"
@@ -1541,26 +1535,55 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 		{0x3F800001u, 0x3F808000u, 0x3F808001u}, // tail 0x8000
 		{0x3F800002u, 0x3F804002u, 0x3F804004u}, // tail 0x8004
 	};
-	for (const Row& r : rows)
-	{
+	// One leg per scope: a harness restores the clamp mode in its destructor,
+	// so a mode-4 harness still alive carries mode 4 into the next leg.
+	auto run = [](const Row& r, int mode, bool interp) {
 		EeRecTestHarness h;
 		h.EnableCop1();
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else if (mode >= 3)
+			h.EnableFpuFullMode();
 		h.SetFprBits(0, r.fs);
 		h.SetFprBits(1, r.ft);
 		h.LoadProgram({ee::MUL_S(2, 0, 1)});
-		h.RunInterpOnly();
-		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
-			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+		if (interp)
+		{
+			h.RunInterpOnly();
+			return h.GetFprBitsInterp(2);
+		}
+		h.RunJitNoDiff();
+		return h.GetFprBitsJit(2);
+	};
+
+	int band_rows = 0;
+	for (const Row& r : rows)
+	{
+		SCOPED_TRACE(::testing::Message() << "mul.s fs=" << std::hex << r.fs
+										  << " ft=" << r.ft);
+		EXPECT_EQ(run(r, 1, true), r.want) << "interp";
+		EXPECT_EQ(run(r, 4, false), r.want) << "eeClampMode 4";
+		const u32 rounded = run(r, 1, false);
+		EXPECT_EQ(run(r, 3, false), rounded)
+			<< "eeClampMode 3 cannot reach this band";
+		if (r.want != rounded)
+			++band_rows;
 	}
+	// Liveness: six rows the array call moves, the first two groups. The third
+	// group is inside the gate and the array calls it exact; the fourth has a
+	// tail that absorbs the borrow.
+	EXPECT_EQ(band_rows, 6)
+		<< "the table stopped covering the band the array call exists for";
 }
 
-TEST(EeRecFpu, MaddSFpuMulHackAppliesToProduct)
+TEST(EeRecFpu, MaddSReachesTheMulHackProductFromModeThree)
 {
-	// MADD routes its multiply through the same helper: ACC=0 + hack(Fs*Ft) ->
-	// the patched product. Proves the family-wide wiring, not just MUL_S.
+	// MADD's multiply stage is a separate emit site from MUL's, so the pair
+	// above is checked through it too: ACC = +0 leaves MADD landing on the
+	// product alone.
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.EnableFpuMulHack();
+	h.EnableFpuFullMode();
 	h.SetAccBits(0x00000000u); // +0
 	h.SetFprBits(0, 0x3e800000u);
 	h.SetFprBits(1, 0x40490fdbu);

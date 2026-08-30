@@ -79,6 +79,51 @@ VuTestHarness::VuTestHarness(int vu_index)
 VuTestHarness::~VuTestHarness()
 {
 	gif_test_hooks::g_path1_sink = nullptr;
+	if (clamp_mode_changed_)
+	{
+		auto& rec = EmuConfig.Cpu.Recompiler;
+		if (vu_index_ == 0)
+		{
+			rec.vu0Overflow = prev_overflow_;
+			rec.vu0ExtraOverflow = prev_extra_overflow_;
+			rec.vu0SignOverflow = prev_sign_overflow_;
+			rec.vu0ExactMode = prev_exact_mode_;
+		}
+		else
+		{
+			rec.vu1Overflow = prev_overflow_;
+			rec.vu1ExtraOverflow = prev_extra_overflow_;
+			rec.vu1SignOverflow = prev_sign_overflow_;
+			rec.vu1ExactMode = prev_exact_mode_;
+		}
+	}
+}
+
+void VuTestHarness::SetVuClampMode(int mode)
+{
+	auto& rec = EmuConfig.Cpu.Recompiler;
+	if (!clamp_mode_changed_)
+	{
+		prev_overflow_ = (vu_index_ == 0) ? rec.vu0Overflow : rec.vu1Overflow;
+		prev_extra_overflow_ = (vu_index_ == 0) ? rec.vu0ExtraOverflow : rec.vu1ExtraOverflow;
+		prev_sign_overflow_ = (vu_index_ == 0) ? rec.vu0SignOverflow : rec.vu1SignOverflow;
+		prev_exact_mode_ = (vu_index_ == 0) ? rec.vu0ExactMode : rec.vu1ExactMode;
+		clamp_mode_changed_ = true;
+	}
+	if (vu_index_ == 0)
+	{
+		rec.vu0Overflow = (mode >= 1);
+		rec.vu0ExtraOverflow = (mode >= 2);
+		rec.vu0SignOverflow = (mode >= 3);
+		rec.vu0ExactMode = (mode >= 4);
+	}
+	else
+	{
+		rec.vu1Overflow = (mode >= 1);
+		rec.vu1ExtraOverflow = (mode >= 2);
+		rec.vu1SignOverflow = (mode >= 3);
+		rec.vu1ExactMode = (mode >= 4);
+	}
 }
 
 void VuTestHarness::SetVf(u32 reg_idx, float x, float y, float z, float w)
@@ -253,6 +298,28 @@ void VuTestHarness::SeedEntryState(bool reset_block_cache)
 		RecompilerTestEnvironment::ResetVuBlockCache(vu_index_);
 }
 
+void VuTestHarness::ResumeUntilTerminated()
+{
+	resume_until_terminated_ = true;
+}
+
+void VuTestHarness::ExecuteEngine(BaseVUmicroCPU* cpu)
+{
+	cpu->Execute(kCycleBudget);
+	if (!resume_until_terminated_)
+		return;
+
+	int resumes = 0;
+	while (!HasTerminated() && resumes < kMaxResumes)
+	{
+		cpu->Execute(kCycleBudget);
+		++resumes;
+	}
+	EXPECT_TRUE(HasTerminated())
+		<< "VU" << vu_index_ << " was still running after " << kMaxResumes
+		<< " re-entries of " << kCycleBudget << " cycles";
+}
+
 void VuTestHarness::RunInterpFromSeeded()
 {
 	// Match production's REC_VU1 ↔ CpuVU1 invariant (the CpuVU1 = EnableVU1 ?
@@ -268,7 +335,7 @@ void VuTestHarness::RunInterpFromSeeded()
 	// and the loop terminates correctly.
 	const bool saved = EmuConfig.Cpu.Recompiler.EnableVU1;
 	EmuConfig.Cpu.Recompiler.EnableVU1 = false;
-	InterpCpu(vu_index_)->Execute(kCycleBudget);
+	ExecuteEngine(InterpCpu(vu_index_));
 	EmuConfig.Cpu.Recompiler.EnableVU1 = saved;
 }
 
@@ -278,7 +345,7 @@ void VuTestHarness::RunJitFromSeeded()
 	// mVU.cycles is the budget and the per-block cycle test exits to
 	// the dispatcher when it exhausts. No new entry point on the microVU
 	// side is required for E-bit-terminated programs.
-	JitCpu(vu_index_)->Execute(kCycleBudget);
+	ExecuteEngine(JitCpu(vu_index_));
 }
 
 void VuTestHarness::RunNoDiff()
@@ -287,6 +354,16 @@ void VuTestHarness::RunNoDiff()
 }
 
 void VuTestHarness::Run()
+{
+	RunDiffing(nullptr);
+}
+
+void VuTestHarness::RunRequiringDivergence(const char* why)
+{
+	RunDiffing(why);
+}
+
+void VuTestHarness::RunDiffing(const char* require_why)
 {
 	RunBothPasses();
 	if (::testing::Test::HasFatalFailure())
@@ -301,6 +378,14 @@ void VuTestHarness::Run()
 	// VuDiffMode docstring).
 	const auto diffs = DiffVu(jit_snapshot_, interp_snapshot_,
 		diff_mode_, ignored_vi_);
+	if (require_why)
+	{
+		EXPECT_FALSE(diffs.empty())
+			<< require_why
+			<< "\nThe recorded divergence is gone. Call Run() and let the plain "
+			   "diff stand.";
+		return;
+	}
 	if (!diffs.empty())
 	{
 		std::ostringstream ss;

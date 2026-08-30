@@ -114,6 +114,7 @@ constexpr u32 VMUL_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask
 constexpr u32 VMAX_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x2B); }
 constexpr u32 VSUB_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x2C); }
 constexpr u32 VMSUB_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x2D); }
+constexpr u32 VOPMSUB_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x2E); }
 constexpr u32 VMINI_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x2F); }
 
 // "i" broadcasts: read VI[REG_I] (the I-bit immediate) as a scalar and
@@ -447,7 +448,11 @@ constexpr u32 VSUBA_U  (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyz
 constexpr u32 VMADDA_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0A, 1); }
 constexpr u32 VMSUBA_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0B, 1); }
 constexpr u32 VMULA_U  (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0A, 2); }
-constexpr u32 VOPMULA_U(u32 fs, u32 ft)                { return UpperFD(mask::xyz, ft, fs, 0x0B, 2); }
+constexpr u32 VOPMULA_U(u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x0B, 2); }
+
+// The Q/I multiplies into ACC: sub-op 0x07, table 0 for Q and 2 for I.
+constexpr u32 VMULAq_U (u32 mask_xyzw, u32 fs) { return UpperFD(mask_xyzw, 0, fs, 0x07, 0); }
+constexpr u32 VMULAi_U (u32 mask_xyzw, u32 fs) { return UpperFD(mask_xyzw, 0, fs, 0x07, 2); }
 
 // Broadcast ACC-target FMACs (ACC ← op(FS, FT.bc)). bc selects the FD table
 // (fd_table_sel: 0=x 1=y 2=z 3=w); sub-op index within every table per

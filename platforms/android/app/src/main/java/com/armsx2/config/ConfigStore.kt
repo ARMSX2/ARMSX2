@@ -436,11 +436,39 @@ object ConfigStore {
      *
      * Games, BIOS, saves, memory cards, save states, covers and texture packs are untouched.
      */
-    fun purgeAllSettingsFiles() {
+    /**
+     * Delete the on-disk settings layers so a factory reset is not silently undone on next launch.
+     *
+     * ★ EVERY root, not just the active one.
+     *
+     * A device with a configured system directory has two — the SD/user root that
+     * currentInitDataRoot resolves to, and app-private storage — and gamesettings/ exists under
+     * BOTH on a device that has been moved between them. Purging only the active root left the
+     * other one intact, and its per-game INIs are re-read on the next launch: reported as
+     * 'reset app doesn't work as intended, some per-game settings still applied like affinity and
+     * GS multithreading' (takanome9104, confirmed by lugnel). Deleting a settings file that is
+     * already gone is free, so casting wide costs nothing and closes the hole.
+     *
+     * This is the same single-root assumption that hid save states from the library's long-press
+     * menu; it is worth checking for wherever this codebase resolves 'the' data directory.
+     */
+    fun purgeAllSettingsFiles(context: android.content.Context? = null) {
         runCatching { backupFile()?.delete() }
-        val root = MainActivityRuntime.currentInitDataRoot()?.takeIf { it.isNotBlank() } ?: return
-        runCatching { File(root, "PCSX2-Android.ini").delete() }
-        runCatching { File(root, "gamesettings").deleteRecursively() }
+
+        val roots = buildList {
+            MainActivityRuntime.currentInitDataRoot()?.takeIf { it.isNotBlank() }?.let(::add)
+            if (context != null) {
+                runCatching { MainActivityRuntime.assetCopyRoot(context) }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }?.let(::add)
+                runCatching { context.getExternalFilesDir(null)?.absolutePath }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinct()
+
+        for (root in roots) {
+            runCatching { File(root, "PCSX2-Android.ini").delete() }
+            runCatching { File(root, "gamesettings").deleteRecursively() }
+        }
     }
 
     /** Minimal INI reader: "[Section]" + "Key = Value" -> map keyed "Section/Key". Comments

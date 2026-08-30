@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +49,9 @@ import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.common.StatusChip
 import com.armsx2.ui.settings.controllerFocusable
 import com.armsx2.ui.theme.Success
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: MemoryCardViewModel = viewModel()) {
@@ -54,6 +59,13 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
     val serial = game?.serial?.takeIf { it.isNotBlank() }
     var createDialog by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<MemoryCardItem?>(null) }
+    var backupsTarget by remember { mutableStateOf<MemoryCardItem?>(null) }
+    var restoreTarget by remember {
+        mutableStateOf<Pair<MemoryCardItem, com.armsx2.MemoryCardBackup.Snapshot>?>(null)
+    }
+    // Bumped after a snapshot or a restore so the open list re-reads from disk.
+    var backupsRevision by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::import) }
     // Folder memory cards are directories, which OpenDocument() cannot return — without
     // this there was no way to import one at all, and zipping it produced a "card.zip.ps2"
@@ -107,6 +119,7 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
                         onClearSlot1 = serial?.let { s -> { viewModel.clearGameCard(s, 1) } },
                         onClearSlot2 = serial?.let { s -> { viewModel.clearGameCard(s, 2) } },
                         onExport = item.takeIf { !it.file.isDirectory }?.let { card -> { exportPending = card; exporter.launch(card.file.name) } },
+                        onBackups = { backupsTarget = item },
                         onDelete = { deleteTarget = item },
                     )
                 }
@@ -132,6 +145,126 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
             onDismiss = { deleteTarget = null },
         )
     }
+    backupsTarget?.let { item ->
+        // Re-read on every revision bump so a snapshot or restore taken from inside this panel is
+        // reflected without closing it.
+        val snapshots = remember(item.file.absolutePath, backupsRevision) { viewModel.backups(item.file) }
+        com.armsx2.ui.common.PadModal(
+            key = "memcard-backups",
+            onDismiss = { backupsTarget = null },
+            initialFocusId = "memcard.backups.close",
+        ) {
+            Surface(
+                modifier = Modifier.padding(24.dp).widthIn(max = 460.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Text(
+                        str("memcard.backups.title").format(item.file.name),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (snapshots.isEmpty()) {
+                        Text(
+                            str("memcard.backups.empty"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LazyColumn(
+                            Modifier.heightIn(max = 320.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(snapshots, key = { it.file.absolutePath }) { snap ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(snap.takenAtText, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            listOfNotNull(humanSize(snap.sizeBytes), snap.game)
+                                                .joinToString(" · "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    if (snap.healthy) {
+                                        StatusChip(str("memcard.backups.good"), Success)
+                                    } else {
+                                        // Kept and shown rather than hidden: the pre-restore copy
+                                        // of a broken card is exactly what someone may need back.
+                                        Text(
+                                            str("memcard.backups.suspect"),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    val restore = { restoreTarget = item to snap }
+                                    TextButton(
+                                        onClick = restore,
+                                        modifier = Modifier.controllerFocusable(
+                                            "memcard.backups.${snap.file.name}", onConfirm = restore),
+                                    ) { Text(str("memcard.backups.restore")) }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // The switch lives here rather than in a settings tab because this panel is
+                    // where someone goes when they are thinking about backups at all.
+                    var autoBackups by remember { mutableStateOf(com.armsx2.MemoryCardBackup.isEnabled()) }
+                    com.armsx2.ui.common.SettingSwitchRow(
+                        title = str("memcard.backups.auto"),
+                        description = str("memcard.backups.auto.help"),
+                        checked = autoBackups,
+                        onCheckedChange = { autoBackups = it; com.armsx2.MemoryCardBackup.setEnabled(it) },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        val backupNow = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { viewModel.backupNow(item.file) }
+                                backupsRevision++
+                            }
+                            Unit
+                        }
+                        TextButton(
+                            onClick = backupNow,
+                            modifier = Modifier.controllerFocusable("memcard.backups.now", onConfirm = backupNow),
+                        ) { Text(str("memcard.backups.now")) }
+                        Spacer(Modifier.width(8.dp))
+                        val close = { backupsTarget = null }
+                        TextButton(
+                            onClick = close,
+                            modifier = Modifier.controllerFocusable("memcard.backups.close", onConfirm = close),
+                        ) { Text(str("action.ok")) }
+                    }
+                }
+            }
+        }
+    }
+    restoreTarget?.let { (item, snap) ->
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("memcard.backups.restore.confirm"),
+            message = str("memcard.backups.restore.body").format(item.file.name, snap.takenAtText),
+            confirmLabel = str("memcard.backups.restore"),
+            destructive = true,
+            idPrefix = "memcard-restore",
+            onConfirm = {
+                restoreTarget = null
+                scope.launch {
+                    withContext(Dispatchers.IO) { viewModel.restoreBackup(snap) }
+                    backupsRevision++
+                }
+            },
+            onDismiss = { restoreTarget = null },
+        )
+    }
     (state.error ?: state.message)?.let { message ->
         com.armsx2.ui.common.NotifyOverlay(
             title = if (state.error != null) str("memcard.title") else str("action.ok"),
@@ -153,6 +286,7 @@ private fun MemoryCardRow(
     onClearSlot1: (() -> Unit)?,
     onClearSlot2: (() -> Unit)?,
     onExport: (() -> Unit)?,
+    onBackups: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Surface(
@@ -194,6 +328,7 @@ private fun MemoryCardRow(
                     TextButton(onClick = onExport, modifier = Modifier.controllerFocusable("memcard.${item.file.name}.export", onConfirm = onExport)) { Text(str("action.export")) }
                 }
                 Spacer(Modifier.width(7.dp))
+                TextButton(onClick = onBackups, modifier = Modifier.controllerFocusable("memcard.${item.file.name}.backups", onConfirm = onBackups)) { Text(str("memcard.backups")) }
                 TextButton(onClick = onDelete, enabled = !item.slot1 && !item.slot2, modifier = Modifier.controllerFocusable("memcard.${item.file.name}.delete", onConfirm = onDelete)) { Text(str("action.delete")) }
             }
         }

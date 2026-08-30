@@ -67,6 +67,11 @@ public:
 		bool tilegpu_bindless_targets : 1; ///< ...and dynamic indexing of a sampled-image array, which the rule-2 tap needs to bind targets.
 		bool tilegpu_self_read : 1; ///< ...and rasterization-order colour access, which the in-pass destination read needs.
 		bool tilegpu_dual_source : 1; ///< ...and dual-source blending, which the As blend factor rides as an index-1 output.
+		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
+		/// renderer. They are requested anyway whenever the driver really has them, because the
+		/// alternative is recreating the device when frame generation is switched on.
+		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
+		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
 	};
 
 	// Global state accessors
@@ -590,6 +595,7 @@ public:
 		CONVERT_PUSH_CONSTANTS_SIZE = 96,
 
 		NUM_CAS_PIPELINES = 2,
+		NUM_FSR1_PIPELINES = 2, // [0] RCAS, [1] EASU
 	};
 	enum TFX_DESCRIPTOR_SET : u32
 	{
@@ -978,6 +984,13 @@ private:
 	VkDescriptorSetLayout m_cas_ds_layout = VK_NULL_HANDLE;
 	VkPipelineLayout m_cas_pipeline_layout = VK_NULL_HANDLE;
 	std::array<VkPipeline, NUM_CAS_PIPELINES> m_cas_pipelines = {};
+	VkDescriptorSetLayout m_fsr1_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_fsr1_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, NUM_FSR1_PIPELINES> m_fsr1_pipelines = {};
+	VkDescriptorSetLayout m_sgsr_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_sgsr_pipeline_layout = VK_NULL_HANDLE;
+	/// One per variant: plain and edge-direction. Still one pass each.
+	std::array<VkPipeline, NUM_SGSR_PIPELINES> m_sgsr_pipelines = {};
 	VkPipeline m_imgui_pipeline = VK_NULL_HANDLE;
 
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
@@ -1010,10 +1023,20 @@ private:
 	/// has to be re-fed regardless of whether the store changed.
 	u64 m_shader_param_generation = 0;
 	void DestroyShaderChain();
+	void ReleaseShaderChain() override { DestroyShaderChain(); }
 	void ApplyShaderChainParams();
 
 	bool DoCAS(
 		GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants) final;
+
+	bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
+	bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
+	bool DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_SGSR_CONSTANTS>& constants,
+		bool edge_direction) final;
+	/// Shared body of the two above: same layout, same push range, different pipeline and
+	/// different input-side synchronisation.
+	bool DoFSR1Pass(
+		GSTexture* sTex, GSTexture* dTex, bool easu_pass, const std::array<u32, NUM_FSR1_CONSTANTS>& constants);
 
 	VkSampler GetSampler(GSHWDrawConfig::SamplerSelector ss);
 	void ClearSamplerCache() final;
@@ -1041,6 +1064,8 @@ private:
 	bool CompileMergePipelines();
 	bool CompilePostProcessingPipelines();
 	bool CompileCASPipelines();
+	bool CompileFSR1Pipelines();
+	bool CompileSGSRPipeline();
 
 	bool CompileImGuiPipeline();
 	void RenderImGui();

@@ -68,14 +68,20 @@ void SeedOverflowOperands(EeRecTestHarness& h, u32 fs, u32 ft)
 	h.IgnoreVu0Vi(REG_MAC_FLAG);
 }
 
+// The JIT's value only. The interpreter answers 0x7FFFFFFF here -- the VU's
+// largest value is one binade above FLT_MAX -- so the two no longer agree on
+// what an overflowing product comes back as; kWhyClampCeiling below records
+// that, and these tests are about where the clamp constants live rather than
+// about which ceiling is right.
 void ExpectClampedToFltMax(EeRecTestHarness& h, u32 vf)
 {
 	for (char l : {'x', 'y', 'z', 'w'})
-	{
 		EXPECT_EQ(h.GetVu0VfBitsJit(vf, l), kFltMaxBits) << "lane " << l;
-		EXPECT_EQ(h.GetVu0VfBitsJit(vf, l), h.GetVu0VfBitsInterp(vf, l)) << "lane " << l;
-	}
 }
+
+constexpr const char* kWhyClampCeiling =
+	"the emitters clamp an overflowing FMAC to FLT_MAX; the interpreter "
+	"saturates at 0x7FFFFFFF, which is what the console returns";
 
 // Micro at PC 0: 32 NOP pairs (outlasts the 16-cycle sync kickstart window)
 // then E-bit. Idempotent — pure NOPs, so JIT/interp replay divergence is
@@ -111,6 +117,7 @@ TEST(EeVu0Cop2ClampResidency, EstablishOncePerStraightLineChain)
 		VMUL_C2(mask_xyzw, 5, 1, 2),
 	});
 	const u32 before = g_cop2ClampConstEstablishCount;
+	h.RequireVu0Divergence(kWhyClampCeiling);
 	h.Run();
 	EXPECT_EQ(g_cop2ClampConstEstablishCount - before, 1u)
 		<< "3 clamping FMACs in one block must establish q25/q26 exactly once";
@@ -140,6 +147,7 @@ TEST(EeVu0Cop2ClampResidency, ReestablishAfterCCallSeam)
 		VMUL_C2(mask_xyzw, 4, 1, 2),
 	});
 	const u32 before = g_cop2ClampConstEstablishCount;
+	h.RequireVu0Divergence(kWhyClampCeiling);
 	h.Run();
 	EXPECT_EQ(g_cop2ClampConstEstablishCount - before, 2u)
 		<< "the C-call seam must invalidate; the post-seam FMAC re-establishes";
@@ -169,6 +177,7 @@ TEST(EeVu0Cop2ClampResidency, ClampCorrectAfterTakenSyncSeam)
 		VMUL_C2(mask_xyzw, 4, 1, 2), // sync seam TAKEN (drains micro), then clamp
 		VMUL_C2(mask_xyzw, 5, 1, 2), // rides the post-seam establishment
 	});
+	h.RequireVu0Divergence(kWhyClampCeiling);
 	h.Run();
 	ExpectClampedToFltMax(h, 3);
 	ExpectClampedToFltMax(h, 4);
@@ -198,6 +207,7 @@ TEST(EeVu0Cop2ClampResidency, ForkArmsShareEstablishment)
 			VMUL_C2(mask_xyzw, 5, 1, 2),  // fall-through arm
 			VMUL_C2(mask_xyzw, 6, 1, 2),  // branch target
 		});
+		h.RequireVu0Divergence(kWhyClampCeiling);
 		h.Run();
 		ExpectClampedToFltMax(h, 3);
 		ExpectClampedToFltMax(h, 4);
@@ -252,22 +262,20 @@ TEST(EeVu0Cop2ClampResidency, SyncStubsReDupClampConsts)
 }
 
 // q25/q26 are reserved out of the EE NEON allocator pool (like q8/q9, and like
-// q10 = NEON_RESERVED_FPU_MULMASK); the rest of the pool is untouched.
+// q11 = NEON_RESERVED_EEFPU_UNSCALE); the rest of the pool is untouched.
 //
-// q10 moved from the usable list to the reserved list when the mode-3
-// multiplier-defect mask was parked there. That move is the whole reservation:
-// before it, _getFreeArm64NEON would hand q10 out as an ordinary FPR home, and
-// the first allocation to land there would have overwritten the mask and turned
-// the predicate off for every later multiply in the block. Note also what this
-// test always said about q16-q24 — they are allocator registers, not the free
-// scratch space a `grep` for literal `v16`..`v24` tokens suggests (the COP2 VF
-// residency cache takes q16-q20 through computed indices, and evicts allocator
-// residency to do it).
+// Without the reservation _getFreeArm64NEON would hand the register out as an
+// ordinary FPR home, and the first allocation to land there would overwrite the
+// constant for the rest of the block. Note also
+// what this test always said about q16-q24 — they are allocator registers, not
+// the free scratch space a `grep` for literal `v16`..`v24` tokens suggests (the
+// COP2 VF residency cache takes q16-q20 through computed indices, and evicts
+// allocator residency to do it).
 TEST(EeVu0Cop2ClampResidency, EeAllocatorReservesClampRegs)
 {
-	for (int reserved : {8, 9, 10, 25, 26})
+	for (int reserved : {8, 9, 11, 25, 26})
 		EXPECT_TRUE(eeTestNeonRegIsReserved(reserved)) << "q" << reserved;
-	for (int usable : {0, 7, 11, 15, 16, 24, 27, 28})
+	for (int usable : {0, 7, 10, 12, 15, 16, 24, 27, 28})
 		EXPECT_FALSE(eeTestNeonRegIsReserved(usable)) << "q" << usable;
 }
 
@@ -302,6 +310,7 @@ TEST(EeVu0Cop2ClampResidency, ValidityRidesThroughMvuReuseWrapper)
 		VMUL_C2(mask_xyzw, 4, 1, 2),
 	});
 	const u32 before = g_cop2ClampConstEstablishCount;
+	h.RequireVu0Divergence(kWhyClampCeiling);
 	h.Run();
 	EXPECT_EQ(g_cop2ClampConstEstablishCount - before, 1u)
 		<< "the mVU-reuse wrapper must not invalidate (its pool excludes q25/q26)";

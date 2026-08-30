@@ -151,7 +151,7 @@ void D2_DBGP(const u8 *inbuffer, u8 *outbuffer, char *message, char *eepc, char 
 						break;
 					case  3:break;//performance counter 32x3
 					case  4:break;//hw debug reg 32x8
-					case  5:memcpy(eregs[i].value, &fpuRegs.fpr[eregs[i].number], 4);break;
+					case  5:{const u32 w=fpuRegs.fpr[eregs[i].number].Word();memcpy(eregs[i].value, &w, 4);}break;
 					case  6:memcpy(eregs[i].value, &fpuRegs.fprc[eregs[i].number], 4);break;
 					case  7:memcpy(eregs[i].value, &VU0.VF[eregs[i].number], 16);break;
 					case  8:memcpy(eregs[i].value, &VU0.VI[eregs[i].number], 4);break;
@@ -201,7 +201,7 @@ void D2_DBGP(const u8 *inbuffer, u8 *outbuffer, char *message, char *eepc, char 
 						break;
 					case  3:break;//performance counter 32x3
 					case  4:break;//hw debug reg 32x8
-					case  5:memcpy(&fpuRegs.fpr[eregs[i].number], eregs[i].value, 4);break;
+					case  5:{u32 w;memcpy(&w, eregs[i].value, 4);fpuRegs.fpr[eregs[i].number].SetWord(w);}break;
 					case  6:memcpy(&fpuRegs.fprc[eregs[i].number], eregs[i].value, 4);break;
 					case  7:memcpy(&VU0.VF[eregs[i].number], eregs[i].value, 16);break;
 					case  8:memcpy(&VU0.VI[eregs[i].number], eregs[i].value, 4);break;

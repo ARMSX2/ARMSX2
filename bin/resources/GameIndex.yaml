@@ -2470,8 +2470,8 @@ SCAJ-20181:
 SCAJ-20182:
   name: "Tales of Destiny"
   region: "NTSC-Unk"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCAJ-20183:
   name: "ワイルドアームズ ザ フィフスヴァンガード"
   name-sort: "わいるどあーむず ざ ふぃふすゔぁんがーど"
@@ -2517,8 +2517,8 @@ SCAJ-20192:
 SCAJ-20193:
   name: "Tales of Destiny [Director's Cut] [Premium Box]"
   region: "NTSC-C-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCAJ-20194:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
@@ -7967,8 +7967,8 @@ SCKA-20100:
   name: "테일즈 오브 데스티니" # Undumped on ReDump as of 2025-08-28
   name-en: "Tales of Destiny"
   region: "NTSC-K"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCKA-20101:
   name: "성검전설 4"
   name-en: "Seiken Densetsu 4"
@@ -8069,8 +8069,8 @@ SCKA-20119:
   name: "테일즈 오브 데스티니 디렉터즈컷 [Premium Box]" # Undumped on ReDump as of 2025-08-28
   name-en: "Tales of Destiny - Director's Cut [Premium Box]"
   region: "NTSC-K"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCKA-20120:
   name: "라쳇 & 클랭크 - 공구들고 바캉스" # Undumped on ReDump as of 2025-08-28
   name-en: "Ratchet & Clank - Vacation with Tools" # Ratchet & Clank - Size Matters
@@ -10919,8 +10919,8 @@ SCPS-56016:
     autoFlush: 1 # Corrects shadows (Currently still broken even with this).
     getSkipCount: "GSC_DTGames"
 SCPS-72001:
-  name: "GRAN TURISMO3 A-spec [MEGA HITS!]"
-  name-sort: "ぐらんつーりすも3 A-spec [MEGA HITS!]"
+  name: "GRAN TURISMO 3 A-spec [MEGA HITS!]"
+  name-sort: "ぐらんつーりすも 3 A-spec [MEGA HITS!]"
   name-en: "Gran Turismo 3 - A-Spec [MEGA HITS!]"
   region: "NTSC-J"
   gsHWFixes: *gran-turismo-3-gs-fixes
@@ -25677,6 +25677,7 @@ SLES-54138:
     preloadFrameData: 1 # Fixes menu graphics.
     autoFlush: 1 # Fixes motion blur.
     minimumBlendingLevel: 2 # Improves post effects.
+    limit24BitDepth: 2 # Fixes icon brightness.
 SLES-54139:
   name: "Earache - Extreme Metal Racing"
   region: "PAL-E"
@@ -26333,6 +26334,7 @@ SLES-54335:
     preloadFrameData: 1 # Fixes menu graphics.
     autoFlush: 1 # Fixes motion blur.
     minimumBlendingLevel: 2 # Improves post effects.
+    limit24BitDepth: 2 # Fixes icon brightness.
 SLES-54336:
   name: "Lumines Plus"
   region: "PAL-M5"
@@ -38014,7 +38016,7 @@ SLPM-62185:
   name-en: "Sangokushi VII"
   region: "NTSC-J"
 SLPM-62186:
-  name: "ゲットバッカーズ奪還屋 奪われた無限城"
+  name: "GetBackers奪還屋 奪われた無限城"
   name-sort: "げっとばっかーずだっかんや うばわれたむげんじょう"
   name-en: "Get Backers - The Stolen City of Infinite"
   region: "NTSC-J"
@@ -38960,7 +38962,7 @@ SLPM-62375:
   name-en: "Simple 2000 Series Vol. 36 - The Musume Ikusei Simulation"
   region: "NTSC-J"
 SLPM-62376:
-  name: "GetBackers奪還屋 奪還だョ！全員集合！ [KONAMI The BEST]"
+  name: "GetBackers奪還屋 奪還だヨ！全員集合！！ [KONAMI The BEST]"
   name-sort: "げっとばっかーずだっかんや だっかんだよ！ぜんいんしゅうごう！！ [KONAMI The BEST]"
   name-en: "Get Backers - All Members Gather [KONAMI The BEST]"
   region: "NTSC-J"
@@ -41320,7 +41322,7 @@ SLPM-65014:
     - GoemonTlbHack
 SLPM-65015:
   name: "決戦II"
-  name-sort: "けっせんII"
+  name-sort: "けっせん2"
   name-en: "Kessen II"
   region: "NTSC-J"
   patches:
@@ -41413,13 +41415,13 @@ SLPM-65029:
   name-en: "Anime Eikaiwa - Tondemo Nezumi Daikatsuyaku"
   region: "NTSC-J"
 SLPM-65030:
-  name: "決戦&決戦2 スーパーバリューセット [決戦ディスク]"
+  name: "決戦&決戦II スーパーバリューセット [決戦ディスク]"
   name-sort: "けっせん&けっせん2 すーぱーばりゅーせっと [けっせんでぃすく]"
   name-en: "Kesse & Kessen2 Super Value Set [Kessen Disc]"
   region: "NTSC-J"
 SLPM-65031:
   name: "決戦&決戦II スーパーバリューセット [決戦Ⅱディスク]"
-  name-sort: "けっせん&けっせんII すーぱーばりゅーせっと [けっせん2でぃすく]"
+  name-sort: "けっせん&けっせん2 すーぱーばりゅーせっと [けっせん2でぃすく]"
   name-en: "Kesse & Kessen II Super Value Set [Kessen II Disc]"
   region: "NTSC-J"
   patches:
@@ -42403,7 +42405,7 @@ SLPM-65207:
   region: "NTSC-J"
 SLPM-65208:
   name: "ポップンミュージック 7"
-  name-sort: "ぽっぷんみゅーじっく 7"
+  name-sort: "ぽっぷんみゅーじっく07"
   name-en: "Pop'n music 7"
   region: "NTSC-J"
 SLPM-65209:
@@ -43106,7 +43108,7 @@ SLPM-65315:
   compat: 5
 SLPM-65316:
   name: "ポップンミュージック 8"
-  name-sort: "ぽっぷんみゅーじっく 8"
+  name-sort: "ぽっぷんみゅーじっく08"
   name-en: "Pop'n music 8"
   region: "NTSC-J"
 SLPM-65317:
@@ -44223,7 +44225,7 @@ SLPM-65507:
     nativeScaling: 2 # Fixes post-processing intensity.
 SLPM-65508:
   name: "ポップンミュージック 9"
-  name-sort: "ぽっぷんみゅーじっく 9"
+  name-sort: "ぽっぷんみゅーじっく09"
   name-en: "Pop'n music 9"
   region: "NTSC-J"
 SLPM-65509:
@@ -45722,13 +45724,13 @@ SLPM-65768:
   name-en: "Beatmania IIDX 8th Style"
   region: "NTSC-J"
 SLPM-65769:
-  name: "pop'n music コントローラセット"
+  name: "ポップンミュージック10 コントローラセット"
   name-sort: "ぽっぷんみゅーじっく [こんとろーらせっと]"
   name-en: "Pop'n music 10 [Controller Set]"
   region: "NTSC-J"
 SLPM-65770:
-  name: "ポップンミュージック 10"
-  name-sort: "ぽっぷんみゅーじっく 10"
+  name: "ポップンミュージック10"
+  name-sort: "ぽっぷんみゅーじっく10"
   name-en: "Pop'n music 10"
   region: "NTSC-J"
 SLPM-65771:
@@ -47440,8 +47442,8 @@ SLPM-66064:
   name-en: "Tough Dark Fight"
   region: "NTSC-J"
 SLPM-66065:
-  name: "ポップンミュージック 11"
-  name-sort: "ぽっぷんみゅーじっく 11"
+  name: "ポップンミュージック11"
+  name-sort: "ぽっぷんみゅーじっく11"
   name-en: "Pop'n music 11"
   region: "NTSC-J"
 SLPM-66066:
@@ -48217,12 +48219,12 @@ SLPM-66177:
     nativeScaling: 2 # Fixes post effects.
 SLPM-66178:
   name: "ポップンミュージック 7 [KONAMI The BEST]"
-  name-sort: "ぽっぷんみゅーじっく 7 [KONAMI The BEST]"
+  name-sort: "ぽっぷんみゅーじっく07 [KONAMI The BEST]"
   name-en: "Pop'n music 7 [KONAMI The BEST]"
   region: "NTSC-J"
 SLPM-66179:
   name: "ポップンミュージック 8 [KONAMI The BEST]"
-  name-sort: "ぽっぷんみゅーじっく 8 [KONAMI The BEST]"
+  name-sort: "ぽっぷんみゅーじっく08 [KONAMI The BEST]"
   name-en: "Pop'n music 8 [KONAMI The BEST]"
   region: "NTSC-J"
 SLPM-66180:
@@ -48412,12 +48414,12 @@ SLPM-66208:
   region: "NTSC-J"
 SLPM-66209:
   name: "ポップンミュージック 9 [KONAMI The BEST]"
-  name-sort: "ぽっぷんみゅーじっく 9 [KONAMI The BEST]"
+  name-sort: "ぽっぷんみゅーじっく09 [KONAMI The BEST]"
   name-en: "Pop'n music 9 [KONAMI The BEST]"
   region: "NTSC-J"
 SLPM-66210:
-  name: "ポップンミュージック 10 [KONAMI The BEST]"
-  name-sort: "ぽっぷんみゅーじっく 10 [KONAMI The BEST]"
+  name: "ポップンミュージック10 [KONAMI The BEST]"
+  name-sort: "ぽっぷんみゅーじっく10 [KONAMI The BEST]"
   name-en: "Pop'n music 10 [KONAMI The BEST]"
   region: "NTSC-J"
 SLPM-66211:
@@ -49120,8 +49122,8 @@ SLPM-66313:
   region: "NTSC-J"
   compat: 5
 SLPM-66314:
-  name: "ポップンミュージック 12 いろは"
-  name-sort: "ぽっぷんみゅーじっく 12 いろは"
+  name: "ポップンミュージック12 いろは"
+  name-sort: "ぽっぷんみゅーじっく12 いろは"
   name-en: "Pop'n music 12 Iroha"
   region: "NTSC-J"
   compat: 5
@@ -50505,8 +50507,8 @@ SLPM-66532:
   name-en: "Mizu no Senritsu 2 - Hi no Kioku"
   region: "NTSC-J"
 SLPM-66533:
-  name: "ポップンミュージック 13 カーニバル"
-  name-sort: "ぽっぷんみゅーじっく 13 かーにばる"
+  name: "ポップンミュージック13 カーニバル"
+  name-sort: "ぽっぷんみゅーじっく13 かーにばる"
   name-en: "Pop'n music 13 Carnival"
   region: "NTSC-J"
 SLPM-66534:
@@ -51826,8 +51828,8 @@ SLPM-66741:
   name-en: "Sentou Kokka Kai - Legend [Standard Edition]"
   region: "NTSC-J"
 SLPM-66742:
-  name: "ポップンミュージック 14 FEVER！"
-  name-sort: "ぽっぷんみゅーじっく 14 FEVER！"
+  name: "ポップンミュージック14 FEVER！"
+  name-sort: "ぽっぷんみゅーじっく14 FEVER！"
   name-en: "Pop'n music 14 FEVER!"
   region: "NTSC-J"
   compat: 5
@@ -58184,7 +58186,7 @@ SLPS-25138:
   region: "NTSC-J"
 SLPS-25139:
   name: "Baldur's Gate - DARK ALLIANCE - [限定版]"
-  name-sort: "ばるだーずげーと だーくあらいあんす [げんていばん]"
+  name-sort: "ばるだーずげーと だーくあらいあんす 1[げんていばん]"
   name-en: "Baldur's Gate - Dark Alliance [Limited Edition]"
   region: "NTSC-J"
   compat: 5
@@ -58195,7 +58197,7 @@ SLPS-25139:
     gpuPaletteConversion: 1 # Reduces hashcache size and improves performance.
 SLPS-25140:
   name: "Baldur's Gate - DARK ALLIANCE - [通常版]"
-  name-sort: "ばるだーずげーと だーくあらいあんす [つうじょうばん]"
+  name-sort: "ばるだーずげーと だーくあらいあんす 1[つうじょうばん]"
   name-en: "Baldur's Gate - Dark Alliance [Standard Edition]"
   region: "NTSC-J"
   gsHWFixes:
@@ -59061,7 +59063,7 @@ SLPS-25290:
     halfPixelOffset: 5 # Fixes alignment of shuffles and post-processing.
 SLPS-25291:
   name: "Baldur's Gate - DARK ALLIANCE - [PCCW Japan The BEST]"
-  name-sort: "ばるだーずげーと だーくあらいあんす [PCCW Japan The BEST]"
+  name-sort: "ばるだーずげーと だーくあらいあんす 1[PCCW Japan The BEST]"
   name-en: "Baldur's Gate - Dark Alliance [PCCW The Best]"
   region: "NTSC-J"
   compat: 5
@@ -61771,8 +61773,8 @@ SLPS-25715:
   name-sort: "ているず おぶ ですてぃにー"
   name-en: "Tales of Destiny"
   region: "NTSC-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SLPS-25716:
   name: "デジモンセイバーズ アナザーミッション"
   name-sort: "でじもんせいばーず あなざーみっしょん"
@@ -62558,8 +62560,8 @@ SLPS-25841:
   name-sort: "ているず おぶ ですてぃにー でぃれくたーずかっと [ぷれみあむBOX]"
   name-en: "Tales of Destiny [Director's Cut] [Premium Box]"
   region: "NTSC-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
   memcardFilters: # Allows import of non-DC Tales of Destiny data.
     - "SLPS-25841"
     - "SLPS-25842"
@@ -62569,9 +62571,9 @@ SLPS-25842:
   name-sort: "ているず おぶ ですてぃにー でぃれくたーずかっと"
   name-en: "Tales of Destiny [Director's Cut]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
   compat: 5
-  gameFixes:
-    - FpuMulHack
   memcardFilters:
     - "SLPS-25841"
     - "SLPS-25842"
@@ -65493,6 +65495,8 @@ SLUS-20250:
   name: "Stuntman"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    vu0ClampMode: 4 # Fixes VU0 macro adds landing a ULP short of the console's adder.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -71871,6 +71875,7 @@ SLUS-21344:
     preloadFrameData: 1 # Fixes menu graphics.
     autoFlush: 1 # Fixes motion blur.
     minimumBlendingLevel: 2 # Improves post effects.
+    limit24BitDepth: 2 # Fixes icon brightness.
 SLUS-21345:
   name: "Grandia III [Disc 2 of 2]"
   region: "NTSC-U"
@@ -75433,6 +75438,7 @@ SLUS-28061:
     preloadFrameData: 1 # Fixes menu graphics.
     autoFlush: 1 # Fixes motion blur.
     minimumBlendingLevel: 2 # Improves post effects.
+    limit24BitDepth: 2 # Fixes icon brightness.
 SLUS-28062:
   name: "Dance Factory [Trade Demo]"
   region: "NTSC-U"
@@ -76219,6 +76225,7 @@ SLUS-29188:
     preloadFrameData: 1 # Fixes menu graphics.
     autoFlush: 1 # Fixes motion blur.
     minimumBlendingLevel: 2 # Improves post effects.
+    limit24BitDepth: 2 # Fixes icon brightness.
 SLUS-29189:
   name: "FIFA World Cup - Germany 2006 [Demo]"
   region: "NTSC-U"

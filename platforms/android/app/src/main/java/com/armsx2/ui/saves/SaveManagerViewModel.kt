@@ -28,6 +28,13 @@ data class SaveManagerUiState(
     val loading: Boolean = true,
     val message: String? = null,
     val error: String? = null,
+    /** True only while a VM is actually running.
+     *
+     * Distinct from [SaveStateItem.canUseWithActiveGame], which means "this state belongs to the
+     * game in context" — that is now true when the screen was opened from the library's
+     * long-press menu, where nothing is booted. Saving needs a running emulator to snapshot; the
+     * two conditions were conflated and Save appeared with nothing behind it. */
+    val hasActiveVm: Boolean = false,
 )
 
 class SaveManagerViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,10 +46,14 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         state.value = previous.copy(loading = true)
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { readSaves() }
+            val vmRunning = withContext(Dispatchers.IO) {
+                runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
+            }
             state.value = state.value.copy(
                 gameTitle = result.gameTitle,
                 saves = result.saves,
                 loading = false,
+                hasActiveVm = vmRunning,
             )
         }
     }
@@ -147,7 +158,14 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
     )
 
     private fun readSaves(): ReadResult {
-        val active = MainActivityRuntime.currentGame.value
+        // ★ contextGame is the fallback, not an afterthought.
+        //
+        // Reached from the library's long-press menu nothing is booted, so currentGame is null —
+        // and with it null every entry came back canUseWithActiveGame = false, which greys out
+        // Load. The list also stopped filtering, so it showed every game's saves at once.
+        // contextGame is set for exactly this case and load() already honours it; the read here
+        // simply had not caught up.
+        val active = MainActivityRuntime.currentGame.value ?: MainActivityRuntime.contextGame.value
         val activeSerial = active?.serial.orEmpty()
         val activePaths = (0 until SLOT_COUNT).mapNotNull { slot ->
             runCatching { NativeApp.getGamePathSlot(slot) }

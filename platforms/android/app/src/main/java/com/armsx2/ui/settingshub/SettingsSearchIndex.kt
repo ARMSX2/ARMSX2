@@ -12,7 +12,7 @@ import com.armsx2.navigation.SettingsCategory
  */
 internal data class SettingsSearchEntry(val text: String, val isI18nKey: Boolean, val category: SettingsCategory)
 
-internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
+private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("app.bootLogo", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.search", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.recents", true, SettingsCategory.General),
@@ -34,7 +34,6 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.fix.eeTiming", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.instantDma", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.blitFps", true, SettingsCategory.Advanced),
-    SettingsSearchEntry("perf.fix.fpuMultiply", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.ophFlag", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.gifFifo", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.dmaBusy", true, SettingsCategory.Advanced),
@@ -101,6 +100,7 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.contrast.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.saturation.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.gamma.label", true, SettingsCategory.Graphics),
+    SettingsSearchEntry("renderer.fsr1.sharpness.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.cas.sharpness.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.displayMode.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.fmvAspect.label", true, SettingsCategory.Graphics),
@@ -111,6 +111,9 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.textureFiltering.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.texturePreloading.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.displayFilter.label", true, SettingsCategory.Graphics),
+    // The FSR1 switch became the Display-upscaler picker when SGSR joined it; searching for the
+    // old key would land on a row that no longer exists.
+    SettingsSearchEntry("renderer.upscaler.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.cas.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.blendingAccuracy.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.trilinear.label", true, SettingsCategory.Graphics),
@@ -194,6 +197,8 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("overlay.toggle.fastForwardPopups", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.osdSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.osdColor.label", true, SettingsCategory.OnScreen),
+    SettingsSearchEntry("overlay.osdPosition.label", true, SettingsCategory.OnScreen),
+    SettingsSearchEntry("overlay.quickMenuSide.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiFontSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("fixes.antiBlur.label", true, SettingsCategory.Advanced),
@@ -262,3 +267,13 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("patches.noInterlacing.label", true, SettingsCategory.Patches),
     SettingsSearchEntry("patches.hostFs.label", true, SettingsCategory.Patches),
 )
+
+/**
+ * Everything searchable, plus whatever the flavour adds.
+ *
+ * The frame-generation rows come from a flavoured list rather than sitting in the one above. In
+ * the play build they would otherwise still be indexed while the section they point at was
+ * compiled out — searching would offer a result that renders its own key as its title and leads
+ * nowhere.
+ */
+internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = BASE_SEARCH_INDEX + LSFG_SEARCH_INDEX

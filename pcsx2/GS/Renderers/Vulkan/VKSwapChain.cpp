@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "GS/GS.h" // GSConfig, for the frame-generation FIFO override below
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
@@ -513,6 +514,26 @@ bool VKSwapChain::SelectPresentMode(VkSurfaceKHR surface, GSVSyncMode* vsync_mod
 		return it != present_modes.end();
 	};
 
+	// ★ Frame generation requires FIFO, and silently produces nothing without it.
+	//
+	// MAILBOX keeps only the most recent image queued for a given refresh: presenting an
+	// interpolated frame and then the real frame replaces the interpolated one, so it is
+	// generated, costs its full GPU time, and is never displayed. IMMEDIATE is no better — it
+	// tears the newest image in, discarding the same way. The failure is completely silent,
+	// because nothing errors: the interpolator succeeds, the present succeeds, and the display
+	// rate simply equals the real frame rate. Observed exactly that on an Adreno 740 with vsync
+	// off, which resolves to MAILBOX here — LSFG reported "active" and both counters read 59.
+	//
+	// Gated on the setting rather than GSLsfg::IsAvailable(), which cannot answer yet: the DLL
+	// path only reaches GSLsfg from EndPresent, which has not run when the swapchain is built.
+	// The user asking for frame generation is the intent worth honouring here.
+	if (GSConfig.LsfgEnabled && *vsync_mode != GSVSyncMode::FIFO)
+	{
+		WARNING_LOG("Frame generation is enabled; forcing FIFO presentation so interpolated "
+					"frames are actually displayed.");
+		*vsync_mode = GSVSyncMode::FIFO;
+	}
+
 	switch (*vsync_mode)
 	{
 		case GSVSyncMode::Disabled:
@@ -605,10 +626,40 @@ bool VKSwapChain::CreateSwapChain()
 	const bool use_triple =
 		(m_window_info.type == WindowInfo::Type::VulkanDirect) ||
 		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR);
-	const u32 desired_image_count = use_triple ? 3 : 2;
+	u32 desired_image_count = use_triple ? 3 : 2;
+
+	// ★ Frame generation needs images it can hold ON TOP of the one being presented.
+	//
+	// Vulkan lets an application hold at most (imageCount - minImageCount + 1) acquired images at
+	// once. The presented frame already occupies that one, so with the driver's minImageCount
+	// equal to the image count there is NO room to acquire a destination for an interpolated
+	// frame — acquiring anyway is undefined behaviour, and on Turnip it faults inside the driver
+	// rather than returning an error. Observed exactly that on an Adreno 740: min=3, images=3,
+	// and the first frame that actually generated took the process down.
+	//
+	// So ask for one extra image per interpolated frame, measured FROM minImageCount rather than
+	// from the base count. Adding to the base is not enough and is a trap worth spelling out: on
+	// FIFO the base is 2, so base + 1 = 3, which then clamps up to minImageCount = 3 and lands on
+	// exactly the count we already had. The budget would be zero, generation would never run, and
+	// nothing anywhere would report an error — the feature would just quietly do nothing.
+	//
+	// This is still only a REQUEST. The clamp below and the driver get the final say, which is
+	// why the budget is recomputed from the real numbers afterwards instead of being assumed.
+	if (GSConfig.LsfgEnabled)
+	{
+		const u32 extra = std::max<u32>(GSConfig.LsfgMultiplier, 2u) - 1u;
+		desired_image_count = std::max(desired_image_count, surface_capabilities.minImageCount + extra);
+	}
+
 	u32 image_count = std::clamp<u32>(
 		desired_image_count, surface_capabilities.minImageCount,
 		(surface_capabilities.maxImageCount == 0) ? std::numeric_limits<u32>::max() : surface_capabilities.maxImageCount);
+
+	// How many images may be acquired BEYOND the one being presented. Zero is normal and simply
+	// means frame generation cannot run on this surface.
+	m_extra_acquirable_images = (image_count > surface_capabilities.minImageCount)
+									? (image_count - surface_capabilities.minImageCount)
+									: 0u;
 	DEV_LOG("Creating a swap chain with {} images in present mode {}", image_count, PresentModeToString(m_present_mode));
 
 	// Determine the dimensions of the swap chain. Values of -1 indicate the size we specify here

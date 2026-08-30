@@ -63,9 +63,17 @@ struct EeSnapshot
 {
 	cpuRegisters regs{};
 	fpuRegisters fprs{};
+	// g_eeFprSlotsRelocated as it stood when `fprs` was copied: a snapshot taken
+	// under one clamp mode and read under another decodes to garbage without it.
+	// Read the FPRs through FprWord / AccWord, never fprs.fpr[i].Word().
+	bool fprs_relocated = false;
 	std::vector<MemWindow> mem_windows;
 
+	u32 FprWord(u32 reg_idx) const;
+	u32 AccWord() const;
+
 	static EeSnapshot Capture(const std::vector<MemWindow>& windows_to_capture);
+	// Puts the file back, converting the FPRs if the format has moved since.
 	void Restore() const;
 	static void ZeroGlobals();
 };

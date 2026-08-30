@@ -80,6 +80,11 @@ void RunConsoleCase(const VuBranchCase& c, VuTestHarness& h)
 	h.SetVfBits(vu::vf::vf8, c.vf_seed[8], c.vf_seed[9], c.vf_seed[10], c.vf_seed[11]);
 	h.SetVfBits(vu::vf::vf9, c.vf_seed[12], c.vf_seed[13], c.vf_seed[14], c.vf_seed[15]);
 
+	// vbprobe.c spun on `cfc2 $vi29` until VU0's running bit cleared and only
+	// then read anything back, so every expected value here is a terminated
+	// program's. Without this the M-bit cases would be scored on the pause.
+	h.ResumeUntilTerminated();
+
 	std::vector<vu::VuOp> prog;
 	for (u32 k = 0; k + 1 < c.n_words; k += 2)
 		prog.push_back(vu::VuOp{c.prog[k], c.prog[k + 1]});
@@ -129,10 +134,12 @@ TEST(VuBranchConsole, TBitConditionalBranchTakenParksAtTarget)
 	EXPECT_EQ(h.GetViJit(vu::vi::vi3), 0u) << "fall-through must not run";
 	EXPECT_EQ(h.GetViJit(vu::vi::vi4), 0u) << "the target's body must not run";
 
-	// The interpreter agrees on the resume address here but never runs the
-	// delay slot -- DISABLED_InterpreterRunsDelaySlotBeforeTraceStop.
 	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc)
 		<< "interpreter: taken-branch resume address matches the console";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u)
+		<< "interpreter: the delay slot runs before the stop";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi3), 0u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi4), 0u);
 }
 
 TEST(VuBranchConsole, TBitConditionalBranchNotTakenParksAtFallthrough)
@@ -150,6 +157,40 @@ TEST(VuBranchConsole, TBitConditionalBranchNotTakenParksAtFallthrough)
 	EXPECT_EQ(h.GetViJit(vu::vi::vi2), 0x222u);
 	EXPECT_EQ(h.GetViJit(vu::vi::vi3), 0u);
 	EXPECT_EQ(h.GetViJit(vu::vi::vi4), 0u);
+
+	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc)
+		<< "interpreter: a not-taken branch under a T-bit stop must resume at "
+		   "the fall-through side, as the console does";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi3), 0u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi4), 0u);
+}
+
+// The M bit does not end a microprogram. It breaks the EE out of its VU0 run
+// loop so a COP2 read can be interlocked against a chosen point; VPU_STAT's
+// running bit stays set and the next entry carries on. Both console rows ran
+// through to the E-bit terminator at pair 4, taking the branch or not, and
+// the M pair's own delay slot ran like any other.
+TEST(VuBranchConsole, MBitPausesWithoutEndingTheMicroprogram)
+{
+	for (const char* tag : {"Q1_MCOND_TAKEN", "Q1_MCOND_NOTTAKEN"})
+	{
+		const VuBranchCase& c = CaseByTag(tag);
+		ASSERT_EQ(c.tpc, 6u) << tag << ": capture invariant, it reached the end";
+		ASSERT_EQ(ConsoleVi(c, 2), 0x222u) << tag << ": and ran the delay slot";
+
+		VuTestHarness h(0);
+		RunConsoleCase(c, h);
+		for (u32 n = 1; n <= 8; ++n)
+		{
+			EXPECT_EQ(h.GetViJit(n), c.vi[n - 1])
+				<< tag << " vi" << n << " (arm64 recompiler)";
+			EXPECT_EQ(h.GetViInterp(n), c.vi[n - 1])
+				<< tag << " vi" << n << " (interpreter)";
+		}
+		EXPECT_EQ(h.GetViJit(REG_TPC), c.tpc) << tag << " (arm64 recompiler)";
+		EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc) << tag << " (interpreter)";
+	}
 }
 
 // The console's T-latch is VPU_STAT bit 2 and the D-latch is bit 1; the
@@ -194,6 +235,8 @@ TEST(VuBranchConsole, TBitOnPlainPairStopsWithoutRunningTheNextPair)
 		   "the following pair";
 	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0u)
 		<< "interpreter: same";
+	EXPECT_EQ(h.GetViJit(REG_TPC), c.tpc);
+	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc);
 }
 
 TEST(VuBranchConsole, TBitOnUnconditionalBranchAndJumpParkAtTheTarget)
@@ -491,8 +534,9 @@ TEST(VuBranchConsole, DISABLED_ScoreEnginesAgainstHardware)
 
 // Both engines leave the MAC flags standing across MAX/MINI. Asserted
 // engine-internally -- MUL+MAX and MUL+MINI must land on the same MAC, MUL+ADD
-// on a different one -- because the console's own MAC word carries the
-// underflow-bit divergence pinned below.
+// on a different one -- because the recompiler only reaches the console's own
+// MAC word for these rows at vuClampMode 3, which the test below scores, and
+// this runs at the harness default.
 TEST(VuBranchConsole, MaxMiniAreFlagTransparentInBothEngines)
 {
 	auto MacAfter = [](const char* tag, bool jit) {
@@ -516,33 +560,39 @@ TEST(VuBranchConsole, MaxMiniAreFlagTransparentInBothEngines)
 	}
 }
 
-// TRIPWIRE -- known divergence, not a MAX/MINI defect.
+// The multiply's MAC underflow bit, across the clamp modes.
 //
-// Console MAC after `mul.xyzw` of the smallest normal by 0.5 is 0x0F0F: Z and
-// U on all four lanes. Both engines report 0x000F -- Z but no U.
+// Console MAC after `mul.xyzw` of the smallest normal by 0.5 is 0x0F0F: Z and U
+// on all four lanes, a result that underflowed out of two normal operands.
 //
-// The cause is upstream of MAX/MINI entirely. VU_MAC_UPDATE (VUflags.cpp)
-// tests `if (f == 0)` first and that branch clears the U bit
-// (`& ~(0x1100<<shift)`); only the later `case 0:` denormal branch sets Z|U.
-// A product that has already been flushed to zero before the flag logic sees
-// it therefore can never raise underflow. Hardware raises U for a result that
-// underflowed out of normal operands regardless of the flush.
+// This was a tripwire against both engines and neither owes it now. The
+// interpreter reproduces the console at every mode, off the exact FMAC result
+// rather than off a VU_MAC_UPDATE that tested `f == 0` first and cleared U on
+// that branch -- a product flushed to zero before the flag logic saw it could
+// never raise underflow there. The recompiler reproduces it at vuClampMode 4,
+// where a multiply's U is read from the operands before the flush can hide it;
+// below that the model is deliberately absent and Z comes away alone.
 //
-// Same defect class as VuStickyMicroConsoleConformance's
-// DISABLED_AllMicroStatusMatchesConsole, which this gives a minimal witness
-// for: one multiply, four lanes, all four underflowing from normal operands.
-// Enable when the FMAC flag path stops folding flush-to-zero into "the result
-// was exactly zero".
-TEST(VuBranchConsole, DISABLED_MacUnderflowBitMatchesConsole)
+// One multiply, four lanes, all four underflowing from normal operands, which
+// is the minimal witness for what VuStickyConsoleConformance's status rows
+// cover in bulk.
+TEST(VuBranchConsole, MacUnderflowBitMatchesConsole)
 {
+	constexpr u32 kZeroWithoutUnderflow = 0x0000000Fu;
 	for (const char* tag : {"Q6_MACMAX", "Q6_MACMINI"})
 	{
 		const VuBranchCase& c = CaseByTag(tag);
 		ASSERT_EQ(c.mac, 0x00000F0Fu) << tag << ": capture invariant";
-		VuTestHarness h(0);
-		RunConsoleCase(c, h);
-		EXPECT_EQ(h.GetViJit(REG_MAC_FLAG), c.mac) << tag << " [arm64]";
-		EXPECT_EQ(h.GetViInterp(REG_MAC_FLAG), c.mac) << tag << " [interp]";
+		for (int mode = 1; mode <= 4; ++mode)
+		{
+			VuTestHarness h(0);
+			h.SetVuClampMode(mode);
+			RunConsoleCase(c, h);
+			SCOPED_TRACE(::testing::Message() << tag << " vuClampMode " << mode);
+			EXPECT_EQ(h.GetViInterp(REG_MAC_FLAG), c.mac) << "[interp]";
+			EXPECT_EQ(h.GetViJit(REG_MAC_FLAG), mode == 4 ? c.mac : kZeroWithoutUnderflow)
+				<< "[arm64]";
+		}
 	}
 }
 
@@ -565,19 +615,18 @@ TEST(VuBranchConsole, DISABLED_DBitStopMatchesConsole)
 	}
 }
 
-// TRIPWIRE -- the interpreter stops one pair early on a trace stop.
-//
-// _vu0Exec (VU0microInterp.cpp) latches ebit=1 on the branch pair itself, so
-// the delay slot never executes (console: vi2 = 0x222, it does) and on a
-// not-taken branch the resume PC rests at the delay slot, pair 1, where the
-// console says pair 2. The taken case agrees by coincidence: the epilogue's
-// `if (branch) TPC = branchpc` lands on the address the console picks.
-TEST(VuBranchConsole, DISABLED_InterpreterRunsDelaySlotBeforeTraceStop)
+// The D bit takes the same deferral as the T bit, over every branch form the
+// capture covers: conditional both ways, unconditional, and JR.  The arm64
+// recompiler compiles a branch and its delay slot as a unit and so gets this
+// for free; only the interpreter had to be told.
+TEST(VuBranchConsole, InterpreterRunsDelaySlotBeforeAStop)
 {
 	for (const char* tag : {"Q1_TCOND_TAKEN_STOP", "Q1_TCOND_NOTTAKEN_STOP",
-	                        "Q1_TUNCOND_STOP", "Q1_TJR_STOP"})
+	                        "Q1_TUNCOND_STOP", "Q1_TJR_STOP",
+	                        "Q1_DCOND_TAKEN_STOP", "Q1_DCOND_NOTTAKEN_STOP"})
 	{
 		const VuBranchCase& c = CaseByTag(tag);
+		ASSERT_EQ(ConsoleVi(c, 2), 0x222u) << tag << ": capture invariant";
 		VuTestHarness h(0);
 		RunConsoleCase(c, h);
 		EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u)

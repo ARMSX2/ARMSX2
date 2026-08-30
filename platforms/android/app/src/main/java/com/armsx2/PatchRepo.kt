@@ -2,6 +2,8 @@
 package com.armsx2
 
 import android.util.Log
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kr.co.iefriends.pcsx2.HttpClient
 import java.io.File
 
@@ -64,6 +66,50 @@ object PatchRepo {
             "https://api.github.com/repos/XiGuanChi/PCSX2-CheatsDB/git/trees/main?recursive=1",
         ),
     )
+    // ---- on-disk tree cache -------------------------------------------------------------
+    //
+    // ★ The repository trees are the whole cost of a search, and they were re-fetched from
+    // scratch on every cold start.
+    //
+    // Each is a GitHub `?recursive=1` listing — multi-megabyte JSON for repositories holding tens
+    // of thousands of pnach files — that has to be downloaded AND regex-scanned for paths. The
+    // in-memory caches below only survive while the process does, so the first search after every
+    // launch paid the full price. That is the "it takes minutes" half of the complaint, as
+    // distinct from the "it never stops" half.
+    //
+    // What is cached is the EXTRACTED PATH LIST, not the JSON: it is a fraction of the size and
+    // it skips the expensive regex on the way back in.
+    @Volatile private var diskCacheDir: File? = null
+
+    /// A week. These repositories gain files occasionally, and the cost of being stale is one
+    /// newly-added cheat not showing up — against re-downloading megabytes on every launch.
+    private const val TREE_CACHE_TTL_MS = 7L * 24 * 60 * 60 * 1000
+
+    /** Point the tree cache at a directory. Until this is called the caches are memory-only. */
+    fun setCacheDir(dir: File) {
+        diskCacheDir = runCatching { dir.apply { mkdirs() } }.getOrNull()
+    }
+
+    private fun treeCacheFile(url: String): File? {
+        val dir = diskCacheDir ?: return null
+        // Hash rather than sanitising: a URL makes an unwieldy filename and two repos can differ
+        // only in characters a filesystem would fold.
+        return File(dir, "tree-%08x.txt".format(url.hashCode()))
+    }
+
+    private fun readTreeCache(url: String): List<String>? {
+        val f = treeCacheFile(url)?.takeIf { it.isFile } ?: return null
+        if ((System.currentTimeMillis() - f.lastModified()) > TREE_CACHE_TTL_MS)
+            return null
+        return runCatching { f.readLines().filter { it.isNotBlank() } }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun writeTreeCache(url: String, paths: List<String>) {
+        val f = treeCacheFile(url) ?: return
+        runCatching { f.writeText(paths.joinToString("\n")) }
+            .onFailure { Log.w(TAG, "tree cache write failed: ${it.message}") }
+    }
+
     private val cheatTreeCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     private val CRC_RE = Regex("^[0-9A-Fa-f]{8}$")
     private val SERIAL_RE = Regex("^[A-Z]{4}-\\d{5}$")
@@ -104,7 +150,20 @@ object PatchRepo {
      *  offline patch DB (resources/patches.zip) — read FIRST so patches resolve even when
      *  the booted CRC isn't a DB filename or the network is rate-limited; the network below
      *  only supplements. Without it, the in-game manager showed cheats but no patches. */
-    fun fetchForGame(serial: String?, crc: String, bundledZip: File? = null): Result {
+    /**
+     * ★ SUSPEND, and it checks for cancellation between every network call.
+     *
+     * These were plain blocking functions. Kotlin cancellation is cooperative, so code that never
+     * suspends and never checks isActive cannot be stopped — cancelling the viewModelScope did
+     * nothing and the scan ran to completion regardless. Leaving the browser and going back to the
+     * game therefore left four repository trees still downloading and being regex-scanned behind
+     * the emulator, which is what users reported as sudden severe heating and a game that would no
+     * longer hold full speed (SNAKEATEROP, Helio G99).
+     *
+     * Every loop below now yields that ability back. It does not make the scan faster; it makes it
+     * STOP.
+     */
+    suspend fun fetchForGame(serial: String?, crc: String, bundledZip: File? = null): Result {
         val c = crc.trim().uppercase()
         if (!CRC_RE.matches(c))
             return Result("", emptyList(), "No game CRC yet — boot the game first.")
@@ -130,6 +189,7 @@ object PatchRepo {
             add(c)
         }
         for (name in patchCandidates) {
+            currentCoroutineContext().ensureActive()
             val text = get("$RAW_BASE/patches/$name.pnach") ?: continue
             val (gt, es) = parse(text, "patches")
             if (gametitle.isEmpty()) gametitle = gt
@@ -141,6 +201,7 @@ object PatchRepo {
         // Also merge improvement patches from the Gabominated compilation (No-Blur etc.),
         // skipping any whose name already came from the official DB.
         for (name in patchCandidates) {
+            currentCoroutineContext().ensureActive()
             val text = get("$GABO_BASE/$GABO_DIR/$name.pnach") ?: continue
             val (gt, es) = parse(text, "patches")
             if (gametitle.isEmpty()) gametitle = gt
@@ -170,7 +231,7 @@ object PatchRepo {
     /** Fetch + parse community cheats for a game across all sources. Matches
      *  each repo's tree by CRC (exact) first, then by serial as a fallback;
      *  dedupes entries by normalized name (earlier sources win). Null if nothing found. */
-    private fun fetchCheats(serial: String?, crc: String): Pair<String, List<Entry>>? {
+    private suspend fun fetchCheats(serial: String?, crc: String): Pair<String, List<Entry>>? {
         val c = crc.uppercase()
         val s = serial?.uppercase()
         val haveCrc = CRC_RE.matches(c)
@@ -180,6 +241,9 @@ object PatchRepo {
         val entries = mutableListOf<Entry>()
         val seenNames = HashSet<String>()
         for (src in CHEAT_SOURCES) {
+            // Between sources: four repositories, each a multi-megabyte tree. This is the check
+            // that matters most — it is where the bulk of the time goes.
+            currentCoroutineContext().ensureActive()
             val tree = cheatTree(src)
             if (tree.isEmpty()) continue
             var matches = if (haveCrc)
@@ -188,6 +252,7 @@ object PatchRepo {
             if (matches.isEmpty() && s != null)
                 matches = tree.filter { it.substringAfterLast('/').uppercase().startsWith("${s}_") }
             for (m in matches) {
+                currentCoroutineContext().ensureActive()
                 val text = get("${src.raw}/${m.replace(" ", "%20")}") ?: continue
                 val (gt, es) = parse(text, "cheats")
                 if (gametitle.isEmpty()) gametitle = gt
@@ -198,11 +263,17 @@ object PatchRepo {
     }
 
     /** Cached file listing for a cheat source. */
-    private fun cheatTree(src: CheatSource): List<String> {
+    private suspend fun cheatTree(src: CheatSource): List<String> {
         cheatTreeCache[src.raw]?.let { return it }
+        readTreeCache(src.tree)?.let { cheatTreeCache[src.raw] = it; return it }
+        currentCoroutineContext().ensureActive()
         val json = get(src.tree) ?: return emptyList()
+        currentCoroutineContext().ensureActive() // the regex below is the CPU-heavy part
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
-        if (paths.isNotEmpty()) cheatTreeCache[src.raw] = paths
+        if (paths.isNotEmpty()) {
+            cheatTreeCache[src.raw] = paths
+            writeTreeCache(src.tree, paths)
+        }
         return paths
     }
 
@@ -210,7 +281,7 @@ object PatchRepo {
      *  booted, where we have the serial but not the disc CRC. Looks the game up
      *  in the repo file tree to find its `<serial>_<crc>.pnach`; the CRC comes
      *  back in [Result.crc] so the caller can name the saved file correctly. */
-    fun fetchForSerial(serial: String?, bundledZip: File? = null): Result {
+    suspend fun fetchForSerial(serial: String?, bundledZip: File? = null): Result {
         val s = serial?.trim()?.uppercase()
         if (s.isNullOrBlank() || !SERIAL_RE.matches(s))
             return Result("", emptyList(), "This game has no serial to search the patch database with.")
@@ -319,18 +390,26 @@ object PatchRepo {
     /** File listing of the Gabominated patch fork, cached for the session. */
     private fun gaboTree(): List<String> {
         gaboTreeCache?.let { return it }
+        readTreeCache(GABO_TREE)?.let { gaboTreeCache = it; return it }
         val json = get(GABO_TREE) ?: return emptyList()
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
-        if (paths.isNotEmpty()) gaboTreeCache = paths
+        if (paths.isNotEmpty()) {
+            gaboTreeCache = paths
+            writeTreeCache(GABO_TREE, paths)
+        }
         return paths
     }
 
     /** File listing of the whole patch repo, cached for the session. */
     private fun repoTree(): List<String> {
         treeCache?.let { return it }
+        readTreeCache(TREE_URL)?.let { treeCache = it; return it }
         val json = get(TREE_URL) ?: return emptyList()
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
-        if (paths.isNotEmpty()) treeCache = paths
+        if (paths.isNotEmpty()) {
+            treeCache = paths
+            writeTreeCache(TREE_URL, paths)
+        }
         return paths
     }
 

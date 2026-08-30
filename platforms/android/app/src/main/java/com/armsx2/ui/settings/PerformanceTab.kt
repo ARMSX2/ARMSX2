@@ -244,16 +244,16 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // at a speed cost. Needs a recompiler reset, so restart the game.
             SegmentedRow(
                 label = str("perf.eeFpuClamping.label"),
-                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full")),
-                selectedIndex = s.eeClampMode.coerceIn(0, 3),
+                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"), str("perf.clamp.exact")),
+                selectedIndex = s.eeClampMode.coerceIn(0, 4),
                 description = str("perf.eeFpuClamping.description"),
                 onChange = { apply(s.copy(eeClampMode = it)) },
             )
             SettingsDivider()
             SegmentedRow(
                 label = str("perf.vuClamping.label"),
-                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign")),
-                selectedIndex = s.vuClampMode.coerceIn(0, 3),
+                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact")),
+                selectedIndex = s.vuClampMode.coerceIn(0, 4),
                 description = str("perf.vuClamping.description"),
                 onChange = { apply(s.copy(vuClampMode = it)) },
             )
@@ -343,6 +343,29 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 onChange = { apply(s.copy(frameSkip = it)) },
             )
         }
+        // Frame generation. Its own group above the speedhacks because it is not one: it
+        // changes what is PRESENTED, not what is emulated, and it is the only row here that
+        // depends on a file the user has to supply. Github flavour only — the section
+        // returns immediately when BuildConfig.LSFG is false.
+        SettingsDivider()
+        com.armsx2.ui.common.LsfgSection(
+            enabled = s.lsfgEnabled,
+            multiplier = s.lsfgMultiplier,
+            dllPath = s.lsfgDllPath,
+            performance = s.lsfgPerformance,
+            flowScale = s.lsfgFlowScale,
+            targetRate = s.lsfgTargetRate,
+        ) { on, mult, dll, perf, flow, target ->
+            apply(s.copy(
+                lsfgEnabled = on,
+                lsfgMultiplier = mult,
+                lsfgDllPath = dll,
+                lsfgPerformance = perf,
+                lsfgFlowScale = flow,
+                lsfgTargetRate = target,
+            ))
+        }
+
         SettingsDivider()
         CollapsibleSection(str("perf.advancedSpeedhacks.title")) {
             Spacer(Modifier.height(8.dp))

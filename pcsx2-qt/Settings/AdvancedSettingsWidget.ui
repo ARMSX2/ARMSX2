@@ -127,6 +127,11 @@
           <string>Full</string>
          </property>
         </item>
+        <item>
+         <property name="text">
+          <string>Exact</string>
+         </property>
+        </item>
        </widget>
       </item>
       <item row="3" column="0" colspan="2">
@@ -286,6 +291,11 @@
           <string>Extra + Preserve Sign</string>
          </property>
         </item>
+        <item>
+         <property name="text">
+          <string>Exact</string>
+         </property>
+        </item>
        </widget>
       </item>
       <item row="1" column="0">
@@ -362,6 +372,11 @@
         <item>
          <property name="text">
           <string>Extra + Preserve Sign</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Exact</string>
          </property>
         </item>
        </widget>

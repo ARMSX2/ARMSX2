@@ -77,6 +77,23 @@ echo "-- both cores in AAB (expect 4k AND 16k) --"
 n_cores=$(unzip -l "$OUTPUT_AAB" | grep -cE "base/lib/arm64-v8a/libemucore_(4k|16k)\.so$" || true)
 unzip -l "$OUTPUT_AAB" | grep -E "libemucore_(4k|16k)\.so" || { echo "FATAL cores missing" >&2; exit 1; }
 [[ "$n_cores" -eq 2 ]] || { echo "FATAL expected 2 cores, got $n_cores" >&2; exit 1; }
+echo "-- Discord Social SDK --"
+# Same trap as the sideload script: DISCORD_SDK_DIR is read from the environment and gated only
+# on include/discordpp.h, so an unset variable silently produces a build with no Discord. 2.6.6.8
+# shipped that way and it was caught only after publishing.
+if [[ -n "${DISCORD_SDK_DIR:-}" ]]; then
+	# Capture then match. Piping into `grep -q` under `set -o pipefail` is a false-failure
+	# generator: grep exits on the first match, SIGPIPEs unzip, and pipefail reports the whole
+	# pipeline as failed even though the library WAS found. That fired here on the first run.
+	discord_listing=$(unzip -l "$OUTPUT_AAB")
+	case "$discord_listing" in
+		*libdiscord_partner_sdk.so*) echo "  present" ;;
+		*) echo "FATAL DISCORD_SDK_DIR is set but libdiscord_partner_sdk.so is not in the bundle" >&2; exit 1 ;;
+	esac
+else
+	echo "  WARNING: DISCORD_SDK_DIR unset -- this bundle has NO Discord integration." >&2
+	echo "           Set it to the staged dir (include/ + arm64-v8a/ + .aar) before a release." >&2
+fi
 echo "-- package (must be $PKG) --"
 unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -oE "come\.nanodata\.armsx2" | head -1 \
 	|| { echo "FATAL wrong package" >&2; exit 1; }
@@ -88,6 +105,31 @@ echo "-- REQUEST_INSTALL_PACKAGES must be ABSENT (self-updating violates Play po
 if unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -q "REQUEST_INSTALL_PACKAGES"; then
 	echo "  !! FATAL: REQUEST_INSTALL_PACKAGES present in play AAB (in-app updater leaked into the Play build)" >&2; exit 1
 else echo "  absent OK"; fi
+echo "-- no frame-generation code in the core (github flavour only) --"
+# There is no separate libarmsx2_lsfg.so any more: frame generation is compiled into the core
+# itself, gated on ARMSX2_ENABLE_LSFG which the play flavour sets to OFF. So the check moved
+# from "is that file packaged" — which can no longer be true either way, and would therefore
+# pass forever without proving anything — to looking inside the core for a symbol only the
+# ported implementation defines.
+if unzip -p "$OUTPUT_AAB" 'base/lib/arm64-v8a/libemucore_*.so' 2>/dev/null | LC_ALL=C grep -aq "LsfgChain"; then
+	echo "  !! FATAL: frame-generation code present in the play core (ARMSX2_ENABLE_LSFG leaked ON)" >&2; exit 1
+else echo "  absent OK"; fi
+echo "-- no frame-generation text at all (the Play build has no LSFG whatsoever) --"
+# The strongest of these checks, and the one someone looking would actually notice. Every
+# user-visible frame-generation string lives in a flavoured table (I18nLsfg.kt) that is empty in
+# the play source set, so none of it should reach the dex. It DID until now: the section was
+# behind a BuildConfig.LSFG check in a shared file, which stopped the rows being drawn and did
+# nothing whatever about the strings — including the ones naming a third-party product — sitting
+# in the Play dex in plain text for anyone who searched.
+#
+# grep -a, not `strings`: Xcode's strings(1) tries to parse a .dex as a Mach-O fat binary, fails,
+# and prints nothing, which reads exactly like a pass.
+for forbidden in Lossless perf.lsfg; do
+	if unzip -p "$OUTPUT_AAB" 'base/dex/*.dex' 2>/dev/null | LC_ALL=C grep -aq "$forbidden"; then
+		echo "  !! FATAL: '$forbidden' present in play AAB (frame generation leaked into the Play build)" >&2; exit 1
+	fi
+done
+echo "  absent OK"
 echo "-- versionName --"
 unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -oE "$VN" | head -1
 echo "-- jar signature --"

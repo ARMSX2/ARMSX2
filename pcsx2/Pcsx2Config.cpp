@@ -3,6 +3,7 @@
 
 #include "common/CocoaTools.h"
 #include "common/FileSystem.h"
+#include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 #include "common/SettingsInterface.h"
 #include "common/SettingsWrapper.h"
@@ -11,6 +12,7 @@
 #include "Config.h"
 #include "GS.h"
 #include "CDVD/CDVDcommon.h"
+#include "GameDatabase.h"
 #include "Host.h"
 #include "Host/AudioStream.h"
 #include "SIO/Memcard/MemoryCardFile.h"
@@ -464,15 +466,16 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	vu0Overflow = true;
 	//vu0ExtraOverflow = false;
 	//vu0SignOverflow = false;
-	//vu0Underflow = false;
+	//vu0ExactMode = false;
 	vu1Overflow = true;
 	//vu1ExtraOverflow = false;
 	//vu1SignOverflow = false;
-	//vu1Underflow = false;
+	//vu1ExactMode = false;
 
 	fpuOverflow = true;
 	//fpuExtraOverflow = false;
 	//fpuFullMode = false;
+	//fpuExactMode = false;
 	fpuGuardedAddSub = true; // PS2-accurate add/sub guard-bit emulation; opt-out for perf on titles verified not to need it.
 }
 
@@ -486,12 +489,16 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 	if (fpuFullMode)
 		fpuIsRight = fpuOverflow && fpuExtraOverflow;
 
+	if (fpuExactMode)
+		fpuIsRight = fpuOverflow && fpuExtraOverflow && fpuFullMode;
+
 	if (!fpuIsRight)
 	{
 		// Values are wonky; assume the defaults.
 		fpuOverflow = RecompilerOptions().fpuOverflow;
 		fpuExtraOverflow = RecompilerOptions().fpuExtraOverflow;
 		fpuFullMode = RecompilerOptions().fpuFullMode;
+		fpuExactMode = RecompilerOptions().fpuExactMode;
 	}
 
 	bool vuIsOk = true;
@@ -500,6 +507,8 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vuIsOk = vuIsOk && vu0Overflow;
 	if (vu0SignOverflow)
 		vuIsOk = vuIsOk && vu0ExtraOverflow;
+	if (vu0ExactMode)
+		vuIsOk = vuIsOk && vu0SignOverflow;
 
 	if (!vuIsOk)
 	{
@@ -507,7 +516,7 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vu0Overflow = RecompilerOptions().vu0Overflow;
 		vu0ExtraOverflow = RecompilerOptions().vu0ExtraOverflow;
 		vu0SignOverflow = RecompilerOptions().vu0SignOverflow;
-		vu0Underflow = RecompilerOptions().vu0Underflow;
+		vu0ExactMode = RecompilerOptions().vu0ExactMode;
 	}
 
 	vuIsOk = true;
@@ -516,6 +525,8 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vuIsOk = vuIsOk && vu1Overflow;
 	if (vu1SignOverflow)
 		vuIsOk = vuIsOk && vu1ExtraOverflow;
+	if (vu1ExactMode)
+		vuIsOk = vuIsOk && vu1SignOverflow;
 
 	if (!vuIsOk)
 	{
@@ -523,7 +534,7 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 		vu1Overflow = RecompilerOptions().vu1Overflow;
 		vu1ExtraOverflow = RecompilerOptions().vu1ExtraOverflow;
 		vu1SignOverflow = RecompilerOptions().vu1SignOverflow;
-		vu1Underflow = RecompilerOptions().vu1Underflow;
+		vu1ExactMode = RecompilerOptions().vu1ExactMode;
 	}
 }
 
@@ -543,21 +554,22 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(vu0Overflow);
 	SettingsWrapBitBool(vu0ExtraOverflow);
 	SettingsWrapBitBool(vu0SignOverflow);
-	SettingsWrapBitBool(vu0Underflow);
+	SettingsWrapBitBool(vu0ExactMode);
 	SettingsWrapBitBool(vu1Overflow);
 	SettingsWrapBitBool(vu1ExtraOverflow);
 	SettingsWrapBitBool(vu1SignOverflow);
-	SettingsWrapBitBool(vu1Underflow);
+	SettingsWrapBitBool(vu1ExactMode);
 
 	SettingsWrapBitBool(fpuOverflow);
 	SettingsWrapBitBool(fpuExtraOverflow);
 	SettingsWrapBitBool(fpuFullMode);
+	SettingsWrapBitBool(fpuExactMode);
 	SettingsWrapBitBool(fpuGuardedAddSub);
 }
 
 u32 Pcsx2Config::RecompilerOptions::GetEEClampMode() const
 {
-	return fpuFullMode ? 3 : (fpuExtraOverflow ? 2 : (fpuOverflow ? 1 : 0));
+	return fpuExactMode ? 4 : (fpuFullMode ? 3 : (fpuExtraOverflow ? 2 : (fpuOverflow ? 1 : 0)));
 }
 
 void Pcsx2Config::RecompilerOptions::SetEEClampMode(u32 value)
@@ -565,11 +577,12 @@ void Pcsx2Config::RecompilerOptions::SetEEClampMode(u32 value)
 	fpuOverflow = (value >= 1);
 	fpuExtraOverflow = (value >= 2);
 	fpuFullMode = (value >= 3);
+	fpuExactMode = (value >= 4);
 }
 
 u32 Pcsx2Config::RecompilerOptions::GetVUClampMode() const
 {
-	return vu0SignOverflow ? 3 : (vu0ExtraOverflow ? 2 : (vu0Overflow ? 1 : 0));
+	return vu0ExactMode ? 4 : (vu0SignOverflow ? 3 : (vu0ExtraOverflow ? 2 : (vu0Overflow ? 1 : 0)));
 }
 
 bool Pcsx2Config::RecompilerOptions::operator!=(const RecompilerOptions& right) const
@@ -967,6 +980,8 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(BackThreadMode) &&
 
 		OpEqu(CAS_Sharpness) &&
+		OpEqu(FSR_Sharpness) &&
+		OpEqu(SGSR_Sharpness) &&
 		OpEqu(ShadeBoost_Brightness) &&
 		OpEqu(ShadeBoost_Contrast) &&
 		OpEqu(ShadeBoost_Saturation) &&
@@ -995,6 +1010,13 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 
 		OpEqu(ShaderChainEnabled) &&
 		OpEqu(ShaderChainPreset) &&
+
+		OpEqu(LsfgEnabled) &&
+		OpEqu(LsfgMultiplier) &&
+		OpEqu(LsfgDllPath) &&
+		OpEqu(LsfgPerformance) &&
+		OpEqu(LsfgFlowScale) &&
+		OpEqu(LsfgTargetRate) &&
 
 		OpEqu(CaptureContainer) &&
 		OpEqu(VideoCaptureCodec) &&
@@ -1263,6 +1285,10 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(CASMode, "CASMode");
 	SettingsWrapIntEnumEx(Upscaler, "Upscaler");
 	SettingsWrapBitfieldEx(CAS_Sharpness, "CASSharpness");
+	// Bitfield, not Entry: FSR_Sharpness is a u8, same as CAS_Sharpness above.
+	SettingsWrapBitfieldEx(FSR_Sharpness, "FSRSharpness");
+	// Bitfield for the same reason: u8.
+	SettingsWrapBitfieldEx(SGSR_Sharpness, "SGSRSharpness");
 	SettingsWrapBitfieldEx(Dithering, "dithering_ps2");
 	SettingsWrapBitfieldEx(MaxAnisotropy, "MaxAnisotropy");
 	SettingsWrapBitfieldEx(SWExtraThreads, "extrathreads");
@@ -1310,6 +1336,15 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");
+
+	SettingsWrapEntryEx(LsfgEnabled, "LsfgEnabled");
+	// Bitfield, not Entry: LsfgMultiplier is a u8, and the plain entry wrapper has no
+	// overload for one — the same reason CAS_Sharpness above uses it.
+	SettingsWrapBitfieldEx(LsfgMultiplier, "LsfgMultiplier");
+	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
+	SettingsWrapEntryEx(LsfgPerformance, "LsfgPerformance");
+	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
+	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
 
 	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
 	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");
@@ -2414,7 +2449,7 @@ void Pcsx2Config::CopyRuntimeConfig(Pcsx2Config& cfg)
 	}
 }
 
-void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si)
+void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterface& src_si, const std::string_view game_serial)
 {
 	FPControlRegisterBackup fpcr_backup(FPControlRegister::GetDefault());
 
@@ -2423,10 +2458,45 @@ void Pcsx2Config::CopyConfiguration(SettingsInterface* dest_si, SettingsInterfac
 		SettingsLoadWrapper wrapper(src_si);
 		temp.LoadSaveCore(wrapper);
 	}
+
+	// Two things a value can agree with, and agreeing with either means writing it
+	// down would decide nothing.
+	//
+	// Stock defaults: the value is simply untouched, and the file would carry it only
+	// as noise. Copying the whole configuration verbatim is what buried the handful of
+	// real choices under hundreds of these, and in a per-game file a key that is
+	// present is a key the player is taken to have claimed — which is how one press of
+	// this button used to disable every automatic fix a game had.
+	//
+	// What the database would set: it is going to set it regardless, so writing it can
+	// only turn into a claim that suppresses the very fix it agrees with.
+	//
+	// Note the reference is a default configuration with the database applied, not this
+	// one — the question is what the database wants, not what it would leave the source
+	// at. That matters for the few fixes that clamp rather than assign; for those this
+	// errs towards writing the player's value, never towards dropping a fix.
+	MemorySettingsInterface defaults_si;
 	{
-		SettingsSaveWrapper wrapper(*dest_si);
-		temp.LoadSaveCore(wrapper);
+		Pcsx2Config defaults;
+		SettingsSaveWrapper wrapper(defaults_si);
+		defaults.LoadSaveCore(wrapper);
 	}
+
+	MemorySettingsInterface database_si;
+	{
+		Pcsx2Config database;
+		if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(game_serial))
+		{
+			game->applyGameFixes(database, true, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+			game->applyGSHardwareFixes(database.GS, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+		}
+
+		SettingsSaveWrapper wrapper(database_si);
+		database.LoadSaveCore(wrapper);
+	}
+
+	SettingsSaveDeviationsWrapper wrapper(*dest_si, {&defaults_si, &database_si});
+	temp.LoadSaveCore(wrapper);
 }
 
 void Pcsx2Config::ClearConfiguration(SettingsInterface* dest_si)

@@ -420,12 +420,34 @@ fun TouchControlsOverlay() {
             val dxState = TouchControls.editorPanelDx(isLandscape)
             val dyState = TouchControls.editorPanelDy(isLandscape)
             val panelScale = TouchControls.editorPanelScale(isLandscape).floatValue
+
+            // ★ The panel moves ITSELF off whatever is being edited.
+            //
+            // It used to be a floating window pinned to the top, which meant every button under
+            // it had to be uncovered by hand before it could be touched -- "having to drag it
+            // around everywhere". Dragging is still there for anything unusual, but it should
+            // not be the price of editing a button in the top half of the screen.
+            //
+            // Halves rather than real overlap maths: the rule has to be predictable. A panel
+            // that darts around as rectangles graze each other is worse than one that is simply
+            // always on the opposite side from the thing you picked.
+            val selectedY = TouchControls.selectedButton.value?.let { id ->
+                layout.buttons.firstOrNull { it.id == id }?.yFrac
+            }
+            val dockBottom = selectedY != null && selectedY < 0.5f
             Box(
                 Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 12.dp)
+                    .align(if (dockBottom) Alignment.BottomCenter else Alignment.TopCenter)
+                    .padding(top = if (dockBottom) 0.dp else 12.dp, bottom = if (dockBottom) 12.dp else 0.dp)
                     .offset {
-                        IntOffset(dxState.floatValue.roundToInt(), dyState.floatValue.roundToInt())
+                        // The stored offset means "away from the anchored edge", so it has to
+                        // flip with the anchor -- otherwise a panel the user had nudged DOWN
+                        // would be nudged straight off the bottom of the screen once it docked
+                        // there.
+                        IntOffset(
+                            dxState.floatValue.roundToInt(),
+                            (if (dockBottom) -dyState.floatValue else dyState.floatValue).roundToInt(),
+                        )
                     },
             ) {
                 CompositionLocalProvider(
@@ -466,7 +488,7 @@ private fun ButtonWidget(
         .fillMaxSize()
         .let {
             if (edit) it.editGestures(cfg)
-            else if (inputEnabled) it.pressGestures(cfg.id.keycode, cfg.tapToHold) { p -> localPressed = p }
+            else if (inputEnabled) it.pressGestures(cfg.id.keycode, cfg.tapToHold, cfg.turbo) { p -> localPressed = p }
             else it
         }
     // Pressed feedback: every button shrinks a hair AND darkens.
@@ -1715,10 +1737,17 @@ private fun isMultiTouchKind(kind: TouchButtonId.Kind): Boolean =
 private fun Modifier.pressGestures(
     keycode: Int,
     tapToHold: Boolean = false,
+    turbo: Int = 0,
     onPressedChange: (Boolean) -> Unit,
 ) =
-    pointerInput(keycode, tapToHold) {
+    pointerInput(keycode, tapToHold, turbo) {
         var latched = false
+        // One place decides hold-vs-rapid-fire, so latch and momentary get turbo for free and
+        // the two compose: with both on, a tap starts the autofire and the next tap stops it.
+        fun emitPress(on: Boolean) {
+            if (turbo > 0) TouchControls.fireTurboButton(keycode, "touch", on, turbo, ::sendDigital)
+            else sendDigital(keycode, on)
+        }
         try {
             awaitPointerEventScope {
                 while (true) {
@@ -1732,7 +1761,7 @@ private fun Modifier.pressGestures(
                         // Toggle the latch on this tap-down.
                         latched = !latched
                         onPressedChange(latched)
-                        sendDigital(keycode, latched)
+                        emitPress(latched)
                         // Consume this finger's lifetime so the same press can't
                         // re-toggle; ignore other pointers.
                         while (true) {
@@ -1742,19 +1771,22 @@ private fun Modifier.pressGestures(
                         }
                     } else {
                         onPressedChange(true)
-                        sendDigital(keycode, true)
+                        emitPress(true)
                         while (true) {
                             val next = awaitPointerEvent()
                             val nc = next.changes.firstOrNull { it.id == id }
                             if (nc == null || !nc.pressed) break
                         }
                         onPressedChange(false)
-                        sendDigital(keycode, false)
+                        emitPress(false)
                     }
                 }
             }
         } finally {
-            // Disposed/reconfigured while latched → don't leave the key stuck down.
+            // Disposed/reconfigured mid-press → don't leave the key stuck down, and don't
+            // leave a turbo toggling a button whose widget no longer exists. emitPress(false)
+            // cancels the timer AND emits the up, so it is right for both cases.
+            if (turbo > 0) emitPress(false)
             if (latched) {
                 sendDigital(keycode, false)
                 onPressedChange(false)
@@ -1904,6 +1936,11 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Collapse/expand. First control in the row so it is in the same place whether the
+            // panel is open or shut.
+            PanelSizeButton(if (TouchControls.editorCollapsed.value) "▼" else "▲") {
+                TouchControls.editorCollapsed.value = !TouchControls.editorCollapsed.value
+            }
             PanelSizeButton("－") {
                 val ls = OverlayDims.last?.let { it.widthPx > it.heightPx } ?: true
                 TouchControls.editorPanelScale(ls).floatValue =
@@ -1949,6 +1986,9 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                     (TouchControls.editorPanelScale(ls).floatValue + 0.1f).coerceIn(0.6f, 1.35f)
             }
         }
+        // Collapsed = grip row only, so everything under the panel is reachable. Column is an
+        // inline composable, so an early return here really does skip the rest of the content.
+        if (TouchControls.editorCollapsed.value) return@Column
         // Scope hint: with no game running the editor edits the GLOBAL Default
         // layout (per-game layouts need a running disc).
         Text(
@@ -2094,6 +2134,22 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 if (selectedCfg.id.kind == TouchButtonId.Kind.FACE ||
                     selectedCfg.id.kind == TouchButtonId.Kind.SHOULDER
                 ) {
+                    // Rapid-fire (#619). Cycles rather than opening a slider: the toolbar is
+                    // the one surface that has to stay usable one-thumbed over the game, and
+                    // three speeds cover what mashing is actually for. Frames between toggles,
+                    // matching a macro's Frequency; 2 is about as fast as the VM can sample.
+                    ToolbarChip(
+                        when (selectedCfg.turbo) {
+                            0 -> str("touch.editor.turboOff")
+                            in 1..2 -> str("touch.editor.turboFast")
+                            in 3..5 -> str("touch.editor.turboMed")
+                            else -> str("touch.editor.turboSlow")
+                        },
+                    ) {
+                        TouchControls.updateButton(selectedCfg.id) {
+                            it.copy(turbo = when (it.turbo) { 0 -> 2; 2 -> 4; 4 -> 8; else -> 0 })
+                        }
+                    }
                     ToolbarChip(if (selectedCfg.tapToHold) str("touch.editor.tapHoldOn") else str("touch.editor.tapHoldOff")) {
                         TouchControls.updateButton(selectedCfg.id) { it.copy(tapToHold = !it.tapToHold) }
                     }

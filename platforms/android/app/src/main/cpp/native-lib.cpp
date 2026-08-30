@@ -28,6 +28,7 @@
 #include "GS/GSUtil.h" // GSUtil::AndroidAutoPrefersVulkan (Auto renderer steering)
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
+#include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -45,6 +46,7 @@
 #include "common/Error.h"
 #include "common/HTTPDownloaderAndroid.h"
 #include "Host.h"
+#include "PerGameOverrides.h"
 #include "ImGui/FullscreenUI.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "MTGS.h"
@@ -846,6 +848,66 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getNominalFrameRate(JNIEnv*, jclass) {
     return VMManager::HasValidVM() ? static_cast<jfloat>(VMManager::GetFrameRate()) : 0.0f;
 }
 
+/*
+ * The rest of what the in-game OSD shows, for the second-screen panel.
+ *
+ * The panel could only reach getFPS(), so it could show frames and a percentage of nominal and
+ * nothing else -- "I would appreciate more info from the OSD available on the second screen"
+ * (Mike22). PerformanceMetrics already computes all of this for the OSD; none of it had a way
+ * across the JNI boundary. Each returns 0 with no VM rather than the last value, so a panel
+ * sitting in the library reads as idle instead of frozen on whatever the last game was doing.
+ */
+/*
+ * Hand the overlay the device temperatures the app layer read. See ImGuiOverlays.h for why the
+ * core cannot read them itself. Values use ARMSX2_THERMAL_NONE for "no reading", so a device
+ * that exposes no usable zone shows nothing rather than a plausible-looking zero.
+ */
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setThermals(JNIEnv*, jclass, jfloat cpu, jfloat gpu,
+                                                 jfloat battery, jboolean show) {
+    Armsx2Thermals::cpu.store(cpu, std::memory_order_relaxed);
+    Armsx2Thermals::gpu.store(gpu, std::memory_order_relaxed);
+    Armsx2Thermals::battery.store(battery, std::memory_order_relaxed);
+    Armsx2Thermals::show.store(show == JNI_TRUE, std::memory_order_relaxed);
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getVPS(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetInternalFPS()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getEmuSpeedPercent(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetSpeed()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getCpuThreadUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetCPUThreadUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGsThreadUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetGSThreadUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGpuUsage(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetGPUUsage()) : 0.0f;
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getAverageFrameTime(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetAverageFrameTime()) : 0.0f;
+}
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getPauseGameTitle(JNIEnv *env, jclass clazz) {
@@ -1600,6 +1662,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass cla
                 return false;
             SettingsLoadWrapper slw(*si);
             EmuConfig.GS.LoadSave(slw);
+
+            // Mirror VMManager::LoadCoreSettings: the reload above took the mask from
+            // whichever layer answered first, so re-derive the per-game claims or
+            // MaskUserHacks() below strips a hack the player set for this game.
+            if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+                EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
         }
 
         // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
@@ -1633,7 +1701,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass cla
         // until the next launch. Mirrors ApplyGameFixes' GS portion.
         if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
         {
-            game->applyGSHardwareFixes(EmuConfig.GS);
+            PerGameOverrides overrides;
+            {
+                auto lock = Host::GetSettingsLock();
+                if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
+                    overrides = ComputePerGameOverrides(*game_layer);
+            }
+
+            game->applyGSHardwareFixes(EmuConfig.GS, overrides);
             EmuConfig.GS.MaskUpscalingHacks();
         }
         return true;
@@ -1833,6 +1908,21 @@ static std::vector<std::string> jStringArrayToVector(JNIEnv* env, jobjectArray a
 // (Patch Manager opened from the library). Path computation is kept identical to
 // gameIniBeginWrite's so BOTH halves of the game layer — the EmuCore overrides and the
 // patch/cheat enable lists — land in the SAME file.
+// The game INI for a serial, without a running VM. Same glob as gameIniBeginWriteForSerial:
+// a serial normally has exactly one CRC-keyed file. Empty when there is none, which is the
+// signal to fall back to the base layer.
+static std::string AndroidGameSettingsPathForSerial(const std::string& serial) {
+    if (serial.empty())
+        return {};
+    FileSystem::FindResultsArray results;
+    FileSystem::FindFiles(EmuFolders::GameSettings.c_str(),
+        fmt::format("{}_*.ini", Path::SanitizeFileName(serial)).c_str(),
+        FILESYSTEM_FIND_FILES, &results);
+    if (results.empty())
+        return {};
+    return results.front().FileName;
+}
+
 static std::string AndroidGameSettingsPath() {
     if (!VMManager::HasValidVM())
         return {};
@@ -1847,10 +1937,19 @@ static std::string AndroidGameSettingsPath() {
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
-    JNIEnv* env, jclass, jboolean cheats, jobjectArray allNames, jobjectArray enabledNames) {
+    JNIEnv* env, jclass, jboolean cheats, jobjectArray allNames, jobjectArray enabledNames,
+    jstring p_serial) {
     const std::vector<std::string> all = jStringArrayToVector(env, allNames);
     const std::vector<std::string> enabled = jStringArrayToVector(env, enabledNames);
     const char* section = (cheats == JNI_TRUE) ? "Cheats" : "Patches";
+
+    std::string serial;
+    if (p_serial) {
+        if (const char* sc = env->GetStringUTFChars(p_serial, nullptr)) {
+            serial = sc;
+            env->ReleaseStringUTFChars(p_serial, sc);
+        }
+    }
 
     auto lock = Host::GetSettingsLock();
 
@@ -1860,7 +1959,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
     // fully shadows the base one. Writing to the base layer meant enabling e.g. "Widescreen
     // 16:9" for one game auto-enabled the identically NAMED group in every other game,
     // because Patch::EnablePatches matches purely by name.
-    const std::string game_ini = AndroidGameSettingsPath();
+    // ★ Prefer the GAME ini even with no VM running.
+    //
+    // ReloadEnabledLists reads through LayeredSettingsInterface, which returns the FIRST
+    // NON-EMPTY layer with LAYER_GAME ahead of LAYER_BASE. So the moment a game's INI carries any
+    // [Patches] Enable entry, the base list is invisible -- and a toggle made from the LIBRARY,
+    // which had nowhere to go but base, reads back as enabled in the Patch Manager while the
+    // patch loader never sees it. That is "I enabled HostFS and it is still off" (JustVibin247),
+    // and it is why the mod's loader stayed disabled through several attempts to switch it on.
+    //
+    // The serial comes from the caller because there is no VM to ask. When no INI exists for it
+    // yet the base layer is still the right target, which is what the fall-through below does.
+    std::string game_ini = AndroidGameSettingsPath();
+    if (game_ini.empty())
+        game_ini = AndroidGameSettingsPathForSerial(serial);
     if (!game_ini.empty()) {
         // Load-then-modify: this file ALSO carries the EmuCore per-game overrides written
         // by gameIniCommitWrite, so it must never be regenerated from scratch here.
@@ -2042,54 +2154,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint por
 // LayeredSettingsInterface::GetStringList returns the FIRST NON-EMPTY layer with the game layer
 // ahead of base, a stale per-game entry SHADOWS the cleaned base list entirely — which is exactly
 // how "GOW2 reports 1 game patch active with every patch setting off" survived the base-only purge.
-extern "C"
-JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass) {
-    auto lock = Host::GetSettingsLock();
-
-    if (SettingsInterface* si = Host::Internal::GetBaseSettingsLayer())
-    {
-        si->DeleteValue("Patches", "Enable");
-        si->DeleteValue("Cheats", "Enable");
-        si->Save();
-    }
-
-    // Every per-game INI. Load-then-modify (never regenerate): these files also carry the user's
-    // per-game EmuCore overrides and gamefixes, which must survive untouched.
-    u32 cleaned = 0;
-    FileSystem::FindResultsArray files;
-    FileSystem::FindFiles(EmuFolders::GameSettings.c_str(), "*.ini",
-        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files);
-    for (const FILESYSTEM_FIND_DATA& fd : files)
-    {
-        INISettingsInterface ini(fd.FileName);
-        if (!ini.Load())
-            continue;
-        // Only rewrite when there is something to remove, so this doesn't churn every file's mtime.
-        if (ini.GetStringList("Patches", "Enable").empty() &&
-            ini.GetStringList("Cheats", "Enable").empty())
-        {
-            continue;
-        }
-        ini.DeleteValue("Patches", "Enable");
-        ini.DeleteValue("Cheats", "Enable");
-        Error error;
-        if (ini.Save(&error))
-            cleaned++;
-        else
-            Console.ErrorFmt("@@ANDROID_PNACH@@ purge failed for {}: {}", fd.FileName, error.GetDescription());
-    }
-
-    // Drop the live game layer's copy too, or the running game keeps the patch for this session.
-    if (SettingsInterface* gsi = Host::Internal::GetGameSettingsLayer())
-    {
-        gsi->DeleteValue("Patches", "Enable");
-        gsi->DeleteValue("Cheats", "Enable");
-    }
-
-    Console.WriteLnFmt("@@ANDROID_PNACH@@ purged [Patches]/[Cheats] Enable lists (base + {} per-game INIs)", cleaned);
-}
-
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderUpscalemultiplier(JNIEnv *env, jclass clazz,
@@ -2796,6 +2860,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
             // no-ops when the NVM is unchanged, so pausing repeatedly is cheap.
             if (VMManager::HasValidVM())
                 cdvdSaveNVRAM();
+            // Same reasoning as the NVRAM above, and the same failure: a memory card write does
+            // not necessarily reach the file system when it happens. A FOLDER card holds writes
+            // in an in-memory page cache and flushes two frames after the last one, counted down
+            // by the per-frame tick that runs off vsync — so pausing does not delay that flush,
+            // it stops it being reached at all. A FILE card writes through, but the last sector
+            // of a save sequence sits in the stdio buffer until the next card access.
+            //
+            // Either way the pending write is lost if Android reclaims the process while it is
+            // backgrounded, which it is free to do with no further callback. Save in-game, switch
+            // apps, get reclaimed — and the save was never on disk. Queued after SetPaused above,
+            // so the console is stopped and nothing can be written behind us.
+            if (VMManager::HasValidVM())
+                FileMcd_Flush();
         });
 
         if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
@@ -2815,8 +2892,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
         Host::RunOnCPUThread([]() {
             if (VMManager::HasValidVM())
                 cdvdSaveNVRAM();
+            if (VMManager::HasValidVM())
+                FileMcd_Flush();
         });
-        Console.WriteLn("@@ANDROID_PAUSE@@ already_paused nvm_flush_queued");
+        Console.WriteLn("@@ANDROID_PAUSE@@ already_paused nvm_and_mcd_flush_queued");
     }
 }
 
@@ -2845,6 +2924,34 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setOutputPauseSuppressed(JNIEnv *env, jclas
     // the brief menu pause means resume is a cheap no-op with no rebuild. Only the
     // overlay pause sets this; background/quit pause normally, and resume() clears it.
     SPU2::SetOutputPauseSuppressed(suppressed == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_lsfgAvailability(JNIEnv *env, jclass clazz, jstring dll_path) {
+    // Why frame generation can or cannot run, as the ordinal of GSLsfg::Unavailable. The UI
+    // needs the REASON, not a bool: "requires an Adreno 7xx GPU" and "you haven't picked a
+    // Lossless.dll yet" are the same greyed-out row otherwise, and only one of them is
+    // something the user can do anything about.
+    //
+    // The path is passed in rather than read from GSConfig because this is asked from the
+    // settings screen, where the pick may not have been committed yet — and on a device with
+    // no game running, where GSConfig holds whatever the last boot left behind.
+    const char *path = dll_path ? env->GetStringUTFChars(dll_path, nullptr) : nullptr;
+    GSLsfg::SetDllPath(path ? std::string(path) : std::string());
+    if (path)
+        env->ReleaseStringUTFChars(dll_path, path);
+    return static_cast<jint>(GSLsfg::GetUnavailableReason());
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_lsfgDllChanged(JNIEnv *env, jclass clazz) {
+    // The import rewrites the same file every time, so the path never changes and SetDllPath()
+    // cannot tell the file is new. Only the importer knows, so only the importer says so —
+    // lsfgAvailability() stays a pure query, and EndPresent, which asks once per frame, keeps
+    // answering from the cache instead of re-reading the DLL inside the present path.
+    GSLsfg::InvalidateDllVerdict();
 }
 
 extern "C"

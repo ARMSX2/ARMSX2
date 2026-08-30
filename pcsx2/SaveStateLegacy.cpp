@@ -445,7 +445,6 @@ namespace OldState
 	// function shared with the current format. They are era-invariant today;
 	// if one ever changes upstream, the legacy blob desyncs mid-stream, so
 	// pin them here to fail the build instead of the load.
-	static_assert(sizeof(fpuRegisters) == 264, "fpuRegs block is 264 bytes in every era");
 	static_assert(sizeof(VECTOR) == 16 && sizeof(REG_VI) == 16, "VU register views are 128-bit in every era");
 	static_assert(sizeof(ipu_fifo) == 288 && sizeof(g_BP) == 48 && sizeof(decoder) == 3028 && sizeof(ipu_cmd) == 32,
 		"IPU block payload is era-invariant");
@@ -473,7 +472,7 @@ namespace
 		// normalized (version-independent) view of the legacy data
 		OldState::cpuRegisters_9A34 cpu; // 9A2C loads leave the tail fields unset
 		OldState::psxRegisters_9A34 psx;
-		fpuRegisters fpu;
+		fpuRegistersWire fpu;
 		OldState::tlbs_9A2C tlb[48];
 		bool allowParams1, allowParams2;
 		u32 elfCRC;
@@ -652,7 +651,7 @@ bool SaveStateBase::FreezeInternalsLegacy(Error* error)
 		psxRegs.sCycle[i] = widen_iop(st.psx.sCycle[i]);
 	std::memcpy(psxRegs.eCycle, st.psx.eCycle, sizeof(psxRegs.eCycle));
 
-	fpuRegs = st.fpu;
+	fpuRegsFromWire(st.fpu);
 
 	for (int i = 0; i < 48; i++)
 	{

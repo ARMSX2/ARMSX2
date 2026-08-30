@@ -36,6 +36,17 @@ internal val OSD_COLORS = listOf(
     0xC08CFF, // purple
 )
 
+/** PCSX2 OsdOverlayPos ordinals for the four corners, in the order the pickers show them.
+ *  The core's enum also has the five centre positions; those are deliberately not offered —
+ *  a stats block down the middle of the screen sits on top of the game. */
+internal val OSD_POSITIONS = listOf(1, 3, 7, 9)
+
+/** i18n keys for [OSD_POSITIONS], same order. */
+internal val OSD_POSITION_LABEL_KEYS = listOf(
+    "overlay.osdPosition.topLeft", "overlay.osdPosition.topRight",
+    "overlay.osdPosition.bottomLeft", "overlay.osdPosition.bottomRight",
+)
+
 /** i18n keys for [OSD_COLORS], same order. */
 internal val OSD_COLOR_LABEL_KEYS = listOf(
     "overlay.osdColor.default", "overlay.osdColor.green", "overlay.osdColor.cyan",
@@ -99,6 +110,26 @@ fun OverlayTab(state: MutableState<Settings>) {
             description = str("overlay.osdColor.description"),
             onChange = { apply(s.copy(osdColor = OSD_COLORS[it])) },
         )
+
+        // Which corner the stats block sits in. Defaults to top-right (the core's own default),
+        // so this only moves for someone who asks it to.
+        SegmentedRow(
+            label = str("overlay.osdPosition.label"),
+            options = OSD_POSITION_LABEL_KEYS.map { str(it) },
+            selectedIndex = OSD_POSITIONS.indexOf(s.osdPosition).coerceAtLeast(0),
+            description = str("overlay.osdPosition.description"),
+            onChange = { apply(s.copy(osdPosition = OSD_POSITIONS[it])) },
+        )
+
+        // Quick-menu handedness. A plain pref, not a Settings field — see QuickMenuSide.
+        val menuLeft = com.armsx2.ui.QuickMenuSide.left
+        SegmentedRow(
+            label = str("overlay.quickMenuSide.label"),
+            options = listOf(str("overlay.quickMenuSide.left"), str("overlay.quickMenuSide.right")),
+            selectedIndex = if (menuLeft.value) 0 else 1,
+            description = str("overlay.quickMenuSide.description"),
+            onChange = { com.armsx2.ui.QuickMenuSide.set(it == 0) },
+        )
         SettingsDivider()
 
         // Interface scaling (global, not per-game): resize the library / menu chrome
@@ -136,6 +167,15 @@ fun OverlayTab(state: MutableState<Settings>) {
         }
         SettingsDivider()
         ToggleRow(str("overlay.toggle.cpuUsage"), s.osdShowCpu) { apply(s.copy(osdShowCpu = it)) }
+        // Device temperatures (Cotcho). Not a core setting like the rows around it: the core has
+        // no way to read a temperature, so the app polls and pushes the values in. Off by
+        // default — it is a sysfs read on a timer.
+        run {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            ToggleRow(str("osd.temps"), com.armsx2.Thermals.osdEnabled.value) {
+                com.armsx2.Thermals.setOsdEnabled(ctx, it)
+            }
+        }
         SettingsDivider()
         ToggleRow(str("overlay.toggle.fps"), s.osdShowFps) { apply(s.copy(osdShowFps = it)) }
         SettingsDivider()

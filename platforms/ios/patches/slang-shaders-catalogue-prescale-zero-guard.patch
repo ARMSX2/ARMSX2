@@ -1,0 +1,294 @@
+Clamp the same integer prescale in the ten upstream files the catalogue reaches.
+
+These ten carry the bug that blackened crt-aperture and sharp-bilinear, and none of
+them is in the bundle: they exist only in the pinned slang-shaders tree the downloadable
+catalogue is built from. That is why this is a second patch. The first one,
+slang-shaders-prescale-zero-guard.patch, records the two bundled files and reverses at
+the repository root. This one cannot: there is nothing here to reverse. Reverse it inside
+a slang-shaders checkout instead:
+
+    git apply -R -p9 platforms/ios/patches/slang-shaders-catalogue-prescale-zero-guard.patch
+
+The path prefix on every hunk is a strip-level convention, not a claim that these files
+live under assets/. shader_manifest.py finds a patch by that prefix and applies it with
+-p9, so the prefix has to be there for the generator to see the file at all.
+
+Each shader derives a whole-number scale from output size over source size, then divides
+by it. RetroArch feeds them a small console framebuffer, so the ratio never falls below
+one. PCSX2 renders internally at up to 8x, so above roughly 1.5x the source is taller
+than the screen, floor() returns zero and the divide yields NaN.
+
+Ten files, twelve sites, 98 presets unblocked. Twelve and not ten because the scanner
+reports one site per file: clamping the first in crt-potato and ultra_potato made a second
+visible in each, in the mask size their fragment stage divides a texture coordinate by.
+Every clamp was written against the site the scanner named, then the scan was run again
+until it came back empty.
+
+Each file also gains a five-line notice under its #version line. A catalogue zip travels
+on its own: whoever installs one gets the bytes and never sees the manifest's per-file
+modified record, so GPL section 2(a)'s prominent notice has to be in the file itself.
+
+Two of the ten clamp the composed value rather than the floor() alone. retro-tiles adds
+OVERSCAN afterwards, which a preset can set to -3, and bead picks between the floor and a
+user scale. Clamping only the floor would leave a second route to zero in both, one that
+has nothing to do with upscaling and is reachable at any resolution.
+
+Two more are copies of crt-aperture living elsewhere in the tree under other names, and
+one of those is a .h. That is why test_ios_shader_prescale_guard.py scans .inc and .h and
+not only .slang.
+
+Of the ten, four are reachable from a preset the signed licence rules actually offer, and
+those four are what 73 of the catalogue's presets rest on. The other six are clamped
+anyway: the class rules can change, and the generator's prescale gate has to come back
+empty for the run to be trustworthy at all.
+
+Signed off with the whole-tree catalogue on 2026-08-18. shader_manifest.py records every
+file here as modified, with its upstream and served hashes.
+
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang b/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
+index 00e4ddd..cc11250 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ // Filename: digital-upsample.slang
+ //
+@@ -89,7 +94,7 @@ void main()
+     vTexCoord = TexCoord;
+ 
+     // Compute scale factors (truncate to integers for zero-insertion)
+-    scale = floor(config.OutputSize.xy / config.SourceSize.xy);
++    scale = max(floor(config.OutputSize.xy / config.SourceSize.xy), vec2(1.0));
+ 
+     // Normalized cutoff frequency: always 0.5 for zero-insertion upsampling
+     fc_norm = vec2(0.5);
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
+index eb7e6e6..f16d7b6 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
++++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
+@@ -1,3 +1,8 @@
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ /*
+     CRT Shader by EasyMode
+@@ -185,7 +190,7 @@ layout(set = 0, binding = 5) uniform sampler2D ambi_temporal_pass;
+ 
+ vec3 get_content(vec2 vTex, vec2 uv)
+ {
+-    float scale = floor(params.OutputSize.y * params.SourceSize.w);
++    float scale = max(floor(params.OutputSize.y * params.SourceSize.w), 1.0);
+     float offset = 1.0 / scale * 0.5;
+     
+     if (bool(mod(scale, 2.0))) offset = 0.0;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
+index 1829b1f..34102a2 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ /*
+     CRT Shader by EasyMode
+@@ -344,7 +349,7 @@ void main()
+ 
+ 
+ //    float scale = floor(params.OutputSize.y * params.SourceSize.w);
+-    float scale = floor(ScaledOutputSize.y * params.SourceSize.w);
++    float scale = max(floor(ScaledOutputSize.y * params.SourceSize.w), 1.0);
+     float offset = 1.0 / scale * 0.5;
+     
+     if (bool(mod(scale, 2.0))) offset = 0.0;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
+index 0451858..e3c5691 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //                                                                       //
+@@ -33,7 +38,7 @@ layout(std140, set = 0, binding = 0) uniform UBO
+ } global;
+ 
+ // Largest integer scale of input video that will fit in the current output (y axis would typically be limiting on widescreens)
+-#define video_scale         floor(params.OutputSize.y * params.SourceSize.w)
++#define video_scale         max(floor(params.OutputSize.y * params.SourceSize.w), 1.0)
+ 
+ // Size of the scaled video
+ //#define scaled_video_out    (params.SourceSize.xy * vec2(video_scale))
+@@ -65,7 +70,7 @@ layout(location = 0) out vec4 FragColor;
+ layout(set = 0, binding = 2) uniform sampler2D Source;
+ layout(set = 0, binding = 3) uniform sampler2D MASK;
+ 
+-#define maskSize vec2(2., floor(params.OutputSize.y / params.SourceSize.y + 0.000001))
++#define maskSize vec2(2., max(floor(params.OutputSize.y / params.SourceSize.y + 0.000001), 1.0))
+ 
+ #define curr_rgb  texture(Source, vTexCoord)
+ #define mask_rgb  texture(MASK, fract((vTexCoord.xy * params.OutputSize.xy) / maskSize))
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
+index 8c67f21..d63d267 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ // crt-potato mod by DariusG
+ 
+@@ -16,7 +21,7 @@ layout(std140, set = 0, binding = 0) uniform UBO
+ } global;
+ 
+ // Largest integer scale of input video that will fit in the current output (y axis would typically be limiting on widescreens)
+-#define video_scale         floor(params.OutputSize.y * params.SourceSize.w)
++#define video_scale         max(floor(params.OutputSize.y * params.SourceSize.w), 1.0)
+ 
+ #pragma stage vertex
+ layout(location = 0) in vec4 Position;
+@@ -42,7 +47,7 @@ layout(set = 0, binding = 2) uniform sampler2D Source;
+ layout(set = 0, binding = 3) uniform sampler2D MASK;
+ 
+ 
+-#define maskSize vec2(2., floor(params.OutputSize.y / params.SourceSize.y + 0.000001))
++#define maskSize vec2(2., max(floor(params.OutputSize.y / params.SourceSize.y + 0.000001), 1.0))
+ 
+ void main()
+ {
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
+index 6709f45..ca4a6f8 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+   /////////////////////////////////////////////////////////////////////////
+ //    _________    __  _________   ____  ______  __                      //
+@@ -201,7 +206,7 @@ void main()
+         if (registers.integer_mode > 1.5) {
+             video_scale_factor = registers.video_scale;
+         } else {
+-            video_scale_factor = floor(registers.OutputSize.y * registers.SourceSize.w);
++            video_scale_factor = max(floor(registers.OutputSize.y * registers.SourceSize.w), 1.0);
+         }
+         vec2 scaled_video_out = (registers.SourceSize.xy * vec2(video_scale_factor));
+         scale_bounds = scaled_video_out / registers.OutputSize.xy;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
+index 264cb92..c8b0780 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //                                                                       //
+@@ -49,7 +54,7 @@ layout(std140, set = 0, binding = 0) uniform UBO
+ //vertex definitions                                                                                                                      //
+ ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-#define video_scale 		floor(params.OutputSize.y * params.SourceSize.w)		//largest integer scale of input video that will fit in the current output (y axis would typically be limiting on widescreens)
++#define video_scale 		max(floor(params.OutputSize.y * params.SourceSize.w), 1.0)		//largest integer scale of input video that will fit in the current output (y axis would typically be limiting on widescreens)
+ #define scaled_video_out	(params.SourceSize.xy * video_scale)				//size of the scaled video
+ #define half_pixel		(0.5 * params.OutputSize.zw)					//it's... half a pixel
+ 
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
+index c7bb17f..5a17f98 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ /*
+    Hyllian's RetroTiles Shader
+@@ -73,7 +78,7 @@ void main()
+ {
+     gl_Position = global.MVP * Position;
+ 
+-    vec2 box_scale = floor(param.OutputSize.xy / param.SourceSize.xy) + OVERSCAN;
++    vec2 box_scale = max(floor(param.OutputSize.xy / param.SourceSize.xy) + OVERSCAN, vec2(1.0));
+     box_scale = vec2(min(box_scale.x, box_scale.y));
+ 
+     vec2 scale = (param.OutputSize.xy / param.SourceSize.xy) / box_scale;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang b/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
+index 97d3203..ff84db8 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ /*
+    Author: Themaister
+@@ -38,7 +43,7 @@ layout(location = 1) out vec2 pixel_no;
+ void main()
+ {
+    gl_Position = global.MVP * Position;
+-   vec2 box_scale = (scale_factor == 0) ? floor(params.OutputSize.xy * params.SourceSize.zw) : vec2(scale_factor);
++   vec2 box_scale = max((scale_factor == 0) ? floor(params.OutputSize.xy * params.SourceSize.zw) : vec2(scale_factor), vec2(1.0));
+    box_scale = vec2(min(box_scale.x, box_scale.y));
+ 
+    vec2 scale = (params.OutputSize.xy * params.SourceSize.zw) / box_scale;
+diff --git a/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang b/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
+index 85cc5c5..f8d4354 100644
+--- a/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
++++ b/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
+@@ -1,4 +1,9 @@
+ #version 450
++// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
++// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
++// than the screen the unclamped value floors to zero and the frame turns black.
++// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
++// tree for the reversible patch and the upstream hash this file came from.
+ 
+ // Super-basic scanline shader
+ // (looks bad at non-integer scales)
+@@ -60,7 +65,7 @@ vec3 YIQtoRGB(vec3 YIQ){
+ void main()
+ {
+ 	float lines = fract(vTexCoord.y * params.SourceSize.y);
+-	float scale_factor = floor((params.OutputSize.y / params.SourceSize.y) + 0.4999);
++	float scale_factor = max(floor((params.OutputSize.y / params.SourceSize.y) + 0.4999), 1.0);
+ 	vec4 screen = texture(Source, vTexCoord);
+ 	screen.rgb = RGBtoYIQ(screen.rgb);
+ 	screen.r *= params.BRIGHTBOOST;

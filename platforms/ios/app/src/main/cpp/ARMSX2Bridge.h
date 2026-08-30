@@ -107,6 +107,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                     toDirectory:(nonnull NSURL *)destinationDirectory
     NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
 
+// Preserves the archive tree, so each .slangp still resolves its stages by relative path.
+// Empty with `error` set on failure; count the returned .slangp URLs to tell a real pack.
++ (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                toDirectory:(nonnull NSURL *)destinationDirectory
+                                                      error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
+
 // Extracts the first .ps2 file from a ZIP into the memory-card directory.
 + (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
     NS_SWIFT_NAME(extractMemoryCardArchive(at:));
@@ -265,6 +272,20 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // hardware). Used by the settings UI to hide the Upscaler option where unusable.
 + (BOOL)isMetalFXSupported;
 
+// Whether this build was compiled with librashader. Not a runtime probe: without cargo
+// the chain is compiled out, and the settings UI leaves the shader section out with it.
++ (BOOL)isShaderChainSupported;
+
+// The tweakable parameters a .slangp preset declares, as a JSON array of objects carrying
+// name, description, initial, minimum, maximum and step, in the author's declaration order.
+// nil when this build has no librashader or the preset will not load; "[]" for a preset that
+// declares none. Blocking file work — never call it on the main thread.
++ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path NS_SWIFT_NAME(shaderPresetParameters(atPath:));
+
+// Queues parameter values for the chain built from preset. The GS thread applies them before
+// its next frame, so this is how a value change reaches a running chain.
++ (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset NS_SWIFT_NAME(setShaderChainParameters(_:forPreset:));
+
 // Per-game INI access — reads/writes the per-game INI file
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
 // patch-enable-list helpers. "For current game" write/delete variants live-apply.
@@ -272,17 +293,21 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (int)getPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIInt(_:key:defaultValue:forISO:));
 + (BOOL)getPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIBool(_:key:defaultValue:forISO:));
 + (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIFloat(_:key:defaultValue:forISO:));
++ (nonnull NSString *)getPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIString(_:key:defaultValue:forISO:));
 + (void)setPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIInt(_:key:value:forISO:));
 + (void)setPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIBool(_:key:value:forISO:));
 + (void)setPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIFloat(_:key:value:forISO:));
++ (void)setPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIString(_:key:value:forISO:));
 + (void)deletePerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(deletePerGameINIValue(_:key:forISO:));
 + (BOOL)hasPerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(hasPerGameINIValueForCurrentGame(_:key:));
 + (int)getPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def NS_SWIFT_NAME(getPerGameINIIntForCurrentGame(_:key:defaultValue:));
 + (BOOL)getPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def NS_SWIFT_NAME(getPerGameINIBoolForCurrentGame(_:key:defaultValue:));
 + (float)getPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def NS_SWIFT_NAME(getPerGameINIFloatForCurrentGame(_:key:defaultValue:));
++ (nonnull NSString *)getPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def NS_SWIFT_NAME(getPerGameINIStringForCurrentGame(_:key:defaultValue:));
 + (void)setPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value NS_SWIFT_NAME(setPerGameINIIntForCurrentGame(_:key:value:));
 + (void)setPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value NS_SWIFT_NAME(setPerGameINIBoolForCurrentGame(_:key:value:));
 + (void)setPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value NS_SWIFT_NAME(setPerGameINIFloatForCurrentGame(_:key:value:));
++ (void)setPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value NS_SWIFT_NAME(setPerGameINIStringForCurrentGame(_:key:value:));
 + (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(deletePerGameINIValueForCurrentGame(_:key:));
 
 // Identity the accessors above key on, or "" when there isn't one. The current-game

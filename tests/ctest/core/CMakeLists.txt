@@ -1,6 +1,11 @@
 add_pcsx2_test(core_test
+	ee_fpu_regfile_tests.cpp
+	ee_clamp_mode_tests.cpp
+	vu_clamp_mode_tests.cpp
+	ee_fpu_reloc_tests.cpp
 	patch_tests.cpp
 	savestate_legacy_tests.cpp
+	settings_precedence_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )
@@ -8,6 +13,11 @@ add_pcsx2_test(core_test
 if(ARCH_ARM64)
 	# Phase 0.6: ARM64 JIT toolchain smoke test (emit + execute ARM64 code).
 	target_sources(core_test PRIVATE arm64_emit_test.cpp)
+endif()
+
+# GSLsfg.cpp only builds with the Vulkan renderer, so its structural-PE-check test follows it.
+if(USE_VULKAN)
+	target_sources(core_test PRIVATE lsfg_dll_check_tests.cpp)
 endif()
 
 # The recompiler differential-test harness drives the arm64 JIT through

@@ -59,3 +59,25 @@ namespace InputRecordingUI
 }
 
 extern InputRecordingUI::InputRecordingData g_InputRecordingData;
+
+#ifdef __ANDROID__
+#include <atomic>
+
+/// Sentinel for "this sensor could not be read". Below any real temperature, so a single
+/// comparison distinguishes absent from cold without a second flag per value.
+#define ARMSX2_THERMAL_NONE (-1000.0f)
+
+/// Device temperatures for the performance overlay.
+///
+/// The core has no way to read these: there is no portable API, and on Android the only route
+/// is a vendor-specific sysfs whose zone names and units differ per SoC. The app layer already
+/// discovers all that for the second-screen panel, so it pushes the values in here and the
+/// overlay just draws them. Written from a UI-thread poll, read on the GS thread.
+namespace Armsx2Thermals
+{
+	extern std::atomic<float> cpu;
+	extern std::atomic<float> gpu;
+	extern std::atomic<float> battery;
+	extern std::atomic<bool> show;
+} // namespace Armsx2Thermals
+#endif

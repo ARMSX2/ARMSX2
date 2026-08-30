@@ -669,12 +669,34 @@ void doIbit(mV)
 	if (mVUup.iBit)
 	{
 		incPC(-1);
-		u32 tempI = curI;
-		if (CHECK_VU_OVERFLOW(mVU.index) && ((curI & 0x7fffffff) >= 0x7f800000))
-			tempI = (0x80000000 & curI) | 0x7f7fffff;
+		if (EmuConfig.Gamefixes.IbitHack)
+		{
+			// mVUsetupRange leaves this word out of the range the program
+			// compare covers, and mVUclear is range-aware, so a game that
+			// rewrites the I immediate in place keeps running the block already
+			// compiled for the old one. Read the constant from micro memory at
+			// run time instead of baking it in. Left unclamped, like x86 — the
+			// operand clamp at the use site covers it.
+			armLoadPtr(gprT1, &curI);
+			armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+		}
+		else
+		{
+			// Baking the immediate in clamped puts an exponent-255 one
+			// permanently out of reach of the exact MAC U and O models, which
+			// read the operand before the clamp. Every FMAC that consumes I
+			// re-clamps it at the use site anyway (setupFtReg's slot is bound to
+			// VF0, which checkVFClamp does not exempt), so at those models' mode
+			// the constant goes in whole. VMAXi and VMINIi compare the raw bits,
+			// as the interpreter does with the unclamped immediate.
+			u32 tempI = curI;
+			if (CHECK_VU_OVERFLOW(mVU.index) && !CHECK_VU_SIGN_OVERFLOW(mVU.index)
+				&& ((curI & 0x7fffffff) >= 0x7f800000))
+				tempI = (0x80000000 & curI) | 0x7f7fffff;
 
-		armAsm->Mov(a64::w9, tempI);
-		armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+			armAsm->Mov(gprT1, tempI);
+			armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+		}
 		incPC(1);
 	}
 }

@@ -29,7 +29,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <gtest/gtest.h>
+#include <vector>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -586,6 +588,35 @@ TEST(EeRecFpuFull, SqrtNegativeSetsIFlagAndUsesAbs)
 	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00020040u, 0x00020040u) << "I|SI not set";
 }
 
+// recSQRT_S_xmm narrows with a plain Fcvt because a root cannot leave the band
+// ToPS2FPU_Full's saturating and flushing arms exist for. These are the four
+// operands nearest the ends of that band.
+TEST(EeRecFpuFull, SqrtStaysInsideTheNarrowingBand)
+{
+	struct Case
+	{
+		u32 ft, want;
+		const char* what;
+	};
+	static constexpr Case kCases[] = {
+		{0x7FFFFFFFu, 0x5FB504F3u, "EEMAX: the largest root there is, 2^64.5"},
+		{0x00800000u, 0x20000000u, "2^-126: the smallest operand FZ keeps, root 2^-63"},
+		{0x007FFFFFu, 0x00000000u, "the largest denormal, flushed ahead of the root"},
+		{0x80000000u, 0x00000000u, "-0.0"},
+	};
+	for (const Case& c : kCases)
+	{
+		SCOPED_TRACE(c.what);
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(1, c.ft);
+		h.LoadProgram({SQRT_S(2, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), c.want) << std::hex << "ft=" << c.ft;
+	}
+}
+
 TEST(EeRecFpuFull, RsqrtPseudoInfExact)
 {
 	// 1.0 / sqrt(2^128) = 2^-64 = 0x1f800000 exactly. The current interp
@@ -780,12 +811,17 @@ struct MaddRow
 };
 
 // Runs one row and returns the destination register's bits (Fd for MADD/MSUB,
-// ACC for MADDA/MSUBA) plus FCR31.
-void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
+// ACC for MADDA/MSUBA) plus FCR31. `mode` is the clamp mode: 3 and 4 share
+// every line of this emitter bar emitDefectiveFmul, so a row needs 4 only when
+// its product is one the boundary term decides.
+void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31, int mode = 3)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.EnableFpuFullMode();
+	if (mode >= 4)
+		h.EnableFpuExactMode();
+	else
+		h.EnableFpuFullMode();
 	h.SetFcr31(0);
 	h.SetAccBits(r.acc);
 	h.SetFprBits(0, r.fs);
@@ -812,15 +848,11 @@ void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
 // deficit reaches all 72 of them; when it landed in iFPUd, 35 rows moved one ULP
 // toward zero. Re-pinning them against the emitter that moved them would assert
 // nothing, so each value below was re-derived by running the same row through
-// FPU.cpp, which models the deficit independently (eeMulRound) -- 71 of 72 agree
-// exactly.
+// FPU.cpp, which models the deficit independently (eeMulRound).
 //
-// The 72nd is row 53 (ft = 0x48b65815), and it is the documented cost of the
-// cheap Booth predicate: its mantissa 0x365815 has no bit of 0x2AA set, so only
-// the dropped boundary term fires. The interpreter returns 0xc8b65805, this
-// emitter 0xc8b65806. MulDefectDropsTheBoundaryTermTheInterpreterModels holds
-// that pair on its own, so closing the gap in iFPUd trips a test that names the
-// reason rather than silently re-pinning a number here.
+// Row 53 (ft = 0x48b65815) is the one the Booth term alone cannot reach: its
+// mantissa 0x365815 has no bit of 0x2AA set, so the boundary term is what
+// decides it.
 constexpr MaddRow kGuardMaskWitnesses[] = {
 	{0x3fb38acau, 0x3f800000u, 0xbacc0111u, 0, 0x3fb357cau, 0u},
 	{0x3ab20dd7u, 0x3f800000u, 0xc4195bd9u, 0, 0xc4195bc2u, 0u},
@@ -873,7 +905,7 @@ constexpr MaddRow kGuardMaskWitnesses[] = {
 	{0x418eac80u, 0x3f800000u, 0x4a25b350u, 1, 0xca25b308u, 0u},
 	{0x35935179u, 0x3f800000u, 0xb3508e2fu, 0, 0x358ccd08u, 0u},
 	{0x452ecb68u, 0x3f800000u, 0xc914f502u, 0, 0xc9144636u, 0u},
-	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65806u, 0u},  // boundary term: interp says c8b65805
+	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65805u, 0u},  // the boundary term decides this one
 	{0x3ec3ca47u, 0x3f800000u, 0x33267262u, 1, 0x3ec3ca46u, 0u},
 	{0x332a2e5bu, 0x3f800000u, 0xaa055622u, 0, 0x332a2e3au, 0u},
 	{0x45855769u, 0x3f800000u, 0xc6cac295u, 0, 0xc6a96cbau, 0u},
@@ -898,15 +930,64 @@ constexpr MaddRow kGuardMaskWitnesses[] = {
 
 } // namespace
 
+// Run at eeClampMode 4: the expected values are the interpreter's, and one
+// witness's product is decided by the boundary term that mode 3 does not emit.
+// The mask itself is not mode-dependent.
 TEST(EeRecFpuFull, MaddGuardMaskAcrossExponentDifferences)
 {
 	for (const MaddRow& r : kGuardMaskWitnesses)
 	{
 		u32 val = 0, fcr31 = 0;
-		RunMaddRow(r, &val, &fcr31);
+		RunMaddRow(r, &val, &fcr31, 4);
 		EXPECT_EQ(val, r.expected)
 			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
 			<< " op=" << std::dec << r.op;
+	}
+}
+
+// The same mask reached from the other side. recMaddsub aligns a product against
+// the ACC; recFPUOp aligns the two guest operands against each other, and it is
+// the only caller that reaches the arm masking ft -- the console corpus sampled
+// the sign-only arms and the one masking fs, never that one.
+//
+// The masked bits sit below the chop boundary on almost every pair, so each row
+// was searched for by requiring that masking change the truncated sum, and each
+// is a witness through the form named in its comment. Only the result word is
+// asserted: FCR31's overflow bit is decided before the mask, by the unrounded
+// sum.
+TEST(EeRecFpuFull, AddSubGuardMaskAcrossExponentDifferences)
+{
+	struct Row { u32 fs, ft, add, sub; };
+	static constexpr Row kRows[] = {
+		{0x447A1D40u, 0xC19B43AAu, 0x44754323u, 0x447EF75Du},  // diff  +5, add
+		{0x840BC9A8u, 0x00F9ABAAu, 0x8409D651u, 0x840DBCFFu},  // diff  +7, add
+		{0x5536E019u, 0xCD175B0Cu, 0x5536DF82u, 0x5536E0B0u},  // diff +16, add
+		{0x18BF028Du, 0x8AEAF6A2u, 0x18BF028Du, 0x18BF028Du},  // diff +28, add
+		{0xA0DD6754u, 0x1051F24Bu, 0xA0DD6754u, 0xA0DD6754u},  // diff +33, add
+		{0x1813816Au, 0x86F08FE9u, 0x1813816Au, 0x1813816Au},  // diff +35, add
+		{0x6A3A7CF3u, 0x6BA7B498u, 0x6BBF0436u, 0xEB9064FAu},  // diff  -3, sub
+		{0x33BB818Au, 0xB8C52D09u, 0xB8C4FE29u, 0x38C55BE9u},  // diff -10, add
+		{0xB62FABAAu, 0xBC848575u, 0xBC848AF2u, 0x3C847FF8u},  // diff -13, sub
+		{0x0A82A5A9u, 0x1778F6B6u, 0x1778F6B6u, 0x9778F6B6u},  // diff -25, sub
+		{0xEF997E6Fu, 0xFC11CD21u, 0xFC11CD21u, 0x7C11CD21u},  // diff -25, sub
+		{0xA309BD95u, 0xB652AB0Cu, 0xB652AB0Cu, 0x3652AB0Cu},  // diff -38, sub
+	};
+
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		for (int issub = 0; issub <= 1; issub++)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.EnableFpuFullMode();
+			h.SetFcr31(0);
+			h.SetFprBits(0, r.fs);
+			h.SetFprBits(1, r.ft);
+			h.LoadProgram({issub ? SUB_S(2, 0, 1) : ADD_S(2, 0, 1)});
+			h.RunJitNoDiff();
+			EXPECT_EQ(h.GetFprBitsJit(2), issub ? r.sub : r.add) << (issub ? "sub.s" : "add.s");
+		}
 	}
 }
 
@@ -1137,64 +1218,270 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 
 
 // ---------------------------------------------------------------------------
-// The one thing this emitter knowingly does not model, held on its own so that
-// closing it trips a test that says why.
+// The boundary term, the one line of this emitter the two clamp modes do not
+// share.
 //
-// The measured predicate has two terms: the Booth term `mant & 0x2AA` (bits
-// 1,3,5,7,9 -- the sign bits of the five lowest radix-4 Booth digits) and a
-// boundary term at the truncation column,
-// `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. iFPUd emits only the first: the
-// second needs a bitfield extract NEON does not have, about eight more
-// instructions on every multiply, and it can only change the answer where the
-// product's tail is already zero.
+// The predicate has two terms: the Booth term `mant & 0x2AA` (bits 1,3,5,7,9,
+// the sign bits of the five lowest radix-4 Booth digits) and a boundary term at
+// the truncation column, `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. They are
+// Or'd into one register, so only the operands tell them apart.
 //
-// ft = 0x48b65815 is a witness. Its mantissa 0x365815 has no bit of 0x2AA set,
-// bit 11 is 1, and (0x365815 >> 12) & 0xF is 5, so the boundary term is the
-// only one that fires. The interpreter (FPU.cpp eeMulArray) models both and
-// returns the decremented product; iFPUd returns the IEEE one.
+// Three ft values with the same exponent and the same top mantissa nibble
+// (5, so `8 <= nib <= 13` is false throughout and the boundary term reduces to
+// bit 11), fs = 1.0 so the product is ft and the tail is zero on all of them:
 //
-// If iFPUd ever grows the boundary term, this test fails and the fix is to
-// delete it -- along with the carve-out in kGuardMaskWitnesses row 53.
-TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
+//   0x365015  Booth off, bit11 0 -> neither term    -> exact
+//   0x365815  Booth off, bit11 1 -> boundary only   -> one ULP low
+//   0x365215  Booth on,  bit11 0 -> Booth only      -> one ULP low
+//
+// The first two are one bit of ft apart, so together they say the boundary
+// term is computed and not always on; the third pins the Booth term on its own.
+// The middle row is the only one where the modes answer differently, and both
+// answers are asserted.
+//
+// The interpreter (FPU.cpp eeMulArray) reaches all three independently and is
+// asserted alongside the emitters.
+TEST(EeRecFpuFull, MulDefectBoundaryTermSeparatesTheClampModes)
 {
 	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
-	constexpr u32 kFt = 0x48b65815u;
+	struct Row
+	{
+		u32 ft;
+		u32 want;    // interpreter and eeClampMode 4
+		u32 want3;   // eeClampMode 3: the Booth term alone
+		const char* what;
+	};
+	constexpr Row kRows[] = {
+		{0x48b65015u, 0x48b65015u, 0x48b65015u, "neither term: exact"},
+		{0x48b65815u, 0x48b65814u, 0x48b65815u, "boundary term alone: mode 4 only"},
+		{0x48b65215u, 0x48b65214u, 0x48b65214u, "Booth term alone: both modes"},
+	};
 
-	EeRecTestHarness hi;
-	hi.EnableCop1();
-	hi.SetFprBits(0, kFs);
-	hi.SetFprBits(1, kFt);
-	hi.LoadProgram({MUL_S(2, 0, 1)});
-	hi.RunInterpOnly();
-	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x48b65814u) << "interp models the boundary term";
+	// One leg per scope: a harness restores the clamp mode in its destructor,
+	// so a mode-4 harness still alive carries mode 4 into the next leg.
+	auto run = [](u32 ft, int mode, bool interp) {
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else if (mode >= 3)
+			h.EnableFpuFullMode();
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		if (interp)
+		{
+			h.RunInterpOnly();
+			return h.GetFprBitsInterp(2);
+		}
+		h.RunJitNoDiff();
+		return h.GetFprBitsJit(2);
+	};
 
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.EnableFpuFullMode();
-	h.SetFprBits(0, kFs);
-	h.SetFprBits(1, kFt);
-	h.LoadProgram({MUL_S(2, 0, 1)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x48b65815u) << "iFPUd drops it: one ULP high";
-
-	// The Booth term alone, for contrast: same shape, and here they agree.
-	EeRecTestHarness hb;
-	hb.EnableCop1();
-	hb.EnableFpuFullMode();
-	hb.SetFprBits(0, kFs);
-	hb.SetFprBits(1, 0x48b65a15u); // mantissa 0x365a15: 0x2AA hits bit 9
-	hb.LoadProgram({MUL_S(2, 0, 1)});
-	hb.RunJitNoDiff();
-	EXPECT_EQ(hb.GetFprBitsJit(2), 0x48b65a14u);
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(r.what);
+		EXPECT_EQ(run(r.ft, 1, true), r.want) << "interp";
+		EXPECT_EQ(run(r.ft, 4, false), r.want) << "eeClampMode 4";
+		EXPECT_EQ(run(r.ft, 3, false), r.want3) << "eeClampMode 3";
+	}
+	// Liveness: exactly one of the three rows separates the modes.
+	int split = 0;
+	for (const Row& r : kRows)
+		split += (r.want != r.want3);
+	ASSERT_EQ(split, 1);
 }
 
 // ---------------------------------------------------------------------------
-// Randomised differential: mode 3 against the interpreter, which reaches the
-// same answers independently and in completely different code (FPU.cpp
-// eeMulArray reconstructs the array's truncated low columns in integers; iFPUd
-// tests ft's Booth digits and lets the narrowing decide whether the decrement
-// survives). Agreement across a wide operand space is what says the emitter
-// implements the law rather than the handful of rows above.
+// The two classes that separate the clamp modes, against silicon.
+//
+// Rows from the fpmul3 capture (SCPH-90000, eight fs significands crossed with
+// every one of the 2^23 ft significands). `console` is what the console
+// returned; `rounded` is the correctly-rounded product the probe computed on
+// the EE beside it. Nothing else came back across all 8 x 2^23 rows, so a row
+// is described by which of the two it is.
+//
+// The 8137-case hardware corpus scores the two modes identically: none of its
+// 328 zero-tail multiplies reaches the boundary term, their ft mantissas being
+// 0x000000, 0x400000 or 0x000001 where the term reads bits 11..15, and of its
+// 31 rows inside the array's band 30 saturate past the EE maximum and the last
+// is exact.
+//
+// Neither class can fire mode 3's predicate -- class A has the Booth term off,
+// class B has a non-zero tail -- so on every row here mode 3 owes `rounded` and
+// mode 4 owes `console`. Half of each table has the two equal.
+namespace {
+struct MulTierRow
+{
+	u32 fs, ft, console, rounded;
+};
+
+// Class A: the exact product has a zero tail and ft's Booth bits are clear, so
+// the boundary term at the truncation column is the only thing that can move
+// the row.
+constexpr MulTierRow kBoundaryTermRows[] = {
+	{0x3f900000u, 0x3f8fa000u, 0x3fa193ffu, 0x3fa19400u},
+	{0x3f900000u, 0x3f8fa800u, 0x3fa19d00u, 0x3fa19d00u},
+	{0x3f900000u, 0x3ff33000u, 0x4008cb00u, 0x4008cb00u},
+	{0x3f900000u, 0x3ff33800u, 0x4008cf7fu, 0x4008cf80u},
+	{0x3fa00000u, 0x3f87d000u, 0x3fa9c3ffu, 0x3fa9c400u},
+	{0x3fa00000u, 0x3f87d800u, 0x3fa9ce00u, 0x3fa9ce00u},
+	{0x3fa00000u, 0x3fdc6500u, 0x4009bf20u, 0x4009bf20u},
+	{0x3fa00000u, 0x3fdc7800u, 0x4009caffu, 0x4009cb00u},
+	{0x3fc00000u, 0x3f87d000u, 0x3fcbb7ffu, 0x3fcbb800u},
+	{0x3fc00000u, 0x3f87d800u, 0x3fcbc400u, 0x3fcbc400u},
+	{0x3fc00000u, 0x3fb27400u, 0x4005d700u, 0x4005d700u},
+	{0x3fc00000u, 0x3fb28000u, 0x4005dfffu, 0x4005e000u},
+	{0x3fe00000u, 0x3f87d000u, 0x3fedabffu, 0x3fedac00u},
+	{0x3fe00000u, 0x3f87d800u, 0x3fedba00u, 0x3fedba00u},
+	{0x3fe00000u, 0x3fa1e940u, 0x400dac17u, 0x400dac18u},
+	{0x3fe00000u, 0x3fa1f000u, 0x400db200u, 0x400db200u},
+	{0x3ff00000u, 0x3f982100u, 0x400e9ef0u, 0x400e9ef0u},
+	{0x3ff00000u, 0x3f983800u, 0x400eb47fu, 0x400eb480u},
+	{0x3fff0000u, 0x3fbf0000u, 0x403e4100u, 0x403e4100u},
+	{0x3fff0000u, 0x3fbf0900u, 0x403e49f6u, 0x403e49f7u},
+};
+
+// Class B: the tail is non-zero but below the array's 2^15 borrow, so no
+// function of ft can decide the row and only reconstructing the array's
+// truncated columns does.
+constexpr MulTierRow kArrayBandRows[] = {
+	{0x3fbfffffu, 0x3fbf8961u, 0x400fa708u, 0x400fa708u},
+	{0x3fbfffffu, 0x3fbf92d1u, 0x400fae1cu, 0x400fae1cu},
+	{0x3fbfffffu, 0x3fbfb47du, 0x400fc75cu, 0x400fc75du},
+	{0x3fbfffffu, 0x3fbfbf69u, 0x400fcf8du, 0x400fcf8eu},
+	{0x3fd2b4c1u, 0x3f83fa5cu, 0x3fd9411eu, 0x3fd9411eu},
+	{0x3fd2b4c1u, 0x3f85cb9cu, 0x3fdc3efbu, 0x3fdc3efcu},
+	{0x3fd2b4c1u, 0x3f87f17cu, 0x3fdfc828u, 0x3fdfc828u},
+	{0x3fd2b4c1u, 0x3f8bb3c4u, 0x3fe5f834u, 0x3fe5f835u},
+	{0x3fd2b4c1u, 0x3fa398c7u, 0x4006a6d6u, 0x4006a6d6u},
+	{0x3fd2b4c1u, 0x3fa6df9cu, 0x40095940u, 0x40095941u},
+	{0x3fd2b4c1u, 0x3fab9889u, 0x400d3c49u, 0x400d3c49u},
+	{0x3fd2b4c1u, 0x3fb23f42u, 0x4012b5beu, 0x4012b5bfu},
+};
+
+// One leg per scope: a harness restores the clamp mode in its destructor, so
+// one still alive carries its mode into the next leg.
+u32 RunMulTierRow(const MulTierRow& r, int mode, bool interp, bool madd)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	if (mode >= 4)
+		h.EnableFpuExactMode();
+	else if (mode >= 3)
+		h.EnableFpuFullMode();
+	h.SetAccBits(0x00000000u); // +0, so MADD lands on the product alone
+	h.SetFprBits(0, r.fs);
+	h.SetFprBits(1, r.ft);
+	h.LoadProgram({madd ? MADD_S(2, 0, 1) : MUL_S(2, 0, 1)});
+	if (interp)
+	{
+		h.RunInterpOnly();
+		return h.GetFprBitsInterp(2);
+	}
+	h.RunJitNoDiff();
+	return h.GetFprBitsJit(2);
+}
+
+// Both emit sites, since recMULop and recMaddsub's multiply stage narrow
+// through different code.
+void ExpectMulTier(const MulTierRow& r)
+{
+	for (bool madd : {false, true})
+	{
+		SCOPED_TRACE(madd ? "MADD.S" : "MUL.S");
+		EXPECT_EQ(RunMulTierRow(r, 1, true, madd), r.console) << "interp";
+		EXPECT_EQ(RunMulTierRow(r, 4, false, madd), r.console) << "eeClampMode 4";
+		EXPECT_EQ(RunMulTierRow(r, 3, false, madd), r.rounded) << "eeClampMode 3";
+	}
+}
+
+int SeparatingRows(const MulTierRow* rows, size_t n)
+{
+	int k = 0;
+	for (size_t i = 0; i < n; i++)
+		k += (rows[i].console != rows[i].rounded);
+	return k;
+}
+} // namespace
+
+TEST(EeRecFpuFull, MulDeficitBoundaryTermAgainstTheConsole)
+{
+	for (const MulTierRow& r : kBoundaryTermRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+	}
+	// Liveness, both ways: rows the term moves, and rows it must not.
+	const int sep = SeparatingRows(kBoundaryTermRows, std::size(kBoundaryTermRows));
+	EXPECT_GT(sep, 0) << "no row left where the boundary term decides";
+	EXPECT_LT(sep, static_cast<int>(std::size(kBoundaryTermRows)))
+		<< "every row decides, so an emitter that always decremented would pass";
+}
+
+TEST(EeRecFpuFull, MulDeficitArrayBandAgainstTheConsole)
+{
+	for (const MulTierRow& r : kArrayBandRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+	}
+	const int sep = SeparatingRows(kArrayBandRows, std::size(kArrayBandRows));
+	EXPECT_GT(sep, 0) << "no row left inside the band that the array moves";
+	EXPECT_LT(sep, static_cast<int>(std::size(kArrayBandRows)))
+		<< "every row moves, so an emitter that always decremented would pass";
+}
+
+// Both tables above are exponent 127 with both operands positive, because that
+// is what the fpmul3 sweep covered. Every model of the deficit in the tree
+// reads the significands and nothing else, so these rows put the other two
+// fields on the console: captures/fpmulsign, four sign combinations across five
+// exponent placements for eight separating operand pairs. All 160 came back one
+// ULP low, and the extremes are kept here.
+//
+// The operands are the ones above with their exponent fields moved, so the
+// significands are unchanged; a row that fails here and passes there is an
+// emitter reading the exponent or the sign.
+constexpr MulTierRow kExponentAndSignRows[] = {
+	{0x12C00000u, 0x30F5A104u, 0x043838C2u, 0x043838C3u},
+	{0x92C00000u, 0x30F5A104u, 0x843838C2u, 0x843838C3u},
+	{0x12C00000u, 0xB0F5A104u, 0x843838C2u, 0x843838C3u},
+	{0x92C00000u, 0xB0F5A104u, 0x043838C2u, 0x043838C3u},
+	{0x00C00000u, 0x7EF5A104u, 0x403838C2u, 0x403838C3u},
+	{0x80C00000u, 0x7EF5A104u, 0xC03838C2u, 0xC03838C3u},
+	{0x00C00000u, 0xFEF5A104u, 0xC03838C2u, 0xC03838C3u},
+	{0x80C00000u, 0xFEF5A104u, 0x403838C2u, 0x403838C3u},
+	{0x00E00000u, 0x7EA2EC50u, 0x400E8EC5u, 0x400E8EC6u},
+	{0x80E00000u, 0x7EA2EC50u, 0xC00E8EC5u, 0xC00E8EC6u},
+	{0x00E00000u, 0xFEA2EC50u, 0xC00E8EC5u, 0xC00E8EC6u},
+	{0x80E00000u, 0xFEA2EC50u, 0x400E8EC5u, 0x400E8EC6u},
+	{0x00A00000u, 0x7ED47C40u, 0x4004CDA7u, 0x4004CDA8u},
+	{0x80A00000u, 0x7ED47C40u, 0xC004CDA7u, 0xC004CDA8u},
+	{0x00A00000u, 0xFED47C40u, 0xC004CDA7u, 0xC004CDA8u},
+	{0x80A00000u, 0xFED47C40u, 0x4004CDA7u, 0x4004CDA8u},
+};
+
+TEST(EeRecFpuFull, MulDeficitIgnoresTheExponentAndTheSigns)
+{
+	int signs = 0;
+	for (const MulTierRow& r : kExponentAndSignRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+		signs |= 1 << (((r.fs >> 31) << 1) | (r.ft >> 31));
+	}
+	EXPECT_EQ(signs, 0xF) << "not all four sign combinations are still here";
+	// Every row here separates the two modes; the control against an emitter
+	// that decrements unconditionally is ExpectMulTier()'s mode 3 leg.
+	EXPECT_EQ(SeparatingRows(kExponentAndSignRows, std::size(kExponentAndSignRows)),
+		static_cast<int>(std::size(kExponentAndSignRows)));
+}
+
+// ---------------------------------------------------------------------------
+// Randomised differential: mode 4 against the interpreter, which reaches the
+// same answers in completely different code (FPU.cpp eeMulArray reconstructs
+// the array's truncated low columns in integers; iFPUd reads the predicate off
+// ft's slot bits and the tail off the double product).
 //
 // Dimensions varied and crossed: six operand classes on each side (arbitrary
 // words, random normals, powers of two -- which force a zero tail and so make
@@ -1205,20 +1492,11 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// Two divergences are licensed, both with the interpreter one ULP nearer zero:
-//
-//   1. the dropped boundary term, on rows whose product is exactly
-//      representable; and
-//   2. rows whose tail is non-zero but smaller than the array's 2^15 borrow.
-//      The interpreter reconstructs the array and so sees these; iFPUd decides
-//      on a double, where one integer ULP is 2^-29 of a single ULP, so its
-//      decrement is absorbed by the narrowing and the row comes back IEEE.
-//
-// Rows are classified by the tail below the single ULP, taken from the exact
-// 48-bit significand product, so a bug in eeMulArray cannot license itself.
-// Anything else -- a wrong predicate, a decrement escaping into a tail large
-// enough to absorb it, a zero product turned into a NaN, a saturation or
-// top-binade case the decrement walked across -- fails here.
+// Mode 4 answers every row the interpreter's way, the inline predicate
+// deciding the zero-tail rows and the island's call to eeMulOneUlpLow deciding
+// the band below the array's borrow. The two classes that need those parts are
+// counted and asserted non-empty, classified from the exact 48-bit significand
+// product so that neither engine can license itself.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1263,7 +1541,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	};
 
 	u64 state = 0x1234567890ABCDEFull;
-	int rows = 0, boundary_gap[4] = {0, 0, 0, 0}, subulp_gap = 0;
+	int rows = 0, boundary_rows[4] = {0, 0, 0, 0}, subulp_rows = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1283,7 +1561,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 
 		EeRecTestHarness h;
 		h.EnableCop1();
-		h.EnableFpuFullMode();
+		h.EnableFpuExactMode();
 		h.SetAccBits(0);
 		h.SetFprBits(0, fs);
 		h.SetFprBits(1, ft);
@@ -1301,66 +1579,120 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		const u32 interp = hi.GetFprBitsInterp(dst);
 
 		rows++;
-		if (jit == interp)
-			continue;
-
 		const u64 tail = tailBelowUlp(fs, ft);
-		const bool boundary_only = tail == 0 && !booth(ft) && full(ft);
-		const bool sub_ulp_tail = tail != 0 && tail < 0x8000u;
-		ASSERT_TRUE((boundary_only || sub_ulp_tail) && jit == interp + 1u)
-			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
-			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail
-			<< " jit=" << jit << " interp=" << interp;
-		if (boundary_only)
-			boundary_gap[form]++;
-		else
-			subulp_gap++;
+		// The class the Booth term cannot see, and the class no function of ft
+		// can see at all. Both are counted whether they agreed or not.
+		if (tail == 0 && !booth(ft) && full(ft))
+			boundary_rows[form]++;
+		if (tail != 0 && tail < 0x8000u)
+			subulp_rows++;
+
+		ASSERT_EQ(jit, interp)
+			<< "form=" << form << " cs=" << cs << " ct=" << ct
+			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail;
 	}
 
 	EXPECT_EQ(rows, 40000);
-	// Liveness. "No unlicensed divergence" is also what a harness that never
-	// reached the emitter would report, so each licensed one must actually be
-	// observed -- the boundary term at both emit sites, since they narrow
-	// through different code.
-	EXPECT_GT(boundary_gap[0] + boundary_gap[1] + boundary_gap[2], 0)
+	// Liveness, per class. The boundary term is asserted at both emit sites
+	// because they narrow through different code.
+	EXPECT_GT(boundary_rows[0] + boundary_rows[1] + boundary_rows[2], 0)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
-	EXPECT_GT(boundary_gap[3], 0)
+	EXPECT_GT(boundary_rows[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
-	EXPECT_GT(subulp_gap, 0)
-		<< "the sweep never reached a non-zero tail below the borrow: the "
-		   "second carve-out is vacuous and would hide a regression";
+	EXPECT_GT(subulp_rows, 0)
+		<< "the sweep never reached a non-zero tail below the borrow, so it "
+		   "never entered the island and says nothing about the call";
+}
+
+// ---------------------------------------------------------------------------
+// The island's call, with the allocator holding as much as it can. The tests
+// above reach it from one-instruction programs, where almost nothing is
+// resident. The call is plain AAPCS -- it clobbers x0-x18 and every vector
+// register bar the low halves of q8-q15 -- so a block's live values are
+// protected by the spill emitted around it and the pin reload after it.
+//
+// Each register below is used once before the multiply and once after, so the
+// allocator has a reason to hold it across. FPRs and GPRs both, saved by
+// different loops.
+//
+// $at, $s0 and $k0 are the caller-saved EE pin mirrors rather than allocator
+// state: the island flushes them before the call and reloads them after, and a
+// reload without the flush loses the block's writes to them.
+TEST(EeRecFpuFull, MulArrayIslandPreservesTheAllocatorsLiveRegisters)
+{
+	// tail 0x2: below the array's borrow, so this is a row that calls out.
+	constexpr u32 kFs = 0x3F800001u, kFt = 0x3F800002u;
+	static const u32 kPinned[] = {1, 16, 26}; // $at, $s0, $k0
+
+	std::vector<u32> prog;
+	auto body = [&prog]() {
+		for (u32 f = 4; f < 16; f += 2)
+			prog.push_back(ADD_S(f, f, f + 1));
+		for (u32 r = 8; r < 14; r += 2)
+			prog.push_back(DADDU(r, r, r + 1));
+		for (u32 r : kPinned)
+			prog.push_back(DADDU(r, r, 8));
+	};
+	body();
+	prog.push_back(MUL_S(2, 0, 1));
+	body();
+
+	auto seed = [&](EeRecTestHarness& h) {
+		h.EnableCop1();
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, kFt);
+		for (u32 f = 4; f < 16; f++)
+			h.SetFprBits(f, 0x3F800000u + (f << 16)); // distinct, exactly representable
+		for (u32 r = 8; r < 14; r++)
+			h.SetGpr64(r, 0x0123456789ABCDEFull * (r + 1));
+		for (u32 r : kPinned)
+			h.SetGpr64(r, 0xFEDCBA9876543210ull * (r + 1));
+	};
+
+	EeRecTestHarness hi;
+	seed(hi);
+	hi.LoadProgram(prog);
+	hi.RunInterpOnly();
+
+	EeRecTestHarness h;
+	h.EnableFpuExactMode();
+	seed(h);
+	h.LoadProgram(prog);
+	h.RunJitNoDiff();
+
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x3F800002u) << "the island's own result";
+	for (u32 f = 4; f < 16; f++)
+		EXPECT_EQ(h.GetFprBitsJit(f), hi.GetFprBitsInterp(f)) << "f" << f;
+	for (u32 r = 8; r < 14; r++)
+		EXPECT_EQ(h.GetGpr64Jit(r), hi.GetGpr64Interp(r)) << "r" << r;
+	for (u32 r : kPinned)
+		EXPECT_EQ(h.GetGpr64Jit(r), hi.GetGpr64Interp(r)) << "pinned r" << r;
 }
 
 
 // ---------------------------------------------------------------------------
-// Residency of the predicate mask (d10, NEON_RESERVED_FPU_MULMASK).
+// The predicate's operand: the allocator-resident guest ft.
 //
-// The mask is not materialized per multiply. It is parked once per JIT entry by
-// _DynGen_EnterRecompiledCode, which is what makes emitDefectiveFmul four
-// instructions instead of six -- see the comment on the constant in
-// iCore-arm64.h for the contract. These tests pin the two things that contract
-// rests on: that no C-call seam, VU dispatch or inline macro-mode emit destroys
-// the parked value, and that the allocator never hands q10 out.
+// emitDefectiveFmul indexes bits 30..44 of ft's slot, read straight out of
+// whatever NEON register the allocator has it in. That is a 64-bit read of a
+// register the emitter does not own, so it is only correct while the full slot
+// is there -- through a C-call seam (iFlushCall retains FPR-class slots in the
+// callee-saved range, where AAPCS64 preserves the low 64 bits and nothing
+// above), through inline macro-mode emit, and through a spill and reload.
 //
-// Both failures are silent -- no crash, no corrupt value, just a wrong rounding
-// decision on a fraction of multiplies -- and they fail in opposite directions,
-// which is why every test below checks both polarities:
+// A 32-bit fill, a retention that kept only the single, or an allocator that
+// let something else into the register leaves those bits wrong with no crash
+// and no corrupt value -- just a wrong rounding decision on a fraction of
+// multiplies. Every test below checks both polarities:
 //
-//   mask zeroed        -> Cmtst never fires -> every product correctly rounded
-//                         (one ULP high wherever silicon is short)
-//   mask overwritten    -> Cmtst fires on operands it must not -> products one
-//     with a live value    ULP low where silicon is exact
+//   bits 30..44 read as zero  -> the predicate never fires -> every product
+//                                correctly rounded, one ULP high wherever
+//                                silicon is short
+//   bits 30..44 read garbage  -> it fires on operands it must not -> products
+//                                one ULP low where silicon is exact
 //
-// A test using only predicate-on operands sees the first and is blind to the
-// second, because a garbage mask with any of bits 0..9 set gives the same
-// answer as the correct mask on exactly those rows. That is not hypothetical:
-// removing q10 from _isReservedNEONreg makes the allocator home a guest FPR
-// there, and the observed break is the second kind, on the rows where ft's
-// mantissa is 0.
-//
-// The 1147-case hardware corpus cannot see any of this: its cases are single
-// ops, so every multiply in it is the first multiply after the entry that
-// parked the mask.
+// The 1147-case hardware corpus is single ops, so no multiply in it is far
+// enough into a block to have been moved.
 namespace {
 // Two rows from kSiliconMulRows above, chosen as a matched pair on one pair of
 // registers -- f0 = 1.0, f1 = +FLT_MAX -- so a single block can ask the
@@ -1370,35 +1702,34 @@ namespace {
 //   MUL_S(d, 1, 0)   ft = f0, mantissa 0         -> predicate off, 0x7f7fffff
 //
 // Both measured on an SCPH-90000; this is the non-commutativity of mul.s, which
-// is the sharpest available probe of the mask because the two answers differ by
-// exactly the decrement the mask controls.
-constexpr u32 kMaskFprOne    = 0x3f800000u; // f0 = 1.0
-constexpr u32 kMaskFprMax    = 0x7f7fffffu; // f1 = +FLT_MAX
-constexpr u32 kMaskOnWant    = 0x7f7ffffeu; // 1.0 * FLT_MAX: silicon is one ULP low
-constexpr u32 kMaskOffWant   = 0x7f7fffffu; // FLT_MAX * 1.0: silicon is exact
+// is the sharpest available probe because the two answers differ by exactly the
+// decrement the predicate controls.
+constexpr u32 kPredFprOne  = 0x3f800000u; // f0 = 1.0
+constexpr u32 kPredFprMax  = 0x7f7fffffu; // f1 = +FLT_MAX
+constexpr u32 kPredOnWant  = 0x7f7ffffeu; // 1.0 * FLT_MAX: silicon is one ULP low
+constexpr u32 kPredOffWant = 0x7f7fffffu; // FLT_MAX * 1.0: silicon is exact
 
-// Seed f0/f1 and assert the matched pair in fd_on / fd_off, at both emit sites.
-void ExpectMaskLive(EeRecTestHarness& h, u32 fd_on, u32 fd_off, const char* where)
+// Assert the matched pair in fd_on / fd_off.
+void ExpectPredicateLive(EeRecTestHarness& h, u32 fd_on, u32 fd_off, const char* where)
 {
-	EXPECT_EQ(h.GetFprBitsJit(fd_on), kMaskOnWant)
-		<< where << ": predicate did not fire -- the parked mask read as zero";
-	EXPECT_EQ(h.GetFprBitsJit(fd_off), kMaskOffWant)
-		<< where << ": predicate fired on ft mantissa 0 -- the parked mask holds garbage";
+	EXPECT_EQ(h.GetFprBitsJit(fd_on), kPredOnWant)
+		<< where << ": predicate did not fire -- ft's slot bits read as zero";
+	EXPECT_EQ(h.GetFprBitsJit(fd_off), kPredOffWant)
+		<< where << ": predicate fired on ft mantissa 0 -- ft's slot bits hold garbage";
 }
 } // namespace
 
 // A VCALLMS in the middle of the block is both runtime hazards at once: it is a
 // real in-block C-call seam (the callee may clobber any caller-saved register),
 // and it dispatches a VU0 microprogram, whose blocks allocate NEON slots q0-q27
-// freely. d10 survives the first because AAPCS64 preserves the low 64 bits of
-// d8-d15, and the second because mVUdispatcherAB's prologue Stp/Ldp-saves
-// d8-d15 around the dispatch -- the same protection the s8/s9 clamp scalars get
-// (see the VE-04 note in microVU-arm64.cpp).
+// freely. A retained ft survives the first because AAPCS64 preserves the low 64
+// bits of v8-v15, the whole slot, and the second because mVUdispatcherAB's
+// prologue Stp/Ldp-saves d8-d15 around the dispatch (see the VE-04 note in
+// microVU-arm64.cpp).
 //
-// A compile-time liveness flag in a caller-saved register would have had to
-// invalidate at this seam and re-materialize after it; this is the assertion
-// that the parked register needs no seam handling at all, at both emit sites.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
+// Both emit sites, since recMULop and recMaddsub reach the seam with different
+// registers live.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesAnInBlockCallSeam)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
@@ -1408,8 +1739,8 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
 	// Trivial immediate-E micro: the VCALLMS is here purely as the seam.
 	h.SeedVu0Microprogram(0, {vu::EBitNopPair(), vu::NopPair()});
 	h.SetAccBits(0x00000000u);
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 	h.LoadProgram({
 		MUL_S(2, 0, 1),
 		MUL_S(3, 1, 0),
@@ -1422,23 +1753,22 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
 	});
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "pre-seam MUL.S");
-	ExpectMaskLive(h, 4, 5, "post-seam MUL.S");
-	ExpectMaskLive(h, 6, 7, "post-seam MADD.S");
+	ExpectPredicateLive(h, 2, 3, "pre-seam MUL.S");
+	ExpectPredicateLive(h, 4, 5, "post-seam MUL.S");
+	ExpectPredicateLive(h, 6, 7, "post-seam MADD.S");
 	// Liveness: the two expectations above discriminate only because the two
 	// answers differ. If this ever fires the rows stopped being a matched pair
 	// and the test is vacuous whatever it reports.
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
 // COP2 macro mode is the one context that emits mVU code inline in an EE block,
-// with no dispatcher save around it. It is safe for d10 for a structural reason
-// rather than an ABI one: macro emit is bounded to NEON slots 0-3 by
-// kMacroVFEvictHighWater, which mVUmacroEmitEpilogue asserts on every macro op.
-// That is why d10 needs no microVU pool gate, unlike SL-13's q25/q26 -- and
-// this is the end-to-end check on it, with two macro FMACs between the
-// multiplies to give the mVU allocator something to spend registers on.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
+// with no dispatcher save around it, so an EE FPR left resident across it is
+// protected by nothing but the mVU allocator's own bound: macro emit is limited
+// to NEON slots 0-3 by kMacroVFEvictHighWater, which mVUmacroEmitEpilogue
+// asserts on every macro op. Two macro FMACs between the multiplies give that
+// allocator something to spend registers on.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesInlineCop2MacroMode)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
@@ -1447,8 +1777,8 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
 	h.SeedVu0Vi(REG_VPU_STAT, 0);
 	h.SeedVu0Vf(1, 1.0f, 2.0f, 3.0f, 4.0f);
 	h.SeedVu0Vf(2, 5.0f, 6.0f, 7.0f, 8.0f);
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 	h.LoadProgram({
 		MUL_S(2, 0, 1),
 		MUL_S(3, 1, 0),
@@ -1459,25 +1789,21 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
 	});
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "pre-macro MUL.S");
-	ExpectMaskLive(h, 4, 5, "MUL.S after inline COP2 macro emit");
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ExpectPredicateLive(h, 2, 3, "pre-macro MUL.S");
+	ExpectPredicateLive(h, 4, 5, "MUL.S after inline COP2 macro emit");
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
-// The other half of the contract: nothing in EE codegen may be handed q10.
-// EeVu0Cop2ClampResidency.EeAllocatorReservesClampRegs pins the reservation at
-// the predicate; this pins it through the allocator, with enough simultaneously
-// live FP values to drive allocation into the callee-saved range where the mask
-// sits. That range is not a last resort -- the FPR class prefers it (GE-15,
-// _getFreeArm64NEONInRangeNoEvict(NEON_CALLEE_SAVED_START, ...)), so q10 is one
-// of the first homes an unreserved pool would reach for, not one of the last.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
+// Sixteen simultaneously live FPRs is more than the pool has, so ft goes out to
+// its slot in fpuRegs and comes back. A 32-bit fill and spill would round-trip
+// the word and lose the domain, leaving bits 30..44 clear on the reload.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesHeavyFprPressure)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.EnableFpuFullMode();
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 
 	std::vector<u32> prog;
 	for (u32 r = 6; r < 22; r++)
@@ -1494,9 +1820,9 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
 	h.LoadProgram(prog);
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "MUL.S under FPR pressure");
-	ExpectMaskLive(h, 4, 5, "MUL.S after 16 live FPRs");
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ExpectPredicateLive(h, 2, 3, "MUL.S under FPR pressure");
+	ExpectPredicateLive(h, 4, 5, "MUL.S after 16 live FPRs");
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,10 +1881,9 @@ constexpr BinadeRow kTopBinadeSilent[] = {
 	{0x3fff0000u, 0x3f808800u, 0x40000778u},
 };
 
-// Upper binade, T == 0, only the dropped boundary term fires -> silicon is one
-// ULP low and this emitter is one ULP high. `want` is the silicon value, so
-// the emitter is asserted at want + 1: the licensed divergence, in the binade
-// where it had never been measured.
+// Upper binade, T == 0, only the boundary term fires -> silicon is one ULP low.
+// The truncation column moves one bit between the binades, so a term keyed to
+// fixed bit positions of ft need not survive the shift.
 constexpr BinadeRow kTopBinadeBoundary[] = {
 	{0x3fc00000u, 0x3faab000u, 0x400003ffu},
 	{0x3fe00000u, 0x3f924940u, 0x40000017u},
@@ -1572,11 +1897,21 @@ constexpr BinadeRow kTopBinadeBoundary[] = {
 // multiply stage with ToPS2FPU_Wide's mask-off-the-low-29. Those two land on
 // different sides of the mantissa boundary that the binade shifts, so the
 // upper binade has to be checked through both.
-void ExpectBothSites(const BinadeRow& r, u32 want, const char* what)
+//
+// `mode` is the clamp mode the rows need: the Booth term is on 3 and 4, the
+// boundary term only on 4.
+void ExpectBothSites(const BinadeRow& r, u32 want, const char* what, int mode = 3)
 {
+	auto tier = [mode](EeRecTestHarness& h) {
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else
+			h.EnableFpuFullMode();
+	};
+
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.EnableFpuFullMode();
+	tier(h);
 	h.SetFprBits(0, r.fs);
 	h.SetFprBits(1, r.ft);
 	h.LoadProgram({MUL_S(2, 0, 1)});
@@ -1586,7 +1921,7 @@ void ExpectBothSites(const BinadeRow& r, u32 want, const char* what)
 
 	EeRecTestHarness hm;
 	hm.EnableCop1();
-	hm.EnableFpuFullMode();
+	tier(hm);
 	hm.SetAccBits(0x00000000u); // ACC = +0 -> fd is the rounded product alone
 	hm.SetFprBits(0, r.fs);
 	hm.SetFprBits(1, r.ft);
@@ -1612,14 +1947,13 @@ TEST(EeRecFpuFull, MulDefectStaysSilentInTheUpperBinadeWhereSiliconIsExact)
 		ExpectBothSites(r, r.want, "upper-binade exact");
 }
 
-// The dropped boundary term reaches the upper binade too, at the same 1/64 of
-// significands. Asserting emitter == silicon + 1 keeps the gap measured rather
-// than latent: closing it in iFPUd trips this and names the reason.
-TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
+// The boundary term reaches the upper binade too: rows the Booth term cannot
+// see, so they pin it where exp == 0xff is an ordinary EE number.
+TEST(EeRecFpuFull, MulDefectBoundaryTermAlsoFiresInTheUpperBinade)
 {
 	for (const BinadeRow& r : kTopBinadeBoundary)
 	{
-		ExpectBothSites(r, r.want + 1u, "upper-binade boundary term");
+		ExpectBothSites(r, r.want, "upper-binade boundary term", 4);
 
 		EeRecTestHarness hi;
 		hi.EnableCop1();
