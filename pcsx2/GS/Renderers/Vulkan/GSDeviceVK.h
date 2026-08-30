@@ -39,6 +39,8 @@ public:
 	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
 	u64 GetSourceSetWaitNs() const override { return m_source_set_wait_ns; }
 	u64 GetSourceSetWaitCalls() const override { return m_source_set_wait_calls; }
+	u64 GetTileGpuKicksOffered() const override { return m_tilegpu_kicks_offered; }
+	u64 GetTileGpuKicksTaken() const override { return m_tilegpu_kicks_taken; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -1338,6 +1340,25 @@ private:
 	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
 	u32 m_readback_frame = ~0u;
+
+	// The TileGpu executor's kick arms off its OWN window, and this is why.
+	//
+	// m_readback_frame above is stamped in one place, ExecuteCommandBufferForReadback — the DRAIN
+	// road. That is sound for Classic and exact-Tile, whose readbacks reach it, and self-defeating
+	// for the TileGpu kick, whose entire job is to convert drains into out-of-band round trips. A
+	// working kick drives the only thing that refreshes m_readback_frame to zero; three frames later
+	// the window shuts, the kick stops, the drains come back, the window reopens. That oscillation
+	// would not look like a bug from the outside — it would look like the lever doing about half of
+	// what it should.
+	//
+	// So this one is refreshed by BOTH roads (SubmitOutOfBandAndWait as well as
+	// ExecuteCommandBufferForReadback), and it is a separate field rather than a wider stamp on
+	// m_readback_frame because that one is Classic's and exact-Tile's — both reach DoRenderHW — and
+	// this must not move their kick cadence. Nothing outside ExecuteTileGpuPassPlan reads it.
+	u32 m_tilegpu_readback_frame = ~0u;
+	u64 m_tilegpu_kicks_offered = 0;
+	u64 m_tilegpu_kicks_taken = 0;
+	bool m_tilegpu_kick_announced = false;
 
 	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
 	// A draw INTO one of these is almost certainly the producer of the next readback,

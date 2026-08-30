@@ -1529,6 +1529,12 @@ bool GSDeviceVK::SubmitOutOfBandAndWait()
 	pxAssert(m_oob.recording);
 	m_oob.recording = false;
 
+	// An out-of-band round trip is a readback too. m_readback_frame deliberately does not learn
+	// that -- it is Classic's and exact-Tile's window and this must not move their kick cadence --
+	// but the TileGpu kick's window must, or a kick that succeeds in moving every pull onto this
+	// road starves the window that armed it. See m_tilegpu_readback_frame.
+	m_tilegpu_readback_frame = m_frame;
+
 	VkResult res = vkEndCommandBuffer(m_oob.command_buffer);
 	if (res != VK_SUCCESS)
 	{
@@ -8313,6 +8319,18 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			GSConfig.TileGpuSerializeOps, GSConfig.TileGpuSerializeMask);
 	}
 
+	// The mid-frame readback kick, EmuCore/GS/TileGpuKickReadbackFrames. Announced once per run
+	// like the levers above, and only when it is set: a lever whose whole effect is submission
+	// TIMING leaves no other trace in a log, and "was it on?" has to be answerable from one.
+	if (GSConfig.TileGpuKickReadbackFrames && !m_tilegpu_kick_announced)
+	{
+		m_tilegpu_kick_announced = true;
+		Console.WriteLn("TileGpu mid-frame readback kick ENGAGED (EmuCore/GS/TileGpuKickReadbackFrames) -- on a "
+						"frame near a readback, the plan's recorded work is submitted at a pass boundary rather "
+						"than held until a pull drains it. Never blocks: it fires only when the next command "
+						"buffer has already retired. Counts at teardown.");
+	}
+
 	// One op boundary, at the strength the grade asks for, at the sites the mask names. The barrier is
 	// deliberately the bluntest one Vulkan can express: this is a discriminator, not a fix, so it must
 	// not be able to miss an edge. The cut from grade 2 takes the road the source-ring wrap already
@@ -8337,6 +8355,72 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		RetainTileGpuStreamsForCurrentCommandBuffer();
 		if (serialize >= 3)
 			WaitForFenceCounter(submitted, GpuWaitCause::Sync);
+		cmd = GetCurrentCommandBuffer();
+	};
+
+	// The mid-frame kick (EmuCore/GS/TileGpuKickReadbackFrames), ported from the Classic renderer's
+	// DoRenderHW. Called at the PASS TAIL below -- after the pass's closing EndRenderPass and after
+	// its snapshot recycle -- for three reasons: no render pass is open there (a submit inside one
+	// would force a tile flush, and ExecuteCommandBuffer(WaitType) does not end one for you); the
+	// recycle has already stamped the scratch texture against the submission that actually read it;
+	// and it is the one point in this loop that the grade-2 ordering lever ALREADY submits at, so
+	// the state audit is the one written above serialize_boundary rather than a new one.
+	//
+	// It takes that same road verbatim -- submit, retain the plan's stream reservations, re-read the
+	// command buffer -- and it must, because everything the loop carries across a pass either
+	// survives a submit or is re-established by the next pass:
+	//   - the frame's vertex/index/state/indirect/ring stream reservations, held by
+	//     RetainTileGpuStreamsForCurrentCommandBuffer so the next frame cannot stage over data this
+	//     one has recorded but not yet submitted;
+	//   - the framebuffer, pipeline and descriptor caches, cleared by MoveToNextCommandBuffer's
+	//     InvalidateCachedState, which is what makes the next pass's OMSetRenderTargets rebuild
+	//     rather than early-out;
+	//   - every per-pass bind -- viewport, scissor, vertex and index buffers at this frame's base,
+	//     sets 0..3 in ascending order, push constants, pipeline -- re-issued inside the pass;
+	//   - rule 3's frame-wide source set, which lives in a persistent ring rather than the frame
+	//     pool and so survives a flush; only its reuse epoch has to name the LAST command buffer,
+	//     which the re-stamp at the end of this function already does;
+	//   - the frame-pool descriptor sets (expand, read-target, writeback, snapshot, dest), every one
+	//     of which is allocated and consumed inside a single pass, so none spans this boundary;
+	//   - the CLUT block-copy run, which never crosses a pass and is closed well before the tail.
+	//
+	// The gate is Classic's, unchanged. The threshold is not a submit budget -- it sets how often we
+	// OFFER, and the fence check below is what decides, by a wide margin. ⚠️ The kick must never
+	// block: submitting cycles to the next command buffer, and ActivateCommandBuffer fence-waits if
+	// that buffer's previous submission is still executing, which is a hidden GPU sync worse than
+	// the backlog the kick drains. So it fires only when the next buffer is verifiably complete;
+	// otherwise the counter keeps the gate open and the next pass tail retries. Classic's comment
+	// at DoRenderHW carries the measurement behind that rule.
+	const auto readback_kick = [&](GSTexture* pass_rt, GSTexture* pass_ds) {
+		if (!GSConfig.TileGpuKickReadbackFrames)
+			return;
+		constexpr u32 kick_threshold = 8;
+		constexpr u32 readback_window_frames = 3;
+		// A pass that wrote a recent readback source is (almost certainly) producing the data for
+		// the next pull, which follows immediately -- kick regardless of the threshold so the
+		// backlog is already draining when it asks. Both attachments, unlike Classic's colour-only
+		// test: a TileGpu pull takes a depth owner as readily as a colour one.
+		const auto recent = [this](GSTexture* t) {
+			return t && (t == m_recent_readback_sources[0] || t == m_recent_readback_sources[1]);
+		};
+		const bool produces_readback_data = recent(pass_rt) || recent(pass_ds);
+		const bool near_readback =
+			m_tilegpu_readback_frame != ~0u && (m_frame - m_tilegpu_readback_frame) <= readback_window_frames;
+		if (!near_readback || InRenderPass())
+			return;
+		if (m_render_passes_since_submit < kick_threshold &&
+			!(produces_readback_data && m_render_passes_since_submit > 0))
+			return;
+
+		m_tilegpu_kicks_offered++;
+		ScanForCommandBufferCompletion();
+		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+		if (m_frame_resources[next_buffer].fence_counter > m_completed_fence_counter)
+			return;
+
+		m_tilegpu_kicks_taken++;
+		ExecuteCommandBuffer(WaitType::None);
+		RetainTileGpuStreamsForCurrentCommandBuffer();
 		cmd = GetCurrentCommandBuffer();
 	};
 
@@ -9612,6 +9696,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// Between consecutive passes -- after the recycle, so the scratch texture's reuse epoch is
 		// the submission that actually read it and not the one after.
 		serialize_boundary(kGSTileGpuSerializeSitePassTail);
+
+		// ...and the readback kick, at the same boundary and for the same reason, after it: at a
+		// serialize grade that already submitted, m_render_passes_since_submit is zero and the gate
+		// below simply does not open. The diagnostic lever wins where the two overlap.
+		readback_kick(rt, ds);
 	}
 
 	// These passes recorded raw, bypassing the device's state cache; force the present path and
@@ -11670,6 +11759,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 void GSDeviceVK::ExecuteCommandBufferForReadback()
 {
 	m_readback_frame = m_frame;
+	m_tilegpu_readback_frame = m_frame;
 	ExecuteCommandBuffer(true);
 	if (m_spinning_supported && GSConfig.HWSpinGPUForReadbacks)
 	{

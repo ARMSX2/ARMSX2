@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 131 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 132 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1300,6 +1300,38 @@ struct Pcsx2Config
 					// the -16.8% -> -28.6% step on GT4 Online Public Beta, faster than
 					// regions-only on both wall and GPU time.
 					TileGpuClutMergePages : 1,
+					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
+					// the frames that read back — the non-blocking kick the Classic
+					// renderer has had in DoRenderHW and the TileGpu executor has not.
+					//
+					// ExecuteTileGpuPassPlan records the whole plan into the frame's
+					// command buffer and submits nothing until something forces it. So a
+					// pull's source image has been touched by the recording (unsubmitted)
+					// buffer, GetGpuTouchCounter() equals the current fence counter,
+					// CopyFromCompletedTexture refuses, and the pull falls off the cheap
+					// out-of-band road onto the DRAIN road: submit the whole recorded plan
+					// and block on the frame fence. Measured on Spider-Man 3 (SD865,
+					// standing suite round 20260826-0157): 51 of 206 pulls a frame take
+					// that road at ~1.07 ms each — 54.5 ms of a 94 ms frame — against
+					// ~37 us for an out-of-band round trip.
+					//
+					// The kick submits at a pass boundary instead, which does two things:
+					// the GPU starts executing while the GS thread is still recording, and
+					// every image the plan has touched so far becomes "complete on the
+					// GPU", so the next pull takes the out-of-band road. It never blocks —
+					// it fires only when the NEXT command buffer has already retired, the
+					// gate Classic's comment records as declining ~3,300 of ~3,400 offers
+					// on Rogue Galaxy. A kick that blocks is worse than no kick.
+					//
+					// PIXEL-INERT by construction: what changes is WHEN recorded work is
+					// submitted, never what is recorded. A byte difference between the arms
+					// is a pre-existing ordering defect, not a trade.
+					//
+					// Default ON. Ceiling from the design study, which is max(gs_cpu, gpu)
+					// against today's gs_cpu + wait: Spider-Man 3 −33% to −45%, gt4opb
+					// −35%, gt4 −43%, outrun-a −32%, dirge −34%. ⚠️ Those are CEILINGS off
+					// a serialized-replay upper bound; the device A/B numbers are PENDING.
+					TileGpuKickReadbackFrames : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

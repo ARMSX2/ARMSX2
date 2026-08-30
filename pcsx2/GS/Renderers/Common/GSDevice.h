@@ -2073,6 +2073,15 @@ public:
 	virtual u64 GetSourceSetWaitNs() const { return 0; }
 	virtual u64 GetSourceSetWaitCalls() const { return 0; }
 
+	/// The TileGpu executor's mid-frame kick (EmuCore/GS/TileGpuKickReadbackFrames): how often the
+	/// gate opened, and how often the next command buffer had also retired so the submit could
+	/// actually go. Read as a PAIR — offered-minus-taken is the fence gate declining, which is the
+	/// pipeline being full rather than anything being wrong, and with three command buffers only two
+	/// submissions are ever in flight. Both zero means the gate never opened, which is a different
+	/// statement from the lever being off.
+	virtual u64 GetTileGpuKicksOffered() const { return 0; }
+	virtual u64 GetTileGpuKicksTaken() const { return 0; }
+
 	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
 	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
 	/// begin at block `cbp` of `owner`, a page-aligned CT32/CT24 surface texture, in

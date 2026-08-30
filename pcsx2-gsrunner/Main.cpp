@@ -181,6 +181,11 @@ struct DeviceWaitBill
 	// Its own bucket, disjoint from sync_* -- but inside GpuBlockingWaits with it, unlike ring_*.
 	u64 source_set_ns = 0;
 	u64 source_set_calls = 0;
+	// Not waits at all: the TileGpu mid-frame kick's offers and takes. Latched here because it is
+	// read against the wait columns above -- the kick's whole claim is that it moves sync_calls onto
+	// oob_calls, and a round that cannot see whether it engaged cannot say whether it failed.
+	u64 kicks_offered = 0;
+	u64 kicks_taken = 0;
 };
 static DeviceWaitBill s_device_wait_bill;
 
@@ -196,6 +201,8 @@ static void LatchDeviceWaitBill()
 	s_device_wait_bill.ring_calls = g_gs_device->GetRingWaitCalls();
 	s_device_wait_bill.source_set_ns = g_gs_device->GetSourceSetWaitNs();
 	s_device_wait_bill.source_set_calls = g_gs_device->GetSourceSetWaitCalls();
+	s_device_wait_bill.kicks_offered = g_gs_device->GetTileGpuKicksOffered();
+	s_device_wait_bill.kicks_taken = g_gs_device->GetTileGpuKicksTaken();
 }
 
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
@@ -1637,6 +1644,10 @@ static void WriteStatsJson(const std::string& path)
 	// the one class outside it.
 	std::fprintf(fp.get(), "    \"source_set_wait_ns\": %" PRIu64 ",\n    \"source_set_wait_calls\": %" PRIu64 ",\n",
 		s_device_wait_bill.source_set_ns, s_device_wait_bill.source_set_calls);
+	// Not a wait class: the TileGpu mid-frame kick, whose engagement is what makes the wait columns
+	// above readable. Zero on every arm that does not run the TileGpu executor.
+	std::fprintf(fp.get(), "    \"tilegpu_kicks_offered\": %" PRIu64 ",\n    \"tilegpu_kicks_taken\": %" PRIu64 ",\n",
+		s_device_wait_bill.kicks_offered, s_device_wait_bill.kicks_taken);
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",

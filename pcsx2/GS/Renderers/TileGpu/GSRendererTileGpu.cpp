@@ -2470,6 +2470,16 @@ void GSRendererTileGpu::ReportModelTraffic()
 		static_cast<double>(g_gs_device->GetSourceSetWaitNs()) / mframes / 1e6,
 		static_cast<double>(g_gs_device->GetRingWaitCalls()) / mframes,
 		static_cast<double>(g_gs_device->GetRingWaitNs()) / mframes / 1e6);
+	// The mid-frame kick's own volume, printed on BOTH arms. A lever whose whole effect is
+	// submission timing leaves no other trace, and "offered 0 / taken 0" with the lever ON is a
+	// different report from the lever being off -- one says the gate never opened, the other says
+	// nothing was asked. Offered-minus-taken is the fence gate declining because the next command
+	// buffer is still executing, which is the pipeline being full and is the expected majority.
+	Console.WriteLn("  mid-frame readback kick (TileGpuKickReadbackFrames %s): offered %.2f /frame, "
+					"taken %.2f /frame",
+		GSConfig.TileGpuKickReadbackFrames ? "ON" : "off",
+		static_cast<double>(g_gs_device->GetTileGpuKicksOffered()) / mframes,
+		static_cast<double>(g_gs_device->GetTileGpuKicksTaken()) / mframes);
 
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of
 	// materialised sources WOULD have served, and for the rest, exactly which clause refused.

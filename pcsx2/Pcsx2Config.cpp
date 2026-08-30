@@ -797,6 +797,10 @@ Pcsx2Config::GSOptions::GSOptions()
 	// 21 corpus dumps gather a palette at all; the rest never reach the arm -- see Config.h.
 	TileGpuClutMergeRegions = true;
 	TileGpuClutMergePages = true;
+	// Default TRUE: pixel-inert by construction (it moves only WHEN recorded work is submitted),
+	// and what it attacks is the whole drain-road readback bill -- 54.5 ms of a 94 ms Spider-Man 3
+	// frame on the SD865. The device A/B is pending; the ceiling is in Config.h.
+	TileGpuKickReadbackFrames = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1164,6 +1168,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuShaderWriteMask);
 	SettingsWrapBitBool(TileGpuClutMergeRegions);
 	SettingsWrapBitBool(TileGpuClutMergePages);
+	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);
