@@ -808,6 +808,10 @@ Pcsx2Config::GSOptions::GSOptions()
 	// upload merge off those pages and the un-poisoned merge costs 2,075 render passes. The device
 	// A/B is the deciding measurement and this is one INI line. Full numbers in Config.h.
 	TileGpuClutBlockGather = false;
+	// Default TRUE: it only ever removes work -- a readback of the block GSState invalidates for a
+	// four-bit-index CLUT load and the loader never reads -- and it is the whole of GT4 Online Public
+	// Beta's CLUT stall count, 2.62 a frame to zero. Byte-identical on all 21 corpus dumps.
+	TileGpuClutHoldSecondCall = true;
 	// Default TRUE: pixel-inert by construction (it moves only WHEN recorded work is submitted),
 	// and what it attacks is the whole drain-road readback bill -- 54.5 ms of a 94 ms Spider-Man 3
 	// frame on the SD865. Device A/B 2026-08-30 (SD865): gt4opb -14.6%, gt4 -12.8%, Spider-Man 3
@@ -1183,6 +1187,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutMergePages);
 	SettingsWrapBitBool(TileGpuClut16Gather);
 	SettingsWrapBitBool(TileGpuClutBlockGather);
+	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);

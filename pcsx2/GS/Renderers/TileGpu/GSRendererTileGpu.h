@@ -1064,6 +1064,46 @@ constexpr bool gsTileGpuClutArmBreaks(u32 open_arm, bool open_target, u32 arm, b
 		   (target_road && open_arm == 2u);
 }
 
+/// How many BLOCKS of guest memory GSState hands the renderer for one CLUT load, and how many of
+/// them the CLUT loader actually reads. `cpsm_bpp` is the palette format's bits per pixel (32 or
+/// 16) and `index_bpp` the texture format's (8 or 4).
+///
+/// They are not the same number and the gap is one whole device round trip. GSState::ApplyTEX0
+/// calls InvalidateLocalMem once per block over a four-block default, halved for a 16-bit palette
+/// and halved again for a four-bit index — so a four-bit index with a 32-bit palette gets TWO
+/// calls. The loader for that shape (GSClut::WriteCLUT_T32_I4_CSM1) reads sixteen entries, sixty-
+/// four bytes, out of the FIRST of them and never touches the second. Every other shape reads
+/// every block it was given.
+///
+/// So the second block of a four-bit-index load is guest memory nobody reads, and reading it back
+/// off a target is a submit and a fence wait for nothing. That is GT4 Online Public Beta's entire
+/// CLUT stall count.
+///
+/// CSM2 is one call over a rect rather than a run of blocks, so neither count describes it and
+/// both answer 1 — the conservative answer, which is "there is no second call to drop".
+constexpr u32 gsTileGpuClutBlocksInvalidated(u32 csm, u32 cpsm_bpp, u32 index_bpp)
+{
+	if (csm != 0)
+		return 1;
+	u32 blocks = 4;
+	if (cpsm_bpp == 16)
+		blocks >>= 1;
+	if (index_bpp == 4)
+		blocks >>= 1;
+	return blocks;
+}
+
+constexpr u32 gsTileGpuClutBlocksRead(u32 csm, u32 cpsm_bpp, u32 index_bpp)
+{
+	if (csm != 0)
+		return 1;
+	// A four-bit index is sixteen entries and they all live in the block at CBP, whatever the
+	// palette format: sixteen 32-bit words of it, or thirty-two 16-bit cells of it.
+	if (index_bpp == 4)
+		return 1;
+	return gsTileGpuClutBlocksInvalidated(csm, cpsm_bpp, index_bpp);
+}
+
 /// Does a CPU-read mark refuse this page to the upload merge?
 ///
 /// `mark` is the page's m_cpu_read_frame entry and `now` is m_frame_index + 1, both in the same
@@ -2580,6 +2620,11 @@ private:
 	/// same for every load of a session or a palette gathered under one rule is consumed under
 	/// another.
 	bool m_clut_block_gather = false;
+	/// TileGpuClutHoldSecondCall, latched the same way. SEPARATE from the block gather on purpose:
+	/// holding the second call is not an admission question at all -- it drops a readback of guest
+	/// memory the loader never reads -- so it is worth having on a build where the gather itself is
+	/// off, which is where it ships.
+	bool m_clut_hold_second_call = false;
 	bool m_warned_clut_lost = false;
 	/// The swizzle forms, fitted here as well as in the device. Both fits run over the same tables
 	/// with the same code and cannot disagree; what the renderer needs them for is the block copy's

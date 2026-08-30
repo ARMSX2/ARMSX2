@@ -1480,6 +1480,52 @@ struct Pcsx2Config
 					// stall census is Spider-Man 3 10 a frame, GT4 29 (~7.1 of 23.3 ms) and
 					// GT4 Online Public Beta 3.
 					TileGpuClutBlockGather : 1,
+					// Do not read back the block GSState invalidates for a CLUT load that
+					// the CLUT loader never reads.
+					//
+					// GSState::ApplyTEX0 calls InvalidateLocalMem once per block over a
+					// four-block default, halved for a 16-bit palette and halved again for a
+					// four-bit index — so a four-bit index with a 32-bit palette gets TWO
+					// calls, and GSClut::WriteCLUT_T32_I4_CSM1 reads sixteen entries, 64
+					// bytes, out of the FIRST of them. The second block is guest memory
+					// nobody reads, and where a target holds it that is a submit and a fence
+					// wait for nothing. gsTileGpuClutBlocksInvalidated and
+					// gsTileGpuClutBlocksRead are the two counts, and the suite pins that
+					// they differ on exactly one shape and by exactly one block.
+					//
+					// It cannot be decided where GSState asks, because TEX0 has not arrived
+					// yet and the load could equally be an eight-bit index whose four calls
+					// are all the palette's. So the second call is HELD: its verdict is
+					// recorded, its readback is not taken, and PreClutLoad settles it once
+					// the entry count is known — dropped where nothing reads it, rejoined
+					// with its readback taken there where something does. Deferring a
+					// readback is always safe: truth does not move, so any later reader of
+					// those bytes still pulls them.
+					//
+					// SEPARATE KEY from TileGpuClutBlockGather on purpose. That one is an
+					// admission question and ships off; this one only ever removes work, and
+					// it is the whole of GT4 Online Public Beta's CLUT stall count: 2.62
+					// stalls a frame, every one of them the over-invalidated block, and its
+					// palette's OWN block is the CPU's and needs nothing. Per drawn frame,
+					// M2 Max / Honeykrisp, off -> on: CLUT owner refusals 2.62 -> 0.00, pool
+					// calls 3.62 -> 1.00, blocking GPU waits 4.12 -> 1.50, of which
+					// out-of-band 2.62 at 3.87 ms -> zero. On the SD865 those pulls were
+					// priced at 2.4-2.6 ms each, which is why this is not a rounding error
+					// there even though the M2 frame time cannot resolve it.
+					//
+					// GT4 itself gets 0.87 of its 25.75 CLUT stalls a frame back the same
+					// way, and it is the only other title that moves at all: Spider-Man 3,
+					// dirge and Yu-Gi-Oh are unchanged to the digit, because their held
+					// second block is one no target holds and its readback was already free.
+					//
+					// Default TRUE. All 21 corpus dumps byte-identical, and identical with
+					// the key OFF as well -- it changes which bytes are PULLED, never which
+					// bytes are read.
+					//
+					// ⚠️ It sits below the road's device probe, so a device that cannot serve
+					// the CLUT gather at all does not hold either. That is the configuration
+					// it was measured in and nothing is claimed beyond it.
+					TileGpuClutHoldSecondCall : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.

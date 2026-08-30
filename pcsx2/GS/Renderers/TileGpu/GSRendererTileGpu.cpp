@@ -294,6 +294,17 @@ GSRendererTileGpu::GSRendererTileGpu()
 						"never reads is not pulled.");
 	}
 
+	// ...and the held second call, on its own key because it is not an admission question: it drops a
+	// readback of guest memory the CLUT loader never reads, which is worth having wherever the gather
+	// itself stands. Said out loud for the reason the others are -- what it does is stop a device
+	// round trip happening, and that leaves no other trace in a log.
+	m_clut_hold_second_call = GSConfig.TileGpuClutHoldSecondCall;
+	if (m_clut_hold_second_call)
+	{
+		Console.WriteLn("TileGpu: the second block GSState invalidates for a four-bit-index CLUT load is not "
+						"pulled -- the loader never reads it (TileGpuClutHoldSecondCall).");
+	}
+
 	// The upload merge's CPU-read window, read once so that every page of a session is judged by one
 	// rule and a run's window can be read off its log. Said out loud on every position including the
 	// default, because this is a WAIT-COUNT heuristic whose whole effect is which of two byte-
@@ -1085,7 +1096,7 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const G
 	// verdict is recorded and nothing is decided: no refusal, and no readback taken. Deferring a
 	// readback is always safe -- truth does not move, so any later reader of those bytes still pulls
 	// them. SettleHeldClutCall finishes it once TEX0 says which.
-	if (m_clut_block_gather && j == 1)
+	if (m_clut_hold_second_call && j == 1)
 	{
 		p.call1_held = true;
 		p.call1_layout = layout;
@@ -1137,35 +1148,51 @@ bool GSRendererTileGpu::ClutLoadDefer(const GSTileSurfaceLayout& layout, const G
 	return true;
 }
 
-// The held second call, settled. TEX0 finally says how many blocks the palette is, and that is the
-// only thing the call was waiting for: a sixteen-entry CSM1 32-bit palette is the sixteen words at
-// the top of block CBP and nothing else (LocateClutBlocks' 8x2 region, LocateClutBlocks16's 16x2
-// one), so the block at CBP+1 that GSState invalidated alongside it is read by nobody. It is
-// dropped -- no refusal, and no readback, which is where GT4 Online Public Beta's whole CLUT stall
-// count lives.
+// The held second call, settled. TEX0 finally says how many of the blocks GSState invalidated the
+// loader will read, and that is the only thing the call was waiting for: a four-bit-index CSM1 load
+// reads sixteen entries out of the block at CBP and nothing else, so the block at CBP+1 that GSState
+// named alongside it is read by nobody. It is dropped -- no refusal, and no readback, which is where
+// GT4 Online Public Beta's whole CLUT stall count lives. See gsTileGpuClutBlocksRead.
 //
 // Any other shape does include it: an eight-bit index reads all four of its blocks, and a load the
 // gather does not serve at all reads whatever GSState said it would. So the call rejoins the load,
 // its verdict decides with the rest, and its readback is taken here instead of at the call.
+//
+// ⚠️ WHOSE VERDICT depends on which question the rest of the load was asked. The two levers are
+// independent -- the hold ships on and the block gather ships off -- and a held call admitted on the
+// block question inside a page-question load would be the block gather leaking in by the back door,
+// which is exactly the thing a lever that ships off is supposed to prevent.
 void GSRendererTileGpu::SettleHeldClutCall(const GIFRegTEX0& TEX0)
 {
 	ClutPendingLoad& p = m_clut_pending;
 	if (!p.call1_held)
 		return;
 	p.call1_held = false;
-	if (ClutGatherServesLoad(TEX0) && GSLocalMemory::m_psm[TEX0.PSM].pal != 256)
+	const u32 read_blocks = gsTileGpuClutBlocksRead(
+		TEX0.CSM, GSLocalMemory::m_psm[TEX0.CPSM].trbpp, GSLocalMemory::m_psm[TEX0.PSM].trbpp);
+	if (read_blocks < 2)
 		return; // nothing reads it
 
+	const GSPageBitmap pages = GSVramModel::PagesForRect(p.call1_layout, p.call1_rect);
 	if (!p.refused)
 	{
-		const u32 refusal = p.call_ref[1];
-		const GSTileSurfaceId owner = p.call_owner[1];
+		GSTileSurfaceId owner = p.call_owner[1];
+		u32 refusal;
+		if (m_clut_block_gather)
+		{
+			refusal = p.call_ref[1];
+			if (refusal == kClutRefMulti)
+				p.multi_cause = p.call_cause[1];
+		}
+		else
+		{
+			refusal = ClutOwnerRefusalForPages(pages, owner);
+		}
+
 		if (refusal != kClutRefNone)
 		{
 			p.refused = true;
 			p.refusal = refusal;
-			if (refusal == kClutRefMulti)
-				p.multi_cause = p.call_cause[1];
 		}
 		else if (p.deferred_blocks != 0 && p.owner != owner)
 		{
@@ -1182,7 +1209,7 @@ void GSRendererTileGpu::SettleHeldClutCall(const GIFRegTEX0& TEX0)
 				p.owner_bwpg = s.layout.bw;
 				p.owner_psm = s.layout.psm;
 			}
-			p.pages |= GSVramModel::PagesForRect(p.call1_layout, p.call1_rect);
+			p.pages |= pages;
 			p.deferred_blocks++;
 		}
 	}
@@ -1191,8 +1218,7 @@ void GSRendererTileGpu::SettleHeldClutCall(const GIFRegTEX0& TEX0)
 		// The readback ClutLoadDefer did not take. Block-refined, exactly as the call would have
 		// taken it: this is the same road, one step later.
 		const u32 before = m_frame.stalls[static_cast<u32>(StallSite::Clut)];
-		ReadbackToShadow(p.call1_layout, p.call1_rect,
-			GSVramModel::PagesForRect(p.call1_layout, p.call1_rect), StallSite::Clut);
+		ReadbackToShadow(p.call1_layout, p.call1_rect, pages, StallSite::Clut);
 		if (m_frame.stalls[static_cast<u32>(StallSite::Clut)] != before)
 			p.readback = true;
 	}

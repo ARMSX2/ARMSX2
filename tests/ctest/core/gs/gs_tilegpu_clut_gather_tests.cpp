@@ -508,6 +508,75 @@ TEST(TileGpuClutGather, ASixteenEntryPaletteLivesEntirelyInTheBlockAtCbp)
 	}
 }
 
+// TileGpuClutHoldSecondCall's whole decision, and it is a claim about two other people's code: how
+// many blocks GSState hands over for a CLUT load, and how many of them GSClut's loader reads. The
+// held second call is DROPPED exactly when the second count is 1 and REJOINED (readback and all)
+// otherwise, so getting this table wrong either leaves a device round trip on the floor or -- far
+// worse -- skips a readback of bytes the loader is about to read, which is a palette built out of
+// stale guest memory.
+//
+// The invalidated count is checked against GSState::ApplyTEX0's arithmetic spelled out here
+// independently, rather than against the function under test.
+TEST(TileGpuClutGather, TheHeldSecondCallIsDroppedOnlyWhereTheLoaderReadsOneBlock)
+{
+	struct Shape
+	{
+		u32 csm;
+		u32 cpsm_bpp;
+		u32 index_bpp;
+		u32 want_invalidated;
+		u32 want_read;
+		const char* what;
+	};
+	const Shape shapes[] = {
+		// CSM1. The one shape where the two counts differ, and it is the population:
+		// WriteCLUT_T32_I4_CSM1 reads sixteen 32-bit words out of the block at CBP and stops.
+		{0, 32, 4, 2, 1, "32-bit palette, four-bit index"},
+		// ...and every other CSM1 shape reads every block it was given.
+		{0, 32, 8, 4, 4, "32-bit palette, eight-bit index"},
+		{0, 16, 4, 1, 1, "16-bit palette, four-bit index"},
+		{0, 16, 8, 2, 2, "16-bit palette, eight-bit index"},
+		// CSM2 is one call over a rect, not a run of blocks: there is no second call to drop and
+		// both counts have to say so rather than describing a block run that does not exist.
+		{1, 32, 4, 1, 1, "CSM2"},
+		{1, 32, 8, 1, 1, "CSM2, eight-bit index"},
+		{1, 16, 4, 1, 1, "CSM2, 16-bit palette"},
+	};
+
+	u32 shapes_that_differ = 0;
+	for (const Shape& sh : shapes)
+	{
+		SCOPED_TRACE(sh.what);
+		const u32 inval = gsTileGpuClutBlocksInvalidated(sh.csm, sh.cpsm_bpp, sh.index_bpp);
+		const u32 read = gsTileGpuClutBlocksRead(sh.csm, sh.cpsm_bpp, sh.index_bpp);
+		EXPECT_EQ(inval, sh.want_invalidated);
+		EXPECT_EQ(read, sh.want_read);
+
+		// GSState::ApplyTEX0's own count, written out here so the two cannot drift silently.
+		if (sh.csm == 0)
+		{
+			u32 gsstate = 4;
+			if (sh.cpsm_bpp == 16)
+				gsstate >>= 1;
+			if (sh.index_bpp == 4)
+				gsstate >>= 1;
+			EXPECT_EQ(inval, gsstate) << "the invalidation count stopped matching GSState's";
+		}
+
+		// The loader can never read a block it was not handed -- that direction is silent wrong
+		// output, where the other direction is only a missed saving.
+		EXPECT_LE(read, inval);
+		// ...and the hold's own predicate: the second call is dropped exactly when nothing but the
+		// first block is read.
+		EXPECT_EQ(read < 2, sh.want_read == 1);
+		if (read != inval)
+			shapes_that_differ++;
+	}
+	// One shape, one block. If this ever grows, the held call is no longer the only over-invalidated
+	// one and SettleHeldClutCall's "call index 1" shortcut stops being enough.
+	EXPECT_EQ(shapes_that_differ, 1u);
+}
+
 // The mapping has to be a bijection onto the copied image: two entries sharing an offset would make
 // one of them silently wrong, and an offset outside the run would read the next palette's words.
 TEST(TileGpuClutGather, TheEntryOrderIsABijectionOntoTheCopiedRun)
