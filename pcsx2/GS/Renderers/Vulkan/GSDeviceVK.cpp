@@ -8913,10 +8913,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							break;
 						}
 						VkBufferImageCopy& rc = regions[count++];
+						// Where region b lands in the palette stream. The op says it outright when its
+						// destination is a TILE the regions are placed in -- the 16-bit road's four
+						// scattered blocks are the four quadrants of one 32x16 tile -- and otherwise the
+						// regions simply follow one another, which is what every 32-bit copy produces and
+						// what this arithmetic has always been. Same words either way for those.
 						rc.bufferOffset =
-							static_cast<VkDeviceSize>(pal_base_words + op.bp + b * op.copy_w * op.copy_h) *
+							static_cast<VkDeviceSize>(pal_base_words + op.bp + op.CopyRegionOffset(b)) *
 							sizeof(u32);
-						rc.bufferRowLength = op.copy_w;
+						rc.bufferRowLength = op.CopyRowLength();
 						rc.bufferImageHeight = op.copy_h;
 						rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 						rc.imageOffset = {static_cast<s32>(op.copy_x[b]), static_cast<s32>(op.copy_y[b]), 0};

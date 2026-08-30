@@ -1007,6 +1007,112 @@ TEST(TileGpuClutGather, ThePrepKindsStayDistinctAndTheCopyNamesItsDestination)
 	EXPECT_EQ(op.copy_count * op.copy_w * op.copy_h, 256u);
 }
 
+// The op's destination arithmetic, which is the executor's and has to be pinned here because the
+// executor itself is a Vulkan command buffer no test can build.
+//
+// Two derivations in one pair of accessors. Zero stride is what the 32-bit road has always produced
+// and must go on meaning exactly what it meant: rows `copy_w` wide, region b at `b * copy_w * copy_h`.
+// A non-zero stride PLACES the regions instead, which is what lets a 16-bit owner's four scattered
+// blocks land as the four quadrants of one tile. The first half is the whole no-behaviour-change
+// claim of the field's landing, so it is asserted over the shapes LocateClutBlocks actually emits
+// rather than over invented ones.
+TEST(TileGpuClutGather, ACopyWithNoStridePlacesItsRegionsExactlyWhereItAlwaysDid)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut_valid);
+
+	// Every shape the 32-bit road produces: the four-block run, the merged square, and the 16-entry
+	// pair of rows, at both owner widths the suite exercises.
+	const GatherCase cases[] = {
+		{0x0040, 0x0000, 1, 256}, {0x0040, 0x0000, 4, 256}, {0x0041, 0x0000, 1, 256},
+		{0x0040, 0x0000, 1, 16}, {0x0043, 0x0000, 1, 16}, {0x0080, 0x0040, 4, 256},
+	};
+	for (const GatherCase& c : cases)
+	{
+		for (const bool merge : {false, true})
+		{
+			ClutBlockCopy blocks;
+			ASSERT_TRUE(LocateClutBlocks(f, c.cbp, c.owner_bp, c.owner_bw, c.entries, merge, blocks));
+			GSDevice::GSTileGpuPrepOp op = {};
+			op.kind = GSDevice::GSTileGpuPrepKind::ClutBlockCopy;
+			op.copy_count = blocks.region_count;
+			op.copy_w = blocks.w;
+			op.copy_h = blocks.h;
+			for (u32 b = 0; b < blocks.region_count; b++)
+				op.copy_off[b] = blocks.copy_off[b];
+			// The 32-bit road leaves copy_stride at zero and copy_off at zero, and that is the field's
+			// whole safety argument: the accessors then answer what the executor computed inline before
+			// they existed.
+			EXPECT_EQ(op.copy_stride, 0u) << "cbp " << c.cbp << " merge " << merge;
+			EXPECT_EQ(op.CopyRowLength(), op.copy_w);
+			for (u32 b = 0; b < blocks.region_count; b++)
+			{
+				EXPECT_EQ(op.copy_off[b], 0u) << "cbp " << c.cbp << " region " << b;
+				EXPECT_EQ(op.CopyRegionOffset(b), b * op.copy_w * op.copy_h) << "cbp " << c.cbp << " region " << b;
+			}
+		}
+	}
+}
+
+// ...and the placed form: a stride and per-region offsets have to tile the reservation EXACTLY.
+// Every word of the destination written once, none written twice, none written past the run the
+// renderer reserved -- because a copy that overruns rewrites the next palette in the stream, and one
+// that leaves a hole gives some entry whatever the reservation was allocated with (zero).
+TEST(TileGpuClutGather, APlacedCopyTilesItsReservationExactly)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.clut16_valid);
+
+	for (const u32 psm : {static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (const u32 entries : {16u, 256u})
+		{
+			for (u32 cbp = 0x0040; cbp < 0x0044; cbp++)
+			{
+				ClutBlockCopy blocks;
+				ASSERT_TRUE(LocateClutBlocks16(f, psm, cbp, 0x0040, 1, entries, blocks))
+					<< "psm " << psm << " entries " << entries << " cbp " << cbp;
+				GSDevice::GSTileGpuPrepOp op = {};
+				op.kind = GSDevice::GSTileGpuPrepKind::ClutBlockCopy;
+				op.copy_count = blocks.region_count;
+				op.copy_w = blocks.w;
+				op.copy_h = blocks.h;
+				op.copy_stride = blocks.stride;
+				for (u32 b = 0; b < blocks.region_count; b++)
+					op.copy_off[b] = blocks.copy_off[b];
+
+				// The reservation the renderer makes is region_count * w * h words, which is also the
+				// tile: stride x (reservation / stride).
+				const u32 reserved = blocks.region_count * blocks.w * blocks.h;
+				ASSERT_NE(op.CopyRowLength(), 0u);
+				EXPECT_EQ(op.CopyRowLength(), blocks.stride);
+				EXPECT_EQ(reserved % op.CopyRowLength(), 0u);
+
+				std::vector<u32> written(reserved, 0);
+				for (u32 b = 0; b < op.copy_count; b++)
+				{
+					const u32 base = op.CopyRegionOffset(b);
+					for (u32 y = 0; y < op.copy_h; y++)
+					{
+						for (u32 x = 0; x < op.copy_w; x++)
+						{
+							const u32 at = base + y * op.CopyRowLength() + x;
+							ASSERT_LT(at, reserved) << "psm " << psm << " entries " << entries << " cbp " << cbp
+													<< " region " << b << " (" << x << ", " << y << ")";
+							written[at]++;
+						}
+					}
+				}
+				for (u32 w = 0; w < reserved; w++)
+				{
+					EXPECT_EQ(written[w], 1u) << "psm " << psm << " entries " << entries << " cbp " << cbp
+											  << " word " << w;
+				}
+			}
+		}
+	}
+}
+
 // -- 3. the identity ---------------------------------------------------------------------------
 
 // A gathered palette's id and a word hash share one field, and the reserved bit is the only thing

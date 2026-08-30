@@ -2617,6 +2617,29 @@ public:
 		u32 copy_count;
 		u32 copy_w, copy_h;
 		u32 copy_x[4], copy_y[4];
+		/// ClutBlockCopy only: the destination as a TILE rather than as consecutive runs — its row
+		/// pitch in words, and where each region's first word sits inside it.
+		///
+		/// Zero stride is the derivation the road has always used: the destination rows are `copy_w`
+		/// wide and region b starts at `b * copy_w * copy_h`, which is what "the regions follow one
+		/// another" means. Every 32-bit copy produces that and is byte-identical under either
+		/// spelling. A non-zero stride says the regions are placed instead, and `copy_off[b]` is
+		/// region b's word offset from the op's own base — the four blocks of a 16-bit owner's
+		/// 256-entry palette land as the four quadrants of one 32x16 tile whatever CBP's alignment,
+		/// so their consumer reads one word order rather than two.
+		u32 copy_stride;
+		u32 copy_off[4];
+
+		/// The destination row pitch this op's copy asks for, in words (VkBufferImageCopy's
+		/// bufferRowLength). Both derivations in one place because the executor and the suite must
+		/// not spell them separately.
+		constexpr u32 CopyRowLength() const { return (copy_stride != 0) ? copy_stride : copy_w; }
+		/// ...and region b's word offset from the op's base (bufferOffset, less the stream's own
+		/// base). Placed where the op says so, and tiled where it does not.
+		constexpr u32 CopyRegionOffset(u32 b) const
+		{
+			return (copy_stride != 0) ? copy_off[b] : (b * copy_w * copy_h);
+		}
 	};
 
 	/// A draw's depth configuration, which selects the depth pipeline variant. GS depth grows
