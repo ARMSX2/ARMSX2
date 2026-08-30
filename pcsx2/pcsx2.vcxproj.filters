@@ -719,6 +719,9 @@
     <ClCompile Include="GameDatabase.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
+    <ClCompile Include="PerGameOverrides.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
     <ClCompile Include="IPU\IPUdma.cpp">
       <Filter>System\Ps2\IPU</Filter>
     </ClCompile>
@@ -1729,6 +1732,18 @@
     </ClInclude>
     <ClInclude Include="GameDatabase.h">
       <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="PerGameOverrides.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="EeFpuFormat.h">
+      <Filter>System\Ps2\EmotionEngine\VU\Interpreter</Filter>
+    </ClInclude>
+    <ClInclude Include="EeFpuModel.h">
+      <Filter>System\Ps2\EmotionEngine\VU\Interpreter</Filter>
+    </ClInclude>
+    <ClInclude Include="VuEfuModel.h">
+      <Filter>System\Ps2\EmotionEngine\VU\Interpreter</Filter>
     </ClInclude>
     <ClInclude Include="IPU\IPUdma.h">
       <Filter>System\Ps2\IPU</Filter>

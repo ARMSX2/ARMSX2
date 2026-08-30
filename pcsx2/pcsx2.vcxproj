@@ -261,6 +261,7 @@
     <ClCompile Include="ImGui\ImGuiOverlays.cpp" />
     <ClCompile Include="INISettingsInterface.cpp" />
     <ClCompile Include="GameDatabase.cpp" />
+    <ClCompile Include="PerGameOverrides.cpp" />
     <ClCompile Include="Gif_Logger.cpp" />
     <ClCompile Include="Gif_Unit.cpp" />
     <ClCompile Include="GSDumpReplayer.cpp" />
@@ -734,6 +735,10 @@
     <ClInclude Include="ImGui\ImGuiOverlays.h" />
     <ClInclude Include="INISettingsInterface.h" />
     <ClInclude Include="GameDatabase.h" />
+    <ClInclude Include="PerGameOverrides.h" />
+    <ClInclude Include="EeFpuFormat.h" />
+    <ClInclude Include="EeFpuModel.h" />
+    <ClInclude Include="VuEfuModel.h" />
     <ClInclude Include="Gif_Unit.h" />
     <ClInclude Include="GSDumpReplayer.h" />
     <ClInclude Include="GS\Renderers\DX11\D3D.h" />
