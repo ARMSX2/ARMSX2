@@ -874,10 +874,35 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 		// kGSTileGpuMergeElisionMaxEpochs / kGSTileGpuMergeElisionMaxRingPages for the measurements
 		// the two numbers come from. A boundary can never cost more flushes than the pre-lever road:
 		// both budgets are only ever asked here, on a write that road would have flushed anyway.
+		//
+		// ...and the probe is not planned where its answer is already known. PlanUploadMerge settles
+		// three questions before it looks at a page -- the merge road's own config key, whether
+		// GSState handed us the whole rect, and whether the footprint kept its block masks -- and all
+		// three are properties of this WRITE, so they can be asked here for free. Where any of them
+		// refuses, the probe is planned, refused whole, thrown away and planned again below, and the
+		// road it takes is the fallback either way.
+		//
+		// SKIPPING IS A PROOF, NOT A HEURISTIC, and the proof is one line: the ignore-synced spill is
+		// a SUPERSET of the ordinary one (same per-page test, one fewer set subtracted from the
+		// candidates), the entry condition above just proved the ordinary one non-empty, so the wide
+		// set is non-empty -- and `wide.andnot(empty).empty()` on a non-empty set is false. The probe
+		// cannot be accepted. Nothing downstream can tell the difference: the counters it would have
+		// touched are restored on that road anyway, and PlanUploadMerge clears the same three scratch
+		// vectors at its head when the fallback calls it.
+		//
+		// Priced, because a gate that saves nothing is worth knowing about: the corpus makes 218.37
+		// probes a drawn frame and throws 11.00 of them away, 9.00 of those for the whole-rect
+		// question this skips (OutRun 2006 A 5.00, B 4.00; the other 2.00 are Yu-Gi-Oh's, per-page
+		// answers no cheap test can predict). A thrown-away probe costs 54 ns on the M2 measured
+		// amplified 64x against a 14 ns clock floor -- so this is 0.3 us a drawn frame on OutRun,
+		// and it is NOT the 0.91 ms of gs_cpu that title loses to the elision on the SD865. The
+		// probe was priced looking for that regression and is three orders of magnitude too small
+		// to be it.
 		const bool over_epochs = m_epoch >= kGSTileGpuMergeElisionMaxEpochs;
 		const bool over_pages = m_ring_entries.size() >= kGSTileGpuMergeElisionMaxRingPages;
 		bool gated = false;
-		if (GSConfig.TileGpuFlushGateUploadMerge && !over_epochs && !over_pages)
+		if (GSConfig.TileGpuFlushGateUploadMerge && !over_epochs && !over_pages &&
+			UploadMergeServesThisWrite(fp))
 		{
 			// The probe's refusals are provisional. PlanUploadMerge counts as it decides, and a
 			// probe this branch discards is planned again below over the same pages, so put the
@@ -8298,6 +8323,13 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		m_frame.merge_ref.overflow++;
 		return GSPageBitmap();
 	}
+	// Past all three, so the hoisted form of them must agree. The two directions are not
+	// symmetric and only one of them is dangerous: a refusal ADDED above and not to the hoist
+	// leaves the hoist a superset, which costs a probe that gets thrown away -- today's price. A
+	// refusal REMOVED from above and not from the hoist makes the gate skip a probe that would
+	// now be accepted, which is a silently lost elision and shows up only as a slower frame.
+	// That is this direction, and this is where it is caught.
+	pxAssert(UploadMergeServesThisWrite(fp));
 
 	GSPageBitmap take;
 	const u32 now = m_frame_index + 1;

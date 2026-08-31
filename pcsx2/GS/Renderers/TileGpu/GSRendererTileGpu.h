@@ -2251,6 +2251,20 @@ private:
 	// the time the plan is built), a byte-masked writeback fills in the target's half, and a seed
 	// reads the merged page back into the target. See EmitUploadMerge.
 
+	/// The three questions PlanUploadMerge settles before it looks at a single page: whether the
+	/// merge road is switched on at all, whether GSState handed us the WHOLE rect (a sliced or
+	/// truncated transfer's rect is a claim, and the keep mask has to be a record), and whether the
+	/// footprint kept its block masks. All three are properties of the WRITE, not of the spill set,
+	/// so they can be asked before that set exists and their answer cannot change as pages are
+	/// walked. False means PlanUploadMerge returns an empty bitmap whatever it is handed.
+	///
+	/// Hoisted so the flush gate does not plan a PROBE whose answer is already known -- see the
+	/// merge road in InvalidateVideoMem. PlanUploadMerge keeps its own three checks because each
+	/// feeds a different refusal counter, and asserts against this one so the two cannot drift.
+	bool UploadMergeServesThisWrite(const GSVramModel::RectFootprint& fp) const
+	{
+		return !GSConfig.TileGpuUploadSpillReadback && m_upload_writes_whole_rect && !fp.overflowed;
+	}
 	/// The pages of `spill` the merge can take, with its groups and keep tables staged in the
 	/// scratch below. Asked BEFORE the residual readback, because the readback's own plan flush must
 	/// not carry merge ops (their ring slot would then be prefilled from a shadow the transfer has
