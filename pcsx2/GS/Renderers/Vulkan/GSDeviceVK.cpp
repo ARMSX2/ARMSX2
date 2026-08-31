@@ -6772,15 +6772,18 @@ bool GSDeviceVK::TileGpuSegregatesSelfRead()
 //  - On Mali it is SIXTEEN 16-lane warps under one barrier, and the same pair of builds LOST on an
 //    RG477V (Dimensity 8300, Mali-G615, r44p1): gow2 12.671 -> 12.999 ms and Spider-Man 3 56.160 ->
 //    58.283 ms of wall mean, four rounds each with the two arms' round values not overlapping at
-//    all. 8 puts that device back on a 64-invocation workgroup, four warps under one barrier. That
-//    part is a PRIMARY target, co-equal with the SD865, so this is not a concession to a low tier.
+//    all. 8 puts that device back on a 64-invocation workgroup, four warps -- and, below, no
+//    barrier at all. That part is a PRIMARY target, co-equal with the SD865, so this is not a
+//    concession to a low tier.
 //
-// ⚠️ The Mali arm is 8x8 with the LDS quad stage, which is NOT the shader that measured faster there
-// -- that one was 8x8 storing a word per invocation. The stage is kept because the regression is
-// attributable to the shape (the barrier's warp count is what 16 changes on a 16-lane part) and
-// because the quads are the architecture-neutral half of the change. If an RG477V A/B against
-// 600c0b2972 still reads slow at dim 8, the LDS stage is the remaining suspect and this is where to
-// split it.
+// ⚠️ THE ANSWER PICKS THE STORE PATH TOO, not just the partition. At 8 the shader does not compile
+// its LDS quad stage at all and each invocation stores its own word, which is what it did before
+// stage 1; at 16 and up it stages. That is measured, not symmetry: the confirm A/B (2026-08-31) ran
+// dim 8 WITH the stage against the pre-stage-1 build on the same RG477V and it was still 1.419 ms of
+// wall mean slower on Spider-Man 3 (58.273 vs 56.854) and 0.269 slower on gow2, while the dim on its
+// own was worth -0.160 and +0.062 -- nothing. What that part was paying for is the stage. The split
+// is spelled in tilegpu_writeback.glsl as TILEGPU_WB_STAGE_LDS, and a dim added here takes the stage
+// unless it is 8.
 //
 // Every other vendor takes 16: Apple and NVIDIA are 32-wide, where a 64-invocation workgroup is
 // already two full SIMD groups and the M2 measured flat either way, so 16 costs them nothing and

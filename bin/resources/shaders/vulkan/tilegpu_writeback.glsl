@@ -59,23 +59,33 @@
 //   the shape per part) over the page's WORD grid, not 8x8 everywhere. A 64-invocation workgroup on
 //   a part whose wave is 128 leaves half of every wave idle, which is Adreno's 16; on a 16-lane part
 //   256 invocations is sixteen warps under one barrier and costs more than it saves, which is Mali's
-//   8. The addressing here reads gl_GlobalInvocationID, so the partition into workgroups is the only
-//   thing the answer moves -- every arm below is written for any dim the device may name.
+//   8. The addressing here reads gl_GlobalInvocationID, so which invocation writes which word is the
+//   same at every dim; what the answer moves is the partition into workgroups and, below, whether
+//   the store goes through shared memory at all.
 //
-//   THE LDS STAGE. A block's 64 words are 64 CONSECUTIVE ring words in a permuted order, so 64
-//   invocations storing one word each is 64 transactions where four-word stores would be 16. Where
-//   this pass writes WHOLE words -- byte_mask covers the word and the entry names no keep mask,
-//   which is every road but PSMCT24 and the upload merge -- each invocation parks its word in
-//   shared memory at its permuted index, and after one barrier a quarter of the lanes each issue
-//   one aligned uvec4. The permutation happens in LDS and no inverse swizzle is needed. A ring slot
-//   is page-aligned and a block is 64 words, so every four-word run inside it is 16-byte aligned by
-//   construction.
+//   THE LDS STAGE, COMPILED AT DIM 16 AND UP ONLY. A block's 64 words are 64 CONSECUTIVE ring words
+//   in a permuted order, so 64 invocations storing one word each is 64 transactions where four-word
+//   stores would be 16. Where this pass writes WHOLE words -- byte_mask covers the word and the
+//   entry names no keep mask, which is every road but PSMCT24 and the upload merge -- each
+//   invocation parks its word in shared memory at its permuted index, and after one barrier a
+//   quarter of the lanes each issue one aligned uvec4. The permutation happens in LDS and no
+//   inverse swizzle is needed. A ring slot is page-aligned and a block is 64 words, so every
+//   four-word run inside it is 16-byte aligned by construction.
 //
 //   The read-modify-write arm (PSMCT24's alpha byte, the upload merge's keep mask) keeps the
 //   per-word path: it must leave bytes it does not own alone, which a uvec4 store cannot express.
 //   The two are separated on a workgroup-UNIFORM test -- byte_mask is a push constant and the keep
 //   mask rides on the entry, which is gl_WorkGroupID.z -- so the barrier below is never reached by
 //   part of a workgroup.
+//
+//   ⚠️ AT DIM 8 THE STAGE IS NOT COMPILED AT ALL and every invocation stores its own word, which is
+//   what this shader did before the stage existed. That is not a preference between two plausible
+//   shapes: three builds A/B'd on an RG477V (Mali-G615) put dim 8 WITH the stage 1.419 ms of wall
+//   mean above the pre-stage-1 shader on Spider-Man 3 (58.273 vs 56.854) and 0.269 above it on God
+//   of War 2, while the dim change on its own was worth -0.160 and +0.062 -- so what that device
+//   pays for is the stage, not the shape. The dim is the device's answer
+//   (GSDeviceVK::TileGpuWritebackGroupDim) and the store path rides on it because the two were
+//   fitted on the same two parts, in the same pair of A/Bs.
 //
 // ⚠️ Not done, and deliberately: hoisting the four workgroup-uniform SSBO loads to one invocation
 // behind a barrier. Measured on an Adreno 650 microbenchmark it costs 30% MORE than re-issuing them
@@ -90,16 +100,26 @@
 // count and this cannot disagree. Must divide both page word extents (64x32 and 32x64) and be a
 // multiple of 8, so that a workgroup covers whole 8x8-word blocks and never a fraction of one --
 // the LDS stage below is per block. The device picks it per part (GSDeviceVK's
-// TileGpuWritebackGroupDim); this default is only what a compile with nothing injected would take.
+// TileGpuWritebackGroupDim); this default is only what a compile with nothing injected would take,
+// and by TILEGPU_WB_STAGE_LDS below it is the shape without the shared-memory stage.
 #ifndef TILEGPU_WB_WG
 #define TILEGPU_WB_WG 8
 #endif
 
-// ...which makes the rest of the shape arithmetic, not a second constant to keep in step.
+// Whether a whole-word store stages through shared memory, or each invocation stores its own word.
+// 16 and up stage -- Adreno's answer, and any part wide enough to want a workgroup bigger than one
+// block; 8 does not -- Mali's answer, where the stage measured slower than a word per invocation
+// (see THE LDS STAGE above for both numbers). One define, so the arms below and the shared arrays
+// they need cannot be compiled out of step with each other.
+#define TILEGPU_WB_STAGE_LDS (TILEGPU_WB_WG >= 16)
+
+#if TILEGPU_WB_STAGE_LDS
+// ...which makes the rest of the stage's shape arithmetic, not a second constant to keep in step.
 #define TILEGPU_WB_BLK_DIM (TILEGPU_WB_WG / 8)
 #define TILEGPU_WB_BLOCKS (TILEGPU_WB_BLK_DIM * TILEGPU_WB_BLK_DIM)
 // One lane per four-word store: 16 quads a block.
 #define TILEGPU_WB_QUAD_LANES (TILEGPU_WB_BLOCKS * 16)
+#endif
 
 layout(local_size_x = TILEGPU_WB_WG, local_size_y = TILEGPU_WB_WG) in;
 
@@ -117,7 +137,8 @@ layout(std430, set = 0, binding = 1) buffer Vram
 // The SAME buffer at the same offset, seen as quads -- the device binds one VkBuffer to both. GLSL
 // gives no other way to spell a 16-byte store into an array declared as words, and declaring the
 // ring as quads instead would make the read-modify-write arm's four-byte store unspellable. Only
-// the whole-word arm stores through this view; nothing reads it.
+// the whole-word arm stores through this view, and at a dim that does not stage nothing touches it
+// at all; the binding stays declared either way, because one descriptor layout serves every dim.
 layout(std430, set = 0, binding = 2) buffer VramQuads
 {
 	uvec4 vram_quads[];
@@ -205,15 +226,17 @@ uint tilegpu_pack5551(vec4 c)
 
 #endif
 
+#if TILEGPU_WB_STAGE_LDS
 // The workgroup's blocks, each staged at its PERMUTED word index so the gather below can read four
 // consecutive ring words as four consecutive shared ones. Sized off the workgroup shape, so the
-// device's answer for TILEGPU_WB_WG carries it -- 4 blocks and 1024 bytes at 16, 1 and 256 at 8.
+// device's answer for TILEGPU_WB_WG carries it -- 4 blocks and 1024 bytes at 16.
 shared uint tile_words[TILEGPU_WB_WG * TILEGPU_WB_WG];
 // Each staged block's physical in-page index, or ~0 for a block this surface does not hold newest
 // -- which is how the gather skips it without re-deriving the block mask.
 shared uint tile_blocks[TILEGPU_WB_BLOCKS];
 
 #define TILEGPU_WB_NO_BLOCK 0xFFFFFFFFu
+#endif
 
 void main()
 {
@@ -234,9 +257,10 @@ void main()
 	const uint col = rel % bw;
 	const uint row = rel / bw;
 
-	// The page's ring slot. Read before the block test rather than after it, because the gather
-	// lanes below need it whether or not their own block travels; it is one workgroup-uniform load
-	// on a shader whose four of them measured at ~3% of its body.
+	// The page's ring slot. Read before the block test rather than after it: where the stage is
+	// compiled the gather lanes need it whether or not their own block travels, and where it is not,
+	// a masked-out invocation pays one workgroup-uniform load it will not use -- on a shader whose
+	// four such loads together measured at ~3% of its body.
 	const uint slot = vram_words[table_base + epoch * 512u + page];
 
 #if TILEGPU_WB_CT32
@@ -284,9 +308,10 @@ void main()
 	}
 #endif
 
-	// THE WHOLE-WORD ARM. Both tests are workgroup-uniform -- byte_mask is a push constant, and the
-	// entry the keep mask rides on is this workgroup's z -- so every invocation of the workgroup
-	// reaches the barrier or none of them does. A block's 64 words are covered by exactly the 64
+#if TILEGPU_WB_STAGE_LDS
+	// THE STAGED WHOLE-WORD ARM. Both tests are workgroup-uniform -- byte_mask is a push constant,
+	// and the entry the keep mask rides on is this workgroup's z -- so every invocation of the
+	// workgroup reaches the barrier or none of them does. A block's 64 words are covered by the 64
 	// invocations of one 8x8 sub-tile, each with a distinct wib, so the quads below write the same
 	// 64 words with the same values the per-word store did.
 	if (byte_mask == 0xFFFFFFFFu && keep_words == 0xFFFFFFFFu)
@@ -315,8 +340,12 @@ void main()
 		}
 		return;
 	}
+#endif
 
-	// THE READ-MODIFY-WRITE ARM: PSMCT24's alpha byte and the upload merge's keep mask, per word.
+	// THE PER-WORD ARM: one store per invocation. It always serves the read-modify-write cases --
+	// PSMCT24's alpha byte and the upload merge's keep mask, which leave bytes alone that no uvec4
+	// store could -- and at a dim that does not stage it serves whole words too, down the
+	// plain-store road at the bottom.
 	if (!mine)
 		return;
 	const uint rw = slot + bib * 64u + wib;
