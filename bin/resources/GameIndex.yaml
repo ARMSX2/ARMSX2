@@ -9465,7 +9465,7 @@ SCPS-15097:
     - "SCPS-55001"
 SCPS-15098:
   name: "Formula One 2005"
-  name-sort: "ふぉみゅらー わん 2005"
+  name-sort: "ふぉーみゅら わん 2005"
   name-en: "Formula One 2005"
   region: "NTSC-J"
 SCPS-15099:
@@ -45763,7 +45763,7 @@ SLPM-65768:
   region: "NTSC-J"
 SLPM-65769:
   name: "ポップンミュージック10 コントローラセット"
-  name-sort: "ぽっぷんみゅーじっく [こんとろーらせっと]"
+  name-sort: "ぽっぷんみゅーじっく10 [こんとろーらせっと]"
   name-en: "Pop'n music 10 [Controller Set]"
   region: "NTSC-J"
 SLPM-65770:
