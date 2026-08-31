@@ -35,13 +35,12 @@ object QuickLoadSetup {
             ?: "quickload"
         val subdir = serial.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
-        val elfName = displayName(context, elfUri)
-        if (!elfName.endsWith(".elf", ignoreCase = true)) {
-            // The guide's own step is "rename the SLPM file to add .elf". Getting this wrong means
-            // VMManager never takes the ELF branch at all and the file boots as a disc image, so
-            // it is worth refusing loudly rather than producing a folder that silently won't work.
-            return I18n.get("games.quickLoad.notElf")
-        }
+        // VMManager only takes its ELF branch for a filename ending in .elf, so the name matters.
+        // The guide makes the user rename the file by hand -- and the packages ship seven of their
+        // eight variants WITHOUT the extension, so that step is where people get stuck. We know we
+        // were handed a boot ELF, so just add it. Picking "SLPM_654.28" now works as-is.
+        val picked = displayName(context, elfUri)
+        val elfName = if (picked.endsWith(".elf", ignoreCase = true)) picked else "$picked.elf"
 
         val written = runCatching { NativeApp.extractIsoToHostfs(iso.uri.toString(), subdir) }
             .getOrDefault(-1)
@@ -59,6 +58,12 @@ object QuickLoadSetup {
             } != null
         }.getOrDefault(false)
         if (!copied) return I18n.get("games.quickLoad.elfFailed")
+
+        // The guide has the modified file OVERWRITE the disc's own SLPM_xxx.xx and then get
+        // renamed, so the stock copy is gone by the end. Extraction wrote it back, so drop it --
+        // leaving both would differ from every working desktop setup for no reason.
+        val stock = File(dest, elfName.removeSuffix(".elf"))
+        if (stock.isFile && stock.absolutePath != elfFile.absolutePath) runCatching { stock.delete() }
 
         // Pair it with the disc. Without this the ELF boots against NoDisc and the game hangs on
         // its loading screen -- the exact symptom this whole feature exists to fix.

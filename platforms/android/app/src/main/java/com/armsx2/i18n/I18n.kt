@@ -665,7 +665,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "games.removeRecent" to "Remove from Recently Played",
     "games.quickLoad" to "Set up quick loading (host:)",
     "games.quickLoad.working" to "Extracting disc files…",
-    "games.quickLoad.notElf" to "That file needs to end in .elf — rename it first, as the guide says.",
     "games.quickLoad.extractFailed" to "Couldn't read that disc. Quick loading needs an ISO, not a compressed image.",
     "games.quickLoad.elfFailed" to "Disc files extracted, but the ELF couldn't be copied in.",
     "games.quickLoad.pairFailed" to "Files are in place, but the ELF couldn't be paired with the disc.",
