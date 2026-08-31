@@ -131,8 +131,13 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 	message(STATUS "Building for ARM64.")
 	set(ARCH_ARM64 TRUE)
 	if(APPLE)
-		# Min spec is an M1
-		add_compile_options("-march=armv8.4-a" "-mcpu=apple-m1")
+		# Min spec is an M1. +crypto because -march is the flag clang resolves
+		# the feature set from here, and armv8.4-a alone leaves the crypto
+		# extension off: 3rdparty/lzma's AesOpt.c then fails to compile its
+		# vaeseq_u8 intrinsics ("requires target feature 'aes'") even though
+		# every Apple Silicon part has them. Older clang (Xcode 15) trips on
+		# this; newer ones happen to take the feature set from -mcpu instead.
+		add_compile_options("-march=armv8.4-a+crypto" "-mcpu=apple-m1")
 	elseif(NOT MSVC)
 		# Require atomic rmw instructions (LSE, ARMv8.1+). This is the upstream
 		# default and targets the broad arm64 ecosystem. MSVC (and clang-cl)

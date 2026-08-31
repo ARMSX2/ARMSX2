@@ -37,6 +37,15 @@
 #include "libretro.h"
 
 #define VK_NO_PROTOTYPES
+// libretro_vulkan.h pulls in vulkan.h, and vulkan.h only declares the Metal
+// surface types when this is defined. VKLoader.h defines it further down for
+// the rest of the renderer, but by then vulkan.h has already been included from
+// here with the header guard set, so its Metal section would be skipped for
+// good and VKEntryPoints.inl loses PFN_vkCreateMetalSurfaceEXT. Define it
+// before the first include instead.
+#if defined(__APPLE__)
+#define VK_USE_PLATFORM_METAL_EXT
+#endif
 #include "libretro_vulkan.h"
 
 #include "fmt/format.h"

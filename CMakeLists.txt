@@ -105,7 +105,7 @@ endif()
 # drags the core into install-driven builds (ninja/make install, packaging) and
 # "build all targets" flows (IDEs) — which is how a plain SDL build ended
 # up compiling libretro. Build it with -DENABLE_LIBRETRO=ON.
-if(UNIX AND NOT APPLE AND ENABLE_LIBRETRO)
+if(UNIX AND ENABLE_LIBRETRO)
 	add_subdirectory(pcsx2-libretro)
 endif()
 
