@@ -12,6 +12,7 @@
 #include "GS/Renderers/Common/GSShaderEnums.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GS/Renderers/Common/GSVertex.h"
+#include "GS/Renderers/Tile/GSPageBitmap.h" // the writeback batch's page-hazard set
 #include "GS/GSAlignedClass.h"
 #include "GS/GSExtra.h"
 #include <array>
@@ -2876,6 +2877,215 @@ public:
 	{
 		return (seed_blocks_per_page != 0) ? entry_block_mask : seed_blocks;
 	}
+
+	/// THE WRITEBACK BATCH -- how a run of Writeback ops becomes fewer commands than it has ops.
+	///
+	/// Each writeback op is one compute dispatch with a whole-buffer ring barrier on each side, and
+	/// on a tiler that bracket is a cache flush plus an invalidate plus a drain: the CLUT copy run
+	/// measured the same bracket at 14.3 us around a 1 KB copy against 1.4 us outside it. The
+	/// campaign's fit prices a writeback op at 3.67 us of fixed cost plus 5.74 us a page, and
+	/// Spider-Man 3 records 1,101 ops a frame -- 4.0 ms that buys no swizzling. The pages are
+	/// already minimal (the compose road is demand-driven at page granularity and 98% consumed);
+	/// the OPS are not.
+	///
+	/// So consecutive writeback ops are batched two ways at once, and both rest on one clause:
+	///
+	///   THE BRACKET. A maximal run of writeback ops gets ONE barrier pair instead of one each.
+	///   Nothing between them reads or writes the ring -- every other op kind closes the run before
+	///   it records anything, exactly as the CLUT copy run does -- so the interior pairs order
+	///   nothing.
+	///
+	///   THE DISPATCH. Inside a run, ops that name the SAME source image with the SAME layout, byte
+	///   mask and epoch, and whose page entries are contiguous in the plan's array, become one
+	///   dispatch with the entry range concatenated. The shader takes its entry as
+	///   gl_WorkGroupID.z off first_entry, so a longer range is a taller dispatch and nothing else;
+	///   no shader, no push constant and no descriptor changes.
+	///
+	/// THE LOAD-BEARING CLAUSE IS PAGE DISJOINTNESS, and it is checked rather than argued. Two ops
+	/// that name one page write disjoint BYTE lanes of the same words -- a PSMCT24 surface owning
+	/// bytes 0-2 while another surface holds the alpha plane -- which is a read-modify-write race
+	/// once the barrier between them is gone, and a race between z groups of one dispatch even with
+	/// it. Any op whose pages the run has already claimed closes the run and opens a new one, so
+	/// the case costs a bracket and never correctness. It is rare (a compose marks its pages synced,
+	/// so a second op reaches the same page only through the other plane's owner) and the check is
+	/// eight words of OR per op.
+	///
+	/// The class is a pure state machine over the op array -- no device, no Vulkan -- so the
+	/// executor and the renderer's census walk the same decisions, and both are pinned in
+	/// gs_tilegpu_writeback_batch_tests.cpp.
+	class GSTileGpuWritebackBatch
+	{
+	public:
+		/// One dispatch to record: an op's parameters, with `page_entry_count` covering every op
+		/// that folded into it.
+		struct Dispatch
+		{
+			GSTileGpuPrepOp op;
+			u32 op_count; ///< ops merged into it -- the census's unit and the drop count's
+		};
+
+		/// What the caller must record for the op just offered, IN THIS ORDER. `flush_dispatch`
+		/// first (the accumulated dispatch is complete and `Flushed()` names it), then `close_run`
+		/// (the run's publishing barrier), then `open_run` (end the render pass and take the new
+		/// run's acquiring barrier). All three false means the op folded into what is already
+		/// accumulating and there is nothing to record at all.
+		struct Step
+		{
+			bool flush_dispatch = false;
+			bool close_run = false;
+			bool open_run = false;
+		};
+
+		void Reset()
+		{
+			m_run_open = false;
+			m_have_pending = false;
+			m_pages.clear();
+		}
+
+		/// Offer the next WRITEBACK op. `entry_base` is the plan's whole page-entry array; the op's
+		/// rows are the `page_entry_count` from `first_page_entry`.
+		Step Offer(const GSTileGpuPrepOp& op, const GSTileGpuPageEntry* entry_base)
+		{
+			pxAssert(op.kind == GSTileGpuPrepKind::Writeback && op.page_entry_count > 0);
+			Step s;
+			if (!m_run_open || Collides(op, entry_base))
+			{
+				// A hazard, or nothing open: publish what the run has, close it, start another.
+				s.flush_dispatch = TakePending();
+				s.close_run = m_run_open;
+				s.open_run = true;
+				m_run_open = true;
+				m_pages.clear();
+			}
+			else if (Merges(op))
+			{
+				m_pending.op.page_entry_count += op.page_entry_count;
+				m_pending.op_count++;
+				AddPages(op, entry_base);
+				return s;
+			}
+			else
+			{
+				// Same run -- no barrier -- but a different image or layout, so its own dispatch.
+				s.flush_dispatch = TakePending();
+			}
+			m_pending.op = op;
+			m_pending.op_count = 1;
+			m_have_pending = true;
+			AddPages(op, entry_base);
+			return s;
+		}
+
+		/// End of the op range, or the first op of any other kind: publish and close.
+		Step Finish()
+		{
+			Step s;
+			s.flush_dispatch = TakePending();
+			s.close_run = m_run_open;
+			m_run_open = false;
+			m_pages.clear();
+			return s;
+		}
+
+		/// Valid only immediately after a Step with `flush_dispatch` set.
+		const Dispatch& Flushed() const { return m_flushed; }
+
+		/// The dispatches a range of prep ops collapses to, by the same walk the executor makes.
+		/// The renderer's census and the tests share it so the counter cannot drift from the
+		/// commands.
+		static u32 CountDispatches(const GSTileGpuPrepOp* ops, u32 op_count, const GSTileGpuPageEntry* entry_base)
+		{
+			GSTileGpuWritebackBatch b;
+			u32 dispatches = 0;
+			for (u32 i = 0; i < op_count; i++)
+			{
+				if (ops[i].kind != GSTileGpuPrepKind::Writeback)
+				{
+					dispatches += b.Finish().flush_dispatch ? 1u : 0u;
+					continue;
+				}
+				// An op with no pages is not an op -- EmitPrepOp files none, and the executor skips
+				// it ahead of the arm, so it must not cost the run its bracket here either.
+				if (ops[i].page_entry_count == 0)
+					continue;
+				dispatches += b.Offer(ops[i], entry_base).flush_dispatch ? 1u : 0u;
+			}
+			return dispatches + (b.Finish().flush_dispatch ? 1u : 0u);
+		}
+
+		/// The barrier BRACKETS the same range opens, which is the other half of what a batch saves.
+		/// `hazards_out` takes the brackets a PAGE COLLISION forced rather than an op of another
+		/// kind -- the census that says whether the disjointness clause is costing anything.
+		static u32 CountRuns(const GSTileGpuPrepOp* ops, u32 op_count, const GSTileGpuPageEntry* entry_base,
+			u32* hazards_out = nullptr)
+		{
+			GSTileGpuWritebackBatch b;
+			u32 runs = 0;
+			for (u32 i = 0; i < op_count; i++)
+			{
+				if (ops[i].kind != GSTileGpuPrepKind::Writeback)
+				{
+					b.Finish();
+					continue;
+				}
+				if (ops[i].page_entry_count == 0)
+					continue;
+				// A bracket that also CLOSED one is a hazard split: an op of any other kind would have
+				// closed the run through Finish above and left nothing open to close here.
+				const Step s = b.Offer(ops[i], entry_base);
+				runs += s.open_run ? 1u : 0u;
+				if (hazards_out && s.open_run && s.close_run)
+					(*hazards_out)++;
+			}
+			b.Finish();
+			return runs;
+		}
+
+	private:
+		bool Merges(const GSTileGpuPrepOp& op) const
+		{
+			// Everything the dispatch fixes: the descriptor (target), the program and page geometry
+			// (psm), the three push constants that address the surface (bp, bw, byte_mask), the page
+			// table the slots come out of (epoch) -- and the entry range, which the shader walks
+			// linearly from first_entry and cannot be given a hole in.
+			return m_have_pending && m_pending.op.target == op.target && m_pending.op.psm == op.psm &&
+				   m_pending.op.bp == op.bp && m_pending.op.bw == op.bw &&
+				   m_pending.op.byte_mask == op.byte_mask && m_pending.op.epoch == op.epoch &&
+				   (m_pending.op.first_page_entry + m_pending.op.page_entry_count) == op.first_page_entry;
+		}
+
+		bool Collides(const GSTileGpuPrepOp& op, const GSTileGpuPageEntry* entry_base) const
+		{
+			for (u32 i = 0; i < op.page_entry_count; i++)
+			{
+				if (m_pages.test(entry_base[op.first_page_entry + i].page))
+					return true;
+			}
+			return false;
+		}
+
+		void AddPages(const GSTileGpuPrepOp& op, const GSTileGpuPageEntry* entry_base)
+		{
+			for (u32 i = 0; i < op.page_entry_count; i++)
+				m_pages.set(entry_base[op.first_page_entry + i].page);
+		}
+
+		bool TakePending()
+		{
+			if (!m_have_pending)
+				return false;
+			m_flushed = m_pending;
+			m_have_pending = false;
+			return true;
+		}
+
+		GSPageBitmap m_pages;    ///< every page the OPEN run has claimed
+		Dispatch m_pending = {}; ///< the dispatch still accumulating
+		Dispatch m_flushed = {}; ///< the last one Take'd, for the caller to record
+		bool m_run_open = false;
+		bool m_have_pending = false;
+	};
 
 	/// A draw's depth configuration, which selects the depth pipeline variant. GS depth grows
 	/// towards the viewer, so the test is GREATER_OR_EQUAL when the draw tests and ALWAYS when it

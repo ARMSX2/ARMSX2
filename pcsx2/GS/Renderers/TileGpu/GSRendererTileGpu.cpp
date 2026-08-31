@@ -2564,6 +2564,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto epochs = stat([](const MF& f) { return f.epochs; });
 	const auto wbo = stat([](const MF& f) { return f.writeback_ops; });
 	const auto wbp = stat([](const MF& f) { return f.writeback_pages; });
+	const auto wbd = stat([](const MF& f) { return f.writeback_dispatches; });
+	const auto wbr = stat([](const MF& f) { return f.writeback_runs; });
+	const auto wbh = stat([](const MF& f) { return f.writeback_run_hazards; });
 	const auto sdo = stat([](const MF& f) { return f.seed_ops; });
 	const auto sdp = stat([](const MF& f) { return f.seed_pages; });
 	const auto sdzo = stat([](const MF& f) { return f.seed_ops_depth; });
@@ -2694,6 +2697,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"%8.2f / %-5u pages, %.2f / %u pass breaks (of the seeds, depth %.2f / %u ops, %.2f / %u pages)",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
 		sbrk.p50, sdzo.mean, sdzo.p50, sdzp.mean, sdzp.p50);
+	// ...and what the executor records for them, which is the number the 3.67 us per-dispatch term
+	// is charged against. Pages are unchanged by batching, by construction; if these two ever equal
+	// the op count the batch found nothing to merge and the barrier bracket is the whole saving.
+	Console.WriteLn("    writeback dispatches %6.2f / %-4u (from %.2f ops), barrier runs %6.2f / %-4u "
+					"(of which %.2f / %u forced by a page collision)",
+		wbd.mean, wbd.p50, wbo.mean, wbr.mean, wbr.p50, wbh.mean, wbh.p50);
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
 		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
@@ -7543,6 +7552,21 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					pxAssertMsg(false, "TileGpu pass draw exceeds min(colour,depth) target height");
 				}
 			}
+		}
+
+		// 3c. What the executor will RECORD for the writeback ops emitted above, walked with the
+		//     class it decides with. The op count is what the compose road emitted; this is what the
+		//     command stream costs, which is the term a batching change moves and the op count does
+		//     not. Census only -- the walk reads the finished plan and changes nothing in it.
+		for (const GSDevice::GSTileGpuPass& pass : m_plan_passes)
+		{
+			const u32 first = std::min<u32>(pass.first_prep_op, static_cast<u32>(m_plan_prep_ops.size()));
+			const u32 count = std::min<u32>(pass.prep_op_count, static_cast<u32>(m_plan_prep_ops.size()) - first);
+			m_frame.writeback_dispatches += GSDevice::GSTileGpuWritebackBatch::CountDispatches(
+				m_plan_prep_ops.data() + first, count, m_plan_page_entries.data());
+			m_frame.writeback_runs += GSDevice::GSTileGpuWritebackBatch::CountRuns(
+				m_plan_prep_ops.data() + first, count, m_plan_page_entries.data(),
+				&m_frame.writeback_run_hazards);
 		}
 
 		// 4. The ring: one entry per (page, epoch range), its source bytes resolved now -- the

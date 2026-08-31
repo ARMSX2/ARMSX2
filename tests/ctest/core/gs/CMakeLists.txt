@@ -62,6 +62,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_pull_grouping_tests.cpp
 	gs_tilegpu_upload_merge_tests.cpp
 	gs_tilegpu_ring_compose_tests.cpp
+	gs_tilegpu_writeback_batch_tests.cpp
 	gs_tilegpu_ct16_road_tests.cpp
 	gs_tilegpu_depth_seed_tests.cpp
 	gs_tilegpu_texture_shuffle_tests.cpp

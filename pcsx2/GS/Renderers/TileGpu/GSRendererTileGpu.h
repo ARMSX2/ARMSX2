@@ -3461,6 +3461,19 @@ private:
 		u32 epochs = 0;
 		u32 writeback_ops = 0;
 		u32 writeback_pages = 0;
+		// What the executor actually RECORDS for those ops. A run of writeback ops takes one ring
+		// barrier pair instead of one each, and inside a run the ops that ask the same question of
+		// the same image become one dispatch -- see GSDevice::GSTileGpuWritebackBatch. Both are
+		// counted here off the finished plan, by the class the executor decides with, because the
+		// campaign's cost model charges 3.67 us per DISPATCH and 5.74 us per page: the pages above
+		// are what a compose costs, these two are what the commands around them cost.
+		u32 writeback_dispatches = 0;
+		u32 writeback_runs = 0;
+		// ...of those runs, the ones a PAGE COLLISION forced open rather than an op of another kind.
+		// Two ops naming one page write disjoint byte lanes of the same words and must stay ordered;
+		// this is what that clause costs, and it is the number that says whether resolving the
+		// collision through the epoch page table would buy anything.
+		u32 writeback_run_hazards = 0;
 		u32 writeback_breaks = 0; // draws that opened a pass because their read needed a writeback
 		u32 seed_ops = 0;
 		u32 seed_pages = 0;

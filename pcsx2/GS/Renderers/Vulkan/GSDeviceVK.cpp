@@ -8722,6 +8722,97 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 	};
 
+	// ONE ring hazard pair per RUN of Writeback ops, not one per op, and one dispatch per run of ops
+	// that ask the same question of the same image. The rule, the page-disjointness clause it rests
+	// on and why the bracket is worth more than the dispatch are all stated once on
+	// GSTileGpuWritebackBatch; this is only its executor half. The renderer counts the same walk for
+	// the census, so `writeback dispatches` in the log is what this records.
+	GSTileGpuWritebackBatch wb_batch;
+	const auto record_writeback_dispatch = [&](const GSTileGpuWritebackBatch::Dispatch& d) {
+		const GSTileGpuPrepOp& op = d.op;
+		GSTextureVK* const tex = static_cast<GSTextureVK*>(plan.targets[op.target]);
+		const u32 road_fmt = gsTileByteRoadFormat(op.psm);
+		// ComputeReadOnly, not ShaderReadOnly: the dispatch below samples this target from the
+		// COMPUTE stage, and ShaderReadOnly's barriers name the FRAGMENT stage on both sides. Under
+		// it the pass that filled this target is not ordered ahead of the read and its writes are
+		// not made visible to it, and the read is not ordered ahead of whatever binds the target as
+		// an attachment next -- so the slot this composes can hold the pixels from either side of
+		// the boundary, decided by how the device happened to overlap two kinds of job. The VkImage
+		// layout is the same SHADER_READ_ONLY_OPTIMAL, so no descriptor and no other reader moves.
+		tex->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadOnly);
+
+		Vulkan::DescriptorSetUpdateBuilder dsub;
+		if (m_use_push_descriptors)
+		{
+			dsub.AddCombinedImageSamplerDescriptorWrite(
+				VK_NULL_HANDLE, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
+			dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+			dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+			dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline_layout, 0, false);
+		}
+		else
+		{
+			VkDescriptorSet wbset = AllocateDescriptorSetFromFramePool(m_tilegpu_writeback_ds_layout);
+			if (wbset == VK_NULL_HANDLE) [[unlikely]]
+			{
+				// Out of descriptor memory outright. The dispatch is skipped and its ring slots keep
+				// whatever they were prefilled with, so a later draw samples the target's PREVIOUS
+				// bytes -- a wrong pixel the renderer's model has already recorded as composed. A
+				// device that does not push descriptors takes this road for every writeback of every
+				// frame, so the total is how a run testifies it never fired. Counted in OPS, not
+				// dispatches, because the ops are what the renderer's census emitted.
+				m_tilegpu_writeback_pool_dropped_ops += d.op_count;
+				if (!m_tilegpu_writeback_pool_warned)
+				{
+					m_tilegpu_writeback_pool_warned = true;
+					Console.Error("TileGpu: the device would give no descriptor set for a writeback; the "
+								  "op is skipped and its ring slot keeps the bytes it was prefilled "
+								  "with. Totals at teardown.");
+				}
+				return;
+			}
+			dsub.AddCombinedImageSamplerDescriptorWrite(
+				wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
+			dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+			dsub.AddBufferDescriptorWrite(wbset, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+			dsub.Update(m_device);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+				m_tilegpu_writeback_pipeline_layout, 0, 1, &wbset, 0, nullptr);
+		}
+
+		const u32 wpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.byte_mask,
+			entries_base_words, op.first_page_entry, op.page_entry_count, keep_base_words};
+		vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+			sizeof(wpush), wpush);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
+		// Groups of TileGpuWritebackGroupDim square covering one page's WORDS: 64x32
+		// for a CT32 page, one texel per invocation; 32x64 for a 64x64 16-bit page,
+		// whose invocations each pack the two texels that share a word. 2048
+		// invocations either way whatever the dim, one page per z -- and it is the same
+		// call the pipeline's local_size was baked from, so the two cannot disagree.
+		const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm, TileGpuWritebackGroupDim());
+		vkCmdDispatch(cmd, groups.x, groups.y, op.page_entry_count);
+	};
+	const auto close_writeback_run = [&]() {
+		// Whatever the run accumulated is recorded before the barrier that publishes it, so the two
+		// can never be reordered by a caller getting the sequence wrong.
+		const GSTileGpuWritebackBatch::Step step = wb_batch.Finish();
+		if (step.flush_dispatch)
+			record_writeback_dispatch(wb_batch.Flushed());
+		if (step.close_run)
+		{
+			// The composed slots feed the seeds and passes that follow.
+			ring_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+		}
+	};
+
 	for (const GSTileGpuPass& pass : plan.passes)
 	{
 		if (pass.target_pair_count == 0)
@@ -8791,6 +8882,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				// reach the ring, or return, with the run's writes still unpublished.
 				if (op.kind != GSTileGpuPrepKind::ClutBlockCopy)
 					close_clut_copy_run();
+				// ...and the same for the writeback run, on the same terms: any other kind ends it
+				// ahead of the first command that kind records, including the ones that record
+				// nothing and the ones that abandon the plan, so nothing below can reach the ring, or
+				// return, with a run's composes still unpublished.
+				if (op.kind != GSTileGpuPrepKind::Writeback)
+					close_writeback_run();
 				if (op.kind != GSTileGpuPrepKind::Donor && op.kind != GSTileGpuPrepKind::ClutGather && !can_texture)
 					continue;
 
@@ -9212,86 +9309,35 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				{
 					if (m_tilegpu_writeback_pipeline[road_fmt] == VK_NULL_HANDLE)
 						continue;
-					EndRenderPass();
-					// Prior shader reads and compute writes of the ring must finish before this
-					// dispatch writes it (a slot may be re-composed after a pass consumed it, or two
-					// owners of one page write disjoint bytes of the same words).
-					ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-									 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-					// ComputeReadOnly, not ShaderReadOnly: the dispatch below samples this target from the
-					// COMPUTE stage, and ShaderReadOnly's barriers name the FRAGMENT stage on both sides. Under
-					// it the pass that filled this target is not ordered ahead of the read and its writes are
-					// not made visible to it, and the read is not ordered ahead of whatever binds the target as
-					// an attachment next -- so the slot this composes can hold the pixels from either side of
-					// the boundary, decided by how the device happened to overlap two kinds of job. The VkImage
-					// layout is the same SHADER_READ_ONLY_OPTIMAL, so no descriptor and no other reader moves.
-					tex->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadOnly);
-
-					Vulkan::DescriptorSetUpdateBuilder dsub;
-					if (m_use_push_descriptors)
+					// The op joins the open run, or ends it. Everything the decision costs is
+					// recorded here, in the order the batch names: the finished dispatch, the run's
+					// publishing barrier, then the next run's acquiring one. An op skipped above
+					// records nothing and joins nothing, exactly as it did when every op carried its
+					// own bracket.
+					const GSTileGpuWritebackBatch::Step step = wb_batch.Offer(op, plan.page_entries.data());
+					if (step.flush_dispatch)
+						record_writeback_dispatch(wb_batch.Flushed());
+					if (step.close_run)
 					{
-						dsub.AddCombinedImageSamplerDescriptorWrite(
-							VK_NULL_HANDLE, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
-						dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
-						dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
-						dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline_layout, 0, false);
+						ring_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+							VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+								VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 					}
-					else
+					if (step.open_run)
 					{
-						VkDescriptorSet wbset = AllocateDescriptorSetFromFramePool(m_tilegpu_writeback_ds_layout);
-						if (wbset == VK_NULL_HANDLE) [[unlikely]]
-						{
-							// Out of descriptor memory outright. The op is skipped and the ring slot keeps
-							// whatever it was prefilled with, so a later draw samples the target's PREVIOUS
-							// bytes -- a wrong pixel the renderer's model has already recorded as composed.
-							// A device that does not push descriptors takes this road for every writeback of
-							// every frame, so the total is how a run testifies it never fired.
-							m_tilegpu_writeback_pool_dropped_ops++;
-							if (!m_tilegpu_writeback_pool_warned)
-							{
-								m_tilegpu_writeback_pool_warned = true;
-								Console.Error("TileGpu: the device would give no descriptor set for a writeback; the "
-											  "op is skipped and its ring slot keeps the bytes it was prefilled "
-											  "with. Totals at teardown.");
-							}
-							continue;
-						}
-						dsub.AddCombinedImageSamplerDescriptorWrite(
-							wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
-						dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
-						dsub.AddBufferDescriptorWrite(wbset, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
-						dsub.Update(m_device);
-						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-							m_tilegpu_writeback_pipeline_layout, 0, 1, &wbset, 0, nullptr);
-					}
-
-					const u32 wpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.byte_mask,
-						entries_base_words, op.first_page_entry, op.page_entry_count, keep_base_words};
-					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-						sizeof(wpush), wpush);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
-					// Groups of TileGpuWritebackGroupDim square covering one page's WORDS: 64x32
-					// for a CT32 page, one texel per invocation; 32x64 for a 64x64 16-bit page,
-					// whose invocations each pack the two texels that share a word. 2048
-					// invocations either way whatever the dim, one page per z -- and it is the same
-					// call the pipeline's local_size was baked from, so the two cannot disagree.
-					{
-						const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm, TileGpuWritebackGroupDim());
-						vkCmdDispatch(cmd, groups.x, groups.y, op.page_entry_count);
-					}
-					// The composed slots feed the seeds and passes that follow.
-					ring_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+						EndRenderPass();
+						// Prior shader reads and compute writes of the ring must finish before this
+						// run writes it (a slot may be re-composed after a pass consumed it, or two
+						// owners of one page write disjoint bytes of the same words -- the second is
+						// why the batch splits a run on a page collision).
+						ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+										 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
 							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-				}
-				else // Seed / SeedDepth
+							VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+					}
+				}				else // Seed / SeedDepth
 				{
 					// One pass shape, two destinations. The addressing, the page mask, the scissor and the
 					// push constants are identical -- what differs is which attachment the fragments land on
@@ -9398,6 +9444,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 				// The writeback dispatch or the seed pass just above; the four kinds that `continue`
 				// out of this loop carry their own boundary at their own tail.
+				//
+				// A writeback RUN is closed first when the lever is armed, and only then: the lever
+				// exists to make each op stand alone, and an open run would otherwise be cut in half
+				// by the submit the boundary can make, with no barrier between the halves. Asking
+				// the mask rather than closing unconditionally is what keeps the batch a batch when
+				// the lever is off, which is every shipped run.
+				if (serialize_sites & (1u << kGSTileGpuSerializeSiteByteRoad))
+					close_writeback_run();
 				serialize_boundary(kGSTileGpuSerializeSiteByteRoad);
 			}
 		}
@@ -9406,6 +9460,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// prep ended in copies publishes them here. Which also leaves the flag false at every other
 		// road out of this loop body.
 		close_clut_copy_run();
+		close_writeback_run();
 
 		// The pass snapshot: a copy of the colour target as it stands before the pass opens, for
 		// the draws that read their own destination (DATE today). Taken here, outside any render
