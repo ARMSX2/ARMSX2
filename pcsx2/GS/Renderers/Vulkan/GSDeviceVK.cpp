@@ -8392,16 +8392,23 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			GSConfig.TileGpuSerializeOps, GSConfig.TileGpuSerializeMask);
 	}
 
-	// The mid-frame readback kick, EmuCore/GS/TileGpuKickReadbackFrames. Announced once per run
-	// like the levers above, and only when it is set: a lever whose whole effect is submission
-	// TIMING leaves no other trace in a log, and "was it on?" has to be answerable from one.
+	// The mid-frame kick, EmuCore/GS/TileGpuKickReadbackFrames. Announced once per run like the
+	// levers above, and only when it is set: a lever whose whole effect is submission TIMING leaves
+	// no other trace in a log, and "was it on, and at what cadence?" has to be answerable from one.
 	if (GSConfig.TileGpuKickReadbackFrames && !m_tilegpu_kick_announced)
 	{
 		m_tilegpu_kick_announced = true;
-		Console.WriteLn("TileGpu mid-frame readback kick ENGAGED (EmuCore/GS/TileGpuKickReadbackFrames) -- on a "
-						"frame near a readback, the plan's recorded work is submitted at a pass boundary rather "
-						"than held until a pull drains it. Never blocks: it fires only when the next command "
-						"buffer has already retired. Counts at teardown.");
+		const u32 cadence = gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence);
+		Console.WriteLn("TileGpu mid-frame kick ENGAGED (EmuCore/GS/TileGpuKickReadbackFrames) -- the plan's "
+						"recorded work is submitted at a pass boundary rather than held until a pull drains it. "
+						"Two triggers: near a readback, every %u render passes; and a pass cadence "
+						"(EmuCore/GS/TileGpuKickPassCadence) of %u, which is %s. Ring is %u command buffers "
+						"deep. Never blocks: it fires only when the next command buffer has already retired. "
+						"Counts at teardown.",
+			kGSTileGpuKickReadbackThreshold, cadence,
+			cadence ? "additive -- it fires on any frame, readback or not"
+					: "OFF, leaving the near-readback trigger standing alone: the arm this shipped as",
+			static_cast<u32>(NUM_COMMAND_BUFFERS));
 	}
 
 	// One op boundary, at the strength the grade asks for, at the sites the mask names. The barrier is
@@ -8457,17 +8464,26 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	//     of which is allocated and consumed inside a single pass, so none spans this boundary;
 	//   - the CLUT block-copy run, which never crosses a pass and is closed well before the tail.
 	//
-	// The gate is Classic's, unchanged. The threshold is not a submit budget -- it sets how often we
-	// OFFER, and the fence check below is what decides, by a wide margin. ⚠️ The kick must never
-	// block: submitting cycles to the next command buffer, and ActivateCommandBuffer fence-waits if
-	// that buffer's previous submission is still executing, which is a hidden GPU sync worse than
-	// the backlog the kick drains. So it fires only when the next buffer is verifiably complete;
-	// otherwise the counter keeps the gate open and the next pass tail retries. Classic's comment
-	// at DoRenderHW carries the measurement behind that rule.
+	// TWO triggers decide whether to offer, and gsTileGpuKickWantsSubmit is the whole of that
+	// decision. Classic's near-a-readback gate is one of them, unchanged. The other is a pass
+	// CADENCE (EmuCore/GS/TileGpuKickPassCadence, 32) that fires on any frame, and it is here
+	// because the readback gate cannot serve the case that costs the most: TileGpu records a whole
+	// frame and submits it once, so a title with no readbacks leaves the GPU idle for as long as
+	// the GS thread records -- SD865 Stuntman, 35.99 ms of idle in a 90.50 ms drawn frame -- with
+	// this kick, the machinery that would fill it, firing zero times because nothing reads back.
+	//
+	// Neither trigger is a submit budget. They set how often we OFFER, and the fence check below is
+	// what decides, by a wide margin. ⚠️ The kick must never block: submitting cycles to the next
+	// command buffer, and ActivateCommandBuffer fence-waits if that buffer's previous submission is
+	// still executing, which is a hidden GPU sync worse than the backlog the kick drains. So it
+	// fires only when the next buffer is verifiably complete; otherwise the counter keeps the gate
+	// open and the next pass tail retries. Classic's comment at DoRenderHW carries the measurement
+	// behind that rule, and NUM_COMMAND_BUFFERS carries why the ring is eight deep rather than
+	// three: at three, that guard refuses most of the cadence's offers on a short frame.
+	const u32 kick_cadence = gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence);
 	const auto readback_kick = [&](GSTexture* pass_rt, GSTexture* pass_ds) {
 		if (!GSConfig.TileGpuKickReadbackFrames)
 			return;
-		constexpr u32 kick_threshold = 8;
 		constexpr u32 readback_window_frames = 3;
 		// A pass that wrote a recent readback source is (almost certainly) producing the data for
 		// the next pull, which follows immediately -- kick regardless of the threshold so the
@@ -8479,10 +8495,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const bool produces_readback_data = recent(pass_rt) || recent(pass_ds);
 		const bool near_readback =
 			m_tilegpu_readback_frame != ~0u && (m_frame - m_tilegpu_readback_frame) <= readback_window_frames;
-		if (!near_readback || InRenderPass())
+		if (InRenderPass())
 			return;
-		if (m_render_passes_since_submit < kick_threshold &&
-			!(produces_readback_data && m_render_passes_since_submit > 0))
+		// Two triggers, OR'd: the near-readback one this kick landed with, and the pass CADENCE,
+		// which fires on any frame and is what serves a title that never reads back. See
+		// gsTileGpuKickWantsSubmit -- the whole composition lives there so a unit test can hold it.
+		if (!gsTileGpuKickWantsSubmit(
+				m_render_passes_since_submit, kick_cadence, near_readback, produces_readback_data))
 			return;
 
 		m_tilegpu_kicks_offered++;

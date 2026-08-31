@@ -19,7 +19,7 @@ public:
 	// We don't actually need +1 semaphores, or, more than one really.
 	// But, the validation layer gets cranky if we don't fence wait before the next image acquire.
 	// So, add an additional semaphore to ensure that we're never acquiring before fence waiting.
-	static constexpr u32 NUM_SEMAPHORES = 4; // Should be command buffers + 1
+	static constexpr u32 NUM_SEMAPHORES = 9; // Should be command buffers + 1
 
 	~VKSwapChain();
 

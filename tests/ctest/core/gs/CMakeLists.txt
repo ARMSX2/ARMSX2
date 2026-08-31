@@ -51,6 +51,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_reorder_tests.cpp
 	gs_tilegpu_spec_guard_tests.cpp
 	gs_tilegpu_source_ring_tests.cpp
+	gs_tilegpu_kick_cadence_tests.cpp
 	gs_tilegpu_depth_policy_tests.cpp
 	gs_tilegpu_pass_geometry_tests.cpp
 	gs_tilegpu_dualsrc_road_tests.cpp

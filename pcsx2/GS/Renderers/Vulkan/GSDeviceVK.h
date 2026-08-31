@@ -45,7 +45,26 @@ public:
 	u64 GetTileGpuMergeSeedRenderPasses() const override { return m_tilegpu_merge_seed_render_passes; }
 	enum : u32
 	{
-		NUM_COMMAND_BUFFERS = 3,
+		// How deep the command-buffer ring is, and therefore how many submissions can be in flight
+		// at once (this minus one -- the buffer being recorded is not one of them).
+		//
+		// Raised 3 -> 8 with the TileGpu pass-tail kick's cadence (EmuCore/GS/TileGpuKickPassCadence)
+		// because the two are one lever. The kick never blocks: it submits only when the NEXT
+		// buffer in this ring has verifiably retired, and otherwise declines and retries at the
+		// following pass. At a ring of three that guard refuses most offers on a short frame, and
+		// the offers it takes run the recording thread into the ring's own recycle wait -- M2,
+		// cadence 32, ring 3: Shadow of the Colossus +2.80 ms with its GPU idle RISING 0.14 -> 2.95
+		// ms a frame; the same arm at ring 8 is -0.20 ms and no dump regresses through the ring.
+		//
+		// Safe by construction, which is why it is a constant and not a policy: a deeper ring only
+		// ever DELAYS a resource's reuse, never permits one earlier. Every reuse in this backend is
+		// gated on a fence counter, not on a ring index. What it costs is five more command pools,
+		// command buffers and fences, five more slots in the timestamp and pipeline-statistics
+		// query pools, and -- the only term worth naming -- five more per-frame descriptor-pool
+		// chains, built lazily at 256 sets a link. Measured on the corpus's heaviest dumps, peak
+		// RSS moves +12.4 MB on Stuntman (548 -> 560, +2.3%), +6.9 on Spider-Man 3 (+1.3%) and
+		// +0.2 on GT4 Online Public Beta, against target memory already in the hundreds of MB.
+		NUM_COMMAND_BUFFERS = 8,
 	};
 
 	struct OptionalExtensions

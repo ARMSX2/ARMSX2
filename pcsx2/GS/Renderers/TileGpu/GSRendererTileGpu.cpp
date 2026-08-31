@@ -3043,9 +3043,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// different report from the lever being off -- one says the gate never opened, the other says
 	// nothing was asked. Offered-minus-taken is the fence gate declining because the next command
 	// buffer is still executing, which is the pipeline being full and is the expected majority.
-	Console.WriteLn("  mid-frame readback kick (TileGpuKickReadbackFrames %s): offered %.2f /frame, "
+	Console.WriteLn("  mid-frame kick (TileGpuKickReadbackFrames %s, pass cadence %u): offered %.2f /frame, "
 					"taken %.2f /frame",
 		GSConfig.TileGpuKickReadbackFrames ? "ON" : "off",
+		gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence),
 		static_cast<double>(g_gs_device->GetTileGpuKicksOffered()) / mframes,
 		static_cast<double>(g_gs_device->GetTileGpuKicksTaken()) / mframes);
 

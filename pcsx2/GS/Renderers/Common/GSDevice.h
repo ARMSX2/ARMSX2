@@ -1500,6 +1500,77 @@ constexpr u32 gsTileGpuSourceSetRingDepth(int setting, u32 builtin_default = kGS
 	return want;
 }
 
+/// The TileGpu pass-tail kick: how often the executor OFFERS to submit the work it has recorded so
+/// far, at a pass boundary, instead of holding the whole frame for one submission at the end.
+///
+/// The kick landed (92f0e375d8) gated on being near a READBACK, because that is the case it was
+/// ported for: a pull fence-waits on everything already recorded, so submitting early lets the GPU
+/// have that backlog done before the pull asks. That gate is exactly right for what it was measured
+/// on and it leaves the larger case unserved. TileGpu submits its whole frame in one act, so on a
+/// title with no readbacks at all the GPU cannot start until the GS thread has finished recording,
+/// and the frame is a strict alternation: the CPU records against an empty queue, submits, blocks;
+/// the GPU runs against an idle CPU. Measured on the SD865, Stuntman is idle on the GPU for 35.99 ms
+/// of a 90.50 ms drawn frame, and the GS thread records for 39.20 -- idle/record 0.91, on three
+/// independent arms. The kick is the machinery that fills that bubble and it fired ZERO times a
+/// frame there, because Stuntman reads nothing back.
+///
+/// So the cadence below is a SECOND trigger for the same kick, not a replacement for the first:
+/// a fixed number of render passes since the last submit, on every frame, readback or not.
+///
+/// PIXEL-INERT by construction, and this is the property the whole road rests on. What a kick
+/// changes is WHEN recorded work is submitted, never what is recorded: queue submissions execute in
+/// order, the plan's stream reservations are retained across the boundary, and every per-pass bind
+/// is re-established inside its pass. A byte difference between two cadences is a pre-existing
+/// ordering defect, not a trade.
+constexpr u32 kGSTileGpuKickPassCadenceDefault = 32;
+
+/// The near-readback trigger's own threshold, unchanged since the kick landed. Named here rather
+/// than left a literal at the call site because the cadence has to be read against it: the two
+/// triggers are OR'd, so the effective threshold on a frame near a readback is the smaller of the
+/// two, and at the shipped 32 that is still this 8.
+constexpr u32 kGSTileGpuKickReadbackThreshold = 8;
+
+/// The effective cadence: what EmuCore/GS/TileGpuKickPassCadence says. ZERO is off and means the
+/// near-readback trigger stands alone, which is the arm this shipped as and the control arm of the
+/// device A/B. Anything below zero is off as well -- a negative cadence has no second meaning to
+/// carry, and a dev-only key should fall back to the previously shipped behaviour on a typo rather
+/// than refuse the run. There is no upper clamp: a cadence larger than any frame's pass count is
+/// simply a cadence that never fires, and rewriting it to some ceiling would change what a device
+/// record's arm meant.
+constexpr u32 gsTileGpuKickPassCadence(int setting)
+{
+	if (setting <= 0)
+		return 0;
+	return static_cast<u32>(setting);
+}
+
+/// Does the pass-tail kick want to offer a submit here? The whole composition, in one place, so a
+/// unit test can hold it: the two triggers are independent and OR'd.
+///
+///   - the NEAR-READBACK trigger, unchanged: on a frame within the readback window, either
+///     `readback_threshold` passes have been recorded since the last submit, or this pass wrote a
+///     texture a recent pull read -- which almost certainly means it is producing the data for the
+///     next pull, so it kicks whatever the count says (but not at zero passes, which would submit
+///     nothing).
+///   - the CADENCE trigger, additive: `cadence` passes since the last submit, on any frame.
+///
+/// Additive rather than a replacement because the two answer different questions. The near-readback
+/// trigger is worth +14.6% on GT4 Online Public Beta on the SD865 and its threshold of 8 was fitted
+/// against that; the cadence is fitted at 32 against the bubble, and pushing the readback trigger
+/// out to 32 with it would retune a landed win nothing in this round measured.
+///
+/// This decides only whether to OFFER. What actually goes is decided by the caller's never-block
+/// guard -- the kick fires only when the NEXT command buffer has verifiably retired -- and on the
+/// shipped ring that guard declines the large majority of offers.
+constexpr bool gsTileGpuKickWantsSubmit(u32 passes_since_submit, u32 cadence, bool near_readback,
+	bool produces_readback_data, u32 readback_threshold = kGSTileGpuKickReadbackThreshold)
+{
+	if (near_readback && (passes_since_submit >= readback_threshold ||
+							 (produces_readback_data && passes_since_submit > 0)))
+		return true;
+	return cadence != 0 && passes_since_submit >= cadence;
+}
+
 /// The strongest ordering grade the TileGpu executor knows how to force.
 constexpr u32 kGSTileGpuSerializeMax = 3;
 
@@ -2073,12 +2144,12 @@ public:
 	virtual u64 GetSourceSetWaitNs() const { return 0; }
 	virtual u64 GetSourceSetWaitCalls() const { return 0; }
 
-	/// The TileGpu executor's mid-frame kick (EmuCore/GS/TileGpuKickReadbackFrames): how often the
-	/// gate opened, and how often the next command buffer had also retired so the submit could
-	/// actually go. Read as a PAIR — offered-minus-taken is the fence gate declining, which is the
-	/// pipeline being full rather than anything being wrong, and with three command buffers only two
-	/// submissions are ever in flight. Both zero means the gate never opened, which is a different
-	/// statement from the lever being off.
+	/// The TileGpu executor's mid-frame kick (EmuCore/GS/TileGpuKickReadbackFrames, and the cadence
+	/// EmuCore/GS/TileGpuKickPassCadence sets): how often the gate opened, and how often the next
+	/// command buffer had also retired so the submit could actually go. Read as a PAIR —
+	/// offered-minus-taken is the fence gate declining, which is the pipeline being full rather than
+	/// anything being wrong, and only NUM_COMMAND_BUFFERS-1 submissions are ever in flight. Both zero
+	/// means the gate never opened, which is a different statement from the lever being off.
 	virtual u64 GetTileGpuKicksOffered() const { return 0; }
 	virtual u64 GetTileGpuKicksTaken() const { return 0; }
 	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and

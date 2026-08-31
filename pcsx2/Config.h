@@ -2227,6 +2227,51 @@ struct Pcsx2Config
 		// the built-in depth. Dev only.
 		int TileGpuSourceSetRingDepth = 0;
 
+		// How many render passes the TileGpu executor records before it OFFERS to submit
+		// them, on any frame -- the second trigger of the mid-frame kick above, beside
+		// that one's near-a-readback trigger. Zero is off and leaves the near-readback
+		// trigger standing alone, which is the arm the kick shipped as and the control
+		// arm of the device A/B. Negative reads as off too.
+		//
+		// What it is for: TileGpu records a whole frame and submits it in one act, so on
+		// a title that never reads back the GPU cannot start until the GS thread has
+		// stopped recording. SD865 Stuntman is the extreme -- 35.99 ms of GPU IDLE in a
+		// 90.50 ms drawn frame, against 39.20 ms of GS-thread recording, the same
+		// idle/record ratio of 0.91 on three independent arms -- and the kick that would
+		// have filled it fired ZERO times a frame, because the title has no readbacks for
+		// its gate to see. This key removes that gate's monopoly on the decision.
+		//
+		// PIXEL-INERT by construction: it moves only WHEN recorded work is submitted,
+		// never what is recorded. A byte difference between two cadences is a pre-existing
+		// ordering defect, not a trade -- which is why every cadence arm is gated on the
+		// full 22-dump hash grid, not a probe set.
+		//
+		// The cadence rides with NUM_COMMAND_BUFFERS 8 (GSDeviceVK.h), and the two are one
+		// lever: at the shipped ring of 3 only two submissions can be in flight, so on a
+		// short frame the kick's never-block guard refuses most offers and the ones it
+		// takes run the CPU into the ring -- M2, cadence 32, three command buffers: Shadow
+		// of the Colossus +2.80 ms and its GPU gap RISING 0.14 -> 2.95. At eight buffers
+		// the same arm is -0.20.
+		//
+		// Default 32. M2 Max / Honeykrisp, three interleaved rounds, median wall per drawn
+		// frame, off vs 32 (both at eight command buffers), 2026-08-30:
+		//   stuntman       175.59 -> 142.16  -33.44 (-19.0%)   GPU idle 30.38 -> 0.88
+		//   flatout2        31.45 ->  28.52   -2.93  (-9.3%)   GPU idle  2.46 -> 0.94
+		//   mgs3            10.26 ->   9.75   -0.51  (-5.0%)
+		//   sotc             6.48 ->   6.27   -0.20  (-3.1%)
+		//   gt4             31.41 ->  31.26   -0.15  (-0.5%)
+		//   rcuya-effects   27.16 ->  28.26   +1.10  (+4.1%)   the one regressor, priced
+		// The cadence sweep that picked 32: 8 taxes the short frames through the per-submit
+		// GPU cost (sotc +2.02, rcuya +2.28) and 512 gives most of stuntman's gain back
+		// (its idle returns to 12.73 ms). 22/22 dumps byte-identical, off vs 32.
+		//
+		// Device A/B (SD865, and a Mali confirmation arm): PENDING. Predicted stuntman
+		// 88-90 -> 57-63 ms. The one unmeasured term is Turnip's cost per submission at
+		// ~20 a frame, and its only datum so far runs the favourable way -- going from two
+		// submissions a frame to one measured +4.3 ms of GPU there. Dev only; a submission
+		// cadence is not a user setting.
+		int TileGpuKickPassCadence = 32;
+
 		// Override the device's answer to "how many extra pipeline binds may one plan pay
 		// for fragment SPECIALIZATION?" (GSDevice::TileGpuMaxSpecializationBinds). Zero --
 		// the default -- asks the device, which is what ships: Adreno answers 300, every
