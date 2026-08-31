@@ -2620,21 +2620,68 @@ void GSRendererTileGpu::ReportPassShapeCensus()
 }
 
 // The memory model's per-frame traffic: what the byte road actually moved, and every crossing
-// the design says should be rare. Mean / p50 over presented frames.
+// the design says should be rare. Mean / p50 per DRAWN frame.
 void GSRendererTileGpu::ReportModelTraffic()
 {
 	if (m_model_frames.empty())
 		return;
-	const double n = static_cast<double>(m_model_frames.size());
-	const auto stat = [this, n](auto get) {
-		std::vector<u32> v(m_model_frames.size());
+	using MF = ModelFrame;
+
+	// ⚠️ PER DRAWN FRAME, and until 2026-08-31 this divided by every PRESENTED frame while every
+	// reader -- and every record quoting it -- took it for the drawn one. A model frame is pushed at
+	// every VSync, and six of the twenty-two corpus titles draw into every other one (Stuntman,
+	// FlatOut 2, both Katamari dumps, MGS3, Yu-Gi-Oh!, Xenosaga), so on those the whole census read
+	// exactly 2x low: Stuntman's 1712.16 passes a drawn frame printed as 856.12. The containment
+	// block below has always divided by the drawn count and said so, which is what made the
+	// discrepancy visible; now there is one denominator for the whole census and it is that one.
+	//
+	// The SUM is over every frame and only the DIVISOR is the drawn count, so a present-only frame's
+	// work is not lost -- it is charged to the frames that did the drawing, which is the arithmetic
+	// the off-line counts this census is compared against use. Multiply any mean by the drawn count
+	// in the header to recover the run total.
+	//
+	// `contain_draws` is the test because it counts PS2 draws as they are accumulated: it is what
+	// the runner's stats.json uses for `drawn_frames`, and it does not see the display-buffer
+	// materialise, which happens on every presented frame and would call every frame drawn.
+	//
+	// The p50 is the median of the DRAWN frames for the same reason -- a median over a population
+	// half of which is structurally zero is a statistic about the presentation cadence, not about
+	// the frames with pixels in them. The max stays over every frame: a peak is a peak wherever it
+	// happened, and a present-only frame that spikes is exactly what a max is for.
+	u32 drawn = 0;
+	for (const MF& f : m_model_frames)
+		drawn += (f.contain_draws != 0) ? 1u : 0u;
+	const double n = static_cast<double>(std::max(drawn, 1u));
+	//
+	// ⚠️ TWO STATISTICS, because two kinds of column live in this census and the same divisor is
+	// right for only one of them.
+	//
+	//   A FLOW is counted as the frame runs -- ring pages, writebacks, pass breaks, stalls, draws.
+	//     A present-only frame's flow is real work and belongs in the bill, so the sum is over every
+	//     frame and only the divisor is the drawn count.
+	//   A LEVEL is a state read at the frame boundary, or the frame's own maximum -- live surfaces,
+	//     the biggest plan's epoch count, the longest pass built, the declaring budget's peak, the
+	//     0/1 "was this class refused". It does not accumulate, so summing it over the run and
+	//     dividing by the drawn count DOUBLES it on a title that draws every other frame -- and the
+	//     refusal column, which is a share of frames, would print over 100%. A level is averaged
+	//     over the drawn frames' own values instead.
+	const bool any_drawn = drawn != 0;
+	const auto tally = [this, n, any_drawn](auto get, bool level) {
+		std::vector<u32> v;
+		v.reserve(m_model_frames.size());
 		double sum = 0.0;
 		u32 worst = 0;
-		for (size_t i = 0; i < m_model_frames.size(); i++)
+		for (const MF& f : m_model_frames)
 		{
-			v[i] = get(m_model_frames[i]);
-			sum += v[i];
-			worst = std::max(worst, v[i]);
+			const u32 x = get(f);
+			worst = std::max(worst, x);
+			// A run that drew in no frame at all has no drawn population to take a median over, so
+			// it falls back to every frame rather than reporting nothing.
+			const bool counted = !any_drawn || f.contain_draws != 0;
+			if (counted)
+				v.push_back(x);
+			if (counted || !level)
+				sum += x;
 		}
 		std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
 		struct
@@ -2645,13 +2692,14 @@ void GSRendererTileGpu::ReportModelTraffic()
 		} r{sum / n, v[v.size() / 2], worst};
 		return r;
 	};
-	using MF = ModelFrame;
-	const auto surf = stat([](const MF& f) { return f.surfaces_live; });
+	const auto stat = [&tally](auto get) { return tally(get, false); };
+	const auto lvl = [&tally](auto get) { return tally(get, true); };
+	const auto surf = lvl([](const MF& f) { return f.surfaces_live; });
 	const auto passes = stat([](const MF& f) { return f.passes; });
 	const auto ring = stat([](const MF& f) { return f.ring_pages; });
 	const auto prefill = stat([](const MF& f) { return f.ring_prefill; });
 	const auto versions = stat([](const MF& f) { return f.ring_versions; });
-	const auto epochs = stat([](const MF& f) { return f.epochs; });
+	const auto epochs = lvl([](const MF& f) { return f.epochs; });
 	const auto wbo = stat([](const MF& f) { return f.writeback_ops; });
 	const auto wbp = stat([](const MF& f) { return f.writeback_pages; });
 	const auto wbd = stat([](const MF& f) { return f.writeback_dispatches; });
@@ -2725,7 +2773,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto vprogd = stat([](const MF& f) { return f.variant_pass_programs_despec; });
 	const auto sgp = stat([](const MF& f) { return f.specguard_passes; });
 	const auto sgd = stat([](const MF& f) { return f.specguard_draws; });
-	const auto bigpass = stat([](const MF& f) { return f.biggest_pass_draws; });
+	const auto bigpass = lvl([](const MF& f) { return f.biggest_pass_draws; });
 	const auto capped = stat([](const MF& f) { return f.capped_passes; });
 	const auto road_oob = [&stat](StallSite s) {
 		return stat([s](const MF& f) { return f.pull_oob[static_cast<u32>(s)]; });
@@ -2747,7 +2795,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
 			   p_all = stp(StallSite::SyncAll);
 
-	Console.WriteLn("TileGpu memory model over %u frames (mean / p50 per frame):", static_cast<u32>(m_model_frames.size()));
+	Console.WriteLn("TileGpu memory model over %u frames, %u of them DRAWN (mean / p50 per DRAWN frame; the mean is "
+					"the run total over the drawn count, so mean x %u is the total):",
+		static_cast<u32>(m_model_frames.size()), drawn, drawn);
 	Console.WriteLn("  surfaces live %6.2f / %-4u  passes %7.2f / %-5u  ring pages %7.2f / %-5u (prefilled %.2f / %u, "
 					"version copies %.2f / %u, epochs %.2f / %u, prefilled for uncomposed bytes %.2f / %u)",
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
@@ -2828,16 +2878,13 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// that is the column containment acts on; the full key adds the depth surface and its presence,
 	// which containment leaves alone, so the gap between the two columns is depth's own contribution.
 	//
-	// ⚠️ Per DRAWN frame, unlike every other line here, and the p50 is dropped for a max. A title
-	// that presents a frame it drew nothing into -- Yu-Gi-Oh! presents two for every one it draws --
-	// would otherwise report half the breaks it has, and this census exists to be compared against
-	// an off-line count over the same draw stream. Getting the denominator wrong there reads as the
-	// fold working twice as well as it does.
-	u32 ct_drawn = 0;
-	for (const MF& f : m_model_frames)
-		ct_drawn += (f.contain_draws != 0) ? 1u : 0u;
-	const double ct_n = static_cast<double>(std::max(ct_drawn, 1u));
-	const auto ctstat = [this, ct_n](auto get) {
+	// ⚠️ Per DRAWN frame -- like every other line here since 2026-08-31, where it used to be the only
+	// one -- and the p50 is dropped for a max. A title that presents a frame it drew nothing into --
+	// Yu-Gi-Oh! presents two for every one it draws -- would otherwise report half the breaks it
+	// has, and this census exists to be compared against an off-line count over the same draw
+	// stream. Getting the denominator wrong there reads as the fold working twice as well as it
+	// does. The count is the block-wide `drawn` above; this block is where its definition came from.
+	const auto ctstat = [this, n](auto get) {
 		double sum = 0.0;
 		u32 worst = 0;
 		for (const MF& f : m_model_frames)
@@ -2850,7 +2897,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 		{
 			double mean;
 			u32 max;
-		} r{sum / ct_n, worst};
+		} r{sum / n, worst};
 		return r;
 	};
 	const auto ct_brk = ctstat([](const MF& f) { return f.contain_breaks; });
@@ -2876,7 +2923,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto ct_bind = ctstat([](const MF& f) { return f.contain_bind_refused; });
 	Console.WriteLn("  containment (%s; mean per DRAWN frame, %u of %u): colour-key breaks "
 					"%8.2f unfolded -> %8.2f folded   full key %8.2f -> %8.2f",
-		m_contain_surfaces ? "TAKEN" : "probed, NOT taken", ct_drawn, static_cast<u32>(m_model_frames.size()),
+		m_contain_surfaces ? "TAKEN" : "probed, NOT taken", drawn, static_cast<u32>(m_model_frames.size()),
 		ct_brk.mean, ct_brkf.mean, ct_key.mean, ct_keyf.mean);
 	Console.WriteLn("    folds %.2f of %.2f first sights (%.2f draws land in a container), growth %.2f pages, "
 					"biggest container %u pages, outgrown %.2f, unfolded %.2f",
@@ -2987,8 +3034,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 				continue;
 			const auto taxd = stat([c](const MF& f) { return f.class_taxed[c]; });
 			const auto runs = stat([c](const MF& f) { return f.class_runs[c]; });
-			const auto peak = stat([c](const MF& f) { return f.class_peak[c]; });
-			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
+			const auto peak = lvl([c](const MF& f) { return f.class_peak[c]; });
+			const auto refu = lvl([c](const MF& f) { return f.class_refused[c]; });
 			// Who refused it, not just how often: on a probe arm the refusal is the KEY's and the cost
 			// peak beside it is still the budget's own opinion, which is the number the arm is pricing.
 			// ⚠️ The peak is MICROSECONDS OF GPU A FRAME since the 2026-08-31 re-fit, and the column
@@ -3044,7 +3091,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 		const auto scsub = stat([](const MF& f) { return f.scissor_subrect; });
 		const auto sccut = stat([](const MF& f) { return f.scissor_cuts; });
 		const auto scdist = stat([](const MF& f) { return f.scissor_distinct; });
-		const auto scmax = stat([](const MF& f) { return f.scissor_pass_distinct_max; });
+		const auto scmax = lvl([](const MF& f) { return f.scissor_pass_distinct_max; });
 		const auto scex = stat([](const MF& f) { return f.scissor_extra_calls; });
 		Console.WriteLn("  scissor: draws %.2f / %u   narrower than target %.2f / %u (%.2f%%)   cuts the draw "
 						"%.2f / %u (%.2f%%)   distinct rects %.2f / %u summed over passes, most in one pass "
@@ -3106,8 +3153,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// the executor at the BeginRenderPass itself. Read the merge's column against merge_ops above --
 	// batched they are equal, per-page it is one pass per merged PAGE -- and read the total beside
 	// the plan-pass line, which has never included any of these.
-	Console.WriteLn("  seed render passes (TileGpuMergeSeedBatch %s): %.2f /frame, of which the upload merge's "
-					"%.2f /frame",
+	Console.WriteLn("  seed render passes (TileGpuMergeSeedBatch %s): %.2f /drawn frame, of which the upload "
+					"merge's %.2f /drawn frame",
 		m_merge_seed_batch ? "on" : "off",
 		static_cast<double>(g_gs_device->GetTileGpuSeedRenderPasses()) / n,
 		static_cast<double>(g_gs_device->GetTileGpuMergeSeedRenderPasses()) / n);
@@ -3140,10 +3187,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// NEITHER until now (only exact-Tile printed the out-of-band line), which is how a regression
 	// built entirely of out-of-band waits once hid behind falling drain counters.
 	//
-	// ⚠️ Basis: MODEL frames (one per plan build, idle frames included), matching every other line
-	// in this census. The runner's stats.json divides by DRAWN frames, so its per-frame figure for
-	// the same population is larger — on a 30 Hz title by about 2x.
-	const double mframes = static_cast<double>(std::max<size_t>(m_model_frames.size(), 1));
+	// ⚠️ Basis: DRAWN frames, matching every other line in this census and matching the runner's
+	// stats.json, which has always divided by them. It used to be model frames -- one per VSync,
+	// present-only frames included -- so on a title that draws every other frame this block read
+	// half of what stats.json read of the same counters, and neither number said which it was.
+	const double mframes = n;
 	const auto pcalls = stat([](const MF& f) { return f.pull_calls; });
 	Console.WriteLn("  pool calls the stalls issued %.2f / %u  (one per owner x block mask x byte window, over the "
 					"whole page set it needs -- the unit the device round trip is charged in)",
@@ -3177,9 +3225,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const double sync = static_cast<double>(g_gs_device->GetSyncWaitCalls());
 	const double oob = static_cast<double>(g_gs_device->GetOobWaitCalls());
 	const double srcset = static_cast<double>(g_gs_device->GetSourceSetWaitCalls());
-	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /frame  =  sync %.2f (%.2f ms/frame, of which pool drains %.2f at "
-					"%.2f ms)  +  out-of-band %.2f (%.2f ms/frame)  +  source-set wrap %.2f (%.2f ms/frame)   "
-					"[ring backpressure, not a drain: %.2f /frame, %.2f ms]",
+	Console.WriteLn("  BLOCKING GPU WAITS %8.2f /drawn frame  =  sync %.2f (%.2f ms/drawn frame, of which pool "
+					"drains %.2f at %.2f ms)  +  out-of-band %.2f (%.2f ms/drawn frame)  +  source-set wrap %.2f "
+					"(%.2f ms/drawn frame)   [ring backpressure, not a drain: %.2f /drawn frame, %.2f ms]",
 		(sync + oob + srcset) / mframes, sync / mframes,
 		static_cast<double>(g_gs_device->GetSyncWaitNs()) / mframes / 1e6, drains / mframes,
 		static_cast<double>(m_target_pool.DrainWallNs()) / mframes / 1e6, oob / mframes,
@@ -3192,8 +3240,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// different report from the lever being off -- one says the gate never opened, the other says
 	// nothing was asked. Offered-minus-taken is the fence gate declining because the next command
 	// buffer is still executing, which is the pipeline being full and is the expected majority.
-	Console.WriteLn("  mid-frame kick (TileGpuKickReadbackFrames %s, pass cadence %u): offered %.2f /frame, "
-					"taken %.2f /frame",
+	Console.WriteLn("  mid-frame kick (TileGpuKickReadbackFrames %s, pass cadence %u): offered %.2f /drawn frame, "
+					"taken %.2f /drawn frame",
 		GSConfig.TileGpuKickReadbackFrames ? "ON" : "off",
 		gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence),
 		static_cast<double>(g_gs_device->GetTileGpuKicksOffered()) / mframes,
