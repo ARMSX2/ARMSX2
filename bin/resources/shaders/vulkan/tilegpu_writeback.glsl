@@ -103,6 +103,19 @@
 // on an Adreno 650 microbenchmark that costs 30% MORE than re-issuing them per invocation -- the
 // redundant loads are cache-friendly and the sync stall is ten times what it saves. The route taken
 // here needs no barrier, no shared memory and no subgroup op, so that result does not bear on it.
+//
+// THE UNIFORM DIVIDE BILL, which was the same shape one layer down. Placing the page in the target
+// needed its column and row off the base page -- `rel % bw` and `rel / bw` -- and mobile GPUs have
+// no integer divider, so each of those lowers to a reciprocal-and-correct sequence tens of
+// instructions long. Every one of a page's 2048 invocations ran both, for an answer that is the
+// same in all 2048: `bw` is a push constant and the page is the workgroup's own entry, so the
+// expression is workgroup-uniform end to end.
+//
+// The renderer now divides once per page, on the CPU, and the answer rides in the sixteen bits the
+// entry was padding with -- so the shader reads it out of the word it already loaded for the page,
+// with a shift and a mask and no extra load. That is what makes it worth doing where broadcasting
+// the uniform LOADS above was not: the loads had to happen somewhere, and this arithmetic does not
+// have to happen on the GPU at all.
 
 #ifndef TILEGPU_WB_FMT
 #define TILEGPU_WB_FMT 0
@@ -159,10 +172,11 @@ layout(std430, set = 0, binding = 2) buffer VramQuads
 layout(push_constant) uniform cb
 {
 	uint table_base;   // UNUSED here: the entry carries its slot already resolved (see below).
-	uint epoch;        // UNUSED here, for the same reason. Both stay declared because the host pushes
-					   // one nine-word array to every TileGpu program and the block must cover it.
-	uint bp;           // the surface's base in blocks (page-aligned)
-	uint bw;           // the surface's stride in pages
+	uint epoch;        // UNUSED here, for the same reason.
+	uint bp;           // UNUSED here: the entry carries the page's row and column already divided.
+	uint bw;           // UNUSED here, for the same reason. All four stay declared because the host
+					   // pushes one nine-word array to every TileGpu program and each reads a PREFIX
+					   // of it by POSITION -- a field dropped here would slide every field after it.
 	uint byte_mask;    // bytes of each word this surface owns (0xFFFFFFFF, or 0x00FFFFFF for CT24)
 	uint entries_base; // ring word of the plan's page-entry array (TILEGPU_WB_ENTRY_WORDS each, below)
 	uint first_entry;  // this op's first entry index into that array
@@ -170,11 +184,17 @@ layout(push_constant) uniform cb
 	uint keep_base;    // ring word of the plan's keep-mask tables, indexed by the entry's third word
 };
 
-// One page entry is four words: {page | pad<<16}, block_mask, keep_mask_words, slot. Four rather
+// One page entry is four words: {page | rowcol<<16}, block_mask, keep_mask_words, slot. Four rather
 // than the three the entry's own fields need, because four is one uvec4: the body below takes the
 // entry in a single aligned load instead of a word at a time. GSTileGpuPageEntry is the same four
 // words in C++ and static_asserts this size.
 #define TILEGPU_WB_ENTRY_WORDS 4u
+
+// How the entry's second half-word packs the page's position in the surface: column in the low bits,
+// row above this shift. Six of column because bw is a 6-bit GS field; nine of row because the pool
+// wraps at 512 pages and bw = 1 gives every page its own row. GSDevice's
+// kGSTileGpuPageEntryRowShift is the same number, checked against this text at device init.
+#define TILEGPU_WB_ROW_SHIFT 6u
 
 // THE RING'S GEOMETRY, spelled once here and once in C++. Every constant below is a fact this
 // shader shares with GSDeviceVK over memory the host stages and this shader indexes as raw words.
@@ -283,7 +303,6 @@ void main()
 	// (the executor asserts the alignment; this shader cannot).
 	const uvec4 entry =
 		vram_quads[(entries_base + (first_entry + entry_index) * TILEGPU_WB_ENTRY_WORDS) >> 2u];
-	const uint page = entry.x & 0xFFFFu;
 	const uint block_mask = entry.y;
 	const uint keep_words = entry.z;
 	// The page's ring slot, resolved by the executor when it staged the entry: table[epoch][page],
@@ -293,10 +312,15 @@ void main()
 	// an entry only ever serves one epoch even when the batch merges ops into one dispatch.
 	const uint slot = entry.w;
 
-	// The page's pixel rect in the target: pool row/column from its offset off the base page.
-	const uint rel = (page + TILEGPU_PAGES - (bp >> 5u)) & 511u;
-	const uint col = rel % bw;
-	const uint row = rel / bw;
+	// The page's pixel rect in the target: its column and row of pages off the surface's base page,
+	// which the renderer resolved when it staged the entry. This was `rel % bw` and `rel / bw` over
+	// a `rel` built from the entry's page and the bp/bw push constants -- an integer divide and an
+	// integer modulo, neither of which mobile GPUs have, run in all 2048 invocations of every page
+	// for an answer identical in all 2048 of them. Nothing in it varied across the workgroup: bw is
+	// a push constant and the page is the workgroup's own entry. So it is a shift and a mask on a
+	// word this lane already holds, and `page`, `bp` and `bw` have no reader left here.
+	const uint col = (entry.x >> 16u) & ((1u << TILEGPU_WB_ROW_SHIFT) - 1u);
+	const uint row = entry.x >> (16u + TILEGPU_WB_ROW_SHIFT);
 
 #if TILEGPU_WB_CT32
 	const uint u = col * 64u + gl_GlobalInvocationID.x;

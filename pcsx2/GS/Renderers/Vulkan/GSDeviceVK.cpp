@@ -6837,8 +6837,8 @@ bool GSDeviceVK::CheckTileGpuShaderContracts()
 		page_word_shift++;
 
 	// One row per (shader, constant): the #define that shader has to carry, and what THIS build says
-	// the number is. Six contracts here; the state row and the push block are counted rather than read
-	// and follow below. Eight in all, which is what the ring's reader audit found spelled twice.
+	// the number is. Nine constants over seventeen rows, a constant getting a row per shader that
+	// carries it; the state row and the push block are counted rather than read and follow below.
 	const struct
 	{
 		u32 shader;
@@ -6864,6 +6864,8 @@ bool GSDeviceVK::CheckTileGpuShaderContracts()
 			"the writeback page-entry stride"},
 		{3, "TILEGPU_KEEP_WORDS_PER_PAGE", kGSTileGpuKeepMaskWordsPerPage,
 			"the writeback keep-mask table's per-page stride"},
+		{3, "TILEGPU_WB_ROW_SHIFT", kGSTileGpuPageEntryRowShift,
+			"the page entry's row/column packing shift"},
 	};
 
 	std::string sources[std::size(kShaders)];

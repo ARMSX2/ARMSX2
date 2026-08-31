@@ -2821,6 +2821,13 @@ public:
 	/// Words in one page's keep-mask table: 32 blocks x 8 words, one BIT per byte of the block's
 	/// 256. A block is 256 bytes in every format, so this table is format-independent.
 	static constexpr u32 kGSTileGpuKeepMaskWordsPerPage = 32 * 8;
+	/// How GSTileGpuPageEntry::rowcol packs the page's position in its surface: column in the low
+	/// bits, row above this shift. Six bits of column because `bw` is a 6-bit GS field, so a column
+	/// is 0..62; nine bits of row because the pool wraps at 512 pages and bw = 1 makes every page its
+	/// own row. Fifteen bits in all, which is why the field is a u16.
+	/// tilegpu_writeback.glsl's TILEGPU_WB_ROW_SHIFT is the same number and
+	/// GSDeviceVK::CheckTileGpuShaderContracts holds the two to each other.
+	static constexpr u32 kGSTileGpuPageEntryRowShift = 6;
 
 	/// One page of a prep op's page list: which page, and which of its 32 physical blocks the op
 	/// touches (a writeback writes only the blocks the surface holds newest; an ordinary seed reads
@@ -2864,10 +2871,43 @@ public:
 	/// range off the end of the array -- so an entry belongs to exactly one op and therefore to
 	/// exactly one epoch. GSTileGpuWritebackBatch merges ops only when their `epoch` agrees, so a
 	/// merged dispatch cannot ask one entry for two epochs' slots.
+	///
+	/// `rowcol` is the page's POSITION in the surface's pixel space -- its column and row of pages
+	/// off the base page -- packed at kGSTileGpuPageEntryRowShift. The writeback derived it for
+	/// itself out of `page`, `bp` and `bw`:
+	///
+	///     rel = (page - bp/32) mod 512;  col = rel % bw;  row = rel / bw
+	///
+	/// which is an integer DIVIDE and an integer MODULO, and mobile GPUs have neither. Both lower to
+	/// a reciprocal-and-correct sequence tens of instructions long, and this shader ran it in all
+	/// 2048 invocations of every page it wrote back, for one answer that is the same in all 2048 --
+	/// `bw` is a push constant and `page` is the workgroup's own entry, so nothing in the expression
+	/// varies across the workgroup at all. It is not a divide the shader needed; it is a divide it
+	/// was repeating.
+	///
+	/// So the renderer does it once per page, on the CPU, where a divide is a divide, and the answer
+	/// rides in the sixteen bits the entry was padding with. The shader reads it out of `page`'s own
+	/// word with a shift and a mask -- no extra load, because that word was already in a register:
+	/// the entry arrives as one uvec4 (see above) and `rowcol` is the high half of its x. `bp` and
+	/// `bw` then have no reader left in the writeback, joining `table_base` and `epoch` as push
+	/// fields it declares to keep the shared block's positions and does not use.
+	///
+	/// WHY NOT A BAKED RECIPROCAL instead, the usual answer to a uniform divisor: it would still cost
+	/// a wide multiply, a shift and a multiply-subtract per invocation, and a tenth push-constant
+	/// word in a nine-word block four shaders read positionally. This costs two ALU ops and no new
+	/// word. And why not broadcast one lane's answer through shared memory: there is nothing to
+	/// broadcast -- the value is workgroup-uniform, so every lane already computes the same thing --
+	/// and the barrier would reach the dim-8 arm, which has no shared memory at all.
+	///
+	/// `bw` IS NEVER ZERO on a surface that reaches here. It is the surface's own stride and the
+	/// target pool already divides by it unguarded for the same surfaces, in
+	/// GSTileTargetPool::HeightForPages, to decide how tall to make the texture this writeback reads.
+	/// A zero-stride layout claims the whole page space (PagesForTargetRect) but never gets a
+	/// texture, so it never gets a prep op either.
 	struct GSTileGpuPageEntry
 	{
 		u16 page;
-		u16 pad_;
+		u16 rowcol;
 		u32 block_mask;
 		u32 keep_mask_words;
 		u32 slot;

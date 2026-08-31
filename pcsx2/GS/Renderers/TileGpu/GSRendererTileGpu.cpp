@@ -4865,11 +4865,22 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 			if (mask == 0)
 				return;
 		}
+		// The page's column and row in the surface's pixel space, which is the divide the writeback
+		// shader used to run in every one of a page's 2048 invocations for one workgroup-uniform
+		// answer -- run here instead, once, where the hardware has a divider. GSTileGpuPageEntry
+		// carries the argument and the packing. `op.bw` is the surface's own stride and cannot be
+		// zero: the target pool divides by the same number to size the texture this reads.
+		pxAssert(op.bw != 0);
+		const u32 rel = (page + GS_MAX_PAGES - (op.bp >> 5)) & (GS_MAX_PAGES - 1);
+		const u32 pgcol = rel % op.bw;
+		const u32 pgrow = rel / op.bw;
+		pxAssert(pgcol < (1u << GSDevice::kGSTileGpuPageEntryRowShift) && pgrow < GS_MAX_PAGES);
+		const u16 rowcol = static_cast<u16>((pgrow << GSDevice::kGSTileGpuPageEntryRowShift) | pgcol);
 		// The trailing zero is the ring slot, which the EXECUTOR fills once it knows where the ring
 		// landed -- see GSTileGpuPageEntry. Spelled rather than left to aggregate init so the word
 		// that reaches GPU memory is a value this line chose.
 		m_plan_page_entries.push_back(
-			GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask, keep, 0});
+			GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), rowcol, mask, keep, 0});
 	});
 	op.page_entry_count = static_cast<u32>(m_plan_page_entries.size()) - op.first_page_entry;
 	if (op.page_entry_count == 0)
