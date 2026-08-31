@@ -9,9 +9,13 @@ find_path(
     ${SHADERC_PATH_INCLUDES}
 )
 
+# shaderc_combined is the static archive with glslang and SPIRV-Tools already
+# folded in. It is what a cross build wants - a libretro core has to carry its
+# own copy, since there is no shaderc on an Android device to link against -
+# and it comes last so a system shared library still wins where there is one.
 find_library(
     SHADERC_LIBRARY
-    NAMES shaderc_shared.1 shaderc_shared
+    NAMES shaderc_shared.1 shaderc_shared shaderc_combined
     PATHS ${ADDITIONAL_LIBRARY_PATHS} ${SHADERC_PATH_LIB}
 )
 
@@ -24,8 +28,14 @@ if(SHADERC_FOUND)
     set_target_properties(Shaderc::shaderc_shared PROPERTIES
         IMPORTED_LOCATION ${SHADERC_LIBRARY}
         INTERFACE_INCLUDE_DIRECTORIES ${SHADERC_INCLUDE_DIR}
-        INTERFACE_COMPILE_DEFINITIONS "SHADERC_SHAREDLIB"
     )
+    # Only the shared library is declared as one: the define picks the
+    # dllimport half of shaderc's headers, which is wrong for the archive.
+    if(NOT SHADERC_LIBRARY MATCHES "shaderc_combined")
+        set_target_properties(Shaderc::shaderc_shared PROPERTIES
+            INTERFACE_COMPILE_DEFINITIONS "SHADERC_SHAREDLIB"
+        )
+    endif()
 endif()
 
 mark_as_advanced(SHADERC_INCLUDE_DIR SHADERC_LIBRARY)

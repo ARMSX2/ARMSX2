@@ -15,8 +15,11 @@ function(detect_operating_system)
 		message(STATUS "Building for iOS.")
 	elseif(APPLE AND NOT IOS)
 		message(STATUS "Building for MacOS.")
-	elseif(APPLE AND IOS)
-		message(STATUS "Building for iOS.")
+	elseif(ANDROID)
+		# Deliberately its own branch rather than folding into LINUX: the
+		# LINUX-guarded code below reaches for udev, D-Bus and a runtime page
+		# size probe, none of which exist under the NDK.
+		message(STATUS "Building for Android.")
 	elseif(LINUX)
 		message(STATUS "Building for Linux.")
 	elseif(BSD)

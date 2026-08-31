@@ -55,7 +55,12 @@ else()
 	include(CheckLib)
 
 	if(UNIX AND NOT APPLE)
-		find_package(Fontconfig REQUIRED)
+		# Android is UNIX AND NOT APPLE, but it is not a desktop: it has no
+		# fontconfig and no D-Bus session to inhibit a screensaver on, and the
+		# only thing built there is the libretro core, which asks for neither.
+		if(NOT ANDROID)
+			find_package(Fontconfig REQUIRED)
+		endif()
 		if(LINUX)
 			check_lib(LIBUDEV libudev libudev.h)
 		endif()
@@ -77,8 +82,10 @@ else()
 			find_package(Libbacktrace REQUIRED)
 		endif()
 
-		find_package(PkgConfig REQUIRED)
-		pkg_check_modules(DBUS REQUIRED dbus-1)
+		if(NOT ANDROID)
+			find_package(PkgConfig REQUIRED)
+			pkg_check_modules(DBUS REQUIRED dbus-1)
+		endif()
 	endif()
 endif()
 

@@ -1,8 +1,9 @@
 # DESCRIPTION: GitLab CI/CD for libRetro (NOT FOR GitLab-proper)
 #
 # Builds armsx2_libretro.so on the libretro buildbot (git.libretro.com mirror)
-# for Linux x86_64/aarch64 and macOS arm64. Inert on GitHub — the GitHub
-# Actions workflows under .github/workflows/ are the project's own CI.
+# for Linux x86_64/aarch64, macOS arm64 and Android arm64-v8a. Inert on GitHub
+# — the GitHub Actions workflows under .github/workflows/ are the project's
+# own CI.
 #
 # The buildbot containers ship no Clang and none of the pinned third-party
 # libraries, so before_script installs clang-17 from apt.llvm.org and reuses
@@ -116,6 +117,54 @@
           ./.github/workflows/scripts/macos/build-dependencies-slice.sh "$CI_PROJECT_DIR/.deps"
       fi
 
+# The Android image carries the NDK and nothing else - no package manager entry
+# for any of the pinned libraries, and no distribution behind it to take zlib,
+# png or SDL from - so the whole dependency set is cross-built from source first,
+# the same way the macOS jobs do it.
+#
+# API 28: bionic's shared memory (ASharedMemory_create, which the fastmem
+# mapping uses in place of the shm_open bionic does not have) arrives at 26, and
+# posix_spawn at 28.
+.core-defs-android:
+  extends: .core-defs
+  variables:
+    API_LEVEL: 28
+    EXTRA_PATH: bin
+    CORE_ARGS: >-
+      -DCMAKE_PREFIX_PATH=$CI_PROJECT_DIR/.deps
+      -DCMAKE_FIND_ROOT_PATH=$CI_PROJECT_DIR/.deps
+      -DENABLE_LIBRETRO=ON
+      -DENABLE_QT_UI=OFF
+      -DENABLE_SDL_FRONTEND=OFF
+      -DENABLE_GSRUNNER=OFF
+      -DENABLE_TESTS=OFF
+      -DENABLE_RECOMPILER_TEST_HOOKS=OFF
+      -DENABLE_SETCAP=OFF
+      -DUSE_BACKTRACE=OFF
+      -DX11_API=OFF
+      -DWAYLAND_API=OFF
+      -DDISABLE_ADVANCE_SIMD=TRUE
+      -DOVERRIDE_HOST_PAGE_SIZE=4096
+      -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+  cache:
+    key:
+      files:
+        - .github/workflows/scripts/android/build-dependencies.sh
+      prefix: android-$ANDROID_ABI
+    paths:
+      - .deps/
+  before_script:
+    # Replaces the template's before_script, which is where NUMPROC is normally
+    # set for its `-j $NUMPROC` build line.
+    - export NUMPROC=$(($(nproc)/2)); [ "$NUMPROC" -lt 1 ] && export NUMPROC=1
+    - apt-get update
+    - DEBIAN_FRONTEND=noninteractive apt-get -y install cmake ninja-build python3 git ca-certificates
+    - |
+      if [ ! -f "$CI_PROJECT_DIR/.deps/lib/libshaderc_combined.a" ]; then
+        ANDROID_NDK="$NDK_ROOT" ANDROID_ABI="$ANDROID_ABI" ANDROID_API="$API_LEVEL" \
+          ./.github/workflows/scripts/android/build-dependencies.sh "$CI_PROJECT_DIR/.deps"
+      fi
+
 # Inclusion templates, required for the build to work
 include:
   # Linux
@@ -126,6 +175,10 @@ include:
   # Apple clang 12, which has neither the C++20 library nor std::bit_cast).
   - project: 'libretro-infrastructure/ci-templates'
     file: '/osx-cmake-arm64.yml'
+
+  # Android (the NDK cross-build).
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/android-cmake.yml'
 
 # Stages for building
 stages:
@@ -161,3 +214,11 @@ libretro-build-osx-arm64:
   extends:
     - .libretro-osx-cmake-arm64
     - .core-defs-macos
+
+################################### CELLULAR #################################
+# Android (arm64-v8a). armeabi-v7a is not built - the emulator is 64-bit only -
+# and neither is x86_64, which this fork does not target.
+libretro-build-android-arm64-v8a:
+  extends:
+    - .libretro-android-cmake-arm64-v8a
+    - .core-defs-android
