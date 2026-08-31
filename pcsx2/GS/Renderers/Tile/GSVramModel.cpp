@@ -223,7 +223,7 @@ void GSVramModel::FootprintForRect(const GSTileSurfaceLayout& layout, const GSVe
 
 // -- Flows ----------------------------------------------------------------------------
 
-GSPageBitmap GSVramModel::SpillBeforeCpuWrite(const RectFootprint& fp, u8 planes) const
+GSPageBitmap GSVramModel::SpillBeforeCpuWrite(const RectFootprint& fp, u8 planes, bool ignore_synced) const
 {
 	GSPageBitmap need;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
@@ -231,7 +231,7 @@ GSPageBitmap GSVramModel::SpillBeforeCpuWrite(const RectFootprint& fp, u8 planes
 		if (!(planes & (1u << pi)))
 			continue;
 		const PlaneState& ps = m_planes[pi];
-		const GSPageBitmap unsynced_truth = (fp.pages & ps.truth).andnot(ps.synced);
+		const GSPageBitmap unsynced_truth = ignore_synced ? (fp.pages & ps.truth) : (fp.pages & ps.truth).andnot(ps.synced);
 		if (fp.overflowed)
 		{
 			// Some edge pages lost their masks: every unsynced truth page in the

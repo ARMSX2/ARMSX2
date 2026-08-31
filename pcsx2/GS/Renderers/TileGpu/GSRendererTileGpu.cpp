@@ -834,29 +834,68 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	GSPageBitmap merged;
 	if (!m_vram_model.SpillBeforeCpuWrite(fp, planes).empty())
 	{
-		// This write partially overwrites blocks only a target holds. That FLUSHES the pending
-		// plan, which retires every synced claim the ring vouched for (those slots are spent, and
-		// their bytes were never in S). Retiring a claim can only ADD pages to the spill set, so
-		// the set that actually has to be dealt with is the one asked for on the far side of the
-		// flush. Answering from this side leaves the pages whose claim the flush retired
-		// unreconciled, and OnCpuWrite below then clears truth the CPU shadow never received --
-		// silent in Release, its synced assert in Devel. So: ask once to learn the reconciliation
-		// is coming, flush, then ask again for the real set.
+		// This write partially overwrites blocks only a target holds, and what has to be reconciled
+		// is the spill set a FLUSH would leave, not the one standing here: a flush retires every
+		// synced claim the ring vouched for (those slots are spent, and their bytes were never in
+		// S), and retiring a claim can only ADD pages. Answer with the ordinary question on this
+		// side and the pages whose claim the flush retired go unreconciled, after which OnCpuWrite
+		// below clears truth the CPU shadow never received -- silent in Release, its synced assert
+		// in Devel.
 		//
-		// The flush happens on the merge road too, and deliberately: it is not a device WAIT (a
-		// plan submission records, it does not block), so it costs nothing the acceptance metric
-		// counts, and asking the spill question the same way on both roads is what keeps the merge
-		// from inheriting a subtly different set than the readback it replaces.
-		FlushPendingPlan();
-		const GSPageBitmap spill = m_vram_model.SpillBeforeCpuWrite(fp, planes);
-		// Decided BEFORE the readback, EMITTED after it. The readback's own plan flush must not
-		// carry merge ops: their ring slot is prefilled from the CPU shadow AT PLAN-BUILD TIME, and
-		// GSState has not written this transfer into it yet, so a plan built between here and the
-		// write would compose the page as it stands BEFORE the transfer and seed that into the
-		// target -- losing the upload entirely.
-		merged = PlanUploadMerge(layout, r, fp, spill);
-		ReadbackToShadow(spill.andnot(merged), StallSite::UploadSubBlock);
-		EmitUploadMerge();
+		// The synced-IGNORED question IS that far-side set, asked from here: it is exactly what the
+		// ordinary form returns after a flush (FlushPendingPlan's tail calls ClearAllSynced, so
+		// there are no claims left to subtract over there) and a superset of what it returns now.
+		// So plan the merge against it. If the merge takes every page of it, nothing is left for
+		// the readback -- and with the readback empty the flush has no consumer at all: it never
+		// widens the set it is asked for (0 of 1,386 merge-road entries on Spider-Man 3), it feeds
+		// a readback that pulls nothing, and it orders nothing, because EmitUploadMerge's ops go to
+		// AppendPrepOnlyDraw, whose break_before already cuts the pass behind every recorded draw
+		// whether the plan ends here or not. Emit on the plan as it stands and skip it
+		// (EmuCore/GS/TileGpuFlushGateUploadMerge). Anything left over takes today's road below,
+		// unchanged.
+		//
+		// The ENTRY condition above stays the NARROW question deliberately. The synced-ignored set
+		// is a superset, so entering on it would admit writes today's road does not touch -- they
+		// are the same set on this corpus, and keeping the narrow test is what makes that a
+		// measurement rather than an assumption.
+		//
+		// Decided BEFORE the readback, EMITTED after it, on both roads. The readback's own plan
+		// flush must not carry merge ops: their ring slot is prefilled from the CPU shadow AT
+		// PLAN-BUILD TIME, and GSState has not written this transfer into it yet, so a plan built
+		// between here and the write would compose the page as it stands BEFORE the transfer and
+		// seed that into the target -- losing the upload entirely.
+		bool gated = false;
+		if (GSConfig.TileGpuFlushGateUploadMerge)
+		{
+			// The probe's refusals are provisional. PlanUploadMerge counts as it decides, and a
+			// probe this branch discards is planned again below over the same pages, so put the
+			// counters back and let the road that actually runs be the one that records.
+			const ModelFrame::MergeRefusals refusals = m_frame.merge_ref;
+			const GSPageBitmap wide = m_vram_model.SpillBeforeCpuWrite(fp, planes, /*ignore_synced=*/true);
+			const GSPageBitmap probe = PlanUploadMerge(layout, r, fp, wide);
+			gated = wide.andnot(probe).empty();
+			if (gated)
+			{
+				merged = probe;
+				EmitUploadMerge();
+			}
+			else
+			{
+				m_frame.merge_ref = refusals;
+			}
+		}
+		if (!gated)
+		{
+			// Today's road, and everything is asked again on the far side of the flush: the probe
+			// above is only trustworthy where it is accepted whole, because PlanUploadMerge reads
+			// the source-pin clock, the texel records and the pool handles, and the flush's tail
+			// moves all three.
+			FlushPendingPlan();
+			const GSPageBitmap spill = m_vram_model.SpillBeforeCpuWrite(fp, planes);
+			merged = PlanUploadMerge(layout, r, fp, spill);
+			ReadbackToShadow(spill.andnot(merged), StallSite::UploadSubBlock);
+			EmitUploadMerge();
+		}
 	}
 	// The merged pages' write is already accounted for: the ring carried its bytes into the owner's
 	// texture and the owner still holds the page's newest bytes, so nothing about truth moves. Every
@@ -2575,13 +2614,13 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
 	const auto mrg = stat([](const MF& f) { return f.merge_ops; });
 	const auto mrgp = stat([](const MF& f) { return f.merge_pages; });
-	const auto mref_o = stat([](const MF& f) { return f.merge_ref_owner; });
-	const auto mref_c = stat([](const MF& f) { return f.merge_ref_cpu; });
-	const auto mref_b = stat([](const MF& f) { return f.merge_ref_bytes; });
-	const auto mref_s = stat([](const MF& f) { return f.merge_ref_slice; });
-	const auto mref_f = stat([](const MF& f) { return f.merge_ref_overflow; });
-	const auto mnext = [&stat](u32 c) { return stat([c](const MF& f) { return f.merge_ref_cpu_next[c]; }); };
-	const auto mage = [&stat](u32 b) { return stat([b](const MF& f) { return f.merge_ref_cpu_age[b]; }); };
+	const auto mref_o = stat([](const MF& f) { return f.merge_ref.owner; });
+	const auto mref_c = stat([](const MF& f) { return f.merge_ref.cpu; });
+	const auto mref_b = stat([](const MF& f) { return f.merge_ref.bytes; });
+	const auto mref_s = stat([](const MF& f) { return f.merge_ref.slice; });
+	const auto mref_f = stat([](const MF& f) { return f.merge_ref.overflow; });
+	const auto mnext = [&stat](u32 c) { return stat([c](const MF& f) { return f.merge_ref.cpu_next[c]; }); };
+	const auto mage = [&stat](u32 b) { return stat([b](const MF& f) { return f.merge_ref.cpu_age[b]; }); };
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
@@ -8186,13 +8225,13 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		// The rect is a CLAIM (a sliced transfer hands the whole image to every slice; a truncated
 		// one hands a guess), and the keep mask has to be a RECORD -- a byte it names that the
 		// shadow does not actually receive is a byte the writeback skips and nobody writes.
-		m_frame.merge_ref_slice++;
+		m_frame.merge_ref.slice++;
 		return GSPageBitmap();
 	}
 	if (fp.overflowed)
 	{
 		// No block masks, so there is no telling which blocks the write covers whole.
-		m_frame.merge_ref_overflow++;
+		m_frame.merge_ref.overflow++;
 		return GSPageBitmap();
 	}
 
@@ -8203,7 +8242,7 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		// backwards and is deliberate. The CPU-read test decides nothing the owner clauses can undo,
 		// so the order it is ASKED in is free, and asking it last means a page it refuses can still
 		// say what it would have met. That is the only way to price lifting it: today the clause
-		// returns, so merge_ref_owner is zero over the refused population by construction rather
+		// returns, so MergeRefusals::owner is zero over the refused population by construction rather
 		// than by measurement.
 		//
 		// ONE live surface must hold every plane of the page that has truth at all. Not a
@@ -8254,14 +8293,14 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 		const u32 mark = m_cpu_read_frame[page];
 		if (gsTileGpuMergeRefusesForCpuRead(mark, now, m_merge_cpu_read_window))
 		{
-			m_frame.merge_ref_cpu++;
-			m_frame.merge_ref_cpu_next[next]++;
-			m_frame.merge_ref_cpu_age[gsTileGpuMergeCpuAgeBucket(now - mark)]++;
+			m_frame.merge_ref.cpu++;
+			m_frame.merge_ref.cpu_next[next]++;
+			m_frame.merge_ref.cpu_age[gsTileGpuMergeCpuAgeBucket(now - mark)]++;
 			return;
 		}
 		if (next != kMergeRefNone)
 		{
-			m_frame.merge_ref_owner++;
+			m_frame.merge_ref.owner++;
 			return;
 		}
 		take.set(page);
@@ -8281,7 +8320,7 @@ GSPageBitmap GSRendererTileGpu::PlanUploadMerge(const GSTileSurfaceLayout& layou
 
 	if (!BuildUploadByteMask(layout, r, take, m_merge_bytes, m_merge_words))
 	{
-		m_frame.merge_ref_bytes++;
+		m_frame.merge_ref.bytes++;
 		m_merge_groups.clear();
 		m_merge_bytes.clear();
 		m_merge_words.clear();

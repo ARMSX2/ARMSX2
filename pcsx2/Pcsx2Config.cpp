@@ -816,6 +816,13 @@ Pcsx2Config::GSOptions::GSOptions()
 	// root-caused and every one of them moves towards the software golden or below the eye -- see
 	// Config.h, which also names the tip defect it exposes on Stuntman.
 	TileGpuFlushGateBlockAsk = true;
+	// Default TRUE: the upload merge's flush had no consumer at all -- over 1,386 merge-road entries
+	// it widened the spill set 0 times, fed the readback 0 pages, and ordered nothing the merge's own
+	// pseudo-draw was not already ordering. Skipping it where the merge accepts the whole spill takes
+	// Spider-Man 3 from 194 plan flushes a drawn frame to 0 and the corpus from 269.88 to 43.76, with
+	// passes, merge-served pages and blocking waits identical on all 22 dumps and 0 of 88 scored
+	// frames moved. Full numbers in Config.h.
+	TileGpuFlushGateUploadMerge = true;
 	// Default TRUE: it only ever removes work -- a readback of the block GSState invalidates for a
 	// four-bit-index CLUT load and the loader never reads -- and it is the whole of GT4 Online Public
 	// Beta's CLUT stall count, 2.62 a frame to zero. Byte-identical on all 21 corpus dumps.
@@ -1234,6 +1241,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutBlockGather);
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuFlushGateBlockAsk);
+	SettingsWrapBitBool(TileGpuFlushGateUploadMerge);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);

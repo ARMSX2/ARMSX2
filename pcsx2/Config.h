@@ -1707,6 +1707,61 @@ struct Pcsx2Config
 					// Default TRUE. OFF is the tip as it shipped on 2026-08-31, byte for
 					// byte on all 22 dumps, and is the control arm of the device A/B.
 					TileGpuFlushGateBlockAsk : 1,
+					// The same gate on the second flush road: the UPLOAD MERGE in
+					// InvalidateVideoMem, where a host->local transfer partially overwrites
+					// blocks only a render target holds.
+					//
+					// That road flushed the pending plan and only then asked what the spill
+					// set was, on the reasoning that the flush retires the ring's synced
+					// claims and so can only WIDEN the set. Measured over 1,386 merge-road
+					// entries of Spider-Man 3 and 20 of Stuntman, it widens it 0 times, and
+					// the readback the flush exists to feed pulled 0 pages in total: the
+					// merge takes every page of the spill, every time, on every corpus dump.
+					// The third job the flush might have had -- ordering the merge's compose
+					// and seed after the draws recorded so far -- it never had, because
+					// EmitUploadMerge hands its ops to AppendPrepOnlyDraw, which sets
+					// break_before and cuts the pass there whether the plan ends or not.
+					// Three candidate consumers, all empty.
+					//
+					// So ask the spill question synced-ignored on the NEAR side, plan the
+					// merge against it, and if the merge accepts every page there is nothing
+					// left to read back and the flush has no consumer at all: emit on the
+					// plan as it stands. If anything is left over, take today's road
+					// unchanged -- flush, re-ask, re-plan, read back the remainder. The
+					// fallback re-asks BOTH questions rather than reusing the probe because
+					// PlanUploadMerge reads the source-pin clock, the texel records and the
+					// pool handles, and the flush's tail moves all three; a probe is only
+					// trustworthy where it is accepted whole.
+					//
+					// The ENTRY condition stays the narrow question. The synced-ignored set
+					// is a superset, so entering on it would admit writes today's road does
+					// not touch. Measured the two are identical on both titles, but the
+					// narrow test is what keeps the admitted population provably today's.
+					//
+					// WHAT IT REMOVES, per drawn frame: Spider-Man 3 mid-frame flushes 194
+					// -> 0 (it carries 64% of the corpus's flushes on its own), ring pages
+					// 951 -> 654, writeback pages 3,038 -> 2,979. Corpus-wide 269.88 ->
+					// 43.76 flushes and 11,612 -> 10,467 ring pages, or 9.4 MB a frame of
+					// 8 KB copies not made. The removal is EXACTLY the merge-served flushes,
+					// dump by dump -- GT4 35.88 - 10.00 = 25.88 and it reads 25.88 -- and
+					// the three titles whose flushes are not merge-served do not move at all.
+					//
+					// THE PRICE is the same trade TileGpuFlushGateBlockAsk priced above,
+					// smaller: +274 heap version copies and +494 epoch table entries a frame
+					// corpus-wide, against the ring and writeback pages removed. Ring
+					// backpressure moves both ways on the M2 and was not timed; Stuntman's
+					// 0.00 -> 2.94 ms is the line the device A/B has to clear.
+					//
+					// Passes, merge-served pages, stalls and blocking GPU waits are IDENTICAL
+					// on all 22 dumps, and 0 of the 88 scored frames move -- byte-identical,
+					// which is stronger than the block-ask gate above and for the reason in
+					// 3(c): the merge's pseudo-draw already cut the pass where the plan
+					// boundary used to fall, so the ring slots are cut in the same places
+					// either way.
+					//
+					// Default TRUE. OFF is the tip as it shipped on 2026-08-31 and is the
+					// control arm of the device A/B.
+					TileGpuFlushGateUploadMerge : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.

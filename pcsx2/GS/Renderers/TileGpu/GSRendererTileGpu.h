@@ -3434,10 +3434,10 @@ private:
 	/// The CPU-read test is the first clause and it returns, so the clauses under it are never asked
 	/// about a page it refuses -- and "what would those pages have met" is the only question that
 	/// prices lifting it. The lambda therefore computes this for EVERY page, before the CPU-read test,
-	/// and a refusal records it (merge_ref_cpu_next) instead of throwing it away.
+	/// and a refusal records it (MergeRefusals::cpu_next) instead of throwing it away.
 	///
-	/// Not a partition of every merge refusal: the byte-mask clause (merge_ref_bytes) is asked once
-	/// over the whole take set after the loop, so no per-page answer exists for it.
+	/// Not a partition of every merge refusal: the byte-mask clause (MergeRefusals::bytes) is asked
+	/// once over the whole take set after the loop, so no per-page answer exists for it.
 	enum MergeRefusal : u32
 	{
 		kMergeRefNone = 0, ///< every clause below the CPU-read one admits it: the page would be served
@@ -3489,18 +3489,29 @@ private:
 		// clause sent the rest down the blocking road.
 		u32 merge_ops = 0;
 		u32 merge_pages = 0;
-		u32 merge_ref_owner = 0;    // no single byte-road owner holding every plane of the page
-		u32 merge_ref_cpu = 0;      // a CPU read has already had to pull this page down once
-		// ...and, over that same population, which clause would have refused it NEXT had the
-		// CPU-read one admitted it (kMergeRefNone = it would have been served). merge_ref_owner is
-		// zero on these pages BY CONSTRUCTION rather than by measurement, so without this the
-		// fraction of a refused population that would actually convert is unknown.
-		u32 merge_ref_cpu_next[kMergeRefCount] = {};
-		// ...and how old the mark that refused it was, in video frames (gsTileGpuMergeCpuAgeBucket).
-		u32 merge_ref_cpu_age[kGSTileGpuMergeCpuAgeBuckets] = {};
-		u32 merge_ref_bytes = 0;    // the write owns half a byte somewhere: no byte mask expresses it
-		u32 merge_ref_slice = 0;    // the rect is a claim, not a record (a sliced or truncated upload)
-		u32 merge_ref_overflow = 0; // the footprint lost its block masks, so coverage is unknown
+		// The refusals, grouped so a caller can take them and put them BACK as one set.
+		// PlanUploadMerge counts as it decides, and the upload-merge flush gate
+		// (TileGpuFlushGateUploadMerge) plans a PROBE it may throw away and then plans the same
+		// pages again -- so a discarded probe's refusals have to come back off these counters or
+		// the census the merge road's own levers are tuned on counts that population twice. The
+		// grouping is what makes that safe to maintain: a counter added in here is restored by the
+		// same assignment, with nothing for anybody to remember.
+		struct MergeRefusals
+		{
+			u32 owner = 0;    // no single byte-road owner holding every plane of the page
+			u32 cpu = 0;      // a CPU read has already had to pull this page down once
+			// ...and, over that same population, which clause would have refused it NEXT had the
+			// CPU-read one admitted it (kMergeRefNone = it would have been served). `owner` is
+			// zero on these pages BY CONSTRUCTION rather than by measurement, so without this the
+			// fraction of a refused population that would actually convert is unknown.
+			u32 cpu_next[kMergeRefCount] = {};
+			// ...and how old the mark that refused it was, in video frames (gsTileGpuMergeCpuAgeBucket).
+			u32 cpu_age[kGSTileGpuMergeCpuAgeBuckets] = {};
+			u32 bytes = 0;    // the write owns half a byte somewhere: no byte mask expresses it
+			u32 slice = 0;    // the rect is a claim, not a record (a sliced or truncated upload)
+			u32 overflow = 0; // the footprint lost its block masks, so coverage is unknown
+		};
+		MergeRefusals merge_ref;
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		// What those snapshots COST, in the 8 KB pages the byte road is counted in, and what the

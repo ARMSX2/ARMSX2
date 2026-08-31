@@ -130,7 +130,13 @@ public:
 	/// the caller must read these back (they become synced) before OnCpuWrite, or the
 	/// unwritten bytes of those blocks would be lost. Whole-page and whole-block
 	/// overwrites never appear here — the common transfer stays spill-free.
-	GSPageBitmap SpillBeforeCpuWrite(const RectFootprint& fp, u8 planes) const;
+	///
+	/// `ignore_synced` answers the same question with the synced bit left out, exactly as
+	/// ReadbackNeeded's does and for the same reason: that is what the ordinary form returns on
+	/// the far side of a byte-store flush (the flush drops every synced claim), and a superset of
+	/// what it returns on this side. So a caller can learn on THIS side what the set would be over
+	/// there, without flushing to find out.
+	GSPageBitmap SpillBeforeCpuWrite(const RectFootprint& fp, u8 planes, bool ignore_synced = false) const;
 
 	/// A CPU-side write (transfer or floor draw) landed on these pages: shrink or
 	/// clear GPU truth. Edge pages shrink block-wise through the sidecar; interior
