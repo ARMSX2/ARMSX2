@@ -314,7 +314,7 @@ void GSVramModel::OnCpuWriteServedOnGpu(const GSPageBitmap& pages)
 	pages.forEachSetPage([this](u32 page) { m_gen[page].cpu_write++; });
 }
 
-GSPageBitmap GSVramModel::ReadbackNeeded(const RectFootprint& fp, u8 planes)
+GSPageBitmap GSVramModel::ReadbackNeeded(const RectFootprint& fp, u8 planes, bool ignore_synced)
 {
 	GSPageBitmap need;
 	GSPageBitmap page_granular;
@@ -323,7 +323,7 @@ GSPageBitmap GSVramModel::ReadbackNeeded(const RectFootprint& fp, u8 planes)
 		if (!(planes & (1u << pi)))
 			continue;
 		const PlaneState& ps = m_planes[pi];
-		const GSPageBitmap cand = (fp.pages & ps.truth).andnot(ps.synced);
+		const GSPageBitmap cand = ignore_synced ? (fp.pages & ps.truth) : (fp.pages & ps.truth).andnot(ps.synced);
 		page_granular |= cand;
 		cand.forEachSetPage([&](u32 page) {
 			if (!fp.overflowed && ps.partial.test(page))
@@ -342,7 +342,10 @@ GSPageBitmap GSVramModel::ReadbackNeeded(const RectFootprint& fp, u8 planes)
 	// The risk-register signal: pages a page-granular model would have spilled that
 	// block refinement proved clean. Counted per page (one avoided pull), not per
 	// plane.
-	m_stats.conflicts_refuted_by_blocks += page_granular.andnot(need).count();
+	// The gate form is a pre-question, not a decision about a pull: counting its refutations
+	// would double every one the real question below it then counts.
+	if (!ignore_synced)
+		m_stats.conflicts_refuted_by_blocks += page_granular.andnot(need).count();
 	return need;
 }
 

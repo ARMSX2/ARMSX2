@@ -810,6 +810,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// count to zero. The M2's predicted CPU bill from the un-poisoned upload merge did not transfer
 	// to the A77. Full numbers in Config.h.
 	TileGpuClutBlockGather = true;
+	// Default TRUE: Stuntman builds 108 plans a drawn frame where the design intends one, because a
+	// CLUT load asks the block question only after flushing. Gating on it first takes that to 6, and
+	// takes the corpus from 13,531 8 KB copies a drawn frame to 12,011. The 9 frames it moves are
+	// root-caused and every one of them moves towards the software golden or below the eye -- see
+	// Config.h, which also names the tip defect it exposes on Stuntman.
+	TileGpuFlushGateBlockAsk = true;
 	// Default TRUE: it only ever removes work -- a readback of the block GSState invalidates for a
 	// four-bit-index CLUT load and the loader never reads -- and it is the whole of GT4 Online Public
 	// Beta's CLUT stall count, 2.62 a frame to zero. Byte-identical on all 21 corpus dumps.
@@ -1227,6 +1233,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClut16Gather);
 	SettingsWrapBitBool(TileGpuClutBlockGather);
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
+	SettingsWrapBitBool(TileGpuFlushGateBlockAsk);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);

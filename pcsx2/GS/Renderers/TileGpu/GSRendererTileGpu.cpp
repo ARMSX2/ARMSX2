@@ -7920,9 +7920,18 @@ void GSRendererTileGpu::ReadbackToShadow(const GSTileSurfaceLayout& layout, cons
 	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
 		return;
 
-	FlushPendingPlan();
+	// The block question, asked BEFORE the flush as a pure "nothing here whatever the flush does"
+	// gate (EmuCore/GS/TileGpuFlushGateBlockAsk). FootprintForRect is a pure function of the layout
+	// and the rect, so building it on this side of the flush changes nothing but the order.
 	GSVramModel::RectFootprint fp;
 	GSVramModel::FootprintForRect(layout, r, fp);
+	if (GSConfig.TileGpuFlushGateBlockAsk &&
+		m_vram_model.ReadbackNeeded(fp, kGSTilePlanesAll, /*ignore_synced=*/true).empty())
+	{
+		return;
+	}
+
+	FlushPendingPlan();
 	PullToShadow(m_vram_model.ReadbackNeeded(fp, kGSTilePlanesAll), site);
 }
 

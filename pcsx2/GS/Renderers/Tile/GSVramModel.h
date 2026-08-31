@@ -149,7 +149,16 @@ public:
 
 	/// Pages a CPU read of fp must pull from the GPU first: GPU-newest pages whose
 	/// truth blocks intersect the read. Partial-page refutations are counted.
-	GSPageBitmap ReadbackNeeded(const RectFootprint& fp, u8 planes);
+	///
+	/// `ignore_synced` answers the same question with the synced bit left out. That is
+	/// what the ordinary form returns on the far side of a byte-store flush -- a renderer
+	/// whose store is a per-frame ring drops every synced claim when it submits -- and it is
+	/// a superset of what the ordinary form returns on this side. So an EMPTY answer in this
+	/// mode proves the pull is empty whether the flush happens or not, which is the one thing
+	/// a caller can decide before flushing. It is a GATE only: never the pull set (a flush that
+	/// finds an empty plan returns without clearing anything, and then the ordinary question
+	/// still honours the claims and returns less).
+	GSPageBitmap ReadbackNeeded(const RectFootprint& fp, u8 planes, bool ignore_synced = false);
 	GSPageBitmap ReadbackNeeded(const GSPageBitmap& pages, u8 planes) const;
 
 	/// The pull happened: those pages' CPU bytes now equal the GPU bytes.

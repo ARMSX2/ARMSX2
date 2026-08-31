@@ -1625,6 +1625,88 @@ struct Pcsx2Config
 					// the CLUT gather at all does not hold either. That is the configuration
 					// it was measured in and nothing is claimed beyond it.
 					TileGpuClutHoldSecondCall : 1,
+					// Ask the block-refined readback question BEFORE the plan flush
+					// instead of after it, as a pure "nothing here whatever the flush
+					// does" gate.
+					//
+					// ReadbackToShadow's rect road -- a local->host transfer, a move's
+					// source, a CLUT load -- runs: cheap page test, FlushPendingPlan, work
+					// out at BLOCK granularity what actually has to come down, pull it. The
+					// block question is the one that says "the palette lives in the unused
+					// tail blocks of a render target's page and not one block of this read
+					// belongs to the target", and it was asked only after the whole pending
+					// plan had been built and submitted. So a palette load that pulls
+					// NOTHING still cost a plan. Stuntman does that 102 times a drawn frame:
+					// 1,000 CLUT block-asks land on target-owned pages, 528 get past the
+					// cheap test, and all 528 pull zero pages.
+					//
+					// WHY THE GATE IS EXACT, not conservative. FlushPendingPlan's tail calls
+					// ClearAllSynced, so on the far side of a flush there are no synced
+					// claims left to subtract and the ordinary question returns exactly the
+					// synced-ignored answer. On this side the synced-ignored answer is a
+					// superset. Empty therefore proves the pull is empty whether the flush
+					// happens or not. What is PULLED never changes -- stall calls, stall
+					// pages and pool calls are identical on all 22 corpus dumps, both arms.
+					// ⚠️ The synced-ignored answer is the GATE and never the pull set: a
+					// flush that finds an EMPTY plan returns without clearing anything, and
+					// pulling the wider set there costs real device round trips (Armored
+					// Core 3, the one corpus title whose readbacks are real, goes 14 pages a
+					// frame to 31 under that mistake).
+					//
+					// WHAT IT REMOVES, p50 per drawn frame, off -> on: Stuntman mid-frame
+					// flushes 107 -> 5, 8 KB copies 1,643 -> 1,330, ring pages 2,807 ->
+					// 1,440, writeback pages 2,204 -> 1,834; MGS3 flushes 57 -> 1 and copies
+					// 870 -> 577; God of War II copies 668 -> 434; Yu-Gi-Oh 302 -> 239;
+					// FlatOut 2 1,398 -> 1,151; Spider-Man 3 1,163 -> 958; GT4 OPB 649 ->
+					// 580. Corpus-wide 13,531 -> 12,011 copies a drawn frame, 110.8 MB ->
+					// 98.4 MB. No title gets worse on any count column. Xenosaga, Armored
+					// Core 3 and SotC are unchanged: they never flush on this road.
+					//
+					// THE PRICE, and it is not free. The plan grows, so ring pages a PLAN
+					// rise (Stuntman 26 -> 240, ~0.23 MB -> ~2.3 MB of a 32 MiB stream
+					// reservation), the epoch page table grows with them (7 epochs a frame
+					// -> 154, 1.55 MB -> 1.89 MB of table stores), and supersedes now find
+					// live slots so heap version copies rise 43 -> 460 a frame. It trades
+					// 730 writes into host-visible stream memory for 417 into a cached heap
+					// vector.
+					//
+					// ⚠️ NOT PIXEL-NEUTRAL, and the movement is TOWARDS the software golden.
+					// 9 of the corpus's 88 scored frames move: Stuntman all four, MGS3 all
+					// four, FlatOut 2 frame 4. Root-caused (flushgate-rootcause, 2026-08-31)
+					// and none of it is the gate letting a read miss truth -- the pull is
+					// identical on every dump. Two plan-structure causes:
+					//
+					//   MGS3 and FlatOut 2 (5 frames) -- ring-slot LIFETIME. A page keeps
+					//   its live slot across the plan boundary that is no longer there, so
+					//   the frame composes it once instead of twice. Cutting the slots at
+					//   the gate reproduces the old frames byte for byte, which is what
+					//   proves it is this and nothing else. MGS3 moves 15.5k pixels, 88% of
+					//   them closer to the golden, worst pixel unchanged at 169 levels.
+					//   FlatOut 2 moves 29.8k, fewer wrong at every level threshold but
+					//   +0.05 of a level on the mean -- mixed, and below any eye.
+					//
+					//   Stuntman (4 frames) -- the 102 REMOVED PLANS were corrupting it.
+					//   2,346-3,412 pixels a frame, wrong by up to 239 levels, magenta-cast,
+					//   over scenery the software golden renders plainly: mean absolute
+					//   error on those pixels 82 levels a channel before, 7 after; whole
+					//   frame 4.65 -> 4.02 and worst pixel 240 -> 154. Every model-side and
+					//   plan-side consequence of the skipped flush was restored one at a
+					//   time and together -- ring cut, synced dropped, source-pin frame
+					//   advanced, palettes pruned, open runs reset, the pass cut forced back
+					//   to the old 1,768 -- and the frame stays the gated arm's to within
+					//   one level. Submission timing is not it either (an 8-pass kick
+					//   cadence, 214 submits a frame, is byte-identical with the gate on;
+					//   removing the kick is byte-identical with it off), and neither is
+					//   unwritten GPU memory (allocation poison ON is byte-identical to OFF
+					//   on both arms) nor an out-of-bounds read (TileGpuStrictMemory changes
+					//   nothing). What is left is the per-plan teardown and rebuild of the
+					//   executor's transient resources, 107 times a frame instead of 5 --
+					//   a defect in the tip that this lever removes rather than causes, and
+					//   one somebody should still go and fix on its own road.
+					//
+					// Default TRUE. OFF is the tip as it shipped on 2026-08-31, byte for
+					// byte on all 22 dumps, and is the control arm of the device A/B.
+					TileGpuFlushGateBlockAsk : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.
