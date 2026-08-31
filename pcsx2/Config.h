@@ -1111,6 +1111,34 @@ struct Pcsx2Config
 					// byte-identical frames, proven corpus-wide). Dev only; a
 					// pass-boundary policy is not a user setting.
 					TileGpuAdaptiveDepthPasses : 1,
+					// Let a per-frame PREDICTOR decide whether the mid-frame kick's
+					// pass cadence (TileGpuKickPassCadence, below) runs, instead of
+					// running it unconditionally.
+					//
+					// The cadence removes GPU-blocking wait by handing recorded work
+					// over mid-frame instead of holding the whole frame. Where the GPU
+					// is starving that is worth -33.3% (Stuntman, SD865) and -38.7%
+					// (Stuntman, RG477V). Where it is not, the submits are pure tax and
+					// it costs +17.2% (Flatout 2, SD865). The same title on the two
+					// devices wants OPPOSITE answers -- Flatout 2 is -8.7% on the
+					// RG477V -- and nothing structural separates those two runs: same
+					// ~500 render passes, same ~7 submits a frame, zero blocking wait on
+					// both. What separates them is what a mid-frame submit COSTS the
+					// recording thread, which is ~0.11 ms on Turnip and ~0.02 ms on the
+					// RG477V. So the decision has to be made per frame from a quantity
+					// measured on the device, and that is what this does -- see
+					// GSTileGpuKickPolicyPicker in GSDevice.h for the rule, the latch it
+					// needs (the cadence HIDES the wait it removes, so the credit cannot
+					// be re-read each frame) and the calibration.
+					//
+					// ON by default: the predictor keeps the cadence's wins and gives
+					// back the cases where it was paying for nothing. Off pins the
+					// cadence at whatever TileGpuKickPassCadence says for the whole run,
+					// which is the arm the cadence shipped as and the control arm of any
+					// device A/B. Pixel-inert either way -- submission timing moves no
+					// pixel, proven corpus-wide on both arms. Dev only; a submission
+					// cadence is not a user setting.
+					TileGpuAdaptiveKick : 1,
 					// Construct TileGpu even on a device that FAILS the TileGpu
 					// device contract, instead of falling back to Classic.
 					//

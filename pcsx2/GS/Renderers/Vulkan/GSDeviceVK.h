@@ -41,6 +41,12 @@ public:
 	u64 GetSourceSetWaitCalls() const override { return m_source_set_wait_calls; }
 	u64 GetTileGpuKicksOffered() const override { return m_tilegpu_kicks_offered; }
 	u64 GetTileGpuKicksTaken() const override { return m_tilegpu_kicks_taken; }
+	u64 GetTileGpuKickPredictorFrames() const override { return m_tilegpu_kick_picker.frames; }
+	u64 GetTileGpuKickPredictorFramesOn() const override { return m_tilegpu_kick_picker.frames_on; }
+	u64 GetTileGpuKickPredictorSwitches() const override { return m_tilegpu_kick_picker.switches; }
+	u64 GetTileGpuKickPredictorBubbleNs() const override { return m_tilegpu_kick_picker.bubble_ns; }
+	u64 GetTileGpuKickPredictorTaxNs() const override { return m_tilegpu_kick_picker.TaxNs(); }
+	u64 GetTileGpuKickPredictorSubmits() const override { return m_tilegpu_kick_picker.submits_taken; }
 	u64 GetTileGpuSeedRenderPasses() const override { return m_tilegpu_seed_render_passes; }
 	u64 GetTileGpuMergeSeedRenderPasses() const override { return m_tilegpu_merge_seed_render_passes; }
 	enum : u32
@@ -1389,6 +1395,26 @@ private:
 	u64 m_tilegpu_kicks_offered = 0;
 	u64 m_tilegpu_kicks_taken = 0;
 	bool m_tilegpu_kick_announced = false;
+
+	// The per-frame cadence predictor (EmuCore/GS/TileGpuAdaptiveKick) and the two things a frame
+	// has to carry for it. The picker lives here rather than in the renderer because every input it
+	// needs is a device counter and its one consumer is the kick lambda below.
+	//
+	// ⚠️ Unlike the construction-read TileGpu keys, the executor reads `on` ONCE PER FRAME, at the
+	// head of ExecuteTileGpuPassPlan, and holds it for every pass of that frame. Re-reading it
+	// mid-frame would be sound (a cadence is not a pass boundary and moves no pixel) but it would
+	// make a frame's submission pattern depend on when in the frame the verdict flipped, which is
+	// not a thing any run record could attribute.
+	GSTileGpuKickPolicyPicker m_tilegpu_kick_picker;
+	/// The blocking-wait total at the head of the previous plan, so this frame's wait is a delta.
+	u64 m_tilegpu_kick_wait_mark = 0;
+	/// Submits the CADENCE was the marginal trigger for this frame, and what they cost the GS
+	/// thread -- offers included, because an offer's ScanForCommandBufferCompletion is a cost the
+	/// cadence pays whether or not the fence gate lets the submit go.
+	u32 m_tilegpu_kick_cadence_submits = 0;
+	/// Render passes this plan opened -- the cadence's unit of work, and the counterfactual's divisor.
+	u32 m_tilegpu_kick_frame_passes = 0;
+	u64 m_tilegpu_kick_cadence_ns = 0;
 
 	// Render passes opened for a Seed or SeedDepth op, and the merge's share of them. Counted at
 	// the BeginRenderPass itself rather than off the op array, so a seed the executor declines

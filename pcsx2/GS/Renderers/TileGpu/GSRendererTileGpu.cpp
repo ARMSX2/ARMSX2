@@ -3084,6 +3084,23 @@ void GSRendererTileGpu::ReportModelTraffic()
 		gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence),
 		static_cast<double>(g_gs_device->GetTileGpuKicksOffered()) / mframes,
 		static_cast<double>(g_gs_device->GetTileGpuKicksTaken()) / mframes);
+	// ...and the PREDICTOR's own line, on the one arm it runs (see GSTileGpuKickPolicyPicker: it has
+	// no dry run, because its verdict changes the quantity it reads). Four numbers, and the last one
+	// is the point: a device that charges nothing for a mid-frame submit backs off nowhere, and one
+	// that charges 0.1 ms backs off wherever the wait it buys is smaller. That single number is why
+	// the same title decides opposite ways on two devices with no vendor gate anywhere in this.
+	if (GSConfig.TileGpuAdaptiveKick)
+	{
+		const double pframes = static_cast<double>(g_gs_device->GetTileGpuKickPredictorFrames());
+		Console.WriteLn("  mid-frame kick predictor (EmuCore/GS/TileGpuAdaptiveKick): cadence ON in %llu/%llu "
+						"frames (%.1f%%), %llu switches, %llu cadence submits -- bubble %.3f ms latched against "
+						"%.3f us a render pass measured on this device",
+			g_gs_device->GetTileGpuKickPredictorFramesOn(), g_gs_device->GetTileGpuKickPredictorFrames(),
+			pframes ? (100.0 * static_cast<double>(g_gs_device->GetTileGpuKickPredictorFramesOn()) / pframes) : 0.0,
+			g_gs_device->GetTileGpuKickPredictorSwitches(), g_gs_device->GetTileGpuKickPredictorSubmits(),
+			static_cast<double>(g_gs_device->GetTileGpuKickPredictorBubbleNs()) / 1e6,
+			static_cast<double>(g_gs_device->GetTileGpuKickPredictorTaxNs()) / 1e3);
+	}
 
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of
 	// materialised sources WOULD have served, and for the rest, exactly which clause refused.

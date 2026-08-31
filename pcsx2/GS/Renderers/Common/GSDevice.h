@@ -1572,6 +1572,160 @@ constexpr bool gsTileGpuKickWantsSubmit(u32 passes_since_submit, u32 cadence, bo
 	return cadence != 0 && passes_since_submit >= cadence;
 }
 
+/// The kick PREDICTOR's constants (EmuCore/GS/TileGpuAdaptiveKick).
+///
+/// Everything here is integer arithmetic on nanoseconds and counts. A frame's verdict must not
+/// depend on how a float rounded on one architecture.
+enum : u32
+{
+	/// The latched bubble decays by 1/256 of itself per DRAWN frame. Two numbers meet here.
+	///
+	/// It has to decay at all: the cadence, when it works, HIDES the bubble it is filling, so a
+	/// peak measured while the cadence was off can never be refreshed while the cadence is on. A
+	/// peak that never decayed would latch the cadence on for the rest of the run off one scene.
+	///
+	/// It has to decay SLOWLY: the only way to re-measure an undistorted bubble is to spend a frame
+	/// with the cadence off, and that frame costs whatever the cadence was worth. 1/256 halves the
+	/// peak in 177 drawn frames (~3 s at 60 Hz), so the re-measurement costs at most the confirm
+	/// window -- four frames in ~180, under 2.5% -- and a scene that genuinely quietens still
+	/// re-prices within seconds.
+	kGSTileGpuKickBubbleDecayShift = 8,
+	/// Entering the ON state needs the bubble to be worth TWICE the price; staying needs it worth
+	/// the price once. The 2x band is the hysteresis, the same shape and the same reason as the
+	/// depth predictor's 1/16-on-1/32-off: the metric is a per-frame quantity and a title sitting
+	/// on the threshold would otherwise re-cut its submission cadence every frame.
+	kGSTileGpuKickEnterMultiplier = 2,
+	/// Consecutive frames that must ask for the other state before it is taken. Two, for the
+	/// depth predictor's reason: the band above answers a metric sitting on the threshold, this
+	/// only removes a single anomalous frame (a load screen, a full-screen wipe).
+	kGSTileGpuKickConfirmFrames = 2,
+};
+
+/// The per-frame submission-cadence policy, and its census.
+///
+/// ⚠️ THE PROBLEM THIS SHAPE EXISTS TO SOLVE, because every simpler shape was tried against the
+/// 22-title x 2-device grid first and every one of them oscillates. The cadence's whole job is to
+/// remove GPU-blocking wait. So on a title where it WORKS, the wait it was justified by is gone,
+/// and any predictor that re-reads the wait each frame reads "no bubble here" and switches itself
+/// off -- on Stuntman, the -33% case the cadence exists for. You cannot observe a bubble you have
+/// filled.
+///
+/// So the credit is LATCHED, not re-measured: `bubble_ns` is the PEAK blocking wait seen, decayed
+/// slowly, exactly the shape the declaring budget's per-class peak uses and for the same reason.
+/// While the cadence is off the frame is undistorted and the peak is the truth; while it is on the
+/// frame's own wait is only a FLOOR under the peak, and the decay is what eventually forces a
+/// re-measurement rather than letting one scene latch the lever for a run.
+///
+/// THE DECISION, in one line: the cadence stays on while the bubble it is fighting is worth more
+/// than the cadence costs to run, both measured in nanoseconds on THIS device.
+///
+///   credit   `bubble_ns`, the latched peak of the frame's GPU-blocking wait -- sync +
+///            out-of-band + source-set wrap, the GSPerfMon::GpuBlockingWaits population exactly.
+///            Ring backpressure is deliberately NOT in it: the census calls it "not a drain" for a
+///            reason, and it is a symptom of submitting more, so it belongs on neither side rather
+///            than on the credit side.
+///   debit    what the cadence's own machinery cost the GS thread. MEASURED, not assumed, and this
+///            is what makes the predictor per-device with no vendor gate anywhere in it: on the
+///            SD865 (Turnip) a mid-frame submit costs the recording thread ~0.11 ms and on the
+///            RG477V ~0.02 ms, and Flatout 2 -- same title, same ~500 render passes, same ~7
+///            submits a frame -- is +17.2% on the first device and -8.7% on the second. Nothing
+///            structural separates those two runs. The price of a submit does.
+///
+/// When the cadence is OFF there is no measured cost to read, so the debit is the counterfactual:
+/// this frame's render passes at the rate the cadence has already been seen to charge PER RENDER
+/// PASS on this device.
+///
+/// ⚠️ PER PASS, not per submit, and the first cut of this got it wrong. The cadence's bill is not
+/// the submits: it is the OFFERS, one at every pass tail past the cadence, each costing a
+/// ScanForCommandBufferCompletion whether or not the fence gate lets the submit go -- and the gate
+/// declines the large majority (Spider-Man 3 on the M2: 380 offers a frame, 19 taken). Priced per
+/// submit, that whole offer bill lands on the few that went, inflating the unit price ~20x; then
+/// the OFF state multiplies that inflated price by `render_passes / cadence`, which over-counts the
+/// submits by the same ~20x the gate declined. Two errors compounding, and they do not cancel: the
+/// two states end up pricing the same frame differently and the predictor flips between them. In
+/// the M2 census that cost Spider-Man 3 244 switches in 1,548 frames. Per pass, both states price
+/// "what the cadence costs on a frame this size" and agree by construction.
+///
+/// ⚠️ A ZERO debit keeps the cadence ON, and that is not a fallback, it is the rule: a device that
+/// has not yet priced a submit has produced no evidence, and a lever that costs nothing measurable
+/// has nothing to back off from. The predictor may only ever move off the shipped arrangement
+/// (cadence on) after it has seen a price.
+///
+/// Starts ON for the same reason.
+struct GSTileGpuKickPolicyPicker
+{
+	bool on = true;        ///< the cadence's state -- the value the executor reads
+	u32 confirming = 0;    ///< consecutive frames that have asked for the other state
+	u32 switches = 0;      ///< times the state actually changed -- the churn column
+	u32 frames = 0;        ///< frames observed
+	u32 frames_on = 0;     ///< ...of which ran with the cadence on
+	u64 bubble_ns = 0;     ///< the latched blocking-wait peak
+	u64 submits_taken = 0; ///< mid-frame submits the cadence was the marginal trigger for
+	u64 tax_total_ns = 0;  ///< the cadence's own GS-thread cost, summed over the frames it RAN in
+	u64 tax_passes = 0;    ///< ...over this many render passes
+
+	/// What the cadence costs this device per render pass, in nanoseconds. Zero until it has run
+	/// somewhere, which is the whole of "unpriced, so no evidence, so leave the shipped arrangement
+	/// alone". Integer division: a rate under 1 ns a pass is a rate this decision cannot use.
+	u64 TaxNs() const { return tax_passes ? (tax_total_ns / tax_passes) : 0; }
+
+	/// Feed one finished frame; returns the state the NEXT frame runs under.
+	///
+	/// `wait_ns`      the frame's GPU-blocking wait (sync + out-of-band + source-set wrap)
+	/// `submits`      mid-frame submits the CADENCE was the marginal trigger for -- census only; a
+	///                kick the near-readback trigger would have taken anyway is neither the
+	///                cadence's to be charged for nor this predictor's to govern
+	/// `cadence_ns`   what the cadence's offers and submits cost the GS thread, wall time
+	/// `render_passes` the frame's render passes -- the cadence's unit of work, and what it is
+	///                priced by
+	bool Observe(u64 wait_ns, u32 submits, u64 cadence_ns, u32 render_passes)
+	{
+		// ⚠️ AN EMPTY FRAME IS NOT EVIDENCE. A frame that opened no render pass gave the cadence no
+		// opportunity, so it says nothing about either state: not a vote, not agreement (agreement
+		// clears the confirmation count, and a 30 Hz title presents an empty frame every second
+		// vsync -- it would never reach two consecutive votes), and above all not a decay step. The
+		// declaring budget learned this one the expensive way: its peak decayed on empty frames,
+		// fell under its own re-admission line in a single step, and re-admitted a class that had
+		// been refused, with the counter reading 100% refused throughout.
+		if (render_passes == 0)
+			return on;
+		frames++;
+		frames_on += on ? 1u : 0u;
+		submits_taken += submits;
+		// The rate is measured only on the frames the cadence RAN in. An off frame records no cost
+		// because there was none to record, and putting its passes in the denominator would price
+		// the lever cheaper the longer it stays off -- which is exactly the feedback that would
+		// switch it back on for no reason.
+		if (on)
+		{
+			tax_total_ns += cadence_ns;
+			tax_passes += render_passes;
+		}
+
+		// The peak, decayed first so a frame's own wait can re-establish it in the same step.
+		bubble_ns -= bubble_ns >> kGSTileGpuKickBubbleDecayShift;
+		if (wait_ns > bubble_ns)
+			bubble_ns = wait_ns;
+
+		// The price of the state we are IN. Measured while on, counterfactual while off, and the
+		// two are the same quantity: what the cadence costs on a frame with this many passes.
+		const u64 debit = on ? cadence_ns : (static_cast<u64>(render_passes) * TaxNs());
+		const u64 need = on ? debit : (debit * kGSTileGpuKickEnterMultiplier);
+		const bool want = (debit == 0) || (bubble_ns >= need);
+		if (want == on)
+		{
+			confirming = 0;
+			return on;
+		}
+		if (++confirming < kGSTileGpuKickConfirmFrames)
+			return on;
+		on = want;
+		confirming = 0;
+		switches++;
+		return on;
+	}
+};
+
 /// The strongest ordering grade the TileGpu executor knows how to force.
 constexpr u32 kGSTileGpuSerializeMax = 3;
 
@@ -2153,6 +2307,18 @@ public:
 	/// means the gate never opened, which is a different statement from the lever being off.
 	virtual u64 GetTileGpuKicksOffered() const { return 0; }
 	virtual u64 GetTileGpuKicksTaken() const { return 0; }
+
+	/// The kick PREDICTOR's census (EmuCore/GS/TileGpuAdaptiveKick): frames observed, of which ran
+	/// with the cadence on, how many times the state actually changed, the latched bubble the
+	/// decision is made against, and what this device has been measured to charge for one mid-frame
+	/// render pass. The last one is the whole reason the predictor is per-device -- read it beside a
+	/// device record's arm, because it is the number that decides.
+	virtual u64 GetTileGpuKickPredictorFrames() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorFramesOn() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorSwitches() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorBubbleNs() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorTaxNs() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorSubmits() const { return 0; }
 	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and
 	/// how many of those were the upload merge's. Counted HERE because nothing else can see them:
 	/// the renderer's pass census counts PLAN passes (`m_frame.passes += m_plan_passes.size()`), and
