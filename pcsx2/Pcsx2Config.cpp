@@ -792,12 +792,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	// budget refuses its population and it is inert (-0.6%, Spider-Man 3 SD865); elsewhere the
 	// population is live and it merges runs. Nothing measured says off is faster -- see Config.h.
 	TileGpuShaderWriteMask = true;
-	// Default TRUE: structurally inert on the 21-dump corpus and on every device without the
-	// in-pass read road, and on Adreno it is what finally lets the write-mask lever above reach
-	// its population -- Spider-Man 3's partial-FBMSK class goes from refused in 100% of frames to
-	// admitted at a cost of 235 against the same 256 line. See Config.h for the rule and for the
-	// three refusals it deliberately does not touch.
-	TileGpuFbmskAdmission = false;
 	// Default TRUE, both: pixel-inert on the corpus, and the GT4 Online Public Beta device A/B is
 	// -16.8% frame time with the first and -28.6% with both (SD865, 2026-08-26). Only five of the
 	// 21 corpus dumps gather a palette at all; the rest never reach the arm -- see Config.h.
@@ -1217,7 +1211,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuPoisonAllocations);
 	SettingsWrapBitBool(TileGpuContainSurfaces);
 	SettingsWrapBitBool(TileGpuShaderWriteMask);
-	SettingsWrapBitBool(TileGpuFbmskAdmission);
 	SettingsWrapBitBool(TileGpuClutMergeRegions);
 	SettingsWrapBitBool(TileGpuClutMergePages);
 	SettingsWrapBitBool(TileGpuClut16Gather);

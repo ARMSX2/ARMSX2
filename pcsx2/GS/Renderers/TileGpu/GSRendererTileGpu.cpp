@@ -275,18 +275,6 @@ GSRendererTileGpu::GSRendererTileGpu()
 			m_shader_write_mask ? "" : " (REFUSED: this device has no in-pass destination read)");
 	}
 
-	// ...and the scoped admission that lets the budget reach the population that lever was written
-	// for. ANDed with the write-mask road being live, because the waiver credits a refused draw with
-	// the indirect call it cuts, and without that road it cuts no call. Read once here for the same
-	// reason: it decides what the budget admits, and so which pass a draw keys into.
-	m_fbmsk_admission = m_shader_write_mask && GSConfig.TileGpuFbmskAdmission;
-	if (GSConfig.TileGpuFbmskAdmission && m_segregate_self_read)
-	{
-		Console.WriteLn("TileGpu: the partial-FBMSK class is charged NET of the indirect calls refusing it "
-						"would cut%s.",
-			m_fbmsk_admission ? "" : " (INERT: the fragment stage is not serving write masks here)");
-	}
-
 	// The sound varies road, read once for the same reason: the split's second draw carries its own
 	// depth variant, which is a pass boundary on a device that asked for depth-uniform passes. Needs
 	// nothing from the device, so nothing narrows it here.
@@ -577,7 +565,6 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	m_declaring_budget.Roll();
 	m_budget_group = GSTileGpuPassKey{};
 	m_budget_prev_wanted = 0;
-	m_budget_prev_mask = 0xFF;
 
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
@@ -2163,28 +2150,15 @@ u32 GSRendererTileGpu::AdmittedClasses(u32 wanted_classes) const
 // budget's own output, and a refused class -- declaring nothing, measuring zero -- would re-admit
 // itself every second frame forever. Against the attachment group the answer is what the class WOULD
 // cost, which is the same whether or not it was admitted.
-void GSRendererTileGpu::ChargeDeclaringBudget(
-	u32 wanted_classes, const GSTileGpuPassKey& group, bool mask_road_would_serve, u8 color_mask)
+void GSRendererTileGpu::ChargeDeclaringBudget(u32 wanted_classes, const GSTileGpuPassKey& group)
 {
 	if (group != m_budget_group)
 	{
 		m_budget_group = group;
 		m_budget_prev_wanted = 0;
-		m_budget_prev_mask = 0xFF;
 	}
 	const u32 opening = wanted_classes & ~m_budget_prev_wanted;
-	// Which of this draw's classes REFUSING would cut an indirect call, and so which of them the
-	// declaring tax is an exchange for rather than an addition to. One class can answer yes -- the
-	// colour write mask is the only piece of state admission takes off the run key -- and it answers
-	// yes only where the fragment stage would actually take the mask over AND the mask is not the one
-	// the previous draw carried, because two draws with one mask were sharing a call already.
-	//
-	// The census counts the population whatever the device does with it; the BUDGET is handed it only
-	// where the road that makes it true is live. Two conditions, one predicate, so the emulog's number
-	// and the verdict cannot come from different questions.
-	const u32 merging =
-		gsTileGpuDeclaringMerges(wanted_classes, mask_road_would_serve, color_mask, m_budget_prev_mask);
-	m_declaring_budget.Charge(wanted_classes, opening, m_fbmsk_admission ? merging : 0u);
+	m_declaring_budget.Charge(wanted_classes, opening);
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 	{
 		const u32 bit = 1u << c;
@@ -2192,18 +2166,11 @@ void GSRendererTileGpu::ChargeDeclaringBudget(
 			continue;
 		m_frame.class_wanted[c]++;
 		if (opening & bit)
-		{
 			m_frame.class_runs[c]++;
-		}
 		else
-		{
 			m_frame.class_taxed[c]++;
-			if (merging & bit)
-				m_frame.class_merges[c]++;
-		}
 	}
 	m_budget_prev_wanted = wanted_classes;
-	m_budget_prev_mask = color_mask;
 }
 
 void GSRendererTileGpu::ObserveDraw()
@@ -2858,15 +2825,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 			const auto runs = stat([c](const MF& f) { return f.class_runs[c]; });
 			const auto peak = stat([c](const MF& f) { return f.class_peak[c]; });
 			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
-			// ...and the taxed draws the waiver did not charge, because refusing them cuts an indirect
-			// call instead (gsTileGpuWaivesDeclaringTax). Printed for every class, and structurally zero
-			// for the four the waiver does not name, so the line reads as an arithmetic the reader can
-			// check: taxed less merges, plus 8/5 a run, against 256.
-			const auto merg = stat([c](const MF& f) { return f.class_merges[c]; });
-			Console.WriteLn("    class %-17s wanted %.2f / %u draws (taxed %.2f / %u - merges %.2f / %u "
-							"+ runs %.2f / %u)   cost peak %.2f / %u   budget refused it in %.0f%% of frames",
-				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, merg.mean, merg.p50, runs.mean,
-				runs.p50, peak.mean, peak.p50, refu.mean * 100.0);
+			Console.WriteLn("    class %-17s wanted %.2f / %u draws (taxed %.2f / %u + runs %.2f / %u)   "
+							"cost peak %.2f / %u   budget refused it in %.0f%% of frames",
+				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, runs.mean, runs.p50, peak.mean,
+				peak.p50, refu.mean * 100.0);
 		}
 	}
 	// The colour write mask as a run key, and it is a funnel rather than three independent numbers:
@@ -5435,26 +5397,6 @@ void GSRendererTileGpu::AccumulateDraw()
 	// rest of this function builds, and the split's second draw answers it for itself.
 	const bool mask_in_shader = gsTileGpuMasksInShader(
 		m_shader_write_mask, draw_color_mask, blend_active, shader_blend, shader_fbmsk);
-	// ...and the same question asked of a draw the budget has NOT admitted: would the fragment stage
-	// take this mask over if it were? That is what the declaring tax is an exchange against, so it is
-	// what the budget's waiver has to be counted from (gsTileGpuWaivesDeclaringTax), and it cannot be
-	// read off `mask_in_shader` -- on the device where the waiver matters the class is refused, so
-	// that answer is false for the entire population the waiver exists for.
-	//
-	// Exactly ONE verdict is hypothesized -- the partial-mask class's -- and every other class keeps
-	// the budget's real answer. A draw whose exotic blend the budget refused is a draw the executor's
-	// blend unit still runs, and the write mask applies AFTER blending, so the road could not serve
-	// it whatever this class is admitted to. Asked with the LEVER's own setting rather than
-	// `m_shader_write_mask`, and with `m_self_read` taken as read, so the count is the same on a
-	// device with no in-pass read road at all -- which is what lets the rule be developed on the M2
-	// corpus instead of only on the device that suffers from it. The budget is handed the answer only
-	// where the road is live (ChargeDeclaringBudget); the census takes it always.
-	const u32 would_admit = admitted_classes | (wanted_classes & kGSTileGpuClassPartialMask);
-	const u32 would_use = gsTileGpuClassUses(would_admit & ~kGSTileGpuClassAfailKeep);
-	const bool mask_road_would_serve = gsTileGpuMasksInShader(GSConfig.TileGpuShaderWriteMask, draw_color_mask,
-		blend_active, (would_use & GSDevice::kGSTileGpuSelfBlend) != 0,
-		(would_use & GSDevice::kGSTileGpuSelfMask) != 0 &&
-			gsTileGpuFrameKeepMask(ctx->FRAME.FBMSK, fb_fmsk) != 0);
 	const u32 draw_self_mask = self_mask | (keep_alpha_admitted ? GSDevice::kGSTileGpuSelfMask : 0u) |
 							   (mask_in_shader ? GSDevice::kGSTileGpuSelfMask : 0u);
 	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
@@ -5573,8 +5515,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// charged within is this same key with the reader dimension left out -- that dimension is what the
 	// budget decides, so measuring inside it would measure the budget's own output.
 	ChargeDeclaringBudget(wanted_classes,
-		gsTileGpuPassKeyFor(fb_id, z_id, pass_depth_mode, m_depth_uniform_passes, false, m_segregate_self_read),
-		mask_road_would_serve, draw_color_mask);
+		gsTileGpuPassKeyFor(fb_id, z_id, pass_depth_mode, m_depth_uniform_passes, false, m_segregate_self_read));
 	const GSTileGpuPassKey draw_key = gsTileGpuPassKeyFor(
 		fb_id, z_id, pass_depth_mode, m_depth_uniform_passes, draw_self_mask != 0, m_segregate_self_read);
 
