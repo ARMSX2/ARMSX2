@@ -3857,6 +3857,13 @@ private:
 		// and the device round trip is charged per CALL -- so this is the number a coalescing
 		// change moves, where stalls and pages both stay put.
 		u32 pull_calls = 0;
+		// ...and what those calls actually BROUGHT DOWN, off the pool's own counters rather than off
+		// the ask. Neither is derivable from pull_calls or from stall_pages: a call fetches the union
+		// bounding box of its runs, so a scattered page set costs texels its pages do not hold, and a
+		// call whose pages the CPU shadow already has fetches nothing at all while still being a call.
+		// This is the pull's WIDTH, and it is the only line in the census that reports it.
+		u32 pull_dl_pages = 0; // guest pages the downloads that happened named
+		u32 pull_dl_texels = 0; // ...and the device texels they copied (four bytes each, both roads)
 		u32 flushes = 0;         // mid-frame plan submissions
 		u32 passes = 0;
 		// The pass-length distribution the max-pass-draws cap acts on, so a run says mechanically

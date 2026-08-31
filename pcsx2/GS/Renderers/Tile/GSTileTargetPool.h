@@ -147,6 +147,18 @@ public:
 	/// Wall time spent inside drain-road submit-and-waits. Beside the drain COUNT
 	/// because a drain's price varies with the GPU backlog it lands behind.
 	u64 DrainWallNs() const { return m_drain_wall_ns; }
+	/// What the readbacks actually BROUGHT DOWN, as opposed to what they were asked for.
+	/// Counted at the one point both roads share -- after the runs are collected and the
+	/// download rectangle is known -- so a call that reached the device for nothing (no
+	/// runs, an unaddressable layout, an empty mask) adds nothing to either.
+	///
+	/// Texels rather than bytes because the download is four bytes a texel on both roads
+	/// (RGBA8 colour, UInt32 depth) whatever the guest format is, and the number that
+	/// answers "how wide was this pull" is the rectangle, not the guest cells it stores
+	/// into. Pages beside it because the rectangle is the union bounding box of the runs,
+	/// so a scattered page set fetches far more texels than its pages hold.
+	u64 ReadbackTexels() const { return m_readback_texels; }
+	u64 ReadbackPageCount() const { return m_readback_pages; }
 
 private:
 	u32 m_unaddressable_readbacks = 0;
@@ -193,4 +205,6 @@ private:
 	u32 m_oob_copies = 0;
 	u32 m_drains = 0;
 	u64 m_drain_wall_ns = 0;
+	u64 m_readback_texels = 0;
+	u64 m_readback_pages = 0;
 };

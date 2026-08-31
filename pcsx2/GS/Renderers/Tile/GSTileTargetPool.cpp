@@ -427,6 +427,11 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 		bb = bb.runion(r);
 	pxAssert(bb.z <= s.tex->GetWidth() && bb.w <= s.tex->GetHeight());
 
+	// The download's own volume, booked here because this is the last point common to both roads and
+	// the first at which the rectangle exists. Every return above it reached the device for nothing.
+	m_readback_texels += static_cast<u64>(bb.width()) * static_cast<u64>(bb.height());
+	m_readback_pages += pages.count();
+
 	const bool depth16 = (s.kind == GSTileSurfaceKind::Depth) && (layout.psm == PSMZ16 || layout.psm == PSMZ16S);
 	const bool color16 = (s.kind == GSTileSurfaceKind::Color) && (gsTileStorageBpp(layout.psm) == 16);
 	// The plane window, restated in the cell width the store actually writes. Callers speak in

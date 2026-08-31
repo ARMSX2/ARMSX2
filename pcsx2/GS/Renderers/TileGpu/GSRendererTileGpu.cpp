@@ -3114,6 +3114,21 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  pool calls the stalls issued %.2f / %u  (one per owner x block mask x byte window, over the "
 					"whole page set it needs -- the unit the device round trip is charged in)",
 		pcalls.mean, pcalls.p50);
+	// ...and the same calls by VOLUME, which the line above cannot show. A round trip is priced per
+	// call, but what a call moves over the bus is a rectangle -- the union bounding box of the runs
+	// the pool collects -- so a scattered page set fetches texels its pages do not hold, and a call
+	// whose pages the CPU shadow already holds fetches nothing while still being a call. Asked pages
+	// beside fetched pages so the gap between them IS the elision, with no arithmetic off two lines.
+	//
+	// ⚠️ Fetched pages are summed per CALL, so a page two calls name (two owners, or two block masks
+	// on one page) counts twice: it costs two downloads and the number is what the device moved, not
+	// how much guest memory is distinct. The asked figure has no such double count.
+	const auto dlp = stat([](const MF& f) { return f.pull_dl_pages; });
+	const auto dlt = stat([](const MF& f) { return f.pull_dl_texels; });
+	Console.WriteLn("  ...and what they FETCHED %.2f pages / %-5u  %.1f KB / %-6u  (asked %.2f pages; KB is the "
+					"download rectangle at four bytes a texel, not the guest bytes it stores)",
+		dlp.mean, dlp.p50, dlt.mean * 4.0 / 1024.0, static_cast<u32>(static_cast<u64>(dlt.p50) * 4 / 1024),
+		p_up.mean + p_rd.mean + p_cl.mean + p_all.mean);
 	//
 	// ⚠️ Itemised off the DEVICE's own counters, not off the pool's drain count, since 2026-08-24.
 	// The old line summed drains + out-of-band and called that the bill, which made it structurally
@@ -7902,7 +7917,15 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 		const GSVramModel::Surface& surf = m_vram_model.Get(c.owner);
 		const u32 oob_before = m_target_pool.OutOfBandCopies();
 		const u32 drains_before = m_target_pool.Drains();
+		// The pull's WIDTH, taken the same way its ROAD is: by delta off the pool's counters, because
+		// the rectangle a call downloads is the union bounding box of runs the pool derives inside
+		// ReadbackPages and nothing out here can name it. A call that reaches the device for nothing
+		// moves neither counter and is charged neither pages nor texels.
+		const u64 dl_pages_before = m_target_pool.ReadbackPageCount();
+		const u64 dl_texels_before = m_target_pool.ReadbackTexels();
 		m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, c.pages, c.write_mask, c.block_mask);
+		m_frame.pull_dl_pages += static_cast<u32>(m_target_pool.ReadbackPageCount() - dl_pages_before);
+		m_frame.pull_dl_texels += static_cast<u32>(m_target_pool.ReadbackTexels() - dl_texels_before);
 		if (m_target_pool.OutOfBandCopies() != oob_before)
 			m_frame.pull_oob[site_index]++;
 		else if (m_target_pool.Drains() != drains_before)
