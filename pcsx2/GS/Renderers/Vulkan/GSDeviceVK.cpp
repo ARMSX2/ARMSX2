@@ -8734,6 +8734,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdSetViewport(cmd, 0, 1, &evp);
 					const VkRect2D esc{{0, 0}, {static_cast<u32>(esize.x), static_cast<u32>(esize.y)}};
 					vkCmdSetScissor(cmd, 0, 1, &esc);
+					InvalidateCachedViewportScissor();
 					{
 						// Bound on THIS road's own layout, and the passes around it re-establish their
 						// own sets before their draws -- which is the whole reason this is recorded here
@@ -8867,6 +8868,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdSetViewport(cmd, 0, 1, &dvp);
 					const VkRect2D dsc{{0, 0}, {static_cast<u32>(dsize.x), static_cast<u32>(dsize.y)}};
 					vkCmdSetScissor(cmd, 0, 1, &dsc);
+					InvalidateCachedViewportScissor();
 					{
 						// This road's own layout, and the passes around it re-establish their own sets
 						// before their draws -- the whole reason it is recorded here.
@@ -9036,6 +9038,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdSetViewport(cmd, 0, 1, &vp);
 					const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
 					vkCmdSetScissor(cmd, 0, 1, &sc);
+					InvalidateCachedViewportScissor();
 					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 						&m_tilegpu_state_descriptor_set, 0, nullptr);
 					const u32 mpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.texa, 0, 0, 0};
@@ -9239,6 +9242,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					const VkRect2D sc{{sc_rect.x, sc_rect.y},
 						{static_cast<u32>(sc_rect.width()), static_cast<u32>(sc_rect.height())}};
 					vkCmdSetScissor(cmd, 0, 1, &sc);
+					// The seed's page rectangle is narrower than the target, and the device's cache still
+					// names the whole one from the OMSetRenderTargets above -- so this is the site where a
+					// stale cache costs a later draw its scissor.
+					InvalidateCachedViewportScissor();
 					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 						&m_tilegpu_state_descriptor_set, 0, nullptr);
 					// Read only where the OP declares a table, and bounds-checked on top of that. Both
@@ -9441,6 +9448,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			const VkRect2D sc{{pass_area.x, pass_area.y},
 				{static_cast<u32>(pass_area.width()), static_cast<u32>(pass_area.height())}};
 			vkCmdSetScissor(cmd, 0, 1, &sc);
+			InvalidateCachedViewportScissor();
 
 			// Bind the vertex/index streams at this frame's base, so the indirect commands'
 			// frame-relative offsets are correct without any per-draw rebase; the state SSBO the VS
@@ -9723,6 +9731,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							"TileGpu draw's scissor reaches outside its pass's render area");
 						const VkRect2D dsc{{r.x, r.y}, {static_cast<u32>(r.width), static_cast<u32>(r.height)}};
 						vkCmdSetScissor(cmd, 0, 1, &dsc);
+						InvalidateCachedViewportScissor();
 					}
 					const VkDeviceSize offset = static_cast<VkDeviceSize>(indirect_base_bytes) +
 												static_cast<VkDeviceSize>(first) * sizeof(GSTileGpuIndirectDraw);
@@ -12182,6 +12191,22 @@ void GSDeviceVK::SetScissor(const GSVector4i& scissor)
 
 	m_scissor = scissor;
 	m_dirty_flags |= DIRTY_FLAG_SCISSOR;
+}
+
+void GSDeviceVK::InvalidateCachedViewportScissor()
+{
+	// Say that the viewport and scissor were written straight into the command buffer, bypassing
+	// SetViewport/SetScissor. Without it the cache still names the rectangle the cached road last
+	// asked for AND still reads as clean, so the next draw through ApplyBaseState dedupes against
+	// a value the command buffer no longer holds, emits nothing, and inherits the raw rectangle.
+	//
+	// The cached values themselves are deliberately left alone rather than overwritten with what
+	// was emitted. They are what the cached road asked for, and something reads them back:
+	// ExecuteCommandBufferAndRestartRenderPass replays m_scissor into the reopened pass, which
+	// should be the drawing road's rectangle and not some executor internal. Marking both dirty
+	// costs one redundant vkCmdSetViewport/vkCmdSetScissor pair at the next cached draw and cannot
+	// lose a set that was pending.
+	m_dirty_flags |= DIRTY_FLAG_VIEWPORT | DIRTY_FLAG_SCISSOR;
 }
 
 void GSDeviceVK::SetPipeline(VkPipeline pipeline)

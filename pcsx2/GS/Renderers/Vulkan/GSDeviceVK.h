@@ -1257,6 +1257,7 @@ public:
 
 	void SetViewport(const VkViewport& viewport);
 	void SetScissor(const GSVector4i& scissor);
+	void InvalidateCachedViewportScissor();
 	void SetPipeline(VkPipeline pipeline);
 
 private:
