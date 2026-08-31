@@ -40,12 +40,57 @@ object QuickLoadSetup {
         if (uri.scheme.equals("file", ignoreCase = true)) (uri.path ?: uri.toString())
         else uri.toString()
 
-    /** Runs the whole setup. Blocking -- call on Dispatchers.IO. Returns a message to show. */
-    fun run(context: Context, iso: GameInfo, elfUri: Uri): String {
+    /** Folder this game's quick-load files live in, whether or not it exists yet. */
+    fun folderFor(iso: GameInfo): File? =
+        MainActivityRuntime.hostfsDir()?.let { File(it, subdirFor(iso)) }
+
+    /** True when [game] is an ELF we installed -- i.e. it sits under hostfs. */
+    fun isInstalledElf(game: GameInfo): Boolean {
+        val root = MainActivityRuntime.hostfsDir()?.absolutePath ?: return false
+        val path = if (game.uri.scheme.equals("file", true)) game.uri.path else null
+        return path != null && path.startsWith(root)
+    }
+
+    /** Remove one game's quick-load files, and the ELF/disc pairing that pointed at them. */
+    fun remove(elf: GameInfo): Boolean {
+        val path = elf.uri.path ?: return false
+        val dir = File(path).parentFile ?: return false
+        val root = MainActivityRuntime.hostfsDir() ?: return false
+        // Never delete outside hostfs, whatever gets passed in.
+        if (!dir.absolutePath.startsWith(root.absolutePath) || dir.absolutePath == root.absolutePath) return false
+        // Drop the pairing first: an orphaned DiscPath in gamesettings/<CRC>.ini would otherwise
+        // outlive the files and quietly re-apply if the same ELF ever came back.
+        runCatching { NativeApp.setElfDiscOverride(path, "") }
+        return runCatching { dir.deleteRecursively() }.getOrDefault(false)
+    }
+
+    /** Bytes the disc will take once extracted. The ISO's own size is the right estimate --
+     *  extraction copies its files out, minus filesystem overhead. */
+    fun estimatedBytes(context: Context, iso: GameInfo): Long = runCatching {
+        if (iso.uri.scheme.equals("file", ignoreCase = true)) {
+            File(iso.uri.path ?: return@runCatching 0L).length()
+        } else {
+            context.contentResolver.query(iso.uri, null, null, null, null)?.use { c ->
+                val i = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (i >= 0 && c.moveToFirst()) c.getLong(i) else 0L
+            } ?: 0L
+        }
+    }.getOrDefault(0L)
+
+    /** Free space where the files will land. */
+    fun freeBytes(): Long =
+        runCatching { MainActivityRuntime.hostfsDir()?.usableSpace ?: 0L }.getOrDefault(0L)
+
+    private fun subdirFor(iso: GameInfo): String {
         val serial = iso.serial?.takeIf { it.isNotBlank() }
             ?: iso.uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.')
             ?: "quickload"
-        val subdir = serial.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return serial.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    }
+
+    /** Runs the whole setup. Blocking -- call on Dispatchers.IO. Returns a message to show. */
+    fun run(context: Context, iso: GameInfo, elfUri: Uri): String {
+        val subdir = subdirFor(iso)
 
         // VMManager only takes its ELF branch for a filename ending in .elf, so the name matters.
         // The guide makes the user rename the file by hand -- and the packages ship seven of their

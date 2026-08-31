@@ -178,6 +178,10 @@ fun HomeScreen(
     var quickLoadIso by remember { mutableStateOf<GameInfo?>(null) }
     var quickLoadBusy by remember { mutableStateOf(false) }
     var quickLoadResult by remember { mutableStateOf<String?>(null) }
+    // Shown BEFORE the file picker: extraction writes gigabytes to internal storage, and a user
+    // who finds that out afterwards has no way to undo it from here.
+    var quickLoadConfirm by remember { mutableStateOf<GameInfo?>(null) }
+    var quickLoadRemove by remember { mutableStateOf<GameInfo?>(null) }
     val scope = rememberCoroutineScope()
     val quickLoadElfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         val iso = quickLoadIso
@@ -1121,8 +1125,7 @@ fun HomeScreen(
                 ) {
                     GameMenuAction("⚡", str("games.quickLoad"), "game-menu.quickload") {
                         menuGame = null
-                        quickLoadIso = game
-                        quickLoadElfPicker.launch(arrayOf("*/*"))
+                        quickLoadConfirm = game
                     }
                 }
                 // Only for ELFs: this pairs a boot ELF with the disc it needs, which is
@@ -1135,6 +1138,12 @@ fun HomeScreen(
                         menuGame = null
                         discForElf = game
                         elfDiscPicker.launch(arrayOf("*/*"))
+                    }
+                }
+                if (com.armsx2.QuickLoadSetup.isInstalledElf(game)) {
+                    GameMenuAction("🧹", str("games.quickLoad.remove"), "game-menu.quickload.remove") {
+                        menuGame = null
+                        quickLoadRemove = game
                     }
                 }
                 GameMenuAction("🏷️", str("games.categories"), "game-menu.categories") {
@@ -1153,6 +1162,93 @@ fun HomeScreen(
 
     categoryGame?.let { game ->
         CategorySheet(game = game, onDismiss = { categoryGame = null })
+    }
+
+    quickLoadConfirm?.let { game ->
+        val needBytes = remember(game.uri) { com.armsx2.QuickLoadSetup.estimatedBytes(context, game) }
+        val freeBytes = remember(game.uri) { com.armsx2.QuickLoadSetup.freeBytes() }
+        val need = android.text.format.Formatter.formatShortFileSize(context, needBytes)
+        val free = android.text.format.Formatter.formatShortFileSize(context, freeBytes)
+        // 1.15x: extraction needs headroom over the ISO's own size, and running the storage to
+        // zero mid-copy is a worse outcome than declining to start.
+        val tight = needBytes > 0 && freeBytes < (needBytes * 115 / 100)
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-confirm",
+            onDismiss = { quickLoadConfirm = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(
+                    Modifier.padding(24.dp).widthIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text(str("games.quickLoad.confirmTitle"), style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        String.format(str("games.quickLoad.confirmBody"), need, free),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (tight) {
+                        Text(
+                            String.format(str("games.quickLoad.confirmLowSpace"), need, free),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadConfirm = null }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = {
+                            quickLoadIso = game
+                            quickLoadConfirm = null
+                            quickLoadElfPicker.launch(arrayOf("*/*"))
+                        }) { Text(str("games.quickLoad.continue")) }
+                    }
+                }
+            }
+        }
+    }
+
+    quickLoadRemove?.let { elf ->
+        val okMsg = str("games.quickLoad.removed")
+        val failMsg = str("games.quickLoad.removeFailed")
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-remove",
+            onDismiss = { quickLoadRemove = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(
+                    Modifier.padding(24.dp).widthIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text(str("games.quickLoad.removeConfirm"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadRemove = null }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = {
+                            quickLoadRemove = null
+                            scope.launch {
+                                val ok = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    com.armsx2.QuickLoadSetup.remove(elf)
+                                }
+                                Toast.makeText(context, if (ok) okMsg else failMsg, Toast.LENGTH_LONG).show()
+                                viewModel.refresh()
+                            }
+                        }) {
+                            Text(str("games.quickLoad.remove"), color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (quickLoadBusy) {
