@@ -289,6 +289,18 @@ open class MainActivityRuntime : ComponentActivity() {
             return if (dir.isDirectory) dir else null
         }
 
+        /** The host: filesystem root, matching EmuFolders::DataRoot/hostfs on the native side.
+         *  Same fallback as [inputProfilesDir] and for the same reason. Created on demand so it
+         *  is already there when someone goes looking for it. */
+        fun hostfsDir(): File? {
+            val root = systemDirPosix()
+                ?: instance?.applicationContext?.getExternalFilesDir(null)?.absolutePath
+                ?: return null
+            val dir = File(root, "hostfs")
+            if (!dir.exists()) runCatching { dir.mkdirs() }
+            return if (dir.isDirectory) dir else null
+        }
+
         /** App-specific data dir on a removable/secondary volume (SD card),
          *  e.g. /storage/<volId>/Android/data/<pkg>/files. Always raw-writable
          *  by the native core with NO permission under scoped storage, which is

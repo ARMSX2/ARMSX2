@@ -11,8 +11,10 @@
 #include "common/ZipHelpers.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/Counters.h"
+#include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/CDVD/IsoReader.h" // ISO extraction for host: quick-loading setups
 #include "pcsx2/CDVD/CDVD.h" // cdvdSaveNVRAM (flush BIOS NVM on background)
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Sio.h" // MemcardBusy — save-state refusal reason
@@ -281,6 +283,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
+
+    // The host: filesystem root (see Hle_SetHostRoot). Created up front rather than at boot so
+    // it is already sitting in the data folder when someone goes looking for somewhere to put
+    // the files a host:-loading game wants -- an empty folder that exists is a usable
+    // instruction; one that appears only after a failed boot is not.
+    FileSystem::CreateDirectoryPath(Path::Combine(EmuFolders::DataRoot, "hostfs").c_str(), true);
 
 #ifdef ARMSX2_PGO_GENERATE
     // PGO instrument build: redirect the .profraw output to an on-device writable
@@ -4418,6 +4426,150 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWrite(JNIEnv*, jclass) {
 // file the JSON prune couldn't reach, which we rewrite from the post-reset settings the Kotlin
 // stream puts next; no match means there is nothing to shadow global and JNI_FALSE tells Kotlin
 // to skip the (now unnecessary) put/commit.
+/**
+ * Copy every file out of an ISO into <DataRoot>/hostfs/<subdir>/, for host:-loading setups.
+ *
+ * The obsrv "quick loading" method for Biohazard Outbreak wants the disc's contents sitting in a
+ * folder, with one file swapped for a modified ELF. On desktop you mount the ISO in the OS file
+ * manager and drag the files out. Android cannot mount an ISO at all, so that step is simply not
+ * available to a user here -- which is why the method has never worked on Android no matter what
+ * anyone put where. The app has to do it.
+ *
+ * Opened the way IsoHasher does (lock CDVD, point it at the file, DoCDVDopen), because IsoReader
+ * reads through the global CDVD rather than taking a handle. REFUSES to run while a VM is alive:
+ * that would yank the disc out from under a running game.
+ *
+ * Returns the number of files written, or -1 on failure. Flat copy of the root directory, which
+ * is the layout the method wants -- these discs keep their data files at the top level.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_extractIsoToHostfs(JNIEnv* env, jclass, jstring p_iso, jstring p_subdir) {
+    if (!p_iso || !p_subdir)
+        return -1;
+    if (VMManager::HasValidVM()) {
+        Console.Error("extractIsoToHostfs: refusing while a VM is running");
+        return -1;
+    }
+    const std::string iso_path = GetJavaString(env, p_iso);
+    const std::string subdir = GetJavaString(env, p_subdir);
+    if (iso_path.empty() || subdir.empty())
+        return -1;
+
+    const std::string dest = Path::Combine(Path::Combine(EmuFolders::DataRoot, "hostfs"), subdir);
+    if (!FileSystem::CreateDirectoryPath(dest.c_str(), true)) {
+        Console.Error("extractIsoToHostfs: cannot create '%s'", dest.c_str());
+        return -1;
+    }
+
+    Error error;
+    if (!cdvdLock(&error)) {
+        Console.Error("extractIsoToHostfs: cdvdLock failed");
+        return -1;
+    }
+    CDVDsys_SetFile(CDVD_SourceType::Iso, iso_path);
+    CDVDsys_ChangeSource(CDVD_SourceType::Iso);
+
+    int written = -1;
+    if (!DoCDVDopen(&error)) {
+        Console.Error("extractIsoToHostfs: cannot open '%s'", iso_path.c_str());
+    } else {
+        IsoReader iso;
+        if (!iso.Open(&error)) {
+            Console.Error("extractIsoToHostfs: not a readable ISO filesystem");
+        } else {
+            written = 0;
+            for (const std::string& name : iso.GetFilesInDirectory(std::string_view(), &error)) {
+                std::vector<u8> data;
+                if (!iso.ReadFile(name, &data, &error)) {
+                    Console.Error("extractIsoToHostfs: failed reading '%s'", name.c_str());
+                    continue;
+                }
+                // Discs list files as NAME;1 -- the ISO9660 version suffix. Strip it or every
+                // filename the game asks for by name misses.
+                const std::string_view clean = IsoReader::RemoveVersionIdentifierFromPath(name);
+                const std::string out = Path::Combine(dest, std::string(clean));
+                if (!FileSystem::WriteBinaryFile(out.c_str(), data.data(), data.size())) {
+                    Console.Error("extractIsoToHostfs: failed writing '%s'", out.c_str());
+                    continue;
+                }
+                written++;
+            }
+            Console.WriteLnFmt("extractIsoToHostfs: wrote {} file(s) to {}", written, dest);
+        }
+        DoCDVDclose();
+    }
+    cdvdUnlock();
+    // Leave CDVD pointing at nothing, so a later boot cannot inherit this ISO by accident.
+    CDVDsys_ChangeSource(CDVD_SourceType::NoDisc);
+    return written;
+}
+
+/**
+ * Pair a boot ELF with the disc it needs, the way desktop's "Properties -> Disc Path" does.
+ *
+ * VMManager::Initialize routes a filename ending in .elf through GetDiscOverrideFromGameSettings,
+ * which opens the ELF, takes its CRC, and reads EmuCore/DiscPath out of gamesettings/<CRC>.ini.
+ * With no disc it falls through to CDVD_SourceType::NoDisc -- the ELF runs, and the game then sits
+ * on its loading screen forever waiting on disc reads that never come.
+ *
+ * Nothing on Android wrote that key, so every ELF that needs a disc was unbootable here. That is
+ * the Biohazard Outbreak "quick-load" method: a modified SLPM_xxx.xx.elf plus the original ISO.
+ *
+ * Empty disc_path clears the pairing. Returns false when the ELF cannot be read or has no CRC,
+ * which is also how the caller learns a file is not a usable ELF.
+ */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setElfDiscOverride(JNIEnv* env, jclass, jstring p_elf, jstring p_disc) {
+    if (!p_elf)
+        return JNI_FALSE;
+    const std::string elf_path = GetJavaString(env, p_elf);
+    const std::string disc_path = p_disc ? GetJavaString(env, p_disc) : std::string();
+    if (elf_path.empty())
+        return JNI_FALSE;
+
+    // Same read the core does, so the CRC we key on is the one it will look for. OpenFile goes
+    // through FileSystem, which is content:// aware, so a SAF-picked ELF resolves here too.
+    ElfObject elfo;
+    if (!elfo.OpenFile(elf_path, false, nullptr)) {
+        Console.Error("setElfDiscOverride: cannot read ELF '%s'", elf_path.c_str());
+        return JNI_FALSE;
+    }
+    const u32 crc = elfo.GetCRC();
+    if (crc == 0) {
+        Console.Error("setElfDiscOverride: ELF '%s' has no CRC", elf_path.c_str());
+        return JNI_FALSE;
+    }
+
+    // Empty serial + CRC == gamesettings/<CRC>.ini, which is exactly the file
+    // GetDiscOverrideFromGameSettings loads.
+    const std::string ini_path = VMManager::GetGameSettingsPath(std::string_view(), crc);
+    INISettingsInterface si(ini_path);
+    si.Load();  // keep whatever else is in there; this is the same file per-game settings use
+    if (disc_path.empty())
+        si.DeleteValue("EmuCore", "DiscPath");
+    else
+        si.SetStringValue("EmuCore", "DiscPath", disc_path.c_str());
+    if (!si.Save()) {
+        Console.Error("setElfDiscOverride: failed writing '%s'", ini_path.c_str());
+        return JNI_FALSE;
+    }
+
+    Console.WriteLnFmt("setElfDiscOverride: ELF {:08X} -> disc '{}'", crc, disc_path);
+    return JNI_TRUE;
+}
+
+/** The disc currently paired with [p_elf], or empty when there is none. */
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getElfDiscOverride(JNIEnv* env, jclass, jstring p_elf) {
+    std::string out;
+    if (p_elf) {
+        const std::string elf_path = GetJavaString(env, p_elf);
+        if (!elf_path.empty())
+            out = VMManager::GetDiscOverrideFromGameSettings(elf_path);
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWriteForSerial(JNIEnv* env, jclass, jstring p_serial) {
     if (!p_serial)

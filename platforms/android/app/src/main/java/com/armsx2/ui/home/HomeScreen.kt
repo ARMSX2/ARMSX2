@@ -5,6 +5,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.layout.heightIn
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -167,6 +170,49 @@ fun HomeScreen(
     }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         picked?.let { LibraryBackground.set(context, it) }
+    }
+    // The ELF a disc is being chosen for. Held across the picker round-trip because the result
+    // callback has no idea which entry started it.
+    var discForElf by remember { mutableStateOf<GameInfo?>(null) }
+    // The ISO being set up for quick loading, held across its own picker round-trip.
+    var quickLoadIso by remember { mutableStateOf<GameInfo?>(null) }
+    var quickLoadBusy by remember { mutableStateOf(false) }
+    var quickLoadResult by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val quickLoadElfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        val iso = quickLoadIso
+        quickLoadIso = null
+        if (picked == null || iso == null) return@rememberLauncherForActivityResult
+        quickLoadBusy = true
+        scope.launch {
+            val outcome = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.armsx2.QuickLoadSetup.run(context, iso, picked)
+            }
+            quickLoadBusy = false
+            quickLoadResult = outcome
+            // The extracted ELF is a NEW library entry; without this it stays invisible until
+            // the next manual rescan, which reads as "nothing happened".
+            viewModel.refresh()
+        }
+    }
+    val discPickedMsg = str("games.elfDisc.set")
+    val discFailedMsg = str("games.elfDisc.failed")
+    val elfDiscPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        val elf = discForElf
+        discForElf = null
+        if (picked != null && elf != null) {
+            // Persist the grant: this URI is read at BOOT, in a later process, long after the
+            // picker is gone. Without takePersistableUriPermission the pairing survives in the
+            // INI and then fails to open, which looks exactly like the bug being fixed.
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    picked, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val ok = runCatching {
+                kr.co.iefriends.pcsx2.NativeApp.setElfDiscOverride(elf.uri.toString(), picked.toString())
+            }.getOrDefault(false)
+            Toast.makeText(context, if (ok) discPickedMsg else discFailedMsg, Toast.LENGTH_LONG).show()
+        }
     }
     // Search: both the controller (A on the Search zone) AND a touch tap open the app's own D-pad +
     // touch keyboard (LibraryKeyboard). The search bar is no longer an editable TextField, so the
@@ -1066,6 +1112,31 @@ fun HomeScreen(
                         menuGame = null
                     }
                 }
+                // Discs only: sets up the host:-loading ("quick load") layout for a game that
+                // wants one, by extracting this disc's files and pairing a modified ELF with it.
+                // Android cannot mount an ISO, so this is the only way the method is reachable
+                // here at all.
+                if (!game.uri.toString().endsWith(".elf", ignoreCase = true) &&
+                    !game.extension.equals("ELF", ignoreCase = true)
+                ) {
+                    GameMenuAction("⚡", str("games.quickLoad"), "game-menu.quickload") {
+                        menuGame = null
+                        quickLoadIso = game
+                        quickLoadElfPicker.launch(arrayOf("*/*"))
+                    }
+                }
+                // Only for ELFs: this pairs a boot ELF with the disc it needs, which is
+                // meaningless for a disc entry (it IS the disc). Desktop exposes the same thing
+                // as Properties -> Disc Path.
+                if (game.uri.toString().endsWith(".elf", ignoreCase = true) ||
+                    game.extension.equals("ELF", ignoreCase = true)
+                ) {
+                    GameMenuAction("💿", str("games.elfDisc"), "game-menu.elfdisc") {
+                        menuGame = null
+                        discForElf = game
+                        elfDiscPicker.launch(arrayOf("*/*"))
+                    }
+                }
                 GameMenuAction("🏷️", str("games.categories"), "game-menu.categories") {
                     menuGame = null
                     categoryGame = game
@@ -1082,6 +1153,36 @@ fun HomeScreen(
 
     categoryGame?.let { game ->
         CategorySheet(game = game, onDismiss = { categoryGame = null })
+    }
+
+    if (quickLoadBusy) {
+        com.armsx2.ui.common.PadModal(key = "quickload-busy", onDismiss = {}, alignment = Alignment.Center) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.width(16.dp))
+                    Text(str("games.quickLoad.working"), color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+    }
+    quickLoadResult?.let { message ->
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-result",
+            onDismiss = { quickLoadResult = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(Modifier.padding(24.dp).widthIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(message, color = MaterialTheme.colorScheme.onSurface)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadResult = null }) {
+                            Text(str("action.ok"))
+                        }
+                    }
+                }
+            }
+        }
     }
 
     manageCategory?.let { category ->

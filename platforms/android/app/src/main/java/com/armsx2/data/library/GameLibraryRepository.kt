@@ -66,8 +66,16 @@ class GameLibraryRepository(private val context: Context) {
         return CachedLibrary(cachedKey, games)
     }
 
+    /** Where host:-loading setups live (see NativeApp.extractIsoToHostfs). Always scanned, and
+     *  scanned as a RAW path: an ELF found here gets a file:// URI, so the core can derive its
+     *  containing folder and point host: at it. A SAF content:// URI has no parent directory,
+     *  which is the whole reason the quick-loading method never worked on Android. */
+    private fun hostfsRoot(): File? =
+        runCatching { MainActivityRuntime.hostfsDir() }.getOrNull()
+
     suspend fun scan(directories: List<String>): List<GameInfo> = withContext(Dispatchers.IO) {
         val collected = linkedMapOf<String, GameInfo>()
+        hostfsRoot()?.let { scanRawDirectory(it, collected, 0) }
         directories.forEach { rawUri ->
             val uri = runCatching { rawUri.toUri() }.getOrNull() ?: return@forEach
             val rawRoot = if (canUseRawStorage()) MainActivityRuntime.resolveTreeUriToPosix(rawUri)?.let(::File) else null

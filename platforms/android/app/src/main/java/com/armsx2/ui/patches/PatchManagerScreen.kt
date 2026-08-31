@@ -339,6 +339,18 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                     onConfirm = { viewModel.update { it.copy(hostFs = !state.settings.hostFs) } },
                 ),
             )
+            // Where host: actually reads from. Worth stating outright: on Android the root
+            // CANNOT be the folder holding the disc, because a SAF content:// URI has no
+            // parent directory to derive one from (see Hle_SetHostRoot). Without this line
+            // the natural assumption is "next to the ISO", which silently reads nothing.
+            if (state.settings.hostFs) {
+                Text(
+                    str("patches.hostFs.folder"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                )
+            }
         }
     }
 }

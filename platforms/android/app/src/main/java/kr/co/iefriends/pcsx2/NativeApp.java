@@ -364,6 +364,20 @@ public class NativeApp {
 	 *  library can still clear a stale, in-game-written override file. Returns false when no such
 	 *  file exists — there is then nothing to rewrite and the caller should skip the put/commit. */
 	public static native boolean gameIniBeginWriteForSerial(String serial);
+
+	/** Copy an ISO's files into hostfs/&lt;subdir&gt;/ so a host:-loading ELF can read them.
+	 *  Android cannot mount an ISO, so the app has to do this itself. Returns the file
+	 *  count, or -1 on failure. Must not be called while a game is running. */
+	public static native int extractIsoToHostfs(String isoPath, String subdir);
+
+	/** Pair a boot ELF with the disc it needs -- desktop's "Properties -> Disc Path".
+	 *  Without it VMManager boots the ELF with NoDisc and a game that reads from the disc
+	 *  hangs on its loading screen. Pass an empty discPath to clear the pairing.
+	 *  Returns false when the file is not a readable ELF or yields no CRC. */
+	public static native boolean setElfDiscOverride(String elfPath, String discPath);
+
+	/** The disc currently paired with elfPath, or "" when there is none. */
+	public static native String getElfDiscOverride(String elfPath);
 	public static native void gameIniPut(String section, String key, String value);
 	public static native boolean gameIniCommitWrite();
 
