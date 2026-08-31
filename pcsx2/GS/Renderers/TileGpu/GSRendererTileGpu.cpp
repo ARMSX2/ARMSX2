@@ -2659,6 +2659,16 @@ void GSRendererTileGpu::ReportModelTraffic()
 			m_depth_picker.switches,
 			m_depth_picker.MeanMetric(), kGSTileGpuDepthMergeOnReciprocal, kGSTileGpuDepthMergeOffReciprocal,
 			pu.mean, pm.mean);
+		// What the polarity in force COST, which the pair above cannot say: it names the two
+		// groupings, not which of them ran. Positive means the polarity that ran is the more
+		// expensive one and the other would have cut the frame into fewer passes. This is the line a
+		// pass-structure policy is answerable to -- without it a vendor gate can charge a title a
+		// third of its pass count with nothing in any log naming the bill.
+		const auto pa = stat([](const MF& f) { return f.passes_active_key; });
+		const auto po = stat([](const MF& f) { return f.passes_other_key; });
+		Console.WriteLn("    the depth polarity in force costs %+.2f passes a frame: %.2f under the "
+						"polarity that ran, %.2f under the other one",
+			pa.mean - po.mean, pa.mean, po.mean);
 	}
 	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
 					"%8.2f / %-5u pages, %.2f / %u pass breaks (of the seeds, depth %.2f / %u ops, %.2f / %u pages)",
@@ -7471,6 +7481,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				[&](u32 d) { return key_under(d, false); }, breaks_at);
 			m_frame.passes_uniform_key += under_uniform;
 			m_frame.passes_merged_key += under_merged;
+			// ...and the same two sorted by which one RAN, off the polarity this plan was cut under.
+			// No third walk: it is the pair above, read the other way round.
+			m_frame.passes_active_key += m_depth_uniform_passes ? under_uniform : under_merged;
+			m_frame.passes_other_key += m_depth_uniform_passes ? under_merged : under_uniform;
 			m_frame.planned_draws += count;
 			// The recount of the polarity that DID run must reproduce the plan, or the metric is
 			// being read off a cut the executor never made.

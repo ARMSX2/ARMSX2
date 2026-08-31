@@ -3677,6 +3677,16 @@ private:
 		u32 passes_uniform_key = 0;
 		u32 passes_merged_key = 0;
 		u32 planned_draws = 0;
+		// The same two counts sorted by ROLE rather than by polarity: what the grouping that RAN cut
+		// the frame into, and what the other polarity would have. The pair above names two groupings
+		// and not which of them happened, so on its own it says what the policy is DOING; these say
+		// what it is COSTING, which is the question a policy is answerable for.
+		//
+		// Charged per frame rather than derived from the pair at the census, because a deciding
+		// predictor changes polarity between frames: a run's bill is only attributable if every
+		// frame's plan is charged against the polarity that plan was actually cut under.
+		u32 passes_active_key = 0;
+		u32 passes_other_key = 0;
 		// The texel-arm axis of the fragment variant (GSDevice::kGSTileGpuTexel*). A pass whose
 		// byte-road draws all decode through one arm gets a program carrying that arm alone; one
 		// that spans two carries both, and is the only case the shatter does not shrink all the way.
