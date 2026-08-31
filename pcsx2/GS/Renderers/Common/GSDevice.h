@@ -1671,6 +1671,14 @@ struct GSTileGpuKickPolicyPicker
 
 	/// Feed one finished frame; returns the state the NEXT frame runs under.
 	///
+	/// ⚠️ ONE CALL PER VIDEO FRAME, at the frame boundary (GSDevice::TileGpuFrameBoundary), and not
+	/// per plan. Every quantity in here is per CALL: the peak decays by 1/256 a call, the
+	/// confirmation counts consecutive calls, and the debit is one call's cost against one call's
+	/// passes. Called per plan instead, all three run at the plan rate -- so a title that
+	/// mid-frame-flushes 190 times a frame decays its latched bubble 190x faster than one that
+	/// flushes once, for the same second of wall clock, and plan count becomes a hidden input to
+	/// the submission cadence. That is what this was doing until 2026-08-31.
+	///
 	/// `wait_ns`      the frame's GPU-blocking wait (sync + out-of-band + source-set wrap)
 	/// `submits`      mid-frame submits the CADENCE was the marginal trigger for -- census only; a
 	///                kick the near-readback trigger would have taken anyway is neither the
@@ -4046,6 +4054,18 @@ public:
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.
 	virtual bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) { return false; }
+
+	/// The video frame has ended: every plan it built has been executed and the next frame's first
+	/// draw has not been accumulated.
+	///
+	/// A frame is NOT a plan. A mid-frame flush ends a plan and starts another, so a title that
+	/// flushes a lot builds hundreds of plans in one video frame -- and anything the device decides
+	/// once per frame has to be told where the frame ends, because the executor cannot tell the
+	/// last plan of a frame from the first plan of the next one. The kick predictor
+	/// (GSTileGpuKickPolicyPicker) is the one thing that needs it: its credit is a peak decayed
+	/// per observation and its confirmation counts consecutive observations, so observing per plan
+	/// runs both clocks at the plan rate rather than the frame rate.
+	virtual void TileGpuFrameBoundary() {}
 
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;

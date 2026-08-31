@@ -524,6 +524,15 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	MaterialiseDisplayBuffers();
 	BuildAndExecutePlan();
 
+	// The device's own frame boundary, and the reason it is a call rather than something the
+	// executor works out for itself: the executor runs once per PLAN, and a mid-frame flush ends a
+	// plan without ending a frame, so nothing below this line is visible from in there. The kick
+	// predictor is what needs it -- it decides the next frame's submission cadence from the frame
+	// that just finished, and observing it per plan ran its decay and its confirmation at the plan
+	// rate. Here for the same reason the depth polarity below is here: every plan of the frame has
+	// been executed and the next frame's first draw has not been accumulated.
+	g_gs_device->TileGpuFrameBoundary();
+
 	// The depth polarity for the NEXT frame, from the one that just finished. Here and nowhere else:
 	// the plan is built and executed, BuildAndExecutePlan's tail has broken the open pass, and the
 	// next frame's first draw has not been accumulated -- so both grouping sites will see one value

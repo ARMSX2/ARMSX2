@@ -263,6 +263,7 @@ public:
 	bool TileGpuClutMergeCompiled() override { return m_tilegpu_clut_merge; }
 	bool TileGpuClutMergePagesCompiled() override { return m_tilegpu_clut_merge_pages; }
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
+	void TileGpuFrameBoundary() override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
@@ -1410,15 +1411,25 @@ private:
 	// make a frame's submission pattern depend on when in the frame the verdict flipped, which is
 	// not a thing any run record could attribute.
 	GSTileGpuKickPolicyPicker m_tilegpu_kick_picker;
-	/// The blocking-wait total at the head of the previous plan, so this frame's wait is a delta.
+	/// The blocking-wait total at the previous FRAME boundary, so this frame's wait is a delta over
+	/// the whole frame -- every plan it built and every gap between them.
 	u64 m_tilegpu_kick_wait_mark = 0;
 	/// Submits the CADENCE was the marginal trigger for this frame, and what they cost the GS
 	/// thread -- offers included, because an offer's ScanForCommandBufferCompletion is a cost the
-	/// cadence pays whether or not the fence gate lets the submit go.
+	/// cadence pays whether or not the fence gate lets the submit go. Summed over every plan of the
+	/// frame and cleared at the frame boundary, NOT at the plan head.
 	u32 m_tilegpu_kick_cadence_submits = 0;
-	/// Render passes this plan opened -- the cadence's unit of work, and the counterfactual's divisor.
-	u32 m_tilegpu_kick_frame_passes = 0;
 	u64 m_tilegpu_kick_cadence_ns = 0;
+	/// Render passes the plan being executed has opened -- reset at the plan head, and added to the
+	/// frame total at the plan tail. Two counters rather than one because EndRenderPass cannot tell
+	/// an executor pass from a merge or present pass: everything opened between two plans lands in
+	/// this one and is thrown away by the next plan's reset, so only executor passes ever reach the
+	/// frame total. The cadence offers at executor pass tails alone, so those are the passes it is
+	/// priced by.
+	u32 m_tilegpu_kick_plan_passes = 0;
+	/// ...and the frame's, summed over its plans and cleared at the frame boundary. The predictor's
+	/// unit of work, and the counterfactual's divisor.
+	u32 m_tilegpu_kick_frame_passes = 0;
 
 	// Render passes opened for a Seed or SeedDepth op, and the merge's share of them. Counted at
 	// the BeginRenderPass itself rather than off the op array, so a seed the executor declines

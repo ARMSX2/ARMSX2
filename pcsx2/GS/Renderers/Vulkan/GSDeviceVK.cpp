@@ -8195,7 +8195,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	if (plan.passes.empty())
 		return true;
 
-	m_tilegpu_kick_frame_passes = 0;
+	m_tilegpu_kick_plan_passes = 0;
 
 	// Record the frame's geometry as constant-cost indirect draws. The draw commands go into an
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
@@ -8715,16 +8715,20 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// behind that rule, and NUM_COMMAND_BUFFERS carries why the ring is eight deep rather than
 	// three: at three, that guard refuses most of the cadence's offers on a short frame.
 	//
-	// ...and WHETHER the cadence half runs at all is the PREDICTOR's answer, read once here and held
-	// for every pass of this frame (EmuCore/GS/TileGpuAdaptiveKick, GSTileGpuKickPolicyPicker). Off
-	// pins it at the key's value for the whole run, which is the arm the cadence shipped as. The
-	// near-readback trigger is untouched either way: it answers a different question, it was fitted
-	// against different numbers, and a title that pulls needs it whatever the bubble looks like.
+	// ...and WHETHER the cadence half runs at all is the PREDICTOR's answer, read here and held for
+	// every pass of this plan (EmuCore/GS/TileGpuAdaptiveKick, GSTileGpuKickPolicyPicker). The
+	// predictor decides at the frame boundary, so every plan of a frame reads the same value and
+	// "held for every pass of this frame" is what it amounts to. Off pins it at the key's value for
+	// the whole run, which is the arm the cadence shipped as. The near-readback trigger is untouched
+	// either way: it answers a different question, it was fitted against different numbers, and a
+	// title that pulls needs it whatever the bubble looks like.
+	//
+	// ⚠️ The cadence's bill is NOT cleared here. It is the FRAME's bill, and a mid-frame flush ends
+	// a plan without ending a frame -- clearing it per plan threw away every plan's offers but the
+	// last one's, on top of running the predictor's clock at the plan rate.
 	const u32 configured_cadence = gsTileGpuKickPassCadence(GSConfig.TileGpuKickPassCadence);
 	const u32 kick_cadence =
 		GSConfig.TileGpuAdaptiveKick ? (m_tilegpu_kick_picker.on ? configured_cadence : 0u) : configured_cadence;
-	m_tilegpu_kick_cadence_submits = 0;
-	m_tilegpu_kick_cadence_ns = 0;
 	const auto readback_kick = [&](GSTexture* pass_rt, GSTexture* pass_ds) {
 		if (!GSConfig.TileGpuKickReadbackFrames)
 			return;
@@ -10181,20 +10185,37 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	if (source_set_index < kTileGpuSourceSetsMax)
 		m_tilegpu_source_set_epoch[source_set_index] = GetCurrentFenceCounter();
 
-	// The cadence the NEXT frame runs under, decided from the one that just finished. Here and
-	// nowhere else: every pass of this frame has run under one value of `on`, the frame's blocking
-	// wait and the cadence's own bill are both complete, and the next frame's first pass has not
-	// been recorded -- which is the whole constraint on this member.
-	//
-	// The wait is a DELTA over the whole inter-plan interval, not just the executor's span, so the
-	// pulls and presents that block between two frames are in it. They are blocking GPU wait and the
-	// cadence moves them; leaving them out would price the lever against half its own bill.
-	//
-	// ⚠️ No dry-run arm, deliberately, and this is where it differs from the depth predictor beside
-	// it. That one's counterfactual is a pure function of the plan, so it can be counted on an arm
-	// it is not steering. This one's inputs are CHANGED by its own verdict -- the cadence hides the
-	// wait it removes -- so a census taken while something else decides would be a census of a world
-	// the predictor is not in. It observes only when it decides.
+	// This plan's passes go on the frame's total for the predictor, which reads it at the frame
+	// boundary. Added here rather than counted straight into the frame total at EndRenderPass
+	// because EndRenderPass serves every road: the merge and present passes between two plans would
+	// otherwise land in the count and be charged to a cadence that never saw them.
+	m_tilegpu_kick_frame_passes += m_tilegpu_kick_plan_passes;
+
+	InvalidateCachedState();
+	return true;
+}
+
+// The cadence the NEXT frame runs under, decided from the one that just finished. Called from
+// GSRendererTileGpu::VSync once the frame's last plan has executed, and nowhere else: every pass of
+// the frame has run under one value of `on`, the frame's blocking wait and the cadence's own bill
+// are both complete, and the next frame's first pass has not been recorded.
+//
+// ⚠️ A frame, not a plan. A mid-frame flush ends a plan and starts another, so on Spider-Man 3 this
+// is one call where the plan tail was 190; the predictor's decay, its two-consecutive-frames
+// confirmation and its per-pass price all ran at that rate and made plan count an input to
+// submission cadence.
+//
+// The wait is a DELTA over the whole inter-frame interval, not just the executor's span, so the
+// pulls and presents that block between two frames are in it. They are blocking GPU wait and the
+// cadence moves them; leaving them out would price the lever against half its own bill.
+//
+// ⚠️ No dry-run arm, deliberately, and this is where it differs from the depth predictor beside it.
+// That one's counterfactual is a pure function of the plan, so it can be counted on an arm it is not
+// steering. This one's inputs are CHANGED by its own verdict -- the cadence hides the wait it
+// removes -- so a census taken while something else decides would be a census of a world the
+// predictor is not in. It observes only when it decides.
+void GSDeviceVK::TileGpuFrameBoundary()
+{
 	if (GSConfig.TileGpuAdaptiveKick)
 	{
 		const u64 wait_now = m_sync_wait_ns + m_oob_wait_ns + m_source_set_wait_ns;
@@ -10203,9 +10224,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		m_tilegpu_kick_picker.Observe(
 			wait_delta, m_tilegpu_kick_cadence_submits, m_tilegpu_kick_cadence_ns, m_tilegpu_kick_frame_passes);
 	}
-
-	InvalidateCachedState();
-	return true;
+	// Cleared whatever the lever says, so the accumulators cannot run away over a session on the arm
+	// that does not read them.
+	m_tilegpu_kick_cadence_submits = 0;
+	m_tilegpu_kick_cadence_ns = 0;
+	m_tilegpu_kick_frame_passes = 0;
 }
 
 bool GSDeviceVK::TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p)
@@ -12591,8 +12614,10 @@ void GSDeviceVK::EndRenderPass()
 	m_render_passes_since_submit++;
 	// The kick predictor's unit of work, counted where the cadence counts it -- every render pass,
 	// the executor's seed passes included, and NOT plan.passes.size(), which is short by exactly
-	// them. Reset at the head of each plan, so it says what this frame gave the cadence.
-	m_tilegpu_kick_frame_passes++;
+	// them. Reset at the head of each plan and banked into the frame total at its tail, so a pass
+	// opened outside the executor -- the merge, the present -- is counted here and then discarded,
+	// and only the passes the cadence could have offered at reach the predictor.
+	m_tilegpu_kick_plan_passes++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 }
