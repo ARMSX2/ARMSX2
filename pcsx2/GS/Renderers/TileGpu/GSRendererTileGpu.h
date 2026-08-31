@@ -1171,6 +1171,81 @@ constexpr u32 gsTileGpuMergeCpuAgeBucket(u32 age)
 	return (age == 0) ? 0u : ((age == 1) ? 1u : ((age <= 3) ? 2u : ((age <= 15) ? 3u : 4u)));
 }
 
+/// The two budgets that BOUND the upload merge's flush elision
+/// (EmuCore/GS/TileGpuFlushGateUploadMerge). Past either one the merge takes the pre-lever road --
+/// flush, re-ask, re-plan -- and that flush is a plan BOUNDARY rather than a reconciliation: the
+/// elision's correctness argument does not depend on it, only its cost does.
+///
+/// Skipping the flush is free per merge and priced per PLAN, and the price is charged in the
+/// executor, where the merge road cannot see it. The whole staging block -- one 8 KB slot per ring
+/// page, the epoch page tables, the entries and masks -- is ONE ReserveMemory against a 32 MiB
+/// stream buffer, so a plan's size IS its reservation. A reservation that does not fit the run left
+/// in the ring waits for the GPU to free one, and a big request both abandons the ring's tail on
+/// every wrap and needs the GPU further ahead before it fits. That wait, not the staging work, is
+/// the cost. Measured on Spider-Man 3, M2, inside the staging block, ms a frame over three runs:
+///
+///   pre-lever (188 plans)   reservation wait 3.54 / 8.57 / 10.44   table fill 0.59
+///   elided    (1 plan)      reservation wait 13.21 / 13.83 / 16.15 table fill 0.49
+///   bounded   (10 plans)    reservation wait 4.15 / 5.72 / 6.03    table fill 0.44
+///
+/// ReserveMemory never actually FAILED on any arm (0.00 forced submits a frame), so all of that is
+/// blocking INSIDE it, waiting on a fence. That matters for reading the numbers: those are WALL
+/// milliseconds. Timed again on the GS thread's own CPU clock the same reservation costs 0.038 ms a
+/// frame pre-lever and 0.004 bounded -- near nothing either way. So this whole term is wall, which
+/// is why the bound moves Spider-Man 3's wall a long way and its gs_cpu hardly at all (below).
+///
+/// The two budgets bound the two axes a plan grows along:
+///
+///   RING PAGES bound the reservation directly -- (1 + pages) x 8 KB is nearly all of it. 192 caps
+///   a merge-road plan at ~1.6 MB, and with it every title's LARGEST single reservation returns to
+///   exactly its pre-lever value: Spider-Man 3 4,064 KB pre-lever, 5,620 elided, 4,064 bounded;
+///   OutRun 2006 3,442 / 3,786 / 3,442; Stuntman 6,212 / 9,448 / 6,212. This is the axis OutRun
+///   regressed on: its per-plan reservation went from a p50 of 50 KB and a p90 of 1,374 KB to 396
+///   and 3,729, and its SD865 ring waits went 1 -> 25 a frame for +1.27 ms of wall while gs_cpu and
+///   gpu both still improved.
+///
+///   EPOCHS bound the epoch page tables, which are the rest of the reservation (24 x 2 KB rather
+///   than the 183 x 2 KB one Spider-Man 3 frame reached) and all of the staging block's own work:
+///   the fill writes one word per (ring page x epoch that page is live for), strided GS_MAX_PAGES
+///   words apart so each is its own cache line. Spider-Man 3's count of those writes reads 2,227 a
+///   frame pre-lever, 47,485 elided, 3,948 under the page bound alone and 2,940 under both -- the
+///   average page went from live for 2.4 epochs to live for 73, which is what a long plan
+///   multiplies.
+///
+/// The axes are independent and both are needed: GT4's post-elision plans reach a p90 of 269 ring
+/// pages at an epoch count of 1, so the epoch budget never sees them, while Spider-Man 3's reach
+/// 183 epochs and the page budget alone leaves nearly twice the fill work.
+///
+/// ⚠️ What the round MEASURED AND REFUTED: plan ASSEMBLY does not care how many plans the draws
+/// arrive in. Collapsing Spider-Man 3's 188 plans into 1 left the state-row build at 0.068 -> 0.066,
+/// the fragment-variant pass at 0.060 -> 0.057, the grouping walk at 0.277 -> 0.270 and draw
+/// accumulation at 4.797 -> 4.809 ms a frame. It is linear in DRAWS, and the draws are the same.
+///
+/// ⚠️ AND WHAT THE BOUND COSTS. Stuntman is the one title the elision helps by making plans BIGGER:
+/// fewer plans re-materialise fewer pages, so its ring pages fall 731 -> 533 a frame and its
+/// reservation wait falls 18.4 -> 2.7 ms. Bounding gives most of that back -- 1.00 boundary flush a
+/// frame, ring pages back to 731, reservation wait 13.0 ms. Still better than the pre-lever 18.4,
+/// but not the 2.7 the unbounded elision reached. A bound cannot cost more flushes than the
+/// pre-lever road (both budgets are only ever asked on the merge road, on a write that would have
+/// flushed anyway), so Stuntman's floor is its own pre-lever 2.50; it lands at 1.00.
+///
+/// ⚠️ AND WHAT THE BOUND DOES NOT FIX, measured, so nobody re-derives it. Spider-Man 3's GS-thread
+/// CPU is ~3 ms a frame worse under the elision on the M2 and the budgets DO NOT MOVE THAT. Over
+/// eight interleaved runs of the shipped pair, warm-up frames excluded, gs_cpu reads 33.57 pre-lever
+/// against 36.51 bounded (+2.94) where unbounded read +3.21 -- unchanged. Wall over the same pair
+/// reads 68.13 against 71.19 (+3.06) where unbounded read +8.72, so the WALL regression really is
+/// the reservation and really is two-thirds gone. Tightening further makes CPU WORSE, not better:
+/// 8 epochs / 64 pages (23.5 boundary flushes a frame) and 4 / 32 (46.7 flushes) both cost more
+/// gs_cpu than 24 / 192 does at 8.8. A cost that does not respond to a six-fold budget change over
+/// a five-fold flush-count range is not a plan-size cost, so whatever the residual is, no budget
+/// here will find it -- do not tune these two numbers hunting it.
+///
+/// The values are the largest that hold the corpus inside the pre-lever band: Spider-Man 3 takes
+/// ~8-10 boundary flushes a drawn frame against the 194 reconciliation flushes the elision removed,
+/// OutRun 2006 ~8 against 18, and no title's largest reservation exceeds the one it already had.
+constexpr u32 kGSTileGpuMergeElisionMaxEpochs = 24;
+constexpr u32 kGSTileGpuMergeElisionMaxRingPages = 192;
+
 /// Does a run of `n` merged palette squares exactly tile a 64-wide BAND of one owner page?
 ///
 /// A 256-entry palette that merges is a 16x16 square at a 16-aligned origin inside one 64x32 guest
@@ -3512,6 +3587,11 @@ private:
 			u32 overflow = 0; // the footprint lost its block masks, so coverage is unknown
 		};
 		MergeRefusals merge_ref;
+		// The elision's two size budgets, counted where they send a merge down the pre-lever road.
+		// A merge may trip both, so these do not sum to the boundary flushes -- the flush count is
+		// the emulog's own mid-frame flush line, and these say WHICH budget is doing the work.
+		u32 merge_bound_epochs = 0;
+		u32 merge_bound_pages = 0;
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		// What those snapshots COST, in the 8 KB pages the byte road is counted in, and what the

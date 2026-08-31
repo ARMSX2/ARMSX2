@@ -1738,29 +1738,51 @@ struct Pcsx2Config
 					// not touch. Measured the two are identical on both titles, but the
 					// narrow test is what keeps the admitted population provably today's.
 					//
-					// WHAT IT REMOVES, per drawn frame: Spider-Man 3 mid-frame flushes 194
-					// -> 0 (it carries 64% of the corpus's flushes on its own), ring pages
-					// 951 -> 654, writeback pages 3,038 -> 2,979. Corpus-wide 269.88 ->
-					// 43.76 flushes and 11,612 -> 10,467 ring pages, or 9.4 MB a frame of
-					// 8 KB copies not made. The removal is EXACTLY the merge-served flushes,
-					// dump by dump -- GT4 35.88 - 10.00 = 25.88 and it reads 25.88 -- and
-					// the three titles whose flushes are not merge-served do not move at all.
+					// ...and the elision is BOUNDED BY SIZE, because unbounded it cost
+					// more than it saved. Removing every flush left Spider-Man 3 with one
+					// plan of 5,600 draws a frame, and a plan's whole staging block -- an
+					// 8 KB ring slot a page, the epoch page tables, the entries and masks --
+					// is ONE reservation against the 32 MiB vram stream buffer. So the plan's
+					// size IS its reservation, a reservation big enough to need the GPU well
+					// ahead of it blocks waiting for the room, and the SD865 A/B read that
+					// back as OutRun 2006's ring waits going 1 -> 25 a frame (+1.27 ms of
+					// wall with gs_cpu and gpu both still improving) and Spider-Man 3's own
+					// gs_cpu going the WRONG WAY by 0.833 ms under an interleaved re-run.
+					// Past either budget -- kGSTileGpuMergeElisionMaxEpochs ring-table epochs
+					// or kGSTileGpuMergeElisionMaxRingPages pages -- the merge takes the road
+					// above instead, and that flush is a plan BOUNDARY: it reconciles nothing
+					// the elision needed, it just ends the plan. Those two constants carry the
+					// measurements, including the two this round REFUTED: plan assembly is
+					// linear in draws and does not care how many plans they arrive in, and
+					// Spider-Man 3's ~3 ms of extra GS-thread CPU does not respond to the
+					// budgets at all. The bound buys back the WALL -- Spider-Man 3 +8.72 ms
+					// unbounded against +3.06 bounded on the M2 -- and leaves that CPU
+					// residual for whoever names it. Tightening the budgets makes the CPU
+					// worse, not better; do not tune them hunting it.
 					//
-					// THE PRICE is the same trade TileGpuFlushGateBlockAsk priced above,
-					// smaller: +274 heap version copies and +494 epoch table entries a frame
-					// corpus-wide, against the ring and writeback pages removed. Ring
-					// backpressure moves both ways on the M2 and was not timed; Stuntman's
-					// 0.00 -> 2.94 ms is the line the device A/B has to clear.
+					// WHAT IT REMOVES, per drawn frame: Spider-Man 3 mid-frame flushes 194 ->
+					// 9 (it carries 64% of the corpus's flushes on its own), OutRun 2006
+					// 19 -> 7, GT4 40 -> 31, Stuntman 5 -> 2. Corpus-wide 269.88 -> 63.51
+					// flushes and 11,612 -> 11,319 ring pages. The removal is bounded by the
+					// merge-served flushes dump by dump, and the three titles whose flushes
+					// are not merge-served do not move at all. Every title's LARGEST single
+					// plan reservation stays exactly what it was before the elision existed:
+					// Spider-Man 3 4,064 KB, OutRun 2006 3,442 KB, Stuntman 6,212 KB.
+					//
+					// THE PRICE is the same trade TileGpuFlushGateBlockAsk priced above, and
+					// the bound holds it far below what the unbounded elision paid: +41 heap
+					// version copies and +41 epoch table entries a frame corpus-wide, where
+					// unbounded it was +274 and +494.
 					//
 					// Passes, merge-served pages, stalls and blocking GPU waits are IDENTICAL
 					// on all 22 dumps, and 0 of the 88 scored frames move -- byte-identical,
-					// which is stronger than the block-ask gate above and for the reason in
-					// 3(c): the merge's pseudo-draw already cut the pass where the plan
-					// boundary used to fall, so the ring slots are cut in the same places
-					// either way.
+					// which is stronger than the block-ask gate above and for the reason the
+					// merge road's own comment gives: the merge's pseudo-draw already cut the
+					// pass where the plan boundary used to fall, so the ring slots are cut in
+					// the same places whether the plan ends there or not.
 					//
-					// Default TRUE. OFF is the tip as it shipped on 2026-08-31 and is the
-					// control arm of the device A/B.
+					// Default TRUE. OFF is the pre-lever road -- flush, re-ask, re-plan on
+					// every merge -- and is the control arm of the device A/B.
 					TileGpuFlushGateUploadMerge : 1,
 					// The CLUT readback's own receipt survives the plan flush it takes on its
 					// way in.

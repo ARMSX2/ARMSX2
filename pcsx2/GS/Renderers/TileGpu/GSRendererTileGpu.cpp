@@ -864,8 +864,20 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 		// PLAN-BUILD TIME, and GSState has not written this transfer into it yet, so a plan built
 		// between here and the write would compose the page as it stands BEFORE the transfer and
 		// seed that into the target -- losing the upload entirely.
+		//
+		// ...and the elision is BOUNDED BY SIZE. Skipping the flush is free per merge and priced per
+		// PLAN, in the executor: the whole staging block is ONE reservation against the 32 MiB vram
+		// stream buffer, so a plan's ring pages ARE its reservation size, and its epoch count is
+		// both the rest of that reservation and all of the table-fill work. Past either budget the
+		// merge takes the road below instead, which makes that flush a plan BOUNDARY rather than a
+		// reconciliation -- it reconciles nothing the elision needed, it just ends the plan. See
+		// kGSTileGpuMergeElisionMaxEpochs / kGSTileGpuMergeElisionMaxRingPages for the measurements
+		// the two numbers come from. A boundary can never cost more flushes than the pre-lever road:
+		// both budgets are only ever asked here, on a write that road would have flushed anyway.
+		const bool over_epochs = m_epoch >= kGSTileGpuMergeElisionMaxEpochs;
+		const bool over_pages = m_ring_entries.size() >= kGSTileGpuMergeElisionMaxRingPages;
 		bool gated = false;
-		if (GSConfig.TileGpuFlushGateUploadMerge)
+		if (GSConfig.TileGpuFlushGateUploadMerge && !over_epochs && !over_pages)
 		{
 			// The probe's refusals are provisional. PlanUploadMerge counts as it decides, and a
 			// probe this branch discards is planned again below over the same pages, so put the
@@ -890,6 +902,11 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 			// above is only trustworthy where it is accepted whole, because PlanUploadMerge reads
 			// the source-pin clock, the texel records and the pool handles, and the flush's tail
 			// moves all three.
+			if (GSConfig.TileGpuFlushGateUploadMerge)
+			{
+				m_frame.merge_bound_epochs += over_epochs ? 1u : 0u;
+				m_frame.merge_bound_pages += over_pages ? 1u : 0u;
+			}
 			FlushPendingPlan();
 			const GSPageBitmap spill = m_vram_model.SpillBeforeCpuWrite(fp, planes);
 			merged = PlanUploadMerge(layout, r, fp, spill);
@@ -3041,6 +3058,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"owner %.2f, a CPU read already wanted it %.2f, half a byte %.2f, rect is a claim %.2f, "
 					"footprint overflow %.2f",
 		mrg.mean, mrg.p50, mrgp.mean, mrgp.p50, mref_o.mean, mref_c.mean, mref_b.mean, mref_s.mean, mref_f.mean);
+	// ...and the elision's two size budgets, which say why a merge-road flush that survives the gate
+	// survived it. Zero on both with the gate off (nothing is ever elided, so nothing is bounded);
+	// with it on, these are the boundary flushes the mid-frame flush line above is now made of.
+	const auto mbe = stat([](const MF& f) { return f.merge_bound_epochs; });
+	const auto mbp = stat([](const MF& f) { return f.merge_bound_pages; });
+	Console.WriteLn("  merge elision bounds (%s, %u epochs / %u ring pages): epoch budget %.2f / %-4u, "
+					"ring-page budget %.2f / %-4u",
+		GSConfig.TileGpuFlushGateUploadMerge ? "on" : "off", kGSTileGpuMergeElisionMaxEpochs,
+		kGSTileGpuMergeElisionMaxRingPages, mbe.mean, mbe.p50, mbp.mean, mbp.p50);
 	// ...and what those merges COST in render passes, which no other number here can show: the pass
 	// count above it is the PLAN's, and a seed runs at a pass head inside no plan pass. Counted in
 	// the executor at the BeginRenderPass itself. Read the merge's column against merge_ops above --
