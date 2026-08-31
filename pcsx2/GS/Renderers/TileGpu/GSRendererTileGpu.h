@@ -1326,6 +1326,31 @@ constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bo
 	return self_read ? gsTileGpuClassUses(wanted_classes & admitted_classes) : 0u;
 }
 
+/// The classes a dev PROBE holds out of admission outright, whatever the budget decided.
+///
+/// One key, one named class, and that scoping is the instrument. The measurement it serves is the
+/// declaring premium on Stuntman, whose exotic-blend class scores 247 against the 256 refuse line
+/// and is therefore admitted in every frame -- 154 declaring passes a frame at 30-90 us of premium
+/// each. The obvious alternative, dropping kGSTileGpuDeclaringRefuseAbove to 224 so the 247 falls
+/// the other side of it, is NOT the same arm: the re-admit line below is also 224, so moving the
+/// refuse line there leaves no hysteresis band and the run would carry two changes.
+///
+/// A refused class is not an unchanged one -- its draws take the RT-copy blend road -- so a run with
+/// any bit set here is a measurement and never a hash gate.
+constexpr u32 gsTileGpuProbeRefusedClasses(bool refuse_exotic_blend)
+{
+	return refuse_exotic_blend ? kGSTileGpuClassExoticBlend : 0u;
+}
+
+/// What a draw is admitted for: what it wanted, less what the budget refused, less what a probe
+/// refuses outright. The probe term is last and absolute -- the instruments that admit everything
+/// (a device that does not tax declaring, TileGpuForceSelfRead) hand `budget_admitted` in as
+/// kGSTileGpuClassAll rather than getting to skip this, so the key means one thing everywhere.
+constexpr u32 gsTileGpuAdmittedClasses(u32 wanted_classes, u32 budget_admitted, u32 probe_refused)
+{
+	return wanted_classes & budget_admitted & ~probe_refused;
+}
+
 /// A class's cost, in the unit the device actually charges in.
 ///
 /// TWO terms, because the SD865 round (20260824, e4d6eddce3) said the one-term form was half a
@@ -1409,8 +1434,14 @@ constexpr u32 kGSTileGpuDeclaringRefuseAbove = 256;
 /// one property beyond being narrow, and the obvious 25% band does not: a class that MUST be
 /// admitted has to be able to come BACK after any transient spike refuses it, so the re-admit line
 /// must sit above the largest must-admit cost. That is Katamari's 211, so 192 would latch its
-/// punctuation off for good after one bad frame. 224 clears it, and the band it leaves (225..256)
-/// contains no measured class on the corpus at all.
+/// punctuation off for good after one bad frame. 224 clears it.
+///
+/// ⚠️ The band it leaves (225..256) was written up as containing no measured class on the corpus at
+/// all. That stopped being true when Stuntman joined it: its exotic-blend class scores 247, and it
+/// was not in the corpus the line was fitted against. So the band now holds the worst title's most
+/// expensive class, nine units under the refuse line and admitted every frame -- which is what
+/// TileGpuRefuseExoticBlendClass exists to price. Anything moving the refuse line to catch that 247
+/// has to move this one too, or there is no band left.
 constexpr u32 kGSTileGpuDeclaringReadmitAtOrUnder = 224;
 
 /// The per-class declaring budget: which admission classes are worth their tax this frame, decided
@@ -2269,6 +2300,10 @@ private:
 	/// exercise the road and a device that refuses a class would otherwise leave it unexercised. A
 	/// forced run on a device that taxes declaring is a measurement, not a shipping shape.
 	bool m_force_self_read = false;
+	/// The admission classes a dev probe refuses outright (gsTileGpuProbeRefusedClasses, driven today
+	/// by EmuCore/GS/TileGpuRefuseExoticBlendClass alone). Zero on every shipping run. Read once at
+	/// construction for the reason the levers around it are: it decides which pass a draw keys into.
+	u32 m_probe_refused_classes = 0;
 	/// EmuCore/GS/TileGpuShaderWriteMask, ANDed with the device having the read road at all: a draw's
 	/// colour write mask leaves the pipeline and the fragment stage serves it, so two draws differing
 	/// only in FBMSK share a pipeline and merge into one indirect call. Read once at construction like

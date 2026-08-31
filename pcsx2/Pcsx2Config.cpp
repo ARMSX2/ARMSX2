@@ -773,6 +773,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TilePassSim = false;
 	TileGpuPassSim = false;
 	TileGpuForceSelfRead = false;
+	TileGpuRefuseExoticBlendClass = false;
 	TileGpuUnionFragmentVariant = false;
 	TileGpuUnspecializedFragmentVariant = false;
 	TileGpuUploadSpillReadback = false;
@@ -1205,6 +1206,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TilePassSim);
 	SettingsWrapBitBool(TileGpuPassSim);
 	SettingsWrapBitBool(TileGpuForceSelfRead);
+	SettingsWrapBitBool(TileGpuRefuseExoticBlendClass);
 	SettingsWrapBitBool(TileGpuUnionFragmentVariant);
 	SettingsWrapBitBool(TileGpuUnspecializedFragmentVariant);
 	SettingsWrapBitBool(TileGpuUploadSpillReadback);

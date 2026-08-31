@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 133 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 141 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1001,6 +1001,42 @@ struct Pcsx2Config
 					// whole corpus before any accuracy repair rides on it. gsrunner
 					// -tilermw arms it; nothing else should. Dev only, default off.
 					TileGpuForceSelfRead : 1,
+					// The opposite instrument, and a measurement probe rather than a
+					// policy: hold the `exotic blend` admission class out of the
+					// in-pass destination read entirely, whatever the declaring
+					// budget decided about it. ONE named class -- no threshold
+					// moves, and no other class's verdict changes.
+					//
+					// It exists to price the DECLARING PREMIUM on the title where it
+					// is worth the most. Stuntman's exotic-blend class scores 247
+					// against a refuse line of 256, so the budget admits it in 100%
+					// of frames, and it produces 154 declaring passes a frame. A
+					// declaring pass costs an ordinary pass (4.30 us on an SD865)
+					// plus a rasterization-mode premium the corpus fit puts at 73.6
+					// us with a band of 30-90 -- 4.6 to 13.9 ms of GPU on a title
+					// already 25.8 ms over its budget. Refusing the class reads that
+					// premium off the device directly. MGS3's twin class scores 259,
+					// falls the other side of the same line, and its refusal was
+					// measured at -9.37 ms.
+					//
+					// ⚠️ NOT interchangeable with dropping
+					// kGSTileGpuDeclaringRefuseAbove to 224 to catch the 247: the
+					// RE-ADMIT line is also 224, so that collapses the hysteresis
+					// band to nothing and the arm would move two things at once.
+					//
+					// Refusal is a fallback and not a no-op -- the refused draws take
+					// the RT-copy blend road, so the frame's exactness changes. An ON
+					// run is a measurement; it is never a shipping shape and never a
+					// hash gate. Absolute where it applies at all: it outranks the
+					// budget AND TileGpuForceSelfRead, so the key means the same
+					// thing on every device. Read once at construction like every
+					// other admission policy. Dev only; a policy probe is not a user
+					// setting. Default off.
+					//
+					// Numbers and the arm's spec: umbrella
+					// devs/bmdhacks/campaigns/gs-tile-stage15-speed/agents/gpu-busy-refit/RESULT.txt,
+					// sections 2.3 and 4 (D1).
+					TileGpuRefuseExoticBlendClass : 1,
 					// Compile each PASS's union fragment program for every draw of
 					// it, the way the executor did before the fragment variant
 					// joined the indirect run key. Default off; the on position is

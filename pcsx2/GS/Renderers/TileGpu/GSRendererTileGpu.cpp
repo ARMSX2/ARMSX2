@@ -262,6 +262,18 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// read be exercised over the whole corpus before anything depends on it.
 	m_force_self_read = m_self_read && GSConfig.TileGpuForceSelfRead;
 
+	// ...and the instrument pointing the other way, read once beside it because it moves the same
+	// boundaries: the classes a dev probe refuses outright, above the budget and above the forced
+	// admission over it. Named in the log on the ON arm only -- a refused class changes what the
+	// frame is exact about, so a number taken under this key has to be attributable to it.
+	m_probe_refused_classes = gsTileGpuProbeRefusedClasses(GSConfig.TileGpuRefuseExoticBlendClass);
+	if (m_probe_refused_classes != 0)
+	{
+		Console.WriteLn("TileGpu: PROBE -- the exotic-blend admission class is refused outright "
+						"(TileGpuRefuseExoticBlendClass on). Its draws take the RT-copy blend road, so this "
+						"run's frames are a measurement and not a hash gate.");
+	}
+
 	// The colour write mask served by the fragment stage instead of the pipeline, read once for the
 	// reason the pass-boundary levers below are: it decides whether a draw declares, and so which pass
 	// it keys into. ANDed with the device having the read road, because there is nothing to serve the
@@ -559,7 +571,11 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 	{
-		m_frame.class_refused[c] = (m_declaring_budget.admitted & (1u << c)) ? 0u : 1u;
+		// The EFFECTIVE verdict, probe included. On a device that does not tax declaring the budget
+		// admits everything unconditionally, so without this term a probe arm's census would read
+		// "refused in 0% of frames" for the class it is refusing.
+		m_frame.class_refused[c] =
+			((m_declaring_budget.admitted & ~m_probe_refused_classes) & (1u << c)) ? 0u : 1u;
 		m_frame.class_peak[c] = m_declaring_budget.peak[c];
 	}
 	m_model_frames.push_back(m_frame);
@@ -2145,11 +2161,15 @@ u32 GSRendererTileGpu::ReaderFlags(bool color_written)
 // the budget has priced a class out -- and everything again under the forced-admission instrument,
 // which exists to exercise the road and so may not be the thing that stops it. A forced run on a
 // device that taxes declaring is a measurement, not a shipping shape.
+//
+// The dev probe's refusal is applied LAST and to all three of those roads alike, so a key naming one
+// class means the same thing on a device that taxes declaring, on one that does not, and under the
+// forced admission. Zero on every shipping run, and this is then the expression it always was.
 u32 GSRendererTileGpu::AdmittedClasses(u32 wanted_classes) const
 {
-	if (m_force_self_read || !m_segregate_self_read)
-		return wanted_classes;
-	return wanted_classes & m_declaring_budget.admitted;
+	const u32 budget_admitted =
+		(m_force_self_read || !m_segregate_self_read) ? kGSTileGpuClassAll : m_declaring_budget.admitted;
+	return gsTileGpuAdmittedClasses(wanted_classes, budget_admitted, m_probe_refused_classes);
 }
 
 // Charge one draw against the budget, and record the per-class census.
@@ -2870,10 +2890,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 			const auto runs = stat([c](const MF& f) { return f.class_runs[c]; });
 			const auto peak = stat([c](const MF& f) { return f.class_peak[c]; });
 			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
+			// Who refused it, not just how often: on a probe arm the refusal is the KEY's and the cost
+			// peak beside it is still the budget's own opinion, which is the number the arm is pricing.
 			Console.WriteLn("    class %-17s wanted %.2f / %u draws (taxed %.2f / %u + runs %.2f / %u)   "
-							"cost peak %.2f / %u   budget refused it in %.0f%% of frames",
+							"cost peak %.2f / %u   %s refused it in %.0f%% of frames",
 				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, runs.mean, runs.p50, peak.mean,
-				peak.p50, refu.mean * 100.0);
+				peak.p50, (m_probe_refused_classes & (1u << c)) ? "the PROBE" : "budget", refu.mean * 100.0);
 		}
 	}
 	// The colour write mask as a run key, and it is a funnel rather than three independent numbers:

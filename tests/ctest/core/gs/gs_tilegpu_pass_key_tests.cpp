@@ -918,6 +918,120 @@ TEST(TileGpuSelfReadUses, AdmissionIsWhatWasWantedLessWhatTheBudgetRefused)
 }
 
 // ---------------------------------------------------------------------------------------------
+// The one-class force-refuse probe (EmuCore/GS/TileGpuRefuseExoticBlendClass).
+//
+// A dev instrument, not a policy, and the suite's job is to hold it to the one thing that makes it
+// usable as one: it refuses the class it names and touches nothing else -- not the two lines, not
+// another class's verdict, not a draw's other reasons for reading.
+//
+// What it is for. The SD865 refit (umbrella gpu-busy-refit, 2026-08-31) prices a declaring pass at
+// an ordinary pass plus a 30-90 us rasterization-mode premium, and Stuntman's exotic-blend class
+// scores 247 against the 256 refuse line -- nine units under it, admitted every frame, 154 declaring
+// passes a frame. Refusing that one class reads the premium off the device on the title where it is
+// worth the most.
+//
+// Why not just move the line. 247 is caught by dropping kGSTileGpuDeclaringRefuseAbove to 224 --
+// and 224 is also the RE-ADMIT line, so the arm would run with no hysteresis band at all and two
+// changes in it. The probe is the way to move one thing.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuDeclaringProbe, OffItIsTheExpressionThatWasThereBefore)
+{
+	// The gate the shipped default rides on: with no probe set, admission is exactly `wanted &
+	// admitted` for every one of the 32 wanted sets against every one of the 32 verdicts. Nothing
+	// about a frame can change if this holds.
+	EXPECT_EQ(0u, gsTileGpuProbeRefusedClasses(false));
+	for (u32 wanted = 0; wanted <= kGSTileGpuClassAll; wanted++)
+	{
+		for (u32 admitted = 0; admitted <= kGSTileGpuClassAll; admitted++)
+		{
+			EXPECT_EQ(wanted & admitted,
+				gsTileGpuAdmittedClasses(wanted, admitted, gsTileGpuProbeRefusedClasses(false)))
+				<< "wanted " << wanted << " admitted " << admitted;
+		}
+	}
+}
+
+TEST(TileGpuDeclaringProbe, OnItRefusesTheExoticBlendClassAndNoOther)
+{
+	EXPECT_EQ(kGSTileGpuClassExoticBlend, gsTileGpuProbeRefusedClasses(true));
+
+	const u32 probe = gsTileGpuProbeRefusedClasses(true);
+	for (u32 wanted = 0; wanted <= kGSTileGpuClassAll; wanted++)
+	{
+		for (u32 admitted = 0; admitted <= kGSTileGpuClassAll; admitted++)
+		{
+			const u32 shipped = gsTileGpuAdmittedClasses(wanted, admitted, 0);
+			const u32 probed = gsTileGpuAdmittedClasses(wanted, admitted, probe);
+			// The named class is gone...
+			EXPECT_EQ(0u, probed & kGSTileGpuClassExoticBlend)
+				<< "wanted " << wanted << " admitted " << admitted;
+			// ...and every other class's verdict is bit-for-bit what it was.
+			EXPECT_EQ(shipped & ~kGSTileGpuClassExoticBlend, probed & ~kGSTileGpuClassExoticBlend)
+				<< "wanted " << wanted << " admitted " << admitted;
+		}
+	}
+}
+
+TEST(TileGpuDeclaringProbe, ItRefusesTheClassAndNotTheDrawsOtherReasons)
+{
+	const u32 probe = gsTileGpuProbeRefusedClasses(true);
+	// A draw whose only reason was the exotic blend loses the read entirely.
+	EXPECT_EQ(0u, gsTileGpuSelfReadUses(kGSTileGpuClassExoticBlend,
+					  gsTileGpuAdmittedClasses(kGSTileGpuClassExoticBlend, kGSTileGpuClassAll, probe), kRoad));
+	// A draw that also quantises its blend result keeps reading for THAT, which is the whole
+	// difference between refusing a class and refusing a draw.
+	const u32 both = kGSTileGpuClassExoticBlend | kGSTileGpuClassQuantisedBlend;
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfBlend,
+		gsTileGpuSelfReadUses(both, gsTileGpuAdmittedClasses(both, kGSTileGpuClassAll, probe), kRoad));
+	// ...and a DATE draw that happens to blend exotically keeps its destination-alpha test exact.
+	const u32 date_too = kGSTileGpuClassExoticBlend | kGSTileGpuClassDate;
+	EXPECT_EQ(GSDevice::kGSTileGpuSelfDate,
+		gsTileGpuSelfReadUses(date_too, gsTileGpuAdmittedClasses(date_too, kGSTileGpuClassAll, probe), kRoad));
+}
+
+TEST(TileGpuDeclaringProbe, ItMovesNeitherLineAndTheAlternativeWouldCollapseTheBand)
+{
+	// Both lines stay where they were fitted. The probe is scoped to a class precisely so that a
+	// device arm reads one change.
+	EXPECT_EQ(256u, kGSTileGpuDeclaringRefuseAbove);
+	EXPECT_EQ(224u, kGSTileGpuDeclaringReadmitAtOrUnder);
+
+	// Stuntman's class, from the SD865 census: 7 taxed draws behind 150 runs = 247, nine units under
+	// the line, so the budget admits it in every frame. That is the admission the probe overrides.
+	EXPECT_EQ(247u, gsTileGpuClassCost(/*taxed=*/7, /*runs=*/150));
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(7, 150));
+	// MGS3's twin, twelve units the other way, is refused by the line itself -- which is why its
+	// refusal could be measured (-9.37 ms) without any probe at all.
+	EXPECT_EQ(259u, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/162));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 162));
+
+	// ⚠️ And the reason the probe exists rather than a lowered line: the only refuse line that
+	// catches 247 is at or below the re-admit line, which leaves no hysteresis band.
+	EXPECT_GT(gsTileGpuClassCost(7, 150), kGSTileGpuDeclaringReadmitAtOrUnder);
+}
+
+TEST(TileGpuDeclaringProbe, TheBudgetItselfNeverSeesIt)
+{
+	// The probe is applied downstream of the budget, so the budget keeps measuring what the class
+	// WOULD cost -- the same property that stops a refused class re-admitting itself forever. Pinned
+	// on Stuntman's own shape: 150 solo runs plus 7 draws standing behind one of them.
+	GSTileGpuDeclaringBudget b;
+	b.Start(/*declaring_taxes_the_pass=*/true);
+	for (u32 r = 0; r < 150; r++)
+		b.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
+	for (u32 t = 0; t < 7; t++)
+		b.Charge(kGSTileGpuClassExoticBlend, 0);
+	b.Roll();
+	EXPECT_EQ(247u, b.peak[1]); // kGSTileGpuClassExoticBlend is bit 1
+	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend)
+		<< "the budget's own verdict is ADMIT; the probe is what refuses it";
+	// ...and it is the probe, applied after, that produces the arm.
+	EXPECT_EQ(0u, gsTileGpuAdmittedClasses(kGSTileGpuClassExoticBlend, b.admitted,
+					  gsTileGpuProbeRefusedClasses(true)));
+}
+
+// ---------------------------------------------------------------------------------------------
 // The budget itself.
 // ---------------------------------------------------------------------------------------------
 
