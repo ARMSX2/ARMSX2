@@ -797,7 +797,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	// its population -- Spider-Man 3's partial-FBMSK class goes from refused in 100% of frames to
 	// admitted at a cost of 235 against the same 256 line. See Config.h for the rule and for the
 	// three refusals it deliberately does not touch.
-	TileGpuFbmskAdmission = true;
+	TileGpuFbmskAdmission = false;
 	// Default TRUE, both: pixel-inert on the corpus, and the GT4 Online Public Beta device A/B is
 	// -16.8% frame time with the first and -28.6% with both (SD865, 2026-08-26). Only five of the
 	// 21 corpus dumps gather a palette at all; the rest never reach the arm -- see Config.h.

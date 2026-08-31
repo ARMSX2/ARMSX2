@@ -1267,9 +1267,20 @@ struct Pcsx2Config
 					// GPU, and the calls it merged were worth -11.96 ms GPU / -14.99 ms frame
 					// (SD865, write-mask round 2 arms C-D, 2,838 calls a frame removed).
 					//
-					// Default TRUE. Inert on every device that does not charge for declaring
-					// (the budget admits everything there), and inert where the write-mask
-					// road is off, since then refusing costs no calls to credit.
+					// Default FALSE since the SD865 A/B (2026-08-31, interleaved, 5 rounds,
+					// dead flat): the structural prediction hit exactly (census 3224->235,
+					// refused 100%->0%, indirect calls -2,839 to the unit) and the frame got
+					// +6.8 ms SLOWER. The admission adds ~296 declaring passes (14->310) and
+					// their GPU sync-wait came to ~8.7 ms/frame -- ~29 us a pass, right on
+					// the standing ~25 us/pass Adreno coefficient -- while the 2,839 calls
+					// saved bought only ~2.1 ms of CPU. The C-D arms above priced the calls,
+					// not the passes; the budget's refusal was correct on this device. The
+					// mechanism is exact and stays for one pre-registered question: sm3 on
+					// Mali (its 3.02x outlier, where declaring is tiler-cheap). Mali >=2 ms
+					// faster admitted -> this becomes a driver-profile decision (Adreno
+					// refuses, Mali admits); Mali flat or slower -> the leg is DELETED.
+					// Inert on every device that does not charge for declaring, and wherever
+					// the write-mask road is off.
 					TileGpuFbmskAdmission : 1,
 					// Copy a 256-entry gathered palette out of its owner as ONE 16x16
 					// region instead of four 8x8 blocks.
