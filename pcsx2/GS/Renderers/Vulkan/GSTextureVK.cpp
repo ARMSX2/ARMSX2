@@ -987,10 +987,11 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	pxAssert(src_level < static_cast<u32>(vkTex->GetMipmapLevels()));
 	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width,
 		GSDeviceVK::GetInstance()->GetBufferCopyRowPitchAlignment());
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
+	const u32 copy_region_size = GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows);
 
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
 	GSDeviceVK::GetInstance()->EndRenderPass();
@@ -1017,7 +1018,9 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	// do the copy
 	vkCmdCopyImageToBuffer(cmdbuf, vkTex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &image_copy);
 
-	// flush gpu cache
+	// Flush the GPU cache over the region the copy above actually wrote -- every row of it. A
+	// barrier sized at one row leaves the rest of the transfer available to the host by no barrier
+	// at all.
 	const VkBufferMemoryBarrier buffer_info = {
 		VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, // VkStructureType    sType
 		nullptr, // const void*        pNext
@@ -1026,8 +1029,8 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 		VK_QUEUE_FAMILY_IGNORED, // uint32_t           srcQueueFamilyIndex
 		VK_QUEUE_FAMILY_IGNORED, // uint32_t           dstQueueFamilyIndex
 		m_buffer, // VkBuffer           buffer
-		0, // VkDeviceSize       offset
-		copy_size // VkDeviceSize       size
+		copy_offset, // VkDeviceSize       offset
+		copy_region_size // VkDeviceSize       size
 	};
 	vkCmdPipelineBarrier(
 		cmdbuf, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &buffer_info, 0, nullptr);
@@ -1071,10 +1074,11 @@ bool GSDownloadTextureVK::CopyFromCompletedTexture(
 	if (cmdbuf == VK_NULL_HANDLE)
 		return false;
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width,
 		dev->GetBufferCopyRowPitchAlignment());
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
+	const u32 copy_region_size = GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows);
 
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
 	GL_INS("GSDownloadTextureVK::CopyFromCompletedTexture: {%d,%d} %ux%u", src.left, src.top, src.width(), src.height());
@@ -1096,9 +1100,10 @@ bool GSDownloadTextureVK::CopyFromCompletedTexture(
 	image_copy.imageExtent = {static_cast<u32>(src.width()), static_cast<u32>(src.height()), 1u};
 	vkCmdCopyImageToBuffer(cmdbuf, vkTex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &image_copy);
 
+	// The whole region the copy wrote, not its first row -- see DoCopyFromTexture above.
 	const VkBufferMemoryBarrier buffer_info = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr,
 		VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-		m_buffer, 0, copy_size};
+		m_buffer, copy_offset, copy_region_size};
 	vkCmdPipelineBarrier(
 		cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &buffer_info, 0, nullptr);
 
@@ -1120,9 +1125,12 @@ bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
 	// Always mapped, but we might need to invalidate the cache.
 	if (m_needs_cache_invalidate)
 	{
-		u32 copy_offset, copy_size, copy_rows;
-		GetTransferSize(read_rc, &copy_offset, &copy_size, &copy_rows);
-		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset, copy_size);
+		u32 copy_offset, copy_row_bytes, copy_rows;
+		GetTransferSize(read_rc, &copy_offset, &copy_row_bytes, &copy_rows);
+		// Every row the caller is about to read, not just the first: this is the invalidate the
+		// non-coherent readback profile is built on, and one row of it is 1/height of the map.
+		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset,
+			GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows));
 		m_needs_cache_invalidate = false;
 	}
 
