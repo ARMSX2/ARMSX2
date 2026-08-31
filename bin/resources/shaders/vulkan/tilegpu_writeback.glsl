@@ -55,10 +55,12 @@
 // is the scattered four-byte stores into the ring. Two things are done about that, and both are
 // re-expressions -- the invocation-to-word map below is unchanged, and so is every byte written.
 //
-//   THE WAVE SHAPE. The workgroup is TILEGPU_WB_WG square (injected by the device from
-//   kGSTileWritebackGroupDim) over the page's WORD grid, not 8x8. A 64-invocation workgroup on a
-//   part whose wave is 128 leaves half of every wave idle; the addressing here reads
-//   gl_GlobalInvocationID, so the partition into workgroups is the only thing that moves.
+//   THE WAVE SHAPE. The workgroup is TILEGPU_WB_WG square (injected by the device, which answers
+//   the shape per part) over the page's WORD grid, not 8x8 everywhere. A 64-invocation workgroup on
+//   a part whose wave is 128 leaves half of every wave idle, which is Adreno's 16; on a 16-lane part
+//   256 invocations is sixteen warps under one barrier and costs more than it saves, which is Mali's
+//   8. The addressing here reads gl_GlobalInvocationID, so the partition into workgroups is the only
+//   thing the answer moves -- every arm below is written for any dim the device may name.
 //
 //   THE LDS STAGE. A block's 64 words are 64 CONSECUTIVE ring words in a permuted order, so 64
 //   invocations storing one word each is 64 transactions where four-word stores would be 16. Where
@@ -87,7 +89,8 @@
 // The workgroup's edge in WORDS of the page grid, injected by the device so the dispatch's group
 // count and this cannot disagree. Must divide both page word extents (64x32 and 32x64) and be a
 // multiple of 8, so that a workgroup covers whole 8x8-word blocks and never a fraction of one --
-// the LDS stage below is per block. A per-device retune is this one number.
+// the LDS stage below is per block. The device picks it per part (GSDeviceVK's
+// TileGpuWritebackGroupDim); this default is only what a compile with nothing injected would take.
 #ifndef TILEGPU_WB_WG
 #define TILEGPU_WB_WG 8
 #endif
@@ -203,8 +206,8 @@ uint tilegpu_pack5551(vec4 c)
 #endif
 
 // The workgroup's blocks, each staged at its PERMUTED word index so the gather below can read four
-// consecutive ring words as four consecutive shared ones. Sized off the workgroup shape, so a
-// retune of TILEGPU_WB_WG carries it.
+// consecutive ring words as four consecutive shared ones. Sized off the workgroup shape, so the
+// device's answer for TILEGPU_WB_WG carries it -- 4 blocks and 1024 bytes at 16, 1 and 256 at 8.
 shared uint tile_words[TILEGPU_WB_WG * TILEGPU_WB_WG];
 // Each staged block's physical in-page index, or ~0 for a block this surface does not hold newest
 // -- which is how the gather skips it without re-deriving the block mask.

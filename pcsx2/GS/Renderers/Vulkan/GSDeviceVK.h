@@ -246,6 +246,14 @@ public:
 	u32 TileGpuMaxPassDraws() override;
 	u32 TileGpuMaxSpecializationBinds() override;
 	bool TileGpuSegregatesSelfRead() override;
+
+	/// The writeback compute's workgroup edge in page WORDS, for this device. Not a GSDevice virtual
+	/// like the answers above it, because nothing outside this backend asks: the two callers are the
+	/// pipeline build that bakes it into the shader's local_size and the dispatch that divides the
+	/// page by it, and both are here. Must stay a pure function of the device — the pipeline is
+	/// compiled once and the dispatches come later, and a dim that changed between them would run a
+	/// grid the shader was not built for.
+	u32 TileGpuWritebackGroupDim() const;
 	bool TileGpuClutMergeCompiled() override { return m_tilegpu_clut_merge; }
 	bool TileGpuClutMergePagesCompiled() override { return m_tilegpu_clut_merge_pages; }
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;

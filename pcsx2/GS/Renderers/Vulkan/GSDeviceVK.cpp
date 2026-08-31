@@ -6756,6 +6756,40 @@ bool GSDeviceVK::TileGpuSegregatesSelfRead()
 	return IsDeviceAdreno();
 }
 
+// The writeback compute's workgroup edge: 16 unless this is Mali, which takes 8. Both architectures
+// were measured on the same two builds and they disagree, so this is a device answer rather than the
+// single constant it started as.
+//
+// What is being traded is the subgroup width against the barrier the shader's shared-memory stage
+// needs. A 16x16 workgroup is 256 invocations:
+//
+//  - On Adreno that is two 128-lane waves, and the 8x8 shape it replaced was half a wave sitting
+//    idle. The store-path A/B on an SD865 (2026-08-31) cut gow2 by 1.090 ms of gpu_ms p50, flatout2
+//    by 2.197 and stuntman by 0.661, with Spider-Man 3 flat. That MISSED the round's pre-registered
+//    3.0 ms bar on gow2 and the shape is kept anyway, because it is a win on three of four titles
+//    and moves no pixel; what the missed bar killed was the claim that the store path holds the
+//    rest of the writeback's bill, not this shape.
+//  - On Mali it is SIXTEEN 16-lane warps under one barrier, and the same pair of builds LOST on an
+//    RG477V (Dimensity 8300, Mali-G615, r44p1): gow2 12.671 -> 12.999 ms and Spider-Man 3 56.160 ->
+//    58.283 ms of wall mean, four rounds each with the two arms' round values not overlapping at
+//    all. 8 puts that device back on a 64-invocation workgroup, four warps under one barrier. That
+//    part is a PRIMARY target, co-equal with the SD865, so this is not a concession to a low tier.
+//
+// ⚠️ The Mali arm is 8x8 with the LDS quad stage, which is NOT the shader that measured faster there
+// -- that one was 8x8 storing a word per invocation. The stage is kept because the regression is
+// attributable to the shape (the barrier's warp count is what 16 changes on a 16-lane part) and
+// because the quads are the architecture-neutral half of the change. If an RG477V A/B against
+// 600c0b2972 still reads slow at dim 8, the LDS stage is the remaining suspect and this is where to
+// split it.
+//
+// Every other vendor takes 16: Apple and NVIDIA are 32-wide, where a 64-invocation workgroup is
+// already two full SIMD groups and the M2 measured flat either way, so 16 costs them nothing and
+// keeps one shape on everything that is not the one part measured to dislike it.
+u32 GSDeviceVK::TileGpuWritebackGroupDim() const
+{
+	return IsDeviceMali() ? kGSTileWritebackGroupDimMali : kGSTileWritebackGroupDimDefault;
+}
+
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
@@ -7532,21 +7566,22 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 	if (!m_tilegpu_tex)
 		return false;
 
-	// The workgroup shape is a compile-time constant fitted to Adreno (kGSTileWritebackGroupDim's
-	// comment says why 16), and Vulkan only GUARANTEES 128 invocations and a 128x128 group size. Every
-	// part we ship to gives 512 or more, but a device that does not would refuse the pipeline and the
+	// The workgroup shape is this device's answer (TileGpuWritebackGroupDim says which and why), and
+	// Vulkan only GUARANTEES 128 invocations and a 128x128 group size, where 16x16 is 256. Every part
+	// we ship to gives 512 or more, but a device that does not would refuse the pipeline and the
 	// executor would then skip every writeback op and hand its readers unwritten ring bytes -- a wrong
 	// pixel with no message. Say so here instead, where the cause is still in hand.
+	const u32 wg_dim = TileGpuWritebackGroupDim();
+	pxAssertMsg(gsTileWritebackGroupDimFits(wg_dim), "the writeback workgroup edge must tile a page in whole blocks");
 	{
 		const VkPhysicalDeviceLimits& lim = m_device_properties.limits;
-		constexpr u32 dim = kGSTileWritebackGroupDim;
-		if (lim.maxComputeWorkGroupInvocations < dim * dim || lim.maxComputeWorkGroupSize[0] < dim ||
-			lim.maxComputeWorkGroupSize[1] < dim)
+		if (lim.maxComputeWorkGroupInvocations < wg_dim * wg_dim || lim.maxComputeWorkGroupSize[0] < wg_dim ||
+			lim.maxComputeWorkGroupSize[1] < wg_dim)
 		{
 			Console.Error("TileGpu: this device takes at most %u compute invocations of %ux%u per workgroup and "
-						  "the writeback wants %ux%u; its ops will be skipped. Lower kGSTileWritebackGroupDim.",
+						  "the writeback wants %ux%u; its ops will be skipped. Lower TileGpuWritebackGroupDim.",
 				lim.maxComputeWorkGroupInvocations, lim.maxComputeWorkGroupSize[0], lim.maxComputeWorkGroupSize[1],
-				dim, dim);
+				wg_dim, wg_dim);
 			return false;
 		}
 	}
@@ -7587,7 +7622,7 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 	// so the version line leads and the swizzle-form defines follow it before the body.
 	const std::string full_source = "#version 460 core\n\n" + TileFormDefines() +
 									fmt::format("#define TILEGPU_WB_FMT {}\n", road_fmt) +
-									fmt::format("#define TILEGPU_WB_WG {}\n", kGSTileWritebackGroupDim) + *source;
+									fmt::format("#define TILEGPU_WB_WG {}\n", wg_dim) + *source;
 	VkShaderModule cs = g_vulkan_shader_cache->GetComputeShader(full_source);
 	if (cs == VK_NULL_HANDLE)
 		return false;
@@ -9238,12 +9273,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
 						sizeof(wpush), wpush);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
-					// Groups of kGSTileWritebackGroupDim square covering one page's WORDS: 64x32
+					// Groups of TileGpuWritebackGroupDim square covering one page's WORDS: 64x32
 					// for a CT32 page, one texel per invocation; 32x64 for a 64x64 16-bit page,
 					// whose invocations each pack the two texels that share a word. 2048
-					// invocations either way, one page per z.
+					// invocations either way whatever the dim, one page per z -- and it is the same
+					// call the pipeline's local_size was baked from, so the two cannot disagree.
 					{
-						const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm);
+						const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm, TileGpuWritebackGroupDim());
 						vkCmdDispatch(cmd, groups.x, groups.y, op.page_entry_count);
 					}
 					// The composed slots feed the seeds and passes that follow.

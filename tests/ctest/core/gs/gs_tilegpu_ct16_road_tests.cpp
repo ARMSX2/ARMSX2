@@ -200,29 +200,39 @@ TEST(TileGpuByteRoad, PageGeometryIsGSLocalMemorysOwn)
 
 TEST(TileGpuByteRoad, TheWritebackDispatchCoversExactlyOnePage)
 {
-	// The compute pass is kGSTileWritebackGroupDim square invocations per workgroup -- a shape
-	// fitted to the store path and free to be retuned per device, which is why this reads the
-	// constant rather than a literal. A 32-bit page is one texel per invocation (2048 texels); a
-	// 16-bit page is one WORD per invocation -- the two texels 8 apart that share it -- which is
-	// also 2048. Both must come out to the page's word count exactly: short and the ring keeps
-	// stale words, long and a neighbour's page is overwritten.
-	constexpr u32 dim = kGSTileWritebackGroupDim;
-	for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S), u32(PSMZ32), u32(PSMZ24)})
+	// The compute pass is TileGpuWritebackGroupDim square invocations per workgroup, and that is a
+	// DEVICE answer -- 16 on Adreno and everything unmeasured, 8 on Mali -- so the coverage claim has
+	// to hold at every value a device may name, not at one constant. A 32-bit page is one texel per
+	// invocation (2048 texels); a 16-bit page is one WORD per invocation -- the two texels 8 apart
+	// that share it -- which is also 2048. Both must come out to the page's word count exactly at
+	// EVERY dim: short and the ring keeps stale words, long and a neighbour's page is overwritten.
+	for (u32 dim : {kGSTileWritebackGroupDimDefault, kGSTileWritebackGroupDimMali})
 	{
-		const GSTileDispatch2D groups = gsTileWritebackGroups(psm);
-		EXPECT_EQ(groups.x * dim * groups.y * dim, 2048u) << psm;
-		// ...and the grid is the page's own shape in words: 64 wide for a 32-bit page, 32 for the
-		// 16-bit pair-packed one.
-		const u32 want_x = (gsTileStorageBpp(psm) == 32) ? 64u : 32u;
-		EXPECT_EQ(groups.x * dim, want_x) << psm;
-		EXPECT_EQ(groups.y * dim, gsTilePageHeight(psm)) << psm;
+		SCOPED_TRACE(dim);
+		// The workgroup must tile the page in whole 8x8-word BLOCKS, because the shader's shared-memory
+		// stage gathers a block at a time: a workgroup holding half a block has no one to write the
+		// other half's quads. Held here as well as by the static_asserts beside the constants, so that a
+		// retune that slips past a header change fails a test rather than a title.
+		EXPECT_TRUE(gsTileWritebackGroupDimFits(dim));
+		EXPECT_EQ(dim % 8u, 0u);
+		EXPECT_GE(dim, 8u);
+
+		for (u32 psm : {u32(PSMCT32), u32(PSMCT24), u32(PSMCT16), u32(PSMCT16S), u32(PSMZ32), u32(PSMZ24)})
+		{
+			const GSTileDispatch2D groups = gsTileWritebackGroups(psm, dim);
+			EXPECT_EQ(groups.x * dim * groups.y * dim, 2048u) << psm;
+			// ...and the grid is the page's own shape in words: 64 wide for a 32-bit page, 32 for the
+			// 16-bit pair-packed one.
+			const u32 want_x = (gsTileStorageBpp(psm) == 32) ? 64u : 32u;
+			EXPECT_EQ(groups.x * dim, want_x) << psm;
+			EXPECT_EQ(groups.y * dim, gsTilePageHeight(psm)) << psm;
+		}
 	}
-	// The workgroup must tile the page in whole 8x8-word BLOCKS, because the shader's shared-memory
-	// stage gathers a block at a time: a workgroup holding half a block has no one to write the
-	// other half's quads. Held here as well as by the static_asserts beside the constant, so that a
-	// retune that slips past a header change fails a test rather than a title.
-	EXPECT_EQ(dim % 8u, 0u);
-	EXPECT_GE(dim, 8u);
+	// A dim that does NOT tile the page has to be rejected rather than silently truncating the
+	// dispatch, which is the failure the predicate exists to catch: 1, 4 and 12 are not whole 8x8
+	// blocks, and 24 and 48 divide neither page word extent.
+	for (u32 bad : {0u, 1u, 4u, 12u, 24u, 48u})
+		EXPECT_FALSE(gsTileWritebackGroupDimFits(bad)) << bad;
 }
 
 // -- what a 16-bit frame STORES, as the draw now has to say ---------------------------------------
