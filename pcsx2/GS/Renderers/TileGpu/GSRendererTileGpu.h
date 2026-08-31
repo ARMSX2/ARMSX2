@@ -1413,6 +1413,76 @@ constexpr u32 kGSTileGpuDeclaringRefuseAbove = 256;
 /// contains no measured class on the corpus at all.
 constexpr u32 kGSTileGpuDeclaringReadmitAtOrUnder = 224;
 
+/// THE ONE TERM THE TAX MODEL WAS MISSING: what REFUSING a class costs.
+///
+/// Everything above prices a class's admission against zero, and for three of the five classes zero
+/// is right -- refuse an exotic blend, a quantised blend or a DATE and the draw takes the executor's
+/// fixed-function road, in the same indirect call it was already in, and the only thing lost is
+/// exactness. The budget cannot measure exactness, which is why it weighs the tax against a fitted
+/// line instead of against a benefit.
+///
+/// The partial-mask class breaks that symmetry, and only when EmuCore/GS/TileGpuShaderWriteMask is
+/// live. An ADMITTED partial-FBMSK draw hands its colour write mask to the fragment stage
+/// (gsTileGpuMasksInShader), and the mask then leaves the indirect-run key -- that is the whole
+/// point of the lever. A REFUSED one carries the mask on the pipeline, where it is part of the blend
+/// key, so it CUTS ITS OWN INDIRECT CALL. Refusing it is not free; it costs a call.
+///
+/// So a taxed draw of that class, on that road, whose mask differs from the draw before it, is not
+/// a cost the budget should be charging. Admitted it pays one render-backend flush; refused it pays
+/// one indirect call. It is an exchange, not an addition, and the device priced the exchange on
+/// exactly this population: Spider-Man 3, SD865, write-mask round 2. Forcing that class declared
+/// cost +2.10 ms of GPU (54.05 -> 56.18 with the write mask off, so the tax alone). Letting the
+/// fragment stage then take the masks over was worth -11.96 ms of GPU and -14.99 ms of frame, for
+/// 2,838 indirect calls a frame removed. A 5.7:1 exchange, charged by the budget as +3,224 against
+/// a line of 256.
+///
+/// ⚠️ WHAT THE WAIVER DOES NOT TOUCH, and this is the scope rather than a caveat: the RUN term. Every
+/// refusal the device has confirmed was priced by the run term and not the taxed one --
+///
+///   FlatOut 2   896 exotic blends in 896 SOLO declared passes, 1,433, 122.04 ms
+///   MGS3        162 exotic blends in 162 SOLO declared passes, 259, +9.4 ms
+///   Xenosaga    4,805 partial-FBMSK draws in 3,855 declaring runs, 7,118 -- 950 taxed against
+///               6,168 of run term. 303 ms and a kernel-level GPU fault when it was admitted.
+///
+/// -- so all three stay refused arithmetically after the waiver, whatever their masks do. Xenosaga
+/// is the one that matters here, because it is the SAME CLASS: waive its entire taxed term and it
+/// still costs 6,168. A class that shatters the frame into solo declaring passes cannot buy its way
+/// in, because there is nothing to merge into and the term that prices the shattering is untouched.
+/// Spider-Man 3's 2,989 taxed draws stand behind only 147 declaring runs, and 147 runs is 235.
+///
+/// The mask-differs condition is the second half of the scope, and it is what stops a class of
+/// draws that all carry ONE partial mask from being waived: those draws share a pipeline already,
+/// refusing them cuts nothing, and there is no exchange to credit. Only a draw that was cutting a
+/// call earns the waiver of the flush that replaces it.
+///
+/// ⚠️ Both halves fail SAFE. A draw whose merge the executor would not actually make -- because some
+/// other run-key dimension cuts between it and its predecessor anyway -- is a waiver granted for a
+/// call that was not there, so the error direction is the same one the run undercount already has:
+/// it can admit something that should have been refused, bounded by the run term it cannot forgive.
+constexpr bool gsTileGpuWaivesDeclaringTax(u32 class_bit)
+{
+	return class_bit == kGSTileGpuClassPartialMask;
+}
+
+/// Which of a draw's classes the waiver applies to: the ones whose REFUSAL would cut an indirect
+/// call, so that the flush admission charges replaces a call rather than adding to one.
+///
+/// `mask_road_would_serve` is gsTileGpuMasksInShader asked as if the budget had refused this draw
+/// nothing -- on the device where the waiver matters the class IS refused, so the road's live answer
+/// is false for the entire population the waiver exists for and cannot be what feeds it.
+///
+/// `prev_color_mask` is the previous draw's PIPELINE colour write mask in the same attachment group.
+/// Two draws carrying one mask were sharing an indirect call already: refusing them cuts nothing,
+/// there is no exchange, and the flush would be a straight addition. That is the half of the scope
+/// that stops a class of draws all masking the same channels from buying its way in.
+constexpr u32 gsTileGpuDeclaringMerges(
+	u32 wanted_classes, bool mask_road_would_serve, u8 color_mask, u8 prev_color_mask)
+{
+	if (!mask_road_would_serve || color_mask == prev_color_mask)
+		return 0;
+	return wanted_classes & kGSTileGpuClassPartialMask;
+}
+
 /// The per-class declaring budget: which admission classes are worth their tax this frame, decided
 /// from what each of them has recently cost.
 ///
@@ -1436,6 +1506,11 @@ struct GSTileGpuDeclaringBudget
 	/// of consecutive runs of the class. The two terms of the cost.
 	std::array<u32, kGSTileGpuAdmissionClasses> taxed{};
 	std::array<u32, kGSTileGpuAdmissionClasses> runs{};
+	/// ...and of the taxed draws, the ones whose refusal would cut an indirect call, so that the
+	/// flush admission charges them replaces a call rather than adding to one. Only ever nonzero for
+	/// a class gsTileGpuWaivesDeclaringTax names, and only where the write-mask road is live -- the
+	/// caller decides both, because both are questions about the DRAW and this struct only counts.
+	std::array<u32, kGSTileGpuAdmissionClasses> merges{};
 	/// ...and what the class has cost RECENTLY: a running peak of gsTileGpuClassCost that decays a
 	/// quarter each frame, which is the number the verdict is actually made on.
 	///
@@ -1467,9 +1542,16 @@ struct GSTileGpuDeclaringBudget
 		{
 			taxed[c] = 0;
 			runs[c] = 0;
+			merges[c] = 0;
 			peak[c] = 0;
 		}
 	}
+
+	/// What class `c` has cost SO FAR THIS FRAME, net of the one waiver. One reader, so the mid-frame
+	/// bootstrap guard and the end-of-frame peak cannot come to different answers about the same
+	/// frame -- which they did in an earlier draft, and the symptom was a class refused mid-frame and
+	/// re-admitted by the Roll of the very frame that refused it.
+	constexpr u32 Cost(u32 c) const { return gsTileGpuClassCost(taxed[c] - merges[c], runs[c]); }
 
 	/// Charge one draw. `wanted` is every class it would be admitted for; `opening` is the subset of
 	/// those whose consecutive run this draw STARTS.
@@ -1490,7 +1572,7 @@ struct GSTileGpuDeclaringBudget
 	/// line rather than by the frame -- about 256 draws' worth, not 2,409 -- and a class whose whole
 	/// frame fits under the line is never refused at all, which is exactly the case the permanent
 	/// damage was in. Exactness is MONOTONE within a frame: admitted to refused, never back.
-	constexpr void Charge(u32 wanted, u32 opening)
+	constexpr void Charge(u32 wanted, u32 opening, u32 merging = 0)
 	{
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
@@ -1498,11 +1580,21 @@ struct GSTileGpuDeclaringBudget
 			if ((wanted & bit) == 0)
 				continue;
 			if ((opening & bit) != 0)
+			{
 				runs[c]++;
+			}
 			else
+			{
 				taxed[c]++;
+				// The waiver, and it can only ever be applied to a draw that was ALSO taxed: a draw
+				// opening a run merges into nothing, so there is no call for the flush to replace.
+				// Counted separately from the taxed total rather than subtracted from it, so the
+				// census goes on reporting the population the class actually has.
+				if ((merging & bit) != 0 && gsTileGpuWaivesDeclaringTax(bit))
+					merges[c]++;
+			}
 			if (taxes && (priced & bit) == 0 && (admitted & bit) != 0 &&
-				gsTileGpuClassCost(taxed[c], runs[c]) > kGSTileGpuDeclaringRefuseAbove)
+				Cost(c) > kGSTileGpuDeclaringRefuseAbove)
 				admitted &= ~bit;
 		}
 	}
@@ -1536,7 +1628,7 @@ struct GSTileGpuDeclaringBudget
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
-			const u32 cost = gsTileGpuClassCost(taxed[c], runs[c]);
+			const u32 cost = Cost(c);
 			const u32 decayed = peak[c] - peak[c] / 4;
 			peak[c] = cost > decayed ? cost : decayed;
 			// A class seen for a whole frame now has a peak worth believing, so it stops being
@@ -1561,6 +1653,7 @@ struct GSTileGpuDeclaringBudget
 			}
 			taxed[c] = 0;
 			runs[c] = 0;
+			merges[c] = 0;
 		}
 	}
 };
@@ -1732,7 +1825,8 @@ private:
 	/// Charge one draw against the budget, and count it into the frame's per-class census. `group` is
 	/// the draw's attachment key -- colour surface, depth surface, depth mode -- which is what a run
 	/// of same-class draws is counted within.
-	void ChargeDeclaringBudget(u32 wanted_classes, const GSTileGpuPassKey& group);
+	void ChargeDeclaringBudget(
+		u32 wanted_classes, const GSTileGpuPassKey& group, bool mask_road_would_serve, u8 color_mask);
 
 	// Mean/p50 of the accumulated per-frame pass structure and of the memory model's traffic,
 	// emitted at teardown.
@@ -2407,6 +2501,17 @@ private:
 	// previous draw's group and wanted set.
 	GSTileGpuPassKey m_budget_group{};
 	u32 m_budget_prev_wanted = 0;
+	// ...and the previous draw's PIPELINE colour write mask in that group, which is the other half of
+	// the tax waiver (gsTileGpuWaivesDeclaringTax): a taxed draw whose mask matches the draw before it
+	// was sharing an indirect call already, so refusing it cuts nothing and there is no exchange to
+	// credit. 0xFF is not a mask any draw carries, so the first draw of a group never matches -- and
+	// it opens the class's run anyway, where the waiver cannot reach it.
+	u8 m_budget_prev_mask = 0xFF;
+	// EmuCore/GS/TileGpuFbmskAdmission, ANDed with the write-mask road actually being live: without
+	// that road a refused partial-FBMSK draw does not cut a call, so there is nothing to waive. Read
+	// once at construction like the levers it depends on -- it moves what the budget admits, and so
+	// which pass a draw keys into.
+	bool m_fbmsk_admission = false;
 
 	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------
 	// The three library caches the materialised-source road is built out of. A direct-colour window
@@ -3408,6 +3513,12 @@ private:
 		u32 class_runs[kGSTileGpuAdmissionClasses] = {};   // ...and the declared runs they fall into
 		u32 class_peak[kGSTileGpuAdmissionClasses] = {};   // the decayed cost peak the verdict was made on
 		u32 class_refused[kGSTileGpuAdmissionClasses] = {};
+		// ...and of the taxed draws, the ones the tax waiver did not charge, because refusing them
+		// would have cut an indirect call instead. Counted with the road's own predicate asked as if
+		// the class were admitted and the device had the read road, so the number reads the SAME on a
+		// device with no read road at all. That is deliberate: the rule this feeds could not be
+		// developed anywhere but the device otherwise, and the M2 corpus is where it is developed.
+		u32 class_merges[kGSTileGpuAdmissionClasses] = {};
 		// The colour write mask's own census, counted whether or not TileGpuShaderWriteMask is on --
 		// the population is what decides whether the lever is worth a device round on a title, and a
 		// counter that only exists in the arm that moved cannot answer that.

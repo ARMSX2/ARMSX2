@@ -948,6 +948,26 @@ u32 RunSpreadFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 draws)
 {
 	return RunFrame(b, classes, draws, 1);
 }
+
+/// Spider-Man 3's partial-FBMSK frame, to the SD865 census's own integers: 2,989 taxed draws spread
+/// over 147 declaring runs, every taxed draw handed `merging`. `after_run` is called with the run
+/// index after each run, for the mid-frame bootstrap assertions. Does NOT Roll -- the caller does,
+/// so it can read the frame's own counters first.
+template <typename F>
+void ChargeSpiderMan3Frame(GSTileGpuDeclaringBudget& b, u32 merging, F after_run)
+{
+	constexpr u32 kRuns = 147;
+	u32 taxed_left = 2989;
+	for (u32 r = 0; r < kRuns; r++)
+	{
+		b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask, merging);
+		const u32 here = (taxed_left + (kRuns - r) - 1) / (kRuns - r);
+		for (u32 d = 0; d < here; d++)
+			b.Charge(kGSTileGpuClassPartialMask, 0, merging);
+		taxed_left -= here;
+		after_run(r);
+	}
+}
 } // namespace
 
 // -- the cost model ----------------------------------------------------------------------------
@@ -1348,6 +1368,244 @@ TEST(TileGpuDeclaringBudget, OneClassCrossingTheLineDoesNotTakeTheOthersWithIt)
 	}
 	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
 	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
+}
+
+// ---------------------------------------------------------------------------------------------
+// -- the tax waiver: charging the partial-FBMSK class NET of what refusing it costs -------------
+//
+// EmuCore/GS/TileGpuFbmskAdmission. Everything above prices a class's admission against ZERO, which
+// is right for three of the five: refuse an exotic blend, a quantised blend or a DATE and the draw
+// takes the executor's fixed-function road in the same indirect call it was already in, and all
+// that is lost is exactness. Refusing the partial-FBMSK class is NOT free once
+// TileGpuShaderWriteMask is live -- an admitted draw hands its colour write mask to the fragment
+// stage and the mask leaves the run key, so a refused one carries it on the pipeline and cuts its
+// own indirect call.
+//
+// The device numbers this is fitted to, all SD865, Spider-Man 3, write-mask round 2
+// (perf/tilegpu-writemask-sm3-sd865-b5ca4830f1):
+//   shipped   budget refuses the class in 100% of frames; 3,657.6 runs/f, gpu 54.30 ms
+//   arm D     class force-declared, write mask still on the pipeline: 3,657.6 runs/f, gpu 56.18 ms
+//             -- so the whole declaring TAX on 2,989 taxed draws is +2.10 ms
+//   arm C     the same, write mask in the fragment stage: 818.8 runs/f, gpu 44.22 ms
+//             -- -11.96 ms GPU and -14.99 ms frame against D, for 2,838.8 calls/f removed
+// A 5.7:1 exchange, which the cost model was scoring as +3,224 against a line of 256.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuDeclaringMerges, OnlyThePartialMaskClassCanEarnTheWaiver)
+{
+	// The scope, stated as the predicate rather than as a comment. The colour write mask is the only
+	// piece of state admission takes OFF the indirect-run key, so it is the only class whose refusal
+	// costs a call. FlatOut 2's and MGS3's exotic blends -- the two shapes the budget was built to
+	// refuse -- cannot reach the waiver at all, whatever their masks do.
+	const u32 all = kGSTileGpuClassAll;
+	EXPECT_EQ(kGSTileGpuClassPartialMask,
+		gsTileGpuDeclaringMerges(all, /*serve=*/true, /*mask=*/0x7, /*prev=*/0xB));
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassExoticBlend, true, 0x7, 0xB));
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassQuantisedBlend, true, 0x7, 0xB));
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassDate, true, 0x7, 0xB));
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassAfailKeep, true, 0x7, 0xB));
+	EXPECT_TRUE(gsTileGpuWaivesDeclaringTax(kGSTileGpuClassPartialMask));
+	EXPECT_FALSE(gsTileGpuWaivesDeclaringTax(kGSTileGpuClassExoticBlend));
+}
+
+TEST(TileGpuDeclaringMerges, ADrawTheWriteMaskRoadWouldNotServeEarnsNothing)
+{
+	// The first half of the scope, and it is what keeps Xenosaga out on its own merits as well as
+	// arithmetically. Its class is an alpha-MSB FBMSK: the register masks the alpha channel in PART,
+	// so no channel is dropped whole, the pipeline write mask stays 0xF and gsTileGpuMasksInShader
+	// has nothing to move. Measured, not argued -- the M2 corpus run reports Xenosaga at 0.50 draws
+	// a frame carrying a partial colour write mask against 2,409 in the class.
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassPartialMask, /*serve=*/false, 0x7, 0xB));
+}
+
+TEST(TileGpuDeclaringMerges, ADrawRepeatingThePreviousMaskEarnsNothing)
+{
+	// The second half, and the one that stops a class of draws all masking the SAME channels from
+	// buying its way in. Two draws carrying one mask were already sharing a pipeline and one indirect
+	// call: refusing them cuts nothing, so the flush admission charges is a straight addition with
+	// nothing on the other side of it.
+	EXPECT_EQ(0u, gsTileGpuDeclaringMerges(kGSTileGpuClassPartialMask, /*serve=*/true, 0x7, 0x7));
+	EXPECT_EQ(kGSTileGpuClassPartialMask,
+		gsTileGpuDeclaringMerges(kGSTileGpuClassPartialMask, /*serve=*/true, 0x7, 0x3));
+}
+
+TEST(TileGpuDeclaringBudget, TheWaiverNeverForgivesTheRUNTerm)
+{
+	// ★ THE SCOPE. Every refusal the device has confirmed was priced by the RUN term, not the taxed
+	// one, so waiving the taxed term in full leaves all of them exactly where they were. Xenosaga is
+	// the one that matters, because it is the SAME CLASS the waiver names: 950 taxed against 3,855
+	// declaring runs, and 3,855 runs is 6,168 on its own. A class that shatters the frame into solo
+	// declaring passes cannot buy its way in, because there is nothing for its draws to merge INTO
+	// and the term that prices the shattering is untouched.
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/3855)); // Xenosaga
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 896)); // FlatOut 2
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 162)); // MGS3
+
+	// Xenosaga's own shape -- 950 taxed behind 3,855 runs -- run through the budget with EVERY taxed
+	// draw waived, the most generous the waiver can possibly be, and it is still refused.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	u32 taxed_left = 950;
+	for (u32 r = 0; r < 3855; r++)
+	{
+		b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+		if (taxed_left != 0 && (r % 4) == 0)
+		{
+			b.Charge(kGSTileGpuClassPartialMask, 0, kGSTileGpuClassPartialMask);
+			taxed_left--;
+		}
+	}
+	EXPECT_EQ(950u, b.merges[3]);
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask) << "the run term stopped guarding";
+	b.Roll();
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+
+	// ...and the discriminating shape, which is the one that says the waiver comes off the TAXED
+	// term and nowhere else. 370 draws in 170 near-solo declaring runs, every one of the 200 taxed
+	// draws merging: the run term alone is 272, over the line, and the class must stay refused. Move
+	// the same 200 merges onto the run term instead and it costs 200 and walks in -- which is the
+	// whole of the Xenosaga/FlatOut 2/MGS3 guard, given away.
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/170));
+	GSTileGpuDeclaringBudget nearsolo;
+	nearsolo.Start(kDeclaringIsTaxed);
+	for (u32 r = 0; r < 170; r++)
+	{
+		nearsolo.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+		// 30 of the runs carry two taxed draws and 140 carry one: 200 taxed over 170 runs.
+		for (u32 d = 0; d < (r < 30 ? 2u : 1u); d++)
+			nearsolo.Charge(kGSTileGpuClassPartialMask, 0, kGSTileGpuClassPartialMask);
+	}
+	EXPECT_EQ(170u, nearsolo.runs[3]);
+	EXPECT_EQ(200u, nearsolo.taxed[3]);
+	EXPECT_EQ(200u, nearsolo.merges[3]);
+	EXPECT_EQ(gsTileGpuClassCost(0, 170), nearsolo.Cost(3));
+	nearsolo.Roll();
+	EXPECT_EQ(0u, nearsolo.admitted & kGSTileGpuClassPartialMask)
+		<< "a near-solo declaring class bought its way in on merges the run term should have outvoted";
+}
+
+TEST(TileGpuDeclaringBudget, SpiderMan3sMaskedClassIsAdmittedAndStays)
+{
+	// ★ THE HEADLINE, and the numbers are the SD865 census verbatim: 3,136 draws a frame in the
+	// partial-FBMSK class, 2,989 of them standing behind another draw of the class, falling into 147
+	// declaring runs. Every one of the 2,989 is a draw the write-mask road serves and whose mask
+	// differs from the draw before it -- the M2 corpus run reports merges 2,989 of 2,989 taxed, and
+	// that is a structural count, not a fit.
+	//
+	// Charged gross the class costs 3,224 against a line of 256 and was refused in 100% of frames.
+	// Charged net it costs the run term alone: 147 * 8/5 = 235, under the line, admitted, and the
+	// mid-frame bootstrap never trips on the way there because the cost only ever rises to 235.
+	EXPECT_EQ(3224u, gsTileGpuClassCost(/*taxed=*/2989, /*runs=*/147));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(2989, 147));
+	EXPECT_EQ(235u, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/147));
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 147));
+
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (int frame = 0; frame < 4; frame++)
+	{
+		ChargeSpiderMan3Frame(b, /*merging=*/kGSTileGpuClassPartialMask, [&](u32 r) {
+			ASSERT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask)
+				<< "bootstrap tripped mid-frame, frame " << frame << " run " << r;
+		});
+		EXPECT_EQ(2989u, b.taxed[3]);
+		EXPECT_EQ(2989u, b.merges[3]);
+		EXPECT_EQ(147u, b.runs[3]);
+		EXPECT_EQ(235u, b.Cost(3));
+		b.Roll();
+		EXPECT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask) << "frame " << frame;
+		EXPECT_EQ(235u, b.peak[3]) << "frame " << frame;
+	}
+}
+
+TEST(TileGpuDeclaringBudget, TheSameFrameWithoutTheWaiverIsRefusedInEveryFrame)
+{
+	// The red half of the pair above, and the OFF contract: with EmuCore/GS/TileGpuFbmskAdmission
+	// false the renderer hands the budget no merges at all, and Spider-Man 3's class is refused
+	// exactly as it is at the tip today -- in 100% of frames, from the first, by the mid-frame
+	// bootstrap. Byte for byte the shipped behaviour before this lever.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	ChargeSpiderMan3Frame(b, /*merging=*/0, [](u32) {});
+	EXPECT_EQ(2989u, b.taxed[3]);
+	EXPECT_EQ(0u, b.merges[3]);
+	EXPECT_EQ(3224u, b.Cost(3));
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+	b.Roll();
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+}
+
+TEST(TileGpuDeclaringBudget, TheWaiverLeavesTheMustAdmitCorpusExactlyWhereItWas)
+{
+	// The five must-admit classes the line was fitted against, re-checked with the waiver in the
+	// tree. Four of them earn nothing from it -- the M2 corpus reports merges 0 on Katamari (both
+	// captures), OutRun (both) and God of War 2 -- so their costs are the same integers they were,
+	// and the fifth, Beyond Good & Evil, earns 2 of its 51 taxed draws and moves 68 -> 66. Nothing
+	// in the fitted set crosses a line in either direction.
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(195, 16)); // Katamari, unmoved
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(42, 20)); // BG&E, gross
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(42 - 2, 20)); // BG&E, net
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(44, 8)); // Shadow of the Colossus
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(29, 17)); // Yu-Gi-Oh
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(43, 2)); // GT4 Online Beta
+	// ...and the waiver cannot move a class the OTHER way: it only ever subtracts, so nothing that
+	// was admitted can be refused by it.
+	for (u32 taxed = 0; taxed < 300; taxed += 7)
+		for (u32 runs = 0; runs < 40; runs += 3)
+			for (u32 merges = 0; merges <= taxed; merges += 11)
+				EXPECT_GE(gsTileGpuClassCost(taxed, runs), gsTileGpuClassCost(taxed - merges, runs));
+}
+
+TEST(TileGpuDeclaringBudget, ADrawOpeningARunCanNotBeWaived)
+{
+	// A draw that opens the class's run merges into nothing -- there is no earlier call for its
+	// flush to replace -- so the waiver must not reach it even when the caller says it merges. The
+	// FlatOut 2 shape is exactly this: every draw alone in its own run, so a class of N solo draws
+	// costs 8N/5 with the waiver as wide open as it goes.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	for (u32 d = 0; d < 896; d++)
+		b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+	EXPECT_EQ(896u, b.runs[3]);
+	EXPECT_EQ(0u, b.taxed[3]);
+	EXPECT_EQ(0u, b.merges[3]) << "a run-opening draw was waived";
+	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
+}
+
+TEST(TileGpuDeclaringBudget, TheWaiverIsInertWhereDeclaringIsFree)
+{
+	// The same gate the rest of the budget has, restated for the waiver: on a device that does not
+	// charge for declaring nothing here may be observable, and that is the byte-identity the M2
+	// corpus grid measures. All 22 dumps reproduce their baseline frame hashes with the lever on.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsFree);
+	for (u32 d = 0; d < 100000; d++)
+		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0, kGSTileGpuClassPartialMask);
+	EXPECT_EQ(kGSTileGpuClassAll, b.admitted);
+	b.Roll();
+	EXPECT_EQ(kGSTileGpuClassAll, b.admitted);
+}
+
+TEST(TileGpuDeclaringBudget, TheCountersAndTheCostAgreeAndTheMergesResetWithTheFrame)
+{
+	// The waiver's own counters ride the same frame boundary the other two do, and Cost() is the one
+	// reader both the mid-frame guard and the Roll use -- an earlier draft had the guard reading the
+	// gross cost and the Roll the net one, and the symptom was a class refused mid-frame and
+	// re-admitted by the Roll of the very frame that refused it.
+	GSTileGpuDeclaringBudget b;
+	b.Start(kDeclaringIsTaxed);
+	b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+	for (u32 d = 0; d < 40; d++)
+		b.Charge(kGSTileGpuClassPartialMask, 0, (d % 2) ? kGSTileGpuClassPartialMask : 0u);
+	EXPECT_EQ(1u, b.runs[3]);
+	EXPECT_EQ(40u, b.taxed[3]);
+	EXPECT_EQ(20u, b.merges[3]);
+	EXPECT_EQ(gsTileGpuClassCost(20, 1), b.Cost(3));
+	b.Roll();
+	EXPECT_EQ(0u, b.taxed[3]);
+	EXPECT_EQ(0u, b.runs[3]);
+	EXPECT_EQ(0u, b.merges[3]);
+	EXPECT_EQ(0u, b.Cost(3));
 }
 
 // ---------------------------------------------------------------------------------------------

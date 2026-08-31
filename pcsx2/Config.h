@@ -1236,6 +1236,41 @@ struct Pcsx2Config
 					// (~15 ms on that title, isolated by force arms) needs the masked class
 					// DECLARED, which is the scoped-admission successor to this lever.
 					TileGpuShaderWriteMask : 1,
+					// The scoped-admission successor named directly above: let the per-class
+					// declaring budget charge the partial-FBMSK class NET of what refusing it
+					// costs, instead of against zero.
+					//
+					// The budget weighs a class's declaring tax against a fixed line because
+					// what the four classes buy is EXACTNESS, which it cannot measure. That is
+					// sound while refusing a class is free in time. It is not free for one
+					// class on one road: with TileGpuShaderWriteMask live, an ADMITTED
+					// partial-FBMSK draw hands its colour write mask to the fragment stage and
+					// the mask leaves the indirect-run key, so a REFUSED one carries the mask
+					// on the pipeline and cuts its own indirect call. The budget was charging
+					// that draw's declaring tax and crediting it nothing.
+					//
+					// So the taxed term is charged only on the draws whose refusal is actually
+					// free -- the ones the write-mask road would not serve anyway, and the ones
+					// whose mask matches their predecessor's and so were sharing a call
+					// already. The RUN term is untouched, and that is the whole of the scope:
+					// every refusal the device has confirmed was priced by the run term, not
+					// the taxed one. FlatOut 2's 896 exotic blends in 896 solo declared passes
+					// (122.04 ms), MGS3's 162 (+9.4 ms) and Xenosaga's 3,855 partial-FBMSK
+					// runs (303 ms and a kernel-level GPU fault) all stay refused arithmetic-
+					// ally, whatever their masks do, because a class that shatters the frame
+					// into solo declaring passes still pays 8/5 a run against the same line.
+					//
+					// What it admits is Spider-Man 3, whose class is 2,989 taxed draws behind
+					// only 147 declaring runs: 235 once the taxed draws that were cutting
+					// their own calls stop being charged for it. The device measured that
+					// exchange on this exact population -- forced admission cost +2.10 ms of
+					// GPU, and the calls it merged were worth -11.96 ms GPU / -14.99 ms frame
+					// (SD865, write-mask round 2 arms C-D, 2,838 calls a frame removed).
+					//
+					// Default TRUE. Inert on every device that does not charge for declaring
+					// (the budget admits everything there), and inert where the write-mask
+					// road is off, since then refusing costs no calls to credit.
+					TileGpuFbmskAdmission : 1,
 					// Copy a 256-entry gathered palette out of its owner as ONE 16x16
 					// region instead of four 8x8 blocks.
 					//
