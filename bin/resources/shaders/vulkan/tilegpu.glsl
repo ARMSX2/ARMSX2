@@ -274,26 +274,6 @@
 // would store rather than as a normalised colour.
 #define TILEGPU_BYTE_TAIL (TILEGPU_SELF_BLEND || TILEGPU_SELF_MASK || TILEGPU_QUANT16)
 
-// TILEGPU_NO_RGB (injected by the device, PER RUN): this run's pipeline colour write mask keeps
-// every RGB channel, so no fragment of it can land a red, green or blue byte. Everything that only
-// feeds those three is then DEAD, and on a tiler dead is not free -- it is program size, and past
-// the Adreno 650's instruction-length threshold it is the whole frame. So the texture function's
-// colour half, the fog walk, the integer blend arm and the colour lanes of the quantise and the
-// write-mask merge are all left out of the SPIR-V, and what remains is the source alpha the alpha
-// test reads plus the one byte the mask still lets through.
-//
-// ⚠️ IT IS DERIVED FROM THE WRITE MASK, NOT FROM A CLASS OF DRAW, and that is what makes it
-// identity rather than an approximation: a channel the pipeline does not write cannot be observed,
-// whatever computed it. The alpha channel is NEVER blended (the GS stores the fragment's own alpha
-// byte, and the pipeline's alpha equation is ONE/ZERO), the alpha test and the DATE test both read
-// alpha, and the dual-source factor is alpha -- so nothing left alive here has ever read an RGB
-// value. The populations it serves are the alpha-test split's second half (which writes the alpha
-// byte and the depth, or the depth alone), the dual-source carrier's alpha companion, and any draw
-// whose FBMSK keeps RGB whole -- OutRun 2006's post sprites and Beyond Good & Evil's silhouettes.
-#ifndef TILEGPU_NO_RGB
-#define TILEGPU_NO_RGB 0
-#endif
-
 // TILEGPU_FMT_* (injected by the device, PER PASS): the BYTE road's texel-decode ARMS this pass's
 // draws actually use -- GSTileGpuPass::texel_mask, ORed over the pass's byte-road draws exactly the
 // way road_mask is ORed over its draws' roads. The byte road is not one decoder, it is five address
@@ -1326,23 +1306,17 @@ void main()
 		const float k = 255.0f / 128.0f;
 		if (TG_TFX(sr) == 1u) // DECAL
 		{
-#if !TILEGPU_NO_RGB
 			cv.rgb = ct.rgb;
-#endif
 			cv.a = (TG_TCC(sr) != 0u) ? ct.a : cf.a;
 		}
 		else if (TG_TFX(sr) == 0u) // MODULATE
 		{
-#if !TILEGPU_NO_RGB
 			cv.rgb = min(ct.rgb * cf.rgb * k, vec3(1.0f));
-#endif
 			cv.a = (TG_TCC(sr) != 0u) ? min(ct.a * cf.a * k, 1.0f) : cf.a;
 		}
 		else // HIGHLIGHT (2) / HIGHLIGHT2 (3)
 		{
-#if !TILEGPU_NO_RGB
 			cv.rgb = min(ct.rgb * cf.rgb * k + vec3(cf.a), vec3(1.0f));
-#endif
 			cv.a = (TG_TCC(sr) != 0u) ? ((TG_TFX(sr) == 2u) ? min(ct.a + cf.a, 1.0f) : ct.a) : cf.a;
 		}
 	}
@@ -1397,27 +1371,19 @@ void main()
 	// the floor writes it: Cfog plus the difference scaled by F at fifteen fractional bits, all in
 	// integer arithmetic, because a float mix rounds where the hardware truncates. Our colour is in
 	// normalised guest units, so it scales to 0..255 for the walk and back afterwards.
-#if !TILEGPU_NO_RGB
 	if (TG_FGE(sr) != 0u)
 	{
 		const ivec3 cfog = ivec3(tilegpu_and(uvec3(sr.fogcol, sr.fogcol >> 8u, sr.fogcol >> 16u), uvec3(0xFFu)));
 		const int f15 = int(v_fog * (255.0f * 128.0f));
 		cv.rgb = vec3(cfog + (((ivec3(cv.rgb * 255.0f) - cfog) * f15) >> 15)) * (1.0f / 255.0f);
 	}
-#endif
 
 	// The GS's As blend factor: the fragment alpha read in the 0x80 = 1.0 convention. Computed here,
 	// off the fragment's own alpha and above the byte tail, because that is the alpha the console's
 	// blend unit takes -- the tail's write-mask merge happens at the write, after the blend.
 	const float as_factor = min(cv.a * (255.0f / 128.0f), 1.0f);
 
-#if TILEGPU_NO_RGB
-	// Nothing here can land an RGB byte, so the three channels are given a defined value and no
-	// arithmetic. The write mask discards them at the attachment.
-	o_color = vec4(0.0f, 0.0f, 0.0f, cv.a);
-#else
 	o_color = cv;
-#endif
 #if TILEGPU_DUAL_SRC
 	o_blend = vec4(as_factor);
 #endif
@@ -1434,32 +1400,6 @@ void main()
 	// the registers said -- the enable bit is set only for a draw whose blend the shader owns, the
 	// keep mask is non-zero only for one whose write mask it owns, and the quantise bit only for one
 	// whose output is what lands -- so the gate is three tests on one word already loaded.
-#if TILEGPU_NO_RGB
-	// The same GATE as the full tail below, deliberately: entering it rounds the fragment to the byte
-	// grid the target stores, and that rounding reaches the ALPHA lane too. A draw whose blend the
-	// shader owns takes nothing else from the arm (the GS never blends alpha) but it does take that
-	// rounding, so dropping the blend bit from this test would move an alpha byte.
-	if ((sr.blend & 0x00110000u) != 0u || sr.fbmsk != 0u || afail_keep_alpha)
-	{
-		int outa = int(floor(fma(cv.a, 255.0f, 0.5f)));
-#if TILEGPU_QUANT16
-		// One bit of alpha is what a 16-bit frame stores, truncated -- the alpha lane of the full
-		// arm's ivec4(0xF8, 0xF8, 0xF8, 0x80).
-		if ((sr.blend & 0x00100000u) != 0u)
-			outa = outa & 0x80;
-#endif
-#if TILEGPU_SELF_MASK
-		if (sr.fbmsk != 0u || afail_keep_alpha)
-		{
-			// FBMSK's alpha byte, and the per-fragment AFAIL=RGB_ONLY keep on top of it. Scalar, so
-			// the Mali vector-AND workaround has nothing to do here.
-			const int keep = afail_keep_alpha ? 0xFF : int((sr.fbmsk >> 24u) & 0xFFu);
-			outa = (outa & ~keep) | (tilegpu_dest_bytes().a & keep);
-		}
-#endif
-		o_color.a = float(outa) * (1.0f / 255.0f);
-	}
-#else
 	if ((sr.blend & 0x00110000u) != 0u || sr.fbmsk != 0u || afail_keep_alpha)
 	{
 		// The bytes the target would have stored for this fragment. Same rounding as the alpha test's,
@@ -1533,8 +1473,7 @@ void main()
 
 		o_color = vec4(outc) * (1.0f / 255.0f);
 	}
-#endif // TILEGPU_NO_RGB
-#endif // TILEGPU_BYTE_TAIL
+#endif
 
 #if !TILEGPU_DUAL_SRC
 	// The As factor with no second output to put it in: it goes in the alpha channel, where the

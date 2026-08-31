@@ -807,7 +807,7 @@ private:
 	// road's decode arms the module carries, so most passes run a program a fraction of the full
 	// shader's size; the vertex stage takes no road and stays a single module. Keyed by the
 	// NORMALISED masks (TileGpuVariantKey), never the plan's raw ones.
-	std::unordered_map<u64, VkShaderModule> m_tilegpu_fs_variants;
+	std::unordered_map<u32, VkShaderModule> m_tilegpu_fs_variants;
 	std::string m_tilegpu_shader_source; // the device defines + tilegpu.glsl, kept for those compiles
 	/// The plan's road mask reduced to what this device can actually serve, so a mask bit never asks
 	/// for a road the shader would leave out anyway (and two masks that compile the same program do
@@ -817,31 +817,22 @@ private:
 	/// no arms, and a byte road that named none takes the whole set — a superset is slow, a subset is
 	/// wrong, and a plan that says "byte road, no arms" is a bug the shader must not render around.
 	static u32 TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask);
-	/// The normalised masks as one module key: roads in bits 0-2, arms in bits 3-9, what the pass
-	/// reads its own destination for in bits 10-12.
+	/// The normalised masks as one module/pipeline key: roads in bits 0-2, arms in bits 3-9,
+	/// what the pass reads its own destination for in bits 10-12.
 	/// ...and whether its frame format quantises, at bit 13, and the run's frozen per-draw GS state
 	/// in bits 14-31 -- the SAME bit positions GSTileGpuPassPlan::PackVariantKey puts them in, so the
 	/// two keys cannot drift apart. The masks arrive normalised; the spec half does not need it.
-	///
-	/// ⚠️ 64 BITS, because the plan's own word is full at 31 and this key carries one thing the plan's
-	/// does not: TILEGPU_NO_RGB at bit 32, which is derived HERE from the run's colour write mask
-	/// (see GetTileGpuPipeline) rather than planned. Nothing persists either key -- the module and
-	/// pipeline caches are keyed by shader SOURCE TEXT and by the driver's own blob -- so a widening
-	/// costs nothing on disk and nothing across sessions.
-	static constexpr u64 kTileGpuVariantKeyNoRgb = u64(1) << 32;
-	static constexpr u64 TileGpuVariantKey(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise,
-		const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb)
+	static constexpr u32 TileGpuVariantKey(
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec)
 	{
-		return static_cast<u64>(road_mask | (texel_mask << 3) | (self_mask << 10) |
-								(quantise ? (1u << 13) : 0u) |
-								(GSDevice::GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
-									GSDevice::GSTileGpuPassPlan::kVariantSpecMask)) |
-		       (no_rgb ? kTileGpuVariantKeyNoRgb : 0);
+		return road_mask | (texel_mask << 3) | (self_mask << 10) | (quantise ? (1u << 13) : 0u) |
+		       (GSDevice::GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
+				   GSDevice::GSTileGpuPassPlan::kVariantSpecMask);
 	}
-	VkShaderModule GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise,
-		const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb);
-	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise,
-		const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb);
+	VkShaderModule GetTileGpuFragmentShader(
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec);
+	VkShaderModule CompileTileGpuFragmentModule(
+		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec);
 	/// `color_write_mask` is the 4-bit rgba mask of channels the draw lands (bit 0 = R .. bit 3 = A),
 	/// realized verbatim as the attachment's VkPipelineColorBlendAttachmentState::colorWriteMask.
 	/// `declares` builds against the pass's declaring render pass (the colour attachment is an input
@@ -849,7 +840,7 @@ private:
 	/// state, which is what makes THIS pipeline's destination reads ordered.
 	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
 		u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads, u32 dualsrc_road,
-		const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb);
+		const GSDevice::GSTileGpuFragmentSpec& spec);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB
@@ -871,10 +862,6 @@ private:
 	// GSDevice::TileGpuClutMergeCompiled for why the renderer reads this and not the setting.
 	bool m_tilegpu_clut_merge = false;
 	bool m_tilegpu_clut_merge_pages = false;
-	/// EmuCore/GS/TileGpuNoRgbFragmentVariant, latched with the two above and for the same reason:
-	/// every module of the session comes out of one cache keyed on this, and a mid-session flip would
-	/// hand one run a program another run's cache entry already answered for.
-	bool m_tilegpu_no_rgb_variant = false;
 	bool CompileTileGpuPipeline();
 	// Target -> bytes: a compute pass that reswizzles a resident colour target's listed pages into
 	// the ring slots the epoch page table names, block- and byte-masked, so a later draw sampling

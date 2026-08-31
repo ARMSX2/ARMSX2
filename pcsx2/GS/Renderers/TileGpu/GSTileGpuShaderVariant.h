@@ -34,11 +34,6 @@ namespace GSTileGpuShaderVariant
 	/// database -- the same one the classic renderer's tfx.glsl reads -- and it defaults OFF so a
 	/// caller that has not been taught to pass it emits the program every other driver already gets.
 	///
-	/// `no_rgb` is the one axis of VariantDefines that is a property of the RUN's pipeline colour
-	/// write mask rather than of its draws' roads: when the mask keeps every RGB channel, nothing the
-	/// program computes for those three can be observed, so the texture function's colour half, the
-	/// fog walk and the whole integer blend arm are left out. See tilegpu.glsl's TILEGPU_NO_RGB.
-	///
 	/// `clut_merge` and `clut_merge_pages` are the entries here that are SETTINGS rather than
 	/// capabilities (TileGpuClutMergeRegions and TileGpuClutMergePages), and they are here rather
 	/// than in the per-draw state row because dead code is not free on this hardware: the merged
@@ -221,8 +216,7 @@ namespace GSTileGpuShaderVariant
 			kWrap[spec.wmt & 3], spec.texa_frozen ? std::to_string(spec.texa) : std::string("row"));
 	}
 
-	inline std::string VariantDefines(
-		u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false, bool no_rgb = false)
+	inline std::string VariantDefines(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)
 	{
 		return fmt::format("#define TILEGPU_ROAD_BYTE {}\n"
 						   "#define TILEGPU_ROAD_TARGET {}\n"
@@ -237,8 +231,7 @@ namespace GSTileGpuShaderVariant
 						   "#define TILEGPU_SELF_DATE {}\n"
 						   "#define TILEGPU_SELF_BLEND {}\n"
 						   "#define TILEGPU_SELF_MASK {}\n"
-						   "#define TILEGPU_QUANT16 {}\n"
-						   "#define TILEGPU_NO_RGB {}\n",
+						   "#define TILEGPU_QUANT16 {}\n",
 			(road_mask & GSDevice::kGSTileGpuRoadByte) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadTarget) ? 1 : 0,
 			(road_mask & GSDevice::kGSTileGpuRoadSource) ? 1 : 0,
@@ -251,12 +244,11 @@ namespace GSTileGpuShaderVariant
 			(texel_mask & GSDevice::kGSTileGpuTexelPalGather16) ? 1 : 0,
 			(self_mask & GSDevice::kGSTileGpuSelfDate) ? 1 : 0,
 			(self_mask & GSDevice::kGSTileGpuSelfBlend) ? 1 : 0,
-			(self_mask & GSDevice::kGSTileGpuSelfMask) ? 1 : 0, quantise ? 1 : 0, no_rgb ? 1 : 0);
+			(self_mask & GSDevice::kGSTileGpuSelfMask) ? 1 : 0, quantise ? 1 : 0);
 	}
 
 	/// A name for one variant, for the compile log and the budget gate's table.
-	inline std::string VariantName(
-		u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false, bool no_rgb = false)
+	inline std::string VariantName(u32 road_mask, u32 texel_mask, u32 self_mask = 0, bool quantise = false)
 	{
 		static constexpr const char* kRoad[8] = {"untextured", "byte", "target", "byte+target", "source",
 			"byte+source", "target+source", "byte+target+source"};
@@ -298,8 +290,6 @@ namespace GSTileGpuShaderVariant
 		}
 		if (quantise)
 			name += " q16";
-		if (no_rgb)
-			name += " no-rgb";
 		return name;
 	}
 } // namespace GSTileGpuShaderVariant

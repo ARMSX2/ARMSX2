@@ -2869,13 +2869,6 @@ public:
 			texa_frozen = false;
 		}
 
-		/// Whether a COLOUR-FREE program (GSTileGpuPassPlan::LandsNoRgb) still has to sample the
-		/// texture. It does only for the ALPHA: with TCC frozen off, all four texture functions leave
-		/// the fragment alpha at the vertex colour's, so a program with no texel road at all lands the
-		/// same byte -- and where the spec is not frozen the row decides at runtime and the road has to
-		/// stay. Nothing else downstream of the texture function reads a texel in that program.
-		constexpr bool NoRgbWantsTexel() const { return !valid || tcc != 0; }
-
 		constexpr bool operator==(const GSTileGpuFragmentSpec& o) const
 		{
 			return valid == o.valid && fst == o.fst && ltf == o.ltf && tfx == o.tfx && tcc == o.tcc &&
@@ -3013,25 +3006,6 @@ public:
 		static constexpr u32 PackNoWrite(u32 write_mask)
 		{
 			return ((~write_mask) & 0xFu) << kNoWriteShift;
-		}
-		/// ...and the one question a draw's write mask answers that the FRAGMENT PROGRAM cares about:
-		/// can any fragment of this draw land a red, green or blue byte at all?
-		///
-		/// No means everything the program computes for those three channels is unobservable, so the
-		/// texture function's colour half, the fog walk and the integer blend arm need not be in the
-		/// SPIR-V (tilegpu.glsl's TILEGPU_NO_RGB, gated on EmuCore/GS/TileGpuNoRgbFragmentVariant).
-		/// The saving is program SIZE, which is what a tiler swings a frame on, and the answer is
-		/// IDENTITY rather than an approximation: a channel the pipeline does not write cannot be
-		/// observed, whatever computed it.
-		///
-		/// ⚠️ ASKED OF THE BLEND KEY, which is exactly what makes it free. The key is already the
-		/// indirect-run key, so a run is uniform in this by construction and no plan stream carries
-		/// it. It also settles the one shape that would otherwise be wrong: a draw whose write mask
-		/// the FRAGMENT stage is serving (gsTileGpuMasksInShader) packs 0xF here and the pipeline
-		/// writes all four channels, so it correctly answers no.
-		static constexpr bool LandsNoRgb(u32 blend_key)
-		{
-			return ((~(blend_key >> kNoWriteShift)) & 0x7u) == 0;
 		}
 		/// Bit 30: this draw reads its own destination pixel in rasterization order, and does in the
 		/// fragment stage whatever the fixed-function state could not express for it -- the blend
