@@ -6793,24 +6793,6 @@ u32 GSDeviceVK::TileGpuWritebackGroupDim() const
 	return IsDeviceMali() ? kGSTileWritebackGroupDimMali : kGSTileWritebackGroupDimDefault;
 }
 
-// EmuCore/GS/TileGpuRingMemoryClass, resolved once when the ring is created. An out-of-range value
-// is the shipped rung rather than an error: this key exists to be set from a capture arm's INI by a
-// script, and a typo there must degrade to "what ships", never to a different road nobody chose.
-VKStreamBuffer::MemoryClass GSDeviceVK::TileGpuRingMemoryClass() const
-{
-	switch (GSConfig.TileGpuRingMemoryClass)
-	{
-		case 1:
-			return VKStreamBuffer::MemoryClass::HostCached;
-		case 2:
-			return VKStreamBuffer::MemoryClass::HostCachedIncoherent;
-		case 3:
-			return VKStreamBuffer::MemoryClass::HostUncached;
-		default:
-			return VKStreamBuffer::MemoryClass::Default;
-	}
-}
-
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
@@ -6969,27 +6951,10 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		// TRANSFER_DST because the CLUT gather's byte-road half copies palette blocks straight out of
 		// an owner target into the frame's palette run of this buffer -- an image-to-buffer copy at a
 		// pass head, which is what keeps a thousand CLUT loads a frame off the pass count.
-		!m_tilegpu_vram_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			TILEGPU_VRAM_BUFFER_SIZE, TileGpuRingMemoryClass()))
+		!m_tilegpu_vram_stream_buffer.Create(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, TILEGPU_VRAM_BUFFER_SIZE))
 	{
 		return fail("the indirect, state and ring stream buffers");
-	}
-
-	// Say which memory type the ring actually LANDED on, every run, not only when the key is set.
-	// The ring is the writeback's destination and the writeback is the corpus's largest GPU bucket,
-	// so "what kind of memory is it storing into" is a standing fact about any measurement taken on
-	// this build -- and the ladder in VKStreamBuffer::Create can fall back, so the value of the key
-	// is not the answer. A device A/B on this key that moves nothing is uninterpretable without it:
-	// "the type never changed" and "the type changed and cost nothing" are different findings.
-	{
-		const VkMemoryPropertyFlags f = m_tilegpu_vram_stream_buffer.GetMemoryProperties();
-		Console.WriteLn("TileGpu: ring on memory type %u (0x%02x:%s%s%s%s), TileGpuRingMemoryClass=%d.",
-			m_tilegpu_vram_stream_buffer.GetMemoryTypeIndex(), f,
-			(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? " DEVICE_LOCAL" : "",
-			(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? " HOST_VISIBLE" : "",
-			(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " HOST_COHERENT" : "",
-			(f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? " HOST_CACHED" : "",
-			GSConfig.TileGpuRingMemoryClass);
 	}
 
 	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
