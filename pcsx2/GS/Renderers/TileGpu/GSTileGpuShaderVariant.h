@@ -9,6 +9,8 @@
 
 #include "fmt/format.h"
 
+#include <cstring>
+#include <optional>
 #include <string>
 
 /// The #define block that turns tilegpu.glsl into one particular fragment program.
@@ -80,9 +82,12 @@ namespace GSTileGpuShaderVariant
 	///
 	/// Deliberately a word count and not a byte count: what has to match is std430's array stride over
 	/// these members, every one of which is 4-byte-aligned, so counting words needs no alignment model.
-	inline u32 StateRowWordsIn(const std::string& source)
+	///
+	/// The counter itself is shared with the push-constant block, which is the same question about a
+	/// different declaration: how many words does the shader think the host laid out here.
+	inline u32 BlockWordsIn(const std::string& source, const char* declaration)
 	{
-		const size_t decl = source.find("struct StateRow");
+		const size_t decl = source.find(declaration);
 		if (decl == std::string::npos)
 			return 0;
 		const size_t open = source.find('{', decl);
@@ -166,6 +171,63 @@ namespace GSTileGpuShaderVariant
 			words += per_name * names;
 		}
 		return words;
+	}
+
+	inline u32 StateRowWordsIn(const std::string& source)
+	{
+		return BlockWordsIn(source, "struct StateRow");
+	}
+
+	/// How many 32-bit words a shader's `layout(push_constant)` block declares. The host pushes one
+	/// fixed-size array to every TileGpu program and each shader declares a PREFIX of it, read by
+	/// POSITION -- no name crosses the boundary -- so a block that grew, shrank or lost a field in
+	/// another revision reads the wrong field out of a range that is still entirely in bounds.
+	inline u32 PushConstantWordsIn(const std::string& source)
+	{
+		return BlockWordsIn(source, "layout(push_constant)");
+	}
+
+	/// The number a shader's `#define <name> <digits>` gives, or nullopt if the shader carries no such
+	/// define at all.
+	///
+	/// ABSENCE IS A MISMATCH, not a pass, and the caller treats it as one: a resource tree from before
+	/// a constant was declared is exactly the tree this exists to reject, and it is the likelier of the
+	/// two failures -- a stale tree usually lacks the define outright rather than carrying a different
+	/// number for it. GSDeviceVK::CheckTileGpuShaderContracts holds the table and the argument.
+	///
+	/// Deliberately dumb: `#define`, the name as a whole token, then decimal digits. It reads the
+	/// literal the shader was written with, so a define whose value is an expression comes back as
+	/// nothing rather than as a guess -- and none of the constants it is pointed at is one.
+	inline std::optional<u32> ShaderConstantIn(const std::string& source, const char* name)
+	{
+		const size_t len = std::strlen(name);
+		for (size_t at = source.find("#define"); at != std::string::npos; at = source.find("#define", at + 1))
+		{
+			size_t i = at + 7;
+			while (i < source.size() && (source[i] == ' ' || source[i] == '\t'))
+				i++;
+			if (source.compare(i, len, name) != 0)
+				continue;
+			i += len;
+			// The name has to END here, or TILEGPU_PAGES answers for TILEGPU_PAGE_WORDS.
+			const char after = (i < source.size()) ? source[i] : '\0';
+			if (after == '_' || (after >= '0' && after <= '9') || (after >= 'A' && after <= 'Z') ||
+				(after >= 'a' && after <= 'z'))
+				continue;
+			while (i < source.size() && (source[i] == ' ' || source[i] == '\t'))
+				i++;
+			u32 value = 0;
+			size_t digits = 0;
+			while (i < source.size() && source[i] >= '0' && source[i] <= '9')
+			{
+				value = value * 10u + static_cast<u32>(source[i++] - '0');
+				digits++;
+			}
+			if (digits == 0)
+				return std::nullopt; // declared, but not as a literal this can compare
+			return value;
+		}
+		return std::nullopt;
 	}
 
 	/// The per-pass half: which texel roads and which of the byte road's decode arms this module

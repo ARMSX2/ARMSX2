@@ -102,6 +102,17 @@ layout(push_constant) uniform cb
 	uint block_base;
 };
 
+// THE RING'S GEOMETRY, spelled once here and once in C++. Every constant below is a fact this
+// shader shares with GSDeviceVK over memory the host stages and this shader indexes as raw words.
+// A disagreement is invisible at runtime -- every index stays in range, every value stays plausible,
+// and the frame is simply wrong -- so the device parses these out of the shader TEXT when it builds
+// its TileGpu pipelines and refuses to build on a mismatch, the same thing it already does for
+// StateRow (GSDeviceVK::CheckTileGpuShaderContracts).
+#define TILEGPU_PAGES 512u            // GS_MAX_PAGES: the epoch page table's row stride
+#define TILEGPU_BLOCK_WORDS 64u       // GS_BLOCK_SIZE / 4: one block, the ring slot's inner stride
+#define TILEGPU_SEED_MASK_WORDS 16u   // GS_MAX_PAGES / 32: `mask_base`'s table, 32 pages to a word
+#define TILEGPU_SEED_BLOCK_WORDS 512u // GS_MAX_PAGES: `block_base`'s table, one word to a page
+
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
 // The three geometry facts each arm's format number decides: 64x32 pages of 8x8 blocks (one word a
@@ -217,7 +228,7 @@ void main()
 	if ((vram_words[mask_base + (page >> 5u)] & (1u << (page & 31u))) == 0u)
 		discard;
 
-	const uint slot = vram_words[table_base + epoch * 512u + page];
+	const uint slot = vram_words[table_base + epoch * TILEGPU_PAGES + page];
 	// Uniform over the op, or this page's own -- see `block_base`.
 	const uint blocks = (block_base != 0u) ? vram_words[block_base + page] : block_mask;
 
@@ -226,13 +237,13 @@ void main()
 	const uint bib = tile_b48((x >> 3u) & 7u, (y >> 3u) & 3u) ^ TILEGPU_SEED_ZXOR;
 	if ((blocks & (1u << bib)) == 0u)
 		discard;
-	const uint w = vram_words[slot + bib * 64u + tile_c32(x & 7u, y & 7u)];
+	const uint w = vram_words[slot + bib * TILEGPU_BLOCK_WORDS + tile_c32(x & 7u, y & 7u)];
 #else
 	const uint bib = tile_b16((x >> 4u) & 3u, (y >> 3u) & 7u) ^ TILEGPU_SEED_ZXOR;
 	if ((blocks & (1u << bib)) == 0u)
 		discard;
 	const uint hw = tile_c16(x & 15u, y & 7u);
-	const uint c = tilegpu_half_sel(vram_words[slot + bib * 64u + (hw >> 1u)], hw);
+	const uint c = tilegpu_half_sel(vram_words[slot + bib * TILEGPU_BLOCK_WORDS + (hw >> 1u)], hw);
 #endif
 
 #if TILEGPU_SEED_DEPTH

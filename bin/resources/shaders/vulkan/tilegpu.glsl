@@ -452,6 +452,17 @@ layout(push_constant) uniform cb
 	uint epoch_count; // page tables this frame staged; the bound a state row's epoch is clamped to
 };
 
+// THE RING'S GEOMETRY, spelled once here and once in C++. Every constant below is a fact this
+// shader shares with GSDeviceVK over memory the host stages and this shader indexes as raw words.
+// A disagreement is invisible at runtime -- every index stays in range, every value stays plausible,
+// and the frame is simply wrong -- so the device parses these out of the shader TEXT when it builds
+// its TileGpu pipelines and refuses to build on a mismatch, the same thing it already does for
+// StateRow (GSDeviceVK::CheckTileGpuShaderContracts).
+#define TILEGPU_PAGES 512u          // GS_MAX_PAGES: guest pages, and so the epoch table's row stride
+#define TILEGPU_PAGE_WORDS 2048u    // GS_PAGE_SIZE / 4: one page, and so one ring slot, in words
+#define TILEGPU_PAGE_WORD_SHIFT 11u // log2(TILEGPU_PAGE_WORDS): guest word address -> page index
+#define TILEGPU_BLOCK_WORDS 64u     // GS_BLOCK_SIZE / 4: one block, the ring's inner stride
+
 #ifdef VERTEX_SHADER
 
 layout(location = 0) in uvec2 a_xy;   // raw 12.4 fixed-point screen XY
@@ -618,14 +629,14 @@ layout(std430, set = 0, binding = 1) readonly buffer Vram
 // this epoch points at the executor's zero slot.
 uint tilegpu_ring_word(uint gs_word, uint epoch)
 {
-	uint page = gs_word >> 11u;
+	uint page = gs_word >> TILEGPU_PAGE_WORD_SHIFT;
 	// The frame stages exactly `epoch_count` tables, and the CPU builds the state rows from the same
 	// counter, so an out-of-range epoch cannot happen. The clamp is here because of what happens if
 	// it ever does: the read would run off the end of the table into the page entries or the palettes
 	// -- live data in this same buffer -- and hand back a plausible-looking slot instead of failing.
 	uint e = min(epoch, max(epoch_count, 1u) - 1u);
-	uint slot = vram_words[table_base + e * 512u + page];
-	return slot + (gs_word & 2047u);
+	uint slot = vram_words[table_base + e * TILEGPU_PAGES + page];
+	return slot + (gs_word & (TILEGPU_PAGE_WORDS - 1u));
 }
 
 // The two swizzle forms a 32-bit (CT32/CT24) texture needs, copied from tile_convert.glsl: the
@@ -668,7 +679,7 @@ uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint zxor)
 	uint page = (v >> 5u) * tbw + (u >> 6u);
 	uint blk = ((tbp0 + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u)) ^ zxor) & 16383u;
 	uint word_in_block = tile_c32(u & 7u, v & 7u);
-	return vram_words[tilegpu_ring_word(blk * 64u + word_in_block, epoch)];
+	return vram_words[tilegpu_ring_word(blk * TILEGPU_BLOCK_WORDS + word_in_block, epoch)];
 }
 #endif // TILEGPU_BYTE_W32
 
@@ -735,7 +746,7 @@ uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	// & 16383 is bn()'s own `% GS_MAX_BLOCKS`, for the reason spelled out on the 32-bit arm.
 	uint blk = (tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u)) & 16383u;
 	uint byte_in_block = tile_c8(u & 15u, v & 15u);
-	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
+	uint word = vram_words[tilegpu_ring_word(blk * TILEGPU_BLOCK_WORDS + (byte_in_block >> 2u), epoch)];
 	return tilegpu_byte_sel(word, byte_in_block);
 }
 #endif // TILEGPU_BYTE_IDX8
@@ -750,7 +761,7 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint blk = (tbp0 + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u)) & 16383u;
 	uint nib = tile_c4(u & 31u, v & 15u);
 	uint byte_in_block = nib >> 1u;
-	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
+	uint word = vram_words[tilegpu_ring_word(blk * TILEGPU_BLOCK_WORDS + (byte_in_block >> 2u), epoch)];
 	uint byteval = tilegpu_byte_sel(word, byte_in_block);
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
@@ -917,7 +928,7 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 		// rather than one per arm is worth another 120 for the same reason.
 		const uint w = (sr.pal_mode == 2u) ? tile_clut4_word(e) : tile_clut8_word(e);
 		const uint c = tile_ic32(w & 63u);
-		uint off = (w >> 6u) * 64u + c;
+		uint off = (w >> 6u) * TILEGPU_BLOCK_WORDS + c;
 		if (sr.pal_mode == 3u)
 #if TILEGPU_CLUT_MERGE_PAGES
 			// S is per draw here: 16 for a palette copied as its own square, 64 for one read out of
@@ -935,7 +946,7 @@ uint tilegpu_palette_word(StateRow sr, uint index)
 		return vram_words[pal_base + sr.pal_offset + off];
 #else
 		const uint w = (sr.pal_mode == 1u) ? tile_clut8_word(e) : tile_clut4_word(e);
-		return vram_words[pal_base + sr.pal_offset + (w >> 6u) * 64u + tile_ic32(w & 63u)];
+		return vram_words[pal_base + sr.pal_offset + (w >> 6u) * TILEGPU_BLOCK_WORDS + tile_ic32(w & 63u)];
 #endif
 #endif // TILEGPU_BYTE_PALGATHER
 	}
@@ -995,7 +1006,7 @@ vec4 tilegpu_texel16(StateRow sr, uint u, uint v, uint fmt)
 	// data in the same buffer -- and hand back a plausible slot.
 	const uint blk = ((sr.tbp0 + page * 32u + b) ^ (((fmt & 2u) != 0u) ? TILE_SWZ_Z16XOR : 0u)) & 16383u;
 	const uint hw = tile_c16(u & 15u, v & 7u);
-	const uint c = tilegpu_half_sel(vram_words[tilegpu_ring_word(blk * 64u + (hw >> 1u), sr.epoch)], hw);
+	const uint c = tilegpu_half_sel(vram_words[tilegpu_ring_word(blk * TILEGPU_BLOCK_WORDS + (hw >> 1u), sr.epoch)], hw);
 
 	const uint a = ((c & 0x8000u) != 0u) ? ((sr.texa >> 16u) & 0xFFu)
 	             : ((TG_TEXA_AEM(sr) && c == 0u) ? 0u : ((sr.texa >> 8u) & 0xFFu));

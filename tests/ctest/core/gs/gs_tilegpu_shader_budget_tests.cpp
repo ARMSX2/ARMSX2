@@ -844,3 +844,33 @@ TEST(GSTileGpuShaderBudget, TheStateRowParserCountsWords)
 	EXPECT_EQ(StateRowWordsIn("struct StateRow { mat4 m; };"), 0u) << "a type this cannot size in words";
 	EXPECT_EQ(StateRowWordsIn("struct StateRow { uint a; float b[4]; };"), 0u) << "an array member is not a word count";
 }
+
+// The state row is one of eight facts the host and the shaders spell twice; the other seven are
+// #defines and a push-constant block, and GSDeviceVK::CheckTileGpuShaderContracts compares all of
+// them at device init. This gate says the two readers that check earns their comparison.
+//
+// The prefix case is the one that would fail silently in the useful direction: TILEGPU_PAGES is a
+// prefix of TILEGPU_PAGE_WORDS, and a parser that matched on prefix would answer 512 for a shader
+// whose page-word count had moved and pass a tree it should have refused.
+TEST(GSTileGpuShaderBudget, TheContractParsersReadDefinesAndPushBlocks)
+{
+	using GSTileGpuShaderVariant::PushConstantWordsIn;
+	using GSTileGpuShaderVariant::ShaderConstantIn;
+
+	const std::string two = "#define TILEGPU_PAGE_WORDS 2048u\n#define TILEGPU_PAGES 512u\n";
+	EXPECT_EQ(ShaderConstantIn(two, "TILEGPU_PAGES"), std::optional<u32>(512u));
+	EXPECT_EQ(ShaderConstantIn(two, "TILEGPU_PAGE_WORDS"), std::optional<u32>(2048u))
+		<< "a name must match as a whole token, not as a prefix";
+	EXPECT_EQ(ShaderConstantIn("#define\tTILEGPU_PAGES\t512u\n", "TILEGPU_PAGES"), std::optional<u32>(512u))
+		<< "tabs separate a define exactly as spaces do";
+
+	// The answers that mean "cannot tell", which the device treats as a mismatch rather than a pass --
+	// a resource tree from before a constant was declared is the tree the check exists to reject.
+	EXPECT_FALSE(ShaderConstantIn("#define TILEGPU_PAGE_WORDS 2048u\n", "TILEGPU_PAGES").has_value())
+		<< "not declared at all";
+	EXPECT_FALSE(ShaderConstantIn("#define TILEGPU_PAGES (256u * 2u)\n", "TILEGPU_PAGES").has_value())
+		<< "declared, but not as a literal this can compare";
+
+	EXPECT_EQ(PushConstantWordsIn("layout(push_constant) uniform cb\n{\n\tuint a; // x\n\tuint b;\n};\n"), 2u);
+	EXPECT_EQ(PushConstantWordsIn("layout(std430) buffer b { uint a; };"), 0u) << "no push block at all";
+}

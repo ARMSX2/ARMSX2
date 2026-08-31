@@ -896,6 +896,10 @@ private:
 	bool m_tilegpu_clut_merge = false;
 	bool m_tilegpu_clut_merge_pages = false;
 	bool CompileTileGpuPipeline();
+	/// Every layout fact the TileGpu path spells twice -- once in C++, once in GLSL -- checked against
+	/// the shader TEXT before the first module is built from any of it. False refuses the renderer, the
+	/// same answer the state row's own check has always given. Host-side, once per device init.
+	static bool CheckTileGpuShaderContracts();
 	// Target -> bytes: a compute pass that reswizzles a resident colour target's listed pages into
 	// the ring slots the epoch page table names, block- and byte-masked, so a later draw sampling
 	// those pages reads the target's pixels through the unchanged texel path. Binding 0 = the target

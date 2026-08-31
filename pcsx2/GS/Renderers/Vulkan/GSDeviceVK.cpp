@@ -6793,6 +6793,144 @@ u32 GSDeviceVK::TileGpuWritebackGroupDim() const
 	return IsDeviceMali() ? kGSTileWritebackGroupDimMali : kGSTileWritebackGroupDimDefault;
 }
 
+// Every layout contract the TileGpu path spells twice -- once in C++, once in GLSL -- checked against
+// the shader TEXT before a module is built from any of it.
+//
+// WHY IT HAS TO EXIST. The shader tree is read from disk at runtime, so the files compiled here need
+// not be the files this binary was built beside: a staged resource tree that did not get re-pushed is
+// a shader from another revision, and nothing else notices. That is not hypothetical. A device round
+// ran a binary whose GSTileGpuPageEntry was three words against a tilegpu_writeback.glsl whose
+// TILEGPU_WB_ENTRY_WORDS was four. Host and shader then walked the same page-entry array at 12 and 16
+// bytes, so every entry after the first came out one word further out of phase, and every writeback
+// stored into a slot number that was really some other entry's page index. The frame was blank -- with
+// rc=0, no validation error, no assert, and a render-pass census identical to the good run's to the
+// digit, because the renderer had done exactly what it meant to do. Only the shader disagreed about
+// where the bytes were. Reproduced afterwards on a second GPU vendor, bit-identically: two drivers do
+// not agree pixel for pixel on a defect, so what came out was a consequence of CPU-side layout rather
+// than of rendering at all.
+//
+// WHAT IT COSTS. Four file reads and a scan of each, once, at device init. Nothing on the GPU.
+//
+// ABSENCE COUNTS AS A MISMATCH. A tree from before a constant was declared is exactly the tree this
+// exists to reject, and it is the likelier half of the two failures.
+bool GSDeviceVK::CheckTileGpuShaderContracts()
+{
+	// The four shaders that index the ring, and how many push-constant words each declares. The host
+	// pushes kTileGpuPushWords to every one of them and each reads a PREFIX of that block by POSITION,
+	// so a block that grew, shrank or lost a field in another revision reads the wrong field out of a
+	// range that is still entirely in bounds.
+	static constexpr struct
+	{
+		const char* path;
+		u32 push_words;
+	} kShaders[] = {
+		{"shaders/vulkan/tilegpu.glsl", 4},
+		{"shaders/vulkan/tilegpu_seed.glsl", 7},
+		{"shaders/vulkan/tilegpu_materialise.glsl", 5},
+		{"shaders/vulkan/tilegpu_writeback.glsl", 9},
+	};
+
+	// The page slot's word count as the shaders that convert an address spell it: the shift. GS_PAGE_SIZE
+	// is a power of two, so this terminates.
+	u32 page_word_shift = 0;
+	while ((1u << page_word_shift) != GS_PAGE_SIZE / 4u)
+		page_word_shift++;
+
+	// One row per (shader, constant): the #define that shader has to carry, and what THIS build says
+	// the number is. Six contracts here; the state row and the push block are counted rather than read
+	// and follow below. Eight in all, which is what the ring's reader audit found spelled twice.
+	const struct
+	{
+		u32 shader;
+		const char* name;
+		u32 host;
+		const char* contract;
+	} kContracts[] = {
+		{0, "TILEGPU_PAGES", GS_MAX_PAGES, "the epoch page table's row stride"},
+		{1, "TILEGPU_PAGES", GS_MAX_PAGES, "the epoch page table's row stride"},
+		{2, "TILEGPU_PAGES", GS_MAX_PAGES, "the epoch page table's row stride"},
+		{3, "TILEGPU_PAGES", GS_MAX_PAGES, "the page count the writeback wraps its surface pool at"},
+		{0, "TILEGPU_PAGE_WORDS", GS_PAGE_SIZE / 4u, "the ring page slot's word count"},
+		{2, "TILEGPU_PAGE_WORDS", GS_PAGE_SIZE / 4u, "the ring page slot's word count"},
+		{0, "TILEGPU_PAGE_WORD_SHIFT", page_word_shift, "the ring page slot's word count"},
+		{2, "TILEGPU_PAGE_WORD_SHIFT", page_word_shift, "the ring page slot's word count"},
+		{0, "TILEGPU_BLOCK_WORDS", GS_BLOCK_SIZE / 4u, "the ring slot's in-block word stride"},
+		{1, "TILEGPU_BLOCK_WORDS", GS_BLOCK_SIZE / 4u, "the ring slot's in-block word stride"},
+		{2, "TILEGPU_BLOCK_WORDS", GS_BLOCK_SIZE / 4u, "the ring slot's in-block word stride"},
+		{3, "TILEGPU_BLOCK_WORDS", GS_BLOCK_SIZE / 4u, "the ring slot's in-block word stride"},
+		{1, "TILEGPU_SEED_MASK_WORDS", GS_MAX_PAGES / 32u, "a seed op's page mask"},
+		{1, "TILEGPU_SEED_BLOCK_WORDS", GS_MAX_PAGES, "a seed op's per-page block-mask table"},
+		{3, "TILEGPU_WB_ENTRY_WORDS", sizeof(GSTileGpuPageEntry) / sizeof(u32),
+			"the writeback page-entry stride"},
+		{3, "TILEGPU_KEEP_WORDS_PER_PAGE", kGSTileGpuKeepMaskWordsPerPage,
+			"the writeback keep-mask table's per-page stride"},
+	};
+
+	std::string sources[std::size(kShaders)];
+	for (size_t i = 0; i < std::size(kShaders); i++)
+	{
+		std::optional<std::string> source = ReadShaderSource(kShaders[i].path);
+		if (!source)
+		{
+			Console.Error("TileGpu: failed to read %s.", kShaders[i].path);
+			return false;
+		}
+		sources[i] = std::move(*source);
+	}
+
+	// Every mismatch is reported, not just the first: a tree from another revision usually disagrees
+	// about several of these, and the whole list is what tells the reader which revision it is.
+	bool ok = true;
+	for (const auto& c : kContracts)
+	{
+		const std::optional<u32> declared = GSTileGpuShaderVariant::ShaderConstantIn(sources[c.shader], c.name);
+		if (!declared)
+		{
+			Console.Error("TileGpu: %s does not declare %s at all, and this build says it is %u (%s). "
+						  "The shader tree is from another revision of the renderer.",
+				kShaders[c.shader].path, c.name, c.host, c.contract);
+			ok = false;
+		}
+		else if (declared.value() != c.host)
+		{
+			Console.Error("TileGpu: %s declares %s = %u and this build says %u (%s). The shader tree is "
+						  "from another revision of the renderer.",
+				kShaders[c.shader].path, c.name, declared.value(), c.host, c.contract);
+			ok = false;
+		}
+	}
+
+	// The state row is a struct rather than a define, so its words are counted rather than read. Three
+	// things agree on this number and none of them can check the others at compile time: the renderer's
+	// C++ StateRow, tilegpu.glsl's std430 StateRow, and the executor's own gate. Two sides on different
+	// strides read every row but the first from the wrong place.
+	const u32 state_row_words = GSTileGpuShaderVariant::StateRowWordsIn(sources[0]);
+	if (state_row_words != GSTileGpuPassPlan::kStateRowWords)
+	{
+		Console.Error("TileGpu: %s declares a %u-word StateRow and this build is %u words (the per-draw "
+					  "state row's stride). The shader tree is from another revision of the renderer.",
+			kShaders[0].path, state_row_words, GSTileGpuPassPlan::kStateRowWords);
+		ok = false;
+	}
+
+	// The push block, likewise counted. Two things have to hold: each shader declares the prefix this
+	// build believes it declares, and none declares more words than the pipeline layout's range.
+	for (size_t i = 0; i < std::size(kShaders); i++)
+	{
+		const u32 declared = GSTileGpuShaderVariant::PushConstantWordsIn(sources[i]);
+		if (declared != kShaders[i].push_words || declared > kTileGpuPushWords)
+		{
+			Console.Error("TileGpu: %s declares a %u-word push_constant block and this build expects %u "
+						  "of the %u words it pushes to every TileGpu program, read positionally. The "
+						  "shader tree is from another revision of the renderer.",
+				kShaders[i].path, declared, kShaders[i].push_words, kTileGpuPushWords);
+			ok = false;
+		}
+	}
+
+	return ok;
+}
+
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
@@ -6980,19 +7118,13 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		return fail("reading shaders/vulkan/tilegpu.glsl");
 	}
 
-	// The shader tree is read from disk, so the file compiled here need not be the file this binary was
-	// built beside. A row-size disagreement between the two is the one mismatch nothing else can see:
-	// the executor's gate checks the PLAN's stride against the binary and still agrees, while the shader
-	// indexes state_rows[] at its own stride and reads every row but the first from the wrong place --
-	// no compile error, no counter, a wrong frame. So refuse to build rather than render it.
-	const u32 shader_row_words = GSTileGpuShaderVariant::StateRowWordsIn(*source);
-	if (shader_row_words != GSDevice::GSTileGpuPassPlan::kStateRowWords)
-	{
-		Console.Error("TileGpu: shaders/vulkan/tilegpu.glsl declares a %u-word StateRow and this build is "
-					  "%u words. The shader tree is from another revision of the renderer.",
-			shader_row_words, GSDevice::GSTileGpuPassPlan::kStateRowWords);
-		return fail("the shader's StateRow layout");
-	}
+	// The shader tree is read from disk, so the files compiled here need not be the files this binary
+	// was built beside, and every layout constant the two share is spelled twice with nothing standing
+	// between them. This is where they are compared -- once, for all of them, before the first module
+	// exists -- and a disagreement refuses the renderer rather than rendering a frame nobody can
+	// explain.
+	if (!CheckTileGpuShaderContracts())
+		return fail("the host/shader layout contracts");
 
 	// The byte sampling path compiles in only if the page-swizzle forms fitted closed forms — the
 	// shader addresses guest memory with them, so an unfit table disables texturing rather than

@@ -87,6 +87,17 @@ layout(push_constant) uniform cb
 	uint texa;       // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
 };
 
+// THE RING'S GEOMETRY, spelled once here and once in C++. Every constant below is a fact this
+// shader shares with GSDeviceVK over memory the host stages and this shader indexes as raw words.
+// A disagreement is invisible at runtime -- every index stays in range, every value stays plausible,
+// and the frame is simply wrong -- so the device parses these out of the shader TEXT when it builds
+// its TileGpu pipelines and refuses to build on a mismatch, the same thing it already does for
+// StateRow (GSDeviceVK::CheckTileGpuShaderContracts).
+#define TILEGPU_PAGES 512u          // GS_MAX_PAGES: the epoch page table's row stride
+#define TILEGPU_PAGE_WORDS 2048u    // GS_PAGE_SIZE / 4: one page, and so one ring slot, in words
+#define TILEGPU_PAGE_WORD_SHIFT 11u // log2(TILEGPU_PAGE_WORDS): guest word address -> page index
+#define TILEGPU_BLOCK_WORDS 64u     // GS_BLOCK_SIZE / 4: one block, the ring's inner stride
+
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
 // The CT32 address geometry: pages 64x32 texels, blocks 8x8, columns 8x8, one word per texel. Four
@@ -174,8 +185,8 @@ uint tilegpu_nibble_sel(uint byteval, uint sel)
 // the word offset of that page's 8 KB slot in this same buffer.
 uint mat_ring_word(uint gs_word)
 {
-	const uint slot = vram_words[table_base + epoch * 512u + (gs_word >> 11u)];
-	return vram_words[slot + (gs_word & 2047u)];
+	const uint slot = vram_words[table_base + epoch * TILEGPU_PAGES + (gs_word >> TILEGPU_PAGE_WORD_SHIFT)];
+	return vram_words[slot + (gs_word & (TILEGPU_PAGE_WORDS - 1u))];
 }
 
 void main()
@@ -190,7 +201,7 @@ void main()
 	// word; they differ only in which of its bits are the index.
 	const uint page = (v >> 5u) * bw + (u >> 6u);
 	const uint blk = (bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u)) & 16383u;
-	const uint w = mat_ring_word(blk * 64u + tile_c32(u & 7u, v & 7u));
+	const uint w = mat_ring_word(blk * TILEGPU_BLOCK_WORDS + tile_c32(u & 7u, v & 7u));
 #endif
 
 #if TILEGPU_SRC_FMT <= 1
@@ -202,7 +213,7 @@ void main()
 	const uint page = (v >> 6u) * bw + (u >> 7u);
 	const uint blk = (bp + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u)) & 16383u;
 	const uint byte_in_block = tile_c8(u & 15u, v & 15u);
-	const uint idx = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
+	const uint idx = tilegpu_byte_sel(mat_ring_word(blk * TILEGPU_BLOCK_WORDS + (byte_in_block >> 2u)), byte_in_block);
 	// The index, replicated -- ps_tile_expand_palette reads .a, and an R8 view of a one-byte source
 	// would have replicated it anyway, so this target holds what that pass already expects.
 	vec4 t = vec4(float(idx)) * (1.0f / 255.0f);
@@ -213,7 +224,7 @@ void main()
 	const uint blk = (bp + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u)) & 16383u;
 	const uint nib = tile_c4(u & 31u, v & 15u);
 	const uint byte_in_block = nib >> 1u;
-	const uint byteval = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
+	const uint byteval = tilegpu_byte_sel(mat_ring_word(blk * TILEGPU_BLOCK_WORDS + (byte_in_block >> 2u)), byte_in_block);
 	vec4 t = vec4(float(tilegpu_nibble_sel(byteval, nib))) * (1.0f / 255.0f);
 #else
 	// The alpha-byte views, identical to tilegpu_index_hi's: the index is the top byte of the CT32

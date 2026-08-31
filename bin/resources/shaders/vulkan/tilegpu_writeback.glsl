@@ -176,6 +176,18 @@ layout(push_constant) uniform cb
 // words in C++ and static_asserts this size.
 #define TILEGPU_WB_ENTRY_WORDS 4u
 
+// THE RING'S GEOMETRY, spelled once here and once in C++. Every constant below is a fact this
+// shader shares with GSDeviceVK over memory the host stages and this shader indexes as raw words.
+// A disagreement is invisible at runtime -- every index stays in range, every value stays plausible,
+// and the frame is simply wrong -- so the device parses these out of the shader TEXT when it builds
+// its TileGpu pipelines and refuses to build on a mismatch, the same thing it already does for
+// StateRow (GSDeviceVK::CheckTileGpuShaderContracts).
+#define TILEGPU_PAGES 512u                 // GS_MAX_PAGES: the pool wrap, and the epoch table's row
+#define TILEGPU_BLOCK_WORDS 64u            // GS_BLOCK_SIZE / 4: one block, a ring slot's inner stride
+// kGSTileGpuKeepMaskWordsPerPage: one page's keep table at `keep_base + keep_words`, block-major,
+// 32 blocks of the eight words the gather below indexes it by.
+#define TILEGPU_KEEP_WORDS_PER_PAGE 256u
+
 // The swizzle forms, byte-identical to tilegpu.glsl's: block-in-page and unit-in-block column.
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
@@ -282,7 +294,7 @@ void main()
 	const uint slot = entry.w;
 
 	// The page's pixel rect in the target: pool row/column from its offset off the base page.
-	const uint rel = (page + 512u - (bp >> 5u)) & 511u;
+	const uint rel = (page + TILEGPU_PAGES - (bp >> 5u)) & 511u;
 	const uint col = rel % bw;
 	const uint row = rel / bw;
 
@@ -341,7 +353,7 @@ void main()
 	{
 		const uint lblk =
 			(gl_LocalInvocationID.y >> 3u) * uint(TILEGPU_WB_BLK_DIM) + (gl_LocalInvocationID.x >> 3u);
-		tile_words[lblk * 64u + wib] = w;
+		tile_words[lblk * TILEGPU_BLOCK_WORDS + wib] = w;
 		// wib is a bijection over the sub-tile, so exactly one invocation of each block has wib 0.
 		if (wib == 0u)
 			tile_blocks[lblk] = mine ? bib : TILEGPU_WB_NO_BLOCK;
@@ -355,9 +367,9 @@ void main()
 			const uint gbib = tile_blocks[b];
 			if (gbib != TILEGPU_WB_NO_BLOCK)
 			{
-				const uint base = b * 64u + quad * 4u;
+				const uint base = b * TILEGPU_BLOCK_WORDS + quad * 4u;
 				// slot is page-aligned and the block is 64 words, so this is 16-byte aligned.
-				vram_quads[(slot + gbib * 64u + quad * 4u) >> 2u] = uvec4(
+				vram_quads[(slot + gbib * TILEGPU_BLOCK_WORDS + quad * 4u) >> 2u] = uvec4(
 					tile_words[base], tile_words[base + 1u], tile_words[base + 2u], tile_words[base + 3u]);
 			}
 		}
@@ -371,7 +383,7 @@ void main()
 	// plain-store road at the bottom.
 	if (!mine)
 		return;
-	const uint rw = slot + bib * 64u + wib;
+	const uint rw = slot + bib * TILEGPU_BLOCK_WORDS + wib;
 
 	// The bytes of this word that are actually ours to write: the surface's own byte window, minus
 	// anything the entry's keep mask claims for the CPU. Word `wib` of the block owns nibble
