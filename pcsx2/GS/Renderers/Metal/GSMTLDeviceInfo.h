@@ -38,6 +38,7 @@ struct GSMTLDevice
 		bool rov_requires_rt        : 1;
 		bool rov_requires_r32       : 1;
 		bool apple_gpu              : 1; ///< Apple-designed GPU (all iOS, Apple-silicon Macs), not Intel/AMD
+		bool broken_shader_depth    : 1;
 		MetalVersion shader_version;
 		int max_texsize;
 	};

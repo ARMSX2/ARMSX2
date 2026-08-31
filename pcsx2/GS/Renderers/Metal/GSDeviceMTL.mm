@@ -1386,9 +1386,10 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 	// Init metal stuff
 	m_fn_constants = MRCTransfer([MTLFunctionConstantValues new]);
-	setFnConstantB(m_fn_constants, m_features.framebuffer_fetch,    GSMTLConstantIndex_FRAMEBUFFER_FETCH);
-	setFnConstantB(m_fn_constants, m_features.depth_feedback,       GSMTLConstantIndex_DEPTH_FEEDBACK);
-	setFnConstantB(m_fn_constants, m_dev.features.rov_requires_r32, GSMTLConstantIndex_ROV_NEEDS_R32);
+	setFnConstantB(m_fn_constants, m_features.framebuffer_fetch,       GSMTLConstantIndex_FRAMEBUFFER_FETCH);
+	setFnConstantB(m_fn_constants, m_features.depth_feedback,          GSMTLConstantIndex_DEPTH_FEEDBACK);
+	setFnConstantB(m_fn_constants, m_dev.features.rov_requires_r32,    GSMTLConstantIndex_ROV_NEEDS_R32);
+	setFnConstantB(m_fn_constants, m_dev.features.broken_shader_depth, GSMTLConstantIndex_BROKEN_SHADER_DEPTH);
 
 	m_draw_sync_fence = MRCTransfer([m_dev.dev newFence]);
 	[m_draw_sync_fence setLabel:@"Draw Sync Fence"];
@@ -2711,6 +2712,9 @@ void GSDeviceMTL::DoRenderHW(GSHWDrawConfig& config)
 { @autoreleasepool {
 	if (config.tex && (config.ds == config.tex || config.rt == config.tex))
 		EndRenderPass(); // Barrier
+
+	if (m_dev.features.broken_shader_depth && (config.depth.ztst >= ZTST_GEQUAL || config.depth.zwe))
+		config.ps.zfloor = true; // Depth must always go through shader (see tfx vs for comment with details)
 
 	size_t vertsize = config.nverts * sizeof(*config.verts);
 	size_t idxsize = config.vs.UseFixedExpandIndexBuffer() ? 0 : (config.nindices * sizeof(*config.indices));
