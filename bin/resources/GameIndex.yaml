@@ -34418,8 +34418,8 @@ SLPM-55108:
   name-en: "Fate - Unlimited Codes"
   region: "NTSC-J"
   compat: 5
-  roundModes:
-    eeRoundMode: 0 # Fixes bow porjectile trajectories.
+  clampModes:
+    eeClampMode: 3 # Archer's Trap Shot arrow reaches the opponent.
 SLPM-55109:
   name: "MAJOR LEAGUE BASEBALL 2K8"
   name-sort: "めじゃー りーぐ べーすぼーる 2K8"

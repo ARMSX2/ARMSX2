@@ -1005,6 +1005,17 @@ namespace EERecFallback
 	inline constexpr int kCop2VuIdCount = 256;
 	extern u64 g_cop2VuMask[kCop2VuIdCount / 64];
 
+	// Per-COP1-op filter, the next bisect axis once `fpu` is implicated. Ids are
+	// the S-format funct, plus one each for what the other rs values select.
+	// All bits set (the default) means "every op".
+	inline constexpr int kFpuIdCount = 128;
+	extern u64 g_fpuMask[kFpuIdCount / 64];
+
+	// Flat id for a COP1/LWC1/SWC1 encoding, or -1.
+	int FpuOpId(u32 code);
+	// Mnemonic for an id, or nullptr.
+	const char* FpuOpName(int id);
+
 	// Canonical id for a VU macro op, or -1 if `code` is not one.
 	int Cop2VuOpId(u32 code);
 	// Mnemonic for an id ("vmulaw"), or nullptr for an unassigned slot.
@@ -1025,7 +1036,7 @@ namespace EERecFallback
 	// Returns false and leaves the outputs untouched on a parse error.
 	// `reg_masks` must point at kCop2MoveOpCount entries, `cop2vu_mask` at
 	// kCop2VuIdCount/64.
-	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks,
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, u64* fpu_mask,
 		u64* cop2vu_mask, std::string* error);
 
 	// Human-readable rendering of a mask, for run banners.

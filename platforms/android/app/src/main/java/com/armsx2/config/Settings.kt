@@ -81,8 +81,9 @@ data class Settings(
      *  list. */
     val eeClampMode: Int = 1,
     /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact
-     *  (PCSX2 default Normal). Unpacks to vu0/vu1 Overflow/ExtraOverflow/
-     *  SignOverflow/ExactMode. 4 is Extra+Sign plus the VU's own arithmetic and
+     *  (PCSX2 default Normal). Unpacks to vu0 Overflow/ExtraOverflow/
+     *  SignOverflow/ExactMode, and to the vu1 four unless [vu1ClampMode]
+     *  overrides them. 4 is Extra+Sign plus the VU's own arithmetic and
      *  status flags: the adder's guard mask, the divide unit's recurrence and
      *  the EFU's series, the multiplier's one-ULP deficit, and the FMAC's
      *  saturation ceiling with its MAC U and MAC O. A title's own GameDB
@@ -91,6 +92,10 @@ data class Settings(
      *  database, and a GameDB entry below 4 clears the exact bit. Keep any
      *  bound in the pickers in sync with this list. */
     val vuClampMode: Int = 1,
+    /** VU1 clamp override — -1 follows [vuClampMode], else 0..4 on the same
+     *  ladder but for the vu1 keys alone. Keep any bound in the pickers in
+     *  sync with this list. */
+    val vu1ClampMode: Int = -1,
     /** EmuCore/Speedhacks/vuThread — Multi-Threaded VU1 (MTVU).
      *  Kept on by default for the mac ARM64 backend, but persisted normally
      *  so testers can A/B games which dislike MTVU. */
@@ -778,6 +783,8 @@ data class Settings(
      *  a renderer restart to take effect. */
     val gpuProfile: Int = 0,
 ) {
+    val effectiveVu1ClampMode: Int get() = if (vu1ClampMode < 0) vuClampMode else vu1ClampMode
+
     /** Routes a persisted-key write to the native base layer, or to
      *  [emitSink] when a per-game INI export is capturing the key set (see
      *  [writeGameSettingsIni]). Replaces the direct NativeApp.setSetting calls
@@ -795,8 +802,8 @@ data class Settings(
         put("EmuCore/Speedhacks", "EECycleRate", "int", eeCycleRate.toString())
         put("EmuCore/Speedhacks", "EECycleSkip", "int", eeCycleSkip.toString())
         // EE/FPU + VU clamping (recompiler accuracy). Each mode unpacks to the
-        // PCSX2 bit flags below; both VUs get the same mode. Needs a recompiler
-        // reset (commitSettings / game restart) to take effect.
+        // PCSX2 bit flags below. Needs a recompiler reset (commitSettings /
+        // game restart) to take effect.
         put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (eeClampMode >= 1).toString())
         put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (eeClampMode >= 2).toString())
         put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (eeClampMode >= 3).toString())
@@ -804,13 +811,13 @@ data class Settings(
         // inconsistent set is silently reset to defaults on load rather than
         // rejected, so all four go out together or none of them mean anything.
         put("EmuCore/CPU/Recompiler", "fpuExactMode", "bool", (eeClampMode >= 4).toString())
-        for (vu in arrayOf("vu0", "vu1")) {
-            put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (vuClampMode >= 1).toString())
-            put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (vuClampMode >= 2).toString())
-            put("EmuCore/CPU/Recompiler", "${vu}SignOverflow", "bool", (vuClampMode >= 3).toString())
+        for ((vu, mode) in arrayOf("vu0" to vuClampMode, "vu1" to effectiveVu1ClampMode)) {
+            put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (mode >= 1).toString())
+            put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (mode >= 2).toString())
+            put("EmuCore/CPU/Recompiler", "${vu}SignOverflow", "bool", (mode >= 3).toString())
             // Cumulative like the FPU ladder above: emucore resets an
             // ExactMode without SignOverflow back to defaults on load.
-            put("EmuCore/CPU/Recompiler", "${vu}ExactMode", "bool", (vuClampMode >= 4).toString())
+            put("EmuCore/CPU/Recompiler", "${vu}ExactMode", "bool", (mode >= 4).toString())
         }
         put("EmuCore/Speedhacks", "vuThread", "bool", mtvu.toString())
         put("EmuCore/Speedhacks", "vu1Instant", "bool", vu1Instant.toString())
@@ -1057,18 +1064,20 @@ data class Settings(
             if (fo == null && fe == null && ff == null && fx == null) this.eeClampMode
             else if (fx == true) 4 else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
         }
-        // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact) — same packing on
-        // vu0* (applyTo writes vu0 and vu1 identically, so reading vu0 recovers the mode).
-        // Treat the exact key's absence as an older core rather than as mode 3 — a build
-        // without it never wrote the key, and inferring 3 there would silently demote the setting.
-        val vuClamp = run {
-            val o = boolAt("EmuCore/CPU/Recompiler/vu0Overflow")
-            val e = boolAt("EmuCore/CPU/Recompiler/vu0ExtraOverflow")
-            val sgn = boolAt("EmuCore/CPU/Recompiler/vu0SignOverflow")
-            val fx = boolAt("EmuCore/CPU/Recompiler/vu0ExactMode")
-            if (o == null && e == null && sgn == null && fx == null) this.vuClampMode
+        // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact) — the same packing,
+        // once per VU. Treat the exact key's absence as an older core rather than as mode 3 — a
+        // build without it never wrote the key, and inferring 3 there would silently demote the
+        // setting.
+        fun vuClampAt(vu: String, fallback: Int): Int {
+            val o = boolAt("EmuCore/CPU/Recompiler/${vu}Overflow")
+            val e = boolAt("EmuCore/CPU/Recompiler/${vu}ExtraOverflow")
+            val sgn = boolAt("EmuCore/CPU/Recompiler/${vu}SignOverflow")
+            val fx = boolAt("EmuCore/CPU/Recompiler/${vu}ExactMode")
+            return if (o == null && e == null && sgn == null && fx == null) fallback
             else if (fx == true) 4 else if (sgn == true) 3 else if (e == true) 2 else if (o == true) 1 else 0
         }
+        val vuClamp = vuClampAt("vu0", this.vuClampMode)
+        val vu1Clamp = vuClampAt("vu1", this.effectiveVu1ClampMode).let { if (it == vuClamp) -1 else it }
 
         // renderer + upscale aren't written by applyTo's put() — the core / renderUpscalemultiplier
         // persist them to the base layer directly — so recover them from the native keys.
@@ -1090,6 +1099,7 @@ data class Settings(
             eeCycleSkip = intAt("EmuCore/Speedhacks/EECycleSkip") ?: this.eeCycleSkip,
             eeClampMode = eeClamp,
             vuClampMode = vuClamp,
+            vu1ClampMode = vu1Clamp,
             mtvu = boolAt("EmuCore/Speedhacks/vuThread") ?: this.mtvu,
             vu1Instant = boolAt("EmuCore/Speedhacks/vu1Instant") ?: this.vu1Instant,
             vuFlagHack = boolAt("EmuCore/Speedhacks/vuFlagHack") ?: this.vuFlagHack,
@@ -1385,9 +1395,16 @@ data class Settings(
         val began = if (serial == null) NativeApp.gameIniBeginWrite()
                     else NativeApp.gameIniBeginWriteForSerial(serial)
         if (!began) return
+        // What outranks the GameDB is key presence in the game layer
+        // (ComputePerGameOverrides), so VU1's group is written even where its values match
+        // global's.
+        val forcedKeys: Set<String> = if (vu1ClampMode != global.vu1ClampMode)
+            setOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
+        else emptySet()
         // Effective pass: stream only the keys that differ from the baseline.
         emitSink = { section, key, _, value ->
-            if (baseline["$section$key"] != value)
+            if (baseline["$section$key"] != value ||
+                (section == "EmuCore/CPU/Recompiler" && key in forcedKeys))
                 NativeApp.gameIniPut(section, key, value)
         }
         try {
@@ -1707,6 +1724,7 @@ data class Settings(
         put("eeCycleSkip", eeCycleSkip)
         put("eeClampMode", eeClampMode)
         put("vuClampMode", vuClampMode)
+        put("vu1ClampMode", vu1ClampMode)
         put("mtvu", mtvu)
         put("vu1Instant", vu1Instant)
         put("vuFlagHack", vuFlagHack)
@@ -1990,6 +2008,7 @@ data class Settings(
                 eeCycleSkip = json.optInt("eeCycleSkip", def.eeCycleSkip),
                 eeClampMode = json.optInt("eeClampMode", def.eeClampMode),
                 vuClampMode = json.optInt("vuClampMode", def.vuClampMode),
+                vu1ClampMode = json.optInt("vu1ClampMode", def.vu1ClampMode),
                 mtvu = json.optBoolean("mtvu", def.mtvu),
                 vu1Instant = json.optBoolean("vu1Instant", def.vu1Instant),
                 vuFlagHack = json.optBoolean("vuFlagHack", def.vuFlagHack),
@@ -2248,6 +2267,7 @@ data class Settings(
             if (current.eeCycleSkip         != base.eeCycleSkip)         j.put("eeCycleSkip", current.eeCycleSkip)
             if (current.eeClampMode         != base.eeClampMode)         j.put("eeClampMode", current.eeClampMode)
             if (current.vuClampMode         != base.vuClampMode)         j.put("vuClampMode", current.vuClampMode)
+            if (current.vu1ClampMode        != base.vu1ClampMode)        j.put("vu1ClampMode", current.vu1ClampMode)
             if (current.mtvu                != base.mtvu)                j.put("mtvu", current.mtvu)
             if (current.vu1Instant          != base.vu1Instant)          j.put("vu1Instant", current.vu1Instant)
             if (current.vuFlagHack          != base.vuFlagHack)          j.put("vuFlagHack", current.vuFlagHack)
@@ -2485,6 +2505,7 @@ data class Settings(
             eeCycleSkip = if (overrides.has("eeCycleSkip")) overrides.getInt("eeCycleSkip") else base.eeCycleSkip,
             eeClampMode = if (overrides.has("eeClampMode")) overrides.getInt("eeClampMode") else base.eeClampMode,
             vuClampMode = if (overrides.has("vuClampMode")) overrides.getInt("vuClampMode") else base.vuClampMode,
+            vu1ClampMode = if (overrides.has("vu1ClampMode")) overrides.getInt("vu1ClampMode") else base.vu1ClampMode,
             mtvu = if (overrides.has("mtvu")) overrides.getBoolean("mtvu") else base.mtvu,
             vu1Instant = if (overrides.has("vu1Instant")) overrides.getBoolean("vu1Instant") else base.vu1Instant,
             vuFlagHack = if (overrides.has("vuFlagHack")) overrides.getBoolean("vuFlagHack") else base.vuFlagHack,

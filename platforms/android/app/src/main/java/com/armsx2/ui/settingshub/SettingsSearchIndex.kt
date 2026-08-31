@@ -70,6 +70,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.adpf.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.eeFpuClamping.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.vuClamping.label", true, SettingsCategory.Performance),
+    SettingsSearchEntry("perf.vu1Clamping.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.eeFpuRoundMode.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.vu0RoundMode.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.vu1RoundMode.label", true, SettingsCategory.Performance),

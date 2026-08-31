@@ -25,6 +25,7 @@
 #include "VuFmacFlags-arm64.h"
 #include "EeFpuModelCall-arm64.h"
 #include "VuEfuModel.h"
+#include "VuMulBand.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 

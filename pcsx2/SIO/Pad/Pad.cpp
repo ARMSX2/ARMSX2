@@ -33,13 +33,22 @@ using KeyMap = std::unordered_multimap<u64, bool>;
 
 namespace Pad
 {
+	struct MacroStep
+	{
+		std::vector<u32> buttons; ///< Buttons to hold for this step; empty holds nothing.
+		u16 frames; ///< Frames to hold them for.
+	};
+
 	struct MacroButton
 	{
 		std::vector<u32> buttons; ///< Buttons to activate.
 		KeyMap active_buttons; ///< Currently active buttons.
+		std::vector<MacroStep> sequence; ///< Steps to play in order on each trigger, if not empty.
 		float pressure; ///< Pressure to apply when macro is active.
 		u16 toggle_frequency; ///< Interval at which the buttons will be toggled, if not 0.
 		u16 toggle_counter; ///< When this counter reaches zero, buttons will be toggled.
+		u16 sequence_counter; ///< Frames left before the step being held ends.
+		u32 sequence_step; ///< Step being held; sequence.size() when the sequence is idle.
 		bool toggle_state; ///< Current state for turbo.
 		bool trigger_state; ///< Whether the macro button is active.
 		bool trigger_toggle; ///< Whether the macro is trigged by holding or press.
@@ -52,6 +61,7 @@ namespace Pad
 	static void LoadMacroButtonConfig(
 		const SettingsInterface& si, u32 pad, const ControllerInfo* ci, const std::string& section);
 	static void ApplyMacroButton(u32 controller, const MacroButton& mb);
+	static void SetMacroStep(u32 controller, const MacroStep& step, float value);
 
 	static std::array<std::array<MacroButton, NUM_MACRO_BUTTONS_PER_CONTROLLER>, NUM_CONTROLLER_PORTS> s_macro_buttons;
 	static std::array<std::unique_ptr<PadBase>, NUM_CONTROLLER_PORTS> s_controllers;
@@ -367,6 +377,7 @@ void Pad::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface&
 				dest_si->CopyFloatValue(src_si, section.c_str(), TinyString::from_format("Macro{}Pressure", i + 1));
 				dest_si->CopyFloatValue(src_si, section.c_str(), TinyString::from_format("Macro{}Deadzone", i + 1));
 				dest_si->CopyStringValue(src_si, section.c_str(), TinyString::from_format("Macro{}Binds", i + 1));
+				dest_si->CopyStringValue(src_si, section.c_str(), TinyString::from_format("Macro{}Sequence", i + 1));
 				dest_si->CopyUIntValue(src_si, section.c_str(), TinyString::from_format("Macro{}Frequency", i + 1));
 				dest_si->CopyBoolValue(src_si, section.c_str(), TinyString::from_format("Macro{}Toggle", i + 1));
 			}
@@ -646,7 +657,12 @@ void Pad::LoadMacroButtonConfig(const SettingsInterface& si, u32 pad, const Cont
 	for (u32 i = 0; i < NUM_MACRO_BUTTONS_PER_CONTROLLER; i++)
 	{
 		std::string binds_string;
-		if (!si.GetStringValue(section.c_str(), TinyString::from_format("Macro{}Binds", i + 1), &binds_string))
+		std::string sequence_string;
+		const bool has_binds =
+			si.GetStringValue(section.c_str(), TinyString::from_format("Macro{}Binds", i + 1), &binds_string);
+		const bool has_sequence =
+			si.GetStringValue(section.c_str(), TinyString::from_format("Macro{}Sequence", i + 1), &sequence_string);
+		if (!has_binds && !has_sequence)
 			continue;
 
 		const u32 frequency = std::min<u32>(si.GetUIntValue(section.c_str(),
@@ -656,26 +672,67 @@ void Pad::LoadMacroButtonConfig(const SettingsInterface& si, u32 pad, const Cont
 		const bool toggle = si.GetBoolValue(section.c_str(), TinyString::from_format("Macro{}Toggle", i + 1), false);
 
 		// convert binds
-		std::vector<u32> bind_indices;
-		std::vector<std::string_view> buttons_split(StringUtil::SplitString(binds_string, '&', true));
-		if (buttons_split.empty())
-			continue;
-		for (const std::string_view& button : buttons_split)
-		{
-			std::optional<u32> bind_index = ci->GetBindIndex(button);
-			if (!bind_index.has_value())
+		const auto convert_binds = [&ci, i, pad](const std::string_view list, std::vector<u32>* indices) {
+			for (const std::string_view& button : StringUtil::SplitString(list, '&', true))
 			{
-				Console.Error(fmt::format("Invalid bind '{}' in macro button {} for pad {}", button, i, pad));
-				continue;
+				std::optional<u32> bind_index = ci->GetBindIndex(button);
+				if (!bind_index.has_value())
+				{
+					Console.Error(fmt::format("Invalid bind '{}' in macro button {} for pad {}", button, i, pad));
+					continue;
+				}
+
+				indices->push_back(bind_index.value());
+			}
+		};
+
+		std::vector<u32> bind_indices;
+		convert_binds(binds_string, &bind_indices);
+
+		// A sequence is comma-separated steps, each "binds:frames", with the binds joined by
+		// '&' as in Macro{}Binds. A step whose binds are "-" holds nothing for its frames.
+		std::vector<MacroStep> steps;
+		for (const std::string_view& step_string : StringUtil::SplitString(sequence_string, ',', true))
+		{
+			std::string_view step_binds(step_string);
+			u32 frames = 1;
+
+			const std::string_view::size_type separator = step_string.rfind(':');
+			if (separator != std::string_view::npos)
+			{
+				step_binds = StringUtil::StripWhitespace(step_string.substr(0, separator));
+				const std::optional<u32> parsed =
+					StringUtil::FromChars<u32>(StringUtil::StripWhitespace(step_string.substr(separator + 1)));
+				if (!parsed.has_value() || parsed.value() == 0)
+				{
+					Console.Error(fmt::format(
+						"Invalid frame count in step '{}' of macro button {} for pad {}", step_string, i, pad));
+					continue;
+				}
+
+				frames = std::min<u32>(parsed.value(), std::numeric_limits<u16>::max());
 			}
 
-			bind_indices.push_back(bind_index.value());
+			MacroStep step;
+			step.frames = static_cast<u16>(frames);
+			if (step_binds != "-")
+				convert_binds(step_binds, &step.buttons);
+
+			steps.push_back(std::move(step));
 		}
-		if (bind_indices.empty())
+
+		if (bind_indices.empty() && steps.empty())
 			continue;
 
 		MacroButton& macro = s_macro_buttons[pad][i];
+		// Otherwise a reload leaves the step in flight held down for good.
+		if (macro.sequence_step < macro.sequence.size())
+			SetMacroStep(pad, macro.sequence[macro.sequence_step], 0.0f);
+
 		macro.buttons = std::move(bind_indices);
+		macro.sequence = std::move(steps);
+		macro.sequence_step = static_cast<u32>(macro.sequence.size());
+		macro.sequence_counter = 0;
 		macro.toggle_frequency = static_cast<u16>(frequency);
 		macro.pressure = pressure;
 		macro.trigger_toggle = toggle;
@@ -692,7 +749,7 @@ void Pad::SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool sta
 		return;
 
 	MacroButton& mb = s_macro_buttons[pad][index];
-	if (mb.buttons.empty())
+	if (mb.buttons.empty() && mb.sequence.empty())
 		return;
 
 	SettingsInterface& sif = *Host::GetSettingsInterface();
@@ -725,6 +782,19 @@ void Pad::SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool sta
 
 	mb.toggle_counter = mb.toggle_frequency;
 	mb.trigger_state = trigger_state;
+
+	if (!mb.sequence.empty())
+	{
+		if (trigger_state && mb.sequence_step >= mb.sequence.size())
+		{
+			mb.sequence_step = 0;
+			mb.sequence_counter = mb.sequence[0].frames;
+			SetMacroStep(pad, mb.sequence[0], mb.pressure);
+		}
+
+		return;
+	}
+
 	if (mb.toggle_state != trigger_state)
 	{
 		mb.toggle_state = trigger_state;
@@ -741,6 +811,16 @@ void Pad::ApplyMacroButton(u32 controller, const Pad::MacroButton& mb)
 		pad->Set(btn, value);
 }
 
+void Pad::SetMacroStep(u32 controller, const Pad::MacroStep& step, float value)
+{
+	PadBase* const pad = Pad::GetPad(controller);
+	if (!pad)
+		return;
+
+	for (const u32 btn : step.buttons)
+		pad->Set(btn, value);
+}
+
 void Pad::UpdateMacroButtons()
 {
 	for (u32 pad = 0; pad < Pad::NUM_CONTROLLER_PORTS; pad++)
@@ -748,6 +828,25 @@ void Pad::UpdateMacroButtons()
 		for (u32 index = 0; index < NUM_MACRO_BUTTONS_PER_CONTROLLER; index++)
 		{
 			Pad::MacroButton& mb = s_macro_buttons[pad][index];
+
+			// A sequence runs to completion whether or not the trigger is still held.
+			if (mb.sequence_step < mb.sequence.size())
+			{
+				if (--mb.sequence_counter > 0)
+					continue;
+
+				SetMacroStep(pad, mb.sequence[mb.sequence_step], 0.0f);
+				mb.sequence_step++;
+
+				if (mb.sequence_step < mb.sequence.size())
+				{
+					const Pad::MacroStep& step = mb.sequence[mb.sequence_step];
+					mb.sequence_counter = step.frames;
+					SetMacroStep(pad, step, mb.pressure);
+				}
+
+				continue;
+			}
 
 			if (!mb.trigger_state || mb.toggle_frequency == 0)
 			{

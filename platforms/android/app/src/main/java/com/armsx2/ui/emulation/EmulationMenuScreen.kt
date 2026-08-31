@@ -1165,6 +1165,13 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
         onSelect = { value -> viewModel.updateSettings { it.copy(vuClampMode = value) } },
     )
     HorizontalOptions(
+        title = str("perf.vu1Clamping.label"),
+        options = listOf(str("perf.clamp.followVu0"), str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact"))
+            .mapIndexed { index, label -> index - 1 to label },
+        selected = settings.vu1ClampMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(vu1ClampMode = value) } },
+    )
+    HorizontalOptions(
         title = str("perf.eeFpuRoundMode.label"),
         options = listOf(str("perf.round.nearest"), str("perf.round.negative"), str("perf.round.positive"), str("perf.round.chop"))
             .mapIndexed { index, label -> index to label },

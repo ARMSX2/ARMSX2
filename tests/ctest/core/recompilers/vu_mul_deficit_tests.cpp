@@ -22,11 +22,18 @@
 //                      the boundary term on bits 11..15, which closes the
 //                      zero-tail regime exactly
 //
-// Two regimes stay open at every mode and both are here as their own tables:
-// a product that needs more than 24 bits, where the decision needs fs and the
-// array (iFPUd-arm64.cpp runs it on a double product; four singles in a Q
-// register have none to run it on), and a product below 2^-79, where the FMLS
-// residue the exactness test reads has itself flushed to zero.
+// Four tables cover operands the predicate over ft cannot decide on its own,
+// named by what the exact 48-bit mantissa product looks like:
+//
+//   long-tail        bits below the result's last bit, 0x8000 or more.
+//                    eeMulRound does not decrement these either.
+//   short-tail       those bits non-zero but below 0x8000. The array's
+//                    truncation still crosses, so only eeMulOneUlpLow decides.
+//   low-exp          product below 2^-79. The emitted exactness test does not
+//                    work there, because the rounding error it measures has
+//                    itself flushed to zero.
+//   low-short-tail   both at once. Both emitters call eeMulOneUlpLow for the
+//                    middle two; this one keeps the lanes they still miss.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -126,23 +133,104 @@ const std::vector<Row>& LongTail()
 	return v;
 }
 
+// Operand pairs whose exact mantissa product has bits below the result's last
+// bit, but fewer than 0x8000 of them. eeMulOneUlpLow only stops decrementing
+// once those bits reach 0x8000, so the emitted model, which decrements nothing
+// when they are non-zero at all, disagrees with it here.
+const std::vector<Row>& ShortTail()
+{
+	static const std::vector<Row> v = [] {
+		std::mt19937 rng(0x51012a11u);
+		std::vector<Row> out;
+		while (out.size() < 200)
+		{
+			const u32 fs = 0x3f800000u | (rng() & 0x7FFFFFu);
+			const u32 ft = 0x3f800000u | (rng() & 0x7FFFFFu);
+			const u64 a = 0x800000u | (fs & 0x7FFFFFu);
+			const u64 b = 0x800000u | (ft & 0x7FFFFFu);
+			const u64 prod = a * b;
+			const int k = (prod >> 47) ? 24 : 23;
+			const u64 tail = prod & ((1ull << k) - 1u);
+			if (tail == 0 || tail >= 0x8000u)
+				continue;
+			out.push_back({fs, ft});
+		}
+		return out;
+	}();
+	return v;
+}
+
+// Both of the above at once: a product below 2^-79 whose exact mantissa product
+// also has non-zero bits below 0x8000. This is where the emitters still differ
+// from the interpreter, because the lanes they send to eeMulOneUlpLow are
+// selected using the predicate over ft, and a lane that predicate rejects is
+// never sent even when the array would have decremented it.
+//
+// Neither table above samples this: ShortTail() uses exponent 127 and
+// LowExponent() builds products with no bits below the last one.
+const std::vector<Row>& LowShortTail()
+{
+	static const std::vector<Row> v = [] {
+		std::mt19937 rng(0x10517a11u);
+		std::vector<Row> out;
+		// Exponents 64 to 79 put the product's field at 1 to 31, where a tail
+		// under 0x8000 makes a residue under 2^-126 whatever the tail is, so
+		// every row here has a residue the arithmetic has flushed.
+		while (out.size() < 400)
+		{
+			const u32 e = (64u + (out.size() & 15u)) << 23;
+			const u32 fs = e | (rng() & 0x7FFFFFu);
+			const u32 ft = e | (rng() & 0x7FFFFFu);
+			const u64 a = 0x800000u | (fs & 0x7FFFFFu);
+			const u64 b = 0x800000u | (ft & 0x7FFFFFu);
+			const u64 prod = a * b;
+			const int k = (prod >> 47) ? 24 : 23;
+			const u64 tail = prod & ((1ull << k) - 1u);
+			if (tail == 0 || tail >= 0x8000u)
+				continue;
+			out.push_back({fs, ft});
+		}
+		return out;
+	}();
+	return v;
+}
+
 // Zeros, denormals, the smallest normal, both ends of the range and the two
 // exponent-255 words the VU reads as ordinary numbers -- crossed with a normal
 // operand and with each other. Nothing here may take a decrement.
+//
+// Split at exponent 255, because the two halves test different things. Below
+// it both emitters multiply the architectural words, so the deficit model
+// decides the result. At exponent 255 the word is an Inf or NaN to the host and
+// both emitters bound it before multiplying -- differently -- so those rows
+// score the operand clamp rather than this model.
+constexpr bool TopBinade(u32 w) { return ((w >> 23) & 0xFFu) == 0xFFu; }
+
+const u32 kEdgeWords[] = {
+	0x00000000u, 0x80000000u, 0x00000001u, 0x807FFFFFu, 0x00800000u,
+	0x80800000u, 0x3f800000u, 0xbf800000u, 0x7F7FFFFFu, 0xFF7FFFFFu,
+	0x7F800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x49998921u, 0x3fAAAAABu,
+};
+
+std::vector<Row> CrossEdgeWords(bool topBinade)
+{
+	std::vector<Row> out;
+	for (u32 a : kEdgeWords)
+		for (u32 b : kEdgeWords)
+			if ((TopBinade(a) || TopBinade(b)) == topBinade)
+				out.push_back({a, b});
+	return out;
+}
+
 const std::vector<Row>& Edges()
 {
-	static const std::vector<Row> v = [] {
-		static const u32 words[] = {
-			0x00000000u, 0x80000000u, 0x00000001u, 0x807FFFFFu, 0x00800000u,
-			0x80800000u, 0x3f800000u, 0xbf800000u, 0x7F7FFFFFu, 0xFF7FFFFFu,
-			0x7F800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0x49998921u, 0x3fAAAAABu,
-		};
-		std::vector<Row> out;
-		for (u32 a : words)
-			for (u32 b : words)
-				out.push_back({a, b});
-		return out;
-	}();
+	static const std::vector<Row> v = CrossEdgeWords(false);
+	return v;
+}
+
+const std::vector<Row>& TopBinadeEdges()
+{
+	static const std::vector<Row> v = CrossEdgeWords(true);
 	return v;
 }
 
@@ -295,9 +383,11 @@ Score ScoreMicro(const std::vector<Row>& rows, const Shape& s, int mode)
 
 // ---- the grid ---------------------------------------------------------
 
-enum { kZeroTail, kLowExp, kLongTail, kEdges, kTableCount };
+enum { kZeroTail, kLowExp, kLongTail, kShortTail, kLowShortTail, kEdges, kTopBinade,
+	kTableCount };
 
-const char* kTableName[] = {"zero-tail", "low-exp", "long-tail", "edges"};
+const char* kTableName[] = {"zero-tail", "low-exp", "long-tail", "short-tail",
+	"low-short-tail", "edges", "top-binade"};
 
 const std::vector<Row>& Table(int t)
 {
@@ -306,7 +396,10 @@ const std::vector<Row>& Table(int t)
 		case kZeroTail: return ZeroTail();
 		case kLowExp:   return LowExponent();
 		case kLongTail: return LongTail();
-		default:        return Edges();
+		case kShortTail: return ShortTail();
+		case kLowShortTail: return LowShortTail();
+		case kEdges:    return Edges();
+		default:        return TopBinadeEdges();
 	}
 }
 
@@ -355,10 +448,9 @@ const Grid& Measured()
 // dest fields, as {macro, micro}. Regenerate from DISABLED_Measure; do not
 // hand-edit.
 //
-// The two emitters land on the same number everywhere the deficit decides
-// anything. Only the edge table separates them, and not over this model: every
-// row that separates them has an operand at exponent 255, and the two paths
-// bound those differently.
+// The two emitters produce the same count on every table but the last, which
+// holds the exponent-255 operands and scores the operand clamp rather than this
+// model.
 //
 // The macro path bounds what the mVU clampType row it mirrors names, at every
 // vuClampMode. Where the row names nothing -- mVU_MADD, mVU_MULA, mVU_MADDA,
@@ -373,12 +465,21 @@ const Grid& Measured()
 //
 // vu_micro_fmac_console_tests.cpp scores that clamp against the console; this
 // file only has to leave it alone.
+//
+// The mismatches the in-range edge table still has at mode 4 come from the
+// result, not from the multiply array: the product, or the MADD sum it feeds,
+// lands above FLT_MAX and below 0x7FFFFFFF, which single precision cannot
+// represent. It used to have 80 more, from products below 2^-79; both emitters
+// now pass those to eeMulOneUlpLow.
 constexpr int kBad[kTableCount][5][2] = {
 	//  -        mode1          mode2          mode3        mode4
 	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {0,0}},       // zero-tail
-	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {500,500}},   // low-exp
+	{{0,0}, {2904,2904}, {2904,2904}, {2904,2904}, {0,0}},       // low-exp
 	{{0,0}, {0,0}, {0,0}, {0,0}, {0,0}},                         // long-tail
-	{{0,0}, {3852,3512}, {3852,3436}, {3852,3276}, {2618,1922}}, // edges
+	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,0}},       // short-tail
+	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {20,20}},     // low-short-tail
+	{{0,0}, {1110,1110}, {1110,1110}, {1110,1110}, {296,296}},   // edges
+	{{0,0}, {2742,2402}, {2742,2326}, {2742,2166}, {2242,1546}}, // top-binade
 };
 
 } // namespace
@@ -468,18 +569,14 @@ TEST(VuMulDeficit, OnlyModeFourEmitsIt)
 	}
 }
 
-// The two regimes no ft predicate reaches, kept apart so that a change which
-// starts firing on them is visible. A product needing more than 24 bits is the
-// array's, which is not here; a product under 2^-79 has lost the FMLS residue
-// the exactness test reads.
-// One model, two emitters. The edge table is excluded for the reason above
-// kBad; everywhere else the macro path and microVU have to come to the same
-// number at every mode, which is what says the model was not wired into one of
-// them and left out of the other.
+// The same model on both emitters. The top-binade table is excluded for the
+// reason given above kBad; on every other table the COP2 macro path and microVU
+// must produce the same count at every mode. A difference would mean the model
+// was wired into one emitter and not the other.
 TEST(VuMulDeficit, BothEmittersAnswerAlike)
 {
 	const Grid& g = Measured();
-	for (int t = 0; t < kEdges; t++)
+	for (int t = 0; t < kTopBinade; t++)
 	{
 		for (int mode = 1; mode <= 4; mode++)
 		{
@@ -489,18 +586,74 @@ TEST(VuMulDeficit, BothEmittersAnswerAlike)
 	}
 }
 
-TEST(VuMulDeficit, TheRegimesItDoesNotReach)
+// eeMulOneUlpLow does not decrement when the bits below the result's last bit
+// reach 0x8000, and neither does the emitted model, so both emitters agree with
+// the interpreter on this table at every mode.
+TEST(VuMulDeficit, NothingFiresOnALongTail)
 {
 	const Grid& g = Measured();
 	for (int e = 0; e < 2; e++)
 	{
 		SCOPED_TRACE(e ? "micro" : "macro");
-		// Nothing fires on a long tail at any mode, so the two engines agree
-		// with the interpreter there before and after.
 		for (int mode = 1; mode <= 4; mode++)
 			EXPECT_EQ(g.bad[kLongTail][mode][e], 0) << "vuClampMode " << mode;
-		EXPECT_GT(g.bad[kLowExp][4][e], 0) << "the exponent floor no longer costs anything";
-		EXPECT_LT(g.bad[kLowExp][4][e], g.bad[kLowExp][1][e]) << "the floor swallowed the model";
+	}
+}
+
+// Below 2^-79 the rounding error the exactness test measures has itself flushed
+// to zero, so the emitted model cannot distinguish an exact product from a
+// rounded one and its exponent test rejects the lane. eeMulOneUlpLow recomputes
+// the mantissa product instead, and both emitters pass it these lanes.
+TEST(VuMulDeficit, TheLowExponentRegime)
+{
+	const Grid& g = Measured();
+	for (int e = 0; e < 2; e++)
+	{
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_EQ(g.bad[kLowExp][4][e], 0);
+		EXPECT_GT(g.lanes[kLowExp][4][e] - g.stale[kLowExp][4][e], 0) << "wrote nothing";
+		for (int mode = 1; mode <= 3; mode++)
+			EXPECT_EQ(g.bad[kLowExp][mode][e], g.bad[kLowExp][1][e])
+				<< "vuClampMode " << mode;
+	}
+}
+
+// The lanes that selection still misses. Which lanes are passed to
+// eeMulOneUlpLow is decided using the emitted model's own condition, so a lane
+// the predicate over ft rejects is never passed, even below 2^-79 where the
+// array would have decremented it. Selecting on the product's exponent alone
+// would need that exponent live alongside the condition and the constant 48,
+// which is one more scratch register than the COP2 macro path has.
+//
+// 20 lanes of 6920. The table has to be built for this case specifically: a
+// first version at a single exponent found none of them in 200 rows.
+TEST(VuMulDeficit, TheRoutingIsMasked)
+{
+	const Grid& g = Measured();
+	for (int e = 0; e < 2; e++)
+	{
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_GT(g.bad[kLowShortTail][4][e], 0) << "the corner closed";
+		EXPECT_LT(g.bad[kLowShortTail][4][e], g.bad[kLowShortTail][1][e] / 100)
+			<< "most of it is no longer routed";
+	}
+}
+
+// Tails below 0x8000, and the clamp mode that gates the whole model.
+TEST(VuMulDeficit, TheShortTailBand)
+{
+	const Grid& g = Measured();
+	for (int e = 0; e < 2; e++)
+	{
+		SCOPED_TRACE(e ? "micro" : "macro");
+		EXPECT_EQ(g.bad[kShortTail][4][e], 0);
+		EXPECT_GT(g.lanes[kShortTail][4][e] - g.stale[kShortTail][4][e], 0) << "wrote nothing";
+		for (int mode = 1; mode <= 3; mode++)
+		{
+			EXPECT_EQ(g.bad[kShortTail][mode][e], g.bad[kShortTail][1][e])
+				<< "vuClampMode " << mode;
+			EXPECT_GT(g.bad[kShortTail][mode][e], 0) << "vuClampMode " << mode;
+		}
 	}
 }
 
@@ -523,7 +676,10 @@ TEST(VuMulDeficit, DISABLED_Measure)
 		{"zero-tail", ZeroTail()},
 		{"low-exp", LowExponent()},
 		{"long-tail", LongTail()},
+		{"short-tail", ShortTail()},
+		{"low-short-tail", LowShortTail()},
 		{"edges", Edges()},
+		{"top-binade", TopBinadeEdges()},
 	};
 	for (u32 dest : {0xFu, 0xEu})
 	{
