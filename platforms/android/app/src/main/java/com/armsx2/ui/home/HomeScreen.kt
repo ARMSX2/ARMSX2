@@ -143,6 +143,9 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
+    // Separate from menuGame: the category sheet REPLACES the game menu rather than nesting
+    // inside it, so the menu closes as this opens and B backs out of one modal, not two.
+    var categoryGame by remember { mutableStateOf<GameInfo?>(null) }
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
@@ -525,6 +528,91 @@ fun HomeScreen(
                     }
                 }
 
+                // List layout: one filter control instead of category sections. Stacking shelves
+                // inside a single-column list just makes a longer list, so List narrows instead.
+                //
+                // A pill that opens a PadModal, NOT a DropdownMenu: a dropdown is its own focused
+                // window and swallows pad keys, which is exactly why the overflow menu beside it
+                // was already rebuilt the same way.
+                if (state.layout == LibraryLayout.List && state.initialized &&
+                    com.armsx2.GameCategories.names().isNotEmpty()
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        var picking by remember { mutableStateOf(false) }
+                        val allLabel = str("library.category.all")
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .controllerFocusable("library-category-filter", RoundedCornerShape(12.dp),
+                                    onConfirm = { picking = true })
+                                .clickable { picking = true }
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "\uD83C\uDFF7\uFE0F  " + (state.categoryFilter ?: allLabel),
+                                Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text("\u25BE", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (picking) {
+                            com.armsx2.ui.common.PadModal(
+                                key = "library-category-picker",
+                                onDismiss = { picking = false },
+                                alignment = Alignment.BottomCenter,
+                            ) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    tonalElevation = 2.dp,
+                                ) {
+                                    Column(
+                                        Modifier.fillMaxWidth().heightIn(max = 480.dp)
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(horizontal = 20.dp, vertical = 20.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        SectionTitle(str("library.category.filter"))
+                                        Spacer(Modifier.height(6.dp))
+                                        (listOf<String?>(null) + com.armsx2.GameCategories.names()).forEach { name ->
+                                            val label = name ?: allLabel
+                                            Row(
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .controllerFocusable("category-pick-${'$'}label", RoundedCornerShape(10.dp),
+                                                        onConfirm = { viewModel.setCategoryFilter(name); picking = false })
+                                                    .clickable { viewModel.setCategoryFilter(name); picking = false }
+                                                    .padding(vertical = 12.dp, horizontal = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Text(
+                                                    label,
+                                                    Modifier.weight(1f),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                if (state.categoryFilter == name) {
+                                                    Text("\u2713", color = MaterialTheme.colorScheme.primary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (shownRecents.isNotEmpty()) {
                     val recentsSelected = HomeInputController.zone.value == HomeZone.Recents
                     val recentSel = if (recentsSelected) HomeInputController.recentIndex.intValue else -1
@@ -615,6 +703,76 @@ fun HomeScreen(
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Category sections, one row each, sitting between Recently Played and the
+                // full library. Grid and Shelf only: List gets a dropdown filter in the toolbar
+                // instead, because stacking rows in a one-column list just makes a longer list.
+                //
+                // Hidden while SEARCHING, exactly like Recently Played above — a search should
+                // show matches, not matches re-sorted into shelves.
+                if (state.layout != LibraryLayout.List && state.query.isBlank() && state.initialized) {
+                    val categoryNames = com.armsx2.GameCategories.names()
+                    categoryNames.forEach { categoryName ->
+                        val members = com.armsx2.GameCategories.members(categoryName)
+                        // Resolve against the games actually in the library, so a category
+                        // holding a game the user has since deleted simply shows fewer, rather
+                        // than an empty shelf with a title over it.
+                        val categoryGames = state.visibleGames.filter { g ->
+                            g.settingsKey?.let { it in members } == true
+                        }
+                        if (categoryGames.isEmpty()) return@forEach
+                        item(span = { GridItemSpan(maxLineSpan) }, key = "category-$categoryName") {
+                            Column {
+                                SectionTitle(
+                                    categoryName,
+                                    modifier = Modifier.padding(
+                                        start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
+                                    ),
+                                )
+                                Spacer(Modifier.height(9.dp))
+                                if (state.layout == LibraryLayout.Shelf) {
+                                    GameShelf(
+                                        games = categoryGames,
+                                        shelfRes = R.drawable.shelf_frosted,
+                                        coverWidth = ((if (compact) 84f else 100f) * coverScale).dp,
+                                        scroll = true,
+                                        selectedIndex = -1,
+                                        onLaunch = { viewModel.launch(it) },
+                                        onDetails = { menuGame = it },
+                                        modifier = Modifier.layout { measurable, constraints ->
+                                            val edge = 8.dp.roundToPx()
+                                            val placeable = measurable.measure(
+                                                constraints.copy(
+                                                    minWidth = constraints.maxWidth + edge * 2,
+                                                    maxWidth = constraints.maxWidth + edge * 2,
+                                                ),
+                                            )
+                                            layout(constraints.maxWidth, placeable.height) {
+                                                placeable.placeRelative(-edge, 0)
+                                            }
+                                        },
+                                    )
+                                } else {
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp),
+                                    ) {
+                                        itemsIndexed(categoryGames, key = { _, g -> g.uri.toString() }) { _, game ->
+                                            RecentGameCard(
+                                                game = game,
+                                                selected = false,
+                                                onClick = { viewModel.launch(game) },
+                                                onDetails = { menuGame = game },
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
                             }
                         }
                     }
@@ -897,6 +1055,10 @@ fun HomeScreen(
                         menuGame = null
                     }
                 }
+                GameMenuAction("🏷️", str("games.categories"), "game-menu.categories") {
+                    menuGame = null
+                    categoryGame = game
+                }
                 val hidden = com.armsx2.HiddenGames.isHidden(game)
                 GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide"), "game-menu.hide") {
                     viewModel.setHidden(game, !hidden)
@@ -904,6 +1066,121 @@ fun HomeScreen(
                 }
             }
           }
+        }
+    }
+
+    categoryGame?.let { game ->
+        CategorySheet(game = game, onDismiss = { categoryGame = null })
+    }
+}
+
+/**
+ * Assigns one game to categories. Checkboxes rather than a single choice because a category is a
+ * TAG — see [com.armsx2.GameCategories] — so "Onimusha" and "Favorites" are both allowed at once.
+ *
+ * Stays open on every toggle: filing a game usually means ticking more than one box, and closing
+ * after each would mean re-opening the menu for the second.
+ */
+@Composable
+private fun CategorySheet(game: GameInfo, onDismiss: () -> Unit) {
+    val key = game.settingsKey
+    var newName by remember { mutableStateOf("") }
+    // Subscribe to edits: names() reads GameCategories.version internally.
+    val names = com.armsx2.GameCategories.names()
+
+    com.armsx2.ui.common.PadModal(
+        key = "game-categories",
+        onDismiss = onDismiss,
+        alignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    str("games.categories.title"),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    game.displayTitle(com.armsx2.EnglishTitles.enabled.value),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                if (names.isEmpty()) {
+                    Text(
+                        str("games.categories.none"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        str("games.categories.subtitle"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    names.forEach { name ->
+                        val checked = com.armsx2.GameCategories.contains(name, key)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .controllerFocusable("category-$name", RoundedCornerShape(12.dp),
+                                    onConfirm = { com.armsx2.GameCategories.setMembership(name, key, !checked) })
+                                .clickable { com.armsx2.GameCategories.setMembership(name, key, !checked) }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = checked,
+                                onCheckedChange = { com.armsx2.GameCategories.setMembership(name, key, it) },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                name,
+                                Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+                // Creating from here also files THIS game into it — that is invariably why
+                // someone types a new category name while looking at a game.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        singleLine = true,
+                        label = { Text(str("games.categories.newHint")) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    androidx.compose.material3.TextButton(
+                        enabled = newName.isNotBlank(),
+                        onClick = {
+                            val trimmed = newName.trim()
+                            com.armsx2.GameCategories.create(trimmed)
+                            com.armsx2.GameCategories.setMembership(trimmed, key, true)
+                            newName = ""
+                        },
+                    ) { Text(str("games.categories.add")) }
+                }
+            }
         }
     }
 }

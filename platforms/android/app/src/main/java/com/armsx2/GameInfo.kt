@@ -98,6 +98,144 @@ object CustomNames {
     }
 }
 
+/**
+ * User-made categories ("Onimusha", "Favorites", "Beat these already") a game can be filed under.
+ *
+ * TAGS, not folders: a game may be in any number of categories at once. Exclusive grouping would
+ * force a "which one does it go in" decision on every game that plausibly belongs to two, and it
+ * costs nothing to avoid.
+ *
+ * Keyed by [GameInfo.settingsKey] — the same identity per-game settings, custom names and custom
+ * covers use — so categories survive a re-scan, and a game re-added from a different folder keeps
+ * them. The known consequence: settingsKey is the SERIAL, so two copies of one game (a retail dump
+ * and a modded build of it) are one entity here and cannot be filed apart. That is already true of
+ * their settings, name and cover; making categories the lone exception would be more confusing than
+ * the limitation. Keying on the URI instead was rejected because a SAF path changes when the folder
+ * is re-picked, which would silently drop every category on a re-scan.
+ *
+ * Stored as one JSON object, category -> [keys], under a single pref. That shape is what both
+ * consumers want: the picker lists categories, and the library filters by one. "Which categories is
+ * this game in" is a scan of a map with tens of entries, which is nothing next to a frame.
+ */
+object GameCategories {
+    private const val KEY = "library.categories"
+
+    /** Bumped on every edit. Read inside the accessors so a change recomposes the library —
+     *  the data lives in prefs, which Compose cannot observe (see [CustomNames.version]). */
+    val version = mutableIntStateOf(0)
+
+    /** category -> set of settingsKeys. Cached because the library reads it per frame. */
+    private var cache: LinkedHashMap<String, MutableSet<String>>? = null
+
+    private fun load(): LinkedHashMap<String, MutableSet<String>> {
+        cache?.let { return it }
+        val out = LinkedHashMap<String, MutableSet<String>>()
+        runCatching {
+            val raw = MainActivityRuntime.prefs.getString(KEY, null)
+            if (!raw.isNullOrBlank()) {
+                val obj = org.json.JSONObject(raw)
+                for (name in obj.keys()) {
+                    val arr = obj.optJSONArray(name) ?: continue
+                    val members = linkedSetOf<String>()
+                    for (i in 0 until arr.length()) {
+                        arr.optString(i).takeIf { it.isNotBlank() }?.let(members::add)
+                    }
+                    out[name] = members
+                }
+            }
+        }
+        cache = out
+        return out
+    }
+
+    private fun persist(map: LinkedHashMap<String, MutableSet<String>>) {
+        val obj = org.json.JSONObject()
+        // Sorted so the stored file is stable and the picker is alphabetical without re-sorting.
+        for (name in map.keys.sortedBy { it.lowercase() }) {
+            obj.put(name, org.json.JSONArray().apply { map[name]?.sorted()?.forEach(::put) })
+        }
+        MainActivityRuntime.prefs.edit().putString(KEY, obj.toString()).apply()
+        cache = map
+        version.intValue++
+    }
+
+    /** Every category name, alphabetical. Empty categories are kept — a user who makes one
+     *  before filing anything into it should not watch it vanish. */
+    fun names(): List<String> {
+        version.intValue // subscribe
+        return load().keys.sortedBy { it.lowercase() }
+    }
+
+    /** settingsKeys filed under [category]. */
+    fun members(category: String): Set<String> {
+        version.intValue // subscribe
+        return load()[category].orEmpty()
+    }
+
+    /** Categories [key] belongs to. */
+    fun categoriesFor(key: String?): List<String> {
+        version.intValue // subscribe
+        if (key.isNullOrBlank()) return emptyList()
+        return load().entries.filter { key in it.value }.map { it.key }.sortedBy { it.lowercase() }
+    }
+
+    fun contains(category: String, key: String?): Boolean =
+        !key.isNullOrBlank() && key in members(category)
+
+    /** Create an empty category. No-op when it already exists, so the "New category" field
+     *  cannot silently wipe an existing one that happens to share the name. */
+    fun create(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        val map = load()
+        if (map.containsKey(trimmed)) return
+        map[trimmed] = linkedSetOf()
+        persist(map)
+    }
+
+    fun setMembership(category: String, key: String?, member: Boolean) {
+        val trimmed = category.trim()
+        if (trimmed.isEmpty() || key.isNullOrBlank()) return
+        val map = load()
+        val set = map.getOrPut(trimmed) { linkedSetOf() }
+        if (member) set.add(key) else set.remove(key)
+        persist(map)
+    }
+
+    fun rename(from: String, to: String) {
+        val target = to.trim()
+        if (target.isEmpty() || from == target) return
+        val map = load()
+        val members = map.remove(from) ?: return
+        // Renaming onto an existing name merges rather than clobbering.
+        map.getOrPut(target) { linkedSetOf() }.addAll(members)
+        persist(map)
+    }
+
+    fun delete(category: String) {
+        val map = load()
+        if (map.remove(category) == null) return
+        persist(map)
+    }
+
+    /** Drop a game from every category — used when it is removed from the library, so a
+     *  stale key cannot keep a category looking non-empty. */
+    fun forget(key: String?) {
+        if (key.isNullOrBlank()) return
+        val map = load()
+        var touched = false
+        for (set in map.values) if (set.remove(key)) touched = true
+        if (touched) persist(map)
+    }
+
+    /** Called by the settings reset path. */
+    fun clearAll() {
+        MainActivityRuntime.prefs.edit().remove(KEY).apply()
+        cache = null
+        version.intValue++
+    }
+}
+
 /** Show the game title under every cover in the main library grid (the old-UI behaviour),
  *  not only where a name is otherwise shown. Toggled from the library 3-dot overflow menu. */
 object GridLabels {

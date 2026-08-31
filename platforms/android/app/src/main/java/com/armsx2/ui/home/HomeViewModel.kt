@@ -24,6 +24,10 @@ data class HomeUiState(
     val query: String = "",
     val sort: HomeSort = HomeSort.Title,
     val layout: LibraryLayout = LibraryLayout.Grid,
+    /** Category the LIST layout is filtered to, or null for everything. Only List uses it —
+     *  Grid and Shelf show categories as their own sections instead, the way Recently Played
+     *  works, so filtering the whole library there would hide the sections it is made of. */
+    val categoryFilter: String? = null,
     val scanning: Boolean = false,
     val error: String? = null,
     val selectedIndex: Int = 0,
@@ -123,6 +127,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectedGame(): GameInfo? = state.value.visibleGames.getOrNull(state.value.selectedIndex)
 
+    /** List-layout category filter. Null shows everything. */
+    fun setCategoryFilter(category: String?) {
+        state.value = buildState(state.value.copy(categoryFilter = category, selectedIndex = 0))
+    }
+
     fun launch(game: GameInfo) {
         repository.markPlayed(game)
         state.value = buildState(state.value)
@@ -158,8 +167,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val recents = repository.recentGames(base.allGames)
         val recentOrder = recents.mapIndexed { index, game -> game.uri.toString() to index }.toMap()
         val forceEn = com.armsx2.EnglishTitles.enabled.value
+        // A category filter narrows the pool before anything else. Cleared implicitly when the
+        // category stops existing (renamed or deleted while selected) rather than leaving the
+        // library stuck showing nothing with no obvious way back.
+        val activeCategory = base.categoryFilter?.takeIf { it in com.armsx2.GameCategories.names() }
+        val members = activeCategory?.let { com.armsx2.GameCategories.members(it) }
         val filtered = base.allGames.filter { game ->
             val query = base.query.trim()
+            (members == null || game.settingsKey?.let { it in members } == true) &&
             // Exclude games the user marked hidden (long-press → Hide), unless "Show hidden" is on.
             (com.armsx2.HiddenGames.showHidden.value || !com.armsx2.HiddenGames.isHidden(game)) &&
                 (query.isBlank() ||
