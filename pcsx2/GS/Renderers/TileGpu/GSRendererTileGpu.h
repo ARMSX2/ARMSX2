@@ -1482,8 +1482,15 @@ constexpr u32 kGSTileGpuDeclaringRefuseAboveUs = 3800;
 /// both renderings are valid, so the flicker is subtle rather than broken. The band has to satisfy
 /// one property beyond being narrow, and the obvious 25% band does not: a class that MUST be admitted
 /// has to be able to come BACK after any transient spike refuses it, so the re-admit line must sit
-/// above the largest must-admit cost. That is Katamari's punctuation at 2,866, so 3,200 clears it by
-/// 11.7% and 2,850 -- the 25% band -- would latch the glyphs off for good after one bad frame.
+/// above the largest must-admit cost.
+///
+/// ⚠️ And that comparison is against the class's PEAK, not against its steady frame cost, which are
+/// not the same number. Katamari's punctuation costs 2,866 us in its median frame and its census
+/// peak reads 2,960 -- a heavier frame is in there, and the peak is what the verdict is made on. So
+/// the line clears it by 7.5%, not by the 11.7% the frame cost suggests, and the obvious 25% band's
+/// 2,850 sits UNDER the peak: it would latch the glyphs off for good after one bad frame. Any
+/// re-tune that re-derives the taxed price from the frame costs in the table above has to leave this
+/// same ~3% of headroom on top, or it will fit a line the corpus then crosses.
 ///
 /// ⚠️ ONE MEASURED CLASS SITS IN THE BAND: Ace Combat 5's exotic blends, 3,306. It is admitted in the
 /// ordinary way, but any transient spike past 3,800 refuses it permanently, because its own steady
