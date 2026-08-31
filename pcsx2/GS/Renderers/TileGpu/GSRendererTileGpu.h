@@ -1238,13 +1238,60 @@ constexpr u32 gsTileGpuMergeCpuAgeBucket(u32 age)
 /// 8 epochs / 64 pages (23.5 boundary flushes a frame) and 4 / 32 (46.7 flushes) both cost more
 /// gs_cpu than 24 / 192 does at 8.8. A cost that does not respond to a six-fold budget change over
 /// a five-fold flush-count range is not a plan-size cost, so whatever the residual is, no budget
-/// here will find it -- do not tune these two numbers hunting it.
+/// here will find it -- do not tune these two numbers hunting it. ⚠️ THE TWO SWEEP POINTS IN THAT
+/// SENTENCE ARE STALE: they were taken before the merge probe was gated on the write, and post-gate
+/// neither 8/64 nor 4/32 costs anything measurable. The conclusion survives, the numbers do not --
+/// see the retune below. The residual is still not a plan-size cost; it is just not a cost of
+/// tightening either.
 ///
-/// The values are the largest that hold the corpus inside the pre-lever band: Spider-Man 3 takes
-/// ~8-10 boundary flushes a drawn frame against the 194 reconciliation flushes the elision removed,
-/// OutRun 2006 ~8 against 18, and no title's largest reservation exceeds the one it already had.
-constexpr u32 kGSTileGpuMergeElisionMaxEpochs = 24;
-constexpr u32 kGSTileGpuMergeElisionMaxRingPages = 192;
+/// ⚠️ RETUNED FROM 24 / 192 TO 2 / 16, 2026-08-31, because the two cost curves point opposite ways
+/// and only one of them turned out to be real.
+///
+/// THE CPU CURVE IS FLAT. The curve that argued for loose budgets was measured before the merge
+/// probe was gated on the write, and it does not survive the gate. Re-measured at 0862ab9e9d over
+/// four ladder points, six interleaved reps an arm with the within-rep order rotated, gs_cpu ms a
+/// drawn frame (M2 Max, DIRECTIONAL ONLY):
+///
+///   epochs / pages    pre-lever   24/192    8/48    4/32    2/16
+///     spiderman3          38.11    38.71   38.08   36.78   38.10
+///     outrun-a             6.05     5.98    6.04    5.84    6.02
+///     gt4                 11.55    11.75   11.88   11.97   11.85
+///     stuntman            63.39    64.17   63.74   63.13   63.65
+///
+/// Every arm sits inside every other arm's own rep spread, and the old curve's +5.15 ms at 4/32
+/// does not reproduce in any direction. Tight budgets are not paid for in CPU.
+///
+/// THE GPU CURVE IS NOT FLAT, and it was measured on the SD865, which is the arbiter. The cost is
+/// the ring working set ONE PLAN's draws address through the epoch page-table: the same fetches
+/// over the same staged bytes, spread across a wider range. Spider-Man 3 on device, per-plan ring
+/// pages = ring pages a frame / (mid-frame flushes + 1), against its frame times in ms:
+///
+///   arm          pages/plan     gpu      gs_cpu     wall
+///   pre-lever          4.95   45.375     30.177   44.091
+///   24 / 192          89.99   47.182     29.875   44.240
+///   2 / 16            10.13   45.376     30.470   43.654
+///
+/// 2/16 hands back 0.60 ms of that title's device gs_cpu -- it elides 89 of its 173 merge-road
+/// flushes a frame instead of 165 -- and buys 1.81 ms of device GPU for it. It is the best WALL of
+/// the three on both titles the device ran (GT4 20.309 against 24/192's 20.964 and a pre-lever
+/// 20.402). The M2 agrees on wall over 12 interleaved reps: Spider-Man 3 68.65 against 71.28, with
+/// pre-lever at 69.40.
+///
+/// WHAT THE TIGHTER PAIR COSTS, in counts, over the 22-dump corpus: boundary flushes 63.51 -> 155.00
+/// a drawn frame against a pre-lever 269.88, so 43% of the flush removal is kept instead of 76%.
+/// Nothing else moves. Pages served by the merge are 227.13 on both arms, render passes 4,077.50 on
+/// both to the dump, blocking GPU waits identical on all 22, and ring pages (11,319 -> 11,610),
+/// version copies (1,856 -> 1,817) and epoch entries (656 -> 615) all return to the pre-lever
+/// values (11,612 / 1,815 / 614).
+///
+/// ⚠️ AND WHAT NO SETTING OF THESE TWO NUMBERS REACHES. The budgets are only ever asked on the
+/// merge road, so a plan that is large because a FRAME is long is untouched by them. Thirteen of the
+/// 22 dumps do not move a single count between 24/192 and 2/16, and six of those sit above 340 ring
+/// pages a plan on both arms (God of War II 404, FlatOut 2 401, R&C effects 382, Stuntman 377,
+/// Baldur's Gate 375, Beyond Good & Evil 347). If the working set costs those titles anything,
+/// these constants are not the lever that pays it back.
+constexpr u32 kGSTileGpuMergeElisionMaxEpochs = 2;
+constexpr u32 kGSTileGpuMergeElisionMaxRingPages = 16;
 
 /// Does a run of `n` merged palette squares exactly tile a 64-wide BAND of one owner page?
 ///
