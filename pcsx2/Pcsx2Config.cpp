@@ -836,6 +836,15 @@ Pcsx2Config::GSOptions::GSOptions()
 	// decides no pixel -- and it is what took both R&C UYA dumps' depth predictor into the merged
 	// state the day the split landed. See Config.h.
 	TileGpuSplitSharesPassKey = true;
+	// Default TRUE: the one scoping of the split that makes speed AND accuracy better at once. The
+	// FB_ONLY class's second half writes no colour byte -- it re-rasterizes the whole draw's fill to
+	// carry a depth write -- and its first half paints the whole colour with no test, which
+	// over-paints a draw whose own primitives occlude each other. Refusing it recovers SotC +1.00 ms
+	// and MGS3 +2.19 ms on the SD865 and closes both filed accuracy regressions; it gives up FlatOut
+	// 2's mask improvement, which was free on device. Asked of the REGISTER's AFAIL, so LEGO Star
+	// Wars' floor reflection -- an RGB_ONLY draw the planner's algebra calls FB_ONLY -- keeps
+	// splitting. See Config.h.
+	TileGpuSplitRefuseFbOnly = true;
 	// Default TRUE: it is a pure re-expression of the merge's seed, not a trade. One render pass
 	// per merged PAGE existed only because the seed's block mask was an op-level push constant;
 	// moved to the page entry, one pass serves any number of pages and the bytes it writes are the
@@ -1217,6 +1226,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
+	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);

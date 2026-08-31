@@ -1801,6 +1801,59 @@ struct Pcsx2Config
 					//
 					// Default TRUE. OFF is the shipped-tip road, byte for byte.
 					TileGpuSplitSharesPassKey : 1,
+					// Refuse the AFAIL=FB_ONLY class admission to the alpha-test draw
+					// split. It keeps the one-draw discarding road — which is what
+					// TileGpuAfailSplit=false gives every class — and RGB_ONLY and
+					// ZB_ONLY go on splitting.
+					//
+					// THE MECHANISM. Under FB_ONLY the channel split puts the WHOLE
+					// colour in the first pass with no test at all, and the second pass
+					// writes no colour byte: it exists to carry the depth write. So the
+					// second half re-rasterizes the draw's entire fill, pays the whole
+					// fragment bill — texture fetch, texture function, fog, blend — and
+					// lands one depth value; and the first half paints every fragment's
+					// colour, including the fragments a later primitive of the same draw
+					// would have hidden. Both costs come off the same predicate.
+					//
+					// ⚠️ THE PREDICATE READS THE REGISTER'S AFAIL, AND THAT IS A MEASURED
+					// CHOICE, NOT A DERIVED ONE. An AFAIL=RGB_ONLY draw whose alpha the
+					// write mask already took has no alpha write left to suppress, so the
+					// planner's own register algebra rewrites it to FB_ONLY — and it then
+					// takes structurally the SAME two passes: the whole colour in an
+					// untested first pass, depth alone in the second. No shape tells the
+					// two apart. But that rewritten class is LEGO STAR WARS' FLOOR
+					// REFLECTION, the draw the split was written for, and refusing it
+					// throws away the corpus's largest single repair (whole-frame mean
+					// absolute error against Classic 8.543 -> 1.764) for 11 draws a frame
+					// of device time. So the class is named by the register, and which
+					// side of it a title falls on came from the per-title measurements
+					// below.
+					//
+					// ⚠️ THE ONLY LEVER ON THE TABLE THAT MAKES SPEED AND ACCURACY BETTER
+					// AT ONCE, which is why it is default TRUE and why the accuracy it
+					// gives up is named rather than argued away. Speed, SD865 p50, from
+					// the split's own price record: SotC +1.00 ms and MGS3 +2.19 ms
+					// recovered. Accuracy, mean absolute channel error against
+					// `-variant classic` over the pixels the two arms differ on, split
+					// off -> on: this closes MGS3's 6.617 -> 11.926 over 122,611 px a
+					// frame (the split round's one wrong-way title, filed) and AC3's
+					// exact agreement 49.48% -> 2.44% over 2,031 px. What it gives back
+					// is FlatOut 2's 19.809 -> 14.513, which was FREE on device (-0.34
+					// ms), and part of SotC's 4.551 -> 4.213.
+					//
+					// THE POPULATION, per drawn frame on the 22-dump corpus, is the
+					// census's "FB_ONLY refused" line: MGS3 64, SotC 124, FlatOut 2 18,
+					// AC3 2, and zero everywhere else — so four dumps move and eighteen
+					// are byte-identical by construction. R&C UYA effects (531 a frame),
+					// R&C UYA gameplay (421.5), Stuntman (547), God of War II (49.9),
+					// dirge (46), LEGO Star Wars (10.75), GT4, GT4 OPB and Ace Combat 5
+					// are all RGB_ONLY by the register and untouched. OutRun 2006's 19.9 varying draws a frame
+					// are FB_ONLY with no depth write, whose two sides write the same
+					// channels, so they never split and never discarded either.
+					//
+					// Default TRUE. OFF is the split as it shipped on 2026-08-30, byte
+					// for byte on all 22 dumps.
+					TileGpuSplitRefuseFbOnly : 1,
 					// Let ONE seed render pass repair a batch of the upload merge's pages,
 					// instead of one render pass per page.
 					//

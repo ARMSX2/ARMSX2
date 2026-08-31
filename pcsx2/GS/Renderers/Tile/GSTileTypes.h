@@ -334,6 +334,12 @@ enum class GSTileAlphaSplitRefusal : u8
 	/// partner needs, and which a render pass cannot gain or lose in the middle. There is no
 	/// "test always, write nothing" depth variant to lend it.
 	NoDepthTest,
+	/// AFAIL=FB_ONLY, refused on POLICY rather than on impossibility (EmuCore/GS/TileGpuSplitRefuseFbOnly).
+	/// This class's second half writes no colour byte at all -- it exists to carry the depth write --
+	/// so it re-rasterizes the whole draw's fill for a depth write, and it is also the class whose
+	/// first half paints the WHOLE colour with no test, which is where MGS3's and AC3's regressions
+	/// come from. See the key.
+	RefusedFbOnly,
 };
 
 /// One pass of a draw the alpha test splits: the channels it writes, whether it writes depth, and
@@ -418,10 +424,23 @@ struct GSTileAlphaSplit
 /// first (MGS3 15.390, LEGO 4.484). The refusal is kept for the one shape no split expresses at
 /// all, and `reorders_fragments` is what a future per-draw rule for MGS3's population hangs off.
 ///
+/// ⚠️ AND ONE CLASS IS REFUSED ON POLICY, not on impossibility: the REGISTER's AFAIL=FB_ONLY, under
+/// `refuse_fb_only` (EmuCore/GS/TileGpuSplitRefuseFbOnly, default on). It is the only scoping on
+/// the table that makes speed AND accuracy better at once. Its second half writes no colour byte at
+/// all -- it re-rasterizes the draw's whole fill to carry a depth write -- and its first half paints
+/// the WHOLE colour with no test, which over-paints wherever the draw's own primitives occlude each
+/// other. That over-paint IS the MGS3 regression this file books above (6.617 -> 11.926 over 122,611
+/// px a frame) and AC3's (exact agreement 49.5% -> 2.44%), and both close when the class is refused.
+/// What it gives back is FlatOut 2's 19.809 -> 14.513 and SotC's 4.551 -> 4.213 over their changed
+/// masks. RGB_ONLY and ZB_ONLY keep splitting -- including the RGB_ONLY draw whose alpha the write
+/// mask already took, which the algebra below calls FB_ONLY and which is LEGO Star Wars' floor
+/// reflection. The predicate reads the register for that one reason and the refusal says so.
+///
 /// `color_mask` and `z_write` are the draw's own, after FBMSK and after the fold's AFAIL edit; the
 /// two returned passes always union back to them.
 constexpr GSTileAlphaSplit gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold fold, u32 atst, u32 aref, u32 afail,
-	u8 color_mask, bool z_write, bool z_test, bool independent_z, bool independent_colour, bool lever)
+	u8 color_mask, bool z_write, bool z_test, bool independent_z, bool independent_colour, bool lever,
+	bool refuse_fb_only)
 {
 	const bool varies = (fold == GSTileAlphaTestFold::Varies);
 	// The one-draw answer first, and it is today's unchanged: the draw's own mask and depth write,
@@ -483,6 +502,31 @@ constexpr GSTileAlphaSplit gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold fold, u32
 		// no depth attachment at all. Nothing here can express that, so this one draw keeps the
 		// discard -- the only case that does.
 		s.refusal = GSTileAlphaSplitRefusal::NoDepthTest;
+		return s;
+	}
+	if (afail == AFAIL_FB_ONLY && refuse_fb_only)
+	{
+		// The one class the split is refused on POLICY. Two costs, one predicate. The second half
+		// writes NO colour byte (pass[1] is {0, z_write}), so it re-rasterizes the draw's whole fill
+		// to carry a depth write and pays the full fragment bill for it -- SotC +1.00 ms and MGS3
+		// +2.19 ms of SD865 frame time. And the first half paints the WHOLE colour with no test at
+		// all, which over-paints wherever the draw's own primitives occlude each other: that is
+		// MGS3's 6.617 -> 11.926 mean-abs against Classic and AC3's 49.5% -> 2.44% exact agreement,
+		// the split round's only two wrong-way titles. Refusing hands the draw back to the discarding
+		// road, which loses the failing fragment's colour -- FlatOut 2's 19.809 -> 14.513 and SotC's
+		// 4.551 -> 4.213 are what that costs.
+		//
+		// ⚠️ ASKED OF THE REGISTER'S AFAIL, NOT OF `af`, AND THAT IS NOT A SLIP. The two differ on
+		// exactly one shape -- an AFAIL=RGB_ONLY draw whose alpha the write mask already took, which
+		// the algebra above rewrites to FB_ONLY -- and that shape is LEGO STAR WARS' FLOOR
+		// REFLECTION, the draw this whole road was written for (FBMSK=0xFF000000, depth-writing,
+		// 8.543 -> 1.764 whole-frame mean-abs against Classic). Refusing on `af` takes it back out,
+		// which is a 4.8x accuracy loss on the corpus's largest repair for no measured device time:
+        // legosw is 11 splits a frame, not 124. The two classes are structurally IDENTICAL here
+		// (whole colour in an untested first pass, depth alone in the second), so there is no
+		// derivation that separates them -- the register is the only thing that does, and which side
+		// of it a title falls on was MEASURED, per title, in the split's price record.
+		s.refusal = GSTileAlphaSplitRefusal::RefusedFbOnly;
 		return s;
 	}
 

@@ -354,7 +354,7 @@ SplitKeys SplitKeysFor(u32 afail, u8 color_mask, bool z_write, bool z_test, bool
 {
 	const GSTileAlphaSplit split = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL,
 		0x80, afail, color_mask, z_write, z_test, /*independent_z=*/true, /*independent_colour=*/true,
-		/*lever=*/true);
+		/*lever=*/true, /*refuse_fb_only=*/false);
 	const bool z_used = z_write || z_test;
 	const bool p1_z_write = (split.pass_count == 2) ? split.pass[1].z_write : split.pass[0].z_write;
 	const auto key = [&](bool half_z_write) {

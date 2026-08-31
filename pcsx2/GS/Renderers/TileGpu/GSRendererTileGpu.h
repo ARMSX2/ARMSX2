@@ -2389,6 +2389,11 @@ private:
 	/// IS the pass boundary, and a lever that moved mid-frame would leave accumulation's notion of
 	/// where a pass ends and the plan build's cut naming different draws.
 	bool m_split_shares_pass_key = false;
+	/// EmuCore/GS/TileGpuSplitRefuseFbOnly: the AFAIL=FB_ONLY class does not split -- it falls back to
+	/// the discarding one-draw road, which is what the whole lever off gives it. Read once at
+	/// construction like the levers above, and for their reason: it decides how many plan entries a
+	/// draw becomes, and both grouping sites count those.
+	bool m_split_refuse_fb_only = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -3725,6 +3730,7 @@ private:
 		u32 afail_split_reordered = 0; // ...split, with the failing fragments landing after the passing ones
 		u32 afail_split_discard = 0;   // ...still discarding: a write the console makes is lost
 		u32 afail_split_refused_no_ztest = 0; // ZTST=ALWAYS + depth write: no attachment for the second pass
+		u32 afail_split_refused_fb_only = 0;  // AFAIL=FB_ONLY, refused on policy (TileGpuSplitRefuseFbOnly)
 		u32 afail_split_overlap_asked = 0;    // overlap tests the split's order proof paid for
 		u32 afail_split_draws = 0;            // the extra plan entries the split emitted
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};

@@ -296,6 +296,10 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// rather than per draw for the reason the polarity below is: both grouping sites ask it and a
 	// mid-frame answer would have them disagree.
 	m_split_shares_pass_key = GSConfig.TileGpuSplitSharesPassKey;
+	// ...and the one class the split is refused on, read here for the same reason the two above are:
+	// it decides how many plan entries a draw becomes, and the pass cap and the plan build's (j - i)
+	// both count those.
+	m_split_refuse_fb_only = GSConfig.TileGpuSplitRefuseFbOnly;
 
 	// The merge's seed batch, said out loud on BOTH positions for the reason the write mask above
 	// is: its whole effect is how many render passes carry the same bytes, and a pass the executor
@@ -2602,6 +2606,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto afsr = stat([](const MF& f) { return f.afail_split_reordered; });
 	const auto afsd = stat([](const MF& f) { return f.afail_split_discard; });
 	const auto afsn = stat([](const MF& f) { return f.afail_split_refused_no_ztest; });
+	const auto afsf = stat([](const MF& f) { return f.afail_split_refused_fb_only; });
 	const auto afsx = stat([](const MF& f) { return f.afail_split_draws; });
 	const auto afso = stat([](const MF& f) { return f.afail_split_overlap_asked; });
 	const auto st = [&stat](StallSite s) {
@@ -2829,10 +2834,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// draw on it loses something the console writes. Counted on both arms -- an OFF run reports the
 	// same population an ON run does, or the two are not comparable.
 	Console.WriteLn("    of which the discard would drop a write: split exactly %.2f / %u   split with the "
-					"fragments reordered %.2f / %u   still discarding %.2f / %u (no depth test %.2f)   "
-					"extra draws %.2f / %u, overlap asked %.2f (TileGpuAfailSplit %s)",
-		afss.mean, afss.p50, afsr.mean, afsr.p50, afsd.mean, afsd.p50, afsn.mean, afsx.mean, afsx.p50,
-		afso.mean, m_afail_split ? "on" : "off");
+					"fragments reordered %.2f / %u   still discarding %.2f / %u (no depth test %.2f, "
+					"FB_ONLY refused %.2f / %u)   extra draws %.2f / %u, overlap asked %.2f "
+					"(TileGpuAfailSplit %s, TileGpuSplitRefuseFbOnly %s)",
+		afss.mean, afss.p50, afsr.mean, afsr.p50, afsd.mean, afsd.p50, afsn.mean, afsf.mean, afsf.p50,
+		afsx.mean, afsx.p50, afso.mean, m_afail_split ? "on" : "off", m_split_refuse_fb_only ? "on" : "off");
 	Console.WriteLn("  in-pass destination read: %.2f / %u draws admitted, %.2f / %u passes declared, "
 					"%.2f / %u draws inside a declaring pass",
 		srd.mean, srd.p50, srp.mean, srp.p50, srpd.mean, srpd.p50);
@@ -5305,14 +5311,14 @@ void GSRendererTileGpu::AccumulateDraw()
 	const bool cheap_z = !z_test || (ctx->TEST.ZTST == ZTST_GEQUAL && m_vt.m_eq.z);
 	const bool cheap_colour = !blend_reads_dest_alpha && date == 0;
 	GSTileAlphaSplit split = gsTileGpuPlanAlphaSplit(atst_fold, ctx->TEST.ATST, ctx->TEST.AREF, afail,
-		color_mask, z_write, z_test, cheap_z, cheap_colour, m_afail_split);
+		color_mask, z_write, z_test, cheap_z, cheap_colour, m_afail_split, m_split_refuse_fb_only);
 	if (split.reorders_fragments)
 	{
 		m_frame.afail_split_overlap_asked++;
 		if (GetPrimitiveOverlapDrawlist(false) == PRIM_OVERLAP_NO)
 		{
 			split = gsTileGpuPlanAlphaSplit(atst_fold, ctx->TEST.ATST, ctx->TEST.AREF, afail, color_mask,
-				z_write, z_test, true, true, m_afail_split);
+				z_write, z_test, true, true, m_afail_split, m_split_refuse_fb_only);
 		}
 	}
 	// The census of what became of the varying non-KEEP population. The number the design owes is
@@ -5324,6 +5330,15 @@ void GSRendererTileGpu::AccumulateDraw()
 		if (split.refusal == GSTileAlphaSplitRefusal::NoDepthTest)
 		{
 			m_frame.afail_split_refused_no_ztest++;
+			m_frame.afail_split_discard++;
+		}
+		else if (split.refusal == GSTileAlphaSplitRefusal::RefusedFbOnly)
+		{
+			// The policy refusal, counted apart from the structural one above and from the whole-lever
+			// OFF arm below, because it is the number that scopes the key: a title whose hash moves
+			// with EmuCore/GS/TileGpuSplitRefuseFbOnly on is a title with a non-zero count here, and
+			// nothing else may move.
+			m_frame.afail_split_refused_fb_only++;
 			m_frame.afail_split_discard++;
 		}
 		else if (!m_afail_split)

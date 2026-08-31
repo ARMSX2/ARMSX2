@@ -656,6 +656,12 @@ constexpr u32 kAfails[] = {AFAIL_KEEP, AFAIL_FB_ONLY, AFAIL_ZB_ONLY, AFAIL_RGB_O
 TEST(TileGpuAlphaTestFold, EveryVaryingDrawThePlanAcceptsLandsWhatTheConsoleLands)
 {
 	u32 checked = 0, split = 0;
+	// Both arms of EmuCore/GS/TileGpuSplitRefuseFbOnly. The contract is the same sentence under
+	// either: what the plan ACCEPTS must land what the console lands. Refusing a class does not
+	// weaken it, it narrows the population -- a refused draw goes back to the discarding road, which
+	// this contract has never covered and which the key's own test below pins instead.
+	for (bool refuse_fb_only : {false, true})
+	{
 	for (u32 atst : kRealAtsts)
 	{
 		for (u8 aref : {u8(0), u8(1), u8(64), u8(125), u8(128), u8(200), u8(255)})
@@ -669,7 +675,7 @@ TEST(TileGpuAlphaTestFold, EveryVaryingDrawThePlanAcceptsLandsWhatTheConsoleLand
 						for (bool zt : {false, true})
 						{
 							const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies,
-								atst, aref, afail, cm, zw, zt, true, true, true);
+								atst, aref, afail, cm, zw, zt, true, true, true, refuse_fb_only);
 							if (s.refusal != GSTileAlphaSplitRefusal::None)
 								continue;
 							split += (s.pass_count == 2) ? 1 : 0;
@@ -692,6 +698,7 @@ TEST(TileGpuAlphaTestFold, EveryVaryingDrawThePlanAcceptsLandsWhatTheConsoleLand
 				}
 			}
 		}
+	}
 	}
 	EXPECT_GT(checked, 10000u);
 	EXPECT_GT(split, 0u);
@@ -723,7 +730,7 @@ TEST(TileGpuAlphaTestFold, LegoswFloorReflectionPaintsItsColourWithNoBoundOnItsA
 	const Fold arm_b = gsTileFoldAlphaTest(true, ATST_GEQUAL, 125, kAnyLo, kAnyHi);
 	EXPECT_EQ(arm_b, Fold::Varies);
 	const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(
-		arm_b, ATST_GEQUAL, 125, AFAIL_RGB_ONLY, cm, zw, /*z_test=*/true, true, true, true);
+		arm_b, ATST_GEQUAL, 125, AFAIL_RGB_ONLY, cm, zw, /*z_test=*/true, true, true, true, true);
 	ASSERT_EQ(s.refusal, GSTileAlphaSplitRefusal::None);
 	ASSERT_EQ(s.pass_count, 2u);
 	EXPECT_EQ(s.pass[0].color_mask, kGSTileChannelsRGB);
@@ -751,7 +758,7 @@ TEST(TileGpuAlphaTestFold, TheOrderProofLabelsTheSplitAndNeverRefusesIt)
 	using Refusal = GSTileAlphaSplitRefusal;
 	const auto plan = [](u32 afail, bool zw, bool zt, bool iz, bool ic) {
 		return gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128, afail,
-			kGSTileChannelsRGBA, zw, zt, iz, ic, true);
+			kGSTileChannelsRGBA, zw, zt, iz, ic, true, /*refuse_fb_only=*/false);
 	};
 	// Depth the split would reorder: still split, still two passes, and the row says it reorders.
 	for (u32 afail : {u32(AFAIL_RGB_ONLY), u32(AFAIL_FB_ONLY), u32(AFAIL_ZB_ONLY)})
@@ -796,8 +803,14 @@ TEST(TileGpuAlphaTestFold, TheOrderProofLabelsTheSplitAndNeverRefusesIt)
 
 // The lever off is today's road, to the field: one draw, the live test wherever the two sides of
 // it land differently, and nothing else touched. That is what makes the A/B a clean one.
+//
+// Swept under BOTH positions of TileGpuSplitRefuseFbOnly, which pins the second half of that A/B:
+// the FB_ONLY key cannot change anything with the whole split off, because the planner returns
+// before it is read.
 TEST(TileGpuAlphaTestFold, TheLeverOffIsTheOneDrawRoadExactly)
 {
+	for (bool refuse_fb_only : {false, true})
+	{
 	for (u32 atst : kRealAtsts)
 	{
 		for (u32 afail : kAfails)
@@ -807,7 +820,7 @@ TEST(TileGpuAlphaTestFold, TheLeverOffIsTheOneDrawRoadExactly)
 				for (bool zw : {false, true})
 				{
 					const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, atst,
-						128, afail, cm, zw, true, true, true, false);
+						128, afail, cm, zw, true, true, true, false, refuse_fb_only);
 					EXPECT_EQ(s.pass_count, 1u);
 					EXPECT_EQ(s.pass[0].color_mask, cm);
 					EXPECT_EQ(s.pass[0].z_write, zw);
@@ -822,14 +835,202 @@ TEST(TileGpuAlphaTestFold, TheLeverOffIsTheOneDrawRoadExactly)
 			}
 		}
 	}
+	}
 	// A fold that decided needs no test whatever the lever says.
 	for (bool lever : {false, true})
 	{
 		const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::AllPass, ATST_GEQUAL, 128,
-			AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, true, true, true, lever);
+			AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, true, true, true, lever, true);
 		EXPECT_EQ(s.pass_count, 1u);
 		EXPECT_EQ(s.pass[0].atst, u8(ATST_ALWAYS));
 	}
+}
+
+// ============================================================================================
+// EmuCore/GS/TileGpuSplitRefuseFbOnly -- the ONE class refused on policy.
+//
+// The split's FB_ONLY shape puts the whole colour in a first pass with no test and leaves the
+// second pass writing NO COLOUR BYTE at all: it re-rasterizes the draw's entire fill to carry a
+// depth write. That is the whole of SotC's +1.00 ms and MGS3's +2.19 ms on the SD865, and the
+// first half's untested colour is what over-paints a draw whose own primitives occlude each other
+// -- MGS3 6.617 -> 11.926 mean-abs against Classic, AC3 exact agreement 49.5% -> 2.4%.
+//
+// The tests below pin the class by SHAPE rather than by name, because the predicate is asked of
+// the AFAIL the register algebra leaves and not of the register.
+// ============================================================================================
+
+namespace
+{
+constexpr bool SamePlan(const GSTileAlphaSplit& a, const GSTileAlphaSplit& b)
+{
+	if (a.pass_count != b.pass_count || a.refusal != b.refusal ||
+		a.reorders_fragments != b.reorders_fragments || a.discards_a_write != b.discards_a_write)
+		return false;
+	for (u32 i = 0; i < a.pass_count; i++)
+	{
+		if (a.pass[i].color_mask != b.pass[i].color_mask || a.pass[i].z_write != b.pass[i].z_write ||
+			a.pass[i].atst != b.pass[i].atst || a.pass[i].aref != b.pass[i].aref)
+			return false;
+	}
+	return true;
+}
+
+} // namespace
+
+// ⚠️ THE SCOPE, both directions, over the planner's whole domain. A draw is refused if and ONLY if
+// the register's AFAIL is FB_ONLY and the draw would otherwise have split; everything else is
+// BYTE-IDENTICAL between the two arms, field for field.
+//
+// Red three ways by construction: a refusal that also fires on RGB_ONLY or ZB_ONLY breaks the
+// SamePlan clause, a refusal that never fires breaks the `refused` clause, and a refusal asked of
+// the post-algebra class instead of the register breaks SamePlan on the RGB_ONLY-with-masked-alpha
+// shape -- which is the LEGO Star Wars draw the road exists for, pinned by name below.
+TEST(TileGpuAlphaTestFold, TheFbOnlyRefusalTakesTheRegistersFbOnlyClassAndNothingElse)
+{
+	u32 refused = 0, kept_split = 0, kept_one = 0;
+	for (u32 atst : kRealAtsts)
+	{
+		for (u8 aref : {u8(0), u8(128), u8(255)})
+		{
+			for (u32 afail : kAfails)
+			{
+				for (u8 cm = 0; cm <= 0xF; cm++)
+				{
+					for (bool zw : {false, true})
+					{
+						for (bool zt : {false, true})
+						{
+							const GSTileAlphaSplit off = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies,
+								atst, aref, afail, cm, zw, zt, true, true, true, false);
+							const GSTileAlphaSplit on = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies,
+								atst, aref, afail, cm, zw, zt, true, true, true, true);
+							const bool in_class = (afail == AFAIL_FB_ONLY) && off.pass_count == 2;
+							if (in_class)
+							{
+								refused++;
+								EXPECT_EQ(on.refusal, GSTileAlphaSplitRefusal::RefusedFbOnly)
+									<< afail << " " << u32(cm) << " " << zw << " " << zt;
+								EXPECT_EQ(on.pass_count, 1u);
+							}
+							else
+							{
+								(off.pass_count == 2 ? kept_split : kept_one)++;
+								EXPECT_TRUE(SamePlan(off, on))
+									<< afail << " " << u32(cm) << " " << zw << " " << zt;
+								EXPECT_NE(on.refusal, GSTileAlphaSplitRefusal::RefusedFbOnly);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// Every branch of the sweep is actually populated, or it proves nothing: draws refused, draws
+	// that go on splitting, and draws that were never splitting.
+	EXPECT_GT(refused, 0u);
+	EXPECT_GT(kept_split, 0u);
+	EXPECT_GT(kept_one, 0u);
+}
+
+// ...and what a refused draw becomes: the pre-split one-draw road, field for field. That is the
+// key's whole contract -- it hands the class back to the road TileGpuAfailSplit=false gives every
+// class -- and it is why the census still counts the draw as discarding a write.
+TEST(TileGpuAlphaTestFold, ARefusedFbOnlyDrawIsExactlyTheOneDrawRoad)
+{
+	for (u32 atst : kRealAtsts)
+	{
+		for (u8 cm = 1; cm <= 0xF; cm++)
+		{
+			const GSTileAlphaSplit refused = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, atst,
+				128, AFAIL_FB_ONLY, cm, /*z_write=*/true, /*z_test=*/true, true, true, true, true);
+			const GSTileAlphaSplit lever_off = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, atst,
+				128, AFAIL_FB_ONLY, cm, /*z_write=*/true, /*z_test=*/true, true, true, false, true);
+			ASSERT_EQ(refused.refusal, GSTileAlphaSplitRefusal::RefusedFbOnly) << u32(cm);
+			EXPECT_EQ(refused.pass_count, 1u);
+			EXPECT_EQ(refused.pass[0].color_mask, cm);
+			EXPECT_TRUE(refused.pass[0].z_write);
+			EXPECT_EQ(refused.pass[0].atst, u8(atst)); // the live discarding test is back
+			EXPECT_EQ(refused.pass[0].aref, u8(128));
+			// The population line the census hangs off: a refused draw is still a draw the one-draw
+			// road loses a write on, and it is counted apart from the whole-lever-off arm.
+			EXPECT_TRUE(refused.discards_a_write);
+			// Everything but the refusal label is the lever-off answer.
+			EXPECT_EQ(lever_off.refusal, GSTileAlphaSplitRefusal::None);
+			EXPECT_EQ(refused.pass_count, lever_off.pass_count);
+			EXPECT_EQ(refused.pass[0].color_mask, lever_off.pass[0].color_mask);
+			EXPECT_EQ(refused.pass[0].z_write, lever_off.pass[0].z_write);
+			EXPECT_EQ(refused.pass[0].atst, lever_off.pass[0].atst);
+			EXPECT_EQ(refused.pass[0].aref, lever_off.pass[0].aref);
+		}
+	}
+}
+
+// ⚠️ THE PREDICATE READS THE REGISTER, AND THIS IS THE DRAW THAT DECIDES IT. LEGO Star Wars' floor
+// reflection is AFAIL=RGB_ONLY with FBMSK=0xFF000000, so the write mask has already taken its alpha
+// and the register algebra rewrites it to FB_ONLY -- structurally the same two passes MGS3's draws
+// take. Refusing the POST-ALGEBRA class takes this draw out of the split, which is the corpus's
+// largest single accuracy repair (8.543 -> 1.764 whole-frame mean-abs against Classic) thrown away
+// for 11 draws a frame of device time. The two classes cannot be told apart by shape; the register
+// is the only thing that separates them, and which side a title falls on was measured per title.
+TEST(TileGpuAlphaTestFold, TheFbOnlyRefusalKeepsTheLegoswFloorReflectionSplitting)
+{
+	// The draw, as its registers give it: PSMT4 sprite, ATST=GEQUAL AREF=125, AFAIL=RGB_ONLY,
+	// FBMSK=0xFF000000 (alpha kept, RGB written), ZTE=1 ZTST=GEQUAL ZMSK=0.
+	const u8 cm = gsTileFrameColorWriteMask(0xFF000000u, kC32, false, AFAIL_RGB_ONLY);
+	ASSERT_EQ(cm, kGSTileChannelsRGB);
+	const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 125,
+		AFAIL_RGB_ONLY, cm, /*z_write=*/true, /*z_test=*/true, true, true, true, /*refuse_fb_only=*/true);
+	EXPECT_EQ(s.refusal, GSTileAlphaSplitRefusal::None);
+	EXPECT_EQ(s.pass_count, 2u);
+	EXPECT_EQ(s.pass[0].color_mask, kGSTileChannelsRGB);
+	EXPECT_EQ(s.pass[0].atst, u8(ATST_ALWAYS));
+	EXPECT_EQ(s.pass[1].color_mask, 0u);
+	// ...and it is the SAME two passes it took before the key existed, so the key costs it nothing.
+	const GSTileAlphaSplit before = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL,
+		125, AFAIL_RGB_ONLY, cm, true, true, true, true, true, /*refuse_fb_only=*/false);
+	EXPECT_TRUE(SamePlan(s, before));
+}
+
+// The rest of the class boundary, by shape.
+TEST(TileGpuAlphaTestFold, TheFbOnlyRefusalLeavesTheOtherTwoModesAlone)
+{
+	// OutRun 2006's shape -- AFAIL=FB_ONLY with no depth write -- is NOT refused, because it
+	// never split and never discarded: passing and failing fragments write the same channels, so the
+	// algebra takes the test away entirely and there is nothing for the key to hand back.
+	const GSTileAlphaSplit outrun = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL,
+		128, AFAIL_FB_ONLY, kGSTileChannelsRGBA, /*z_write=*/false, /*z_test=*/true, true, true, true,
+		true);
+	EXPECT_EQ(outrun.refusal, GSTileAlphaSplitRefusal::None);
+	EXPECT_EQ(outrun.pass_count, 1u);
+	EXPECT_EQ(outrun.pass[0].atst, u8(ATST_ALWAYS));
+	EXPECT_FALSE(outrun.discards_a_write);
+
+	// The RGB_ONLY draw that keeps its alpha write splits as it always did -- the key is not a
+	// blanket refusal of the split.
+	const GSTileAlphaSplit rgb = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128,
+		AFAIL_RGB_ONLY, kGSTileChannelsRGBA, /*z_write=*/true, /*z_test=*/true, true, true, true, true);
+	EXPECT_EQ(rgb.refusal, GSTileAlphaSplitRefusal::None);
+	EXPECT_EQ(rgb.pass_count, 2u);
+	EXPECT_EQ(rgb.pass[1].color_mask, u8(kGSTileChannelAlpha));
+	// ...and so does ZB_ONLY, whose second half also writes no colour but whose FIRST half keeps the
+	// real comparison. Naming the class by "pass[1] writes nothing" alone would take this one too.
+	const GSTileAlphaSplit zb = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128,
+		AFAIL_ZB_ONLY, kGSTileChannelsRGBA, /*z_write=*/true, /*z_test=*/true, true, true, true, true);
+	EXPECT_EQ(zb.refusal, GSTileAlphaSplitRefusal::None);
+	EXPECT_EQ(zb.pass_count, 2u);
+	EXPECT_EQ(zb.pass[0].atst, u8(ATST_GEQUAL));
+	EXPECT_EQ(zb.pass[1].atst, u8(ATST_LESS));
+}
+
+// The two refusals do not collide, and the structural one keeps priority: a ZTST=ALWAYS FB_ONLY
+// draw that writes depth cannot be split AT ALL, so it must report that and not the policy.
+TEST(TileGpuAlphaTestFold, TheStructuralRefusalOutranksThePolicyOne)
+{
+	const GSTileAlphaSplit s = gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128,
+		AFAIL_FB_ONLY, kGSTileChannelsRGBA, /*z_write=*/true, /*z_test=*/false, true, true, true, true);
+	EXPECT_EQ(s.refusal, GSTileAlphaSplitRefusal::NoDepthTest);
+	EXPECT_EQ(s.pass_count, 1u);
+	EXPECT_TRUE(s.discards_a_write);
 }
 
 // The comparison that accepts exactly what its partner rejects, which is what the ZB_ONLY split
@@ -857,31 +1058,35 @@ TEST(TileGpuAlphaTestFold, TheInvertedComparisonPartitionsEveryAlpha)
 // the same channels, so the test was never emitted and nothing was ever dropped.
 TEST(TileGpuAlphaTestFold, TheDiscardCensusCountsOnlyDrawsThatActuallyLoseAWrite)
 {
-	const auto plan = [](u32 afail, u8 cm, bool zw, bool lever) {
+	const auto plan = [](u32 afail, u8 cm, bool zw, bool lever, bool refuse_fb_only = false) {
 		return gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::Varies, ATST_GEQUAL, 128, afail, cm, zw,
-			/*z_test=*/true, true, true, lever);
+			/*z_test=*/true, true, true, lever, refuse_fb_only);
 	};
+	// ⚠️ The census must read the same on every arm or the arms are not comparable, so the sweep runs
+	// over the FB_ONLY refusal too: a refused draw is still a draw the one-draw road drops a write on,
+	// and `discards_a_write` is computed above every refusal for exactly that reason.
+	for (bool refuse_fb_only : {false, true})
 	for (bool lever : {false, true})
 	{
 		// OutRun's shape: FB_ONLY, no depth write. Passing and failing fragments write the same
 		// colour, so the one-draw road emits no test at all.
-		EXPECT_FALSE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever).discards_a_write);
-		EXPECT_EQ(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever).pass[0].atst, u8(ATST_ALWAYS));
+		EXPECT_FALSE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever, refuse_fb_only).discards_a_write);
+		EXPECT_EQ(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, false, lever, refuse_fb_only).pass[0].atst, u8(ATST_ALWAYS));
 		// ZB_ONLY with no colour write is the same statement the other way round.
-		EXPECT_FALSE(plan(AFAIL_ZB_ONLY, 0, true, lever).discards_a_write);
+		EXPECT_FALSE(plan(AFAIL_ZB_ONLY, 0, true, lever, refuse_fb_only).discards_a_write);
 		// KEEP is what the discard already does exactly.
-		EXPECT_FALSE(plan(AFAIL_KEEP, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		EXPECT_FALSE(plan(AFAIL_KEEP, kGSTileChannelsRGBA, true, lever, refuse_fb_only).discards_a_write);
 		// A failing fragment with nothing left to write: the mask already took it.
-		EXPECT_FALSE(plan(AFAIL_RGB_ONLY, kGSTileChannelAlpha, true, lever).discards_a_write);
+		EXPECT_FALSE(plan(AFAIL_RGB_ONLY, kGSTileChannelAlpha, true, lever, refuse_fb_only).discards_a_write);
 
 		// ...and the three that do lose something.
-		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
-		EXPECT_TRUE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
-		EXPECT_TRUE(plan(AFAIL_ZB_ONLY, kGSTileChannelsRGBA, true, lever).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGBA, true, lever, refuse_fb_only).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_FB_ONLY, kGSTileChannelsRGBA, true, lever, refuse_fb_only).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_ZB_ONLY, kGSTileChannelsRGBA, true, lever, refuse_fb_only).discards_a_write);
 		// The RGB_ONLY draw whose alpha the register already masked and which writes no depth: the
 		// test decides nothing and yet the one-draw road still discarded on it. Repaired without a
 		// split at all, by dropping the test.
-		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, lever).discards_a_write);
+		EXPECT_TRUE(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, lever, refuse_fb_only).discards_a_write);
 	}
 	EXPECT_EQ(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, true).pass_count, 1u);
 	EXPECT_EQ(plan(AFAIL_RGB_ONLY, kGSTileChannelsRGB, false, true).pass[0].atst, u8(ATST_ALWAYS));
@@ -890,7 +1095,7 @@ TEST(TileGpuAlphaTestFold, TheDiscardCensusCountsOnlyDrawsThatActuallyLoseAWrite
 	for (u32 afail : kAfails)
 	{
 		EXPECT_FALSE(gsTileGpuPlanAlphaSplit(GSTileAlphaTestFold::AllFail, ATST_GEQUAL, 128, afail,
-			kGSTileChannelsRGBA, true, true, true, true, true)
+			kGSTileChannelsRGBA, true, true, true, true, true, true)
 						 .discards_a_write);
 	}
 }
