@@ -146,6 +146,9 @@ fun HomeScreen(
     // Separate from menuGame: the category sheet REPLACES the game menu rather than nesting
     // inside it, so the menu closes as this opens and B backs out of one modal, not two.
     var categoryGame by remember { mutableStateOf<GameInfo?>(null) }
+    // Category being renamed/deleted. Reachable by long-press from either presentation:
+    // the section header (Grid/Shelf) or a row in the filter picker (List).
+    var manageCategory by remember { mutableStateOf<String?>(null) }
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
@@ -590,7 +593,11 @@ fun HomeScreen(
                                                     .clip(RoundedCornerShape(10.dp))
                                                     .controllerFocusable("category-pick-${'$'}label", RoundedCornerShape(10.dp),
                                                         onConfirm = { viewModel.setCategoryFilter(name); picking = false })
-                                                    .clickable { viewModel.setCategoryFilter(name); picking = false }
+                                                    .combinedClickable(
+                                                        onClick = { viewModel.setCategoryFilter(name); picking = false },
+                                                        // "All games" is not a category and has nothing to manage.
+                                                        onLongClick = name?.let { { picking = false; manageCategory = it } },
+                                                    )
                                                     .padding(vertical = 12.dp, horizontal = 8.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                             ) {
@@ -729,9 +736,13 @@ fun HomeScreen(
                             Column {
                                 SectionTitle(
                                     categoryName,
-                                    modifier = Modifier.padding(
-                                        start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
-                                    ),
+                                    detail = categoryGames.size.toString(),
+                                    modifier = Modifier
+                                        .padding(start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp)
+                                        .combinedClickable(
+                                            onClick = {},
+                                            onLongClick = { manageCategory = categoryName },
+                                        ),
                                 )
                                 Spacer(Modifier.height(9.dp))
                                 if (state.layout == LibraryLayout.Shelf) {
@@ -1071,6 +1082,127 @@ fun HomeScreen(
 
     categoryGame?.let { game ->
         CategorySheet(game = game, onDismiss = { categoryGame = null })
+    }
+
+    manageCategory?.let { category ->
+        CategoryManageSheet(
+            category = category,
+            onDismiss = { manageCategory = null },
+            onRenamed = { from, to ->
+                com.armsx2.GameCategories.rename(from, to)
+                // Follow the rename if this was the active filter, rather than dropping the
+                // user back to All Games because the name they were looking at stopped existing.
+                if (state.categoryFilter == from) viewModel.setCategoryFilter(to)
+                manageCategory = null
+            },
+            onDeleted = {
+                com.armsx2.GameCategories.delete(category)
+                if (state.categoryFilter == category) viewModel.setCategoryFilter(null)
+                manageCategory = null
+            },
+        )
+    }
+}
+
+/**
+ * Rename or delete one category. Reached by long-pressing its section header (Grid/Shelf) or its
+ * row in the filter picker (List) -- the two places the name is already on screen, so there is no
+ * separate management screen to find.
+ *
+ * Delete asks first and says what it does NOT do: the games stay in the library. Without that line
+ * "Delete category" reads like it might remove the games in it, which is the one thing a user
+ * cannot undo from here.
+ */
+@Composable
+private fun CategoryManageSheet(
+    category: String,
+    onDismiss: () -> Unit,
+    onRenamed: (String, String) -> Unit,
+    onDeleted: () -> Unit,
+) {
+    var name by remember(category) { mutableStateOf(category) }
+    var confirmingDelete by remember(category) { mutableStateOf(false) }
+    val count = com.armsx2.GameCategories.members(category).size
+
+    com.armsx2.ui.common.PadModal(
+        key = "category-manage",
+        onDismiss = onDismiss,
+        alignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SectionTitle(category, detail = count.toString())
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text(str("games.categories.rename")) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    androidx.compose.material3.TextButton(
+                        enabled = name.isNotBlank() && name.trim() != category,
+                        onClick = { onRenamed(category, name.trim()) },
+                    ) { Text(str("games.categories.rename")) }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+                if (!confirmingDelete) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .controllerFocusable("category-delete", RoundedCornerShape(12.dp),
+                                onConfirm = { confirmingDelete = true })
+                            .clickable { confirmingDelete = true }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("\uD83D\uDDD1\uFE0F", Modifier.padding(end = 10.dp))
+                        Text(
+                            str("games.categories.delete"),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    Text(
+                        String.format(str("games.categories.deleteConfirm"), category),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        androidx.compose.material3.TextButton(onClick = { confirmingDelete = false }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = onDeleted) {
+                            Text(
+                                str("games.categories.delete"),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
