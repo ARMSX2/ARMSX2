@@ -1881,6 +1881,46 @@ struct Pcsx2Config
 					//
 					// Default TRUE. OFF is the one-pass-per-page road, byte for byte.
 					TileGpuMergeSeedBatch : 1,
+					// A DATE pass snapshots the pixels its DATE draws read, not its whole
+					// colour target.
+					//
+					// The destination-alpha test needs the destination as it stood BEFORE
+					// the pass opened, and a tiler cannot be asked for that in-pass on a
+					// device without an ordered self-read — so the planner copies the colour
+					// target into a scratch surface the pass samples. It copied ALL of it:
+					// GSVector4i(0, 0, tsz.x, tsz.y), 140 pages / 1.147 MB for a 640x448
+					// target, once per pass carrying a DATE draw, whatever those draws
+					// actually looked at. Stuntman takes 1,179 of them a drawn frame on the
+					// SD865 — 2.70 GB of image copy a frame, which at that device's 44 GB/s
+					// DRAM peak cannot cost less than ~61 ms of an 86 ms GPU frame, and the
+					// same dump on Mali (which admits the in-pass read and takes no snapshot
+					// at all) runs the identical draw stream in 51.87 ms against 131.54.
+					//
+					// WHAT BOUNDS IT is one shader line. A snapshot has exactly one consumer:
+					// `texelFetch(u_snapshot, ivec2(gl_FragCoord.xy), 0).a` in tilegpu.glsl,
+					// under the draw's own `date != 0`. That is an unfiltered fetch at the
+					// fragment's OWN coordinate — no filter footprint, no gather, no
+					// derivative — so a DATE draw reads exactly the pixels it rasterizes.
+					// The union of the pass's DATE draws' scissor-clipped bounding boxes
+					// therefore covers every read that snapshot can serve. Those boxes are
+					// the same ones the planner already trusts to bound a draw's WRITES when
+					// it decides a DATE draw needs a fresh snapshot, and per-draw coverage is
+					// Classic's own rule for the same job: its DATE stencil pre-pass is
+					// SetupDATE(rt, ds, datm, config.drawarea).
+					//
+					// The copy already lands at the target's own coordinates, so the fetch
+					// does not move with the rect and no shader changes. The rect is rounded
+					// out to the 64x32-pixel page grid — nothing requires it, a copy of an
+					// uncompressed colour format is exact per pixel, but it keeps a copy a
+					// whole number of the 8 KB pages the census counts.
+					//
+					// IDENTITY BY CONSTRUCTION, so a moved pixel on either arm is a DEFECT
+					// and not a trade: the pixels the pass samples are the same pixels, off a
+					// smaller copy of them. Verified byte-for-byte on all 22 corpus dumps with
+					// the key ON and again with it OFF.
+					//
+					// Default TRUE. OFF is the whole-target copy as it shipped on 2026-08-30.
+					TileGpuNarrowDateSnapshot : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

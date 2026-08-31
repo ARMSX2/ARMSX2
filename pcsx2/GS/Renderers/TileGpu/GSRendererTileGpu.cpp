@@ -300,6 +300,16 @@ GSRendererTileGpu::GSRendererTileGpu()
 		m_merge_seed_batch ? "a BATCH of pages in one render pass" : "ONE PAGE per render pass",
 		m_merge_seed_batch ? "on" : "off", m_merge_seed_batch ? "in each page's entry" : "in the op");
 
+	// The DATE snapshot's rect, said out loud on BOTH positions for the reason the seed batch above
+	// is: its whole effect is how many bytes a copy moves, and a copy leaves no trace in the plan
+	// pass census. The snapshot line's page columns are the only place either arm can be read, and a
+	// number with no arm beside it in the log is a number nobody can attribute.
+	m_narrow_date_snapshot = GSConfig.TileGpuNarrowDateSnapshot;
+	Console.WriteLn("TileGpu: a DATE pass snapshots %s (TileGpuNarrowDateSnapshot %s).",
+		m_narrow_date_snapshot ? "the pages its DATE draws READ, rounded out to the page grid" :
+								 "its WHOLE colour target",
+		m_narrow_date_snapshot ? "on" : "off");
+
 	// The sixteen-bit CLUT gather, said out loud for the same reason the write mask above is: a
 	// lever whose whole effect is that a readback DOESN'T happen leaves no other trace in a log, and
 	// the population it serves is one title of twenty-one.
@@ -2552,6 +2562,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
+	const auto snapp = stat([](const MF& f) { return f.snapshot_pages; });
+	const auto snapf = stat([](const MF& f) { return f.snapshot_full_pages; });
+	const auto snapn = stat([](const MF& f) { return f.snapshot_narrowed; });
+	const auto snaph = [&stat](u32 b) { return stat([b](const MF& f) { return f.snapshot_page_hist[b]; }); };
 	const auto self = stat([](const MF& f) { return f.self_reads; });
 	const auto binds = stat([](const MF& f) { return f.tex_binds; });
 	const auto bindbrk = stat([](const MF& f) { return f.tex_bind_breaks; });
@@ -2658,6 +2672,27 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
+	// What those snapshots MOVE, which the count above cannot say: a copy is 8 KB a page, and the
+	// road's whole cost is bytes. Both bills printed side by side off the one run -- what the copies
+	// cover and what copying the whole target would have -- because the lever's value is the
+	// difference and a difference read across two runs is two scenes, not one change. The megabytes
+	// are the same numbers in the units the DRAM bandwidth argument is made in.
+	if (snaps.mean > 0.0)
+	{
+		Console.WriteLn("  DATE snapshot copies: %.2f / %u pages (%.2f MB/f) against %.2f / %u full-target "
+						"(%.2f MB/f), %.2f / %u narrowed of %.2f / %u (TileGpuNarrowDateSnapshot %s)",
+			snapp.mean, snapp.p50, snapp.mean * 8192.0 / 1048576.0, snapf.mean, snapf.p50,
+			snapf.mean * 8192.0 / 1048576.0, snapn.mean, snapn.p50, snaps.mean, snaps.p50,
+			m_narrow_date_snapshot ? "on" : "off");
+		// The distribution, because a mean over "one page" and "the whole target" is a number no
+		// copy has. Doubling bands, the last one open; every band printed whether or not it has a
+		// population, so two runs' lines sit under each other column for column.
+		Console.WriteLn("    pages per copy: 1 %.2f/%u  2 %.2f/%u  3-4 %.2f/%u  5-8 %.2f/%u  9-16 %.2f/%u  "
+						"17-32 %.2f/%u  33-64 %.2f/%u  65+ %.2f/%u",
+			snaph(0).mean, snaph(0).p50, snaph(1).mean, snaph(1).p50, snaph(2).mean, snaph(2).p50,
+			snaph(3).mean, snaph(3).p50, snaph(4).mean, snaph(4).p50, snaph(5).mean, snaph(5).p50,
+			snaph(6).mean, snaph(6).p50, snaph(7).mean, snaph(7).p50);
+	}
 	// Surface-identity containment, counted and not taken. The two break columns are the same draw
 	// stream keyed twice -- on the surfaces the draws take, and on the containers they would take --
 	// so the difference is the passes the fold would remove and nothing else. Colour first because
@@ -7331,20 +7366,45 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 					m_frame.scissor_extra_calls++;
 			}
 
-			// A pass with a DATE draw snapshots its colour target before opening.
+			// A pass with a DATE draw snapshots the pixels those draws read, before opening.
 			pass.first_snapshot = static_cast<u32>(m_plan_snapshots.size());
 			pass.snapshot_count = 0;
 			// ...and takes none when the read serves DATE: the live pixel is the destination, exactly.
+			//
+			// The rect is the union of the DATE draws' own scissor-clipped boxes and not the whole
+			// target, which is what it used to be. A snapshot has ONE consumer -- the texelFetch at
+			// `gl_FragCoord.xy` in tilegpu.glsl, under the draw's own `date != 0` -- so a DATE draw
+			// reads exactly the pixels it rasterizes and the union covers every read the pass can
+			// make of it. Gathered here rather than folded in the loop so the rule itself is a pure
+			// function the tests can break on purpose (gsTileGpuSnapshotRect).
+			//
+			// Every draw in the pass shares the colour surface -- it is in the pass key -- so these
+			// rectangles and the target are in one pixel space, which is also the space the copy
+			// lands in and the space gl_FragCoord counts in.
+			m_snapshot_reads.clear();
 			for (u32 d = i; d < j; d++)
 			{
 				if (m_plan_pending[d].date != 0 && (pass.self_mask & GSDevice::kGSTileGpuSelfDate) == 0)
-				{
-					const GSVector2i tsz = m_plan_targets[tp.frame_target]->GetSize();
-					m_plan_snapshots.push_back(GSDevice::GSTileGpuSnapshotCopy{tp.frame_target, GSVector4i(0, 0, tsz.x, tsz.y)});
-					pass.snapshot_count = 1;
-					m_frame.snapshots++;
-					break;
-				}
+					m_snapshot_reads.push_back(m_plan_pending[d].rect);
+			}
+			if (!m_snapshot_reads.empty())
+			{
+				const GSVector2i tsz = m_plan_targets[tp.frame_target]->GetSize();
+				const GSVector4i full(0, 0, tsz.x, tsz.y);
+				const GSVector4i rect = m_narrow_date_snapshot ?
+											GSDevice::gsTileGpuSnapshotRect(m_snapshot_reads, tsz.x, tsz.y) :
+											full;
+				m_plan_snapshots.push_back(GSDevice::GSTileGpuSnapshotCopy{tp.frame_target, rect});
+				pass.snapshot_count = 1;
+				m_frame.snapshots++;
+				// Both roads' bills, off the one run: what this copy costs and what the whole-target
+				// copy it replaces would have. Counted on BOTH arms, so the census is answerable for
+				// the change without a second scene to compare against.
+				const u32 pages = GSDevice::gsTileGpuSnapshotPages(rect);
+				m_frame.snapshot_pages += pages;
+				m_frame.snapshot_full_pages += GSDevice::gsTileGpuSnapshotPages(full);
+				m_frame.snapshot_narrowed += rect.eq(full) ? 0u : 1u;
+				m_frame.snapshot_page_hist[GSDevice::gsTileGpuSnapshotPageBucket(pages)]++;
 			}
 
 			// The cap, checked rather than trusted. Mechanical because the failure it guards against

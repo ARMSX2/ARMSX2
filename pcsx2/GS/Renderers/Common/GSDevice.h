@@ -2421,6 +2421,128 @@ public:
 		return GSTileGpuScissorRect{lx, ly, (hx > lx) ? (hx - lx) : 0, (hy > ly) ? (hy - ly) : 0};
 	}
 
+	/// The GS page grid in PIXELS of a 32-bit colour target: a PSMCT32 page is 64x32 pixels, and
+	/// 64 * 32 * 4 = 8192 bytes is the 8 KB page the whole byte road is counted in. Used to round a
+	/// snapshot copy out, and to count what one costs in the units every other TileGpu census uses.
+	static constexpr int kGSTileGpuSnapshotPageWidth = 64;
+	static constexpr int kGSTileGpuSnapshotPageHeight = 32;
+
+	/// The rectangle a pass's snapshot copy has to cover: the union of the rectangles its DATE draws
+	/// read, rounded out to the page grid and clamped to the target.
+	///
+	/// The snapshot road copies the colour target into a scratch surface the pass then samples, and
+	/// it copied the WHOLE target -- 140 pages, 1.147 MB, for a target of 640x448 -- once per pass
+	/// with a DATE draw in it, whatever those draws actually looked at. Stuntman takes 1,179 of them
+	/// a drawn frame on the SD865: 2.70 GB of image copy, which at that device's 44 GB/s DRAM peak
+	/// cannot cost less than ~61 ms of an 86 ms GPU frame.
+	///
+	/// WHAT BOUNDS THE NARROWING, and it is a single shader line. The only consumer of a snapshot is
+	/// `texelFetch(u_snapshot, ivec2(gl_FragCoord.xy), 0).a` in tilegpu.glsl, under the draw's own
+	/// `date != 0`: an unfiltered fetch at the fragment's OWN coordinate, so a DATE draw reads
+	/// exactly the pixels it rasterizes and nothing beside them -- no filter footprint, no gather, no
+	/// derivative. The copy already lands at the target's own coordinates, so the fetch does not move
+	/// with the rect and no shader changes. Every draw of a pass shares its colour surface (it is in
+	/// the pass key), and a draw's `rect` is its scissor-clipped bbox in that surface's pixel space,
+	/// which is the SAME rectangle the planner already trusts to bound the draw's writes when it
+	/// decides whether a DATE draw needs a fresh snapshot. So the union over the pass's DATE draws
+	/// covers every read any consumer of that snapshot can make. It is Classic's own rule: its DATE
+	/// stencil pre-pass is `SetupDATE(rt, ds, datm, config.drawarea)`, per-draw coverage, and has
+	/// been since long before this renderer.
+	///
+	/// NOTHING REQUIRES THE ROUND-OUT. The copy is a vkCmdCopyImage over an uncompressed colour
+	/// format, whose block is 1x1, and the reader is a texelFetch -- both are exact at single-pixel
+	/// granularity. It is rounded out anyway so that a copy costs a whole number of the pages the
+	/// census reports, and so that its rows stay 256-byte multiples for whatever the driver does
+	/// underneath. The margin is at most one page in each direction.
+	///
+	/// An EMPTY union comes back as the WHOLE target, not as nothing. That is the fail-safe and it
+	/// is the point of putting the rule here: outside the copied rect the scratch holds its previous
+	/// tenant's pixels, so a caller that under-states its reads gets garbage rather than a stale
+	/// pixel. A caller that hands this function nothing gets a slow pass instead.
+	///
+	/// 2026-08-30.
+	static GSVector4i gsTileGpuSnapshotRect(
+		std::span<const GSVector4i> reads, int target_width, int target_height)
+	{
+		const GSVector4i full(0, 0, target_width, target_height);
+		if (target_width <= 0 || target_height <= 0)
+			return full;
+
+		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		bool any = false;
+		for (const GSVector4i& rd : reads)
+		{
+			// Clamped through the executor's own scissor transcription, so a rectangle reaching past
+			// the target arrives clipped and one that admits nothing arrives as a zero extent.
+			const GSTileGpuScissorRect r =
+				gsTileGpuScissorRect(rd.x, rd.y, rd.z, rd.w, target_width, target_height);
+			if (r.width <= 0 || r.height <= 0)
+				continue;
+			if (!any)
+			{
+				x0 = r.x;
+				y0 = r.y;
+				x1 = r.x + r.width;
+				y1 = r.y + r.height;
+				any = true;
+				continue;
+			}
+			x0 = (r.x < x0) ? r.x : x0;
+			y0 = (r.y < y0) ? r.y : y0;
+			x1 = ((r.x + r.width) > x1) ? (r.x + r.width) : x1;
+			y1 = ((r.y + r.height) > y1) ? (r.y + r.height) : y1;
+		}
+		if (!any)
+			return full;
+
+		constexpr int gw = kGSTileGpuSnapshotPageWidth;
+		constexpr int gh = kGSTileGpuSnapshotPageHeight;
+		const int lx = x0 - (x0 % gw);
+		const int ly = y0 - (y0 % gh);
+		int hx = ((x1 + gw - 1) / gw) * gw;
+		int hy = ((y1 + gh - 1) / gh) * gh;
+		hx = (hx > target_width) ? target_width : hx;
+		hy = (hy > target_height) ? target_height : hy;
+		return GSVector4i(lx, ly, hx, hy);
+	}
+
+	/// What a snapshot copy of `r` costs, in the 8 KB pages the rest of the TileGpu census counts.
+	/// Rounded UP on both axes, so a target whose height is not a whole number of page rows -- 448 is
+	/// fourteen, but 224 is seven and a half -- is charged for the partial row it copies.
+	static constexpr u32 gsTileGpuSnapshotPages(const GSVector4i& r)
+	{
+		const int w = (r.z > r.x) ? (r.z - r.x) : 0;
+		const int h = (r.w > r.y) ? (r.w - r.y) : 0;
+		if (w <= 0 || h <= 0)
+			return 0;
+		const int cols = (w + kGSTileGpuSnapshotPageWidth - 1) / kGSTileGpuSnapshotPageWidth;
+		const int rows = (h + kGSTileGpuSnapshotPageHeight - 1) / kGSTileGpuSnapshotPageHeight;
+		return static_cast<u32>(cols) * static_cast<u32>(rows);
+	}
+
+	/// The census bucket a snapshot copy's page count falls in. Doubling bands, because the question
+	/// the distribution answers is "are these copies small" and the answer is an order of magnitude,
+	/// not a page: 140 is the whole target on the corpus's 640x448 dumps and 1 is one page.
+	static constexpr u32 kGSTileGpuSnapshotPageBuckets = 8;
+	static constexpr u32 gsTileGpuSnapshotPageBucket(u32 pages)
+	{
+		if (pages <= 1)
+			return 0;
+		if (pages <= 2)
+			return 1;
+		if (pages <= 4)
+			return 2;
+		if (pages <= 8)
+			return 3;
+		if (pages <= 16)
+			return 4;
+		if (pages <= 32)
+			return 5;
+		if (pages <= 64)
+			return 6;
+		return 7;
+	}
+
 	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
 	/// pass's draws sample, so a draw reads a pre-pass version of pixels the pass also writes
 	/// without a raster-order hazard. Taken before the pass it feeds opens; one per pass. Today
@@ -2428,6 +2550,10 @@ public:
 	/// on the snapshot's alpha bit 7 against DATM) -- the planner opens a new pass whenever a
 	/// DATE draw's rect intersects what the pass already wrote, so the snapshot is exact for it.
 	/// The in-pass declared read (ROAA) replaces this road where the device has it.
+	///
+	/// `src_rect` is the pass's own DATE-read coverage, not the whole target: see
+	/// gsTileGpuSnapshotRect, which is what builds it and what states why the narrowing is sound.
+	/// Outside it the scratch holds its previous tenant, so nothing may sample there.
 	struct GSTileGpuSnapshotCopy
 	{
 		u32 src_target;

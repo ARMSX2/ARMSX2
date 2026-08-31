@@ -845,6 +845,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// same ones. It buys nothing on today's corpus (the merge's groups are one page each) and ships
 	// so that batching the seeds across a run of transfers has something to batch. See Config.h.
 	TileGpuMergeSeedBatch = true;
+	// Default TRUE: it is a smaller copy of the same pixels, not a trade. A snapshot's only
+	// consumer is a texelFetch at the fragment's own coordinate, so the union of the pass's DATE
+	// draws' scissor-clipped boxes covers every read it can serve -- per-draw coverage, which is
+	// what Classic's own DATE stencil pre-pass has always used. It takes stuntman's 2.70 GB of
+	// full-target image copy a frame down to what its DATE draws actually look at. See Config.h.
+	TileGpuNarrowDateSnapshot = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1221,6 +1227,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
 	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
+	SettingsWrapBitBool(TileGpuNarrowDateSnapshot);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

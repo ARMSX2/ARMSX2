@@ -2300,6 +2300,12 @@ private:
 	/// construction like the levers above, and for their reason: it decides how many plan entries a
 	/// draw becomes, and both grouping sites count those.
 	bool m_split_refuse_fb_only = false;
+	/// EmuCore/GS/TileGpuNarrowDateSnapshot: a DATE pass's snapshot copies the union of what its
+	/// DATE draws read, not the whole colour target. Read once at construction like the levers
+	/// above -- not for their reason, since this one decides no pass boundary and no plan entry, but
+	/// for the plainer one that the census prints the arm beside the counters and a lever that moved
+	/// mid-frame would have a frame's copies attributed to two roads at once.
+	bool m_narrow_date_snapshot = false;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -3386,6 +3392,17 @@ private:
 		u32 merge_ref_overflow = 0; // the footprint lost its block masks, so coverage is unknown
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
+		// What those snapshots COST, in the 8 KB pages the byte road is counted in, and what the
+		// whole-target road would have cost on the same frame. Both filled on both arms, so the
+		// before and the after come off ONE run rather than two scenes compared -- which is the
+		// whole point of carrying `snapshot_full_pages` in the narrow arm as well.
+		u32 snapshot_pages = 0;       // pages the copies actually cover
+		u32 snapshot_full_pages = 0;  // pages the whole-target copy would have covered
+		u32 snapshot_narrowed = 0;    // copies that came out smaller than their whole target
+		// ...and the shape of them, because a mean over a bimodal population says nothing. Doubling
+		// bands (gsTileGpuSnapshotPageBucket): a copy is either a page or two of a sprite's
+		// footprint or it is the target, and the histogram is what tells the two apart.
+		u32 snapshot_page_hist[GSDevice::kGSTileGpuSnapshotPageBuckets] = {};
 		// The fragment read-modify-write road. Both are zero on a device without it, and zero on a
 		// frame no draw of which needs it -- which is the gate the road ships under: the SotC gate
 		// scene has FBMSK 0 on every draw, PABE 0, no 16-bit frame and no DATE, so it must admit
@@ -3875,6 +3892,9 @@ private:
 	/// ...and for the per-pass scissor census. A GS scissor is four register fields of eleven bits,
 	/// so [0, 2048] on every edge and the four pack into one u64 without loss.
 	std::vector<u64> m_scissor_keys;
+	/// ...and for the DATE snapshot's read union: the rectangles the pass's DATE draws fetch from
+	/// the snapshot, gathered here so gsTileGpuSnapshotRect can be a pure function of them.
+	std::vector<GSVector4i> m_snapshot_reads;
 
 	struct PassShape
 	{
