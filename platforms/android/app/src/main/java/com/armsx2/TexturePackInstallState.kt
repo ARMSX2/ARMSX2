@@ -7,7 +7,7 @@ import java.io.File
 /**
  * Which catalog packs are installed, and at which version.
  *
- * The texture folder itself cannot answer this: a pack extracts to loose .png/.dds files under
+ * The texture folder itself cannot answer this: a pack extracts to loose replacement files under
  * `textures/<SERIAL>/replacements`, with nothing recording where they came from. Without this the
  * catalog could only ever offer "Get", never "Installed" or "Update available".
  */

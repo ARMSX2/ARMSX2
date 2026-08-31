@@ -11,8 +11,10 @@
 
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/HW/GSTextureASTC.h"
+#include "GS/Renderers/HW/GSTextureKTX.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
 #include <csetjmp>
@@ -28,11 +30,13 @@ struct LoaderDefinition
 static bool PNGLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 static bool DDSLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 static bool ASTCLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
+static bool KTXLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 
 static constexpr LoaderDefinition s_loaders[] = {
 	{"png", PNGLoader},
 	{"dds", DDSLoader},
 	{"astc", ASTCLoader},
+	{"ktx", KTXLoader},
 };
 
 
@@ -692,21 +696,25 @@ static bool ReadDDSMipLevel(std::FILE* fp, const std::string& filename, u32 mip_
 // ASTC Handlers
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+static bool SupportsASTCReplacement(const std::string& filename)
+{
+	if (g_gs_device && g_gs_device->Features().astc_textures)
+		return true;
+
+	static std::atomic<bool> warned{false};
+	if (!warned.exchange(true))
+	{
+		Console.Warning("Skipping ASTC replacement textures (e.g. %s): the active GS backend "
+						"does not support native ASTC LDR compression.",
+			filename.c_str());
+	}
+	return false;
+}
+
 static bool ASTCLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image)
 {
-	if (!g_gs_device || !g_gs_device->Features().astc_textures)
-	{
-		// One warning for the pack rather than one per texture; the game's original
-		// texture remains in use.
-		static std::atomic<bool> warned{false};
-		if (!warned.exchange(true))
-		{
-			Console.Warning("Skipping ASTC replacement textures (e.g. %s): the active GS backend "
-							"does not support native ASTC LDR compression.",
-				filename.c_str());
-		}
+	if (!SupportsASTCReplacement(filename))
 		return false;
-	}
 
 	u8 header[ASTC::HEADER_SIZE];
 	{
@@ -787,6 +795,154 @@ static bool ASTCLoader(const std::string& filename, GSTextureReplacements::Repla
 		return false;
 	}
 
+	return true;
+}
+
+static const char* KTXParseResultToString(KTX::ParseResult result)
+{
+	switch (result)
+	{
+		case KTX::ParseResult::Ok:
+			return "no error";
+		case KTX::ParseResult::TruncatedHeader:
+			return "truncated header";
+		case KTX::ParseResult::BadIdentifier:
+			return "bad KTX1 identifier";
+		case KTX::ParseResult::BadEndianness:
+			return "unsupported endianness";
+		case KTX::ParseResult::BadTypeFields:
+			return "invalid compressed-format fields";
+		case KTX::ParseResult::BadBaseFormat:
+			return "base format is not RGBA";
+		case KTX::ParseResult::BadInternalFormat:
+			return "unsupported or non-linear ASTC format";
+		case KTX::ParseResult::BadTextureType:
+			return "texture is not a single 2D image";
+		case KTX::ParseResult::BadDimensions:
+			return "invalid image dimensions";
+		case KTX::ParseResult::TooLarge:
+			return "dimensions exceed the device texture size limit";
+		case KTX::ParseResult::BadMipCount:
+			return "invalid mip count";
+		case KTX::ParseResult::BadKeyValueData:
+			return "malformed key/value data";
+		case KTX::ParseResult::BadOrientation:
+			return "missing, duplicate, or unsupported orientation";
+		case KTX::ParseResult::BadImageSize:
+			return "mip imageSize does not match its ASTC geometry";
+		case KTX::ParseResult::TruncatedLevel:
+			return "truncated mip chain";
+		case KTX::ParseResult::TrailingBytes:
+			return "trailing bytes after the mip chain";
+	}
+	return "unknown error";
+}
+
+static bool KTXLoader(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image)
+{
+	(void)only_base_image; // KTX is the explicit-chain format; always load every supplied level.
+	if (!SupportsASTCReplacement(filename))
+		return false;
+	return GSTextureReplacements::LoadKTXTexture(filename, tex, g_gs_device->GetMaxTextureSize());
+}
+
+bool GSTextureReplacements::LoadKTXTexture(
+	const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, u32 max_texture_size)
+{
+	auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "rb");
+	if (!fp)
+		return false;
+
+	std::array<u8, KTX::HEADER_SIZE> header{};
+	if (std::fread(header.data(), 1, header.size(), fp.get()) != header.size())
+	{
+		Console.Warning("Rejecting KTX replacement texture %s: truncated header.", filename.c_str());
+		return false;
+	}
+
+	KTX::ContainerInfo info{};
+	KTX::ParseResult result = KTX::ParseHeader(header.data(), header.size(), &info, max_texture_size);
+	if (result != KTX::ParseResult::Ok)
+	{
+		Console.Warning("Rejecting KTX replacement texture %s: %s.", filename.c_str(), KTXParseResultToString(result));
+		return false;
+	}
+
+	const s64 file_size = FileSystem::FSize64(fp.get());
+	std::array<KTX::LevelInfo, KTX::MAX_MIP_LEVELS> levels{};
+	result = KTX::BuildLevelLayout(info, file_size, &levels);
+	if (result != KTX::ParseResult::Ok)
+	{
+		Console.Warning("Rejecting KTX replacement texture %s: %s.", filename.c_str(), KTXParseResultToString(result));
+		return false;
+	}
+
+	std::vector<u8> metadata(info.key_value_bytes);
+	if ((FileSystem::FSeek64(fp.get(), KTX::HEADER_SIZE, SEEK_SET) != 0) ||
+		(!metadata.empty() && std::fread(metadata.data(), 1, metadata.size(), fp.get()) != metadata.size()))
+	{
+		Console.Warning("Rejecting KTX replacement texture %s: truncated key/value data.", filename.c_str());
+		return false;
+	}
+
+	result = KTX::ValidateKeyValueData(metadata.data(), metadata.size());
+	if (result != KTX::ParseResult::Ok)
+	{
+		Console.Warning("Rejecting KTX replacement texture %s: %s.", filename.c_str(), KTXParseResultToString(result));
+		return false;
+	}
+
+	// Check every imageSize field before allocating any payload. A malformed
+	// later level must not leave the loader holding earlier mip buffers.
+	for (u32 level = 0; level < info.mip_count; level++)
+	{
+		const KTX::LevelInfo& level_info = levels[level];
+		if (FileSystem::FSeek64(fp.get(), static_cast<s64>(level_info.data_offset - sizeof(u32)), SEEK_SET) != 0)
+			return false;
+
+		std::array<u8, sizeof(u32)> image_size{};
+		if (std::fread(image_size.data(), 1, image_size.size(), fp.get()) != image_size.size() ||
+			KTX::ValidateLevelSize(image_size.data(), image_size.size(), level_info) != KTX::ParseResult::Ok)
+		{
+			Console.Warning("Rejecting KTX replacement texture %s: invalid imageSize for mip %u.", filename.c_str(), level);
+			return false;
+		}
+	}
+
+	GSTextureReplacements::ReplacementTexture loaded{};
+	loaded.width = info.width;
+	loaded.height = info.height;
+	loaded.format = info.format;
+	loaded.pitch = levels[0].pitch;
+	loaded.mips.reserve(info.mip_count - 1);
+
+	for (u32 level = 0; level < info.mip_count; level++)
+	{
+		const KTX::LevelInfo& level_info = levels[level];
+		std::vector<u8>* data;
+		if (level == 0)
+		{
+			data = &loaded.data;
+		}
+		else
+		{
+			auto& mip = loaded.mips.emplace_back();
+			mip.width = level_info.width;
+			mip.height = level_info.height;
+			mip.pitch = level_info.pitch;
+			data = &mip.data;
+		}
+
+		data->resize(level_info.payload_size);
+		if (FileSystem::FSeek64(fp.get(), static_cast<s64>(level_info.data_offset), SEEK_SET) != 0 ||
+			std::fread(data->data(), 1, data->size(), fp.get()) != data->size())
+		{
+			Console.Warning("Rejecting KTX replacement texture %s: truncated payload for mip %u.", filename.c_str(), level);
+			return false;
+		}
+	}
+
+	*tex = std::move(loaded);
 	return true;
 }
 
