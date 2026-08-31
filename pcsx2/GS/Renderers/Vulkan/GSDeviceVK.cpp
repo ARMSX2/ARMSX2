@@ -8351,6 +8351,36 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			std::memcpy(entries, plan.page_entries.data(), entry_bytes);
 		entries_base_words = table_base_words + table_bytes / sizeof(u32);
 
+		// Resolve every WRITEBACK entry's ring slot here, into the ring's copy of the entry -- the
+		// table read the shader used to do per invocation, done once per page on the CPU. The table
+		// above is complete and nothing after this point writes it, so this is that read moved
+		// earlier and not a different one (GSTileGpuPageEntry states the whole argument). The plan's
+		// own array is a const span and is left alone; only the ring copy carries slots.
+		//
+		// Seed entries are skipped: no shader reads them, and their `epoch` names a table the seed
+		// addresses for itself.
+		if (entry_bytes)
+		{
+			// The shader takes the entry as one uvec4 through the ring's quad view, so the array's
+			// base has to be a multiple of four words. It is a multiple of 512 by construction --
+			// the reservation is page-aligned and the tables are whole 512-word rows -- and this
+			// says so out loud, because the shader has no way to check it.
+			pxAssert((entries_base_words % 4) == 0);
+			GSTileGpuPageEntry* const ring_entries = reinterpret_cast<GSTileGpuPageEntry*>(entries);
+			for (const GSTileGpuPrepOp& op : plan.prep_ops)
+			{
+				if (op.kind != GSTileGpuPrepKind::Writeback)
+					continue;
+				pxAssert(op.epoch < plan.epoch_count);
+				const u32* const row = tables + op.epoch * GS_MAX_PAGES;
+				for (u32 k = 0; k < op.page_entry_count; k++)
+				{
+					GSTileGpuPageEntry& e = ring_entries[op.first_page_entry + k];
+					e.slot = row[e.page];
+				}
+			}
+		}
+
 		u32* const masks = reinterpret_cast<u32*>(entries + entry_bytes);
 		masks_base_words = entries_base_words + entry_bytes / sizeof(u32);
 		u32* const blocks = masks + mask_words;

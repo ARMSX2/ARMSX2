@@ -87,10 +87,22 @@
 //   (GSDeviceVK::TileGpuWritebackGroupDim) and the store path rides on it because the two were
 //   fitted on the same two parts, in the same pair of A/Bs.
 //
-// ⚠️ Not done, and deliberately: hoisting the four workgroup-uniform SSBO loads to one invocation
-// behind a barrier. Measured on an Adreno 650 microbenchmark it costs 30% MORE than re-issuing them
-// per invocation -- the redundant loads are cache-friendly and cost ~3%, and the sync stall is ten
-// times what it saves. They stay per-invocation.
+// THE UNIFORM READ BILL. This pass ran 2048 invocations a page and each of them loaded the same
+// four SSBO words -- the entry's three, then the slot out of the epoch page table, that last one
+// dependent on the first three since its index is the page they name. 8192 loads a page, of four
+// values, and they were about two thirds of the page's memory instructions.
+//
+// They are now ONE load. The entry is four words instead of three because the executor resolves
+// table[epoch][page] into it while staging (it can: the table is CPU-authored before the frame's
+// first command and no GPU write ever lands in it), and four words is one uvec4 through the ring's
+// quad view. So a lane issues one 16-byte load where it issued four scalar ones, and the dependent
+// load is gone rather than moved.
+//
+// ⚠️ What is still NOT done, and deliberately, is the OTHER road to the same place: having one
+// invocation load the values and broadcasting them through shared memory behind a barrier. Measured
+// on an Adreno 650 microbenchmark that costs 30% MORE than re-issuing them per invocation -- the
+// redundant loads are cache-friendly and the sync stall is ten times what it saves. The route taken
+// here needs no barrier, no shared memory and no subgroup op, so that result does not bear on it.
 
 #ifndef TILEGPU_WB_FMT
 #define TILEGPU_WB_FMT 0
@@ -135,10 +147,10 @@ layout(std430, set = 0, binding = 1) buffer Vram
 };
 
 // The SAME buffer at the same offset, seen as quads -- the device binds one VkBuffer to both. GLSL
-// gives no other way to spell a 16-byte store into an array declared as words, and declaring the
-// ring as quads instead would make the read-modify-write arm's four-byte store unspellable. Only
-// the whole-word arm stores through this view, and at a dim that does not stage nothing touches it
-// at all; the binding stays declared either way, because one descriptor layout serves every dim.
+// gives no other way to spell a 16-byte access into an array declared as words, and declaring the
+// ring as quads instead would make the read-modify-write arm's four-byte store unspellable. EVERY
+// arm at EVERY dim reads its page entry through this view; only the staged whole-word arm stores
+// through it.
 layout(std430, set = 0, binding = 2) buffer VramQuads
 {
 	uvec4 vram_quads[];
@@ -146,19 +158,23 @@ layout(std430, set = 0, binding = 2) buffer VramQuads
 
 layout(push_constant) uniform cb
 {
-	uint table_base;   // this frame's first page-table word in the ring
-	uint epoch;        // which epoch's table names the destination slots
+	uint table_base;   // UNUSED here: the entry carries its slot already resolved (see below).
+	uint epoch;        // UNUSED here, for the same reason. Both stay declared because the host pushes
+					   // one nine-word array to every TileGpu program and the block must cover it.
 	uint bp;           // the surface's base in blocks (page-aligned)
 	uint bw;           // the surface's stride in pages
 	uint byte_mask;    // bytes of each word this surface owns (0xFFFFFFFF, or 0x00FFFFFF for CT24)
-	uint entries_base; // ring word of the plan's page-entry array (3 words per entry, below)
+	uint entries_base; // ring word of the plan's page-entry array (TILEGPU_WB_ENTRY_WORDS each, below)
 	uint first_entry;  // this op's first entry index into that array
 	uint entry_count;
 	uint keep_base;    // ring word of the plan's keep-mask tables, indexed by the entry's third word
 };
 
-// One page entry is three words: {page | pad<<16}, block_mask, keep_mask_words.
-#define TILEGPU_WB_ENTRY_WORDS 3u
+// One page entry is four words: {page | pad<<16}, block_mask, keep_mask_words, slot. Four rather
+// than the three the entry's own fields need, because four is one uvec4: the body below takes the
+// entry in a single aligned load instead of a word at a time. GSTileGpuPageEntry is the same four
+// words in C++ and static_asserts this size.
+#define TILEGPU_WB_ENTRY_WORDS 4u
 
 // The swizzle forms, byte-identical to tilegpu.glsl's: block-in-page and unit-in-block column.
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
@@ -247,21 +263,28 @@ void main()
 	const uint entry_index = gl_WorkGroupID.z;
 	if (entry_index >= entry_count)
 		return;
-	const uint eword = entries_base + (first_entry + entry_index) * TILEGPU_WB_ENTRY_WORDS;
-	const uint page = vram_words[eword] & 0xFFFFu;
-	const uint block_mask = vram_words[eword + 1u];
-	const uint keep_words = vram_words[eword + 2u];
+	// THE WHOLE ENTRY IN ONE 16-BYTE LOAD. All four words are workgroup-uniform and all 2048 of a
+	// page's invocations need them, so this one instruction is the shader's entire uniform read
+	// bill. It used to be four: the entry's three words, and then the page table's slot -- which was
+	// DEPENDENT on the first of them, its index being the page they produced. entries_base is
+	// four-word aligned and an entry is TILEGPU_WB_ENTRY_WORDS = 4 words, so the quad index is exact
+	// (the executor asserts the alignment; this shader cannot).
+	const uvec4 entry =
+		vram_quads[(entries_base + (first_entry + entry_index) * TILEGPU_WB_ENTRY_WORDS) >> 2u];
+	const uint page = entry.x & 0xFFFFu;
+	const uint block_mask = entry.y;
+	const uint keep_words = entry.z;
+	// The page's ring slot, resolved by the executor when it staged the entry: table[epoch][page],
+	// the same word this shader used to read for itself. The epoch page table is written on the CPU
+	// before the frame records a command and nothing on the GPU timeline writes it, so moving the
+	// read earlier cannot change its answer. GSTileGpuPageEntry carries the argument, including why
+	// an entry only ever serves one epoch even when the batch merges ops into one dispatch.
+	const uint slot = entry.w;
 
 	// The page's pixel rect in the target: pool row/column from its offset off the base page.
 	const uint rel = (page + 512u - (bp >> 5u)) & 511u;
 	const uint col = rel % bw;
 	const uint row = rel / bw;
-
-	// The page's ring slot. Read before the block test rather than after it: where the stage is
-	// compiled the gather lanes need it whether or not their own block travels, and where it is not,
-	// a masked-out invocation pays one workgroup-uniform load it will not use -- on a shader whose
-	// four such loads together measured at ~3% of its body.
-	const uint slot = vram_words[table_base + epoch * 512u + page];
 
 #if TILEGPU_WB_CT32
 	const uint u = col * 64u + gl_GlobalInvocationID.x;

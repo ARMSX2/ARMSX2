@@ -2837,16 +2837,46 @@ public:
 	/// plan's `writeback_keep_masks` of a kGSTileGpuKeepMaskWordsPerPage table, block-major, 8 words
 	/// a block, bit (word*4 + byte) set for a byte the writeback must leave alone. kGSTileGpuNoKeepMask
 	/// on every other page entry, which is every entry any other road emits.
+	///
+	/// `slot` is the page's 8 KB ring slot, as a WORD offset into the ring -- the same value the
+	/// frame's epoch page table holds at [op.epoch][page], which is where the writeback shader used
+	/// to read it from. The EXECUTOR fills it, not the renderer: only the executor knows where the
+	/// ring landed. The renderer leaves it zero and nothing reads it until the executor has written
+	/// it. Seed ops carry page entries too and this field means nothing on theirs -- the shader that
+	/// reads entries is the writeback and only the writeback.
+	///
+	/// WHY IT IS CARRIED HERE rather than looked up. The writeback runs 2048 invocations per page
+	/// and every one of them read the same four SSBO words: the entry's three, and then the page
+	/// table's slot -- a DEPENDENT load, since the table index needs the page the first read
+	/// produced. Four loads x 2048 lanes is 8192 of the page's ~12300 memory instructions, all of
+	/// them re-reads of four workgroup-uniform values. Carrying the slot makes the entry four words,
+	/// which is one 16-byte load through the ring's uvec4 view: one memory instruction per lane
+	/// instead of four, and the dependent load gone outright.
+	///
+	/// WHY IT IS THE SAME WORD THE SHADER WOULD HAVE READ. The epoch page tables are authored on the
+	/// CPU, into mapped memory, before the frame records its first command, and nothing on the GPU
+	/// timeline writes them: a writeback's stores land inside a page slot (`slot + bib*64 + wib`,
+	/// under 2048 words by construction), a CLUT copy lands in the palette region, and the poison
+	/// fill lands in slots. So the table is immutable for the frame and resolving it at record time
+	/// is the same read moved earlier, not a different one.
+	///
+	/// WHY ONE SLOT PER ENTRY IS ENOUGH under batching. Entry ranges are disjoint -- an op takes its
+	/// range off the end of the array -- so an entry belongs to exactly one op and therefore to
+	/// exactly one epoch. GSTileGpuWritebackBatch merges ops only when their `epoch` agrees, so a
+	/// merged dispatch cannot ask one entry for two epochs' slots.
 	struct GSTileGpuPageEntry
 	{
 		u16 page;
 		u16 pad_;
 		u32 block_mask;
 		u32 keep_mask_words;
+		u32 slot;
 	};
 	/// The array is memcpy'd into the ring verbatim and indexed by the writeback shader as raw
 	/// words, so the shader's TILEGPU_WB_ENTRY_WORDS and this size are one fact spelled twice.
-	static_assert(sizeof(GSTileGpuPageEntry) == 3 * sizeof(u32),
+	/// Four words, and the shader reads all four as one uvec4, so the size is also an ALIGNMENT
+	/// claim: the entry array's base must be four-word aligned, which the executor asserts.
+	static_assert(sizeof(GSTileGpuPageEntry) == 4 * sizeof(u32),
 		"tilegpu_writeback.glsl walks page entries at TILEGPU_WB_ENTRY_WORDS words each");
 
 	/// The dispatches run at the head of a pass, before its render pass opens: the two

@@ -4865,7 +4865,11 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 			if (mask == 0)
 				return;
 		}
-		m_plan_page_entries.push_back(GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask, keep});
+		// The trailing zero is the ring slot, which the EXECUTOR fills once it knows where the ring
+		// landed -- see GSTileGpuPageEntry. Spelled rather than left to aggregate init so the word
+		// that reaches GPU memory is a value this line chose.
+		m_plan_page_entries.push_back(
+			GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask, keep, 0});
 	});
 	op.page_entry_count = static_cast<u32>(m_plan_page_entries.size()) - op.first_page_entry;
 	if (op.page_entry_count == 0)
