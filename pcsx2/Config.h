@@ -1007,22 +1007,19 @@ struct Pcsx2Config
 					// budget decided about it. ONE named class -- no threshold
 					// moves, and no other class's verdict changes.
 					//
-					// It exists to price the DECLARING PREMIUM on the title where it
-					// is worth the most. Stuntman's exotic-blend class scores 247
-					// against a refuse line of 256, so the budget admits it in 100%
-					// of frames, and it produces 154 declaring passes a frame. A
-					// declaring pass costs an ordinary pass (4.30 us on an SD865)
-					// plus a rasterization-mode premium the corpus fit puts at 73.6
-					// us with a band of 30-90 -- 4.6 to 13.9 ms of GPU on a title
-					// already 25.8 ms over its budget. Refusing the class reads that
-					// premium off the device directly. MGS3's twin class scores 259,
-					// falls the other side of the same line, and its refusal was
-					// measured at -9.37 ms.
+					// It existed to price the DECLARING PREMIUM, and it did: arm D1
+					// refused Stuntman's exotic blends on an SD865 and measured
+					// -13.783 ms of GPU across 154 declaring passes, 96.6 us a pass,
+					// with OutRun's two scenes reading 111.6 and 103.3. Those three
+					// numbers are what the declaring budget's cost model is now
+					// fitted to (gsTileGpuClassCostUs, 2026-08-31).
 					//
-					// ⚠️ NOT interchangeable with dropping
-					// kGSTileGpuDeclaringRefuseAbove to 224 to catch the 247: the
-					// RE-ADMIT line is also 224, so that collapses the hysteresis
-					// band to nothing and the arm would move two things at once.
+					// ⚠️ It is NOT how you refuse that class any more -- the re-fitted
+					// budget refuses it, and OutRun's and Dirge's and Xenosaga's with
+					// it, by itself. The key stays because "what does ONE class cost
+					// on THIS device" keeps being the question, and because it is the
+					// only way to ask it on a device that admits everything (an M2, a
+					// Mali), where the budget is inert.
 					//
 					// Refusal is a fallback and not a no-op -- the refused draws take
 					// the RT-copy blend road, so the frame's exactness changes. An ON
@@ -1034,8 +1031,10 @@ struct Pcsx2Config
 					// setting. Default off.
 					//
 					// Numbers and the arm's spec: umbrella
-					// devs/bmdhacks/campaigns/gs-tile-stage15-speed/agents/gpu-busy-refit/RESULT.txt,
-					// sections 2.3 and 4 (D1).
+					// devs/bmdhacks/campaigns/gs-tile-stage15-speed/agents/gpu-busy-refit/RESULT.txt
+					// sections 2.3 and 4 (the design), and the suite's
+					// results/20260831-0621-3b21b7ff5d/report/study-d1-exotic-blend-refuse/
+					// (what the device said).
 					TileGpuRefuseExoticBlendClass : 1,
 					// Compile each PASS's union fragment program for every draw of
 					// it, the way the executor did before the fragment variant

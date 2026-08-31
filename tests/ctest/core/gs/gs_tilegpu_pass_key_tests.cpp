@@ -924,15 +924,15 @@ TEST(TileGpuSelfReadUses, AdmissionIsWhatWasWantedLessWhatTheBudgetRefused)
 // usable as one: it refuses the class it names and touches nothing else -- not the two lines, not
 // another class's verdict, not a draw's other reasons for reading.
 //
-// What it is for. The SD865 refit (umbrella gpu-busy-refit, 2026-08-31) prices a declaring pass at
-// an ordinary pass plus a 30-90 us rasterization-mode premium, and Stuntman's exotic-blend class
-// scores 247 against the 256 refuse line -- nine units under it, admitted every frame, 154 declaring
-// passes a frame. Refusing that one class reads the premium off the device on the title where it is
-// worth the most.
+// What it was for, and what it bought. The probe took arm D1 on the SD865: force-refusing Stuntman's
+// exotic-blend class measured -13.783 ms of GPU across 154 declaring passes -- 96.6 us a declaring
+// pass -- with OutRun's two scenes reading 111.6 and 103.3. Those three numbers are what the
+// declaring budget's cost model was re-fitted to on 2026-08-31.
 //
-// Why not just move the line. 247 is caught by dropping kGSTileGpuDeclaringRefuseAbove to 224 --
-// and 224 is also the RE-ADMIT line, so the arm would run with no hysteresis band at all and two
-// changes in it. The probe is the way to move one thing.
+// ⚠️ It is no longer how that class gets refused. The re-fitted budget refuses it by itself, and
+// OutRun's, Dirge's and Xenosaga's exotic blends with it. The key stays as an instrument, and the one
+// thing it can still do that nothing else can is ask what a single class costs on a device that
+// admits everything, where the budget is inert and cannot be made to say anything.
 // ---------------------------------------------------------------------------------------------
 
 TEST(TileGpuDeclaringProbe, OffItIsTheExpressionThatWasThereBefore)
@@ -990,40 +990,42 @@ TEST(TileGpuDeclaringProbe, ItRefusesTheClassAndNotTheDrawsOtherReasons)
 		gsTileGpuSelfReadUses(date_too, gsTileGpuAdmittedClasses(date_too, kGSTileGpuClassAll, probe), kRoad));
 }
 
-TEST(TileGpuDeclaringProbe, ItMovesNeitherLineAndTheAlternativeWouldCollapseTheBand)
+TEST(TileGpuDeclaringProbe, ItMovesNeitherLineAndTheBudgetNowRefusesStuntmanWithoutIt)
 {
-	// Both lines stay where they were fitted. The probe is scoped to a class precisely so that a
-	// device arm reads one change.
-	EXPECT_EQ(256u, kGSTileGpuDeclaringRefuseAbove);
-	EXPECT_EQ(224u, kGSTileGpuDeclaringReadmitAtOrUnder);
+	// Both lines stay where the re-fit put them, and the probe still moves neither. What changed
+	// underneath it is that the class it was built to isolate is refused by the arithmetic now.
+	EXPECT_EQ(3800u, kGSTileGpuDeclaringRefuseAboveUs);
+	EXPECT_EQ(3200u, kGSTileGpuDeclaringReadmitAtOrUnderUs);
 
-	// Stuntman's class, from the SD865 census: 7 taxed draws behind 150 runs = 247, nine units under
-	// the line, so the budget admits it in every frame. That is the admission the probe overrides.
-	EXPECT_EQ(247u, gsTileGpuClassCost(/*taxed=*/7, /*runs=*/150));
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(7, 150));
-	// MGS3's twin, twelve units the other way, is refused by the line itself -- which is why its
-	// refusal could be measured (-9.37 ms) without any probe at all.
-	EXPECT_EQ(259u, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/162));
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 162));
-
-	// ⚠️ And the reason the probe exists rather than a lowered line: the only refuse line that
-	// catches 247 is at or below the re-admit line, which leaves no hysteresis band.
-	EXPECT_GT(gsTileGpuClassCost(7, 150), kGSTileGpuDeclaringReadmitAtOrUnder);
+	// Stuntman's class, from the SD865 census: 7 taxed draws behind 150 runs. Under the old
+	// dimensionless score that was 247 against a line of 256 -- nine units under, admitted every
+	// frame, which is the admission the probe existed to overrule. It is 14,170 us of GPU a frame,
+	// and the device measured 13,783 when the probe refused it.
+	EXPECT_EQ(14170u, gsTileGpuClassCostUs(/*taxed=*/7, /*runs=*/150));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(7, 150));
+	// MGS3's twin, whose refusal was measured at -9.37 ms, was twelve units the other side of the
+	// old line and is four times the other side of this one.
+	EXPECT_EQ(15228u, gsTileGpuClassCostUs(/*taxed=*/0, /*runs=*/162));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 162));
 }
 
 TEST(TileGpuDeclaringProbe, TheBudgetItselfNeverSeesIt)
 {
 	// The probe is applied downstream of the budget, so the budget keeps measuring what the class
-	// WOULD cost -- the same property that stops a refused class re-admitting itself forever. Pinned
-	// on Stuntman's own shape: 150 solo runs plus 7 draws standing behind one of them.
+	// WOULD cost -- the same property that stops a refused class re-admitting itself forever.
+	//
+	// ⚠️ Pinned on Shadow of the Colossus' exotic blends (8 runs with 44 draws behind them, 1,192 us)
+	// and no longer on Stuntman's. The re-fit refuses Stuntman's class by itself, so on that shape
+	// "the budget admits it, the probe refuses it" stopped being two different answers. This is a
+	// class the budget really does admit.
 	GSTileGpuDeclaringBudget b;
 	b.Start(/*declaring_taxes_the_pass=*/true);
-	for (u32 r = 0; r < 150; r++)
+	for (u32 r = 0; r < 8; r++)
 		b.Charge(kGSTileGpuClassExoticBlend, kGSTileGpuClassExoticBlend);
-	for (u32 t = 0; t < 7; t++)
+	for (u32 t = 0; t < 44; t++)
 		b.Charge(kGSTileGpuClassExoticBlend, 0);
 	b.Roll();
-	EXPECT_EQ(247u, b.peak[1]); // kGSTileGpuClassExoticBlend is bit 1
+	EXPECT_EQ(1192u, b.peak[1]); // kGSTileGpuClassExoticBlend is bit 1
 	EXPECT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend)
 		<< "the budget's own verdict is ADMIT; the probe is what refuses it";
 	// ...and it is the probe, applied after, that produces the arm.
@@ -1062,78 +1064,182 @@ u32 RunSpreadFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 draws)
 {
 	return RunFrame(b, classes, draws, 1);
 }
+
+/// One frame of a class in exactly the shape the per-class census reports it -- `runs` declared runs
+/// and `taxed` draws standing behind them -- so a corpus row can be replayed literally.
+u32 RunCensusFrame(GSTileGpuDeclaringBudget& b, u32 classes, u32 taxed, u32 runs)
+{
+	for (u32 r = 0; r < runs; r++)
+		b.Charge(classes, classes);
+	for (u32 t = 0; t < taxed; t++)
+		b.Charge(classes, 0);
+	b.Roll();
+	return b.admitted;
+}
+
+/// ⚠️ The line is MICROSECONDS now, not a draw count, so these tests can no longer spell "a frame
+/// that certainly crosses it" as `kDrawsWellPastTheLine`. A dense frame is one run plus
+/// taxed draws, so it crosses at (line - run price) / taxed price + 1 taxed draws; round up and add
+/// a margin.
+constexpr u32 kTaxedNetUs = kGSTileGpuTaxedDrawUs - kGSTileGpuRefusedDrawUs;
+constexpr u32 kRunNetUs = kGSTileGpuDeclaringPassUs - kGSTileGpuRefusedDrawUs;
+constexpr u32 kDrawsPastTheLine = (kGSTileGpuDeclaringRefuseAboveUs - kRunNetUs) / kTaxedNetUs + 8;
+/// ...and one four times over, for the tests that need the peak to take several frames to decay.
+constexpr u32 kDrawsWellPastTheLine = kDrawsPastTheLine * 4;
+/// ...and a frame that stays comfortably under the RE-ADMIT line, let alone the refuse line.
+constexpr u32 kDrawsUnderTheLine = kDrawsPastTheLine / 4;
 } // namespace
 
 // -- the cost model ----------------------------------------------------------------------------
 
-TEST(TileGpuClassCost, ADeclaredRunCostsMoreThanATaxedDraw)
+TEST(TileGpuClassCost, ADeclaredRunCostsNearlyTenTimesWhatATaxedDrawDoes)
 {
-	// alpha = 8/5, measured. A declaring pass is the more expensive of the two halves: MGS3's exotic
-	// blends are 162 draws in 162 SOLO declared passes -- no overlap for the render-backend flush to
-	// charge at all -- and force-refusing that one class on the SD865 took the frame from 29.1 ms to
-	// 19.73, with the device pass count dropping by exactly the class's own count, 633 -> 471. That
-	// is ~9.5 ms across 162 passes, about 59 us each, and consistent with the ~77 us FlatOut 2's 896
-	// declared passes implied.
-	EXPECT_EQ(100u, gsTileGpuClassCost(/*taxed=*/100, /*runs=*/0));
-	EXPECT_EQ(160u, gsTileGpuClassCost(/*taxed=*/0, /*runs=*/100));
-	EXPECT_LT(gsTileGpuClassCost(100, 0), gsTileGpuClassCost(0, 100));
+	// The gap the re-fit opened. A declared run is a declaring pass and a declaring pass is measured:
+	// 100 us of premium, less the 6 us the draw's refusal would itself have cost, is 94. A taxed draw
+	// is priced at 16 us less the same 6, and that 10 is a fitted risk premium rather than a
+	// measurement -- it is what the run counter's known undercount is worth on average.
+	EXPECT_EQ(1000u, gsTileGpuClassCostUs(/*taxed=*/100, /*runs=*/0));
+	EXPECT_EQ(9400u, gsTileGpuClassCostUs(/*taxed=*/0, /*runs=*/100));
+	EXPECT_LT(gsTileGpuClassCostUs(100, 0), gsTileGpuClassCostUs(0, 100));
+	// ...and the ratio, spelled out, because it is the number a re-tune will want first.
+	EXPECT_EQ(94u, gsTileGpuClassCostUs(0, 1));
+	EXPECT_EQ(10u, gsTileGpuClassCostUs(1, 0));
+}
+
+TEST(TileGpuClassCost, ItReproducesTheThreeDeltasTheDeviceMeasured)
+{
+	// ★ The whole justification for the arithmetic, as an assertion. Arm D1 (SD865, suite
+	// 20260831-0621) force-refused one admission class on three dumps and measured the GPU each time.
+	// The score is what it says would be given back, in microseconds a frame, and it lands inside 8%
+	// on all three -- with no per-title term anywhere in it.
+	struct Arm
+	{
+		const char* what;
+		u32 taxed, runs, measured_us;
+	};
+	// stuntman / outrun-a / outrun-b: the census shapes, against the measured GPU deltas.
+	for (const Arm& a : {Arm{"stuntman exotic", 7, 150, 13783}, Arm{"outrun-a exotic", 17, 96, 9614},
+			 Arm{"outrun-b exotic", 11, 88, 7787}})
+	{
+		const u32 score = gsTileGpuClassCostUs(a.taxed, a.runs);
+		const double err = (static_cast<double>(score) - a.measured_us) / a.measured_us;
+		EXPECT_LT(-0.08, err) << a.what << " scored " << score << " against " << a.measured_us;
+		EXPECT_GT(0.08, err) << a.what << " scored " << score << " against " << a.measured_us;
+		EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, score) << a.what << " must be refused";
+	}
 }
 
 TEST(TileGpuClassCost, TheRunCounterCanOnlyEVERUNDERSTATE)
 {
-	// ⚠️ The caveat that outlived the alpha it was an argument for. At alpha = 1 the cost was the
-	// class's draw count and so was invariant to how the draws split into passes -- which mattered,
-	// because the run counter is the number this planner cannot measure: it counts runs broken by
-	// the attachment group changing, and cannot see the pass breaks a prep op or a texture bind
-	// makes later in the same draw. On Ratchet & Clank's effects it counts SEVEN runs where the
-	// device declared 357 passes.
+	// ⚠️ The caveat that has now outlived two cost models. The run counter is the number this planner
+	// cannot measure: it breaks a run when the attachment group changes, and cannot see the pass
+	// breaks a prep op or a texture bind makes later in the same draw. On Ratchet & Clank's effects
+	// it counts SEVEN runs where the device declared 357 passes.
 	//
-	// The device overruled the invariance argument -- a declared pass is really more expensive, so
-	// alpha really is above one -- and the caveat survives with its DIRECTION stated: undercounting
-	// runs UNDERPRICES a class, never the reverse, so the failure mode is admitting something that
-	// should have been refused. On the one class where the undercount is known to be enormous the
-	// taxed term alone already refuses it, so nothing rides on the runs there.
-	EXPECT_LT(gsTileGpuClassCost(357, 7), gsTileGpuClassCost(7, 357));
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(357, 7));
+	// Its DIRECTION is what makes it survivable: undercounting runs UNDERPRICES a class, never the
+	// reverse, so the failure mode is admitting something that should have been refused. And on the
+	// one class where the undercount is known to be enormous, the taxed term alone still refuses it
+	// -- which is the entire job the taxed term's fitted 10 us is doing.
+	EXPECT_LT(gsTileGpuClassCostUs(357, 7), gsTileGpuClassCostUs(7, 357));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(357, 7));
+	// ...and the taxed draws are 3,570 of that 4,228. The seven runs the counter CAN see score 658
+	// on their own, nowhere near the line: strike the taxed term out and this class is admitted, on a
+	// title where the device declared 357 passes for it.
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 7));
+	EXPECT_EQ(3570u, gsTileGpuClassCostUs(357, 0));
+}
+
+TEST(TileGpuClassCost, TheRunTermIsNeverForgivenAndNeitherIsTheTaxedOne)
+{
+	// Xenosaga's alpha-MSB FBMSK, the class the whole budget was built for: 2,892 draws standing
+	// behind 1,912 declared runs. Both halves of the score refuse it on their own, and the sum is
+	// what is actually compared -- a re-tune that quietly drops either term still has to explain
+	// this row.
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(2892, 1912));
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 1912)) << "the run term alone";
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(2892, 0)) << "the taxed term alone";
+	EXPECT_LT(gsTileGpuClassCostUs(0, 1912), gsTileGpuClassCostUs(2892, 1912)) << "the taxed term is intact";
+	EXPECT_EQ(208648u, gsTileGpuClassCostUs(2892, 1912));
 }
 
 TEST(TileGpuDeclaringBudget, TheBudgetSitsWhereTheCorpusSeparates)
 {
-	// The calibration, pinned where a re-tune will see it. Per-class (taxed, runs) over the 18-dump
-	// corpus under the Adreno pass shape, with the SD865's verdict on each where it ran:
+	// The calibration, pinned where a re-tune will see it. Per-class (taxed, runs) over the 22-dump
+	// corpus, taken on the M2 -- which computes the SD865's numbers exactly, because a class is
+	// charged against its ATTACHMENT GROUP and never against passes -- with the device's own verdict
+	// beside every class that has one, and the score in microseconds of GPU a frame.
 	//
-	//   must refuse   Xenosaga's alpha-MSB FBMSK (950, 3855), FlatOut 2's exotic blends (0, 896),
-	//                 Baldur's Gate's 16-bit blends (473, 5), Ratchet & Clank's effect blends
-	//                 (357, 7), and MGS3's exotic blends (0, 162) -- the last added by the alpha
-	//                 probe, which force-refused that class and took MGS3 from 29.1 ms to 19.73,
-	//                 the 19.725 pre-regression floor to within 0.05%.
-	//   must admit    Katamari's punctuation FBMSK (195, 16), Beyond Good & Evil's FBMSK (42, 20),
-	//                 Shadow of the Colossus' exotic blends (44, 8), Yu-Gi-Oh's (29, 17), GT4
-	//                 Online Beta's (43, 2)
+	//   must refuse   Xenosaga's FBMSK    (2892, 1912)  208,648     the toll the budget was built for
+	//                 Stuntman's DATE     (   0, 1340)  125,960
+	//                 FlatOut 2's exotic  (   0,  896)   84,224     +66.5 ms when it was admitted
+	//                 Spider-Man 3 FBMSK  (2989,  147)   43,708
+	//                 Spider-Man 3 exotic (  60,  390)   37,260
+	//                 MGS3's exotic       (   0,  162)   15,228      -9.37 ms measured
+	//                 Stuntman's exotic   (   7,  150)   14,170     -13.78 ms measured
+	//                 OutRun exotic (a)   (  17,   96)    9,194      -9.61 ms measured
+	//                 OutRun exotic (b)   (  11,   88)    8,382      -7.79 ms measured
+	//                 Baldur's Gate 16bit ( 476,    2)    4,948
+	//                 Dirge's exotic      (   5,   47)    4,468
+	//                 Ratchet's effects   ( 357,    7)    4,228     <- binds the taxed price
+	//                 Xenosaga's exotic   (   9,   43)    4,132
+	//   must admit    Ace Combat 5 exotic (  11,   34)    3,306     <- inside the hysteresis band
+	//                 Katamari's glyphs   ( 202,    9)    2,866     <- binds the taxed price
+	//                 GT4's exotic        (   5,   26)    2,494
+	//                 God of War 2 FBMSK  (   8,   18)    1,772
+	//                 Yu-Gi-Oh's 16-bit   (  30,   16)    1,804
+	//                 Beyond G&E's FBMSK  (  51,   11)    1,544
+	//                 SotC's exotic       (  44,    8)    1,192
+	//                 GT4 Online Beta     (  43,    2)      468
 	//
-	// MGS3 and Katamari are the pair that binds now, and they are what fixes alpha rather than the
-	// line: 162a > 195 + 16a needs a > 1.336 merely to SEPARATE them, and 162a > 256 needs a > 1.581
-	// to put MGS3 on the far side of the line where it already sat.
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 162));   // MGS3
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(357, 7));   // Ratchet
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(0, 896));   // FlatOut 2
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(473, 5));   // Baldur's Gate
-	EXPECT_LT(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(950, 3855)); // Xenosaga
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(195, 16));  // Katamari
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(42, 20));   // Beyond Good & Evil
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(44, 8));    // Shadow of the Colossus
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(29, 17));   // Yu-Gi-Oh
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove, gsTileGpuClassCost(43, 2));    // GT4 Online Beta
+	// ⚠️ Four of these rows changed side in the 2026-08-31 re-fit and the device is the reason:
+	// Stuntman's, OutRun's two, and MGS3's were the classes arm D1 refused and measured. Dirge's and
+	// Xenosaga's exotic blends changed side with them, on the arithmetic rather than on a
+	// measurement of their own.
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(2892, 1912)); // Xenosaga FBMSK
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 1340));    // Stuntman DATE
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 896));     // FlatOut 2
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(2989, 147));  // Spider-Man 3
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(0, 162));     // MGS3
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(7, 150));     // Stuntman exotic
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(17, 96));     // OutRun a
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(11, 88));     // OutRun b
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(476, 2));     // Baldur's Gate
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(5, 47));      // Dirge
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(357, 7));     // Ratchet
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(9, 43));      // Xenosaga exotic
 
-	// ⚠️ ...and the UPPER bound on alpha, which is the spike-recovery property and not a cost at all.
-	// A class that must be admitted has to be able to come BACK after a transient spike refuses it,
-	// so its cost has to stay under the RE-ADMIT line, not merely under the refuse line. Katamari's
-	// (195, 16) is 220 at alpha = 8/5 and would be 227 at alpha = 2 -- over the line, latched off for
-	// good, which is exactly the bug a 192 re-admit line would have caused at alpha = 1. So alpha is
-	// bounded above by 1.8125 as well as below by 1.581, and 8/5 is the fraction in that window that
-	// leaves BOTH lines where they were.
-	EXPECT_GE(kGSTileGpuDeclaringReadmitAtOrUnder, gsTileGpuClassCost(195, 16));
-	EXPECT_LT(kGSTileGpuDeclaringReadmitAtOrUnder, kGSTileGpuDeclaringRefuseAbove);
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(11, 34));     // Ace Combat 5
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(202, 9));     // Katamari
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(5, 26));      // GT4
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(8, 18));      // God of War 2
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(30, 16));     // Yu-Gi-Oh
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(51, 11));     // Beyond Good & Evil
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(44, 8));      // Shadow of the Colossus
+	EXPECT_GE(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(43, 2));      // GT4 Online Beta
+}
+
+TEST(TileGpuDeclaringBudget, RatchetAndKatamariAreWhatFixTheTaxedPrice)
+{
+	// ⚠️ Why the taxed draw is 16 us and not something rounder. It is not a measurement -- the two
+	// corpus anchors disagree about what a taxed draw costs by a factor of a hundred, and both
+	// readings are real:
+	//
+	//   Ratchet's effects   357 taxed behind 7 runs, and the device declared 357 passes. Nearly
+	//                       every taxed draw was a declaring pass of its own.
+	//   Katamari's glyphs   202 taxed behind 9 runs, and the whole title declares 14-20 passes a
+	//                       frame. Nearly none of them was.
+	//
+	// So the price is set by the ORDER the two have to come in, not by either reading: Ratchet
+	// refused, Katamari not merely admitted but able to come BACK after a transient spike, which
+	// means under the RE-ADMIT line and not just under the refuse line. With x the taxed price net of
+	// the 6 us a refusal costs, 658 + 357x > 3800 needs x > 8.80 and 846 + 202x <= 3200 needs
+	// x <= 11.65. 16 - 6 = 10 sits near the middle.
+	EXPECT_LT(kGSTileGpuDeclaringRefuseAboveUs, gsTileGpuClassCostUs(357, 7));
+	EXPECT_GE(kGSTileGpuDeclaringReadmitAtOrUnderUs, gsTileGpuClassCostUs(202, 9));
+	EXPECT_LT(kGSTileGpuDeclaringReadmitAtOrUnderUs, kGSTileGpuDeclaringRefuseAboveUs);
+	// ...and the window really is a window: one unit either side of it breaks one of the two.
+	EXPECT_LT(8.80, static_cast<double>(kGSTileGpuTaxedDrawUs - kGSTileGpuRefusedDrawUs));
+	EXPECT_GE(11.65, static_cast<double>(kGSTileGpuTaxedDrawUs - kGSTileGpuRefusedDrawUs));
 }
 
 // -- the device gate ---------------------------------------------------------------------------
@@ -1169,25 +1275,33 @@ TEST(TileGpuDeclaringBudget, AnUnpricedClassStartsAdmitted)
 
 TEST(TileGpuDeclaringBudget, AClassThatFitsUnderTheLineIsExactFromTheFirstDraw)
 {
-	// ★ The headline: Katamari's punctuation. Its FBMSK class costs 211 a frame, under the line, so
-	// the bootstrap never trips and frame one writes the glyphs exactly. Under the startup polarity
-	// this frame was approximated and the damage was permanent.
+	// ★ The headline: Katamari's punctuation. Its FBMSK class is 202 draws standing behind 9 declared
+	// runs, 2,866 us a frame against a 3,800 line, so the bootstrap never trips and frame one writes
+	// the glyphs exactly. Under the startup polarity this frame was approximated and the damage was
+	// permanent, because the glyph store is written once.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	for (u32 d = 0; d < 211; d++)
+	for (u32 r = 0; r < 9; r++)
 	{
-		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0);
+		b.Charge(kGSTileGpuClassPartialMask, kGSTileGpuClassPartialMask);
+		ASSERT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask) << "run " << r;
+	}
+	for (u32 d = 0; d < 202; d++)
+	{
+		b.Charge(kGSTileGpuClassPartialMask, 0);
 		ASSERT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask) << "draw " << d;
 	}
 	b.Roll();
 	EXPECT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask);
+	EXPECT_EQ(2866u, b.peak[3]) << "kGSTileGpuClassPartialMask is bit 3";
 }
 
 TEST(TileGpuDeclaringBudget, AnUnpricedClassIsRefusedTheMomentItCrossesTheLine)
 {
 	// The other side of the same bet: exposure is bounded by the LINE, not by the frame. Xenosaga's
 	// FBMSK is 4805 draws a frame; a whole admitted frame of it measured 303 ms on the device and
-	// took a kernel-level GPU fault. Here it is stopped after about 256.
+	// took a kernel-level GPU fault. In this shape -- one run with everything else behind it -- the
+	// line falls after 94 us of run plus 371 taxed draws at 10 us, so 372 draws get through.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
 	u32 admitted_draws = 0;
@@ -1200,8 +1314,9 @@ TEST(TileGpuDeclaringBudget, AnUnpricedClassIsRefusedTheMomentItCrossesTheLine)
 		EXPECT_TRUE(was_admitted || (b.admitted & kGSTileGpuClassPartialMask) == 0) << "draw " << d;
 	}
 	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
-	EXPECT_GE(kGSTileGpuDeclaringRefuseAbove + 2, admitted_draws);
-	EXPECT_LE(kGSTileGpuDeclaringRefuseAbove, admitted_draws);
+	const u32 taxed_to_the_line = (kGSTileGpuDeclaringRefuseAboveUs - kRunNetUs) / kTaxedNetUs + 1;
+	EXPECT_EQ(taxed_to_the_line + 1, admitted_draws);
+	EXPECT_EQ(372u, admitted_draws);
 }
 
 TEST(TileGpuDeclaringBudget, TheBootstrapCountsRunsAsWellAsTaxedDraws)
@@ -1229,7 +1344,7 @@ TEST(TileGpuDeclaringBudget, APricedClassKeepsItsVerdictForTheWholeFrame)
 	ASSERT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate);
 
 	// Now the scene explodes. The class is priced, so it rides the whole frame admitted...
-	for (u32 d = 0; d < kGSTileGpuDeclaringRefuseAbove * 4; d++)
+	for (u32 d = 0; d < kDrawsWellPastTheLine; d++)
 	{
 		b.Charge(kGSTileGpuClassDate, d == 0 ? kGSTileGpuClassDate : 0);
 		ASSERT_EQ(kGSTileGpuClassDate, b.admitted & kGSTileGpuClassDate) << "draw " << d;
@@ -1246,7 +1361,7 @@ TEST(TileGpuDeclaringBudget, ReAdmittingAClassMakesItUnpricedAgain)
 	// than a whole frame at whatever the class now costs -- which is the 303 ms frame, arriving late.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 4);
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kDrawsWellPastTheLine);
 	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
 
 	int quiet = 0;
@@ -1259,7 +1374,7 @@ TEST(TileGpuDeclaringBudget, ReAdmittingAClassMakesItUnpricedAgain)
 	EXPECT_EQ(0u, b.priced & kGSTileGpuClassPartialMask) << "a re-admitted class must be bootstrapped again";
 
 	// ...and the guard really is armed: the retry frame stops at the line.
-	for (u32 d = 0; d < kGSTileGpuDeclaringRefuseAbove * 4; d++)
+	for (u32 d = 0; d < kDrawsWellPastTheLine; d++)
 		b.Charge(kGSTileGpuClassPartialMask, d == 0 ? kGSTileGpuClassPartialMask : 0);
 	EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
 }
@@ -1272,9 +1387,9 @@ TEST(TileGpuDeclaringBudget, TheFrameJustDrawnDecidesTheNextOne)
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
 	ASSERT_EQ(kGSTileGpuClassExoticBlend, b.admitted & kGSTileGpuClassExoticBlend);
-	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kGSTileGpuDeclaringRefuseAbove * 3) &
+	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kDrawsWellPastTheLine) &
 					  kGSTileGpuClassExoticBlend);
-	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kGSTileGpuDeclaringRefuseAbove * 3) &
+	EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassExoticBlend, kDrawsWellPastTheLine) &
 					  kGSTileGpuClassExoticBlend);
 }
 
@@ -1289,7 +1404,7 @@ TEST(TileGpuDeclaringBudget, ARefusedClassKeepsMeasuringWhatItWouldHaveCost)
 	b.Start(kDeclaringIsTaxed);
 	for (int frame = 0; frame < 8; frame++)
 	{
-		EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3) &
+		EXPECT_EQ(0u, RunDenseFrame(b, kGSTileGpuClassPartialMask, kDrawsWellPastTheLine) &
 						  kGSTileGpuClassPartialMask)
 			<< "frame " << frame;
 	}
@@ -1307,7 +1422,7 @@ TEST(TileGpuDeclaringBudget, AClassExpensiveEveryOtherFrameStaysRefused)
 	for (int frame = 0; frame < 12; frame++)
 	{
 		if (frame % 2 == 0)
-			RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3);
+			RunDenseFrame(b, kGSTileGpuClassPartialMask, kDrawsWellPastTheLine);
 		else
 			b.Roll();
 		EXPECT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask) << "frame " << frame;
@@ -1372,7 +1487,7 @@ TEST(TileGpuDeclaringBudget, APeakDecaysSoAQuietSceneIsReAdmitted)
 	// of genuine quiet.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3);
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kDrawsWellPastTheLine);
 	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
 
 	// ⚠️ The quiet frames have to DRAW something, or they are not evidence and do not decay anything.
@@ -1389,17 +1504,20 @@ TEST(TileGpuDeclaringBudget, APeakDecaysSoAQuietSceneIsReAdmitted)
 
 TEST(TileGpuDeclaringBudget, AMustAdmitClassComesBackAfterATransientSpike)
 {
-	// The reason the re-admit line is 224 and not a round fraction of the other one. Katamari's
-	// punctuation costs 211 every frame. One bad frame refuses it; if the re-admit line sat below
-	// 211 the peak would decay to 211, stop there, and the punctuation would be off for good.
+	// The reason the re-admit line is 3,200 and not a round fraction of the other one. Katamari's
+	// punctuation costs 2,866 us every frame. One bad frame refuses it; if the re-admit line sat
+	// below 2,866 -- as the obvious 25% band's 2,850 does -- the peak would decay to 2,866, stop
+	// there, and the punctuation would be off for good.
 	GSTileGpuDeclaringBudget b;
 	b.Start(kDeclaringIsTaxed);
-	RunDenseFrame(b, kGSTileGpuClassPartialMask, kGSTileGpuDeclaringRefuseAbove * 3); // the spike
+	RunDenseFrame(b, kGSTileGpuClassPartialMask, kDrawsWellPastTheLine); // the spike
 	ASSERT_EQ(0u, b.admitted & kGSTileGpuClassPartialMask);
 	for (int frame = 0; frame < 40 && (b.admitted & kGSTileGpuClassPartialMask) == 0; frame++)
-		RunDenseFrame(b, kGSTileGpuClassPartialMask, 211); // Katamari's ordinary frame
+		RunCensusFrame(b, kGSTileGpuClassPartialMask, /*taxed=*/202, /*runs=*/9); // an ordinary frame
 	EXPECT_EQ(kGSTileGpuClassPartialMask, b.admitted & kGSTileGpuClassPartialMask)
 		<< "a class that must be admitted was latched off by one bad frame";
+	EXPECT_GE(kGSTileGpuDeclaringReadmitAtOrUnderUs, b.peak[3])
+		<< "the peak the re-admission was made on";
 }
 
 TEST(TileGpuDeclaringBudget, ADrawThatOpensARunIsCountedAsARunAndNotAsATaxedDraw)
@@ -1425,8 +1543,8 @@ TEST(TileGpuDeclaringBudget, ADrawThatOpensARunIsCountedAsARunAndNotAsATaxedDraw
 	// ...and the SPREAD one costs MORE, which is the whole of alpha above one: the same hundred
 	// draws are dearer when each of them is a declared pass of its own than when they share one.
 	// MGS3 is the dump that proved it -- 162 draws, 162 solo passes, 9.5 ms.
-	EXPECT_LT(gsTileGpuClassCost(dense.taxed[1], dense.runs[1]),
-		gsTileGpuClassCost(spread.taxed[1], spread.runs[1]));
+	EXPECT_LT(gsTileGpuClassCostUs(dense.taxed[1], dense.runs[1]),
+		gsTileGpuClassCostUs(spread.taxed[1], spread.runs[1]));
 }
 
 TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
@@ -1437,7 +1555,7 @@ TEST(TileGpuDeclaringBudget, TheCountersResetWithTheFrame)
 	for (int frame = 0; frame < 8; frame++)
 	{
 		EXPECT_EQ(kGSTileGpuClassQuantisedBlend,
-			RunDenseFrame(b, kGSTileGpuClassQuantisedBlend, kGSTileGpuDeclaringRefuseAbove / 2) &
+			RunDenseFrame(b, kGSTileGpuClassQuantisedBlend, kDrawsUnderTheLine) &
 				kGSTileGpuClassQuantisedBlend)
 			<< "frame " << frame;
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)

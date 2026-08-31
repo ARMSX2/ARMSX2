@@ -1328,12 +1328,16 @@ constexpr u32 gsTileGpuSelfReadUses(u32 wanted_classes, u32 admitted_classes, bo
 
 /// The classes a dev PROBE holds out of admission outright, whatever the budget decided.
 ///
-/// One key, one named class, and that scoping is the instrument. The measurement it serves is the
-/// declaring premium on Stuntman, whose exotic-blend class scores 247 against the 256 refuse line
-/// and is therefore admitted in every frame -- 154 declaring passes a frame at 30-90 us of premium
-/// each. The obvious alternative, dropping kGSTileGpuDeclaringRefuseAbove to 224 so the 247 falls
-/// the other side of it, is NOT the same arm: the re-admit line below is also 224, so moving the
-/// refuse line there leaves no hysteresis band and the run would carry two changes.
+/// One key, one named class, and that scoping is the instrument: it moves neither line, and no other
+/// class's verdict changes with it. What it bought is in the cost model below -- arm D1 refused the
+/// exotic-blend class on Stuntman and read the declaring premium straight off the device, three
+/// times, which is what the whole cost model is now fitted to.
+///
+/// ⚠️ It is no longer the way to refuse Stuntman's class: the re-fitted budget refuses that class by
+/// itself, and every other class D1 priced with it. The key stays because the question it answers
+/// keeps coming back -- what does ONE class cost on THIS device -- and because it is the only way to
+/// ask it on a device that admits everything (an M2, a Mali), where the budget is inert and cannot
+/// be made to say anything at all.
 ///
 /// A refused class is not an unchanged one -- its draws take the RT-copy blend road -- so a run with
 /// any bit set here is a measurement and never a hash gate.
@@ -1351,98 +1355,143 @@ constexpr u32 gsTileGpuAdmittedClasses(u32 wanted_classes, u32 budget_admitted, 
 	return wanted_classes & budget_admitted & ~probe_refused;
 }
 
-/// A class's cost, in the unit the device actually charges in.
+/// A class's cost, in MICROSECONDS OF GPU A FRAME -- and specifically the NET cost of admitting it:
+/// what refusing it would give back, less what the road it then falls back to costs.
 ///
-/// TWO terms, because the SD865 round (20260824, e4d6eddce3) said the one-term form was half a
-/// model. The tax has two halves and a class pays both:
+/// ⚠️ RE-FITTED 2026-08-31, and the SHAPE changed, not only the line. Until this round the function
+/// returned dimensionless units (taxed + 8/5 x runs) against a line of 256, and that 8/5 encoded a
+/// declaring premium about four times too small. It admitted Stuntman's exotic blends at 247 against
+/// 256 -- a class the device then measured at -13.78 ms of GPU when it was refused. No line on the
+/// old score fixes that: the old score admits Katamari's 220, OutRun's 170 and 151 and Stuntman's
+/// 247 and refuses MGS3's 259, while the device says refuse 247, 170 and 151 and keep Katamari. The
+/// order was wrong, so the arithmetic had to change.
 ///
-///   taxed draws     a draw sharing a declaring pass with an earlier draw of the same class pays a
-///                   render-backend flush, because on sysmem a declaring pass rasterizes under
-///                   GRAS_SC_CNTL.single_prim_mode = FLUSH_PER_OVERLAP_AND_OVERWRITE.
-///   declared runs   ...and a declaring pass costs of its OWN, whatever it holds -- transitions,
-///                   load forcing, the input-attachment bind. The first cost model scored a run of
-///                   one draw as FREE, and the device refuted it in the loudest available way:
-///                   FlatOut 2's exotic blends are 896 draws in 896 solo declared passes, scored
-///                   ZERO, admitted, and the frame came back at 122.04 ms -- +120% against the arm
-///                   before the budget existed and +383% against the arm before the read road
-///                   existed, with the pass count going 235 -> 1,100.
+/// THE THREE COEFFICIENTS
 ///
-/// So cost = taxed + alpha * runs, and alpha = 8/5.
+///   a declared run    100 us   MEASURED. A declared run is a declaring pass, and a declaring pass
+///                              is an ordinary pass (4.30 us) plus the rasterization-mode premium it
+///                              pays for abandoning Turnip's cheap sysmem path. Arm D1 (suite
+///                              20260831-0621, SD865 / Adreno 650 / Turnip 26.1.2) read that premium
+///                              three times, by force-refusing one class and dividing the GPU delta
+///                              by the declaring passes it eliminated:
+///                                  stuntman  -13.783 ms over 154 passes    96.6 us   (the decision)
+///                                  outrun-a   -9.614 ms over  96 passes   111.6 us
+///                                  outrun-b   -7.787 ms over  86 passes   103.3 us
+///                              Standing value 100 us, band 95-110. ⚠️ The corpus fit's 73.6 us and
+///                              this comment's own former 59-77 us are both LOW, and for the same
+///                              reason: nothing had yet moved a declaring-pass count on purpose.
 ///
-/// ⚠️ alpha WAS 1, on an argument that was principled and that the device then overruled. The
-/// argument: at alpha = 1 the cost is arithmetically taxed + runs = the class's draw count, which is
-/// invariant to how those draws fall into passes -- and that invariance is worth having, because the
-/// run counter is a number this planner cannot measure properly. It counts runs broken by the
-/// attachment group changing and cannot see the pass breaks a prep op or a texture bind makes later
-/// in the same draw; on Ratchet & Clank's effects it counts SEVEN runs where the device declared
-/// 357 passes.
+///   a refused draw      6 us   DERIVED from two standing coefficients. A refused draw of the
+///                              classes that carry the corpus's cost takes the RT-copy blend road:
+///                              one copy dispatch (1.76 us) plus the pass entry its break costs
+///                              (4.30 us). Cross-check: D1's dispatch priced Stuntman's 157 refused
+///                              draws at ~1.1 ms, which is 7.0 us each.
+///                              One coefficient for every class deliberately. The mask classes fall
+///                              back to the channel-granular pipeline mask -- no copy at all, so
+///                              their refusal is cheaper than 6 us and this term UNDERSTATES what
+///                              refusing them buys. That is the direction that keeps a class
+///                              admitted rather than the one that loses a glyph.
 ///
-/// What overruled it: MGS3. Its exotic blends are 162 draws in 162 SOLO declared passes -- no
-/// overlap anywhere for the flush to charge -- and the alpha probe (manager scaffold 1dd0ed3edd,
-/// force-refusing that one class) took MGS3 from 29.1 ms to 19.734-19.745, which is the 19.725
-/// pre-regression floor to within 0.05%, with the device pass count dropping by exactly the class's
-/// own count, 633 -> 471. Its whole +48% residual was that class. At alpha = 1 it costs 162 and this
-/// line admits it; the run term is simply real, and about 59 us a pass by that arithmetic, which
-/// agrees with the ~77 us FlatOut 2's 896 declared passes implied.
+///   a taxed draw       16 us   FITTED, and it is a RISK PREMIUM rather than a cost. A taxed draw is
+///                              one the run counter believes shares a declaring pass with an earlier
+///                              draw of the same class. That counter can only ever UNDERCOUNT: it
+///                              breaks a run when the attachment group changes, and cannot see the
+///                              pass breaks a prep op or a texture bind makes later in the same
+///                              draw. The corpus's two anchors disagree about the size of that
+///                              undercount by a hundred times:
+///                                  Ratchet's effects   357 taxed behind 7 runs, and the device
+///                                                      declared 357 passes. Nearly every taxed
+///                                                      draw was a declaring pass of its own.
+///                                  Katamari's glyphs   202 taxed behind 9 runs, and the whole
+///                                                      title declares 14-20 passes a frame
+///                                                      (1.0-1.5 ms). Nearly none of them was.
+///                              No single price is right for both, so this one is not set by a
+///                              measurement at all. It is set by the ORDER those two have to come
+///                              in, and the window that leaves is written up on the refuse line.
 ///
-/// The run-counter caveat survives the change, with its DIRECTION now stated: undercounting runs
-/// UNDERPRICES a class and never the reverse, so the failure mode is admitting something that should
-/// have been refused, and it is bounded by however badly the count is wrong. On the one class where
-/// the undercount is known to be enormous -- Ratchet's 7 counted against 357 declared -- the taxed
-/// term alone is 357 and already refuses it, so nothing there rides on the runs at all.
+/// WHAT THE SCORE REPRODUCES. The three classes D1 refused on the device, score against measurement:
 ///
-/// ⚠️ alpha is bounded on BOTH sides and 8/5 is chosen inside the window, not for tidiness:
+///     stuntman exotic    14,170 us    measured -13,783 us    +2.8%
+///     outrun-a exotic     9,194 us    measured  -9,614 us    -4.4%
+///     outrun-b exotic     8,382 us    measured  -7,787 us    +7.6%
 ///
-///   a > 1.336   or MGS3 (162 runs) and Katamari's punctuation (195 taxed + 16 runs) cannot be
-///               separated by any line at all, whatever it is set to.
-///   a > 1.581   to put MGS3 past the refuse line where the device says it belongs, with the line
-///               left where the previous round fitted it.
-///   a <= 1.8125 or Katamari's 220 crosses the RE-ADMIT line, and a class that must be admitted
-///               stops being able to come back after a transient spike refuses it. alpha = 2 puts
-///               it at 227 and re-creates exactly the latch-off bug a 192 re-admit line would have
-///               caused at alpha = 1.
+/// MGS3's older arm reads 53.5 us a declaring pass rather than 96.6, so its class scores 15,228
+/// against a measured -9,370: the score is 63% high there and right about the verdict. Nothing else
+/// in the corpus has a measured delta to check a score against.
 ///
-/// 8/5 is the fraction in that window that leaves BOTH lines exactly where they were; 3/2 would
-/// have needed the refuse line moved as well.
-constexpr u32 kGSTileGpuRunCostNumerator = 8;
-constexpr u32 kGSTileGpuRunCostDenominator = 5;
+/// ⚠️ The two terms stay in separate counters even though only their sum is ever compared to a line.
+/// They were measured separately, they are wrong in different directions, and a device round that
+/// re-prices either one has to be able to see them apart.
+constexpr u32 kGSTileGpuDeclaringPassUs = 100;
+constexpr u32 kGSTileGpuTaxedDrawUs = 16;
+constexpr u32 kGSTileGpuRefusedDrawUs = 6;
 
-constexpr u32 gsTileGpuClassCost(u32 taxed_draws, u32 declared_runs)
+constexpr u32 gsTileGpuClassCostUs(u32 taxed_draws, u32 declared_runs)
 {
-	return taxed_draws + declared_runs * kGSTileGpuRunCostNumerator / kGSTileGpuRunCostDenominator;
+	return declared_runs * (kGSTileGpuDeclaringPassUs - kGSTileGpuRefusedDrawUs) +
+		   taxed_draws * (kGSTileGpuTaxedDrawUs - kGSTileGpuRefusedDrawUs);
 }
 
-/// The line, and it is a fit to a constraint set rather than a round number.
+/// The refuse line: refuse a class when admitting it costs more than this many microseconds of GPU a
+/// frame, net of the road its draws would take refused.
 ///
-/// Per-class costs over the 18-dump corpus under the Adreno pass shape, at alpha = 8/5, with the
-/// device's verdict on each where it ran:
+/// 3,800 us is a fifth of a 60 Hz frame, and that fifth IS the trade. A class stays exact until
+/// refusing it would give back more than a fifth of the whole frame budget; above that the exactness
+/// is not what the frame is short of.
 ///
-///   must refuse   Xenosaga's alpha-MSB FBMSK 7118, FlatOut 2's exotic blends 1433, Baldur's Gate's
-///                 16-bit blends 481, Ratchet & Clank's effect blends 368, MGS3's exotic blends 259
-///   must admit    Katamari's punctuation FBMSK 220, OutRun's exotic blends 170 and 151, Beyond
-///                 Good & Evil's FBMSK 74, Shadow of the Colossus' exotic blends 56, Yu-Gi-Oh's
-///                 16-bit blend 56, GT4 Online Beta's 46, and twenty-odd classes under 40
+/// The line is not free to move on its own, because it and the taxed price are fitted together
+/// against the same corpus. Per-class (taxed, runs) over the 22-dump corpus, taken on the M2 -- which
+/// computes the SD865's peaks exactly, because a class is charged against its ATTACHMENT GROUP and
+/// never against passes -- with the device's verdict beside every class that has one:
 ///
-/// MGS3's 259 and Katamari's 220 are the two that bind now, and they are what fixed ALPHA rather
-/// than this line -- see gsTileGpuClassCost. The line itself has not moved since it was fitted
-/// against Katamari and Ratchet, which is the point of having chosen 8/5 over 3/2.
-constexpr u32 kGSTileGpuDeclaringRefuseAbove = 256;
+///   must refuse   Xenosaga's alpha-MSB FBMSK   (2892, 1912)   208,648      the toll it was fitted on
+///                 Stuntman's DATE              (   0, 1340)   125,960
+///                 FlatOut 2's exotic blends    (   0,  896)    84,224      +66.5 ms admitted
+///                 Spider-Man 3's FBMSK         (2989,  147)    43,708
+///                 Spider-Man 3's exotic        (  60,  390)    37,260
+///                 MGS3's exotic blends         (   0,  162)    15,228       -9.37 ms measured
+///                 Stuntman's exotic blends     (   7,  150)    14,170      -13.78 ms measured
+///                 OutRun's exotic, scene a     (  17,   96)     9,194       -9.61 ms measured
+///                 OutRun's exotic, scene b     (  11,   88)     8,382       -7.79 ms measured
+///                 Baldur's Gate's 16-bit       ( 476,    2)     4,948
+///                 Dirge's exotic blends        (   5,   47)     4,468
+///                 Ratchet's effect blends      ( 357,    7)     4,228      <- binds the taxed price
+///                 Xenosaga's exotic blends     (   9,   43)     4,132
+///   must admit    Ace Combat 5's exotic        (  11,   34)     3,306      <- inside the band
+///                 Katamari's punctuation FBMSK ( 202,    9)     2,866      <- binds the taxed price
+///                 GT4's exotic blends          (   5,   26)     2,494
+///                 God of War 2's FBMSK         (   8,   18)     1,772
+///                 Yu-Gi-Oh's 16-bit blend      (  30,   16)     1,804
+///                 Beyond Good & Evil's FBMSK   (  51,   11)     1,544
+///                 ...and the other thirty rows of the 49-row census, all under 1,500
+///
+/// Ratchet and Katamari are the pair that binds, and they fix the TAXED price rather than this line.
+/// Ratchet's cost is almost all taxed draws and Katamari's largely is, so with the lines here and x
+/// the price of a taxed draw net of the 6 us its refusal would have cost:
+///
+///     658 + 357x > 3800   to refuse Ratchet, whose 357 taxed draws the device made 357 passes
+///     846 + 202x <= 3200  to leave Katamari's glyphs able to come back after a transient spike
+///
+/// gives 8.80 < x <= 11.65, and 16 - 6 = 10 sits near the middle of it: a taxed draw priced between
+/// a seventh and a sixth of a declaring pass. That the two anchors are separable at all is the only
+/// thing the taxed term is really claiming.
+constexpr u32 kGSTileGpuDeclaringRefuseAboveUs = 3800;
 /// ...and the re-admit line, the near edge of the hysteresis band.
 ///
 /// A class hovering at one line would otherwise change what the frame is exact about every frame;
 /// both renderings are valid, so the flicker is subtle rather than broken. The band has to satisfy
-/// one property beyond being narrow, and the obvious 25% band does not: a class that MUST be
-/// admitted has to be able to come BACK after any transient spike refuses it, so the re-admit line
-/// must sit above the largest must-admit cost. That is Katamari's 211, so 192 would latch its
-/// punctuation off for good after one bad frame. 224 clears it.
+/// one property beyond being narrow, and the obvious 25% band does not: a class that MUST be admitted
+/// has to be able to come BACK after any transient spike refuses it, so the re-admit line must sit
+/// above the largest must-admit cost. That is Katamari's punctuation at 2,866, so 3,200 clears it by
+/// 11.7% and 2,850 -- the 25% band -- would latch the glyphs off for good after one bad frame.
 ///
-/// ⚠️ The band it leaves (225..256) was written up as containing no measured class on the corpus at
-/// all. That stopped being true when Stuntman joined it: its exotic-blend class scores 247, and it
-/// was not in the corpus the line was fitted against. So the band now holds the worst title's most
-/// expensive class, nine units under the refuse line and admitted every frame -- which is what
-/// TileGpuRefuseExoticBlendClass exists to price. Anything moving the refuse line to catch that 247
-/// has to move this one too, or there is no band left.
-constexpr u32 kGSTileGpuDeclaringReadmitAtOrUnder = 224;
+/// ⚠️ ONE MEASURED CLASS SITS IN THE BAND: Ace Combat 5's exotic blends, 3,306. It is admitted in the
+/// ordinary way, but any transient spike past 3,800 refuses it permanently, because its own steady
+/// cost never falls back under this line. That is a bounded, deliberate hazard -- the consequence is
+/// approximate blending on a title whose GPU busy is 7.3 ms against a 16.67 budget, and it is 3.3 ms
+/// a frame cheaper when it happens. The alternative bands that leave no class inside all shrink some
+/// other margin to 1-3%, and margins are what the last re-tune ran out of.
+constexpr u32 kGSTileGpuDeclaringReadmitAtOrUnderUs = 3200;
 
 /// The per-class declaring budget: which admission classes are worth their tax this frame, decided
 /// from what each of them has recently cost.
@@ -1467,7 +1516,7 @@ struct GSTileGpuDeclaringBudget
 	/// of consecutive runs of the class. The two terms of the cost.
 	std::array<u32, kGSTileGpuAdmissionClasses> taxed{};
 	std::array<u32, kGSTileGpuAdmissionClasses> runs{};
-	/// ...and what the class has cost RECENTLY: a running peak of gsTileGpuClassCost that decays a
+	/// ...and what the class has cost RECENTLY: a running peak of gsTileGpuClassCostUs that decays a
 	/// quarter each frame, which is the number the verdict is actually made on.
 	///
 	/// ⚠️ Not the last frame's cost, and this is not a refinement -- a budget reading one frame is
@@ -1518,9 +1567,10 @@ struct GSTileGpuDeclaringBudget
 	/// whole admitted frame, which on Xenosaga was 303 ms and a kernel-level GPU fault.
 	///
 	/// So: start admitted, and stop the moment the class proves expensive. Exposure is bounded by the
-	/// line rather than by the frame -- about 256 draws' worth, not 2,409 -- and a class whose whole
-	/// frame fits under the line is never refused at all, which is exactly the case the permanent
-	/// damage was in. Exactness is MONOTONE within a frame: admitted to refused, never back.
+	/// line rather than by the frame: at the re-fitted coefficients that is 41 declared runs, or one
+	/// run plus 371 draws standing behind it -- not Xenosaga's 4,805. And a class whose whole frame
+	/// fits under the line is never refused at all, which is exactly the case the permanent damage
+	/// was in. Exactness is MONOTONE within a frame: admitted to refused, never back.
 	constexpr void Charge(u32 wanted, u32 opening)
 	{
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
@@ -1533,7 +1583,7 @@ struct GSTileGpuDeclaringBudget
 			else
 				taxed[c]++;
 			if (taxes && (priced & bit) == 0 && (admitted & bit) != 0 &&
-				gsTileGpuClassCost(taxed[c], runs[c]) > kGSTileGpuDeclaringRefuseAbove)
+				gsTileGpuClassCostUs(taxed[c], runs[c]) > kGSTileGpuDeclaringRefuseAboveUs)
 				admitted &= ~bit;
 		}
 	}
@@ -1555,6 +1605,12 @@ struct GSTileGpuDeclaringBudget
 		// fired. Measured that way it was "refused in 100% of frames" and still paying 161 of its
 		// 162 declared passes.
 		//
+		// ⚠️ The re-fit of 2026-08-31 did not retire that story, it only moved which class tells it.
+		// MGS3 now scores 15,228 against a 3,800 line, four times over, so no single decay step
+		// crosses it. But a decay step is 25% and the hysteresis band is 16%, so any class landing
+		// just over the refuse line still decays clean under the re-admit line in ONE step -- the
+		// trap is unchanged in kind and this guard is still the whole of the defence.
+		//
 		// So a frame in which nothing was charged at all changes nothing: not the peak, not the
 		// verdict, not `priced`. A frame that DID draw but not this class still decays it, which is
 		// the case the decay is for.
@@ -1567,7 +1623,7 @@ struct GSTileGpuDeclaringBudget
 		for (u32 c = 0; c < kGSTileGpuAdmissionClasses; c++)
 		{
 			const u32 bit = 1u << c;
-			const u32 cost = gsTileGpuClassCost(taxed[c], runs[c]);
+			const u32 cost = gsTileGpuClassCostUs(taxed[c], runs[c]);
 			const u32 decayed = peak[c] - peak[c] / 4;
 			peak[c] = cost > decayed ? cost : decayed;
 			// A class seen for a whole frame now has a peak worth believing, so it stops being
@@ -1578,10 +1634,10 @@ struct GSTileGpuDeclaringBudget
 				admitted |= bit;
 			else if ((admitted & bit) != 0)
 			{
-				if (peak[c] > kGSTileGpuDeclaringRefuseAbove)
+				if (peak[c] > kGSTileGpuDeclaringRefuseAboveUs)
 					admitted &= ~bit;
 			}
-			else if (peak[c] <= kGSTileGpuDeclaringReadmitAtOrUnder)
+			else if (peak[c] <= kGSTileGpuDeclaringReadmitAtOrUnderUs)
 			{
 				// Re-admitting a class the budget once refused is a GUESS again -- the peak that
 				// justifies it was measured while the class was refused and the scene has moved on.

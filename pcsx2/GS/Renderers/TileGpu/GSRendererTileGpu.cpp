@@ -2892,8 +2892,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 			const auto refu = stat([c](const MF& f) { return f.class_refused[c]; });
 			// Who refused it, not just how often: on a probe arm the refusal is the KEY's and the cost
 			// peak beside it is still the budget's own opinion, which is the number the arm is pricing.
+			// ⚠️ The peak is MICROSECONDS OF GPU A FRAME since the 2026-08-31 re-fit, and the column
+			// says so: it used to be a dimensionless score against a line of 256 and the numbers are
+			// now three orders of magnitude bigger. A log read against the old wording compares
+			// nothing.
 			Console.WriteLn("    class %-17s wanted %.2f / %u draws (taxed %.2f / %u + runs %.2f / %u)   "
-							"cost peak %.2f / %u   %s refused it in %.0f%% of frames",
+							"refusing it would buy %.2f / %u us   %s refused it in %.0f%% of frames",
 				kClassNames[c], want.mean, want.p50, taxd.mean, taxd.p50, runs.mean, runs.p50, peak.mean,
 				peak.p50, (m_probe_refused_classes & (1u << c)) ? "the PROBE" : "budget", refu.mean * 100.0);
 		}
