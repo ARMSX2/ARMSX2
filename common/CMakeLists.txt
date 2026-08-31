@@ -16,6 +16,7 @@ target_sources(common PRIVATE
 	Error.cpp
 	FastJmp.cpp
 	FileSystem.cpp
+	HostVFS.cpp
 	HostSys.cpp
 	Image.cpp
 	HTTPDownloader.cpp
@@ -53,6 +54,7 @@ target_sources(common PRIVATE
 	FPControl.h
 	FastJmp.h
 	FileSystem.h
+	HostVFS.h
 	HashCombine.h
 	HostSys.h
 	HeterogeneousContainers.h

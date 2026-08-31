@@ -52,6 +52,7 @@
 #include "common/SmallString.h"
 #include "common/StringUtil.h"
 #include "common/Threading.h"
+#include "common/HostVFS.h"
 
 #include "pcsx2/PrecompiledHeader.h"
 
@@ -1342,6 +1343,56 @@ RETRO_API unsigned retro_api_version(void)
 	return RETRO_API_VERSION;
 }
 
+// Hand the frontend's file system to common/FileSystem. Without it the core
+// can only open paths the OS understands, which on Android leaves out
+// everything reached through the Storage Access Framework (content:// URIs)
+// and everything on a network share - which is to say most of a user's games.
+//
+// Version 3 is asked for because that is where stat(), mkdir() and directory
+// iteration arrive; the frontend answers with the version it actually has, and
+// the members above it stay null, so an older frontend still gets file access
+// and simply falls back to the OS for the rest.
+static void InstallFrontendVFS(retro_environment_t cb)
+{
+	retro_vfs_interface_info info = {3, nullptr};
+	if (!cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &info) || !info.iface)
+		return;
+
+	const unsigned version = info.required_interface_version;
+	retro_vfs_interface* iface = info.iface;
+
+	HostVFS::Ops ops = {};
+	ops.open = reinterpret_cast<void* (*)(const char*, unsigned, unsigned)>(iface->open);
+	ops.close = reinterpret_cast<int (*)(void*)>(iface->close);
+	ops.size = reinterpret_cast<s64 (*)(void*)>(iface->size);
+	ops.tell = reinterpret_cast<s64 (*)(void*)>(iface->tell);
+	ops.seek = reinterpret_cast<s64 (*)(void*, s64, int)>(iface->seek);
+	ops.read = reinterpret_cast<s64 (*)(void*, void*, u64)>(iface->read);
+	ops.write = reinterpret_cast<s64 (*)(void*, const void*, u64)>(iface->write);
+	ops.flush = reinterpret_cast<int (*)(void*)>(iface->flush);
+	ops.remove = iface->remove;
+	ops.rename = iface->rename;
+
+	if (version >= 2)
+		ops.truncate = reinterpret_cast<int (*)(void*, s64)>(iface->truncate);
+
+	if (version >= 3)
+	{
+		ops.stat = iface->stat;
+		ops.mkdir = iface->mkdir;
+		ops.opendir = reinterpret_cast<void* (*)(const char*, bool)>(iface->opendir);
+		ops.readdir = reinterpret_cast<bool (*)(void*)>(iface->readdir);
+		ops.dirent_get_name = reinterpret_cast<const char* (*)(void*)>(iface->dirent_get_name);
+		ops.dirent_is_dir = reinterpret_cast<bool (*)(void*)>(iface->dirent_is_dir);
+		ops.closedir = reinterpret_cast<int (*)(void*)>(iface->closedir);
+	}
+
+	HostVFS::Install(ops);
+
+	if (log_cb)
+		log_cb(RETRO_LOG_INFO, "Using the frontend's VFS (interface version %u)\n", version);
+}
+
 RETRO_API void retro_set_environment(retro_environment_t cb)
 {
 	environ_cb = cb;
@@ -1354,6 +1405,8 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 
 	bool support_no_game = false;
 	cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &support_no_game);
+
+	InstallFrontendVFS(cb);
 
 	PopulateBiosOptions(cb);
 

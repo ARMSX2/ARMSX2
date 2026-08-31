@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "FileSystem.h"
+#include "HostVFS.h"
 #include "Error.h"
 #include "Path.h"
 #include "Assertions.h"
@@ -999,6 +1000,15 @@ std::FILE* FileSystem::OpenCFile(const char* filename, const char* mode, Error* 
 
 	return fp;
 #else
+	// The host's file system first, when there is one: on Android a content://
+	// path has no OS-level equivalent for fopen() to take, and a libretro core
+	// has no Activity to reach the JNI path below through either.
+	if (HostVFS::IsInstalled())
+	{
+		if (std::FILE* vfp = HostVFS::OpenAsCFile(filename, mode))
+			return vfp;
+	}
+
 	#if defined(__ANDROID__)
 	if (std::strncmp(filename, "content://", 10) == 0)
 	{
@@ -2183,6 +2193,139 @@ bool FileSystem::DeleteSymbolicLink(const char* path, Error* error)
 // No 32-bit file offsets breaking stuff please.
 static_assert(sizeof(off_t) == sizeof(s64));
 
+// The same walk as RecursiveFindFiles below, but through the host's directory
+// interface. It is a separate function rather than a branch inside that one
+// because the host has no stat() per entry worth calling - the iterator says
+// whether an entry is a directory, and nothing else - so sizes and timestamps
+// come back zero, and the symlink-loop guard has nothing to resolve against.
+static u32 RecursiveFindFilesVFS(const char* OriginPath, const char* ParentPath, const char* Path, const char* Pattern,
+	u32 Flags, FileSystem::FindResultsArray* pResults, ProgressCallback* cancel)
+{
+	if (cancel && cancel->IsCancelled())
+		return 0;
+
+	std::string tempStr;
+	if (Path)
+	{
+		if (ParentPath)
+			tempStr = fmt::format("{}/{}/{}", OriginPath, ParentPath, Path);
+		else
+			tempStr = fmt::format("{}/{}", OriginPath, Path);
+	}
+	else
+	{
+		tempStr = fmt::format("{}", OriginPath);
+	}
+
+	const HostVFS::Ops* ops = HostVFS::GetOps();
+	void* dir = ops->opendir(tempStr.c_str(), (Flags & FILESYSTEM_FIND_HIDDEN_FILES) != 0);
+	if (!dir)
+		return 0;
+
+	bool hasWildCards = false;
+	bool wildCardMatchAll = false;
+	u32 nFiles = 0;
+	if (std::strpbrk(Pattern, "*?"))
+	{
+		hasWildCards = true;
+		wildCardMatchAll = (std::strcmp(Pattern, "*") == 0);
+	}
+
+	while (ops->readdir(dir))
+	{
+		const char* name = ops->dirent_get_name(dir);
+		if (!name || name[0] == '\0')
+			continue;
+
+		if (name[0] == '.')
+		{
+			if (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))
+				continue;
+
+			if (!(Flags & FILESYSTEM_FIND_HIDDEN_FILES))
+				continue;
+		}
+
+		std::string full_path;
+		if (ParentPath)
+			full_path = fmt::format("{}/{}/{}/{}", OriginPath, ParentPath, Path, name);
+		else if (Path)
+			full_path = fmt::format("{}/{}/{}", OriginPath, Path, name);
+		else
+			full_path = fmt::format("{}/{}", OriginPath, name);
+
+		FILESYSTEM_FIND_DATA outData;
+		outData.Attributes = 0;
+		outData.Size = 0;
+		outData.CreationTime = 0;
+		outData.ModificationTime = 0;
+
+		const bool is_directory = ops->dirent_is_dir(dir);
+		if (is_directory)
+		{
+			if (Flags & FILESYSTEM_FIND_RECURSIVE)
+			{
+				if (ParentPath)
+				{
+					const std::string recursive_dir = fmt::format("{}/{}", ParentPath, Path);
+					nFiles += RecursiveFindFilesVFS(OriginPath, recursive_dir.c_str(), name, Pattern, Flags, pResults, cancel);
+				}
+				else
+				{
+					nFiles += RecursiveFindFilesVFS(OriginPath, Path, name, Pattern, Flags, pResults, cancel);
+				}
+			}
+
+			if (!(Flags & FILESYSTEM_FIND_FOLDERS))
+				continue;
+
+			outData.Attributes |= FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY;
+		}
+		else
+		{
+			if (!(Flags & FILESYSTEM_FIND_FILES))
+				continue;
+
+			// Only the size is worth a second call, and only for files that
+			// are going to be returned.
+			s64 size = 0;
+			if (HostVFS::StatPath(full_path.c_str(), nullptr, &size))
+				outData.Size = static_cast<u64>(size);
+		}
+
+		if (hasWildCards)
+		{
+			if (!wildCardMatchAll && !StringUtil::WildcardMatch(name, Pattern))
+				continue;
+		}
+		else
+		{
+			if (std::strcmp(name, Pattern) != 0)
+				continue;
+		}
+
+		if (!(Flags & FILESYSTEM_FIND_RELATIVE_PATHS))
+		{
+			outData.FileName = std::move(full_path);
+		}
+		else
+		{
+			if (ParentPath)
+				outData.FileName = fmt::format("{}/{}/{}", ParentPath, Path, name);
+			else if (Path)
+				outData.FileName = fmt::format("{}/{}", Path, name);
+			else
+				outData.FileName = name;
+		}
+
+		nFiles++;
+		pResults->push_back(std::move(outData));
+	}
+
+	ops->closedir(dir);
+	return nFiles;
+}
+
 static u32 RecursiveFindFiles(const char* OriginPath, const char* ParentPath, const char* Path, const char* Pattern,
 	u32 Flags, FileSystem::FindResultsArray* pResults, std::vector<std::string>& visited, ProgressCallback* cancel)
 {
@@ -2328,18 +2471,30 @@ bool FileSystem::FindFiles(const char* path, const char* pattern, u32 flags, Fin
 	if (!(flags & FILESYSTEM_FIND_KEEP_ARRAY))
 		results->clear();
 
-	// add self if recursive, we don't want to visit it twice
-	std::vector<std::string> visited;
-	if (flags & FILESYSTEM_FIND_RECURSIVE)
+	// The host's directory iterator, when it has one: a content:// tree cannot
+	// be walked with opendir(). Frontends that offer files but not directories
+	// leave opendir null, and those fall through to the OS below.
+	if (HostVFS::IsInstalled() && HostVFS::GetOps()->opendir && HostVFS::GetOps()->readdir &&
+		HostVFS::GetOps()->dirent_get_name && HostVFS::GetOps()->closedir)
 	{
-		std::string real_path = Path::RealPath(path);
-		if (!real_path.empty())
-			visited.push_back(std::move(real_path));
+		if (RecursiveFindFilesVFS(path, nullptr, nullptr, pattern, flags, results, cancel) == 0)
+			return false;
 	}
+	else
+	{
+		// add self if recursive, we don't want to visit it twice
+		std::vector<std::string> visited;
+		if (flags & FILESYSTEM_FIND_RECURSIVE)
+		{
+			std::string real_path = Path::RealPath(path);
+			if (!real_path.empty())
+				visited.push_back(std::move(real_path));
+		}
 
-	// enter the recursive function
-	if (RecursiveFindFiles(path, nullptr, nullptr, pattern, flags, results, visited, cancel) == 0)
-		return false;
+		// enter the recursive function
+		if (RecursiveFindFiles(path, nullptr, nullptr, pattern, flags, results, visited, cancel) == 0)
+			return false;
+	}
 
 	if (flags & FILESYSTEM_FIND_SORT_BY_NAME)
 	{
@@ -2377,6 +2532,24 @@ bool FileSystem::StatFile(const char* path, FILESYSTEM_STAT_DATA* sd)
 	// has a path
 	if (path[0] == '\0')
 		return false;
+
+	// The host's answer, where it has one. Its interface reports existence,
+	// directory-ness and size, but no timestamps, so those stay zero - callers
+	// that compare them (cache invalidation) see "unchanged", which is the
+	// harmless direction.
+	if (HostVFS::IsInstalled())
+	{
+		bool is_directory = false;
+		s64 size = 0;
+		if (HostVFS::StatPath(path, &is_directory, &size))
+		{
+			sd->CreationTime = 0;
+			sd->ModificationTime = 0;
+			sd->Attributes = is_directory ? FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY : 0;
+			sd->Size = is_directory ? 0 : size;
+			return true;
+		}
+	}
 
 	// stat file
 	struct stat sysStatData;
@@ -2434,6 +2607,13 @@ bool FileSystem::FileExists(const char* path)
 	if (path[0] == '\0')
 		return false;
 
+	if (HostVFS::IsInstalled())
+	{
+		bool is_directory = false;
+		if (HostVFS::StatPath(path, &is_directory, nullptr))
+			return !is_directory;
+	}
+
 #if defined(__ANDROID__)
 	if (std::strncmp(path, "content://", 10) == 0)
 	{
@@ -2462,6 +2642,13 @@ bool FileSystem::DirectoryExists(const char* path)
 	// has a path
 	if (path[0] == '\0')
 		return false;
+
+	if (HostVFS::IsInstalled())
+	{
+		bool is_directory = false;
+		if (HostVFS::StatPath(path, &is_directory, nullptr))
+			return is_directory;
+	}
 
 	// stat file
 	struct stat sysStatData;
@@ -2506,8 +2693,17 @@ bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* er
 		return false;
 
 	// try just flat-out, might work if there's no other segments that have to be made
-	if (mkdir(path, 0777) == 0)
+	if (HostVFS::IsInstalled() && HostVFS::GetOps()->mkdir)
+	{
+		// 0 is success, -2 is "already exists" in the frontend's interface.
+		const int res = HostVFS::GetOps()->mkdir(path);
+		if (res == 0 || res == -2)
+			return true;
+	}
+	else if (mkdir(path, 0777) == 0)
+	{
 		return true;
+	}
 
 	// check error
 	int lastError = errno;
@@ -2607,11 +2803,27 @@ bool FileSystem::DeleteFilePath(const char* path, Error* error)
 		return false;
 	}
 
-	struct stat sysStatData;
-	if (stat(path, &sysStatData) != 0 || S_ISDIR(sysStatData.st_mode))
+	// Skipped when the host owns the path: its stat() is the one that knows
+	// whether a content:// URI exists, and the check below would reject one.
+	if (!HostVFS::IsInstalled())
 	{
-		Error::SetStringView(error, "File does not exist.");
-		return false;
+		struct stat sysStatData;
+		if (stat(path, &sysStatData) != 0 || S_ISDIR(sysStatData.st_mode))
+		{
+			Error::SetStringView(error, "File does not exist.");
+			return false;
+		}
+	}
+
+	if (HostVFS::IsInstalled() && HostVFS::GetOps()->remove)
+	{
+		if (HostVFS::GetOps()->remove(path) != 0)
+		{
+			Error::SetStringView(error, "Host remove() failed.");
+			return false;
+		}
+
+		return true;
 	}
 
 	if (unlink(path) != 0)
@@ -2629,6 +2841,18 @@ bool FileSystem::RenamePath(const char* old_path, const char* new_path, Error* e
 	{
 		Error::SetStringView(error, "Path is empty.");
 		return false;
+	}
+
+	if (HostVFS::IsInstalled() && HostVFS::GetOps()->rename)
+	{
+		if (HostVFS::GetOps()->rename(old_path, new_path) != 0)
+		{
+			Error::SetStringView(error, "Host rename() failed.");
+			Console.Error("host rename('%s', '%s') failed", old_path, new_path);
+			return false;
+		}
+
+		return true;
 	}
 
 	if (rename(old_path, new_path) != 0)
