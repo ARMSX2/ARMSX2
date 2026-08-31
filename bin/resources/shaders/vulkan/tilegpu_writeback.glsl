@@ -49,12 +49,56 @@
 // sequences on one word with no ordering between them. Pairing them makes the store a plain write
 // and the whole pass race-free, exactly as the 32-bit arm already is. The pairing is unit-pinned
 // (GSTileSwizzleForms::Locate16, TheSixteenBitWordPairsAreEightTexelsApart).
+//
+// THE STORE PATH. This pass is store-bound, not fetch-bound and not swizzle-bound: the 16-bit arm
+// fetches twice the texels for the same 2048 words and runs 5% FASTER, so what the machine waits on
+// is the scattered four-byte stores into the ring. Two things are done about that, and both are
+// re-expressions -- the invocation-to-word map below is unchanged, and so is every byte written.
+//
+//   THE WAVE SHAPE. The workgroup is TILEGPU_WB_WG square (injected by the device from
+//   kGSTileWritebackGroupDim) over the page's WORD grid, not 8x8. A 64-invocation workgroup on a
+//   part whose wave is 128 leaves half of every wave idle; the addressing here reads
+//   gl_GlobalInvocationID, so the partition into workgroups is the only thing that moves.
+//
+//   THE LDS STAGE. A block's 64 words are 64 CONSECUTIVE ring words in a permuted order, so 64
+//   invocations storing one word each is 64 transactions where four-word stores would be 16. Where
+//   this pass writes WHOLE words -- byte_mask covers the word and the entry names no keep mask,
+//   which is every road but PSMCT24 and the upload merge -- each invocation parks its word in
+//   shared memory at its permuted index, and after one barrier a quarter of the lanes each issue
+//   one aligned uvec4. The permutation happens in LDS and no inverse swizzle is needed. A ring slot
+//   is page-aligned and a block is 64 words, so every four-word run inside it is 16-byte aligned by
+//   construction.
+//
+//   The read-modify-write arm (PSMCT24's alpha byte, the upload merge's keep mask) keeps the
+//   per-word path: it must leave bytes it does not own alone, which a uvec4 store cannot express.
+//   The two are separated on a workgroup-UNIFORM test -- byte_mask is a push constant and the keep
+//   mask rides on the entry, which is gl_WorkGroupID.z -- so the barrier below is never reached by
+//   part of a workgroup.
+//
+// ⚠️ Not done, and deliberately: hoisting the four workgroup-uniform SSBO loads to one invocation
+// behind a barrier. Measured on an Adreno 650 microbenchmark it costs 30% MORE than re-issuing them
+// per invocation -- the redundant loads are cache-friendly and cost ~3%, and the sync stall is ten
+// times what it saves. They stay per-invocation.
 
 #ifndef TILEGPU_WB_FMT
 #define TILEGPU_WB_FMT 0
 #endif
 
-layout(local_size_x = 8, local_size_y = 8) in;
+// The workgroup's edge in WORDS of the page grid, injected by the device so the dispatch's group
+// count and this cannot disagree. Must divide both page word extents (64x32 and 32x64) and be a
+// multiple of 8, so that a workgroup covers whole 8x8-word blocks and never a fraction of one --
+// the LDS stage below is per block. A per-device retune is this one number.
+#ifndef TILEGPU_WB_WG
+#define TILEGPU_WB_WG 8
+#endif
+
+// ...which makes the rest of the shape arithmetic, not a second constant to keep in step.
+#define TILEGPU_WB_BLK_DIM (TILEGPU_WB_WG / 8)
+#define TILEGPU_WB_BLOCKS (TILEGPU_WB_BLK_DIM * TILEGPU_WB_BLK_DIM)
+// One lane per four-word store: 16 quads a block.
+#define TILEGPU_WB_QUAD_LANES (TILEGPU_WB_BLOCKS * 16)
+
+layout(local_size_x = TILEGPU_WB_WG, local_size_y = TILEGPU_WB_WG) in;
 
 // The finished colour target, sampled point (texelFetch ignores filtering). Logical RGBA regardless
 // of the native byte order, matching tilegpu_unpack's logical-RGBA read.
@@ -65,6 +109,15 @@ layout(set = 0, binding = 0) uniform sampler2D src;
 layout(std430, set = 0, binding = 1) buffer Vram
 {
 	uint vram_words[];
+};
+
+// The SAME buffer at the same offset, seen as quads -- the device binds one VkBuffer to both. GLSL
+// gives no other way to spell a 16-byte store into an array declared as words, and declaring the
+// ring as quads instead would make the read-modify-write arm's four-byte store unspellable. Only
+// the whole-word arm stores through this view; nothing reads it.
+layout(std430, set = 0, binding = 2) buffer VramQuads
+{
+	uvec4 vram_quads[];
 };
 
 layout(push_constant) uniform cb
@@ -149,11 +202,22 @@ uint tilegpu_pack5551(vec4 c)
 
 #endif
 
+// The workgroup's blocks, each staged at its PERMUTED word index so the gather below can read four
+// consecutive ring words as four consecutive shared ones. Sized off the workgroup shape, so a
+// retune of TILEGPU_WB_WG carries it.
+shared uint tile_words[TILEGPU_WB_WG * TILEGPU_WB_WG];
+// Each staged block's physical in-page index, or ~0 for a block this surface does not hold newest
+// -- which is how the gather skips it without re-deriving the block mask.
+shared uint tile_blocks[TILEGPU_WB_BLOCKS];
+
+#define TILEGPU_WB_NO_BLOCK 0xFFFFFFFFu
+
 void main()
 {
-	// One page per workgroup column: dispatch is (grid, entry_count) groups of 8x8, where the grid
-	// is the page's shape in WORDS -- (8, 4) for a 64x32 CT32 page, (4, 8) for a 64x64 16-bit one
-	// whose words each hold two texels. Either way 2048 invocations, one guest word each.
+	// One page per workgroup column: dispatch is (grid, entry_count) groups of TILEGPU_WB_WG
+	// square, where the grid is the page's shape in WORDS -- 64x32 for a CT32 page, 32x64 for a
+	// 16-bit one whose words each hold two texels. Either way 2048 invocations, one guest word
+	// each, and the map from invocation to word is the global id, not the partition.
 	const uint entry_index = gl_WorkGroupID.z;
 	if (entry_index >= entry_count)
 		return;
@@ -167,50 +231,92 @@ void main()
 	const uint col = rel % bw;
 	const uint row = rel / bw;
 
+	// The page's ring slot. Read before the block test rather than after it, because the gather
+	// lanes below need it whether or not their own block travels; it is one workgroup-uniform load
+	// on a shader whose four of them measured at ~3% of its body.
+	const uint slot = vram_words[table_base + epoch * 512u + page];
+
 #if TILEGPU_WB_CT32
-	const uint u = col * 64u + gl_WorkGroupID.x * 8u + gl_LocalInvocationID.x;
-	const uint v = row * 32u + gl_WorkGroupID.y * 8u + gl_LocalInvocationID.y;
+	const uint u = col * 64u + gl_GlobalInvocationID.x;
+	const uint v = row * 32u + gl_GlobalInvocationID.y;
 
 	// Block within the page; only the surface's blocks travel. The block_mask is over PHYSICAL
 	// in-page blocks, so the XOR has to be applied before the mask test as well as before the word.
 	const uint bib = tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u) ^ TILEGPU_WB_ZXOR;
-	if ((block_mask & (1u << bib)) == 0u)
-		return;
-
 	// The exact ring word tilegpu_texel32(u, v, bp, bw, epoch) will read for this texel.
-	const uint slot = vram_words[table_base + epoch * 512u + page];
 	const uint wib = tile_c32(u & 7u, v & 7u);
-	const uint rw = slot + bib * 64u + wib;
+	const bool mine = (block_mask & (1u << bib)) != 0u;
 
 	// Pack the finished pixel to a raw RGBA8888 word: the inverse of tilegpu_unpack, round to nearest.
-	const vec4 c = texelFetch(src, ivec2(int(u), int(v)), 0);
-	const uint w = (uint(clamp(c.r, 0.0f, 1.0f) * 255.0f + 0.5f))
-	             | (uint(clamp(c.g, 0.0f, 1.0f) * 255.0f + 0.5f) << 8u)
-	             | (uint(clamp(c.b, 0.0f, 1.0f) * 255.0f + 0.5f) << 16u)
-	             | (uint(clamp(c.a, 0.0f, 1.0f) * 255.0f + 0.5f) << 24u);
+	uint w = 0u;
+	if (mine)
+	{
+		const vec4 c = texelFetch(src, ivec2(int(u), int(v)), 0);
+		w = (uint(clamp(c.r, 0.0f, 1.0f) * 255.0f + 0.5f))
+		  | (uint(clamp(c.g, 0.0f, 1.0f) * 255.0f + 0.5f) << 8u)
+		  | (uint(clamp(c.b, 0.0f, 1.0f) * 255.0f + 0.5f) << 16u)
+		  | (uint(clamp(c.a, 0.0f, 1.0f) * 255.0f + 0.5f) << 24u);
+	}
 #else
 	// gx walks the 32 word-columns of a 16-bit page row, gy its 64 pixel rows. Word-column gx owns
 	// the LOW half of one 16-texel group -- texel (gx>>3)*16 + (gx&7) -- and the high half is that
 	// texel plus eight.
-	const uint gx = gl_WorkGroupID.x * 8u + gl_LocalInvocationID.x;
-	const uint gy = gl_WorkGroupID.y * 8u + gl_LocalInvocationID.y;
+	const uint gx = gl_GlobalInvocationID.x;
+	const uint gy = gl_GlobalInvocationID.y;
 	const uint u = col * 64u + (gx >> 3u) * 16u + (gx & 7u);
 	const uint v = row * 64u + gy;
 
 	// Block within the page: 16x8-texel blocks, four across and eight down. u and u+8 share it,
 	// because they differ only in bit 3.
 	const uint bib = tile_b16((u >> 4u) & 3u, (v >> 3u) & 7u);
-	if ((block_mask & (1u << bib)) == 0u)
-		return;
-
 	// The word both halves live in: the low texel's halfword is even, the high texel's is that + 1.
-	const uint slot = vram_words[table_base + epoch * 512u + page];
 	const uint wib = tile_c16(u & 15u, v & 7u) >> 1u;
-	const uint rw = slot + bib * 64u + wib;
+	const bool mine = (block_mask & (1u << bib)) != 0u;
 
-	const uint w = tilegpu_pack5551(texelFetch(src, ivec2(int(u), int(v)), 0))
-	             | (tilegpu_pack5551(texelFetch(src, ivec2(int(u + 8u), int(v)), 0)) << 16u);
+	uint w = 0u;
+	if (mine)
+	{
+		w = tilegpu_pack5551(texelFetch(src, ivec2(int(u), int(v)), 0))
+		  | (tilegpu_pack5551(texelFetch(src, ivec2(int(u + 8u), int(v)), 0)) << 16u);
+	}
 #endif
+
+	// THE WHOLE-WORD ARM. Both tests are workgroup-uniform -- byte_mask is a push constant, and the
+	// entry the keep mask rides on is this workgroup's z -- so every invocation of the workgroup
+	// reaches the barrier or none of them does. A block's 64 words are covered by exactly the 64
+	// invocations of one 8x8 sub-tile, each with a distinct wib, so the quads below write the same
+	// 64 words with the same values the per-word store did.
+	if (byte_mask == 0xFFFFFFFFu && keep_words == 0xFFFFFFFFu)
+	{
+		const uint lblk =
+			(gl_LocalInvocationID.y >> 3u) * uint(TILEGPU_WB_BLK_DIM) + (gl_LocalInvocationID.x >> 3u);
+		tile_words[lblk * 64u + wib] = w;
+		// wib is a bijection over the sub-tile, so exactly one invocation of each block has wib 0.
+		if (wib == 0u)
+			tile_blocks[lblk] = mine ? bib : TILEGPU_WB_NO_BLOCK;
+
+		barrier();
+
+		if (gl_LocalInvocationIndex < uint(TILEGPU_WB_QUAD_LANES))
+		{
+			const uint b = gl_LocalInvocationIndex >> 4u;
+			const uint quad = gl_LocalInvocationIndex & 15u;
+			const uint gbib = tile_blocks[b];
+			if (gbib != TILEGPU_WB_NO_BLOCK)
+			{
+				const uint base = b * 64u + quad * 4u;
+				// slot is page-aligned and the block is 64 words, so this is 16-byte aligned.
+				vram_quads[(slot + gbib * 64u + quad * 4u) >> 2u] = uvec4(
+					tile_words[base], tile_words[base + 1u], tile_words[base + 2u], tile_words[base + 3u]);
+			}
+		}
+		return;
+	}
+
+	// THE READ-MODIFY-WRITE ARM: PSMCT24's alpha byte and the upload merge's keep mask, per word.
+	if (!mine)
+		return;
+	const uint rw = slot + bib * 64u + wib;
 
 	// The bytes of this word that are actually ours to write: the surface's own byte window, minus
 	// anything the entry's keep mask claims for the CPU. Word `wib` of the block owns nibble

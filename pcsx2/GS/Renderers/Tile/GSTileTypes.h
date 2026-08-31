@@ -994,7 +994,24 @@ constexpr u32 gsTileWritebackByteMask(u32 psm)
 	return (psm == PSMCT24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
 }
 
-/// The writeback compute dispatch for ONE page of `psm`, in workgroups of 8x8 invocations.
+/// The writeback compute workgroup's edge, in WORDS of the guest page. The device injects it into
+/// tilegpu_writeback.glsl as TILEGPU_WB_WG and divides the page by it here, so the shader's
+/// local_size and the dispatch's group count cannot disagree — a per-device retune is this one
+/// number and nothing else.
+///
+/// 16, not 8, on the store path's evidence: the pass is store-bound, and a 64-invocation workgroup
+/// on a part whose wave is 128 leaves half of every wave idle. An Adreno 650 microbenchmark of the
+/// exact address pattern measured 16x16 at −11.7% against 8x8, and −16.0% once the same workgroup
+/// staged its stores through shared memory as uvec4s, which is what the shader does. The shape is
+/// fitted to Adreno; Mali's 16-lane subgroups are a named, unmeasured risk on the same number.
+///
+/// It must be a multiple of 8 and divide both page word extents (64x32 and 32x64), so that a
+/// workgroup covers whole 8x8-word blocks — the shader's shared-memory stage is per block, and half
+/// a block in a workgroup would have no one to gather it.
+static constexpr u32 kGSTileWritebackGroupDim = 16;
+
+/// The writeback compute dispatch for ONE page of `psm`, in workgroups of kGSTileWritebackGroupDim
+/// square invocations.
 ///
 /// A 32-bit page is 64x32 texels and one word each, so the grid is the page. A 16-bit page is 64x64
 /// texels of half a word each, and the pass covers it one WORD per invocation — the two texels eight
@@ -1009,8 +1026,14 @@ struct GSTileDispatch2D
 constexpr GSTileDispatch2D gsTileWritebackGroups(u32 psm)
 {
 	const u32 words_x = (gsTileStorageBpp(psm) == 32) ? 64u : 32u;
-	return GSTileDispatch2D{words_x / 8u, gsTilePageHeight(psm) / 8u};
+	return GSTileDispatch2D{words_x / kGSTileWritebackGroupDim, gsTilePageHeight(psm) / kGSTileWritebackGroupDim};
 }
+
+// The page word extents both arms carry, and the block granularity the shader's shared-memory stage
+// needs. A dim that fails either of these compiles a dispatch that covers part of a page.
+static_assert(kGSTileWritebackGroupDim % 8 == 0, "a writeback workgroup must cover whole 8x8-word blocks");
+static_assert(32 % kGSTileWritebackGroupDim == 0 && 64 % kGSTileWritebackGroupDim == 0,
+	"a writeback workgroup must tile both page word extents (64x32 and 32x64) exactly");
 
 /// A 32-bit RGBA guest word packed to the 16-bit colour formats' A1B5G5R5: the top five bits of
 /// each colour byte, and the alpha bit from the MSB of the alpha byte. This is

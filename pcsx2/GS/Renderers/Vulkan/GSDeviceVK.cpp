@@ -1763,9 +1763,11 @@ VkDescriptorPool GSDeviceVK::CreateFrameDescriptorPool()
 	// declares, so an EMPTY link can serve one set of any of them. Undercount a type and that
 	// layout is not slow, it is unservable -- every allocation of it fails, on every link, forever.
 	//
-	//   storage buffer: the TileGpu writeback set declares one and this pool reserved none, so on
-	//     the non-push path every writeback compute dispatch went unbound and its pages were never
-	//     composed. The call site read the failure as "exhaustion implausible, skip it".
+	//   storage buffer: the TileGpu writeback set declares TWO -- the ring as words and the same
+	//     buffer as quads, which is how its whole-word arm spells a 16-byte store -- and this pool
+	//     once reserved none, so on the non-push path every writeback compute dispatch went unbound
+	//     and its pages were never composed. The call site read the failure as "exhaustion
+	//     implausible, skip it". Undercounting here is that failure again, not a slowdown.
 	//   sampled image:  a TFX texture set declares four of them (palette, primid, and the colour
 	//     and depth feedback bindings wherever those are not input attachments), not three.
 	const u32 sets = FRAME_DESCRIPTOR_POOL_CHUNK_SETS;
@@ -1774,7 +1776,7 @@ VkDescriptorPool GSDeviceVK::CreateFrameDescriptorPool()
 		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 4},
 		{VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, sets * 2},
 		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * 2},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 1},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2},
 	};
 	const VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, sets,
 		static_cast<u32>(std::size(pool_sizes)), pool_sizes};
@@ -7530,6 +7532,25 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 	if (!m_tilegpu_tex)
 		return false;
 
+	// The workgroup shape is a compile-time constant fitted to Adreno (kGSTileWritebackGroupDim's
+	// comment says why 16), and Vulkan only GUARANTEES 128 invocations and a 128x128 group size. Every
+	// part we ship to gives 512 or more, but a device that does not would refuse the pipeline and the
+	// executor would then skip every writeback op and hand its readers unwritten ring bytes -- a wrong
+	// pixel with no message. Say so here instead, where the cause is still in hand.
+	{
+		const VkPhysicalDeviceLimits& lim = m_device_properties.limits;
+		constexpr u32 dim = kGSTileWritebackGroupDim;
+		if (lim.maxComputeWorkGroupInvocations < dim * dim || lim.maxComputeWorkGroupSize[0] < dim ||
+			lim.maxComputeWorkGroupSize[1] < dim)
+		{
+			Console.Error("TileGpu: this device takes at most %u compute invocations of %ux%u per workgroup and "
+						  "the writeback wants %ux%u; its ops will be skipped. Lower kGSTileWritebackGroupDim.",
+				lim.maxComputeWorkGroupInvocations, lim.maxComputeWorkGroupSize[0], lim.maxComputeWorkGroupSize[1],
+				dim, dim);
+			return false;
+		}
+	}
+
 	// The set and pipeline layouts are shared by every format's program; only the first build makes
 	// them.
 	if (m_tilegpu_writeback_pipeline_layout == VK_NULL_HANDLE)
@@ -7539,6 +7560,10 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 			dslb.SetPushFlag();
 		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		// The same buffer again, seen as uvec4s. The shader's whole-word arm stages a block through
+		// shared memory and stores it four words at a time, and GLSL has no way to spell a 16-byte
+		// store into an array declared as words. Two bindings, one VkBuffer, one range.
+		dslb.AddBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 		if ((m_tilegpu_writeback_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_writeback_ds_layout, "TileGpu writeback DS layout");
@@ -7561,7 +7586,8 @@ bool GSDeviceVK::CompileTileGpuWritebackPipeline(u32 road_fmt)
 	// GetComputeShader compiles the source verbatim (no #version injected, unlike the utility path),
 	// so the version line leads and the swizzle-form defines follow it before the body.
 	const std::string full_source = "#version 460 core\n\n" + TileFormDefines() +
-									fmt::format("#define TILEGPU_WB_FMT {}\n", road_fmt) + *source;
+									fmt::format("#define TILEGPU_WB_FMT {}\n", road_fmt) +
+									fmt::format("#define TILEGPU_WB_WG {}\n", kGSTileWritebackGroupDim) + *source;
 	VkShaderModule cs = g_vulkan_shader_cache->GetComputeShader(full_source);
 	if (cs == VK_NULL_HANDLE)
 		return false;
@@ -9172,6 +9198,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							VK_NULL_HANDLE, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
 						dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+						dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
 						dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline_layout, 0, false);
 					}
 					else
@@ -9198,6 +9226,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 							wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
 						dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+						dsub.AddBufferDescriptorWrite(wbset, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
 						dsub.Update(m_device);
 						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
 							m_tilegpu_writeback_pipeline_layout, 0, 1, &wbset, 0, nullptr);
@@ -9208,10 +9238,10 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
 						sizeof(wpush), wpush);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline[road_fmt]);
-					// Groups of 8x8 covering one page's WORDS: (8, 4) for a 64x32 CT32 page, one
-					// texel per invocation; (4, 8) for a 64x64 16-bit page, whose invocations each
-					// pack the two texels that share a word. 2048 invocations either way, one page
-					// per z.
+					// Groups of kGSTileWritebackGroupDim square covering one page's WORDS: 64x32
+					// for a CT32 page, one texel per invocation; 32x64 for a 64x64 16-bit page,
+					// whose invocations each pack the two texels that share a word. 2048
+					// invocations either way, one page per z.
 					{
 						const GSTileDispatch2D groups = gsTileWritebackGroups(op.psm);
 						vkCmdDispatch(cmd, groups.x, groups.y, op.page_entry_count);
