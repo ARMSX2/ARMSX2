@@ -365,6 +365,11 @@ public class NativeApp {
 	 *  file exists — there is then nothing to rewrite and the caller should skip the put/commit. */
 	public static native boolean gameIniBeginWriteForSerial(String serial);
 
+	/** Where host: reads from. The single source of truth -- do NOT rebuild this path in
+	 *  Kotlin: DataRoot and the user-facing system-directory preference differ whenever the
+	 *  data folder is on an SD card. */
+	public static native String getHostfsDir();
+
 	/** Copy an ISO's files into hostfs/&lt;subdir&gt;/ so a host:-loading ELF can read them.
 	 *  Android cannot mount an ISO, so the app has to do this itself. Returns the file
 	 *  count, or -1 on failure. Must not be called while a game is running. */

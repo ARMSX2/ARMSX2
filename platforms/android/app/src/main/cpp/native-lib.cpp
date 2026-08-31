@@ -70,6 +70,7 @@
 #include <deque>
 #include <future>
 #include <functional>
+#include <optional>
 #include <thread>
 #include <regex>
 #include <vector>
@@ -4427,6 +4428,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWrite(JNIEnv*, jclass) {
 // stream puts next; no match means there is nothing to shadow global and JNI_FALSE tells Kotlin
 // to skip the (now unnecessary) put/commit.
 /**
+ * Where host: reads from: <EmuFolders::DataRoot>/hostfs.
+ *
+ * Exposed because the Kotlin side must NOT recompute it. DataRoot and the app's user-facing
+ * "system directory" preference are different values whenever the data folder lives on an SD
+ * card, so deriving the path on both sides put extraction and the ELF copy in different
+ * folders -- and would have had the library scanning a directory nothing was ever written to.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getHostfsDir(JNIEnv* env, jclass) {
+    const std::string dir = Path::Combine(EmuFolders::DataRoot, "hostfs");
+    FileSystem::CreateDirectoryPath(dir.c_str(), true);
+    return env->NewStringUTF(dir.c_str());
+}
+
+/**
  * Copy every file out of an ISO into <DataRoot>/hostfs/<subdir>/, for host:-loading setups.
  *
  * The obsrv "quick loading" method for Biohazard Outbreak wants the disc's contents sitting in a
@@ -4478,22 +4494,68 @@ Java_kr_co_iefriends_pcsx2_NativeApp_extractIsoToHostfs(JNIEnv* env, jclass, jst
             Console.Error("extractIsoToHostfs: not a readable ISO filesystem");
         } else {
             written = 0;
-            for (const std::string& name : iso.GetFilesInDirectory(std::string_view(), &error)) {
-                std::vector<u8> data;
-                if (!iso.ReadFile(name, &data, &error)) {
-                    Console.Error("extractIsoToHostfs: failed reading '%s'", name.c_str());
-                    continue;
+            // Recursive: GetFilesInDirectory returns subdirectories alongside files, and a PS2
+            // disc keeps plenty below the root (Outbreak has /PROG and /NTGUI2). A flat copy of
+            // the root silently produced a folder missing most of the game.
+            std::function<void(const std::string&)> copy_dir = [&](const std::string& dir) {
+                for (const std::string& name : iso.GetFilesInDirectory(dir, &error)) {
+                    // Discs list files as NAME;1 -- the ISO9660 version suffix. Strip it, or every
+                    // filename the game asks for by name misses.
+                    const std::string clean(IsoReader::RemoveVersionIdentifierFromPath(name));
+                    const std::string out = Path::Combine(dest, clean);
+
+                    if (iso.DirectoryExists(name, nullptr)) {
+                        FileSystem::CreateDirectoryPath(out.c_str(), true);
+                        copy_dir(name);
+                        continue;
+                    }
+
+                    // STREAMED, sector at a time. IsoReader::ReadFile loads the whole file into a
+                    // vector first, and a PS2 disc carries files far too large for that: the
+                    // lowmemorykiller took the app at ~2GB RSS mid-extract. Copy through a fixed
+                    // buffer so peak memory is one sector regardless of how big the file is.
+                    const std::optional<IsoReader::ISODirectoryEntry> de = iso.LocateFile(name, &error);
+                    if (!de.has_value()) {
+                        Console.Error("extractIsoToHostfs: cannot locate '%s'", name.c_str());
+                        continue;
+                    }
+
+                    auto fp = FileSystem::OpenManagedCFile(out.c_str(), "wb", &error);
+                    if (!fp) {
+                        Console.Error("extractIsoToHostfs: failed opening '%s'", out.c_str());
+                        continue;
+                    }
+
+                    u8 sector[2048];
+                    u64 remaining = de->length_le;
+                    u32 lsn = de->location_le;
+                    bool ok = true;
+                    while (remaining > 0) {
+                        if (DoCDVDreadSector(sector, lsn, CDVD_MODE_2048) != 0) {
+                            Console.Error("extractIsoToHostfs: read error in '%s' at lsn %u",
+                                name.c_str(), lsn);
+                            ok = false;
+                            break;
+                        }
+                        const size_t chunk = static_cast<size_t>(
+                            std::min<u64>(remaining, sizeof(sector)));
+                        if (std::fwrite(sector, 1, chunk, fp.get()) != chunk) {
+                            Console.Error("extractIsoToHostfs: failed writing '%s'", out.c_str());
+                            ok = false;
+                            break;
+                        }
+                        remaining -= chunk;
+                        lsn++;
+                    }
+                    fp.reset();
+                    if (!ok) {
+                        FileSystem::DeleteFilePath(out.c_str());
+                        continue;
+                    }
+                    written++;
                 }
-                // Discs list files as NAME;1 -- the ISO9660 version suffix. Strip it or every
-                // filename the game asks for by name misses.
-                const std::string_view clean = IsoReader::RemoveVersionIdentifierFromPath(name);
-                const std::string out = Path::Combine(dest, std::string(clean));
-                if (!FileSystem::WriteBinaryFile(out.c_str(), data.data(), data.size())) {
-                    Console.Error("extractIsoToHostfs: failed writing '%s'", out.c_str());
-                    continue;
-                }
-                written++;
-            }
+            };
+            copy_dir(std::string());
             Console.WriteLnFmt("extractIsoToHostfs: wrote {} file(s) to {}", written, dest);
         }
         DoCDVDclose();

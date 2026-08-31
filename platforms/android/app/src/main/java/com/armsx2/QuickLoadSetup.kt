@@ -28,6 +28,18 @@ import java.io.File
  */
 object QuickLoadSetup {
 
+    /**
+     * What the core can actually open. A file:// URI is a percent-encoded wrapper around a real
+     * path -- CDVD takes a plain filesystem path and chokes on both the scheme and the %20s, which
+     * is why extraction failed on any library entry with a space in its name. uri.path decodes it.
+     * content:// must stay a URI: FileSystem routes those through the SAF layer by scheme.
+     *
+     * Same conversion MainActivityRuntime.launchGame already does before booting.
+     */
+    private fun corePath(uri: Uri): String =
+        if (uri.scheme.equals("file", ignoreCase = true)) (uri.path ?: uri.toString())
+        else uri.toString()
+
     /** Runs the whole setup. Blocking -- call on Dispatchers.IO. Returns a message to show. */
     fun run(context: Context, iso: GameInfo, elfUri: Uri): String {
         val serial = iso.serial?.takeIf { it.isNotBlank() }
@@ -42,7 +54,7 @@ object QuickLoadSetup {
         val picked = displayName(context, elfUri)
         val elfName = if (picked.endsWith(".elf", ignoreCase = true)) picked else "$picked.elf"
 
-        val written = runCatching { NativeApp.extractIsoToHostfs(iso.uri.toString(), subdir) }
+        val written = runCatching { NativeApp.extractIsoToHostfs(corePath(iso.uri), subdir) }
             .getOrDefault(-1)
         if (written <= 0) return I18n.get("games.quickLoad.extractFailed")
 
@@ -52,12 +64,26 @@ object QuickLoadSetup {
         // Copied in AFTER extraction on purpose: the ELF replaces a file the disc also carries
         // (SLPM_xxx.xx), so extracting second would overwrite the modified copy with the stock one.
         val elfFile = File(dest, elfName)
-        val copied = runCatching {
-            context.contentResolver.openInputStream(elfUri)?.use { input ->
-                elfFile.outputStream().use { output -> input.copyTo(output) }
-            } != null
-        }.getOrDefault(false)
-        if (!copied) return I18n.get("games.quickLoad.elfFailed")
+        // Belt and braces: extraction created this natively, but if the two sides ever disagree
+        // about the root again, fail by writing a usable folder rather than by ENOENT.
+        runCatching { elfFile.parentFile?.mkdirs() }
+        // Logged, not swallowed: a bare runCatching here cost a debugging round-trip once
+        // already -- the failure message named a step but not a reason.
+        val copyError = runCatching {
+            val opened = context.contentResolver.openInputStream(elfUri)
+                ?: error("openInputStream returned null for $elfUri")
+            opened.use { input -> elfFile.outputStream().use { output -> input.copyTo(output) } }
+            null
+        }.getOrElse { it }
+        if (copyError != null || !elfFile.isFile || elfFile.length() == 0L) {
+            android.util.Log.w(
+                "QuickLoadSetup",
+                "ELF copy failed: dest=${elfFile.absolutePath} exists=${elfFile.isFile} " +
+                    "size=${elfFile.length()} uri=$elfUri",
+                copyError,
+            )
+            return I18n.get("games.quickLoad.elfFailed")
+        }
 
         // The guide has the modified file OVERWRITE the disc's own SLPM_xxx.xx and then get
         // renamed, so the stock copy is gone by the end. Extraction wrote it back, so drop it --
@@ -68,7 +94,7 @@ object QuickLoadSetup {
         // Pair it with the disc. Without this the ELF boots against NoDisc and the game hangs on
         // its loading screen -- the exact symptom this whole feature exists to fix.
         val paired = runCatching {
-            NativeApp.setElfDiscOverride(elfFile.absolutePath, iso.uri.toString())
+            NativeApp.setElfDiscOverride(elfFile.absolutePath, corePath(iso.uri))
         }.getOrDefault(false)
         if (!paired) return I18n.get("games.quickLoad.pairFailed")
 

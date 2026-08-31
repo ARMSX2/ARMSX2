@@ -293,6 +293,16 @@ open class MainActivityRuntime : ComponentActivity() {
          *  Same fallback as [inputProfilesDir] and for the same reason. Created on demand so it
          *  is already there when someone goes looking for it. */
         fun hostfsDir(): File? {
+            // Asked of the core, NOT rebuilt here. EmuFolders::DataRoot and systemDirPosix()
+            // are different paths whenever the data folder sits on an SD card, and deriving
+            // this locally put the ISO extraction and the ELF copy in separate folders.
+            val fromCore = runCatching { kr.co.iefriends.pcsx2.NativeApp.getHostfsDir() }.getOrNull()
+            if (!fromCore.isNullOrBlank()) {
+                val dir = File(fromCore)
+                if (!dir.exists()) runCatching { dir.mkdirs() }
+                if (dir.isDirectory) return dir
+            }
+            // Native not up yet (library scan can run before the core initialises).
             val root = systemDirPosix()
                 ?: instance?.applicationContext?.getExternalFilesDir(null)?.absolutePath
                 ?: return null

@@ -75,7 +75,11 @@ class GameLibraryRepository(private val context: Context) {
 
     suspend fun scan(directories: List<String>): List<GameInfo> = withContext(Dispatchers.IO) {
         val collected = linkedMapOf<String, GameInfo>()
-        hostfsRoot()?.let { scanRawDirectory(it, collected, 0) }
+        // ELFs only. hostfs holds a whole extracted disc -- CNICON.BIN, GCRES.BIN, NETBIO00.DAT
+        // and the rest -- and .bin/.img/.dump are all real game extensions elsewhere, so the
+        // default filter turned every one of those data files into a library entry. The ELF is
+        // the only thing here anyone launches.
+        hostfsRoot()?.let { scanRawDirectory(it, collected, 0, accept = setOf("elf")) }
         directories.forEach { rawUri ->
             val uri = runCatching { rawUri.toUri() }.getOrNull() ?: return@forEach
             val rawRoot = if (canUseRawStorage()) MainActivityRuntime.resolveTreeUriToPosix(rawUri)?.let(::File) else null
@@ -208,16 +212,17 @@ class GameLibraryRepository(private val context: Context) {
         directory: File,
         output: MutableMap<String, GameInfo>,
         depth: Int,
+        accept: Set<String> = gameExtensions,
     ) {
         if (depth > MaxScanDepth) return
         val children = runCatching { directory.listFiles() }.getOrNull() ?: return
         children.forEach { file ->
             if (file.isDirectory) {
-                scanRawDirectory(file, output, depth + 1)
+                scanRawDirectory(file, output, depth + 1, accept)
                 return@forEach
             }
             val extension = file.extension.lowercase()
-            if (extension !in gameExtensions) return@forEach
+            if (extension !in accept) return@forEach
             val uri = Uri.fromFile(file)
             val probe = if (extension in probeExtensions) probeRaw(file) else null
             output.putIfAbsent(uri.toString(), createGame(uri, file.name, extension, probe))
