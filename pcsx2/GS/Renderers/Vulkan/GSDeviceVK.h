@@ -260,6 +260,10 @@ public:
 	/// compiled once and the dispatches come later, and a dim that changed between them would run a
 	/// grid the shader was not built for.
 	u32 TileGpuWritebackGroupDim() const;
+
+	/// EmuCore/GS/TileGpuRingMemoryClass, mapped onto the allocator's host-attribute classes.
+	/// Only the TileGpu byte ring consults this; every other stream buffer keeps Default.
+	VKStreamBuffer::MemoryClass TileGpuRingMemoryClass() const;
 	bool TileGpuClutMergeCompiled() override { return m_tilegpu_clut_merge; }
 	bool TileGpuClutMergePagesCompiled() override { return m_tilegpu_clut_merge_pages; }
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;

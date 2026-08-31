@@ -13,6 +13,43 @@
 class VKStreamBuffer
 {
 public:
+	/// Which HOST attributes to ask the allocator for. It is deliberately not a choice of HEAP:
+	/// on every target this campaign runs -- Adreno 650, the Mali-G615 tier and Apple/Honeykrisp
+	/// -- every non-lazy memory type is DEVICE_LOCAL *and* HOST_VISIBLE, so "put this buffer in
+	/// device memory" is not a thing the hardware offers. The only axis that exists is the CPU
+	/// cache attribute of the type, and on Adreno 650 the shipped preference below lands the ring
+	/// on type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT, i.e. an UNCACHED / write-combining
+	/// mapping. Everything but the TileGpu ring passes Default and keeps the shipped allocation.
+	enum class MemoryClass : u8
+	{
+		/// Prefer HOST_COHERENT. What every stream buffer has always allocated.
+		Default = 0,
+		/// Prefer HOST_CACHED. On Adreno 650 this moves the buffer off the write-combining type 0
+		/// onto type 1 (DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED) -- cached, and
+		/// still coherent, so nothing about flushing changes.
+		HostCached = 1,
+		/// Require HOST_CACHED and refuse every type carrying HOST_COHERENT. On Adreno 650 that is
+		/// type 2 (DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED): cached and NOT snooped, which is the
+		/// only rung that gets the GPU a plain write-back cacheable mapping. Correctness then rests
+		/// entirely on CommitMemory's flush, which is unconditional and always has been.
+		///
+		/// Falls back to HostCached where the device has no such type -- Apple/Honeykrisp offers
+		/// only 0x0f and 0x07, both coherent -- rather than failing to allocate.
+		HostCachedIncoherent = 2,
+		/// The MIRROR of HostCached: refuse every type carrying HOST_CACHED, i.e. ask for the
+		/// uncached / write-combining one. It is not a candidate for shipping -- it is the arm that
+		/// makes the other two testable.
+		///
+		/// On Adreno 650 it is the SHIPPED type (0x07 is already what class 0 selects there), so a
+		/// device A/B that shows class 3 differing from class 0 in anything but noise has a harness
+		/// fault, not a finding. On Apple/Honeykrisp it is the only rung that MOVES: the ring goes
+		/// from type 0 (0x0f, cached) to type 1 (0x07, uncached), which is the same axis the Adreno
+		/// arm walks, just with the two ends available in the opposite order. That is what lets a
+		/// machine with no incoherent memory type still prove this ladder selects a real second type
+		/// and still renders the same bytes from it.
+		HostUncached = 3,
+	};
+
 	VKStreamBuffer();
 	VKStreamBuffer(VKStreamBuffer&& move);
 	VKStreamBuffer(const VKStreamBuffer&) = delete;
@@ -30,8 +67,19 @@ public:
 	__fi u32 GetCurrentSpace() const { return m_current_space; }
 	__fi u32 GetCurrentOffset() const { return m_current_offset; }
 
-	bool Create(VkBufferUsageFlags usage, u32 size);
+	bool Create(VkBufferUsageFlags usage, u32 size, MemoryClass mem_class = MemoryClass::Default);
 	void Destroy(bool defer);
+
+	/// What the allocator actually GRANTED, not what was asked for. A memory-class arm that moves
+	/// nothing on a device is uninterpretable without this -- "the type did not change" and "the
+	/// type changed and cost nothing" are different findings and only these say which happened.
+	__fi VkMemoryPropertyFlags GetMemoryProperties() const { return m_memory_properties; }
+	__fi u32 GetMemoryTypeIndex() const { return m_memory_type_index; }
+	__fi bool IsHostCoherent() const
+	{
+		return (m_memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+	}
+	__fi bool IsHostCached() const { return (m_memory_properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0; }
 
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
 	void CommitMemory(u32 final_num_bytes);
@@ -70,6 +118,8 @@ private:
 	VmaAllocation m_allocation = VK_NULL_HANDLE;
 	VkBuffer m_buffer = VK_NULL_HANDLE;
 	u8* m_host_pointer = nullptr;
+	VkMemoryPropertyFlags m_memory_properties = 0;
+	u32 m_memory_type_index = 0;
 
 	// List of fences and the corresponding positions in the buffer
 	std::deque<std::pair<u64, u32>> m_tracked_fences;

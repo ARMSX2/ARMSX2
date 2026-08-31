@@ -19,6 +19,8 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_allocation(move.m_allocation)
 	, m_buffer(move.m_buffer)
 	, m_host_pointer(move.m_host_pointer)
+	, m_memory_properties(move.m_memory_properties)
+	, m_memory_type_index(move.m_memory_type_index)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
 {
 	move.m_size = 0;
@@ -28,6 +30,8 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	move.m_allocation = VK_NULL_HANDLE;
 	move.m_buffer = VK_NULL_HANDLE;
 	move.m_host_pointer = nullptr;
+	move.m_memory_properties = 0;
+	move.m_memory_type_index = 0;
 }
 
 VKStreamBuffer::~VKStreamBuffer()
@@ -47,33 +51,93 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_current_gpu_position, move.m_current_gpu_position);
 	std::swap(m_buffer, move.m_buffer);
 	std::swap(m_host_pointer, move.m_host_pointer);
+	std::swap(m_memory_properties, move.m_memory_properties);
+	std::swap(m_memory_type_index, move.m_memory_type_index);
 	std::swap(m_tracked_fences, move.m_tracked_fences);
 
 	return *this;
 }
 
-bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size)
+bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, MemoryClass mem_class)
 {
 	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, static_cast<VkDeviceSize>(size),
 		usage, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
 
-	VmaAllocationCreateInfo aci = {};
-	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-	// PREFERRED, not required: VMA weighs it against the DEVICE_LOCAL that CPU_TO_GPU adds, so on a
-	// device offering a cached-but-incoherent device-local type and a coherent host type this lands
-	// on whichever comes first in the type list, and the ring is then only as correct as the flush
-	// in CommitMemory. EmuCore/GS/TileGpuStrictMemory promotes it to required for the whole device,
-	// which takes the flush out of the picture and is the point of the key.
+	const VmaAllocator allocator = GSDeviceVK::GetInstance()->GetAllocator();
+
+	// TileGpuStrictMemory wins any contradiction with the class. Its whole job is "coherent,
+	// everywhere, so no result depends on a flush being correctly ranged", and a buffer that
+	// quietly stayed incoherent under it would make the diagnostic lie about the run.
 	if (GSDeviceVK::GetInstance()->StrictHostMemory())
-		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		mem_class = MemoryClass::Default;
+
+	// Which memory types are HOST_CACHED and carry NO HOST_COHERENT. Computed rather than assumed,
+	// because whether such a type exists at all is a per-device fact: Adreno 650 has one (type 2,
+	// 0x0b) and Apple/Honeykrisp has none -- its two types are 0x0f and 0x07 and both are coherent.
+	u32 cached_incoherent_bits = 0;
+	// ...and which are HOST_VISIBLE with NO HOST_CACHED, for the mirror class.
+	u32 uncached_bits = 0;
+	{
+		const VkPhysicalDeviceMemoryProperties* mp = nullptr;
+		vmaGetMemoryProperties(allocator, &mp);
+		for (u32 i = 0; i < mp->memoryTypeCount; i++)
+		{
+			const VkMemoryPropertyFlags f = mp->memoryTypes[i].propertyFlags;
+			if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0)
+				continue;
+			if ((f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0 && (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
+				cached_incoherent_bits |= (1u << i);
+			if ((f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) == 0)
+				uncached_bits |= (1u << i);
+		}
+	}
+
+	// The ladder. Every rung is a whole allocation attempt and the LAST rung is exactly the shipped
+	// one, so a device that cannot honour the class asked for falls back to the allocation this
+	// buffer has always had instead of failing to create. Fail-closed by construction: the arm can
+	// only ever be the shipped behaviour or better-specified, never a broken buffer.
+	struct Rung
+	{
+		VkMemoryPropertyFlags preferred;
+		VkMemoryPropertyFlags required;
+		u32 type_bits;
+	};
+	Rung rungs[3];
+	u32 rung_count = 0;
+	if (mem_class == MemoryClass::HostCachedIncoherent && cached_incoherent_bits != 0)
+	{
+		rungs[rung_count++] = {
+			VK_MEMORY_PROPERTY_HOST_CACHED_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, cached_incoherent_bits};
+	}
+	if (mem_class == MemoryClass::HostCached || mem_class == MemoryClass::HostCachedIncoherent)
+		rungs[rung_count++] = {VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0, UINT32_MAX};
+	if (mem_class == MemoryClass::HostUncached && uncached_bits != 0)
+		rungs[rung_count++] = {VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0, uncached_bits};
+	// The shipped rung. PREFERRED, not required: VMA weighs it against the DEVICE_LOCAL that
+	// CPU_TO_GPU adds, so on a device offering a cached-but-incoherent device-local type and a
+	// coherent host type this lands on whichever comes first in the type list, and the ring is then
+	// only as correct as the flush in CommitMemory. EmuCore/GS/TileGpuStrictMemory promotes it to
+	// required for the whole device, which takes the flush out of the picture and is the point of
+	// the key.
+	rungs[rung_count++] = {VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		GSDeviceVK::GetInstance()->StrictHostMemory() ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : 0u, UINT32_MAX};
 
 	VmaAllocationInfo ai = {};
 	VkBuffer new_buffer = VK_NULL_HANDLE;
 	VmaAllocation new_allocation = VK_NULL_HANDLE;
-	VkResult res =
-		vmaCreateBuffer(GSDeviceVK::GetInstance()->GetAllocator(), &bci, &aci, &new_buffer, &new_allocation, &ai);
+	VkResult res = VK_ERROR_FEATURE_NOT_PRESENT;
+	for (u32 r = 0; r < rung_count; r++)
+	{
+		VmaAllocationCreateInfo aci = {};
+		aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+		aci.preferredFlags = rungs[r].preferred;
+		aci.requiredFlags = rungs[r].required;
+		aci.memoryTypeBits = rungs[r].type_bits;
+		res = vmaCreateBuffer(allocator, &bci, &aci, &new_buffer, &new_allocation, &ai);
+		if (res == VK_SUCCESS)
+			break;
+	}
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkCreateBuffer failed: ");
@@ -91,6 +155,8 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size)
 	m_allocation = new_allocation;
 	m_buffer = new_buffer;
 	m_host_pointer = static_cast<u8*>(ai.pMappedData);
+	m_memory_type_index = ai.memoryType;
+	vmaGetAllocationMemoryProperties(allocator, new_allocation, &m_memory_properties);
 	return true;
 }
 
@@ -111,6 +177,8 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_buffer = VK_NULL_HANDLE;
 	m_allocation = VK_NULL_HANDLE;
 	m_host_pointer = nullptr;
+	m_memory_properties = 0;
+	m_memory_type_index = 0;
 }
 
 bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)

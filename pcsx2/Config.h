@@ -2462,6 +2462,57 @@ struct Pcsx2Config
 		// and then sampled) that no reordering can remove.
 		int TileGpuReorderRuns = 0;
 
+		// WHICH MEMORY TYPE the TileGpu byte ring (m_tilegpu_vram_stream_buffer) is allocated on.
+		//
+		// The ring is the destination of the writeback compute, which reswizzles a finished target
+		// into guest page order at 2048 scattered four-byte stores per 8 KB page -- and on the
+		// standing SD865 suite that store is the single largest GPU bucket in the corpus, ~5.2-5.4
+		// us a page and ~100 ms of corpus GPU a frame. The `writeback-swizzle-study` measured that
+		// the cost is the STORE and not the swizzle or the fetch (the 32-bit and 16-bit arms fetch
+		// 2048 vs 4096 texels and their slopes agree within 5%), and named the memory type as the
+		// suspect.
+		//
+		// ⚠️ THE OBVIOUS FIX DOES NOT EXIST. "Move the ring to device-local memory" has no
+		// destination: on Adreno 650, on Apple/Honeykrisp and on every UMA part this campaign
+		// targets, EVERY non-lazy memory type is DEVICE_LOCAL *and* HOST_VISIBLE. Adreno 650 offers
+		// 0x07, 0x0f, 0x0b and a LAZILY_ALLOCATED type that cannot back a buffer at all; Honeykrisp
+		// offers 0x0f and 0x07. There is no heap to move to. What differs between those types is the
+		// HOST CACHE ATTRIBUTE, and the shipped preference (HOST_COHERENT, VKStreamBuffer::Create)
+		// selects Adreno 650's type 0 -- the UNCACHED, write-combining one. 2048 scattered word
+		// stores into a write-combining mapping is the mechanism that would produce the observed
+		// ratio against a linear copy, and the read-modify-write arm (PSMCT24 and the upload merge's
+		// keep mask) reads it back through the same mapping.
+		//
+		//   0 -- SHIPPED. Prefer HOST_COHERENT. What the ring has always allocated.
+		//   1 -- Prefer HOST_CACHED. Adreno 650: type 1, cached and still coherent (snooped).
+		//   2 -- Require HOST_CACHED and refuse HOST_COHERENT. Adreno 650: type 2, cached and NOT
+		//        snooped -- a plain write-back cacheable mapping for the GPU. Falls back to 1 where
+		//        the device has no such type, which is every Apple part.
+		//
+		//   3 -- MIRROR / CONTROL. Refuse HOST_CACHED: ask for the uncached, write-combining type.
+		//        Not a shipping candidate. On Adreno 650 it is the type class 0 already selects, so
+		//        a device A/B where 3 differs from 0 by more than noise has a harness fault and the
+		//        whole round is void -- which is what makes it worth having. On Apple/Honeykrisp it
+		//        is the only class that MOVES the ring at all (type 0, cached -> type 1, uncached),
+		//        so it is also the only way a machine with no incoherent type can prove this ladder
+		//        selects a real second type and still renders identical bytes from it.
+		//
+		// 1 and 2 are separate rungs because they test opposite mechanisms and the campaign has no
+		// silicon probe that discriminates them yet: 1 keeps IO-coherency on, which routes the GPU's
+		// traffic through the coherent interconnect and can cost more than the cache wins, and 2
+		// turns it off. A bool would have forced a guess between them.
+		//
+		// ⚠️ PIXEL-INERT BY CONSTRUCTION, and a byte difference between any two values is a DEFECT,
+		// not a trade. A memory type does not change what a store stores. The correctness story for
+		// rung 2 is that the CPU never READS this ring -- readbacks go through GSDownloadTextureVK,
+		// an entirely separate buffer -- and every CPU write into it is a whole-region write
+		// followed by CommitMemory's unconditional vmaFlushAllocation. So the only direction
+		// incoherency could bite is one that does not occur here.
+		//
+		// Read once, at first executor use, when the ring is created; changing it mid-session does
+		// nothing until a device reset. TileGpuStrictMemory overrides it back to 0.
+		int TileGpuRingMemoryClass = 0;
+
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
 		// that spills into it takes the blocking road instead.
 		//
