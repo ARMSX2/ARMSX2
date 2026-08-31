@@ -1810,76 +1810,20 @@ struct Pcsx2Config
 					// spilling transfer, so consecutive merges are in different plans by
 					// construction.
 					//
-					// PRE-REGISTERED DEVICE TARGET, so that a later reading cannot be
-					// fitted to whatever came back. Spider-Man 3 on the SD865:
-					// gpu_ms_p50 50.603 -> ~40, frame_ms_p50 50.412 -> ~40 (the arm is
-					// GPU-bound, so the two move together). ⚠️ THAT TARGET IS NOT THIS
-					// KEY'S. It was registered against the study's stage 1 before the
-					// corpus said the groups are one page; this key changes one render
-					// pass on one dump and cannot reach it. The key that can is
-					// TileGpuNarrowSeedPassArea below, and the device A/B must bisect
-					// the two rather than reading them together. Device numbers PENDING.
+					// ⚠️ THE SEED DIET'S PRE-REGISTERED TARGET IS NOT THIS KEY'S, AND
+					// NOTHING NOW CARRIES IT. Spider-Man 3 on the SD865, gpu_ms_p50
+					// 50.603 -> ~40, was registered against the study's stage 1 before
+					// the corpus said the groups are one page; this key changes one
+					// render pass on one dump and cannot reach it. The key that was
+					// supposed to reach it — a narrowed seed render AREA, which cut the
+					// corpus' declared area 11.9% — measured ZERO on all three tiers,
+					// and was deleted rather than shipped: declared render area is not
+					// what any of them bills. Batching the seeds ACROSS a run of
+					// transfers is the road that is left, and it is what this key
+					// enables.
 					//
 					// Default TRUE. OFF is the one-pass-per-page road, byte for byte.
 					TileGpuMergeSeedBatch : 1,
-					// A seed's render pass covers the PAGES IT SEEDS, not the whole
-					// attachment.
-					//
-					// This is the pass-area clamp the DRAW passes have shipped since the
-					// pass-structure census (gsTileGpuPassArea), applied at the one pass
-					// that never got it. The seed is a full-target triangle whose fragments
-					// discard outside the op's page set, and the executor already computes
-					// the rectangle those pages occupy and sets it as the SCISSOR — but the
-					// render AREA stayed the whole attachment. On an immediate-mode GPU that
-					// costs nothing. On a TILER it is the whole cost: a render pass loads
-					// every tile its area covers and stores every one back, drawn or not, so
-					// a seed repairing ONE 64x32 guest page paid a load and a store of the
-					// entire target.
-					//
-					// ⚠️ MEASURED ON THE CORPUS, and this is the number the seed diet was
-					// actually looking for. Render-pass area per frame, seed passes against
-					// the scissors those same passes set: Spider-Man 3 39.89 Mpx of
-					// attachment for 3.63 Mpx of scissor, against 70.09 Mpx for the WHOLE
-					// frame -- so 57% of everything the frame loads and stores is seed
-					// passes, and 91% of that is area the scissor throws away. Dirge of
-					// Cerberus 3.62 -> 0.94 of 143.79, GT4 1.61 -> 0.64 of 35.82, SotC 0.56
-					// -> 0.10 of 9.71. Narrowing takes Spider-Man 3's frame from 70.09 to
-					// 33.83 Mpx, a 52% cut, and it is 173 of its 331 seed passes a frame
-					// that the upload merge emits one of per merged page.
-					//
-					// PIXEL-INERT, and by the draw passes' own argument rather than a new
-					// one: the scissor already confined every write to this rectangle, so the
-					// area is shrinking to the only region that was ever written; outside it
-					// a LOAD/STORE attachment is neither loaded nor stored and keeps its
-					// bytes; and the round-out margin is loaded and stored back unchanged
-					// because no fragment reaches there. A mid-pass command-buffer flush
-					// restarts the pass on the area it saved, which is this one.
-					//
-					// ⚠️ ONLY WHERE THE ATTACHMENT LOADS, which is gsTileGpuMayClampPassArea's
-					// rule and is why that function is shared rather than restated. A CLEAR
-					// must cover the whole attachment or the pages outside stay uninitialized
-					// for a later pass that loads them — the reason the full area was here at
-					// all — and a clamped DONT_CARE leaves that region holding whatever the
-					// full-area form left undefined. Both keep the whole attachment, which is
-					// what they already do, so neither changes.
-					//
-					// PRE-REGISTERED DEVICE TARGET, inherited from the seed diet this
-					// key turned out to be: Spider-Man 3 on the SD865, gpu_ms_p50 50.603
-					// -> ~40 and frame_ms_p50 50.412 -> ~40. The mechanism it rests on is
-					// that the SD865 bills ~62.86 us of GPU per merged page and a merged
-					// page is one full-attachment seed pass; this key leaves the pass and
-					// removes 91% of its area. The M2 cannot test it -- Honeykrisp bills
-					// this work to record time, which is a function of the pass COUNT, and
-					// the count does not move (Spider-Man 3: 9026 render passes on both
-					// arms, to the unit). ⚠️ RUN THE DEVICE HASH GRID BEFORE THE TIMING
-					// A/B: partial render areas are content-preserving by spec and
-					// byte-identical on 21 dumps here, but that is one driver, and
-					// Turnip's render-area granularity also decides how much of the
-					// -11.9% survives (Honeykrisp reports 1x1, so the round-out is free
-					// on this box and will not be on Adreno). Device numbers PENDING.
-					//
-					// Default TRUE. OFF is the whole-attachment road, byte for byte.
-					TileGpuNarrowSeedPassArea : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

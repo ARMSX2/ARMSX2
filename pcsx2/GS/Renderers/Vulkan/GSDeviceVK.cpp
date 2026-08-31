@@ -9211,36 +9211,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 													VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
 					if (rp == VK_NULL_HANDLE)
 						return abandon("a seed op's render pass");
-
-					// EmuCore/GS/TileGpuNarrowSeedPassArea: the pass-area clamp the DRAW passes have
-					// shipped since the pass-structure census, applied at the one pass that never got
-					// it. A render pass on a tiler pays a tile load and a tile store for every pixel of
-					// its render AREA, drawn or not -- and this pass has always declared the whole
-					// attachment while its scissor confined every fragment to the pages the op names.
-					// A seed repairing one 64x32 guest page therefore loaded and stored the entire
-					// target. Measured over the corpus, render-pass area a frame with the clamp against
-					// without: Spider-Man 3 70.09 -> 33.83 Mpx (-51.7%, and its seed passes alone were
-					// 39.89 Mpx of attachment for 3.63 Mpx of scissor), God of War II -24.4%, Beyond
-					// Good & Evil -23.4%, MGS3 -19.3%, OutRun 2006 -18.5%, LEGO Star Wars -16.4%.
-					//
-					// Same rule and same arithmetic as the draw passes: gsTileGpuMayClampPassArea
-					// refuses anything but a LOAD (a CLEAR or a DONT_CARE initializes the attachment
-					// and does so only inside the area), and gsTileGpuPassArea rounds out to the
-					// driver's render-area granularity so the margin is loaded and stored back
-					// unchanged rather than split across a tile. A seed carries exactly one attachment,
-					// colour or depth, which is what the four arguments say here.
-					GSVector4i seed_pass_area = area;
-					if (GSConfig.TileGpuNarrowSeedPassArea &&
-						gsTileGpuMayClampPassArea(!is_depth_seed, op_load == VK_ATTACHMENT_LOAD_OP_LOAD,
-							is_depth_seed, op_load == VK_ATTACHMENT_LOAD_OP_LOAD))
-					{
-						const VkExtent2D gran = GetRenderAreaGranularity(rp);
-						const GSVector4i seed_scissors[] = {sc_rect};
-						const GSTileGpuScissorRect pa = gsTileGpuPassArea(
-							seed_scissors, size.x, size.y, static_cast<int>(gran.width), static_cast<int>(gran.height));
-						seed_pass_area = GSVector4i(pa.x, pa.y, pa.x + pa.width, pa.y + pa.height);
-					}
-
 					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
 					{
 						// A pool texture on its first bind. The clear covers the WHOLE attachment, not the
@@ -9255,7 +9225,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					}
 					else
 					{
-						BeginRenderPass(rp, seed_pass_area);
+						BeginRenderPass(rp, area);
 					}
 					// Counted at the pass, not off the op array: everything above this line can decline a
 					// seed, and a declined op costs no pass. This is the only place a seed's render passes
