@@ -303,3 +303,86 @@ TEST(TileGpuShaderWriteMask, TheMergedBytesAreWhatThePipelineWouldHaveWritten)
 		}
 	}
 }
+
+// =========================================================================================
+// THE COLOUR-FREE FRAGMENT VARIANT (EmuCore/GS/TileGpuNoRgbFragmentVariant).
+//
+// A draw whose pipeline colour write mask keeps every RGB channel cannot land one, so everything
+// the fragment program computes for those three is dead -- and on a tiler dead is program SIZE,
+// which is the axis the Adreno 650 swings a whole frame on. The program that serves such a run
+// leaves out the texture function's colour half, the fog walk and the integer blend arm
+// (tilegpu.glsl's TILEGPU_NO_RGB).
+//
+// The scope is decided by GSTileGpuPassPlan::LandsNoRgb off the BLEND KEY, which is already the
+// indirect-run key -- so a run is uniform in this by construction and no plan stream carries it.
+// What that predicate must get right is pinned here, because the whole claim of zero traded
+// accuracy rests on it: a draw that CAN land an RGB byte must never reach the colour-free program.
+// =========================================================================================
+
+// The scope, over every write mask there is. Yes exactly for the four masks with no RGB channel in
+// them, no for the other twelve.
+TEST(GSTileGpuShaderWriteMask, TheColourFreeVariantTakesExactlyTheMasksThatLandNoRgb)
+{
+	u32 yes = 0, no = 0;
+	for (u8 cm = 0; cm <= 0xF; cm++)
+	{
+		const bool lands_rgb = (cm & (kR | kG | kB)) != 0;
+		const bool answer = Plan::LandsNoRgb(BlendKey(cm, /*in_shader=*/false));
+		EXPECT_EQ(answer, !lands_rgb) << "mask=" << std::hex << u32(cm);
+		(answer ? yes : no)++;
+	}
+	// Depth-only (0x0) and alpha-only (0x8) are the two, times the self-read flag's two positions
+	// further down; twelve masks land at least one colour channel.
+	EXPECT_EQ(yes, 2u);
+	EXPECT_EQ(no, 14u);
+
+	// The named populations, by the shape the planner gives them. The alpha-test split's second half
+	// under AFAIL=RGB_ONLY writes the alpha byte alone; under ZB_ONLY it writes no colour at all;
+	// and the dual-source carrier's alpha companion is the first of those again.
+	EXPECT_TRUE(Plan::LandsNoRgb(Plan::PackNoWrite(kA)));
+	EXPECT_TRUE(Plan::LandsNoRgb(Plan::PackNoWrite(0)));
+	// ...and Ace Combat 5's "write colour, keep alpha" repaint is the other way round and must NOT be
+	// taken: it lands three RGB bytes.
+	EXPECT_FALSE(Plan::LandsNoRgb(Plan::PackNoWrite(kR | kG | kB)));
+	EXPECT_FALSE(Plan::LandsNoRgb(Plan::PackNoWrite(kR | kG | kB | kA)));
+	// A plan carrying no blend keys at all asks for all four channels, so it is never colour-free.
+	EXPECT_FALSE(Plan::LandsNoRgb(0));
+}
+
+// ⚠️ THE SHAPE THAT WOULD BE WRONG, and the reason the predicate reads the blend key rather than the
+// draw's own colour_mask. When the FRAGMENT stage is serving the write mask
+// (gsTileGpuMasksInShader) the pipeline writes all four channels and the shader merges the
+// destination in -- so the draw's own mask says "RGB dropped" while RGB bytes really do land, out of
+// the shader's own arithmetic. The blend key is the thing that knows.
+TEST(GSTileGpuShaderWriteMask, TheColourFreeVariantRefusesADrawWhoseMaskTheShaderIsServing)
+{
+	for (u8 cm = 0; cm <= 0xF; cm++)
+	{
+		// Every draw on the shader's write-mask road packs 0xF and therefore lands RGB.
+		EXPECT_FALSE(Plan::LandsNoRgb(BlendKey(cm, /*in_shader=*/true))) << "mask=" << std::hex << u32(cm);
+	}
+	// ...and the same draw with the mask left on the pipeline is colour-free where its mask says so.
+	EXPECT_TRUE(Plan::LandsNoRgb(BlendKey(kA, false)));
+	EXPECT_FALSE(Plan::LandsNoRgb(BlendKey(kA, true)));
+}
+
+// The second narrowing: the colour-free program still samples the texture, but only for the ALPHA,
+// so where TCC is frozen off it does not sample at all. With the spec unfrozen the row decides at
+// runtime and the road has to stay -- getting that backwards would drop the alpha the test reads.
+TEST(GSTileGpuShaderWriteMask, TheColourFreeVariantKeepsTheTexelRoadOnlyWhereTheAlphaComesFromIt)
+{
+	GSDevice::GSTileGpuFragmentSpec unfrozen;
+	EXPECT_FALSE(unfrozen.valid);
+	EXPECT_TRUE(unfrozen.NoRgbWantsTexel()) << "an unspecialized program reads TCC off the row";
+
+	GSDevice::GSTileGpuFragmentSpec spec;
+	spec.valid = true;
+	for (u8 tfx = 0; tfx < 4; tfx++)
+	{
+		spec.tfx = tfx;
+		spec.tcc = 1;
+		EXPECT_TRUE(spec.NoRgbWantsTexel()) << "tfx=" << u32(tfx); // the texel carries the alpha
+		spec.tcc = 0;
+		EXPECT_FALSE(spec.NoRgbWantsTexel()) << "tfx=" << u32(tfx); // ...and here it carries nothing
+	}
+}

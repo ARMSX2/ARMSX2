@@ -6951,6 +6951,9 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// module that has no mode-3 arm, nor a 64-wide tile in front of an arm whose stride is 16.
 	m_tilegpu_clut_merge = GSConfig.TileGpuClutMergeRegions;
 	m_tilegpu_clut_merge_pages = m_tilegpu_clut_merge && GSConfig.TileGpuClutMergePages;
+	// ...and the colour-free fragment variant, latched here for the same reason: it keys the module
+	// cache, so a mid-session flip would hand one run a program a cache entry already answered for.
+	m_tilegpu_no_rgb_variant = GSConfig.TileGpuNoRgbFragmentVariant;
 	const std::string defines =
 		(m_tilegpu_tex ? form_defines : std::string()) +
 		GSTileGpuShaderVariant::DeviceDefines(m_tilegpu_tex, static_byte_sel,
@@ -6983,7 +6986,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// and takes no road, so it has no variants at all.
 	const u32 full_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
 	VkShaderModule fs = CompileTileGpuFragmentModule(
-		full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, {});
+		full_roads, TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, {}, false);
 	if (fs == VK_NULL_HANDLE)
 		return fail("the full fragment module");
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
@@ -7006,7 +7009,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		{
 			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
 			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, 0xFu, full_roads,
-				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false, false, 0, {});
+				TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll), 0, false, false, false, 0, {},
+				false);
 			if (pipe == VK_NULL_HANDLE)
 				return fail("an eager no-blend pipeline");
 		}
@@ -7142,20 +7146,21 @@ u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceB
 // One fragment module for one road mask. The mask arrives as #defines, so the roads it does not name
 // are not in the SPIR-V at all -- which is the whole point on a tiler, where an instruction that is
 // never executed still costs program size and can carry the whole frame over a cliff.
-VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(
-	u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec)
+VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(u32 road_mask, u32 texel_mask, u32 self_mask,
+	bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb)
 {
-	const std::string source = GSTileGpuShaderVariant::VariantDefines(road_mask, texel_mask, self_mask, quantise) +
-							   GSTileGpuShaderVariant::SpecDefines(spec) + m_tilegpu_shader_source;
+	const std::string source =
+		GSTileGpuShaderVariant::VariantDefines(road_mask, texel_mask, self_mask, quantise, no_rgb) +
+		GSTileGpuShaderVariant::SpecDefines(spec) + m_tilegpu_shader_source;
 	u32 spv_words = 0;
 	VkShaderModule mod = GetUtilityFragmentShader(source, nullptr, &spv_words);
 #ifdef PCSX2_DEVBUILD
 	// The attribution line the instruction-size gate reads: a device stats line says how big a
 	// program is, and this says which variant it was. Word count is the local proxy -- the real
 	// number is the driver's instrlen, which only the device can report.
-	Console.WriteLn("TileGpu fragment variant road=%u texel=%u self=%u q16=%u (%s%s): %u SPIR-V words%s", road_mask,
-		texel_mask, self_mask, quantise ? 1u : 0u,
-		GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask, quantise).c_str(),
+	Console.WriteLn("TileGpu fragment variant road=%u texel=%u self=%u q16=%u norgb=%u (%s%s): %u SPIR-V words%s",
+		road_mask, texel_mask, self_mask, quantise ? 1u : 0u, no_rgb ? 1u : 0u,
+		GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask, quantise, no_rgb).c_str(),
 		GSTileGpuShaderVariant::SpecName(spec).c_str(), spv_words, (mod == VK_NULL_HANDLE) ? " -- FAILED" : "");
 #endif
 	return mod;
@@ -7164,18 +7169,21 @@ VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(
 // The fragment module for a pass's (road mask, texel-arm mask), compiled on first sight of the pair.
 // A pair that fails to compile falls back to the full module, which is a superset: bigger than the
 // pass needs, never wrong.
-VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(
-	u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec)
+VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(u32 road_mask, u32 texel_mask, u32 self_mask,
+	bool quantise, const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb)
 {
 	const u32 full_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
-	if (!spec.valid && self_mask == 0 && !quantise && road_mask == full_roads &&
+	// ...and never the FULL module for a colour-free run: that program computes the colour this one
+	// exists not to, so it is a superset in the size sense and not in the identity sense only by
+	// accident. Keeping it out of this early-out is what makes the axis real rather than advisory.
+	if (!spec.valid && self_mask == 0 && !quantise && !no_rgb && road_mask == full_roads &&
 		texel_mask == TileGpuTexelMask(full_roads, GSDevice::kGSTileGpuTexelMaskAll))
 		return m_tilegpu_fs;
-	const u32 key = TileGpuVariantKey(road_mask, texel_mask, self_mask, quantise, spec);
+	const u64 key = TileGpuVariantKey(road_mask, texel_mask, self_mask, quantise, spec, no_rgb);
 	const auto it = m_tilegpu_fs_variants.find(key);
 	if (it != m_tilegpu_fs_variants.end())
 		return (it->second != VK_NULL_HANDLE) ? it->second : m_tilegpu_fs;
-	VkShaderModule mod = CompileTileGpuFragmentModule(road_mask, texel_mask, self_mask, quantise, spec);
+	VkShaderModule mod = CompileTileGpuFragmentModule(road_mask, texel_mask, self_mask, quantise, spec, no_rgb);
 	if (mod == VK_NULL_HANDLE)
 	{
 		// The fallback is a superset, so the pixels stay right and only the size is wrong -- but on the
@@ -7186,10 +7194,10 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(
 		if (!m_tilegpu_variant_compile_warned)
 		{
 			m_tilegpu_variant_compile_warned = true;
-			Console.Error("TileGpu: fragment variant road=%u texel=%u self=%u q16=%u failed to compile; its draws "
-						  "run the full program instead -- correct, and past the size threshold that swings a "
-						  "frame. Totals at teardown.",
-				road_mask, texel_mask, self_mask, quantise ? 1u : 0u);
+			Console.Error("TileGpu: fragment variant road=%u texel=%u self=%u q16=%u norgb=%u failed to compile; "
+						  "its draws run the full program instead -- correct, and past the size threshold that "
+						  "swings a frame. Totals at teardown.",
+				road_mask, texel_mask, self_mask, quantise ? 1u : 0u, no_rgb ? 1u : 0u);
 		}
 	}
 	m_tilegpu_fs_variants.emplace(key, mod);
@@ -7213,7 +7221,7 @@ VkShaderModule GSDeviceVK::GetTileGpuFragmentShader(
 // draw masking all four still tests and writes depth.
 VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, u32 color_write_mask,
 	u32 road_mask, u32 texel_mask, u32 self_mask, bool quantise, bool declares, bool reads, u32 dualsrc_road,
-	const GSDevice::GSTileGpuFragmentSpec& spec)
+	const GSDevice::GSTileGpuFragmentSpec& spec, bool no_rgb)
 {
 	static constexpr VkPrimitiveTopology kTopology[3] = {
 		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
@@ -7250,7 +7258,7 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 		return VK_NULL_HANDLE;
 	// This pass's roads and texel arms and no others. A variant that failed to compile comes back as
 	// the full module.
-	const VkShaderModule fs = GetTileGpuFragmentShader(road_mask, texel_mask, self_mask, quantise, spec);
+	const VkShaderModule fs = GetTileGpuFragmentShader(road_mask, texel_mask, self_mask, quantise, spec, no_rgb);
 	if (fs == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
 	const DepthVariant& dv = kDepthVariant[depth_mode];
@@ -7353,9 +7361,9 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 		" (writes a)", " (writes ra)", " (writes ga)", " (writes rga)",
 		" (writes ba)", " (writes rba)", " (writes gba)", ""};
 	const char* mask = kMaskName[color_write_mask & 0xFu];
-	const std::string variant = GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask, quantise) +
-								GSTileGpuShaderVariant::SpecName(spec) +
-								(reads ? " reading" : (declares ? " in-declared-pass" : ""));
+	const std::string variant =
+		GSTileGpuShaderVariant::VariantName(road_mask, texel_mask, self_mask, quantise, no_rgb) +
+		GSTileGpuShaderVariant::SpecName(spec) + (reads ? " reading" : (declares ? " in-declared-pass" : ""));
 	if (blend_index == kTileGpuNoBlend)
 		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s %s", kTopologyName[topology], dv.name, mask,
 			variant.c_str());
@@ -7396,8 +7404,8 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	// the two separate arguments -- but its fragment program carries no destination read at all.
 	pxAssertMsg(declares || self_mask == 0, "TileGpu run needs the destination read in a pass that declares none");
 	pxAssertMsg(!reads || self_mask != 0, "TileGpu draw reads its destination through a variant that compiles none");
-	const u32 road_mask = TileGpuRoadMask(plan_road_mask);
-	const u32 texel_mask = TileGpuTexelMask(road_mask, plan_texel_mask);
+	u32 road_mask = TileGpuRoadMask(plan_road_mask);
+	u32 texel_mask = TileGpuTexelMask(road_mask, plan_texel_mask);
 	// ...and the frozen state narrowed the same way, against the road this DEVICE serves rather than
 	// the one the plan asked for: a field the program cannot read must not be in the key, or two
 	// character-identical programs become two modules and two pipelines. Then the driver's own
@@ -7406,6 +7414,34 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	GSDevice::GSTileGpuFragmentSpec spec = plan_spec;
 	spec.NarrowToRoad(road_mask);
 	spec.NarrowToDriver(TileGpuFreezeTexa());
+	// ⚠️ AND THE NARROWING THAT IS NOT ABOUT THE ROAD. This run's colour write mask keeps every RGB
+	// channel, so no fragment of it can land a red, green or blue byte -- and everything the program
+	// computes for those three is dead. The texture function's colour half, the fog walk and the whole
+	// integer blend arm come out of the SPIR-V (tilegpu.glsl's TILEGPU_NO_RGB), which on a tiler is
+	// not a saving of executed instructions but of PROGRAM SIZE, the axis the Adreno 650 swings a
+	// frame on.
+	//
+	// It is derived from the write mask rather than from a class of draw, and that is exactly what
+	// makes it IDENTITY: a channel the pipeline does not write cannot be observed, whatever computed
+	// it. The three things still alive downstream all read alpha and never RGB -- the alpha test, the
+	// destination-alpha test, and the As blend factor -- and the alpha channel is never blended (the
+	// GS stores the fragment's own alpha byte; the equation set below is ONE/ZERO on that channel,
+	// CONSTANT_ALPHA/ZERO on the carrier-restore road). The write mask is already part of the run key
+	// (GSTileGpuPassPlan::blend_keys), so a run is uniform in this by construction and nothing in the
+	// plan has to carry it.
+	//
+	// ...and where the texel is wanted for its ALPHA alone and TCC says the texel has no alpha to
+	// give, the road goes too: with TCC frozen off, the texture function leaves the fragment alpha at
+	// the vertex colour's in all four TFX modes, so a program with no texel road at all lands the same
+	// byte. That is the split's second half on an untextured-alpha draw reduced to a handful of
+	// instructions.
+	const bool no_rgb = m_tilegpu_no_rgb_variant && GSTileGpuPassPlan::LandsNoRgb(blend_key);
+	if (no_rgb && !spec.NoRgbWantsTexel() && road_mask != 0)
+	{
+		road_mask = 0;
+		texel_mask = 0;
+		spec.NarrowToRoad(0);
+	}
 	const u32 all_roads = TileGpuRoadMask(GSDevice::kGSTileGpuRoadMaskAll);
 	// The eager table is the FULL program, which on Adreno sits past the instruction-size threshold --
 	// so a pass reaches it only by genuinely being the full set, never as a convenience. It is also
@@ -7423,7 +7459,10 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	// Bits 0-1 topology, 2-3 depth, 8-15 blend, 16-19 the colour write mask, 20-22 the road mask,
 	// 23-29 the texel-arm mask, 32-34 the pass's self-read mask, 35 declares, 36 reads, 37 quantise,
 	// 38-55 the run's frozen per-draw GS state (the plan key's spec half, shifted down to 38),
-	// 56-57 the As factor's road.
+	// 56-57 the As factor's road, 58 the colour-free fragment variant. The last is DERIVABLE from the
+	// write-mask field three bits below it and is spelt out anyway, because a pipeline key that does
+	// not name every input to the program it caches is a key that silently hands one program's
+	// pipeline to another the day the derivation changes.
 	const u64 spec_bits = static_cast<u64>((GSTileGpuPassPlan::PackVariantKey(0, 0, 0, false, spec) &
 											   GSTileGpuPassPlan::kVariantSpecMask) >>
 										   14);
@@ -7433,12 +7472,13 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 					(static_cast<u64>(texel_mask) << 23) | (static_cast<u64>(self_mask) << 32) |
 					(static_cast<u64>(declares ? 1u : 0u) << 35) | (static_cast<u64>(reads ? 1u : 0u) << 36) |
 					(static_cast<u64>(quantise ? 1u : 0u) << 37) | (spec_bits << 38) |
-					(static_cast<u64>(dualsrc_road >> GSTileGpuPassPlan::kDualSrcRoadShift) << 56);
+					(static_cast<u64>(dualsrc_road >> GSTileGpuPassPlan::kDualSrcRoadShift) << 56) |
+					(static_cast<u64>(no_rgb ? 1u : 0u) << 58);
 	const auto it = m_tilegpu_blend_pipelines.find(key);
 	if (it != m_tilegpu_blend_pipelines.end())
 		return (it->second != VK_NULL_HANDLE) ? it->second : TileGpuPipelineFallback(topology, depth_mode, declares);
 	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write_mask, road_mask,
-		texel_mask, self_mask, quantise, declares, reads, dualsrc_road, spec);
+		texel_mask, self_mask, quantise, declares, reads, dualsrc_road, spec, no_rgb);
 	m_tilegpu_blend_pipelines.emplace(key, pipe);
 	return (pipe != VK_NULL_HANDLE) ? pipe : TileGpuPipelineFallback(topology, depth_mode, declares);
 }

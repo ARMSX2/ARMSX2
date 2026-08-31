@@ -1854,6 +1854,54 @@ struct Pcsx2Config
 					// Default TRUE. OFF is the split as it shipped on 2026-08-30, byte
 					// for byte on all 22 dumps.
 					TileGpuSplitRefuseFbOnly : 1,
+					// Compile a fragment program with NO COLOUR IN IT for a draw whose pipeline
+					// colour write mask keeps every RGB channel.
+					//
+					// THE MECHANISM. Such a draw cannot land a red, green or blue byte, so
+					// everything the fragment stage computes for those three is dead — the
+					// texture function's colour half, the whole fog walk, the integer blend
+					// arm, and the colour lanes of the 16-bit quantise and the FBMSK merge.
+					// On a tiler dead code is not free: it is PROGRAM SIZE, and the Adreno
+					// 650 swings a whole frame across an instruction-length threshold. So
+					// those blocks leave the SPIR-V (tilegpu.glsl's TILEGPU_NO_RGB) and what
+					// remains is the source alpha the alpha test reads and the one byte the
+					// mask still lets through. And where the texel was wanted for its alpha
+					// alone and TCC says the texel carries none, the texel ROAD goes too:
+					// with TCC off, all four texture functions leave the fragment alpha at
+					// the vertex colour's, so a program with no sampling in it lands the
+					// same byte.
+					//
+					// ⚠️ ZERO ACCURACY IS TRADED, and the argument is one sentence: a channel
+					// the pipeline does not write cannot be observed, whatever computed it.
+					// Everything left alive reads ALPHA and never RGB — the alpha test, the
+					// destination-alpha test, and the As blend factor — and the alpha channel
+					// is never blended, because the GS stores the fragment's own alpha byte
+					// and the pipeline's alpha equation is ONE/ZERO (CONSTANT_ALPHA/ZERO on
+					// the dual-source carrier's restore road, which is still alpha). The one
+					// trap is the integer tail's GATE: entering it rounds the fragment to the
+					// byte grid, and that rounding reaches the alpha lane, so the colour-free
+					// tail keeps the same gate including the shader-blend bit it otherwise
+					// has no use for.
+					//
+					// DERIVED FROM THE WRITE MASK, NOT FROM A CLASS OF DRAW. That is what
+					// makes it identity rather than a rule with exceptions, and it costs the
+					// plan nothing: the colour write mask already rides the blend key, which
+					// is already the indirect-run key, so a run is uniform in this by
+					// construction. The populations it serves are the alpha-test split's
+					// second half (TileGpuSplitRefuseFbOnly leaves that population RGB_ONLY,
+					// so the second half writes the alpha byte and the depth — R&C UYA
+					// effects is 531 such draws a frame, gameplay 421.5, Stuntman 547, God
+					// of War II 49.9, dirge 46, LEGO Star Wars 10.75), the dual-source
+					// carrier's alpha companion, and any draw whose FBMSK keeps RGB whole —
+					// OutRun 2006's post sprites and Beyond Good & Evil's silhouettes.
+					//
+					// WHAT IT COSTS: one more axis on the fragment-module population, and a
+					// module is a compile. Measured on the 22-dump corpus, the M2's module
+					// count per dump is in the round's record.
+					//
+					// Default TRUE. PIXEL-INERT: both arms are byte-identical on all 22
+					// corpus dumps, and a difference between them is a DEFECT, not a trade.
+					TileGpuNoRgbFragmentVariant : 1,
 					// Let ONE seed render pass repair a batch of the upload merge's pages,
 					// instead of one render pass per page.
 					//

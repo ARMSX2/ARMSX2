@@ -845,6 +845,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// Wars' floor reflection -- an RGB_ONLY draw the planner's algebra calls FB_ONLY -- keeps
 	// splitting. See Config.h.
 	TileGpuSplitRefuseFbOnly = true;
+	// Default TRUE: pure cost removal with nothing traded. A draw whose colour write mask keeps every
+	// RGB channel cannot land one, so the fragment program it runs leaves out the texture function's
+	// colour half, the fog walk and the integer blend arm -- program size, which is the axis a tiler
+	// swings a frame on. Derived from the write mask rather than from a class of draw, which is what
+	// makes it identity: both arms are byte-identical on all 22 corpus dumps. See Config.h.
+	TileGpuNoRgbFragmentVariant = true;
 	// Default TRUE: it is a pure re-expression of the merge's seed, not a trade. One render pass
 	// per merged PAGE existed only because the seed's block mask was an op-level push constant;
 	// moved to the page entry, one pass serves any number of pages and the bytes it writes are the
@@ -1227,6 +1233,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
 	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);
+	SettingsWrapBitBool(TileGpuNoRgbFragmentVariant);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
