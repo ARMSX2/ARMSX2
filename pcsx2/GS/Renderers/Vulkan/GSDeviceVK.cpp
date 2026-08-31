@@ -4752,6 +4752,44 @@ void GSDeviceVK::DoHintReadbackSource(GSTexture* tex)
 	m_recent_readback_sources[0] = tex;
 }
 
+// Two images moved at the same point go into ONE vkCmdPipelineBarrier, not one each. The image
+// barriers are the same structs either way -- what merges is the submission. The call's stage masks
+// become the union of the two, which is a STRONGER dependency than either alone and never a weaker
+// one, so the merge cannot under-synchronise. Measured motivation: the TileGpu DATE snapshot records
+// four barrier submissions a pass, 5,360 a stuntman frame, and they are two pairs at two points.
+static void TransitionTwoImages(VkCommandBuffer cmd, GSTextureVK* a, GSTextureVK::Layout a_layout,
+	GSTextureVK* b, GSTextureVK::Layout b_layout)
+{
+	// Either both moves batch or neither does. Batching one and falling back for the other would
+	// record the two out of the order the caller asked for them in.
+	if ((a && !a->LayoutTransitionIsBatchable(a_layout)) || (b && !b->LayoutTransitionIsBatchable(b_layout)))
+	{
+		if (a)
+			a->TransitionToLayout(cmd, a_layout);
+		if (b)
+			b->TransitionToLayout(cmd, b_layout);
+		return;
+	}
+
+	VkImageMemoryBarrier barriers[2];
+	VkPipelineStageFlags src_stage = 0, dst_stage = 0;
+	u32 count = 0;
+	const auto add = [&](GSTextureVK* tex, GSTextureVK::Layout layout) {
+		VkPipelineStageFlags s, d;
+		// False means the image is already there and there is nothing to record -- which is also
+		// what the source-is-the-destination copy hits on its second call.
+		if (!tex || !tex->BuildBatchedLayoutTransition(barriers[count], s, d, layout))
+			return;
+		src_stage |= s;
+		dst_stage |= d;
+		count++;
+	};
+	add(a, a_layout);
+	add(b, b_layout);
+	if (count > 0)
+		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, count, barriers);
+}
+
 void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
@@ -4830,10 +4868,12 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 
 	sTexVK->SetUseFenceCounter(GetCurrentFenceCounter());
 	dTexVK->SetUseFenceCounter(GetCurrentFenceCounter());
-	sTexVK->TransitionToLayout(
-		(dTexVK == sTexVK) ? GSTextureVK::Layout::TransferSelf : GSTextureVK::Layout::TransferSrc);
-	dTexVK->TransitionToLayout(
-		(dTexVK == sTexVK) ? GSTextureVK::Layout::TransferSelf : GSTextureVK::Layout::TransferDst);
+	// One barrier submission for the pair, not one each: both images move at this point and nothing
+	// is recorded between them.
+	const bool copy_to_self = (dTexVK == sTexVK);
+	TransitionTwoImages(GetCurrentCommandBuffer(), sTexVK,
+		copy_to_self ? GSTextureVK::Layout::TransferSelf : GSTextureVK::Layout::TransferSrc, dTexVK,
+		copy_to_self ? GSTextureVK::Layout::TransferSelf : GSTextureVK::Layout::TransferDst);
 
 	vkCmdCopyImage(GetCurrentCommandBuffer(), sTexVK->GetImage(), sTexVK->GetVkLayout(), dTexVK->GetImage(),
 		dTexVK->GetVkLayout(), 1, &ic);
@@ -9299,7 +9339,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				poison_clear(snapshot, kTileGpuPoisonSnapshot);
 				const GSVector4i copy_rect = sc.src_rect.rintersect(GSVector4i(0, 0, ssz.x, ssz.y));
 				CopyRect(rt, snapshot, copy_rect, copy_rect.x, copy_rect.y);
-				static_cast<GSTextureVK*>(snapshot)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+				// And one on the way out. The scratch goes to shader-read for the pass that samples
+				// it, and the target goes back to colour-attachment HERE rather than inside
+				// OMSetRenderTargets below -- which then finds it already there and records nothing.
+				// Nothing between the two points touches the target: the pass's rule-2 sampled
+				// sources are asserted not to be its own attachment, and a pass that declares the
+				// in-pass read takes no snapshot at all, so this is never the feedback-loop layout's
+				// road.
+				TransitionTwoImages(cmd, static_cast<GSTextureVK*>(snapshot), GSTextureVK::Layout::ShaderReadOnly,
+					static_cast<GSTextureVK*>(rt), GSTextureVK::Layout::ColorAttachment);
 				// A copy recorded outside a pass whose result the pass about to open samples: the
 				// same producer->consumer shape the lever is interrogating.
 				serialize_boundary(kGSTileGpuSerializeSiteSnapshot);

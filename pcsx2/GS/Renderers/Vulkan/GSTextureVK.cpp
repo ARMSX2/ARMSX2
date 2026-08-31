@@ -638,6 +638,27 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 		old_layout = Layout::ColorAttachment;
 	}
 
+	VkImageMemoryBarrier barrier;
+	VkPipelineStageFlags srcStageMask, dstStageMask;
+	BuildLayoutBarrier(start_level, num_levels, old_layout, new_layout, barrier, srcStageMask, dstStageMask);
+	vkCmdPipelineBarrier(command_buffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	// Count as a UAV barrier if we transition to/from UAV.
+	if (IsRenderTargetOrDepthStencil() &&
+		(old_layout == Layout::ReadWriteImage || new_layout == Layout::ReadWriteImage))
+	{
+		g_perfmon.Put(GSPerfMon::Barriers, 1);
+		g_perfmon.Put(GSPerfMon::BarriersROV, 1);
+	}
+}
+
+// The barrier and stage masks a transition would record, worked out but NOT recorded. Split out
+// of TransitionSubresourcesToLayout so that a caller with two images to move at one point can put
+// both image barriers into a single vkCmdPipelineBarrier; the transition road above is its only
+// other caller and gets the identical struct it built inline before.
+void GSTextureVK::BuildLayoutBarrier(int start_level, int num_levels, Layout old_layout, Layout new_layout,
+	VkImageMemoryBarrier& barrier, VkPipelineStageFlags& srcStageMask, VkPipelineStageFlags& dstStageMask)
+{
 	VkImageAspectFlags aspect;
 	if (IsDepthStencil())
 	{
@@ -649,13 +670,12 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 		aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 
-	VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, 0, 0, GetVkImageLayout(old_layout),
+	barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, 0, 0, GetVkImageLayout(old_layout),
 		GetVkImageLayout(new_layout), VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_image,
 		{aspect, static_cast<u32>(start_level), static_cast<u32>(num_levels), 0u, 1u}};
 
 	// srcStageMask -> Stages that must complete before the barrier
 	// dstStageMask -> Stages that must wait for after the barrier before beginning
-	VkPipelineStageFlags srcStageMask, dstStageMask;
 	switch (old_layout)
 	{
 		case Layout::Undefined:
@@ -823,15 +843,36 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 			dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 			break;
 	}
-	vkCmdPipelineBarrier(command_buffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
 
-	// Count as a UAV barrier if we transition to/from UAV.
-	if (IsRenderTargetOrDepthStencil() &&
-		(old_layout == Layout::ReadWriteImage || new_layout == Layout::ReadWriteImage))
+bool GSTextureVK::BuildBatchedLayoutTransition(
+	VkImageMemoryBarrier& barrier, VkPipelineStageFlags& srcStageMask, VkPipelineStageFlags& dstStageMask,
+	Layout new_layout)
+{
+	if (m_layout == new_layout)
+		return false;
+
+	pxAssertMsg(LayoutTransitionIsBatchable(new_layout),
+		"Batched layout transition on an image whose move needs the RDNA2 two-step");
+	pxAssertMsg(!g_gs_device->DeferredDrawsWouldObserve(this),
+		"Image layout change on a texture with deferred draws queued against it");
+
+	// Same stamp the recorded road takes, and for the same reason: the caller is about to record
+	// what this hands back, so from here on the image has been touched by this command buffer.
+	StampGpuTouch(GSDeviceVK::GetInstance()->GetCurrentFenceCounter());
+
+	BuildLayoutBarrier(0, m_mipmap_levels, m_layout, new_layout, barrier, srcStageMask, dstStageMask);
+
+	if (IsRenderTargetOrDepthStencil() && new_layout == Layout::ReadWriteImage)
 	{
 		g_perfmon.Put(GSPerfMon::Barriers, 1);
 		g_perfmon.Put(GSPerfMon::BarriersROV, 1);
 	}
+
+	// The tracked layout moves here, not when the caller records -- so a caller that takes this
+	// road MUST record the barrier it was given.
+	m_layout = new_layout;
+	return true;
 }
 
 VkFramebuffer GSTextureVK::GetFramebuffer(bool feedback_loop)

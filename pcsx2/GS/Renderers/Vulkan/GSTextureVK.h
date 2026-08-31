@@ -79,6 +79,24 @@ public:
 	void TransitionSubresourcesToLayout(
 		VkCommandBuffer command_buffer, int start_level, int num_levels, Layout old_layout, Layout new_layout);
 
+	// Two images moved at the same point cost two vkCmdPipelineBarrier submissions, one apiece,
+	// and they do not have to: one call carries as many image barriers as it is given. These two
+	// let a caller build the barriers first and submit them together.
+	//
+	// False when a move to `new_layout` needs the RDNA2 two-step below, which records a barrier of
+	// its own and so cannot be folded into anyone else's call. Ask BEFORE building a batch: a
+	// caller that batched one image and fell back for the other would record the two out of order.
+	__fi bool LayoutTransitionIsBatchable(Layout new_layout) const
+	{
+		return !(m_layout == Layout::ReadWriteImage && new_layout != Layout::ColorAttachment &&
+				 new_layout != Layout::ReadWriteImage);
+	}
+	// Builds the image barrier and the stage masks a move to `new_layout` needs and moves the
+	// tracked layout, without recording anything. False means there is nothing to record (the
+	// image is already there); true means the caller now OWES the barrier a vkCmdPipelineBarrier.
+	bool BuildBatchedLayoutTransition(VkImageMemoryBarrier& barrier, VkPipelineStageFlags& srcStageMask,
+		VkPipelineStageFlags& dstStageMask, Layout new_layout);
+
 	static VkFramebuffer CreateNullFramebuffer(u32 w, u32 h);
 
 	/// Framebuffers are lazily allocated.
@@ -109,6 +127,9 @@ public:
 private:
 	GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image, VmaAllocation allocation,
 		VkImageView view, VkFormat vk_format);
+
+	void BuildLayoutBarrier(int start_level, int num_levels, Layout old_layout, Layout new_layout,
+		VkImageMemoryBarrier& barrier, VkPipelineStageFlags& srcStageMask, VkPipelineStageFlags& dstStageMask);
 
 	VkCommandBuffer GetCommandBufferForUpdate();
 	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;
