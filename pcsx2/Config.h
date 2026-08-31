@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 141 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 145 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1762,6 +1762,58 @@ struct Pcsx2Config
 					// Default TRUE. OFF is the tip as it shipped on 2026-08-31 and is the
 					// control arm of the device A/B.
 					TileGpuFlushGateUploadMerge : 1,
+					// The CLUT readback's own receipt survives the plan flush it takes on its
+					// way in.
+					//
+					// GT4 pulls TWO guest pages a frame, twenty-nine times. Twenty-eight of the
+					// twenty-nine are byte for byte the same request -- CLUT base 15589, guest
+					// page 487, owner surface 10, block mask 0xffffffe0, one page -- and they
+					// arrive inside about five milliseconds of each other. They repeat because
+					// the receipt a pull writes ("the CPU shadow holds this page") is stored in
+					// the model's `synced` bit, and ReadbackToShadow calls FlushPendingPlan,
+					// whose tail calls ClearAllSynced. Each pull tears up the previous pull's
+					// receipt on its way to asking whether it has to pull. Asked on the NEAR side
+					// of that flush instead, 397 of GT4's 427 readbacks need nothing at all, and
+					// 0 of the 427 have a pending draw that writes the pages -- so nothing in the
+					// plan justifies the re-pull either. On the five titles that pull in draw
+					// order the near-side count is ZERO: their claims were already retired at
+					// accumulation time, and the two populations separate perfectly.
+					//
+					// ClearAllSynced is right to exist and this does not touch it. Four of the
+					// five places that set `synced` are bookkeeping fictions -- the ring holds
+					// the page, these bytes are dead, these bytes are dropped, the seed will
+					// overwrite them -- and all four go stale at a submit. So the fix ADDS a
+					// claim rather than reinterpreting the one that is there: GSVramModel's
+					// `shadow` bitmap, set only by the pull, retired only by OnNativeDraw and by
+					// anything that takes truth off the page. That is sound because OnNativeDraw
+					// is the ONE place GPU truth is created (GSVramModel.cpp), and it is why the
+					// model suite pins the retirement rather than a comment claiming it.
+					//
+					// The ASK is untouched -- only the DOWNLOAD narrows. PullToShadow still
+					// counts the stall, still stamps m_cpu_read_frame over the whole page set and
+					// still calls OnReadback with it, because that stamp is the upload merge's
+					// input and the merge is the campaign's largest standing win. The only thing
+					// that changes in the binary is which pages reach ReadbackPages.
+					//
+					// WHAT IT REMOVES, per drawn frame: GT4's blocking GPU waits 25.88 -> 2.75
+					// and its CLUT out-of-band road 24.88 -> 1.75; Armored Core 3 14.50 ->
+					// 11.50; Dirge of Cerberus 3.00 -> 2.00; corpus-wide 66.51 -> 39.13. Every
+					// other census line on all 22 dumps is identical -- flushes, ring pages,
+					// prefill, render passes, writeback pages, stalls, stall pages, and the
+					// upload merge line with its cpu-read refusal histogram -- except mid-frame
+					// kick offers, which fall because there are fewer pulls to trigger them. 0 of
+					// 88 scored frames move.
+					//
+					// WHAT IT COSTS is that the class of bug where a GPU write reaches a target's
+					// texture without going through OnNativeDraw stops self-healing: today
+					// ClearAllSynced re-pulls the page at the next flush and the wrong bytes live
+					// for one readback, and with a surviving claim they live until something
+					// writes the page. Nothing does that today; the model suite is what keeps it
+					// that way.
+					//
+					// Default TRUE. OFF is the tip as it shipped on 2026-08-31 and is the control
+					// arm of the device A/B.
+					TileGpuShadowSurvivesFlush : 1,
 					// Submit the frame's recorded work MID-PLAN, at a pass boundary, on
 					// the frames that read back — the non-blocking kick the Classic
 					// renderer has had in DoRenderHW and the TileGpu executor has not.

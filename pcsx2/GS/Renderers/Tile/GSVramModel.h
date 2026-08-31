@@ -27,6 +27,13 @@
 //   Synced:      in truth and in synced. GPU and CPU hold equal bytes (after a
 //                readback-for-read); the owner surface's validity is retained.
 //
+// A second bitmap, `shadow`, records the same equality from the CPU shadow's side only,
+// because `synced` cannot: four of the five things that set it are bookkeeping fictions a
+// renderer makes to keep the steal invariant satisfied without moving a byte, they go
+// stale at a submit, and the bitmap cannot tell them apart — so a per-frame byte ring has
+// to drop the whole thing when it submits. `shadow` is set by OnShadowFilled alone, which
+// means the CPU really has the bytes, and ClearSynced/ClearAllSynced leave it alone.
+//
 // Truth is page-granular from the draw side by construction: a native draw uploads
 // its destination pages before rendering into them, so after the draw the whole page
 // is current in the texture. The block-mask sidecar exists for the CPU-write side
@@ -38,8 +45,8 @@
 // Invariants (Devel-asserted via CheckInvariants, pinned by the unit suite):
 //   - per plane, surface valid bitmaps are pairwise disjoint and truth is their OR;
 //   - per plane, owner[page] != none exactly for truth pages, and matches valid;
-//   - synced is a subset of truth; partial is a subset of truth; a partial page's
-//     mask is never 0 and never full.
+//   - synced is a subset of truth; shadow is a subset of truth; partial is a subset
+//     of truth; a partial page's mask is never 0 and never full.
 class GSVramModel
 {
 public:
@@ -178,6 +185,34 @@ public:
 	void ClearSynced(const GSPageBitmap& pages);
 	void ClearAllSynced();
 
+	/// The pull's OWN receipt: these pages' bytes are in the CPU shadow — and unlike the synced
+	/// claim, ClearSynced and ClearAllSynced do not drop it.
+	///
+	/// Both bits say "GPU and CPU hold equal bytes", so the reason there are two is worth stating.
+	/// `synced` is set from five places that mean five different things: the ring holds the page,
+	/// these bytes are dead, these bytes are dropped, the seed will overwrite them — and, once,
+	/// the CPU shadow really has them. The first four are fictions that keep the steal invariant
+	/// satisfied without moving a byte, they all go stale at a submit, and nothing in the bitmap
+	/// distinguishes them, so a renderer whose byte store is a per-frame ring is right to drop the
+	/// lot when it submits. The fifth is not a fiction and does not go stale at a submit: the CPU
+	/// shadow keeps its bytes exactly as CPU local memory does.
+	///
+	/// So a CLUT readback that flushes the plan on its way in stops destroying its own previous
+	/// pull's receipt before asking whether it has to pull again. Retired by OnNativeDraw, in the
+	/// same statement that clears `synced`, and by anything that takes truth off the page — which
+	/// is sound because OnNativeDraw is the one place GPU truth is created.
+	void OnShadowFilled(const GSPageBitmap& pages);
+
+	/// Of `pages`, the ones whose bytes must actually come down: a page whose shadow claim still
+	/// stands on every plane that holds GPU truth for it is already in the CPU shadow, byte for
+	/// byte, and pulling it again fetches what is there.
+	///
+	/// Deliberately NOT folded into ReadbackNeeded. ReadbackNeeded answers the caller's ASK, and a
+	/// caller spends that answer on more than the transfer — TileGpu stamps its stall census and
+	/// its upload merge's "this page was CPU-read recently" mark from it, and the merge is the one
+	/// thing this claim must not move. The ask stays whole; only the download narrows.
+	GSPageBitmap ShadowMissing(const GSPageBitmap& pages) const;
+
 	/// Truth pages in the footprint owned by OTHER surfaces and not yet synced: the
 	/// caller must read them back before drawing natively into id (the steal is then
 	/// lossless). Self-owned pages never appear — a target redraws itself freely.
@@ -256,6 +291,7 @@ public:
 
 	const GSPageBitmap& Truth(u32 plane_idx) const { return m_planes[plane_idx].truth; }
 	const GSPageBitmap& SyncedPages(u32 plane_idx) const { return m_planes[plane_idx].synced; }
+	const GSPageBitmap& ShadowPages(u32 plane_idx) const { return m_planes[plane_idx].shadow; }
 	GSPageBitmap TruthAny() const;
 	GSTileSurfaceId OwnerOf(u32 page, u32 plane_idx) const { return m_planes[plane_idx].owner[page]; }
 	/// 0 when the page has no truth; kFullBlockMask when fully truth.
@@ -278,6 +314,7 @@ private:
 	{
 		GSPageBitmap truth;
 		GSPageBitmap synced;
+		GSPageBitmap shadow; // synced, but claimed by the CPU shadow alone: ClearSynced spares it
 		GSPageBitmap partial; // truth pages with a (non-full) block mask
 		std::unordered_map<u16, u32> masks; // page -> truth block mask, present iff partial
 		std::array<GSTileSurfaceId, GS_MAX_PAGES> owner;

@@ -7860,7 +7860,16 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	// by delta rather than by a return value, because the roads are internal to ReadbackPages and a
 	// call that falls off the out-of-band road onto the drain must be counted as the drain it became.
 	// A call takes at most one road, so the three buckets partition the calls exactly.
-	PlanPull(m_vram_model, need, m_pull_calls);
+
+	// What must actually COME DOWN, which after the flush above is not the whole ask. A page the
+	// CPU shadow already holds -- claimed by an earlier pull of this same road, and
+	// written by neither side since -- is bytes we have; fetching them again buys nothing and costs
+	// a full pipeline wait, because the readback's submit-and-wait waits on everything already
+	// submitted. The ask itself stays whole on purpose: the stall census above, the
+	// m_cpu_read_frame stamp and OnReadback below are all spent on `need`, and that stamp is the
+	// upload merge's input. See EmuCore/GS/TileGpuShadowSurvivesFlush.
+	const GSPageBitmap fetch = GSConfig.TileGpuShadowSurvivesFlush ? m_vram_model.ShadowMissing(need) : need;
+	PlanPull(m_vram_model, fetch, m_pull_calls);
 	const u32 site_index = static_cast<u32>(site);
 	for (const PullCall& c : m_pull_calls)
 	{
@@ -7877,6 +7886,12 @@ void GSRendererTileGpu::PullToShadow(const GSPageBitmap& need, StallSite site)
 	}
 	m_frame.pull_calls += static_cast<u32>(m_pull_calls.size());
 	m_vram_model.OnReadback(need);
+	// The pull's own receipt, and the one claim in the model that means the CPU really has the
+	// bytes rather than that some fiction was needed to satisfy the steal invariant. Recorded for
+	// the WHOLE ask, not for what was fetched: the pages the claim already served are in the shadow
+	// too. Maintained on both arms of the knob -- only whether it is HONOURED above is gated -- so
+	// the bitmap and its invariant get the same exercise either way.
+	m_vram_model.OnShadowFilled(need);
 }
 
 void GSRendererTileGpu::PlanPull(const GSVramModel& model, const GSPageBitmap& need, std::vector<PullCall>& out)

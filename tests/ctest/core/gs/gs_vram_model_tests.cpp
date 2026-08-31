@@ -1059,3 +1059,141 @@ TEST(GSVramModel, ResidencyGrowsToTheUnionOfEveryViewsRect)
 	EXPECT_EQ(spanned.count(), 60u);
 	EXPECT_EQ(spanned.andnot(grown).count(), 48u);
 }
+
+// The CLUT readback's receipt, and the one bit of model state whose whole point is that a flush
+// does NOT clear it.
+//
+// TileGpu's byte store is a per-frame ring, so when it submits it drops every synced claim
+// (ClearAllSynced) -- it has to, because four of the five things that set `synced` are
+// bookkeeping fictions that go stale at a submit. The CLUT readback flushes the plan on its way
+// in, so before this bitmap existed every pull tore up the previous pull's receipt on its way to
+// asking whether it had to pull, and GT4 pulled the same two guest pages twenty-nine times a
+// frame.
+//
+// The risk this test exists to hold down is not the win, it is the retirement. The claim is sound
+// only because OnNativeDraw is the ONE place GPU truth is created, so it is the one place a
+// texture can become newer than the CPU shadow. A future road that makes a target's texture newer
+// without that call would serve stale bytes with nothing complaining -- and unlike today, it would
+// not self-heal at the next flush. So the retirement is pinned here rather than asserted in a
+// comment.
+TEST(GSVramModel, TheShadowClaimSurvivesAFlushAndDiesAtTheNextNativeDraw)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+	const u32 rgb = GSVramModel::PlaneIndex(GSTilePlaneRGB);
+	m.OnNativeDraw(id, pages, kGSTilePlanesColor);
+
+	// The pull. Both claims are written: `synced` for the model's steal invariant, `shadow` for
+	// the CPU copy the pull actually produced.
+	const GSPageBitmap need = m.ReadbackNeeded(pages, kGSTilePlanesAll);
+	ASSERT_EQ(need.count(), pages.count());
+	m.OnReadback(need);
+	m.OnShadowFilled(need);
+	EXPECT_TRUE(m.ShadowMissing(pages).empty());
+	EXPECT_TRUE(m.CheckInvariants());
+
+	// (1) The next CLUT load's FlushPendingPlan tail. The synced claims go, because the ring no
+	// longer vouches for anything; the shadow claim stays, because the CPU shadow does.
+	m.ClearAllSynced();
+	EXPECT_TRUE(m.SyncedPages(rgb).empty());
+	EXPECT_TRUE(pages.andnot(m.ShadowPages(rgb)).empty());
+	EXPECT_TRUE(m.ShadowMissing(pages).empty()) << "the pull's receipt did not survive the plan flush";
+	EXPECT_TRUE(m.CheckInvariants());
+
+	// ...and the ASK is deliberately unchanged by any of this. The renderer spends ReadbackNeeded's
+	// answer on the stall census and on the upload merge's cpu-read mark as well as on the
+	// transfer, so only the transfer narrows.
+	EXPECT_EQ(m.ReadbackNeeded(pages, kGSTilePlanesAll).count(), pages.count());
+
+	// A page-granular ClearSynced spares it too -- same reason, one page at a time.
+	m.OnReadback(need);
+	m.ClearSynced(pages);
+	EXPECT_TRUE(m.SyncedPages(rgb).empty());
+	EXPECT_TRUE(pages.andnot(m.ShadowPages(rgb)).empty());
+
+	// (2) A native draw over half of them: the GPU has written those pages, so their claim is
+	// retired and they must be pulled again. The other half is untouched.
+	const GSPageBitmap half = GSVramModel::PagesForRect(l, GSVector4i(0, 0, 512, 224));
+	ASSERT_LT(half.count(), pages.count());
+	m.OnNativeDraw(id, half, kGSTilePlanesColor);
+	EXPECT_TRUE(m.CheckInvariants());
+	EXPECT_EQ(m.ShadowMissing(pages), half) << "the draw's pages, and only those, need pulling again";
+	EXPECT_TRUE((half & m.ShadowPages(rgb)).empty());
+	EXPECT_TRUE(pages.andnot(half).andnot(m.ShadowPages(rgb)).empty());
+
+	// A CPU write is the other retirement: truth leaves the page entirely, so there is no GPU copy
+	// left for the claim to be equal to.
+	const GSPageBitmap rest = pages.andnot(half);
+	m.OnReadback(m.ReadbackNeeded(rest, kGSTilePlanesAll));
+	m.OnCpuWrite(rest, kGSTilePlanesColor);
+	EXPECT_TRUE((rest & m.ShadowPages(rgb)).empty());
+	EXPECT_TRUE(m.ShadowMissing(rest).empty()) << "nothing to pull: the CPU owns them outright";
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+// The claim is per plane, like `synced`, and a page can be colour truth under one surface and
+// depth truth under another. A draw that writes only the depth plane retires only the depth
+// claim -- and the page still has to come down, because a pull fetches whole pages.
+TEST(GSVramModel, TheShadowClaimIsRetiredPerPlaneAndAPartlyClaimedPageStillPulls)
+{
+	GSVramModel m;
+	const auto color = Layout(0, 8, PSMCT32);
+	const auto depth = Layout(0, 8, PSMZ32, GSTileSurfaceKind::Depth);
+	const GSVector4i rect(0, 0, 512, 224);
+	const GSTileSurfaceId cid = m.Create(color, rect, 1);
+	const GSTileSurfaceId zid = m.Create(depth, rect, 2);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(color, rect);
+	const u32 rgb = GSVramModel::PlaneIndex(GSTilePlaneRGB);
+	const u32 z = GSVramModel::PlaneIndex(GSTilePlaneZ);
+
+	m.OnNativeDraw(cid, pages, kGSTilePlanesColor);
+	m.OnNativeDraw(zid, pages, GSTilePlaneZ);
+	const GSPageBitmap need = m.ReadbackNeeded(pages, kGSTilePlanesAll);
+	m.OnReadback(need);
+	m.OnShadowFilled(need);
+	m.ClearAllSynced();
+	EXPECT_TRUE(m.ShadowMissing(pages).empty());
+
+	// Depth only: the colour claim is untouched, the Z claim is gone, and the page pulls.
+	m.OnNativeDraw(zid, pages, GSTilePlaneZ);
+	EXPECT_TRUE(pages.andnot(m.ShadowPages(rgb)).empty());
+	EXPECT_TRUE((pages & m.ShadowPages(z)).empty());
+	EXPECT_EQ(m.ShadowMissing(pages), pages) << "one plane short of the shadow is not in the shadow";
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+// Destroying the owner takes truth off the page, so the claim goes with it: the CPU bytes are
+// still the ones the surface held, but there is no GPU copy for the claim to be about, and
+// `shadow` is an invariant subset of truth.
+TEST(GSVramModel, DestroyingTheOwnerRetiresTheShadowClaim)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 224);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+	const u32 rgb = GSVramModel::PlaneIndex(GSTilePlaneRGB);
+
+	m.OnNativeDraw(id, pages, kGSTilePlanesColor);
+	const GSPageBitmap need = m.ReadbackNeeded(pages, kGSTilePlanesAll);
+	m.OnReadback(need);
+	m.OnShadowFilled(need);
+	ASSERT_TRUE(pages.andnot(m.ShadowPages(rgb)).empty());
+
+	m.Destroy(id);
+	EXPECT_TRUE(m.ShadowPages(rgb).empty());
+	EXPECT_TRUE(m.CheckInvariants());
+
+	// Reset is the other wholesale drop.
+	const GSTileSurfaceId again = m.Create(l, rect, 1);
+	m.OnNativeDraw(again, pages, kGSTilePlanesColor);
+	m.OnReadback(pages);
+	m.OnShadowFilled(pages);
+	ASSERT_FALSE(m.ShadowPages(rgb).empty());
+	m.Reset();
+	EXPECT_TRUE(m.ShadowPages(rgb).empty());
+	EXPECT_TRUE(m.CheckInvariants());
+}

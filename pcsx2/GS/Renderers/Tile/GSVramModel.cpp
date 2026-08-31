@@ -20,6 +20,7 @@ void GSVramModel::Reset()
 	{
 		ps.truth.clear();
 		ps.synced.clear();
+		ps.shadow.clear();
 		ps.partial.clear();
 		ps.masks.clear();
 		ps.owner.fill(kGSTileNoSurface);
@@ -79,6 +80,9 @@ void GSVramModel::Destroy(GSTileSurfaceId id)
 		(s.valid[pi] & ps.partial).forEachSetPage([&ps](u32 page) { ps.masks.erase(static_cast<u16>(page)); });
 		ps.truth = ps.truth.andnot(s.valid[pi]);
 		ps.synced = ps.synced.andnot(s.valid[pi]);
+		// Truth leaves the page, so the claim goes with it: the CPU bytes are still the ones the
+		// dead surface held (Destroy requires them synced), but there is no GPU copy to be equal to.
+		ps.shadow = ps.shadow.andnot(s.valid[pi]);
 		ps.partial = ps.partial.andnot(s.valid[pi]);
 	}
 
@@ -472,6 +476,22 @@ void GSVramModel::ClearAllSynced()
 		ps.synced.clear();
 }
 
+void GSVramModel::OnShadowFilled(const GSPageBitmap& pages)
+{
+	for (PlaneState& ps : m_planes)
+		ps.shadow |= pages & ps.truth;
+}
+
+GSPageBitmap GSVramModel::ShadowMissing(const GSPageBitmap& pages) const
+{
+	// A page counts as missing if ANY plane holds GPU truth the shadow has no claim on — the
+	// caller pulls whole pages, and half a page out of the shadow is not a page in the shadow.
+	GSPageBitmap missing;
+	for (const PlaneState& ps : m_planes)
+		missing |= (pages & ps.truth).andnot(ps.shadow);
+	return missing;
+}
+
 GSPageBitmap GSVramModel::SpillBeforeNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes) const
 {
 	pxAssert(id < m_surfaces.size() && m_surfaces[id].alive);
@@ -515,6 +535,10 @@ void GSVramModel::OnNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8
 		s.valid[pi] |= pages;
 		ps.truth |= pages;
 		ps.synced = ps.synced.andnot(pages);
+		// The GPU wrote them, so the CPU shadow's copy is stale. This is the ONE retirement the
+		// claim's soundness rests on: truth is created here and nowhere else, so a texture that
+		// has become newer than the shadow has been through this line.
+		ps.shadow = ps.shadow.andnot(pages);
 	}
 	pages.forEachSetPage([this](u32 page) { m_gen[page].gpu_write++; });
 }
@@ -578,6 +602,8 @@ bool GSVramModel::CheckInvariants() const
 			return false;
 		if (!ps.truth.contains(ps.synced))
 			return false;
+		if (!ps.truth.contains(ps.shadow))
+			return false;
 		if (!ps.truth.contains(ps.partial))
 			return false;
 
@@ -609,6 +635,7 @@ void GSVramModel::ClearTruthPage(PlaneState& ps, u32 page, u32 plane_idx)
 	ps.owner[page] = kGSTileNoSurface;
 	ps.truth.unset(page);
 	ps.synced.unset(page);
+	ps.shadow.unset(page);
 	if (ps.partial.test(page))
 	{
 		ps.partial.unset(page);
@@ -630,5 +657,6 @@ void GSVramModel::ShrinkTruthPage(PlaneState& ps, u32 page, u32 written_blocks, 
 	ps.masks[static_cast<u16>(page)] = next;
 	ps.partial.set(page);
 	// The synced claim survives a shrink: it now asserts equality only over the
-	// remaining truth blocks, whose CPU bytes the write did not touch.
+	// remaining truth blocks, whose CPU bytes the write did not touch. So does the
+	// shadow claim, on the same terms — the CPU write went into the shadow itself.
 }

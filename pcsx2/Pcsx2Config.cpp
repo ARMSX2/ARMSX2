@@ -823,6 +823,13 @@ Pcsx2Config::GSOptions::GSOptions()
 	// passes, merge-served pages and blocking waits identical on all 22 dumps and 0 of 88 scored
 	// frames moved. Full numbers in Config.h.
 	TileGpuFlushGateUploadMerge = true;
+	// Default TRUE: GT4 pulls the same two guest pages twenty-nine times a frame because the pull's
+	// receipt lives in the model's synced bit and every CLUT readback's plan flush clears it. A
+	// second bitmap the flush does not touch takes GT4's blocking GPU waits from 25.88 a drawn frame
+	// to 2.75 and the corpus from 66.51 to 39.13, with every other census line identical on all 22
+	// dumps -- the upload merge's inputs included -- and 0 of 88 scored frames moved. Full numbers
+	// and the soundness argument in Config.h.
+	TileGpuShadowSurvivesFlush = true;
 	// Default TRUE: it only ever removes work -- a readback of the block GSState invalidates for a
 	// four-bit-index CLUT load and the loader never reads -- and it is the whole of GT4 Online Public
 	// Beta's CLUT stall count, 2.62 a frame to zero. Byte-identical on all 21 corpus dumps.
@@ -1242,6 +1249,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuClutHoldSecondCall);
 	SettingsWrapBitBool(TileGpuFlushGateBlockAsk);
 	SettingsWrapBitBool(TileGpuFlushGateUploadMerge);
+	SettingsWrapBitBool(TileGpuShadowSurvivesFlush);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
