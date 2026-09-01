@@ -102,6 +102,11 @@ u32 GSClut::GetCLUTCPSM()
 	return m_write.TEX0.CPSM;
 }
 
+u32 GSClut::GetCLUTCSM()
+{
+	return m_write.TEX0.CSM;
+}
+
 void GSClut::SetNextCLUTTEX0(u64 TEX0)
 {
 	m_write.next_tex0 = TEX0;
@@ -115,6 +120,10 @@ void GSClut::Reset()
 	m_write.dirty = 1;
 	m_read = {};
 	m_read.dirty = true;
+	// The RAM just changed (to zeroes), so the generation has to move with it. The counters
+	// themselves do NOT rewind: a consumer memoising on a generation it captured before the reset
+	// would match again at the same count under different bytes.
+	m_write_generation++;
 }
 
 bool GSClut::InvalidateRange(u32 start_block, u32 end_block, bool is_draw)
@@ -236,6 +245,12 @@ void GSClut::SetEntries32(u32 first, u32 count, const u32* words)
 		m_clut[first + i + 256] = static_cast<u16>(words[i] >> 16);
 	}
 	m_read.dirty = true;
+	// A device-loaded palette written back into the CLUT RAM is a RAM change like any other, and
+	// the write generation is what says the RAM changed. It used to move only on a load from local
+	// memory, which left this road invisible to any consumer keying on it -- the read side was
+	// dirtied and the expansion did change, but the generation said the words were the ones it saw
+	// last. Nothing consumed it then; the stream dedup does.
+	m_write_generation++;
 }
 
 void GSClut::WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)

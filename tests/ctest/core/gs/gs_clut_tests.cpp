@@ -299,3 +299,61 @@ TEST_F(GSClutTest, CSM2With16BitPaletteStartsAtTheOriginAndDoesNotRepeat)
 	ASSERT_EQ(repeats, 0);
 }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// The write generation, as a witness of the CLUT RAM.
+//
+// It is the half of a palette-content key that says the RAM has not moved
+// (GSTileClutStreamDedup keys the TileGpu plan's palette stream on it), and a
+// witness that misses a rewrite serves stale colours with nothing downstream to
+// catch it. It used to move only on a load from local memory: SetEntries32 --
+// the road a device-loaded palette takes back into the CLUT RAM -- and Reset
+// both changed the RAM behind it.
+// ---------------------------------------------------------------------------
+
+TEST_F(GSClutTest, TheWriteGenerationMovesOnALoad)
+{
+	SeedPalette(PSMCT32, 0);
+	const u32 before = m_clut->GetWriteGeneration();
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT8));
+	EXPECT_NE(m_clut->GetWriteGeneration(), before);
+}
+
+TEST_F(GSClutTest, TheWriteGenerationMovesOnADeviceEntrySync)
+{
+	SeedPalette(PSMCT32, 0);
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT8));
+	const u32 before = m_clut->GetWriteGeneration();
+
+	std::array<u32, 256> words{};
+	for (u32 e = 0; e < 256; e++)
+		words[e] = 0xFF000000u | (e * 11u + 3u);
+	m_clut->SetEntries32(0, 256, words.data());
+
+	EXPECT_NE(m_clut->GetWriteGeneration(), before);
+	// ...and the expansion really did change, so the generation is not moving for nothing.
+	m_clut->Read32(ClutTEX0(0, PSMCT32, 0, 1, PSMT8), m_texa);
+	EXPECT_EQ((*m_clut)[5], words[5]);
+}
+
+// Reset zeroes the RAM, so it must move the generation -- and it must NOT rewind it, or a
+// consumer holding a pre-reset generation would match again at the same count under
+// different bytes.
+TEST_F(GSClutTest, ResetMovesTheWriteGenerationForwards)
+{
+	SeedPalette(PSMCT32, 0);
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT8));
+	const u32 before = m_clut->GetWriteGeneration();
+	m_clut->Reset();
+	EXPECT_GT(m_clut->GetWriteGeneration(), before);
+}
+
+// The load's CSM, which Read32's four-bit 32-bit path consults (a CSM1 read after a CSM0 load
+// un-swizzles) and no read-side register carries.
+TEST_F(GSClutTest, GetCLUTCSMReportsTheLoadsAddressingMode)
+{
+	SeedPalette(PSMCT32, 0);
+	GIFRegTEX0 t = ClutTEX0(0, PSMCT32, 0, 1, PSMT8);
+	Load(t);
+	EXPECT_EQ(m_clut->GetCLUTCSM(), 0u);
+}

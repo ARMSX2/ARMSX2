@@ -118,6 +118,10 @@ public:
 	void ClearDrawInvalidity();
 	u32 GetCLUTCBP();
 	u32 GetCLUTCPSM();
+	/// The CSM of the LOAD that filled the CLUT RAM, which is not always the CSM the draw reading
+	/// it names: Read32's four-bit 32-bit path un-swizzles exactly when a CSM1 read follows a CSM0
+	/// load. A consumer keying on the expanded content needs it for that reason alone.
+	u32 GetCLUTCSM();
 	void SetNextCLUTTEX0(u64 CBP);
 	bool CanLoadCLUT(const GIFRegTEX0& TEX0, const bool update_CBP = false);
 	bool WriteTest(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
@@ -125,16 +129,22 @@ public:
 	// and the palette load from local memory (back-executable).
 	void WriteDecision(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
-	/// Bumped on every palette load from local memory. Together with the read-side
-	/// registers (CPSM/CSA/TEXA) this identifies the expanded palette content, which
-	/// is what consumers caching depalettised textures key on.
+	/// Bumped by every change to the CLUT RAM: a palette load from local memory, a
+	/// device-loaded palette written back through SetEntries32, and a reset. Together
+	/// with the read-side registers (CPSM/CSA/CSM/TEXA, plus the load's own CSM) this
+	/// identifies the expanded palette content — Read32 reads nothing else — which is
+	/// what consumers caching or deduplicating a palette expansion key on.
 	__fi u32 GetWriteGeneration() const { return m_write_generation; }
 
 	/// Bumped exactly when Read32 recomputes the expanded read buffer. Between two
 	/// calls returning the same value, the buffer's bytes are bit-identical — the
-	/// witness a consumer memoising the buffer's expansion keys on. (The write
-	/// generation is NOT that witness: SetEntries32 dirties the read side without
-	/// bumping it, and TEX0/TEXA changes redirect the read without any write.)
+	/// witness a consumer memoising the buffer's expansion keys on. It is monotonic
+	/// and NOT a content identity: a palette alternation re-expands on every switch,
+	/// so A,B,A gets three generations for two palettes. (The write generation is not
+	/// this witness either — a TEX0/TEXA change redirects the read with no write at
+	/// all — but it IS the witness of the RAM the read expands, which is the other
+	/// half a content key needs. It no longer misses SetEntries32; it did until
+	/// 2026-09-01, and a memo keyed on it would have read stale words.)
 	__fi u32 GetReadGeneration() const { return m_read_generation; }
 
 	/// The word order the CSM1 32-bit loaders read a palette in: entry e of an eight-bit
