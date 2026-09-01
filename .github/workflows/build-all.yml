@@ -159,8 +159,6 @@ jobs:
   ios:
     name: iOS (arm64, unsigned device IPA)
     runs-on: macos-26
-    # Non-blocking until the collapsed-core iOS build first goes green.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
@@ -246,8 +244,8 @@ jobs:
 
   # ---- Alert on a broken master build ------------------------------------
   # Fires only when a BLOCKING guardrail job (the PC arm64 builds) fails on a
-  # push to master -- never on PRs, and never on the non-blocking mobile jobs
-  # (they are continue-on-error, so they can't trip `failure()`). GitHub also
+  # push to master -- never on PRs, and never on the mobile jobs, which the
+  # `needs` below does not name and so cannot trip `failure()`. GitHub also
   # emails the pusher natively; this adds a Discord ping to the shared channel.
   notify-failure:
     name: Notify on master build failure
