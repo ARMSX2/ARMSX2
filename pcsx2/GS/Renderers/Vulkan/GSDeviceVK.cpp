@@ -9794,6 +9794,21 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// Back to shader-read, which is what set 2's descriptors were written promising, and
 					// the dependency that orders this build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					// ⚠️ AND HERE, A SUBMISSION BOUNDARY IS NOT EVEN PIXEL-INERT. The barrier the
+					// serialize grade records below is fine; ENDING the command buffer at this point is
+					// not. Forced on over the corpus it renders Ratchet & Clank's armour with another
+					// window's texels, ~0.9% of the frame, the same way every run -- and neither a full
+					// ALL_COMMANDS memory barrier at the cut nor waiting for the submission to retire
+					// changes it, while splitting the MATERIALISE passes of those same plans is
+					// byte-identical. So it is not a missing dependency at the boundary and not the cut
+					// merely existing in a donor-bearing plan: something about a donor build's consumers
+					// needs to stay in its submission, and nobody has found out what.
+					//
+					// The expand and the CLUT gather ride with it -- an expand follows the build that
+					// filled its index, so an expand-triggered cut is a donor-triggered cut on the
+					// paletted road, and the gather is the donor's shape with a palette for a
+					// destination. Anything that wants to cut a producer out of its consuming
+					// submission has to answer this first.
 					serialize_boundary(kGSTileGpuSerializeSiteDonor);
 					continue;
 				}
@@ -9941,6 +9956,47 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					// build), and this transition is also the execution dependency that orders the
 					// build ahead of every pass that samples it.
 					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					// ⚠️ ENDING THE COMMAND BUFFER HERE HAS BEEN TRIED TWICE AND IS A DEAD ROAD. Read
+					// this before building it a third time; the shape is seductive and the numbers are
+					// not in the tree anywhere else.
+					//
+					// The idea: on a Mali-G615 (r44p1) Beyond Good & Evil once alternated a ~130 ms
+					// frame with a ~7.5 ms one on a byte-identical plan, and an eight-arm device round
+					// left the materialised-source road as the only term that moved it (ring depth 2 and
+					// 64, one draw per pass, uniform depth passes and out-of-band readback were each
+					// exactly inert). The reading was that the blob charges a pipeline drain per
+					// producer->consumer image dependency inside one submission, so: cut at the end of
+					// the prep range of any pass that built a source, and its draws sample images an
+					// already-submitted buffer produced. Nothing is reordered.
+					//
+					// THREE THINGS KILL IT.
+					//
+					// (a) The stall it targets is gone. RG477V bge ran flat at 5-7 ms warm the day after
+					// that round and 7.85-8.51 ms warm p50 a week later at the standing baseline, with
+					// only the two cold frames heavy; the pool-drain wait fell from 59.61 ms/frame to
+					// 1.78. The pass-tail kick (TileGpuKickReadbackFrames) now takes ~16 submissions a
+					// frame on that title by itself, so the monolithic one-submission plan the split was
+					// designed against no longer exists.
+					//
+					// (b) It costs, and the worst case is catastrophic. M2, -loop 10, cut taken
+					// unguarded at every materialising pass: bge +10.6% (7.20 cuts/frame), gt4opb +1.1%,
+					// spiderman3 -3.7%, and STUNTMAN +164% -- 58 -> 154 ms on 109.2 cuts a frame, with
+					// the wait relocating out of sync (30.5 ms/frame) and into the command-buffer ring
+					// (0.66 -> 86.34 ms/frame, 98.55 waits a frame against a ring NUM_COMMAND_BUFFERS
+					// deep). On the Adreno tier a single blocking wait a frame costs 4-6 ms, so that
+					// arm is unrunnable there. A guarded variant that declines the cut unless the next
+					// buffer has retired takes only 30-52% of its offers and moves nothing.
+					//
+					// (c) The cheap variant does not exist. One cut per PLAN would need every build
+					// hoisted to the plan head, which is legal only past the writebacks that compose the
+					// ring bytes a build reads -- and 92-100% of every corpus title's materialises have
+					// a writeback ahead of them in their own plan (bge 100%, spiderman3 99.9%,
+					// rcuya-gameplay 96.7%, ac3 92.3%). There is nothing to hoist.
+					//
+					// The full record, with the population census and the per-title arrays:
+					// umbrella devs/bmdhacks/campaigns/gs-tile-stage15-speed/agents/
+					// bge-materialise-split/RESULT.txt. The 2026-08-25 build of it is git
+					// c7a5773062 (branch tilegpu-matsplit), whose own device A/B cost bge 12-14%.
 					serialize_boundary(kGSTileGpuSerializeSiteMaterialise);
 					continue;
 				}
