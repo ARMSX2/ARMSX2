@@ -2759,6 +2759,17 @@ struct Pcsx2Config
 		//         where the hash is not. Plus the epoch page table's write volume, the version
 		//         snapshot's block coverage, and the writeback dispatch count under two relaxed merge
 		//         rules. The hash is a whole-page pass per copy, so this is the second expensive one.
+		//  64  -- TileGpuCensusPlanBoundary: WHY each plan ended, and what the plan it ended held.
+		//         A plan is what the executor runs once, and every title but Spider-Man 3 builds
+		//         one to thirty-three of them a frame while Spider-Man 3 builds ninety-three -- so
+		//         "what ends a plan" is a per-title question with no answer in the tree. The cause
+		//         is the verdict the renderer ACTS on, taken where it acts on it
+		//         (GSRendererTileGpu::FlushPendingPlan's argument, tallied in BuildAndExecutePlan),
+		//         and the tally is asserted against the mid-frame flush count the emulog already
+		//         prints. Beside each cause, the SIZE of the plan it ended -- draws, ring pages,
+		//         epochs, prep ops, page-table words -- because a boundary's cost is the cost of
+		//         the plan it cut, and the two are not derivable from the frame totals. One enum
+		//         store per flush and one add per plan.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//
@@ -2780,6 +2791,7 @@ struct Pcsx2Config
 		static constexpr int TileGpuCensusPalette = 8;
 		static constexpr int TileGpuCensusWriteback = 16;
 		static constexpr int TileGpuCensusRingStage = 32;
+		static constexpr int TileGpuCensusPlanBoundary = 64;
 		int TileGpuCensus = 0;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload

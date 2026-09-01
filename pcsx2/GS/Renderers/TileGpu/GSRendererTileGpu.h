@@ -353,6 +353,53 @@ constexpr const char* gsTileGpuBreakCauseName(GSTileGpuBreakCause c)
 	}
 }
 
+/// WHY a plan ended (TileGpuCensusPlanBoundary). One of these per plan the executor runs.
+///
+/// A plan is the unit the executor is handed, and a frame builds one plus one per mid-frame flush.
+/// Every mid-frame flush in the renderer comes from exactly three call sites -- the upload-merge
+/// spill road and the two ReadbackToShadow overloads -- but three sites are not three causes: the
+/// merge road refuses to elide for six distinguishable reasons and the readback road for four
+/// stall classes, and which of those is doing the work decides whether a boundary is a data
+/// dependency or a policy the campaign chose. The counter's value is entirely in that split.
+///
+/// `FrameEnd` is not a boundary: it is the plan VSync builds out of whatever is left, so it counts
+/// PLANS rather than flushes, and the identity the census asserts is
+/// `sum(every cause) - FrameEnd == ModelFrame::flushes`.
+enum class GSTileGpuPlanFlushCause : u8
+{
+	FrameEnd,          ///< not a flush -- the frame's last plan, built by VSync
+	MergeGateOff,      ///< TileGpuFlushGateUploadMerge is off: every merge-road spill flushes
+	MergeNotServed,    ///< the elision is on and unbounded, but the merge cannot serve this write
+	MergeOverEpochs,   ///< the elision's epoch budget alone (kGSTileGpuMergeElisionMaxEpochs)
+	MergeOverPages,    ///< ...its ring-page budget alone (kGSTileGpuMergeElisionMaxRingPages)
+	MergeOverBoth,     ///< both budgets, on one write
+	MergeProbeRefused, ///< the probe was planned and did not take the whole spill set
+	ReadbackUpload,    ///< ReadbackToShadow, StallSite::UploadSubBlock
+	ReadbackLocal,     ///< ...StallSite::LocalRead
+	ReadbackClut,      ///< ...StallSite::Clut
+	ReadbackSyncAll,   ///< ...StallSite::SyncAll
+	Count,
+};
+constexpr u32 kGSTileGpuPlanFlushCauses = static_cast<u32>(GSTileGpuPlanFlushCause::Count);
+constexpr const char* gsTileGpuPlanFlushCauseName(GSTileGpuPlanFlushCause c)
+{
+	switch (c)
+	{
+		case GSTileGpuPlanFlushCause::FrameEnd: return "frame end";
+		case GSTileGpuPlanFlushCause::MergeGateOff: return "merge: gate off";
+		case GSTileGpuPlanFlushCause::MergeNotServed: return "merge: not served";
+		case GSTileGpuPlanFlushCause::MergeOverEpochs: return "merge: epoch budget";
+		case GSTileGpuPlanFlushCause::MergeOverPages: return "merge: page budget";
+		case GSTileGpuPlanFlushCause::MergeOverBoth: return "merge: both budgets";
+		case GSTileGpuPlanFlushCause::MergeProbeRefused: return "merge: probe refused";
+		case GSTileGpuPlanFlushCause::ReadbackUpload: return "readback: upload";
+		case GSTileGpuPlanFlushCause::ReadbackLocal: return "readback: local";
+		case GSTileGpuPlanFlushCause::ReadbackClut: return "readback: CLUT";
+		case GSTileGpuPlanFlushCause::ReadbackSyncAll: return "readback: sync-all";
+		default: return "?";
+	}
+}
+
 /// The DATE snapshot's write history as a SET of rects rather than one union, for the counterfactual
 /// that sizes the finer staleness test. Taken by nothing; see ModelFrame::date_breaks_cover_would_skip.
 ///
@@ -2861,6 +2908,15 @@ private:
 	/// the only census here that reads guest MEMORY rather than the model -- an FNV-1a over each
 	/// 8 KB page the frame copies -- so it is the one whose own cost most needs the key.
 	bool m_census_ring_stage = false;
+	/// ...and the plan-boundary arm (TileGpuCensusPlanBoundary). Once-at-construction like the rest:
+	/// it asserts its own tally against ModelFrame::flushes, and an arm that moved mid-frame would
+	/// fail that identity on a frame that is perfectly correct.
+	bool m_census_plan_boundary = false;
+	/// The cause the plan about to be built is ending for. FlushPendingPlan sets it from its
+	/// argument; BuildAndExecutePlan reads it, tallies, and puts it back to FrameEnd -- so the plan
+	/// VSync builds is attributed without VSync having to say anything, and a plan build that
+	/// followed no flush can never inherit the previous flush's cause.
+	GSTileGpuPlanFlushCause m_plan_cause = GSTileGpuPlanFlushCause::FrameEnd;
 	/// TileGpuCensusRingStage's two dedup sets, cleared at the top of every frame: the (page,
 	/// content) pairs already copied, and the (page, CPU write generation) pairs. The second is the
 	/// key a real dedup could afford; the first is the truth it would have to match.
@@ -3822,6 +3878,18 @@ private:
 		SyncAll,            ///< whole-of-truth: savestate / switch / purge
 		Count
 	};
+	/// The plan-boundary cause for a flush the readback road forces: one per stall site, so the
+	/// census's readback rows split by the road that asked rather than by which overload ran.
+	static constexpr GSTileGpuPlanFlushCause PlanFlushCauseForStall(StallSite s)
+	{
+		switch (s)
+		{
+			case StallSite::UploadSubBlock: return GSTileGpuPlanFlushCause::ReadbackUpload;
+			case StallSite::LocalRead: return GSTileGpuPlanFlushCause::ReadbackLocal;
+			case StallSite::Clut: return GSTileGpuPlanFlushCause::ReadbackClut;
+			default: return GSTileGpuPlanFlushCause::ReadbackSyncAll;
+		}
+	}
 	void ReadbackToShadow(const GSPageBitmap& pages, StallSite site);
 	/// The same, for a caller whose ask is a RECT: refines "which pages must be pulled" through
 	/// the model's block sidecar, so a read landing only on blocks the owner never wrote costs
@@ -3863,7 +3931,11 @@ private:
 	// callable because the flush RETIRES EVERY SYNCED CLAIM -- the ring slots those claims named
 	// are spent, and their bytes were never in the CPU shadow -- so a caller whose question is
 	// phrased in terms of `synced` has to ask it on the far side of this, never before.
-	void FlushPendingPlan();
+	///
+	/// `cause` is why the caller is ending the plan. It is carried rather than inferred because the
+	/// three call sites are not the three causes: the merge road refuses to elide for six different
+	/// reasons and only the site itself can say which. Census only -- nothing downstream reads it.
+	void FlushPendingPlan(GSTileGpuPlanFlushCause cause);
 
 	// --- the open pass, as accumulation sees it ----------------------------------------------
 	//
@@ -4445,6 +4517,20 @@ private:
 		u32 pull_dl_pages = 0; // guest pages the downloads that happened named
 		u32 pull_dl_texels = 0; // ...and the device texels they copied (four bytes each, both roads)
 		u32 flushes = 0;         // mid-frame plan submissions
+		// WHY each plan ended, and what it held when it did (TileGpuCensusPlanBoundary). Zero on
+		// every column with the arm off. `count` is plans, not asks: the tally happens inside the
+		// plan build, past FlushPendingPlan's empty-plan early-out, so a flush that submitted
+		// nothing is not a boundary here either.
+		struct PlanBoundary
+		{
+			u32 count = 0;
+			u32 draws = 0;       // pending draws the plan carried
+			u32 ring_pages = 0;  // live ring entries it staged
+			u32 epochs = 0;      // page-table epochs (m_epoch + 1)
+			u32 prep_ops = 0;    // seeds, writebacks and CLUT copies queued at its passes' heads
+			u32 table_words = 0; // epochs * GS_MAX_PAGES -- the page table the plan writes whole
+		};
+		PlanBoundary plan_boundary[kGSTileGpuPlanFlushCauses];
 		u32 passes = 0;
 		// The pass-length distribution the max-pass-draws cap acts on, so a run says mechanically
 		// whether the cap engaged rather than leaving it to be eyeballed off a pass total.

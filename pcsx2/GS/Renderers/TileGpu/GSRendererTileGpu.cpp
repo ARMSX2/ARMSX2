@@ -455,15 +455,17 @@ GSRendererTileGpu::GSRendererTileGpu()
 	m_census_palette = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPalette) != 0;
 	m_census_writeback = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusWriteback) != 0;
 	m_census_ring_stage = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusRingStage) != 0;
+	m_census_plan_boundary =
+		(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPlanBoundary) != 0;
 	if (GSConfig.TileGpuCensus != 0)
 	{
 		Console.WriteLn("TileGpu: censuses ARMED (TileGpuCensus = %d): pass breaks %s, DATE cover %s, "
-						"variant fields %s, palette %s, writeback breaks %s, ring staging %s. Instrumentation only "
-						"-- nothing here decides a pixel or a pass.",
+						"variant fields %s, palette %s, writeback breaks %s, ring staging %s, plan boundaries %s. "
+						"Instrumentation only -- nothing here decides a pixel or a pass.",
 			GSConfig.TileGpuCensus, m_census_pass_breaks ? "on" : "off", m_census_date_cover ? "on" : "off",
 			(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0 ? "on" : "off",
 			m_census_palette ? "on" : "off", m_census_writeback ? "on" : "off",
-			m_census_ring_stage ? "on" : "off");
+			m_census_ring_stage ? "on" : "off", m_census_plan_boundary ? "on" : "off");
 	}
 
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
@@ -1023,6 +1025,20 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 		// to be it.
 		const bool over_epochs = m_epoch >= kGSTileGpuMergeElisionMaxEpochs;
 		const bool over_pages = m_ring_entries.size() >= kGSTileGpuMergeElisionMaxRingPages;
+		// ...and WHICH of the four conjuncts below refuses, for the plan-boundary census. Read off
+		// the same bools the gate reads, in the gate's own short-circuit order, so no predicate is
+		// asked twice and none is asked that the gate did not ask: gate key, then epoch budget, then
+		// page budget, then "can the merge serve this write at all" -- which is what is left when
+		// the first three admit and the conjunction still fails. The probe's own refusal is set
+		// below, where the probe is judged.
+		GSTileGpuPlanFlushCause flush_cause = GSTileGpuPlanFlushCause::MergeGateOff;
+		if (GSConfig.TileGpuFlushGateUploadMerge)
+		{
+			flush_cause = over_epochs ? (over_pages ? GSTileGpuPlanFlushCause::MergeOverBoth :
+													  GSTileGpuPlanFlushCause::MergeOverEpochs) :
+						  over_pages ? GSTileGpuPlanFlushCause::MergeOverPages :
+									   GSTileGpuPlanFlushCause::MergeNotServed;
+		}
 		bool gated = false;
 		if (GSConfig.TileGpuFlushGateUploadMerge && !over_epochs && !over_pages &&
 			UploadMergeServesThisWrite(fp))
@@ -1042,6 +1058,7 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 			else
 			{
 				m_frame.merge_ref = refusals;
+				flush_cause = GSTileGpuPlanFlushCause::MergeProbeRefused;
 			}
 		}
 		if (!gated)
@@ -1055,7 +1072,7 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 				m_frame.merge_bound_epochs += over_epochs ? 1u : 0u;
 				m_frame.merge_bound_pages += over_pages ? 1u : 0u;
 			}
-			FlushPendingPlan();
+			FlushPendingPlan(flush_cause);
 			const GSPageBitmap spill = m_vram_model.SpillBeforeCpuWrite(fp, planes);
 			merged = PlanUploadMerge(layout, r, fp, spill);
 			ReadbackToShadow(spill.andnot(merged), StallSite::UploadSubBlock);
@@ -3330,6 +3347,41 @@ void GSRendererTileGpu::ReportModelTraffic()
 						"%.2f (%.1f%%), staged whole-word arm %.2f (%.1f%%)",
 			wbp.mean, web.mean, wbp.mean * 32.0, 100.0 * web.mean / std::max(wbp.mean * 32.0, 1e-9), wef.mean,
 			100.0 * wef.mean / std::max(wbp.mean, 1e-9), wes.mean, 100.0 * wes.mean / std::max(wbp.mean, 1e-9));
+	}
+	// WHY each plan ended and what it held (TileGpuCensusPlanBoundary). Printed only when the arm
+	// ran: every column is zero otherwise, and a zero in the readback rows would read as a finding
+	// ("nothing stalls this title") rather than as an instrument nobody armed.
+	if (m_census_plan_boundary)
+	{
+		const auto pb = [&stat](u32 c, auto get) {
+			return stat([c, get](const MF& f) { return get(f.plan_boundary[c]); });
+		};
+		double total_plans = 0.0;
+		for (u32 c = 0; c < kGSTileGpuPlanFlushCauses; c++)
+			total_plans += pb(c, [](const ModelFrame::PlanBoundary& b) { return b.count; }).mean;
+		Console.WriteLn("TileGpu plan boundaries -- what ends a plan (%.2f plans a drawn frame, one per mid-frame "
+						"flush plus the frame's own), and the size of the plan each cause ended:",
+			total_plans);
+		Console.WriteLn("    %-22s %8s %10s %10s %8s %9s %11s", "cause", "plans/f", "draws", "ringpages", "epochs",
+			"prep ops", "table words");
+		for (u32 c = 0; c < kGSTileGpuPlanFlushCauses; c++)
+		{
+			const auto n = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.count; });
+			if (n.mean <= 0.0)
+				continue;
+			// Per PLAN, not per frame: the question these columns answer is what one boundary of
+			// this cause cut, and a frame total would hide a cause that fires twice on huge plans
+			// behind one that fires ninety times on tiny ones.
+			const double per = n.mean;
+			const auto dr = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.draws; });
+			const auto rp = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.ring_pages; });
+			const auto ep = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.epochs; });
+			const auto po = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.prep_ops; });
+			const auto tw = pb(c, [](const ModelFrame::PlanBoundary& b) { return b.table_words; });
+			Console.WriteLn("    %-22s %8.2f %10.2f %10.2f %8.2f %9.2f %11.0f",
+				gsTileGpuPlanFlushCauseName(static_cast<GSTileGpuPlanFlushCause>(c)), n.mean, dr.mean / per,
+				rp.mean / per, ep.mean / per, po.mean / per, tw.mean / per);
+		}
 	}
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
@@ -8287,6 +8339,30 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	// sees consecutively. A no-op with the lever off.
 	MergeClutCopiesIntoPages();
 
+	// The plan-boundary census (TileGpuCensusPlanBoundary), taken HERE: past FlushPendingPlan's
+	// empty-plan early-out, past the splice and the copy merge, and ahead of the build -- so the
+	// size columns describe the plan the executor is about to be handed, not the one accumulation
+	// was still holding. `m_plan_cause` is FrameEnd unless a flush set it, which is what makes the
+	// frame's last plan a row rather than a gap.
+	if (m_census_plan_boundary) [[unlikely]]
+	{
+		ModelFrame::PlanBoundary& b = m_frame.plan_boundary[static_cast<u32>(m_plan_cause)];
+		b.count++;
+		b.draws += static_cast<u32>(m_plan_pending.size());
+		b.ring_pages += static_cast<u32>(m_ring_entries.size());
+		b.epochs += m_epoch + 1;
+		b.prep_ops += static_cast<u32>(m_plan_prep_ops.size());
+		b.table_words += (m_epoch + 1) * GS_MAX_PAGES;
+		// The identity that makes the split trustworthy: every row but FrameEnd is a mid-frame
+		// flush, and the frame's own flush counter is what the emulog already prints. If these ever
+		// disagree a cause is being attributed to a plan that was never built, or a flush is
+		// reaching the build by a road with no cause on it.
+		u32 boundaries = 0;
+		for (u32 c = 1; c < kGSTileGpuPlanFlushCauses; c++)
+			boundaries += m_frame.plan_boundary[c].count;
+		pxAssertMsg(boundaries == m_frame.flushes, "plan-boundary census disagrees with the flush count");
+	}
+
 	if (g_gs_device->TileGpuExecutorAvailable())
 	{
 		// 1. Resolve the plan's target list: pool textures as they are NOW (any growth this
@@ -9043,6 +9119,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	// the plan and not with the video frame.
 	AdvanceSourcePinFrame();
 	ResetOpenRuns();
+	// The next plan is VSync's until a flush says otherwise (census only).
+	m_plan_cause = GSTileGpuPlanFlushCause::FrameEnd;
 	m_vram_model.ClearAllSynced();
 	// The one place a device palette may be recycled. Here, and only here, both conditions Tile's
 	// own predicate silently assumes are true by construction: there are no pending draws and every
@@ -9053,11 +9131,15 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 // -- the stall road ------------------------------------------------------------------------
 
-void GSRendererTileGpu::FlushPendingPlan()
+void GSRendererTileGpu::FlushPendingPlan(GSTileGpuPlanFlushCause cause)
 {
 	if (m_plan_pending.empty())
 		return;
 	m_frame.flushes++;
+	// The plan build is what tallies -- see m_plan_cause. Set here rather than counted here so the
+	// boundary and the frame's last plan go through one site, and so the SIZE columns are read off
+	// the plan the build is about to consume rather than off a snapshot taken a line earlier.
+	m_plan_cause = cause;
 	BuildAndExecutePlan();
 }
 
@@ -9074,7 +9156,7 @@ void GSRendererTileGpu::ReadbackToShadow(const GSPageBitmap& pages, StallSite si
 	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
 		return;
 
-	FlushPendingPlan();
+	FlushPendingPlan(PlanFlushCauseForStall(site));
 	PullToShadow(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll), site);
 }
 
@@ -9293,7 +9375,7 @@ void GSRendererTileGpu::ReadbackToShadow(const GSTileSurfaceLayout& layout, cons
 		return;
 	}
 
-	FlushPendingPlan();
+	FlushPendingPlan(PlanFlushCauseForStall(site));
 	PullToShadow(m_vram_model.ReadbackNeeded(fp, kGSTilePlanesAll), site);
 }
 
