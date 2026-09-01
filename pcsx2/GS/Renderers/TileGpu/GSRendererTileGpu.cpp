@@ -3597,7 +3597,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto pcb = stat([](const MF& f) { return f.pcyc_building; });
 	const auto pce = stat([](const MF& f) { return f.pcyc_elided; });
 	const auto pcs = stat([](const MF& f) { return f.pcyc_subs; });
-	const auto pccp = stat([](const MF& f) { return f.pcyc_claimed_pages; });
+	const auto pccp = stat([](const MF& f) { return f.pcyc_elided_pages; });
 	const auto pcsp = stat([](const MF& f) { return f.pcyc_sub_pages; });
 	const auto pcx = stat([](const MF& f) { return f.pcyc_refused; });
 	if (pc1p.mean > 0.0)
@@ -3610,7 +3610,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 						"refused: format %.2f / %-5u  primclass %.2f / %u",
 			pc1p.mean, pc1p.p50, pc1.mean, pc1.p50, pc2.mean, pc2.p50, pcff.mean, pcff.p50, pcfo.mean, pcfo.p50);
 		Console.WriteLn("  runs %.2f / %-4u  (alpha-destination %.2f / %-4u)  below threshold, drawn %.2f / %-4u  "
-						"elided %.2f / %-5u  pages the elision claimed %.2f / %-5u",
+						"elided %.2f / %-5u  pages they would have written %.2f / %-5u",
 			pcr.mean, pcr.p50, pcra.mean, pcra.p50, pcb.mean, pcb.p50, pce.mean, pce.p50, pccp.mean, pccp.p50);
 		Console.WriteLn("  substitutes %.2f / %-4u  their pages %.2f / %-5u  runs with no substitute %.2f / %u",
 			pcs.mean, pcs.p50, pcsp.mean, pcsp.p50, pcx.mean, pcx.p50);
@@ -6180,37 +6180,35 @@ void GSRendererTileGpu::AccumulateDraw()
 			// free: the draw never reaches the texture cache and the damage, if the detector is
 			// wrong, is confined to a render target. TileGpu's page model is a BYTE-TRUTH LEDGER --
 			// it names, per page and per plane, which surface holds the newest bytes -- and the
-			// writeback road pushes those bytes into guest VRAM, where the EE reads them. An elided
-			// draw that is not accounted for leaves the model believing some OTHER surface holds
-			// what this draw was about to overwrite, and the guest then reads it.
+			// writeback road pushes those bytes into guest VRAM, where the EE reads them. Getting
+			// the ledger wrong here does not move a pixel, it moves GUEST MEMORY.
 			//
-			// So the elision is not `return`. Everything the draw would have done to MEMORY still
-			// happens -- the page claims, the surface version bumps, the destruction of the palette
-			// this draw was about to destroy -- and only the PIXELS are produced differently. This
-			// block is the ONE place those three are duplicated; it is deliberately spelled the
-			// same way as the claim block at the end of this function so a divergence between the
-			// two reads as a diff.
+			// THE RULE IS: THE LEDGER IS TOLD WHAT ACTUALLY GETS WRITTEN. An elided draw with no
+			// substitute behind it writes nothing, so it claims nothing, bumps nothing and destroys
+			// no palette -- which is not a shortcut, it is the only sound answer. "The draw did not
+			// happen" is exactly what the model then says, and the pages keep the holder whose
+			// bytes really are the newest.
+			//
+			// ⚠️ THE DESIGN SHEET ASKED FOR THE OPPOSITE (claim the pages, bump the version, run
+			// NoteClutSourceWritten) and it is wrong, in a way that is worth writing down because
+			// the reasoning looks right. Those three are what the RUN would have done to memory --
+			// but only if something replaces its pixels. Claiming pages nothing wrote makes this
+			// surface the model's answer for bytes another surface genuinely holds, which is a
+			// LOSS of truth and cannot be recovered; and NoteClutSourceWritten marks a palette
+			// record destroyed by a draw that destroyed nothing, which reserves ring words and
+			// emits a block copy nothing owns. That last one was measured: 141 orphaned copy ops a
+			// frame on gt4opb, emitted into no draw's op range and so never executed, against a
+			// reservation the fragment stage would have read as zeros.
+			//
+			// So the claims move WITH the substitute. When it lands it claims what it writes, in
+			// its own plan entry, and this block stays as it is.
 			if (m_palette_cycle_hle && (pcyc_verdict == GSTilePaletteCycleVerdict::Arm ||
 										   pcyc_verdict == GSTilePaletteCycleVerdict::Elide))
 			{
 				if (pcyc_verdict == GSTilePaletteCycleVerdict::Arm)
 					IssuePaletteCycleSubstitute(pd, fb_id, r, tex0);
-
-				if (color_written)
-				{
-					m_vram_model.OnNativeDraw(fb_id, fb_pages, kGSTilePlanesAll);
-					BumpSurfaceVersion(fb_id);
-					NoteClutSourceWritten(fb_id, fb_pages);
-					m_frame.pcyc_claimed_pages += fb_pages.count();
-				}
-				if (z_write)
-				{
-					const u8 elided_z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);
-					AliasSteal(m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, elided_z_claims));
-					m_vram_model.OnNativeDraw(z_id, z_pages, elided_z_claims);
-					BumpSurfaceVersion(z_id);
-				}
 				m_frame.pcyc_elided++;
+				m_frame.pcyc_elided_pages += fb_pages.count();
 				return;
 			}
 

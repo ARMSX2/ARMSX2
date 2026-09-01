@@ -4153,7 +4153,7 @@ private:
 		u32 pcyc_building = 0;    // signature draws executed for real below the threshold
 		u32 pcyc_elided = 0;      // draws elided into a run
 		u32 pcyc_subs = 0;        // substitute draws issued
-		u32 pcyc_claimed_pages = 0; // guest pages the elided draws claimed for their targets
+		u32 pcyc_elided_pages = 0; // guest pages the elided draws would have written
 		u32 pcyc_sub_pages = 0;   // guest pages the substitutes claimed
 		u32 pcyc_refused = 0;     // runs armed but whose substitute could not be built (drawn instead)
 	};
