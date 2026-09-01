@@ -4078,6 +4078,11 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	// the query pools' length, the command pools, the fences, the per-frame descriptor chains --
 	// is sized off it, and every index that walks the ring wraps on it.
 	m_census_pipeline_depth = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPipelineDepth) != 0;
+	// Rounded UP, so 48 MB of byte road is scale 2 and not scale 1: a ratio that rounds down leaves
+	// the neighbour ring at its built-in size and hands the wait straight to it.
+	m_stream_size_scale = (gsTileGpuStagingRingBytes(GSConfig.TileGpuStagingRingMB) + gsTileGpuStagingRingBytes(0) - 1) /
+						  gsTileGpuStagingRingBytes(0);
+	m_stream_size_scale = std::max(1u, m_stream_size_scale);
 	m_command_buffer_count = CommandBufferRingDepth(GSConfig.VulkanCommandBufferRingDepth);
 	if (m_command_buffer_count != static_cast<u32>(NUM_COMMAND_BUFFERS))
 	{
@@ -6238,20 +6243,22 @@ bool GSDeviceVK::CreateBuffers()
 {
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),
-			VERTEX_BUFFER_SIZE, GpuWaitSite::StreamVertex))
+			VERTEX_BUFFER_SIZE * m_stream_size_scale, GpuWaitSite::StreamVertex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate vertex buffer");
 		return false;
 	}
 
-	if (!m_index_stream_buffer.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE, GpuWaitSite::StreamIndex))
+	if (!m_index_stream_buffer.Create(
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE * m_stream_size_scale, GpuWaitSite::StreamIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate index buffer");
 		return false;
 	}
 
 	if (!m_expand_index_stream_buffer.Create(
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? INDEX_BUFFER_SIZE : 4, GpuWaitSite::StreamExpandIndex))
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? (INDEX_BUFFER_SIZE * m_stream_size_scale) : 4,
+			GpuWaitSite::StreamExpandIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate expansion index buffer (VS resource)");
 		return false;
@@ -7207,12 +7214,18 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// page slots (only the pages the plan reads or reconciles -- a few hundred KB to low MB, not the
 	// whole 4 MiB), its epoch page tables, page-entry lists and palettes; several frames' worth so a
 	// frame in flight does not stall the next frame's staging.
-	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
-	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
 	// The byte road's staging ring, sized by EmuCore/GS/TileGpuStagingRingMB (0 = the built-in
 	// 32 MB). Read once here rather than per frame: the ring is created once and the descriptor
 	// below spells its size a second time, so the two must come from one read.
 	const u32 TILEGPU_VRAM_BUFFER_SIZE = gsTileGpuStagingRingBytes(GSConfig.TileGpuStagingRingMB);
+	// ...and its two neighbours scale WITH it, because the three are one pipeline and a lever that
+	// deepens only the deepest of them just moves the wait to the next. Measured, M2, Spider-Man 3:
+	// take the byte road from 32 MB to 64 alone and `stream-tilegpu-vram` goes to exactly zero while
+	// `stream-tilegpu-state` picks up 0.23 waits a drawn frame at 7.49 ms -- a 4 MB ring paying a
+	// bill that had been the 32 MB one's. The ratio is the byte road's, so a run that does not set
+	// the key gets the sizes it always had.
+	const u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024 * m_stream_size_scale;
+	const u32 TILEGPU_STATE_BUFFER_SIZE = TILEGPU_INDIRECT_BUFFER_SIZE;
 	if (!m_tilegpu_indirect_stream_buffer.Create(
 			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE, GpuWaitSite::StreamTileGpuIndirect) ||
 		!m_tilegpu_state_stream_buffer.Create(
@@ -7233,11 +7246,16 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// the campaign grows a row that means nothing.
 	if (TILEGPU_VRAM_BUFFER_SIZE != gsTileGpuStagingRingBytes(0))
 	{
-		Console.WriteLn("TileGpu byte-road staging ring: %u MB (EmuCore/GS/TileGpuStagingRingMB = %d, built-in %u). "
-						"The ring frees a range only when the submission that read it retires, so this is how far "
-						"ahead of the GPU the GS thread may stage before it blocks.",
-			TILEGPU_VRAM_BUFFER_SIZE / (1024u * 1024u), GSConfig.TileGpuStagingRingMB,
-			kGSTileGpuStagingRingMBDefault);
+		Console.WriteLn("TileGpu byte-road staging ring: %u MB (EmuCore/GS/TileGpuStagingRingMB = %d, built-in %u), "
+						"and every other ring the recording thread can run out of scaled x%u with it (state and "
+						"indirect %u MB each, vertex %u, index %u). A ring frees a range only when the submission "
+						"that read it retires, so this is how far ahead of the GPU the GS thread may stage before "
+						"it blocks -- and the family moves together because deepening one of them alone just hands "
+						"the wait to the next.",
+			TILEGPU_VRAM_BUFFER_SIZE / (1024u * 1024u), GSConfig.TileGpuStagingRingMB, kGSTileGpuStagingRingMBDefault,
+			m_stream_size_scale, TILEGPU_STATE_BUFFER_SIZE / (1024u * 1024u),
+			(VERTEX_BUFFER_SIZE / (1024u * 1024u)) * m_stream_size_scale,
+			(INDEX_BUFFER_SIZE / (1024u * 1024u)) * m_stream_size_scale);
 	}
 
 	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
@@ -12738,12 +12756,12 @@ bool GSDeviceVK::CreatePersistentDescriptorSets()
 	if (m_features.vs_expand)
 	{
 		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			m_vertex_stream_buffer.GetBuffer(), 0, VERTEX_BUFFER_SIZE);
+			m_vertex_stream_buffer.GetBuffer(), 0, VERTEX_BUFFER_SIZE * m_stream_size_scale);
 	}
 	if (m_features.aa1)
 	{
 		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			m_expand_index_stream_buffer.GetBuffer(), 0, INDEX_BUFFER_SIZE);
+			m_expand_index_stream_buffer.GetBuffer(), 0, INDEX_BUFFER_SIZE * m_stream_size_scale);
 	}
 	dsub.Update(dev);
 	Vulkan::SetObjectName(dev, m_tfx_ubo_descriptor_set, "Persistent TFX UBO set");

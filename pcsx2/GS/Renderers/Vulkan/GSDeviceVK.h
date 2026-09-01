@@ -685,6 +685,14 @@ private:
 	// EmuCore/GS/VulkanCommandBufferRingDepth before any of them is created. Every index that
 	// walks the ring wraps on THIS, not on the array length.
 	u32 m_command_buffer_count = static_cast<u32>(NUM_COMMAND_BUFFERS);
+
+	// How much bigger than built-in every stream ring the RECORDING thread can run out of is, set
+	// once from EmuCore/GS/TileGpuStagingRingMB. One multiplier for the whole family -- byte road,
+	// state, indirect, vertex, index -- because they are one pipeline: deepen the deepest of them
+	// alone and the wait relocates to the next, which is measured and is exactly what the M2 does
+	// (byte road 32 -> 48 moves the wait onto the 4 MB state ring; 32 -> 64 with the state ring
+	// scaled moves it onto the 32 MB vertex ring). One at the default, so nothing moves.
+	u32 m_stream_size_scale = 1;
 	u64 m_next_fence_counter = 1;
 	u64 m_completed_fence_counter = 0;
 	u32 m_current_frame = 0;
