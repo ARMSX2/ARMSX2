@@ -22,7 +22,6 @@
 #include "arm64/iR5900-arm64.h"
 #include "arm64/EeFpuModelCall-arm64.h"
 
-#include <algorithm>
 #include <cfloat>
 
 namespace a64 = vixl::aarch64;
@@ -412,30 +411,38 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // microVU stubs are generated with, and model_call_contract_tests walks each
 // closure against the one it was compiled with.
 //
+// The EeFpuModel::Slot entry points take and return the relocated double the
+// allocator is already holding, so an island moves its operands to x0-x2 and
+// its result back and emits no conversion of its own. x0-x3 are this file's
+// scratch and none of them is allocatable or a pin.
+//
 // The models are pure arithmetic on their arguments, so unlike the vtlb slow
 // paths they need no pc/code flush and no cycle spill, and they read no guest
 // GPR memory, which is what lets a pin stay dirty in its register across the
-// call. x8 carries the result back out, being neither allocatable nor a pin.
+// call.
 enum IslandCalleeKind
 {
 	kIslandCalleeDivide,
-	kIslandCalleeSqrtBits,
-	kIslandCalleeMulOneUlpLow,
+	kIslandCalleeSqrt,
+	kIslandCalleeRecipSqrt,
+	kIslandCalleeMulDeficit,
 	kIslandCalleeCount
 };
 
 static EeFpuModelCallee islandCallee(int kind)
 {
-	namespace Interp = R5900::Interpreter::OpcodeImpl::COP1;
+	namespace Slot = EeFpuModel::Slot;
 	using namespace EeFpuModelFrame;
 	switch (kind)
 	{
 		case kIslandCalleeDivide:
-			return {reinterpret_cast<const void*>(&Interp::eeDivide), kVecNone};
-		case kIslandCalleeSqrtBits:
-			return {reinterpret_cast<const void*>(&Interp::eeSqrtBits), kVecSqrt};
-		case kIslandCalleeMulOneUlpLow:
-			return {reinterpret_cast<const void*>(&Interp::eeMulOneUlpLow), kVecNone};
+			return {reinterpret_cast<const void*>(&Slot::Divide), kVecNone};
+		case kIslandCalleeSqrt:
+			return {reinterpret_cast<const void*>(&Slot::Sqrt), kVecSqrt};
+		case kIslandCalleeRecipSqrt:
+			return {reinterpret_cast<const void*>(&Slot::RecipSqrt), kVecSqrt};
+		case kIslandCalleeMulDeficit:
+			return {reinterpret_cast<const void*>(&Slot::MulDeficit), kVecNone};
 		default: break;
 	}
 	pxFail("unknown island callee");
@@ -446,13 +453,11 @@ struct IslandFrame
 {
 	u8 gprs[8];
 	u8 fprs[NUM_ARM_NEON_REGS];
-	u32 ngpr, nfpr, frame, spare;
+	u32 ngpr, nfpr, frame;
 };
 
-// `vecEnd` is one past the last q register the callee reaches; `spare` bytes
-// above the saved registers, addressed through IslandSpare, for an island that
-// has to carry a value across a call of its own.
-static void emitIslandEnter(IslandFrame& f, int vecEnd, u32 spare = 0)
+// `vecEnd` is one past the last q register the callee reaches.
+static void emitIslandEnter(IslandFrame& f, int vecEnd)
 {
 	// Without the attribute the convention is plain AAPCS and the whole
 	// caller-saved half goes, whatever the callee reaches.
@@ -479,8 +484,7 @@ static void emitIslandEnter(IslandFrame& f, int vecEnd, u32 spare = 0)
 			f.fprs[f.nfpr++] = static_cast<u8>(i);
 	}
 
-	f.spare = spare;
-	f.frame = (f.ngpr * 8 + f.nfpr * 16 + spare + 15u) & ~15u;
+	f.frame = (f.ngpr * 8 + f.nfpr * 16 + 15u) & ~15u;
 	if (f.frame)
 		armAsm->Sub(a64::sp, a64::sp, f.frame);
 	u32 off = 0;
@@ -493,11 +497,6 @@ static void emitIslandEnter(IslandFrame& f, int vecEnd, u32 spare = 0)
 	// half of what EEFPU_MODEL_CALL spares. A pin homed outside it would need
 	// the flush before the reload, the mirrors being lazily dirty.
 	armFlushEEPinsBeforePreserveMostCall();
-}
-
-static a64::MemOperand IslandSpare(const IslandFrame& f)
-{
-	return a64::MemOperand(a64::sp, f.ngpr * 8 + f.nfpr * 16);
 }
 
 static void emitIslandLeave(const IslandFrame& f)
@@ -570,36 +569,33 @@ static void emitIslandLeave(const IslandFrame& f)
 // (w == 0x00800000) needs ma*mb == 2^46 with both in [2^23, 2^24), forcing
 // ma == mb == 2^23 -- ft mantissa 0, predicate off.
 //
-// A tail below the array's 2^15 borrow goes out of line to eeMulOneUlpLow,
-// which reconstructs the truncated columns. The guard is one-directional: bits
-// 28..21 of the product pattern are clear on every row in the band and on some
-// rows outside it, and eeMulOneUlpLow re-tests the tail itself, so a false
-// entry costs a call and returns false. A tighter mask spelled on the tail
-// alone would miss rows.
+// A tail below the array's 2^15 borrow goes out of line to Slot::MulDeficit,
+// which reconstructs the truncated columns and applies the decrement itself.
+// The guard is one-directional: bits 28..21 of the product pattern are clear on
+// every row in the band and on some rows outside it, and the model re-tests the
+// tail, so a false entry costs a call and gets the product back unchanged. A
+// tighter mask spelled on the tail alone would miss rows.
 //
 static void emitMulArrayIsland(const a64::VRegister& prod, int fsslotidx, int ftslotidx)
 {
-	const EeFpuModelCallee callee = islandCallee(kIslandCalleeMulOneUlpLow);
+	const EeFpuModelCallee callee = islandCallee(kIslandCalleeMulDeficit);
 	IslandFrame f;
 	emitIslandEnter(f, callee.vecEnd);
 
-	// The stub takes the architectural words; the slots hold them relocated.
-	armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
-	armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	armAsm->Fmov(RXARG1, armDRegister(fsslotidx));
+	armAsm->Fmov(RXARG2, armDRegister(ftslotidx));
+	armAsm->Fmov(RXARG3, prod);
 	armEmitCall(callee.fn);
-	// AAPCS64 leaves everything above a bool return's one byte unspecified.
-	armAsm->And(RXSCRATCH, RXARG1, 1);
 
+	// The destination is written after the restore, which can reload it.
 	emitIslandLeave(f);
-
-	armAsm->Fmov(RXARG2, prod);
-	armAsm->Sub(RXARG2, RXARG2, a64::Operand(RXSCRATCH, a64::LSL, 29));
-	armAsm->Fmov(prod, RXARG2);
+	armAsm->Fmov(prod, RXARG1);
 }
 
 // `dstidx` holds the widened fs on entry and the product on exit, `tidx` holds
 // the widened ft, `fsslotidx` and `ftslotidx` are the untouched guest operands.
-// x0/x1/x8 are the scratch this file uses everywhere, ToPS2FPU_Wide included.
+// x0-x3 and x8 are the scratch this file uses everywhere, ToPS2FPU_Wide
+// included.
 static void emitDefectiveFmul(int dstidx, int tidx, int fsslotidx, int ftslotidx)
 {
 	const a64::VRegister prod = armDRegister(dstidx);
@@ -941,94 +937,58 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 // Mode 3's guards call the same models through emitDivideUnitModelCall.
 //
 // Silicon composes RSQRT.S out of the other two with an ordinary single in
-// between, so this does as well; the intermediate crosses the sqrt's call
-// through the island's own scratch, x0 being the only register it could
-// otherwise live in.
+// between, and Slot::RecipSqrt is that composition, so the root never has to
+// cross a second call here.
+// One model entry point each, so the enumerators are the islandCallee kinds.
 enum class DivUnitOp
 {
-	Divide,    // eeDivide(fs, ft)
-	Sqrt,      // eeSqrtBits(ft)
-	RecipSqrt, // eeDivide(fs, eeSqrtBits(ft))
+	Divide = kIslandCalleeDivide,
+	Sqrt = kIslandCalleeSqrt,
+	RecipSqrt = kIslandCalleeRecipSqrt,
 };
 
-static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+// The slot form leaves the same three moves wherever the unit is reached from.
+// The model drops the divisor's sign itself, so the host path's |Ft| has no
+// counterpart here.
+static void emitDivideUnitOperands(DivUnitOp op, int fsslotidx, int ftslotidx)
 {
-	const EeFpuModelCallee divide = islandCallee(kIslandCalleeDivide);
-	const EeFpuModelCallee sqrtBits = islandCallee(kIslandCalleeSqrtBits);
-	int vecEnd = 0;
-	if (op != DivUnitOp::Sqrt)
-		vecEnd = std::max(vecEnd, divide.vecEnd);
-	if (op != DivUnitOp::Divide)
-		vecEnd = std::max(vecEnd, sqrtBits.vecEnd);
-
-	IslandFrame f;
-	emitIslandEnter(f, vecEnd, op == DivUnitOp::RecipSqrt ? 16 : 0);
-
-	// The models take the architectural words; the slots hold them relocated.
-	// eeSqrtBits drops the operand's sign itself, so the host path's |Ft| has no
-	// counterpart here.
 	if (op == DivUnitOp::Sqrt)
 	{
-		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
+		armAsm->Fmov(RXARG1, armDRegister(ftslotidx));
 	}
 	else
 	{
-		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
-		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+		armAsm->Fmov(RXARG1, armDRegister(fsslotidx));
+		armAsm->Fmov(RXARG2, armDRegister(ftslotidx));
 	}
+}
 
-	if (op == DivUnitOp::RecipSqrt)
-	{
-		armAsm->Str(RXARG1.W(), IslandSpare(f));
-		armAsm->Mov(RXARG1.W(), RXARG2.W());
-	}
-	if (op != DivUnitOp::Divide)
-		armEmitCall(sqrtBits.fn);
-	if (op == DivUnitOp::RecipSqrt)
-	{
-		armAsm->Mov(RXARG2.W(), RXARG1.W());
-		armAsm->Ldr(RXARG1.W(), IslandSpare(f));
-	}
-	if (op != DivUnitOp::Sqrt)
-		armEmitCall(divide.fn);
+static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+{
+	const EeFpuModelCallee callee = islandCallee(static_cast<int>(op));
+	IslandFrame f;
+	emitIslandEnter(f, callee.vecEnd);
 
-	armAsm->Mov(RWSCRATCH, RXARG1.W());
+	emitDivideUnitOperands(op, fsslotidx, ftslotidx);
+	armEmitCall(callee.fn);
+
+	// The destination is written after the restore, which can reload it.
 	emitIslandLeave(f);
-	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
+	armAsm->Fmov(armDRegister(dstidx), RXARG1);
 }
 
 // The guards' body is emitted after the block, where the allocator's answer is
 // stale and no frame can be sized from it, so it reaches the model the way the
 // COP2 and microVU sites do: one stub per op, generated with the dispatchers,
 // leaving the site a bl.
-static constexpr int kNumDivUnitOps = 3;
+static constexpr int kNumDivUnitOps = kIslandCalleeRecipSqrt + 1;
 static const u8* s_divUnitModelStubs[kNumDivUnitOps];
-
-static EeFpuModelCallee divUnitModelCallee(DivUnitOp op)
-{
-	using namespace EeFpuModelFrame;
-	switch (op)
-	{
-		case DivUnitOp::Divide: return {reinterpret_cast<const void*>(&EeFpuModel::Divide), kVecNone};
-		case DivUnitOp::Sqrt: return {reinterpret_cast<const void*>(&EeFpuModel::SqrtBits), kVecSqrt};
-		case DivUnitOp::RecipSqrt: return {reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt), kVecSqrt};
-	}
-	return {nullptr, NUM_ARM_NEON_REGS};
-}
 
 static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
 {
-	if (op == DivUnitOp::Sqrt)
-	{
-		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
-	}
-	else
-	{
-		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
-		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
-	}
+	emitDivideUnitOperands(op, fsslotidx, ftslotidx);
 	armEmitCall(s_divUnitModelStubs[static_cast<int>(op)]);
-	armEmitEeFprWiden(armDRegister(dstidx), RWARG1, RXSCRATCH);
+	armAsm->Fmov(armDRegister(dstidx), RXARG1);
 }
 
 // Mode 3 keeps the host quotient unless the divide unit's word truncates to a
@@ -1340,7 +1300,7 @@ void fpuDynGenModelStubs()
 {
 	namespace D = R5900::Dynarec::OpcodeImpl::COP1::DOUBLE;
 	for (int op = 0; op < D::kNumDivUnitOps; op++)
-		D::s_divUnitModelStubs[op] = armDynGenEeFpuModelStub(D::divUnitModelCallee(static_cast<D::DivUnitOp>(op)));
+		D::s_divUnitModelStubs[op] = armDynGenEeFpuModelStub(D::islandCallee(op));
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS

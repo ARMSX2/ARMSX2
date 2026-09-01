@@ -72,4 +72,21 @@ namespace EeFpuModel
 	// The composition silicon performs, as one call: the root has nowhere to
 	// live across a second.
 	EEFPU_MODEL_CALL u32 RecipSqrt(u32 a, u32 t);
+
+	/*	The same unit against a register file in EeFpuFormat.h's relocated form.
+		The recompiler holds every FPR as a double there, so reaching the word
+		form above costs it a narrow at each operand and a widen at the result,
+		re-emitted at every call site for a conversion that is the same at all
+		of them and can be done here instead.  */
+	namespace Slot
+	{
+		EEFPU_MODEL_CALL u64 Divide(u64 fs, u64 ft);
+		EEFPU_MODEL_CALL u64 Sqrt(u64 ft);
+		EEFPU_MODEL_CALL u64 RecipSqrt(u64 fs, u64 ft);
+
+		// `product` decremented by the one EE ULP the multiply array loses on
+		// the rows its truncated columns decide, and returned unchanged on the
+		// rest.
+		EEFPU_MODEL_CALL u64 MulDeficit(u64 fs, u64 ft, u64 product);
+	} // namespace Slot
 } // namespace EeFpuModel

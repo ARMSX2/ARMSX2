@@ -1315,4 +1315,30 @@ EEFPU_MODEL_CALL u32 RecipSqrt(u32 a, u32 t)
 {
 	return COP1::eeDivide(a, COP1::eeSqrtBits(t));
 }
+
+namespace Slot
+{
+EEFPU_MODEL_CALL u64 Divide(u64 fs, u64 ft)
+{
+	return eeFprWidenBits(COP1::eeDivide(eeFprNarrowBits(fs), eeFprNarrowBits(ft)));
+}
+
+EEFPU_MODEL_CALL u64 Sqrt(u64 ft)
+{
+	return eeFprWidenBits(COP1::eeSqrtBits(eeFprNarrowBits(ft)));
+}
+
+EEFPU_MODEL_CALL u64 RecipSqrt(u64 fs, u64 ft)
+{
+	return eeFprWidenBits(EeFpuModel::RecipSqrt(eeFprNarrowBits(fs), eeFprNarrowBits(ft)));
+}
+
+// 1 << 29 is one EE ULP in this form.
+EEFPU_MODEL_CALL u64 MulDeficit(u64 fs, u64 ft, u64 product)
+{
+	if (!COP1::eeMulOneUlpLow(eeFprNarrowBits(fs), eeFprNarrowBits(ft)))
+		return product;
+	return product - (UINT64_C(1) << 29);
+}
+} // namespace Slot
 } // namespace EeFpuModel
