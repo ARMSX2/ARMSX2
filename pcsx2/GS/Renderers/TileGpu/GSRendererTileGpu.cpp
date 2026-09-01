@@ -1619,6 +1619,24 @@ const GSRendererTileGpu::GpuPalette* GSRendererTileGpu::FindClutSourceWrittenBy(
 	return other;
 }
 
+// The palette cycle's substitute: one draw standing in for the whole run the elision above is about
+// to drop, semantically matched to Classic's GSC_PolyphonyDigitalGames.
+//
+// ⚠️ NOT BUILT YET -- this counts the refusal and returns, so the run is elided with nothing in its
+// place. It is landed in this state on purpose: the elision is where the whole prize is (the run is
+// 85% of gt4opb's frame, and the substitute is worth ~0.3 ms of it), and the elision's risk is
+// entirely in the page ledger above, which is measurable without any pixels. The substitute's risk
+// is entirely in the pixels, which are worth measuring only once the ledger is known to survive.
+void GSRendererTileGpu::IssuePaletteCycleSubstitute(
+	const PendingDraw& pd, GSTileSurfaceId fb_id, const GSVector4i& rect, const GIFRegTEX0& tex0)
+{
+	(void)pd;
+	(void)fb_id;
+	(void)rect;
+	(void)tex0;
+	m_frame.pcyc_refused++;
+}
+
 void GSRendererTileGpu::NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages)
 {
 	if (m_clut_live.empty()) [[likely]]
@@ -3579,6 +3597,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto pcb = stat([](const MF& f) { return f.pcyc_building; });
 	const auto pce = stat([](const MF& f) { return f.pcyc_elided; });
 	const auto pcs = stat([](const MF& f) { return f.pcyc_subs; });
+	const auto pccp = stat([](const MF& f) { return f.pcyc_claimed_pages; });
 	const auto pcsp = stat([](const MF& f) { return f.pcyc_sub_pages; });
 	const auto pcx = stat([](const MF& f) { return f.pcyc_refused; });
 	if (pc1p.mean > 0.0)
@@ -3591,9 +3610,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 						"refused: format %.2f / %-5u  primclass %.2f / %u",
 			pc1p.mean, pc1p.p50, pc1.mean, pc1.p50, pc2.mean, pc2.p50, pcff.mean, pcff.p50, pcfo.mean, pcfo.p50);
 		Console.WriteLn("  runs %.2f / %-4u  (alpha-destination %.2f / %-4u)  below threshold, drawn %.2f / %-4u  "
-						"elided %.2f / %-5u  substitutes %.2f / %-4u  claimed pages %.2f / %-5u  refused %.2f / %u",
-			pcr.mean, pcr.p50, pcra.mean, pcra.p50, pcb.mean, pcb.p50, pce.mean, pce.p50, pcs.mean, pcs.p50,
-			pcsp.mean, pcsp.p50, pcx.mean, pcx.p50);
+						"elided %.2f / %-5u  pages the elision claimed %.2f / %-5u",
+			pcr.mean, pcr.p50, pcra.mean, pcra.p50, pcb.mean, pcb.p50, pce.mean, pce.p50, pccp.mean, pccp.p50);
+		Console.WriteLn("  substitutes %.2f / %-4u  their pages %.2f / %-5u  runs with no substitute %.2f / %u",
+			pcs.mean, pcs.p50, pcsp.mean, pcsp.p50, pcx.mean, pcx.p50);
 	}
 }
 
@@ -6152,6 +6172,46 @@ void GSRendererTileGpu::AccumulateDraw()
 					break;
 				default:
 					break;
+			}
+
+			// -- the elision -------------------------------------------------------------------
+			//
+			// ⚠️ THE LOAD-BEARING PART, and the one hard difference from Classic. Classic's skip is
+			// free: the draw never reaches the texture cache and the damage, if the detector is
+			// wrong, is confined to a render target. TileGpu's page model is a BYTE-TRUTH LEDGER --
+			// it names, per page and per plane, which surface holds the newest bytes -- and the
+			// writeback road pushes those bytes into guest VRAM, where the EE reads them. An elided
+			// draw that is not accounted for leaves the model believing some OTHER surface holds
+			// what this draw was about to overwrite, and the guest then reads it.
+			//
+			// So the elision is not `return`. Everything the draw would have done to MEMORY still
+			// happens -- the page claims, the surface version bumps, the destruction of the palette
+			// this draw was about to destroy -- and only the PIXELS are produced differently. This
+			// block is the ONE place those three are duplicated; it is deliberately spelled the
+			// same way as the claim block at the end of this function so a divergence between the
+			// two reads as a diff.
+			if (m_palette_cycle_hle && (pcyc_verdict == GSTilePaletteCycleVerdict::Arm ||
+										   pcyc_verdict == GSTilePaletteCycleVerdict::Elide))
+			{
+				if (pcyc_verdict == GSTilePaletteCycleVerdict::Arm)
+					IssuePaletteCycleSubstitute(pd, fb_id, r, tex0);
+
+				if (color_written)
+				{
+					m_vram_model.OnNativeDraw(fb_id, fb_pages, kGSTilePlanesAll);
+					BumpSurfaceVersion(fb_id);
+					NoteClutSourceWritten(fb_id, fb_pages);
+					m_frame.pcyc_claimed_pages += fb_pages.count();
+				}
+				if (z_write)
+				{
+					const u8 elided_z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);
+					AliasSteal(m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, elided_z_claims));
+					m_vram_model.OnNativeDraw(z_id, z_pages, elided_z_claims);
+					BumpSurfaceVersion(z_id);
+				}
+				m_frame.pcyc_elided++;
+				return;
 			}
 
 			// The read window (resolved above) is composed into the ring for this epoch -- prefilled
