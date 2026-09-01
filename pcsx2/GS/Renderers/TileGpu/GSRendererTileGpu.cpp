@@ -20,6 +20,7 @@
 #include <cstring>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -3785,6 +3786,44 @@ void GSRendererTileGpu::ReportModelTraffic()
 		static_cast<double>(g_gs_device->GetSourceSetWaitNs()) / mframes / 1e6,
 		static_cast<double>(g_gs_device->GetRingWaitCalls()) / mframes,
 		static_cast<double>(g_gs_device->GetRingWaitNs()) / mframes / 1e6);
+	// ...and the same bill itemised by the SITE that paid it. The line above says what waiting cost;
+	// this one says what it was waiting FOR, which is the question a fix needs. They are not two
+	// measurements: the device books both in one function off one table (GSDeviceVK::BookGpuWait),
+	// so the sites of a family sum to that family's figure exactly, and the sums are printed at the
+	// end of the line so a reader can check that without taking anybody's word for it.
+	//
+	// Only nonzero sites are listed. On a clean run that is nothing at all and the line is one word,
+	// which is the report -- "no site paid" is a reading, not a blank.
+	{
+		const u32 nsites = g_gs_device->GetGpuWaitSiteCount();
+		const u64* site_ns = g_gs_device->GetGpuWaitSiteNs();
+		const u64* site_calls = g_gs_device->GetGpuWaitSiteCalls();
+		std::string sites;
+		double sum_sync_ns = 0.0, sum_sync_calls = 0.0, sum_ring_ns = 0.0, sum_ring_calls = 0.0;
+		for (u32 i = 0; nsites != 0 && site_ns && site_calls && i < nsites; i++)
+		{
+			const std::string_view family(g_gs_device->GetGpuWaitSiteFamily(i));
+			if (family == "sync")
+			{
+				sum_sync_ns += static_cast<double>(site_ns[i]);
+				sum_sync_calls += static_cast<double>(site_calls[i]);
+			}
+			else if (family == "ring")
+			{
+				sum_ring_ns += static_cast<double>(site_ns[i]);
+				sum_ring_calls += static_cast<double>(site_calls[i]);
+			}
+			if (site_calls[i] == 0)
+				continue;
+			sites += StringUtil::StdStringFromFormat("  %s[%s] %.2f/%.2f ms", g_gs_device->GetGpuWaitSiteName(i),
+				g_gs_device->GetGpuWaitSiteFamily(i), static_cast<double>(site_calls[i]) / mframes,
+				static_cast<double>(site_ns[i]) / mframes / 1e6);
+		}
+		Console.WriteLn("  ...BY SITE (calls/drawn frame / ms/drawn frame):%s   [sums: sync %.2f/%.2f ms, ring "
+						"%.2f/%.2f ms -- must equal the line above]",
+			sites.empty() ? "  none" : sites.c_str(), sum_sync_calls / mframes, sum_sync_ns / mframes / 1e6,
+			sum_ring_calls / mframes, sum_ring_ns / mframes / 1e6);
+	}
 	// The mid-frame kick's own volume, printed on BOTH arms. A lever whose whole effect is
 	// submission timing leaves no other trace, and "offered 0 / taken 0" with the lever ON is a
 	// different report from the lever being off -- one says the gate never opened, the other says

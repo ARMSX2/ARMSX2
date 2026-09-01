@@ -10,6 +10,12 @@
 #include <deque>
 #include <memory>
 
+/// Defined in GSDeviceVK.h, which includes this header — so this is an opaque-enum-declaration
+/// (legal, and it makes the type complete) rather than an include the other way round. A stream
+/// buffer stores one so that when it blocks for room, the wait is charged to THIS buffer and not to
+/// the undifferentiated pile every stream ring used to share.
+enum class GpuWaitSite : u8;
+
 class VKStreamBuffer
 {
 public:
@@ -30,7 +36,10 @@ public:
 	__fi u32 GetCurrentSpace() const { return m_current_space; }
 	__fi u32 GetCurrentOffset() const { return m_current_offset; }
 
-	bool Create(VkBufferUsageFlags usage, u32 size);
+	/// `wait_site` is who gets charged when this buffer runs out of room and blocks. Passed at
+	/// creation rather than set afterwards because a buffer that serves traffic before anybody
+	/// names it books its waits somewhere useless, and there is no way to notice.
+	bool Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site);
 	void Destroy(bool defer);
 
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
@@ -70,6 +79,9 @@ private:
 	VmaAllocation m_allocation = VK_NULL_HANDLE;
 	VkBuffer m_buffer = VK_NULL_HANDLE;
 	u8* m_host_pointer = nullptr;
+	// Set to GpuWaitSite::StreamUnnamed by the constructor, which is out of line in the .cpp
+	// because only there is the enum's definition visible.
+	GpuWaitSite m_wait_site;
 
 	// List of fences and the corresponding positions in the buffer
 	std::deque<std::pair<u64, u32>> m_tracked_fences;

@@ -2351,6 +2351,23 @@ public:
 	virtual u64 GetSourceSetWaitNs() const { return 0; }
 	virtual u64 GetSourceSetWaitCalls() const { return 0; }
 
+	/// The same waits again, itemised by the CALL SITE that paid rather than by the bill it landed
+	/// on. The four getters above answer "what did waiting cost"; these answer "what was it waiting
+	/// for", which is the question a fix needs and the one a frame-level counter cannot reach — on
+	/// Spider-Man 3 / Mali-G615 the sync bill is 10 ms a frame with zero readbacks in the run, and
+	/// no aggregate says which of a dozen sites is spending it.
+	///
+	/// Sites of one bill sum to that bill EXACTLY (GSDeviceVK::BookGpuWait writes both in one
+	/// place), so a reader can reconcile without trusting the instrument. The arrays are
+	/// GetGpuWaitSiteCount() long, indexed by site, and stay valid for the device's lifetime;
+	/// the names are string literals and outlive it, which is what lets the runner latch them.
+	virtual u32 GetGpuWaitSiteCount() const { return 0; }
+	virtual const u64* GetGpuWaitSiteNs() const { return nullptr; }
+	virtual const u64* GetGpuWaitSiteCalls() const { return nullptr; }
+	virtual const char* GetGpuWaitSiteName(u32 site) const { return ""; }
+	/// Which of sync / out-of-band / source-set / ring this site is charged to.
+	virtual const char* GetGpuWaitSiteFamily(u32 site) const { return ""; }
+
 	/// The TileGpu executor's mid-frame kick (EmuCore/GS/TileGpuKickReadbackFrames, and the cadence
 	/// EmuCore/GS/TileGpuKickPassCadence sets): how often the gate opened, and how often the next
 	/// command buffer had also retired so the submit could actually go. Read as a PAIR —

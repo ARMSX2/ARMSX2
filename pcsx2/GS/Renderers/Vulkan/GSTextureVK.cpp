@@ -1203,7 +1203,7 @@ void GSDownloadTextureVK::Flush()
 	}
 	else
 	{
-		GSDeviceVK::GetInstance()->WaitForFenceCounter(m_copy_fence_counter);
+		GSDeviceVK::GetInstance()->WaitForFenceCounter(m_copy_fence_counter, GpuWaitSite::DownloadFence);
 	}
 }
 
