@@ -28,8 +28,8 @@
 //  - DEPTH IS A HARD REFUSAL and it is tested before the cheap shape questions, because the road
 //    writes colour bytes into GSLocalMemory and has no depth attachment to keep consistent with.
 //
-//  - The two reasons this function CANNOT answer -- a page whose newest bytes are on the GPU, and
-//    a palette the device holds that the CPU has not synced -- are still part of the refusal
+//  - The reasons this function CANNOT answer -- a page whose newest bytes are on the GPU, and a
+//    palette the device holds that the CPU has not synced -- are still part of the refusal
 //    enumeration, because the census counts them beside the shape reasons and the renderer is
 //    where they are decided. Declining is always safe: the draw takes the ordinary GPU road. The
 //    one thing the road may never do is stall to make itself admissible.
@@ -203,7 +203,8 @@ TEST(GSTileGpuCpuSprite, RefusalIsTotalOverTheShapeSpace)
 					EXPECT_EQ(r == R::None, shape_ok)
 						<< "bw " << bw << " level " << level << " fbw " << fbw << " bits " << bits;
 					// The model reasons are never produced here -- they are the renderer's.
-					EXPECT_NE(r, R::GpuTruth);
+					EXPECT_NE(r, R::GpuTruthRead);
+					EXPECT_NE(r, R::GpuTruthWrite);
 					EXPECT_NE(r, R::ClutStale);
 				}
 			}

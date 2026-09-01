@@ -2293,9 +2293,15 @@ private:
 	/// mip level the core would fetch. Page-granular and deliberately the WINDOW rather than the
 	/// texels the coordinates reach, which is what the sampler is free to fetch.
 	GSPageBitmap CpuRasterReadPages();
+	/// GSRendererHW::IsDepthAlwaysPassing over the live context: whether this draw's depth test can
+	/// reject anything at all.
+	bool CpuRasterDepthAlwaysPassing();
 	GSSwPrimRenderState m_sw_prim;
 	bool (*m_sw_prim_render)(GSRenderer&, GSSwPrimRenderState&, const GSVector4i&) = nullptr;
 	bool m_cpu_sprite_raster = false;
+	/// ...and whether the GameDB actually armed it for this title, which is what the CLUT gather
+	/// stands down for. Asked once: both terms are fixed for the session.
+	bool m_cpu_raster_armed = false;
 
 	// Compose `pages`' byte truth into ring slots for the current epoch: writebacks for every
 	// colour surface holding unsynced truth on them (appended as prep ops on the pending draw),
@@ -3859,10 +3865,12 @@ private:
 		// never land anywhere, and these land in guest memory at native resolution.
 		u32 cpu_raster_draws = 0; // diverted and executed by the scanline core
 		u32 cpu_raster_pages = 0; // guest pages those draws wrote
-		u32 cpu_raster_shape = 0; // declined: the draw is not the shape the entry names
-		u32 cpu_raster_gpu_truth = 0; // declined: a page it touches has its newest bytes on the GPU
-		u32 cpu_raster_clut_stale = 0; // declined: the palette it samples is the device's
 		u32 cpu_raster_refused = 0; // admitted, then the core wrote nothing and the GPU road ran
+		// ...and every decline, by the reason it gave. Per reason and not one "declined" total,
+		// because the reasons are not interchangeable: a title whose population declines on WIDTH
+		// is one the entry does not name, and a title whose population declines on GPU TRUTH is one
+		// where the chain stopped closing -- the same number, two different bugs.
+		u32 cpu_raster_refuse[static_cast<u32>(GSTileCpuRasterRefusal::ClutStale) + 1] = {};
 
 		// Surface-identity containment as placed (PlaceContainedView): off the lever, the fold the
 		// renderer did NOT take; on it, the fold it did. The two break pairs are the whole point --

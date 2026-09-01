@@ -1461,7 +1461,8 @@ enum class GSTileCpuRasterRefusal : u8
 	FrameWidth, ///< FRAME.FBW is wider than the entry allows
 	Blended, ///< level < 2 admits neither mipmapped nor blended draws
 	Shuffle, ///< a texture shuffle is in progress
-	GpuTruth, ///< a page the draw reads or writes has its newest bytes on the GPU
+	GpuTruthRead, ///< a page the draw SAMPLES has its newest bytes on the GPU
+	GpuTruthWrite, ///< ...or a page it writes, and the write does not supersede them whole
 	ClutStale, ///< the draw's palette slots are the device's, not the CPU's
 };
 
