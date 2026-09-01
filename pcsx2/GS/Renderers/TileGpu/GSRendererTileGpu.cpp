@@ -417,17 +417,28 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// Draw reordering, read once for the reason every pass-boundary policy here is: it decides which
 	// pass a draw lands in, and a value that moved mid-run would leave one frame's draws scheduled two
 	// ways. Negative is the census -- the model runs and reports and moves nothing.
-	m_reorder_setting = GSConfig.TileGpuReorderRuns;
+	//
+	// The shipped setting is AUTO, so the level usually comes from the game database's
+	// coalesceRenderPasses bit rather than from the INI, on the same terms as the palette-cycle
+	// substitute above. Said out loud on EVERY position, and with the reason for the position,
+	// because the whole effect of this lever is that a thousand render passes DON'T get opened: a
+	// title the gate misses and a title with no alternation to collect produce the same census, and
+	// a number with no arm beside it in the log is a number nobody can attribute.
+	m_reorder_gated = GSConfig.CoalesceRenderPasses;
+	m_reorder_setting = gsTileGpuReorderRuns(GSConfig.TileGpuReorderRuns, m_reorder_gated);
 	m_reorder_census = m_reorder_setting < 0;
 	m_reorder_active = m_reorder_setting > 0;
 	m_reorder_max_runs =
 		std::min(static_cast<u32>(std::abs(m_reorder_setting)), GSTileGpuReorderScheduler::kMaxRuns);
 	m_reorder.Reset(m_reorder_max_runs);
-	if (m_reorder_setting != 0)
-	{
-		Console.WriteLn("TileGpu: draw reordering %s, %u concurrent runs (TileGpuReorderRuns = %d).",
-			m_reorder_census ? "COUNTED ONLY -- nothing moves" : "ON", m_reorder_max_runs, m_reorder_setting);
-	}
+	Console.WriteLn("TileGpu: draw reordering is %s (%u concurrent runs; TileGpuReorderRuns = %d, %s; "
+					"GameDB gate %s).",
+		m_reorder_active ? "ON" : (m_reorder_census ? "COUNTED ONLY -- nothing moves" : "off"),
+		m_reorder_max_runs, GSConfig.TileGpuReorderRuns,
+		(GSConfig.TileGpuReorderRuns == Pcsx2Config::GSOptions::TileGpuReorderRunsAuto) ?
+			"AUTO -- the database decides" :
+			"forced -- the database gets no say",
+		m_reorder_gated ? "matched" : "not matched");
 
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records

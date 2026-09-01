@@ -477,3 +477,75 @@ TEST(GSTileGpuReorder, SpliceTakesPayloadByIndexAndStateIndexByPosition)
 		EXPECT_EQ(out[pos].state_index, pos) << "position " << pos << " kept a stale state index";
 	}
 }
+
+// -- the level itself: who decides how wide the scheduler runs ------------------------------------
+//
+// Everything above drives the scheduler at a width a caller picked. This is where that width comes
+// from, and it is a composition of two sources that can disagree: the INI key
+// EmuCore/GS/TileGpuReorderRuns and the game database's coalesceRenderPasses bit.
+//
+// Pinned rather than left to the renderer's constructor because the failure is silent in BOTH
+// directions and neither shows in an image. A gate that stops firing gives back a thousand render
+// passes a frame on the one title that needs them collected, and nobody notices until a device
+// round; a forced arm the database quietly overrides stops being an arm, and every A/B taken
+// through it measures the same build twice while reporting two numbers.
+
+namespace
+{
+constexpr int kAuto = Pcsx2Config::GSOptions::TileGpuReorderRunsAuto;
+constexpr int kGameDb = Pcsx2Config::GSOptions::TileGpuReorderRunsGameDB;
+} // namespace
+
+/// AUTO is what ships, so a title the database says nothing about must get exactly the behaviour
+/// that shipped before the gate existed: nothing runs, nothing is counted, nothing costs.
+TEST(GSTileGpuReorderLevel, AutoIsOffWhereTheDatabaseIsSilent)
+{
+	EXPECT_EQ(gsTileGpuReorderRuns(kAuto, false), 0);
+}
+
+/// ...and a title it does name takes the database width. This is the whole lever: Dirge of Cerberus
+/// (SLUS-21419) carries coalesceRenderPasses, so it reorders, and the other twenty-one dumps in the
+/// corpus do not.
+TEST(GSTileGpuReorderLevel, AutoTakesTheDatabaseWidthWhereTheBitIsSet)
+{
+	EXPECT_EQ(gsTileGpuReorderRuns(kAuto, true), kGameDb);
+	EXPECT_EQ(kGameDb, 4) << "every R8 device number was measured at four runs";
+}
+
+/// A forced 0 outranks the database. Without this the campaign's OFF arm silently stops being an
+/// arm on exactly the one title the A/B is about, and the pair of numbers it produces are two
+/// readings of the same build.
+TEST(GSTileGpuReorderLevel, AnExplicitOffOutranksTheDatabase)
+{
+	EXPECT_EQ(gsTileGpuReorderRuns(0, true), 0);
+	EXPECT_EQ(gsTileGpuReorderRuns(0, false), 0);
+}
+
+/// ...and so does a forced width, in the other direction: an ungated title can still be measured
+/// with reordering on, which is how every non-dirge row of the reorder census was taken.
+TEST(GSTileGpuReorderLevel, AnExplicitWidthOutranksTheDatabase)
+{
+	EXPECT_EQ(gsTileGpuReorderRuns(4, false), 4);
+	EXPECT_EQ(gsTileGpuReorderRuns(2, true), 2) << "a forced width is not raised to the database's";
+	EXPECT_EQ(gsTileGpuReorderRuns(8, true), 8);
+}
+
+/// The census arm keeps its sign and its width on both kinds of title. -1 is AUTO now, so a census
+/// is spelt from -2 down; -1 was the one width that could never have reported anything, since a
+/// scheduler holding a single run open is the identity (OneRunIsTheIdentity above).
+TEST(GSTileGpuReorderLevel, TheCensusArmSurvivesTheGate)
+{
+	EXPECT_EQ(gsTileGpuReorderRuns(-4, false), -4);
+	EXPECT_EQ(gsTileGpuReorderRuns(-4, true), -4) << "a census must not turn into a reorder on a gated title";
+	EXPECT_EQ(gsTileGpuReorderRuns(-2, true), -2);
+}
+
+/// The shipped default IS auto. Stated as its own test because the whole design rests on it: a
+/// default of 0 would make the shipped value and an explicit "-set ...=0" the same integer, and the
+/// gate could then never tell "the player said off" from "the player said nothing".
+TEST(GSTileGpuReorderLevel, TheShippedDefaultIsAuto)
+{
+	const Pcsx2Config::GSOptions shipped;
+	EXPECT_EQ(shipped.TileGpuReorderRuns, kAuto);
+	EXPECT_NE(kAuto, 0) << "AUTO must be distinguishable from a forced off";
+}

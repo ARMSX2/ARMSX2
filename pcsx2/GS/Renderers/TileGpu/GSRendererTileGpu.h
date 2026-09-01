@@ -470,10 +470,31 @@ constexpr u32 gsTileGpuBreakKeyFields(const GSTileGpuPassKey& a, const GSTileGpu
 // pass on every switch. Where the two targets share no GS page the alternation is a scheduling
 // accident and not a data dependency: the draws into each can be grouped and the passes collapse.
 // Dirge of Cerberus plans about a thousand passes a frame that way and would plan under sixty.
-//
-// This is the bookkeeping half -- which draws are staged in which RUN, and what order the runs come
-// out in. It holds no renderer state and does no page arithmetic beyond intersect, so the whole
-// thing is drivable from a test with a synthetic draw list (gs_tilegpu_reorder_tests.cpp).
+
+/// The effective reorder level for a session: what EmuCore/GS/TileGpuReorderRuns says, unless it
+/// says AUTO, in which case the game database does.
+///
+/// `coalesce_render_passes` is GSConfig.CoalesceRenderPasses -- the gsHWFixes bit the ARMSX2
+/// database overlay sets on the titles whose passes want coalescing, and the same bit that turns
+/// Classic's GSPassScheduler on. It is a hint and not a proof: Classic's scheduler keys on GSTexture
+/// pointer identity and this one keys on the pass key plus page bitmaps, so a title the bit helps
+/// there need not be a title it helps here. What bounds the exposure is that the bit is on six
+/// serials.
+///
+/// An explicit setting always outranks the database, in both directions: a forced 0 stays off on a
+/// gated title and a forced 4 reorders an ungated one. Every A/B arm the campaign has taken keeps
+/// meaning what it meant.
+constexpr int gsTileGpuReorderRuns(int setting, bool coalesce_render_passes)
+{
+	if (setting != Pcsx2Config::GSOptions::TileGpuReorderRunsAuto)
+		return setting;
+	return coalesce_render_passes ? Pcsx2Config::GSOptions::TileGpuReorderRunsGameDB : 0;
+}
+
+// The rest of this section is the bookkeeping half -- which draws are staged in which RUN, and what
+// order the runs come out in. It holds no renderer state and does no page arithmetic beyond
+// intersect, so the whole thing is drivable from a test with a synthetic draw list
+// (gs_tilegpu_reorder_tests.cpp).
 //
 // The standing invariant, which is the entire correctness argument:
 //
@@ -2822,7 +2843,8 @@ private:
 	//
 	// Read once at construction like every other boundary policy: a value that moved mid-run would
 	// leave one frame's draws scheduled two ways.
-	int m_reorder_setting = 0;   ///< the raw lever, for the log line and the report
+	int m_reorder_setting = 0;   ///< the EFFECTIVE lever, after AUTO asked the database
+	bool m_reorder_gated = false; ///< the database's coalesceRenderPasses bit, which AUTO reads
 	bool m_reorder_census = false; ///< run the model and report it, moving nothing (setting < 0)
 	bool m_reorder_active = false; ///< stage and splice for real (setting > 0)
 	u32 m_reorder_max_runs = 0;  ///< |setting|, clamped to the scheduler's ceiling; 0 when off

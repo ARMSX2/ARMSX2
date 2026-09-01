@@ -2676,15 +2676,38 @@ struct Pcsx2Config
 		// displaced road's cap, waiting for that road.
 		int TileGpuContainPageBudget = 0;
 
+		// TileGpuReorderRuns' AUTO value, and what ships: the game database decides, per title.
+		//
+		// It is a value and not the absence of the key because absence never happens -- VMManager::
+		// SetDefaultSettings writes every GS key with its default into the settings interface before
+		// anything reads one, so a shipped default and an explicit "-set ...=0" would otherwise be the
+		// same integer and the campaign's OFF arm would silently stop being an arm.
+		//
+		// -1 rather than some larger magic number because -1 is the one census width that says
+		// nothing: a scheduler holding a single run open can never move a draw past another (see
+		// GSTileGpuReorder.OneRunIsTheIdentity), so "census over one run" was already a reading of
+		// zero. Census widths start at -2.
+		static constexpr int TileGpuReorderRunsAuto = -1;
+
+		// ...and the level AUTO takes when the database says this title's passes want coalescing.
+		// Four is Classic's own GSPassScheduler width and the width every R8 device number was
+		// measured at.
+		static constexpr int TileGpuReorderRunsGameDB = 4;
+
 		// Draw REORDERING in the TileGpu pass planner: how many per-(colour, depth) runs of draws the
 		// planner may hold open at once, emitting each contiguously instead of in guest order.
 		//
-		// Three states, the same shape as TileGpuMaxPassDraws and for the same reason -- "count what
-		// it would do" and "do it" are different questions, and a bool cannot ask the second one at a
-		// chosen width:
+		// Four states, the first of them the same shape as TileGpuMaxPassDraws and for the same
+		// reason -- "count what it would do" and "do it" are different questions, and a bool cannot
+		// ask the second one at a chosen width:
 		//
-		//   0  -- OFF, and what ships. No census, no reorder, no cost.
-		//  <0  -- CENSUS ONLY. Run the admission model over |N| runs and report at teardown what it
+		//   -1 -- AUTO, and what ships. The game database decides: a title whose gsHWFixes carry
+		//         coalesceRenderPasses gets TileGpuReorderRunsGameDB runs, every other title gets
+		//         nothing. That key is Classic's own pass-scheduler switch and it is set for exactly
+		//         this reason -- Classic plans 61 passes a frame on Dirge of Cerberus with it and
+		//         1,002 without.
+		//   0  -- OFF, forced. No census, no reorder, no cost, and the database gets no say.
+		//  <-1 -- CENSUS ONLY. Run the admission model over |N| runs and report at teardown what it
 		//         would have moved. Nothing moves; the plan is the plan.
 		//  >0  -- REORDER, holding at most N runs open.
 		//
@@ -2702,7 +2725,7 @@ struct Pcsx2Config
 		// It is also a one-title lever on today's corpus. Every dump but Dirge measures between 0%
 		// and -3% passes, because their alternations are data dependencies (a palette buffer rendered
 		// and then sampled) that no reordering can remove.
-		int TileGpuReorderRuns = 0;
+		int TileGpuReorderRuns = TileGpuReorderRunsAuto;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
 		// that spills into it takes the blocking road instead.
