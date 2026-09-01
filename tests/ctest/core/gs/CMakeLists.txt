@@ -71,7 +71,6 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tilegpu_shader_budget_tests.cpp
 	gs_tilegpu_serialize_mask_tests.cpp
 	gs_tilegpu_containment_tests.cpp
-	gs_tilegpu_cpusprite_tests.cpp
 	gs_readback_transfer_size_tests.cpp
 	gs_fe_decode_tests.cpp
 	gs_astc_tests.cpp

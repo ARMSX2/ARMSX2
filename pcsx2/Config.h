@@ -2226,31 +2226,6 @@ struct Pcsx2Config
 					//
 					// Default TRUE.
 					TileGpuPaletteCycleHle : 1,
-					// Divert the draw population the GameDB's cpuSpriteRenderBW /
-					// cpuSpriteRenderLevel entries name to the software scanline core,
-					// which writes native-resolution PS2 bytes straight into guest
-					// memory -- the road Classic has always taken for it.
-					//
-					// The mechanism arms ONLY from the GameDB. A title with no entry has
-					// bw 0 and is structurally untouched, so this key changes nothing for
-					// it; what the key is for is the A/B on the handful of titles that do
-					// have one. Default ON.
-					//
-					// Admission is all-or-nothing and DECLINES rather than stalls: a draw
-					// whose read or write pages have their newest bytes on the GPU takes
-					// the ordinary GPU road, and no readback or wait is ever emitted to
-					// make the CPU road available. That is what closes the chain --
-					// diverting SOME legs of a ping-pong would make each undiverted leg's
-					// surface GPU truth and stall the next CPU leg -- and it is what makes
-					// the road stall-free by construction rather than by hope.
-					//
-					// Spider-Man 3 is the title it was built for: 3,143 draws a frame on
-					// three 64x64 scratch targets, 33.0% of the serialized GPU frame in
-					// draws plus 4.3% in the writeback they force, and Classic renders
-					// zero of them on the GPU. It is also the title's only visible
-					// accuracy defect -- the sun glow is missing and the sky carries ghost
-					// content, which is the effect the GameDB entry's own comment names.
-					TileGpuCpuSpriteRaster : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

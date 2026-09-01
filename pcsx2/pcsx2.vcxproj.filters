@@ -2138,6 +2138,9 @@
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h">
       <Filter>System\Ps2\GS\Renderers\Null</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSwPrimRender.h">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
@@ -2148,9 +2151,6 @@
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSRenderer.h">
-      <Filter>System\Ps2\GS\Renderers\Common</Filter>
-    </ClInclude>
-    <ClInclude Include="GS\Renderers\Common\GSSwPrimRender.h">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSDirtyRect.h">
