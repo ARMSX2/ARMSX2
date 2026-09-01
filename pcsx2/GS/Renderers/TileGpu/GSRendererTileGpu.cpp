@@ -6485,7 +6485,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			m_primitive_covers_without_gaps = GapsFound;
 			const GSVector4i tex_core = gsTileGpuReadWindowRect(tex_win,
 				GetTextureMinMax(tex0, ctx->CLAMP, m_vt.IsLinear(), true).coverage, tex0.TW, tex0.TH, ctx->CLAMP.WMS,
-				ctx->CLAMP.WMT);
+				ctx->CLAMP.WMT, ctx->CLAMP.MINU, ctx->CLAMP.MAXU, ctx->CLAMP.MINV, ctx->CLAMP.MAXV);
 			tex_pages = GSVramModel::PagesForRect(tex_l, tex_win);
 			tex_narrowed = !tex_core.eq(tex_win);
 			tex_read_pages = tex_narrowed ? GSVramModel::PagesForRect(tex_l, tex_core) : tex_pages;

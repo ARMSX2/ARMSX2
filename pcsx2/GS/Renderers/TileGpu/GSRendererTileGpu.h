@@ -985,11 +985,13 @@ constexpr u32 gsTileGpuMaxSpecializationBinds(int setting, u32 device_answer)
 ///  - `tw_log2 > 10 || th_log2 > 10`. The window is `1 << min(TW, 10)` (the GS's own 1024 cap)
 ///    while GetTextureMinMax works in `1 << TW`, so the two rects are in different spaces and an
 ///    intersection between them means nothing.
-///  - REGION_REPEAT on either axis. That mode's reads are a BIT PATTERN over the axis
-///    (`(u & MINU) | MAXU`), not an interval, and GetTextureMinMax's rect for it is a hint the
-///    texture cache pairs with a preserved wrap mode -- it is not a claim that nothing outside the
-///    rect is fetched. Every other mode's rect is exact: CLAMP and REGION_CLAMP are intervals,
-///    and REPEAT is only narrowed when the whole span lies inside one repeat period.
+///  - REGION_REPEAT whose pattern can address outside the texture, i.e. `(MAXU | MINU)` at or above
+///    the axis size. That mode reads a BIT PATTERN, `(u & MINU) | MAXU`, and every value it can
+///    produce has bits within `MAXU | MINU` -- so while that fits the axis the pattern lies inside
+///    the texture and GetTextureMinMax's hull for it (UsesRegionRepeat) covers all of it. When it
+///    does NOT fit, values run off the end, the hull is clipped against the texture on the way out,
+///    and what survives is no longer a superset of what is read. Only that case is refused.
+///    GetTextureMinMax flags the same condition itself, as `uses_boundary`.
 ///  - An empty intersection. GetTextureMinMax has its own one-texel fixups for a clamp region
 ///    entirely outside the texture; rather than reason about which of them applied, refuse.
 ///
@@ -997,12 +999,14 @@ constexpr u32 gsTileGpuMaxSpecializationBinds(int setting, u32 device_answer)
 /// already level 0 alone (`tex_pages` is built from the base TEX0), and no TileGpu road samples any
 /// other level -- see ProbeSourceRoad, which admits a declared pyramid precisely because both roads
 /// sample level 0. Narrowing INSIDE level 0 can neither add nor remove another level's pages.
-inline GSVector4i gsTileGpuReadWindowRect(
-	const GSVector4i& window, const GSVector4i& coverage, u32 tw_log2, u32 th_log2, u32 wms, u32 wmt)
+inline GSVector4i gsTileGpuReadWindowRect(const GSVector4i& window, const GSVector4i& coverage, u32 tw_log2,
+	u32 th_log2, u32 wms, u32 wmt, u32 minu, u32 maxu, u32 minv, u32 maxv)
 {
 	if (tw_log2 > 10 || th_log2 > 10)
 		return window;
-	if (wms == CLAMP_REGION_REPEAT || wmt == CLAMP_REGION_REPEAT)
+	if (wms == CLAMP_REGION_REPEAT && (maxu | minu) >= (1u << tw_log2))
+		return window;
+	if (wmt == CLAMP_REGION_REPEAT && (maxv | minv) >= (1u << th_log2))
 		return window;
 	const GSVector4i clipped = coverage.rintersect(window);
 	if (clipped.rempty())
