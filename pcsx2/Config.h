@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 145 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 146 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1880,6 +1880,33 @@ struct Pcsx2Config
 					// threshold), queued behind removing the pulls themselves (the 16-bit
 					// CLUT gather), which is the only thing that helps that title.
 					TileGpuKickReadbackFrames : 1,
+					// At a mid-plan cut, retain only the byte road's LIVE reservation instead of
+					// everything staged since the last cut.
+					//
+					// ⚠️ THE MECHANISM. A stream ring frees a range when the submission that
+					// read it retires. A mid-plan cut has to walk the newest range's fence
+					// forward, because the plan being recorded reads its staging on BOTH sides
+					// of the cut -- that is what stopped Ratchet & Clank drawing with other
+					// draws' textures. But the range it walks forward is everything staged
+					// since the last cut, and a commit landing on the same fence counter merges
+					// into that range rather than opening a new one. So the range never
+					// subdivides: every cut slides it onto the buffer now recording, a whole
+					// frame's staging ends up pinned to the frame's LAST submission, and the
+					// ring's depth is counted in FRAMES instead of submissions. The wait that
+					// follows is correspondingly long -- RG477V Spider-Man 3 blocks ~15 ms per
+					// wait, which is a whole frame of GPU work, not a submission's.
+					//
+					// With the key on, the cut names where the live reservation begins and the
+					// bytes below it retire with the submission that actually read them. Costs
+					// nothing: no memory, one deque entry per cut, and the fence still only ever
+					// moves FORWARD for the range that needs it.
+					//
+					// OFF by default until the device A/B says otherwise -- it changes when
+					// staging bytes become reusable, which is a lifetime question and the one
+					// place in this backend where being wrong is silent corruption rather than a
+					// slow frame. Pixel-inert if it is right, which is exactly what the 22-dump
+					// hash grid is asked. Dev only.
+					TileGpuStageRetainSplit : 1,
 					// Serve an alpha test the plan could not decide EXACTLY, by splitting the
 					// draw, instead of discarding the fragments that fail it.
 					//

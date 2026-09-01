@@ -1135,7 +1135,11 @@ private:
 	/// plan holds live references to all of them from the moment it stages until its last draw is
 	/// recorded. Without this the ring frees them at the first of the plan's submissions instead of
 	/// the last; VKStreamBuffer::RetainForCurrentCommandBuffer's comment has the mechanism.
-	void RetainTileGpuStreamsForCurrentCommandBuffer();
+	/// `vram_keep_from` is where the byte road's LIVE reservation begins, or kTileGpuNoStagedPlan
+	/// when the caller has nothing staged that a later submission still reads. It is only consulted
+	/// under EmuCore/GS/TileGpuStageRetainSplit; without the key every cut retains the blanket way.
+	static constexpr u32 kTileGpuNoStagedPlan = ~0u;
+	void RetainTileGpuStreamsForCurrentCommandBuffer(u32 vram_keep_from = kTileGpuNoStagedPlan);
 	bool m_tilegpu_tried = false;
 	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the byte sampling path compiled in
 	// TileGpuClutMergeRegions as it stood when this session's module source was assembled -- see

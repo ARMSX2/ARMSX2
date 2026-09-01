@@ -1255,6 +1255,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuFlushGateUploadMerge);
 	SettingsWrapBitBool(TileGpuShadowSurvivesFlush);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
+	SettingsWrapBitBool(TileGpuStageRetainSplit);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
 	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);

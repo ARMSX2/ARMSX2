@@ -214,6 +214,35 @@ void VKStreamBuffer::RetainForCurrentCommandBuffer()
 		m_tracked_fences.back().first = counter;
 }
 
+void VKStreamBuffer::RetainForCurrentCommandBufferFrom(u32 keep_from_offset)
+{
+	if (m_tracked_fences.empty())
+		return;
+
+	const u64 counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
+	auto& back = m_tracked_fences.back();
+	if (back.first >= counter)
+		return; // already on the buffer being recorded; there is nothing older to leave behind
+
+	// The newest range runs from the previous entry's mark (or the buffer's start) up to this
+	// entry's. A split is only meaningful strictly inside it: at or below the low end there is
+	// nothing to leave behind, at or above the high end there is nothing to carry forward, and
+	// either way a wrap has put the offsets out of order and the blanket retain is the safe read.
+	const u32 high = back.second;
+	const u32 low = (m_tracked_fences.size() >= 2) ? m_tracked_fences[m_tracked_fences.size() - 2].second : 0;
+	if (keep_from_offset <= low || keep_from_offset >= high || low > high)
+	{
+		RetainForCurrentCommandBuffer();
+		return;
+	}
+
+	// [low, keep_from) keeps the fence it was committed under and retires with it; [keep_from, high)
+	// moves onto the buffer now recording. The deque stays sorted on both keys by construction:
+	// keep_from < high, and the old counter is strictly below the current one.
+	back.second = keep_from_offset;
+	m_tracked_fences.emplace_back(counter, high);
+}
+
 void VKStreamBuffer::UpdateCurrentFencePosition()
 {
 	// Has the offset changed since the last fence?

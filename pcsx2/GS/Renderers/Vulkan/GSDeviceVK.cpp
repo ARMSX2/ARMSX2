@@ -7429,13 +7429,24 @@ u32 GSDeviceVK::TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask)
 // outside the staging window today and get nothing out of it; they call it anyway, because the rule
 // that survives a later edit is "a cut retains", and the alternative is re-auditing all five sites
 // every time a reservation moves. Retention only ever delays a reuse, never permits one.
-void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer()
+void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer(u32 vram_keep_from)
 {
 	m_vertex_stream_buffer.RetainForCurrentCommandBuffer();
 	m_index_stream_buffer.RetainForCurrentCommandBuffer();
 	m_tilegpu_state_stream_buffer.RetainForCurrentCommandBuffer();
 	m_tilegpu_indirect_stream_buffer.RetainForCurrentCommandBuffer();
-	m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
+
+	// The byte road is the one ring that RUNS OUT -- on RG477V it is 100% of Spider-Man 3's sync
+	// bill -- and it is also the one whose live range the caller can name, because a plan reserves
+	// its whole frame's staging in a single act. Under EmuCore/GS/TileGpuStageRetainSplit the cut
+	// leaves everything below that reservation behind, so the ring's depth is counted in
+	// submissions again instead of frames. The other four keep the blanket retain: their live range
+	// is the FRAME's (every pass re-binds vertex and index at the frame's base), and none of them
+	// has ever waited.
+	if (GSConfig.TileGpuStageRetainSplit && vram_keep_from != kTileGpuNoStagedPlan)
+		m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBufferFrom(vram_keep_from);
+	else
+		m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
 }
 
 // The source set the frame's draws sample through, taken from the ring. A set is reusable once the
@@ -8538,6 +8549,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	m_tilegpu_kick_plan_passes = 0;
 
+	// Where this plan's byte-road staging begins, once it exists. Every mid-plan cut below hands it
+	// to the retain so the bytes BELOW it -- earlier plans', already recorded into the submission
+	// going out -- are not dragged forward onto the buffer this thread is still filling. Stays
+	// kTileGpuNoStagedPlan until the reservation lands, which is what makes the cuts that happen
+	// before it (the state and indirect reserve fallbacks) retain the blanket way.
+	u32 vram_plan_base = kTileGpuNoStagedPlan;
+
 	// Record the frame's geometry as constant-cost indirect draws. The draw commands go into an
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
 	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
@@ -8722,6 +8740,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		}
 		u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
 		const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
+		vram_plan_base = m_tilegpu_vram_stream_buffer.GetCurrentOffset();
 
 		std::memset(base, 0, kPageBytes); // the zero slot
 		u32* const tables = reinterpret_cast<u32*>(base + slot_bytes);
@@ -9007,7 +9026,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// The counter this submission will carry, read before the submit moves it on.
 		const u64 submitted = GetCurrentFenceCounter();
 		ExecuteCommandBuffer(false);
-		RetainTileGpuStreamsForCurrentCommandBuffer();
+		RetainTileGpuStreamsForCurrentCommandBuffer(vram_plan_base);
 		if (serialize >= 3)
 			WaitForFenceCounter(submitted, GpuWaitSite::TileGpuSerialize);
 		cmd = GetCurrentCommandBuffer();
@@ -9119,7 +9138,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		m_tilegpu_kicks_taken++;
 		ExecuteCommandBuffer(WaitType::None);
-		RetainTileGpuStreamsForCurrentCommandBuffer();
+		RetainTileGpuStreamsForCurrentCommandBuffer(vram_plan_base);
 		cmd = GetCurrentCommandBuffer();
 		if (cadence_is_marginal)
 		{

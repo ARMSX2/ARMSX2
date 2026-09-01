@@ -63,6 +63,24 @@ public:
 	/// a fence FORWARD, so it can delay a reuse and never permit one.
 	void RetainForCurrentCommandBuffer();
 
+	/// The same thing, but leaving behind the bytes the live reservation does not cover.
+	///
+	/// RetainForCurrentCommandBuffer moves the WHOLE newest range forward, and at a mid-plan cut
+	/// that range is everything staged since the last cut -- most of which no longer has a reader,
+	/// because the draws that read it are already recorded into the submission that is going out.
+	/// Since a commit that lands on the same fence counter merges into that range rather than
+	/// opening a new one, the range never subdivides: every cut slides it onto the buffer now
+	/// recording, so a whole frame's staging ends up pinned to the frame's LAST submission and the
+	/// ring's effective depth is measured in frames instead of submissions.
+	///
+	/// `keep_from_offset` is where the reservation the caller is still recording against begins.
+	/// Bytes below it retire with the submission that read them; bytes at or above it ride forward,
+	/// which is the part the correctness argument is actually about. Falls back to the blanket
+	/// retain whenever the offset does not sit strictly inside the newest range -- a wrap, an empty
+	/// live range, a caller with nothing staged -- because retaining too much is only slow and
+	/// retaining too little is corruption.
+	void RetainForCurrentCommandBufferFrom(u32 keep_from_offset);
+
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);
 	void UpdateCurrentFencePosition();
