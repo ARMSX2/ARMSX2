@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 146 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 147 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1907,6 +1907,28 @@ struct Pcsx2Config
 					// slow frame. Pixel-inert if it is right, which is exactly what the 22-dump
 					// hash grid is asked. Dev only.
 					TileGpuStageRetainSplit : 1,
+					// Hand the recorded work to the GPU BEFORE blocking for byte-road staging
+					// room, instead of after.
+					//
+					// Shipped, ReserveMemory blocks on a fence first and only submits if no
+					// fence could have helped. So the GS thread runs out of ring, goes to
+					// sleep, and does it holding a command buffer full of work the GPU has
+					// never seen -- the one state in the whole road where the queue is short
+					// and the host is waiting on it anyway. With the key on the first ask is
+					// non-blocking: no room means submit, then ask again and wait if it still
+					// has to.
+					//
+					// It does not shorten the wait it does not remove; what it buys is that
+					// the GPU is fed across it. It can also relocate: the submit may hit the
+					// command-buffer ring instead, and the retry may still wait. Both land on
+					// their own wait site, which is the whole reason the per-site accounting
+					// exists.
+					//
+					// OFF by default until the device A/B says otherwise. Pixel-inert by
+					// construction -- it moves WHEN recorded work is submitted, never what is
+					// recorded -- and gated on the 22-dump hash grid like every other
+					// submission-timing key. Dev only.
+					TileGpuSubmitBeforeStageWait : 1,
 					// Serve an alpha test the plan could not decide EXACTLY, by splitting the
 					// draw, instead of discarding the fragments that fail it.
 					//

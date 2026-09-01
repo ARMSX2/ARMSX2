@@ -119,7 +119,7 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_host_pointer = nullptr;
 }
 
-bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
+bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment, bool allow_wait)
 {
 	const u32 required_bytes = num_bytes + alignment;
 
@@ -174,7 +174,7 @@ bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
 	}
 
 	// Can we find a fence to wait on that will give us enough memory?
-	if (WaitForClearSpace(required_bytes))
+	if (allow_wait && WaitForClearSpace(required_bytes))
 	{
 		const u32 align_diff = Common::AlignUp(m_current_offset, alignment) - m_current_offset;
 		m_current_offset += align_diff;

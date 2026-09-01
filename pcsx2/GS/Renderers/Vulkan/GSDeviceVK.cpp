@@ -8731,7 +8731,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const u32 keep_bytes = static_cast<u32>(plan.writeback_keep_masks.size() * sizeof(u32));
 		const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
 		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + block_bytes + keep_bytes + pal_bytes;
-		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
+		// EmuCore/GS/TileGpuSubmitBeforeStageWait inverts the order of the two things that can be
+		// done about a full ring. Shipped, ReserveMemory blocks on a fence first and only submits
+		// if no fence could help -- so the GS thread goes to sleep with a frame's recorded work
+		// still sitting in an unsubmitted command buffer, which is the one state where the GPU has
+		// nothing queued and the host is waiting for it anyway. With the key on, the first ask is
+		// non-blocking: run out of room and the recorded work goes to the GPU before this thread
+		// blocks. The retry that follows may still wait, and the submit itself may hit the
+		// command-buffer ring -- both are read per site, which is how the relocation is caught.
+		const bool submit_before_wait = GSConfig.TileGpuSubmitBeforeStageWait;
+		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes, !submit_before_wait))
 		{
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
 			RetainTileGpuStreamsForCurrentCommandBuffer();

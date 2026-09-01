@@ -42,7 +42,11 @@ public:
 	bool Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site);
 	void Destroy(bool defer);
 
-	bool ReserveMemory(u32 num_bytes, u32 alignment);
+	/// `allow_wait` false means "tell me whether there is room, do not block to make room": the
+	/// last-resort WaitForClearSpace is skipped and the call returns false instead. A caller that
+	/// has recorded work the GPU has not seen yet can use that to hand the work over FIRST and
+	/// block afterwards, which is a strictly deeper pipeline than blocking with the queue short.
+	bool ReserveMemory(u32 num_bytes, u32 alignment, bool allow_wait = true);
 	void CommitMemory(u32 final_num_bytes);
 
 	/// Hold the newest committed range until the command buffer being recorded NOW retires, not
