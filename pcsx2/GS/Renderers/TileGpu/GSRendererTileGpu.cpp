@@ -3256,12 +3256,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 		const double pframes = static_cast<double>(g_gs_device->GetTileGpuKickPredictorFrames());
 		Console.WriteLn("  mid-frame kick predictor (EmuCore/GS/TileGpuAdaptiveKick): cadence ON in %llu/%llu "
 						"frames (%.1f%%), %llu switches, %llu cadence submits -- bubble %.3f ms latched against "
-						"%.3f us a render pass measured on this device",
+						"%.3f us a render pass measured on this device (the bubble is a DIFFERENCE: %.3f ms of "
+						"wait peak with the cadence off, less %.3f ms with it on)",
 			g_gs_device->GetTileGpuKickPredictorFramesOn(), g_gs_device->GetTileGpuKickPredictorFrames(),
 			pframes ? (100.0 * static_cast<double>(g_gs_device->GetTileGpuKickPredictorFramesOn()) / pframes) : 0.0,
 			g_gs_device->GetTileGpuKickPredictorSwitches(), g_gs_device->GetTileGpuKickPredictorSubmits(),
 			static_cast<double>(g_gs_device->GetTileGpuKickPredictorBubbleNs()) / 1e6,
-			static_cast<double>(g_gs_device->GetTileGpuKickPredictorTaxNs()) / 1e3);
+			static_cast<double>(g_gs_device->GetTileGpuKickPredictorTaxNs()) / 1e3,
+			static_cast<double>(g_gs_device->GetTileGpuKickPredictorWaitOffNs()) / 1e6,
+			static_cast<double>(g_gs_device->GetTileGpuKickPredictorWaitOnNs()) / 1e6);
 	}
 
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of

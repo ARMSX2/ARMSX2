@@ -44,7 +44,9 @@ public:
 	u64 GetTileGpuKickPredictorFrames() const override { return m_tilegpu_kick_picker.frames; }
 	u64 GetTileGpuKickPredictorFramesOn() const override { return m_tilegpu_kick_picker.frames_on; }
 	u64 GetTileGpuKickPredictorSwitches() const override { return m_tilegpu_kick_picker.switches; }
-	u64 GetTileGpuKickPredictorBubbleNs() const override { return m_tilegpu_kick_picker.bubble_ns; }
+	u64 GetTileGpuKickPredictorBubbleNs() const override { return m_tilegpu_kick_picker.BubbleNs(); }
+	u64 GetTileGpuKickPredictorWaitOffNs() const override { return m_tilegpu_kick_picker.wait_off_ns; }
+	u64 GetTileGpuKickPredictorWaitOnNs() const override { return m_tilegpu_kick_picker.wait_on_ns; }
 	u64 GetTileGpuKickPredictorTaxNs() const override { return m_tilegpu_kick_picker.TaxNs(); }
 	u64 GetTileGpuKickPredictorSubmits() const override { return m_tilegpu_kick_picker.submits_taken; }
 	u64 GetTileGpuSeedRenderPasses() const override { return m_tilegpu_seed_render_passes; }

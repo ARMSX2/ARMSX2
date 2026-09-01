@@ -1578,7 +1578,8 @@ constexpr bool gsTileGpuKickWantsSubmit(u32 passes_since_submit, u32 cadence, bo
 /// depend on how a float rounded on one architecture.
 enum : u32
 {
-	/// The latched bubble decays by 1/256 of itself per DRAWN frame. Two numbers meet here.
+	/// Each of the two latched wait peaks decays by 1/256 of itself per DRAWN frame. Two numbers
+	/// meet here.
 	///
 	/// It has to decay at all: the cadence, when it works, HIDES the bubble it is filling, so a
 	/// peak measured while the cadence was off can never be refreshed while the cadence is on. A
@@ -1589,6 +1590,11 @@ enum : u32
 	/// peak in 177 drawn frames (~3 s at 60 Hz), so the re-measurement costs at most the confirm
 	/// window -- four frames in ~180, under 2.5% -- and a scene that genuinely quietens still
 	/// re-prices within seconds.
+	///
+	/// ⚠️ AND IT HAS TO BE THE SAME RATE ON BOTH PEAKS. The credit below is a DIFFERENCE of two
+	/// peaks, one per state; decaying them at different rates would make that difference drift
+	/// toward whichever side was last refreshed, which is a number about the sampling and not
+	/// about the lever.
 	kGSTileGpuKickBubbleDecayShift = 8,
 	/// Entering the ON state needs the bubble to be worth TWICE the price; staying needs it worth
 	/// the price once. The 2x band is the hysteresis, the same shape and the same reason as the
@@ -1610,17 +1616,39 @@ enum : u32
 /// off -- on Stuntman, the -33% case the cadence exists for. You cannot observe a bubble you have
 /// filled.
 ///
-/// So the credit is LATCHED, not re-measured: `bubble_ns` is the PEAK blocking wait seen, decayed
-/// slowly, exactly the shape the declaring budget's per-class peak uses and for the same reason.
-/// While the cadence is off the frame is undistorted and the peak is the truth; while it is on the
-/// frame's own wait is only a FLOOR under the peak, and the decay is what eventually forces a
-/// re-measurement rather than letting one scene latch the lever for a run.
+/// So the credit is LATCHED, not re-measured, and it is latched ONCE PER STATE: `wait_off_ns` is
+/// the peak blocking wait seen on the frames the cadence was off for, `wait_on_ns` the peak seen on
+/// the frames it was on for, both decayed slowly, exactly the shape the declaring budget's
+/// per-class peak uses and for the same reason. Neither can be refreshed while the other state
+/// runs, and the decay is what eventually forces a re-measurement rather than letting one scene
+/// latch the lever for a run.
 ///
-/// THE DECISION, in one line: the cadence stays on while the bubble it is fighting is worth more
-/// than the cadence costs to run, both measured in nanoseconds on THIS device.
+/// ⚠️ TWO PEAKS AND NOT ONE, AND THE SINGLE PEAK WAS WRONG IN SIGN. One peak makes the credit the
+/// wait that EXISTS, and the model then reads any wait at all as wait the cadence would remove.
+/// That inference has no evidence behind it and on real content it is backwards. Stuntman on the
+/// M2, cadence pinned each way over the same dump: 69.74 ms of blocking wait a drawn frame with the
+/// cadence OFF and 121.52 ms with it ON, for +34.7 ms of wall. The lever does not drain a backlog
+/// on that title, it manufactures the stall -- the pass tail's submit is not free where the next
+/// command buffer has not really retired -- and a credit that only ever reads a level cannot
+/// represent that, however long it is given to observe. So the credit is the DIFFERENCE: what a
+/// frame stalls for without the cadence, less what it stalls for with it. That is falsifiable, it
+/// is what the lever is actually worth, and it costs one extra accumulator.
 ///
-///   credit   `bubble_ns`, the latched peak of the frame's GPU-blocking wait -- sync +
-///            out-of-band + source-set wrap, the GSPerfMon::GpuBlockingWaits population exactly.
+/// ⚠️ AND THE DIFFERENCE IS WHAT MAKES A LONG MEMORY SAFE. A peak has the memory its decay gives it
+/// -- 177 drawn frames, about three seconds. Against a debit that is one frame's cost and has no
+/// memory at all, a single stalled frame licenses the cadence for three seconds; on Spider-Man 3 a
+/// 79.4 ms frame latched the lever on for the following twenty-two frames whose own waits were
+/// 0-39 ms. Paired with a same-memory peak on the on-state side, a spike that appears in both
+/// states cancels instead of ratcheting, and the credit is a difference of like with like. This is
+/// the term the frame-clock fix of 2026-08-31 changed: it multiplied the peak's memory by the
+/// title's plans per frame (Spider-Man 3 1.9 frames -> 177) while leaving the debit a per-frame
+/// quantity, so an unopposed credit gained three seconds of persistence it had never had.
+///
+/// THE DECISION, in one line: the cadence stays on while the wait it REMOVES is worth more than the
+/// cadence costs to run, both measured in nanoseconds on THIS device.
+///
+///   credit   `BubbleNs()`, the off-state wait peak less the on-state one, floored at zero -- sync
+///            + out-of-band + source-set wrap, the GSPerfMon::GpuBlockingWaits population exactly.
 ///            Ring backpressure is deliberately NOT in it: the census calls it "not a drain" for a
 ///            reason, and it is a symptom of submitting more, so it belongs on neither side rather
 ///            than on the credit side.
@@ -1659,7 +1687,8 @@ struct GSTileGpuKickPolicyPicker
 	u32 switches = 0;      ///< times the state actually changed -- the churn column
 	u32 frames = 0;        ///< frames observed
 	u32 frames_on = 0;     ///< ...of which ran with the cadence on
-	u64 bubble_ns = 0;     ///< the latched blocking-wait peak
+	u64 wait_off_ns = 0;   ///< the latched blocking-wait peak of the frames the cadence was OFF for
+	u64 wait_on_ns = 0;    ///< ...and of the frames it was ON for. The credit is the difference.
 	u64 submits_taken = 0; ///< mid-frame submits the cadence was the marginal trigger for
 	u64 tax_total_ns = 0;  ///< the cadence's own GS-thread cost, summed over the frames it RAN in
 	u64 tax_passes = 0;    ///< ...over this many render passes
@@ -1668,6 +1697,12 @@ struct GSTileGpuKickPolicyPicker
 	/// somewhere, which is the whole of "unpriced, so no evidence, so leave the shipped arrangement
 	/// alone". Integer division: a rate under 1 ns a pass is a rate this decision cannot use.
 	u64 TaxNs() const { return tax_passes ? (tax_total_ns / tax_passes) : 0; }
+
+	/// The wait the cadence REMOVES, in nanoseconds: what a frame stalls for without it, less what
+	/// it stalls for with it. Floored at zero rather than allowed to go negative, because a lever
+	/// that ADDS wait is worth nothing, not worth less than nothing -- the debit already carries
+	/// what it costs, and letting the credit go negative would double-charge it.
+	u64 BubbleNs() const { return wait_off_ns > wait_on_ns ? (wait_off_ns - wait_on_ns) : 0; }
 
 	/// Feed one finished frame; returns the state the NEXT frame runs under.
 	///
@@ -1710,16 +1745,25 @@ struct GSTileGpuKickPolicyPicker
 			tax_passes += render_passes;
 		}
 
-		// The peak, decayed first so a frame's own wait can re-establish it in the same step.
-		bubble_ns -= bubble_ns >> kGSTileGpuKickBubbleDecayShift;
-		if (wait_ns > bubble_ns)
-			bubble_ns = wait_ns;
+		// The two peaks, decayed first so a frame's own wait can re-establish its own in the same
+		// step. BOTH decay every frame even though only one of them can be refreshed: the credit is
+		// their difference, and decaying only the state we are in would let the other side stand
+		// unaged and turn the difference into a fact about which state was sampled last.
+		wait_off_ns -= wait_off_ns >> kGSTileGpuKickBubbleDecayShift;
+		wait_on_ns -= wait_on_ns >> kGSTileGpuKickBubbleDecayShift;
+		// ⚠️ Only the state this frame RAN IN may take the sample. A frame's wait is evidence about
+		// the world it was measured in and about no other; crediting an on-frame's wait to the off
+		// peak is what made the old single peak read a wait the cadence CAUSED as a wait it would
+		// remove.
+		u64& measured = on ? wait_on_ns : wait_off_ns;
+		if (wait_ns > measured)
+			measured = wait_ns;
 
 		// The price of the state we are IN. Measured while on, counterfactual while off, and the
 		// two are the same quantity: what the cadence costs on a frame with this many passes.
 		const u64 debit = on ? cadence_ns : (static_cast<u64>(render_passes) * TaxNs());
 		const u64 need = on ? debit : (debit * kGSTileGpuKickEnterMultiplier);
-		const bool want = (debit == 0) || (bubble_ns >= need);
+		const bool want = (debit == 0) || (BubbleNs() >= need);
 		if (want == on)
 		{
 			confirming = 0;
@@ -2325,6 +2369,8 @@ public:
 	virtual u64 GetTileGpuKickPredictorFramesOn() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorSwitches() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorBubbleNs() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorWaitOffNs() const { return 0; }
+	virtual u64 GetTileGpuKickPredictorWaitOnNs() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorTaxNs() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorSubmits() const { return 0; }
 	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and
@@ -4062,9 +4108,9 @@ public:
 	/// flushes a lot builds hundreds of plans in one video frame -- and anything the device decides
 	/// once per frame has to be told where the frame ends, because the executor cannot tell the
 	/// last plan of a frame from the first plan of the next one. The kick predictor
-	/// (GSTileGpuKickPolicyPicker) is the one thing that needs it: its credit is a peak decayed
-	/// per observation and its confirmation counts consecutive observations, so observing per plan
-	/// runs both clocks at the plan rate rather than the frame rate.
+	/// (GSTileGpuKickPolicyPicker) is the one thing that needs it: its credit is the difference of
+	/// two peaks decayed per observation and its confirmation counts consecutive observations, so
+	/// observing per plan runs both clocks at the plan rate rather than the frame rate.
 	virtual void TileGpuFrameBoundary() {}
 
 	/// Enables/disables GPU frame timing.

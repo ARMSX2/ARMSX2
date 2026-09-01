@@ -20,6 +20,15 @@
 // oscillates on exactly the case it exists for. You cannot observe a bubble you have filled. The
 // tests below pin that the latch prevents it.
 //
+// ⚠️ AND THE SECOND TRAP, which cost a round to find because it is invisible on every title above.
+// ONE peak makes the credit the wait that EXISTS, and nothing in that reading distinguishes a wait
+// the cadence would remove from a wait the cadence CAUSES. On Stuntman on the M2 it causes it:
+// 69.74 ms of blocking wait a drawn frame with the cadence off, 121.52 ms with it on, +34.7 ms of
+// wall. So the credit is TWO peaks, one per state, and what it is worth is their DIFFERENCE. Every
+// case below is fitted to numbers where the off frame stalls more than the on frame, so the two
+// readings agree there and the corpus alone cannot tell them apart -- kStuntmanM2 is the case that
+// can, and it is the reason the difference is pinned in both directions.
+//
 // What is pinned here:
 //
 //  - AN EMPTY FRAME IS NOT EVIDENCE. A frame that opened no render pass gave the cadence no
@@ -29,6 +38,11 @@
 //    re-admission line in ONE step, and re-admitted a class the counter read as 100% refused.
 //  - HYSTERESIS. Entering the ON state needs the bubble worth twice the price; staying needs it
 //    worth the price once, and either move needs two consecutive frames to ask for it.
+//  - A CREDIT IS A DIFFERENCE, AND IT HAS TO BE MEASURED. A wait the cadence causes is not credited
+//    to it, a spike that lands in both states cancels instead of licensing the lever, and a run
+//    that has never had the cadence off spends the confirm window off to find out what one costs --
+//    once at the start and once per decay period, which is the excursion budget the decay constant
+//    was chosen for.
 //  - BOUNDED OSCILLATION. A title whose bubble is invisible while the cadence runs spends the
 //    overwhelming majority of its frames ON, not half of them: the peak decays at 1/256 a frame, so
 //    the re-measurement excursion is the confirm window in ~180 frames rather than a flip-flop.
@@ -138,6 +152,17 @@ namespace
 		{0, 7, 100000, 438},
 		{0, 0, 0, 438},
 	};
+	// ★ Stuntman on the M2 Max under Honeykrisp, the case that has the OPPOSITE sign to every one
+	// above and the reason the credit is a difference. Measured 2026-08-31 with the cadence pinned
+	// each way over the same dump: 69.74 ms of blocking wait a drawn frame with it OFF and 121.52
+	// with it ON, wall 104.63 ms against 139.29, and 3.77 ms a drawn frame of GS-thread CPU for the
+	// privilege. The lever does not drain a backlog here, it manufactures the stall. A model whose
+	// credit is the wait that EXISTS reads the 121.52 as the bubble and pins the cadence on for the
+	// run; the difference reads it as the cadence's own doing and refuses.
+	constexpr Title kStuntmanM2 = {
+		{121520000, 6, 3770000, 2066},
+		{69740000, 0, 0, 2066},
+	};
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -150,7 +175,9 @@ TEST(TileGpuKickPredictor, StartsOnBecauseThatIsWhatShips)
 	EXPECT_TRUE(picker.on);
 	EXPECT_EQ(picker.frames, 0u);
 	EXPECT_EQ(picker.switches, 0u);
-	EXPECT_EQ(picker.bubble_ns, 0u);
+	EXPECT_EQ(picker.BubbleNs(), 0u);
+	EXPECT_EQ(picker.wait_off_ns, 0u);
+	EXPECT_EQ(picker.wait_on_ns, 0u);
 	EXPECT_EQ(picker.TaxNs(), 0u);
 }
 
@@ -181,7 +208,8 @@ TEST(TileGpuKickPredictor, AnEmptyFrameChangesNothingAtAll)
 	EXPECT_TRUE(picker.Observe(50 * kMs, 99, 99 * kMs, 0));
 	EXPECT_EQ(picker.frames, before.frames);
 	EXPECT_EQ(picker.frames_on, before.frames_on);
-	EXPECT_EQ(picker.bubble_ns, before.bubble_ns);
+	EXPECT_EQ(picker.wait_off_ns, before.wait_off_ns);
+	EXPECT_EQ(picker.wait_on_ns, before.wait_on_ns);
 	EXPECT_EQ(picker.confirming, before.confirming);
 	EXPECT_EQ(picker.switches, before.switches);
 	EXPECT_EQ(picker.tax_total_ns, before.tax_total_ns);
@@ -196,10 +224,12 @@ TEST(TileGpuKickPredictor, EmptyFramesDoNotDecayThePeak)
 	// as the design says, and the ON state would be given up on a schedule nobody chose.
 	GSTileGpuKickPolicyPicker picker;
 	picker.Observe(20 * kMs, 4, 4 * kTaxSD865, 500);
-	const u64 peak = picker.bubble_ns;
+	const u64 peak_off = picker.wait_off_ns;
+	const u64 peak_on = picker.wait_on_ns;
 	for (u32 i = 0; i < 500; i++)
 		picker.Observe(0, 0, 0, 0);
-	EXPECT_EQ(picker.bubble_ns, peak);
+	EXPECT_EQ(picker.wait_off_ns, peak_off);
+	EXPECT_EQ(picker.wait_on_ns, peak_on);
 	EXPECT_EQ(picker.frames, 1u);
 }
 
@@ -227,12 +257,19 @@ TEST(TileGpuKickPredictor, OneAnomalousFrameDoesNotSwitch)
 {
 	// A load screen, a full-screen wipe. The confirmation count is what this answers; the band
 	// below answers a metric sitting on the threshold.
+	//
+	// ⚠️ The off-state peak is seeded, because a credit is a DIFFERENCE and a picker that has never
+	// run with the cadence off has not measured one. The frames themselves carry no wait: that is
+	// the latch's own case, the cadence having filled the bubble it is being judged on.
 	GSTileGpuKickPolicyPicker picker;
-	picker.Observe(20 * kMs, 4, 4 * kTaxSD865, 500); // healthy: stay on
-	picker.Observe(0, 40, 40 * kMs, 500);            // one wild frame asking for off
+	picker.wait_off_ns = 20 * kMs;
+	picker.Observe(0, 4, 4 * kTaxSD865, 500); // healthy: stay on
+	EXPECT_TRUE(picker.on);
+	EXPECT_EQ(picker.confirming, 0u);
+	picker.Observe(0, 40, 40 * kMs, 500); // one wild frame asking for off
 	EXPECT_TRUE(picker.on);
 	EXPECT_EQ(picker.confirming, 1u);
-	picker.Observe(20 * kMs, 4, 4 * kTaxSD865, 500); // back to healthy
+	picker.Observe(0, 4, 4 * kTaxSD865, 500); // back to healthy
 	EXPECT_TRUE(picker.on);
 	EXPECT_EQ(picker.confirming, 0u);
 	EXPECT_EQ(picker.switches, 0u);
@@ -254,11 +291,13 @@ TEST(TileGpuKickPredictor, EnteringOnCostsTwiceWhatStayingOnCosts)
 		return p;
 	};
 	{
-		// Staying: 1.5x the price is enough.
+		// Staying: 1.5x the price is enough. The off-state peak carries the credit and the frames
+		// themselves show no wait, which is the latch's own case -- the cadence has filled the
+		// bubble it is being judged on.
 		GSTileGpuKickPolicyPicker picker = priced(true);
-		picker.bubble_ns = (3 * kDebit) / 2;
+		picker.wait_off_ns = (3 * kDebit) / 2;
 		for (u32 i = 0; i < 8; i++)
-			picker.Observe(picker.bubble_ns, 10, kDebit, kPasses);
+			picker.Observe(0, 10, kDebit, kPasses);
 		EXPECT_TRUE(picker.on);
 	}
 	{
@@ -326,9 +365,17 @@ TEST(TileGpuKickPredictor, ASettledOffTitleDoesNotChurn)
 
 TEST(TileGpuKickPredictor, StuntmanKeepsItsCadenceOnBothDevices)
 {
-	// The -33.3% and the -38.7%. On the SD865 the wait survives the cadence and the latch is not
-	// even needed; on the RG477V it does not, and the latch is the whole reason this holds.
-	EXPECT_GT(FramesOn(600, kStuntmanSD865), 594u);  // > 99%
+	// The -33.3% and the -38.7%. On the SD865 a large wait survives the cadence and on the RG477V
+	// it does not; either way the OFF frames stall far more than the ON frames, which is what the
+	// credit reads.
+	//
+	// ⚠️ 97.5% rather than the 99% this pinned before 2026-08-31, and the missing frames are a
+	// MEASUREMENT and not churn. A credit is the difference between the two states, so a run that
+	// has never had the cadence off has not measured one; the predictor spends the confirm window
+	// off, once at the start and once per decay period after, and that is the only way the
+	// difference can be known at all. It is inside the excursion budget the decay constant is
+	// chosen for -- the confirm window in ~180 frames, under 2.5%.
+	EXPECT_GT(FramesOn(600, kStuntmanSD865), 585u);  // > 97.5%
 	EXPECT_GT(FramesOn(600, kStuntmanRG477V), 570u); // > 95%
 }
 
@@ -400,4 +447,68 @@ TEST(TileGpuKickPredictor, ACadenceThatNeverFiresChargesNothingAndTheStateStands
 		picker.Observe(0, 0, 0, 500);
 	EXPECT_TRUE(picker.on);
 	EXPECT_EQ(picker.TaxNs(), 0u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The credit is a DIFFERENCE -- what the cadence removes, not what the frame stalls for
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuKickPredictor, AWaitTheCadenceCausesIsNotCreditedToTheCadence)
+{
+	// ★ The M2's Stuntman. Every other case in this file has the off frame stalling more than the
+	// on frame, so a credit taken from either reads roughly the same; this one has it the other way
+	// round, and the two readings differ by the whole verdict. Pinning both directions is what says
+	// the difference is doing the work rather than a threshold that happens to fit.
+	EXPECT_LT(FramesOn(600, kStuntmanM2), 30u); // off, and it stays off
+	const GSTileGpuKickPolicyPicker picker = RunTitle(600, kStuntmanM2);
+	EXPECT_FALSE(picker.on);
+	// ...and the reason, stated in the numbers the decision actually used: the on-state peak is the
+	// larger of the two, so there is no wait to credit the lever with at all.
+	EXPECT_GT(picker.wait_on_ns, picker.wait_off_ns);
+	EXPECT_EQ(picker.BubbleNs(), 0u);
+}
+
+TEST(TileGpuKickPredictor, ASpikeSeenInBothStatesCancelsInsteadOfLatchingTheLeverOn)
+{
+	// Spider-Man 3 on the M2. A periodic stall that has nothing to do with the cadence lands in
+	// whichever state the frame happened to run in, and over a run it lands in both. Under one peak
+	// it was pure credit -- a single 79.4 ms frame licensed the cadence for the twenty-two that
+	// followed, whose own waits were 0-39 ms -- and the frame-clock fix of 2026-08-31 stretched that
+	// licence from about two frames to about a hundred and seventy-seven. Under two it cancels.
+	//
+	// The bill is 12 ms a frame against a spike of 79.4 every twelfth frame, so a model that
+	// credits the spike says ON and a model that cancels it says OFF.
+	u32 on = 0;
+	GSTileGpuKickPolicyPicker picker;
+	for (u32 i = 0; i < 600; i++)
+	{
+		on += picker.on ? 1u : 0u;
+		const u64 wait = (i % 12) == 0 ? 79400000 : 0;
+		if (picker.on)
+			picker.Observe(wait, 5, 12 * kMs, 1146);
+		else
+			picker.Observe(wait, 0, 0, 1146);
+	}
+	EXPECT_LT(on, 120u); // under a fifth of the run, against ~all of it under one peak
+}
+
+TEST(TileGpuKickPredictor, TheOffStateHasToBeMeasuredOnceBeforeAnyCreditExists)
+{
+	// The startup excursion, pinned so it stays BOUNDED rather than becoming a duty cycle. A run
+	// begins with the cadence on and no measurement of what a frame costs without it, so the credit
+	// is not zero, it is unknown -- and the only way to learn it is to spend the confirm window off.
+	// Stuntman on the SD865 is the case where the old single peak never had to: it read the 14 ms
+	// that SURVIVES the cadence as the bubble and stayed on from frame one.
+	GSTileGpuKickPolicyPicker picker;
+	for (u32 i = 0; i < 8; i++)
+	{
+		const Frame& f = picker.on ? kStuntmanSD865.on : kStuntmanSD865.off;
+		picker.Observe(f.wait_ns, f.submits, f.cadence_ns, f.passes);
+	}
+	// It went off to look, found the 50 ms, and came straight back.
+	EXPECT_TRUE(picker.on);
+	EXPECT_EQ(picker.switches, 2u);
+	EXPECT_GT(picker.wait_off_ns, 48 * kMs);  // the off world, measured, less a few frames of decay
+	EXPECT_LE(picker.wait_off_ns, 50 * kMs);
+	EXPECT_GT(picker.BubbleNs(), 30 * kMs); // ...and now there is a real credit
 }
