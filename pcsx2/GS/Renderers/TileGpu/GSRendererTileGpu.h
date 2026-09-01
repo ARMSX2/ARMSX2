@@ -2299,8 +2299,9 @@ private:
 	GSSwPrimRenderState m_sw_prim;
 	bool (*m_sw_prim_render)(GSRenderer&, GSSwPrimRenderState&, const GSVector4i&) = nullptr;
 	bool m_cpu_sprite_raster = false;
-	/// ...and whether the GameDB actually armed it for this title, which is what the CLUT gather
-	/// stands down for. Asked once: both terms are fixed for the session.
+	/// ...and whether the GameDB actually armed it for this title. Asked once: both terms are fixed
+	/// for the session, and the whole road hangs off this one test so a title with no entry pays a
+	/// predicted branch per draw and nothing else.
 	bool m_cpu_raster_armed = false;
 
 	// Compose `pages`' byte truth into ring slots for the current epoch: writebacks for every

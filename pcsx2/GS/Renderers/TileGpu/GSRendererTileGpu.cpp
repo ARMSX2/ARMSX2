@@ -1088,26 +1088,31 @@ bool GSRendererTileGpu::ClutGatherServes()
 		// palette stream, which asks the device for nothing. Rule 3's N x 1 gather does need the
 		// source array, and it is already unreachable without it (ProbeSourceRoad is the gate).
 	}
-	// ⚠️ THE CPU RASTERIZATION ROAD AND THE GATHER CANNOT BOTH RUN ON ONE TITLE, and where the game
-	// database arms the first the second stands down. The gather leaves the CPU's CLUT RAM stale for
-	// the slots it serves, the scanline core reads exactly that RAM, and the road's rule is to
-	// DECLINE rather than sync -- so a stale slot is a refused draw.
+	// ⚠️ THE GATHER OUTRANKS THE CPU RASTERIZATION ROAD WHERE THE TWO COLLIDE, and on Spider-Man 3
+	// they collide completely. Recorded here because the collision is invisible from either side:
+	// the gather knows nothing about the road and the road's refusal reads as an ordinary decline.
 	//
-	// The two are not symmetric, which is what makes this a standing refusal rather than a tie-break.
-	// The gather exists to avoid reading a palette back off a render target, and the road REMOVES the
-	// render target: with Spider-Man 3's population on the CPU its palettes are produced into guest
-	// memory, so the loads that needed a gather stop needing anything. Measured on the first drawn
-	// frame, where the mirror is still clean and the road runs at full strength: 2,238 CLUT loads,
-	// 2,218 of them needing nothing at all, and 20 gathers against 182 with the road off.
+	// The gather leaves the CPU's CLUT RAM stale for the slots it serves; the scanline core reads
+	// exactly that RAM; the road's rule is to DECLINE rather than sync. So a device-held slot is a
+	// refused draw -- and one device load refuses every EIGHT-BIT palettised draw in the frame,
+	// because an eight-bit palette at CSA 0 reads all sixteen mirror slots. On Spider-Man 3 that is
+	// 3,120 of the 3,136 draws the road is for.
 	//
-	// Those twenty are why it cannot be left on. One device load poisons every eight-bit palettised
-	// draw in the frame -- an eight-bit palette at CSA 0 reads all sixteen mirror slots -- so twenty
-	// stray gathers on the first frame refused 2,240 draws on the second and 3,120 on every frame
-	// after it: the road diverted 3,136 draws, then 832, then none. With the gather standing down
-	// those loads take the readback road, which restamps the mirror CPU-authoritative and keeps the
-	// road closed.
-	if (m_cpu_raster_armed)
-		return false;
+	// Standing the gather down was tried and is worse, which is the measurement worth keeping. It
+	// does work on its own terms -- the road then diverts the whole population on a clean model, and
+	// the loads that needed a gather stop needing anything (2,238 CLUT loads on the first drawn
+	// frame, 2,218 of them free, 20 gathers against 182) -- but the loads it does not free take the
+	// readback road, and Spider-Man 3 went from ZERO blocking GPU waits a frame to 44.88 of them at
+	// 27.8 ms: 5 CLUT stalls and 45 upload sub-block stalls, the second an indirect effect of the
+	// ownership pattern changing. The road's own prize on that title (writeback dispatches 1,079 ->
+	// 667) is not close to paying for it.
+	//
+	// Stuntman, the corpus's other title with the entry, settles it: it takes the road at full
+	// strength WITH the gather up -- 260 draws diverted, writeback dispatches 382 -> 64, and stalls
+	// and blocking waits both still zero -- because its palettes are not gathered off targets in the
+	// first place. So the two are not a general conflict to be arbitrated, they are one title's
+	// collision, and the road is simply inert there until something breaks the tie honestly (a
+	// bounded sync of the draw's own slots, priced against the gather it replaces).
 	return m_clut_gather_serves;
 }
 
@@ -5728,7 +5733,7 @@ bool GSRendererTileGpu::TryCpuRaster(const GSTileSurfaceLayout& fb_l, const GSVe
 	// The road arms from the game database and nowhere else, so a title without an entry is
 	// structurally untouched: this is the only test it ever reaches, and none of the counters
 	// below can be non-zero for it.
-	const u32 bw = m_cpu_sprite_raster ? GSConfig.UserHacks_CPUSpriteRenderBW : 0u;
+	const u32 bw = m_cpu_raster_armed ? GSConfig.UserHacks_CPUSpriteRenderBW : 0u;
 	if (bw == 0) [[likely]]
 		return false;
 
