@@ -2532,6 +2532,28 @@ struct Pcsx2Config
 		// the built-in depth. Dev only.
 		int TileGpuSourceSetRingDepth = 0;
 
+		// How many MEGABYTES the TileGpu byte road's host staging ring holds -- the buffer
+		// a frame's page slots, epoch page tables, page-entry lists, masks and palettes are
+		// written into on the way to the GPU. Zero -- the default -- takes the built-in
+		// 32 MB; a positive value forces that size, clamped to 8..256. Negative means
+		// nothing here and is treated as zero: a ring of no megabytes is not a
+		// configuration.
+		//
+		// It is a PIPELINE-DEPTH lever. The ring frees a range only when the submission
+		// that read it retires, so size / bytes-staged-a-frame is how many frames the GS
+		// thread may run ahead before it blocks in ReserveMemory. Spider-Man 3 stages ~9 MB
+		// a frame (32 MB = ~3.5 frames), Stuntman ~12.7 (~2.5). Those are the corpus's two
+		// no-readback titles and they are the only two that pay this wait: on RG477V
+		// Spider-Man 3 blocks here 0.68-0.70 times a drawn frame at ~15 ms EACH, 100% of
+		// its sync bucket, while its GPU sits 53.9% busy -- CPU and GPU taking turns.
+		//
+		// ⚠️ REAL MEMORY on an 8 GB handheld, allocated once at first executor use and held
+		// for the run. 32 -> 64 is +32 MB against a target already in the hundreds.
+		//
+		// PIXEL-INERT by construction: a ring's size cannot reach a shader. Dev only; a
+		// staging size is not a user setting.
+		int TileGpuStagingRingMB = 0;
+
 		// How many render passes the TileGpu executor records before it OFFERS to submit
 		// them, on any frame -- the second trigger of the mid-frame kick above, beside
 		// that one's near-a-readback trigger. Zero is off and leaves the near-readback

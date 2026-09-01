@@ -1073,6 +1073,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileNativeDrawLimit) &&
 		OpEqu(TileGpuMaxPassDraws) &&
 		OpEqu(TileGpuSourceSetRingDepth) &&
+		OpEqu(TileGpuStagingRingMB) &&
 		OpEqu(TileGpuKickPassCadence) &&
 		OpEqu(TileGpuMaxSpecializationBinds) &&
 		OpEqu(TileGpuDualSrcRoad) &&
@@ -1422,6 +1423,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileNativeDrawLimit, "TileNativeDrawLimit");
 	SettingsWrapBitfieldEx(TileGpuMaxPassDraws, "TileGpuMaxPassDraws");
 	SettingsWrapBitfieldEx(TileGpuSourceSetRingDepth, "TileGpuSourceSetRingDepth");
+	SettingsWrapBitfieldEx(TileGpuStagingRingMB, "TileGpuStagingRingMB");
 	SettingsWrapBitfieldEx(TileGpuKickPassCadence, "TileGpuKickPassCadence");
 	SettingsWrapBitfieldEx(TileGpuMaxSpecializationBinds, "TileGpuMaxSpecializationBinds");
 	SettingsWrapBitfieldEx(TileGpuDualSrcRoad, "TileGpuDualSrcRoad");

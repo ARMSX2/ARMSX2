@@ -7192,7 +7192,10 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// frame in flight does not stall the next frame's staging.
 	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
 	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
-	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 32 * 1024 * 1024;
+	// The byte road's staging ring, sized by EmuCore/GS/TileGpuStagingRingMB (0 = the built-in
+	// 32 MB). Read once here rather than per frame: the ring is created once and the descriptor
+	// below spells its size a second time, so the two must come from one read.
+	const u32 TILEGPU_VRAM_BUFFER_SIZE = gsTileGpuStagingRingBytes(GSConfig.TileGpuStagingRingMB);
 	if (!m_tilegpu_indirect_stream_buffer.Create(
 			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE, GpuWaitSite::StreamTileGpuIndirect) ||
 		!m_tilegpu_state_stream_buffer.Create(
@@ -7205,6 +7208,19 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			GpuWaitSite::StreamTileGpuVram))
 	{
 		return fail("the indirect, state and ring stream buffers");
+	}
+
+	// Announced only when the key MOVED it. A lever whose whole effect is how far the recording
+	// thread may run ahead leaves no other trace in a log, and "what size did that arm run at?" has
+	// to be answerable from one -- but the default must add no line, or every containment diff in
+	// the campaign grows a row that means nothing.
+	if (TILEGPU_VRAM_BUFFER_SIZE != gsTileGpuStagingRingBytes(0))
+	{
+		Console.WriteLn("TileGpu byte-road staging ring: %u MB (EmuCore/GS/TileGpuStagingRingMB = %d, built-in %u). "
+						"The ring frees a range only when the submission that read it retires, so this is how far "
+						"ahead of the GPU the GS thread may stage before it blocks.",
+			TILEGPU_VRAM_BUFFER_SIZE / (1024u * 1024u), GSConfig.TileGpuStagingRingMB,
+			kGSTileGpuStagingRingMBDefault);
 	}
 
 	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
