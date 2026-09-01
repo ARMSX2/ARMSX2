@@ -6423,7 +6423,18 @@ void GSRendererTileGpu::AccumulateDraw()
 	bool direct32 = false, direct32_depth = false, paletted = false, direct16 = false;
 	bool tex_sampleable = false; ///< TME on, and the format is one of the three this stage samples
 	u32 win_tw = 0, win_th = 0;
+	/// The WHOLE size-fixed window's pages -- what the sampler is FREE to fetch. Every question
+	/// about which ROAD this draw takes is asked over this and nothing else (rule 2's "does one
+	/// live target own it all", the donor's, the source cache's identity and its generation
+	/// stamp), deliberately, so a narrowing cannot move a draw from one road to another.
 	GSPageBitmap tex_pages;
+	/// ...and the pages of the part of it this draw's sampler can actually REACH. It is a subset of
+	/// `tex_pages` always, and equal to it whenever the narrowing is refused.
+	GSPageBitmap tex_read_pages;
+	bool tex_narrowed = false; ///< is it a PROPER subset -- i.e. is there anything to drop at all
+	/// The byte road's composed set when there is: the reach, plus every page of the WHOLE window
+	/// the memory model says still needs a writeback. Built at the compose site.
+	GSPageBitmap tex_compose_pages;
 	if (PRIM->TME)
 	{
 		tex_mip = IsMipMapActive();
@@ -6450,13 +6461,35 @@ void GSRendererTileGpu::AccumulateDraw()
 		{
 			win_tw = 1u << std::min<u32>(tex0.TW, 10);
 			win_th = 1u << std::min<u32>(tex0.TH, 10);
-			// The whole (size-fixed) texture under its own layout, page-granular. Deliberately the
-			// window and not the texels the coordinates reach: the window is what the sampler is free
-			// to fetch.
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(tex_psm),
 				KindForPsm(tex_psm)};
-			tex_pages = GSVramModel::PagesForRect(
-				tex_l, GSVector4i(0, 0, static_cast<int>(win_tw), static_cast<int>(win_th)));
+			// The size-fixed window narrowed to the rectangle this draw's sampler can reach, and the
+			// page footprint of THAT -- because every page of the window is handed a ring slot before
+			// the memory model narrows anything, and on the corpus two thirds of that walk is window
+			// the sampler never touches.
+			//
+			// The coverage is Classic's own (GetTextureMinMax), not a second answer to the same
+			// question: it accounts for the CLAMP register, the wrap modes and the linear filter's
+			// half-texel skirt, and gsTileGpuReadWindowRect only decides whether it may be used.
+			// `clamp_to_tsize` true because the window IS (0, 0, 1 << TW, 1 << TH) here, so the rect
+			// wanted is the one already inside it -- Classic's HW call sites pass false and let the
+			// texture cache carry a REGION_CLAMP that runs off the end, which this road has no room
+			// for: `tex_pages` never covered anything outside the window in the first place.
+			//
+			// ⚠️ The scissor-clip narrowing inside GetTextureMinMax keys on
+			// m_primitive_covers_without_gaps, which only the HW and SW roads compute. Declining it
+			// here is not a shortcut and not a guess: with the flag GapsFound that block is skipped
+			// and the box comes out WIDER, which is the safe direction, and reading a member this
+			// road never writes would be reading an indeterminate value.
+			const GSVector4i tex_win(0, 0, static_cast<int>(win_tw), static_cast<int>(win_th));
+			m_primitive_covers_without_gaps = GapsFound;
+			const GSVector4i tex_core = gsTileGpuReadWindowRect(tex_win,
+				GetTextureMinMax(tex0, ctx->CLAMP, m_vt.IsLinear(), true).coverage, tex0.TW, tex0.TH, ctx->CLAMP.WMS,
+				ctx->CLAMP.WMT);
+			tex_pages = GSVramModel::PagesForRect(tex_l, tex_win);
+			tex_narrowed = !tex_core.eq(tex_win);
+			tex_read_pages = tex_narrowed ? GSVramModel::PagesForRect(tex_l, tex_core) : tex_pages;
+			tex_narrowed = tex_narrowed && !tex_read_pages.contains(tex_pages);
 			// ...and the same window narrowed to the texels the coordinates actually reach, for the
 			// census alone. Taken by nothing: the sampler really is free to fetch the whole window,
 			// and this box accounts for none of the reasons it would (wrap, REGION_CLAMP, mips), so
@@ -6470,7 +6503,7 @@ void GSRendererTileGpu::AccumulateDraw()
 					static_cast<int>(std::ceil(t.z)), static_cast<int>(std::ceil(t.w)));
 				const bool inside = box.x >= 0 && box.y >= 0 && box.z <= static_cast<int>(win_tw) &&
 									box.w <= static_cast<int>(win_th) && box.z > box.x && box.w > box.y;
-				m_census_reach = inside ? GSVramModel::PagesForRect(tex_l, box) : tex_pages;
+				m_census_reach = inside ? GSVramModel::PagesForRect(tex_l, box) : tex_read_pages;
 				m_census_reach_valid = true;
 			}
 		}
@@ -6625,6 +6658,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	// uncomposed -- they read an image, not bytes -- and the open pass's read set has to say so, or a
 	// later writeback would test itself against a slot nothing read.
 	bool composed_tex = false;
+	/// ...and WHICH pages it composed, since that is no longer always the whole window: the read set
+	/// the hoist test is built from has to be the set that actually got ring slots, or it names a
+	/// page whose m_ring_live is zero and reads that back as "the slot this draw read is still live".
+	const GSPageBitmap* composed_pages = nullptr;
 	if (PRIM->TME)
 	{
 		// tex0, the format arms and the window's pages were all resolved above, before the pass was
@@ -6956,7 +6993,48 @@ void GSRendererTileGpu::AccumulateDraw()
 					// order, and the compose below emits its writebacks before the build. A donor that
 					// was offered and then refused downstream lands here too, which is why the compose
 					// is on this side of the branch and not above it.
-					ComposeForPendingDraw(tex_pages, pd, WritebackAsk::TextureRead);
+					//
+					// ⚠️ HOW MUCH of the window: the part the sampler reaches when this draw decodes
+					// ring bytes itself, and the WHOLE window when a source image is about to be built
+					// out of it. A materialise walks the whole tw x th destination and reads the ring
+					// for every texel of it, so a page the compose skipped would land in that image as
+					// the executor's zero slot -- and the image is CACHED, keyed on the window's
+					// registers and a stamp that a never-written page contributes nothing to, so the
+					// next draw of that window would be served the zeros. The narrowing therefore
+					// stops exactly where the ring stops being read at the draw's own coordinates.
+					//
+					// This is not the conservative half of a choice: the cache does carry a validity
+					// rectangle for partial builds (GSTileTextureSource's `valid_rect`, for the subrect
+					// donor), and narrowing the materialise with it was built and MEASURED. It moves
+					// pixels -- 16 of the 22 corpus dumps -- and not by composing too little: with the
+					// narrowing itself disabled and only the rectangle discipline left, dirge and SotC
+					// still moved, because an entry that cannot serve a draw reaching further sends
+					// that draw down the byte road instead, and rule 3 and the byte road are not
+					// byte-equal on those two. The road change is the defect, and it belongs to
+					// whoever reconciles the two roads; this lever does not get to spend it.
+					//
+					// ⚠️ AND THE WRITEBACK SET IS NOT NARROWED EITHER, on the pages the reach drops.
+					// A compose does two things: it gives each page a ring SLOT, and it writes back
+					// the pages some target holds newest -- which also marks them SYNCED. The slot is
+					// what this draw reads and is the whole cost; the writeback is what the rest of
+					// the frame reads, and dropping it moves nothing this draw sees but does move the
+					// model's synced set, and every road question downstream is decided against that
+					// set. Measured, on God of War 2: composing only the reach left ~2 windows a frame
+					// unable to prove their content fingerprint (the tier declines while any page of
+					// the window is unsynced GPU truth), which refused their palette pair at first
+					// sight and sent ~2 draws a frame from rule 3 to the byte road -- 188 pixels moved
+					// by one level. So the walk narrows and the writeback does not: every page of the
+					// WHOLE window that needs one is composed exactly as before, and the model comes
+					// out identical.
+					const GSPageBitmap* compose_pages = &tex_pages;
+					if (src_window == kNoSourceSlot && tex_narrowed)
+					{
+						tex_compose_pages =
+							tex_read_pages | m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
+						compose_pages = &tex_compose_pages;
+					}
+					ComposeForPendingDraw(*compose_pages, pd, WritebackAsk::TextureRead);
+					composed_pages = compose_pages;
 					composed_tex = true;
 					pd.epoch = m_epoch;
 					// A paletted window goes the same way in two stages -- index image, then the
@@ -7446,8 +7524,14 @@ void GSRendererTileGpu::AccumulateDraw()
 		// there and here closes one (only an upload does, and uploads do not land mid-draw), so
 		// m_ring_live still names the slot this draw's shader will read. A rule-2 draw and a
 		// donor-served one read no slot at all, so they constrain no later writeback.
-		run.read |= tex_pages;
-		tex_pages.forEachSetPage([&](u32 page) { run.read_slot[page] = m_ring_live[page]; });
+		//
+		// ⚠️ The COMPOSED set, not the window. A page of the window this draw's sampler cannot reach
+		// was never given a slot, so m_ring_live is zero for it -- and read_slot would be zero too,
+		// which the hoist test reads as "the slot this draw read is still live" and breaks a pass
+		// for a page nothing read.
+		pxAssert(composed_pages);
+		run.read |= *composed_pages;
+		composed_pages->forEachSetPage([&](u32 page) { run.read_slot[page] = m_ring_live[page]; });
 	}
 
 	pd.color_surface = fb_id;
@@ -7766,8 +7850,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			p1_run.target_road = (spd.road_mask & GSDevice::kGSTileGpuRoadTarget) != 0;
 			if (spd.tex_enable && composed_tex)
 			{
-				p1_run.read |= tex_pages;
-				tex_pages.forEachSetPage([&](u32 page) { p1_run.read_slot[page] = m_ring_live[page]; });
+				p1_run.read |= *composed_pages;
+				composed_pages->forEachSetPage([&](u32 page) { p1_run.read_slot[page] = m_ring_live[page]; });
 			}
 		}
 		CurrentRun().pass = p1_key;

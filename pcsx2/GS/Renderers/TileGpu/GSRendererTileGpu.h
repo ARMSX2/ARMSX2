@@ -962,6 +962,63 @@ constexpr u32 gsTileGpuMaxSpecializationBinds(int setting, u32 device_answer)
 	return device_answer;
 }
 
+/// THE READ WINDOW a texture read composes, narrowed to the rectangle the sampler can reach.
+///
+/// The road's window is the size-fixed TEX0 footprint -- what the sampler is FREE to fetch --
+/// which on Ratchet & Clank UYA's effects scene is 44.4 pages while the draw's coordinates reach
+/// 2.7. `ComposeRingPages` gives every page of it a ring slot before the memory model narrows
+/// anything, so 93.9% of that walk is window nothing samples (corpus 65.9%).
+///
+/// ⚠️ It narrows the READ, not the road. A draw that builds a source IMAGE out of the ring reads
+/// the whole window whatever its coordinates do -- the materialise walks the whole destination --
+/// so the caller composes the window for those and this rect for the rest. See the compose site.
+///
+/// `coverage` is `GSState::GetTextureMinMax(TEX0, CLAMP, linear, /*clamp_to_tsize=*/true).coverage`
+/// -- Classic's own answer to this question, which already accounts for the CLAMP register, the
+/// wrap modes and the linear filter's half-texel skirt. This function does not recompute any of
+/// that. It decides only whether the answer may be USED, and it refuses wherever the narrowing
+/// cannot be proven safe, because a window narrowed one texel too far is a wrong sample and not
+/// an accuracy trade.
+///
+/// The three refusals, each for a stated reason:
+///
+///  - `tw_log2 > 10 || th_log2 > 10`. The window is `1 << min(TW, 10)` (the GS's own 1024 cap)
+///    while GetTextureMinMax works in `1 << TW`, so the two rects are in different spaces and an
+///    intersection between them means nothing.
+///  - REGION_REPEAT on either axis. That mode's reads are a BIT PATTERN over the axis
+///    (`(u & MINU) | MAXU`), not an interval, and GetTextureMinMax's rect for it is a hint the
+///    texture cache pairs with a preserved wrap mode -- it is not a claim that nothing outside the
+///    rect is fetched. Every other mode's rect is exact: CLAMP and REGION_CLAMP are intervals,
+///    and REPEAT is only narrowed when the whole span lies inside one repeat period.
+///  - An empty intersection. GetTextureMinMax has its own one-texel fixups for a clamp region
+///    entirely outside the texture; rather than reason about which of them applied, refuse.
+///
+/// ⚠️ MIP LEVELS need no widening here and this is not an oversight: the window this narrows is
+/// already level 0 alone (`tex_pages` is built from the base TEX0), and no TileGpu road samples any
+/// other level -- see ProbeSourceRoad, which admits a declared pyramid precisely because both roads
+/// sample level 0. Narrowing INSIDE level 0 can neither add nor remove another level's pages.
+inline GSVector4i gsTileGpuReadWindowRect(
+	const GSVector4i& window, const GSVector4i& coverage, u32 tw_log2, u32 th_log2, u32 wms, u32 wmt)
+{
+	if (tw_log2 > 10 || th_log2 > 10)
+		return window;
+	if (wms == CLAMP_REGION_REPEAT || wmt == CLAMP_REGION_REPEAT)
+		return window;
+	const GSVector4i clipped = coverage.rintersect(window);
+	if (clipped.rempty())
+		return window;
+	// One texel of slack in every direction, on top of an answer already known non-empty.
+	// GetTextureMinMax's edges carry an "inclusive" term it computes rather than assumes ("Need to
+	// make sure we don't oversample, this can cause trouble in grabbing textures... adding 1 all
+	// the time is wrong too"), and that trade is Classic's TEXTURE CACHE's: an extra texel there
+	// can pull a neighbouring texture into the upload. This road buys nothing from the tight edge
+	// -- the rect only ever becomes a PAGE set, so a texel of slack costs a page at a page boundary
+	// and nothing at all inside one -- so it declines the trade and takes the wide side of every
+	// edge rule in there. Taken AFTER the emptiness test, so the slack can never rescue a rect the
+	// guard above meant to refuse.
+	return clipped.add32(GSVector4i(-1, -1, 1, 1)).rintersect(window);
+}
+
 /// A GS scissor as one comparable word, for counting distinct rects. SCAX0/SCAY0/SCAX1/SCAY1 are
 /// eleven-bit register fields and scissor.in adds one to the exclusive edges, so every edge is in
 /// [0, 2048] and the four pack into a u64 without loss.
