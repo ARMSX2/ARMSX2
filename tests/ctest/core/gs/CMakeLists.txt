@@ -14,6 +14,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_framebuffer_fetch_policy_tests.cpp
 	gs_gpu_driver_profile_tests.cpp
 	gs_draw_staging_tests.cpp
+	gs_draw_env_snapshot_tests.cpp
 	gs_draw_log_tests.cpp
 	gs_snapshot_policy_tests.cpp
 	gs_sw_scanline_cpath_tests.cpp
