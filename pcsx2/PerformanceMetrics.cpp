@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "common/Console.h"
@@ -13,7 +14,6 @@
 #include "PerformanceMetrics.h"
 
 #include "GS.h"
-#include "GS/GSCapture.h"
 #include "MTGS.h"
 #include "MTVU.h"
 #include "VMManager.h"
@@ -65,7 +65,6 @@ static u64 s_last_cpu_time = 0;
 static u64 s_last_gs_time = 0;
 static u64 s_last_gs_back_time = 0;
 static u64 s_last_vu_time = 0;
-static u64 s_last_capture_time = 0;
 static u64 s_last_ticks = 0;
 
 // The GS back thread registers itself from its own entry point and is cleared from the MTGS
@@ -193,8 +192,6 @@ static float s_gs_back_thread_usage = 0.0f;
 static float s_gs_back_thread_time = 0.0f;
 static float s_vu_thread_usage = 0.0f;
 static float s_vu_thread_time = 0.0f;
-static float s_capture_thread_usage = 0.0f;
-static float s_capture_thread_time = 0.0f;
 
 static PerformanceMetrics::FrameTimeHistory s_frame_time_history;
 static u32 s_frame_time_history_pos = 0;
@@ -237,8 +234,6 @@ void PerformanceMetrics::Clear()
 	s_gs_back_thread_time = 0.0f;
 	s_vu_thread_usage = 0.0f;
 	s_vu_thread_time = 0.0f;
-	s_capture_thread_usage = 0.0f;
-	s_capture_thread_time = 0.0f;
 
 	s_average_gpu_time = 0.0f;
 	s_last_gpu_time = 0.0f;
@@ -285,7 +280,6 @@ void PerformanceMetrics::Reset()
 	SampleGSBackThreadCPUTime(); // rebases the running total; the delta is deliberately dropped
 	s_last_vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
 	s_last_ticks = GetCPUTicks();
-	s_last_capture_time = GSCapture::IsCapturing() ? GSCapture::GetEncoderThreadHandle().GetCPUTime() : 0;
 
 	for (GSSWThreadStats& stat : s_gs_sw_threads)
 		stat.last_cpu_time = stat.handle.GetCPUTime();
@@ -362,27 +356,22 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	const u64 gs_time = MTGS::GetThreadHandle().GetCPUTime();
 	const u64 gs_back_delta = SampleGSBackThreadCPUTime();
 	const u64 vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
-	const u64 capture_time = GSCapture::IsCapturing() ? GSCapture::GetEncoderThreadHandle().GetCPUTime() : 0;
 
 	const u64 cpu_delta = cpu_time - s_last_cpu_time;
 	const u64 gs_delta = gs_time - s_last_gs_time;
 	const u64 vu_delta = vu_time - s_last_vu_time;
-	const u64 capture_delta = capture_time - s_last_capture_time;
 	s_last_cpu_time = cpu_time;
 	s_last_gs_time = gs_time;
 	s_last_vu_time = vu_time;
-	s_last_capture_time = capture_time;
 
 	s_cpu_thread_usage = static_cast<double>(cpu_delta) * pct_divider;
 	s_gs_thread_usage = static_cast<double>(gs_delta) * pct_divider;
 	s_gs_back_thread_usage = static_cast<double>(gs_back_delta) * pct_divider;
 	s_vu_thread_usage = static_cast<double>(vu_delta) * pct_divider;
-	s_capture_thread_usage = static_cast<double>(capture_delta) * pct_divider;
 	s_cpu_thread_time = static_cast<double>(cpu_delta) * time_divider;
 	s_gs_thread_time = static_cast<double>(gs_delta) * time_divider;
 	s_gs_back_thread_time = static_cast<double>(gs_back_delta) * time_divider;
 	s_vu_thread_time = static_cast<double>(vu_delta) * time_divider;
-	s_capture_thread_time = static_cast<double>(capture_delta) * time_divider;
 
 	for (GSSWThreadStats& thread : s_gs_sw_threads)
 	{
@@ -665,16 +654,6 @@ float PerformanceMetrics::GetVUThreadUsage()
 float PerformanceMetrics::GetVUThreadAverageTime()
 {
 	return s_vu_thread_time;
-}
-
-float PerformanceMetrics::GetCaptureThreadUsage()
-{
-	return s_capture_thread_usage;
-}
-
-float PerformanceMetrics::GetCaptureThreadAverageTime()
-{
-	return s_capture_thread_time;
 }
 
 u32 PerformanceMetrics::GetGSSWThreadCount()

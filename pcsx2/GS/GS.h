@@ -93,7 +93,6 @@ void GSSetPresentCapSuspended(bool suspended);
 bool GSGetPresentCapSuspended();
 int GSfreeze(FreezeAction mode, freezeData* data);
 std::string GSGetBaseSnapshotFilename();
-std::string GSGetBaseVideoFilename();
 // False if there is no renderer, or a snapshot is already queued and this request was dropped.
 bool GSQueueSnapshot(const std::string& path, u32 gsdump_frames = 0);
 // True while a dump is open and taking frames. Queueing a snapshot over one of these does not
@@ -104,8 +103,6 @@ bool GSIsDumpRecording();
 // split is unsupported, so this is the only way to tell whether the mode really engaged.
 bool GSHasFrontParser();
 void GSStopGSDump();
-bool GSBeginCapture(std::string filename);
-void GSEndCapture();
 void GSPresentCurrentFrame();
 void GSThrottlePresentation();
 void GSGameChanged();
@@ -161,9 +158,6 @@ namespace Host
 	/// Alters fullscreen state of hosting application.
 	void SetFullscreen(bool enabled);
 
-	/// Called when video capture starts or stops. Called on the MTGS thread.
-	void OnCaptureStarted(const std::string& filename);
-	void OnCaptureStopped();
 }
 
 extern Pcsx2Config::GSOptions GSConfig;

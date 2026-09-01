@@ -71,7 +71,6 @@ OSDSettingsWidget::OSDSettingsWidget(SettingsWindow* settings_dialog, QWidget* p
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.boldText, "EmuCore/GS", "OsdBoldText", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showPatches, "EmuCore/GS", "OsdshowPatches", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showInputs, "EmuCore/GS", "OsdShowInputs", false);
-	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showVideoCapture, "EmuCore/GS", "OsdShowVideoCapture", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showInputRec, "EmuCore/GS", "OsdShowInputRec", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showTextureReplacements, "EmuCore/GS", "OsdShowTextureReplacements", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.warnAboutUnsafeSettings, "EmuCore", "WarnAboutUnsafeSettings", true);
@@ -150,9 +149,6 @@ OSDSettingsWidget::OSDSettingsWidget(SettingsWindow* settings_dialog, QWidget* p
 
 	dialog()->registerWidgetHelp(m_ui.showInputs, tr("Show Inputs"), tr("Unchecked"),
 		tr("Shows the current controller state of the system in the bottom-left corner of the display."));
-
-	dialog()->registerWidgetHelp(m_ui.showVideoCapture, tr("Show Video Capture Status"), tr("Checked"),
-		tr("Shows the status of the currently active video capture in the top-right corner of the display."));
 
 	dialog()->registerWidgetHelp(m_ui.showInputRec, tr("Show Input Recording Status"), tr("Checked"),
 		tr("Shows the status of the currently active input recording in the top-right corner of the display."));
@@ -287,7 +283,6 @@ void OSDSettingsWidget::setAllCheckboxes(bool checked)
 
 	// Keep these checked
 	m_ui.showStatusIndicators->setChecked(true);
-	m_ui.showVideoCapture->setChecked(true);
 	m_ui.showInputRec->setChecked(true);
 	m_ui.warnAboutUnsafeSettings->setChecked(true);
 }

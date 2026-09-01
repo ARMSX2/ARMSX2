@@ -834,7 +834,6 @@ struct Pcsx2Config
 		static const char* FMVAspectRatioSwitchNames[];
 		static const char* DisplayRotationNames[];
 		static const char* BlendingLevelNames[];
-		static const char* CaptureContainers[];
 
 		static const char* GetRendererName(GSRendererType type);
 
@@ -864,11 +863,6 @@ struct Pcsx2Config
 		static constexpr OsdOverlayPos DEFAULT_OSD_MESSAGE_POS = OsdOverlayPos::TopLeft;
 		static constexpr OsdOverlayPos DEFAULT_OSD_PERFORMANCE_POS = OsdOverlayPos::TopRight;
 
-		static constexpr int DEFAULT_VIDEO_CAPTURE_BITRATE = 6000;
-		static constexpr int DEFAULT_VIDEO_CAPTURE_WIDTH = 640;
-		static constexpr int DEFAULT_VIDEO_CAPTURE_HEIGHT = 480;
-		static constexpr int DEFAULT_AUDIO_CAPTURE_BITRATE = 192;
-		static const char* DEFAULT_CAPTURE_CONTAINER;
 
 		static constexpr int DEFAULT_SHADEBOOST_BRIGHTNESS = 50;
 		static constexpr int DEFAULT_SHADEBOOST_CONTRAST = 50;
@@ -924,7 +918,6 @@ struct Pcsx2Config
 					OsdShowSettings : 1,
 					OsdshowPatches : 1,
 					OsdShowInputs : 1,
-					OsdShowVideoCapture : 1,
 					OsdShowInputRec : 1,
 					OsdShowTextureReplacements : 1,
 					OsdBoldText : 1,
@@ -979,13 +972,7 @@ struct Pcsx2Config
 					LoadTextureReplacements : 1,
 					LoadTextureReplacementsAsync : 1,
 					PrecacheTextureReplacements : 1,
-					EnableVideoCapture : 1,
-					EnableVideoCaptureParameters : 1,
-					VideoCaptureAutoResolution : 1,
-					EnableAudioCapture : 1,
-					EnableAudioCaptureParameters : 1,
-					OrganizeSnapshotsByGame : 1,
-					OrganizeVideoCaptureByGame : 1;
+					OrganizeSnapshotsByGame : 1;
 			};
 		};
 
@@ -1121,16 +1108,6 @@ struct Pcsx2Config
 		GSScreenshotFormat ScreenshotFormat = GSScreenshotFormat::PNG;
 		int ScreenshotQuality = 90;
 
-		std::string CaptureContainer = DEFAULT_CAPTURE_CONTAINER;
-		std::string VideoCaptureCodec;
-		std::string VideoCaptureFormat;
-		std::string VideoCaptureParameters;
-		std::string AudioCaptureCodec;
-		std::string AudioCaptureParameters;
-		int VideoCaptureBitrate = DEFAULT_VIDEO_CAPTURE_BITRATE;
-		int VideoCaptureWidth = DEFAULT_VIDEO_CAPTURE_WIDTH;
-		int VideoCaptureHeight = DEFAULT_VIDEO_CAPTURE_HEIGHT;
-		int AudioCaptureBitrate = DEFAULT_AUDIO_CAPTURE_BITRATE;
 
 		std::string Adapter;
 		std::string AndroidGpuProfileOverride = "auto";
@@ -1710,7 +1687,6 @@ namespace EmuFolders
 	extern std::string GameSettings;
 	extern std::string Textures;
 	extern std::string InputProfiles;
-	extern std::string Videos;
 	extern std::string DebuggerLayouts;
 	extern std::string DebuggerSettings;
 

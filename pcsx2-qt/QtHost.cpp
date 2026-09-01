@@ -862,40 +862,6 @@ void EmuThread::queueSnapshot(quint32 gsdump_frames)
 	MTGS::RunOnGSThread([gsdump_frames]() { GSQueueSnapshot(std::string(), gsdump_frames); });
 }
 
-void EmuThread::beginCapture(const QString& path)
-{
-	if (!isOnEmuThread())
-	{
-		QMetaObject::invokeMethod(this, "beginCapture", Qt::QueuedConnection, Q_ARG(const QString&, path));
-		return;
-	}
-
-	if (!VMManager::HasValidVM())
-		return;
-
-	MTGS::RunOnGSThread([path = path.toStdString()]() {
-		GSBeginCapture(std::move(path));
-	});
-
-	// Sync GS thread. We want to start adding audio at the same time as video.
-	// TODO: This could be up to 64 frames behind... use the pts to adjust it.
-	MTGS::WaitGS(false, false, false);
-}
-
-void EmuThread::endCapture()
-{
-	if (!isOnEmuThread())
-	{
-		QMetaObject::invokeMethod(this, "endCapture", Qt::QueuedConnection);
-		return;
-	}
-
-	if (!VMManager::HasValidVM())
-		return;
-
-	MTGS::RunOnGSThread(&GSEndCapture);
-}
-
 std::optional<WindowInfo> EmuThread::acquireRenderWindow(bool recreate_window)
 {
 	// Check if we're wanting to get exclusive fullscreen. This should be safe to read, since we're going to be calling from the GS thread.
@@ -1323,16 +1289,6 @@ bool Host::IsFullscreen()
 void Host::SetFullscreen(bool enabled)
 {
 	g_emu_thread->setFullscreen(enabled, true);
-}
-
-void Host::OnCaptureStarted(const std::string& filename)
-{
-	emit g_emu_thread->onCaptureStarted(QString::fromStdString(filename));
-}
-
-void Host::OnCaptureStopped()
-{
-	emit g_emu_thread->onCaptureStopped();
 }
 
 bool QtHost::InitializeConfig()

@@ -1031,7 +1031,6 @@ void VMManager::Internal::UpdateEmuFolders()
 	const std::string old_patches_directory(EmuFolders::Patches);
 	const std::string old_memcards_directory(EmuFolders::MemoryCards);
 	const std::string old_textures_directory(EmuFolders::Textures);
-	const std::string old_videos_directory(EmuFolders::Videos);
 
 	auto lock = Host::GetSettingsLock();
 	EmuFolders::LoadConfig(*Host::Internal::GetBaseSettingsLayer());
@@ -1063,12 +1062,6 @@ void VMManager::Internal::UpdateEmuFolders()
 				if (VMManager::HasValidVM())
 					GSTextureReplacements::ReloadReplacementMap();
 			});
-		}
-
-		if (EmuFolders::Videos != old_videos_directory)
-		{
-			if (VMManager::HasValidVM())
-				MTGS::RunOnGSThread(&GSEndCapture);
 		}
 	}
 }
@@ -3549,7 +3542,6 @@ void VMManager::ReleaseNonEssentialRuntimeResources(u32 release_flags)
 		GSConfig.OsdShowSettings = false;
 		GSConfig.OsdshowPatches = false;
 		GSConfig.OsdShowInputs = false;
-		GSConfig.OsdShowVideoCapture = false;
 		GSConfig.OsdShowInputRec = false;
 		GSConfig.OsdShowTextureReplacements = false;
 	}

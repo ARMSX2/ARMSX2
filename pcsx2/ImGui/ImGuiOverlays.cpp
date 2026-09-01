@@ -6,7 +6,6 @@
 #include "Counters.h"
 #include "GS/GS.h"
 #include "GS/GSShaderCompileIndicator.h"
-#include "GS/GSCapture.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #ifdef _WIN32
@@ -76,7 +75,6 @@ SmallString s_cpu_usage_gs_line;
 SmallString s_cpu_usage_gs_back_line;
 SmallString s_cpu_usage_vu_line;
 std::vector<SmallString> s_software_thread_lines;
-SmallString s_capture_line;
 SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
 SmallString s_gpu_stats_line;
@@ -238,7 +236,6 @@ namespace ImGuiManager
 	static void DrawSettingsOverlay(float scale, float margin, float bottom_margin, float spacing);
 	static void DrawInputsOverlay(float scale, float margin, float bottom_margin, float spacing);
 	static void DrawInputRecordingOverlay(float& position_y, float scale, float margin, float spacing);
-	static void DrawVideoCaptureOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawTextureReplacementsOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawIndicatorsOverlay(float& position_y, float scale, float margin, float spacing);
 } // namespace ImGuiManager
@@ -727,13 +724,6 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					FormatProcessorStat(s_software_thread_lines[thread], PerformanceMetrics::GetGSSWThreadUsage(thread), PerformanceMetrics::GetGSSWThreadAverageTime(thread));
 					DRAW_LINE(osd_font, font_size, s_software_thread_lines[thread].c_str(), OsdTextColor());
 				}
-
-				if (GSCapture::IsCapturing())
-				{
-					s_capture_line.assign("CAP: ");
-					FormatProcessorStat(s_capture_line, PerformanceMetrics::GetCaptureThreadUsage(), PerformanceMetrics::GetCaptureThreadAverageTime());
-					DRAW_LINE(osd_font, font_size, s_capture_line.c_str(), OsdTextColor());
-				}
 			}
 
 			if (GSConfig.OsdShowGPU)
@@ -827,9 +817,6 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					static_cast<u32>(s_software_thread_lines.size()));
 				for (u32 thread = 0; thread < thread_count; thread++)
 					DRAW_LINE(osd_font, font_size, s_software_thread_lines[thread].c_str(), OsdTextColor());
-
-				if (GSCapture::IsCapturing())
-					DRAW_LINE(osd_font, font_size, s_capture_line.c_str(), OsdTextColor());
 			}
 
 			if (GSConfig.OsdShowGPU)
@@ -1525,43 +1512,6 @@ __ri void ImGuiManager::DrawInputRecordingOverlay(float& position_y, float scale
 #undef DRAW_LINE
 }
 
-__ri void ImGuiManager::DrawVideoCaptureOverlay(float& position_y, float scale, float margin, float spacing)
-{
-	if (!GSConfig.OsdShowVideoCapture ||
-		!GSCapture::IsCapturing() ||
-		FullscreenUI::HasActiveWindow())
-		return;
-
-	const float shadow_offset = std::ceil(scale);
-	ImFont* const osd_font = ImGuiManager::GetOSDFont();
-	float font_size = ImGuiManager::GetFontSizeStandard();
-	ImDrawList* dl = ImGui::GetBackgroundDrawList();
-
-	static constexpr const char* ICON = ICON_PF_CIRCLE;
-	const TinyString text_msg = TinyString::from_format(" {}", GSCapture::GetElapsedTime());
-	const ImVec2 icon_size = osd_font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(),
-		-1.0f, ICON, nullptr, nullptr);
-	const ImVec2 text_size = osd_font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(),
-		-1.0f, text_msg.c_str(), text_msg.end_ptr(), nullptr);
-
-	// Shadow
-	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x - icon_size.x + shadow_offset, position_y + shadow_offset),
-		IM_COL32(0, 0, 0, 100), ICON);
-	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x + shadow_offset, position_y + shadow_offset),
-		IM_COL32(0, 0, 0, 100), text_msg.c_str(), text_msg.end_ptr());
-
-	// Text
-	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x - icon_size.x, position_y), IM_COL32(255, 0, 0, 255), ICON);
-	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x, position_y), white_color, text_msg.c_str(),
-		text_msg.end_ptr());
-
-	position_y += std::max(icon_size.y, text_size.y) + spacing;
-}
-
 __ri void ImGuiManager::DrawTextureReplacementsOverlay(float& position_y, float scale, float margin, float spacing)
 {
 	if (!GSConfig.OsdShowTextureReplacements ||
@@ -2180,7 +2130,6 @@ void ImGuiManager::RenderOverlays()
 	float position_y = base_margin + inset_top;
 
 	DrawIndicatorsOverlay(position_y, scale, margin, spacing);
-	DrawVideoCaptureOverlay(position_y, scale, margin, spacing);
 	DrawInputRecordingOverlay(position_y, scale, margin, spacing);
 	DrawTextureReplacementsOverlay(position_y, scale, margin, spacing);
 	if (GSConfig.OsdPerformancePos != OsdOverlayPos::None)

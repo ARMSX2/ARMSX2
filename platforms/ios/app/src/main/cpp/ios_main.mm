@@ -646,7 +646,6 @@ void ARMSX2IOSSanitizeFolderSettings(SettingsInterface* si, const std::string& d
         {"Cache", "cache", false},
         {"Textures", "textures", false},
         {"InputProfiles", "inputprofiles", false},
-        {"Videos", "videos", false},
         {"DebuggerLayouts", "debuggerlayouts", true},
         {"DebuggerSettings", "debuggersettings", true},
     };

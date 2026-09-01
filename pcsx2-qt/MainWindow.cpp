@@ -106,8 +106,6 @@ static QString s_current_disc_serial;
 static quint32 s_current_disc_crc;
 static quint32 s_current_running_crc;
 
-static bool s_record_on_start = false;
-static QString s_path_to_recording_for_record_on_start;
 
 // DX cannot fullscreen when the display surface is in a container.
 // QWindow, however, seems to lack CSD under wayland, so needs the container.
@@ -593,7 +591,6 @@ void MainWindow::connectSignals()
 	connect(m_ui.actionSaveBlockDump, &QAction::toggled, this, &MainWindow::onBlockDumpActionToggled);
 	connect(m_ui.actionShowAdvancedSettings, &QAction::toggled, this, &MainWindow::onShowAdvancedSettingsToggled);
 	connect(m_ui.actionSaveGSDump, &QAction::triggered, this, &MainWindow::onSaveGSDumpActionTriggered);
-	connect(m_ui.actionVideoCapture, &QAction::toggled, this, &MainWindow::onVideoCaptureToggled);
 	connect(m_ui.actionEditPatches, &QAction::triggered, this, [this]() { onToolsEditCheatsPatchesTriggered(false); });
 	connect(m_ui.actionEditCheats, &QAction::triggered, this, [this]() { onToolsEditCheatsPatchesTriggered(true); });
 
@@ -633,8 +630,6 @@ void MainWindow::connectVMThreadSignals(EmuThread* thread)
 	connect(thread, &EmuThread::onVMResumed, this, &MainWindow::onVMResumed);
 	connect(thread, &EmuThread::onVMStopped, this, &MainWindow::onVMStopped);
 	connect(thread, &EmuThread::onGameChanged, this, &MainWindow::onGameChanged);
-	connect(thread, &EmuThread::onCaptureStarted, this, &MainWindow::onCaptureStarted);
-	connect(thread, &EmuThread::onCaptureStopped, this, &MainWindow::onCaptureStopped);
 	connect(thread, &EmuThread::onAchievementsLoginRequested, this, &MainWindow::onAchievementsLoginRequested);
 	connect(thread, &EmuThread::onAchievementsHardcoreModeChanged, this, &MainWindow::onAchievementsHardcoreModeChanged);
 
@@ -912,94 +907,6 @@ void MainWindow::updateAdvancedSettingsVisibility()
 	m_ui.actionEnableVerboseLogging->setVisible(enabled);
 }
 
-void MainWindow::onVideoCaptureToggled(bool checked)
-{
-	if (!s_vm_valid)
-	{
-		QMessageBox msgbox(this);
-		msgbox.setIcon(QMessageBox::Question);
-		msgbox.setWindowIcon(QtHost::GetAppIcon());
-		msgbox.setWindowTitle(tr("Record On Boot"));
-		msgbox.setWindowModality(Qt::WindowModal);
-		msgbox.addButton(QMessageBox::Yes);
-		msgbox.addButton(QMessageBox::No);
-		msgbox.setDefaultButton(QMessageBox::Yes);
-
-		if (!s_record_on_start)
-		{
-			msgbox.setText(tr("Did you want to start recording on boot?"));
-			if (msgbox.exec() == QMessageBox::Yes)
-			{
-				const QString container(QString::fromStdString(
-					Host::GetStringSettingValue("EmuCore/GS", "CaptureContainer", Pcsx2Config::GSOptions::DEFAULT_CAPTURE_CONTAINER)));
-				const QString filter(tr("%1 Files (*.%2)").arg(container.toUpper()).arg(container));
-
-				const QString base_video_filename(QStringLiteral("%1.%2").arg(QString::fromStdString(GSGetBaseVideoFilename())).arg(container));
-				s_path_to_recording_for_record_on_start = QDir::toNativeSeparators(QFileDialog::getSaveFileName(this, tr("Video Capture"), base_video_filename, filter));
-				s_record_on_start = !s_path_to_recording_for_record_on_start.isEmpty();
-			}
-		}
-		else
-		{
-			msgbox.setText(tr("Did you want to cancel recording on boot?"));
-			if (msgbox.exec() == QMessageBox::Yes)
-				s_record_on_start = false;
-		}
-		QSignalBlocker sb(m_ui.actionVideoCapture);
-		m_ui.actionVideoCapture->setChecked(s_record_on_start);
-		return;
-	}
-
-	// Reset the checked state, we'll get updated by the GS thread.
-	QSignalBlocker sb(m_ui.actionVideoCapture);
-	m_ui.actionVideoCapture->setChecked(!checked);
-
-	if (!checked)
-	{
-		g_emu_thread->endCapture();
-		return;
-	}
-
-	if (s_record_on_start && !s_path_to_recording_for_record_on_start.isEmpty())
-	{
-		// We can't start recording immediately, this is called before full GS init (specifically the fps amount)
-		// and GSCapture ends up unhappy.
-		// TODO: Pass some sort of flag or callback to the GS thread to start recording on frame 0.
-		Host::AddOSDMessage(tr("Recording will start in a moment").toStdString(), 3.0f);
-		QTimer::singleShot(2000, []() { g_emu_thread->beginCapture(s_path_to_recording_for_record_on_start); });
-	}
-	else
-	{
-		const QString container(QString::fromStdString(
-			Host::GetStringSettingValue("EmuCore/GS", "CaptureContainer", Pcsx2Config::GSOptions::DEFAULT_CAPTURE_CONTAINER)));
-		const QString filter(tr("%1 Files (*.%2)").arg(container.toUpper()).arg(container));
-
-		QString path(QStringLiteral("%1.%2").arg(QString::fromStdString(GSGetBaseVideoFilename())).arg(container));
-		path = QDir::toNativeSeparators(QFileDialog::getSaveFileName(this, tr("Video Capture"), path, filter));
-		if (path.isEmpty())
-			return;
-		g_emu_thread->beginCapture(path);
-	}
-}
-
-void MainWindow::onCaptureStarted(const QString& filename)
-{
-	if (!s_vm_valid)
-		return;
-
-	QSignalBlocker sb(m_ui.actionVideoCapture);
-	m_ui.actionVideoCapture->setChecked(true);
-}
-
-void MainWindow::onCaptureStopped()
-{
-	if (!s_vm_valid)
-		return;
-
-	QSignalBlocker sb(m_ui.actionVideoCapture);
-	m_ui.actionVideoCapture->setChecked(false);
-}
-
 void MainWindow::onAchievementsLoginRequested(Achievements::LoginRequestReason reason)
 {
 	auto lock = pauseAndLockVM();
@@ -1164,11 +1071,6 @@ void MainWindow::updateEmulationActions(bool starting, bool running, bool stoppi
 	m_ui.actionToolbarSaveState->setEnabled(running);
 
 	m_ui.actionViewGameProperties->setEnabled(running);
-	if (!running && m_ui.actionVideoCapture->isChecked())
-	{
-		QSignalBlocker sb(m_ui.actionVideoCapture);
-		m_ui.actionVideoCapture->setChecked(false);
-	}
 
 	m_game_list_widget->setDisabled(starting && !running);
 
@@ -1889,9 +1791,6 @@ void MainWindow::onGameListEntryContextMenuRequested(const QPoint& point)
 
 		action = menu.addAction(tr("Open Texture Dump/Replacement Folder"));
 		connect(action, &QAction::triggered, [this, entry]() { openTextureFolderForGame(*entry); });
-
-		action = menu.addAction(tr("Open Video Capture Folder"));
-		connect(action, &QAction::triggered, [this, entry]() { openVideoCaptureFolder(*entry); });
 		menu.addSeparator();
 
 		if (!s_vm_valid)
@@ -2421,11 +2320,6 @@ void MainWindow::onVMStarted()
 	updateWindowTitle();
 	updateStatusBarWidgetVisibility();
 	updateInputRecordingActions(true);
-	if (s_record_on_start)
-	{
-		m_ui.actionVideoCapture->setChecked(true);
-		s_record_on_start = false;
-	}
 }
 
 void MainWindow::onVMPaused()
@@ -3516,31 +3410,6 @@ void MainWindow::openMemoryCardFolder()
 	}
 
 	QMessageBox::critical(this, tr("Error"), tr("Failed to open memory card directory."));
-}
-
-void MainWindow::openVideoCaptureFolder(const GameList::Entry& entry)
-{
-	// Go to top-level video directory if not organizing by game.
-	if (EmuConfig.GS.OrganizeVideoCaptureByGame && !entry.title.empty())
-	{
-		const bool prefer_english = Host::GetBaseBoolSettingValue("UI", "PreferEnglishGameList", false);
-		std::string game_name =  (prefer_english && !entry.title_en.empty()) ? entry.title_en : entry.title;
-		Path::SanitizeFileName(&game_name);
-
-		const std::string game_dir = Path::Combine(EmuFolders::Videos, game_name);
-
-		// Make sure the per-game directory exists or that we can successfully create it.
-		if (FileSystem::DirectoryExists(game_dir.c_str()) || FileSystem::CreateDirectoryPath(game_dir.c_str(), false))
-		{
-			const QFileInfo fi(QString::fromStdString(game_dir));
-			QtUtils::OpenURL(this, QUrl::fromLocalFile(fi.absoluteFilePath()));
-			return;
-		}
-
-		QMessageBox::critical(this, tr("Error"), tr("Failed to create game video capture directory '%1'\n\nOpening default directory.").arg(QString::fromStdString(game_dir)));
-	}
-
-	QtUtils::OpenURL(this, QUrl::fromLocalFile(QString::fromStdString(EmuFolders::Videos)));
 }
 
 std::optional<bool> MainWindow::promptForResumeState(const QString& save_state_path)

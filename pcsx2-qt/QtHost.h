@@ -104,8 +104,6 @@ public Q_SLOTS:
 	void enumerateVibrationMotors();
 	void runOnCPUThread(const std::function<void()>& func);
 	void queueSnapshot(quint32 gsdump_frames);
-	void beginCapture(const QString& path);
-	void endCapture();
 
 Q_SIGNALS:
 	void statusMessage(const QString& message);
@@ -161,8 +159,6 @@ Q_SIGNALS:
 	void onAchievementsHardcoreModeChanged(bool enabled);
 
 	/// Called when video capture starts/stops.
-	void onCaptureStarted(const QString& filename);
-	void onCaptureStopped();
 
 protected:
 	void run();
