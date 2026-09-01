@@ -3569,12 +3569,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// The palette cycle. Printed whenever ANY draw reached the first conjunct's first half, on both
 	// arms of the lever -- the funnel is what says which conjunct refused a population, and a run
 	// with the lever off has to print the same columns or the two arms cannot be compared.
-	const auto pc1p = stat([](const MF& f) { return f.pcyc_s1_pal; });
-	const auto pc1n = stat([](const MF& f) { return f.pcyc_s1_pal_no_write; });
-	const auto pc1 = stat([](const MF& f) { return f.pcyc_s1; });
-	const auto pc2 = stat([](const MF& f) { return f.pcyc_s2; });
-	const auto pcff = stat([](const MF& f) { return f.pcyc_s2_fail_fmt; });
-	const auto pcfo = stat([](const MF& f) { return f.pcyc_s2_fail_owner; });
+	const auto pc1p = stat([](const MF& f) { return f.pcyc_pal; });
+	const auto pc1 = stat([](const MF& f) { return f.pcyc_loop; });
+	const auto pc2 = stat([](const MF& f) { return f.pcyc_shape; });
+	const auto pcff = stat([](const MF& f) { return f.pcyc_fail_fmt; });
+	const auto pcfo = stat([](const MF& f) { return f.pcyc_fail_prim; });
 	const auto pcr = stat([](const MF& f) { return f.pcyc_runs; });
 	const auto pcra = stat([](const MF& f) { return f.pcyc_runs_alpha; });
 	const auto pcb = stat([](const MF& f) { return f.pcyc_building; });
@@ -3588,12 +3587,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 			m_palette_cycle_hle ? "ARMED" :
 								  (GSConfig.TileGpuPaletteCycleHle ? "detector only (GameDB gate not matched)" :
 																	 "detector only (TileGpuPaletteCycleHle off)"));
-		Console.WriteLn("  S1 device palette %.2f / %-5u  ...that writes its source %.2f / %-5u  "
-						"(does not %.2f / %u)",
-			pc1p.mean, pc1p.p50, pc1.mean, pc1.p50, pc1n.mean, pc1n.p50);
-		Console.WriteLn("  S2 shape %.2f / %-5u  refused: format/prim/ABE %.2f / %-5u  owner is not the target "
-						"%.2f / %u",
-			pc2.mean, pc2.p50, pcff.mean, pcff.p50, pcfo.mean, pcfo.p50);
+		Console.WriteLn("  device palette %.2f / %-5u  ...closing the loop %.2f / %-5u   shape %.2f / %-5u  "
+						"refused: format %.2f / %-5u  primclass %.2f / %u",
+			pc1p.mean, pc1p.p50, pc1.mean, pc1.p50, pc2.mean, pc2.p50, pcff.mean, pcff.p50, pcfo.mean, pcfo.p50);
 		Console.WriteLn("  runs %.2f / %-4u  (alpha-destination %.2f / %-4u)  below threshold, drawn %.2f / %-4u  "
 						"elided %.2f / %-5u  substitutes %.2f / %-4u  claimed pages %.2f / %-5u  refused %.2f / %u",
 			pcr.mean, pcr.p50, pcra.mean, pcra.p50, pcb.mean, pcb.p50, pce.mean, pce.p50, pcs.mean, pcs.p50,
@@ -6116,36 +6112,32 @@ void GSRendererTileGpu::AccumulateDraw()
 			// is written back into the ring, which is most of what the elision exists to avoid.
 			//
 			// Counted on both arms of the lever and latched on both, so a run's census can be read
-			// off a gated build; only the ELISION below is gated. A funnel and not a single number:
-			// "the detector did not fire" is four different diagnoses and the draw-call count cannot
-			// tell them apart.
+			// off a build with the lever off; only the ELISION below is gated. A funnel and not a
+			// single number: "the detector did not fire" is several different diagnoses and a
+			// draw-call count cannot tell them apart -- which is exactly how the first shape of
+			// this signature was found to be refusing its whole population.
 			GSTilePaletteCycleDraw pcyc = {};
 			pcyc.pal_on_device = (pd.pal_record != 0);
 			pcyc.paletted_index = (tex_psm == PSMT8 || tex_psm == PSMT4);
 			pcyc.sprite = is_sprite;
-			pcyc.abe = (PRIM->ABE != 0);
 			pcyc.fbmsk = ctx->FRAME.FBMSK;
 			if (pcyc.pal_on_device)
 			{
-				m_frame.pcyc_s1_pal++;
-				const GpuPalette* const src = FindClutSourceWrittenBy(fb_id, fb_pages);
-				if (src)
-				{
-					pcyc.writes_pal_source = true;
-					pcyc.owner = src->owner;
-					pcyc.owner_is_written = (src->owner == fb_id);
-					m_frame.pcyc_s1++;
-					if (pcyc.paletted_index && pcyc.sprite && pcyc.abe && pcyc.owner_is_written)
-						m_frame.pcyc_s2++;
-					else if (!pcyc.owner_is_written)
-						m_frame.pcyc_s2_fail_owner++;
-					else
-						m_frame.pcyc_s2_fail_fmt++;
-				}
+				m_frame.pcyc_pal++;
+				if (const GpuPalette* const rec = FindGpuPalette(pd.pal_record))
+					pcyc.pal_owner = rec->owner;
+				// S1, asked with NoteClutSourceWritten's own predicate so the two cannot disagree
+				// about what "this draw destroys that palette" means -- this is the same draw that
+				// will run it a few hundred lines below.
+				pcyc.destroys_pal_source = (FindClutSourceWrittenBy(fb_id, fb_pages) != nullptr);
+				if (pcyc.destroys_pal_source)
+					m_frame.pcyc_loop++;
+				if (pcyc.paletted_index && pcyc.sprite)
+					m_frame.pcyc_shape++;
+				else if (!pcyc.paletted_index)
+					m_frame.pcyc_fail_fmt++;
 				else
-				{
-					m_frame.pcyc_s1_pal_no_write++;
-				}
+					m_frame.pcyc_fail_prim++;
 			}
 			const GSTilePaletteCycleVerdict pcyc_verdict = m_palette_cycle.Observe(pcyc);
 			switch (pcyc_verdict)

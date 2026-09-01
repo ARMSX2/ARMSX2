@@ -4139,12 +4139,11 @@ private:
 		// The palette cycle (channel shuffle). A funnel, not a single number: the three conjuncts
 		// are counted separately because "the detector did not fire" is four different diagnoses,
 		// and the primary kill criterion is a draw-call count that says nothing about which one.
-		u32 pcyc_s1 = 0;          // draws satisfying S1: a device palette, and this draw writes its source
-		u32 pcyc_s2 = 0;          // ...of which also satisfy S2 (PSMT8/4, sprite, ABE, owner is the target)
-		u32 pcyc_s1_pal = 0;      // S1's first half alone: pal_record != 0
-		u32 pcyc_s1_pal_no_write = 0; // ...that did NOT write their palette's source pages
-		u32 pcyc_s2_fail_fmt = 0; // S1 held, S2 refused on the format / primclass / ABE clause
-		u32 pcyc_s2_fail_owner = 0; // S1 held, S2 refused because the palette's owner is not the target
+		u32 pcyc_pal = 0;         // draws the CLUT gather served (pal_record != 0), the population gate
+		u32 pcyc_loop = 0;        // ...of which close the loop: about to destroy a live palette record
+		u32 pcyc_shape = 0;       // ...of which also carry the shape (paletted index, sprite)
+		u32 pcyc_fail_fmt = 0;    // ...refused on the index-format clause
+		u32 pcyc_fail_prim = 0;   // ...refused on the primclass clause
 		u32 pcyc_runs = 0;        // runs that reached the arming threshold
 		u32 pcyc_runs_alpha = 0;  // ...of which took the three-draw alpha-destination shape
 		u32 pcyc_building = 0;    // signature draws executed for real below the threshold

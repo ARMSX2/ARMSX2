@@ -1284,96 +1284,113 @@ static constexpr GSTileSurfaceId kGSTileNoSurface = 0xFFFF;
 // ---------------------------------------------------------------------------------------------
 // The palette cycle (channel shuffle), as a behavioural signature.
 //
-// A family of games splits a frame buffer into its R, G and B channels by re-reading it as a
-// PSMT8 texture through a ramp CLUT, one channel at a time, and accumulating the pieces into a
-// scratch target. Gran Turismo 4 does it for screen brightness and spends 85% of a frame on it:
-// 140 cycles of eleven draws, each cycle re-rendering the palette and re-reading it. Classic
-// recognises the idiom and substitutes one HLE draw for the whole run
-// (GSHwHack.cpp's GSC_PolyphonyDigitalGames, and the title-agnostic collapser in
-// GSRendererHW::Draw beside it); executing it literally is what a renderer does when it cannot
-// see the idiom.
+// A family of games splits a frame buffer into its channels by re-reading it as a PSMT8 texture
+// through a CLUT the game itself renders, and cycles the whole arrangement: render the palette,
+// consume it, render it again. Gran Turismo 4 does it for a screen-brightness post-process and
+// spends 85% of a frame on it -- on the Online Public Beta dump, 139 cycles of eleven draws.
+// Classic recognises the idiom and substitutes one HLE draw for the whole run (GSHwHack.cpp's
+// GSC_PolyphonyDigitalGames, and the title-agnostic collapser in GSRendererHW::Draw beside it);
+// executing it literally is what a renderer does when it cannot see the idiom.
 //
-// TileGpu can state the signature better than Classic can, because Classic's version is a
-// vertex-SHAPE heuristic standing in for a question its texture cache cannot answer -- "does this
-// draw write the memory its own palette was loaded from" -- and TileGpu has both page sets in
-// hand by the time it needs to decide.
+// ⚠️ THE SHAPE OF THE SIGNATURE WAS MEASURED, NOT DESIGNED, and the first design of it was wrong
+// in two ways that a desk read could not have caught. The instrumented census of gt4opb's tail
+// (2026-08-31, one frame, 1,539 palette draws):
 //
-// Three conjuncts, and the run key is what keeps the collapse honest:
+//   * The draw that CLOSES the loop and the draws that have Classic's SHAPE are different draws.
+//     Per cycle: eight consumers read the rendered palette bank through eight palettes and write
+//     eight-pixel strips; then three producers rebuild the bank, and the first of those three is
+//     the one that overwrites the pages a live palette record was loaded from. A conjunction of
+//     "closes the loop" and "has the shape" over ONE draw is empty on this population: 139 draws
+//     close the loop and 1,400 do not, and the 139 fail the original shape clause.
+//   * The loop-closing draw has ABE OFF (the two blended producers behind it are the ones that
+//     accumulate). Classic's IsPossibleChannelShuffle does not test ABE either; the clause was
+//     invented and it refused the entire population.
 //
-//   S1  THE CLOSED LOOP. The CLUT gather served this draw's palette (the palette's words are on
-//       the device, not in the CPU's CLUT RAM), and this draw's WRITE footprint meets the pages
-//       that palette was loaded from. In words: it samples a device palette and overwrites the
-//       memory that palette came from. Nothing but a palette cycle does that.
-//   S2  THE SHAPE. A paletted index format (PSMT8/PSMT4), sprite class, ABE on, and the palette's
-//       owner surface is the surface this draw writes.
-//   S3  THE RUN. S1 and S2 held for the previous draw too, under the same FRAME.FBMSK and the
-//       same palette owner, for at least kArmAfter draws in a row.
+// So the loop is a fact about the RUN and the shape is a fact about the DRAW:
+//
+//   S1  THE CLOSED LOOP, asked over the run. Some draw inside the run is about to destroy a live
+//       palette record -- it writes the pages that record was gathered from, in the surface that
+//       owns it. Exactly NoteClutSourceWritten's own predicate, which is what makes it free. In
+//       words: the palette is being re-rendered while it is being consumed. Nothing but a cycle
+//       does that; an ordinary paletted draw stream consumes a palette nobody is rewriting.
+//   S2  THE SHAPE, asked per draw. The CLUT gather served this draw's palette -- so the words are
+//       on the device and the palette was RENDERED, not uploaded -- and the draw is a paletted
+//       (PSMT8/PSMT4) sprite. The first clause is the population gate and it is enormous: Shadow
+//       of the Colossus and Xenosaga load 1,300-1,800 palettes a frame and the gather serves none
+//       of them, so S2 is structurally unreachable there whatever else they draw.
+//   S3  THE RUN. S2 held for kArmAfter draws in a row under one FRAME.FBMSK and one palette owner,
+//       and S1 held somewhere inside them.
 //
 // S3 is FBMSK-keyed for the reason Classic's latch is: GT4's race-start transition runs an RGB
 // shuffle and an alpha shuffle back to back and changes FBMSK between them, and NFS Underground 2
 // runs a shuffle that reduces the alpha channel over time -- an accumulating run that must NOT be
-// collapsed across the change. A run key that ignored FBMSK would merge those into one.
+// collapsed across the change. It is owner-keyed because Tomb Raider: Underworld puts R, G and B
+// in three separate palettes, and a run key that ignored the owner would elide one palette's
+// draws under another's substitute.
 struct GSTilePaletteCycleDraw
 {
-	bool pal_on_device = false;      ///< S1: the gather served this draw (PendingDraw::pal_record != 0)
-	bool writes_pal_source = false;  ///< S1: fb_pages meets a live record's source pages
-	bool paletted_index = false;     ///< S2: TEX0.PSM is PSMT8 or PSMT4
-	bool sprite = false;             ///< S2: GS_SPRITE_CLASS
-	bool abe = false;                ///< S2: PRIM->ABE
-	bool owner_is_written = false;   ///< S2: the palette's owner IS the surface this draw writes
-	u32 fbmsk = 0;                   ///< S3: FRAME.FBMSK, half the run key
-	GSTileSurfaceId owner = kGSTileNoSurface; ///< S3: the palette's owner, the other half
+	bool pal_on_device = false;     ///< S2: the gather served this draw (PendingDraw::pal_record != 0)
+	bool paletted_index = false;    ///< S2: TEX0.PSM is PSMT8 or PSMT4
+	bool sprite = false;            ///< S2: GS_SPRITE_CLASS
+	bool destroys_pal_source = false; ///< S1: this draw is about to destroy a live palette record
+	u32 fbmsk = 0;                  ///< S3: FRAME.FBMSK, half the run key
+	GSTileSurfaceId pal_owner = kGSTileNoSurface; ///< S3: the palette's owner surface, the other half
 };
 
 /// What the detector says to do with the draw it was just handed.
 enum class GSTilePaletteCycleVerdict : u8
 {
 	Pass,     ///< not the shape at all: draw it, and the run (if any) is over
-	Building, ///< the shape, but the run has not reached the arming threshold: draw it
-	Arm,      ///< the run reached the threshold on THIS draw: issue the substitute, then elide it
+	Building, ///< the shape, but the run has not armed yet: draw it
+	Arm,      ///< the run armed on THIS draw: issue the substitute, then elide it
 	Elide,    ///< the run is armed and this draw belongs to it: elide, substitute nothing
 };
 
 /// The run latch. One instance per renderer, reset at the frame boundary.
 ///
-/// ⚠️ The threshold costs the first kArmAfter - 1 draws of every run: they are drawn for real,
-/// because until the run is that long the shape is not distinguishable from a one-off paletted
-/// self-read (a game reading back its own scratch buffer through a palette, which the corpus has
-/// and which must not be elided). Classic arms on the first draw and can afford to, because its
-/// failure mode is a wrong render target; TileGpu's page model is a byte-truth ledger and a false
-/// positive can push wrong bytes into guest VRAM, where the EE reads them.
+/// ⚠️ The threshold costs the first draws of every run: they are drawn for real, because until the
+/// run is that long the shape is not distinguishable from a one-off paletted read of a rendered
+/// palette, which the corpus has and which must not be elided. Classic arms on the first draw and
+/// can afford to, because its failure mode is a wrong render target; TileGpu's page model is a
+/// byte-truth ledger and a false positive there pushes wrong bytes into guest VRAM, where the EE
+/// reads them.
 class GSTilePaletteCycleRun
 {
 public:
-	/// Consecutive signature draws needed before the run is elided. Four: GT4 runs cycles of
-	/// eleven draws under one FBMSK and reaches it immediately, while the corpus's one-off
-	/// paletted self-reads are singletons.
+	/// Consecutive S2 draws needed before a run may arm. Four: gt4opb reaches it inside the first
+	/// cycle (eight consumers before the first producer), while a one-off read of a gathered
+	/// palette is a singleton.
 	static constexpr u32 kArmAfter = 4;
 
 	GSTilePaletteCycleVerdict Observe(const GSTilePaletteCycleDraw& d)
 	{
-		const bool s1 = d.pal_on_device && d.writes_pal_source;
-		const bool s2 = d.paletted_index && d.sprite && d.abe && d.owner_is_written;
-		if (!s1 || !s2)
+		if (!d.pal_on_device || !d.paletted_index || !d.sprite)
 		{
 			Reset();
 			return GSTilePaletteCycleVerdict::Pass;
 		}
-		if (m_length == 0 || d.fbmsk != m_fbmsk || d.owner != m_owner)
+		if (m_length == 0 || d.fbmsk != m_fbmsk || d.pal_owner != m_owner)
 		{
 			// A new run, not a continuation. The previous one is over whatever it reached: a
-			// shuffle that changes FBMSK is a different operation on the same pixels.
+			// shuffle that changes FBMSK is a different operation on the same pixels, and one that
+			// changes palette owner is a different palette.
 			m_fbmsk = d.fbmsk;
-			m_owner = d.owner;
+			m_owner = d.pal_owner;
 			m_length = 1;
+			m_loop = d.destroys_pal_source;
+			m_armed = false;
 		}
 		else
 		{
 			m_length++;
+			m_loop = m_loop || d.destroys_pal_source;
 		}
-		if (m_length < kArmAfter)
+		if (m_armed)
+			return GSTilePaletteCycleVerdict::Elide;
+		if (m_length < kArmAfter || !m_loop)
 			return GSTilePaletteCycleVerdict::Building;
-		return (m_length == kArmAfter) ? GSTilePaletteCycleVerdict::Arm : GSTilePaletteCycleVerdict::Elide;
+		m_armed = true;
+		return GSTilePaletteCycleVerdict::Arm;
 	}
 
 	void Reset()
@@ -1381,9 +1398,12 @@ public:
 		m_length = 0;
 		m_fbmsk = 0;
 		m_owner = kGSTileNoSurface;
+		m_loop = false;
+		m_armed = false;
 	}
 
-	bool armed() const { return m_length >= kArmAfter; }
+	bool armed() const { return m_armed; }
+	bool loop_seen() const { return m_loop; }
 	u32 length() const { return m_length; }
 	u32 fbmsk() const { return m_fbmsk; }
 	GSTileSurfaceId owner() const { return m_owner; }
@@ -1392,6 +1412,8 @@ private:
 	u32 m_length = 0;
 	u32 m_fbmsk = 0;
 	GSTileSurfaceId m_owner = kGSTileNoSurface;
+	bool m_loop = false;  ///< S1 held somewhere inside this run
+	bool m_armed = false;
 };
 
 /// Which substitute a run's FBMSK asks for, matched to GSC_PolyphonyDigitalGames.
