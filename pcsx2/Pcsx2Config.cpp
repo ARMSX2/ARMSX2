@@ -1073,8 +1073,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TileNativeDrawLimit) &&
 		OpEqu(TileGpuMaxPassDraws) &&
 		OpEqu(TileGpuSourceSetRingDepth) &&
-		OpEqu(TileGpuStagingRingMB) &&
-		OpEqu(VulkanCommandBufferRingDepth) &&
 		OpEqu(TileGpuKickPassCadence) &&
 		OpEqu(TileGpuMaxSpecializationBinds) &&
 		OpEqu(TileGpuDualSrcRoad) &&
@@ -1255,8 +1253,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuFlushGateUploadMerge);
 	SettingsWrapBitBool(TileGpuShadowSurvivesFlush);
 	SettingsWrapBitBool(TileGpuKickReadbackFrames);
-	SettingsWrapBitBool(TileGpuStageRetainSplit);
-	SettingsWrapBitBool(TileGpuSubmitBeforeStageWait);
 	SettingsWrapBitBool(TileGpuAfailSplit);
 	SettingsWrapBitBool(TileGpuSplitSharesPassKey);
 	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);
@@ -1426,8 +1422,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(TileNativeDrawLimit, "TileNativeDrawLimit");
 	SettingsWrapBitfieldEx(TileGpuMaxPassDraws, "TileGpuMaxPassDraws");
 	SettingsWrapBitfieldEx(TileGpuSourceSetRingDepth, "TileGpuSourceSetRingDepth");
-	SettingsWrapBitfieldEx(TileGpuStagingRingMB, "TileGpuStagingRingMB");
-	SettingsWrapBitfieldEx(VulkanCommandBufferRingDepth, "VulkanCommandBufferRingDepth");
 	SettingsWrapBitfieldEx(TileGpuKickPassCadence, "TileGpuKickPassCadence");
 	SettingsWrapBitfieldEx(TileGpuMaxSpecializationBinds, "TileGpuMaxSpecializationBinds");
 	SettingsWrapBitfieldEx(TileGpuDualSrcRoad, "TileGpuDualSrcRoad");

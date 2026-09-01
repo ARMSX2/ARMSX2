@@ -147,11 +147,10 @@ public:
 	u32 GetTileGpuStagePeakRanges() const override { return m_tilegpu_stage_peak_ranges; }
 	u64 GetTileGpuStageSubmitRetries() const override { return m_tilegpu_stage_submit_retries; }
 	u64 GetTileGpuRetainCuts() const override { return m_tilegpu_retain_cuts; }
-	u64 GetTileGpuRetainSplits() const override { return m_tilegpu_retain_splits; }
-	u32 GetCommandBufferRingDepth() const override { return m_command_buffer_count; }
+	u32 GetCommandBufferRingDepth() const override { return static_cast<u32>(NUM_COMMAND_BUFFERS); }
 	u64 GetTileGpuKickDeclinesAtDepth(u32 depth) const override
 	{
-		return (depth < MAX_COMMAND_BUFFERS) ? m_tilegpu_kick_decline_depth[depth] : 0;
+		return (depth <= NUM_COMMAND_BUFFERS) ? m_tilegpu_kick_decline_depth[depth] : 0;
 	}
 	enum : u32
 	{
@@ -175,36 +174,13 @@ public:
 		// RSS moves +12.4 MB on Stuntman (548 -> 560, +2.3%), +6.9 on Spider-Man 3 (+1.3%) and
 		// +0.2 on GT4 Online Public Beta, against target memory already in the hundreds of MB.
 		//
-		// It is the BUILT-IN depth, not the only one: EmuCore/GS/VulkanCommandBufferRingDepth
-		// moves it at runtime up to MAX_COMMAND_BUFFERS, because on a device where the CPU and
-		// the GPU take turns the ring's depth is what decides how many of the kick's offers are
-		// taken. RG477V Spider-Man 3 declines 99.3% of 510 offers a drawn frame and blocks in
-		// ActivateCommandBuffer 0.53-0.57 times a frame for 6.8-7.5 ms, which is what a ring
-		// that is too shallow for the title's submission rate looks like from the host.
+		// ⚠️ Depth was tried as a runtime key and refuted. Sixteen buffers halves the mid-frame
+		// kick's declines on RG477V Spider-Man 3, and the frame does not move: the backlog stops
+		// waiting on the command-buffer ring and starts waiting on the byte road's staging ring
+		// instead, which is the same milliseconds at a different site. It is a constant because
+		// there is nothing to tune.
 		NUM_COMMAND_BUFFERS = 8,
-
-		// The ring never gets deeper than this, and every per-buffer array is this long whatever
-		// the runtime depth is -- the slots past the depth are simply never created. Sixteen
-		// because that is twice the default, which covers "the GPU is two frames behind at five
-		// submissions a frame" with room, and because the swapchain's semaphore count has to be
-		// one more than the deepest ring the device can be asked for.
-		MAX_COMMAND_BUFFERS = 16,
 	};
-
-	/// The effective command-buffer ring depth: what EmuCore/GS/VulkanCommandBufferRingDepth says,
-	/// or the built-in default where it says nothing. Two states, not three -- a negative has no
-	/// meaning here (a ring of no buffers is not a configuration) and reads as the default rather
-	/// than as an error, because the alternative is a run that refuses to start over a typo in a
-	/// dev-only key. Clamped to 2..MAX_COMMAND_BUFFERS: at one buffer there is no ring at all.
-	static constexpr u32 CommandBufferRingDepth(int setting)
-	{
-		const u32 want = (setting > 0) ? static_cast<u32>(setting) : static_cast<u32>(NUM_COMMAND_BUFFERS);
-		if (want < 2)
-			return 2;
-		if (want > static_cast<u32>(MAX_COMMAND_BUFFERS))
-			return static_cast<u32>(MAX_COMMAND_BUFFERS);
-		return want;
-	}
 
 	struct OptionalExtensions
 	{
@@ -623,7 +599,7 @@ private:
 	VkBuffer m_spin_buffer = VK_NULL_HANDLE;
 	VmaAllocation m_spin_buffer_allocation = VK_NULL_HANDLE;
 	VkDescriptorSet m_spin_descriptor_set = VK_NULL_HANDLE;
-	std::array<SpinResources, MAX_COMMAND_BUFFERS> m_spin_resources;
+	std::array<SpinResources, NUM_COMMAND_BUFFERS> m_spin_resources;
 
 	// The out-of-band command buffer: one-shot work submitted on its own fence while the
 	// frame's buffer goes on being recorded. Because queue submissions execute in order,
@@ -679,20 +655,7 @@ private:
 	bool m_wants_new_timestamp_calibration = false;
 	VkTimeDomainEXT m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_EXT;
 
-	std::array<FrameResources, MAX_COMMAND_BUFFERS> m_frame_resources;
-
-	// How many of those slots this run actually uses -- the ring's depth, read once from
-	// EmuCore/GS/VulkanCommandBufferRingDepth before any of them is created. Every index that
-	// walks the ring wraps on THIS, not on the array length.
-	u32 m_command_buffer_count = static_cast<u32>(NUM_COMMAND_BUFFERS);
-
-	// How much bigger than built-in every stream ring the RECORDING thread can run out of is, set
-	// once from EmuCore/GS/TileGpuStagingRingMB. One multiplier for the whole family -- byte road,
-	// state, indirect, vertex, index -- because they are one pipeline: deepen the deepest of them
-	// alone and the wait relocates to the next, which is measured and is exactly what the M2 does
-	// (byte road 32 -> 48 moves the wait onto the 4 MB state ring; 32 -> 64 with the state ring
-	// scaled moves it onto the 32 MB vertex ring). One at the default, so nothing moves.
-	u32 m_stream_size_scale = 1;
+	std::array<FrameResources, NUM_COMMAND_BUFFERS> m_frame_resources;
 	u64 m_next_fence_counter = 1;
 	u64 m_completed_fence_counter = 0;
 	u32 m_current_frame = 0;
@@ -1155,11 +1118,7 @@ private:
 	/// plan holds live references to all of them from the moment it stages until its last draw is
 	/// recorded. Without this the ring frees them at the first of the plan's submissions instead of
 	/// the last; VKStreamBuffer::RetainForCurrentCommandBuffer's comment has the mechanism.
-	/// `vram_keep_from` is where the byte road's LIVE reservation begins, or kTileGpuNoStagedPlan
-	/// when the caller has nothing staged that a later submission still reads. It is only consulted
-	/// under EmuCore/GS/TileGpuStageRetainSplit; without the key every cut retains the blanket way.
-	static constexpr u32 kTileGpuNoStagedPlan = ~0u;
-	void RetainTileGpuStreamsForCurrentCommandBuffer(u32 vram_keep_from = kTileGpuNoStagedPlan);
+	void RetainTileGpuStreamsForCurrentCommandBuffer();
 	bool m_tilegpu_tried = false;
 	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the byte sampling path compiled in
 	// TileGpuClutMergeRegions as it stood when this session's module source was assembled -- see
@@ -1686,17 +1645,17 @@ private:
 	// The pipeline-depth census (EmuCore/GS/TileGpuCensus bit 128). Every counter here is written
 	// under that bit and nowhere else, so the default arm's numbers and its output are what they
 	// were. What the three groups answer, in order: how big a staging ring this title actually
-	// wants, what ring depth would have converted the kick offers that were refused, and whether a
-	// mid-plan cut is subdividing the tracked range or sliding all of it forward.
+	// wants, what ring depth would have converted the kick offers that were refused, and how often a
+	// mid-plan cut walked the newest tracked range's fence forward.
 	u64 m_tilegpu_stage_bytes = 0;
 	u64 m_tilegpu_stage_peak_outstanding = 0;
 	u32 m_tilegpu_stage_peak_ranges = 0;
 	u64 m_tilegpu_stage_submit_retries = 0;
 	u64 m_tilegpu_retain_cuts = 0;
-	u64 m_tilegpu_retain_splits = 0;
-	// Indexed by the number of ring slots still holding an unretired submission when an offer was
-	// declined. A decline at depth d is one a ring of d + 2 would have taken.
-	std::array<u64, MAX_COMMAND_BUFFERS> m_tilegpu_kick_decline_depth{};
+	// Indexed by the number of submissions in flight when an offer was declined. NUM_COMMAND_BUFFERS
+	// is a reachable index, not one past the end: the buffer being RECORDED carries a counter of its
+	// own, so a full ring of seven unretired submissions reads as eight.
+	std::array<u64, NUM_COMMAND_BUFFERS + 1> m_tilegpu_kick_decline_depth{};
 	// EmuCore/GS/TileGpuCensus bit 128, read once at device creation like every other census arm.
 	bool m_census_pipeline_depth = false;
 	bool m_tilegpu_kick_announced = false;

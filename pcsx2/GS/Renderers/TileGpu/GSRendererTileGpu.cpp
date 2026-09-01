@@ -3890,15 +3890,18 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  pipeline depth -- kick declines by SUBMISSIONS IN FLIGHT (ring %u deep;%s):%s   "
 						"[total %.2f /drawn frame]",
 			g_gs_device->GetCommandBufferRingDepth(),
-			" a pile at the depth is a floor, not a measurement -- deepen the ring and re-read",
+			" a pile at the depth is a floor -- the count cannot exceed the ring, so it says the backlog is at "
+			"least this deep and never how much more",
 			declines.empty() ? "  none" : declines.c_str(), static_cast<double>(declined_total) / mframes);
 
-		const double cuts = static_cast<double>(g_gs_device->GetTileGpuRetainCuts());
-		Console.WriteLn("  pipeline depth -- mid-plan cuts: %.2f /drawn frame, of which %.2f subdivided the tracked "
-						"range and %.2f slid all of it forward (EmuCore/GS/TileGpuStageRetainSplit %s)",
-			cuts / mframes, static_cast<double>(g_gs_device->GetTileGpuRetainSplits()) / mframes,
-			(cuts - static_cast<double>(g_gs_device->GetTileGpuRetainSplits())) / mframes,
-			GSConfig.TileGpuStageRetainSplit ? "ON" : "off");
+		// Every cut walks the newest tracked range's fence onto the buffer being recorded, and a
+		// commit landing on the same counter merges into that range rather than opening a new one.
+		// So the cut rate against the range count above is what turns the ring's byte size into a
+		// wait: many cuts and few ranges means a frame's staging is pinned to the frame's LAST
+		// submission, and a blocking wait there has nothing shorter than a frame to wait for.
+		Console.WriteLn("  pipeline depth -- mid-plan cuts: %.2f /drawn frame, each retaining the whole newest "
+						"tracked range",
+			static_cast<double>(g_gs_device->GetTileGpuRetainCuts()) / mframes);
 	}
 
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of

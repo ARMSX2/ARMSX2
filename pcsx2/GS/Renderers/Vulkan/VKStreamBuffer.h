@@ -58,11 +58,7 @@ public:
 	bool Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site);
 	void Destroy(bool defer);
 
-	/// `allow_wait` false means "tell me whether there is room, do not block to make room": the
-	/// last-resort WaitForClearSpace is skipped and the call returns false instead. A caller that
-	/// has recorded work the GPU has not seen yet can use that to hand the work over FIRST and
-	/// block afterwards, which is a strictly deeper pipeline than blocking with the queue short.
-	bool ReserveMemory(u32 num_bytes, u32 alignment, bool allow_wait = true);
+	bool ReserveMemory(u32 num_bytes, u32 alignment);
 	void CommitMemory(u32 final_num_bytes);
 
 	/// Hold the newest committed range until the command buffer being recorded NOW retires, not
@@ -82,26 +78,6 @@ public:
 	/// recording, so it ends up on the last submission that actually reads it. It only ever moves
 	/// a fence FORWARD, so it can delay a reuse and never permit one.
 	void RetainForCurrentCommandBuffer();
-
-	/// The same thing, but leaving behind the bytes the live reservation does not cover.
-	///
-	/// RetainForCurrentCommandBuffer moves the WHOLE newest range forward, and at a mid-plan cut
-	/// that range is everything staged since the last cut -- most of which no longer has a reader,
-	/// because the draws that read it are already recorded into the submission that is going out.
-	/// Since a commit that lands on the same fence counter merges into that range rather than
-	/// opening a new one, the range never subdivides: every cut slides it onto the buffer now
-	/// recording, so a whole frame's staging ends up pinned to the frame's LAST submission and the
-	/// ring's effective depth is measured in frames instead of submissions.
-	///
-	/// `keep_from_offset` is where the reservation the caller is still recording against begins.
-	/// Bytes below it retire with the submission that read them; bytes at or above it ride forward,
-	/// which is the part the correctness argument is actually about. Falls back to the blanket
-	/// retain whenever the offset does not sit strictly inside the newest range -- a wrap, an empty
-	/// live range, a caller with nothing staged -- because retaining too much is only slow and
-	/// retaining too little is corruption.
-	/// Returns whether the range was actually split, rather than falling back to the blanket
-	/// retain -- the one thing an arm that claims to subdivide has to be able to show.
-	bool RetainForCurrentCommandBufferFrom(u32 keep_from_offset);
 
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);

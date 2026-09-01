@@ -894,7 +894,7 @@ struct Pcsx2Config
 
 		union
 		{
-			// ⚠️ 147 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
+			// ⚠️ 145 one-bit flags in 192 bits of array. The flag PAST the array is invisible to
 			// OptionsAreEqual, which compares these words and nothing else, so a settings change
 			// that moved only that flag would not count as one. Widen the array and add the
 			// matching OpEqu row in the SAME commit as the flag that needs it -- 128/128 is how
@@ -1880,55 +1880,6 @@ struct Pcsx2Config
 					// threshold), queued behind removing the pulls themselves (the 16-bit
 					// CLUT gather), which is the only thing that helps that title.
 					TileGpuKickReadbackFrames : 1,
-					// At a mid-plan cut, retain only the byte road's LIVE reservation instead of
-					// everything staged since the last cut.
-					//
-					// ⚠️ THE MECHANISM. A stream ring frees a range when the submission that
-					// read it retires. A mid-plan cut has to walk the newest range's fence
-					// forward, because the plan being recorded reads its staging on BOTH sides
-					// of the cut -- that is what stopped Ratchet & Clank drawing with other
-					// draws' textures. But the range it walks forward is everything staged
-					// since the last cut, and a commit landing on the same fence counter merges
-					// into that range rather than opening a new one. So the range never
-					// subdivides: every cut slides it onto the buffer now recording, a whole
-					// frame's staging ends up pinned to the frame's LAST submission, and the
-					// ring's depth is counted in FRAMES instead of submissions. The wait that
-					// follows is correspondingly long -- RG477V Spider-Man 3 blocks ~15 ms per
-					// wait, which is a whole frame of GPU work, not a submission's.
-					//
-					// With the key on, the cut names where the live reservation begins and the
-					// bytes below it retire with the submission that actually read them. Costs
-					// nothing: no memory, one deque entry per cut, and the fence still only ever
-					// moves FORWARD for the range that needs it.
-					//
-					// OFF by default until the device A/B says otherwise -- it changes when
-					// staging bytes become reusable, which is a lifetime question and the one
-					// place in this backend where being wrong is silent corruption rather than a
-					// slow frame. Pixel-inert if it is right, which is exactly what the 22-dump
-					// hash grid is asked. Dev only.
-					TileGpuStageRetainSplit : 1,
-					// Hand the recorded work to the GPU BEFORE blocking for byte-road staging
-					// room, instead of after.
-					//
-					// Shipped, ReserveMemory blocks on a fence first and only submits if no
-					// fence could have helped. So the GS thread runs out of ring, goes to
-					// sleep, and does it holding a command buffer full of work the GPU has
-					// never seen -- the one state in the whole road where the queue is short
-					// and the host is waiting on it anyway. With the key on the first ask is
-					// non-blocking: no room means submit, then ask again and wait if it still
-					// has to.
-					//
-					// It does not shorten the wait it does not remove; what it buys is that
-					// the GPU is fed across it. It can also relocate: the submit may hit the
-					// command-buffer ring instead, and the retry may still wait. Both land on
-					// their own wait site, which is the whole reason the per-site accounting
-					// exists.
-					//
-					// OFF by default until the device A/B says otherwise. Pixel-inert by
-					// construction -- it moves WHEN recorded work is submitted, never what is
-					// recorded -- and gated on the 22-dump hash grid like every other
-					// submission-timing key. Dev only.
-					TileGpuSubmitBeforeStageWait : 1,
 					// Serve an alpha test the plan could not decide EXACTLY, by splitting the
 					// draw, instead of discarding the fragments that fail it.
 					//
@@ -2581,53 +2532,6 @@ struct Pcsx2Config
 		// the built-in depth. Dev only.
 		int TileGpuSourceSetRingDepth = 0;
 
-		// How many MEGABYTES the TileGpu byte road's host staging ring holds -- the buffer
-		// a frame's page slots, epoch page tables, page-entry lists, masks and palettes are
-		// written into on the way to the GPU. Zero -- the default -- takes the built-in
-		// 32 MB; a positive value forces that size, clamped to 8..256. Negative means
-		// nothing here and is treated as zero: a ring of no megabytes is not a
-		// configuration.
-		//
-		// It is a PIPELINE-DEPTH lever. The ring frees a range only when the submission
-		// that read it retires, so size / bytes-staged-a-frame is how many frames the GS
-		// thread may run ahead before it blocks in ReserveMemory. Spider-Man 3 stages ~9 MB
-		// a frame (32 MB = ~3.5 frames), Stuntman ~12.7 (~2.5). Those are the corpus's two
-		// no-readback titles and they are the only two that pay this wait: on RG477V
-		// Spider-Man 3 blocks here 0.68-0.70 times a drawn frame at ~15 ms EACH, 100% of
-		// its sync bucket, while its GPU sits 53.9% busy -- CPU and GPU taking turns.
-		//
-		// ⚠️ REAL MEMORY on an 8 GB handheld, allocated once at first executor use and held
-		// for the run. 32 -> 64 is +32 MB against a target already in the hundreds.
-		//
-		// PIXEL-INERT by construction: a ring's size cannot reach a shader. Dev only; a
-		// staging size is not a user setting.
-		int TileGpuStagingRingMB = 0;
-
-		// How many command buffers the Vulkan backend's submission ring holds. Zero -- the
-		// default -- takes the built-in 8; a positive value forces that depth, clamped to
-		// 2..16 (GSDeviceVK::MAX_COMMAND_BUFFERS). Negative means nothing here and reads as
-		// zero: a ring of no buffers is not a configuration.
-		//
-		// Depth is how many submissions may be in flight -- this minus one, since the buffer
-		// being recorded is not one of them -- and it decides two things at once. The GS
-		// thread blocks in ActivateCommandBuffer when the ring comes round to a buffer the
-		// GPU has not finished (wait site `cmdbuf-ring`), and the mid-frame kick's
-		// never-block guard DECLINES its offer in exactly the same condition. So a ring that
-		// is too shallow for the title's submission rate costs twice: the host waits, and the
-		// machinery that would have kept the GPU fed stops firing. RG477V Spider-Man 3
-		// declines 99.3% of 510 offers a drawn frame and waits 0.53-0.57 times a frame for
-		// 6.8-7.5 ms.
-		//
-		// Safe at any depth by construction: a deeper ring only ever DELAYS a resource's
-		// reuse, never permits one earlier -- every reuse in this backend is gated on a fence
-		// counter, not on a ring index. What it costs is a command pool, a command buffer, a
-		// fence, query-pool slots and a per-frame descriptor-pool chain per buffer; the
-		// 3 -> 8 raise measured +12.4 MB peak RSS on Stuntman and +6.9 on Spider-Man 3.
-		//
-		// PIXEL-INERT by construction: which physical buffer a submission lands in cannot
-		// reach a shader. Dev only; a submission ring is not a user setting.
-		int VulkanCommandBufferRingDepth = 0;
-
 		// How many render passes the TileGpu executor records before it OFFERS to submit
 		// them, on any frame -- the second trigger of the mid-frame kick above, beside
 		// that one's near-a-readback trigger. Zero is off and leaves the near-readback
@@ -2874,10 +2778,11 @@ struct Pcsx2Config
 		//         everything". Together those price a ring size instead of guessing one. (b) The
 		//         mid-frame kick's declines, histogrammed by how many ring slots still held an
 		//         unretired submission: a decline at depth d is one a command-buffer ring of d + 2
-		//         would have taken, so the histogram says what depth would buy what. (c) Whether a
-		//         mid-plan cut subdivided the tracked range or slid all of it forward
-		//         (TileGpuStageRetainSplit's own evidence). Counters only -- no hash, no walk --
-		//         and every one of them is written under this bit and nowhere else.
+		//         would have taken, so the histogram says what depth would buy what. (c) How many
+		//         mid-plan cuts a frame took -- each one walks the newest tracked range's fence
+		//         forward, so the cut rate is what turns a ring's byte size into a wait. Counters
+		//         only -- no hash, no walk -- and every one of them is written under this bit and
+		//         nowhere else.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//

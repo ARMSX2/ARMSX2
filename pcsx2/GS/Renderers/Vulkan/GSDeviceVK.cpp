@@ -1419,13 +1419,9 @@ bool GSDeviceVK::CreateCommandBuffers()
 {
 	VkResult res;
 
-	// Only the slots the ring's runtime depth actually uses. The array is MAX_COMMAND_BUFFERS long
-	// so the indices are constant, but an uncreated slot costs no pool, no fence and no descriptor
-	// chain -- which is the whole reason the default's footprint does not move when the ceiling does.
 	uint32_t frame_index = 0;
-	for (u32 create_index = 0; create_index < m_command_buffer_count; create_index++)
+	for (FrameResources& resources : m_frame_resources)
 	{
-		FrameResources& resources = m_frame_resources[create_index];
 		resources.needs_fence_wait = false;
 
 		VkCommandPoolCreateInfo pool_info = {
@@ -1620,7 +1616,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 	if (m_gpu_timing_supported)
 	{
 		const VkQueryPoolCreateInfo query_create_info = {
-			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, m_command_buffer_count * 4, 0};
+			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, NUM_COMMAND_BUFFERS * 4, 0};
 		res = vkCreateQueryPool(m_device, &query_create_info, nullptr, &m_timestamp_query_pool);
 		if (res != VK_SUCCESS)
 		{
@@ -1633,7 +1629,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 	if (m_gpu_pipeline_statistics_supported)
 	{
 		const VkQueryPoolCreateInfo query_create_info = {
-			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_PIPELINE_STATISTICS, m_command_buffer_count,
+			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_PIPELINE_STATISTICS, NUM_COMMAND_BUFFERS,
 			VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT};
 		res = vkCreateQueryPool(m_device, &query_create_info, nullptr, &m_pipeline_statistics_query_pool);
 		if (res != VK_SUCCESS)
@@ -1883,13 +1879,13 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter, GpuWaitSite site)
 		return;
 
 	// Find the first command buffer which covers this counter value.
-	u32 index = (m_current_frame + 1) % m_command_buffer_count;
+	u32 index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 	while (index != m_current_frame)
 	{
 		if (m_frame_resources[index].fence_counter >= fence_counter)
 			break;
 
-		index = (index + 1) % m_command_buffer_count;
+		index = (index + 1) % NUM_COMMAND_BUFFERS;
 	}
 
 	pxAssert(index != m_current_frame);
@@ -1981,8 +1977,8 @@ std::vector<std::string> GSDeviceVK::GetExtendedStats() const
 
 void GSDeviceVK::ScanForCommandBufferCompletion()
 {
-	for (u32 check_index = (m_current_frame + 1) % m_command_buffer_count; check_index != m_current_frame;
-	     check_index = (check_index + 1) % m_command_buffer_count)
+	for (u32 check_index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS; check_index != m_current_frame;
+	     check_index = (check_index + 1) % NUM_COMMAND_BUFFERS)
 	{
 		FrameResources& resources = m_frame_resources[check_index];
 		if (resources.fence_counter <= m_completed_fence_counter)
@@ -2191,7 +2187,7 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitSite site)
 	// Clean up any resources for command buffers between the last known completed buffer and this
 	// now-completed command buffer. If we use >2 buffers, this may be more than one buffer.
 	const u64 now_completed_counter = m_frame_resources[index].fence_counter;
-	u32 cleanup_index = (m_current_frame + 1) % m_command_buffer_count;
+	u32 cleanup_index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 	while (cleanup_index != m_current_frame)
 	{
 		FrameResources& resources = m_frame_resources[cleanup_index];
@@ -2201,7 +2197,7 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitSite site)
 		if (resources.fence_counter > m_completed_fence_counter)
 			CommandBufferCompleted(cleanup_index);
 
-		cleanup_index = (cleanup_index + 1) % m_command_buffer_count;
+		cleanup_index = (cleanup_index + 1) % NUM_COMMAND_BUFFERS;
 	}
 
 	m_completed_fence_counter = now_completed_counter;
@@ -2434,7 +2430,7 @@ void GSDeviceVK::CommandBufferCompleted(u32 index)
 
 void GSDeviceVK::MoveToNextCommandBuffer()
 {
-	ActivateCommandBuffer((m_current_frame + 1) % m_command_buffer_count);
+	ActivateCommandBuffer((m_current_frame + 1) % NUM_COMMAND_BUFFERS);
 	InvalidateCachedState();
 	SetInitialState(m_current_command_buffer);
 }
@@ -2959,7 +2955,7 @@ bool GSDeviceVK::InitSpinResources()
 	desc_set_write.pBufferInfo = &desc_buffer_info;
 	vkUpdateDescriptorSets(m_device, 1, &desc_set_write, 0, nullptr);
 
-	for (u32 index = 0; index < m_command_buffer_count; index++)
+	for (u32 index = 0; index < NUM_COMMAND_BUFFERS; index++)
 	{
 		SpinResources& resources = m_spin_resources[index];
 		VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -3058,7 +3054,7 @@ void GSDeviceVK::SpinCommandCompleted(u32 index)
 {
 	SpinResources& resources = m_spin_resources[index];
 	resources.in_progress = false;
-	const u32 timestamp_base = (index + m_command_buffer_count) * 2;
+	const u32 timestamp_base = (index + NUM_COMMAND_BUFFERS) * 2;
 	std::array<u64, 2> timestamps;
 	const VkResult res =
 		vkGetQueryPoolResults(m_device, m_timestamp_query_pool, timestamp_base, static_cast<u32>(timestamps.size()),
@@ -3123,7 +3119,7 @@ void GSDeviceVK::SubmitSpinCommand(u32 index, u32 cycles)
 		vkCmdPipelineBarrier(resources.command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 0, nullptr);
 
-	const u32 timestamp_base = (index + m_command_buffer_count) * 2;
+	const u32 timestamp_base = (index + NUM_COMMAND_BUFFERS) * 2;
 	vkCmdResetQueryPool(resources.command_buffer, m_timestamp_query_pool, timestamp_base, 2);
 	vkCmdWriteTimestamp(
 		resources.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool, timestamp_base);
@@ -4074,23 +4070,8 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	if (!CreateDevice(surface, enable_validation_layer))
 		return false;
 
-	// The ring's depth, read once and before anything per-buffer exists. Everything below --
-	// the query pools' length, the command pools, the fences, the per-frame descriptor chains --
-	// is sized off it, and every index that walks the ring wraps on it.
+	// Read once, before anything the pipeline-depth census counts exists.
 	m_census_pipeline_depth = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPipelineDepth) != 0;
-	// Rounded UP, so 48 MB of byte road is scale 2 and not scale 1: a ratio that rounds down leaves
-	// the neighbour ring at its built-in size and hands the wait straight to it.
-	m_stream_size_scale = (gsTileGpuStagingRingBytes(GSConfig.TileGpuStagingRingMB) + gsTileGpuStagingRingBytes(0) - 1) /
-						  gsTileGpuStagingRingBytes(0);
-	m_stream_size_scale = std::max(1u, m_stream_size_scale);
-	m_command_buffer_count = CommandBufferRingDepth(GSConfig.VulkanCommandBufferRingDepth);
-	if (m_command_buffer_count != static_cast<u32>(NUM_COMMAND_BUFFERS))
-	{
-		Console.WriteLn("VK: command-buffer ring %u deep (EmuCore/GS/VulkanCommandBufferRingDepth = %d, built-in %u). "
-						"One fewer than this many submissions may be in flight, which is what the mid-frame kick's "
-						"never-block guard has to fit inside.",
-			m_command_buffer_count, GSConfig.VulkanCommandBufferRingDepth, static_cast<u32>(NUM_COMMAND_BUFFERS));
-	}
 
 	// And critical resources.
 	if (!CreateAllocator() || !CreateGlobalDescriptorPool() || !CreateCommandBuffers())
@@ -6243,22 +6224,20 @@ bool GSDeviceVK::CreateBuffers()
 {
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),
-			VERTEX_BUFFER_SIZE * m_stream_size_scale, GpuWaitSite::StreamVertex))
+			VERTEX_BUFFER_SIZE, GpuWaitSite::StreamVertex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate vertex buffer");
 		return false;
 	}
 
-	if (!m_index_stream_buffer.Create(
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE * m_stream_size_scale, GpuWaitSite::StreamIndex))
+	if (!m_index_stream_buffer.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE, GpuWaitSite::StreamIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate index buffer");
 		return false;
 	}
 
 	if (!m_expand_index_stream_buffer.Create(
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? (INDEX_BUFFER_SIZE * m_stream_size_scale) : 4,
-			GpuWaitSite::StreamExpandIndex))
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? INDEX_BUFFER_SIZE : 4, GpuWaitSite::StreamExpandIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate expansion index buffer (VS resource)");
 		return false;
@@ -7214,18 +7193,14 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// page slots (only the pages the plan reads or reconciles -- a few hundred KB to low MB, not the
 	// whole 4 MiB), its epoch page tables, page-entry lists and palettes; several frames' worth so a
 	// frame in flight does not stall the next frame's staging.
-	// The byte road's staging ring, sized by EmuCore/GS/TileGpuStagingRingMB (0 = the built-in
-	// 32 MB). Read once here rather than per frame: the ring is created once and the descriptor
-	// below spells its size a second time, so the two must come from one read.
-	const u32 TILEGPU_VRAM_BUFFER_SIZE = gsTileGpuStagingRingBytes(GSConfig.TileGpuStagingRingMB);
-	// ...and its two neighbours scale WITH it, because the three are one pipeline and a lever that
-	// deepens only the deepest of them just moves the wait to the next. Measured, M2, Spider-Man 3:
-	// take the byte road from 32 MB to 64 alone and `stream-tilegpu-vram` goes to exactly zero while
-	// `stream-tilegpu-state` picks up 0.23 waits a drawn frame at 7.49 ms -- a 4 MB ring paying a
-	// bill that had been the 32 MB one's. The ratio is the byte road's, so a run that does not set
-	// the key gets the sizes it always had.
-	const u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024 * m_stream_size_scale;
-	const u32 TILEGPU_STATE_BUFFER_SIZE = TILEGPU_INDIRECT_BUFFER_SIZE;
+	//
+	// ⚠️ The size was tried as a key and refuted. Doubling the ring (and the state, indirect,
+	// vertex and index rings with it, or the wait just relocates to whichever of them is next)
+	// leaves it 100% outstanding on RG477V Spider-Man 3 and the frame where it was: the title
+	// stages into whatever is offered, so a bigger ring buys a bigger backlog, not a shorter wait.
+	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
+	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
+	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 32 * 1024 * 1024;
 	if (!m_tilegpu_indirect_stream_buffer.Create(
 			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE, GpuWaitSite::StreamTileGpuIndirect) ||
 		!m_tilegpu_state_stream_buffer.Create(
@@ -7238,24 +7213,6 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			GpuWaitSite::StreamTileGpuVram))
 	{
 		return fail("the indirect, state and ring stream buffers");
-	}
-
-	// Announced only when the key MOVED it. A lever whose whole effect is how far the recording
-	// thread may run ahead leaves no other trace in a log, and "what size did that arm run at?" has
-	// to be answerable from one -- but the default must add no line, or every containment diff in
-	// the campaign grows a row that means nothing.
-	if (TILEGPU_VRAM_BUFFER_SIZE != gsTileGpuStagingRingBytes(0))
-	{
-		Console.WriteLn("TileGpu byte-road staging ring: %u MB (EmuCore/GS/TileGpuStagingRingMB = %d, built-in %u), "
-						"and every other ring the recording thread can run out of scaled x%u with it (state and "
-						"indirect %u MB each, vertex %u, index %u). A ring frees a range only when the submission "
-						"that read it retires, so this is how far ahead of the GPU the GS thread may stage before "
-						"it blocks -- and the family moves together because deepening one of them alone just hands "
-						"the wait to the next.",
-			TILEGPU_VRAM_BUFFER_SIZE / (1024u * 1024u), GSConfig.TileGpuStagingRingMB, kGSTileGpuStagingRingMBDefault,
-			m_stream_size_scale, TILEGPU_STATE_BUFFER_SIZE / (1024u * 1024u),
-			(VERTEX_BUFFER_SIZE / (1024u * 1024u)) * m_stream_size_scale,
-			(INDEX_BUFFER_SIZE / (1024u * 1024u)) * m_stream_size_scale);
 	}
 
 	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
@@ -7448,29 +7405,18 @@ u32 GSDeviceVK::TileGpuTexelMask(u32 road_mask, u32 plan_texel_mask)
 // outside the staging window today and get nothing out of it; they call it anyway, because the rule
 // that survives a later edit is "a cut retains", and the alternative is re-auditing all five sites
 // every time a reservation moves. Retention only ever delays a reuse, never permits one.
-void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer(u32 vram_keep_from)
+void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer()
 {
 	m_vertex_stream_buffer.RetainForCurrentCommandBuffer();
 	m_index_stream_buffer.RetainForCurrentCommandBuffer();
 	m_tilegpu_state_stream_buffer.RetainForCurrentCommandBuffer();
 	m_tilegpu_indirect_stream_buffer.RetainForCurrentCommandBuffer();
+	m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
 
-	// The byte road is the one ring that RUNS OUT -- on RG477V it is 100% of Spider-Man 3's sync
-	// bill -- and it is also the one whose live range the caller can name, because a plan reserves
-	// its whole frame's staging in a single act. Under EmuCore/GS/TileGpuStageRetainSplit the cut
-	// leaves everything below that reservation behind, so the ring's depth is counted in
-	// submissions again instead of frames. The other four keep the blanket retain: their live range
-	// is the FRAME's (every pass re-binds vertex and index at the frame's base), and none of them
-	// has ever waited.
-	if (GSConfig.TileGpuStageRetainSplit && vram_keep_from != kTileGpuNoStagedPlan)
-	{
-		const bool split = m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBufferFrom(vram_keep_from);
-		m_tilegpu_retain_splits += (m_census_pipeline_depth && split) ? 1 : 0;
-	}
-	else
-	{
-		m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
-	}
+	// ⚠️ Retaining only the LIVE reservation instead of the whole newest range was tried, and it
+	// works -- about half the cuts subdivide -- and the frame does not move: the byte road stops
+	// waiting and the command-buffer ring starts. Counted, not gated: the cut rate is what turns a
+	// ring's byte size into a wait, and it is the number the census bit is here to report.
 	m_tilegpu_retain_cuts += m_census_pipeline_depth ? 1 : 0;
 }
 
@@ -8574,13 +8520,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	m_tilegpu_kick_plan_passes = 0;
 
-	// Where this plan's byte-road staging begins, once it exists. Every mid-plan cut below hands it
-	// to the retain so the bytes BELOW it -- earlier plans', already recorded into the submission
-	// going out -- are not dragged forward onto the buffer this thread is still filling. Stays
-	// kTileGpuNoStagedPlan until the reservation lands, which is what makes the cuts that happen
-	// before it (the state and indirect reserve fallbacks) retain the blanket way.
-	u32 vram_plan_base = kTileGpuNoStagedPlan;
-
 	// Record the frame's geometry as constant-cost indirect draws. The draw commands go into an
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
 	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
@@ -8756,16 +8695,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const u32 keep_bytes = static_cast<u32>(plan.writeback_keep_masks.size() * sizeof(u32));
 		const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
 		const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + block_bytes + keep_bytes + pal_bytes;
-		// EmuCore/GS/TileGpuSubmitBeforeStageWait inverts the order of the two things that can be
-		// done about a full ring. Shipped, ReserveMemory blocks on a fence first and only submits
-		// if no fence could help -- so the GS thread goes to sleep with a frame's recorded work
-		// still sitting in an unsubmitted command buffer, which is the one state where the GPU has
-		// nothing queued and the host is waiting for it anyway. With the key on, the first ask is
-		// non-blocking: run out of room and the recorded work goes to the GPU before this thread
-		// blocks. The retry that follows may still wait, and the submit itself may hit the
-		// command-buffer ring -- both are read per site, which is how the relocation is caught.
-		const bool submit_before_wait = GSConfig.TileGpuSubmitBeforeStageWait;
-		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes, !submit_before_wait))
+		// ⚠️ Asking non-blocking FIRST, so a full ring submits the recorded work before this thread
+		// sleeps on it, was tried as a key and refuted -- it moves the same milliseconds onto the
+		// command-buffer ring. So the order stands: block on a fence, and submit only if no fence
+		// could have helped.
+		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 		{
 			m_tilegpu_stage_submit_retries += m_census_pipeline_depth ? 1 : 0;
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
@@ -8785,7 +8719,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		}
 		u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
 		const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
-		vram_plan_base = m_tilegpu_vram_stream_buffer.GetCurrentOffset();
 
 		std::memset(base, 0, kPageBytes); // the zero slot
 		u32* const tables = reinterpret_cast<u32*>(base + slot_bytes);
@@ -9043,7 +8976,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			kGSTileGpuKickReadbackThreshold, cadence,
 			cadence ? "additive -- it fires on any frame, readback or not"
 					: "OFF, leaving the near-readback trigger standing alone: the arm this shipped as",
-			m_command_buffer_count,
+			static_cast<u32>(NUM_COMMAND_BUFFERS),
 			GSConfig.TileGpuAdaptiveKick ?
 				"PREDICTED per frame (EmuCore/GS/TileGpuAdaptiveKick, starting on): it runs while the "
 				"blocking wait it removes is worth more than the submits cost on this device" :
@@ -9071,7 +9004,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		// The counter this submission will carry, read before the submit moves it on.
 		const u64 submitted = GetCurrentFenceCounter();
 		ExecuteCommandBuffer(false);
-		RetainTileGpuStreamsForCurrentCommandBuffer(vram_plan_base);
+		RetainTileGpuStreamsForCurrentCommandBuffer();
 		if (serialize >= 3)
 			WaitForFenceCounter(submitted, GpuWaitSite::TileGpuSerialize);
 		cmd = GetCurrentCommandBuffer();
@@ -9168,7 +9101,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		m_tilegpu_kicks_offered++;
 		ScanForCommandBufferCompletion();
-		const u32 next_buffer = (m_current_frame + 1) % m_command_buffer_count;
+		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 		if (m_frame_resources[next_buffer].fence_counter > m_completed_fence_counter)
 		{
 			if (m_census_pipeline_depth)
@@ -9180,7 +9113,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				// what is refusing, while one that spreads below it means the depth is not the
 				// binding term and a deeper ring buys nothing.
 				const u64 in_flight = GetCurrentFenceCounter() - m_completed_fence_counter;
-				m_tilegpu_kick_decline_depth[std::min<u64>(in_flight, MAX_COMMAND_BUFFERS - 1)]++;
+				m_tilegpu_kick_decline_depth[std::min<u64>(in_flight, NUM_COMMAND_BUFFERS)]++;
 			}
 			// A declined offer still cost a scan, and on a starved title there are hundreds of them
 			// a frame. The predictor is answerable for that too, so it is timed on the way out.
@@ -9194,7 +9127,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		m_tilegpu_kicks_taken++;
 		ExecuteCommandBuffer(WaitType::None);
-		RetainTileGpuStreamsForCurrentCommandBuffer(vram_plan_base);
+		RetainTileGpuStreamsForCurrentCommandBuffer();
 		cmd = GetCurrentCommandBuffer();
 		if (cadence_is_marginal)
 		{
@@ -11646,7 +11579,7 @@ void GSDeviceVK::RenderBlankFrame()
 
 	m_swap_chain->GetCurrentTexture()->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::PresentSrc);
 	SubmitCommandBuffer(m_swap_chain.get());
-	ActivateCommandBuffer((m_current_frame + 1) % m_command_buffer_count);
+	ActivateCommandBuffer((m_current_frame + 1) % NUM_COMMAND_BUFFERS);
 }
 
 bool GSDeviceVK::DoCAS(
@@ -12756,12 +12689,12 @@ bool GSDeviceVK::CreatePersistentDescriptorSets()
 	if (m_features.vs_expand)
 	{
 		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			m_vertex_stream_buffer.GetBuffer(), 0, VERTEX_BUFFER_SIZE * m_stream_size_scale);
+			m_vertex_stream_buffer.GetBuffer(), 0, VERTEX_BUFFER_SIZE);
 	}
 	if (m_features.aa1)
 	{
 		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			m_expand_index_stream_buffer.GetBuffer(), 0, INDEX_BUFFER_SIZE * m_stream_size_scale);
+			m_expand_index_stream_buffer.GetBuffer(), 0, INDEX_BUFFER_SIZE);
 	}
 	dsub.Update(dev);
 	Vulkan::SetObjectName(dev, m_tfx_ubo_descriptor_set, "Persistent TFX UBO set");
@@ -13727,7 +13660,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// when the next buffer is verifiably complete; otherwise keep recording and retry
 		// at the next draw (the counter keeps the gate open).
 		ScanForCommandBufferCompletion();
-		const u32 next_buffer = (m_current_frame + 1) % m_command_buffer_count;
+		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
 			ExecuteCommandBuffer(WaitType::None);
 	}

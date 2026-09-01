@@ -1487,42 +1487,6 @@ constexpr u32 kGSTileGpuSourceSetRingDefault = 32;
 constexpr u32 kGSTileGpuSourceSetRingMin = 2;
 constexpr u32 kGSTileGpuSourceSetRingMax = 64;
 
-/// The TileGpu byte road's HOST STAGING RING: how many megabytes of host-visible buffer the frame's
-/// page slots, epoch page tables, page-entry lists, masks and palettes are written into before the
-/// GPU reads them (GSDeviceVK::m_tilegpu_vram_stream_buffer, wait site `stream-tilegpu-vram`).
-///
-/// This is a PIPELINE-DEPTH lever, not a capacity one. The ring frees a range only when the
-/// submission that read it retires, so its size divided by the bytes a frame stages is how many
-/// frames the GS thread may run ahead of the GPU before it blocks in ReserveMemory. Spider-Man 3
-/// stages ~9 MB a frame, so 32 MB is ~3.5 frames; Stuntman ~12.7 MB, ~2.5 frames. Those are the two
-/// corpus titles that read nothing back, and they are exactly the two that pay this wait --
-/// a title that pulls throttles the host on its own and never reaches the ring.
-///
-/// ⚠️ It is REAL MEMORY on an 8 GB handheld, allocated once at first executor use and never
-/// released, so a megabyte here is a megabyte gone for the whole run. Price it against the device it
-/// is for, not against the desktop it is measured on.
-///
-/// PIXEL-INERT by construction: the ring's size cannot reach a shader. What it changes is WHEN the
-/// recording thread blocks, and a byte difference between two sizes is a pre-existing lifetime
-/// defect, not a trade.
-constexpr u32 kGSTileGpuStagingRingMBDefault = 32;
-constexpr u32 kGSTileGpuStagingRingMBMin = 8;
-constexpr u32 kGSTileGpuStagingRingMBMax = 256;
-
-/// The effective staging-ring size in BYTES: what EmuCore/GS/TileGpuStagingRingMB says, or the
-/// built-in default where it says nothing. Two states, not three -- a negative has no meaning here
-/// (there is no "no ring") and reads as the default rather than as an error, because the
-/// alternative is a run that refuses to start over a typo in a dev-only key.
-constexpr u32 gsTileGpuStagingRingBytes(int setting, u32 builtin_default_mb = kGSTileGpuStagingRingMBDefault)
-{
-	u32 mb = (setting > 0) ? static_cast<u32>(setting) : builtin_default_mb;
-	if (mb < kGSTileGpuStagingRingMBMin)
-		mb = kGSTileGpuStagingRingMBMin;
-	if (mb > kGSTileGpuStagingRingMBMax)
-		mb = kGSTileGpuStagingRingMBMax;
-	return mb * 1024u * 1024u;
-}
-
 /// The effective ring depth: what EmuCore/GS/TileGpuSourceSetRingDepth says, or the built-in
 /// default where it says nothing. Two states, not three — a negative has no meaning here (there is
 /// no "uncapped" ring) and reads as the default rather than as an error, because the alternative is
@@ -2431,15 +2395,15 @@ public:
 	/// is set. The staging group prices a ring size directly -- bytes staged, the peak the ring was
 	/// actually holding for unretired submissions, and how many separate fences it was tracking,
 	/// which is the granularity a blocking wait gets to choose from. The decline histogram says what
-	/// ring DEPTH would have converted each refused kick offer. The retain pair says whether a
-	/// mid-plan cut subdivided the tracked range or slid the whole thing forward.
+	/// ring DEPTH would have converted each refused kick offer. The cut count says how often a
+	/// mid-plan cut walked the newest tracked range's fence forward, which is what turns the
+	/// ring's byte size into a wait.
 	virtual u64 GetTileGpuStageBytes() const { return 0; }
 	virtual u64 GetTileGpuStagePeakOutstanding() const { return 0; }
 	virtual u32 GetTileGpuStageRingBytes() const { return 0; }
 	virtual u32 GetTileGpuStagePeakRanges() const { return 0; }
 	virtual u64 GetTileGpuStageSubmitRetries() const { return 0; }
 	virtual u64 GetTileGpuRetainCuts() const { return 0; }
-	virtual u64 GetTileGpuRetainSplits() const { return 0; }
 	virtual u32 GetCommandBufferRingDepth() const { return 0; }
 	virtual u64 GetTileGpuKickDeclinesAtDepth(u32 depth) const { return 0; }
 	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and
