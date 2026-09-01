@@ -135,8 +135,7 @@ static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& 
 	armAsm->Str(fs, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, fs)));
 	armAsm->Str(aliasFt ? fs : from, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, ft)));
 	armAsm->Str(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
-	armEmitEeFpuModelCall(reinterpret_cast<const void*>(
-		mVU.index ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0));
+	mVUemitModelCall(mVU, mVUModelStubMulShortTailBand);
 	armAsm->Ldr(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
 	armAsm->Bind(&done);
 }

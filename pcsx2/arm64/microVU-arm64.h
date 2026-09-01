@@ -123,7 +123,10 @@
 //  22 — the clamp bounds are register-resident: every mVUclamp1 drops its two
 //       Ldrs, the block gains an Ldp at its entry, and q25/q26 leave the VF
 //       pool in micro mode as well, moving what the allocator hands out.
-static constexpr u32 kMvuCompilerAbiVersion = 22;
+//  23 — the EE FPU / EFU model calls reach their target through a stub in
+//       mVU.cache instead of spilling at the site, so every block carrying
+//       one is 22 instructions shorter and records a stub fixup id.
+static constexpr u32 kMvuCompilerAbiVersion = 23;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -475,6 +478,31 @@ void mVUunpack_xyzw(const a64::VRegister& dstreg, const a64::VRegister& srcreg, 
 // microVU Main Structure
 //------------------------------------------------------------------
 
+// The EE FPU / EFU model seam (EeFpuModelCall-arm64.h), emitted once per
+// target and reached by a bl.
+enum : int
+{
+	mVUModelStubDivide,
+	mVUModelStubSqrtBits,
+	mVUModelStubRecipSqrt,
+	mVUModelStubMulShortTailBand,
+	mVUModelStubEfuSum,
+	mVUModelStubEfuSquareSum,
+	mVUModelStubEfuRecipSquareSum,
+	mVUModelStubEfuLength,
+	mVUModelStubEfuRecipLength,
+	mVUModelStubEfuRecip,
+	mVUModelStubEfuSqrt,
+	mVUModelStubEfuRecipSqrt,
+	mVUModelStubEfuSin,
+	mVUModelStubEfuExp,
+	mVUModelStubEfuAtan,
+	mVUModelStubEfuAtanRatio,
+	mVUModelStubCount
+};
+
+const void* mVUModelStubTarget(int stub, int vuIndex);
+
 struct microVU
 {
 	alignas(16) u32 statFlag[4];
@@ -583,6 +611,9 @@ struct microVU
 	u8* endProgramFlagsA; // non-Ebit exits (isEbit == 0 || isEbit == 3)
 	u8* endProgramFlagsB; // Ebit exits (isEbit && isEbit != 3)
 	u8* resumePtrXG;
+
+	// mVUModelStubTarget entries.
+	u8* modelStubs[mVUModelStubCount];
 
 	// Compile-time only (never read by emitted code): pool GPR index holding
 	// the live IBcc condition value between the branch op and condBranch's
@@ -889,6 +920,15 @@ __fi void* mVUentryGet(microVU& mVU, microBlockManager* block, u32 startPC, uptr
 }
 
 //------------------------------------------------------------------
+void mVUGenerateModelStubs(microVU& mVU);
+
+__fi static void mVUemitModelCall(microVU& mVU, int stub)
+{
+	pxAssert(stub >= 0 && stub < mVUModelStubCount);
+	pxAssert(mVU.modelStubs[stub]); // generated with the dispatchers, at every reset
+	armEmitCall(mVU.modelStubs[stub]);
+}
+
 // ARM64 helper .inl files + shared analysis/tables
 //------------------------------------------------------------------
 #include "microVU_Clamp-arm64.inl"

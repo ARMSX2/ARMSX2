@@ -106,7 +106,7 @@ mVUop(mVU_DIV)
 			// signed zero.
 			armAsm->Umov(RWARG1, Fs.V4S(), 0);
 			armAsm->Umov(RWARG2, Ft.V4S(), 0);
-			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::Divide));
+			mVUemitModelCall(mVU, mVUModelStubDivide);
 			armAsm->Ins(Fs.V4S(), 0, RWARG1);
 		}
 		else
@@ -187,7 +187,7 @@ mVUop(mVU_SQRT)
 		if (exact)
 		{
 			armAsm->Umov(RWARG1, Ft.V4S(), 0);
-			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
+			mVUemitModelCall(mVU, mVUModelStubSqrtBits);
 			armAsm->Ins(Ft.V4S(), 0, RWARG1);
 		}
 		else
@@ -311,7 +311,7 @@ mVUop(mVU_RSQRT)
 			// nowhere to live across a second, and RecipSqrt is the pair.
 			armAsm->Umov(RWARG1, Fs.V4S(), 0);
 			armAsm->Umov(RWARG2, Ft.V4S(), 0);
-			armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
+			mVUemitModelCall(mVU, mVUModelStubRecipSqrt);
 			armAsm->Ins(Fs.V4S(), 0, RWARG1);
 		}
 		else
@@ -419,7 +419,7 @@ static __fi void mVUwritePQresult(const a64::VRegister& src, bool writeP)
 	`lanes` names the VF lanes the op reads, in argument order; the scalar forms
 	pass {0}, allocReg's single-bit mask having already shuffled fsf's lane down
 	to it. */
-static __fi void mVUemitEfuModel(mV, const void* fn, int xyzw, std::initializer_list<int> lanes)
+static __fi void mVUemitEfuModel(mV, int stub, int xyzw, std::initializer_list<int> lanes)
 {
 	const a64::Register arg[4] = {RWARG1, RWARG2, RWARG3, RWARG4};
 	pxAssert(lanes.size() <= std::size(arg));
@@ -429,7 +429,7 @@ static __fi void mVUemitEfuModel(mV, const void* fn, int xyzw, std::initializer_
 	for (int lane : lanes)
 		armAsm->Umov(arg[i++], Fs.V4S(), lane);
 
-	armEmitEeFpuModelCall(fn);
+	mVUemitModelCall(mVU, stub);
 	armAsm->Ins(Fs.V4S(), 0, RWARG1);
 	mVUwritePQresult(Fs, mVUinfo.writeP);
 	mVU.regAlloc->clearNeeded(Fs);
@@ -510,7 +510,7 @@ mVUop(mVU_EATAN)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Atan),
+			mVUemitEfuModel(mVU, mVUModelStubEfuAtan,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -551,7 +551,7 @@ mVUop(mVU_EATANxy)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::AtanRatio),
+			mVUemitEfuModel(mVU, mVUModelStubEfuAtanRatio,
 				0xf, {0, 1});
 		}
 		else
@@ -593,7 +593,7 @@ mVUop(mVU_EATANxz)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::AtanRatio),
+			mVUemitEfuModel(mVU, mVUModelStubEfuAtanRatio,
 				0xf, {0, 2});
 		}
 		else
@@ -644,7 +644,7 @@ mVUop(mVU_EEXP)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Exp),
+			mVUemitEfuModel(mVU, mVUModelStubEfuExp,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -698,7 +698,7 @@ mVUop(mVU_ELENG)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Length),
+			mVUemitEfuModel(mVU, mVUModelStubEfuLength,
 				_X_Y_Z_W, {0, 1, 2});
 		}
 		else
@@ -731,7 +731,7 @@ mVUop(mVU_ERCPR)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Recip),
+			mVUemitEfuModel(mVU, mVUModelStubEfuRecip,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -768,7 +768,7 @@ mVUop(mVU_ERLENG)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::RecipLength),
+			mVUemitEfuModel(mVU, mVUModelStubEfuRecipLength,
 				_X_Y_Z_W, {0, 1, 2});
 		}
 		else
@@ -806,7 +806,7 @@ mVUop(mVU_ERSADD)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::RecipSquareSum),
+			mVUemitEfuModel(mVU, mVUModelStubEfuRecipSquareSum,
 				_X_Y_Z_W, {0, 1, 2});
 		}
 		else
@@ -841,7 +841,7 @@ mVUop(mVU_ERSQRT)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::RecipSqrt),
+			mVUemitEfuModel(mVU, mVUModelStubEfuRecipSqrt,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -878,7 +878,7 @@ mVUop(mVU_ESADD)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::SquareSum),
+			mVUemitEfuModel(mVU, mVUModelStubEfuSquareSum,
 				_X_Y_Z_W, {0, 1, 2});
 		}
 		else
@@ -908,7 +908,7 @@ mVUop(mVU_ESIN)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Sin),
+			mVUemitEfuModel(mVU, mVUModelStubEfuSin,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -966,7 +966,7 @@ mVUop(mVU_ESQRT)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Sqrt),
+			mVUemitEfuModel(mVU, mVUModelStubEfuSqrt,
 				(1 << (3 - _Fsf_)), {0});
 		}
 		else
@@ -998,7 +998,7 @@ mVUop(mVU_ESUM)
 	{
 		if (CHECK_VU_EXACT(mVU.index))
 		{
-			mVUemitEfuModel(mVU, reinterpret_cast<const void*>(&VuEfuModel::Sum),
+			mVUemitEfuModel(mVU, mVUModelStubEfuSum,
 				_X_Y_Z_W, {0, 1, 2, 3});
 		}
 		else

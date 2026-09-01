@@ -1046,6 +1046,43 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 	armEndBlock();
 }
 
+const void* mVUModelStubTarget(int stub, int vuIndex)
+{
+	switch (stub)
+	{
+		case mVUModelStubDivide:             return reinterpret_cast<const void*>(&EeFpuModel::Divide);
+		case mVUModelStubSqrtBits:           return reinterpret_cast<const void*>(&EeFpuModel::SqrtBits);
+		case mVUModelStubRecipSqrt:          return reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
+		case mVUModelStubMulShortTailBand:   return reinterpret_cast<const void*>(
+			vuIndex ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0);
+		case mVUModelStubEfuSum:             return reinterpret_cast<const void*>(&VuEfuModel::Sum);
+		case mVUModelStubEfuSquareSum:       return reinterpret_cast<const void*>(&VuEfuModel::SquareSum);
+		case mVUModelStubEfuRecipSquareSum:  return reinterpret_cast<const void*>(&VuEfuModel::RecipSquareSum);
+		case mVUModelStubEfuLength:          return reinterpret_cast<const void*>(&VuEfuModel::Length);
+		case mVUModelStubEfuRecipLength:     return reinterpret_cast<const void*>(&VuEfuModel::RecipLength);
+		case mVUModelStubEfuRecip:           return reinterpret_cast<const void*>(&VuEfuModel::Recip);
+		case mVUModelStubEfuSqrt:            return reinterpret_cast<const void*>(&VuEfuModel::Sqrt);
+		case mVUModelStubEfuRecipSqrt:       return reinterpret_cast<const void*>(&VuEfuModel::RecipSqrt);
+		case mVUModelStubEfuSin:             return reinterpret_cast<const void*>(&VuEfuModel::Sin);
+		case mVUModelStubEfuExp:             return reinterpret_cast<const void*>(&VuEfuModel::Exp);
+		case mVUModelStubEfuAtan:            return reinterpret_cast<const void*>(&VuEfuModel::Atan);
+		case mVUModelStubEfuAtanRatio:       return reinterpret_cast<const void*>(&VuEfuModel::AtanRatio);
+		default: break;
+	}
+	pxFail("unknown model stub");
+	return nullptr;
+}
+
+void mVUGenerateModelStubs(mV)
+{
+	for (int i = 0; i < mVUModelStubCount; i++)
+	{
+		mVU.modelStubs[i] = armStartBlock();
+		armDynGenEeFpuModelStub(mVUModelStubTarget(i, mVU.index));
+		armEndBlock();
+	}
+}
+
 // Resets Rec Data
 void mVUreset(microVU& mVU, bool resetReserve)
 {
@@ -1106,6 +1143,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	mVUGenerateWaitMTVU(mVU);
 	mVUGenerateCopyPipelineState(mVU);
 	mVUGenerateEndProgramFlagsHelper(mVU);
+	mVUGenerateModelStubs(mVU);
 
 	mVU.regs().nextBlockCycles = 0;
 	memset(&mVU.prog.lpState, 0, sizeof(mVU.prog.lpState));
@@ -2139,6 +2177,25 @@ bool mVUTestProbe_NeonPoolUsable(int hostreg, bool cop2mode)
 const u8* mVUTestProbe_WaitMTVUStub(int index)
 {
 	return (index ? microVU1 : microVU0).waitMTVU;
+}
+
+int mVUTestProbe_ModelStubCount()
+{
+	return mVUModelStubCount;
+}
+
+const u8* mVUTestProbe_ModelStub(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return nullptr;
+	return (index ? microVU1 : microVU0).modelStubs[stub];
+}
+
+const void* mVUTestProbe_ModelStubTarget(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return nullptr;
+	return mVUModelStubTarget(stub, index);
 }
 #endif
 

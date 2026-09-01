@@ -126,6 +126,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_persist_roundtrip_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
+	mvu_model_stub_tests.cpp
 	mvu_ibit_hack_tests.cpp
 	vu0_macro_zero_sign_console_tests.cpp
 	# Conformance against real-hardware captures rather than against the other
