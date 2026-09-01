@@ -873,6 +873,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	// what Classic's own DATE stencil pre-pass has always used. It takes stuntman's 2.70 GB of
 	// full-target image copy a frame down to what its DATE draws actually look at. See Config.h.
 	TileGpuNarrowDateSnapshot = true;
+	TileGpuPaletteCycleHle = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1256,6 +1257,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuSplitRefuseFbOnly);
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileGpuNarrowDateSnapshot);
+	SettingsWrapBitBool(TileGpuPaletteCycleHle);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

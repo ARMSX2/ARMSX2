@@ -2195,6 +2195,37 @@ struct Pcsx2Config
 					//
 					// Default TRUE. OFF is the whole-target copy as it shipped on 2026-08-30.
 					TileGpuNarrowDateSnapshot : 1,
+					// Recognise the PALETTE CYCLE (channel shuffle) idiom and substitute one
+					// HLE draw per run for it, instead of executing all eleven draws of every
+					// cycle.
+					//
+					// Gran Turismo 4 splits its frame buffer into R, G and B by re-reading it
+					// as PSMT8 through a ramp CLUT it re-renders every cycle. On the Online
+					// Public Beta dump that is 85% of the frame: 140 cycles, ~1,540 draws,
+					// ~1,250 CLUT block copies, 279 render passes. Classic recognises the
+					// idiom and replaces the whole run with one channel-fetch draw
+					// (GSC_PolyphonyDigitalGames), which is why it renders the same scene in
+					// 5.9 ms against TileGpu's 23.3.
+					//
+					// The detector is behavioural and title-agnostic in shape -- three
+					// conjuncts over page sets AccumulateDraw already computes, see
+					// GSTilePaletteCycleRun -- but for its first release it is ARMED only when
+					// GameDB names the Polyphony skip-count entry for the running title. Not
+					// because the signature needs a title list: because six of the eight named
+					// near-miss families (NFS Undercover, NFSU2, Tomb Raider Underworld, WRC 4,
+					// Hitman, Urban Chaos) are outside the corpus, and a green corpus therefore
+					// says nothing about the false-positive rate. The gate comes off when that
+					// rate has been measured on titles the corpus does not hold.
+					//
+					// ⚠️ A false positive here is worse than Classic's. Classic's skip is free
+					// and the damage is confined to a render target; TileGpu's page model is a
+					// byte-truth ledger, so an elided draw still has to claim its pages, bump
+					// its surface version and destroy the palette it destroyed -- only the
+					// PIXELS come from somewhere else. Getting that wrong pushes wrong bytes
+					// into guest VRAM, where the EE reads them.
+					//
+					// Default TRUE.
+					TileGpuPaletteCycleHle : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

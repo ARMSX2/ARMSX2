@@ -2540,6 +2540,20 @@ private:
 	/// for the plainer one that the census prints the arm beside the counters and a lever that moved
 	/// mid-frame would have a frame's copies attributed to two roads at once.
 	bool m_narrow_date_snapshot = false;
+	/// EmuCore/GS/TileGpuPaletteCycleHle: recognise the palette-cycle (channel-shuffle) idiom and
+	/// substitute one HLE channel-fetch draw per run for it. Read once at construction like the
+	/// levers above, and ANDed here with the GameDB gate below -- a lever that moved mid-frame would
+	/// leave a run half-elided, which is the one state the substitute cannot repair.
+	bool m_palette_cycle_hle = false;
+	/// ...and the gate itself: GameDB names GSC_PolyphonyDigitalGames as this title's skip-count
+	/// function, i.e. Classic would run the CRC hack this substitute is matched to. The first
+	/// release's safety net and nothing more -- the signature below is title-agnostic in shape, and
+	/// this comes off once the false-positive rate has been measured on the near-miss families the
+	/// corpus does not hold.
+	bool m_palette_cycle_gated = false;
+	/// The run latch. Reset at every frame boundary -- a run cannot span a frame, because the plan
+	/// it would be elided out of does not.
+	GSTilePaletteCycleRun m_palette_cycle;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason
@@ -3054,6 +3068,9 @@ private:
 	/// A pool texture's pages were just written (a draw into the surface, or a seed): every record
 	/// whose source those pages carry has lost its words. Cheap by construction -- the list it walks
 	/// is at most sixteen long and empty on a title with no gathered palette at all.
+	/// The palette-cycle signature's first conjunct: the live record whose source pages this draw's
+	/// write footprint meets, preferring one the written surface owns. Null where none does.
+	const GpuPalette* FindClutSourceWrittenBy(GSTileSurfaceId id, const GSPageBitmap& pages) const;
 	void NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages);
 	/// The surface id has been recycled into a new surface: every palette on it has lost its words.
 	void NoteClutSurfaceReplaced(GSTileSurfaceId id);
@@ -4118,6 +4135,23 @@ private:
 		u32 clut_syncs = 0;       // device palettes handed back to the CPU (seams + the two unservable roads)
 		u32 clut_lost = 0;        // ...of which had already lost their source: the words are unrecoverable
 		u32 clut_pruned = 0;      // records recycled at the plan tail
+
+		// The palette cycle (channel shuffle). A funnel, not a single number: the three conjuncts
+		// are counted separately because "the detector did not fire" is four different diagnoses,
+		// and the primary kill criterion is a draw-call count that says nothing about which one.
+		u32 pcyc_s1 = 0;          // draws satisfying S1: a device palette, and this draw writes its source
+		u32 pcyc_s2 = 0;          // ...of which also satisfy S2 (PSMT8/4, sprite, ABE, owner is the target)
+		u32 pcyc_s1_pal = 0;      // S1's first half alone: pal_record != 0
+		u32 pcyc_s1_pal_no_write = 0; // ...that did NOT write their palette's source pages
+		u32 pcyc_s2_fail_fmt = 0; // S1 held, S2 refused on the format / primclass / ABE clause
+		u32 pcyc_s2_fail_owner = 0; // S1 held, S2 refused because the palette's owner is not the target
+		u32 pcyc_runs = 0;        // runs that reached the arming threshold
+		u32 pcyc_runs_alpha = 0;  // ...of which took the three-draw alpha-destination shape
+		u32 pcyc_building = 0;    // signature draws executed for real below the threshold
+		u32 pcyc_elided = 0;      // draws elided into a run
+		u32 pcyc_subs = 0;        // substitute draws issued
+		u32 pcyc_sub_pages = 0;   // guest pages the substitutes claimed
+		u32 pcyc_refused = 0;     // runs armed but whose substitute could not be built (drawn instead)
 	};
 	ModelFrame m_frame = {};
 	std::vector<ModelFrame> m_model_frames;
