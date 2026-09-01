@@ -1996,3 +1996,162 @@ TEST(TileGpuVariantKey, TheDriverCanTakeAnAxisBackOutOfTheFrozenSet)
 	EXPECT_FALSE(none.valid);
 	EXPECT_TRUE(GSTileGpuShaderVariant::SpecDefines(none).empty());
 }
+
+// ---------------------------------------------------------------------------------------------
+// The variant word, field by field -- the table the in-pass bind census attributes cuts through.
+//
+// The nine-field census (GSDeviceVK::TileGpuCensusCut) answered "what buys our in-pass pipeline
+// binds" with "the fragment variant, and on an Adreno 650 by a wide margin": 87.3% of Gran Turismo
+// 4's in-pass binds, 91.3% of Katamari's, 95.7% of Yu-Gi-Oh's are cut by the variant and by nothing
+// else. That is one answer to nine questions and fifteen to the next one, because merging the wrap
+// modes and merging the byte road's decode arms are not the same change and do not cost the same.
+//
+// So the census opens the variant column up by field, and the field positions are
+// GSTileGpuPassPlan::VarFieldMask. The word is FULL and its own header says the next edit to it is a
+// repack -- so a mask table that agreed with the packer only by having been written on the same day
+// would misattribute silently afterwards. It is pinned against the packer instead, field by field,
+// by construction rather than by transcription.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuVariantKey, VariantFieldMasksAgreeWithThePacker)
+{
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	using Spec = GSDevice::GSTileGpuFragmentSpec;
+
+	// A field's mask is exactly the bits that move when that field alone moves. So every field is
+	// swept over its whole REACHABLE range against an all-zero baseline, and two things are asked of
+	// each step: no step may move a bit outside the field's mask (or the census would blame the
+	// wrong field), and the steps together must move every bit inside it (or the mask claims bits
+	// the packer never writes, and a merge would be priced against cuts that cannot exist).
+	//
+	// "Reachable" is the operative word on two fields. The alpha test packs `atst - 2`, so its three
+	// bits carry 0-6 and never 7; DATE is 0-2 and never 3. Both still reach every BIT, which is what
+	// the mask is about, and it takes more than one step to see that.
+	Spec zero;
+	zero.valid = true;
+	const auto pack = [](u32 road, u32 texel, u32 self, bool q, const Spec& sp) {
+		return Plan::PackVariantKey(road, texel, self, q, sp);
+	};
+	const u32 ref = pack(0, 0, 0, false, zero);
+
+	std::vector<std::pair<u32, std::vector<u32>>> steps; // field -> the keys it steps to
+	const auto sweep_spec = [&](u32 field, void (*mut)(Spec&, u32), u32 lo, u32 hi) {
+		std::vector<u32> keys;
+		for (u32 v = lo; v <= hi; v++)
+		{
+			Spec sp = zero;
+			mut(sp, v);
+			keys.push_back(pack(0, 0, 0, false, sp));
+		}
+		steps.emplace_back(field, std::move(keys));
+	};
+
+	{
+		std::vector<u32> keys;
+		for (u32 v = 1; v <= GSDevice::kGSTileGpuRoadMaskAll; v++)
+			keys.push_back(pack(v, 0, 0, false, zero));
+		steps.emplace_back(Plan::kVarRoad, std::move(keys));
+	}
+	{
+		std::vector<u32> keys;
+		for (u32 v = 1; v <= GSDevice::kGSTileGpuTexelMaskAll; v++)
+			keys.push_back(pack(0, v, 0, false, zero));
+		steps.emplace_back(Plan::kVarTexel, std::move(keys));
+	}
+	{
+		std::vector<u32> keys;
+		for (u32 v = 1; v <= GSDevice::kGSTileGpuSelfMaskAll; v++)
+			keys.push_back(pack(0, 0, v, false, zero));
+		steps.emplace_back(Plan::kVarSelf, std::move(keys));
+	}
+	steps.emplace_back(Plan::kVarQuantise, std::vector<u32>{pack(0, 0, 0, true, zero)});
+	sweep_spec(Plan::kVarFst, [](Spec& sp, u32 v) { sp.fst = static_cast<u8>(v); }, 1, 1);
+	sweep_spec(Plan::kVarLtf, [](Spec& sp, u32 v) { sp.ltf = static_cast<u8>(v); }, 1, 1);
+	sweep_spec(Plan::kVarTfx, [](Spec& sp, u32 v) { sp.tfx = static_cast<u8>(v); }, 1, 3);
+	sweep_spec(Plan::kVarTcc, [](Spec& sp, u32 v) { sp.tcc = static_cast<u8>(v); }, 1, 1);
+	// atst 3..8 are the six comparisons that reach the fragment stage; the packer stores atst - 2.
+	sweep_spec(Plan::kVarAtst, [](Spec& sp, u32 v) { sp.atst = static_cast<u8>(v); }, 3, 8);
+	sweep_spec(Plan::kVarFge, [](Spec& sp, u32 v) { sp.fge = static_cast<u8>(v); }, 1, 1);
+	sweep_spec(Plan::kVarDate, [](Spec& sp, u32 v) { sp.date = static_cast<u8>(v); }, 1, 2);
+	sweep_spec(Plan::kVarWms, [](Spec& sp, u32 v) { sp.wms = static_cast<u8>(v); }, 1, 3);
+	sweep_spec(Plan::kVarWmt, [](Spec& sp, u32 v) { sp.wmt = static_cast<u8>(v); }, 1, 3);
+	sweep_spec(Plan::kVarTexa, [](Spec& sp, u32 v) { sp.texa = static_cast<u8>(v); }, 1, 3);
+	// The presence flag is the one field no mutation of a VALID spec can reach: it is what separates
+	// a frozen spec from no spec at all.
+	steps.emplace_back(Plan::kVarSpecValid, std::vector<u32>{pack(0, 0, 0, false, Spec{})});
+
+	u32 covered = 0;
+	for (const auto& [field, keys] : steps)
+	{
+		const u32 mask = Plan::VarFieldMask(field);
+		u32 seen = 0;
+		for (const u32 key : keys)
+		{
+			const u32 delta = ref ^ key;
+			EXPECT_NE(delta, 0u) << "field " << field << " has a value the word does not distinguish";
+			EXPECT_EQ(delta & ~mask, 0u) << "field " << field << " moved bits outside its own mask";
+			seen |= delta;
+		}
+		EXPECT_EQ(seen, mask) << "field " << field << " never writes every bit its mask claims";
+		covered |= mask;
+	}
+
+	// PARTITION, both ways. The fifteen masks must cover every bit of the word and must not overlap
+	// -- a bit belonging to two fields would be counted twice by the census, and a bit belonging to
+	// none would make a real cut look like nobody's fault.
+	EXPECT_EQ(steps.size(), static_cast<size_t>(Plan::kVarFields)) << "a field has no sweep above";
+	EXPECT_EQ(covered, 0xFFFFFFFFu) << "the field masks do not cover the whole variant word";
+	u32 acc = 0;
+	for (u32 f = 0; f < Plan::kVarFields; f++)
+	{
+		EXPECT_EQ(acc & Plan::VarFieldMask(f), 0u) << "field " << f << " overlaps an earlier field";
+		acc |= Plan::VarFieldMask(f);
+	}
+	EXPECT_EQ(acc, 0xFFFFFFFFu);
+
+	// The two named groups the collapse candidates are built from say what they mean: the sampler
+	// axes are the four a merged program would have to feed a texture call, the arithmetic axes the
+	// three it could select between after sampling. Neither may stray outside the frozen half.
+	EXPECT_EQ(Plan::kVarSamplerFields & ~Plan::kVariantSpecMask, 0u);
+	EXPECT_EQ(Plan::kVarTexArithFields & ~Plan::kVariantSpecMask, 0u);
+	EXPECT_EQ(Plan::kVarSamplerFields & Plan::kVarTexArithFields, 0u);
+	// Both are spelled in raw bits at their definition -- the class is incomplete there, so
+	// VarFieldMask is not callable in a constant expression yet. This is where the two spellings are
+	// made to agree.
+	EXPECT_EQ(Plan::kVarSamplerFields, Plan::VarFieldMask(Plan::kVarFst) | Plan::VarFieldMask(Plan::kVarLtf) |
+										   Plan::VarFieldMask(Plan::kVarWms) | Plan::VarFieldMask(Plan::kVarWmt));
+	EXPECT_EQ(Plan::kVarTexArithFields, Plan::VarFieldMask(Plan::kVarTfx) | Plan::VarFieldMask(Plan::kVarTcc) |
+											Plan::VarFieldMask(Plan::kVarTexa));
+}
+
+TEST(TileGpuVariantKey, TheFrozenHalfIsExactlyTheFieldsBelowItsPresenceFlag)
+{
+	// The census's largest collapse candidate is "merge the whole frozen GS state", and what it
+	// counts is a cut whose differing bits all lie inside kVariantSpecMask. That candidate is only
+	// the lever it claims to be -- de-specialization, which already exists as
+	// EmuCore/GS/TileGpuUnspecializedFragmentVariant -- if the mask is exactly the frozen fields and
+	// contains no road, arm, self-read or quantise bit. Pinned, because getting it wrong would
+	// price a merge against binds no merge of that kind can remove.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	u32 frozen = Plan::VarFieldMask(Plan::kVarSpecValid);
+	for (u32 f = Plan::kVarFst; f <= Plan::kVarTexa; f++)
+		frozen |= Plan::VarFieldMask(f);
+	EXPECT_EQ(frozen, Plan::kVariantSpecMask);
+
+	u32 unfrozen = 0;
+	for (u32 f = Plan::kVarRoad; f <= Plan::kVarQuantise; f++)
+		unfrozen |= Plan::VarFieldMask(f);
+	EXPECT_EQ(unfrozen & Plan::kVariantSpecMask, 0u);
+	EXPECT_EQ(unfrozen | frozen, 0xFFFFFFFFu);
+
+	// ...and the de-specialized key really is what dropping the frozen half writes: the renderer's
+	// unspecialized arm packs the same word with an invalid spec, which is the frozen half zeroed.
+	GSDevice::GSTileGpuFragmentSpec sp;
+	sp.valid = true;
+	sp.wms = 3;
+	sp.atst = 7;
+	const u32 specialized = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, 1u, 0, false, sp);
+	const u32 despecialized = Plan::PackVariantKey(GSDevice::kGSTileGpuRoadByte, 1u, 0, false);
+	EXPECT_EQ(specialized & ~Plan::kVariantSpecMask, despecialized);
+	EXPECT_EQ(despecialized & Plan::kVariantSpecMask, 0u);
+}

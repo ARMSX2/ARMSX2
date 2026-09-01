@@ -3858,6 +3858,61 @@ public:
 			return spec;
 		}
 
+		/// The packed variant word, field by field, for anything that has to ask WHICH part of two
+		/// variants differs rather than merely whether they do. That question is the executor's
+		/// in-pass bind census (GSDeviceVK::TileGpuCensusCut): the fragment variant is the largest
+		/// single cause of our in-pass pipeline binds on an Adreno 650 -- 87.3% of Gran Turismo 4's,
+		/// 95.7% of Yu-Gi-Oh's -- and "merge the variant" is fifteen different changes at fifteen
+		/// different prices, so the census has to name the field.
+		///
+		/// It lives here, beside PackVariantKey, and not with the census that reads it, because the
+		/// header above says the word is FULL and the next change to it is a repack. A table of bit
+		/// positions living in another file would go stale silently and misattribute rather than
+		/// fail. VariantFieldMasksAgreeWithThePacker in gs_tilegpu_pass_key_tests.cpp pins each mask
+		/// against the packer itself.
+		enum VarField
+		{
+			kVarRoad,      ///< which texel roads the draw takes
+			kVarTexel,     ///< the byte road's decode arms
+			kVarSelf,      ///< what the in-pass destination read is for
+			kVarQuantise,  ///< the draw's own output is what a 16-bit frame stores
+			kVarSpecValid, ///< the frozen-state half is present at all
+			kVarFst,       ///< frozen coordinate kind (STQ / UV)
+			kVarLtf,       ///< frozen filter (NEAREST / LINEAR)
+			kVarTfx,       ///< frozen texture function
+			kVarTcc,       ///< frozen "the texel carries alpha"
+			kVarAtst,      ///< frozen alpha-test comparison
+			kVarFge,       ///< frozen fog enable
+			kVarDate,      ///< frozen destination-alpha test
+			kVarWms,       ///< frozen S wrap mode
+			kVarWmt,       ///< frozen T wrap mode
+			kVarTexa,      ///< frozen TEXA expansion
+			kVarFields,
+		};
+		static constexpr u32 VarFieldMask(u32 f)
+		{
+			constexpr u32 kMasks[kVarFields] = {
+				kGSTileGpuRoadMaskAll,                 // bits 0-2
+				kGSTileGpuTexelMaskAll << 3,           // bits 3-9
+				kGSTileGpuSelfMaskAll << 10,           // bits 10-12
+				1u << 13,                              // quantise
+				kVariantSpecValid,                     // bit 14
+				1u << 15, 1u << 16, 3u << 17, 1u << 19, // fst, ltf, tfx, tcc
+				7u << 20, 1u << 23, 3u << 24,          // atst, fge, date
+				3u << 26, 3u << 28, 3u << 30,          // wms, wmt, texa
+			};
+			return kMasks[f];
+		}
+		/// The frozen axes that are the SAMPLER's -- what a merged program would have to read off the
+		/// state row and feed a texture call, as opposed to arithmetic it could branch over.
+		/// (Spelled in bits rather than through VarFieldMask: the class is still incomplete here, so
+		/// its own static member function is not yet callable in a constant expression. The two
+		/// masks are pinned against VarFieldMask by the test that pins VarFieldMask itself.)
+		static constexpr u32 kVarSamplerFields = (1u << 15) | (1u << 16) | (3u << 26) | (3u << 28);
+		/// ...and the ones that are texel ARITHMETIC, which a merged program can select between with
+		/// no change to how it samples.
+		static constexpr u32 kVarTexArithFields = (3u << 17) | (1u << 19) | (3u << 30);
+
 		/// The per-draw PIPELINE state an indirect run has to be uniform in. A run is a maximal
 		/// stretch of a pass's draws sharing it: the executor binds one pipeline and issues the
 		/// stretch as one vkCmdDrawIndexedIndirect, so a change here cuts the run and costs a

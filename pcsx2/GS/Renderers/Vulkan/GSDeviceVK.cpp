@@ -62,6 +62,7 @@ namespace
 #include "librashader.h"
 #endif
 
+#include <algorithm>
 #include <bit>
 #include <limits>
 #include <mutex>
@@ -7717,9 +7718,52 @@ void GSDeviceVK::TileGpuCensusCut(const GSDevice::GSTileGpuPassPlan& plan, u32 d
 	// Asked only where the variant is the whole reason for the cut, because that is the only case
 	// where the device's own narrowing could take the cut away. Two plan words that compile one
 	// program on this device would be one run and one bind.
-	if (sole && variant_differs &&
-		TileGpuNarrowedVariant(plan.variant_keys[d]) == TileGpuNarrowedVariant(plan.variant_keys[d - 1]))
+	if (!sole || !variant_differs)
+		return;
+	const u32 na = TileGpuNarrowedVariant(plan.variant_keys[d]);
+	const u32 nb = TileGpuNarrowedVariant(plan.variant_keys[d - 1]);
+	if (na == nb)
+	{
 		m_tilegpu_cut_variant_narrows_away++;
+		return;
+	}
+	// The variant is the sole cause and it survives narrowing, so this bind is bought by the
+	// fragment program and nothing else. WHICH field of the program bought it is the next question,
+	// and it is asked against the narrowed words rather than the plan's: the narrowed word is what
+	// GetTileGpuPipeline keys on, so a field that differs only before narrowing did not buy a bind.
+	m_tilegpu_var_sole_total++;
+	const u32 delta = na ^ nb;
+	u32 fields = 0;
+	for (u32 f = 0; f < kTileGpuVarFields; f++)
+	{
+		if ((delta & GSTileGpuPassPlan::VarFieldMask(f)) != 0)
+			fields |= (1u << f);
+	}
+	const u32 width = static_cast<u32>(std::popcount(fields));
+	m_tilegpu_var_width[std::min(width, kTileGpuVarWidthBuckets - 1)]++;
+	const bool one_field = (fields & (fields - 1)) == 0;
+	for (u32 f = 0; f < kTileGpuVarFields; f++)
+	{
+		if ((fields & (1u << f)) == 0)
+			continue;
+		m_tilegpu_var_field_cause[f]++;
+		if (one_field)
+			m_tilegpu_var_field_sole[f]++;
+	}
+	if (width == 2)
+	{
+		const u32 lo = static_cast<u32>(std::countr_zero(fields));
+		const u32 hi = static_cast<u32>(31 - std::countl_zero(fields));
+		m_tilegpu_var_pair[hi][lo]++;
+	}
+	// ...and what each candidate MERGE would give back, which is not the sum of any set of `sole`
+	// columns: a cut is removed by a candidate exactly when the candidate's mask covers every bit
+	// that differs.
+	for (u32 c = 0; c < kTileGpuVarCollapses; c++)
+	{
+		if ((delta & ~TileGpuVarCollapseMask(c)) == 0)
+			m_tilegpu_var_collapse[c]++;
+	}
 }
 
 // What a failed build falls back to. Outside a declaring pass that is the eager full-road pipeline --
@@ -12008,6 +12052,59 @@ void GSDeviceVK::DestroyResources()
 		}
 		Console.WriteLn("  %-20s %llu of the variant-only cuts compile ONE program on this device",
 			"...narrowed away:", static_cast<unsigned long long>(m_tilegpu_cut_variant_narrows_away));
+	}
+	if (m_tilegpu_var_sole_total != 0)
+	{
+		// The variant column of the census above, opened up. Denominator is the variant-SOLE cuts,
+		// not every cut: these are the binds a fragment-program merge could give back, and the
+		// question is which field of the program has to be merged to give each one back.
+		static constexpr const char* kVarFieldName[kTileGpuVarFields] = {"road", "texel arms",
+			"self-read use", "16-bit quantise", "spec present", "fst (coord kind)", "ltf (filter)",
+			"tfx (tex func)", "tcc (texel alpha)", "atst (alpha test)", "fge (fog)", "date", "wms",
+			"wmt", "texa"};
+		static constexpr const char* kVarCollapseName[kTileGpuVarCollapses] = {"frozen GS state",
+			"texel arms", "sampler axes", "texel arithmetic", "frozen state + arms", "the whole variant"};
+		const double denom = static_cast<double>(m_tilegpu_var_sole_total);
+		Console.WriteLn("TileGpu variant-only in-pass cuts by FIELD, %llu cuts (%.1f%% of all cuts); narrowed "
+						"words, `differs` overlaps, `sole` is the field alone:",
+			static_cast<unsigned long long>(m_tilegpu_var_sole_total),
+			100.0 * denom / static_cast<double>(m_tilegpu_cut_total));
+		for (u32 f = 0; f < kTileGpuVarFields; f++)
+		{
+			if (m_tilegpu_var_field_cause[f] == 0)
+				continue;
+			Console.WriteLn("  %-20s differs %8llu (%5.1f%%)   sole %8llu (%5.1f%%)", kVarFieldName[f],
+				static_cast<unsigned long long>(m_tilegpu_var_field_cause[f]),
+				100.0 * static_cast<double>(m_tilegpu_var_field_cause[f]) / denom,
+				static_cast<unsigned long long>(m_tilegpu_var_field_sole[f]),
+				100.0 * static_cast<double>(m_tilegpu_var_field_sole[f]) / denom);
+		}
+		std::string widths;
+		for (u32 w = 1; w < kTileGpuVarWidthBuckets; w++)
+		{
+			widths += StringUtil::StdStringFromFormat("%s%u:%llu (%.1f%%)", widths.empty() ? "" : "  ", w,
+				static_cast<unsigned long long>(m_tilegpu_var_width[w]),
+				100.0 * static_cast<double>(m_tilegpu_var_width[w]) / denom);
+		}
+		Console.WriteLn("  fields differing at once (last bucket is that many or more): %s", widths.c_str());
+		for (u32 c = 0; c < kTileGpuVarCollapses; c++)
+		{
+			Console.WriteLn("  merge %-22s would give back %8llu (%5.1f%% of variant-only, %5.1f%% of all cuts)",
+				kVarCollapseName[c], static_cast<unsigned long long>(m_tilegpu_var_collapse[c]),
+				100.0 * static_cast<double>(m_tilegpu_var_collapse[c]) / denom,
+				100.0 * static_cast<double>(m_tilegpu_var_collapse[c]) / static_cast<double>(m_tilegpu_cut_total));
+		}
+		for (u32 hi = 0; hi < kTileGpuVarFields; hi++)
+		{
+			for (u32 lo = 0; lo < hi; lo++)
+			{
+				if (m_tilegpu_var_pair[hi][lo] == 0)
+					continue;
+				Console.WriteLn("  pair %-18s + %-18s %8llu (%5.1f%%)", kVarFieldName[lo], kVarFieldName[hi],
+					static_cast<unsigned long long>(m_tilegpu_var_pair[hi][lo]),
+					100.0 * static_cast<double>(m_tilegpu_var_pair[hi][lo]) / denom);
+			}
+		}
 	}
 
 	for (FrameResources& resources : m_frame_resources)

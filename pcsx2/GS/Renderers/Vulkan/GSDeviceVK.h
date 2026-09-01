@@ -858,6 +858,58 @@ private:
 	/// Adreno and on Honeykrisp by construction — the planner already narrows to the draw's own
 	/// road and both devices serve every road — and non-zero only on a device that cannot.
 	u64 m_tilegpu_cut_variant_narrows_away = 0;
+
+	/// The fragment variant is one of the nine causes above and it is by far the largest SOLE one on
+	/// an Adreno 650 -- 87.3% of Gran Turismo 4's in-pass binds, 91.3% of Katamari's, 95.7% of
+	/// Yu-Gi-Oh's, and a 10-30% tail across another eight titles. "Collapse the variant" is not one
+	/// change, though: the word packs fifteen independent fields and each has its own price for
+	/// merging, so the question the nine-field census cannot answer is WHICH of them buys those cuts.
+	///
+	/// The fields themselves are GSTileGpuPassPlan::VarField / VarFieldMask, next to the packer that
+	/// defines them. They are tallied ONLY over the cuts where the fragment variant is the sole
+	/// cause of the nine -- the removable population -- and against the DEVICE-NARROWED words
+	/// (TileGpuNarrowedVariant), because that is what GetTileGpuPipeline keys on and therefore what
+	/// the bind actually depends on.
+	static constexpr u32 kTileGpuVarFields = GSDevice::GSTileGpuPassPlan::kVarFields;
+
+	/// Collapse CANDIDATES: sets of fields a merge could plausibly take together, each counted as
+	/// the cuts it alone would give back. A cut is removed by a candidate exactly when every field
+	/// that differs across it is inside the candidate's set -- which is why these cannot be summed
+	/// out of the per-field `sole` column: a cut tripping three frozen-state fields at once is sole
+	/// for none of them and removed by the frozen-state candidate.
+	enum TileGpuVarCollapse
+	{
+		kTileGpuCollapseSpec,      ///< the whole frozen per-draw GS state (what TileGpuUnspecializedFragmentVariant already writes)
+		kTileGpuCollapseTexel,     ///< the byte road's decode arms, merged back to the union
+		kTileGpuCollapseSampler,   ///< the sampler-shaped frozen axes alone: ltf, wms, wmt, fst
+		kTileGpuCollapseTexFunc,   ///< the texel-arithmetic frozen axes alone: tfx, tcc, texa
+		kTileGpuCollapseSpecTexel, ///< frozen state and decode arms together
+		kTileGpuCollapseAll,       ///< every field: the ceiling, and equal to the variant-sole total
+		kTileGpuVarCollapses,
+	};
+	static constexpr u32 TileGpuVarCollapseMask(u32 c)
+	{
+		using Plan = GSDevice::GSTileGpuPassPlan;
+		constexpr u32 kSpec = Plan::kVariantSpecMask;
+		constexpr u32 kTexel = Plan::VarFieldMask(Plan::kVarTexel);
+		constexpr u32 kMasks[kTileGpuVarCollapses] = {kSpec, kTexel, Plan::kVarSamplerFields,
+			Plan::kVarTexArithFields, kSpec | kTexel, ~0u};
+		return kMasks[c];
+	}
+	u64 m_tilegpu_var_field_cause[kTileGpuVarFields] = {};
+	u64 m_tilegpu_var_field_sole[kTileGpuVarFields] = {};
+	u64 m_tilegpu_var_collapse[kTileGpuVarCollapses] = {};
+	/// How many variant fields a variant-sole cut trips at once, capped at the last bucket. A cut
+	/// tripping four fields cannot be given back by any single-field merge, and this is the column
+	/// that says how much of the population is in that state.
+	static constexpr u32 kTileGpuVarWidthBuckets = 6;
+	u64 m_tilegpu_var_width[kTileGpuVarWidthBuckets] = {};
+	/// Exactly-two-field cuts, by the pair -- the partial-collapse table. Lower triangle only,
+	/// indexed [hi][lo].
+	u64 m_tilegpu_var_pair[kTileGpuVarFields][kTileGpuVarFields] = {};
+	/// The denominator for every row above: cuts whose sole cause of the nine is the variant.
+	u64 m_tilegpu_var_sole_total = 0;
+
 	/// One in-pass run cut, classified. `d` is the run's first draw and the comparison is against
 	/// `d - 1`, its predecessor inside the same pass.
 	void TileGpuCensusCut(const GSDevice::GSTileGpuPassPlan& plan, u32 d);
