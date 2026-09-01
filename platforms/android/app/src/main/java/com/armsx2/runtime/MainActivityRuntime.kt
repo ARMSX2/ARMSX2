@@ -757,7 +757,23 @@ open class MainActivityRuntime : ComponentActivity() {
                     val bootCfg = com.armsx2.config.ConfigStore
                         .resolveForGame(currentGame.value?.settingsKey)
                     // Read by VMManager::SetEmuThreadAffinities during boot.
-                    runCatching { NativeApp.setAffinityMode(bootCfg.affinityMode) }
+                    //
+                    // Sustained Performance WINS over Performance Cores. The two settings pull in
+                    // opposite directions: sustained mode asks the platform to hold a cooler,
+                    // steady clock, while confining the emu threads to the big cluster keeps them
+                    // on the hottest cores and stops the scheduler shedding work onto the little
+                    // ones as temperature climbs. Reported on an S22+ (8 Gen 1, four big cores and
+                    // four A510s it could no longer reach): sustained mode stopped doing anything
+                    // and the device ran hot. Someone who opted into thermal headroom did not ask
+                    // for that, so their choice is the one we keep.
+                    //
+                    // Only the tier-confining mode is overridden. Modes 1-6 are explicit per-core
+                    // placements the user went looking for, so they are left alone.
+                    val sustained = prefs.getBoolean("ui.sustainedPerf", false)
+                    val affinity = if (sustained && bootCfg.affinityMode == 7) 0 else bootCfg.affinityMode
+                    if (affinity != bootCfg.affinityMode)
+                        println("@@ANDROID_AFFINITY@@ sustained performance on -> affinity forced to Disabled")
+                    runCatching { NativeApp.setAffinityMode(affinity) }
                     // The hold itself waits for the VM to come up. BIOS boots skip it.
                     if (bootCfg.autoProgressiveScan)
                         startAutoProgressiveScanHold()
