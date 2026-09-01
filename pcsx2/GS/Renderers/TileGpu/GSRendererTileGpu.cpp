@@ -7,6 +7,7 @@
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
 #include "GS/GSLocalMemory.h"
+#include "GS/GSUtil.h"
 #include "GS/GS.h"
 
 #include "common/Console.h"
@@ -843,7 +844,29 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 		return nullptr;
 	scale = 1.0f;
 	y_offset = contained_y;
-	return m_target_pool.GetTexture(surf.pool_handle);
+	GSTexture* t = m_target_pool.GetTexture(surf.pool_handle);
+
+	// -dump f, the same hook Classic and the software renderer carry, in the same call at the same
+	// point of it: the display buffer as the presenter is about to receive it. Without this the
+	// flag was a silent no-op on this renderer, so a device A/B had no pixels to compare.
+	//
+	// Named off the PCRTC display's own BP and PSM, not off the surface actually found -- a
+	// container, or a CT32 render scanned out as CT24, is still the same display unit, and the
+	// comparison only works if both renderers write the same filename for the same frame. The
+	// .bmp is Classic's too and is not a mistake: GSTexture::Save rewrites the extension and
+	// writes PNG. Changing it here would break the parity this exists for.
+	//
+	// GSTexture::Save reads the image back, which stalls the device. It is reached only with
+	// dumping on; with it off this is one bool test, GSConfig.SaveFrame, on a call that runs
+	// twice a frame. The pixels are finished by the time it runs -- VSync builds and executes
+	// this frame's plan before the base's present path calls GetOutput.
+	if (GSConfig.SaveFrame && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
+	{
+		t->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), i,
+			static_cast<int>(fb.Block()), GSUtil::GetPSMName(fb.PSM)));
+	}
+
+	return t;
 }
 
 bool GSRendererTileGpu::IsCoverageAlphaSupported()
