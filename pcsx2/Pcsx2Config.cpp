@@ -874,6 +874,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	// full-target image copy a frame down to what its DATE draws actually look at. See Config.h.
 	TileGpuNarrowDateSnapshot = true;
 	TileGpuPaletteCycleHle = true;
+	TileGpuCpuSpriteRaster = true;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1258,6 +1259,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileGpuMergeSeedBatch);
 	SettingsWrapBitBool(TileGpuNarrowDateSnapshot);
 	SettingsWrapBitBool(TileGpuPaletteCycleHle);
+	SettingsWrapBitBool(TileGpuCpuSpriteRaster);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

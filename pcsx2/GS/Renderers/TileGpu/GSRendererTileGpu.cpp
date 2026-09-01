@@ -150,6 +150,21 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// a mid-run flip needs a renderer restart.
 	m_pass_sim.SetActive(GSConfig.TileGpuPassSim);
 
+	// The software scanline core, resolved once rather than per draw: it is compiled per vector
+	// ISA on x86, and GSRendererHW resolves its own the same way.
+	m_sw_prim_render = MULTI_ISA_SELECT(GSSwPrimRenderRun);
+	m_cpu_sprite_raster = GSConfig.TileGpuCpuSpriteRaster;
+	if (GSConfig.UserHacks_CPUSpriteRenderBW != 0)
+	{
+		// Named in the emulog because it changes which road a whole population of draws takes, and
+		// an archived log has to carry the arm the numbers under it were taken on.
+		Console.WriteLn("TileGpu: the CPU rasterization road is %s (GameDB cpuSpriteRenderBW %u, "
+						"cpuSpriteRenderLevel %u).",
+			m_cpu_sprite_raster ? "ON" : "OFF (EmuCore/GS/TileGpuCpuSpriteRaster)",
+			static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderBW),
+			static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderLevel));
+	}
+
 	// Asked once, before any draw: rule 2 is served by work this renderer DOES NOT DO, so a device
 	// that cannot bind targets has to be known before the first read window is (not) composed.
 	m_bindless_targets = g_gs_device && g_gs_device->TileGpuBindlessTargets();
@@ -1753,11 +1768,19 @@ void GSRendererTileGpu::NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBi
 	for (const u32 idx : m_clut_live)
 	{
 		GpuPalette& gp = m_gpu_palettes[idx];
-		if (gp.source_lost || gp.owner != id || !gp.pages.intersects(pages))
+		if (gp.source_lost || (id != kGSTileNoSurface && gp.owner != id) || !gp.pages.intersects(pages))
 			continue;
 		CaptureClutRecordWords(gp);
 		gp.source_lost = true;
 	}
+}
+
+// The same question without an owner to name. The CPU rasterization road writes guest bytes that
+// no surface produced, so "which surface wrote this" has no answer -- and every record sourced
+// from the pages has lost its words just the same.
+void GSRendererTileGpu::NoteClutSourceWritten(const GSPageBitmap& pages)
+{
+	NoteClutSourceWritten(kGSTileNoSurface, pages);
 }
 
 // TileGpuClutMergePages. See the declaration for why this is a plan-build pass and not a capture-side
@@ -2914,6 +2937,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// cannot serve (another depth surface's, or this one's own partial claim) are what remain here.
 	const auto lossyz = stat([](const MF& f) { return f.lossy_pages_depth; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
+	const auto cpur = stat([](const MF& f) { return f.cpu_raster_draws; });
+	const auto cpurp = stat([](const MF& f) { return f.cpu_raster_pages; });
+	const auto cpurs = stat([](const MF& f) { return f.cpu_raster_shape; });
+	const auto cpurg = stat([](const MF& f) { return f.cpu_raster_gpu_truth; });
+	const auto cpurc = stat([](const MF& f) { return f.cpu_raster_clut_stale; });
+	const auto cpurr = stat([](const MF& f) { return f.cpu_raster_refused; });
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
 	const auto afold_f = stat([](const MF& f) { return f.atst_fold_fail; });
 	const auto afold_p = stat([](const MF& f) { return f.atst_fold_pass; });
@@ -3177,6 +3206,17 @@ void GSRendererTileGpu::ReportModelTraffic()
 				ro_pass.mean, ro_moved.mean, -drop);
 		}
 	}
+	// The CPU rasterization road. Every number is zero on a title the GameDB did not arm, which is
+	// the containment claim stated rather than assumed -- and the DECLINE lines are the ones that
+	// matter on a title it did arm: gpu-truth rising means the chain stopped closing and the
+	// population is being split between the two roads, which is the shape this road must never take.
+	Console.WriteLn("  CPU raster (GameDB cpuSpriteRenderBW %u level %u, TileGpuCpuSpriteRaster %s): "
+					"%.2f / %u draws diverted over %.2f / %u pages; declined shape %.2f / %u, "
+					"gpu-truth %.2f / %u, clut-stale %.2f / %u, wrote-nothing %.2f / %u",
+		static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderBW),
+		static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderLevel),
+		m_cpu_sprite_raster ? "on" : "off", cpur.mean, cpur.p50, cpurp.mean, cpurp.p50, cpurs.mean,
+		cpurs.p50, cpurg.mean, cpurg.p50, cpurc.mean, cpurc.p50, cpurr.mean, cpurr.p50);
 	Console.WriteLn("  alpha test folded at plan time (fragment alpha interval): all-fail %.2f / %u   "
 					"all-pass %.2f / %u",
 		afold_f.mean, afold_f.p50, afold_p.mean, afold_p.p50);
@@ -5548,6 +5588,156 @@ bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 // empty-rect draws exactly as ObserveDraw does, so the plan and the pass model count the same
 // draws. Indices are 0-based within the batch; the draw's vertex_offset rebases them into the
 // frame vertex stream.
+// The pages this draw would SAMPLE, under the texture's own layout, page-granular. The window and
+// not the texels the coordinates reach -- the window is what the sampler is free to fetch -- and
+// every mip level the scanline setup would build a source for, each from its own MIPTBP base.
+//
+// Whole windows rather than the coverage rectangles the setup narrows to. This feeds a REFUSAL
+// test, so a read set that is too wide can only refuse more draws, never admit a wrong one.
+GSPageBitmap GSRendererTileGpu::CpuRasterReadPages()
+{
+	GSPageBitmap pages;
+	if (!PRIM->TME)
+		return pages;
+
+	const GSDrawingContext* ctx = m_context;
+	const bool mip = IsMipMapActive();
+	const auto window = [](const GIFRegTEX0& t) {
+		const int tw = static_cast<int>(1u << std::min<u32>(t.TW, 10));
+		const int th = static_cast<int>(1u << std::min<u32>(t.TH, 10));
+		const GSTileSurfaceLayout l{t.TBP0, static_cast<u8>(t.TBW), static_cast<u8>(t.PSM),
+			KindForPsm(t.PSM)};
+		return GSVramModel::PagesForRect(l, GSVector4i(0, 0, tw, th));
+	};
+
+	pages |= window(ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip));
+	if (mip)
+	{
+		for (u32 i = 1, j = std::min<u32>(ctx->TEX1.MXL, 6); i <= j; i++)
+			pages |= window(GetTex0Layer(i));
+	}
+	return pages;
+}
+
+// Run this draw on the CPU instead of on the GPU, where the game database says the title wants it
+// there and the memory model says nothing is in the way. Returns true if the draw was executed
+// here and AccumulateDraw is done with it.
+//
+// The population is Classic's, named by `cpuSpriteRenderBW` / `cpuSpriteRenderLevel`, and the
+// shape gates are transcribed unchanged (gsTileGpuPlanCpuRaster). On Spider-Man 3 it is 3,143
+// draws a frame on three 64x64 scratch render targets, ping-ponged ~49 times a frame: 33.0% of
+// TileGpu's serialized GPU frame in draws and another 4.3% in the writeback they force -- more
+// than the entire writeback road. Classic runs every one of them on the CPU and none on the GPU,
+// and gets the sun glow right doing it, which TileGpu does not.
+//
+// ⚠️ ADMISSION IS A REFUSAL AND NEVER A STALL. Classic's gate 6 asks its texture cache whether a
+// render target can serve the sample, and its answer can be a readback. The equivalent question
+// here is the memory model's own, asked of BOTH ends at once: any page this draw reads or writes
+// whose newest bytes are on the GPU sends it back to the ordinary GPU road. Nothing is ever read
+// back or waited on to make the road available.
+//
+// That refusal is also what CLOSES THE CHAIN, which is the part the population's shape demands.
+// Divert some legs of a ping-pong and the road is a disaster: each undiverted leg makes its
+// scratch surface GPU truth and forces a stalling readback for the next CPU leg. Refusing on GPU
+// truth means the first undiverted leg automatically refuses every leg after it, so a macro cycle
+// runs entirely on the CPU or entirely on the GPU and never crosses.
+bool GSRendererTileGpu::TryCpuRaster(const GSTileSurfaceLayout& fb_l, const GSVector4i& r,
+	bool colour_written, bool z_used)
+{
+	// The road arms from the game database and nowhere else, so a title without an entry is
+	// structurally untouched: this is the only test it ever reaches, and none of the counters
+	// below can be non-zero for it.
+	const u32 bw = m_cpu_sprite_raster ? GSConfig.UserHacks_CPUSpriteRenderBW : 0u;
+	if (bw == 0) [[likely]]
+		return false;
+
+	const GSDrawingContext* ctx = m_context;
+	// Depth in BOTH senses, which is what Classic's `no_ds` is: the folded one (this draw's depth
+	// write survives its masks, or it tests depth) and the raw register one (ZTE on with ZMSK
+	// clear). The second matters because the scanline core derives its own depth write from the
+	// registers, and a draw whose fold said "no depth" while the registers say otherwise would
+	// have the core write depth bytes the ledger below never accounts for.
+	const bool depth_used = z_used || (ctx->TEST.ZTE && !ctx->ZBUF.ZMSK);
+	const bool draw_sprite_tex = PRIM->TME && m_vt.m_primclass == GS_SPRITE_CLASS;
+	// The split-shuffle gate is Classic's own state machine (m_split_texture_shuffle_pages) and
+	// this renderer has no analogue of it, so there is nothing to be in the middle of.
+	const GSTileCpuRasterRefusal shape = gsTileGpuPlanCpuRaster(bw,
+		GSConfig.UserHacks_CPUSpriteRenderLevel, colour_written, depth_used, draw_sprite_tex,
+		ctx->FRAME.FBW, IsMipMapActive(), IsOpaque(), /*split_shuffle=*/false);
+	if (shape != GSTileCpuRasterRefusal::None)
+	{
+		m_frame.cpu_raster_shape++;
+		return false;
+	}
+
+	// The palette. The core reads the CPU's CLUT RAM, which is stale for any slot the device
+	// holds, and a draw sampled through the wrong palette is a wrong pixel with nothing to say so.
+	// Asked of THIS DRAW'S OWN SLOTS, the same window the alpha bound further up asks about.
+	// Declining rather than syncing is the rule, not an optimization: SyncClutToCpu stalls.
+	if (PRIM->TME)
+	{
+		const u32 tex_pal = GSLocalMemory::m_psm[ctx->TEX0.PSM].pal;
+		if (tex_pal > 0 && !m_clut_mirror.DrawSlotsCpuCurrent(tex_pal, ctx->TEX0.CSA))
+		{
+			m_frame.cpu_raster_clut_stale++;
+			return false;
+		}
+	}
+
+	// The rectangle the core will walk, asked here because the pages it writes have to be decided
+	// BEFORE it runs and reported after it. One spelling of the question, shared with the core.
+	const GSVector4i bbox = GSSwPrimRenderBBox(m_vt, ctx->scissor.in);
+	if (bbox.rempty())
+		return false;
+
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(fb_l, bbox, fp);
+	if ((fp.pages | CpuRasterReadPages()).intersects(m_vram_model.TruthAny()))
+	{
+		m_frame.cpu_raster_gpu_truth++;
+		return false;
+	}
+
+	// ⚠️ Ring slots close BEFORE the core writes the shadow, not after. A slot an already-planned
+	// draw still reads captures the page's CURRENT bytes as a version copy, and a copy taken after
+	// the write would hand that draw bytes it never saw. This is why the whole ledger below cannot
+	// simply be moved after the raster.
+	SupersedeRingSlots(fp.pages);
+	// A palette gathered off these very pages is losing the only copy of its words, and the write
+	// taking them is not any one surface's -- so the question is asked of every owner.
+	NoteClutSourceWritten(fp.pages);
+
+	if (!m_sw_prim_render(*this, m_sw_prim, bbox))
+	{
+		// The core wrote neither colour nor depth. Nothing landed, so nothing is owed and the GPU
+		// road below runs the draw as it always did; the slots closed above cost a recompose and
+		// nothing else.
+		m_frame.cpu_raster_refused++;
+		return false;
+	}
+
+	// -- the ledger, and here the correct call is the opposite of the surrounding code ---------
+	//
+	// The bytes are in GSLocalMemory: CPU-side, native resolution, full PS2 layout -- exactly
+	// where an EE transfer's bytes are. So the destination takes the CPU-WRITE road and every
+	// downstream GPU consumer learns of them the way it learns of an upload.
+	//
+	// ⚠️ NOT OnNativeDraw and NOT BumpSurfaceVersion. Those are the normal path's claims, and here
+	// they would be a lie: they assert GPU-side truth for pages the GPU never wrote, and a
+	// consumer that believes them samples ring content the writeback road never composed. No
+	// surface was created, so there is nothing to version.
+	const u8 planes = gsTilePlanesInvalidatedByWrite(ctx->FRAME.PSM);
+	// The admission test above proved no page here holds GPU truth, so there is nothing to
+	// reconcile and the upload hook's whole spill/merge apparatus has no work. Asserted rather
+	// than assumed: if it ever fires, the refusal has stopped closing the chain.
+	pxAssert(m_vram_model.SpillBeforeCpuWrite(fp, planes).empty());
+	m_vram_model.OnCpuWrite(fp, planes);
+
+	m_frame.cpu_raster_draws++;
+	m_frame.cpu_raster_pages += fp.pages.count();
+	return true;
+}
+
 void GSRendererTileGpu::AccumulateDraw()
 {
 	const GSVector4i bbox = ComputeDrawBBox();
@@ -5721,6 +5911,16 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (date_fold == GSTileDateFold::DropDraw)
 		return;
 	const u32 date = gsTileGpuDateRow(date_fold);
+
+	// -- the CPU rasterization road --------------------------------------------------------------
+	//
+	// Asked HERE, in the band between the last return that owes nothing and the first surface
+	// allocation, for the same reason Classic asks it before its own target lookup ("super early,
+	// to avoid creating superfluous render targets"). A diverted draw never allocates a pool
+	// texture, never enters the surface model and never appends a plan entry, so the nine per-draw
+	// plan arrays and their parity assert are untouched by it.
+	if (TryCpuRaster(fb_l, r, color_written, z_used)) [[unlikely]]
+		return;
 
 	// -- the sound varies road -----------------------------------------------------------------
 	//

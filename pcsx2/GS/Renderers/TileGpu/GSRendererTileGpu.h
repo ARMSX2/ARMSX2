@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
@@ -2278,6 +2279,24 @@ private:
 	// hook BEFORE GSState writes the shadow (that is why the copy is exact).
 	void SupersedeRingSlots(const GSPageBitmap& pages);
 
+	// -- the CPU rasterization road ---------------------------------------------------------
+	//
+	// Run this draw through the software scanline core into guest memory instead of onto the GPU,
+	// where the GameDB says the title wants it there and the memory model says nothing stands in
+	// the way. Returns true if the draw was executed here, in which case AccumulateDraw is done
+	// with it: no surface is created, no plan entry is appended, no pass is opened.
+	//
+	// The scratch and the entry point. The entry is resolved once rather than per draw, exactly as
+	// GSRendererHW resolves its own: the scanline core is compiled per vector ISA on x86.
+	bool TryCpuRaster(const GSTileSurfaceLayout& fb_l, const GSVector4i& r, bool colour_written, bool z_used);
+	/// The pages this draw would read: the sampled texture window under its own layout, plus every
+	/// mip level the core would fetch. Page-granular and deliberately the WINDOW rather than the
+	/// texels the coordinates reach, which is what the sampler is free to fetch.
+	GSPageBitmap CpuRasterReadPages();
+	GSSwPrimRenderState m_sw_prim;
+	bool (*m_sw_prim_render)(GSRenderer&, GSSwPrimRenderState&, const GSVector4i&) = nullptr;
+	bool m_cpu_sprite_raster = false;
+
 	// Compose `pages`' byte truth into ring slots for the current epoch: writebacks for every
 	// colour surface holding unsynced truth on them (appended as prep ops on the pending draw),
 	// S prefill for the rest, and the model's synced bit set for what the ring now holds. Depth
@@ -3083,6 +3102,11 @@ private:
 	bool IssuePaletteCycleSubstitute(
 		const PendingDraw& pd, GSTileSurfaceId fb_id, const GSVector4i& rect, const GIFRegTEX0& tex0);
 	void NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages);
+	/// The same, asked WITHOUT an owner: guest bytes on those pages were rewritten by something
+	/// that is not one surface's draw. The CPU rasterization road is the caller -- its bytes land in
+	/// GSLocalMemory and no surface wrote them -- so every record sourced from the pages is captured,
+	/// whoever owns it.
+	void NoteClutSourceWritten(const GSPageBitmap& pages);
 	/// The surface id has been recycled into a new surface: every palette on it has lost its words.
 	void NoteClutSurfaceReplaced(GSTileSurfaceId id);
 
@@ -3828,6 +3852,17 @@ private:
 		// number cannot be both.
 		u32 lossy_pages_depth = 0;
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
+
+		// The CPU rasterization road. Counted only where the GameDB armed it, so every title
+		// without an entry reports zeros -- which is the containment claim, stated as a number
+		// rather than assumed. `cpu_raster_draws` is NOT `skipped_draws`: a skipped draw's bytes
+		// never land anywhere, and these land in guest memory at native resolution.
+		u32 cpu_raster_draws = 0; // diverted and executed by the scanline core
+		u32 cpu_raster_pages = 0; // guest pages those draws wrote
+		u32 cpu_raster_shape = 0; // declined: the draw is not the shape the entry names
+		u32 cpu_raster_gpu_truth = 0; // declined: a page it touches has its newest bytes on the GPU
+		u32 cpu_raster_clut_stale = 0; // declined: the palette it samples is the device's
+		u32 cpu_raster_refused = 0; // admitted, then the core wrote nothing and the GPU road ran
 
 		// Surface-identity containment as placed (PlaceContainedView): off the lever, the fold the
 		// renderer did NOT take; on it, the fold it did. The two break pairs are the whole point --
