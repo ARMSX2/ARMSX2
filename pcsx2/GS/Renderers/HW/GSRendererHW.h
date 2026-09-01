@@ -6,6 +6,7 @@
 #include "GSTextureCache.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSRenderer.h"
+#include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/GSState.h"
 #include "GS/MultiISA.h"
@@ -345,9 +346,7 @@ private:
 	HWCachedCtx m_cached_ctx;
 
 	// software sprite renderer state
-	std::vector<GSVertexSW> m_sw_vertex_buffer;
-	std::unique_ptr<GSTextureCacheSW::Texture> m_sw_texture[7 + 1];
-	std::unique_ptr<GSVirtualAlignedClass<32>> m_sw_rasterizer;
+	GSSwPrimRenderState m_sw_prim;
 
 public:
 	GSRendererHW();

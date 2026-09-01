@@ -615,6 +615,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSPassScheduler.h
 	GS/Renderers/Common/GSPresentationPolicy.h
 	GS/Renderers/Common/GSRenderer.h
+	GS/Renderers/Common/GSSwPrimRender.h
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSTexture.h

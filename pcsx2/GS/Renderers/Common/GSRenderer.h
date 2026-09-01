@@ -4,11 +4,19 @@
 #pragma once
 
 #include "GS/GSState.h"
+#include "GS/MultiISA.h"
 #include <memory>
 #include <string>
 
+MULTI_ISA_DEF(class GSSwPrimRenderFunctions;)
+
 class GSRenderer : public GSState
 {
+	// The software prim render reads the drawing state through a GSRenderer reference, so its
+	// friendship has to sit here and not on one derived renderer: both GSRendererHW and
+	// GSRendererTileGpu send draws down that road.
+	MULTI_ISA_FRIEND(GSSwPrimRenderFunctions)
+
 private:
 	enum class MergeMode
 	{
