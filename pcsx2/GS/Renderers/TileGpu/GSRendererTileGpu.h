@@ -8,6 +8,7 @@
 #include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
+#include "GS/Renderers/TileGpu/GSTileClutStreamDedup.h"
 #include "GS/Renderers/Tile/GSTilePassSim.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
@@ -2410,6 +2411,10 @@ private:
 	std::vector<u16> m_plan_indices;
 	std::vector<StateRow> m_plan_states;
 	std::vector<u32> m_plan_palettes; // expanded CLUTs (GSClut::Read32), concatenated per frame
+	/// Which expansions the stream above already holds, so a second draw reading the same palette
+	/// reuses the first one's words instead of appending a copy of them and hashing it again.
+	/// Cleared wherever m_plan_palettes is, and only there -- its entries are offsets into it.
+	GSTileClutStreamDedup m_plan_palette_dedup;
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	// One per m_plan_draws entry: the draw's GS scissor (GSTileGpuPassPlan::scissors). Filled from
@@ -4453,7 +4458,11 @@ private:
 		// stream, and hashes it for a content id -- and does all three again for the next draw,
 		// with no test for whether anything moved in between.
 		u32 clut_cpu_draws = 0;   ///< paletted draws that took the CPU expansion road
-		u32 clut_cpu_words = 0;   ///< words those draws appended to the stream
+		u32 clut_cpu_words = 0;   ///< words those draws APPENDED to the stream
+		/// ...and the words they ASKED for, which is what a road that appended every draw's
+		/// expansion blind would have carried. The two columns side by side are the dedup's whole
+		/// result, readable off one arm rather than off a pair.
+		u32 clut_cpu_words_demanded = 0;
 		/// ...of those draws, the ones whose CLUT read generation had NOT moved since the previous
 		/// CPU-road draw and whose entry count matched it. GSClut::Read32 bumps the generation only
 		/// when it re-expands, so a held generation means the words appended here are byte-identical
@@ -4462,6 +4471,14 @@ private:
 		u32 clut_cpu_readgen_held = 0;
 		u32 clut_cpu_words_held = 0;  ///< ...and the words those redundant appends carried
 		u32 clut_cpu_distinct = 0;    ///< distinct content ids the frame's CPU road produced
+		/// ...and the draws the stream dedup served out of an expansion the plan already held, so
+		/// they appended nothing and hashed nothing. The complement of this against clut_cpu_draws
+		/// is what clut_cpu_words is now counted over.
+		u32 clut_cpu_dedup_hits = 0;
+		/// ...and of those, the ones the REGISTER key caught, which cost no hash at all. The rest
+		/// of the population paid one hash of the words -- the price of seeing repetition across a
+		/// CLUT reload, which is the only kind rcuya-effects has.
+		u32 clut_cpu_nohash = 0;
 		u32 clut_copies = 0;      // block copies emitted (one per record per plan, at a pass head)
 		// ...and the REGIONS those copies carry, which is what the copy actually costs: per-region
 		// cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so an op's price is its
@@ -4525,7 +4542,7 @@ private:
 	/// draw-weighted program size.
 	void ReportVariantCensus();
 	/// TileGpuCensusPalette: tally one CPU-road paletted draw against the previous one of this frame.
-	void CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id);
+	void CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id, bool appended, bool hashed);
 
 	// The PASS WORKING SET census: for each distinct set of fragment programs some pass alternates
 	// among, how many passes had that set and how many draws and runs they carried.

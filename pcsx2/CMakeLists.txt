@@ -655,6 +655,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSTileTypes.h
 	GS/Renderers/Tile/GSVramModel.h
 	GS/Renderers/TileGpu/GSRendererTileGpu.h
+	GS/Renderers/TileGpu/GSTileClutStreamDedup.h
 	)
 
 if(ARCH_X86)

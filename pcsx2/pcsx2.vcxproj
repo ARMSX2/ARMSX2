@@ -841,6 +841,7 @@
     <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h" />
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
     <ClInclude Include="GS\Renderers\TileGpu\GSRendererTileGpu.h" />
+    <ClInclude Include="GS\Renderers\TileGpu\GSTileClutStreamDedup.h" />
     <ClInclude Include="GS\Renderers\TileGpu\GSTileGpuShaderVariant.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />

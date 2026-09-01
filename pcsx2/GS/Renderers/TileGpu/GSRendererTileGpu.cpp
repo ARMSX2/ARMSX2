@@ -533,6 +533,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_indices.clear();
 	m_plan_states.clear();
 	m_plan_palettes.clear();
+	m_plan_palette_dedup.Clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_scissors.clear();
@@ -2763,10 +2764,23 @@ void GSRendererTileGpu::ReportPassStructure()
 // words out of m_clut. For that population the insert above copied bytes the stream already holds
 // and the ContentId above hashed words it had just hashed -- both are removable without changing a
 // single byte the executor sees, which is what makes this a size rather than an opinion.
-void GSRendererTileGpu::CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id)
+void GSRendererTileGpu::CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id, bool appended, bool hashed)
 {
 	m_frame.clut_cpu_draws++;
-	m_frame.clut_cpu_words += entries;
+	// Words are counted twice over, where they are ASKED for and where they are APPENDED. The
+	// demand is what a road with no dedup builds; the appends are what this one builds. The draw
+	// count stays the population either way -- a lever that changed which draws take this road
+	// would be doing something other than deduplicating it, and these columns are what says so.
+	m_frame.clut_cpu_words_demanded += entries;
+	if (appended)
+		m_frame.clut_cpu_words += entries;
+	else
+		m_frame.clut_cpu_dedup_hits++;
+	// ...and which of the two keys earned the hit. The register key costs no hash and the content
+	// key costs one, so the split IS the lever's remaining hash bill -- and it is the column that
+	// says whether a title's repetition is register-shaped or byte-shaped.
+	if (!hashed)
+		m_frame.clut_cpu_nohash++;
 	if (m_census_pal_prev_valid && read_gen == m_census_pal_prev_gen && entries == m_census_pal_prev_entries)
 	{
 		m_frame.clut_cpu_readgen_held++;
@@ -3882,9 +3896,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// no gather at all is exactly the one whose CPU road is worth counting.
 	const auto pcd = stat([](const MF& f) { return f.clut_cpu_draws; });
 	const auto pcw = stat([](const MF& f) { return f.clut_cpu_words; });
+	const auto pcq = stat([](const MF& f) { return f.clut_cpu_words_demanded; });
 	const auto pch = stat([](const MF& f) { return f.clut_cpu_readgen_held; });
 	const auto pcwh = stat([](const MF& f) { return f.clut_cpu_words_held; });
 	const auto pcdi = stat([](const MF& f) { return f.clut_cpu_distinct; });
+	const auto pcdd = stat([](const MF& f) { return f.clut_cpu_dedup_hits; });
+	const auto pcnh = stat([](const MF& f) { return f.clut_cpu_nohash; });
 	if (pcd.mean > 0.0)
 	{
 		// held% is what a read-generation memo would remove outright: the words were byte-identical
@@ -3893,11 +3910,19 @@ void GSRendererTileGpu::ReportModelTraffic()
 		// two draws can share a palette without being adjacent.
 		Console.WriteLn("TileGpu CPU palette road (draws the device could not serve, so the CLUT is expanded, "
 						"copied into the plan's stream and hashed):");
-		Console.WriteLn("  draws %.2f / %-5u  words %.2f / %-6u  read-gen held %.2f / %-5u (%.1f%% of draws, "
-						"%.1f%% of words)  distinct ids %.2f / %u",
-			pcd.mean, pcd.p50, pcw.mean, pcw.p50, pch.mean, pch.p50,
+		Console.WriteLn("  draws %.2f / %-5u  words asked %.2f / %-6u  appended %.2f / %-6u (%.1f%% removed)  "
+						"read-gen held %.2f / %-5u (%.1f%% of draws, %.1f%% of words)  distinct ids %.2f / %u",
+			pcd.mean, pcd.p50, pcq.mean, pcq.p50, pcw.mean, pcw.p50,
+			pcq.mean > 0.0 ? 100.0 * (pcq.mean - pcw.mean) / pcq.mean : 0.0, pch.mean, pch.p50,
 			pcd.mean > 0.0 ? 100.0 * pch.mean / pcd.mean : 0.0,
-			pcw.mean > 0.0 ? 100.0 * pcwh.mean / pcw.mean : 0.0, pcdi.mean, pcdi.p50);
+			pcq.mean > 0.0 ? 100.0 * pcwh.mean / pcq.mean : 0.0, pcdi.mean, pcdi.p50);
+		// ...and what the stream dedup actually removed. Read against "distinct ids": the dedup is
+		// keyed on the expansion's inputs rather than on its bytes, so its miss count is an upper
+		// bound on the distinct palettes and the two converging is the key catching the population.
+		Console.WriteLn("  stream dedup: hits %.2f / %-5u (%.1f%% of draws)  appends %.2f / %-5u  "
+						"no hash needed %.2f / %u",
+			pcdd.mean, pcdd.p50, pcd.mean > 0.0 ? 100.0 * pcdd.mean / pcd.mean : 0.0,
+			pcd.mean - pcdd.mean, pcd.p50 - pcdd.p50, pcnh.mean, pcnh.p50);
 	}
 
 	// The palette cycle. Printed whenever ANY draw reached the first conjunct's first half, on both
@@ -6499,18 +6524,62 @@ void GSRendererTileGpu::AccumulateDraw()
 				else
 				{
 					// Expand this draw's CLUT to 32-bit RGBA (CSA/CPSM/TEXA applied by Read32) and
-					// append it to the frame's palette stream; pal_offset is the word index of entry 0.
-					// No dedup yet (wrong-fast): a palette is 16 or 256 words, a full SotC frame well
-					// under the ring.
+					// take its offset in the plan's palette stream -- appending the expansion only
+					// if the plan does not already hold it.
+					//
+					// Read32 runs either way, and deliberately: it is what keeps the CLUT's own
+					// read state (and the GPU-CLUT road behind it) current, and when nothing has
+					// moved it is a register compare. The re-work this removes is on THIS side of
+					// it -- the copy into the stream and the hash over the copy, which on the R&C
+					// UYA effects scene ran 1,535 times a frame over 85 distinct palettes.
+					//
+					// The key is the expansion's inputs, so a hit is byte-identity and not a
+					// resemblance: same CLUT RAM (the write generation), same registers selecting
+					// out of it. See GSTileClutStreamDedup for why the READ generation is the
+					// wrong witness for this.
 					m_mem.m_clut.Read32(tex0, m_env.TEXA);
 					const u32* clut = m_mem.m_clut;
-					pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
-					m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
-					const u64 pal_content = GSTilePaletteCache::ContentId(clut, pal_entries);
+					const GSTileClutStreamDedup::Key pal_key =
+						GSTileClutStreamDedup::MakeKey(m_mem.m_clut, tex0, m_env.TEXA, pal_entries);
+					u64 pal_content;
+					bool pal_appended;
+					bool pal_hashed = true;
+					if (const GSTileClutStreamDedup::Stream* held = m_plan_palette_dedup.FindByRegisters(pal_key))
+					{
+						// Level 1. Same CLUT RAM, same registers selecting out of it: the words are
+						// the ones already in the stream, and no hash was needed to know it.
+						pd.pal_offset = held->offset;
+						pal_content = held->content_id;
+						pal_appended = false;
+						pal_hashed = false;
+					}
+					else
+					{
+						// Level 2. The RAM moved (this title reloads its CLUT before nearly every
+						// draw), so only the WORDS can say whether anything changed. This is the
+						// hash the road paid anyway -- the source road's second hash of the same
+						// words is what went away with pd.pal_content_id.
+						pal_content = GSTilePaletteCache::ContentId(clut, pal_entries);
+						if (const GSTileClutStreamDedup::Stream* same = m_plan_palette_dedup.FindByContent(
+								pal_content, m_plan_palettes.data(), clut, pal_entries))
+						{
+							pd.pal_offset = same->offset;
+							pal_appended = false;
+							m_plan_palette_dedup.InsertRegisters(pal_key, *same);
+						}
+						else
+						{
+							pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
+							m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
+							m_plan_palette_dedup.Insert(pal_key, pal_content, pd.pal_offset, pal_entries);
+							pal_appended = true;
+						}
+					}
 					pd.pal_content_id = pal_content;
 					pd.pal_id = ClutCpuPalId(pal_content);
 					if (m_census_palette) [[unlikely]]
-						CensusCpuPalette(m_mem.m_clut.GetReadGeneration(), pal_entries, pal_content);
+						CensusCpuPalette(m_mem.m_clut.GetReadGeneration(), pal_entries, pal_content, pal_appended,
+							pal_hashed);
 				}
 			}
 
@@ -6746,6 +6815,12 @@ void GSRendererTileGpu::AccumulateDraw()
 						pd.pal_mode = 0;
 						pd.pal_mul = 0;
 						pd.pal_shift = 0;
+						// Outside the stream dedup on purpose. This append happens after the road
+						// decision, so no source-road lookup can be waiting on a content id, and
+						// the dedup's entry needs one -- which here would mean hashing a palette
+						// nothing else is going to ask about. A record dying between the resolve
+						// and this point is rare enough that one un-deduplicated palette costs
+						// less than a hash on the ordinary path would.
 						m_mem.m_clut.Read32(tex0, m_env.TEXA);
 						const u32* const clut = m_mem.m_clut;
 						pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
@@ -8521,6 +8596,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_indices.clear();
 	m_plan_states.clear();
 	m_plan_palettes.clear();
+	m_plan_palette_dedup.Clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_scissors.clear();

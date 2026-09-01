@@ -2078,6 +2078,9 @@
     <ClInclude Include="GS\Renderers\TileGpu\GSRendererTileGpu.h">
       <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\TileGpu\GSTileClutStreamDedup.h">
+      <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\TileGpu\GSTileGpuShaderVariant.h">
       <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
     </ClInclude>
