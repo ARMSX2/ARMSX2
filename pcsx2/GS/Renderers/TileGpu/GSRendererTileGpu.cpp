@@ -3249,6 +3249,35 @@ void GSRendererTileGpu::ReportModelTraffic()
 		Console.WriteLn("  a pass-head BATCH would eliminate %.2f / %-5u of them (%.1f%%); the other %.2f / %-5u "
 						"read pages a draw of the same pass wrote -- real read-after-write, batched or not",
 			wcf.mean, wcf.p50, wbrk.mean > 0.0 ? 100.0 * wcf.mean / wbrk.mean : 0.0, wraw.mean, wraw.p50);
+		// ...and the road the breaks ride on, which the break count alone does not price: the slot
+		// walk runs over every page of every compose, before anything asks whether a writeback is
+		// needed at all.
+		const auto wcc = stat([](const MF& f) { return f.wbb_compose_calls; });
+		const auto wcp = stat([](const MF& f) { return f.wbb_compose_pages; });
+		const auto wnp = stat([](const MF& f) { return f.wbb_need_pages; });
+		const auto wza = stat([](const MF& f) { return f.wbb_zseed_asks; });
+		const auto wzu = stat([](const MF& f) { return f.wbb_zseed_unconsumed; });
+		const auto wzup = stat([](const MF& f) { return f.wbb_zseed_unconsumed_pages; });
+		Console.WriteLn("  the compose road itself: %.2f / %-5u non-empty composes take a ring slot for %.2f / %-6u "
+						"pages, of which %.2f / %-5u (%.1f%%) needed a writeback",
+			wcc.mean, wcc.p50, wcp.mean, wcp.p50, wnp.mean, wnp.p50,
+			wcp.mean > 0.0 ? 100.0 * wnp.mean / wcp.mean : 0.0);
+		Console.WriteLn("    of the depth claims, %.2f / %-5u composed something and %.2f / %-5u of those seeded "
+						"NOTHING (%.2f / %u pages slotted for no reader)",
+			wza.mean, wza.p50, wzu.mean, wzu.p50, wzup.mean, wzup.p50);
+		// ...and how much of that walk is the window being wider than the draw. An UPPER bound: the
+		// reach is a coordinate box and accounts for none of the reasons a sampler leaves it.
+		const auto wwp = stat([](const MF& f) { return f.wbb_win_pages; });
+		const auto wrp = stat([](const MF& f) { return f.wbb_reach_pages; });
+		const auto wwn = stat([](const MF& f) { return f.wbb_win_need; });
+		const auto wrn = stat([](const MF& f) { return f.wbb_reach_need; });
+		const auto wrs = stat([](const MF& f) { return f.wbb_reach_saves; });
+		Console.WriteLn("  read window vs the coordinates' REACH (upper bound -- no wrap, region or mip): "
+						"%.2f / %-6u window pages -> %.2f / %-6u reached (%.1f%% dropped)   writeback pages "
+						"%.2f / %-5u -> %.2f / %-5u   breaks it would not have made %.2f / %u",
+			wwp.mean, wwp.p50, wrp.mean, wrp.p50,
+			wwp.mean > 0.0 ? 100.0 * (wwp.mean - wrp.mean) / wwp.mean : 0.0, wwn.mean, wwn.p50, wrn.mean, wrn.p50,
+			wrs.mean, wrs.p50);
 	}
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
@@ -5617,9 +5646,19 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 		return;
 	// Under the upload merge every page here is one the merge staged, and its slot MUST take the S
 	// prefill whatever the model says about who holds the page -- see EnsureRingSlot.
+	// TileGpuCensusWriteback prices the road, not just its breaks: the slot walk below runs over
+	// every page of the window on every compose, and the model is asked what needs writing back
+	// only after it. Two popcounts, taken where both sets are in hand.
+	if (m_census_writeback)
+	{
+		m_frame.wbb_compose_calls++;
+		m_frame.wbb_compose_pages += pages.count();
+	}
 	pages.forEachSetPage([&](u32 page) { EnsureRingSlot(page, m_merge_emitting); });
 
 	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
+	if (m_census_writeback)
+		m_frame.wbb_need_pages += need.count();
 	if (need.empty())
 		return;
 
@@ -5693,6 +5732,26 @@ void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, Pending
 		m_frame.wbb_asks++;
 		m_frame.wbb_asks_tex += (ask == WritebackAsk::TextureRead) ? 1u : 0u;
 	}
+	// The narrowing counterfactual, asked BEFORE the compose: composing marks pages synced, so the
+	// same two questions on the other side of it both answer empty.
+	if (m_census_writeback && ask == WritebackAsk::TextureRead && m_census_reach_valid)
+	{
+		const OpenRun& run = CurrentRun();
+		const GSPageBitmap win_need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
+		const GSPageBitmap reach_need = m_vram_model.ReadbackNeeded(m_census_reach, kGSTilePlanesAll);
+		m_frame.wbb_win_pages += pages.count();
+		m_frame.wbb_reach_pages += m_census_reach.count();
+		m_frame.wbb_win_need += win_need.count();
+		m_frame.wbb_reach_need += reach_need.count();
+		// A saving only where the window WOULD have broken and the reach would not: the reach's
+		// writeback takes no page the open pass wrote, so the clause that holds every break in this
+		// corpus has nothing to fire on.
+		if (!win_need.empty() && win_need.intersects(run.color_written | run.z_written) &&
+			!reach_need.intersects(run.color_written | run.z_written))
+			m_frame.wbb_reach_saves++;
+	}
+	m_census_reach_valid = false;
+
 	const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
 	ComposeRingPages(pages);
 	const bool emitted = m_plan_prep_ops.size() != ops_before;
@@ -6398,6 +6457,22 @@ void GSRendererTileGpu::AccumulateDraw()
 				KindForPsm(tex_psm)};
 			tex_pages = GSVramModel::PagesForRect(
 				tex_l, GSVector4i(0, 0, static_cast<int>(win_tw), static_cast<int>(win_th)));
+			// ...and the same window narrowed to the texels the coordinates actually reach, for the
+			// census alone. Taken by nothing: the sampler really is free to fetch the whole window,
+			// and this box accounts for none of the reasons it would (wrap, REGION_CLAMP, mips), so
+			// it is an upper bound on a narrowing and not a proposal for one. A box that leaves the
+			// window is counted at the full window rather than clamped, which is the reading that
+			// cannot flatter the bound.
+			if (m_census_writeback)
+			{
+				const GSVector4 t = m_vt.m_min.t.xyxy(m_vt.m_max.t);
+				const GSVector4i box(static_cast<int>(std::floor(t.x)), static_cast<int>(std::floor(t.y)),
+					static_cast<int>(std::ceil(t.z)), static_cast<int>(std::ceil(t.w)));
+				const bool inside = box.x >= 0 && box.y >= 0 && box.z <= static_cast<int>(win_tw) &&
+									box.w <= static_cast<int>(win_th) && box.z > box.x && box.w > box.y;
+				m_census_reach = inside ? GSVramModel::PagesForRect(tex_l, box) : tex_pages;
+				m_census_reach_valid = true;
+			}
 		}
 	}
 
@@ -7106,6 +7181,18 @@ void GSRendererTileGpu::AccumulateDraw()
 		// holds -- exactly as every depth page did before this road existed.
 		NoteLossyPages(z_seed.andnot(z_fill), GSTileSurfaceKind::Depth);
 		ComposeForPendingDraw(z_seed, pd, WritebackAsk::DepthSeed);
+		// The compose above walked z_seed and took a ring slot for every page of it. Where z_fill
+		// is empty no seed reads any of them, so the whole walk went into the ring for nothing --
+		// counted here, at the only place that knows both halves.
+		if (m_census_writeback && !z_seed.empty())
+		{
+			m_frame.wbb_zseed_asks++;
+			if (z_fill.empty())
+			{
+				m_frame.wbb_zseed_unconsumed++;
+				m_frame.wbb_zseed_unconsumed_pages += z_seed.count();
+			}
+		}
 		if (!z_fill.empty())
 		{
 			EmitPrepOp(GSDevice::GSTileGpuPrepKind::SeedDepth, z_id, z_fill);

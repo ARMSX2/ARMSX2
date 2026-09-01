@@ -2793,6 +2793,12 @@ private:
 	/// verdict ComposeForPendingDraw acted on, and an arm that moved between the two would fail a
 	/// run that is perfectly correct.
 	bool m_census_writeback = false;
+	/// TileGpuCensusWriteback's read-window latch: the pages the draw being accumulated actually
+	/// reaches with its texture coordinates, stashed where they are computable and read where the
+	/// compose is asked for. Census only -- nothing downstream of it decides a pixel, a page or a
+	/// pass -- and cleared on every use so a draw that took another road cannot inherit it.
+	bool m_census_reach_valid = false;
+	GSPageBitmap m_census_reach;
 	/// The palette census's latch: the CLUT read generation and entry count the previous CPU-road
 	/// draw of THIS frame expanded under, and the distinct content ids the frame has produced. Per
 	/// frame, because the question is what one frame's plan re-copies; a latch carried across the
@@ -3977,6 +3983,36 @@ private:
 		/// a writeback-batching lever can collect, measured rather than assumed.
 		u32 wbb_cf_batch = 0;
 		u32 wbb_pages_inpass = 0; ///< pages of the breaking composes the open pass itself wrote
+		/// What the compose ROAD costs whether or not it composes anything. ComposeRingPages hands
+		/// every page of the asked window to EnsureRingSlot BEFORE it asks the model whether any of
+		/// them holds truth to write back, because a read needs a slot either way -- the prefill is
+		/// what it samples when nothing does. So these three price the road the breaks ride on: the
+		/// calls, the pages they walk, and the pages that turned out to need a writeback at all.
+		u32 wbb_compose_calls = 0;
+		u32 wbb_compose_pages = 0;
+		u32 wbb_need_pages = 0;
+		/// ...and the depth claim's own share of it, which is the part with no consumer. A draw's
+		/// depth claim composes the pages its Z buffer does not hold, and then seeds only the ones
+		/// PagesDepthSeedable admits. Where it admits none, the compose walked its window, took ring
+		/// slots for every page and nothing ever read them.
+		u32 wbb_zseed_asks = 0;
+		u32 wbb_zseed_unconsumed = 0;
+		u32 wbb_zseed_unconsumed_pages = 0;
+		/// THE SECOND COUNTERFACTUAL, and the one the compose road's page walk answers to: the read
+		/// window is the size-fixed TEX0 footprint -- what the sampler is FREE to fetch -- and not
+		/// the texels the draw's coordinates reach. These carry the tighter set beside it, take
+		/// nothing from it, and count what it would have saved. ⚠️ An UPPER BOUND on the saving: the
+		/// reach is the coordinate bounding box with no account of wrap, REGION_CLAMP or mip levels,
+		/// so a draw whose box leaves the window is counted at the full window and every other draw
+		/// is counted at its most optimistic.
+		u32 wbb_win_pages = 0;   ///< pages of the size-fixed window, over censused texture reads
+		u32 wbb_reach_pages = 0; ///< ...and of the coordinate reach inside it
+		u32 wbb_win_need = 0;    ///< pages of the window that needed a writeback
+		u32 wbb_reach_need = 0;  ///< ...and of the reach
+		/// ...and the breaks the narrower window would not have made: its writeback pages miss
+		/// every page the open pass wrote, so the colour clause -- which holds every break in this
+		/// corpus -- could not have fired.
+		u32 wbb_reach_saves = 0;
 		u32 seed_ops = 0;
 		u32 seed_pages = 0;
 		// ...of which the DEPTH seeds', counted apart because their population is a different
