@@ -270,3 +270,82 @@ TEST(GSTileGpuPassBreak, EveryCauseHasADistinctName)
 	// The mask has to fit a u32, which is what every counter and every carried field assumes.
 	EXPECT_LE(kGSTileGpuBreakCauses, 32u);
 }
+
+// GSTileGpuDateCover, the DATE staleness counterfactual. Its whole claim is that keeping a handful
+// of rects instead of one bounding union can only ever REMOVE pass breaks, never add a wrong pixel
+// -- so the property that has to hold is that the cover never forgets a rect it was given. If it
+// could, a DATE draw would be told the snapshot is clean over pixels something wrote, and the draw
+// would read a stale destination alpha.
+TEST(GSTileGpuPassBreak, DateCoverNeverForgetsARectItWasGiven)
+{
+	std::mt19937 rng(20260901u);
+	for (u32 trial = 0; trial < 300; trial++)
+	{
+		GSTileGpuDateCover cover;
+		std::vector<GSVector4i> given;
+		const u32 n = 1u + (rng() % 40u);
+		for (u32 i = 0; i < n; i++)
+		{
+			const int x = static_cast<int>(rng() % 600u);
+			const int y = static_cast<int>(rng() % 440u);
+			const int w = 1 + static_cast<int>(rng() % 64u);
+			const int h = 1 + static_cast<int>(rng() % 64u);
+			const GSVector4i r(x, y, x + w, y + h);
+			given.push_back(r);
+			cover.add(r);
+			// More rects than it holds must coalesce, not drop.
+			EXPECT_LE(cover.count, GSTileGpuDateCover::kMaxRects);
+		}
+		for (const GSVector4i& r : given)
+			EXPECT_TRUE(cover.intersects(r)) << "the cover forgot a rect it was given";
+	}
+}
+
+// ...and it never claims MORE than the union it replaces: anything the cover says is written was
+// inside the union too. That is the direction that makes the counterfactual's saving real rather
+// than an artefact -- a cover that over-reported would under-count the breaks it could skip.
+TEST(GSTileGpuPassBreak, DateCoverIsContainedInTheUnionItReplaces)
+{
+	std::mt19937 rng(7u);
+	for (u32 trial = 0; trial < 300; trial++)
+	{
+		GSTileGpuDateCover cover;
+		GSVector4i uni = GSVector4i::zero();
+		const u32 n = 1u + (rng() % 30u);
+		for (u32 i = 0; i < n; i++)
+		{
+			const int x = static_cast<int>(rng() % 600u);
+			const int y = static_cast<int>(rng() % 440u);
+			const GSVector4i r(x, y, x + 1 + static_cast<int>(rng() % 40u), y + 1 + static_cast<int>(rng() % 40u));
+			cover.add(r);
+			uni = uni.rempty() ? r : uni.runion(r);
+		}
+		for (u32 t = 0; t < 40; t++)
+		{
+			const int x = static_cast<int>(rng() % 640u);
+			const int y = static_cast<int>(rng() % 480u);
+			const GSVector4i probe(x, y, x + 8, y + 8);
+			if (cover.intersects(probe))
+				EXPECT_FALSE(uni.rintersect(probe).rempty()) << "the cover claims a rect the union does not";
+		}
+	}
+}
+
+// An empty cover intersects nothing, and a cleared one goes back to empty -- the two states the
+// break site drives it through on every pass boundary.
+TEST(GSTileGpuPassBreak, DateCoverStartsAndClearsEmpty)
+{
+	GSTileGpuDateCover cover;
+	EXPECT_TRUE(cover.empty());
+	EXPECT_FALSE(cover.intersects(GSVector4i(0, 0, 640, 448)));
+	cover.add(GSVector4i(10, 10, 20, 20));
+	EXPECT_FALSE(cover.empty());
+	EXPECT_TRUE(cover.intersects(GSVector4i(0, 0, 640, 448)));
+	// An empty rect is not a write and must not become one.
+	GSTileGpuDateCover other;
+	other.add(GSVector4i(5, 5, 5, 5));
+	EXPECT_TRUE(other.empty());
+	cover.clear();
+	EXPECT_TRUE(cover.empty());
+	EXPECT_FALSE(cover.intersects(GSVector4i(0, 0, 640, 448)));
+}

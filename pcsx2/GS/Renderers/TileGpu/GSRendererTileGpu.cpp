@@ -2931,6 +2931,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto mnext = [&stat](u32 c) { return stat([c](const MF& f) { return f.merge_ref.cpu_next[c]; }); };
 	const auto mage = [&stat](u32 b) { return stat([b](const MF& f) { return f.merge_ref.cpu_age[b]; }); };
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
+	const auto ddraw = stat([](const MF& f) { return f.date_draws; });
+	const auto dskip = stat([](const MF& f) { return f.date_breaks_cover_would_skip; });
 	const auto uncomp = stat([](const MF& f) { return f.prefill_uncomposed; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
 	const auto snapp = stat([](const MF& f) { return f.snapshot_pages; });
@@ -3132,6 +3134,16 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
+	// What the DATE staleness test costs for being a bounding UNION. Counted on every run, taken by
+	// nothing: a rect set covers everything the union covers, so every break it skips is one the
+	// union made over pixels nobody wrote. The pair is the lever's whole size.
+	if (dbrk.mean > 0.0)
+	{
+		Console.WriteLn("    DATE staleness: %.2f / %u draws asked, %.2f / %u broke   a %u-rect cover would skip "
+						"%.2f / %u of the breaks (%.1f%%) and the snapshots with them",
+			ddraw.mean, ddraw.p50, dbrk.mean, dbrk.p50, GSTileGpuDateCover::kMaxRects, dskip.mean, dskip.p50,
+			100.0 * dskip.mean / std::max(dbrk.mean, 1e-9));
+	}
 	// What those snapshots MOVE, which the count above cannot say: a copy is 8 KB a page, and the
 	// road's whole cost is bytes. Both bills printed side by side off the one run -- what the copies
 	// cover and what copying the whole target would have -- because the lever's value is the
@@ -5653,6 +5665,7 @@ void GSRendererTileGpu::ResetOpenRuns()
 		BreakOpenPass();
 		CurrentRun().date_surface = kGSTileNoSurface;
 		CurrentRun().date_written = GSVector4i::zero();
+		CurrentRun().date_cover.clear();
 	}
 	m_open_run = 0;
 }
@@ -6866,6 +6879,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	{
 		CurrentRun().date_surface = fb_id;
 		CurrentRun().date_written = GSVector4i::zero();
+		CurrentRun().date_cover.clear();
 	}
 	// ...and only on the snapshot road. A DATE draw served by the in-pass read sees the live pixel,
 	// including whatever this same pass has already written under it, so there is nothing for a break
@@ -6876,18 +6890,30 @@ void GSRendererTileGpu::AccumulateDraw()
 	// views then simply never intersect, which is the right answer -- the snapshot the second one
 	// reads genuinely does hold the first one's pixels.
 	const bool date_reads_live = (self_mask & GSDevice::kGSTileGpuSelfDate) != 0;
+	if (date != 0 && !date_reads_live)
+		m_frame.date_draws++;
 	if (date != 0 && !date_reads_live && !CurrentRun().date_written.rempty() &&
 		!CurrentRun().date_written.rintersect(sr).rempty())
 	{
+		// The counterfactual, before the break clears the history it reads. The rect set covers
+		// everything the union covers, so it can only ever say "clear" where the union said "stale"
+		// -- never the other way -- and this counts exactly the breaks the finer test would not make.
+		if (!CurrentRun().date_cover.intersects(sr))
+			m_frame.date_breaks_cover_would_skip++;
 		pd.break_before = true;
 		pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Date);
 		CurrentRun().date_written = GSVector4i::zero();
+		CurrentRun().date_cover.clear();
 		m_frame.date_breaks++;
 		BreakOpenPass();
 	}
 	if (pd.break_before)
+	{
 		CurrentRun().date_written = GSVector4i::zero();
+		CurrentRun().date_cover.clear();
+	}
 	CurrentRun().date_written = CurrentRun().date_written.rempty() ? sr : CurrentRun().date_written.runion(sr);
+	CurrentRun().date_cover.add(sr);
 	pd.date = date;
 	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
 	pd.afail_keep_alpha = afail_keep_alpha;
@@ -6963,6 +6989,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			// The DATE snapshot's written rect starts again at this draw, exactly as it does at the
 			// bind break below and at every other break in this function.
 			run.date_written = sr;
+			run.date_cover.clear();
+			run.date_cover.add(sr);
 			BreakOpenPass();
 		}
 		// ...and this draw is now in a pass -- its own, if the break above made one -- so what it
@@ -6999,6 +7027,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::TexBind);
 			m_frame.tex_bind_breaks++;
 			run.date_written = sr;
+			run.date_cover.clear();
+			run.date_cover.add(sr);
 			BreakOpenPass();
 		}
 		u32 slot = 0;
@@ -7334,6 +7364,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			// The rule-2 bind first: a slot number belongs to the pass, so the principal's is not
 			// this one's, and an empty table makes it slot zero.
 			p1_run.date_written = sr;
+			p1_run.date_cover.clear();
+			p1_run.date_cover.add(sr);
 			if (spd.tex_source != kGSTileNoSurface)
 			{
 				p1_run.tex_src[0] = spd.tex_source;

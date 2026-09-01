@@ -352,6 +352,74 @@ constexpr const char* gsTileGpuBreakCauseName(GSTileGpuBreakCause c)
 	}
 }
 
+/// The DATE snapshot's write history as a SET of rects rather than one union, for the counterfactual
+/// that sizes the finer staleness test. Taken by nothing; see ModelFrame::date_breaks_cover_would_skip.
+///
+/// A DATE draw on the snapshot road reads a copy of the target taken when the pass opened. If
+/// anything since has written pixels under the draw's rect, the copy is stale for them and the draw
+/// opens a pass of its own. What "under" means is decided by OpenRun::date_written, which is the
+/// bounding UNION of every rect written since -- so N scattered sprites make a rect covering all of
+/// them, and a DATE draw between two of them breaks a pass over pixels nobody wrote. The corpus's
+/// single largest pass-break cause is this test: Stuntman takes 1,340 of its 1,712 passes a frame
+/// here, and pays 1,340 snapshot copies with them.
+///
+/// Keeping a handful of rects instead answers the same question more precisely, and can only ever
+/// remove breaks: the set covers everything the union covered (the fallback coalesces rather than
+/// forgets), so a draw the set says is clear is a draw the union also had no written pixel under.
+/// Eight is a size, not a law -- it is what the counterfactual measures, and the number it reports
+/// is what would decide the real one.
+struct GSTileGpuDateCover
+{
+	static constexpr u32 kMaxRects = 8;
+	GSVector4i rects[kMaxRects];
+	u32 count = 0;
+
+	void clear() { count = 0; }
+	bool empty() const { return count == 0; }
+
+	/// Record a written rect. Full, it grows the entry it can grow LEAST -- coalescing rather than
+	/// dropping, so the set never covers less than the union it replaces.
+	void add(const GSVector4i& r)
+	{
+		if (r.rempty())
+			return;
+		for (u32 i = 0; i < count; i++)
+		{
+			if (rects[i].rcontains(r))
+				return;
+		}
+		if (count < kMaxRects)
+		{
+			rects[count++] = r;
+			return;
+		}
+		u32 best = 0;
+		s64 best_cost = -1;
+		for (u32 i = 0; i < kMaxRects; i++)
+		{
+			const GSVector4i u = rects[i].runion(r);
+			const s64 cost = static_cast<s64>(u.width()) * u.height() -
+							 static_cast<s64>(rects[i].width()) * rects[i].height();
+			if (best_cost < 0 || cost < best_cost)
+			{
+				best_cost = cost;
+				best = i;
+			}
+		}
+		rects[best] = rects[best].runion(r);
+	}
+
+	bool intersects(const GSVector4i& r) const
+	{
+		for (u32 i = 0; i < count; i++)
+		{
+			if (!rects[i].rintersect(r).rempty())
+				return true;
+		}
+		return false;
+	}
+};
+
 /// One boundary's causes into a present/sole pair of tallies, and the multi-cause count.
 ///
 /// `sole` is credited only where the mask holds exactly one bit, because a merge that removes a
@@ -3705,6 +3773,10 @@ private:
 		// a pass of its own. (These were m_run_surface / m_run_written.)
 		GSTileSurfaceId date_surface = kGSTileNoSurface;
 		GSVector4i date_written = GSVector4i::zero();
+
+		// ...and the same history as a small SET of rects instead of one union, taken by nothing and
+		// counted only. See GSTileGpuDateCover.
+		GSTileGpuDateCover date_cover;
 	};
 
 	// One per run, in open order, and `m_open_run` is the one the draw being accumulated joins.
@@ -3839,6 +3911,12 @@ private:
 		u32 merge_bound_epochs = 0;
 		u32 merge_bound_pages = 0;
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
+		// ...and how many of those a rect SET would not have opened. Counted, taken by nothing: the
+		// staleness test is a bounding union today, so a DATE draw between two scattered sprites breaks
+		// a pass over pixels nobody wrote. See GSTileGpuDateCover. `date_draws` is the denominator --
+		// the DATE draws on the snapshot road that were asked the question at all.
+		u32 date_draws = 0;
+		u32 date_breaks_cover_would_skip = 0;
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		// What those snapshots COST, in the 8 KB pages the byte road is counted in, and what the
 		// whole-target road would have cost on the same frame. Both filled on both arms, so the
