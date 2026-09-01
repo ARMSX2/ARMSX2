@@ -88,7 +88,7 @@ TEST(GSTileClutStreamDedupKey, TheSameStateIsTheSameKey)
 {
 	const KeyInputs in;
 	EXPECT_TRUE(in.Build() == in.Build());
-	EXPECT_EQ(Dedup::KeyHash{}(in.Build()), Dedup::KeyHash{}(in.Build()));
+	EXPECT_EQ(in.Build().Hash(), in.Build().Hash());
 }
 
 // Every input GSClut::Read32 reads. A field missing from the key is a stale palette served to a
@@ -177,18 +177,46 @@ TEST(GSTileClutStreamDedup, FindsWhatInsertPutAndMissesTheRest)
 {
 	const KeyInputs in;
 	Dedup d;
-	EXPECT_EQ(d.FindByRegisters(in.Build()), nullptr);
+	EXPECT_EQ(d.FindByRegisters(in.Build()), Dedup::kNone);
 
 	d.Insert(in.Build(), 0xABCDEF01ull, 512, 256);
-	const Dedup::Stream* s = d.FindByRegisters(in.Build());
-	ASSERT_NE(s, nullptr);
-	EXPECT_EQ(s->offset, 512u);
-	EXPECT_EQ(s->entries, 256u);
-	EXPECT_EQ(s->content_id, 0xABCDEF01ull);
+	const u32 i = d.FindByRegisters(in.Build());
+	ASSERT_NE(i, Dedup::kNone);
+	EXPECT_EQ(d.At(i).offset, 512u);
+	EXPECT_EQ(d.At(i).entries, 256u);
+	EXPECT_EQ(d.At(i).content_id, 0xABCDEF01ull);
 
 	KeyInputs other = in;
 	other.tex0.CSA = in.tex0.CSA + 1;
-	EXPECT_EQ(d.FindByRegisters(other.Build()), nullptr);
+	EXPECT_EQ(d.FindByRegisters(other.Build()), Dedup::kNone);
+}
+
+// Open addressing with a generation stamp: more entries than the table started with must grow it
+// and keep every entry findable, and a plan boundary must retire them all in one act.
+TEST(GSTileClutStreamDedup, SurvivesMoreEntriesThanItStartedWith)
+{
+	Dedup d;
+	std::vector<Dedup::Key> keys;
+	for (u32 n = 0; n < 4096; n++)
+	{
+		KeyInputs in;
+		in.gen = n;
+		in.tex0.CBP = n & 0x3FFFu;
+		keys.push_back(in.Build());
+		d.Insert(keys.back(), 0x1000ull + n, n * 16, 16);
+	}
+	EXPECT_EQ(d.Size(), 4096u);
+	for (u32 n = 0; n < 4096; n++)
+	{
+		const u32 i = d.FindByRegisters(keys[n]);
+		ASSERT_NE(i, Dedup::kNone) << "entry " << n;
+		EXPECT_EQ(d.At(i).offset, n * 16);
+		EXPECT_EQ(d.At(i).content_id, 0x1000ull + n);
+	}
+	d.Clear();
+	EXPECT_EQ(d.Size(), 0u);
+	for (u32 n = 0; n < 4096; n++)
+		EXPECT_EQ(d.FindByRegisters(keys[n]), Dedup::kNone) << "entry " << n;
 }
 
 // The generation bump is the register key's entire invalidation mechanism: the registers are
@@ -198,10 +226,10 @@ TEST(GSTileClutStreamDedup, ACLUTRamChangeInvalidatesTheRegisterKey)
 	KeyInputs in;
 	Dedup d;
 	d.Insert(in.Build(), 1, 0, 256);
-	ASSERT_NE(d.FindByRegisters(in.Build()), nullptr);
+	ASSERT_NE(d.FindByRegisters(in.Build()), Dedup::kNone);
 
 	in.gen++;
-	EXPECT_EQ(d.FindByRegisters(in.Build()), nullptr);
+	EXPECT_EQ(d.FindByRegisters(in.Build()), Dedup::kNone);
 }
 
 TEST(GSTileClutStreamDedup, ClearEmptiesBothKeys)
@@ -211,14 +239,13 @@ TEST(GSTileClutStreamDedup, ClearEmptiesBothKeys)
 	std::array<u32, 256> words{};
 	words.fill(0x11223344u);
 	d.Insert(in.Build(), 99, 0, 256);
-	EXPECT_EQ(d.RegisterEntries(), 1u);
-	EXPECT_EQ(d.ContentEntries(), 1u);
+	EXPECT_EQ(d.Size(), 1u);
+	ASSERT_NE(d.FindByContent(99, words.data(), words.data(), 256), Dedup::kNone);
 
 	d.Clear();
-	EXPECT_EQ(d.RegisterEntries(), 0u);
-	EXPECT_EQ(d.ContentEntries(), 0u);
-	EXPECT_EQ(d.FindByRegisters(in.Build()), nullptr);
-	EXPECT_EQ(d.FindByContent(99, words.data(), words.data(), 256), nullptr);
+	EXPECT_EQ(d.Size(), 0u);
+	EXPECT_EQ(d.FindByRegisters(in.Build()), Dedup::kNone);
+	EXPECT_EQ(d.FindByContent(99, words.data(), words.data(), 256), Dedup::kNone);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -240,10 +267,10 @@ TEST(GSTileClutStreamDedup, AContentHitIsDecidedByTheWordsAndNotTheHash)
 	Dedup d;
 	d.Insert(KeyInputs{}.Build(), id, 0, 256);
 
-	ASSERT_NE(d.FindByContent(id, stream.data(), same.data(), 256), nullptr);
+	ASSERT_NE(d.FindByContent(id, stream.data(), same.data(), 256), Dedup::kNone);
 	// The same id offered for different words is what a 64-bit hash collision looks like from
 	// here. It must cost a compare and an append, never a wrong palette.
-	EXPECT_EQ(d.FindByContent(id, stream.data(), different.data(), 256), nullptr);
+	EXPECT_EQ(d.FindByContent(id, stream.data(), different.data(), 256), Dedup::kNone);
 }
 
 TEST(GSTileClutStreamDedup, AContentHitRefusesADifferentEntryCount)
@@ -252,7 +279,7 @@ TEST(GSTileClutStreamDedup, AContentHitRefusesADifferentEntryCount)
 	const u64 id = GSTilePaletteCache::ContentId(stream.data(), 256);
 	Dedup d;
 	d.Insert(KeyInputs{}.Build(), id, 0, 256);
-	EXPECT_EQ(d.FindByContent(id, stream.data(), stream.data(), 16), nullptr);
+	EXPECT_EQ(d.FindByContent(id, stream.data(), stream.data(), 16), Dedup::kNone);
 }
 
 // The alias the second level installs: words already in the stream get the new register key
@@ -275,15 +302,15 @@ TEST(GSTileClutStreamDedup, InsertRegistersAliasesAnExistingStreamEntry)
 
 	KeyInputs reloaded = first;
 	reloaded.gen++; // the same bytes, loaded again
-	ASSERT_EQ(d.FindByRegisters(reloaded.Build()), nullptr);
-	const Dedup::Stream* by_content = d.FindByContent(id, stream.data(), words.data(), 256);
-	ASSERT_NE(by_content, nullptr);
-	d.InsertRegisters(reloaded.Build(), *by_content);
+	ASSERT_EQ(d.FindByRegisters(reloaded.Build()), Dedup::kNone);
+	const u32 by_content = d.FindByContent(id, stream.data(), words.data(), 256);
+	ASSERT_NE(by_content, Dedup::kNone);
+	d.AliasRegisters(reloaded.Build(), by_content);
 
-	const Dedup::Stream* s = d.FindByRegisters(reloaded.Build());
-	ASSERT_NE(s, nullptr);
-	EXPECT_EQ(s->offset, kAt);
-	EXPECT_EQ(d.ContentEntries(), 1u) << "aliasing must not add a second copy of the palette";
+	const u32 i = d.FindByRegisters(reloaded.Build());
+	ASSERT_NE(i, Dedup::kNone);
+	EXPECT_EQ(d.At(i).offset, kAt);
+	EXPECT_EQ(d.Size(), 1u) << "aliasing must not add a second copy of the palette";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,8 +452,8 @@ TEST_F(ClutDedupTest, AReloadOfIdenticalBytesMovesTheRegisterKeyButNotTheContent
 	// ...and the dedup therefore serves the second draw out of the first's stream words.
 	Dedup d;
 	d.Insert(first.key, first.content_id, 0, 256);
-	EXPECT_EQ(d.FindByRegisters(second.key), nullptr);
-	EXPECT_NE(d.FindByContent(second.content_id, first.words.data(), second.words.data(), 256), nullptr);
+	EXPECT_EQ(d.FindByRegisters(second.key), Dedup::kNone);
+	EXPECT_NE(d.FindByContent(second.content_id, first.words.data(), second.words.data(), 256), Dedup::kNone);
 }
 
 // A palette written back from the device dirties the read side with no load at all. The write

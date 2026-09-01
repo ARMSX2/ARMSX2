@@ -6544,12 +6544,14 @@ void GSRendererTileGpu::AccumulateDraw()
 					u64 pal_content;
 					bool pal_appended;
 					bool pal_hashed = true;
-					if (const GSTileClutStreamDedup::Stream* held = m_plan_palette_dedup.FindByRegisters(pal_key))
+					const u32 by_regs = m_plan_palette_dedup.FindByRegisters(pal_key);
+					if (by_regs != GSTileClutStreamDedup::kNone)
 					{
 						// Level 1. Same CLUT RAM, same registers selecting out of it: the words are
 						// the ones already in the stream, and no hash was needed to know it.
-						pd.pal_offset = held->offset;
-						pal_content = held->content_id;
+						const GSTileClutStreamDedup::Stream& held = m_plan_palette_dedup.At(by_regs);
+						pd.pal_offset = held.offset;
+						pal_content = held.content_id;
 						pal_appended = false;
 						pal_hashed = false;
 					}
@@ -6560,12 +6562,13 @@ void GSRendererTileGpu::AccumulateDraw()
 						// hash the road paid anyway -- the source road's second hash of the same
 						// words is what went away with pd.pal_content_id.
 						pal_content = GSTilePaletteCache::ContentId(clut, pal_entries);
-						if (const GSTileClutStreamDedup::Stream* same = m_plan_palette_dedup.FindByContent(
-								pal_content, m_plan_palettes.data(), clut, pal_entries))
+						const u32 by_content = m_plan_palette_dedup.FindByContent(
+							pal_content, m_plan_palettes.data(), clut, pal_entries);
+						if (by_content != GSTileClutStreamDedup::kNone)
 						{
-							pd.pal_offset = same->offset;
+							pd.pal_offset = m_plan_palette_dedup.At(by_content).offset;
 							pal_appended = false;
-							m_plan_palette_dedup.InsertRegisters(pal_key, *same);
+							m_plan_palette_dedup.AliasRegisters(pal_key, by_content);
 						}
 						else
 						{
