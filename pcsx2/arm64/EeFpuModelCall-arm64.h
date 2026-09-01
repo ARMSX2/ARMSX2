@@ -29,9 +29,10 @@ namespace a64 = vixl::aarch64;
 
 	The vector half is per target. kVec* is one past the last q register the
 	target's closure reaches, so a stub carries only what its own callee can
-	dirty; the GPR half is not worth splitting, since 17 of the 18 targets
-	reach x8. Nothing on the callee's side holds it to the declaration, so
-	model_call_contract_tests walks each shipped closure and fails on a q
+	dirty, and iFPUd-arm64.cpp's islands read the same extents for a spill they
+	emit at the site. The GPR half is not worth splitting, since 17 of the 18
+	targets reach x8. Nothing on the callee's side holds it to the declaration,
+	so model_call_contract_tests walks each shipped closure and fails on a q
 	register at or above the extent it was generated with.
 
 	The GPRs are stored below the vectors so that both halves stay inside their
@@ -54,8 +55,8 @@ namespace EeFpuModelFrame
 	// throughout. The square roots take a host sqrt in q0. The nine EFU
 	// polynomials evaluate in q0-q4.
 	constexpr int kVecNone = 0;
-	constexpr int kVecSqrt = 2;
-	constexpr int kVecPoly = 6;
+	constexpr int kVecSqrt = 1;
+	constexpr int kVecPoly = 5;
 
 	// The pair after the last saved GPR is x30, which has no run to sit in.
 	__fi static a64::XRegister Gpr(int i) { return a64::XRegister(i <= kGprEnd ? i : 30); }
@@ -71,11 +72,12 @@ struct EeFpuModelCallee
 __fi static const u8* armDynGenEeFpuModelStub(EeFpuModelCallee callee)
 {
 	using namespace EeFpuModelFrame;
-	// Without the attribute the convention is plain AAPCS and every
-	// caller-saved vector has to go, whatever this target reaches.
-	const int neonEnd = EEFPU_MODEL_CALL_SPARES_MOST ? callee.vecEnd : 32;
+	pxAssert(callee.vecEnd >= 0 && callee.vecEnd <= 8);
+	// Rounded up to a pair, the frame being written with Stp. Without the
+	// attribute the convention is plain AAPCS and every caller-saved vector has
+	// to go, whatever this target reaches.
+	const int neonEnd = EEFPU_MODEL_CALL_SPARES_MOST ? ((callee.vecEnd + 1) & ~1) : 32;
 	const int frame = kGprBytes + neonEnd * 16;
-	pxAssert(neonEnd >= 0 && neonEnd % 2 == 0);
 
 	const u8* start = armGetCurrentCodePointer();
 

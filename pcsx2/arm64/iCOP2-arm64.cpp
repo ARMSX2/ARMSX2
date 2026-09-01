@@ -768,7 +768,7 @@ static EeFpuModelCallee cop2ModelCallee(int kind)
 		default: break;
 	}
 	pxFail("unknown model stub");
-	return {nullptr, 32};
+	return {nullptr, 8};
 }
 
 void cop2DynGenModelStubs()

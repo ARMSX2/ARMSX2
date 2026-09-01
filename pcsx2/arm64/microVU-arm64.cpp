@@ -1072,7 +1072,7 @@ EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex)
 		default: break;
 	}
 	pxFail("unknown model stub");
-	return {nullptr, 32};
+	return {nullptr, 8};
 }
 
 void mVUGenerateModelStubs(mV)

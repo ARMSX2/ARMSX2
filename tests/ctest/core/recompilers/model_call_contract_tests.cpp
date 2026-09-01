@@ -4,11 +4,11 @@
 // The model seam's private call contract.
 //
 // EeFpuModelCall-arm64.h narrows the vector half of the EE FPU / EFU model
-// stubs per target: each stub protects q0 up to the declared kVec* extent and
+// calls per target: each site protects q0 up to the declared kVec* extent and
 // nothing above it. EEFPU_MODEL_CALL already binds the callee for q8-q31, but
 // nothing binds it below q8 -- that half is caller-saved and the extent is a
 // claim about what the compiler happened to allocate. A register allocator
-// that reaches one q higher on some future build turns a stub into silent
+// that reaches one q higher on some future build turns a call into silent
 // state corruption in whichever VF or Q/P slot the JIT had parked there, on a
 // path that only runs at eeClampMode/vuClampMode 4.
 //
@@ -31,8 +31,8 @@
 #include <string>
 #include <vector>
 
-// iCOP2-arm64.cpp / microVU-arm64.cpp (PCSX2_RECOMPILER_TESTS builds only).
-// Global scope -- defined outside namespaces in the arm64 sources.
+// iCOP2-arm64.cpp / microVU-arm64.cpp / iFPUd-arm64.cpp (PCSX2_RECOMPILER_TESTS
+// builds only). Global scope -- defined outside namespaces in the arm64 sources.
 int cop2TestGetModelStubCount();
 const u8* cop2TestGetModelStub(int kind);
 const void* cop2TestGetModelStubTarget(int kind);
@@ -41,6 +41,9 @@ int mVUTestProbe_ModelStubCount();
 const u8* mVUTestProbe_ModelStub(int index, int stub);
 const void* mVUTestProbe_ModelStubTarget(int index, int stub);
 int mVUTestProbe_ModelStubVecEnd(int index, int stub);
+int fpuTestGetIslandCalleeCount();
+const void* fpuTestGetIslandCallee(int kind);
+int fpuTestGetIslandCalleeVecEnd(int kind);
 
 namespace recompiler_tests {
 namespace {
@@ -154,7 +157,7 @@ void CheckTarget(const char* who, const void* fn, int vecEnd)
 		<< ", so what it touches cannot be read off the code";
 	EXPECT_GT(c.instructions, 0) << who;
 	EXPECT_LT(c.highestLowVec, vecEnd)
-		<< who << ": closure reaches q" << c.highestLowVec << " but the stub is generated to save "
+		<< who << ": closure reaches q" << c.highestLowVec << " but the caller is generated to save "
 		<< (vecEnd > 0 ? "q0-q" + std::to_string(vecEnd - 1) : std::string("no vector register"));
 }
 
@@ -184,7 +187,7 @@ void CheckStub(const char* who, const u8* stub, int vecEnd)
 			break;
 	}
 	ASSERT_LT(i, 128) << who << ": no Ret in the scan window";
-	EXPECT_EQ(qStores, vecEnd / 2) << who << ": vector half does not match the declaration";
+	EXPECT_EQ(qStores, ((vecEnd + 1) & ~1) / 2) << who << ": vector half does not match the declaration";
 	EXPECT_EQ(qLoads, qStores) << who << ": vector half is not restored";
 	EXPECT_EQ(xStores, 4) << who << ": x2-x8 plus x30 is four pairs";
 	EXPECT_EQ(xLoads, xStores) << who << ": gpr half is not restored";
@@ -197,6 +200,10 @@ std::string Cop2Name(int kind)
 std::string MvuName(int index, int stub)
 {
 	return "VU" + std::to_string(index) + " model stub " + std::to_string(stub);
+}
+std::string IslandName(int kind)
+{
+	return "iFPUd island callee " + std::to_string(kind);
 }
 
 } // namespace
@@ -224,6 +231,15 @@ TEST(ModelCallContract, TargetsStayInsideTheirDeclaredVectorHalf)
 			CheckTarget(MvuName(index, stub).c_str(), mVUTestProbe_ModelStubTarget(index, stub),
 				mVUTestProbe_ModelStubVecEnd(index, stub));
 		}
+	}
+
+	// The iFPUd islands spill at the site rather than through a stub, but the
+	// extent they read is the same declaration and needs the same walk.
+	ASSERT_GT(fpuTestGetIslandCalleeCount(), 0);
+	for (int kind = 0; kind < fpuTestGetIslandCalleeCount(); kind++)
+	{
+		CheckTarget(IslandName(kind).c_str(), fpuTestGetIslandCallee(kind),
+			fpuTestGetIslandCalleeVecEnd(kind));
 	}
 }
 
