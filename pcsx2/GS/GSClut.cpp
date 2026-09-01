@@ -100,6 +100,11 @@ u32 GSClut::GetCLUTCPSM()
 	return m_write.TEX0.CPSM;
 }
 
+u32 GSClut::GetCLUTCSM()
+{
+	return m_write.TEX0.CSM;
+}
+
 void GSClut::SetNextCLUTTEX0(u64 TEX0)
 {
 	m_write.next_tex0 = TEX0;

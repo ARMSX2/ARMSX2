@@ -116,6 +116,10 @@ public:
 	void ClearDrawInvalidity();
 	u32 GetCLUTCBP();
 	u32 GetCLUTCPSM();
+	/// The CSM of the LOAD that filled the CLUT RAM, which is not always the CSM the draw reading
+	/// it names: Read32's four-bit 32-bit path un-swizzles exactly when a CSM1 read follows a CSM0
+	/// load. A consumer keying on the expanded content needs it for that reason alone.
+	u32 GetCLUTCSM();
 	void SetNextCLUTTEX0(u64 CBP);
 	bool CanLoadCLUT(const GIFRegTEX0& TEX0, const bool update_CBP = false);
 	bool WriteTest(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);

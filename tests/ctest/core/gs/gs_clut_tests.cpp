@@ -299,3 +299,17 @@ TEST_F(GSClutTest, CSM2With16BitPaletteStartsAtTheOriginAndDoesNotRepeat)
 	ASSERT_EQ(repeats, 0);
 }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// The load's addressing mode, as an input to the expanded palette.
+// ---------------------------------------------------------------------------
+
+// The load's CSM, which Read32's four-bit 32-bit path consults (a CSM1 read after a CSM0 load
+// un-swizzles) and no read-side register carries.
+TEST_F(GSClutTest, GetCLUTCSMReportsTheLoadsAddressingMode)
+{
+	SeedPalette(PSMCT32, 0);
+	GIFRegTEX0 t = ClutTEX0(0, PSMCT32, 0, 1, PSMT8);
+	Load(t);
+	EXPECT_EQ(m_clut->GetCLUTCSM(), 0u);
+}
