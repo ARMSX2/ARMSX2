@@ -868,7 +868,6 @@ void ARMSX2SetIOSOsdFlags(bool show_fps, bool show_vps, bool show_speed, bool sh
     EmuConfig.GS.OsdShowFrameTimes = show_frame_times;
     EmuConfig.GS.OsdShowVersion = show_version;
     EmuConfig.GS.OsdShowHardwareInfo = show_hardware_info;
-    EmuConfig.GS.OsdShowVideoCapture = false;
     EmuConfig.GS.OsdShowInputRec = false;
 }
 
@@ -890,7 +889,6 @@ void ARMSX2WriteIOSOsdFlagsToSettings()
     s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowFrameTimes", EmuConfig.GS.OsdShowFrameTimes);
     s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowVersion", EmuConfig.GS.OsdShowVersion);
     s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowHardwareInfo", EmuConfig.GS.OsdShowHardwareInfo);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowVideoCapture", false);
     s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowInputRec", false);
 }
 
