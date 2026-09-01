@@ -453,12 +453,15 @@ GSRendererTileGpu::GSRendererTileGpu()
 		(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPassBreaks) != 0;
 	m_census_date_cover = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusDateCover) != 0;
 	m_census_palette = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPalette) != 0;
+	m_census_writeback = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusWriteback) != 0;
 	if (GSConfig.TileGpuCensus != 0)
 	{
 		Console.WriteLn("TileGpu: censuses ARMED (TileGpuCensus = %d): pass breaks %s, DATE cover %s, "
-						"variant fields %s. Instrumentation only -- nothing here decides a pixel or a pass.",
+						"variant fields %s, palette %s, writeback breaks %s. Instrumentation only -- nothing here "
+						"decides a pixel or a pass.",
 			GSConfig.TileGpuCensus, m_census_pass_breaks ? "on" : "off", m_census_date_cover ? "on" : "off",
-			(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0 ? "on" : "off");
+			(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0 ? "on" : "off",
+			m_census_palette ? "on" : "off", m_census_writeback ? "on" : "off");
 	}
 
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
@@ -3206,6 +3209,47 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("    writeback dispatches %6.2f / %-4u (from %.2f ops), barrier runs %6.2f / %-4u "
 					"(of which %.2f / %u forced by a page collision)",
 		wbd.mean, wbd.p50, wbo.mean, wbr.mean, wbr.p50, wbh.mean, wbh.p50);
+	// WHY those writeback breaks happened, and what a batched writeback could have collected
+	// (TileGpuCensusWriteback). Printed only when the arm ran, because every column here is zero
+	// otherwise and a reader would take the zeros for a finding.
+	if (m_census_writeback)
+	{
+		const auto wa = stat([](const MF& f) { return f.wbb_asks; });
+		const auto wat = stat([](const MF& f) { return f.wbb_asks_tex; });
+		const auto wc = stat([](const MF& f) { return f.wbb_composes; });
+		const auto wbt = stat([](const MF& f) { return f.wbb_breaks_tex; });
+		const auto wops = stat([](const MF& f) { return f.wbb_ops; });
+		const auto wpg = stat([](const MF& f) { return f.wbb_pages; });
+		const auto wpgi = stat([](const MF& f) { return f.wbb_pages_inpass; });
+		const auto wraw = stat([](const MF& f) { return f.wbb_inpass_raw; });
+		const auto wcf = stat([](const MF& f) { return f.wbb_cf_batch; });
+		const auto wset = [&stat](u32 m) { return stat([m](const MF& f) { return f.wbb_set[m]; }); };
+		Console.WriteLn("TileGpu writeback pass breaks -- why (all three hoist clauses asked of every op, so a "
+						"break two clauses held together is counted once under BOTH):");
+		Console.WriteLn("  composes asked %.2f / %-5u (texture read %.2f / %-5u, depth claim %.2f / %-5u)  "
+						"emitted a writeback %.2f / %-5u  broke the pass %.2f / %-5u (texture read %.2f / %u)",
+			wa.mean, wa.p50, wat.mean, wat.p50, wa.mean - wat.mean, wa.p50 - wat.p50, wc.mean, wc.p50,
+			wbrk.mean, wbrk.p50, wbt.mean, wbt.p50);
+		Console.WriteLn("  the breaking composes carry %.2f / %-5u ops and %.2f / %-5u pages, of which %.2f / %u "
+						"pages this pass itself wrote",
+			wops.mean, wops.p50, wpg.mean, wpg.p50, wpgi.mean, wpgi.p50);
+		// The cause sets, in the order a merge would have to collect them: a set is collected only
+		// whole, so the histogram and not the per-clause total is what prices one.
+		static constexpr const char* kSetNames[8] = {"(none)", "slot", "colour", "slot+colour", "depth",
+			"slot+depth", "colour+depth", "slot+colour+depth"};
+		for (u32 m = 1; m < 8; m++)
+		{
+			const auto r = wset(m);
+			if (r.mean > 0.0)
+				Console.WriteLn("    %-20s %8.2f / %-5u (%.1f%%)", kSetNames[m], r.mean, r.p50,
+					wbrk.mean > 0.0 ? 100.0 * r.mean / wbrk.mean : 0.0);
+		}
+		// ...and the counterfactual, which is the lever's whole size. A break whose pages the open
+		// pass wrote is a read-after-write no batch reaches; the rest a pass-head batch collects.
+		Console.WriteLn("  a pass-head BATCH would eliminate %.2f / %-5u of them (%.1f%%); the other %.2f / %-5u "
+						"read pages a draw of the same pass wrote -- real read-after-write, batched or not",
+			wcf.mean, wcf.p50, wbrk.mean > 0.0 ? 100.0 * wcf.mean / wbrk.mean : 0.0, wraw.mean, wraw.p50);
+	}
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
 		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
@@ -5642,17 +5686,89 @@ void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages, GSTileSurfaceKind 
 // backwards, and the draw opens its own pass instead, exactly as a seed does. Where it collides with
 // none of them the hoist is provably invisible and the pass stays whole: pass count is the currency
 // of this design.
-void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd)
+void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd, WritebackAsk ask)
 {
+	if (m_census_writeback)
+	{
+		m_frame.wbb_asks++;
+		m_frame.wbb_asks_tex += (ask == WritebackAsk::TextureRead) ? 1u : 0u;
+	}
 	const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
 	ComposeRingPages(pages);
-	if (m_plan_prep_ops.size() != ops_before && WritebackHoistCollides(ops_before))
+	const bool emitted = m_plan_prep_ops.size() != ops_before;
+	const bool collides = emitted && WritebackHoistCollides(ops_before);
+	// Attributed here rather than off the finished plan, and BEFORE the break is taken: the census
+	// reads the same open run the verdict was decided against, so the two cannot come to disagree
+	// about which pass the writebacks would have been hoisted into.
+	if (m_census_writeback && emitted)
+		CensusWritebackCompose(ops_before, collides, ask);
+	if (collides)
 	{
 		pd.break_before = true;
 		pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Writeback);
 		m_frame.writeback_breaks++;
 		BreakOpenPass();
 	}
+}
+
+// See the declaration. All three clauses are asked of every op, not just the one the hoist test
+// stopped on -- and then the counterfactual, which is a different question from all three: not
+// "may this writeback be hoisted" but "could a batch have composed these bytes before the pass
+// opened, so that this draw had nothing to compose at all".
+void GSRendererTileGpu::CensusWritebackCompose(u32 first_op, bool collided, WritebackAsk ask)
+{
+	const OpenRun& run = CurrentRun();
+	m_frame.wbb_composes++;
+
+	u32 mask = 0;
+	u32 ops = 0;
+	GSPageBitmap taken; // every page the compose's writebacks read
+	for (u32 k = first_op; k < m_plan_prep_ops.size(); k++)
+	{
+		const GSDevice::GSTileGpuPrepOp& op = m_plan_prep_ops[k];
+		if (op.kind != GSDevice::GSTileGpuPrepKind::Writeback)
+			continue;
+		ops++;
+		GSPageBitmap p;
+		for (u32 e = op.first_page_entry; e < op.first_page_entry + op.page_entry_count; e++)
+			p.set(m_plan_page_entries[e].page);
+		taken |= p;
+
+		bool slot = false;
+		(p & run.read).forEachSetPage([&](u32 page) { slot |= (run.read_slot[page] == m_ring_live[page]); });
+		mask |= slot ? 1u : 0u;
+		const GSTileSurfaceId src = m_plan_target_surfaces[op.target];
+		if (src == run.pass.color && p.intersects(run.color_written))
+			mask |= 2u;
+		if (run.pass.depth_used && src == run.pass.depth && p.intersects(run.z_written))
+			mask |= 4u;
+	}
+
+	// The identity that makes this a census of the renderer rather than of a model of it: the three
+	// clauses asked here are the three the hoist test asks, so their OR is its verdict. Asserted
+	// rather than checked by eye, exactly as the pass-break census asserts its own.
+	pxAssert((mask != 0) == collided);
+	if (!collided)
+		return;
+
+	m_frame.wbb_set[mask]++;
+	m_frame.wbb_breaks_tex += (ask == WritebackAsk::TextureRead) ? 1u : 0u;
+	m_frame.wbb_ops += ops;
+	m_frame.wbb_pages += taken.count();
+
+	// THE COUNTERFACTUAL. A batching policy's earliest opportunity is the head of the open pass:
+	// prep ops run there, ahead of every draw the pass holds, which is the whole reason a hoist is
+	// worth testing for. So a page a draw of THIS pass wrote is one whose bytes did not exist at
+	// that opportunity, and no batch can serve a read of it -- the break is a real read-after-write
+	// and survives any amount of batching. Everything else the pass never wrote, so its truth
+	// predates the pass and a pass-head batch would have composed it; this compose would then have
+	// found nothing to do, emitted no op, and left the pass whole.
+	const u32 inpass = (taken & (run.color_written | run.z_written)).count();
+	m_frame.wbb_pages_inpass += inpass;
+	if (inpass != 0)
+		m_frame.wbb_inpass_raw++;
+	else
+		m_frame.wbb_cf_batch++;
 }
 
 // One draw's colour and depth surfaces claim the same pages, so only one of them can be the
@@ -6765,7 +6881,7 @@ void GSRendererTileGpu::AccumulateDraw()
 					// order, and the compose below emits its writebacks before the build. A donor that
 					// was offered and then refused downstream lands here too, which is why the compose
 					// is on this side of the branch and not above it.
-					ComposeForPendingDraw(tex_pages, pd);
+					ComposeForPendingDraw(tex_pages, pd, WritebackAsk::TextureRead);
 					composed_tex = true;
 					pd.epoch = m_epoch;
 					// A paletted window goes the same way in two stages -- index image, then the
@@ -6989,7 +7105,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// or serves only through a foreign view of the same memory. They keep whatever the depth image
 		// holds -- exactly as every depth page did before this road existed.
 		NoteLossyPages(z_seed.andnot(z_fill), GSTileSurfaceKind::Depth);
-		ComposeForPendingDraw(z_seed, pd);
+		ComposeForPendingDraw(z_seed, pd, WritebackAsk::DepthSeed);
 		if (!z_fill.empty())
 		{
 			EmitPrepOp(GSDevice::GSTileGpuPrepKind::SeedDepth, z_id, z_fill);

@@ -2745,6 +2745,12 @@ struct Pcsx2Config
 		//         generation had moved since the previous such draw -- i.e. whether the words just
 		//         appended and the content id just hashed were provably the previous draw's. One
 		//         comparison and one set insert per CPU-road paletted draw.
+		//  16  -- TileGpuCensusWriteback: WHY each writeback pass break happened, and whether a
+		//         batched writeback could have avoided it. ComposeForPendingDraw asks
+		//         WritebackHoistCollides for one verdict and the walk stops at the first of its
+		//         three clauses that fires; this asks all three of every op, so a break two clauses
+		//         held together is not credited to whichever came first. Per compose that emits a
+		//         writeback op -- one extra page-bitmap walk of the ops just emitted.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//
@@ -2764,6 +2770,7 @@ struct Pcsx2Config
 		static constexpr int TileGpuCensusDateCover = 2;
 		static constexpr int TileGpuCensusVariantFields = 4;
 		static constexpr int TileGpuCensusPalette = 8;
+		static constexpr int TileGpuCensusWriteback = 16;
 		int TileGpuCensus = 0;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload

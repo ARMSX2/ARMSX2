@@ -2788,6 +2788,11 @@ private:
 	/// the counters below are differences against the PREVIOUS CPU-road draw, so an arm that moved
 	/// mid-frame would compare a counted draw against an uncounted one.
 	bool m_census_palette = false;
+	/// ...and the writeback-break arm (TileGpuCensusWriteback). Read once at construction for the
+	/// pass-break census's reason: it asserts that the three clauses it evaluates agree with the
+	/// verdict ComposeForPendingDraw acted on, and an arm that moved between the two would fail a
+	/// run that is perfectly correct.
+	bool m_census_writeback = false;
 	/// The palette census's latch: the CLUT read generation and entry count the previous CPU-road
 	/// draw of THIS frame expanded under, and the distinct content ids the frame has produced. Per
 	/// frame, because the question is what one frame's plan re-copies; a latch carried across the
@@ -3580,10 +3585,24 @@ private:
 	// bytes, and count it lossy.
 	void LossySteal(const GSPageBitmap& pages, GSTileSurfaceKind kind);
 
+	// Which of the two roads asked for a compose. Carried for the census alone -- both roads take
+	// the identical compose and the identical hoist test -- because "what needed those bytes" is
+	// the first thing a reader of the break census asks and the op list cannot answer it.
+	enum class WritebackAsk : u32
+	{
+		TextureRead, ///< the draw samples guest bytes: its read window is composed into the ring
+		DepthSeed,   ///< the draw's depth claim spills whatever else holds its Z pages
+	};
+
 	// Compose `pages` into the ring for the draw being accumulated, breaking the open pass if the
 	// writebacks it emitted cannot be hoisted to that pass's head. The idiom a texture read has
 	// always used, shared with the depth claim's spill.
-	void ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd);
+	void ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd, WritebackAsk ask);
+
+	// TileGpuCensusWriteback: attribute one compose that emitted writeback ops, at the site whose
+	// verdict the renderer acted on, so census and behaviour cannot disagree about what broke.
+	// `first_op` is the compose's first prep op and `collided` the verdict already taken.
+	void CensusWritebackCompose(u32 first_op, bool collided, WritebackAsk ask);
 
 	// One draw's colour and depth surfaces claim the same pages -- the game packed FRAME and ZBUF
 	// close enough that a single draw's two footprints share them. Only one surface can be the
@@ -3926,6 +3945,38 @@ private:
 		// collision through the epoch page table would buy anything.
 		u32 writeback_run_hazards = 0;
 		u32 writeback_breaks = 0; // draws that opened a pass because their read needed a writeback
+		// The writeback break's CAUSE census (TileGpuCensusWriteback). WritebackHoistCollides
+		// returns one bool and stops at the first of its three clauses that fires; these ask all
+		// three of every op the compose emitted, so a break two clauses held together is not
+		// credited to whichever the walk reached first -- the sole/present distinction that decides
+		// whether a merge collects a boundary or leaves it open.
+		u32 wbb_asks = 0;      ///< composes asked for by a draw (ComposeForPendingDraw calls)
+		u32 wbb_composes = 0;  ///< ...of which emitted at least one writeback op
+		u32 wbb_asks_tex = 0;  ///< asks from the texture read window (the rest are depth claims)
+		u32 wbb_breaks_tex = 0; ///< ...and the breaks that road took
+		/// Breaks by CAUSE SET, indexed by the three clauses of WritebackHoistCollides:
+		/// bit 0 slot (a draw of the open pass sampled the page through the live ring slot this
+		/// writeback rewrites), bit 1 colour (the writeback reads the pass's colour target on pages
+		/// that pass has rendered into), bit 2 depth (the same for its depth target). Index 0 is
+		/// never incremented -- a break with no clause would be a census that disagrees with the
+		/// renderer, and it is asserted rather than counted.
+		u32 wbb_set[8] = {};
+		u32 wbb_ops = 0;    ///< writeback ops the BREAKING composes emitted
+		u32 wbb_pages = 0;  ///< ...and the pages those ops take
+		/// THE COUNTERFACTUAL. Of the breaks, the ones where a draw ALREADY IN THE OPEN PASS wrote
+		/// one of the pages the compose takes. The earliest point any batching policy could put the
+		/// writeback is the pass head, which is before that draw ran, so the bytes a batch would
+		/// have composed are not the bytes this reader asked for: the break is a genuine
+		/// read-after-write and no batching removes it. Asked surface-blind -- against every page
+		/// the pass wrote rather than only the clause's own surface -- so it errs towards calling a
+		/// break genuine, which is the direction that cannot oversell the lever.
+		u32 wbb_inpass_raw = 0;
+		/// ...and the complement: breaks whose composed pages the open pass never wrote, so their
+		/// truth predates the pass and a batch at the pass head would have composed it. This draw
+		/// would then have found nothing to do and the pass would have stayed whole. The population
+		/// a writeback-batching lever can collect, measured rather than assumed.
+		u32 wbb_cf_batch = 0;
+		u32 wbb_pages_inpass = 0; ///< pages of the breaking composes the open pass itself wrote
 		u32 seed_ops = 0;
 		u32 seed_pages = 0;
 		// ...of which the DEPTH seeds', counted apart because their population is a different
