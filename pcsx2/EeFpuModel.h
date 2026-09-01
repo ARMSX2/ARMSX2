@@ -48,8 +48,8 @@ namespace EeFpuModel
 		bool underflow; // nonzero below 2^-126, so flushed to a signed zero
 	};
 
-	Result AddSub(u32 a, u32 b, bool issub);
-	Result Mul(u32 fs, u32 ft);
+	EEFPU_MODEL_CALL Result AddSub(u32 a, u32 b, bool issub);
+	EEFPU_MODEL_CALL Result Mul(u32 fs, u32 ft);
 
 	struct Accumulate
 	{

@@ -20,7 +20,7 @@ VuMulBandSlot g_vuMulBand[2];
 // 48-bit mantissa product has no bits below the result's last bit, because the
 // predicate over ft's mantissa agrees with the array exactly there. Every other
 // lane is one of the two cases VuMulBand.h describes.
-void vuMulShortTailBandLanes(const u32* fs, const u32* ft, u32* product)
+EEFPU_MODEL_CALL void vuMulShortTailBandLanes(const u32* fs, const u32* ft, u32* product)
 {
 	for (int lane = 0; lane < 4; lane++)
 	{
@@ -1769,7 +1769,7 @@ static constexpr u32 kEexpC[6] = {
 	0x3E7FFFA8, 0x3D0007F4, 0x3B29D3FF, 0x3933E553, 0x36B63510, 0x353961AC};
 static constexpr u32 kEfuOne = 0x3F800000;
 
-static __ri u32 _vuCalculateEATAN(u32 x)
+static EEFPU_MODEL_CALL __ri u32 _vuCalculateEATAN(u32 x)
 {
 	const u32 xx = _vuEfuMul(x, x);
 

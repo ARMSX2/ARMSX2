@@ -1014,7 +1014,7 @@ static u64 eeMulArray(u32 a, u32 b)
 	return full - (((lo + hi) ^ full) & 0x8000);
 }
 
-bool eeMulOneUlpLow(u32 fs, u32 ft)
+EEFPU_MODEL_CALL bool eeMulOneUlpLow(u32 fs, u32 ft)
 {
 	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
 		return false; // a zero operand (denormals are zero): the product is zero
@@ -1277,13 +1277,13 @@ static Result MakeResult(double exact, u32 bits)
 	return s;
 }
 
-Result AddSub(u32 a, u32 b, bool issub)
+EEFPU_MODEL_CALL Result AddSub(u32 a, u32 b, bool issub)
 {
 	const double sum = COP1::eeGuardedSum(a, b, issub);
 	return MakeResult(sum, COP1::eeRoundToSingle(sum, true));
 }
 
-Result Mul(u32 fs, u32 ft)
+EEFPU_MODEL_CALL Result Mul(u32 fs, u32 ft)
 {
 	const double product = eeToDouble(fs) * eeToDouble(ft);
 	return MakeResult(product, COP1::eeMulRound(fs, ft, product));
