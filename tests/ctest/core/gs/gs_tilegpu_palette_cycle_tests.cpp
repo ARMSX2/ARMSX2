@@ -251,6 +251,52 @@ TEST(TileGpuPaletteCycle, FbmskSelectsTheSubstituteShape)
 	EXPECT_FALSE(gsTilePaletteCycleIsAlphaSplit(0x80FFFFFFu));
 }
 
+// A run whose substitute could not be built must be DRAWN, and go on being drawn. Eliding one with
+// nothing in its place is the arrangement that loses a lot of picture silently: measured before the
+// substitute existed, it cost gt4opb 13.5 levels of mean difference against Classic and gt4 9.9.
+// The refusal is sticky so the renderer pays the failed attempt once and not on every draw of a
+// thousand-draw run.
+TEST(TileGpuPaletteCycle, ARefusedRunIsDrawnAndStaysDrawn)
+{
+	GSTilePaletteCycleRun run;
+	for (int i = 0; i < 3; i++)
+		run.Observe(Consumer());
+	ASSERT_EQ(run.Observe(Producer()), V::Arm);
+	run.Refuse();
+	EXPECT_TRUE(run.refused());
+	EXPECT_FALSE(run.armed());
+	for (int i = 0; i < 64; i++)
+		EXPECT_EQ(run.Observe(Consumer()), V::Building) << "draw " << i;
+	EXPECT_FALSE(run.armed());
+}
+
+// ...but the refusal belongs to the RUN, not to the renderer: the next run gets its own attempt,
+// because what could not be substituted is a property of the shape that run presented.
+TEST(TileGpuPaletteCycle, ARefusalDoesNotOutliveItsRun)
+{
+	GSTilePaletteCycleRun run;
+	for (int i = 0; i < 3; i++)
+		run.Observe(Consumer(0x00FFFFFFu));
+	ASSERT_EQ(run.Observe(Producer(0x00FFFFFFu)), V::Arm);
+	run.Refuse();
+	// A new FBMSK is a new run, and it may arm.
+	for (int i = 0; i < 3; i++)
+		EXPECT_EQ(run.Observe(Consumer(0xFF000000u)), V::Building);
+	EXPECT_FALSE(run.refused());
+	EXPECT_EQ(run.Observe(Producer(0xFF000000u)), V::Arm);
+}
+
+TEST(TileGpuPaletteCycle, ResetClearsARefusal)
+{
+	GSTilePaletteCycleRun run;
+	for (int i = 0; i < 3; i++)
+		run.Observe(Consumer());
+	ASSERT_EQ(run.Observe(Producer()), V::Arm);
+	run.Refuse();
+	run.Reset();
+	EXPECT_FALSE(run.refused());
+}
+
 TEST(TileGpuPaletteCycle, ResetEndsTheRun)
 {
 	GSTilePaletteCycleRun run;

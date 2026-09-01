@@ -1648,21 +1648,22 @@ const GSRendererTileGpu::GpuPalette* GSRendererTileGpu::FindClutSourceWrittenBy(
 // ⚠️ The claims are HERE and not in the elision, because this is the draw that writes. The rule the
 // elision states is that the ledger is told what actually gets written; the substitute writes the
 // source surface's rect, so the source surface claims it.
-void GSRendererTileGpu::IssuePaletteCycleSubstitute(
+bool GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	const PendingDraw& pd, GSTileSurfaceId fb_id, const GSVector4i& rect, const GIFRegTEX0& tex0)
 {
 	(void)rect;
+	// Classic picks its variant off FBMSK: 0x00FFFFFF is the alpha-destination shuffle, which
+	// extracts each channel into its own page-sized target, and everything else is the in-place
+	// brightness ramp. Only the ramp is served here -- the three-target variant needs three
+	// destinations this road does not name. Asked FIRST, before anything is allocated or queued: a
+	// refusal below this line would strand the ops it had already emitted.
+	if (gsTilePaletteCycleIsAlphaSplit(m_palette_cycle.fbmsk()))
+		return false;
 	if (pd.pal_record == 0)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 	GpuPalette* const gp = FindGpuPalette(pd.pal_record);
 	if (!gp)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 
 	// The subject: the live target that owns the whole window this draw READS. Classic's
 	// LookupDrawTarget(RTEX0) in the terms this renderer states ownership in -- and asked with the
@@ -1678,29 +1679,19 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	if (src == kGSTileNoSurface || src == fb_id)
 	{
 		// No single target holds the run's source, or it is the very surface the run writes -- and
-		// then the substitute would be reading what the elision just refused to produce.
-		m_frame.pcyc_refused++;
-		return;
+		// then the substitute would be reading what the elision refused to produce.
+		return false;
 	}
 	const GSVramModel::Surface& surf = m_vram_model.Get(src);
 	if (!surf.alive || !surf.pool_handle)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 	GSTexture* const src_tex = m_target_pool.GetTexture(surf.pool_handle);
 	if (!src_tex)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 	const GSVector2i size = src_tex->GetSize();
 	const GSVector4i sub_rect = GSVector4i::loadh(size);
 	if (sub_rect.rempty())
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 
 	// The palette, as the N x 1 image rule 3 already knows how to build. It reads the owner's texture
 	// at the pass head, and it is queued BEFORE the fetch, so the gather sees the palette's texels
@@ -1708,10 +1699,7 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	PendingDraw sub_pd = pd;
 	GSTexture* const pal_tex = ClutGatherTexture(*gp, sub_pd);
 	if (!pal_tex)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 
 	// The scratch the executor copies the destination into before sampling it: a render pass may not
 	// sample the image it writes. One per renderer, grown to the largest subject a session has seen,
@@ -1725,10 +1713,7 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	if (!m_pcyc_scratch)
 		m_pcyc_scratch = g_gs_device->CreateRenderTarget(size.x, size.y, GSTexture::Format::Color, false, true);
 	if (!m_pcyc_scratch)
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 
 	const u32 first_op = sub_pd.first_prep_op;
 	GSDevice::GSTileGpuPrepOp op = {};
@@ -1736,17 +1721,7 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	op.target = PlanTargetIndex(src);
 	op.index_texture = PrepTextureIndex(m_pcyc_scratch);
 	op.palette_texture = PrepTextureIndex(pal_tex);
-	// Classic picks its variant off FBMSK: 0x00FFFFFF is the alpha-destination shuffle, which
-	// extracts each channel into its own page-sized target, and everything else is the in-place
-	// brightness ramp. Only the ramp is served here -- the three-target variant needs three
-	// destinations this road does not name, and it is counted as a refusal rather than approximated
-	// by the wrong one.
-	if (gsTilePaletteCycleIsAlphaSplit(m_palette_cycle.fbmsk()))
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
-	op.chan_mode = 0; // RGB
+	op.chan_mode = 0; // RGB (the FBMSK variant was decided at the top, before anything was queued)
 	op.copy_x[0] = static_cast<u32>(sub_rect.x);
 	op.copy_y[0] = static_cast<u32>(sub_rect.y);
 	op.copy_w = static_cast<u32>(sub_rect.width());
@@ -1757,10 +1732,7 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	// covers; the write is the whole of it, which is what Classic's `src->GetUnscaledRect()` is.
 	const GSPageBitmap sub_pages = GSVramModel::PagesForRect(surf.layout, sub_rect) & surf.residency;
 	if (!AppendPrepOnlyDraw(src, sub_rect, first_op, sub_pages))
-	{
-		m_frame.pcyc_refused++;
-		return;
-	}
+		return false;
 
 	// The claims: this pass really did write those pages, out of the subject's own pixels, so the
 	// ledger is told exactly that. NoteClutSourceWritten last, for the reason the ordinary claim
@@ -1771,6 +1743,7 @@ void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	NoteClutSourceWritten(src, sub_pages);
 	m_frame.pcyc_subs++;
 	m_frame.pcyc_sub_pages += sub_pages.count();
+	return true;
 }
 
 void GSRendererTileGpu::NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages)
@@ -6338,11 +6311,23 @@ void GSRendererTileGpu::AccumulateDraw()
 			//
 			// So the claims move WITH the substitute. When it lands it claims what it writes, in
 			// its own plan entry, and this block stays as it is.
-			if (m_palette_cycle_hle && (pcyc_verdict == GSTilePaletteCycleVerdict::Arm ||
-										   pcyc_verdict == GSTilePaletteCycleVerdict::Elide))
+			// ⚠️ A RUN IS ONLY ELIDED IF ITS SUBSTITUTE WAS BUILT. Dropping one with nothing in its
+			// place is the arrangement that loses a lot of picture silently -- measured, before the
+			// substitute existed: gt4opb 13.5 levels of mean difference against Classic and gt4 9.9,
+			// both away. So a refusal latches the run into "drawn" and this draw goes on down the
+			// ordinary road exactly as it would have.
+			bool pcyc_elide = m_palette_cycle_hle && pcyc_verdict == GSTilePaletteCycleVerdict::Elide;
+			if (m_palette_cycle_hle && pcyc_verdict == GSTilePaletteCycleVerdict::Arm)
 			{
-				if (pcyc_verdict == GSTilePaletteCycleVerdict::Arm)
-					IssuePaletteCycleSubstitute(pd, fb_id, r, tex0);
+				pcyc_elide = IssuePaletteCycleSubstitute(pd, fb_id, r, tex0);
+				if (!pcyc_elide)
+				{
+					m_palette_cycle.Refuse();
+					m_frame.pcyc_refused++;
+				}
+			}
+			if (pcyc_elide)
+			{
 				m_frame.pcyc_elided++;
 				m_frame.pcyc_elided_pages += fb_pages.count();
 				return;

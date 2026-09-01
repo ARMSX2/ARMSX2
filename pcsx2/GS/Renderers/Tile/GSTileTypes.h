@@ -1379,6 +1379,7 @@ public:
 			m_length = 1;
 			m_loop = d.destroys_pal_source;
 			m_armed = false;
+			m_refused = false;
 		}
 		else
 		{
@@ -1387,10 +1388,22 @@ public:
 		}
 		if (m_armed)
 			return GSTilePaletteCycleVerdict::Elide;
-		if (m_length < kArmAfter || !m_loop)
+		// A run whose substitute could not be built is DRAWN, for the rest of its life. Eliding it
+		// anyway is the one arrangement that loses a lot of picture silently: measured, a run
+		// dropped with nothing in its place costs gt4opb 13.5 levels of mean difference against
+		// Classic and gt4 9.9. The latch is sticky until the run key moves so a refusal is paid once
+		// and not re-attempted on every draw of a thousand-draw run.
+		if (m_refused || m_length < kArmAfter || !m_loop)
 			return GSTilePaletteCycleVerdict::Building;
 		m_armed = true;
 		return GSTilePaletteCycleVerdict::Arm;
+	}
+
+	/// The substitute could not be built for this run: draw it, and go on drawing it.
+	void Refuse()
+	{
+		m_refused = true;
+		m_armed = false;
 	}
 
 	void Reset()
@@ -1400,9 +1413,11 @@ public:
 		m_owner = kGSTileNoSurface;
 		m_loop = false;
 		m_armed = false;
+		m_refused = false;
 	}
 
 	bool armed() const { return m_armed; }
+	bool refused() const { return m_refused; }
 	bool loop_seen() const { return m_loop; }
 	u32 length() const { return m_length; }
 	u32 fbmsk() const { return m_fbmsk; }
@@ -1414,6 +1429,7 @@ private:
 	GSTileSurfaceId m_owner = kGSTileNoSurface;
 	bool m_loop = false;  ///< S1 held somewhere inside this run
 	bool m_armed = false;
+	bool m_refused = false; ///< ...and this run's substitute could not be built, so it is drawn
 };
 
 /// Which substitute a run's FBMSK asks for, matched to GSC_PolyphonyDigitalGames.

@@ -3078,7 +3078,9 @@ private:
 	const GpuPalette* FindClutSourceWrittenBy(GSTileSurfaceId id, const GSPageBitmap& pages) const;
 	/// The palette cycle's substitute: what stands in for the run of draws about to be elided. See
 	/// the definition -- it is Classic's GSC_PolyphonyDigitalGames HLE draw, in TileGpu's own plan.
-	void IssuePaletteCycleSubstitute(
+	/// ...false where it could not be built, and then the run is NOT elided -- it goes on being
+	/// drawn, because a run dropped with nothing in its place loses the whole effect.
+	bool IssuePaletteCycleSubstitute(
 		const PendingDraw& pd, GSTileSurfaceId fb_id, const GSVector4i& rect, const GIFRegTEX0& tex0);
 	void NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages);
 	/// The surface id has been recycled into a new surface: every palette on it has lost its words.
@@ -4160,7 +4162,7 @@ private:
 		u32 pcyc_subs = 0;        // substitute draws issued
 		u32 pcyc_elided_pages = 0; // guest pages the elided draws would have written
 		u32 pcyc_sub_pages = 0;   // guest pages the substitutes claimed
-		u32 pcyc_refused = 0;     // runs armed but whose substitute could not be built (drawn instead)
+		u32 pcyc_refused = 0;     // runs whose substitute could not be built, and are drawn instead
 	};
 	ModelFrame m_frame = {};
 	std::vector<ModelFrame> m_model_frames;
