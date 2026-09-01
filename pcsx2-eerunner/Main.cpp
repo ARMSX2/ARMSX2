@@ -166,6 +166,7 @@ static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (rep
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
+static u64 s_rec_fallback_fpu_mask[EERecFallback::kFpuIdCount / 64] = {~0ull, ~0ull}; // per-FPU-op filter
 static u64 s_rec_fallback_vu_mask[EERecFallback::kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull}; // per-VU-macro-op filter
 #endif
 
@@ -848,14 +849,16 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				std::string err;
 				u32 mask = 0;
 				u32 reg_masks[EERecFallback::kCop2MoveOpCount] = {};
+				u64 fpu_mask[EERecFallback::kFpuIdCount / 64] = {};
 				u64 vu_mask[EERecFallback::kCop2VuIdCount / 64] = {};
-				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, vu_mask, &err))
+				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, fpu_mask, vu_mask, &err))
 				{
 					Console.Error(err.c_str());
 					return false;
 				}
 				s_rec_fallback_groups = mask;
 				std::memcpy(s_rec_fallback_reg_masks, reg_masks, sizeof(reg_masks));
+				std::memcpy(s_rec_fallback_fpu_mask, fpu_mask, sizeof(fpu_mask));
 				std::memcpy(s_rec_fallback_vu_mask, vu_mask, sizeof(vu_mask));
 #else
 				Console.Error("--rec-fallback is implemented for the arm64 EE recompiler only.");
@@ -1192,6 +1195,7 @@ void EERunner::SettingsOverride()
 	// before any block is compiled, and stays put for the whole run.
 	EERecFallback::g_groups = s_rec_fallback_groups;
 	std::memcpy(EERecFallback::g_cop2RegMask, s_rec_fallback_reg_masks, sizeof(s_rec_fallback_reg_masks));
+	std::memcpy(EERecFallback::g_fpuMask, s_rec_fallback_fpu_mask, sizeof(s_rec_fallback_fpu_mask));
 	std::memcpy(EERecFallback::g_cop2VuMask, s_rec_fallback_vu_mask, sizeof(s_rec_fallback_vu_mask));
 	if (s_rec_fallback_groups != 0)
 	{
