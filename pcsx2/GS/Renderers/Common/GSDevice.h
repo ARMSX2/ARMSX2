@@ -3749,6 +3749,14 @@ public:
 		static constexpr u32 kDualSrcCarrier = 1u << kDualSrcRoadShift; ///< SRC1_* become SRC_ALPHA
 		/// ...and the carrier with the alpha blend equation put to work giving the stored alpha back.
 		static constexpr u32 kDualSrcCarrierRestore = 2u << kDualSrcRoadShift;
+		/// ALPHA.FIX out of the word, in the GS's 0x80 = 1.0 convention. Named because it is the one
+		/// field of the blend key that is NOT pipeline state — it rides as vkCmdSetBlendConstants,
+		/// dynamic state — and the difference matters to anything reasoning about what a run cut
+		/// buys. (It was tried as a run-key exclusion in August 2026 and left alone: over the 22-dump
+		/// corpus, ALPHA.FIX is the sole reason for 8 of 137,616 in-pass run cuts, so the merge would
+		/// remove 0.01% of the pipeline binds and cost a call cut to keep the constant right. The
+		/// cause census in GSDeviceVK is what measures this.)
+		static constexpr u32 BlendFix(u32 blend_key) { return (blend_key >> 8) & 0xFFu; }
 		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
 		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
 		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a

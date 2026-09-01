@@ -7656,6 +7656,72 @@ VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blen
 	return (pipe != VK_NULL_HANDLE) ? pipe : TileGpuPipelineFallback(topology, depth_mode, declares);
 }
 
+// The plan's fragment variant, narrowed the way GetTileGpuPipeline narrows it before it keys
+// anything: the roads this device serves, the texel arms normalised against them, and the frozen GS
+// state cut down to what the resulting program can read.
+u32 GSDeviceVK::TileGpuNarrowedVariant(u32 variant_key) const
+{
+	const u32 road = TileGpuRoadMask(GSTileGpuPassPlan::VariantRoadMask(variant_key));
+	const u32 texel = TileGpuTexelMask(road, GSTileGpuPassPlan::VariantTexelMask(variant_key));
+	GSDevice::GSTileGpuFragmentSpec spec = GSTileGpuPassPlan::VariantSpec(variant_key);
+	spec.NarrowToRoad(road);
+	spec.NarrowToDriver(TileGpuFreezeTexa());
+	return GSTileGpuPassPlan::PackVariantKey(road, texel, GSTileGpuPassPlan::VariantSelfMask(variant_key),
+		GSTileGpuPassPlan::VariantQuantises(variant_key), spec);
+}
+
+// One in-pass run cut, classified by which per-draw field ended the run -- which is to say, by what
+// bought the vkCmdBindPipeline that follows it. Nine fields can do it, they overlap freely, and the
+// column that matters is the SOLE one: a cut a single field made is a cut that field could give
+// back, if that field turned out not to be something the pipeline depends on.
+void GSDeviceVK::TileGpuCensusCut(const GSDevice::GSTileGpuPassPlan& plan, u32 d)
+{
+	const bool have_blends = plan.blend_keys.size() == plan.draws.size();
+	const bool have_variants = plan.variant_keys.size() == plan.draws.size();
+	const u32 bk = have_blends ? plan.blend_keys[d] : 0u;
+	const u32 pk = have_blends ? plan.blend_keys[d - 1] : 0u;
+	// The blend word read the way GetTileGpuPipeline reads it: a draw whose blend the SHADER
+	// evaluates has the fixed-function unit off, and where the unit is off the equation index and
+	// the As road are not in the pipeline at all.
+	const auto blends = [](u32 k) {
+		return (k & GSTileGpuPassPlan::kSelfBlend) == 0 && (k & GSTileGpuPassPlan::kBlendEnable) != 0;
+	};
+	u32 mask = 0;
+	const auto set = [&mask](TileGpuCutCause c, bool on) { mask |= on ? (1u << c) : 0u; };
+	set(kTileGpuCutTopology, plan.topologies[d] != plan.topologies[d - 1]);
+	set(kTileGpuCutDepth, plan.depth_modes[d] != plan.depth_modes[d - 1]);
+	set(kTileGpuCutBlendOnOff, blends(bk) != blends(pk));
+	set(kTileGpuCutBlendEqn, blends(bk) && blends(pk) && (bk & 0x7Fu) != (pk & 0x7Fu));
+	set(kTileGpuCutWriteMask,
+		(bk & GSTileGpuPassPlan::kNoWriteMask) != (pk & GSTileGpuPassPlan::kNoWriteMask));
+	set(kTileGpuCutDualSrcRoad,
+		blends(bk) == blends(pk) &&
+			(blends(bk) ? (bk & GSTileGpuPassPlan::kDualSrcRoadMask) !=
+							  (pk & GSTileGpuPassPlan::kDualSrcRoadMask) :
+						  false));
+	set(kTileGpuCutSelfRead, (bk & GSTileGpuPassPlan::kSelfRead) != (pk & GSTileGpuPassPlan::kSelfRead));
+	set(kTileGpuCutAlphaFix, GSTileGpuPassPlan::BlendFix(bk) != GSTileGpuPassPlan::BlendFix(pk));
+	const bool variant_differs = have_variants && plan.variant_keys[d] != plan.variant_keys[d - 1];
+	set(kTileGpuCutVariant, variant_differs);
+	m_tilegpu_cut_total++;
+	const bool sole = (mask & (mask - 1)) == 0;
+	for (u32 c = 0; c < kTileGpuCutCauses; c++)
+	{
+		if (mask & (1u << c))
+		{
+			m_tilegpu_cut_cause[c]++;
+			if (sole)
+				m_tilegpu_cut_sole[c]++;
+		}
+	}
+	// Asked only where the variant is the whole reason for the cut, because that is the only case
+	// where the device's own narrowing could take the cut away. Two plan words that compile one
+	// program on this device would be one run and one bind.
+	if (sole && variant_differs &&
+		TileGpuNarrowedVariant(plan.variant_keys[d]) == TileGpuNarrowedVariant(plan.variant_keys[d - 1]))
+		m_tilegpu_cut_variant_narrows_away++;
+}
+
 // What a failed build falls back to. Outside a declaring pass that is the eager full-road pipeline --
 // wrong-fast, never a dropped draw. Inside one there is nothing to fall back TO: the eager table is
 // built against the ordinary render pass and binding it in a declaring pass is not a wrong blend, it
@@ -10228,6 +10294,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			u32 pass_binds = 0;
 			while (d < end)
 			{
+				// Every run after a pass's first is an in-pass pipeline bind, and the field that ended
+				// the previous run is what bought it. Classified here, where the cut is, so the census
+				// and the submission cannot come to disagree about what a cut is.
+				if (d != pass.first_draw)
+					TileGpuCensusCut(plan, d);
 				const GSTileGpuPassPlan::GSTileGpuRunKey rkey = plan.RunKeyAt(d);
 				const u32 bkey = rkey.blend_key;
 				const u32 run_end = plan.RunEndAt(d, end);
@@ -10286,7 +10357,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				if ((bkey & GSTileGpuPassPlan::kBlendEnable) && !(bkey & GSTileGpuPassPlan::kSelfBlend))
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.
-					const float fix = std::min(static_cast<float>((bkey >> 8) & 0xFFu) * (1.0f / 128.0f), 1.0f);
+					const float fix =
+						std::min(static_cast<float>(GSTileGpuPassPlan::BlendFix(bkey)) * (1.0f / 128.0f), 1.0f);
 					// ...and its ALPHA component is the carrier's undo factor, which the restore road
 					// asks for as CONSTANT_ALPHA. Nothing else reads it: the alpha equation is
 					// ONE/ZERO on every other road, and a colour factor that reads the constant
@@ -11915,6 +11987,27 @@ void GSDeviceVK::DestroyResources()
 		Console.Error("TileGpu: %u writebacks were skipped this session because the frame descriptor pool could not "
 					  "serve them; their ring slots kept the bytes they were prefilled with.",
 			m_tilegpu_writeback_pool_dropped_ops);
+	}
+	if (m_tilegpu_cut_total != 0)
+	{
+		// The in-pass bind bill, by what bought each bind. `differs` overlaps -- one cut usually
+		// trips several fields at once; `sole` is the column that matters, the cuts a single field
+		// made on its own and could therefore give back.
+		static constexpr const char* kCauseName[kTileGpuCutCauses] = {"topology", "depth mode", "blend on/off",
+			"blend equation", "colour write mask", "As road", "self-read", "ALPHA.FIX", "fragment variant"};
+		Console.WriteLn("TileGpu in-pass run cuts by cause, %llu cuts this session (one per in-pass pipeline bind; "
+						"`differs` overlaps, `sole` is what that field alone bought):",
+			static_cast<unsigned long long>(m_tilegpu_cut_total));
+		for (u32 c = 0; c < kTileGpuCutCauses; c++)
+		{
+			Console.WriteLn("  %-20s differs %8llu (%5.1f%%)   sole %8llu (%5.1f%%)", kCauseName[c],
+				static_cast<unsigned long long>(m_tilegpu_cut_cause[c]),
+				100.0 * static_cast<double>(m_tilegpu_cut_cause[c]) / static_cast<double>(m_tilegpu_cut_total),
+				static_cast<unsigned long long>(m_tilegpu_cut_sole[c]),
+				100.0 * static_cast<double>(m_tilegpu_cut_sole[c]) / static_cast<double>(m_tilegpu_cut_total));
+		}
+		Console.WriteLn("  %-20s %llu of the variant-only cuts compile ONE program on this device",
+			"...narrowed away:", static_cast<unsigned long long>(m_tilegpu_cut_variant_narrows_away));
 	}
 
 	for (FrameResources& resources : m_frame_resources)

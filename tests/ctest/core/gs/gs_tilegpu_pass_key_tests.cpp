@@ -774,6 +774,108 @@ TEST(TileGpuRunKey, AnAbsentVariantArrayFallsBackToThePassUnion)
 	EXPECT_EQ(p.At(0).variant, 0u);
 }
 
+// ---------------------------------------------------------------------------------------------
+// What ends a run and what does NOT, measured rather than assumed.
+//
+// The pipeline is built from PART of the blend word and the run is cut on all of it, so the obvious
+// suspicion is that some of our in-pass pipeline binds re-bind the identical VkPipeline. A device
+// capture said 43.2% of them did -- but a capture can only see the vertex and fragment PROGRAM, and
+// the program is blind to the blend equation, the colour write mask, the As road, the topology and
+// the depth mode, all five of which are real pipeline state.
+//
+// The executor's own cause census (GSDeviceVK::TileGpuCensusCut) settled it over the 22-dump corpus:
+// of 137,616 in-pass run cuts, ALPHA.FIX is the sole cause of 8 and a narrowed-away fragment variant
+// of 0. The two tests below pin the two halves of that answer in the code the census reads, so a
+// future change that makes either population real fails here first.
+// ---------------------------------------------------------------------------------------------
+
+TEST(TileGpuRunKey, AlphaFixIsTheOnePartOfTheBlendWordNoPipelineIsBuiltFrom)
+{
+	// FIX rides as vkCmdSetBlendConstants -- dynamic state, one command per value. It is therefore
+	// the one field a run could in principle span, at the price of cutting the indirect CALL where
+	// the scissor already cuts it. Measured worth: 8 cuts in 137,616, so the run key still compares
+	// the word whole and this test exists to pin the reading, not the merge.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	constexpr u32 kBase = Plan::kBlendEnable | 5u;
+	EXPECT_EQ(Plan::BlendFix(kBase | (0x20u << 8)), 0x20u);
+	EXPECT_EQ(Plan::BlendFix(kBase), 0u);
+	EXPECT_EQ(Plan::BlendFix(kBase | Plan::PackNoWrite(0x7u) | Plan::kDualSrcCarrier | Plan::kSelfRead), 0u);
+
+	// Two draws differing only in FIX still cut the run today -- that is the shipped behaviour and
+	// what the census counts as the ALPHA.FIX cause.
+	const RunPlan p{{Topology::Triangle, kBase | (0x20u << 8), DepthMode::TestWrite},
+		{Topology::Triangle, kBase | (0x80u << 8), DepthMode::TestWrite}};
+	EXPECT_NE(p.At(0), p.At(1));
+	EXPECT_NE(Plan::BlendFix(p.blend_keys[0]), Plan::BlendFix(p.blend_keys[1]));
+}
+
+TEST(TileGpuVariantKey, TheDeviceNarrowingHasNothingLeftToNarrow)
+{
+	// The other half. GetTileGpuPipeline narrows the frozen GS state to the road it is compiling
+	// for, so in principle two plan variants could collapse to one program and one bind. They do
+	// not, and the reason is structural rather than lucky: the PLANNER already applies exactly this
+	// narrowing when it writes the key (PlanVariantKeyAt calls spec.NarrowToRoad(pd.road_mask)), so
+	// on a device that serves every road the second application is the identity function.
+	//
+	// The narrowing itself is real and is what makes that true -- pinned here on the sharpest case,
+	// an untextured draw, which reads no wrap mode, no filter, no texture function and no coordinate
+	// kind. Four axes of disagreement, one program.
+	using Plan = GSDevice::GSTileGpuPassPlan;
+	const auto narrowed = [](u32 road, const GSDevice::GSTileGpuFragmentSpec& raw) {
+		GSDevice::GSTileGpuFragmentSpec spec = raw;
+		spec.NarrowToRoad(road);
+		return Plan::PackVariantKey(road, 0, 0, false, spec);
+	};
+
+	GSDevice::GSTileGpuFragmentSpec a;
+	a.valid = true;
+	a.wms = 1;
+	a.wmt = 2;
+	a.ltf = 1;
+	a.tfx = 3;
+	a.fst = 1;
+	a.tcc = 1;
+	a.texa = 3;
+	GSDevice::GSTileGpuFragmentSpec b = a;
+	b.wms = 3;
+	b.wmt = 0;
+	b.ltf = 0;
+	b.tfx = 0;
+	b.fst = 0;
+	b.tcc = 0;
+	b.texa = 1;
+	EXPECT_NE(a, b);
+	EXPECT_EQ(narrowed(0, a), narrowed(0, b));
+
+	// ...and applying it twice changes nothing, which is the property that makes the planner's copy
+	// and the device's copy agree and the device's copy free.
+	GSDevice::GSTileGpuFragmentSpec once = a;
+	once.NarrowToRoad(GSDevice::kGSTileGpuRoadSource);
+	GSDevice::GSTileGpuFragmentSpec twice = once;
+	twice.NarrowToRoad(GSDevice::kGSTileGpuRoadSource);
+	EXPECT_EQ(once, twice);
+
+	// TEXA alone, on a road with a per-texel tap and one without: a materialised source bakes TEXA
+	// into the image at build time and the shader never applies it, so those two draws are one
+	// program; the byte road does apply it, so there they are two.
+	GSDevice::GSTileGpuFragmentSpec t1 = a, t2 = a;
+	t1.texa = 0;
+	t2.texa = 3;
+	EXPECT_EQ(narrowed(GSDevice::kGSTileGpuRoadSource, t1), narrowed(GSDevice::kGSTileGpuRoadSource, t2));
+	EXPECT_NE(narrowed(GSDevice::kGSTileGpuRoadByte, t1), narrowed(GSDevice::kGSTileGpuRoadByte, t2));
+
+	// ...and the axes that survive every road, so the narrowing is not merely "zero everything".
+	GSDevice::GSTileGpuFragmentSpec u1 = a, u2 = a;
+	u2.atst = 4;
+	EXPECT_NE(narrowed(0, u1), narrowed(0, u2));
+	u2 = a;
+	u2.fge = 1;
+	EXPECT_NE(narrowed(0, u1), narrowed(0, u2));
+	u2 = a;
+	u2.date = 2;
+	EXPECT_NE(narrowed(0, u1), narrowed(0, u2));
+}
+
 TEST(TileGpuVariantKey, EveryAxisRoundTripsAndNoneCollides)
 {
 	// One packer, three unpackers and thirteen bits: the renderer fills it, the run key compares it

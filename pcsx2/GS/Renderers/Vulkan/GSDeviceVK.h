@@ -823,6 +823,49 @@ private:
 	// ...and INSIDE one, where there is no compatible fallback and the run's draws are dropped.
 	// TileGpuPipelineFallback already says so once; this is what a run lost.
 	u32 m_tilegpu_declared_build_dropped_draws = 0;
+	/// WHICH per-draw field ends each in-pass indirect run — which is to say, which one buys each
+	/// in-pass vkCmdBindPipeline. The switch tax is 57-66% of Ratchet & Clank's per-draw gap, so the
+	/// one question worth asking about it is whether any of these fields is something the pipeline
+	/// does not actually depend on. Only a census by field answers that, and a device capture cannot:
+	/// a capture sees the vertex and fragment PROGRAM, and the program is blind to the blend
+	/// equation, the colour write mask, the As road, the topology and the depth mode — five fields
+	/// that are all real pipeline state. Judging by program identity put the redundant share at
+	/// 43.2%; by field it is 0.01% (16 cuts in 137,616 over the 22-dump corpus).
+	///
+	/// Two tallies per field. `cause` counts every cut where the field differs — they overlap, and
+	/// heavily: a cut typically trips depth, write mask, blend and variant at once. `sole` counts
+	/// the cuts where the field is the ONLY one that differs, which is the population that field
+	/// could give back if it turned out not to be pipeline state. That column is the whole point.
+	enum TileGpuCutCause
+	{
+		kTileGpuCutTopology,
+		kTileGpuCutDepth,
+		kTileGpuCutBlendOnOff,  ///< a fixed-function blend appears or disappears
+		kTileGpuCutBlendEqn,    ///< the GS ALPHA (A,B,C,D) index, where both sides blend
+		kTileGpuCutWriteMask,   ///< the colour channels the draw preserves
+		kTileGpuCutDualSrcRoad, ///< which road the As factor takes
+		kTileGpuCutSelfRead,    ///< the in-pass destination read
+		kTileGpuCutAlphaFix,    ///< ALPHA.FIX — the blend CONSTANT, and not pipeline state at all
+		kTileGpuCutVariant,     ///< the fragment variant, as the plan wrote it
+		kTileGpuCutCauses,
+	};
+	u64 m_tilegpu_cut_cause[kTileGpuCutCauses] = {};
+	u64 m_tilegpu_cut_sole[kTileGpuCutCauses] = {};
+	u64 m_tilegpu_cut_total = 0;
+	/// ...and the one field whose cut MIGHT not be a pipeline change: a variant the plan wrote as
+	/// two words that this device compiles as one program. Counted only where the variant is the
+	/// sole cause, because that is the only case where narrowing could remove the cut. Zero on
+	/// Adreno and on Honeykrisp by construction — the planner already narrows to the draw's own
+	/// road and both devices serve every road — and non-zero only on a device that cannot.
+	u64 m_tilegpu_cut_variant_narrows_away = 0;
+	/// One in-pass run cut, classified. `d` is the run's first draw and the comparison is against
+	/// `d - 1`, its predecessor inside the same pass.
+	void TileGpuCensusCut(const GSDevice::GSTileGpuPassPlan& plan, u32 d);
+	/// Draw `d`'s fragment variant as this DEVICE compiles it: the plan's word with the roads this
+	/// device cannot serve taken out, the texel arms normalised against what is left, and the frozen
+	/// GS state narrowed to what the resulting program can read. GetTileGpuPipeline does exactly
+	/// this before it keys anything, so two draws agreeing here compile one program.
+	u32 TileGpuNarrowedVariant(u32 variant_key) const;
 	// A writeback the frame pool would give no descriptor set for. Its ring slot keeps what it was
 	// prefilled with while the renderer's model records the composition as done.
 	bool m_tilegpu_writeback_pool_warned = false;
