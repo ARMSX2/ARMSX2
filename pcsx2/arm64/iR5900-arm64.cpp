@@ -455,6 +455,7 @@ static void _DynGen_Dispatchers()
 #endif
 	cop2DynGenSyncStubs();
 	cop2DynGenModelStubs();
+	fpuDynGenModelStubs();
 
 	JITCompile = _DynGen_JITCompile();
 	EnterRecompiledCode = _DynGen_EnterRecompiledCode();

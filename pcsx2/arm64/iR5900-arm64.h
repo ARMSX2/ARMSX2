@@ -628,6 +628,7 @@ extern const void* g_fpuGuardMaskStub;
 #endif
 
 void cop2DynGenModelStubs();
+void fpuDynGenModelStubs();
 
 extern u32 pc;             // recompiler pc
 extern int g_branch;       // set for branch

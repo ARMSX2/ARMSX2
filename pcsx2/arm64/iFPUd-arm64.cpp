@@ -953,7 +953,24 @@ static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ft
 	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
 }
 
-// The guards' body, emitted after the block: no allocator frame.
+// The guards' body is emitted after the block, where the allocator's answer is
+// stale and no frame can be sized from it, so it reaches the model the way the
+// COP2 and microVU sites do: one stub per op, generated with the dispatchers,
+// leaving the site a bl.
+static constexpr int kNumDivUnitOps = 3;
+static const u8* s_divUnitModelStubs[kNumDivUnitOps];
+
+static const void* divUnitModelFn(DivUnitOp op)
+{
+	switch (op)
+	{
+		case DivUnitOp::Divide: return reinterpret_cast<const void*>(&EeFpuModel::Divide);
+		case DivUnitOp::Sqrt: return reinterpret_cast<const void*>(&EeFpuModel::SqrtBits);
+		case DivUnitOp::RecipSqrt: return reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
+	}
+	return nullptr;
+}
+
 static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
 {
 	if (op == DivUnitOp::Sqrt)
@@ -965,10 +982,7 @@ static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int
 		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
 		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
 	}
-	const void* fn = op == DivUnitOp::Divide ? reinterpret_cast<const void*>(&EeFpuModel::Divide) :
-	                 op == DivUnitOp::Sqrt   ? reinterpret_cast<const void*>(&EeFpuModel::SqrtBits) :
-	                                           reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
-	armEmitEeFpuModelCall(fn);
+	armEmitCall(s_divUnitModelStubs[static_cast<int>(op)]);
 	armEmitEeFprWiden(armDRegister(dstidx), RWARG1, RXSCRATCH);
 }
 
@@ -1274,3 +1288,12 @@ void recRSQRT_S_xmm(int info)
 } // namespace OpcodeImpl
 } // namespace Dynarec
 } // namespace R5900
+
+// Generated with the dispatchers, so the guards' outlined bodies find them in
+// place before any block that reaches one compiles.
+void fpuDynGenModelStubs()
+{
+	namespace D = R5900::Dynarec::OpcodeImpl::COP1::DOUBLE;
+	for (int op = 0; op < D::kNumDivUnitOps; op++)
+		D::s_divUnitModelStubs[op] = armDynGenEeFpuModelStub(D::divUnitModelFn(static_cast<D::DivUnitOp>(op)));
+}
