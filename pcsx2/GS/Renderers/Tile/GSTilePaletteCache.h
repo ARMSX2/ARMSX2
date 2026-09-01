@@ -48,6 +48,20 @@ public:
 	/// format fixes it). This cache's OWN lookups still verify words exactly.
 	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen, u64* content_id = nullptr);
 
+	/// The same lookup with the content id already in hand. A caller that expanded the CLUT into
+	/// its own stream has hashed exactly these words to identify them; hashing them a second time
+	/// here reads the whole palette back out of that stream to compute a number the caller is
+	/// holding. The overload takes the number instead. Everything else is unchanged — the read_gen
+	/// memo still runs first (it also refreshes last_use and pinned_frame, so skipping it would
+	/// move eviction order), and the entry compare behind the hash is still a memcmp of the words,
+	/// so this can never serve the wrong colours.
+	///
+	/// ⚠️ `content_id` must be ContentId(clut, entries) for these words. A wrong one cannot corrupt
+	/// a lookup, but the cache STORES what it is given, so the palette would then be invisible to
+	/// every hashing lookup for as long as the entry lives — a silent rebuild loop, not a
+	/// miscolour.
+	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen, u64 content_id, u64* out_content_id);
+
 	/// The content id Lookup would hand back for these words, computed without touching
 	/// the cache or the device. Same function, same value: a caller that only needs the
 	/// palette's identity (to key a derived cache, or to ask whether a pair would be
@@ -84,6 +98,11 @@ public:
 	u64 CapacityRefusals() const { return m_capacity_refusals; }
 
 private:
+	/// The two halves both public lookups are made of: the read-generation memo, and the content
+	/// path with the hash already decided (computed by one caller, handed in by the other).
+	GSTexture* LookupMemo(u32 entries, u32 read_gen, u64* content_id);
+	GSTexture* LookupByHash(const u32* clut, u32 entries, u32 read_gen, u64 hash, u64* content_id);
+
 	// 128 capacity-thrashed on GT4 (198 rebuilds per frame, each a texture create
 	// plus a 1 KB upload, for palettes the title rotates through every frame). A
 	// palette texture is N×1 texels, so capacity here is nearly free on both sides.

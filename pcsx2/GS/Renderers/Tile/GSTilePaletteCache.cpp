@@ -40,6 +40,31 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 {
 	pxAssert(entries == 16 || entries == 256);
 
+	if (GSTexture* memo = LookupMemo(entries, read_gen, content_id))
+		return memo;
+
+	return LookupByHash(clut, entries, read_gen, HashWords(clut, entries), content_id);
+}
+
+GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen, u64 content_id,
+	u64* out_content_id)
+{
+	pxAssert(entries == 16 || entries == 256);
+	// ⚠️ NOT asserted against HashWords here on purpose: the assert would recompute the hash this
+	// overload exists to skip, and Devel keeps pxAssert, which is the build every measurement is
+	// taken on. The two forms are pinned equal in gs_tilegpu_palette_dedup_tests instead.
+
+	// The memo first, exactly as the hashing form does. It is not a shortcut past the hash here --
+	// the caller already paid that -- but past the entry scan and the memcmp, and it is where
+	// last_use and pinned_frame get refreshed.
+	if (GSTexture* memo = LookupMemo(entries, read_gen, out_content_id))
+		return memo;
+
+	return LookupByHash(clut, entries, read_gen, content_id, out_content_id);
+}
+
+GSTexture* GSTilePaletteCache::LookupMemo(u32 entries, u32 read_gen, u64* content_id)
+{
 	if (m_memo_valid && read_gen == m_memo_read_gen && entries == m_memo_entries)
 	{
 		Entry& me = m_entries[m_memo_slot];
@@ -54,9 +79,12 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 			return me.tex;
 		}
 	}
+	return nullptr;
+}
 
-	const u64 hash = HashWords(clut, entries);
-
+GSTexture* GSTilePaletteCache::LookupByHash(const u32* clut, u32 entries, u32 read_gen, u64 hash,
+	u64* content_id)
+{
 	Entry* lru = nullptr;
 	Entry* free_slot = nullptr;
 	for (Entry& e : m_entries)

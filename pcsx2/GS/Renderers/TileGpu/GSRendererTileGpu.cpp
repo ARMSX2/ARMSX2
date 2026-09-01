@@ -4984,11 +4984,17 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 		else
 		{
 			// The same words the byte road reads, from the same place: AccumulateDraw already ran
-			// Read32 (CSA, CPSM and TEXA applied there) and appended the expansion to the frame's
+			// Read32 (CSA, CPSM and TEXA applied there) and put the expansion in the frame's
 			// palette stream. Taking them from there rather than re-reading the CLUT is what makes
 			// the two roads' colours the same bytes by construction rather than by coincidence.
+			//
+			// ...and it also already HASHED them, into pd.pal_content_id, which is the number this
+			// lookup would otherwise compute by reading the whole palette back out of the stream.
+			// The words still decide the answer (the cache memcmps them behind the hash); only the
+			// hash is carried rather than repeated.
 			const u32* const clut = m_plan_palettes.data() + pd.pal_offset;
-			pal = m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration(), &pal_id);
+			pal = m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration(),
+				pd.pal_content_id, &pal_id);
 			// The namespace the gathered ids are kept out of: the expanded cache fuses
 			// (index build id x palette id) pairs, and two ids from different worlds compared equal
 			// would fuse two unrelated pairs with nothing to catch it.
@@ -6501,6 +6507,7 @@ void GSRendererTileGpu::AccumulateDraw()
 					pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
 					m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
 					const u64 pal_content = GSTilePaletteCache::ContentId(clut, pal_entries);
+					pd.pal_content_id = pal_content;
 					pd.pal_id = ClutCpuPalId(pal_content);
 					if (m_census_palette) [[unlikely]]
 						CensusCpuPalette(m_mem.m_clut.GetReadGeneration(), pal_entries, pal_content);

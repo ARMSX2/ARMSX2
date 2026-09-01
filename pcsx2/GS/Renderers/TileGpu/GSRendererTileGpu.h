@@ -2396,6 +2396,12 @@ private:
 		/// pal_mode 3 only: the copied tile's row stride S, as the state row's two forms of it.
 		u32 pal_mul, pal_shift;
 		u64 pal_id;
+		/// CPU road only (pal_record == 0): the palette's UNTAGGED content id, the raw hash of the
+		/// words at pal_offset. pal_id above is the same number with the id space's foreign bit
+		/// cleared, and the cache stores the raw one -- so this is the field the palette cache can
+		/// be handed to skip re-hashing words this draw already hashed, and pal_id is the field
+		/// derived caches key on. Zero on the gather road, which has no words.
+		u64 pal_content_id;
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
