@@ -141,6 +141,18 @@ public:
 	u64 GetTileGpuKickPredictorSubmits() const override { return m_tilegpu_kick_picker.submits_taken; }
 	u64 GetTileGpuSeedRenderPasses() const override { return m_tilegpu_seed_render_passes; }
 	u64 GetTileGpuMergeSeedRenderPasses() const override { return m_tilegpu_merge_seed_render_passes; }
+	u64 GetTileGpuStageBytes() const override { return m_tilegpu_stage_bytes; }
+	u64 GetTileGpuStagePeakOutstanding() const override { return m_tilegpu_stage_peak_outstanding; }
+	u32 GetTileGpuStageRingBytes() const override { return m_tilegpu_vram_stream_buffer.GetCurrentSize(); }
+	u32 GetTileGpuStagePeakRanges() const override { return m_tilegpu_stage_peak_ranges; }
+	u64 GetTileGpuStageSubmitRetries() const override { return m_tilegpu_stage_submit_retries; }
+	u64 GetTileGpuRetainCuts() const override { return m_tilegpu_retain_cuts; }
+	u64 GetTileGpuRetainSplits() const override { return m_tilegpu_retain_splits; }
+	u32 GetCommandBufferRingDepth() const override { return m_command_buffer_count; }
+	u64 GetTileGpuKickDeclinesAtDepth(u32 depth) const override
+	{
+		return (depth < MAX_COMMAND_BUFFERS) ? m_tilegpu_kick_decline_depth[depth] : 0;
+	}
 	enum : u32
 	{
 		// How deep the command-buffer ring is, and therefore how many submissions can be in flight
@@ -1662,6 +1674,23 @@ private:
 	u32 m_tilegpu_readback_frame = ~0u;
 	u64 m_tilegpu_kicks_offered = 0;
 	u64 m_tilegpu_kicks_taken = 0;
+
+	// The pipeline-depth census (EmuCore/GS/TileGpuCensus bit 128). Every counter here is written
+	// under that bit and nowhere else, so the default arm's numbers and its output are what they
+	// were. What the three groups answer, in order: how big a staging ring this title actually
+	// wants, what ring depth would have converted the kick offers that were refused, and whether a
+	// mid-plan cut is subdividing the tracked range or sliding all of it forward.
+	u64 m_tilegpu_stage_bytes = 0;
+	u64 m_tilegpu_stage_peak_outstanding = 0;
+	u32 m_tilegpu_stage_peak_ranges = 0;
+	u64 m_tilegpu_stage_submit_retries = 0;
+	u64 m_tilegpu_retain_cuts = 0;
+	u64 m_tilegpu_retain_splits = 0;
+	// Indexed by the number of ring slots still holding an unretired submission when an offer was
+	// declined. A decline at depth d is one a ring of d + 2 would have taken.
+	std::array<u64, MAX_COMMAND_BUFFERS> m_tilegpu_kick_decline_depth{};
+	// EmuCore/GS/TileGpuCensus bit 128, read once at device creation like every other census arm.
+	bool m_census_pipeline_depth = false;
 	bool m_tilegpu_kick_announced = false;
 
 	// The per-frame cadence predictor (EmuCore/GS/TileGpuAdaptiveKick) and the two things a frame

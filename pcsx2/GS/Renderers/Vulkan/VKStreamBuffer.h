@@ -36,6 +36,22 @@ public:
 	__fi u32 GetCurrentSpace() const { return m_current_space; }
 	__fi u32 GetCurrentOffset() const { return m_current_offset; }
 
+	/// How many bytes the ring is holding for submissions that have not retired -- the write
+	/// position measured from where the GPU has been proven to have got to, wrap included. This is
+	/// the ring's DEPTH as a number rather than as a wait: it is what has to fit inside the buffer
+	/// for the host to keep running, so a peak near the size is a title that is about to block and
+	/// a peak well under it is a ring nobody is asking anything of.
+	__fi u32 GetOutstandingBytes() const
+	{
+		return (m_current_offset >= m_current_gpu_position) ? (m_current_offset - m_current_gpu_position)
+															: (m_size - m_current_gpu_position + m_current_offset);
+	}
+
+	/// How many separate fences the ring is tracking. One entry is one "these bytes free together",
+	/// so this is the granularity a blocking wait gets to choose from: at one entry the only
+	/// available answer is "wait for everything".
+	__fi u32 GetTrackedRangeCount() const { return static_cast<u32>(m_tracked_fences.size()); }
+
 	/// `wait_site` is who gets charged when this buffer runs out of room and blocks. Passed at
 	/// creation rather than set afterwards because a buffer that serves traffic before anybody
 	/// names it books its waits somewhere useless, and there is no way to notice.
@@ -83,7 +99,9 @@ public:
 	/// retain whenever the offset does not sit strictly inside the newest range -- a wrap, an empty
 	/// live range, a caller with nothing staged -- because retaining too much is only slow and
 	/// retaining too little is corruption.
-	void RetainForCurrentCommandBufferFrom(u32 keep_from_offset);
+	/// Returns whether the range was actually split, rather than falling back to the blanket
+	/// retain -- the one thing an arm that claims to subdivide has to be able to show.
+	bool RetainForCurrentCommandBufferFrom(u32 keep_from_offset);
 
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);

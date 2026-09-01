@@ -3856,6 +3856,51 @@ void GSRendererTileGpu::ReportModelTraffic()
 			static_cast<double>(g_gs_device->GetTileGpuKickPredictorWaitOnNs()) / 1e6);
 	}
 
+	// THE PIPELINE-DEPTH CENSUS (EmuCore/GS/TileGpuCensus bit 128). Three resources bound how far
+	// ahead of the GPU the GS thread may run, and until this line the only visible symptom of any of
+	// them was a wait with no explanation of what depth would have removed it.
+	if (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPipelineDepth)
+	{
+		const double ring_mb = static_cast<double>(g_gs_device->GetTileGpuStageRingBytes()) / (1024.0 * 1024.0);
+		const double peak_mb = static_cast<double>(g_gs_device->GetTileGpuStagePeakOutstanding()) / (1024.0 * 1024.0);
+		Console.WriteLn("  pipeline depth -- byte-road staging: %.2f MB /drawn frame into a %.0f MB ring, peak %.2f MB "
+						"outstanding (%.1f%% of it), %u tracked ranges at the deepest, %.2f submit-and-retry /drawn "
+						"frame",
+			static_cast<double>(g_gs_device->GetTileGpuStageBytes()) / mframes / (1024.0 * 1024.0), ring_mb, peak_mb,
+			ring_mb > 0.0 ? (100.0 * peak_mb / ring_mb) : 0.0, g_gs_device->GetTileGpuStagePeakRanges(),
+			static_cast<double>(g_gs_device->GetTileGpuStageSubmitRetries()) / mframes);
+
+		// The histogram, printed only where it is nonzero, with the ring depth each bucket would
+		// have needed spelled out -- the reader's question is "what do I set the key to", not "what
+		// was the fence counter".
+		std::string declines;
+		u64 declined_total = 0;
+		for (u32 d = 0; d < 64; d++)
+		{
+			const u64 n = g_gs_device->GetTileGpuKickDeclinesAtDepth(d);
+			if (n == 0)
+				continue;
+			declined_total += n;
+			declines += StringUtil::StdStringFromFormat(
+				"  %u: %.2f /f", d, static_cast<double>(n) / mframes);
+		}
+		// Piled at the ring depth means the backlog is AT LEAST that deep and the ring is what is
+		// refusing; spread below it means depth is not the binding term and a deeper one buys
+		// nothing. The count cannot exceed the depth by construction, so the top bucket is a floor.
+		Console.WriteLn("  pipeline depth -- kick declines by SUBMISSIONS IN FLIGHT (ring %u deep;%s):%s   "
+						"[total %.2f /drawn frame]",
+			g_gs_device->GetCommandBufferRingDepth(),
+			" a pile at the depth is a floor, not a measurement -- deepen the ring and re-read",
+			declines.empty() ? "  none" : declines.c_str(), static_cast<double>(declined_total) / mframes);
+
+		const double cuts = static_cast<double>(g_gs_device->GetTileGpuRetainCuts());
+		Console.WriteLn("  pipeline depth -- mid-plan cuts: %.2f /drawn frame, of which %.2f subdivided the tracked "
+						"range and %.2f slid all of it forward (EmuCore/GS/TileGpuStageRetainSplit %s)",
+			cuts / mframes, static_cast<double>(g_gs_device->GetTileGpuRetainSplits()) / mframes,
+			(cuts - static_cast<double>(g_gs_device->GetTileGpuRetainSplits())) / mframes,
+			GSConfig.TileGpuStageRetainSplit ? "ON" : "off");
+	}
+
 	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of
 	// materialised sources WOULD have served, and for the rest, exactly which clause refused.
 	const auto tdraws = stat([](const MF& f) { return f.tex_draws; });

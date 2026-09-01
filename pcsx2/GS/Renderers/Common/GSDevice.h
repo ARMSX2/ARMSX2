@@ -2426,6 +2426,22 @@ public:
 	virtual u64 GetTileGpuKickPredictorWaitOnNs() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorTaxNs() const { return 0; }
 	virtual u64 GetTileGpuKickPredictorSubmits() const { return 0; }
+
+	/// The pipeline-depth census (EmuCore/GS/TileGpuCensus bit 128), all of it dark unless that bit
+	/// is set. The staging group prices a ring size directly -- bytes staged, the peak the ring was
+	/// actually holding for unretired submissions, and how many separate fences it was tracking,
+	/// which is the granularity a blocking wait gets to choose from. The decline histogram says what
+	/// ring DEPTH would have converted each refused kick offer. The retain pair says whether a
+	/// mid-plan cut subdivided the tracked range or slid the whole thing forward.
+	virtual u64 GetTileGpuStageBytes() const { return 0; }
+	virtual u64 GetTileGpuStagePeakOutstanding() const { return 0; }
+	virtual u32 GetTileGpuStageRingBytes() const { return 0; }
+	virtual u32 GetTileGpuStagePeakRanges() const { return 0; }
+	virtual u64 GetTileGpuStageSubmitRetries() const { return 0; }
+	virtual u64 GetTileGpuRetainCuts() const { return 0; }
+	virtual u64 GetTileGpuRetainSplits() const { return 0; }
+	virtual u32 GetCommandBufferRingDepth() const { return 0; }
+	virtual u64 GetTileGpuKickDeclinesAtDepth(u32 depth) const { return 0; }
 	/// Render passes the executor opened for a Seed or SeedDepth op, cumulative over the run, and
 	/// how many of those were the upload merge's. Counted HERE because nothing else can see them:
 	/// the renderer's pass census counts PLAN passes (`m_frame.passes += m_plan_passes.size()`), and

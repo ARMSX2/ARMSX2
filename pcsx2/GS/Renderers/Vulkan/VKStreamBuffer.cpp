@@ -214,15 +214,15 @@ void VKStreamBuffer::RetainForCurrentCommandBuffer()
 		m_tracked_fences.back().first = counter;
 }
 
-void VKStreamBuffer::RetainForCurrentCommandBufferFrom(u32 keep_from_offset)
+bool VKStreamBuffer::RetainForCurrentCommandBufferFrom(u32 keep_from_offset)
 {
 	if (m_tracked_fences.empty())
-		return;
+		return false;
 
 	const u64 counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
 	auto& back = m_tracked_fences.back();
 	if (back.first >= counter)
-		return; // already on the buffer being recorded; there is nothing older to leave behind
+		return false; // already on the buffer being recorded; there is nothing older to leave behind
 
 	// The newest range runs from the previous entry's mark (or the buffer's start) up to this
 	// entry's. A split is only meaningful strictly inside it: at or below the low end there is
@@ -233,7 +233,7 @@ void VKStreamBuffer::RetainForCurrentCommandBufferFrom(u32 keep_from_offset)
 	if (keep_from_offset <= low || keep_from_offset >= high || low > high)
 	{
 		RetainForCurrentCommandBuffer();
-		return;
+		return false;
 	}
 
 	// [low, keep_from) keeps the fence it was committed under and retires with it; [keep_from, high)
@@ -241,6 +241,7 @@ void VKStreamBuffer::RetainForCurrentCommandBufferFrom(u32 keep_from_offset)
 	// keep_from < high, and the old counter is strictly below the current one.
 	back.second = keep_from_offset;
 	m_tracked_fences.emplace_back(counter, high);
+	return true;
 }
 
 void VKStreamBuffer::UpdateCurrentFencePosition()

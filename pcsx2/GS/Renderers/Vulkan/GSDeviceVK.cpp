@@ -4077,6 +4077,7 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	// The ring's depth, read once and before anything per-buffer exists. Everything below --
 	// the query pools' length, the command pools, the fences, the per-frame descriptor chains --
 	// is sized off it, and every index that walks the ring wraps on it.
+	m_census_pipeline_depth = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPipelineDepth) != 0;
 	m_command_buffer_count = CommandBufferRingDepth(GSConfig.VulkanCommandBufferRingDepth);
 	if (m_command_buffer_count != static_cast<u32>(NUM_COMMAND_BUFFERS))
 	{
@@ -7444,9 +7445,15 @@ void GSDeviceVK::RetainTileGpuStreamsForCurrentCommandBuffer(u32 vram_keep_from)
 	// is the FRAME's (every pass re-binds vertex and index at the frame's base), and none of them
 	// has ever waited.
 	if (GSConfig.TileGpuStageRetainSplit && vram_keep_from != kTileGpuNoStagedPlan)
-		m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBufferFrom(vram_keep_from);
+	{
+		const bool split = m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBufferFrom(vram_keep_from);
+		m_tilegpu_retain_splits += (m_census_pipeline_depth && split) ? 1 : 0;
+	}
 	else
+	{
 		m_tilegpu_vram_stream_buffer.RetainForCurrentCommandBuffer();
+	}
+	m_tilegpu_retain_cuts += m_census_pipeline_depth ? 1 : 0;
 }
 
 // The source set the frame's draws sample through, taken from the ring. A set is reusable once the
@@ -8742,10 +8749,21 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const bool submit_before_wait = GSConfig.TileGpuSubmitBeforeStageWait;
 		if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes, !submit_before_wait))
 		{
+			m_tilegpu_stage_submit_retries += m_census_pipeline_depth ? 1 : 0;
 			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
 			RetainTileGpuStreamsForCurrentCommandBuffer();
 			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 				pxFailRel("Failed to reserve TileGpu ring");
+		}
+		if (m_census_pipeline_depth)
+		{
+			// Sampled with the reservation in hand and before the commit, so "outstanding" is what
+			// the ring was holding when it was asked -- the number a size has to be bigger than.
+			m_tilegpu_stage_bytes += total;
+			m_tilegpu_stage_peak_outstanding = std::max<u64>(
+				m_tilegpu_stage_peak_outstanding, m_tilegpu_vram_stream_buffer.GetOutstandingBytes() + total);
+			m_tilegpu_stage_peak_ranges =
+				std::max(m_tilegpu_stage_peak_ranges, m_tilegpu_vram_stream_buffer.GetTrackedRangeCount());
 		}
 		u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
 		const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
@@ -9135,6 +9153,17 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const u32 next_buffer = (m_current_frame + 1) % m_command_buffer_count;
 		if (m_frame_resources[next_buffer].fence_counter > m_completed_fence_counter)
 		{
+			if (m_census_pipeline_depth)
+			{
+				// Submissions the GPU has not finished, exactly: the counter this thread is
+				// recording against, less the newest one proven complete. It cannot exceed the ring
+				// depth, because ActivateCommandBuffer blocks before it could -- so a histogram
+				// that PILES AT THE DEPTH means the backlog is at least that deep and the ring is
+				// what is refusing, while one that spreads below it means the depth is not the
+				// binding term and a deeper ring buys nothing.
+				const u64 in_flight = GetCurrentFenceCounter() - m_completed_fence_counter;
+				m_tilegpu_kick_decline_depth[std::min<u64>(in_flight, MAX_COMMAND_BUFFERS - 1)]++;
+			}
 			// A declined offer still cost a scan, and on a starved title there are hundreds of them
 			// a frame. The predictor is answerable for that too, so it is timed on the way out.
 			if (cadence_is_marginal)

@@ -2866,6 +2866,18 @@ struct Pcsx2Config
 		//         epochs, prep ops, page-table words -- because a boundary's cost is the cost of
 		//         the plan it cut, and the two are not derivable from the frame totals. One enum
 		//         store per flush and one add per plan.
+		// 128  -- TileGpuCensusPipelineDepth: how deep the pipeline actually gets, in the three
+		//         resources that bound it. (a) The byte road's staging: bytes staged a frame, the
+		//         PEAK the ring was holding for submissions that had not retired, and how many
+		//         separate fences it was tracking -- which is the granularity a blocking wait gets
+		//         to choose from, and at one range the only available answer is "wait for
+		//         everything". Together those price a ring size instead of guessing one. (b) The
+		//         mid-frame kick's declines, histogrammed by how many ring slots still held an
+		//         unretired submission: a decline at depth d is one a command-buffer ring of d + 2
+		//         would have taken, so the histogram says what depth would buy what. (c) Whether a
+		//         mid-plan cut subdivided the tracked range or slid all of it forward
+		//         (TileGpuStageRetainSplit's own evidence). Counters only -- no hash, no walk --
+		//         and every one of them is written under this bit and nowhere else.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//
@@ -2888,6 +2900,7 @@ struct Pcsx2Config
 		static constexpr int TileGpuCensusWriteback = 16;
 		static constexpr int TileGpuCensusRingStage = 32;
 		static constexpr int TileGpuCensusPlanBoundary = 64;
+		static constexpr int TileGpuCensusPipelineDepth = 128;
 		int TileGpuCensus = 0;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
