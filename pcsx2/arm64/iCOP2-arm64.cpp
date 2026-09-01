@@ -740,6 +740,30 @@ static EEFPU_MODEL_CALL void cop2MulShortTailBand()
 	vuMulShortTailBandLanes(st.bandFs, st.bandFt, st.bandProduct);
 }
 
+// The model seam is the same at every site (EeFpuModelCall-arm64.h), so it is
+// emitted once with the dispatchers and each site is left with a bl.
+enum : int
+{
+	kCop2ModelStubDivide,
+	kCop2ModelStubSqrtBits,
+	kCop2ModelStubRecipSqrt,
+	kCop2ModelStubMulShortTailBand,
+	kCop2ModelStubCount
+};
+static const u8* s_cop2ModelStubs[kCop2ModelStubCount];
+
+void cop2DynGenModelStubs()
+{
+	s_cop2ModelStubs[kCop2ModelStubDivide] =
+		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::Divide));
+	s_cop2ModelStubs[kCop2ModelStubSqrtBits] =
+		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
+	s_cop2ModelStubs[kCop2ModelStubRecipSqrt] =
+		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
+	s_cop2ModelStubs[kCop2ModelStubMulShortTailBand] =
+		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&cop2MulShortTailBand));
+}
+
 static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& u, bool uLive)
 {
@@ -811,7 +835,7 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	if (!aliasFt)
 		armAsm->Str(b, bandFt);
 	armAsm->Str(dst, bandProduct);
-	armEmitEeFpuModelCall(reinterpret_cast<const void*>(&cop2MulShortTailBand));
+	armEmitCall(s_cop2ModelStubs[kCop2ModelStubMulShortTailBand]);
 	armAsm->Ldr(dst, bandProduct);
 	armAsm->Bind(&done);
 
@@ -1517,6 +1541,15 @@ int cop2TestGetSyncStubCount()
 const u8* cop2TestGetSyncStub(int kind)
 {
 	return (kind >= 0 && kind < kCop2SyncStubCount) ? s_cop2SyncStubs[kind] : nullptr;
+}
+
+int cop2TestGetModelStubCount()
+{
+	return kCop2ModelStubCount;
+}
+const u8* cop2TestGetModelStub(int kind)
+{
+	return (kind >= 0 && kind < kCop2ModelStubCount) ? s_cop2ModelStubs[kind] : nullptr;
 }
 #endif
 
@@ -2918,7 +2951,7 @@ static bool cop2NeedsSoftwareFlush()
 
 /*	vuClampMode 4 reads the divide unit's own arithmetic -- a digit recurrence
 	with no rounding step -- instead of the host's Fdiv and Fsqrt, out of line
-	through armEmitEeFpuModelCall, on the arm each op takes once it has answered
+	through s_cop2ModelStubs, on the arm each op takes once it has answered
 	the zero divisor for itself.
 
 	Two things stop below it: the ±FLT_MAX clamp, the model's range running a
@@ -2996,7 +3029,7 @@ void recCOP2_VDIV()
 	{
 		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->Ldr(RWARG2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::Divide));
+		armEmitCall(s_cop2ModelStubs[kCop2ModelStubDivide]);
 		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
 	}
 	else
@@ -3054,7 +3087,7 @@ void recCOP2_VSQRT()
 		// eeSqrtBits never reads the sign bit, so the |ft| the host path needs
 		// has no counterpart here.
 		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
+		armEmitCall(s_cop2ModelStubs[kCop2ModelStubSqrtBits]);
 		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
 	}
 	else
@@ -3157,7 +3190,7 @@ void recCOP2_VRSQRT()
 		// to live across a second, and RecipSqrt is the pair.
 		armAsm->Ldr(RWARG1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->Ldr(RWARG2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-		armEmitEeFpuModelCall(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
+		armEmitCall(s_cop2ModelStubs[kCop2ModelStubRecipSqrt]);
 		armAsm->Str(RWARG1, armVU0Mem(&VU0.q));
 	}
 	else

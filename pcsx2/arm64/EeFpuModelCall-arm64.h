@@ -27,7 +27,7 @@ namespace a64 = vixl::aarch64;
 	addressing modes: STP's offset is a signed 7-bit multiple of the operand
 	size, and the fallback frame is wide enough that vectors first would push
 	the GPR pairs past it.  */
-__fi static void armEmitEeFpuModelCall(const void* fn)
+namespace EeFpuModelFrame
 {
 	// Without the attribute the convention is plain AAPCS and everything
 	// caller-saved has to go. x17 and x18 are excluded either way: one is
@@ -43,19 +43,43 @@ __fi static void armEmitEeFpuModelCall(const void* fn)
 	static_assert(kFrame % 16 == 0, "sp stays 16-byte aligned");
 
 	// The pair after the last saved GPR is x30, which has no run to sit in.
-	const auto gpr = [](int i) { return a64::XRegister(i <= kGprEnd ? i : 30); };
+	__fi static a64::XRegister Gpr(int i) { return a64::XRegister(i <= kGprEnd ? i : 30); }
+} // namespace EeFpuModelFrame
 
+__fi static void armEmitEeFpuModelSpill()
+{
+	using namespace EeFpuModelFrame;
 	armAsm->Sub(a64::sp, a64::sp, kFrame);
 	for (int i = 2, off = 0; i < 2 + kNumGpr; i += 2, off += 16)
-		armAsm->Stp(gpr(i), gpr(i + 1), a64::MemOperand(a64::sp, off));
+		armAsm->Stp(Gpr(i), Gpr(i + 1), a64::MemOperand(a64::sp, off));
 	for (int i = 0, off = kGprBytes; i < kNeonEnd; i += 2, off += 32)
 		armAsm->Stp(a64::QRegister(i), a64::QRegister(i + 1), a64::MemOperand(a64::sp, off));
+}
 
-	armEmitCall(fn);
-
+__fi static void armEmitEeFpuModelRestore()
+{
+	using namespace EeFpuModelFrame;
 	for (int i = 2, off = 0; i < 2 + kNumGpr; i += 2, off += 16)
-		armAsm->Ldp(gpr(i), gpr(i + 1), a64::MemOperand(a64::sp, off));
+		armAsm->Ldp(Gpr(i), Gpr(i + 1), a64::MemOperand(a64::sp, off));
 	for (int i = 0, off = kGprBytes; i < kNeonEnd; i += 2, off += 32)
 		armAsm->Ldp(a64::QRegister(i), a64::QRegister(i + 1), a64::MemOperand(a64::sp, off));
 	armAsm->Add(a64::sp, a64::sp, kFrame);
+}
+
+__fi static void armEmitEeFpuModelCall(const void* fn)
+{
+	armEmitEeFpuModelSpill();
+	armEmitCall(fn);
+	armEmitEeFpuModelRestore();
+}
+
+// Reached by a bl, so the x30 in the frame is the site's return address.
+__fi static const u8* armDynGenEeFpuModelStub(const void* fn)
+{
+	const u8* start = armGetCurrentCodePointer();
+	armEmitEeFpuModelSpill();
+	armEmitCall(fn);
+	armEmitEeFpuModelRestore();
+	armAsm->Ret();
+	return start;
 }
