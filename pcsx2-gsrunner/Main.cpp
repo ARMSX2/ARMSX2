@@ -302,6 +302,12 @@ static double s_last_dualsrc_restore = 0;
 static u64 s_total_dualsrc_restore = 0;
 static double s_last_dualsrc_companions = 0;
 static u64 s_total_dualsrc_companions = 0;
+// The TileGpu pipeline-switch census: every bind the executor emits, and the in-pass subset the
+// switch tax is actually charged on (a pass's first bind is the pass's, not a switch).
+static double s_last_tilegpu_pipeline_binds = 0;
+static u64 s_total_tilegpu_pipeline_binds = 0;
+static double s_last_tilegpu_inpass_binds = 0;
+static u64 s_total_tilegpu_inpass_binds = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -562,6 +568,9 @@ void Host::BeginPresentFrame()
 		update_stat(GSPerfMon::TileGpuDualSrcDraws, s_total_dualsrc_draws, s_last_dualsrc_draws);
 		update_stat(GSPerfMon::TileGpuDualSrcRestore, s_total_dualsrc_restore, s_last_dualsrc_restore);
 		update_stat(GSPerfMon::TileGpuDualSrcCompanions, s_total_dualsrc_companions, s_last_dualsrc_companions);
+		update_stat(GSPerfMon::TileGpuPipelineBinds, s_total_tilegpu_pipeline_binds, s_last_tilegpu_pipeline_binds);
+		update_stat(
+			GSPerfMon::TileGpuInPassPipelineBinds, s_total_tilegpu_inpass_binds, s_last_tilegpu_inpass_binds);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -1630,6 +1639,8 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_draws\": %" PRIu64 ",\n", s_total_dualsrc_draws);
 	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_restore\": %" PRIu64 ",\n", s_total_dualsrc_restore);
 	std::fprintf(fp.get(), "    \"tilegpu_dualsrc_companions\": %" PRIu64 ",\n", s_total_dualsrc_companions);
+	std::fprintf(fp.get(), "    \"tilegpu_pipeline_binds\": %" PRIu64 ",\n", s_total_tilegpu_pipeline_binds);
+	std::fprintf(fp.get(), "    \"tilegpu_inpass_pipeline_binds\": %" PRIu64 ",\n", s_total_tilegpu_inpass_binds);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	// The same population, split by cause, so an attribution round needs no teardown-ordering print
 	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader
@@ -1705,6 +1716,10 @@ void GSRunner::DumpStats()
 		s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Tile Payload Bytes: {} (avg {})", s_total_tile_payload_bytes, static_cast<u64>(std::ceil(s_total_tile_payload_bytes / static_cast<double>(s_total_drawn_frames)))));
+	Console.WriteLn(fmt::format("@HWSTAT@ TileGpu Pipeline Binds: {} (avg {})", s_total_tilegpu_pipeline_binds,
+		static_cast<u64>(std::ceil(s_total_tilegpu_pipeline_binds / static_cast<double>(s_total_drawn_frames)))));
+	Console.WriteLn(fmt::format("@HWSTAT@ TileGpu In-Pass Pipeline Binds: {} (avg {})", s_total_tilegpu_inpass_binds,
+		static_cast<u64>(std::ceil(s_total_tilegpu_inpass_binds / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));

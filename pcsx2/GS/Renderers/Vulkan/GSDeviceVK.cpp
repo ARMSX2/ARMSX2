@@ -10225,6 +10225,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			const bool have_variants = plan.variant_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
+			u32 pass_binds = 0;
 			while (d < end)
 			{
 				const GSTileGpuPassPlan::GSTileGpuRunKey rkey = plan.RunKeyAt(d);
@@ -10276,6 +10277,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					continue;
 				}
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, run_pipe);
+				g_perfmon.Put(GSPerfMon::TileGpuPipelineBinds, 1);
+				// The first bind of a pass is the pass's own; every one after it is a switch INSIDE
+				// the pass, which is the population the switch tax is charged on. Kept apart because
+				// a pass entry costs what it costs whatever the run key says.
+				if (pass_binds++ != 0)
+					g_perfmon.Put(GSPerfMon::TileGpuInPassPipelineBinds, 1);
 				if ((bkey & GSTileGpuPassPlan::kBlendEnable) && !(bkey & GSTileGpuPassPlan::kSelfBlend))
 				{
 					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.

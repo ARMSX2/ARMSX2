@@ -82,6 +82,19 @@ public:
 		TileGpuDualSrcRestore,
 		TileGpuDualSrcCompanions,
 
+		// The TileGpu pipeline-switch tax, in the two halves it is actually paid in. On the Adreno
+		// 650 a draw preceded by an IN-PASS vkCmdBindPipeline costs +2.8 to +6.4 us against +0.7 to
+		// +1.9 for Classic's equivalent -- the driver defers the state-group upload to draw time, so
+		// the cost lands on the draw and not on the bind, and our fragment programs are 2.6x
+		// Classic's per switch. That makes the count of IN-PASS binds, and not the count of all
+		// binds, the population the mid-band per-draw premium is charged on.
+		//
+		// PipelineBinds is every bind the TileGpu executor emits; InPassPipelineBinds is those after
+		// a pass's first, which is the population above. A pass entry costs what it costs whatever
+		// the run key says, so folding the two would hide the number a run-cut change moves.
+		TileGpuPipelineBinds,
+		TileGpuInPassPipelineBinds,
+
 		// Summed renderArea of the frame's render passes, in pixels. On a tiler that is the frame's
 		// tile load-and-store bill: a pass pays for every pixel of its render area whether anything
 		// drew there or not, so the area is what a pass costs and the count is not. Exactly the
