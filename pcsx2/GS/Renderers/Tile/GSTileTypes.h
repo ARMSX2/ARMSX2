@@ -1445,3 +1445,65 @@ constexpr bool gsTilePaletteCycleIsAlphaSplit(u32 fbmsk)
 {
 	return fbmsk == kGSTilePaletteCycleAlphaFbmsk;
 }
+
+// -- the CPU rasterization road -----------------------------------------------------------------
+
+/// Why a draw did NOT take the CPU rasterization road, or None where it did. The shape reasons are
+/// decided by gsTileGpuPlanCpuRaster below; the two model reasons are the renderer's, because they
+/// are questions about what the GPU currently holds and no pure function can answer them.
+enum class GSTileCpuRasterRefusal : u8
+{
+	None = 0, ///< admitted
+	Disabled, ///< the GameDB entry is absent, or the key is off
+	NoColour, ///< the draw writes no colour at all
+	Depth, ///< the draw touches a depth buffer
+	NotSpriteTex, ///< level 0 admits only textured sprites, and this is not one
+	FrameWidth, ///< FRAME.FBW is wider than the entry allows
+	Blended, ///< level < 2 admits neither mipmapped nor blended draws
+	Shuffle, ///< a texture shuffle is in progress
+	GpuTruth, ///< a page the draw reads or writes has its newest bytes on the GPU
+	ClutStale, ///< the draw's palette slots are the device's, not the CPU's
+};
+
+/// Classic's `GSRendererHW::CanUseSwPrimRender` gates 1-5, which are the ones that describe the
+/// DRAW rather than the renderer's cache. They transcribe unchanged, because the GameDB entry that
+/// arms this road was tuned against exactly these boundaries and a title's fix means the population
+/// Classic diverts, not a population of our own choosing.
+///
+/// `bw` is UserHacks_CPUSpriteRenderBW, in units of 64 pixels: the entry names the widest render
+/// target it will divert, and Spider-Man 3's `2` means at most 128 pixels wide. The `fbw == 32`
+/// escape is a named Spider-Man 2 special case and rides along.
+///
+/// `level` is UserHacks_CPUSpriteRenderLevel and it widens the population twice. Level 0 takes
+/// opaque unmipmapped TEXTURED SPRITES only; level 1 drops the sprite and texture requirement;
+/// LEVEL 2 drops the opaque and mipmap requirements as well, which is what admits a BLENDED draw.
+/// That last step is not a detail: Spider-Man 3's sun glow is a blended draw, and the GameDB's own
+/// comment on the entry ("Fixes the sun when using the above") is naming this gate.
+///
+/// The two gates Classic has and this does not are its texture-cache sub-analysis, which asks
+/// whether a render target can serve the sample -- a question about GPU-side objects TileGpu does
+/// not have, replaced at the call site by the memory model's own truth test -- and its
+/// blended-with-constant-alpha special case, which is a REFINEMENT of that same sub-analysis (it
+/// only ever fires where a destination target exists) and therefore has nothing to refine here.
+constexpr GSTileCpuRasterRefusal gsTileGpuPlanCpuRaster(u32 bw, u32 level, bool colour_written,
+	bool depth_used, bool draw_sprite_tex, u32 fbw, bool mipmap, bool opaque, bool split_shuffle)
+{
+	using R = GSTileCpuRasterRefusal;
+	if (bw == 0)
+		return R::Disabled;
+	if (!colour_written)
+		return R::NoColour;
+	// The load-bearing one. A draw that touches depth at all is refused: the road writes colour
+	// bytes into guest memory and has no depth attachment to be consistent with.
+	if (depth_used)
+		return R::Depth;
+	if (level == 0 && !draw_sprite_tex)
+		return R::NotSpriteTex;
+	if (fbw > bw && fbw != 32)
+		return R::FrameWidth;
+	if (level < 2 && (mipmap || !opaque))
+		return R::Blended;
+	if (split_shuffle)
+		return R::Shuffle;
+	return R::None;
+}
