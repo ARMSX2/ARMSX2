@@ -2727,6 +2727,39 @@ struct Pcsx2Config
 		// and then sampled) that no reordering can remove.
 		int TileGpuReorderRuns = TileGpuReorderRunsAuto;
 
+		// WHICH of the TileGpu campaign's CENSUSES run, as a bitmask. Zero -- the default and what
+		// ships -- runs none of them and costs the frame nothing.
+		//
+		//   0  -- none. What ships.
+		//   1  -- TileGpuCensusPassBreaks: why each render pass ended, plus the same plan recut
+		//         under the Adreno pass policy (GSRendererTileGpu::CensusPassBreak /
+		//         CensusAdrenoPasses). The recut is a SECOND grouping walk over every draw of the
+		//         plan, so this is the expensive one.
+		//   2  -- TileGpuCensusDateCover: what a rect-set DATE staleness test would have saved over
+		//         today's bounding union (GSTileGpuDateCover). One rect-set update per draw.
+		//   4  -- TileGpuCensusVariantFields: which FIELD of the fragment variant bought each
+		//         in-pass pipeline bind (GSDeviceVK::TileGpuCensusCut's field/pair/collapse
+		//         tallies). Per in-pass run cut whose sole cause is the variant.
+		//  -1  -- every census, including any bit added after this comment was written. The campaign
+		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
+		//
+		// WHY THIS EXISTS. An instrument's own cost is part of its integration gate, and these three
+		// were landed without one. Between 84e7ccd7b0 and 34576e657a the SD865 suite's OutRun 2006
+		// scene lost 5.1% with its GPU time flat to 0.1% and its pass and draw counts identical --
+		// pure added GS-thread CPU. The censuses answer questions about a run in front of you, which
+		// is a campaign question and not a player's, so they stay one `-set` away rather than being
+		// deleted. What each of them REPORTS when armed is unchanged; only their per-frame cost when
+		// nobody asked for them is.
+		//
+		// A bitmask rather than a bool because the three have different prices and different
+		// questions: a round that wants the pass tier should not have to pay the device's per-cut
+		// field split to get it. Read ONCE at renderer construction, like every other pass-structure
+		// policy here -- a census that armed itself mid-frame would count part of a plan.
+		static constexpr int TileGpuCensusPassBreaks = 1;
+		static constexpr int TileGpuCensusDateCover = 2;
+		static constexpr int TileGpuCensusVariantFields = 4;
+		int TileGpuCensus = 0;
+
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
 		// that spills into it takes the blocking road instead.
 		//

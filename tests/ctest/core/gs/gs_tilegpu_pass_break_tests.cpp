@@ -349,3 +349,38 @@ TEST(GSTileGpuPassBreak, DateCoverStartsAndClearsEmpty)
 	EXPECT_TRUE(cover.empty());
 	EXPECT_FALSE(cover.intersects(GSVector4i(0, 0, 640, 448)));
 }
+
+// -- EmuCore/GS/TileGpuCensus, the key that arms all of the above -------------------------------
+//
+// The census is a campaign instrument and a player pays for none of it, so the key's DEFAULT is the
+// property that matters most and it is the one nothing else would catch: a default that drifted to
+// non-zero would put a second grouping walk and a per-draw rect set back into every shipped frame,
+// and every test in this file would still pass. The bits are pinned as distinct single bits so that
+// a fourth census added later cannot silently re-use one of the three, which would arm two
+// instruments where a round asked for one and misattribute whatever it then measured.
+TEST(GSTileGpuPassBreak, CensusIsOffByDefaultAndItsBitsAreDisjoint)
+{
+	using GS = Pcsx2Config::GSOptions;
+	// What ships. The regression this key exists for is exactly this value being anything else.
+	EXPECT_EQ(GS().TileGpuCensus, 0);
+
+	constexpr int kBits[] = {GS::TileGpuCensusPassBreaks, GS::TileGpuCensusDateCover,
+		GS::TileGpuCensusVariantFields};
+	int seen = 0;
+	for (const int b : kBits)
+	{
+		EXPECT_NE(b, 0);
+		// One bit each: a mask of two would arm a census the caller did not name.
+		EXPECT_EQ(b & (b - 1), 0) << "census bit " << b << " is not a single bit";
+		EXPECT_EQ(seen & b, 0) << "census bit " << b << " collides with an earlier one";
+		seen |= b;
+	}
+
+	// Nothing is armed at zero, everything is armed at -1 -- including bits added after this test,
+	// which is why the campaign arm is -1 and not the sum of the three.
+	for (const int b : kBits)
+	{
+		EXPECT_EQ(0 & b, 0);
+		EXPECT_NE(-1 & b, 0);
+	}
+}

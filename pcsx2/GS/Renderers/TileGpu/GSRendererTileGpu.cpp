@@ -440,6 +440,26 @@ GSRendererTileGpu::GSRendererTileGpu()
 			"forced -- the database gets no say",
 		m_reorder_gated ? "matched" : "not matched");
 
+	// The campaign censuses this renderer owns (EmuCore/GS/TileGpuCensus), read once here for the
+	// reason every pass-structure policy above is read once: the pass-break census asserts it counted
+	// the same passes the plan build did, and a bit that changed between the walk and the assert
+	// would fail a run that is perfectly correct.
+	//
+	// Announced only when something is armed. A census decides nothing and moves no pixel, so a line
+	// on the OFF position would be noise in every shipped log -- but a run whose numbers were taken
+	// with an instrument running has to say so, because the instrument is what this key exists to
+	// price.
+	m_census_pass_breaks =
+		(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPassBreaks) != 0;
+	m_census_date_cover = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusDateCover) != 0;
+	if (GSConfig.TileGpuCensus != 0)
+	{
+		Console.WriteLn("TileGpu: censuses ARMED (TileGpuCensus = %d): pass breaks %s, DATE cover %s, "
+						"variant fields %s. Instrumentation only -- nothing here decides a pixel or a pass.",
+			GSConfig.TileGpuCensus, m_census_pass_breaks ? "on" : "off", m_census_date_cover ? "on" : "off",
+			(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0 ? "on" : "off");
+	}
+
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
 	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
 	// draws and issues them at the plan, so a texture one of them names must survive to the end of
@@ -3032,8 +3052,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 		m_max_pass_draws, bigpass.mean, bigpass.p50, capped.mean, capped.p50);
 	// The pass-break cause census. Two numbers per cause: the boundaries it was PRESENT at, and in
 	// brackets those where it was the SOLE cause -- the ones a merge removing that cause would
-	// actually collect. Printed unconditionally, because "which of the dozen merges is worth writing"
-	// is a question about the run in front of you and there is no arm to compare against.
+	// actually collect. Printed whenever the census RAN: with the key off nothing counted a boundary,
+	// and a table of zeroes reads as a plan with no pass boundaries rather than as a census nobody
+	// asked for.
+	if (m_census_pass_breaks)
 	{
 		const auto brk_plans = stat([](const MF& f) { return f.break_plans; });
 		const auto brk_bnd = stat([](const MF& f) { return f.break_boundaries; });
@@ -3145,10 +3167,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
 		lossy.p50, lossyz.mean, lossyz.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
-	// What the DATE staleness test costs for being a bounding UNION. Counted on every run, taken by
-	// nothing: a rect set covers everything the union covers, so every break it skips is one the
-	// union made over pixels nobody wrote. The pair is the lever's whole size.
-	if (dbrk.mean > 0.0)
+	// What the DATE staleness test costs for being a bounding UNION. Counted when the census is armed
+	// and taken by nothing even then: a rect set covers everything the union covers, so every break it
+	// skips is one the union made over pixels nobody wrote. The pair is the lever's whole size.
+	if (m_census_date_cover && dbrk.mean > 0.0)
 	{
 		Console.WriteLn("    DATE staleness: %.2f / %u draws asked, %.2f / %u broke   a %u-rect cover would skip "
 						"%.2f / %u of the breaks (%.1f%%) and the snapshots with them",
@@ -6901,7 +6923,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	// views then simply never intersect, which is the right answer -- the snapshot the second one
 	// reads genuinely does hold the first one's pixels.
 	const bool date_reads_live = (self_mask & GSDevice::kGSTileGpuSelfDate) != 0;
-	if (date != 0 && !date_reads_live)
+	if (m_census_date_cover && date != 0 && !date_reads_live)
 		m_frame.date_draws++;
 	if (date != 0 && !date_reads_live && !CurrentRun().date_written.rempty() &&
 		!CurrentRun().date_written.rintersect(sr).rempty())
@@ -6909,7 +6931,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		// The counterfactual, before the break clears the history it reads. The rect set covers
 		// everything the union covers, so it can only ever say "clear" where the union said "stale"
 		// -- never the other way -- and this counts exactly the breaks the finer test would not make.
-		if (!CurrentRun().date_cover.intersects(sr))
+		if (m_census_date_cover && !CurrentRun().date_cover.intersects(sr))
 			m_frame.date_breaks_cover_would_skip++;
 		pd.break_before = true;
 		pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Date);
@@ -6924,7 +6946,11 @@ void GSRendererTileGpu::AccumulateDraw()
 		CurrentRun().date_cover.clear();
 	}
 	CurrentRun().date_written = CurrentRun().date_written.rempty() ? sr : CurrentRun().date_written.runion(sr);
-	CurrentRun().date_cover.add(sr);
+	// The counterfactual's own history, beside the union and under the census gate. This runs on
+	// EVERY draw, and a set of eight rects is not a rect: with the census off it is the one piece of
+	// this instrument a frame would actually feel.
+	if (m_census_date_cover)
+		CurrentRun().date_cover.add(sr);
 	pd.date = date;
 	// The alpha keep is a per-fragment write mask, so it joins the arm that already does one.
 	pd.afail_keep_alpha = afail_keep_alpha;
@@ -7001,7 +7027,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			// bind break below and at every other break in this function.
 			run.date_written = sr;
 			run.date_cover.clear();
-			run.date_cover.add(sr);
+			if (m_census_date_cover)
+				run.date_cover.add(sr);
 			BreakOpenPass();
 		}
 		// ...and this draw is now in a pass -- its own, if the break above made one -- so what it
@@ -7039,7 +7066,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			m_frame.tex_bind_breaks++;
 			run.date_written = sr;
 			run.date_cover.clear();
-			run.date_cover.add(sr);
+			if (m_census_date_cover)
+				run.date_cover.add(sr);
 			BreakOpenPass();
 		}
 		u32 slot = 0;
@@ -7376,7 +7404,8 @@ void GSRendererTileGpu::AccumulateDraw()
 			// this one's, and an empty table makes it slot zero.
 			p1_run.date_written = sr;
 			p1_run.date_cover.clear();
-			p1_run.date_cover.add(sr);
+			if (m_census_date_cover)
+				p1_run.date_cover.add(sr);
 			if (spd.tex_source != kGSTileNoSurface)
 			{
 				p1_run.tex_src[0] = spd.tex_source;
@@ -7906,10 +7935,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		while (i < m_plan_draws.size())
 		{
 			const PendingDraw& first = m_plan_pending[i];
-			if (have_prev)
-				CensusPassBreak(prev_key, prev_draws, i);
-			else
-				m_frame.break_plans++;
+			if (m_census_pass_breaks)
+			{
+				if (have_prev)
+					CensusPassBreak(prev_key, prev_draws, i);
+				else
+					m_frame.break_plans++;
+			}
 			const u32 j = gsTileGpuPassEnd(i, static_cast<u32>(m_plan_draws.size()), m_max_pass_draws,
 				[&](u32 d) { return key_of(m_plan_pending[d]); },
 				[&](u32 d) { return m_plan_pending[d].break_before; });
@@ -8216,16 +8248,29 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);
-			prev_key = key_of(first);
-			prev_draws = pass.draw_count;
-			have_prev = true;
+			// The census's memory of the pass the walk is leaving. Under the gate with the census
+			// itself: the key it builds is the walk's own comparison repeated, and nothing else reads
+			// either of these.
+			if (m_census_pass_breaks)
+			{
+				prev_key = key_of(first);
+				prev_draws = pass.draw_count;
+				have_prev = true;
+			}
 			i = j;
 		}
 		m_frame.passes += static_cast<u32>(m_plan_passes.size());
-		// The census counts the passes the walk above built, or it is a census of something else.
-		pxAssertMsg(m_frame.break_plans + m_frame.break_boundaries == m_frame.passes,
-			"TileGpu's pass-break census counted a different number of passes than the plan build");
-		CensusAdrenoPasses();
+		if (m_census_pass_breaks)
+		{
+			// The census counts the passes the walk above built, or it is a census of something else.
+			// Inside the gate with the census: with it off nothing counted a boundary, so the identity
+			// would fail on a run that is perfectly correct.
+			pxAssertMsg(m_frame.break_plans + m_frame.break_boundaries == m_frame.passes,
+				"TileGpu's pass-break census counted a different number of passes than the plan build");
+			// ...and the recut, which is a SECOND grouping walk over every draw of the plan. It is the
+			// most expensive thing this key gates and the reason the key is a bitmask.
+			CensusAdrenoPasses();
+		}
 
 		// What draw reordering would have done to this plan, taken by nothing. Gated, so the shipped
 		// default pays not one bitmap intersection for it.

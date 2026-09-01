@@ -2761,6 +2761,18 @@ private:
 	/// for the plainer one that the census prints the arm beside the counters and a lever that moved
 	/// mid-frame would have a frame's copies attributed to two roads at once.
 	bool m_narrow_date_snapshot = false;
+	/// EmuCore/GS/TileGpuCensus, split into the two arms this renderer owns. Read once at
+	/// construction like the levers above, and for the strongest of their reasons: the pass-break
+	/// census asserts that it counted the plan build's own passes, so a census that armed itself
+	/// between the walk and the identity check would count part of a plan and fail on a run that is
+	/// perfectly correct.
+	///
+	/// Both default OFF, which is what ships. They are campaign instruments -- they answer "which of
+	/// the dozen pass merges is worth writing" about the run in front of you -- and a player pays
+	/// for neither. See Pcsx2Config::GSOptions::TileGpuCensus for the bits and for why the key
+	/// exists at all.
+	bool m_census_pass_breaks = false;
+	bool m_census_date_cover = false;
 	/// EmuCore/GS/TileGpuPaletteCycleHle: recognise the palette-cycle (channel-shuffle) idiom and
 	/// substitute one HLE channel-fetch draw per run for it. Read once at construction like the
 	/// levers above, and ANDed here with the GameDB gate below -- a lever that moved mid-frame would

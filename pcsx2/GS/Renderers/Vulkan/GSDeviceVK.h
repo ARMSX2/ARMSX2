@@ -545,6 +545,10 @@ private:
 	OptionalExtensions m_optional_extensions = {};
 	bool m_colorclip_fallback_to_hdr = false;
 	bool m_strict_host_memory = false;
+	/// EmuCore/GS/TileGpuCensus's variant-field bit, read once at device creation. See
+	/// TileGpuCensusCut: the nine-cause cut census runs on every run, the field/pair/collapse split
+	/// below it only when a campaign run asks for it.
+	bool m_tilegpu_census_var_fields = false;
 
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;

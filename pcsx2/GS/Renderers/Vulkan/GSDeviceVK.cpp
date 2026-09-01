@@ -768,6 +768,12 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	// preferring one. Read once into a member rather than at each allocation, so a setting changed
 	// mid-session cannot leave the device holding buffers on two different kinds of memory.
 	m_strict_host_memory = GSConfig.TileGpuStrictMemory;
+	// ...and the field split of the in-pass cut census (EmuCore/GS/TileGpuCensus), read here for the
+	// same reason: the split's rows are printed as a percentage of m_tilegpu_cut_total, which counts
+	// on every run, so a key that moved mid-session would put a numerator and a denominator from two
+	// different populations on one line.
+	m_tilegpu_census_var_fields =
+		(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0;
 	if (m_strict_host_memory)
 	{
 		Console.WriteLn("VK: TileGpuStrictMemory engaged: robustBufferAccess %s, host-visible stream "
@@ -7731,6 +7737,12 @@ void GSDeviceVK::TileGpuCensusCut(const GSDevice::GSTileGpuPassPlan& plan, u32 d
 	// fragment program and nothing else. WHICH field of the program bought it is the next question,
 	// and it is asked against the narrowed words rather than the plan's: the narrowed word is what
 	// GetTileGpuPipeline keys on, so a field that differs only before narrowing did not buy a bind.
+	//
+	// Everything from here down is the campaign's, and it runs on every variant-sole cut of every
+	// pass -- fifteen field tests, a width bucket, a pair and six candidate masks. The nine-cause
+	// census above stays on (it was measured free); this half is one `-set` away.
+	if (!m_tilegpu_census_var_fields)
+		return;
 	m_tilegpu_var_sole_total++;
 	const u32 delta = na ^ nb;
 	u32 fields = 0;
