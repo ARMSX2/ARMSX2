@@ -956,6 +956,18 @@ private:
 	VkPipeline m_tilegpu_expand_pipeline = VK_NULL_HANDLE;
 	bool m_tilegpu_expand_tried = false;
 	bool CompileTileGpuExpandPipeline();
+	// The palette cycle's HLE SUBSTITUTE: a channel fetch through a gathered palette, standing in for
+	// a run of channel-shuffle draws the renderer elided. Recorded raw beside the expand, for the
+	// expand's reason, and with its own layout for the expand's reason -- two samplers (the source
+	// copy and the palette) plus one push word (which channel). Two pipelines: the RGB one writes
+	// colour and the single-channel one writes alpha, which is a colour write MASK and therefore
+	// pipeline state, so it cannot be a uniform.
+	VkDescriptorSetLayout m_tilegpu_chanfetch_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_tilegpu_chanfetch_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline m_tilegpu_chanfetch_pipeline_rgb = VK_NULL_HANDLE;
+	VkPipeline m_tilegpu_chanfetch_pipeline_alpha = VK_NULL_HANDLE;
+	bool m_tilegpu_chanfetch_tried = false;
+	bool CompileTileGpuChannelFetchPipelines();
 	// The two roads that READ A RESIDENT TARGET through the GS swizzle and write a prep texture: the
 	// DONOR build (a texture source reinterpreted out of its owner) and the CLUT GATHER (a palette
 	// gathered out of the target the game rendered it into). Both are recorded raw beside the expand

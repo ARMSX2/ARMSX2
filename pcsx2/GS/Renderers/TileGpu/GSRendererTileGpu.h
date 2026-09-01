@@ -2554,6 +2554,11 @@ private:
 	/// The run latch. Reset at every frame boundary -- a run cannot span a frame, because the plan
 	/// it would be elided out of does not.
 	GSTilePaletteCycleRun m_palette_cycle;
+	/// The substitute's source copy: a render pass may not sample the image it writes, so the
+	/// executor blits the subject here first. One per renderer, grown to the largest subject the
+	/// session has seen -- a substitute is once or twice a frame and an allocation per substitute
+	/// would churn the pool for nothing.
+	GSTexture* m_pcyc_scratch = nullptr;
 
 	// Whether this device would rather have MORE passes than mixed depth state inside one
 	// (GSDevice::TileGpuPrefersDepthUniformPasses). Read once at construction, for the same reason

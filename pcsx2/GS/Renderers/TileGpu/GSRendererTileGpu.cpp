@@ -454,6 +454,13 @@ void GSRendererTileGpu::Destroy()
 	m_palette_cache.Clear();
 	m_expand_cache.Clear();
 	ReleaseGpuPalettes();
+	// The palette-cycle substitute's source copy, on the same terms as everything above: a device
+	// texture goes back to the pool while the device is alive.
+	if (m_pcyc_scratch)
+	{
+		g_gs_device->Recycle(m_pcyc_scratch);
+		m_pcyc_scratch = nullptr;
+	}
 	m_target_pool.ReleaseAll();
 	GSRenderer::Destroy();
 }
@@ -1619,22 +1626,151 @@ const GSRendererTileGpu::GpuPalette* GSRendererTileGpu::FindClutSourceWrittenBy(
 	return other;
 }
 
-// The palette cycle's substitute: one draw standing in for the whole run the elision above is about
-// to drop, semantically matched to Classic's GSC_PolyphonyDigitalGames.
+// The palette cycle's substitute: one device pass standing in for the whole run the elision drops,
+// semantically matched to Classic's GSC_PolyphonyDigitalGames.
 //
-// ⚠️ NOT BUILT YET -- this counts the refusal and returns, so the run is elided with nothing in its
-// place. It is landed in this state on purpose: the elision is where the whole prize is (the run is
-// 85% of gt4opb's frame, and the substitute is worth ~0.3 ms of it), and the elision's risk is
-// entirely in the page ledger above, which is measurable without any pixels. The substitute's risk
-// is entirely in the pixels, which are worth measuring only once the ledger is known to survive.
+// WHAT CLASSIC DOES, and this is the part that is easy to get backwards. Its HLE draw has the SAME
+// texture as render target and as source -- `src`, the target its TEX0 names -- and applies a
+// per-channel palette lookup to it IN PLACE. It does not write the shuffle's FRAME at all; the
+// shuffle's writes are the thing being skipped. So the substitute's subject is the image the run
+// READS, and the ramp is that image's brightness curve. Measured: eliding gt4opb's run with nothing
+// in its place takes the frame from mean 49.9 to 36.4 against Classic's 86.5, and gt4 -- where
+// un-elided TileGpu already matches Classic to within 4 levels -- from 105.6 to 91.5. The run is a
+// BRIGHTENING pass, and dropping it darkens the picture by about what the ramp adds.
+//
+// It is a prep op and not a plan draw. It needs no state row, no vertex stream and no fragment
+// variant, and GSTileGpuPassPlan's variant key has no bits left for one -- while the prep stream is
+// exactly the place TileGpu already puts "a device operation on a surface". Three ops go out
+// together, in the order the executor runs them: the CLUT gather that builds the palette as an N x 1
+// image, the channel fetch itself, and the prep-only pseudo-draw that gives the pair a home in the
+// plan (an op emitted into no draw's range is silently never executed).
+//
+// ⚠️ The claims are HERE and not in the elision, because this is the draw that writes. The rule the
+// elision states is that the ledger is told what actually gets written; the substitute writes the
+// source surface's rect, so the source surface claims it.
 void GSRendererTileGpu::IssuePaletteCycleSubstitute(
 	const PendingDraw& pd, GSTileSurfaceId fb_id, const GSVector4i& rect, const GIFRegTEX0& tex0)
 {
-	(void)pd;
-	(void)fb_id;
 	(void)rect;
-	(void)tex0;
-	m_frame.pcyc_refused++;
+	if (pd.pal_record == 0)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+	GpuPalette* const gp = FindGpuPalette(pd.pal_record);
+	if (!gp)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+
+	// The subject: the live target that owns the whole window this draw READS. Classic's
+	// LookupDrawTarget(RTEX0) in the terms this renderer states ownership in -- and asked with the
+	// same all-planes GPU-truth question the donor road asks, so a window the byte store owns, or one
+	// split across two targets, is refused rather than half-served.
+	const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(std::max<u32>(tex0.TBW, 1)),
+		static_cast<u8>(tex0.PSM), KindForPsm(tex0.PSM)};
+	const u32 tw = 1u << std::min<u32>(tex0.TW, 10);
+	const u32 th = 1u << std::min<u32>(tex0.TH, 10);
+	const GSPageBitmap win =
+		GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(tw), static_cast<int>(th)));
+	const GSTileSurfaceId src = m_vram_model.SoleGpuOwner(win, kGSTilePlanesAll);
+	if (src == kGSTileNoSurface || src == fb_id)
+	{
+		// No single target holds the run's source, or it is the very surface the run writes -- and
+		// then the substitute would be reading what the elision just refused to produce.
+		m_frame.pcyc_refused++;
+		return;
+	}
+	const GSVramModel::Surface& surf = m_vram_model.Get(src);
+	if (!surf.alive || !surf.pool_handle)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+	GSTexture* const src_tex = m_target_pool.GetTexture(surf.pool_handle);
+	if (!src_tex)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+	const GSVector2i size = src_tex->GetSize();
+	const GSVector4i sub_rect = GSVector4i::loadh(size);
+	if (sub_rect.rempty())
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+
+	// The palette, as the N x 1 image rule 3 already knows how to build. It reads the owner's texture
+	// at the pass head, and it is queued BEFORE the fetch, so the gather sees the palette's texels
+	// whatever the fetch goes on to overwrite.
+	PendingDraw sub_pd = pd;
+	GSTexture* const pal_tex = ClutGatherTexture(*gp, sub_pd);
+	if (!pal_tex)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+
+	// The scratch the executor copies the destination into before sampling it: a render pass may not
+	// sample the image it writes. One per renderer, grown to the largest subject a session has seen,
+	// because a substitute is once or twice a frame and an allocation per substitute would churn the
+	// pool for nothing.
+	if (m_pcyc_scratch && (m_pcyc_scratch->GetWidth() < size.x || m_pcyc_scratch->GetHeight() < size.y))
+	{
+		g_gs_device->Recycle(m_pcyc_scratch);
+		m_pcyc_scratch = nullptr;
+	}
+	if (!m_pcyc_scratch)
+		m_pcyc_scratch = g_gs_device->CreateRenderTarget(size.x, size.y, GSTexture::Format::Color, false, true);
+	if (!m_pcyc_scratch)
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+
+	const u32 first_op = sub_pd.first_prep_op;
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = GSDevice::GSTileGpuPrepKind::ChannelFetch;
+	op.target = PlanTargetIndex(src);
+	op.index_texture = PrepTextureIndex(m_pcyc_scratch);
+	op.palette_texture = PrepTextureIndex(pal_tex);
+	// Classic picks its variant off FBMSK: 0x00FFFFFF is the alpha-destination shuffle, which
+	// extracts each channel into its own page-sized target, and everything else is the in-place
+	// brightness ramp. Only the ramp is served here -- the three-target variant needs three
+	// destinations this road does not name, and it is counted as a refusal rather than approximated
+	// by the wrong one.
+	if (gsTilePaletteCycleIsAlphaSplit(m_palette_cycle.fbmsk()))
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+	op.chan_mode = 0; // RGB
+	op.copy_x[0] = static_cast<u32>(sub_rect.x);
+	op.copy_y[0] = static_cast<u32>(sub_rect.y);
+	op.copy_w = static_cast<u32>(sub_rect.width());
+	op.copy_h = static_cast<u32>(sub_rect.height());
+	m_plan_prep_ops.push_back(op);
+
+	// The pages the substitute writes, in the subject's own layout. Its residency is what the surface
+	// covers; the write is the whole of it, which is what Classic's `src->GetUnscaledRect()` is.
+	const GSPageBitmap sub_pages = GSVramModel::PagesForRect(surf.layout, sub_rect) & surf.residency;
+	if (!AppendPrepOnlyDraw(src, sub_rect, first_op, sub_pages))
+	{
+		m_frame.pcyc_refused++;
+		return;
+	}
+
+	// The claims: this pass really did write those pages, out of the subject's own pixels, so the
+	// ledger is told exactly that. NoteClutSourceWritten last, for the reason the ordinary claim
+	// block runs it last -- a palette gathered off these very pages is now gone, and its words were
+	// captured by the gather queued above.
+	m_vram_model.OnNativeDraw(src, sub_pages, kGSTilePlanesAll);
+	BumpSurfaceVersion(src);
+	NoteClutSourceWritten(src, sub_pages);
+	m_frame.pcyc_subs++;
+	m_frame.pcyc_sub_pages += sub_pages.count();
 }
 
 void GSRendererTileGpu::NoteClutSourceWritten(GSTileSurfaceId id, const GSPageBitmap& pages)

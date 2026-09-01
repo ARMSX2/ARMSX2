@@ -8067,6 +8067,90 @@ bool GSDeviceVK::CompileTileGpuExpandPipeline()
 	return true;
 }
 
+// The palette cycle's HLE substitute: a channel fetch through a gathered palette. Two pipelines off
+// one shader, because Classic's two variants differ in their colour WRITE MASK -- the RGB fetch
+// writes colour and keeps the destination's alpha, the single-channel fetch writes alpha alone --
+// and a write mask is pipeline state, not something a uniform can carry.
+//
+// Recorded raw beside the expand and with its own descriptor layout, for the expand's reasons: the
+// device's utility paths bind through its own state cache and would disturb the sets the executor
+// established for the passes around this one.
+bool GSDeviceVK::CompileTileGpuChannelFetchPipelines()
+{
+	m_tilegpu_chanfetch_tried = true;
+
+	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		if (m_use_push_descriptors)
+			dslb.SetPushFlag();
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_chanfetch_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_chanfetch_ds_layout, "TileGpu channel-fetch DS layout");
+
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddDescriptorSet(m_tilegpu_chanfetch_ds_layout);
+		plb.AddPushConstants(VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(u32));
+		if ((m_tilegpu_chanfetch_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_chanfetch_pipeline_layout, "TileGpu channel-fetch pipeline layout");
+	}
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_chanfetch.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_chanfetch.glsl.");
+		return false;
+	}
+
+	VkShaderModule vs = GetUtilityVertexShader(*source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(*source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	const auto build = [&](u32 write_mask, const char* name) -> VkPipeline {
+		Vulkan::GraphicsPipelineBuilder gpb;
+		gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+		gpb.SetPipelineLayout(m_tilegpu_chanfetch_pipeline_layout);
+		gpb.SetDynamicViewportAndScissorState();
+		gpb.SetNoCullRasterizationState();
+		gpb.SetNoBlendingState();
+		gpb.SetNoDepthTestState();
+		gpb.SetNoStencilState();
+		gpb.SetVertexShader(vs);
+		gpb.SetFragmentShader(fs);
+		gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+						  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_LOAD,
+						  VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						  VK_ATTACHMENT_STORE_OP_DONT_CARE),
+			0);
+		gpb.SetColorWriteMask(0, write_mask);
+		VkPipeline p = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		if (p != VK_NULL_HANDLE)
+			Vulkan::SetObjectName(m_device, p, name);
+		return p;
+	};
+
+	m_tilegpu_chanfetch_pipeline_rgb =
+		build(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT,
+			"TileGpu channel-fetch RGB pipeline");
+	m_tilegpu_chanfetch_pipeline_alpha = build(VK_COLOR_COMPONENT_A_BIT, "TileGpu channel-fetch alpha pipeline");
+	if (m_tilegpu_chanfetch_pipeline_rgb == VK_NULL_HANDLE || m_tilegpu_chanfetch_pipeline_alpha == VK_NULL_HANDLE)
+	{
+		// Say it once: without this the palette cycle is elided with nothing in its place, which
+		// reads as a missing post-process rather than as a missing pipeline.
+		Console.Error("VK: TileGpu channel-fetch pipelines failed to build -- an elided palette cycle will "
+					  "have no substitute.");
+		return false;
+	}
+	return true;
+}
+
 // A resident target -> an index image: rule 3's DONOR build, the road for a window whose pages one
 // live target solely owns. Same arithmetic as ps_tile_reinterpret_index, recorded raw rather than
 // through GSDevice::TileReinterpretIndex -- see tilegpu_reinterpret.glsl's header for why that
@@ -9050,7 +9134,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		for (u32 o = pass.first_prep_op; o < op_end; o++)
 		{
 			const GSTileGpuPrepKind k = plan.prep_ops[o].kind;
-			pass_has_donor |= (k == GSTileGpuPrepKind::Donor || k == GSTileGpuPrepKind::ClutGather);
+			pass_has_donor |= (k == GSTileGpuPrepKind::Donor || k == GSTileGpuPrepKind::ClutGather ||
+							   k == GSTileGpuPrepKind::ChannelFetch);
 		}
 
 		if ((can_texture || pass_has_donor) && pass.prep_op_count > 0)
@@ -9096,8 +9181,117 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				// return, with a run's composes still unpublished.
 				if (op.kind != GSTileGpuPrepKind::Writeback)
 					close_writeback_run();
-				if (op.kind != GSTileGpuPrepKind::Donor && op.kind != GSTileGpuPrepKind::ClutGather && !can_texture)
+				// The three kinds that read an IMAGE rather than the byte store run whatever the byte
+				// road is doing: they touch no ring slot and no page table, so a frame that composes
+				// nothing must still run them or what they feed is an image nobody wrote.
+				if (op.kind != GSTileGpuPrepKind::Donor && op.kind != GSTileGpuPrepKind::ClutGather &&
+					op.kind != GSTileGpuPrepKind::ChannelFetch && !can_texture)
 					continue;
+
+				// The palette cycle's HLE substitute. One draw standing in for a run of channel-shuffle
+				// draws the renderer elided -- semantically GSC_PolyphonyDigitalGames', and issued here
+				// rather than as a plan draw because it needs neither a state row nor a fragment
+				// variant, and the variant key has no room for one.
+				//
+				// It is in place, so the destination is copied to a scratch first and the pass samples
+				// the copy: a render pass may not sample the image it writes, and Classic's own HLE
+				// draw takes the framebuffer-fetch road for exactly this. One full-target blit per
+				// substitute, against a run of a thousand draws.
+				if (op.kind == GSTileGpuPrepKind::ChannelFetch)
+				{
+					if (op.target >= plan.targets.size() || op.index_texture >= plan.prep_textures.size() ||
+						op.palette_texture >= plan.prep_textures.size())
+						continue;
+					GSTexture* const cdst = plan.targets[op.target];
+					GSTexture* const cscratch = plan.prep_textures[op.index_texture];
+					GSTexture* const cpal = plan.prep_textures[op.palette_texture];
+					if (!cdst || !cscratch || !cpal)
+						continue;
+					if (!m_tilegpu_chanfetch_tried)
+						CompileTileGpuChannelFetchPipelines();
+					const bool crgb = (op.chan_mode == 0);
+					VkPipeline cpipe = crgb ? m_tilegpu_chanfetch_pipeline_rgb : m_tilegpu_chanfetch_pipeline_alpha;
+					if (cpipe == VK_NULL_HANDLE)
+						continue;
+
+					GSTextureVK* const cd = static_cast<GSTextureVK*>(cdst);
+					const GSVector2i csize = cd->GetSize();
+					GSVector4i crect(static_cast<int>(op.copy_x[0]), static_cast<int>(op.copy_y[0]),
+						static_cast<int>(op.copy_x[0] + op.copy_w), static_cast<int>(op.copy_y[0] + op.copy_h));
+					crect = crect.rintersect(GSVector4i::loadh(csize)).rintersect(
+						GSVector4i::loadh(static_cast<GSTextureVK*>(cscratch)->GetSize()));
+					if (crect.rempty())
+						continue;
+
+					EndRenderPass();
+					// The source copy. CopyRect is the device's own image-to-image blit; it ends the
+					// render pass itself and does its own transitions, and the scratch is a plain
+					// render target the renderer allocated for this.
+					CopyRect(cdst, cscratch, crect, crect.x, crect.y);
+					static_cast<GSTextureVK*>(cscratch)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					static_cast<GSTextureVK*>(cpal)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+
+					OMSetRenderTargets(cdst, nullptr, crect);
+					const VkRenderPass crp = GetRenderPass(LookupNativeFormat(cdst->GetFormat()),
+						VK_FORMAT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+						VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+						VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					if (crp == VK_NULL_HANDLE)
+						return abandon("a palette-cycle substitute's render pass");
+					BeginRenderPass(crp, crect);
+
+					// The viewport is the whole target and the scissor is the rect: the shader
+					// addresses by gl_FragCoord, so the full-viewport triangle has to be in the
+					// target's own coordinates for the source copy to line up, and the rect is what
+					// limits what lands.
+					const VkViewport cvp{
+						0.0f, 0.0f, static_cast<float>(csize.x), static_cast<float>(csize.y), 0.0f, 1.0f};
+					vkCmdSetViewport(cmd, 0, 1, &cvp);
+					const VkRect2D csc{{crect.x, crect.y},
+						{static_cast<u32>(crect.width()), static_cast<u32>(crect.height())}};
+					vkCmdSetScissor(cmd, 0, 1, &csc);
+					InvalidateCachedViewportScissor();
+					{
+						Vulkan::DescriptorSetUpdateBuilder dsub;
+						if (m_use_push_descriptors)
+						{
+							dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 0,
+								static_cast<GSTextureVK*>(cscratch)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(cscratch)->GetVkLayout());
+							dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 1,
+								static_cast<GSTextureVK*>(cpal)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(cpal)->GetVkLayout());
+							dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+								m_tilegpu_chanfetch_pipeline_layout, 0, false);
+						}
+						else
+						{
+							VkDescriptorSet cset = AllocateDescriptorSetFromFramePool(m_tilegpu_chanfetch_ds_layout);
+							if (cset == VK_NULL_HANDLE) [[unlikely]]
+							{
+								EndRenderPass();
+								continue;
+							}
+							dsub.AddCombinedImageSamplerDescriptorWrite(cset, 0,
+								static_cast<GSTextureVK*>(cscratch)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(cscratch)->GetVkLayout());
+							dsub.AddCombinedImageSamplerDescriptorWrite(cset, 1,
+								static_cast<GSTextureVK*>(cpal)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(cpal)->GetVkLayout());
+							dsub.Update(m_device);
+							vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+								m_tilegpu_chanfetch_pipeline_layout, 0, 1, &cset, 0, nullptr);
+						}
+					}
+					const u32 cpush[4] = {op.chan_mode, 0u, 0u, 0u};
+					vkCmdPushConstants(cmd, m_tilegpu_chanfetch_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+						sizeof(cpush), cpush);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cpipe);
+					vkCmdDraw(cmd, 3, 1, 0, 0);
+					EndRenderPass();
+					cd->SetState(GSTexture::State::Dirty);
+					continue;
+				}
 
 				// Indices + palette -> the colour image a paletted draw samples. It names three prep
 				// textures and no target, and it MUST follow the materialise that filled its index --

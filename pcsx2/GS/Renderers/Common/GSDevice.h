@@ -3060,6 +3060,20 @@ public:
 		/// back into guest bytes, so truth a depth surface holds is still counted lossy when
 		/// something else needs it as bytes.
 		SeedDepth = 7,
+		/// A resident target -> ITSELF, per pixel, through a gathered palette: the HLE SUBSTITUTE for
+		/// a palette cycle (channel shuffle) the renderer recognised and elided. Semantically
+		/// Classic's GSC_PolyphonyDigitalGames HLE draw -- `chan_mode` selects its RGB variant (each
+		/// channel indexes the palette and keeps its own component, colour write mask RGB) or one of
+		/// its three single-channel ones (one channel indexes the palette and the entry's alpha is
+		/// written, write mask A).
+		///
+		/// `target` indexes the frame's `targets` (the destination, which is also the source);
+		/// `index_texture` a prep texture the executor COPIES the destination into first, because a
+		/// render pass may not sample the image it writes; `palette_texture` the N x 1 gathered
+		/// palette. `copy_x[0]`/`copy_y[0]`/`copy_w`/`copy_h` are the rect, in the destination's own
+		/// pixel space, and the source is read at the same pixel. Nothing else is used: this road
+		/// reads no bytes and goes through no page table.
+		ChannelFetch = 8,
 	};
 
 	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise or an
@@ -3125,6 +3139,12 @@ public:
 		/// the plan-pass counter cannot see a seed pass, and the merge's pass bill was invisible to
 		/// every number this campaign took until it was.
 		u32 seed_from_merge;
+		/// ChannelFetch only: which of Classic's four channel fetches this substitute is --
+		/// 0 = RGB, 1 = RED, 2 = GREEN, 3 = BLUE, matching tilegpu_chanfetch.glsl's own constants
+		/// and, through them, tfx.glsl's ChannelFetch enum. It picks the pipeline as well as the
+		/// shader arm, because the RGB variant's colour write mask is RGB and the other three's is
+		/// alpha, and a write mask is pipeline state.
+		u32 chan_mode;
 		/// ClutBlockCopy only: the source rects in the owner's texture, copied in this order into
 		/// consecutive `copy_w` x `copy_h` word runs of the destination. Four 8x8 blocks for a
 		/// 256-entry palette, one 8x2 for a 16-entry one (GSTileSwizzleForms::LocateClutBlocks).
