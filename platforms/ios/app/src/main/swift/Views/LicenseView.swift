@@ -16,7 +16,6 @@ private let licenses: [LicenseEntry] = [
     LicenseEntry(name: "ARMSX2", license: "GPL v3", copyright: "Android port"),
     LicenseEntry(name: "SDL3", license: "zlib License", copyright: "© Sam Lantinga"),
     LicenseEntry(name: "VIXL", license: "BSD 3-Clause", copyright: "© ARM Ltd."),
-    LicenseEntry(name: "FFmpeg", license: "LGPL v2.1 / GPL v2", copyright: "© FFmpeg contributors"),
     LicenseEntry(name: "fmt", license: "MIT", copyright: "© Victor Zverovich"),
     LicenseEntry(name: "zlib", license: "zlib License", copyright: "© Jean-loup Gailly, Mark Adler"),
     LicenseEntry(name: "zstd", license: "BSD", copyright: "© Meta Platforms, Inc."),
