@@ -454,14 +454,16 @@ GSRendererTileGpu::GSRendererTileGpu()
 	m_census_date_cover = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusDateCover) != 0;
 	m_census_palette = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPalette) != 0;
 	m_census_writeback = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusWriteback) != 0;
+	m_census_ring_stage = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusRingStage) != 0;
 	if (GSConfig.TileGpuCensus != 0)
 	{
 		Console.WriteLn("TileGpu: censuses ARMED (TileGpuCensus = %d): pass breaks %s, DATE cover %s, "
-						"variant fields %s, palette %s, writeback breaks %s. Instrumentation only -- nothing here "
-						"decides a pixel or a pass.",
+						"variant fields %s, palette %s, writeback breaks %s, ring staging %s. Instrumentation only "
+						"-- nothing here decides a pixel or a pass.",
 			GSConfig.TileGpuCensus, m_census_pass_breaks ? "on" : "off", m_census_date_cover ? "on" : "off",
 			(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusVariantFields) != 0 ? "on" : "off",
-			m_census_palette ? "on" : "off", m_census_writeback ? "on" : "off");
+			m_census_palette ? "on" : "off", m_census_writeback ? "on" : "off",
+			m_census_ring_stage ? "on" : "off");
 	}
 
 	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
@@ -668,6 +670,12 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// be a duplicate of anything counted above.
 	m_census_pal_prev_valid = false;
 	m_census_pal_ids.clear();
+
+	// ...and the ring-staging census's dedup sets, for the same reason and at the same granularity:
+	// the question is "has this frame already copied these bytes", so a frame boundary is the only
+	// place either set can be cleared without answering a different one.
+	m_census_stage_content.clear();
+	m_census_stage_gen.clear();
 
 	// The palette-cycle run latch. A run cannot span a frame: the plan its draws would be elided out
 	// of does not, and the substitute that stands for them is a plan entry.
@@ -945,7 +953,7 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	const u8 planes = gsTilePlanesInvalidatedByWrite(BITBLTBUF.DPSM);
 	GSVramModel::RectFootprint fp;
 	GSVramModel::FootprintForRect(layout, r, fp);
-	SupersedeRingSlots(fp.pages);
+	SupersedeRingSlots(fp.pages, &fp);
 	GSPageBitmap merged;
 	if (!m_vram_model.SpillBeforeCpuWrite(fp, planes).empty())
 	{
@@ -3279,6 +3287,50 @@ void GSRendererTileGpu::ReportModelTraffic()
 			wwp.mean > 0.0 ? 100.0 * (wwp.mean - wrp.mean) / wwp.mean : 0.0, wwn.mean, wwn.p50, wrn.mean, wrn.p50,
 			wrs.mean, wrs.p50);
 	}
+	// What the RING costs the host thread that stages it (TileGpuCensusRingStage). Every page here is
+	// an 8 KB memcpy on the GS thread, and a versioned page is two of them -- once out of the shadow
+	// before the write lands, once out of the vector into the stream. Printed only when the arm ran:
+	// the dedup columns are zero otherwise and a reader would take the zeros for a finding.
+	if (m_census_ring_stage)
+	{
+		const auto sdc = stat([](const MF& f) { return f.stage_dup_content; });
+		const auto sdg = stat([](const MF& f) { return f.stage_dup_gen; });
+		const auto svd = stat([](const MF& f) { return f.stage_ver_dup_content; });
+		const auto svb = stat([](const MF& f) { return f.stage_ver_blocks; });
+		const auto svp = stat([](const MF& f) { return f.stage_ver_pages; });
+		const auto stw = stat([](const MF& f) { return f.stage_table_words; });
+		const auto stu = stat([](const MF& f) { return f.stage_table_words_used; });
+		const auto wds = stat([](const MF& f) { return f.writeback_dispatches_srcarray; });
+		const auto wdp = stat([](const MF& f) { return f.writeback_dispatches_pageonly; });
+		const double copies = prefill.mean + versions.mean;
+		Console.WriteLn("TileGpu ring staging -- the host's 8 KB copies, and how much of them is bytes already copied:");
+		Console.WriteLn("  copies %.2f (prefill %.2f + version %.2f) = %.2f MB/f   already copied this frame: by "
+						"CONTENT %.2f / %u (%.1f%%), by the model's page GENERATION %.2f / %u (%.1f%%)",
+			copies, prefill.mean, versions.mean, copies * 8192.0 / 1048576.0, sdc.mean, sdc.p50,
+			100.0 * sdc.mean / std::max(prefill.mean, 1e-9), sdg.mean, sdg.p50,
+			100.0 * sdg.mean / std::max(prefill.mean, 1e-9));
+		Console.WriteLn("  version snapshots %.2f / %u   of which content already copied %.2f / %u   blocks the "
+						"forcing write actually covers %.2f of %.2f (%.1f%% of the page)",
+			svp.mean, svp.p50, svd.mean, svd.p50, svb.mean, svp.mean * 32.0,
+			100.0 * svb.mean / std::max(svp.mean * 32.0, 1e-9));
+		Console.WriteLn("  epoch page table %.2f words/f written (%.2f KB), of which %.2f claimed by a ring page "
+						"(%.1f%%) -- the rest is the zero-slot default nothing reads",
+			stw.mean, stw.mean * 4.0 / 1024.0, stu.mean, 100.0 * stu.mean / std::max(stw.mean, 1e-9));
+		Console.WriteLn("  writeback dispatches %.2f as recorded -> %.2f if ops could name different source images "
+						"(-%.1f%%) -> %.2f if only the epoch and the entry range held (-%.1f%%)",
+			wbd.mean, wds.mean, 100.0 * (wbd.mean - wds.mean) / std::max(wbd.mean, 1e-9), wdp.mean,
+			100.0 * (wbd.mean - wdp.mean) / std::max(wbd.mean, 1e-9));
+		const auto web = stat([](const MF& f) { return f.wb_entry_blocks; });
+		const auto wef = stat([](const MF& f) { return f.wb_entry_blocks_full; });
+		const auto wes = stat([](const MF& f) { return f.wb_entry_staged; });
+		// A page's dispatch runs its whole extent whatever its block mask says, so the block column
+		// is how much of the per-page term buys stores. The arm column says which store road the
+		// page takes -- the staged quad one, or the per-word read-modify-write.
+		Console.WriteLn("  writeback page entries %.2f: blocks stored %.2f of %.2f (%.1f%%), whole-mask entries "
+						"%.2f (%.1f%%), staged whole-word arm %.2f (%.1f%%)",
+			wbp.mean, web.mean, wbp.mean * 32.0, 100.0 * web.mean / std::max(wbp.mean * 32.0, 1e-9), wef.mean,
+			100.0 * wef.mean / std::max(wbp.mean, 1e-9), wes.mean, 100.0 * wes.mean / std::max(wbp.mean, 1e-9));
+	}
 	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
 					"%.2f / %u pass breaks",
 		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
@@ -5444,7 +5496,46 @@ u32 GSRendererTileGpu::EnsureRingSlot(u32 page, bool force_prefill)
 	return static_cast<u32>(m_ring_entries.size() - 1);
 }
 
-void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages)
+// TileGpuCensusRingStage. One 8 KB copy, asked two ways.
+//
+// The CONTENT question is the truth: has this frame already copied these exact bytes for this page?
+// It is what a dedup could reach at best, and it costs a whole-page hash to ask, which is why the
+// answer alone does not price a lever -- reading 8 KB to avoid writing 8 KB is half the traffic
+// saved at best.
+//
+// The GENERATION question is the one a shipped dedup could actually afford: GSVramModel bumps a
+// per-page counter on every write from either side, so (page, cpu_write, gpu_write) is a free key
+// that is CONSERVATIVE by construction -- a generation that did not move proves the bytes did not,
+// while bytes can repeat across a generation the key cannot see. The gap between the two columns is
+// exactly what a free key would leave on the table.
+void GSRendererTileGpu::CensusStageCopy(u32 page, const void* bytes, bool version,
+	const GSVramModel::RectFootprint* fp)
+{
+	const u32* words = static_cast<const u32*>(bytes);
+	u64 h = 1469598103934665603ull;
+	for (u32 i = 0; i < GS_PAGE_SIZE / sizeof(u32); i++)
+	{
+		h ^= words[i];
+		h *= 1099511628211ull;
+	}
+	const bool dup_content = !m_census_stage_content.insert((h & ~0x1FFull) | page).second;
+	if (version)
+	{
+		m_frame.stage_ver_dup_content += dup_content ? 1 : 0;
+		m_frame.stage_ver_pages++;
+		// A page the footprint never named as an edge is one the write covers whole; an edge page
+		// carries the blocks it touches. No footprint at all is the same whole-page answer.
+		const GSVramModel::RectFootprint::Edge* edge = fp ? fp->FindEdge(page) : nullptr;
+		m_frame.stage_ver_blocks += edge ? static_cast<u32>(std::popcount(edge->blocks)) : 32u;
+		return;
+	}
+	m_frame.stage_dup_content += dup_content ? 1 : 0;
+	const GSVramModel::PageGen& g = m_vram_model.Gen(page);
+	const u64 key = (static_cast<u64>(g.cpu_write) << 41) ^ (static_cast<u64>(g.gpu_write) << 9) ^ page;
+	m_frame.stage_dup_gen += m_census_stage_gen.insert(key).second ? 0 : 1;
+}
+
+void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages, const GSVramModel::RectFootprint* fp)
 {
 	bool cut = false;
 	GSPageBitmap closed;
@@ -5463,6 +5554,8 @@ void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages)
 			m_ring_versions.resize(m_ring_versions.size() + GS_PAGE_SIZE);
 			std::memcpy(m_ring_versions.data() + e.version_offset, m_mem.vm8() + page * GS_PAGE_SIZE, GS_PAGE_SIZE);
 			m_frame.ring_versions++;
+			if (m_census_ring_stage) [[unlikely]]
+				CensusStageCopy(page, m_ring_versions.data() + e.version_offset, /*version=*/true, fp);
 		}
 		m_ring_live[page] = 0;
 		closed.set(page);
@@ -5563,6 +5656,13 @@ void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfa
 		// The trailing zero is the ring slot, which the EXECUTOR fills once it knows where the ring
 		// landed -- see GSTileGpuPageEntry. Spelled rather than left to aggregate init so the word
 		// that reaches GPU memory is a value this line chose.
+		if (m_census_ring_stage && kind == GSDevice::GSTileGpuPrepKind::Writeback) [[unlikely]]
+		{
+			m_frame.wb_entry_blocks += static_cast<u32>(std::popcount(mask));
+			m_frame.wb_entry_blocks_full += (mask == GSVramModel::kFullBlockMask) ? 1 : 0;
+			m_frame.wb_entry_staged +=
+				(op.byte_mask == 0xFFFFFFFFu && keep == GSDevice::kGSTileGpuNoKeepMask) ? 1 : 0;
+		}
 		m_plan_page_entries.push_back(
 			GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), rowcol, mask, keep, 0});
 	});
@@ -8798,6 +8898,18 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			m_frame.writeback_runs += GSDevice::GSTileGpuWritebackBatch::CountRuns(
 				m_plan_prep_ops.data() + first, count, m_plan_page_entries.data(),
 				&m_frame.writeback_run_hazards);
+			// ...and the same walk under the two rules the shipped one could be widened to. The
+			// difference between them and the shipped column is the whole population a batching
+			// change could reach; it is counted here rather than modelled because the merge is a
+			// state machine over the op ARRAY and no per-op statistic reproduces it.
+			if (m_census_ring_stage) [[unlikely]]
+			{
+				using WB = GSDevice::GSTileGpuWritebackBatch;
+				m_frame.writeback_dispatches_srcarray += WB::CountDispatches(m_plan_prep_ops.data() + first,
+					count, m_plan_page_entries.data(), WB::MergeRule::SourceArray);
+				m_frame.writeback_dispatches_pageonly += WB::CountDispatches(m_plan_prep_ops.data() + first,
+					count, m_plan_page_entries.data(), WB::MergeRule::PageOnly);
+			}
 		}
 
 		// 4. The ring: one entry per (page, epoch range), its source bytes resolved now -- the
@@ -8816,8 +8928,20 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 								   : static_cast<const void*>(m_mem.vm8() + static_cast<u32>(e.page) * GS_PAGE_SIZE);
 			if (rp.src)
 				m_frame.ring_prefill++;
+			if (m_census_ring_stage) [[unlikely]]
+			{
+				// The executor's memcpy is the copy being priced, so it is asked for here, where the
+				// source pointer it will read is resolved -- not where the slot was opened.
+				if (rp.src)
+					CensusStageCopy(rp.page, rp.src, /*version=*/false, nullptr);
+				// ...and the epoch page table it writes beside them: every entry defaulted to the
+				// zero slot, then one store per epoch a ring page is live for.
+				m_frame.stage_table_words_used += std::min<u32>(rp.epoch_last, m_epoch) - rp.epoch_first + 1;
+			}
 			ring.push_back(rp);
 		}
+		if (m_census_ring_stage) [[unlikely]]
+			m_frame.stage_table_words += (m_epoch + 1) * GS_MAX_PAGES;
 		m_frame.epochs = std::max(m_frame.epochs, m_epoch + 1);
 
 		// 5. Assemble the plan over the frame's streams and submit. The spans are CPU-side

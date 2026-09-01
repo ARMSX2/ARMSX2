@@ -2569,7 +2569,10 @@ private:
 	// current S bytes as a version copy and closes at this epoch, so draws already planned keep
 	// reading the bytes they saw; the epoch advances if anything closed. Called from the upload
 	// hook BEFORE GSState writes the shadow (that is why the copy is exact).
-	void SupersedeRingSlots(const GSPageBitmap& pages);
+	/// `fp`, when given, is the footprint the pages came from, and is read by NOTHING but
+	/// TileGpuCensusRingStage: the snapshot copies the whole page and the write that forced it covers
+	/// only the footprint's blocks, so this is what sizes a block-granular version.
+	void SupersedeRingSlots(const GSPageBitmap& pages, const GSVramModel::RectFootprint* fp = nullptr);
 
 	// Compose `pages`' byte truth into ring slots for the current epoch: writebacks for every
 	// colour surface holding unsynced truth on them (appended as prep ops on the pending draw),
@@ -2854,6 +2857,19 @@ private:
 	/// verdict ComposeForPendingDraw acted on, and an arm that moved between the two would fail a
 	/// run that is perfectly correct.
 	bool m_census_writeback = false;
+	/// ...and the ring-staging arm (TileGpuCensusRingStage). Same once-at-construction read. It is
+	/// the only census here that reads guest MEMORY rather than the model -- an FNV-1a over each
+	/// 8 KB page the frame copies -- so it is the one whose own cost most needs the key.
+	bool m_census_ring_stage = false;
+	/// TileGpuCensusRingStage's two dedup sets, cleared at the top of every frame: the (page,
+	/// content) pairs already copied, and the (page, CPU write generation) pairs. The second is the
+	/// key a real dedup could afford; the first is the truth it would have to match.
+	std::unordered_set<u64> m_census_stage_content;
+	std::unordered_set<u64> m_census_stage_gen;
+	/// One 8 KB copy the frame just made, attributed. `bytes` is the copy's OWN destination rather
+	/// than the shadow, so the version snapshot is hashed over what it kept and not over what has
+	/// since replaced it. `fp` is the write that forced a version snapshot, for its block coverage.
+	void CensusStageCopy(u32 page, const void* bytes, bool version, const GSVramModel::RectFootprint* fp);
 	/// TileGpuCensusWriteback's read-window latch: the pages the draw being accumulated actually
 	/// reaches with its texture coordinates, stashed where they are computable and read where the
 	/// compose is asked for. Census only -- nothing downstream of it decides a pixel, a page or a
@@ -4044,6 +4060,40 @@ private:
 		/// a writeback-batching lever can collect, measured rather than assumed.
 		u32 wbb_cf_batch = 0;
 		u32 wbb_pages_inpass = 0; ///< pages of the breaking composes the open pass itself wrote
+		/// THE RING'S HOST STAGING BILL (TileGpuCensusRingStage). Every one of these is an 8 KB
+		/// memcpy on the GS thread, which is the constrained resource on the CPU-bound titles: the
+		/// executor's prefill into the Vulkan stream, and SupersedeRingSlots' version snapshot into
+		/// a heap vector -- and a versioned page pays BOTH, once out of the shadow and once out of
+		/// the vector. ring_prefill and ring_versions already count them; these say how much of the
+		/// bill is bytes the frame has already copied and what a cheaper rule could reach.
+		u32 stage_dup_content = 0;  ///< prefills whose (page, 8 KB content) pair was already copied
+		u32 stage_dup_gen = 0;      ///< ...and the same asked off the page's CPU write generation
+		u32 stage_ver_dup_content = 0; ///< version snapshots whose (page, content) pair was already copied
+		/// The version snapshot copies the WHOLE page because the reader it protects reads the whole
+		/// slot; the write that forced it covers only what its rect covers. This is the sum of the
+		/// blocks that write actually touches, over the snapshots -- 32 a snapshot means the whole
+		/// page really is overwritten and a block-granular version buys nothing.
+		u32 stage_ver_blocks = 0;
+		u32 stage_ver_pages = 0; ///< snapshots the block column is summed over (== ring_versions)
+		/// The epoch page table: `epoch_count * 512` words per plan, every one written with the zero
+		/// slot before the ring pages claim theirs. `used` is the entries a ring page then claims --
+		/// the difference is store traffic into write-combining memory that nothing ever reads.
+		u32 stage_table_words = 0;
+		u32 stage_table_words_used = 0;
+		/// The writeback dispatch count under GSTileGpuWritebackBatch's two relaxed merge rules, on
+		/// the same walk as writeback_dispatches. See MergeRule.
+		u32 writeback_dispatches_srcarray = 0;
+		u32 writeback_dispatches_pageonly = 0;
+		/// WHAT A WRITEBACK PAGE ACTUALLY STORES. The 5.74 us page term is charged per PAGE, and a
+		/// page's dispatch runs its whole 2048-invocation extent whether the entry's block mask names
+		/// one block or all 32 -- the invocations of a block the surface does not hold newest write
+		/// nothing (`!mine` returns on the per-word arm; the staged arm still writes LDS and reaches
+		/// the barrier). So the ratio of these two is how much of the page term buys stores.
+		u32 wb_entry_blocks = 0;      ///< sum of popcount(block_mask) over writeback page entries
+		u32 wb_entry_blocks_full = 0; ///< ...entries whose mask is all 32
+		/// ...and which STORE ARM the entry takes: the staged whole-word quad road needs the byte
+		/// mask whole and no keep mask; anything else runs the per-word read-modify-write.
+		u32 wb_entry_staged = 0;
 		/// What the compose ROAD costs whether or not it composes anything. ComposeRingPages hands
 		/// every page of the asked window to EnsureRingSlot BEFORE it asks the model whether any of
 		/// them holds truth to write back, because a read needs a slot either way -- the prefill is

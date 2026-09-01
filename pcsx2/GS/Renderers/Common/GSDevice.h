@@ -3226,6 +3226,29 @@ public:
 	class GSTileGpuWritebackBatch
 	{
 	public:
+		/// WHAT A DISPATCH IS ALLOWED TO SPAN. `Shipped` is the rule the executor records with and
+		/// the only one that decides anything; the other two are census counterfactuals, asked by
+		/// CountDispatches so a lever that widens the rule is priced against the walk it would
+		/// change rather than against a model of it.
+		///
+		///   SourceArray  the ops may name DIFFERENT source images. That is the one clause a source
+		///                image array would remove -- the shader binds a single `sampler2D src`, so
+		///                today two ops over two surfaces can never share a dispatch however
+		///                adjacent they are. `bp` and `bw` ride along because the writeback shader
+		///                stopped reading them when the page's row and column moved into the entry;
+		///                they are pushed and unused, and they never differ without `target`
+		///                differing anyway (a surface id owns one layout).
+		///   PageOnly     everything but the epoch, the entry contiguity and the page disjointness
+		///                is per-ENTRY. The absolute ceiling of any batching rule that keeps one
+		///                program: `psm` selects the page geometry and `byte_mask` the store arm, so
+		///                reaching this needs both in the entry and branched on per workgroup.
+		enum class MergeRule
+		{
+			Shipped,
+			SourceArray,
+			PageOnly,
+		};
+
 		/// One dispatch to record: an op's parameters, with `page_entry_count` covering every op
 		/// that folded into it.
 		struct Dispatch
@@ -3304,9 +3327,11 @@ public:
 		/// The dispatches a range of prep ops collapses to, by the same walk the executor makes.
 		/// The renderer's census and the tests share it so the counter cannot drift from the
 		/// commands.
-		static u32 CountDispatches(const GSTileGpuPrepOp* ops, u32 op_count, const GSTileGpuPageEntry* entry_base)
+		static u32 CountDispatches(const GSTileGpuPrepOp* ops, u32 op_count, const GSTileGpuPageEntry* entry_base,
+			MergeRule rule = MergeRule::Shipped)
 		{
 			GSTileGpuWritebackBatch b;
+			b.m_rule = rule;
 			u32 dispatches = 0;
 			for (u32 i = 0; i < op_count; i++)
 			{
@@ -3359,10 +3384,26 @@ public:
 			// (psm), the three push constants that address the surface (bp, bw, byte_mask), the page
 			// table the slots come out of (epoch) -- and the entry range, which the shader walks
 			// linearly from first_entry and cannot be given a hole in.
-			return m_have_pending && m_pending.op.target == op.target && m_pending.op.psm == op.psm &&
-				   m_pending.op.bp == op.bp && m_pending.op.bw == op.bw &&
-				   m_pending.op.byte_mask == op.byte_mask && m_pending.op.epoch == op.epoch &&
-				   (m_pending.op.first_page_entry + m_pending.op.page_entry_count) == op.first_page_entry;
+			//
+			// The epoch and the contiguity hold under every rule: the first is the page table the
+			// slots come out of and the second is the only shape a taller dispatch can have.
+			if (!m_have_pending || m_pending.op.epoch != op.epoch ||
+				(m_pending.op.first_page_entry + m_pending.op.page_entry_count) != op.first_page_entry)
+			{
+				return false;
+			}
+			switch (m_rule)
+			{
+				case MergeRule::PageOnly:
+					return true;
+				case MergeRule::SourceArray:
+					return m_pending.op.psm == op.psm && m_pending.op.byte_mask == op.byte_mask;
+				case MergeRule::Shipped:
+				default:
+					return m_pending.op.target == op.target && m_pending.op.psm == op.psm &&
+						   m_pending.op.bp == op.bp && m_pending.op.bw == op.bw &&
+						   m_pending.op.byte_mask == op.byte_mask;
+			}
 		}
 
 		bool Collides(const GSTileGpuPrepOp& op, const GSTileGpuPageEntry* entry_base) const
@@ -3395,6 +3436,9 @@ public:
 		Dispatch m_flushed = {}; ///< the last one Take'd, for the caller to record
 		bool m_run_open = false;
 		bool m_have_pending = false;
+		/// Always Shipped on the executor's own instance; a census walk sets it to price a rule the
+		/// renderer does not have.
+		MergeRule m_rule = MergeRule::Shipped;
 	};
 
 	/// A draw's depth configuration, which selects the depth pipeline variant. GS depth grows

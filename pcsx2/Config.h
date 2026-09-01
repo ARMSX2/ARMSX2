@@ -2751,6 +2751,14 @@ struct Pcsx2Config
 		//         three clauses that fires; this asks all three of every op, so a break two clauses
 		//         held together is not credited to whichever came first. Per compose that emits a
 		//         writeback op -- one extra page-bitmap walk of the ops just emitted.
+		//  32  -- TileGpuCensusRingStage: what the ring's HOST STAGING costs and how much of it is
+		//         bytes already staged. Per 8 KB copy the frame makes -- the executor's prefill and
+		//         SupersedeRingSlots' version snapshot -- an FNV-1a over the page, so "this page with
+		//         these exact bytes has already been copied this frame" is a set membership test; and
+		//         the same question asked off the model's per-page CPU write generation, which is free
+		//         where the hash is not. Plus the epoch page table's write volume, the version
+		//         snapshot's block coverage, and the writeback dispatch count under two relaxed merge
+		//         rules. The hash is a whole-page pass per copy, so this is the second expensive one.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//
@@ -2771,6 +2779,7 @@ struct Pcsx2Config
 		static constexpr int TileGpuCensusVariantFields = 4;
 		static constexpr int TileGpuCensusPalette = 8;
 		static constexpr int TileGpuCensusWriteback = 16;
+		static constexpr int TileGpuCensusRingStage = 32;
 		int TileGpuCensus = 0;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
