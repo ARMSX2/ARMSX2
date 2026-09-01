@@ -960,15 +960,16 @@ static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ft
 static constexpr int kNumDivUnitOps = 3;
 static const u8* s_divUnitModelStubs[kNumDivUnitOps];
 
-static const void* divUnitModelFn(DivUnitOp op)
+static EeFpuModelCallee divUnitModelCallee(DivUnitOp op)
 {
+	using namespace EeFpuModelFrame;
 	switch (op)
 	{
-		case DivUnitOp::Divide: return reinterpret_cast<const void*>(&EeFpuModel::Divide);
-		case DivUnitOp::Sqrt: return reinterpret_cast<const void*>(&EeFpuModel::SqrtBits);
-		case DivUnitOp::RecipSqrt: return reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
+		case DivUnitOp::Divide: return {reinterpret_cast<const void*>(&EeFpuModel::Divide), kVecNone};
+		case DivUnitOp::Sqrt: return {reinterpret_cast<const void*>(&EeFpuModel::SqrtBits), kVecSqrt};
+		case DivUnitOp::RecipSqrt: return {reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt), kVecSqrt};
 	}
-	return nullptr;
+	return {nullptr, NUM_ARM_NEON_REGS};
 }
 
 static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
@@ -1295,5 +1296,5 @@ void fpuDynGenModelStubs()
 {
 	namespace D = R5900::Dynarec::OpcodeImpl::COP1::DOUBLE;
 	for (int op = 0; op < D::kNumDivUnitOps; op++)
-		D::s_divUnitModelStubs[op] = armDynGenEeFpuModelStub(D::divUnitModelFn(static_cast<D::DivUnitOp>(op)));
+		D::s_divUnitModelStubs[op] = armDynGenEeFpuModelStub(D::divUnitModelCallee(static_cast<D::DivUnitOp>(op)));
 }

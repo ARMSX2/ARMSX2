@@ -1046,31 +1046,33 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 	armEndBlock();
 }
 
-const void* mVUModelStubTarget(int stub, int vuIndex)
+EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex)
 {
+	using namespace EeFpuModelFrame;
 	switch (stub)
 	{
-		case mVUModelStubDivide:             return reinterpret_cast<const void*>(&EeFpuModel::Divide);
-		case mVUModelStubSqrtBits:           return reinterpret_cast<const void*>(&EeFpuModel::SqrtBits);
-		case mVUModelStubRecipSqrt:          return reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
-		case mVUModelStubMulShortTailBand:   return reinterpret_cast<const void*>(
-			vuIndex ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0);
-		case mVUModelStubEfuSum:             return reinterpret_cast<const void*>(&VuEfuModel::Sum);
-		case mVUModelStubEfuSquareSum:       return reinterpret_cast<const void*>(&VuEfuModel::SquareSum);
-		case mVUModelStubEfuRecipSquareSum:  return reinterpret_cast<const void*>(&VuEfuModel::RecipSquareSum);
-		case mVUModelStubEfuLength:          return reinterpret_cast<const void*>(&VuEfuModel::Length);
-		case mVUModelStubEfuRecipLength:     return reinterpret_cast<const void*>(&VuEfuModel::RecipLength);
-		case mVUModelStubEfuRecip:           return reinterpret_cast<const void*>(&VuEfuModel::Recip);
-		case mVUModelStubEfuSqrt:            return reinterpret_cast<const void*>(&VuEfuModel::Sqrt);
-		case mVUModelStubEfuRecipSqrt:       return reinterpret_cast<const void*>(&VuEfuModel::RecipSqrt);
-		case mVUModelStubEfuSin:             return reinterpret_cast<const void*>(&VuEfuModel::Sin);
-		case mVUModelStubEfuExp:             return reinterpret_cast<const void*>(&VuEfuModel::Exp);
-		case mVUModelStubEfuAtan:            return reinterpret_cast<const void*>(&VuEfuModel::Atan);
-		case mVUModelStubEfuAtanRatio:       return reinterpret_cast<const void*>(&VuEfuModel::AtanRatio);
+		case mVUModelStubDivide:            return {reinterpret_cast<const void*>(&EeFpuModel::Divide), kVecNone};
+		case mVUModelStubSqrtBits:          return {reinterpret_cast<const void*>(&EeFpuModel::SqrtBits), kVecSqrt};
+		case mVUModelStubRecipSqrt:         return {reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt), kVecSqrt};
+		case mVUModelStubMulShortTailBand:
+			return {reinterpret_cast<const void*>(
+				vuIndex ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0), kVecNone};
+		case mVUModelStubEfuSum:            return {reinterpret_cast<const void*>(&VuEfuModel::Sum), kVecPoly};
+		case mVUModelStubEfuSquareSum:      return {reinterpret_cast<const void*>(&VuEfuModel::SquareSum), kVecPoly};
+		case mVUModelStubEfuRecipSquareSum: return {reinterpret_cast<const void*>(&VuEfuModel::RecipSquareSum), kVecPoly};
+		case mVUModelStubEfuLength:         return {reinterpret_cast<const void*>(&VuEfuModel::Length), kVecPoly};
+		case mVUModelStubEfuRecipLength:    return {reinterpret_cast<const void*>(&VuEfuModel::RecipLength), kVecPoly};
+		case mVUModelStubEfuRecip:          return {reinterpret_cast<const void*>(&VuEfuModel::Recip), kVecNone};
+		case mVUModelStubEfuSqrt:           return {reinterpret_cast<const void*>(&VuEfuModel::Sqrt), kVecSqrt};
+		case mVUModelStubEfuRecipSqrt:      return {reinterpret_cast<const void*>(&VuEfuModel::RecipSqrt), kVecSqrt};
+		case mVUModelStubEfuSin:            return {reinterpret_cast<const void*>(&VuEfuModel::Sin), kVecPoly};
+		case mVUModelStubEfuExp:            return {reinterpret_cast<const void*>(&VuEfuModel::Exp), kVecPoly};
+		case mVUModelStubEfuAtan:           return {reinterpret_cast<const void*>(&VuEfuModel::Atan), kVecPoly};
+		case mVUModelStubEfuAtanRatio:      return {reinterpret_cast<const void*>(&VuEfuModel::AtanRatio), kVecPoly};
 		default: break;
 	}
 	pxFail("unknown model stub");
-	return nullptr;
+	return {nullptr, 32};
 }
 
 void mVUGenerateModelStubs(mV)
@@ -2195,7 +2197,14 @@ const void* mVUTestProbe_ModelStubTarget(int index, int stub)
 {
 	if (stub < 0 || stub >= mVUModelStubCount)
 		return nullptr;
-	return mVUModelStubTarget(stub, index);
+	return mVUModelStubTarget(stub, index).fn;
+}
+
+int mVUTestProbe_ModelStubVecEnd(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return -1;
+	return mVUModelStubTarget(stub, index).vecEnd;
 }
 #endif
 

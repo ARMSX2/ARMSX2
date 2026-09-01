@@ -501,7 +501,7 @@ enum : int
 	mVUModelStubCount
 };
 
-const void* mVUModelStubTarget(int stub, int vuIndex);
+EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex);
 
 struct microVU
 {

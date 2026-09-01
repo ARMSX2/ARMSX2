@@ -752,16 +752,29 @@ enum : int
 };
 static const u8* s_cop2ModelStubs[kCop2ModelStubCount];
 
+static EeFpuModelCallee cop2ModelCallee(int kind)
+{
+	using namespace EeFpuModelFrame;
+	switch (kind)
+	{
+		case kCop2ModelStubDivide:
+			return {reinterpret_cast<const void*>(&EeFpuModel::Divide), kVecNone};
+		case kCop2ModelStubSqrtBits:
+			return {reinterpret_cast<const void*>(&EeFpuModel::SqrtBits), kVecSqrt};
+		case kCop2ModelStubRecipSqrt:
+			return {reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt), kVecSqrt};
+		case kCop2ModelStubMulShortTailBand:
+			return {reinterpret_cast<const void*>(&cop2MulShortTailBand), kVecNone};
+		default: break;
+	}
+	pxFail("unknown model stub");
+	return {nullptr, 32};
+}
+
 void cop2DynGenModelStubs()
 {
-	s_cop2ModelStubs[kCop2ModelStubDivide] =
-		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::Divide));
-	s_cop2ModelStubs[kCop2ModelStubSqrtBits] =
-		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::SqrtBits));
-	s_cop2ModelStubs[kCop2ModelStubRecipSqrt] =
-		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt));
-	s_cop2ModelStubs[kCop2ModelStubMulShortTailBand] =
-		armDynGenEeFpuModelStub(reinterpret_cast<const void*>(&cop2MulShortTailBand));
+	for (int kind = 0; kind < kCop2ModelStubCount; kind++)
+		s_cop2ModelStubs[kind] = armDynGenEeFpuModelStub(cop2ModelCallee(kind));
 }
 
 static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
@@ -1550,6 +1563,14 @@ int cop2TestGetModelStubCount()
 const u8* cop2TestGetModelStub(int kind)
 {
 	return (kind >= 0 && kind < kCop2ModelStubCount) ? s_cop2ModelStubs[kind] : nullptr;
+}
+const void* cop2TestGetModelStubTarget(int kind)
+{
+	return (kind >= 0 && kind < kCop2ModelStubCount) ? cop2ModelCallee(kind).fn : nullptr;
+}
+int cop2TestGetModelStubVecEnd(int kind)
+{
+	return (kind >= 0 && kind < kCop2ModelStubCount) ? cop2ModelCallee(kind).vecEnd : -1;
 }
 #endif
 
