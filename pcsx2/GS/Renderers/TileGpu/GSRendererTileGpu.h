@@ -2773,6 +2773,19 @@ private:
 	/// exists at all.
 	bool m_census_pass_breaks = false;
 	bool m_census_date_cover = false;
+	/// ...and the palette arm (TileGpuCensusPalette). Same reason for the once-at-construction read:
+	/// the counters below are differences against the PREVIOUS CPU-road draw, so an arm that moved
+	/// mid-frame would compare a counted draw against an uncounted one.
+	bool m_census_palette = false;
+	/// The palette census's latch: the CLUT read generation and entry count the previous CPU-road
+	/// draw of THIS frame expanded under, and the distinct content ids the frame has produced. Per
+	/// frame, because the question is what one frame's plan re-copies; a latch carried across the
+	/// frame boundary would credit the first draw of a frame against the last of the one before,
+	/// whose stream was already handed to the executor and cleared.
+	bool m_census_pal_prev_valid = false;
+	u32 m_census_pal_prev_gen = 0;
+	u32 m_census_pal_prev_entries = 0;
+	std::unordered_set<u64> m_census_pal_ids;
 	/// EmuCore/GS/TileGpuPaletteCycleHle: recognise the palette-cycle (channel-shuffle) idiom and
 	/// substitute one HLE channel-fetch draw per run for it. Read once at construction like the
 	/// levers above, and ANDed here with the GameDB gate below -- a lever that moved mid-frame would
@@ -4429,6 +4442,20 @@ private:
 		// the words a 32-bit one does (512 for a 256-entry palette, 32 for a 16-entry one), so this
 		// is the column that says whether the ring upload is anywhere near a bound.
 		u32 clut_stream_words = 0;
+		// The CPU palette road's own re-work, behind TileGpuCensusPalette. A paletted draw the
+		// device cannot serve expands its CLUT, appends the expansion to the frame's palette
+		// stream, and hashes it for a content id -- and does all three again for the next draw,
+		// with no test for whether anything moved in between.
+		u32 clut_cpu_draws = 0;   ///< paletted draws that took the CPU expansion road
+		u32 clut_cpu_words = 0;   ///< words those draws appended to the stream
+		/// ...of those draws, the ones whose CLUT read generation had NOT moved since the previous
+		/// CPU-road draw and whose entry count matched it. GSClut::Read32 bumps the generation only
+		/// when it re-expands, so a held generation means the words appended here are byte-identical
+		/// to the previous append and the content id hashed here is the previous id. Both the copy
+		/// and the hash are redundant for exactly this population.
+		u32 clut_cpu_readgen_held = 0;
+		u32 clut_cpu_words_held = 0;  ///< ...and the words those redundant appends carried
+		u32 clut_cpu_distinct = 0;    ///< distinct content ids the frame's CPU road produced
 		u32 clut_copies = 0;      // block copies emitted (one per record per plan, at a pass head)
 		// ...and the REGIONS those copies carry, which is what the copy actually costs: per-region
 		// cost on Adreno 650 is flat at ~2.8 us whatever the region's size, so an op's price is its
@@ -4491,6 +4518,8 @@ private:
 	/// variant ... N SPIR-V words" lines in the same log, which is what turns draws into a
 	/// draw-weighted program size.
 	void ReportVariantCensus();
+	/// TileGpuCensusPalette: tally one CPU-road paletted draw against the previous one of this frame.
+	void CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id);
 
 	// The PASS WORKING SET census: for each distinct set of fragment programs some pass alternates
 	// among, how many passes had that set and how many draws and runs they carried.

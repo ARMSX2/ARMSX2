@@ -452,6 +452,7 @@ GSRendererTileGpu::GSRendererTileGpu()
 	m_census_pass_breaks =
 		(GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPassBreaks) != 0;
 	m_census_date_cover = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusDateCover) != 0;
+	m_census_palette = (GSConfig.TileGpuCensus & Pcsx2Config::GSOptions::TileGpuCensusPalette) != 0;
 	if (GSConfig.TileGpuCensus != 0)
 	{
 		Console.WriteLn("TileGpu: censuses ARMED (TileGpuCensus = %d): pass breaks %s, DATE cover %s, "
@@ -656,6 +657,13 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	}
 	m_model_frames.push_back(m_frame);
 	m_frame = ModelFrame{};
+
+	// The palette census compares each CPU-road draw against the previous one of the SAME frame,
+	// and counts the frame's distinct ids. Both reset here for the reason the stream itself does:
+	// m_plan_palettes was handed to the executor and cleared, so nothing the next frame appends can
+	// be a duplicate of anything counted above.
+	m_census_pal_prev_valid = false;
+	m_census_pal_ids.clear();
 
 	// The palette-cycle run latch. A run cannot span a frame: the plan its draws would be elided out
 	// of does not, and the substitute that stands for them is a plan entry.
@@ -2746,6 +2754,31 @@ void GSRendererTileGpu::ReportPassStructure()
 // would compare two scenes as well as two arms. Joined against the device's own per-variant
 // "... N SPIR-V words" lines in the same log, these two columns ARE the draw-weighted program size,
 // before and after.
+// The CPU palette road's re-work, counted at the one place that appends to the frame's palette
+// stream. Behind TileGpuCensusPalette: one integer compare and one set insert per CPU-road draw.
+//
+// The question is narrow and the test for it is exact rather than heuristic. GSClut::Read32 bumps
+// the CLUT's read generation only when it actually re-expands (GSClut::Read32's IsDirty gate), so
+// two consecutive CPU-road draws that share a generation and an entry count read byte-identical
+// words out of m_clut. For that population the insert above copied bytes the stream already holds
+// and the ContentId above hashed words it had just hashed -- both are removable without changing a
+// single byte the executor sees, which is what makes this a size rather than an opinion.
+void GSRendererTileGpu::CensusCpuPalette(u32 read_gen, u32 entries, u64 content_id)
+{
+	m_frame.clut_cpu_draws++;
+	m_frame.clut_cpu_words += entries;
+	if (m_census_pal_prev_valid && read_gen == m_census_pal_prev_gen && entries == m_census_pal_prev_entries)
+	{
+		m_frame.clut_cpu_readgen_held++;
+		m_frame.clut_cpu_words_held += entries;
+	}
+	m_census_pal_prev_valid = true;
+	m_census_pal_prev_gen = read_gen;
+	m_census_pal_prev_entries = entries;
+	m_census_pal_ids.insert(content_id);
+	m_frame.clut_cpu_distinct = static_cast<u32>(m_census_pal_ids.size());
+}
+
 void GSRendererTileGpu::ReportVariantCensus()
 {
 	if (m_variant_census_own.empty())
@@ -3841,6 +3874,30 @@ void GSRendererTileGpu::ReportModelTraffic()
 						"lost records %.2f / %-4u  pruned %.2f / %u",
 			ccp.mean, ccp.p50, ccr.mean, ccr.p50, cpm.mean, cpm.p50, cgp.mean, cgp.p50, cbrk.mean, cbrk.p50, csy.mean,
 			csy.p50, clost.mean, clost.p50, cpr.mean, cpr.p50);
+	}
+
+	// The CPU palette road's re-work (TileGpuCensusPalette). Its own block rather than a line inside
+	// the gather report above, because that block is gated on the frame having had a gather LOAD and
+	// this population is the draws no gather served -- the two are near-complements, and a title with
+	// no gather at all is exactly the one whose CPU road is worth counting.
+	const auto pcd = stat([](const MF& f) { return f.clut_cpu_draws; });
+	const auto pcw = stat([](const MF& f) { return f.clut_cpu_words; });
+	const auto pch = stat([](const MF& f) { return f.clut_cpu_readgen_held; });
+	const auto pcwh = stat([](const MF& f) { return f.clut_cpu_words_held; });
+	const auto pcdi = stat([](const MF& f) { return f.clut_cpu_distinct; });
+	if (pcd.mean > 0.0)
+	{
+		// held% is what a read-generation memo would remove outright: the words were byte-identical
+		// to the previous append and the content id was the previous id. distinct is the separate,
+		// larger question a full stream dedup would reach -- an upper bound on the same road, since
+		// two draws can share a palette without being adjacent.
+		Console.WriteLn("TileGpu CPU palette road (draws the device could not serve, so the CLUT is expanded, "
+						"copied into the plan's stream and hashed):");
+		Console.WriteLn("  draws %.2f / %-5u  words %.2f / %-6u  read-gen held %.2f / %-5u (%.1f%% of draws, "
+						"%.1f%% of words)  distinct ids %.2f / %u",
+			pcd.mean, pcd.p50, pcw.mean, pcw.p50, pch.mean, pch.p50,
+			pcd.mean > 0.0 ? 100.0 * pch.mean / pcd.mean : 0.0,
+			pcw.mean > 0.0 ? 100.0 * pcwh.mean / pcw.mean : 0.0, pcdi.mean, pcdi.p50);
 	}
 
 	// The palette cycle. Printed whenever ANY draw reached the first conjunct's first half, on both
@@ -6443,7 +6500,10 @@ void GSRendererTileGpu::AccumulateDraw()
 					const u32* clut = m_mem.m_clut;
 					pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
 					m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
-					pd.pal_id = ClutCpuPalId(GSTilePaletteCache::ContentId(clut, pal_entries));
+					const u64 pal_content = GSTilePaletteCache::ContentId(clut, pal_entries);
+					pd.pal_id = ClutCpuPalId(pal_content);
+					if (m_census_palette) [[unlikely]]
+						CensusCpuPalette(m_mem.m_clut.GetReadGeneration(), pal_entries, pal_content);
 				}
 			}
 

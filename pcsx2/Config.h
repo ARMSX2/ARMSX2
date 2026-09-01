@@ -2740,6 +2740,11 @@ struct Pcsx2Config
 		//   4  -- TileGpuCensusVariantFields: which FIELD of the fragment variant bought each
 		//         in-pass pipeline bind (GSDeviceVK::TileGpuCensusCut's field/pair/collapse
 		//         tallies). Per in-pass run cut whose sole cause is the variant.
+		//   8  -- TileGpuCensusPalette: what the CPU palette road re-does. Per paletted draw that
+		//         expands its CLUT into the plan's palette stream, whether the CLUT's read
+		//         generation had moved since the previous such draw -- i.e. whether the words just
+		//         appended and the content id just hashed were provably the previous draw's. One
+		//         comparison and one set insert per CPU-road paletted draw.
 		//  -1  -- every census, including any bit added after this comment was written. The campaign
 		//         arm: `-set EmuCore/GS/TileGpuCensus=-1`.
 		//
@@ -2758,6 +2763,7 @@ struct Pcsx2Config
 		static constexpr int TileGpuCensusPassBreaks = 1;
 		static constexpr int TileGpuCensusDateCover = 2;
 		static constexpr int TileGpuCensusVariantFields = 4;
+		static constexpr int TileGpuCensusPalette = 8;
 		int TileGpuCensus = 0;
 
 		// How many video frames a CPU READ keeps a page off the TileGpu upload merge, so an upload
