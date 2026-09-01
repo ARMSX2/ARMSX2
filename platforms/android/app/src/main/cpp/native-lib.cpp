@@ -71,6 +71,7 @@
 #include <future>
 #include <functional>
 #include <optional>
+#include <fcntl.h>
 #include <thread>
 #include <regex>
 #include <vector>
@@ -4546,6 +4547,24 @@ Java_kr_co_iefriends_pcsx2_NativeApp_extractIsoToHostfs(JNIEnv* env, jclass, jst
                         }
                         remaining -= chunk;
                         lsn++;
+                    }
+                    // Push this file out and drop it from the page cache before moving on.
+                    //
+                    // Without this the whole extraction -- several GB for a DVD -- accumulates as
+                    // DIRTY pages. They cannot be reclaimed until writeback completes, so on a
+                    // device with modest RAM and slow storage the kernel is left stalling on
+                    // writeback with nothing it can free: lmkd reports "device is not responding"
+                    // and kills the app, which then looks like a crash on the NEXT thing the user
+                    // does. Seen on a 6GB tablet ~20s after a 4.7GB extraction, while the same
+                    // build was fine on a faster 8GB device.
+                    //
+                    // fsync before FADV_DONTNEED because the advice is a no-op on pages that are
+                    // still dirty -- dropping has to happen after they are clean.
+                    std::fflush(fp.get());
+                    const int out_fd = fileno(fp.get());
+                    if (out_fd >= 0) {
+                        fsync(out_fd);
+                        posix_fadvise(out_fd, 0, 0, POSIX_FADV_DONTNEED);
                     }
                     fp.reset();
                     if (!ok) {
