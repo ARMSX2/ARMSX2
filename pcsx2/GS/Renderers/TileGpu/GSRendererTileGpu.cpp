@@ -12,12 +12,16 @@
 
 #include "common/Console.h"
 #include "common/Assertions.h"
+#include "common/StringUtil.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <span>
+#include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -529,6 +533,11 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_merge_emitting = false;
 	m_cpu_read_frame.fill(0);
 	m_frame_index = 0;
+	// The pass-break census's run-level histograms. They outlive a plan -- the census's denominator
+	// is the run's drawn frame count -- but not a model reset, because the surfaces whose alternation
+	// the masks describe die with it.
+	m_break_masks.clear();
+	m_break_adreno_masks.clear();
 	AdvanceSourcePinFrame();
 	// The surfaces the open pass named died with the model, so its ids would alias whatever takes
 	// them next.
@@ -754,6 +763,7 @@ bool GSRendererTileGpu::AppendPrepOnlyDraw(GSTileSurfaceId color, const GSVector
 	pd.color_surface = color;
 	pd.z_surface = kGSTileNoSurface;
 	pd.break_before = true; // the ops must land after every draw recorded so far
+	pd.break_reasons = gsTileGpuBreakBit(GSTileGpuBreakCause::PrepOnly);
 	pd.rect = rect;
 	pd.scissor = rect;
 	pd.epoch = m_epoch;
@@ -1941,6 +1951,7 @@ void GSRendererTileGpu::ClutHoistBreak(const GpuPalette& gp, PendingDraw& pd)
 	if (!DonorHoistCollides(gp.owner, gp.pages))
 		return;
 	pd.break_before = true;
+	pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::ClutHoist);
 	m_frame.clut_breaks++;
 	BreakOpenPass();
 }
@@ -3006,6 +3017,77 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  max draws per pass %u (0 = uncapped)  biggest pass built %.2f / %-5u draws  "
 					"passes the cap ended %.2f / %u",
 		m_max_pass_draws, bigpass.mean, bigpass.p50, capped.mean, capped.p50);
+	// The pass-break cause census. Two numbers per cause: the boundaries it was PRESENT at, and in
+	// brackets those where it was the SOLE cause -- the ones a merge removing that cause would
+	// actually collect. Printed unconditionally, because "which of the dozen merges is worth writing"
+	// is a question about the run in front of you and there is no arm to compare against.
+	{
+		const auto brk_plans = stat([](const MF& f) { return f.break_plans; });
+		const auto brk_bnd = stat([](const MF& f) { return f.break_boundaries; });
+		const auto brk_multi = stat([](const MF& f) { return f.break_multi; });
+		const auto brk_adr = stat([](const MF& f) { return f.break_adreno_passes; });
+		const auto cause = [&stat](u32 c) { return stat([c](const MF& f) { return f.break_cause[c]; }); };
+		const auto sole = [&stat](u32 c) { return stat([c](const MF& f) { return f.break_cause_sole[c]; }); };
+		const auto acause = [&stat](u32 c) { return stat([c](const MF& f) { return f.break_adreno_cause[c]; }); };
+		const auto asole = [&stat](u32 c) {
+			return stat([c](const MF& f) { return f.break_adreno_cause_sole[c]; });
+		};
+		Console.WriteLn("  pass breaks: %.2f passes = %.2f plan starts + %.2f boundaries, of which %.2f carry more "
+						"than one cause   [x(y) below = present at x boundaries, SOLE cause at y]",
+			brk_plans.mean + brk_bnd.mean, brk_plans.mean, brk_bnd.mean, brk_multi.mean);
+		std::string key_line, ops_line, adr_line;
+		for (u32 c = 0; c < kGSTileGpuBreakCauses; c++)
+		{
+			const auto cc = cause(c);
+			const auto ss = sole(c);
+			const auto ac = acause(c);
+			const auto as = asole(c);
+			const GSTileGpuBreakCause id = static_cast<GSTileGpuBreakCause>(c);
+			std::string& line = (c <= static_cast<u32>(GSTileGpuBreakCause::Cap)) ? key_line : ops_line;
+			line += StringUtil::StdStringFromFormat(
+				"  %s %.2f(%.2f)", gsTileGpuBreakCauseName(id), cc.mean, ss.mean);
+			if (ac.mean > 0.0)
+				adr_line += StringUtil::StdStringFromFormat(
+					"  %s %.2f(%.2f)", gsTileGpuBreakCauseName(id), ac.mean, as.mean);
+		}
+		Console.WriteLn("    key + cap:%s", key_line.c_str());
+		Console.WriteLn("    ops:      %s", ops_line.c_str());
+		// The same plan recut under the Adreno pass policy (depth-uniform, readers segregated, 64-draw
+		// cap). On a non-Adreno device the three policy causes above are structurally zero, so this is
+		// the only line here that says what the primary device's pass structure is made of -- exact in
+		// its key and cap halves, an estimate in its ops half (each draw's break_before was decided
+		// under the policy that ran). Causes with no population are left out to keep the line readable.
+		Console.WriteLn("    as Adreno would cut it: %.2f passes%s", brk_adr.mean, adr_line.c_str());
+		// The exact cause-SET distribution, which is what prices a TIER rather than a single merge.
+		// Descending by population, and every mask with a whole boundary a frame in it -- the tail
+		// below that cannot decide anything and would bury the head.
+		const auto dump_masks = [&](const char* what, const std::unordered_map<u32, u32>& hist) {
+			std::vector<std::pair<u32, u32>> v(hist.begin(), hist.end());
+			std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+			u32 shown = 0;
+			for (const auto& [mask, hits] : v)
+			{
+				const double per = static_cast<double>(hits) / n;
+				if (per < 1.0 || shown >= 12)
+					break;
+				std::string names;
+				for (u32 c = 0; c < kGSTileGpuBreakCauses; c++)
+				{
+					if ((mask & (1u << c)) == 0)
+						continue;
+					if (!names.empty())
+						names += "+";
+					names += gsTileGpuBreakCauseName(static_cast<GSTileGpuBreakCause>(c));
+				}
+				Console.WriteLn("      %s %8.2f  %s", what, per, names.c_str());
+				shown++;
+			}
+		};
+		Console.WriteLn("    cause SETS, descending (a tier removing a set of causes collects exactly the "
+						"boundaries whose whole set is inside it):");
+		dump_masks("as cut ", m_break_masks);
+		dump_masks("adreno ", m_break_adreno_masks);
+	}
 	// The predictor's own line, and only when it ran -- a census of a policy that was not deciding
 	// anything reads as a policy that decided nothing, which is a different run. Both counterfactual
 	// pass counts are printed beside the metric, because the metric is a ratio and a ratio hides
@@ -5434,6 +5516,7 @@ void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, Pending
 	if (m_plan_prep_ops.size() != ops_before && WritebackHoistCollides(ops_before))
 	{
 		pd.break_before = true;
+		pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Writeback);
 		m_frame.writeback_breaks++;
 		BreakOpenPass();
 	}
@@ -5476,6 +5559,69 @@ void GSRendererTileGpu::BreakOpenPass()
 	run.target_road = false;
 	// date_surface / date_written deliberately survive: the DATE snapshot's run spans ordinary pass
 	// breaks and is reset only where the snapshot is genuinely retaken.
+}
+
+// See the declaration. All three families are asked, not just the one the walk stopped on.
+void GSRendererTileGpu::CensusPassBreak(const GSTileGpuPassKey& prev_key, u32 prev_draws, u32 d)
+{
+	const PendingDraw& pd = m_plan_pending[d];
+	u32 mask = pd.break_reasons;
+	mask |= gsTileGpuBreakKeyFields(prev_key,
+		gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode, m_depth_uniform_passes,
+			pd.self_mask != 0, m_segregate_self_read));
+	// gsTileGpuPassEnd tests the cap BEFORE it looks at the draw, so a pass that reached the cap ended
+	// there whatever the draw would have said. The draw's own causes are still recorded beside it: the
+	// question a merge asks is whether removing a cause would join the two passes, and where the cap
+	// also fired the answer is no.
+	if (m_max_pass_draws != 0 && prev_draws >= m_max_pass_draws)
+		mask |= gsTileGpuBreakBit(GSTileGpuBreakCause::Cap);
+	// A boundary that names no cause is a break site that forgot to record itself. It would read as a
+	// merge opportunity nobody can collect, which is worse than no census at all.
+	pxAssertMsg(mask != 0, "TileGpu ended a render pass and no break site recorded why");
+	m_frame.break_boundaries++;
+	gsTileGpuTallyBreak(mask, m_frame.break_cause, m_frame.break_cause_sole, &m_frame.break_multi);
+	m_break_masks[mask]++;
+}
+
+// See the declaration and ModelFrame::break_adreno_passes. The policy triple is spelled here rather
+// than asked of the device because the whole point is to answer it on a device that says no to all
+// three -- GSDeviceVK::TileGpuPrefersDepthUniformPasses, ::TileGpuSegregatesSelfRead and
+// ::TileGpuMaxPassDraws are Adreno-only, so an M2 census reads a structural zero for exactly the
+// three causes the primary device pays most for. On an Adreno the two arms coincide, which is a
+// free self-check rather than a duplicate.
+void GSRendererTileGpu::CensusAdrenoPasses()
+{
+	const u32 count = static_cast<u32>(m_plan_draws.size());
+	if (count == 0)
+		return;
+	constexpr u32 kAdrenoPassDrawCap = 64; // GSDeviceVK::TileGpuMaxPassDraws
+	const auto key_of = [this](u32 d) {
+		const PendingDraw& pd = m_plan_pending[d];
+		return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode, true,
+			pd.self_mask != 0, true);
+	};
+	const auto breaks_at = [this](u32 d) { return m_plan_pending[d].break_before; };
+	GSTileGpuPassKey prev_key;
+	u32 prev_draws = 0;
+	bool have_prev = false;
+	for (u32 i = 0; i < count;)
+	{
+		if (have_prev)
+		{
+			u32 mask = m_plan_pending[i].break_reasons | gsTileGpuBreakKeyFields(prev_key, key_of(i));
+			if (prev_draws >= kAdrenoPassDrawCap)
+				mask |= gsTileGpuBreakBit(GSTileGpuBreakCause::Cap);
+			pxAssertMsg(mask != 0, "TileGpu's Adreno pass recut ended a pass and no cause names it");
+			gsTileGpuTallyBreak(mask, m_frame.break_adreno_cause, m_frame.break_adreno_cause_sole, nullptr);
+			m_break_adreno_masks[mask]++;
+		}
+		const u32 j = gsTileGpuPassEnd(i, count, kAdrenoPassDrawCap, key_of, breaks_at);
+		m_frame.break_adreno_passes++;
+		prev_key = key_of(i);
+		prev_draws = j - i;
+		have_prev = true;
+		i = j;
+	}
 }
 
 // The one piece of bookkeeping draw reordering adds to the pass model, and the one that is silent
@@ -6421,6 +6567,7 @@ void GSRendererTileGpu::AccumulateDraw()
 					if (m_plan_prep_ops.size() != ops_before && DonorHoistCollides(donor.owner, tex_pages))
 					{
 						pd.break_before = true;
+						pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Donor);
 						m_frame.src_donor_breaks++;
 						BreakOpenPass();
 					}
@@ -6592,6 +6739,7 @@ void GSRendererTileGpu::AccumulateDraw()
 				ComposeRingPages(seed);
 				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, fb_id, seed);
 				pd.break_before = true;
+				pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::SeedColor);
 				m_frame.seed_breaks++;
 				BreakOpenPass();
 				Texels(fb_id).filled.MarkWhole(seed);
@@ -6655,6 +6803,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		{
 			EmitPrepOp(GSDevice::GSTileGpuPrepKind::SeedDepth, z_id, z_fill);
 			pd.break_before = true;
+			pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::SeedDepth);
 			m_frame.seed_breaks++;
 			BreakOpenPass();
 		}
@@ -6731,6 +6880,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		!CurrentRun().date_written.rintersect(sr).rempty())
 	{
 		pd.break_before = true;
+		pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Date);
 		CurrentRun().date_written = GSVector4i::zero();
 		m_frame.date_breaks++;
 		BreakOpenPass();
@@ -6808,6 +6958,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		if (gsTileGpuClutArmBreaks(run.gather_arm, run.target_road, want_arm, want_target))
 		{
 			pd.break_before = true;
+			pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::Clut16Arm);
 			m_frame.clut16_arm_breaks++;
 			// The DATE snapshot's written rect starts again at this draw, exactly as it does at the
 			// bind break below and at every other break in this function.
@@ -6845,6 +6996,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		if (need_break)
 		{
 			pd.break_before = true;
+			pd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::TexBind);
 			m_frame.tex_bind_breaks++;
 			run.date_written = sr;
 			BreakOpenPass();
@@ -7098,6 +7250,10 @@ void GSRendererTileGpu::AccumulateDraw()
 		apd.first_prep_op = pd.first_prep_op + pd.prep_op_count;
 		apd.prep_op_count = 0;
 		apd.break_before = false;
+		// ...and the causes with it. The copy carries the principal's, and a companion that
+		// inherited them would have the census attribute the principal's seed or bind break to a
+		// second boundary that never happened.
+		apd.break_reasons = 0;
 		m_plan_pending.push_back(apd);
 		// Same geometry, same state, same target: the companion's footprint is its principal's. Its
 		// write mask is narrower (the alpha byte alone), which cannot reach a page the principal did
@@ -7151,6 +7307,10 @@ void GSRendererTileGpu::AccumulateDraw()
 		spd.first_prep_op = pd.first_prep_op + pd.prep_op_count;
 		spd.prep_op_count = 0;
 		spd.break_before = false;
+		// ...and the causes with it. The copy carries the principal's, and a companion that
+		// inherited them would have the census attribute the principal's seed or bind break to a
+		// second boundary that never happened.
+		spd.break_reasons = 0;
 
 		// The depth WRITE-ENABLE differs between the two halves under the channel splits, and with
 		// EmuCore/GS/TileGpuSplitSharesPassKey off, on a device that asked for depth-uniform passes,
@@ -7167,6 +7327,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		if (p1_key != draw_key || !gsTileGpuPassAdmitsMore(CurrentRun().draw_count, m_max_pass_draws))
 		{
 			spd.break_before = true;
+			spd.break_reasons |= gsTileGpuBreakBit(GSTileGpuBreakCause::AfailSplit);
 			BreakOpenPass();
 			OpenRun& p1_run = CurrentRun();
 			// Everything BreakOpenPass cleared that this draw itself establishes in the new pass.
@@ -7684,14 +7845,28 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// pass knows that while it is being built. See PlanFragmentVariants.
 		PlanFragmentVariants();
 
+		// Hoisted out of the walk below so the pass-break census can ask it about the PREVIOUS pass
+		// too. One reader for the key, as everywhere else that groups draws.
+		const auto key_of = [this](const PendingDraw& pd) {
+			return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
+				m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
+		};
+
 		u32 i = 0;
+		// The pass the walk is about to leave, for the census: its key, and how many draws it held.
+		// Held here rather than recomputed because the cut compared against the FIRST draw of that
+		// pass, not against the draw before this one, and attributing a boundary to a comparison the
+		// walk did not make is how a census and the thing it counts drift apart.
+		GSTileGpuPassKey prev_key;
+		u32 prev_draws = 0;
+		bool have_prev = false;
 		while (i < m_plan_draws.size())
 		{
 			const PendingDraw& first = m_plan_pending[i];
-			const auto key_of = [this](const PendingDraw& pd) {
-				return gsTileGpuPassKeyFor(pd.color_surface, pd.z_surface, pd.pass_depth_mode,
-					m_depth_uniform_passes, pd.self_mask != 0, m_segregate_self_read);
-			};
+			if (have_prev)
+				CensusPassBreak(prev_key, prev_draws, i);
+			else
+				m_frame.break_plans++;
 			const u32 j = gsTileGpuPassEnd(i, static_cast<u32>(m_plan_draws.size()), m_max_pass_draws,
 				[&](u32 d) { return key_of(m_plan_pending[d]); },
 				[&](u32 d) { return m_plan_pending[d].break_before; });
@@ -7998,9 +8173,16 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);
+			prev_key = key_of(first);
+			prev_draws = pass.draw_count;
+			have_prev = true;
 			i = j;
 		}
 		m_frame.passes += static_cast<u32>(m_plan_passes.size());
+		// The census counts the passes the walk above built, or it is a census of something else.
+		pxAssertMsg(m_frame.break_plans + m_frame.break_boundaries == m_frame.passes,
+			"TileGpu's pass-break census counted a different number of passes than the plan build");
+		CensusAdrenoPasses();
 
 		// What draw reordering would have done to this plan, taken by nothing. Gated, so the shipped
 		// default pays not one bitmap intersection for it.

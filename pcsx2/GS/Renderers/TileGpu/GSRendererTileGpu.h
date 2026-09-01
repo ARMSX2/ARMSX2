@@ -270,6 +270,132 @@ u32 gsTileGpuPassEnd(u32 first, u32 count, u32 max_pass_draws, KeyAt key_at, Bre
 	return j;
 }
 
+// -- the pass-break cause census ---------------------------------------------------------------
+//
+// WHY. A render pass boundary is the TileGpu design's unit of cost on a tiler -- every one of them
+// resolves the tile buffer and reloads it -- and the corpus spread is enormous: Dirge of Cerberus
+// plans 1,013 a frame where Classic opens 26, Spider-Man 3 998 against 38, Gran Turismo 4's Online
+// Public Beta 721 against 35. "Merge the passes" is not one change, it is a dozen at a dozen
+// different prices, and which of them is worth writing depends entirely on which of them carries
+// the population. So each boundary has to be able to name what ended the pass before it.
+//
+// WHERE. The census is taken at the plan build's OWN cut (the grouping walk in BuildAndExecutePlan),
+// not at a model of it, so the two cannot disagree about how many passes there are: the identity
+// `passes == plan starts + boundaries` is asserted, and every boundary is required to name at least
+// one cause. A boundary that named none would be a break site that forgot to record itself, which is
+// exactly the failure a census kept somewhere else would report as a merge opportunity that is not
+// there.
+//
+// THE THREE FAMILIES, and they are not interchangeable:
+//
+//  - The KEY. The pass's attachments changed, or a device policy that rides in the key did. A key
+//    cause is a property of the DRAW ORDER: the same draws in a different order need not produce it,
+//    which is what makes EmuCore/GS/TileGpuReorderRuns a lever against this family and against no
+//    other.
+//  - The CAP. The pass held as many draws as the device admits. Nothing about the draws forced it.
+//  - The OPS. A draw's own reconciliation work could not be hoisted to the head of the open pass --
+//    a seed, a writeback, a donor build, a CLUT gather, a stale DATE snapshot, a full bind table.
+//    These are properties of the DRAW, and reordering moves them rather than removing them.
+//
+// SOLE vs PRESENT. Causes coincide -- a draw that seeds its target usually also switched target --
+// so every boundary contributes to the `present` tally of each cause it carries and to the `sole`
+// tally of exactly one cause when it carries exactly one. A merge that removes a cause only removes
+// the boundaries where that cause was SOLE; the `present` count is the population it must reason
+// about and the `sole` count is the population it can actually collect. Reporting only one of the
+// two is how a lever gets sized off the wrong number.
+enum class GSTileGpuBreakCause : u8
+{
+	KeyColor,     ///< the colour attachment is a different surface
+	KeyDepthUse,  ///< the depth attachment appeared or disappeared
+	KeyDepthId,   ///< both passes have depth and it is a different surface
+	KeyDepthMode, ///< depth-uniform passes only: the depth pipeline variant changed
+	KeySelfRead,  ///< reader segregation only: a destination reader may not join a non-reader's pass
+	Cap,          ///< the pass held TileGpuMaxPassDraws draws
+	PrepOnly,     ///< a prep-only pseudo-draw: display seed, or an upload-merge reconciliation
+	SeedColor,    ///< the draw's colour target needed pages seeded from the byte store
+	SeedDepth,    ///< ...and the same for its depth target
+	Writeback,    ///< the draw's read needed a writeback the open pass's draws would have raced
+	Donor,        ///< a rule-3 materialise off a live owner the open pass had rendered into
+	ClutHoist,    ///< a CLUT gather off an owner target the open pass had rendered into
+	Clut16Arm,    ///< the pass's CLUT gather arm and the draw's cannot share one fragment program
+	Date,         ///< the DATE snapshot would be stale for this draw
+	TexBind,      ///< the rule-2 bind wants the pass's own attachment, or the bind table is full
+	AfailSplit,   ///< the second half of an alpha-test channel split refused the principal's pass
+	Count,
+};
+constexpr u32 kGSTileGpuBreakCauses = static_cast<u32>(GSTileGpuBreakCause::Count);
+constexpr u32 gsTileGpuBreakBit(GSTileGpuBreakCause c)
+{
+	return 1u << static_cast<u32>(c);
+}
+constexpr const char* gsTileGpuBreakCauseName(GSTileGpuBreakCause c)
+{
+	switch (c)
+	{
+		case GSTileGpuBreakCause::KeyColor: return "key-colour";
+		case GSTileGpuBreakCause::KeyDepthUse: return "key-depth-use";
+		case GSTileGpuBreakCause::KeyDepthId: return "key-depth-id";
+		case GSTileGpuBreakCause::KeyDepthMode: return "key-depth-mode";
+		case GSTileGpuBreakCause::KeySelfRead: return "key-self-read";
+		case GSTileGpuBreakCause::Cap: return "cap";
+		case GSTileGpuBreakCause::PrepOnly: return "prep-only";
+		case GSTileGpuBreakCause::SeedColor: return "seed";
+		case GSTileGpuBreakCause::SeedDepth: return "seed-Z";
+		case GSTileGpuBreakCause::Writeback: return "writeback";
+		case GSTileGpuBreakCause::Donor: return "donor";
+		case GSTileGpuBreakCause::ClutHoist: return "clut-hoist";
+		case GSTileGpuBreakCause::Clut16Arm: return "clut16-arm";
+		case GSTileGpuBreakCause::Date: return "DATE";
+		case GSTileGpuBreakCause::TexBind: return "tex-bind";
+		case GSTileGpuBreakCause::AfailSplit: return "afail-split";
+		default: return "?";
+	}
+}
+
+/// One boundary's causes into a present/sole pair of tallies, and the multi-cause count.
+///
+/// `sole` is credited only where the mask holds exactly one bit, because a merge that removes a
+/// cause removes only the boundaries that cause was holding open ALONE -- everywhere else a second
+/// cause still ends the pass and the merge buys nothing there. The two tallies therefore satisfy
+/// `sum(sole) + multi == boundaries`, which is the arithmetic that says no cause was dropped.
+inline void gsTileGpuTallyBreak(u32 mask, u32* present, u32* sole, u32* multi)
+{
+	const bool one = (mask & (mask - 1)) == 0;
+	for (u32 c = 0; c < kGSTileGpuBreakCauses; c++)
+	{
+		if ((mask & (1u << c)) == 0)
+			continue;
+		present[c]++;
+		if (one)
+			sole[c]++;
+	}
+	if (!one && multi)
+		(*multi)++;
+}
+
+/// Which FIELDS of two pass keys differ, as GSTileGpuBreakCause bits.
+///
+/// ⚠️ It must return nonzero for exactly the pairs GSTileGpuPassKey::operator!= calls different, and
+/// the depth clause is where that is easy to get wrong: the key compares the depth SURFACE only when
+/// both sides use depth, so a pair differing only in a depth id neither of them attaches is the same
+/// key and must name no cause. gs_tilegpu_pass_break_tests.cpp pins the equivalence exhaustively
+/// rather than by inspection.
+constexpr u32 gsTileGpuBreakKeyFields(const GSTileGpuPassKey& a, const GSTileGpuPassKey& b)
+{
+	u32 m = 0;
+	if (a.color != b.color)
+		m |= gsTileGpuBreakBit(GSTileGpuBreakCause::KeyColor);
+	if (a.depth_used != b.depth_used)
+		m |= gsTileGpuBreakBit(GSTileGpuBreakCause::KeyDepthUse);
+	else if (a.depth_used && a.depth != b.depth)
+		m |= gsTileGpuBreakBit(GSTileGpuBreakCause::KeyDepthId);
+	if (a.keyed_depth_mode != b.keyed_depth_mode)
+		m |= gsTileGpuBreakBit(GSTileGpuBreakCause::KeyDepthMode);
+	if (a.keyed_self_read != b.keyed_self_read)
+		m |= gsTileGpuBreakBit(GSTileGpuBreakCause::KeySelfRead);
+	return m;
+}
+
 // -- draw reordering (EmuCore/GS/TileGpuReorderRuns) -------------------------------------------
 //
 // A pass is its attachments, so a game that alternates between two render targets ends a render
@@ -2066,6 +2192,12 @@ private:
 		// draws into passes run after accumulation, where `z_write` and the split are both gone.
 		GSDevice::GSTileGpuDepthMode pass_depth_mode;
 		bool break_before;    // this draw's prep ops cannot be hoisted over the open pass: it opens a new one
+		// ...and WHICH of the break sites in AccumulateDraw said so, as GSTileGpuBreakCause bits. Set
+		// beside every `break_before = true` and read only by the pass-break census, which is why it is
+		// a mask rather than one cause: several sites can fire for one draw, and a census that kept the
+		// first or the last would report a merge as available when a second cause still holds the
+		// boundary open.
+		u32 break_reasons;
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
 		GSVector4i scissor;   // the GS scissor (SCISSOR register), exclusive right/bottom
@@ -2630,6 +2762,21 @@ private:
 	/// The staging and the emission order, shared by the count-only model and the live road -- they
 	/// never both run, and one implementation is what keeps the census honest about the other.
 	GSTileGpuReorderScheduler m_reorder;
+
+	// The pass-break census's EXACT cause-set distribution, over the run rather than per frame: how
+	// many boundaries carried each combination of causes.
+	//
+	// The present/sole pair in ModelFrame prices ONE merge at a time and cannot price a TIER. A merge
+	// removing causes {A,B} collects exactly the boundaries whose whole cause set is inside {A,B} --
+	// not sole(A) + sole(B), which under-counts every boundary A and B held open together, and not
+	// present(A) + present(B), which over-counts every boundary a third cause still holds. Only the
+	// joint distribution answers it, and a tier is chosen by that arithmetic or by guesswork.
+	//
+	// A map rather than a per-frame array because the population is sparse -- the corpus's whole
+	// distribution is a few dozen distinct masks -- and because the census's denominator is the drawn
+	// frame count, which is known only at teardown.
+	std::unordered_map<u32, u32> m_break_masks;
+	std::unordered_map<u32, u32> m_break_adreno_masks;
 
 	/// Run the admission model over the plan as it stands and record what it would have moved.
 	/// Decides nothing: the caller's plan is untouched, and only the ModelFrame counters change.
@@ -3575,6 +3722,16 @@ private:
 	// leaves the DATE snapshot's run alone -- that one spans ordinary pass breaks.
 	void BreakOpenPass();
 
+	// The pass-break cause census. `CensusPassBreak` attributes ONE boundary of the plan build's own
+	// grouping walk: `prev_key` is the key of the pass the draw refused to join, `prev_draws` how many
+	// draws that pass held, and `d` the first draw of the new one. All three families are evaluated
+	// even though the walk short-circuits on the first that fires -- a boundary the cap made may also
+	// have been a target switch, and a census that stopped at the cap would price a merge that cannot
+	// collect it.
+	void CensusPassBreak(const GSTileGpuPassKey& prev_key, u32 prev_draws, u32 d);
+	/// The same walk over the same plan under the Adreno pass policy. See ModelFrame::break_adreno_*.
+	void CensusAdrenoPasses();
+
 	// A flush emitted `runs_emitted` runs, so the pass the next draw follows is the LAST of them.
 	// Carry that run's open pass into run 0 -- the run the next draw joins, since the flush emptied
 	// the backlog -- and reset the rest. See the definition: getting this wrong is not a slow frame.
@@ -3964,6 +4121,35 @@ private:
 		// cap as engaged on a frame it never touched.
 		u32 biggest_pass_draws = 0; // the longest pass built this frame
 		u32 capped_passes = 0;      // ...and how many the cap itself ended
+
+		// The pass-break cause census (see GSTileGpuBreakCause). `break_plans` counts the passes no
+		// boundary opened -- the first pass of every plan, so one per frame plus one per mid-frame flush
+		// -- and `break_boundaries` the rest, which makes `passes == break_plans + break_boundaries` an
+		// identity the plan build asserts rather than a coincidence to be checked by eye.
+		//
+		// `break_cause` is the boundaries each cause was present at and `break_cause_sole` those where it
+		// was the only cause; `break_multi` is the boundaries carrying more than one. The sole tallies
+		// plus break_multi sum to break_boundaries, which is the second identity and the one that says a
+		// cause was not silently dropped.
+		u32 break_plans = 0;
+		u32 break_boundaries = 0;
+		u32 break_multi = 0;
+		u32 break_cause[kGSTileGpuBreakCauses] = {};
+		u32 break_cause_sole[kGSTileGpuBreakCauses] = {};
+		// ...and the same census recut under the ADRENO pass policy -- depth-uniform passes, segregated
+		// destination readers, a 64-draw cap -- so an M2 run can say what the pass structure on the
+		// primary device is made of. The three policy bits are the only device-shaped rows in the census
+		// and all three are OFF on every non-Adreno device, so without this arm an M2 census reads zero
+		// for exactly the causes the device pays most for.
+		//
+		// ⚠️ An ESTIMATE in one respect, the same one the depth predictor's counterfactual carries: each
+		// draw's break_before was decided during accumulation against the pass that was open under the
+		// policy actually in force, and a different policy would have had a different pass open. The KEY
+		// and CAP halves are exact -- they are functions of the draw list alone -- and the OPS half is
+		// the estimate.
+		u32 break_adreno_passes = 0;
+		u32 break_adreno_cause[kGSTileGpuBreakCauses] = {};
+		u32 break_adreno_cause_sole[kGSTileGpuBreakCauses] = {};
 		// The depth predictor's two counterfactual pass counts and its denominator, summed over every
 		// plan the frame built (a mid-frame flush makes more than one). Both polarities are counted,
 		// including the one the frame actually took, so the pair is self-consistent -- taking the
