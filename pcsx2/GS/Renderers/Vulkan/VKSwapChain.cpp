@@ -29,7 +29,7 @@
 #include <android/native_window.h>
 #endif
 
-static_assert(VKSwapChain::NUM_SEMAPHORES == (GSDeviceVK::NUM_COMMAND_BUFFERS + 1));
+static_assert(VKSwapChain::NUM_SEMAPHORES == (GSDeviceVK::MAX_COMMAND_BUFFERS + 1));
 
 namespace
 {

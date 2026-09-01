@@ -1419,9 +1419,13 @@ bool GSDeviceVK::CreateCommandBuffers()
 {
 	VkResult res;
 
+	// Only the slots the ring's runtime depth actually uses. The array is MAX_COMMAND_BUFFERS long
+	// so the indices are constant, but an uncreated slot costs no pool, no fence and no descriptor
+	// chain -- which is the whole reason the default's footprint does not move when the ceiling does.
 	uint32_t frame_index = 0;
-	for (FrameResources& resources : m_frame_resources)
+	for (u32 create_index = 0; create_index < m_command_buffer_count; create_index++)
 	{
+		FrameResources& resources = m_frame_resources[create_index];
 		resources.needs_fence_wait = false;
 
 		VkCommandPoolCreateInfo pool_info = {
@@ -1616,7 +1620,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 	if (m_gpu_timing_supported)
 	{
 		const VkQueryPoolCreateInfo query_create_info = {
-			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, NUM_COMMAND_BUFFERS * 4, 0};
+			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, m_command_buffer_count * 4, 0};
 		res = vkCreateQueryPool(m_device, &query_create_info, nullptr, &m_timestamp_query_pool);
 		if (res != VK_SUCCESS)
 		{
@@ -1629,7 +1633,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 	if (m_gpu_pipeline_statistics_supported)
 	{
 		const VkQueryPoolCreateInfo query_create_info = {
-			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_PIPELINE_STATISTICS, NUM_COMMAND_BUFFERS,
+			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_PIPELINE_STATISTICS, m_command_buffer_count,
 			VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT};
 		res = vkCreateQueryPool(m_device, &query_create_info, nullptr, &m_pipeline_statistics_query_pool);
 		if (res != VK_SUCCESS)
@@ -1879,13 +1883,13 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter, GpuWaitSite site)
 		return;
 
 	// Find the first command buffer which covers this counter value.
-	u32 index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+	u32 index = (m_current_frame + 1) % m_command_buffer_count;
 	while (index != m_current_frame)
 	{
 		if (m_frame_resources[index].fence_counter >= fence_counter)
 			break;
 
-		index = (index + 1) % NUM_COMMAND_BUFFERS;
+		index = (index + 1) % m_command_buffer_count;
 	}
 
 	pxAssert(index != m_current_frame);
@@ -1977,8 +1981,8 @@ std::vector<std::string> GSDeviceVK::GetExtendedStats() const
 
 void GSDeviceVK::ScanForCommandBufferCompletion()
 {
-	for (u32 check_index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS; check_index != m_current_frame;
-	     check_index = (check_index + 1) % NUM_COMMAND_BUFFERS)
+	for (u32 check_index = (m_current_frame + 1) % m_command_buffer_count; check_index != m_current_frame;
+	     check_index = (check_index + 1) % m_command_buffer_count)
 	{
 		FrameResources& resources = m_frame_resources[check_index];
 		if (resources.fence_counter <= m_completed_fence_counter)
@@ -2187,7 +2191,7 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitSite site)
 	// Clean up any resources for command buffers between the last known completed buffer and this
 	// now-completed command buffer. If we use >2 buffers, this may be more than one buffer.
 	const u64 now_completed_counter = m_frame_resources[index].fence_counter;
-	u32 cleanup_index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+	u32 cleanup_index = (m_current_frame + 1) % m_command_buffer_count;
 	while (cleanup_index != m_current_frame)
 	{
 		FrameResources& resources = m_frame_resources[cleanup_index];
@@ -2197,7 +2201,7 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitSite site)
 		if (resources.fence_counter > m_completed_fence_counter)
 			CommandBufferCompleted(cleanup_index);
 
-		cleanup_index = (cleanup_index + 1) % NUM_COMMAND_BUFFERS;
+		cleanup_index = (cleanup_index + 1) % m_command_buffer_count;
 	}
 
 	m_completed_fence_counter = now_completed_counter;
@@ -2430,7 +2434,7 @@ void GSDeviceVK::CommandBufferCompleted(u32 index)
 
 void GSDeviceVK::MoveToNextCommandBuffer()
 {
-	ActivateCommandBuffer((m_current_frame + 1) % NUM_COMMAND_BUFFERS);
+	ActivateCommandBuffer((m_current_frame + 1) % m_command_buffer_count);
 	InvalidateCachedState();
 	SetInitialState(m_current_command_buffer);
 }
@@ -2955,9 +2959,9 @@ bool GSDeviceVK::InitSpinResources()
 	desc_set_write.pBufferInfo = &desc_buffer_info;
 	vkUpdateDescriptorSets(m_device, 1, &desc_set_write, 0, nullptr);
 
-	for (SpinResources& resources : m_spin_resources)
+	for (u32 index = 0; index < m_command_buffer_count; index++)
 	{
-		u32 index = &resources - &m_spin_resources[0];
+		SpinResources& resources = m_spin_resources[index];
 		VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
 		pool_info.queueFamilyIndex = m_spin_queue_family_index;
 		CHECKED_CREATE(vkCreateCommandPool, &pool_info, &resources.command_pool);
@@ -3054,7 +3058,7 @@ void GSDeviceVK::SpinCommandCompleted(u32 index)
 {
 	SpinResources& resources = m_spin_resources[index];
 	resources.in_progress = false;
-	const u32 timestamp_base = (index + NUM_COMMAND_BUFFERS) * 2;
+	const u32 timestamp_base = (index + m_command_buffer_count) * 2;
 	std::array<u64, 2> timestamps;
 	const VkResult res =
 		vkGetQueryPoolResults(m_device, m_timestamp_query_pool, timestamp_base, static_cast<u32>(timestamps.size()),
@@ -3119,7 +3123,7 @@ void GSDeviceVK::SubmitSpinCommand(u32 index, u32 cycles)
 		vkCmdPipelineBarrier(resources.command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 0, nullptr);
 
-	const u32 timestamp_base = (index + NUM_COMMAND_BUFFERS) * 2;
+	const u32 timestamp_base = (index + m_command_buffer_count) * 2;
 	vkCmdResetQueryPool(resources.command_buffer, m_timestamp_query_pool, timestamp_base, 2);
 	vkCmdWriteTimestamp(
 		resources.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool, timestamp_base);
@@ -4069,6 +4073,18 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	// Attempt to create the device.
 	if (!CreateDevice(surface, enable_validation_layer))
 		return false;
+
+	// The ring's depth, read once and before anything per-buffer exists. Everything below --
+	// the query pools' length, the command pools, the fences, the per-frame descriptor chains --
+	// is sized off it, and every index that walks the ring wraps on it.
+	m_command_buffer_count = CommandBufferRingDepth(GSConfig.VulkanCommandBufferRingDepth);
+	if (m_command_buffer_count != static_cast<u32>(NUM_COMMAND_BUFFERS))
+	{
+		Console.WriteLn("VK: command-buffer ring %u deep (EmuCore/GS/VulkanCommandBufferRingDepth = %d, built-in %u). "
+						"One fewer than this many submissions may be in flight, which is what the mid-frame kick's "
+						"never-block guard has to fit inside.",
+			m_command_buffer_count, GSConfig.VulkanCommandBufferRingDepth, static_cast<u32>(NUM_COMMAND_BUFFERS));
+	}
 
 	// And critical resources.
 	if (!CreateAllocator() || !CreateGlobalDescriptorPool() || !CreateCommandBuffers())
@@ -8963,7 +8979,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			kGSTileGpuKickReadbackThreshold, cadence,
 			cadence ? "additive -- it fires on any frame, readback or not"
 					: "OFF, leaving the near-readback trigger standing alone: the arm this shipped as",
-			static_cast<u32>(NUM_COMMAND_BUFFERS),
+			m_command_buffer_count,
 			GSConfig.TileGpuAdaptiveKick ?
 				"PREDICTED per frame (EmuCore/GS/TileGpuAdaptiveKick, starting on): it runs while the "
 				"blocking wait it removes is worth more than the submits cost on this device" :
@@ -9088,7 +9104,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		m_tilegpu_kicks_offered++;
 		ScanForCommandBufferCompletion();
-		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+		const u32 next_buffer = (m_current_frame + 1) % m_command_buffer_count;
 		if (m_frame_resources[next_buffer].fence_counter > m_completed_fence_counter)
 		{
 			// A declined offer still cost a scan, and on a starved title there are hundreds of them
@@ -11555,7 +11571,7 @@ void GSDeviceVK::RenderBlankFrame()
 
 	m_swap_chain->GetCurrentTexture()->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::PresentSrc);
 	SubmitCommandBuffer(m_swap_chain.get());
-	ActivateCommandBuffer((m_current_frame + 1) % NUM_COMMAND_BUFFERS);
+	ActivateCommandBuffer((m_current_frame + 1) % m_command_buffer_count);
 }
 
 bool GSDeviceVK::DoCAS(
@@ -13636,7 +13652,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// when the next buffer is verifiably complete; otherwise keep recording and retry
 		// at the next draw (the counter keeps the gate open).
 		ScanForCommandBufferCompletion();
-		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+		const u32 next_buffer = (m_current_frame + 1) % m_command_buffer_count;
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
 			ExecuteCommandBuffer(WaitType::None);
 	}

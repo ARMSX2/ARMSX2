@@ -2554,6 +2554,31 @@ struct Pcsx2Config
 		// staging size is not a user setting.
 		int TileGpuStagingRingMB = 0;
 
+		// How many command buffers the Vulkan backend's submission ring holds. Zero -- the
+		// default -- takes the built-in 8; a positive value forces that depth, clamped to
+		// 2..16 (GSDeviceVK::MAX_COMMAND_BUFFERS). Negative means nothing here and reads as
+		// zero: a ring of no buffers is not a configuration.
+		//
+		// Depth is how many submissions may be in flight -- this minus one, since the buffer
+		// being recorded is not one of them -- and it decides two things at once. The GS
+		// thread blocks in ActivateCommandBuffer when the ring comes round to a buffer the
+		// GPU has not finished (wait site `cmdbuf-ring`), and the mid-frame kick's
+		// never-block guard DECLINES its offer in exactly the same condition. So a ring that
+		// is too shallow for the title's submission rate costs twice: the host waits, and the
+		// machinery that would have kept the GPU fed stops firing. RG477V Spider-Man 3
+		// declines 99.3% of 510 offers a drawn frame and waits 0.53-0.57 times a frame for
+		// 6.8-7.5 ms.
+		//
+		// Safe at any depth by construction: a deeper ring only ever DELAYS a resource's
+		// reuse, never permits one earlier -- every reuse in this backend is gated on a fence
+		// counter, not on a ring index. What it costs is a command pool, a command buffer, a
+		// fence, query-pool slots and a per-frame descriptor-pool chain per buffer; the
+		// 3 -> 8 raise measured +12.4 MB peak RSS on Stuntman and +6.9 on Spider-Man 3.
+		//
+		// PIXEL-INERT by construction: which physical buffer a submission lands in cannot
+		// reach a shader. Dev only; a submission ring is not a user setting.
+		int VulkanCommandBufferRingDepth = 0;
+
 		// How many render passes the TileGpu executor records before it OFFERS to submit
 		// them, on any frame -- the second trigger of the mid-frame kick above, beside
 		// that one's near-a-readback trigger. Zero is off and leaves the near-readback

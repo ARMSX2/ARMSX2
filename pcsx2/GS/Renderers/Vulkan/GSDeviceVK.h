@@ -162,8 +162,37 @@ public:
 		// chains, built lazily at 256 sets a link. Measured on the corpus's heaviest dumps, peak
 		// RSS moves +12.4 MB on Stuntman (548 -> 560, +2.3%), +6.9 on Spider-Man 3 (+1.3%) and
 		// +0.2 on GT4 Online Public Beta, against target memory already in the hundreds of MB.
+		//
+		// It is the BUILT-IN depth, not the only one: EmuCore/GS/VulkanCommandBufferRingDepth
+		// moves it at runtime up to MAX_COMMAND_BUFFERS, because on a device where the CPU and
+		// the GPU take turns the ring's depth is what decides how many of the kick's offers are
+		// taken. RG477V Spider-Man 3 declines 99.3% of 510 offers a drawn frame and blocks in
+		// ActivateCommandBuffer 0.53-0.57 times a frame for 6.8-7.5 ms, which is what a ring
+		// that is too shallow for the title's submission rate looks like from the host.
 		NUM_COMMAND_BUFFERS = 8,
+
+		// The ring never gets deeper than this, and every per-buffer array is this long whatever
+		// the runtime depth is -- the slots past the depth are simply never created. Sixteen
+		// because that is twice the default, which covers "the GPU is two frames behind at five
+		// submissions a frame" with room, and because the swapchain's semaphore count has to be
+		// one more than the deepest ring the device can be asked for.
+		MAX_COMMAND_BUFFERS = 16,
 	};
+
+	/// The effective command-buffer ring depth: what EmuCore/GS/VulkanCommandBufferRingDepth says,
+	/// or the built-in default where it says nothing. Two states, not three -- a negative has no
+	/// meaning here (a ring of no buffers is not a configuration) and reads as the default rather
+	/// than as an error, because the alternative is a run that refuses to start over a typo in a
+	/// dev-only key. Clamped to 2..MAX_COMMAND_BUFFERS: at one buffer there is no ring at all.
+	static constexpr u32 CommandBufferRingDepth(int setting)
+	{
+		const u32 want = (setting > 0) ? static_cast<u32>(setting) : static_cast<u32>(NUM_COMMAND_BUFFERS);
+		if (want < 2)
+			return 2;
+		if (want > static_cast<u32>(MAX_COMMAND_BUFFERS))
+			return static_cast<u32>(MAX_COMMAND_BUFFERS);
+		return want;
+	}
 
 	struct OptionalExtensions
 	{
@@ -582,7 +611,7 @@ private:
 	VkBuffer m_spin_buffer = VK_NULL_HANDLE;
 	VmaAllocation m_spin_buffer_allocation = VK_NULL_HANDLE;
 	VkDescriptorSet m_spin_descriptor_set = VK_NULL_HANDLE;
-	std::array<SpinResources, NUM_COMMAND_BUFFERS> m_spin_resources;
+	std::array<SpinResources, MAX_COMMAND_BUFFERS> m_spin_resources;
 
 	// The out-of-band command buffer: one-shot work submitted on its own fence while the
 	// frame's buffer goes on being recorded. Because queue submissions execute in order,
@@ -638,7 +667,12 @@ private:
 	bool m_wants_new_timestamp_calibration = false;
 	VkTimeDomainEXT m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_EXT;
 
-	std::array<FrameResources, NUM_COMMAND_BUFFERS> m_frame_resources;
+	std::array<FrameResources, MAX_COMMAND_BUFFERS> m_frame_resources;
+
+	// How many of those slots this run actually uses -- the ring's depth, read once from
+	// EmuCore/GS/VulkanCommandBufferRingDepth before any of them is created. Every index that
+	// walks the ring wraps on THIS, not on the array length.
+	u32 m_command_buffer_count = static_cast<u32>(NUM_COMMAND_BUFFERS);
 	u64 m_next_fence_counter = 1;
 	u64 m_completed_fence_counter = 0;
 	u32 m_current_frame = 0;
