@@ -244,15 +244,30 @@ void GSClut::WriteCLUT16S_I4_CSM1(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& T
 template <int n>
 void GSClut::WriteCLUT32_CSM2(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)
 {
+	// The gs-clut2 hardware capture (SCPH-30001, 2026-08-12): with an EIGHT-bit
+	// index this reads 128 source words starting 128 pixels past
+	// (COU*16, COV), and fills all 256 entries from them -- so entry e and
+	// entry e+128 are the same word. The offset is a constant in the
+	// coordinate, measured identical at CBW 1, 2, 4 and 8, and moving CBP off
+	// the page boundary moves the strip with it and leaves the offset alone.
+	//
+	// It belongs to this configuration alone, and the reason is that the
+	// configuration is out of spec: CSM2 admits 16-bit entries only, so a
+	// 32-bit CSM2 palette is something the hardware was never asked to do.
+	// Four-bit indices and 16-bit palettes start exactly at the origin and
+	// never repeat, which the capture measured separately.
+	constexpr bool wide_index = (n == 256);
+	constexpr int origin = wide_index ? 128 : 0;
+
 	GSOffset off = GSOffset::fromKnownPSM(TEX0.CBP, TEXCLUT.CBW, PSMCT32);
-	GSOffset::PAHelper pa = off.paMulti(TEXCLUT.COU << 4, TEXCLUT.COV);
+	GSOffset::PAHelper pa = off.paMulti((TEXCLUT.COU << 4) + origin, TEXCLUT.COV);
 
 	u32* vm = m_mem->vm32();
 	u16* RESTRICT clut = m_clut + ((TEX0.CSA & 15) << 4);
 
 	for (int i = 0; i < n; i++)
 	{
-		u32 c = vm[pa.value(i)];
+		u32 c = vm[pa.value(wide_index ? (i & 127) : i)];
 
 		clut[i] = (u16)(c & 0xffff);
 		clut[i + 256] = (u16)(c >> 16);

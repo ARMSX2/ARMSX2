@@ -237,4 +237,65 @@ TEST_F(GSClutTest, UndocumentedCPSMValuesLoadI4)
 	for (int i = 0; i < 16; i++)
 		ASSERT_EQ((*m_clut)[i], documented[i]) << "entry " << i;
 }
+
+// gs-clut2 (SCPH-30001, 2026-08-12, umbrella/hardware-oracle/captures/gs-clut2)
+// result 2: a 32-bit CSM2 palette read with an eight-bit index reads 128 source
+// words starting 128 pixels past (COU*16, COV), and fills all 256 entries from
+// them -- entry e and entry e+128 are the same word. Measured over 28 cases with
+// COU swept, and the +128 is the same at CBW 1, 2, 4 and 8, so it is a constant
+// in the coordinate rather than a row. Sony documents CSM2 as admitting 16-bit
+// entries only, which is why this configuration alone behaves this way.
+TEST_F(GSClutTest, CSM2With32BitPaletteAndEightBitIndexReads128WordsFrom128Along)
+{
+	GIFRegTEXCLUT tc;
+	tc.U64 = 0;
+	tc.CBW = 8; // 512 pixels wide, so the strip and its +128 origin both fit
+
+	const GSLocalMemory::psm_t& fmt32 = GSLocalMemory::m_psm[PSMCT32];
+	for (int x = 0; x < 512; x++)
+		(m_mem->*fmt32.wp)(x, 0, Seed32(x & 0xff, x >> 8), 0, 8);
+
+	m_clut->Reset();
+	GIFRegTEX0 t = ClutTEX0(0, PSMCT32, 0, 1, PSMT8);
+	t.CSM = 1;
+	ASSERT_TRUE(m_clut->WriteTest(t, tc));
+	m_clut->WriteDecision(t, tc);
+	m_clut->WriteLoad(t, tc);
+	m_clut->Read32(t, m_texa);
+
+	for (u32 e = 0; e < 256; e++)
+	{
+		const u32 src = 128 + (e & 127);
+		ASSERT_EQ((*m_clut)[e], Seed32(src & 0xff, src >> 8)) << "entry " << e;
+	}
+	for (u32 e = 0; e < 128; e++)
+		ASSERT_EQ((*m_clut)[e], (*m_clut)[e + 128]) << "entries " << e << " and " << (e + 128);
+}
+
+// The other half of the same result, and the guard that keeps the offset out of
+// the configurations the capture measured as landing on the origin: a 16-bit
+// CSM2 strip starts exactly where (COU*16, COV) says and never repeats.
+TEST_F(GSClutTest, CSM2With16BitPaletteStartsAtTheOriginAndDoesNotRepeat)
+{
+	GIFRegTEXCLUT tc;
+	tc.U64 = 0;
+	tc.CBW = 8;
+
+	const GSLocalMemory::psm_t& fmt16 = GSLocalMemory::m_psm[PSMCT16];
+	for (int x = 0; x < 512; x++)
+		(m_mem->*fmt16.wp)(x, 0, Seed16(x & 0x1f, x >> 5), 0, 8);
+
+	m_clut->Reset();
+	GIFRegTEX0 t = ClutTEX0(0, PSMCT16, 0, 1, PSMT8);
+	t.CSM = 1;
+	ASSERT_TRUE(m_clut->WriteTest(t, tc));
+	m_clut->WriteDecision(t, tc);
+	m_clut->WriteLoad(t, tc);
+	m_clut->Read32(t, m_texa);
+
+	int repeats = 0;
+	for (u32 e = 0; e < 128; e++)
+		repeats += ((*m_clut)[e] == (*m_clut)[e + 128]) ? 1 : 0;
+	ASSERT_EQ(repeats, 0);
+}
 } // namespace
