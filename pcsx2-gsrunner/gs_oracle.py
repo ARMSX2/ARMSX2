@@ -5,9 +5,9 @@
 """Oracle scoring harness for the GS renderers.
 
 Scores a renderer arm per-pixel against golden frames produced by the software
-renderer, over a corpus of GS dumps. This is the correctness gate for the Tile
-renderer ladder: eyeball review is banned by charter, so every claim of "renders
-correctly" is a number produced here.
+renderer, over a corpus of GS dumps. This is the correctness gate for the renderer
+work: eyeball review is banned by charter, so every claim of "renders correctly"
+is a number produced here.
 
 GS dump replay is nondeterministic run-to-run (thread timing changes transfer
 interleaving on some dumps), so nothing is compared raw: the golden build runs the
@@ -22,18 +22,17 @@ GEOMETRY", "LOCALISED DEFECT") beside the raw percentages. That channel is
 REPORTING ONLY and never touches `pass`: the level metric remains the gate. It
 exists because pixel counts do not rank the way people do -- a full-screen
 exposure shift moves 81% of pixels and reads as mild, while a dropped polygon
-moves 1.5% and is the first thing an eye lands on. Its consumer is the waiver
-workflow, so a recorded quality trade is reviewed with severity in hand.
-`--no-perceptual` turns it off.
+moves 1.5% and is the first thing an eye lands on. It is what a recorded quality
+trade is reviewed with. `--no-perceptual` turns it off.
 
 ⚠️ This harness compares PRESENTED frames -- the `*_frame*.png` that gsrunner writes
 when given `-dumpdir` alone. It does NOT compare `-dump f` output, which is the
 per-draw debugger writing internal render targets. Those targets are sized by each
 renderer's own allocation policy and legitimately differ between arms: on one
-letterboxed title the same frame dumps 640x415 under sw, 640x448 under tile, and
-641x800-varying under classic, none of which is a bug. Reaching for `-dump f` to
-investigate a score from here produces three arms that disagree about frame geometry
-and an inviting, wrong conclusion. The tell that you are off the rails is that
+letterboxed title the same frame dumps 640x415 under sw and 641x800-varying under
+classic, neither of which is a bug. Reaching for `-dump f` to investigate a score
+from here produces arms that disagree about frame geometry and an inviting, wrong
+conclusion. The tell that you are off the rails is that
 `score_frame_arrays` reports a shape mismatch as an explicit error, so any run that
 produced real percentages was comparing equally-sized frames.
 
@@ -44,18 +43,17 @@ the renderer it claims to be.
 Subcommands:
   golden    build/refresh golden frames + stability manifests for a corpus
   score     run one dump under an arm and score it against its golden
-  corpus    score a whole corpus, apply reviewed waivers, emit a scorecard JSON
+  corpus    score a whole corpus, emit a scorecard JSON, gate
   selftest  prove the scorer catches an injected 1-level/1% shift (no runner needed)
 
 Arms (what gets executed, verified by effect against the renderer identity line in
 the emulog rather than trusted from the command line):
-  sw       -renderer sw                        expect no variant identity line
-  classic  -renderer vulkan                    expect "GS: Classic renderer active"
-  tile     -renderer vulkan HWRendererVariant=2  expect "GS: Tile renderer active"
+  sw       -renderer sw       expect no variant identity line
+  classic  -renderer vulkan    expect "GS: Classic renderer active"
 
-The classic arm deliberately leaves HWRendererVariant at its Auto default: that is
-the configuration real users run today, and Auto currently resolves Classic
-everywhere (and prints the identity line, which explicit Classic does not).
+Two arms, because this tree has two renderers. The classic arm passes no variant
+setting: that is the configuration real users run, and it is what prints the
+identity line the verify-by-effect check reads.
 
 Golden layout (lives beside the dumps, outside any repo -- goldens are ~1 GB):
   <golden-root>/corpus_summary.json
@@ -64,7 +62,7 @@ Golden layout (lives beside the dumps, outside any repo -- goldens are ~1 GB):
 
 Typical use:
   ./gs_oracle.py golden  --runner build/bin/pcsx2-gsrunner --corpus corpus.txt --golden-root ~/gs-oracle/golden
-  ./gs_oracle.py score   --runner build/bin/pcsx2-gsrunner --golden-root ~/gs-oracle/golden --arm tile --dump <dump>
+  ./gs_oracle.py score   --runner build/bin/pcsx2-gsrunner --golden-root ~/gs-oracle/golden --arm classic --dump <dump>
   ./gs_oracle.py corpus  --runner build/bin/pcsx2-gsrunner --golden-root ~/gs-oracle/golden --corpus corpus.txt \
                          --arm classic --out classic_baseline.json
   ./gs_oracle.py selftest --golden-root ~/gs-oracle/golden
@@ -89,15 +87,11 @@ THRESHOLDS = [0, 1, 2, 4, 8]
 
 DUMP_EXTENSIONS = (".gs", ".gs.xz", ".gs.zst")
 
-IDENTITY_RE = re.compile(r"GS: (Tile|Classic) renderer active \(([^)]*)\)")
+IDENTITY_RE = re.compile(r"GS: (Classic) renderer active \(([^)]*)\)")
 
 ARMS = {
     "sw": {"args": ["-renderer", "sw"], "identity": None},
     "classic": {"args": ["-renderer", "vulkan"], "identity": "Classic"},
-    "tile": {
-        "args": ["-renderer", "vulkan", "-set", "EmuCore/GS/HWRendererVariant=2"],
-        "identity": "Tile",
-    },
 }
 
 
@@ -315,9 +309,8 @@ def perceptual_profile(golden_path, test_path, ppd):
     """Perceptual severity for one differing frame, or None if unavailable.
 
     ⚠️ REPORTING ONLY. This never touches `pass` -- the gate stays the level
-    metric. Its consumer is the waiver workflow: a scored quality trade is
-    reviewed with a severity profile in hand, which is the difference between
-    "81.6% of pixels moved" and "one global gain of 1.06, no structural
+    metric. It is what a scored quality trade is reviewed with: the difference
+    between "81.6% of pixels moved" and "one global gain of 1.06, no structural
     residue". The eyeball ban is on eyes as the *gate*, not on informed
     judgement over an explicitly recorded trade.
 
@@ -351,19 +344,9 @@ def perceptual_profile(golden_path, test_path, ppd):
     }
 
 
-def find_waiver(waivers, gsname, frame_idx):
-    for w in waivers:
-        if w.get("dump") != gsname:
-            continue
-        frames = w.get("frames", "all")
-        if frames == "all" or (isinstance(frames, list) and frame_idx in frames):
-            return w
-    return None
-
-
 def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
                          gate_threshold, gate_pct, min_stable_fraction, hash_only,
-                         waivers, perceptual=True, ppd=None):
+                         perceptual=True, ppd=None):
     """Compare a test arm's stable frames against a golden manifest. Returns the
     per-dump scorecard dict (schema is the harness's public contract; bump
     'schema' on any incompatible change)."""
@@ -375,7 +358,7 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
     rep = test_runs[0]  # stability guarantees any run is representative on stable frames
 
     frames_out = []
-    failed = waived = identical = diffed = missing = skipped = 0
+    failed = identical = diffed = missing = skipped = 0
 
     for idx in sorted(golden_stable.keys()):
         if not golden_stable[idx]:
@@ -427,16 +410,6 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
         diffed += 1
 
         if not entry["pass"]:
-            w = find_waiver(waivers, gsname, idx)
-            if w is not None and "error" not in metrics:
-                w_threshold = str(w.get("threshold", gate_threshold))
-                w_max_pct = float(w.get("max_pct", 0.0))
-                if metrics["pct_gt"].get(w_threshold, 100.0) <= w_max_pct:
-                    entry["pass"] = True
-                    entry["waived"] = True
-                    entry["waiver_reason"] = w.get("reason", "")
-                    waived += 1
-        if not entry["pass"]:
             failed += 1
         frames_out.append(entry)
 
@@ -482,7 +455,6 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
             "diff": diffed,
             "missing": missing,
             "failed": failed,
-            "waived": waived,
             "skipped_unstable": skipped,
             "stable_fraction_golden": round(manifest["stable_fraction"], 4),
             "stable_fraction_test": round(test_stability["stable_fraction"], 4),
@@ -602,20 +574,7 @@ def cmd_golden(args):
 # score / corpus
 # ---------------------------------------------------------------------------
 
-def load_waivers(path, arm):
-    # Waivers document accepted quality trades for the Tile renderer only; a waiver
-    # must never quietly excuse a Classic or SW regression.
-    if not path or arm != "tile":
-        return []
-    if not os.path.isfile(path):
-        return []
-    import yaml
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("waivers", []) or []
-
-
-def score_one_dump(args, dump, waivers):
+def score_one_dump(args, dump):
     gsname = gs_name(dump)
     golden_dir = os.path.join(args.golden_root, gsname)
     manifest_path = os.path.join(golden_dir, "manifest.json")
@@ -651,7 +610,7 @@ def score_one_dump(args, dump, waivers):
         card = score_against_golden(manifest, os.path.join(golden_dir, "frames"),
                                     runs, stability, args.gate_threshold,
                                     args.gate_pct, args.min_stable_fraction,
-                                    args.hash_only, waivers,
+                                    args.hash_only,
                                     perceptual=not args.no_perceptual,
                                     ppd=args.ppd)
 
@@ -678,8 +637,6 @@ def print_card_line(card):
     detail = (f"{s['identical']}/{s['compared']} identical"
               f", sf(g)={s['stable_fraction_golden']:.2f}"
               f", sf(t)={s['stable_fraction_test']:.2f}")
-    if s["waived"]:
-        detail += f", {s['waived']} waived"
     if s["worst"]:
         w = s["worst"]
         detail += (f", worst f{w['frame']}: {w['pct_gt']['0']}%>0lv "
@@ -694,8 +651,7 @@ def print_card_line(card):
 
 
 def cmd_score(args):
-    waivers = load_waivers(args.waivers, args.arm)
-    card = score_one_dump(args, args.dump, waivers)
+    card = score_one_dump(args, args.dump)
     print_card_line(card)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -741,17 +697,15 @@ def compare_to_baseline(cards, baseline_path, regress_eps):
 
 def cmd_corpus(args):
     dumps = load_corpus(args.corpus)
-    waivers = load_waivers(args.waivers, args.arm)
     log(f"Scoring {len(dumps)} dumps under arm '{args.arm}' "
         f"(gate: <= {args.gate_pct}% of pixels wrong by > {args.gate_threshold} levels"
         f"{', hash-only' if args.hash_only else ''})")
 
-    cards = [score_one_dump(args, dump, waivers) for dump in dumps]
+    cards = [score_one_dump(args, dump) for dump in dumps]
     for card in cards:
         print_card_line(card)
 
     passed = sum(1 for c in cards if c["pass"])
-    waived_frames = sum((c.get("summary") or {}).get("waived", 0) for c in cards)
     result = {
         "schema": 1,
         "arm": args.arm,
@@ -763,7 +717,6 @@ def cmd_corpus(args):
         "pass": passed == len(cards),
         "dumps_passed": passed,
         "dumps_total": len(cards),
-        "waived_frames": waived_frames,
         "cards": cards,
     }
 
@@ -788,12 +741,10 @@ def cmd_corpus(args):
             raise SystemExit("--regressions-only requires --baseline")
         ok = not regressions and not any(c.get("error") for c in cards)
         log(f"== drift-watch: {len(regressions)} regressions vs baseline"
-            + (f", {waived_frames} waived frames" if waived_frames else "")
             + f" => {'PASS' if ok else 'FAIL'} ==")
     else:
         ok = result["pass"] and not regressions
         log(f"== {passed}/{len(cards)} dumps pass"
-            + (f", {waived_frames} waived frames" if waived_frames else "")
             + (f", {len(regressions)} regressions" if regressions else "")
             + f" => {'PASS' if ok else 'FAIL'} ==")
     return 0 if ok else 1
@@ -888,7 +839,7 @@ def add_common_run_args(p):
 
 
 def add_score_args(p):
-    p.add_argument("--arm", choices=sorted(ARMS.keys()), default="tile")
+    p.add_argument("--arm", choices=sorted(ARMS.keys()), default="classic")
     p.add_argument("--runs", type=int, default=2,
                    help="runs per dump for test-side stability (default 2)")
     p.add_argument("--gate-threshold", type=int, default=0, choices=THRESHOLDS,
@@ -902,8 +853,6 @@ def add_score_args(p):
     p.add_argument("--hash-only", action="store_true",
                    help="byte-hash comparison only; any diff fails, no pixel metrics "
                         "(the cheap nightly mode)")
-    p.add_argument("--waivers", default=os.path.join(SCRIPT_DIR, "tile_waivers.yaml"),
-                   help="reviewed quality-trade waivers (applied to the tile arm only)")
     p.add_argument("--no-perceptual", action="store_true",
                    help="skip the perceptual severity profile on differing "
                         "frames (it is reporting-only and never gates, but it "
@@ -947,7 +896,7 @@ def main():
     add_score_args(p)
     p.set_defaults(func=cmd_score)
 
-    p = sub.add_parser("corpus", help="score a corpus; apply waivers; gate")
+    p = sub.add_parser("corpus", help="score a corpus and gate")
     add_common_run_args(p)
     p.add_argument("--golden-root", required=True)
     p.add_argument("--corpus", required=True)
