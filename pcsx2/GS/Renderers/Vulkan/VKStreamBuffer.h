@@ -45,6 +45,28 @@ public:
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
 	void CommitMemory(u32 final_num_bytes);
 
+	/// Hold the newest committed range until the command buffer being recorded NOW retires, not
+	/// merely until the one it was committed under does.
+	///
+	/// The ring's whole model is "a range is free once the command buffer that was recording when
+	/// it was committed has completed", and that holds as long as the only reader is that command
+	/// buffer. A caller that stages once and then keeps recording across a SUBMISSION breaks it:
+	/// the range is tracked against the first submission, which retires first, and the ring then
+	/// hands the same bytes out again while the later submissions are still reading them. Worse
+	/// than a wrap-round overwrite, because UpdateGPUPosition's "the GPU caught up" case resets
+	/// the whole ring to offset zero the moment the tracked position equals the write position, so
+	/// the very next staging lands on top of the live data.
+	///
+	/// Calling this at each submission boundary walks the range's tracked fence forward with the
+	/// recording, so it ends up on the last submission that actually reads it. It only ever moves
+	/// a fence FORWARD, so it can delay a reuse and never permit one.
+	///
+	/// Nothing on this branch stages across a submission yet -- the classic renderer stages a
+	/// draw's vertices and records the draw with no submission in between, which is exactly the
+	/// shape the ring's own rule assumes. A pass planner that stages a whole frame before opening
+	/// its first pass does not, and has to call this at every cut.
+	void RetainForCurrentCommandBuffer();
+
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);
 	void UpdateCurrentFencePosition();
