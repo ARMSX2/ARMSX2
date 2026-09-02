@@ -1860,6 +1860,23 @@ public:
 	virtual u64 GetRingWaitNs() const { return 0; }
 	virtual u64 GetRingWaitCalls() const { return 0; }
 
+	/// The same waits again, itemised by the CALL SITE that paid rather than by the bill it landed
+	/// on. The getters above answer "what did waiting cost"; these answer "what was it waiting
+	/// for", which is the question a fix needs and the one a frame-level counter cannot reach -- a
+	/// run can spend milliseconds a frame under "sync" with no readback in it, and no aggregate
+	/// says which of a dozen sites is spending it.
+	///
+	/// Sites of one bill sum to that bill EXACTLY (GSDeviceVK::BookGpuWait writes both in one
+	/// place), so a reader can reconcile without trusting the instrument. The arrays are
+	/// GetGpuWaitSiteCount() long, indexed by site, and stay valid for the device's lifetime;
+	/// the names are string literals and outlive it, which is what lets the runner latch them.
+	virtual u32 GetGpuWaitSiteCount() const { return 0; }
+	virtual const u64* GetGpuWaitSiteNs() const { return nullptr; }
+	virtual const u64* GetGpuWaitSiteCalls() const { return nullptr; }
+	virtual const char* GetGpuWaitSiteName(u32 site) const { return ""; }
+	/// Which of sync / ring this site is charged to.
+	virtual const char* GetGpuWaitSiteFamily(u32 site) const { return ""; }
+
 	/// Returns true if not enough time has passed for present to not block.
 	/// ⚠️ Not a pure query: answering "present" books this frame as the one that was displayed,
 	/// so the next call within the same throttle period answers "skip". Ask exactly once per

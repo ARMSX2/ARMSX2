@@ -9,7 +9,10 @@
 #include "common/BitUtils.h"
 #include "common/Console.h"
 
-VKStreamBuffer::VKStreamBuffer() = default;
+VKStreamBuffer::VKStreamBuffer()
+	: m_wait_site(GpuWaitSite::StreamUnnamed)
+{
+}
 
 VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	: m_size(move.m_size)
@@ -20,6 +23,7 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_buffer(move.m_buffer)
 	, m_host_pointer(move.m_host_pointer)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
+	, m_wait_site(move.m_wait_site)
 {
 	move.m_size = 0;
 	move.m_current_offset = 0;
@@ -48,12 +52,14 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_buffer, move.m_buffer);
 	std::swap(m_host_pointer, move.m_host_pointer);
 	std::swap(m_tracked_fences, move.m_tracked_fences);
+	std::swap(m_wait_site, move.m_wait_site);
 
 	return *this;
 }
 
-bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size)
+bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site)
 {
+	m_wait_site = wait_site;
 	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, static_cast<VkDeviceSize>(size),
 		usage, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
 
@@ -298,7 +304,10 @@ bool VKStreamBuffer::WaitForClearSpace(u32 num_bytes)
 		return false;
 
 	// Wait until this fence is signaled. This will fire the callback, updating the GPU position.
-	GSDeviceVK::GetInstance()->WaitForFenceCounter(iter->first);
+	// Charged to THIS buffer. Every stream ring used to land on the same undifferentiated sync
+	// figure, so "the host is out of staging room" and "the host is draining a readback" read as
+	// one number, and the two want opposite fixes.
+	GSDeviceVK::GetInstance()->WaitForFenceCounter(iter->first, m_wait_site);
 	m_tracked_fences.erase(
 		m_tracked_fences.begin(), m_current_offset == iter->second ? m_tracked_fences.end() : ++iter);
 	m_current_offset = new_offset;

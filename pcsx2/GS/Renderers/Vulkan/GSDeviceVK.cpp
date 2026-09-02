@@ -1442,7 +1442,7 @@ VkDescriptorSet GSDeviceVK::AllocateDescriptorSetFromFramePool(VkDescriptorSetLa
 	return VK_NULL_HANDLE;
 }
 
-void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
+void GSDeviceVK::WaitForFenceCounter(u64 fence_counter, GpuWaitSite site)
 {
 	if (m_completed_fence_counter >= fence_counter)
 		return;
@@ -1458,16 +1458,15 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
 	}
 
 	pxAssert(index != m_current_frame);
-	WaitForCommandBufferCompletion(index);
+	WaitForCommandBufferCompletion(index, site);
 }
 
 void GSDeviceVK::WaitForGPUIdle()
 {
 	const u64 t0 = Common::Timer::GetCurrentValue();
 	vkDeviceWaitIdle(m_device);
-	m_sync_wait_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - t0);
-	m_sync_wait_calls++;
-	g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+	BookGpuWait(
+		GpuWaitSite::DeviceIdle, Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - t0));
 }
 
 float GSDeviceVK::GetAndResetAccumulatedGPUTime()
@@ -1568,15 +1567,68 @@ void GSDeviceVK::ScanForCommandBufferCompletion()
 	}
 }
 
-void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause)
+GSDeviceVK::GpuWaitCause GSDeviceVK::CauseOfSite(GpuWaitSite site)
 {
-	// Wait for this command buffer to be completed. Timed and attributed: a Sync wait is the GS
-	// thread stalling out of turn, which serializes the whole frame whatever it carries, and it
-	// was previously indistinguishable from the ring's own recycle wait in every counter we had.
-	const u64 wait_t0 = Common::Timer::GetCurrentValue();
-	const VkResult res = vkWaitForFences(m_device, 1, &m_frame_resources[index].fence, VK_TRUE, UINT64_MAX);
-	const u64 wait_ns = Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - wait_t0);
-	if (cause == GpuWaitCause::Sync)
+	return (site == GpuWaitSite::CommandBufferRing) ? GpuWaitCause::Ring : GpuWaitCause::Sync;
+}
+
+const char* GSDeviceVK::NameOfSite(GpuWaitSite site)
+{
+	// Stable tags. A round comparing two device runs compares these strings, so renaming one
+	// silently breaks every table that already quotes it.
+	switch (site)
+	{
+		case GpuWaitSite::CommandBufferRing:
+			return "cmdbuf-ring";
+		case GpuWaitSite::StreamVertex:
+			return "stream-vertex";
+		case GpuWaitSite::StreamIndex:
+			return "stream-index";
+		case GpuWaitSite::StreamExpandIndex:
+			return "stream-expand-index";
+		case GpuWaitSite::StreamVertexUniform:
+			return "stream-vs-uniform";
+		case GpuWaitSite::StreamFragmentUniform:
+			return "stream-fs-uniform";
+		case GpuWaitSite::StreamTexture:
+			return "stream-texture";
+		case GpuWaitSite::StreamUnnamed:
+			return "stream-unnamed";
+		case GpuWaitSite::Readback:
+			return "readback-drain";
+		case GpuWaitSite::DownloadFence:
+			return "download-fence";
+		case GpuWaitSite::DeviceIdle:
+			return "device-idle";
+		case GpuWaitSite::SamplerCacheClear:
+			return "sampler-cache-clear";
+		case GpuWaitSite::TextureAllocFallback:
+			return "texture-alloc-fallback";
+		case GpuWaitSite::SyncUnnamed:
+			return "sync-unnamed";
+		default:
+			return "?";
+	}
+}
+
+const char* GSDeviceVK::GetGpuWaitSiteFamily(u32 site) const
+{
+	if (site >= kGpuWaitSiteCount)
+		return "";
+	return (CauseOfSite(static_cast<GpuWaitSite>(site)) == GpuWaitCause::Ring) ? "ring" : "sync";
+}
+
+void GSDeviceVK::BookGpuWait(GpuWaitSite site, u64 wait_ns)
+{
+	// ⚠️ THE ONLY PLACE A WAIT IS CHARGED. Site and cause are written together off one table, which
+	// is what makes "the per-site figures sum to the per-cause figures" true by construction instead
+	// of by anybody checking. Add a site, and its cause's aggregate still reconciles; book a cause
+	// anywhere but here, and it stops.
+	//
+	// Ring is backpressure and stays out of the blocking-wait population; Sync is in it.
+	m_wait_site_ns[static_cast<u32>(site)] += wait_ns;
+	m_wait_site_calls[static_cast<u32>(site)]++;
+	if (CauseOfSite(site) == GpuWaitCause::Sync)
 	{
 		m_sync_wait_ns += wait_ns;
 		m_sync_wait_calls++;
@@ -1587,6 +1639,16 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause)
 		m_ring_wait_ns += wait_ns;
 		m_ring_wait_calls++;
 	}
+}
+
+void GSDeviceVK::WaitForCommandBufferCompletion(u32 index, GpuWaitSite site)
+{
+	// Wait for this command buffer to be completed. Timed and attributed: a Sync wait is the GS
+	// thread stalling out of turn, which serializes the whole frame whatever it carries, and it
+	// was previously indistinguishable from the ring's own recycle wait in every counter we had.
+	const u64 wait_t0 = Common::Timer::GetCurrentValue();
+	const VkResult res = vkWaitForFences(m_device, 1, &m_frame_resources[index].fence, VK_TRUE, UINT64_MAX);
+	BookGpuWait(site, Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - wait_t0));
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
@@ -1850,7 +1912,7 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	// Wait for the GPU to finish with all resources for this command buffer. This one is the ring
 	// coming round -- the pipeline is full -- not a stall anybody asked for.
 	if (resources.fence_counter > m_completed_fence_counter)
-		WaitForCommandBufferCompletion(index, GpuWaitCause::Ring);
+		WaitForCommandBufferCompletion(index, GpuWaitSite::CommandBufferRing);
 
 	// Reset fence to unsignaled before starting.
 	VkResult res = vkResetFences(m_device, 1, &resources.fence);
@@ -1924,7 +1986,7 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	vmaSetCurrentFrameIndex(m_allocator, static_cast<u32>(m_next_fence_counter));
 }
 
-void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
+void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion, GpuWaitSite site)
 {
 	if (m_last_submit_failed)
 		return;
@@ -1943,7 +2005,7 @@ void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
 			while (vkGetFenceStatus(m_device, m_frame_resources[current_frame].fence) == VK_NOT_READY)
 				ShortSpin();
 		}
-		WaitForCommandBufferCompletion(current_frame);
+		WaitForCommandBufferCompletion(current_frame, site);
 	}
 
 	// Push constants need to be refreshed each command buffer.
@@ -4154,7 +4216,8 @@ GSTexture* GSDeviceVK::CreateSurface(GSTexture::Usage usage, int width, int heig
 	{
 		// We're probably out of vram, try flushing the command buffer to release pending textures.
 		PurgePool();
-		ExecuteCommandBufferAndRestartRenderPass(true, "Couldn't allocate texture.");
+		ExecuteCommandBufferAndRestartRenderPass(
+			true, "Couldn't allocate texture.", GpuWaitSite::TextureAllocFallback);
 		tex = GSTextureVK::Create(usage, format, width, height, levels);
 	}
 
@@ -5304,7 +5367,7 @@ VkSampler GSDeviceVK::GetSampler(GSHWDrawConfig::SamplerSelector ss)
 
 void GSDeviceVK::ClearSamplerCache()
 {
-	ExecuteCommandBuffer(true);
+	ExecuteCommandBuffer(true, GpuWaitSite::SamplerCacheClear);
 	for (const auto& it : m_samplers)
 	{
 		if (it.second != VK_NULL_HANDLE)
@@ -5489,37 +5552,40 @@ bool GSDeviceVK::CreateBuffers()
 {
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),
-			VERTEX_BUFFER_SIZE))
+			VERTEX_BUFFER_SIZE, GpuWaitSite::StreamVertex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate vertex buffer");
 		return false;
 	}
 
-	if (!m_index_stream_buffer.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE))
+	if (!m_index_stream_buffer.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_SIZE, GpuWaitSite::StreamIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate index buffer");
 		return false;
 	}
 
-	if (!m_expand_index_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? INDEX_BUFFER_SIZE : 4))
+	if (!m_expand_index_stream_buffer.Create(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_features.aa1 ? INDEX_BUFFER_SIZE : 4, GpuWaitSite::StreamExpandIndex))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate expansion index buffer (VS resource)");
 		return false;
 	}
 
-	if (!m_vertex_uniform_stream_buffer.Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VERTEX_UNIFORM_BUFFER_SIZE))
+	if (!m_vertex_uniform_stream_buffer.Create(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VERTEX_UNIFORM_BUFFER_SIZE, GpuWaitSite::StreamVertexUniform))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate vertex uniform buffer");
 		return false;
 	}
 
-	if (!m_fragment_uniform_stream_buffer.Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, FRAGMENT_UNIFORM_BUFFER_SIZE))
+	if (!m_fragment_uniform_stream_buffer.Create(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, FRAGMENT_UNIFORM_BUFFER_SIZE, GpuWaitSite::StreamFragmentUniform))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate fragment uniform buffer");
 		return false;
 	}
 
-	if (!m_texture_stream_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_BUFFER_SIZE))
+	if (!m_texture_stream_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_BUFFER_SIZE, GpuWaitSite::StreamTexture))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate texture upload buffer");
 		return false;
@@ -7251,10 +7317,10 @@ GSDeviceVK::WaitType GSDeviceVK::GetWaitType(bool wait, bool spin)
 		return WaitType::Sleep;
 }
 
-void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion)
+void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion, GpuWaitSite site)
 {
 	EndRenderPass();
-	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks));
+	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks), site);
 }
 
 void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion, const char* reason, ...)
@@ -7268,7 +7334,8 @@ void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion, const char* reas
 	ExecuteCommandBuffer(wait_for_completion);
 }
 
-void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completion, const char* reason)
+void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(
+	bool wait_for_completion, const char* reason, GpuWaitSite site)
 {
 	Console.Warning("VK: Executing command buffer due to '%s'", reason);
 
@@ -7280,7 +7347,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completi
 	const FeedbackLoopFlag current_feedback_loop = m_current_framebuffer_feedback_loop;
 
 	EndRenderPass();
-	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks));
+	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks), site);
 
 	if (render_pass != VK_NULL_HANDLE)
 	{
@@ -7349,7 +7416,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 void GSDeviceVK::ExecuteCommandBufferForReadback()
 {
 	m_readback_frame = m_frame;
-	ExecuteCommandBuffer(true);
+	ExecuteCommandBuffer(true, GpuWaitSite::Readback);
 	if (m_spinning_supported && GSConfig.HWSpinGPUForReadbacks)
 	{
 		m_spin_timer = 30;

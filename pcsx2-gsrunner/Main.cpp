@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <deque>
 #include <functional>
 #include <condition_variable>
@@ -174,6 +177,16 @@ struct DeviceWaitBill
 	u64 sync_calls = 0;
 	u64 ring_ns = 0;
 	u64 ring_calls = 0;
+	// The same waits itemised by CALL SITE. The two bills above say what waiting cost; these say
+	// what it was waiting for, and the sites of a bill sum to that bill exactly (the device books
+	// both in one place). Names are latched too, because they are read after the device is gone --
+	// they are string literals, so copying the pointer is copying the string.
+	static constexpr u32 kMaxSites = 32;
+	u32 site_count = 0;
+	const char* site_names[kMaxSites] = {};
+	const char* site_families[kMaxSites] = {};
+	u64 site_ns[kMaxSites] = {};
+	u64 site_calls[kMaxSites] = {};
 };
 static DeviceWaitBill s_device_wait_bill;
 
@@ -185,6 +198,26 @@ static void LatchDeviceWaitBill()
 	s_device_wait_bill.sync_calls = g_gs_device->GetSyncWaitCalls();
 	s_device_wait_bill.ring_ns = g_gs_device->GetRingWaitNs();
 	s_device_wait_bill.ring_calls = g_gs_device->GetRingWaitCalls();
+
+	const u32 nsites = std::min(g_gs_device->GetGpuWaitSiteCount(), DeviceWaitBill::kMaxSites);
+	const u64* site_ns = g_gs_device->GetGpuWaitSiteNs();
+	const u64* site_calls = g_gs_device->GetGpuWaitSiteCalls();
+	if (nsites == 0 || !site_ns || !site_calls)
+		return;
+	// The names are string literals and never change, so they are copied once rather than on every
+	// present -- this runs per frame and the counters are the only part that moves.
+	const bool need_names = (s_device_wait_bill.site_count == 0);
+	s_device_wait_bill.site_count = nsites;
+	for (u32 i = 0; i < nsites; i++)
+	{
+		if (need_names)
+		{
+			s_device_wait_bill.site_names[i] = g_gs_device->GetGpuWaitSiteName(i);
+			s_device_wait_bill.site_families[i] = g_gs_device->GetGpuWaitSiteFamily(i);
+		}
+		s_device_wait_bill.site_ns[i] = site_ns[i];
+		s_device_wait_bill.site_calls[i] = site_calls[i];
+	}
 }
 
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
@@ -1539,6 +1572,18 @@ static void WriteStatsJson(const std::string& path)
 		s_device_wait_bill.sync_ns, s_device_wait_bill.sync_calls);
 	std::fprintf(fp.get(), "    \"ring_wait_ns\": %" PRIu64 ",\n    \"ring_wait_calls\": %" PRIu64 ",\n",
 		s_device_wait_bill.ring_ns, s_device_wait_bill.ring_calls);
+	// The same population a THIRD way: by the call site that paid, which is the only cut that names
+	// a mechanism. Every site is emitted, zeros included, so a reader diffing two runs never has to
+	// decide whether a missing key means zero or means the instrument was absent. The families sum
+	// to the two figures above exactly.
+	std::fprintf(fp.get(), "    \"wait_sites\": {");
+	for (u32 i = 0; i < s_device_wait_bill.site_count; i++)
+	{
+		std::fprintf(fp.get(), "%s\n      \"%s\": {\"family\": \"%s\", \"ns\": %" PRIu64 ", \"calls\": %" PRIu64 "}",
+			(i > 0) ? "," : "", s_device_wait_bill.site_names[i], s_device_wait_bill.site_families[i],
+			s_device_wait_bill.site_ns[i], s_device_wait_bill.site_calls[i]);
+	}
+	std::fprintf(fp.get(), "%s},\n", s_device_wait_bill.site_count ? "\n    " : "");
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
@@ -1609,6 +1654,31 @@ void GSRunner::DumpStats()
 		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Wait ms: {:.3f} over {} waits; "
 									"ring backpressure {:.3f} ms over {} waits",
 			w.sync_ns / 1e6, w.sync_calls, w.ring_ns / 1e6, w.ring_calls));
+		// ...and the same bill by SITE. Nonzero sites only, with each family's sum appended so the
+		// reconciliation against the line above is a read rather than an arithmetic exercise. A run
+		// that blocked nowhere prints "none", which is a reading and not a blank.
+		std::string sites;
+		u64 sum_ns[2] = {}, sum_calls[2] = {};
+		static constexpr const char* kFamilies[2] = {"sync", "ring"};
+		for (u32 i = 0; i < w.site_count; i++)
+		{
+			for (u32 f = 0; f < 2; f++)
+			{
+				if (std::strcmp(w.site_families[i], kFamilies[f]) != 0)
+					continue;
+				sum_ns[f] += w.site_ns[i];
+				sum_calls[f] += w.site_calls[i];
+				break;
+			}
+			if (w.site_calls[i] == 0)
+				continue;
+			sites += fmt::format("  {}[{}] {} @ {:.3f} ms", w.site_names[i], w.site_families[i], w.site_calls[i],
+				w.site_ns[i] / 1e6);
+		}
+		Console.WriteLn(fmt::format("@HWSTAT@ GPU Wait Sites:{}   [sums: sync {:.3f} ms over {}; "
+									"ring {:.3f} ms over {}]",
+			sites.empty() ? std::string("  none") : sites, sum_ns[0] / 1e6, sum_calls[0], sum_ns[1] / 1e6,
+			sum_calls[1]));
 	}
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
