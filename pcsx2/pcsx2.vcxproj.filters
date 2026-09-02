@@ -2504,6 +2504,9 @@
     <ClCompile Include="vu_capture.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
+    <ClCompile Include="PerGameOverrides.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
     <ClInclude Include="GS\GSBackQueue.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
@@ -2550,6 +2553,18 @@
       <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="vu_capture.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="EeFpuFormat.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="EeFpuModel.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="VuEfuModel.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="PerGameOverrides.h">
       <Filter>Misc</Filter>
     </ClInclude>
   </ItemGroup>

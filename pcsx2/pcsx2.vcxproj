@@ -565,6 +565,7 @@
     <ClCompile Include="microVU_Divtrace.cpp" />
     <ClCompile Include="no-jit-improvements.cpp" />
     <ClCompile Include="vu_capture.cpp" />
+    <ClCompile Include="PerGameOverrides.cpp" />
     <ClCompile Include="DebugTools\DisR3000A.cpp" />
     <ClCompile Include="DebugTools\DisR5900asm.cpp" />
     <ClCompile Include="DebugTools\DisVU0Micro.cpp" />
@@ -1003,6 +1004,10 @@
     <ClInclude Include="microVU_Divtrace.h" />
     <ClInclude Include="no-jit-improvements.h" />
     <ClInclude Include="vu_capture.h" />
+    <ClInclude Include="EeFpuFormat.h" />
+    <ClInclude Include="EeFpuModel.h" />
+    <ClInclude Include="VuEfuModel.h" />
+    <ClInclude Include="PerGameOverrides.h" />
     <ClInclude Include="x86\iCore.h" />
   </ItemGroup>
   <ItemGroup>
