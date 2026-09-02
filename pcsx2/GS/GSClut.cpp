@@ -33,62 +33,40 @@ GSClut::GSClut(GSLocalMemory* mem)
 			const bool eight_bit = (j & 0x7) == 0x3;
 			const bool four_bit = (j & 0x7) == 0x4;
 
-			switch (i)
-			{
-				case PSMCT32:
-				case PSMCT24: // undocumented (KH?)
-					if (eight_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT32_I8_CSM1;
-					else if (four_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT32_I4_CSM1;
-					else
-						m_wc[0][i][j] = &GSClut::WriteCLUT_NULL;
-					break;
-				case PSMCT16:
-					if (eight_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT16_I8_CSM1;
-					else if (four_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT16_I4_CSM1;
-					else
-						m_wc[0][i][j] = &GSClut::WriteCLUT_NULL;
-					break;
-				case PSMCT16S:
-					if (eight_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT16S_I8_CSM1;
-					else if (four_bit)
-						m_wc[0][i][j] = &GSClut::WriteCLUT16S_I4_CSM1;
-					else
-						m_wc[0][i][j] = &GSClut::WriteCLUT_NULL;
-					break;
-				default:
-					m_wc[0][i][j] = &GSClut::WriteCLUT_NULL;
-			}
+			// The gs-clut hardware capture (SCPH-30001, 2026-08-11): CPSM decodes
+			// two bits — bit 1 selects the entry width (set means 16-bit) and
+			// bit 3 selects the S block layout. The undocumented values
+			// (0x03/0x08/0x09/0x0B) load accordingly; silicon refuses nothing.
+			// (Measured for CSM1 over bits 0/1/3; bit 2 follows the capture's
+			// two-meaningful-bits rule.)
+			const bool sixteen_bit = (i & 0x2) != 0;
+			const bool s_layout = (i & 0x8) != 0;
 
-			// TODO: test this
-			m_wc[1][i][j] = &GSClut::WriteCLUT_NULL;
+			if (eight_bit)
+				m_wc[0][i][j] = !sixteen_bit ? &GSClut::WriteCLUT32_I8_CSM1 :
+				                s_layout     ? &GSClut::WriteCLUT16S_I8_CSM1 :
+				                               &GSClut::WriteCLUT16_I8_CSM1;
+			else if (four_bit)
+				m_wc[0][i][j] = !sixteen_bit ? &GSClut::WriteCLUT32_I4_CSM1 :
+				                s_layout     ? &GSClut::WriteCLUT16S_I4_CSM1 :
+				                               &GSClut::WriteCLUT16_I4_CSM1;
+			else
+				m_wc[0][i][j] = &GSClut::WriteCLUT_NULL;
+
+			// CSM2 decodes CPSM through the same two bits — the capture
+			// measured the undocumented values loading there as well.
+			if (eight_bit)
+				m_wc[1][i][j] = !sixteen_bit ? &GSClut::WriteCLUT32_CSM2<256> :
+				                s_layout     ? &GSClut::WriteCLUT16S_CSM2<256> :
+				                               &GSClut::WriteCLUT16_CSM2<256>;
+			else if (four_bit)
+				m_wc[1][i][j] = !sixteen_bit ? &GSClut::WriteCLUT32_CSM2<16> :
+				                s_layout     ? &GSClut::WriteCLUT16S_CSM2<16> :
+				                               &GSClut::WriteCLUT16_CSM2<16>;
+			else
+				m_wc[1][i][j] = &GSClut::WriteCLUT_NULL;
 		}
 	}
-
-	m_wc[1][PSMCT32][PSMT8] = &GSClut::WriteCLUT32_CSM2<256>;
-	m_wc[1][PSMCT32][PSMT8H] = &GSClut::WriteCLUT32_CSM2<256>;
-	m_wc[1][PSMCT32][PSMT4] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT32][PSMT4HL] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT32][PSMT4HH] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT24][PSMT8] = &GSClut::WriteCLUT32_CSM2<256>;
-	m_wc[1][PSMCT24][PSMT8H] = &GSClut::WriteCLUT32_CSM2<256>;
-	m_wc[1][PSMCT24][PSMT4] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT24][PSMT4HL] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT24][PSMT4HH] = &GSClut::WriteCLUT32_CSM2<16>;
-	m_wc[1][PSMCT16][PSMT8] = &GSClut::WriteCLUT16_CSM2<256>;
-	m_wc[1][PSMCT16][PSMT8H] = &GSClut::WriteCLUT16_CSM2<256>;
-	m_wc[1][PSMCT16][PSMT4] = &GSClut::WriteCLUT16_CSM2<16>;
-	m_wc[1][PSMCT16][PSMT4HL] = &GSClut::WriteCLUT16_CSM2<16>;
-	m_wc[1][PSMCT16][PSMT4HH] = &GSClut::WriteCLUT16_CSM2<16>;
-	m_wc[1][PSMCT16S][PSMT8] = &GSClut::WriteCLUT16S_CSM2<256>;
-	m_wc[1][PSMCT16S][PSMT8H] = &GSClut::WriteCLUT16S_CSM2<256>;
-	m_wc[1][PSMCT16S][PSMT4] = &GSClut::WriteCLUT16S_CSM2<16>;
-	m_wc[1][PSMCT16S][PSMT4HL] = &GSClut::WriteCLUT16S_CSM2<16>;
-	m_wc[1][PSMCT16S][PSMT4HH] = &GSClut::WriteCLUT16S_CSM2<16>;
 }
 
 GSClut::~GSClut()
@@ -376,7 +354,9 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 
 		u16* clut = m_clut;
 
-		if (TEX0.CPSM == PSMCT32 || TEX0.CPSM == PSMCT24)
+		// Entry width matches the write side's CPSM decode: bit 1 clear is a
+		// 32-bit palette, set is 16-bit, undocumented values included.
+		if ((TEX0.CPSM & 0x2) == 0)
 		{
 			switch (TEX0.PSM)
 			{
@@ -400,7 +380,7 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 					break;
 			}
 		}
-		else if (TEX0.CPSM == PSMCT16 || TEX0.CPSM == PSMCT16S)
+		else
 		{
 			switch (TEX0.PSM)
 			{
@@ -665,16 +645,15 @@ void GSClut::ReadCLUT_T32_I4_Swizzled(const u16* RESTRICT clut, u32* RESTRICT ds
 
 void GSClut::ReadCLUT_T32_I8(const u16* RESTRICT clut, u32* RESTRICT dst, int offset)
 {
-	// Okay this deserves a small explanation
-	// T32 I8 can address up to 256 colors however the offset can be "more than zero" when reading
-	// Previously I assumed that it would wrap around the end of the buffer to the beginning
-	// but it turns out this is incorrect, the address doesn't mirror, it clamps to to the last offset,
-	// probably though some sort of addressing mechanism then picks the color from the lower 0xF of the requested CLUT entry.
-	// if we don't do this, the dirt on GTA SA goes transparent and actually cleans the car driving through dirt.
+	// The gs-clut hardware capture (SCPH-30001, 2026-08-11): CSA is ORed into
+	// the CLUT group an entry reads — group = (entry >> 4) | CSA, 1,536/1,536
+	// readings. An OR looks like a clamp from CSA 15 and like an add from
+	// CSA 0, which is why the old add-and-clamp (kept for GTA SA's dirt
+	// overlay) held up on the games that motivated it; it is wrong at every
+	// CSA between.
 	for (int i = 0; i < 256; i += 16)
 	{
-		// Min value + offet or Last CSA * 16 (240)
-		ReadCLUT_T32_I4(&clut[std::min((i + offset), 240)], &dst[i]);
+		ReadCLUT_T32_I4(&clut[i | offset], &dst[i]);
 	}
 }
 

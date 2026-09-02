@@ -20,6 +20,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_astc_tests.cpp
 	gs_fe_decode_tests.cpp
 	gs_local_memory_move_tests.cpp
+	gs_clut_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
