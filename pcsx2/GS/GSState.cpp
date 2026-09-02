@@ -2984,7 +2984,12 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 		}
 	}
 
+	// Whether `r` is exactly what the wi() below writes, for a consumer that plans on the shadow
+	// holding those bytes and no others (see the member's own comment). One packet only: a sliced
+	// transfer hands the whole image rect to every slice, and a truncated one hands a guess.
+	m_upload_writes_whole_rect = rec.first_slice && rec.end >= rec.total;
 	InvalidateVideoMem(rec.env_blit, r);
+	m_upload_writes_whole_rect = false;
 
 	const GSLocalMemory::writeImage wi = GSLocalMemory::m_psm[rec.env_blit.DPSM].wi;
 
@@ -3910,7 +3915,11 @@ void GSState::Move()
 			 sx, sy, dx, dy, w, h);
 
 	InvalidateLocalMem(m_env.BITBLTBUF, GSVector4i(sx, sy, sx + w, sy + h));
+	// A move copies its whole destination rect below, in this call and no other -- the exact form
+	// the flag names (see GSState.h).
+	m_upload_writes_whole_rect = true;
 	InvalidateVideoMem(m_env.BITBLTBUF, GSVector4i(dx, dy, dx + w, dy + h));
+	m_upload_writes_whole_rect = false;
 	GSVector4i r;
 	r.left = m_env.TRXPOS.DSAX;
 	r.top = m_env.TRXPOS.DSAY;
