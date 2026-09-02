@@ -153,6 +153,11 @@ static u32 s_renderdoc_frame_count = 1;
 // Owned by the GS thread.
 static u32 s_dump_frame_number = 0;
 static u32 s_loop_number = s_loop_count;
+
+// Frames in one pass over the dump. Latched while the replayer is alive, because the
+// stats JSON is written after VMManager::Shutdown() has already released the dump file.
+// Zero when the run was not a dump replay.
+static u32 s_dump_frames_per_loop = 0;
 static double s_last_internal_draws = 0;
 static double s_last_draws = 0;
 static double s_last_render_passes = 0;
@@ -283,6 +288,17 @@ static u64 ReadResidentSetKB()
 struct FrameSample
 {
 	u32 frame;
+	/// The same frame's index WITHIN the dump. `frame` is monotonic across the whole
+	/// run, so under -loop N it says nothing about where in the dump a sample sits;
+	/// this one resets on every wrap, which is what separates the cold first loop from
+	/// steady state.
+	///
+	/// It is the replayer's counter as published to the GS thread -- the identical
+	/// value, read at the identical instant, that names the presented-frame PNG, so a
+	/// sample and a frame dump join on it exactly. That publication rides the CPU
+	/// thread's message pump, so at a loop boundary the reset can arrive one present
+	/// late: cut the series where this DECREASES, not where it equals zero.
+	u32 frame_in_dump;
 	bool idle;
 	float frame_ms;
 	float gpu_ms;
@@ -578,6 +594,7 @@ void Host::BeginPresentFrame()
 
 		FrameSample sample = {};
 		sample.frame = s_total_frames;
+		sample.frame_in_dump = s_dump_frame_number;
 		sample.prims = update_stat(GSPerfMon::Prim, s_total_prims, s_last_prims);
 		sample.draws = update_stat(GSPerfMon::Draw, s_total_internal_draws, s_last_internal_draws);
 		sample.draw_calls = update_stat(GSPerfMon::DrawCalls, s_total_draws, s_last_draws);
@@ -1689,6 +1706,13 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"device_name\": \"%s\",\n    \"driver_info\": \"%s\",\n",
 		json_escape(s_device_name).c_str(), json_escape(s_driver_info).c_str());
 	std::fprintf(fp.get(), "    \"frames\": %u,\n    \"drawn_frames\": %u,\n", s_total_frames, s_total_drawn_frames);
+	// What the run was asked to replay, so a reader can cut the frame series into loops.
+	// loop_count is the -loop value verbatim (1 when the flag was absent, 0 meaning
+	// "until stopped"); frames_per_loop is the dump's own frame count. Without the pair,
+	// the first loop -- shader compiles, cold caches, first upload of every texture --
+	// sits in the same percentile as steady state and there is no way to take it out.
+	std::fprintf(fp.get(), "    \"loop_count\": %d,\n    \"frames_per_loop\": %u,\n",
+		s_loop_count, s_dump_frames_per_loop);
 	std::fprintf(fp.get(), "    \"prims\": %" PRIu64 ",\n    \"draws\": %" PRIu64 ",\n    \"draw_calls\": %" PRIu64 ",\n",
 		s_total_prims, s_total_internal_draws, s_total_draws);
 	std::fprintf(fp.get(), "    \"render_passes\": %" PRIu64 ",\n    \"barriers\": %" PRIu64 ",\n", s_total_render_passes, s_total_barriers);
@@ -1746,7 +1770,7 @@ static void WriteStatsJson(const std::string& path)
 	{
 		const FrameSample& s = s_frame_samples[i];
 		std::fprintf(fp.get(),
-			"    {\"frame\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
+			"    {\"frame\":%u,\"frame_in_dump\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
 			"\"prims\":%" PRIu64 ",\"draws\":%" PRIu64 ",\"draw_calls\":%" PRIu64 ","
 			"\"render_passes\":%" PRIu64 ",\"render_pass_area_pixels\":%" PRIu64 ","
 			"\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
@@ -1757,7 +1781,7 @@ static void WriteStatsJson(const std::string& path)
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
 			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
 			"\"rss_kb\":%" PRIu64 "}%s\n",
-			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
+			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
 			s.uploads, s.readbacks,
@@ -2013,6 +2037,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);
+			// Read here, not in WriteStatsJson: by the time that runs, VMManager::Shutdown()
+			// has released the dump file and the answer would always be zero.
+			s_dump_frames_per_loop = GSDumpReplayer::GetDumpFrameCount();
 			// Armed before the first packet, so rung zero is the state the freeze left
 			// and every later rung is named by the packet it follows.
 			GSLadder::Begin(s_ladder_opts);

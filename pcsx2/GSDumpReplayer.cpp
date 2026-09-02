@@ -187,6 +187,21 @@ u32 GSDumpReplayer::GetFrameNumber()
 	return s_dump_frame_number;
 }
 
+u32 GSDumpReplayer::GetDumpFrameCount()
+{
+	// Counted from the packet list rather than tracked as the replay runs: a caller
+	// wants this before the first loop has finished, and the packets are already in
+	// memory. Dumps are tens of thousands of packets, so the walk is trivial and is
+	// not worth caching.
+	if (!s_dump_file)
+		return 0;
+
+	u32 frames = 0;
+	for (const GSDumpFile::GSData& packet : s_dump_file->GetPackets())
+		frames += (packet.id == GSDumpTypes::GSType::VSync) ? 1 : 0;
+	return frames;
+}
+
 void GSDumpReplayer::SetPacketHook(PacketHook hook)
 {
 	s_packet_hook = hook;

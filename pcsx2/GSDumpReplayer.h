@@ -27,6 +27,11 @@ namespace GSDumpReplayer
 
 	u32 GetFrameNumber();
 
+	/// Number of frames in one pass over the loaded dump, i.e. its VSync packet count.
+	/// GetFrameNumber() resets to zero on every wrap, so this is what turns a frame
+	/// index back into "which loop, and how far into it". Zero when no dump is loaded.
+	u32 GetDumpFrameCount();
+
 	/// Called on the CPU thread after each packet is dispatched, with that packet's
 	/// index in the dump and whether it was a vsync. Nothing in the core sets this;
 	/// gsrunner uses it to schedule a readback at an exact point in the stream, which
