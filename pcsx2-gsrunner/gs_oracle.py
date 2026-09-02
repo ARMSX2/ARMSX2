@@ -587,44 +587,55 @@ def score_one_dump(args, dump):
         raise SystemExit(f"dump {gsname} changed since its golden was built; "
                          f"re-run `golden`")
 
-    work_dir = os.path.join(args.workdir, gsname) if args.workdir else \
+    persistent_workdir = bool(args.workdir)
+    work_dir = os.path.join(args.workdir, gsname) if persistent_workdir else \
         tempfile.mkdtemp(prefix=f"gs_oracle_{args.arm}_")
-    runs, stability = run_arm(args.runner, dump, args.arm, work_dir, args.runs,
-                              manifest["loop"], manifest["upscale"], [],
-                              args.timeout)
+    card = None
+    try:
+        runs, stability = run_arm(args.runner, dump, args.arm, work_dir, args.runs,
+                                  manifest["loop"], manifest["upscale"], [],
+                                  args.timeout)
 
-    hard_fail = None
-    for i, r in enumerate(runs):
-        if r["timed_out"] or r["returncode"] != 0:
-            hard_fail = f"run {i} failed (rc={r['returncode']}, timeout={r['timed_out']})"
-            break
-    if hard_fail is None:
-        ok, msg = verify_identity(args.arm, runs)
-        if not ok:
-            hard_fail = msg
+        hard_fail = None
+        for i, r in enumerate(runs):
+            if r["timed_out"] or r["returncode"] != 0:
+                hard_fail = f"run {i} failed (rc={r['returncode']}, timeout={r['timed_out']})"
+                break
+        if hard_fail is None:
+            ok, msg = verify_identity(args.arm, runs)
+            if not ok:
+                hard_fail = msg
 
-    if hard_fail is not None:
-        card = {"schema": 2, "gsname": gsname, "dump": dump, "pass": False,
-                "error": hard_fail, "frames": [], "summary": None}
-    else:
-        card = score_against_golden(manifest, os.path.join(golden_dir, "frames"),
-                                    runs, stability, args.gate_threshold,
-                                    args.gate_pct, args.min_stable_fraction,
-                                    args.hash_only,
-                                    perceptual=not args.no_perceptual,
-                                    ppd=args.ppd)
+        if hard_fail is not None:
+            card = {"schema": 2, "gsname": gsname, "dump": dump, "pass": False,
+                    "error": hard_fail, "frames": [], "summary": None}
+        else:
+            card = score_against_golden(manifest, os.path.join(golden_dir, "frames"),
+                                        runs, stability, args.gate_threshold,
+                                        args.gate_pct, args.min_stable_fraction,
+                                        args.hash_only,
+                                        perceptual=not args.no_perceptual,
+                                        ppd=args.ppd)
 
-    card["arm"] = args.arm
-    card["runs"] = args.runs
-    card["identity"] = runs[0]["identity"]
-    card["device"] = runs[0]["device"]
-
-    if card["pass"] and not args.keep_runs:
-        shutil.rmtree(work_dir, ignore_errors=True)
-    else:
-        card["workdir"] = work_dir
-
-    return card
+        card["arm"] = args.arm
+        card["runs"] = args.runs
+        card["identity"] = runs[0]["identity"]
+        card["device"] = runs[0]["device"]
+        return card
+    finally:
+        # work_dir is scratch -- subprocess stdout, per-run frames, logs.
+        # Nothing downstream reads it; a human debugging a failure opts in
+        # with --keep-runs. Every other exit (pass, fail, or an exception
+        # raised above) removes it here, so a corpus run can't leak one
+        # directory per dump onto /tmp.
+        if not persistent_workdir:
+            if args.keep_runs:
+                if card is not None:
+                    card["workdir"] = work_dir
+                else:
+                    log(f"exception before scoring finished; kept work dir {work_dir}")
+            else:
+                shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def print_card_line(card):
@@ -862,10 +873,12 @@ def add_score_args(p):
                         "profile; default is the handheld geometry. Perceptual "
                         "scores are only comparable at a fixed ppd.")
     p.add_argument("--workdir", default=None,
-                   help="keep run output under this directory (default: temp, "
-                        "deleted on pass)")
+                   help="put run output under this directory instead of a "
+                        "temp dir; a --workdir is never deleted")
     p.add_argument("--keep-runs", action="store_true",
-                   help="keep run output even on pass")
+                   help="keep the per-run temp dir (frames/logs) for "
+                        "inspection, whether the dump passes or fails "
+                        "(default: always deleted when scoring finishes)")
     p.add_argument("--out", default=None, help="write scorecard JSON here")
 
 
