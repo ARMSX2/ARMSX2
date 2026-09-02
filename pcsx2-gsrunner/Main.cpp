@@ -136,6 +136,14 @@ static bool s_no_console = false;
 static std::string s_gs_pin_request;
 static u64 s_gs_pin_mask = 0;
 static std::string s_gs_pin_effective("none");
+static const char* s_gs_pin_source = "none";
+
+// The CPU set this process started with, captured before anything has pinned anything.
+// It is the reference that tells "nobody narrowed this thread" apart from "something
+// did": a read-back on its own cannot say which, and both answers are one comma list.
+// Captured rather than derived from the online CPU count because Android runs the app
+// inside a cpuset, where the inherited set is already narrower than the machine.
+static u64 s_baseline_cpu_mask = 0;
 
 // -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
 static std::string s_renderdoc_path;
@@ -1721,10 +1729,12 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
 		Percentile(gs_cpu_per_draw_us, 0.50), Percentile(gs_cpu_per_draw_us, 0.95));
 	std::fprintf(fp.get(), "    \"gs_cpu_partial\": %s,\n", s_saw_gs_back_thread_in_stats ? "true" : "false");
-	// Where the GS thread was asked to sit, and where it actually did. "none" when no pin
-	// was requested, "unsupported" when the platform cannot pin or cannot be asked.
+	// Where the GS thread was asked to sit, where it actually sat, and who put it there.
+	// requested is "none" when the flag was absent; effective is always the read-back, and
+	// is "unsupported" only when the platform cannot be asked.
 	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
 		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
+	std::fprintf(fp.get(), "    \"gs_pin_source\": \"%s\",\n", s_gs_pin_source);
 	std::fprintf(fp.get(), "    \"rss_kb_first\": %" PRIu64 ",\n    \"rss_kb_last\": %" PRIu64 ",\n    \"rss_kb_max\": %" PRIu64 ",\n",
 		rss_kb_first, rss_kb_last, rss_kb_max);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
@@ -1898,33 +1908,42 @@ void GSRunner::DumpStats()
 #define main real_main
 #endif
 
-// Pins the GS thread where -gspin asked, then reads the pin back, because a request is
-// not a result: sched_setaffinity fails on a CPU that does not exist, and a cpuset or
-// cgroup clamp can narrow what was asked for without failing at all. A mismatch is
-// reported and the run continues -- the harness reads the JSON, so the run's own record
-// of where its GS thread sat is what decides whether its timings are comparable.
+// Pins the GS thread where -gspin asked, if it asked, and then reads back where the
+// thread actually ended up -- always, flag or no flag.
 //
-// Applied once, here, rather than per frame: the pin is a property of the run.
+// The read-back is unconditional because a request is not a result and, more to the
+// point, because the run with no flag is not an unpinned run. VMManager pins the GS
+// thread itself during Initialize whenever EmuCore/EnableThreadPinning is on, which it
+// is by default, so on a big.LITTLE device a core has already been chosen by the time
+// anything here runs. That choice decides what the run's GS-thread CPU time means, so
+// it belongs in the record whether we made it or not.
+//
+// gs_pin_source names who did it, because the same comma list means different things:
+//   flag       -- the read-back is exactly what -gspin asked for
+//   vmmanager  -- something narrowed the thread and it was not us (in practice
+//                 VMManager's own pinning, including when -gspin asked and missed)
+//   none       -- the read-back is the set the process started with, so nothing pinned
+//                 anything, or the platform cannot be asked at all
+//
+// A pin that did not take warns once on stderr and the run continues. The harness reads
+// the JSON, and a run whose thread went elsewhere is still a valid run -- just not a
+// placement-controlled one, which is exactly what these three keys let it work out.
 static void ApplyGSThreadPin()
 {
-	if (s_gs_pin_request.empty())
-	{
-		s_gs_pin_effective = "none";
-		return;
-	}
-
 	const Threading::ThreadHandle& gs_thread = MTGS::GetThreadHandle();
 	if (!gs_thread)
 	{
 		s_gs_pin_effective = "unsupported";
-		std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: there is no GS thread to pin.\n", s_gs_pin_request.c_str());
+		s_gs_pin_source = "none";
+		if (!s_gs_pin_request.empty())
+			std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: there is no GS thread to pin.\n", s_gs_pin_request.c_str());
 		return;
 	}
 
 	// A zero mask means "every processor" to SetAffinity, so a request naming only CPUs
 	// the mask cannot express must not be passed through: that would un-pin the thread
 	// while reporting that a pin was asked for.
-	if (s_gs_pin_mask != 0)
+	if (!s_gs_pin_request.empty() && s_gs_pin_mask != 0)
 		gs_thread.SetAffinity(s_gs_pin_mask);
 
 	const u64 effective = gs_thread.GetAffinity();
@@ -1934,13 +1953,30 @@ static void ApplyGSThreadPin()
 		// return 0 here, and Darwin cannot pin at all), so there is nothing to report but
 		// that the platform does not answer the question.
 		s_gs_pin_effective = "unsupported";
-		std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: this platform does not support pinning a thread.\n",
-			s_gs_pin_request.c_str());
+		s_gs_pin_source = "none";
+		if (!s_gs_pin_request.empty())
+		{
+			std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: this platform does not support pinning a thread.\n",
+				s_gs_pin_request.c_str());
+		}
 		return;
 	}
 
 	s_gs_pin_effective = FormatCpuMask(effective);
-	if (effective != s_gs_pin_mask)
+
+	const bool took = (!s_gs_pin_request.empty() && effective == s_gs_pin_mask);
+	if (took)
+		s_gs_pin_source = "flag";
+	else if (s_baseline_cpu_mask != 0 && effective == s_baseline_cpu_mask)
+		s_gs_pin_source = "none";
+	else
+		s_gs_pin_source = "vmmanager";
+
+	if (took)
+	{
+		Console.WriteLn(fmt::format("GS thread pinned to CPU(s) {}", s_gs_pin_effective));
+	}
+	else if (!s_gs_pin_request.empty())
 	{
 		std::fprintf(stderr,
 			"pcsx2-gsrunner: -gspin %s did not take -- the GS thread may run on %s. The run continues, but its "
@@ -1949,7 +1985,7 @@ static void ApplyGSThreadPin()
 	}
 	else
 	{
-		Console.WriteLn(fmt::format("GS thread pinned to CPU(s) {}", s_gs_pin_effective));
+		Console.WriteLn(fmt::format("GS thread runs on CPU(s) {} (pinned by: {})", s_gs_pin_effective, s_gs_pin_source));
 	}
 }
 
@@ -2035,6 +2071,10 @@ int main(int argc, char* argv[])
 {
 	CrashHandler::Install();
 	GSRunner::InitializeConsole();
+
+	// Before the VM, and so before either VMManager's thread pinning or -gspin, which is
+	// the only moment this reads as the untouched inherited set.
+	s_baseline_cpu_mask = Threading::ThreadHandle::GetForCallingThread().GetAffinity();
 
 	// Clean SIGINT/SIGTERM → VM stop, so DumpStats() still fires on ^C or SIGTERM during -loop 0.
 	// Defer the actual stop to the CPU thread (see s_signal_stop_requested).
