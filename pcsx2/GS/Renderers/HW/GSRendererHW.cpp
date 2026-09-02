@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSHwHack.h"
+#include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
@@ -2212,6 +2213,35 @@ bool GSRendererHW::IsDepthAlwaysPassing()
 	return (!m_cached_ctx.TEST.ZTE || m_cached_ctx.TEST.ZTST <= ZTST_ALWAYS) ||
 	       // Depth test will always pass
 	       (m_cached_ctx.TEST.ZTST == ZTST_GEQUAL && m_vt.m_eq.z && std::min(m_vertex->buff[check_index].XYZ.Z, max_z) == max_z);
+}
+
+bool GSRendererHW::AllDepthTestsPassOnClearedTarget(const GSTextureCache::Target* ds)
+{
+	if (!m_cached_ctx.TEST.ZTE || !ds || !ds->m_texture)
+		return false;
+
+	// The draw renders into a stand-in, so ds->m_texture is not the buffer it tests against.
+	if (m_using_temp_z)
+		return false;
+
+	// The device's deferred-clear state is the always-current statement of "this whole texture
+	// holds one value". Every path that writes a texture has to take it out of Cleared, or the
+	// clear it still owes would land on top of the write; the render-pass scheduler flips it at
+	// enqueue for exactly that reason. The texture cache already reads it the same way.
+	if (ds->m_texture->GetState() != GSTexture::State::Cleared)
+		return false;
+
+	// Only the zero clear. The clear depth is stored normalised, and turning a non-zero one back
+	// into an integer Z costs mantissa bits the comparison below cannot afford to guess at.
+	if (ds->m_texture->GetClearDepth() != 0.0f)
+		return false;
+
+	const u32 max_z = (0xFFFFFFFFu >> (GSLocalMemory::m_psm[m_cached_ctx.ZBUF.PSM].fmt * 8));
+	const int check_index = m_vt.m_primclass == GS_SPRITE_CLASS ? 1 : 0;
+	const u32 draw_z = std::min(m_vertex->buff[check_index].XYZ.Z, max_z);
+
+	return GSDepthCoverage::AllPixelsPassConstantDepth(m_cached_ctx.TEST.ZTST, m_vt.m_eq.z != 0,
+		draw_z, 0, !m_cached_ctx.ZBUF.ZMSK, m_prim_overlap != PRIM_OVERLAP_NO);
 }
 
 bool GSRendererHW::IsUsingCsInBlend()
@@ -5852,8 +5882,9 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 
 			const bool afail_always_fb_alpha = m_cached_ctx.TEST.AFAIL == AFAIL_FB_ONLY || (m_cached_ctx.TEST.AFAIL == AFAIL_RGB_ONLY && GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32);
 			const bool always_passing_alpha = !m_cached_ctx.TEST.ATE || afail_always_fb_alpha || (m_cached_ctx.TEST.ATE && m_cached_ctx.TEST.ATST == ATST_ALWAYS);
+			const bool depth_rejects_nothing = IsDepthAlwaysPassing() || AllDepthTestsPassOnClearedTarget(ds);
 			const bool full_cover = rt->m_valid.rintersect(m_r).eq(rt->m_valid) && m_primitive_covers_without_gaps == NoGapsType::FullCover &&
-				!(date_options.enabled || !always_passing_alpha || !IsDepthAlwaysPassing());
+				!(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing);
 
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
 			const u32 fb_mask = m_conf.colormask.wa ? (m_conf.ps.fbmask ? m_conf.cb_ps.FbMask.a : 0) : 0xFF;
@@ -5862,7 +5893,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			log_alpha_flags |= GSDrawLog::RTAlphaWritten | (full_cover ? GSDrawLog::RTAlphaFullCover : 0);
 			log_alpha_flags |= rt->m_valid.rintersect(m_r).eq(rt->m_valid) ? GSDrawLog::RTAlphaCoversValid : 0;
 			log_alpha_flags |= (m_primitive_covers_without_gaps == NoGapsType::FullCover) ? GSDrawLog::RTAlphaNoGaps : 0;
-			log_alpha_flags |= !(date_options.enabled || !always_passing_alpha || !IsDepthAlwaysPassing()) ?
+			log_alpha_flags |= !(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing) ?
 								   GSDrawLog::RTAlphaTestsPass :
 								   0;
 			log_fb_mask = fb_mask;

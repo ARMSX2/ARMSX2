@@ -301,6 +301,9 @@ private:
 	bool IsRTWritten();
 	bool IsRTWrittenLive(const GIFRegALPHA& ALPHA) override;
 	bool IsDepthAlwaysPassing();
+	/// The case IsDepthAlwaysPassing() cannot reach: the depth buffer still holds the value it was
+	/// cleared to in every pixel, so a GREATER or GEQUAL test against it is answerable.
+	bool AllDepthTestsPassOnClearedTarget(const GSTextureCache::Target* ds);
 	bool IsUsingCsInBlend();
 	bool IsUsingAsInBlend();
 
