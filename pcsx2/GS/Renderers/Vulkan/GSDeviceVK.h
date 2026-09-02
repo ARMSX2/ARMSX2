@@ -28,6 +28,10 @@ class VKSwapChain;
 class GSDeviceVK final : public GSDevice
 {
 public:
+	u64 GetSyncWaitNs() const override { return m_sync_wait_ns; }
+	u64 GetSyncWaitCalls() const override { return m_sync_wait_calls; }
+	u64 GetRingWaitNs() const override { return m_ring_wait_ns; }
+	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -253,7 +257,17 @@ private:
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
-	void WaitForCommandBufferCompletion(u32 index);
+	/// Why the host is about to block on a GPU fence. `Ring` is the command-buffer ring's own
+	/// recycle wait -- the pipeline is full and the frame ahead has to retire -- which is
+	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
+	/// paid out of turn to get an answer, and that is the population readback work is judged
+	/// against (see GSPerfMon::GpuBlockingWaits).
+	enum class GpuWaitCause
+	{
+		Ring,
+		Sync,
+	};
+	void WaitForCommandBufferCompletion(u32 index, GpuWaitCause cause = GpuWaitCause::Sync);
 
 	bool InitSpinResources();
 	void DestroySpinResources();
@@ -331,6 +345,10 @@ private:
 	VmaAllocation m_spin_buffer_allocation = VK_NULL_HANDLE;
 	VkDescriptorSet m_spin_descriptor_set = VK_NULL_HANDLE;
 	std::array<SpinResources, NUM_COMMAND_BUFFERS> m_spin_resources;
+	u64 m_sync_wait_ns = 0;
+	u64 m_sync_wait_calls = 0;
+	u64 m_ring_wait_ns = 0;
+	u64 m_ring_wait_calls = 0;
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif

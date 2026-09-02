@@ -41,6 +41,18 @@ public:
 		// per-draw CPU proxy the mobile renderer work steers by.
 		PipelineSwitches,
 
+		// Host waits on GPU completion that the GS thread paid OUT OF TURN -- a readback's
+		// submit-and-wait, an explicit sync. The command-buffer ring's own recycle wait is NOT
+		// one: that is healthy backpressure, and counting it would hide the number this exists
+		// to expose.
+		//
+		// It exists because ONE of these per frame serializes the whole pipeline: a frame with
+		// any of them runs at cpu + gpu, a frame with none at max(cpu, gpu), and the count above
+		// one does not matter. So the acceptance metric for readback work is literally "is this
+		// zero in steady state", which no other counter can answer -- Readbacks counts copies
+		// that reach the device, and a copy is not the same thing as a wait.
+		GpuBlockingWaits,
+
 		CounterLast,
 
 		// Reused counters for HW.
