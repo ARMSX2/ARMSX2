@@ -144,6 +144,14 @@ namespace GSDrawLog
 		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
 	}
 
+	void NoteExactAlphaDrop(u8 decision)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		s_records[s_open_record].exact_alpha_drop = decision;
+	}
+
 	void NoteRTAlphaCommitted()
 	{
 		if (s_open_record == SIZE_MAX)
@@ -288,6 +296,25 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetExactAlphaDropName(u8 decision)
+	{
+		switch (decision)
+		{
+			case ExactAlphaDropTaken:
+				return "TAKEN";
+			case ExactAlphaDropIneligible:
+				return "INELIGIBLE";
+			case ExactAlphaDropTargetUnknown:
+				return "TARGET_UNKNOWN";
+			case ExactAlphaDropSourceNotConstant:
+				return "SRC_NOT_CONST";
+			case ExactAlphaDropLoadBearing:
+				return "LOAD_BEARING";
+			default:
+				return "";
+		}
+	}
+
 	static const char* GetPrimOverlapName(u8 overlap)
 	{
 		switch (overlap)
@@ -324,7 +351,7 @@ namespace GSDrawLog
 			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck,"
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
-			"rt_fbmask_a,rt_alpha_fmt_mask\n");
+			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop\n");
 
 		for (const Record& r : s_records)
 		{
@@ -455,7 +482,7 @@ namespace GSDrawLog
 
 			if (r.flags2 & Flags2RTAlpha)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x\n",
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x,%s\n",
 					(r.rt_alpha_flags & RTAlphaWritten) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaShuffle) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaFullCover) ? 1 : 0,
@@ -464,11 +491,13 @@ namespace GSDrawLog
 					(r.rt_alpha_flags & RTAlphaCoversValid) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaNoGaps) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaTestsPass) ? 1 : 0,
-					r.rt_fbmask_a, r.rt_alpha_fmt_mask);
+					r.rt_fbmask_a, r.rt_alpha_fmt_mask, GetExactAlphaDropName(r.exact_alpha_drop));
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,\n");
+				// The drop decision is taken before the alpha-range calculation, so a draw that
+				// returned in between still has one worth printing.
+				std::fprintf(fp.get(), ",,,,,,,,,,%s\n", GetExactAlphaDropName(r.exact_alpha_drop));
 			}
 		}
 

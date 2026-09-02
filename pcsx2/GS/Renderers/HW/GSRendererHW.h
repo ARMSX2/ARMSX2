@@ -219,6 +219,9 @@ private:
 	void HandleFlatShadedVertices();
 	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	/// Whether this draw's alpha FBMSK can be cleared without changing a pixel, and if not, why.
+	/// Answered whatever EmuCore/GS/ExactAlphaMaskDrop says, so the ledger counts both arms.
+	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
 	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
 	void EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options, GSTextureCache::Target* rt,
 		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);

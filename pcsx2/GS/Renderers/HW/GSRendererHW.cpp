@@ -6668,6 +6668,55 @@ void GSRendererHW::EmulateDither()
 	}
 }
 
+u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask)
+{
+	const u32 fmsk = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].fmsk;
+	const u8 alpha_mask = static_cast<u8>((fmsk & 0xFF000000u) >> 24);
+	const u8 masked = static_cast<u8>((fbmask & 0xFF000000u) >> 24);
+
+	// Alpha has to be partially masked -- neither fully written nor fully held back -- and it has
+	// to be the only channel that is. A partially masked colour byte keeps the barrier whatever
+	// alpha does, so dropping alpha's half of the mask would buy nothing and change the shader.
+	if (alpha_mask == 0 || masked == 0 || masked == alpha_mask)
+		return GSDrawLog::ExactAlphaDropNotConsidered;
+
+	const GSVector4i fbmask_v = GSVector4i::load(static_cast<int>(fbmask));
+	const GSVector4i fmsk_v = GSVector4i::load(static_cast<int>(fmsk));
+	const int ff_fbmask = fbmask_v.eq8(fmsk_v).mask();
+	const int zero_fbmask = fbmask_v.eq8(GSVector4i::zero()).mask();
+	if ((~ff_fbmask & ~zero_fbmask & 0xF) != 0x8)
+		return GSDrawLog::ExactAlphaDropNotConsidered;
+
+	// 32 bits both sides, and the target's alpha stored the way it is written: an RTA-scaled
+	// target holds alpha in a different representation on either side of the mask, and the two
+	// roads need not round back to the same byte.
+	if (!rt || GSLocalMemory::m_psm[rt->m_TEX0.PSM].trbpp != 32 ||
+		GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32 || rt->m_rt_alpha_scale)
+		return GSDrawLog::ExactAlphaDropIneligible;
+
+	// A shuffle does not write the alpha byte this mask names, and AA1 coverage replaces the
+	// fragment alpha with 128 behind GetAlphaMinMax's back.
+	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlphaFixedOne())
+		return GSDrawLog::ExactAlphaDropIneligible;
+
+	if ((rt->m_alpha_known.bits & masked) != masked)
+		return GSDrawLog::ExactAlphaDropTargetUnknown;
+
+	// The fragment alpha, with FBA folded in the way CalculateAlphaRange folds it. Read here, so
+	// before CorrectATEAlphaMinMax narrows the range to the values that pass the alpha test:
+	// pixels that fail the test can still write alpha, so the wider range is the honest one.
+	const int fba_value = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
+	const u8 src_lo = static_cast<u8>(GetAlphaMinMax().min | fba_value);
+	const u8 src_hi = static_cast<u8>(GetAlphaMinMax().max | fba_value);
+
+	if ((GSAlphaKnownBits::ConstantBits(src_lo, src_hi) & masked) != masked)
+		return GSDrawLog::ExactAlphaDropSourceNotConstant;
+	if (!GSAlphaKnownBits::MaskIsIdentity(rt->m_alpha_known, masked, src_lo, src_hi))
+		return GSDrawLog::ExactAlphaDropLoadBearing;
+
+	return GSDrawLog::ExactAlphaDropTaken;
+}
+
 void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex)
 {
 	// Uncomment to disable texture shuffle emulation.
@@ -6793,6 +6842,17 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		int fbmask = static_cast<int>(m_cached_ctx.FRAME.FBMSK);
 		const int fbmask_r = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].fmsk;
 		fbmask &= fbmask_r;
+
+		// If the target already holds the alpha bits this mask protects, and the draw would write
+		// them back unchanged, the mask is the identity: clear it. The alpha write still lands,
+		// the same bytes end up in the target, and the block below takes neither the barrier nor
+		// -- on a device with no framebuffer fetch -- the render-target clone the barrier becomes.
+		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
+		if (GSDrawLog::IsActive()) [[unlikely]]
+			GSDrawLog::NoteExactAlphaDrop(exact_drop);
+		if (exact_drop == GSDrawLog::ExactAlphaDropTaken && GSConfig.ExactAlphaMaskDrop)
+			fbmask &= 0x00FFFFFF;
+
 		const GSVector4i fbmask_v = GSVector4i::load(fbmask);
 		const GSVector4i fbmask_vr = GSVector4i::load(fbmask_r);
 		const int ff_fbmask = fbmask_v.eq8(fbmask_vr).mask();

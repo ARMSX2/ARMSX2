@@ -121,6 +121,11 @@ namespace GSDrawLog
 		/// TargetEvent for a row that records something other than a draw; zero on draws.
 		u8 evt_kind;
 
+		/// ExactAlphaDrop: what the exact alpha-mask-drop rule decided for this draw, whether or
+		/// not the key let it act. Recorded rather than re-derived because the decision reads the
+		/// target's known alpha bits, which only exist while the draw is running.
+		u8 exact_alpha_drop;
+
 		s16 area_x;
 		s16 area_y;
 		s16 area_z;
@@ -187,6 +192,21 @@ namespace GSDrawLog
 		Flags2DATEModes = 1 << 1, ///< date_mode_* were filled
 		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
 		Flags2Event = 1 << 3, ///< the row is a target event, not a draw; see evt_kind
+	};
+
+	/// What the exact alpha-mask-drop rule decided about a draw.
+	///
+	/// The three refusals are separated because they say different things about the title: an
+	/// unknown target is a tracker problem, a non-constant source is a geometry fact, and a
+	/// load-bearing mask is a draw the rule must never touch.
+	enum ExactAlphaDrop : u8
+	{
+		ExactAlphaDropNotConsidered = 0, ///< not an alpha-only partial mask on a 32-bit target
+		ExactAlphaDropTaken, ///< the mask was the identity; it was cleared
+		ExactAlphaDropIneligible, ///< an alpha-only partial mask, refused on a precondition
+		ExactAlphaDropTargetUnknown, ///< the target does not know the bits the mask holds back
+		ExactAlphaDropSourceNotConstant, ///< the fragment alpha straddles one of those bits
+		ExactAlphaDropLoadBearing, ///< known and constant, and different: the mask is doing work
 	};
 
 	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.
@@ -270,6 +290,9 @@ namespace GSDrawLog
 	/// Records which target the draw is about to write and how it touched its alpha, on the
 	/// open row. Read where CalculateAlphaRange already has all of it in hand.
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask);
+
+	/// Records what the exact alpha-mask-drop rule decided, on the open row. See ExactAlphaDrop.
+	void NoteExactAlphaDrop(u8 decision);
 
 	/// Marks the open row as having actually assigned the target's new alpha range. A draw
 	/// can compute the range and then return before the assignment, and a reconstruction
