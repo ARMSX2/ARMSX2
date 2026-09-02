@@ -1110,10 +1110,58 @@ bool GSState::CanBufferNewDraw()
 	return true;
 }
 
+// Snapshot the environment the current draw buffer was built with. Called once per
+// draw from the vertex kick, so its cost is a per-draw memcpy on every title.
+//
+// With draw buffering ON the whole environment is copied, because the buffer list is
+// live and CanBufferNewDraw/PushBuffer walk it.
+//
+// With it OFF only buffer 0 exists -- CanBufferNewDraw returns at its first line and
+// PushBuffer never runs, so m_used_buffers_idx stays 1 -- and only part of the
+// snapshot is ever read back:
+//   FlushBuffers            the env head, both contexts' register blocks, and the
+//                           backed-up context's scissor and offset (it restores
+//                           exactly those into m_prev_env);
+//   GIFRegHandlerTEX0,      the m_used_buffers_idx loops, all of which read PRIM and
+//   CheckWriteOverlap,      register-block members only.
+//   CheckCLUTValidity
+// Nothing reads the transfer registers at the tail of the env head, and nothing reads
+// the INACTIVE context's derived scissor or offset. So copy 480 bytes instead of 768
+// and leave the rest of the snapshot stale -- it is unreachable on this path.
 void GSState::SetDrawBufferEnv()
 {
-	memcpy(&m_env_buffers[m_current_buffer_idx].m_env, &m_env, sizeof(GSDrawingEnvironment));
-	m_env_buffers[m_current_buffer_idx].m_backed_up_ctx = m_backed_up_ctx;
+	GSDrawBufferEnv& buf = m_env_buffers[m_current_buffer_idx];
+
+	if (GSConfig.UserHacks_DrawBuffering)
+	{
+		memcpy(&buf.m_env, &m_env, sizeof(GSDrawingEnvironment));
+	}
+	else
+	{
+		// The 88 and the 96 are the same literals FlushBuffers restores with, and
+		// they are only the register prefixes while the transfer registers stay at
+		// the tail of the environment and scissor still follows a context's
+		// registers. Both are pinned by GsDrawEnvSnapshot.SnapshotLayoutConstants
+		// (offsetof on these types is not standard-layout-clean, so the pin lives in
+		// the test rather than in a static_assert here).
+		//
+		// The reader indexes the derived state by the backed-up context, and the kick
+		// sets that from PRIM.CTXT immediately before calling us.
+		const int ctx = m_env.PRIM.CTXT;
+		pxAssert(m_backed_up_ctx == ctx);
+
+		std::memcpy(&buf.m_env, &m_env, 88);
+		std::memcpy(&buf.m_env.CTXT[0], &m_env.CTXT[0], 96);
+		std::memcpy(&buf.m_env.CTXT[1], &m_env.CTXT[1], 96);
+		// Assigned rather than memcpy'd: both are small and trivially copyable, so
+		// this emits loads and stores in place instead of a libc call on a per-draw
+		// path. That is the whole instruction-count difference -- the shape that
+		// leaves a call here saves half as much.
+		buf.m_env.CTXT[ctx].scissor = m_env.CTXT[ctx].scissor;
+		buf.m_env.CTXT[ctx].offset = m_env.CTXT[ctx].offset;
+	}
+
+	buf.m_backed_up_ctx = m_backed_up_ctx;
 }
 
 void GSState::SetDrawBuffDirty()
