@@ -43,6 +43,18 @@ namespace GSDrawLog
 		u32 frame;
 		u32 draw; // GS draw serial (s_n)
 
+		/// Index of the GS dump packet this draw came out of, or PacketNone when the run
+		/// is not a dump replay (or nobody asked the replayer to publish marks).
+		///
+		/// This is the join key between the ledger and a checkpoint ladder. A ladder rung
+		/// is named by a dump packet because that is the only identity a local run and a
+		/// console replay can both compute without reading each other's file; a ledger row
+		/// is named by a draw serial. Without this column, "the divergence appears after
+		/// packet 49" and "these draws are the filtered ones" are two facts about the same
+		/// stream that cannot be put in one table -- which is how an attribution ends up
+		/// resting on the assumption that two arms enumerate draws identically.
+		u32 packet;
+
 		u32 frame_block;
 		u32 frame_fbmsk;
 		u32 z_block;
@@ -78,6 +90,13 @@ namespace GSDrawLog
 		s16 area_y;
 		s16 area_z;
 		s16 area_w;
+
+		// Row came from the software rasterizer. Such a row carries no backend view, so
+		// it serialises as submitted=0 with the draw rect filled. The column exists
+		// because the software arm is an oracle in its own right: reconciling it against
+		// console captures needs the pixels and the per-draw state to come out of the
+		// same run, not out of a second arm assumed to enumerate draws the same way.
+		u8 sw;
 	};
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
@@ -109,8 +128,21 @@ namespace GSDrawLog
 		FlagFeedbackLoopRT = 1 << 7, ///< the pixel shader reads the render target (any reason)
 	};
 
+	/// Record::packet when the draw did not come from a dump packet.
+	static constexpr u32 PacketNone = 0xFFFFFFFFu;
+
 	/// Whether recording is currently active. Cheap enough to test per draw.
 	bool IsActive();
+
+	/// Names the dump packet whose work is about to reach the GS thread. Every row opened
+	/// after this call carries that index until the next one.
+	///
+	/// ⚠️ Must be called ON THE GS THREAD, ordered against the packet's own work -- which
+	/// under MTGS means queued through the same channel the packet's registers travel
+	/// down, not read from the CPU thread's counter. The CPU thread runs ahead, so a
+	/// direct read names a packet several ahead of the draw it is stamping, and the error
+	/// is invisible: the numbers stay plausible and monotonic.
+	void MarkPacket(u32 packet_index);
 
 	/// Allocates the arena and begins recording. Safe to call when already active.
 	void Start();
@@ -131,6 +163,11 @@ namespace GSDrawLog
 	/// did not record one (inactive, or arena full). prim_overlap is GSState::PRIM_OVERLAP,
 	/// passed in because it lives on the renderer rather than the draw config.
 	void EndDraw(const GSHWDrawConfig& config, u8 prim_overlap);
+
+	/// Completes the row opened by BeginDraw with the software rasterizer's view: the
+	/// draw rect it will rasterize into (bbox ∩ scissor). No backend view exists for
+	/// these draws. No-op if BeginDraw did not record a row.
+	void NoteSWDraw(const GSVector4i& rect);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.
