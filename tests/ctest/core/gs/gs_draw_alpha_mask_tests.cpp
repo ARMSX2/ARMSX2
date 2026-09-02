@@ -83,3 +83,47 @@ TEST(GSDrawAlphaMask, ADroppedPartialMaskStillReadsAsPartial)
 	EXPECT_TRUE(IsPartial(AsRequested(0x80, false, 0)));
 	EXPECT_TRUE(IsPartial(AsRequested(0x01, false, 0)));
 }
+
+// The other half of the same distinction: what the SHADER has to do once the drop has taken the
+// mask away. Dropping the mask takes the draw off the masked-write road, and that road quantizes
+// the colour to integers on all four channels before it merges the destination in. Leaving that
+// behind moved 41% of the pixels in two of Beyond Good and Evil's frames up by a unit or two of
+// colour -- signed one way, because what was lost was a downward truncation.
+
+TEST(GSDrawAlphaMask, ADropToNothingHasToQuantizeOnItsOwn)
+{
+	// The shape the exact alpha drop produces: the draw asked for an alpha-only mask (nibble 0x8)
+	// and ends up with no mask at all.
+	EXPECT_TRUE(NeedsColorQuantize(0x8, 0x0));
+}
+
+TEST(GSDrawAlphaMask, ADrawThatDroppedNothingQuantizesOnlyWhenItAlreadyDid)
+{
+	// Every draw that drops nothing passes the same nibble twice, and none of them may acquire the
+	// bit: with a mask it is already on the road, without one it never was.
+	for (u32 nibble = 0; nibble <= 0xF; nibble++)
+		EXPECT_FALSE(NeedsColorQuantize(nibble, nibble)) << "nibble " << nibble;
+}
+
+TEST(GSDrawAlphaMask, ADropThatLeavesAnotherChannelMaskedStaysOnTheRoad)
+{
+	// The road is per-draw, not per-channel. As long as one channel is still masked the shader
+	// runs it, and quantizing again would be the same work twice.
+	EXPECT_FALSE(NeedsColorQuantize(0xC, 0x4));
+	EXPECT_FALSE(NeedsColorQuantize(0xF, 0x7));
+}
+
+TEST(GSDrawAlphaMask, TheBitIsExactlyLeavingTheRoad)
+{
+	// Stated over every pair, so the rule is the definition rather than a set of examples.
+	for (u32 requested = 0; requested <= 0xF; requested++)
+	{
+		for (u32 emulated = 0; emulated <= 0xF; emulated++)
+		{
+			const bool was_on_the_road = requested != 0;
+			const bool is_on_the_road = emulated != 0;
+			EXPECT_EQ(NeedsColorQuantize(requested, emulated), was_on_the_road && !is_on_the_road)
+				<< "requested " << requested << " emulated " << emulated;
+		}
+	}
+}

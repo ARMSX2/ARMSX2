@@ -16,4 +16,6 @@
 // is BELOW our 110 — taking their value would hand every user a stale blob for a source they no
 // longer have. Our counter has been ahead of theirs since 109 and cannot be resynced by adopting
 // their numbers; always bump past our own last value.
-static constexpr u32 SHADER_CACHE_VERSION = 111; // 108 was upstream PR 14688; their 109 = our 111
+// 112: PS_QUANTIZE_COLOR. Every TFX shader gains the define and the colour-clamp block's guard
+// gains a term, so the source text of every TFX permutation changed.
+static constexpr u32 SHADER_CACHE_VERSION = 112; // 108 was upstream PR 14688; their 109 = our 111

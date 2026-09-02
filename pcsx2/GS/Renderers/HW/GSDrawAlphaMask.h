@@ -40,6 +40,24 @@ namespace GSDrawAlphaMask
 		return shader_masks ? (shader_alpha_mask & 0xFFu) : 0u;
 	}
 
+	/// Whether the shader has to quantize the colour on its own account.
+	///
+	/// A draw that keeps a framebuffer mask runs the shader's masked-write road, and that road
+	/// turns the colour into integers on all four channels before it merges the destination in --
+	/// not only on the channels the mask touches. Off that road the colour stays fractional and
+	/// the output stage rounds it to nearest, which is a unit of colour of difference on every
+	/// pixel the draw covers, and another unit wherever a later draw blends against it. So a draw
+	/// the drop took off the road has to quantize anyway.
+	///
+	/// Both arguments are the shader's four-channel mask nibble (`ps.fbmask`): `requested` as the
+	/// draw asked for it, `emulated` as it stands after the drop. A drop that leaves some other
+	/// channel partially masked leaves the draw on the road, where the quantization already
+	/// happens, so only a drop to nothing needs it put back.
+	inline constexpr bool NeedsColorQuantize(u32 requested, u32 emulated)
+	{
+		return requested != 0u && emulated == 0u;
+	}
+
 	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
 	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
 	/// target's alpha stays describable without reading the mask.

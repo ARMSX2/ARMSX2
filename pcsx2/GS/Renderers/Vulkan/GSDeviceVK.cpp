@@ -7241,6 +7241,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_READ16_SRC", sel.real16src);
 	AddMacro(ss, "PS_WRITE_RG", sel.write_rg);
 	AddMacro(ss, "PS_FBMASK", sel.fbmask);
+	AddMacro(ss, "PS_QUANTIZE_COLOR", sel.quantize_color);
 	AddMacro(ss, "PS_COLCLIP_HW", sel.colclip_hw);
 	AddMacro(ss, "PS_RTA_CORRECTION", sel.rta_correction);
 	AddMacro(ss, "PS_RTA_SRC_CORRECTION", sel.rta_source_correction);

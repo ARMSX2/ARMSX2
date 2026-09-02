@@ -74,6 +74,7 @@
 #define PS_A_MASKED 0
 #define PS_FBA 0
 #define PS_FBMASK 0
+#define PS_QUANTIZE_COLOR 0
 #define PS_LTF 1
 #define PS_TCOFFSETHACK 0
 #define PS_POINT_SAMPLER 0
@@ -1094,13 +1095,28 @@ float4 ps_color(PS_INPUT input)
 	return C;
 }
 
+// The masked-write road turns the colour into integers before merging the destination in, and it
+// does that on all four channels, not only the masked ones. So a draw carrying an FBMSK writes a
+// truncated colour where the same draw without one leaves it fractional and lets the output stage
+// round to nearest. PS_QUANTIZE_COLOR runs the same step for a draw whose mask was dropped as a
+// no-op, so losing the mask does not also change the rounding. One definition, so the two roads
+// cannot drift apart.
+uint4 quantize_color(float4 C)
+{
+	return (uint4)C;
+}
+
 void ps_fbmask(inout float4 C, float2 pos_xy)
 {
 	if (PS_FBMASK)
 	{
 		float multi = PS_COLCLIP_HW ? 65535.0f : 255.0f;
 		float4 RT = trunc(RtLoad(int2(pos_xy)) * multi + 0.1f);
-		C = (float4)(((uint4)C & ~FbMask) | ((uint4)RT & FbMask));
+		C = (float4)((quantize_color(C) & ~FbMask) | ((uint4)RT & FbMask));
+	}
+	else if (PS_QUANTIZE_COLOR)
+	{
+		C = (float4)quantize_color(C);
 	}
 }
 
@@ -1136,7 +1152,7 @@ void ps_color_clamp_wrap(inout float3 C)
 {
 	// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 	// so we need to limit the color depth on dithered items
-	if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK)
+	if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR)
 	{
 		if (PS_DST_FMT == FMT_16 && PS_BLEND_MIX == 0 && PS_ROUND_INV)
 			C += 7.0f; // Need to round up, not down since the shader will invert

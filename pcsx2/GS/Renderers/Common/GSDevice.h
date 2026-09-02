@@ -748,6 +748,13 @@ struct alignas(16) GSHWDrawConfig
 				u32 shuffle_across : 1;
 				u32 write_rg : 1;
 				u32 fbmask   : 1;
+				// Quantize the colour to integers on all four channels, the way the fbmask road
+				// does on its way to merging the destination. Set on its own by a draw whose
+				// framebuffer mask was dropped as a no-op, so the drop keeps the rounding the mask
+				// used to impose without also keeping the destination read, the barrier or the
+				// render-target clone. Deliberately absent from IsFeedbackLoopRT(): this reads
+				// nothing.
+				u32 quantize_color : 1;
 
 				// Blend and Colclip
 				u32 blend_a        : 2;
@@ -863,6 +870,9 @@ struct alignas(16) GSHWDrawConfig
 
 			// no point having fbmask, since we're not writing. DATE has to stay.
 			fbmask = 0;
+
+			// nor quantizing a colour that never reaches a target.
+			quantize_color = 0;
 
 			// disable both outputs.
 			no_color = no_color1 = 1;

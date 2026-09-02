@@ -6849,6 +6849,7 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// them back unchanged, the mask is the identity: clear it. The alpha write still lands,
 		// the same bytes end up in the target, and the block below takes neither the barrier nor
 		// -- on a device with no framebuffer fetch -- the render-target clone the barrier becomes.
+		const int requested_fbmask = fbmask;
 		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
 		if (GSDrawLog::IsActive()) [[unlikely]]
 			GSDrawLog::NoteExactAlphaDrop(exact_drop);
@@ -6874,6 +6875,17 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		m_conf.colormask.wrgba = ~ff_fbmask; // Enable channel if at least 1 bit is 0
 
 		m_conf.ps.fbmask = enable_fbmask_emulation && (~ff_fbmask & ~zero_fbmask & 0xF);
+
+		// The same nibble for the mask the draw asked for, before the drop cleared it. Where the
+		// two disagree the drop has taken the draw off the shader's masked-write road, and that
+		// road quantizes the colour on all four channels on its way past. Put the quantization
+		// back on its own, without the destination read the road came with.
+		const GSVector4i requested_fbmask_v = GSVector4i::load(requested_fbmask);
+		const int requested_ff = requested_fbmask_v.eq8(fbmask_vr).mask();
+		const int requested_zero = requested_fbmask_v.eq8(GSVector4i::zero()).mask();
+		const u32 requested_ps_fbmask =
+			enable_fbmask_emulation ? static_cast<u32>(~requested_ff & ~requested_zero & 0xF) : 0;
+		m_conf.ps.quantize_color = GSDrawAlphaMask::NeedsColorQuantize(requested_ps_fbmask, m_conf.ps.fbmask);
 
 		if (m_conf.ps.fbmask)
 		{

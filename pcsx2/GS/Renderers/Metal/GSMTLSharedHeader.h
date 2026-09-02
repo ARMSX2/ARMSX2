@@ -196,6 +196,7 @@ enum GSMTLFnConstants
 	GSMTLConstantIndex_PS_READ16_SRC,
 	GSMTLConstantIndex_PS_WRITE_RG,
 	GSMTLConstantIndex_PS_FBMASK,
+	GSMTLConstantIndex_PS_QUANTIZE_COLOR,
 	GSMTLConstantIndex_PS_BLEND_A,
 	GSMTLConstantIndex_PS_BLEND_B,
 	GSMTLConstantIndex_PS_BLEND_C,
