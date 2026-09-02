@@ -130,6 +130,7 @@ public:
 		/// alternative is recreating the device when frame generation is switched on.
 		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
 		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
+		bool vk_ext_device_fault : 1;
 	};
 
 	// Global state accessors
@@ -351,6 +352,9 @@ private:
 	void WaitForCommandBufferCompletion(u32 index, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
 	/// The one place a wait is charged: to its site and, off CauseOfSite, to its bill.
 	void BookGpuWait(GpuWaitSite site, u64 wait_ns);
+	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
+	/// structured fault records (addresses, kinds, vendor codes) before the exit.
+	void ReportDeviceFault();
 
 	bool InitSpinResources();
 	void DestroySpinResources();
