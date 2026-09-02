@@ -6631,7 +6631,11 @@ bool GSDeviceVK::DoCAS(
 	GSTextureVK* const dTexVK = static_cast<GSTextureVK*>(dTex);
 	VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
 
-	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+	// The sharpen reads the source from the COMPUTE stage, so it needs a compute-scoped transition:
+	// ShaderReadOnly orders the fragment stage on both sides, and the pass that rendered this source
+	// is a colour-attachment write the dispatch would not be waiting on. Same VkImage layout, so the
+	// descriptor written below is unaffected.
+	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadOnly);
 	dTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadWriteImage);
 
 	// only happening once a frame, so the update isn't a huge deal.
