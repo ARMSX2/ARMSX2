@@ -34,6 +34,12 @@ GSRendererSW::GSRendererSW(int threads)
 
 	std::fill(std::begin(m_fzb_pages), std::end(m_fzb_pages), 0);
 	std::fill(std::begin(m_tex_pages), std::end(m_tex_pages), 0);
+
+	// The GSState constructor armed the parse handlers with the base GetAutoFlushLevel (a
+	// virtual resolves to the base from inside a base constructor); re-arm now that the
+	// override below is live. Matters when this engine runs under a hardware
+	// GSCurrentRenderer, i.e. as another renderer's fallback floor.
+	ResetHandlers();
 }
 
 GSRendererSW::~GSRendererSW()
@@ -1601,6 +1607,16 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 bool GSRendererSW::IsCoverageAlphaSupported()
 {
 	return IsCoverageAlpha();
+}
+
+// The SW engine's flush rule regardless of process renderer type: a renderer can run this
+// engine as its fallback floor under a hardware GSCurrentRenderer, and the parse-time flush
+// decision must follow the engine that consumes the draws or the floor diverges from this
+// renderer on self-texturing draws (FlatOut 2 diverged byte-for-byte when it did not).
+// SpritesOnly is a hardware-renderer notion; the SW rule is all-or-nothing.
+GSHWAutoFlushLevel GSRendererSW::GetAutoFlushLevel() const
+{
+	return GSConfig.AutoFlushSW ? GSHWAutoFlushLevel::Enabled : GSHWAutoFlushLevel::Disabled;
 }
 
 GSRendererSW::SharedData::SharedData()
