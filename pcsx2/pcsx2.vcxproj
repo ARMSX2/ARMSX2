@@ -850,6 +850,7 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />

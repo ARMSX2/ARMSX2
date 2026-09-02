@@ -946,6 +946,15 @@ struct Pcsx2Config
 					// pass was built before 9877eba526. Restart-scoped: the render-pass cache
 					// is built once per device and its key does not carry this bit.
 					RenderPassExternalDependency : 1,
+					// SCAFFOLDING for the Phase 2 feedback-loop carry A/B, and deleted in the
+					// round that decides it. True lets GSDeviceVK keep the feedback-loop flag
+					// set across a run of draws on one target when the framebuffer-fetch path
+					// is live, instead of ending the render pass to clear it for every
+					// non-reader. False is the alternating behaviour every device had before.
+					// Restart-scoped: the two arms build different render passes and different
+					// pipelines, and a mid-session flip leaves a mixture of both cached, which
+					// is not either arm.
+					FeedbackLoopCarry : 1,
 					// Hold hardware draws back so consecutive draws to the same target
 					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
 					// where every pass boundary is a full tile load and store. Hot-

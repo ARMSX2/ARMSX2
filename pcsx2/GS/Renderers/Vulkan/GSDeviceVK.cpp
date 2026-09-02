@@ -37,6 +37,7 @@ namespace
 	constexpr u64 kLibretroRetireFrames = 6;
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 
 #include "BuildVersion.h"
 #include "Host.h"
@@ -8671,21 +8672,51 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			m_pipeline_selector.ds = true;
 		}
 
-		// Everything EXCEPT Broadcom keeps feedback-loop state draw-local: carrying it over
-		// can leave later draws in the previous feedback render pass/layout and cause
-		// Vulkan-only flicker. That matches sashkinbro/EmuCoreX, which removes the carry
-		// globally. A vendor-scoped carry was tried once before and reverted — do NOT widen
-		// this past Broadcom without re-testing Adreno/Mali.
+		// Carry the feedback-loop flag across a run of draws on the same target.
+		//
+		// The rule: once a target run has a reader, the flag stays set for the following
+		// non-readers on that target until the pass ends for another reason. Without it the
+		// flag is draw-local, so OMSetRenderTargets ends and restarts the pass on every
+		// reader/non-reader alternation, and an isolated reader costs two pass boundaries.
+		//
+		// Two device classes carry, for the same reason and on different evidence:
 		//
 		// Broadcom/V3D (Raspberry Pi, via the Linux arm64 build) is tile-based and pays
-		// heavily to close and reopen a tile render pass. Carrying the flags keeps the
-		// feedback_loop passed to OMSetRenderTargets equal to m_current_framebuffer_feedback_loop,
-		// so the render pass is NOT restarted for an otherwise-identical attachment set.
+		// heavily to close and reopen a tile render pass. Its carry is unconditional and
+		// predates the key below.
+		//
+		// The framebuffer-fetch path reads the attachment in-tile through subpassLoad under
+		// rasterization-order attachment access, so a pass declared self-reading by a draw
+		// that never reads is the same pass with one unused input attachment — it costs
+		// nothing to leave the flag set. Gated to Mali, where that was measured, and to
+		// EmuCore/GS/FeedbackLoopCarry so the device suite can run both arms off one binary.
+		//
+		// Everything else keeps feedback-loop state draw-local: carrying it over can leave
+		// later draws in the previous feedback render pass/layout and cause Vulkan-only
+		// flicker. That matches sashkinbro/EmuCoreX, which removes the carry globally. A
+		// vendor-scoped carry was tried once before and reverted — do NOT widen this past
+		// the two cases above without a device round of its own.
 		//
 		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
 		// inherit a stale depth feedback layout: precisely the flicker mode described above.
-		if (IsDeviceBroadcom())
+		GSFeedbackLoopCarryInputs carry;
+		carry.device_always_carries = IsDeviceBroadcom();
+		carry.device_is_measured_vendor = IsDeviceMali();
+		carry.framebuffer_fetch = m_features.framebuffer_fetch;
+		carry.feedback_loop_layout = UseFeedbackLoopLayout();
+		carry.carry_key = GSConfig.FeedbackLoopCarry;
+		// SendHWDraw only receives a target to barrier against when the pipeline's matching
+		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
+		// would emit one where none was emitted before. On the fetch path a non-reader never
+		// asks for one, so this term never fires there; it keeps the carry from being the
+		// thing that introduces a barrier if that ever stops being true.
+		const bool alpha_pass_barrier = config.alpha_second_pass.enable &&
+		                                (config.alpha_second_pass.require_one_barrier || config.alpha_second_pass.require_full_barrier);
+		carry.draw_needs_own_barrier =
+			config.require_one_barrier || config.require_full_barrier || alpha_pass_barrier;
+
+		if (CarryFeedbackLoopAcrossTargetRun(carry))
 		{
 			if (draw_rt && m_current_render_target == draw_rt)
 				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
