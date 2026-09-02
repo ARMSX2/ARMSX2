@@ -128,6 +128,28 @@ namespace GSDrawLog
 		rec.date_mode_selfcheck = selfcheck;
 	}
 
+	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		rec.flags2 |= Flags2RTAlpha;
+		rec.rt_id = target_id;
+		rec.rt_tbp0 = tbp0;
+		rec.rt_alpha_flags = alpha_flags;
+		rec.rt_fbmask_a = fbmask_a;
+		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
+	}
+
+	void NoteRTAlphaCommitted()
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		s_records[s_open_record].rt_alpha_flags |= RTAlphaCommitted;
+	}
+
 	void NoteSelfRead(SelfRead resolution)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -231,7 +253,9 @@ namespace GSDrawLog
 			"area_x,area_y,area_w,area_h,"
 			"sample_x,sample_y,sample_w,sample_h,"
 			"src_alpha_min,src_alpha_max,rt_alpha_min,rt_alpha_max,"
-			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck\n");
+			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck,"
+			"rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,rt_alpha_committed,"
+			"rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,rt_fbmask_a,rt_alpha_fmt_mask\n");
 
 		for (const Record& r : s_records)
 		{
@@ -336,7 +360,7 @@ namespace GSDrawLog
 
 			if (r.flags2 & Flags2DATEModes)
 			{
-				std::fprintf(fp.get(), "%s,%s,%s\n",
+				std::fprintf(fp.get(), "%s,%s,%s,",
 					GSGetDestinationAlphaModeName(
 						static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.date_mode_adreno)),
 					GSGetDestinationAlphaModeName(
@@ -346,7 +370,25 @@ namespace GSDrawLog
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,\n");
+				std::fprintf(fp.get(), ",,,");
+			}
+
+			if (r.flags2 & Flags2RTAlpha)
+			{
+				std::fprintf(fp.get(), "%u,%05x,%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x\n", r.rt_id, r.rt_tbp0,
+					(r.rt_alpha_flags & RTAlphaWritten) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaShuffle) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaFullCover) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaCommitted) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaRangeWasSet) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaCoversValid) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaNoGaps) ? 1 : 0,
+					(r.rt_alpha_flags & RTAlphaTestsPass) ? 1 : 0,
+					r.rt_fbmask_a, r.rt_alpha_fmt_mask);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,,,,,,,\n");
 			}
 		}
 

@@ -31,6 +31,8 @@
 std::unique_ptr<GSTextureCache> g_texture_cache;
 
 static u8* s_unswizzle_buffer;
+// Ledger identity for targets; see GSTextureCache::Target::m_id.
+static u32 s_next_target_id = 0;
 
 /// List of candidates for purging when the hash cache gets too large.
 static std::vector<std::pair<GSTextureCache::HashCacheMap::iterator, s32>> s_hash_cache_purge_list;
@@ -8151,6 +8153,8 @@ GSTextureCache::Target::Target(GIFRegTEX0 TEX0, int type, const GSVector2i& unsc
 		m_alpha_max = 0;
 	}
 	m_32_bits_fmt |= (GSLocalMemory::m_psm[TEX0.PSM].trbpp != 16);
+
+	m_id = ++s_next_target_id;
 }
 
 GSTextureCache::Target::~Target()

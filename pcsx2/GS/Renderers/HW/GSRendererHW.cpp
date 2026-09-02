@@ -5822,6 +5822,12 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 		blend_alpha_min = rt_new_alpha_min = rt->m_alpha_min;
 		blend_alpha_max = rt_new_alpha_max = rt->m_alpha_max;
 
+		// Ledger only: which branch below the draw takes, and the two masks it works from.
+		// Recorded rather than re-derived offline because full_cover and the effective
+		// FbMask are assembled here out of state that is not in the draw's registers.
+		u8 log_alpha_flags = rt->m_alpha_range ? GSDrawLog::RTAlphaRangeWasSet : 0;
+		u32 log_fb_mask = 0;
+
 		const int fba_value = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
 		const bool is_24_bit = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].trbpp == 24);
 		if (is_24_bit)
@@ -5850,6 +5856,14 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
 			const u32 fb_mask = m_conf.colormask.wa ? (m_conf.ps.fbmask ? m_conf.cb_ps.FbMask.a : 0) : 0xFF;
 			const u32 alpha_mask = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24;
+
+			log_alpha_flags |= GSDrawLog::RTAlphaWritten | (full_cover ? GSDrawLog::RTAlphaFullCover : 0);
+			log_alpha_flags |= rt->m_valid.rintersect(m_r).eq(rt->m_valid) ? GSDrawLog::RTAlphaCoversValid : 0;
+			log_alpha_flags |= (m_primitive_covers_without_gaps == NoGapsType::FullCover) ? GSDrawLog::RTAlphaNoGaps : 0;
+			log_alpha_flags |= !(date_options.enabled || !always_passing_alpha || !IsDepthAlwaysPassing()) ?
+								   GSDrawLog::RTAlphaTestsPass :
+								   0;
+			log_fb_mask = fb_mask;
 			if ((fb_mask & alpha_mask) == 0)
 			{
 				if (full_cover)
@@ -5899,6 +5913,13 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 				rt_new_alpha_min = (std::min(m_cached_ctx.TEXA.TA1, m_cached_ctx.TEXA.TA0) & 0x80) | fba_value;
 			}
 			rt->m_alpha_range = true;
+			log_alpha_flags |= GSDrawLog::RTAlphaShuffle;
+		}
+
+		if (GSDrawLog::IsActive()) [[unlikely]]
+		{
+			GSDrawLog::NoteRTAlpha(rt->m_id, rt->m_TEX0.TBP0, log_alpha_flags, static_cast<u8>(log_fb_mask),
+				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24));
 		}
 
 		GL_INS("HW: RT Alpha Range: %d-%d => %d-%d", blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max);
@@ -9963,6 +9984,9 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	{
 		rt->m_alpha_max = rt_new_alpha_max;
 		rt->m_alpha_min = rt_new_alpha_min;
+
+		if (GSDrawLog::IsActive()) [[unlikely]]
+			GSDrawLog::NoteRTAlphaCommitted();
 	}
 
 	// No point outputting colours if we're just writing depth.

@@ -105,6 +105,19 @@ namespace GSDrawLog
 		u8 date_mode_stencil;
 		u8 date_mode_selfcheck;
 
+		/// Which render target the draw wrote, and how it touched that target's alpha.
+		///
+		/// fb_addr names the address the draw asked for; it does not name the target
+		/// object, which can outlive an address or be recreated at one. Any question of the
+		/// form "what had already been written to this target when that draw ran" needs the
+		/// object, so Target carries a serial and the ledger records it here. rt_id is zero
+		/// on a row that reached no render-target alpha calculation.
+		u32 rt_id;
+		u32 rt_tbp0; ///< that target's own TEX0.TBP0, which need not equal fb_addr
+		u8 rt_alpha_flags; ///< RTAlpha bits
+		u8 rt_fbmask_a; ///< the alpha mask CalculateAlphaRange worked from (FbMask.a, or 0)
+		u8 rt_alpha_fmt_mask; ///< the target format's alpha mask (fmsk >> 24)
+
 		s16 area_x;
 		s16 area_y;
 		s16 area_z;
@@ -169,6 +182,30 @@ namespace GSDrawLog
 	{
 		Flags2AlphaRanges = 1 << 0, ///< src_alpha_* / rt_alpha_* were filled
 		Flags2DATEModes = 1 << 1, ///< date_mode_* were filled
+		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
+	};
+
+	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.
+	///
+	/// The distinction that matters is whether the alpha write reached the bits it wrote
+	/// unconditionally: a write whose mask covers some alpha bits leaves those bits holding
+	/// whatever was there, which is why a mask-aware tracker can carry a known bit across
+	/// such a draw and a min/max tracker cannot.
+	enum RTAlpha : u8
+	{
+		RTAlphaWritten = 1 << 0, ///< took the ordinary alpha-range branch
+		RTAlphaShuffle = 1 << 1, ///< took the texture-shuffle branch instead
+		RTAlphaFullCover = 1 << 2, ///< full_cover was true: the draw covers the whole valid rect
+		RTAlphaCommitted = 1 << 3, ///< rt->m_alpha_min/max were actually assigned afterwards
+		RTAlphaRangeWasSet = 1 << 4, ///< rt->m_alpha_range as it stood before the draw
+
+		// full_cover is a conjunction of three unrelated things, and "the draw did not cover
+		// the target" is a different fact from "the draw might have covered it but a depth or
+		// alpha test could reject pixels". Anything that wants to establish what a target
+		// holds needs to know which one refused, so each conjunct is recorded on its own.
+		RTAlphaCoversValid = 1 << 5, ///< the draw rect contains the whole valid rect
+		RTAlphaNoGaps = 1 << 6, ///< m_primitive_covers_without_gaps == FullCover
+		RTAlphaTestsPass = 1 << 7, ///< no DATE, alpha test always writes alpha, depth always passes
 	};
 
 	/// Record::packet when the draw did not come from a dump packet.
@@ -205,6 +242,15 @@ namespace GSDrawLog
 	/// Records the DATE road this draw would take on the two hypothetical feature sets and on
 	/// this device, on the open row. Census scaffolding; see Record::date_mode_adreno.
 	void NoteDATEModes(u8 adreno, u8 stencil, u8 selfcheck);
+
+	/// Records which target the draw is about to write and how it touched its alpha, on the
+	/// open row. Read where CalculateAlphaRange already has all of it in hand.
+	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask);
+
+	/// Marks the open row as having actually assigned the target's new alpha range. A draw
+	/// can compute the range and then return before the assignment, and a reconstruction
+	/// that misses that reads one draw ahead of the renderer for the rest of the frame.
+	void NoteRTAlphaCommitted();
 
 	/// Records how a target-aliasing source was resolved, on the open row. Called from
 	/// hazard handling rather than at submit because the resolution is not recoverable
