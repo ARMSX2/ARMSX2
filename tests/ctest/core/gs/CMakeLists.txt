@@ -16,6 +16,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_draw_staging_tests.cpp
 	gs_snapshot_policy_tests.cpp
 	gs_sw_scanline_cpath_tests.cpp
+	gs_readback_transfer_size_tests.cpp
 	gs_astc_tests.cpp
 	gs_fe_decode_tests.cpp
 )

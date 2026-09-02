@@ -340,7 +340,8 @@ u32 GSDownloadTexture::GetTransferPitch(u32 width, u32 pitch_align) const
 	return Common::AlignUpPow2(bw * bi.bytes, pitch_align);
 }
 
-void GSDownloadTexture::GetTransferSize(const GSVector4i& rc, u32* copy_offset, u32* copy_size, u32* copy_rows) const
+void GSDownloadTexture::GetTransferSize(
+	const GSVector4i& rc, u32* copy_offset, u32* copy_row_bytes, u32* copy_rows) const
 {
 	const GSTexture::BlockInfo bi = GSTexture::GetBlockInfo(m_format);
 	const u32 tw = static_cast<u32>(rc.width());
@@ -348,7 +349,10 @@ void GSDownloadTexture::GetTransferSize(const GSVector4i& rc, u32* copy_offset, 
 
 	*copy_offset = (((static_cast<u32>(rc.y) + bi.height - 1) / bi.height) * m_current_pitch) +
 				   (((static_cast<u32>(rc.x) + bi.width - 1) / bi.width) * bi.bytes);
-	*copy_size = tb * bi.bytes;
+	// One row's worth. Rows are m_current_pitch apart, and for a block-compressed format a "row"
+	// is a row of blocks -- both of which GetTransferRegionSize takes care of for the callers that
+	// need the whole region rather than a row of it.
+	*copy_row_bytes = tb * bi.bytes;
 	*copy_rows = ((static_cast<u32>(rc.height()) + bi.height - 1) / bi.height);
 }
 

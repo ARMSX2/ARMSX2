@@ -356,8 +356,26 @@ public:
 	/// Calculates the pitch of a transfer.
 	u32 GetTransferPitch(u32 width, u32 pitch_align) const;
 
-	/// Calculates the size of the data you should transfer.
-	void GetTransferSize(const GSVector4i& rc, u32* copy_offset, u32* copy_size, u32* copy_rows) const;
+	/// Calculates the layout of a transfer: the byte offset of its first row, the byte width of
+	/// ONE row, and the number of rows. Rows are GetMapPitch() apart, so the row width is not the
+	/// size of the region the transfer occupies -- GetTransferRegionSize is that.
+	void GetTransferSize(const GSVector4i& rc, u32* copy_offset, u32* copy_row_bytes, u32* copy_rows) const;
+
+	/// Bytes spanned by a pitched transfer, first byte of its first row to last byte of its last:
+	/// the rows before the last are `pitch` apart and the last is `row_bytes` wide, so the span is
+	/// (rows - 1) * pitch + row_bytes. Not rows * row_bytes, which ignores the padding between
+	/// rows, and not rows * pitch, which runs off the end of the last one.
+	///
+	/// This is the range a host-cache invalidate, or a TRANSFER_WRITE -> HOST_READ barrier, has to
+	/// cover before the map is read. Covering GetTransferSize's row width instead synchronises the
+	/// first row and leaves every later one to be read through a cache nothing invalidated: inert
+	/// on coherent readback memory, and cache-atom-granular corruption on memory that is genuinely
+	/// non-coherent (which is what the Mali r44p1 profile deliberately keeps, being ~12x faster
+	/// there than the coherent alternative).
+	static constexpr u32 GetTransferRegionSize(u32 pitch, u32 row_bytes, u32 rows)
+	{
+		return (rows == 0) ? 0 : ((rows - 1) * pitch + row_bytes);
+	}
 
 	/// Queues a copy from the specified texture to this buffer.
 	/// Does not complete immediately, you should flush before accessing the buffer.
