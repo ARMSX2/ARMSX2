@@ -41,6 +41,27 @@ public:
 		// per-draw CPU proxy the mobile renderer work steers by.
 		PipelineSwitches,
 
+		// Census scaffolding for the Adreno dynamic-state rung: of the TFX pipeline switches
+		// (the selector changed between consecutive TFX draws), how many differ from the
+		// previous selector ONLY in blend state, only in the colour write mask, only in both,
+		// and how many differ in something else. The first three are what
+		// VK_EXT_extended_dynamic_state3 could absorb without a pipeline bind. Counted per
+		// selector change, so their sum is at or below PipelineSwitches, which counts emitted
+		// binds of every kind including utility pipelines.
+		//
+		// Delete these with the rung they price.
+		TFXPipelineSwitches,
+		TFXPipelineSwitchesBlendOnly,
+		TFXPipelineSwitchesMaskOnly,
+		TFXPipelineSwitchesBlendMaskOnly,
+		// The same switches counted by which part moved at all, not by what moved alone.
+		// Without these a zero in the three above is unreadable: "no switch is blend-only"
+		// and "the blend state never moves" look identical and mean opposite things.
+		TFXPipelineSwitchesBlendMoved,
+		TFXPipelineSwitchesMaskMoved,
+		TFXPipelineSwitchesPSMoved, ///< the fragment shader selector moved
+		TFXPipelineSwitchesRestMoved, ///< vs / depth-stencil / topology / rt / ds / feedback moved
+
 		// Host waits on GPU completion that the GS thread paid OUT OF TURN -- a readback's
 		// submit-and-wait, an explicit sync. The command-buffer ring's own recycle wait is NOT
 		// one: that is healthy backpressure, and counting it would hide the number this exists

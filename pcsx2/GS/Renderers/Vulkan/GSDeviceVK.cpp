@@ -7479,8 +7479,57 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	return pipeline;
 }
 
+// Census scaffolding for the Adreno dynamic-state rung: how much of the per-draw pipeline
+// churn is blend state and colour write mask, the two the extended-dynamic-state-3 path
+// could set without a pipeline bind. Counted on the selector, not on the emitted bind: the
+// question is how consecutive draws differ, and a re-bind of an unchanged selector after a
+// utility pipeline is not a draw-to-draw difference.
+//
+// Delete with the rung.
+void GSDeviceVK::CountTFXPipelineSwitch(const PipelineSelector& p)
+{
+	const bool first = !m_last_tfx_selector_valid;
+	const PipelineSelector prev = m_last_tfx_selector;
+	m_last_tfx_selector = p;
+	m_last_tfx_selector_valid = true;
+
+	if (first || prev == p)
+		return;
+
+	g_perfmon.Put(GSPerfMon::TFXPipelineSwitches, 1);
+
+	const bool bs_moved = (prev.bs.key != p.bs.key);
+	const bool cms_moved = (prev.cms.key != p.cms.key);
+	if (bs_moved)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendMoved, 1);
+	if (cms_moved)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesMaskMoved, 1);
+	if (prev.ps.key_hi != p.ps.key_hi || prev.ps.key_lo != p.ps.key_lo)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesPSMoved, 1);
+	if (prev.vs.key != p.vs.key || prev.dss.key != p.dss.key || prev.key != p.key)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesRestMoved, 1);
+
+	// Everything else in the key: compare a copy with bs and cms neutralised, so a field
+	// added to the selector later counts as "other" rather than silently as absorbable.
+	PipelineSelector prev_rest = prev;
+	PipelineSelector p_rest = p;
+	prev_rest.bs = p_rest.bs = GSHWDrawConfig::BlendState();
+	prev_rest.cms = p_rest.cms = GSHWDrawConfig::ColorMaskSelector();
+	if (prev_rest != p_rest)
+		return; // "other" is the residual: switches minus the three classes below
+
+	if (bs_moved && cms_moved)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendMaskOnly, 1);
+	else if (bs_moved)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendOnly, 1);
+	else if (cms_moved)
+		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesMaskOnly, 1);
+}
+
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
 {
+	CountTFXPipelineSwitch(p);
+
 	VkPipeline pipeline = GetTFXPipeline(p);
 	if (pipeline == VK_NULL_HANDLE)
 		return false;

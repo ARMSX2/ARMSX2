@@ -366,6 +366,23 @@ static double s_last_hash_cache_hit = 0;
 static double s_last_hash_cache_miss = 0;
 static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
+// Census scaffolding for the Adreno dynamic-state rung; delete with it.
+static double s_last_tfx_switches = 0;
+static double s_last_tfx_switches_blend = 0;
+static double s_last_tfx_switches_mask = 0;
+static double s_last_tfx_switches_blendmask = 0;
+static u64 s_total_tfx_switches = 0;
+static u64 s_total_tfx_switches_blend = 0;
+static u64 s_total_tfx_switches_mask = 0;
+static u64 s_total_tfx_switches_blendmask = 0;
+static double s_last_tfx_switches_bsmoved = 0;
+static double s_last_tfx_switches_cmsmoved = 0;
+static u64 s_total_tfx_switches_bsmoved = 0;
+static u64 s_total_tfx_switches_cmsmoved = 0;
+static double s_last_tfx_switches_psmoved = 0;
+static double s_last_tfx_switches_restmoved = 0;
+static u64 s_total_tfx_switches_psmoved = 0;
+static u64 s_total_tfx_switches_restmoved = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -617,6 +634,19 @@ void Host::BeginPresentFrame()
 		sample.hash_cache_hit = update_stat(GSPerfMon::HashCacheHit, s_total_hash_cache_hit, s_last_hash_cache_hit);
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
+		update_stat(GSPerfMon::TFXPipelineSwitches, s_total_tfx_switches, s_last_tfx_switches);
+		update_stat(GSPerfMon::TFXPipelineSwitchesBlendOnly, s_total_tfx_switches_blend, s_last_tfx_switches_blend);
+		update_stat(GSPerfMon::TFXPipelineSwitchesMaskOnly, s_total_tfx_switches_mask, s_last_tfx_switches_mask);
+		update_stat(GSPerfMon::TFXPipelineSwitchesBlendMaskOnly, s_total_tfx_switches_blendmask,
+			s_last_tfx_switches_blendmask);
+		update_stat(GSPerfMon::TFXPipelineSwitchesBlendMoved, s_total_tfx_switches_bsmoved,
+			s_last_tfx_switches_bsmoved);
+		update_stat(GSPerfMon::TFXPipelineSwitchesMaskMoved, s_total_tfx_switches_cmsmoved,
+			s_last_tfx_switches_cmsmoved);
+		update_stat(GSPerfMon::TFXPipelineSwitchesPSMoved, s_total_tfx_switches_psmoved,
+			s_last_tfx_switches_psmoved);
+		update_stat(GSPerfMon::TFXPipelineSwitchesRestMoved, s_total_tfx_switches_restmoved,
+			s_last_tfx_switches_restmoved);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -1812,6 +1842,30 @@ void GSRunner::DumpStats()
 		s_total_render_pass_area_pixels / 1e6,
 		s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
+	{
+		// Census scaffolding for the Adreno dynamic-state rung. "Other" is the residual, so the
+		// four always sum to the switch total; delete the block with the rung.
+		const double frames = static_cast<double>(s_total_drawn_frames);
+		const u64 other = s_total_tfx_switches - s_total_tfx_switches_blend - s_total_tfx_switches_mask -
+						  s_total_tfx_switches_blendmask;
+		const u64 absorbable =
+			s_total_tfx_switches_blend + s_total_tfx_switches_mask + s_total_tfx_switches_blendmask;
+		Console.WriteLn(fmt::format("@HWSTAT@ TFX Pipeline Switches: {} (avg {}) -- blend-only {} (avg {}), "
+									"mask-only {} (avg {}), blend+mask {} (avg {}), other {} (avg {}); "
+									"absorbable {:.2f}%",
+			s_total_tfx_switches, static_cast<u64>(std::ceil(s_total_tfx_switches / frames)),
+			s_total_tfx_switches_blend, static_cast<u64>(std::ceil(s_total_tfx_switches_blend / frames)),
+			s_total_tfx_switches_mask, static_cast<u64>(std::ceil(s_total_tfx_switches_mask / frames)),
+			s_total_tfx_switches_blendmask, static_cast<u64>(std::ceil(s_total_tfx_switches_blendmask / frames)),
+			other, static_cast<u64>(std::ceil(other / frames)),
+			s_total_tfx_switches ? (100.0 * absorbable / static_cast<double>(s_total_tfx_switches)) : 0.0));
+		Console.WriteLn(fmt::format("@HWSTAT@ TFX Pipeline Switches Moving: blend {} (avg {}), mask {} (avg {}), "
+									"ps {} (avg {}), rest {} (avg {})",
+			s_total_tfx_switches_bsmoved, static_cast<u64>(std::ceil(s_total_tfx_switches_bsmoved / frames)),
+			s_total_tfx_switches_cmsmoved, static_cast<u64>(std::ceil(s_total_tfx_switches_cmsmoved / frames)),
+			s_total_tfx_switches_psmoved, static_cast<u64>(std::ceil(s_total_tfx_switches_psmoved / frames)),
+			s_total_tfx_switches_restmoved, static_cast<u64>(std::ceil(s_total_tfx_switches_restmoved / frames))));
+	}
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));

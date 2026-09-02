@@ -1053,4 +1053,10 @@ private:
 
 	// current pipeline selector - we save this in the struct to avoid re-zeroing it every draw
 	PipelineSelector m_pipeline_selector = {};
+
+	// Census scaffolding: the previous TFX selector, so a switch can be classified by which
+	// part of the key moved. Delete with the dynamic-state rung.
+	PipelineSelector m_last_tfx_selector = {};
+	bool m_last_tfx_selector_valid = false;
+	void CountTFXPipelineSwitch(const PipelineSelector& p);
 };
