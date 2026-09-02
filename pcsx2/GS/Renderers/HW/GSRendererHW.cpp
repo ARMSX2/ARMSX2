@@ -5836,6 +5836,12 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			const int s_alpha_max = GetAlphaMinMax().max | fba_value;
 			const int s_alpha_min = GetAlphaMinMax().min | fba_value;
 
+			// Ledger only. Both ranges are already computed here for the renderer's own use;
+			// this reads them, it does not evaluate anything a second time. rt->m_alpha_min/max
+			// still hold the pre-draw range at this point.
+			if (GSDrawLog::IsActive()) [[unlikely]]
+				GSDrawLog::NoteAlphaRanges(s_alpha_min, s_alpha_max, rt->m_alpha_min, rt->m_alpha_max);
+
 			const bool afail_always_fb_alpha = m_cached_ctx.TEST.AFAIL == AFAIL_FB_ONLY || (m_cached_ctx.TEST.AFAIL == AFAIL_RGB_ONLY && GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32);
 			const bool always_passing_alpha = !m_cached_ctx.TEST.ATE || afail_always_fb_alpha || (m_cached_ctx.TEST.ATE && m_cached_ctx.TEST.ATST == ATST_ALWAYS);
 			const bool full_cover = rt->m_valid.rintersect(m_r).eq(rt->m_valid) && m_primitive_covers_without_gaps == NoGapsType::FullCover &&
@@ -6090,6 +6096,7 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	                                m_cached_ctx.TEST.ATST != ATST_NEVER &&
 	                                m_cached_ctx.TEST.AFAIL != AFAIL_KEEP &&
 	                                m_prim_overlap != PRIM_OVERLAP_NO;
+
 	if (m_cached_ctx.TEST.DATM)
 	{
 		blend_alpha_min = std::max(blend_alpha_min, 128);

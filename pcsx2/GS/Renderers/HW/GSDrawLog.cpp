@@ -103,6 +103,19 @@ namespace GSDrawLog
 		s_records[s_open_record].packet = s_packet_mark;
 	}
 
+	void NoteAlphaRanges(int src_min, int src_max, int rt_min, int rt_max)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		rec.flags2 |= Flags2AlphaRanges;
+		rec.src_alpha_min = static_cast<s16>(src_min);
+		rec.src_alpha_max = static_cast<s16>(src_max);
+		rec.rt_alpha_min = static_cast<s16>(rt_min);
+		rec.rt_alpha_max = static_cast<s16>(rt_max);
+	}
+
 	void NoteSelfRead(SelfRead resolution)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -204,7 +217,8 @@ namespace GSDrawLog
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"sample_x,sample_y,sample_w,sample_h\n");
+			"sample_x,sample_y,sample_w,sample_h,"
+			"src_alpha_min,src_alpha_max,rt_alpha_min,rt_alpha_max\n");
 
 		for (const Record& r : s_records)
 		{
@@ -289,8 +303,18 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d\n", r.sample_x, r.sample_y,
+				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.sample_x, r.sample_y,
 					r.sample_z - r.sample_x, r.sample_w - r.sample_y);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,");
+			}
+
+			if (r.flags2 & Flags2AlphaRanges)
+			{
+				std::fprintf(fp.get(), "%d,%d,%d,%d\n", r.src_alpha_min, r.src_alpha_max, r.rt_alpha_min,
+					r.rt_alpha_max);
 			}
 			else
 			{

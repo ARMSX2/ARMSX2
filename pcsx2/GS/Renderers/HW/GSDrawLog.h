@@ -85,6 +85,17 @@ namespace GSDrawLog
 		u8 barrier; // 0 none, 1 one-barrier, 2 full-barrier
 		u8 self_read; // SelfRead enum, filled during hazard handling
 		u8 prim_overlap; // GSState::PRIM_OVERLAP -- whether the draw's own primitives overlap
+		u8 flags2; // Flags2 bits
+
+		/// The two alpha ranges an FBMSK-drop rule has to compare: what this draw can write
+		/// (GetAlphaMinMax with FBA folded in, after the alpha-test correction) and what the
+		/// target is already known to hold, as it stood before this draw. Only filled for
+		/// draws that reach the render-target alpha-range calculation; Flags2AlphaRanges says
+		/// which those are.
+		s16 src_alpha_min;
+		s16 src_alpha_max;
+		s16 rt_alpha_min;
+		s16 rt_alpha_max;
 
 		s16 area_x;
 		s16 area_y;
@@ -145,6 +156,12 @@ namespace GSDrawLog
 		FlagFeedbackLoopRT = 1 << 7, ///< the pixel shader reads the render target (any reason)
 	};
 
+	/// Flags ran out of bits at FlagFeedbackLoopRT, so the second byte starts here.
+	enum Flags2 : u8
+	{
+		Flags2AlphaRanges = 1 << 0, ///< src_alpha_* / rt_alpha_* were filled
+	};
+
 	/// Record::packet when the draw did not come from a dump packet.
 	static constexpr u32 PacketNone = 0xFFFFFFFFu;
 
@@ -170,6 +187,11 @@ namespace GSDrawLog
 	/// Begins a row from the PS2 register state. Returns without effect if inactive or
 	/// the arena is full.
 	void BeginDraw(const Record& ps2_state);
+
+	/// Records the draw's source alpha range and the target's tracked alpha range, on the
+	/// open row. Both are read where the renderer already computes them; nothing here
+	/// evaluates them a second time.
+	void NoteAlphaRanges(int src_min, int src_max, int rt_min, int rt_max);
 
 	/// Records how a target-aliasing source was resolved, on the open row. Called from
 	/// hazard handling rather than at submit because the resolution is not recoverable
