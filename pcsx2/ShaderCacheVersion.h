@@ -22,4 +22,5 @@
 // become named fields, and the colour-clamp block's guard gains another term.
 // 114: PS_AF_IN_SRC1. The Vulkan TFX shader gains the define and a block that overrides
 // alpha_blend with the fixed AFIX value, so its source text changed after 113 was set.
-static constexpr u32 SHADER_CACHE_VERSION = 114; // 108 was upstream PR 14688; their 109 = our 111
+// 115: upstream PR 14897, the depth conversion shaders floor the bilinear result.
+static constexpr u32 SHADER_CACHE_VERSION = 115; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115
