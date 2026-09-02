@@ -129,6 +129,10 @@ static u32 s_loop_number = s_loop_count;
 static double s_last_internal_draws = 0;
 static double s_last_draws = 0;
 static double s_last_render_passes = 0;
+// Summed renderArea of those same passes, in pixels: on a tiler, the frame's tile load-and-store
+// bill. The pair is the point -- a pass count alone cannot separate a title that broke its frame
+// into hundreds of small passes from one that broke it into hundreds of full-surface ones.
+static double s_last_render_pass_area_pixels = 0;
 static double s_last_barriers = 0;
 static double s_last_copies = 0;
 static double s_last_uploads = 0;
@@ -140,6 +144,7 @@ static double s_last_barriers_rov = 0;
 static u64 s_total_internal_draws = 0;
 static u64 s_total_draws = 0;
 static u64 s_total_render_passes = 0;
+static u64 s_total_render_pass_area_pixels = 0;
 static u64 s_total_barriers = 0;
 static u64 s_total_copies = 0;
 static u64 s_total_uploads = 0;
@@ -206,6 +211,7 @@ struct FrameSample
 	u64 draws; // PS2-level (GSPerfMon::Draw)
 	u64 draw_calls;
 	u64 render_passes;
+	u64 render_pass_area_pixels;
 	u64 barriers;
 	u64 copies;
 	u64 uploads;
@@ -481,6 +487,8 @@ void Host::BeginPresentFrame()
 		sample.draws = update_stat(GSPerfMon::Draw, s_total_internal_draws, s_last_internal_draws);
 		sample.draw_calls = update_stat(GSPerfMon::DrawCalls, s_total_draws, s_last_draws);
 		sample.render_passes = update_stat(GSPerfMon::RenderPasses, s_total_render_passes, s_last_render_passes);
+		sample.render_pass_area_pixels = update_stat(
+			GSPerfMon::RenderPassAreaPixels, s_total_render_pass_area_pixels, s_last_render_pass_area_pixels);
 		sample.barriers = update_stat(GSPerfMon::Barriers, s_total_barriers, s_last_barriers);
 		sample.copies = update_stat(GSPerfMon::TextureCopies, s_total_copies, s_last_copies);
 		sample.uploads = update_stat(GSPerfMon::TextureUploads, s_total_uploads, s_last_uploads);
@@ -1484,6 +1492,7 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"prims\": %" PRIu64 ",\n    \"draws\": %" PRIu64 ",\n    \"draw_calls\": %" PRIu64 ",\n",
 		s_total_prims, s_total_internal_draws, s_total_draws);
 	std::fprintf(fp.get(), "    \"render_passes\": %" PRIu64 ",\n    \"barriers\": %" PRIu64 ",\n", s_total_render_passes, s_total_barriers);
+	std::fprintf(fp.get(), "    \"render_pass_area_pixels\": %" PRIu64 ",\n", s_total_render_pass_area_pixels);
 	std::fprintf(fp.get(), "    \"copies\": %" PRIu64 ",\n    \"uploads\": %" PRIu64 ",\n    \"readbacks\": %" PRIu64 ",\n",
 		s_total_copies, s_total_uploads, s_total_readbacks);
 	std::fprintf(fp.get(), "    \"copies_rov\": %" PRIu64 ",\n    \"draw_calls_rov\": %" PRIu64 ",\n    \"barriers_rov\": %" PRIu64 ",\n",
@@ -1519,7 +1528,8 @@ static void WriteStatsJson(const std::string& path)
 		std::fprintf(fp.get(),
 			"    {\"frame\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
 			"\"prims\":%" PRIu64 ",\"draws\":%" PRIu64 ",\"draw_calls\":%" PRIu64 ","
-			"\"render_passes\":%" PRIu64 ",\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
+			"\"render_passes\":%" PRIu64 ",\"render_pass_area_pixels\":%" PRIu64 ","
+			"\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
 			"\"uploads\":%" PRIu64 ",\"readbacks\":%" PRIu64 ","
 			"\"copies_rov\":%" PRIu64 ",\"draw_calls_rov\":%" PRIu64 ",\"barriers_rov\":%" PRIu64 ","
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
@@ -1528,7 +1538,7 @@ static void WriteStatsJson(const std::string& path)
 			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 "}%s\n",
 			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
-			s.render_passes, s.barriers, s.copies,
+			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
 			s.uploads, s.readbacks,
 			s.copies_rov, s.draw_calls_rov, s.barriers_rov,
 			s.tc_source_hit, s.tc_source_miss,
@@ -1550,6 +1560,11 @@ void GSRunner::DumpStats()
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws: {} (avg {})", s_total_internal_draws, static_cast<u64>(std::ceil(s_total_internal_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draw Calls: {} (avg {})", s_total_draws, static_cast<u64>(std::ceil(s_total_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", s_total_render_passes, static_cast<u64>(std::ceil(s_total_render_passes / static_cast<double>(s_total_drawn_frames)))));
+	// The same passes weighed rather than counted: megapixels of renderArea a drawn frame loads and
+	// stores, which is what a pass costs on a tiler.
+	Console.WriteLn(fmt::format("@HWSTAT@ Render Pass Area Mpx: {:.2f} (avg {:.2f}/frame)",
+		s_total_render_pass_area_pixels / 1e6,
+		s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));

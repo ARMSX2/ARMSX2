@@ -53,6 +53,14 @@ public:
 		// that reach the device, and a copy is not the same thing as a wait.
 		GpuBlockingWaits,
 
+		// Summed renderArea of the frame's render passes, in pixels. On a tiler that is the frame's
+		// tile load-and-store bill: a pass pays for every pixel of its render area whether anything
+		// drew there or not, so the area is what a pass costs and the count is not. Exactly the
+		// population `RenderPasses` counts -- same two functions, both directions of the pair -- so
+		// the mean area per pass is a valid division and a title's pass structure is readable from
+		// stats.json without reconstructing it from a draw stream.
+		RenderPassAreaPixels,
+
 		CounterLast,
 
 		// Reused counters for HW.

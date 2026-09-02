@@ -813,6 +813,8 @@ public:
 	// When Bind() is next called, the pass will be restarted.
 	// Calling this function is allowed even if a pass has not begun.
 	bool InRenderPass();
+	/// The frame's tile load-and-store bill, one pass at a time (GSPerfMon::RenderPassAreaPixels).
+	void CountRenderPassArea(const GSVector4i& rect);
 	void BeginRenderPass(VkRenderPass rp, const GSVector4i& rect);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color);

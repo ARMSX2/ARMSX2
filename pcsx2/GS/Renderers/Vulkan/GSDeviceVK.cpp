@@ -7624,6 +7624,7 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
+	CountRenderPassArea(rect);
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
 		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}}, 0,
@@ -7633,6 +7634,16 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
+void GSDeviceVK::CountRenderPassArea(const GSVector4i& rect)
+{
+	// Counted where the area is handed to vkCmdBeginRenderPass, which is the only site that cannot
+	// disagree with what was submitted -- a pass that clamps its area and a counter that predicts the
+	// clamp would be two derivations of one number, and the reason to have this at all is that the
+	// pass-structure census had to be assembled by hand.
+	g_perfmon.Put(GSPerfMon::RenderPassAreaPixels,
+		static_cast<double>(rect.width()) * static_cast<double>(rect.height()));
+}
+
 void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count)
 {
 	if (m_current_render_pass != VK_NULL_HANDLE)
@@ -7640,6 +7651,7 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
+	CountRenderPassArea(rect);
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
 		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}},
