@@ -2051,6 +2051,9 @@
     <ClInclude Include="GS\Renderers\Common\GSRenderer.h">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSwPrimRender.h">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSDirtyRect.h">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClInclude>
