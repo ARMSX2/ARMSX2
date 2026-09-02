@@ -18,6 +18,12 @@
 #include "common/RedtapeWindows.h"
 #endif
 
+#ifdef __linux__
+// For reading /proc/self/statm (resident set size) on the per-frame path.
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include "fmt/format.h"
 
 #include "common/Assertions.h"
@@ -230,6 +236,38 @@ static void LatchDeviceWaitBill()
 	}
 }
 
+// Process resident set size in kB, or 0 where the platform has no procfs to ask.
+//
+// /proc/self/statm's second field is the resident page count, so the figure is pages
+// times the page size -- which is not always 4 kB (this dev box runs 16 kB pages), so
+// it is asked for rather than assumed. The descriptor is opened once and re-read with
+// pread because this lands on the GS thread's per-frame path; one pread is a couple of
+// microseconds against a frame measured in milliseconds.
+static u64 ReadResidentSetKB()
+{
+#if defined(__linux__)
+	static const long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+	static const int fd = open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
+	if (fd < 0 || page_kb <= 0)
+		return 0;
+
+	char buf[128];
+	const ssize_t len = pread(fd, buf, sizeof(buf) - 1, 0);
+	if (len <= 0)
+		return 0;
+	buf[len] = '\0';
+
+	// "<total> <resident> <shared> ..." -- step over the first field.
+	const char* resident = std::strchr(buf, ' ');
+	if (!resident)
+		return 0;
+
+	return std::strtoull(resident + 1, nullptr, 10) * static_cast<u64>(page_kb);
+#else
+	return 0;
+#endif
+}
+
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
 // every presented frame is recorded and written out as JSON at the end of the run.
 // Counters are exact per-frame deltas; frame_ms is measured here rather than taken
@@ -273,6 +311,12 @@ struct FrameSample
 	u64 hash_cache_hit;
 	u64 hash_cache_miss;
 	u64 pipeline_switches;
+
+	/// Process resident set size in kB at the end of this frame. Per frame rather than
+	/// once at the end because the shape is the finding: a run that leaks and a run that
+	/// merely started big have the same closing figure and different curves, and a
+	/// 50-loop run is exactly where that difference shows up.
+	u64 rss_kb;
 };
 // Work posted from other threads (the PINE server) to run on the CPU thread.
 static std::mutex s_cpu_thread_tasks_mutex;
@@ -584,6 +628,7 @@ void Host::BeginPresentFrame()
 			                                          static_cast<double>(Threading::GetThreadTicksPerSecond())) :
 			                       0.0f;
 			s_gs_cpu_time_last = gs_cpu_now;
+			sample.rss_kb = ReadResidentSetKB();
 			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
 		}
@@ -1589,6 +1634,22 @@ static void WriteStatsJson(const std::string& path)
 	const double gs_cpu_us_per_draw = gs_cpu_draws ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws)) : 0.0;
 	const double gs_cpu_us_per_draw_call = gs_cpu_draw_calls ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draw_calls)) : 0.0;
 
+	// Resident set size across the run. first-to-last is the leak test; max is there
+	// because a transient peak sits between the two endpoints and neither one sees it.
+	// The baseline is the first frame that actually drew -- the frames before it are
+	// still paging in shaders and textures, so they would understate the starting point
+	// and turn ordinary warm-up into a reported leak.
+	u64 rss_kb_first = 0, rss_kb_last = 0, rss_kb_max = 0;
+	for (const FrameSample& s : s_frame_samples)
+	{
+		if (s.rss_kb == 0)
+			continue;
+		if (rss_kb_first == 0 && !s.idle)
+			rss_kb_first = s.rss_kb;
+		rss_kb_last = s.rss_kb;
+		rss_kb_max = std::max(rss_kb_max, s.rss_kb);
+	}
+
 	u32 worst_frame = 0;
 	float worst_ms = 0.0f;
 	for (const FrameSample& s : s_frame_samples)
@@ -1664,6 +1725,8 @@ static void WriteStatsJson(const std::string& path)
 	// was requested, "unsupported" when the platform cannot pin or cannot be asked.
 	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
 		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
+	std::fprintf(fp.get(), "    \"rss_kb_first\": %" PRIu64 ",\n    \"rss_kb_last\": %" PRIu64 ",\n    \"rss_kb_max\": %" PRIu64 ",\n",
+		rss_kb_first, rss_kb_last, rss_kb_max);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
@@ -1682,7 +1745,8 @@ static void WriteStatsJson(const std::string& path)
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
-			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 "}%s\n",
+			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
+			"\"rss_kb\":%" PRIu64 "}%s\n",
 			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
@@ -1692,6 +1756,7 @@ static void WriteStatsJson(const std::string& path)
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
 			s.pipeline_switches, s.gpu_blocking_waits,
+			s.rss_kb,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
