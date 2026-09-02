@@ -152,6 +152,36 @@ static u32 s_total_frames = 0;
 static u32 s_total_drawn_frames = 0;
 static std::vector<std::string> s_extended_stats_snapshot;
 
+// The device's wait bill -- the same population as GpuBlockingWaits above, but split by cause and
+// carrying wall time -- LATCHED while the device is still alive.
+//
+// It is latched rather than read where it is printed because DumpStats() runs after
+// VMManager::Shutdown(), and whether g_gs_device still exists at that point is a teardown-ordering
+// accident that differs between builds. It is null there on the handheld device build, which is
+// precisely the configuration whose residual waits the split exists to attribute -- so the line
+// went silently missing on the only machine that needed it, and the run it was needed for had to be
+// re-taken. Latched at every present (GS thread, device certainly live) and once more at
+// shutdown-begin, so no future round depends on that ordering again. The counters are monotonic,
+// so a latch is a plain copy and the last one wins.
+struct DeviceWaitBill
+{
+	u64 sync_ns = 0;
+	u64 sync_calls = 0;
+	u64 ring_ns = 0;
+	u64 ring_calls = 0;
+};
+static DeviceWaitBill s_device_wait_bill;
+
+static void LatchDeviceWaitBill()
+{
+	if (!g_gs_device)
+		return;
+	s_device_wait_bill.sync_ns = g_gs_device->GetSyncWaitNs();
+	s_device_wait_bill.sync_calls = g_gs_device->GetSyncWaitCalls();
+	s_device_wait_bill.ring_ns = g_gs_device->GetRingWaitNs();
+	s_device_wait_bill.ring_calls = g_gs_device->GetRingWaitCalls();
+}
+
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
 // every presented frame is recorded and written out as JSON at the end of the run.
 // Counters are exact per-frame deltas; frame_ms is measured here rather than taken
@@ -427,6 +457,10 @@ void Host::BeginPresentFrame()
 			s_device_name = g_gs_device->GetName();
 			s_driver_info = g_gs_device->GetDriverInfo();
 		}
+
+		// Same reasoning, every frame rather than once: the device's wait counters have to be read
+		// somewhere the device certainly exists, and this is the only per-frame point that qualifies.
+		LatchDeviceWaitBill();
 
 		const u32 last_draws = s_total_internal_draws;
 
@@ -1462,6 +1496,13 @@ static void WriteStatsJson(const std::string& path)
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
+	// The same population, split by cause, so an attribution round needs no teardown-ordering print
+	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader
+	// that wants milliseconds can divide, and one that wants to sum two causes cannot un-round.
+	std::fprintf(fp.get(), "    \"sync_wait_ns\": %" PRIu64 ",\n    \"sync_wait_calls\": %" PRIu64 ",\n",
+		s_device_wait_bill.sync_ns, s_device_wait_bill.sync_calls);
+	std::fprintf(fp.get(), "    \"ring_wait_ns\": %" PRIu64 ",\n    \"ring_wait_calls\": %" PRIu64 ",\n",
+		s_device_wait_bill.ring_ns, s_device_wait_bill.ring_calls);
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
@@ -1519,12 +1560,13 @@ void GSRunner::DumpStats()
 	// min(cpu, gpu) whatever the magnitude.
 	Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {:.2f}/frame)", s_total_gpu_blocking_waits,
 		s_total_gpu_blocking_waits / static_cast<double>(s_total_drawn_frames)));
-	if (g_gs_device)
+	// Unconditional, off the latch: the device is gone by now on some builds, and a split that
+	// disappears exactly where the waits are is worse than no split at all.
 	{
+		const DeviceWaitBill& w = s_device_wait_bill;
 		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Wait ms: {:.3f} over {} waits; "
 									"ring backpressure {:.3f} ms over {} waits",
-			g_gs_device->GetSyncWaitNs() / 1e6, g_gs_device->GetSyncWaitCalls(),
-			g_gs_device->GetRingWaitNs() / 1e6, g_gs_device->GetRingWaitCalls()));
+			w.sync_ns / 1e6, w.sync_calls, w.ring_ns / 1e6, w.ring_calls));
 	}
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
@@ -1646,9 +1688,11 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// Before Shutdown: the last rungs are still queued on the GS thread, and
 			// Finish drains them. After teardown there is no local memory to read.
 			GSLadder::Finish();
-			// Snapshot backend-specific stats before the GS device is destroyed.
+			// Snapshot backend-specific stats before the GS device is destroyed. The wait bill rides
+			// the same snapshot so it also carries whatever was paid after the last present.
 			if (g_gs_device)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
+			LatchDeviceWaitBill();
 			VMManager::Shutdown(false);
 			GSRunner::DumpStats();
 			// After Shutdown, so the last records are in: End() also reports a
