@@ -2272,7 +2272,7 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	VkAttachmentReference* depth_reference_ptr = nullptr;
 	std::array<VkAttachmentReference, 2> input_reference;
 	u32 num_subpass_inputs = 0;
-	std::array<VkSubpassDependency, 2> subpass_dependency;
+	std::array<VkSubpassDependency, 3> subpass_dependency;
 	u32 num_subpass_dependencies = 0;
 	std::array<VkAttachmentDescription, 2> attachments;
 	u32 num_attachments = 0;
@@ -2363,6 +2363,67 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		}
 
 		num_attachments++;
+	}
+
+	// The incoming edge. A render pass that declares no dependency from VK_SUBPASS_EXTERNAL gets an
+	// implicit one, and the implicit one's FIRST synchronization scope is srcStageMask =
+	// TOP_OF_PIPE, srcAccessMask = 0 -- it performs no availability operation, so nothing recorded
+	// before the pass is ordered ahead of the pass's attachment accesses.
+	//
+	// Almost everywhere that costs nothing, because the backend moves an attachment's LAYOUT before
+	// it binds it and the transition barrier carries the real scopes. It costs where the layout does
+	// NOT move: GSTextureVK::TransitionToLayout returns early when the layout is unchanged, so two
+	// render passes in a row that use the same image as the same kind of attachment emit no barrier
+	// of any kind, and the second pass's LOAD races the first pass's stores. TileGpu meets that on
+	// every byte-road seed -- the seed pass fills the target's pages and the geometry pass it was
+	// emitted for LOADs exactly those pages, ~94 times a frame on FlatOut 2 -- and the plain
+	// pass-to-pass split of one target's draws has the same shape.
+	//
+	// So declare what the implicit dependency only pretends to be: its destination scope unchanged,
+	// with a first scope that actually names the framebuffer-space stages the earlier pass wrote in.
+	// BY_REGION keeps it framebuffer-LOCAL, which is the point on a tiler -- the ordering wanted is
+	// per-tile (the seed writes pixel (x,y) and the pass loads pixel (x,y)), so an implementation is
+	// still free to keep the attachment resident in tile memory across the two passes instead of
+	// storing and reloading it. A blanket barrier between passes forbids exactly that.
+	//
+	// The outgoing (subpass -> EXTERNAL) direction is deliberately not declared: every consumer of
+	// an attachment outside a render pass -- a compute sample, a transfer copy, a fragment sample --
+	// reaches the image through a layout transition, and those carry their own scopes.
+	if (num_attachments > 0)
+	{
+		VkSubpassDependency& dep = subpass_dependency[num_subpass_dependencies++];
+		dep = {};
+		dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+		dep.dstSubpass = 0;
+		if (color_reference_ptr)
+		{
+			dep.srcStageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dep.dstStageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dep.srcAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dep.dstAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		}
+		if (depth_reference_ptr)
+		{
+			constexpr VkPipelineStageFlags ds_stages =
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			dep.srcStageMask |= ds_stages;
+			dep.dstStageMask |= ds_stages;
+			dep.srcAccessMask |=
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			dep.dstAccessMask |=
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		}
+		// subpassLoad reads the fragment's own coordinate, so this stays framebuffer-local too. A
+		// SAMPLER read of the attachment (the feedback-loop-layout road) is VK_ACCESS_SHADER_READ,
+		// not INPUT_ATTACHMENT_READ, and is deliberately absent here for that reason -- it was
+		// absent from the implicit dependency as well, and its ordering comes from the layout
+		// transition and the framebuffer-local self-dependency built above.
+		if (num_subpass_inputs > 0)
+		{
+			dep.dstStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dep.dstAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+		}
+		dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 	}
 
 	VkSubpassDescriptionFlags subpass_flags =
