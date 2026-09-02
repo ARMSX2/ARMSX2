@@ -46,14 +46,23 @@ Subcommands:
   corpus    score a whole corpus, emit a scorecard JSON, gate
   selftest  prove the scorer catches an injected 1-level/1% shift (no runner needed)
 
-Arms (what gets executed, verified by effect against the renderer identity line in
-the emulog rather than trusted from the command line):
+Renderer VARIANTS (what gets executed, verified by effect against the renderer
+identity line in the emulog rather than trusted from the command line):
   sw       -renderer sw       expect no variant identity line
   classic  -renderer vulkan    expect "GS: Classic renderer active"
 
-Two arms, because this tree has two renderers. The classic arm passes no variant
-setting: that is the configuration real users run, and it is what prints the
-identity line the verify-by-effect check reads.
+Two variants, because this tree has two renderers. The classic variant passes no
+`-variant` setting: that is the configuration real users run, and it is what prints
+the identity line the verify-by-effect check reads.
+
+An ARM is a label, not necessarily a variant. The integration suite's `arms.conf`
+maps an arm name onto a variant plus extra runner flags, so that a settings A/B
+(one binary against itself with `-set Section/Key=Value` flipped) is two arms rather
+than two renderers. `--variant` names the variant when it is not the arm's own name,
+and `--runner-flags` carries the arm's extra flags into every runner launch. Both
+land in the scorecard, so a flagged score can never be mistaken for an unflagged one.
+Without them a flagged arm is timed with its flags and scored without them, which is
+a scorecard describing a configuration nobody ran.
 
 Golden layout (lives beside the dumps, outside any repo -- goldens are ~1 GB):
   <golden-root>/corpus_summary.json
@@ -74,6 +83,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -148,7 +158,35 @@ def load_corpus(path):
 # Running an arm
 # ---------------------------------------------------------------------------
 
-def run_gsrunner_once(runner, dump, run_dir, arm_args, loop, upscale, extra_args,
+def split_runner_flags(text):
+    """Split an arm's extra-flag string into argv tokens.
+
+    Plain whitespace splitting, deliberately: the suite's shell scripts pass
+    `$(arm_flags "$arm")` unquoted, so the shell word-splits it on IFS with no quote
+    processing, and the oracle has to end up with the same tokens the timed and pixel
+    runs got. shlex.split() would honour quotes the shell already did not, which is a
+    quieter way to score a different command line than the one that was measured.
+    """
+    return text.split()
+
+
+def build_runner_argv(runner, dump, run_dir, variant_args, loop, upscale, extra_args):
+    """The exact argv one runner launch uses. Factored out of run_gsrunner_once so
+    --print-cmd can show it without running anything."""
+    args = [runner]
+    args += variant_args
+    args += ["-dumpdir", run_dir, "-logfile", os.path.join(run_dir, "emulog.txt"),
+             "-loop", str(loop)]
+    args += ["-stats-json", os.path.join(run_dir, "stats.json")]
+    if upscale is not None:
+        args += ["-upscale", str(upscale)]
+    args += ["-surfaceless"]
+    args += list(extra_args)
+    args += ["--", dump]
+    return args
+
+
+def run_gsrunner_once(runner, dump, run_dir, variant_args, loop, upscale, extra_args,
                       timeout):
     """One gsrunner invocation. Returns a per-run record; never raises on runner
     failure -- failures are data."""
@@ -156,15 +194,8 @@ def run_gsrunner_once(runner, dump, run_dir, arm_args, loop, upscale, extra_args
     logfile = os.path.join(run_dir, "emulog.txt")
     statsfile = os.path.join(run_dir, "stats.json")
 
-    args = [runner]
-    args += arm_args
-    args += ["-dumpdir", run_dir, "-logfile", logfile, "-loop", str(loop)]
-    args += ["-stats-json", statsfile]
-    if upscale is not None:
-        args += ["-upscale", str(upscale)]
-    args += ["-surfaceless"]
-    args += list(extra_args)
-    args += ["--", dump]
+    args = build_runner_argv(runner, dump, run_dir, variant_args, loop, upscale,
+                             extra_args)
 
     env = os.environ.copy()
     env["PCSX2_NOCONSOLE"] = "1"
@@ -223,10 +254,10 @@ def run_gsrunner_once(runner, dump, run_dir, arm_args, loop, upscale, extra_args
     }
 
 
-def verify_identity(arm, runs):
-    """Verify-by-effect: the emulog identity line must match the requested arm in
-    every run. Returns (ok, message)."""
-    expect = ARMS[arm]["identity"]
+def verify_identity(variant, runs):
+    """Verify-by-effect: the emulog identity line must match the requested renderer
+    variant in every run. Returns (ok, message)."""
+    expect = ARMS[variant]["identity"]
     for i, run in enumerate(runs):
         got = run["identity"]["renderer"] if run["identity"] else None
         if got != expect:
@@ -235,12 +266,16 @@ def verify_identity(arm, runs):
     return True, "ok"
 
 
-def run_arm(runner, dump, arm, work_dir, runs, loop, upscale, extra_args, timeout):
-    """Run an arm N times; collate stability. Returns (runs list, stability dict)."""
+def run_arm(runner, dump, variant, work_dir, runs, loop, upscale, extra_args, timeout):
+    """Run an arm N times; collate stability. Returns (runs list, stability dict).
+
+    `variant` picks the renderer; `extra_args` is the arm's own flag list, and it goes
+    into every one of the N launches -- an arm scored with its flags on some runs and
+    off on others would read as an instability rather than as a harness bug."""
     run_records = []
     for i in range(runs):
         run_dir = os.path.join(work_dir, f"run{i}")
-        rec = run_gsrunner_once(runner, dump, run_dir, ARMS[arm]["args"], loop,
+        rec = run_gsrunner_once(runner, dump, run_dir, ARMS[variant]["args"], loop,
                                 upscale, extra_args, timeout)
         run_records.append(rec)
 
@@ -592,9 +627,9 @@ def score_one_dump(args, dump):
         tempfile.mkdtemp(prefix=f"gs_oracle_{args.arm}_")
     card = None
     try:
-        runs, stability = run_arm(args.runner, dump, args.arm, work_dir, args.runs,
-                                  manifest["loop"], manifest["upscale"], [],
-                                  args.timeout)
+        runs, stability = run_arm(args.runner, dump, args.variant, work_dir, args.runs,
+                                  manifest["loop"], manifest["upscale"],
+                                  args.runner_flags, args.timeout)
 
         hard_fail = None
         for i, r in enumerate(runs):
@@ -602,7 +637,7 @@ def score_one_dump(args, dump):
                 hard_fail = f"run {i} failed (rc={r['returncode']}, timeout={r['timed_out']})"
                 break
         if hard_fail is None:
-            ok, msg = verify_identity(args.arm, runs)
+            ok, msg = verify_identity(args.variant, runs)
             if not ok:
                 hard_fail = msg
 
@@ -618,6 +653,10 @@ def score_one_dump(args, dump):
                                         ppd=args.ppd)
 
         card["arm"] = args.arm
+        # What the arm label actually resolved to. Recorded on every card, flags or
+        # none, so a reader never has to infer "unflagged" from an absent key.
+        card["variant"] = args.variant
+        card["runner_flags"] = list(args.runner_flags)
         card["runs"] = args.runs
         card["identity"] = runs[0]["identity"]
         card["device"] = runs[0]["device"]
@@ -661,7 +700,30 @@ def print_card_line(card):
             f"{wp['verdict']} -- {wp['detail']}")
 
 
+def print_runner_cmds(args, dumps):
+    """Print the runner command line each dump would be launched with, and run
+    nothing. This is how a round proves the arm's extra flags reached the accuracy
+    phase, without spending an hour of device time to find out that they did not."""
+    for dump in dumps:
+        gsname = gs_name(dump)
+        loop, upscale, src = 2, None, "defaults (no golden manifest)"
+        manifest_path = os.path.join(args.golden_root, gsname, "manifest.json")
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            loop, upscale, src = manifest["loop"], manifest["upscale"], "golden manifest"
+        argv = build_runner_argv(args.runner, dump, "<run-dir>",
+                                 ARMS[args.variant]["args"], loop, upscale,
+                                 args.runner_flags)
+        log(f"arm={args.arm} variant={args.variant} "
+            f"runner_flags={args.runner_flags} (loop/upscale from {src})")
+        log("  " + " ".join(shlex.quote(a) for a in argv))
+    return 0
+
+
 def cmd_score(args):
+    if args.print_cmd:
+        return print_runner_cmds(args, [args.dump])
     card = score_one_dump(args, args.dump)
     print_card_line(card)
     if args.out:
@@ -708,7 +770,12 @@ def compare_to_baseline(cards, baseline_path, regress_eps):
 
 def cmd_corpus(args):
     dumps = load_corpus(args.corpus)
+    if args.print_cmd:
+        return print_runner_cmds(args, dumps)
+    flag_note = (f", flags: {' '.join(args.runner_flags)}" if args.runner_flags
+                 else ", no extra flags")
     log(f"Scoring {len(dumps)} dumps under arm '{args.arm}' "
+        f"(variant {args.variant}{flag_note}) "
         f"(gate: <= {args.gate_pct}% of pixels wrong by > {args.gate_threshold} levels"
         f"{', hash-only' if args.hash_only else ''})")
 
@@ -720,6 +787,11 @@ def cmd_corpus(args):
     result = {
         "schema": 1,
         "arm": args.arm,
+        # The arm's resolution, at the top of the scorecard as well as on every card:
+        # a report that only reads the summary must still be able to tell a flagged
+        # score from an unflagged one.
+        "variant": args.variant,
+        "runner_flags": list(args.runner_flags),
         "gate": {"threshold": args.gate_threshold, "max_pct": args.gate_pct,
                  "min_stable_fraction": args.min_stable_fraction,
                  "hash_only": args.hash_only},
@@ -850,7 +922,24 @@ def add_common_run_args(p):
 
 
 def add_score_args(p):
-    p.add_argument("--arm", choices=sorted(ARMS.keys()), default="classic")
+    p.add_argument("--arm", default="classic",
+                   help="the arm LABEL, as the integration suite names it. Free-form: "
+                        "an arm with no --variant must name a variant "
+                        f"({', '.join(sorted(ARMS))}), which is the pre-arms.conf "
+                        "behaviour where a label and a variant were the same thing")
+    p.add_argument("--variant", choices=sorted(ARMS.keys()), default=None,
+                   help="renderer this arm runs (default: the arm's own name). This "
+                        "is arms.conf column 2 -- pass it whenever the arm label is "
+                        "not itself a renderer")
+    p.add_argument("--runner-flags", action="append", default=None, metavar="FLAGS",
+                   help="extra runner flags for this arm, as one whitespace-separated "
+                        "string (arms.conf column 3, e.g. \"-set "
+                        "EmuCore/GS/Key=false\"). Repeatable; every occurrence is "
+                        "split and appended. They go into every scoring launch, so "
+                        "the scorecard describes the configuration that was timed")
+    p.add_argument("--print-cmd", action="store_true",
+                   help="print the runner command line each dump would use and exit "
+                        "without running anything (dry run)")
     p.add_argument("--runs", type=int, default=2,
                    help="runs per dump for test-side stability (default 2)")
     p.add_argument("--gate-threshold", type=int, default=0, choices=THRESHOLDS,
@@ -880,6 +969,31 @@ def add_score_args(p):
                         "inspection, whether the dump passes or fails "
                         "(default: always deleted when scoring finishes)")
     p.add_argument("--out", default=None, help="write scorecard JSON here")
+
+
+def resolve_arm(args):
+    """Normalise the arm label into (variant, runner_flags) on `args`.
+
+    Both attributes always exist afterwards, on every subcommand -- `golden` has no
+    arm of its own (it is always sw with no flags) and gets the same shape so nothing
+    downstream has to test for their presence.
+    """
+    if not hasattr(args, "arm"):
+        args.arm = "sw"
+        args.variant = "sw"
+        args.runner_flags = []
+        return
+    if not args.variant:
+        args.variant = args.arm
+    if args.variant not in ARMS:
+        raise SystemExit(
+            f"arm '{args.arm}' is not a renderer variant this harness knows "
+            f"({', '.join(sorted(ARMS))}); pass --variant to say which renderer it "
+            f"runs, the way arms.conf column 2 does")
+    flags = []
+    for chunk in (args.runner_flags or []):
+        flags += split_runner_flags(chunk)
+    args.runner_flags = flags
 
 
 def main():
@@ -930,6 +1044,7 @@ def main():
     p.set_defaults(func=cmd_selftest)
 
     args = parser.parse_args()
+    resolve_arm(args)
     return args.func(args)
 
 
