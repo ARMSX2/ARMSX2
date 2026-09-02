@@ -6083,6 +6083,112 @@ bool GSRendererHW::EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Targe
 	return false;
 }
 
+// Census scaffolding for the Adreno DATE rung. A read-only mirror of the branch chain in
+// EmulateDATESelectMethod followed by the mode assignment in EmulateDATEGetConfig, run with
+// a feature set that is not this device's, so a run on the M2 can say which road a draw
+// would take on Adreno. Nothing here writes m_conf or date_options.
+//
+// Two things make the mirror safe to run beside the real selection rather than instead of
+// it. It is called at the TOP of EmulateDATESelectMethod, so it reads require_full_barrier
+// and require_one_barrier as they stood before the selection wrote them -- which is what the
+// real chain's own conditions read. And the one branch with a side effect,
+// ComputeDrawlistGetSize (it fills m_drawlist), sits behind features.texture_barrier: the
+// hypothetical feature sets have that false, so they short-circuit before reaching it, and a
+// self-check run with the real features walks exactly the same branches in the same order as
+// the call that follows it.
+//
+// Delete this with the rung it prices. While it lives, the date_mode_selfcheck ledger column
+// is the audit: run with the real features it must equal the destination_alpha the renderer
+// actually chose, on every submitted draw.
+GSHWDrawConfig::DestinationAlphaMode GSRendererHW::PredictDATEMode(
+	const GSDevice::FeatureSupport& features, const DATEOptions& date, GSTextureCache::Target* rt,
+	bool complex_alpha_test)
+{
+	if (!date.enabled)
+		return GSHWDrawConfig::DestinationAlphaMode::Off;
+
+	bool barrier = false;
+	bool primid = false;
+	bool stencil_one = false;
+
+	// The FBMASK block takes one barrier instead of a full one when the device has no
+	// feedback loops, so a hypothetical device's barrier state is not this device's.
+	bool one_barrier = m_conf.require_one_barrier;
+	const bool full_barrier = m_conf.require_full_barrier;
+	if (m_conf.ps.fbmask && !features.feedback_loops())
+		one_barrier = true;
+
+	const bool wa = m_conf.colormask.wa;
+
+	if (features.framebuffer_fetch)
+	{
+		barrier = true;
+	}
+	else if (features.feedback_loops() && IsCoverageAlphaSupported())
+	{
+		barrier = true;
+	}
+	else if (features.texture_barrier && m_prim_overlap == PRIM_OVERLAP_NO)
+	{
+		barrier = true;
+	}
+	else if (features.feedback_loops() && m_texture_shuffle)
+	{
+		barrier = true;
+	}
+	else if (wa && complex_alpha_test && features.feedback_loops())
+	{
+		barrier = true;
+	}
+	else if (wa && !complex_alpha_test && (m_context->FBA.FBA || IsCoverageAlphaFixedOne()) &&
+			 features.stencil_buffer)
+	{
+		stencil_one = !m_cached_ctx.TEST.DATM;
+	}
+	else if (wa && !complex_alpha_test && !(m_cached_ctx.FRAME.FBMSK & 0x80000000))
+	{
+		if (m_cached_ctx.TEST.DATM && GetAlphaMinMax().max < 128 && features.stencil_buffer)
+			stencil_one = true;
+		else if (!m_cached_ctx.TEST.DATM && GetAlphaMinMax().min >= 128 && features.stencil_buffer)
+			stencil_one = true;
+		else if (features.texture_barrier &&
+				 ((m_vt.m_primclass == GS_SPRITE_CLASS && ComputeDrawlistGetSize(rt->m_scale) < 10) ||
+					 (m_index->tail < 30)))
+			barrier = true;
+		else if (features.feedback_loops() && full_barrier)
+			barrier = true;
+		else if (features.primitive_id)
+			primid = true;
+		else if (features.feedback_loops())
+			barrier = true;
+		else if (features.stencil_buffer)
+			stencil_one = true;
+	}
+	else if (features.texture_barrier && !wa)
+	{
+		barrier = true;
+	}
+
+	// EmulateDATEGetConfig. Its alpha write test runs after the 24-bit target has cleared
+	// the alpha write, so fold that in here rather than reading colormask.wa again.
+	const bool get_config_wa = wa && m_conf.ps.dst_fmt != GSLocalMemory::PSM_FMT_24;
+	if (!get_config_wa && (one_barrier || (full_barrier && features.feedback_loops())))
+		barrier = true;
+
+	if (m_conf.ps.scanmsk & 2)
+		primid = false;
+
+	if (stencil_one)
+		return GSHWDrawConfig::DestinationAlphaMode::StencilOne;
+	if (primid)
+		return GSHWDrawConfig::DestinationAlphaMode::PrimIDTracking;
+	if (barrier)
+		return GSHWDrawConfig::DestinationAlphaMode::Full;
+	if (features.stencil_buffer)
+		return GSHWDrawConfig::DestinationAlphaMode::Stencil;
+	return GSHWDrawConfig::DestinationAlphaMode::Full;
+}
+
 void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max)
 {
 	if (!date_options.enabled)
@@ -6096,6 +6202,29 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	                                m_cached_ctx.TEST.ATST != ATST_NEVER &&
 	                                m_cached_ctx.TEST.AFAIL != AFAIL_KEEP &&
 	                                m_prim_overlap != PRIM_OVERLAP_NO;
+
+	// Ledger only, and before the chain below writes anything: which road this draw would
+	// take on the two feature sets the DATE rung is priced against, plus a self-check on
+	// this device's own answer. See PredictDATEMode.
+	if (GSDrawLog::IsActive()) [[unlikely]]
+	{
+		// Adreno: no fetch, no texture barrier (ARMSX2 #442 forces the RT-copy road), no
+		// stencil (the A6xx hangcheck), primitive ID available.
+		GSDevice::FeatureSupport adreno = features;
+		adreno.framebuffer_fetch = false;
+		adreno.texture_barrier = false;
+		adreno.multidraw_fb_copy = false;
+		adreno.stencil_buffer = false;
+		adreno.primitive_id = true;
+
+		// The same device with a stencil buffer -- the RG477V's copy path today.
+		GSDevice::FeatureSupport stencil_dev = adreno;
+		stencil_dev.stencil_buffer = true;
+
+		GSDrawLog::NoteDATEModes(static_cast<u8>(PredictDATEMode(adreno, date_options, rt, complex_alpha_test)),
+			static_cast<u8>(PredictDATEMode(stencil_dev, date_options, rt, complex_alpha_test)),
+			static_cast<u8>(PredictDATEMode(features, date_options, rt, complex_alpha_test)));
+	}
 
 	if (m_cached_ctx.TEST.DATM)
 	{

@@ -245,6 +245,12 @@ private:
 
 	bool EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Target* rt);
 	void EmulateDATESelectMethod(DATEOptions& date, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max);
+	/// Census scaffolding: which DATE road this draw would take on a device with the given
+	/// feature set. Read-only mirror of EmulateDATESelectMethod + EmulateDATEGetConfig, used
+	/// to price the Adreno DATE rung from an M2 run. Delete with the rung.
+	GSHWDrawConfig::DestinationAlphaMode PredictDATEMode(
+		const GSDevice::FeatureSupport& features, const DATEOptions& date, GSTextureCache::Target* rt,
+		bool complex_alpha_test);
 	void EmulateDATEGetConfig(DATEOptions& date, bool scale_rt_alpha, GSDevice::RecycledTexture& temp_ds);
 
 	void EmulateDither();
