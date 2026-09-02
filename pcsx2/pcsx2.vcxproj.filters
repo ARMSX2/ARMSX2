@@ -2477,5 +2477,80 @@
     <Natvis Include="GS\GS.natvis">
       <Filter>System\Ps2\GS</Filter>
     </Natvis>
+    <ClCompile Include="DEV9\LocalLinkAdapter.cpp">
+      <Filter>System\Ps2\DEV9</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Common\GSPassScheduler.cpp">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp">
+      <Filter>System\Ps2\GS\Renderers\Null</Filter>
+    </ClCompile>
+    <ClCompile Include="VU1Trace.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="ee_divtrace.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="microVU_Divtrace.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="no-jit-improvements.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="vu_capture.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClInclude Include="GS\GSBackQueue.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\GSVertexKick.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h">
+      <Filter>System\Ps2\GS\Renderers\Null</Filter>
+    </ClInclude>
+    <ClInclude Include="MTGS.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="VU1Trace.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="ee_divtrace.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="microVU_Divtrace.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="no-jit-improvements.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="ps2\eeHwTraceLog.inl">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="vu_capture.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

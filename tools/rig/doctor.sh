@@ -220,7 +220,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. PROVENANCE -- the certificate.
+# 4. MSVC FILE LIST -- the build nobody here can run.
+#
+# Same shape of lie as an orphan test, one platform over. CMake and the MSVC
+# project name their files in separate hand-maintained lists, and only the CMake
+# one is ever exercised on this box -- so the project rots into a Windows link
+# failure that every local gate reports green. The Tile renderer was unbuildable
+# there for three milestones, and eight more sources were missing beside it.
+#
+# ⚠️ A pass here is NOT "Windows builds". It is only "the project names the file".
+# ---------------------------------------------------------------------------
+if [ -f "$SOURCE_DIR/tools/rig/check-msvc-filelist.py" ]; then
+	MSVC_OUT="$(python3 "$SOURCE_DIR/tools/rig/check-msvc-filelist.py" 2>&1)"
+	MSVC_RC=$?
+	# The skipped-lists tail prints on success too, so under-coverage never reads
+	# as silence; keep it out of the one-line pass.
+	if [ "$MSVC_RC" -eq 0 ]; then
+		pass "$(printf '%s' "$MSVC_OUT" | sed -n 's/^ok    //p' | head -1)"
+	else
+		fail "msvc file list: pcsx2.vcxproj is missing files CMake builds everywhere"
+		printf '%s\n' "$MSVC_OUT" >&2
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. PROVENANCE -- the certificate.
 # ---------------------------------------------------------------------------
 GIT_SHA="$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 GIT_BRANCH="$(git -C "$SOURCE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"

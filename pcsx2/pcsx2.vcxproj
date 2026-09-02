@@ -202,6 +202,7 @@
     <ClCompile Include="DEV9\smap.cpp" />
     <ClCompile Include="DEV9\sockets.cpp" />
     <ClCompile Include="DEV9\net.cpp" />
+    <ClCompile Include="DEV9\LocalLinkAdapter.cpp" />
     <ClCompile Include="DEV9\Win32\tap-win32.cpp" />
     <ClCompile Include="GameList.cpp" />
     <ClCompile Include="GS\GSDrawingEnvironment.cpp" />
@@ -367,6 +368,7 @@
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWMultiISA.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
+    <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRendererSW.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
@@ -379,11 +381,13 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSTextureCache.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSTextureCacheSW.cpp" />
     <ClCompile Include="GS\GSUtil.cpp" />
     <ClCompile Include="GS\GSVector.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSVertexTrace.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSVertexTraceFMM.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSPassScheduler.cpp" />
     <ClCompile Include="GS\GSXXH.cpp" />
     <ClCompile Include="GS\MultiISA.cpp" />
     <ClCompile Include="StateWrapper.cpp" />
@@ -556,6 +560,11 @@
     <ClCompile Include="Ipu\yuv2rgb.cpp" />
     <ClCompile Include="GS.cpp" />
     <ClCompile Include="MTGS.cpp" />
+    <ClCompile Include="VU1Trace.cpp" />
+    <ClCompile Include="ee_divtrace.cpp" />
+    <ClCompile Include="microVU_Divtrace.cpp" />
+    <ClCompile Include="no-jit-improvements.cpp" />
+    <ClCompile Include="vu_capture.cpp" />
     <ClCompile Include="DebugTools\DisR3000A.cpp" />
     <ClCompile Include="DebugTools\DisR5900asm.cpp" />
     <ClCompile Include="DebugTools\DisVU0Micro.cpp" />
@@ -810,6 +819,7 @@
     <ClInclude Include="GS\Renderers\Common\GSRenderer.h" />
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h" />
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
+    <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
@@ -833,10 +843,18 @@
     <ClInclude Include="GS\GSVector8.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertex.h" />
     <ClInclude Include="GS\Renderers\HW\GSVertexHW.h" />
+    <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
+    <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />
+    <ClInclude Include="GS\GSBackQueue.h" />
+    <ClInclude Include="GS\GSVertexKick.h" />
     <ClInclude Include="IPU\IPUdma.h" />
     <ClInclude Include="Mdec.h" />
     <ClInclude Include="Patch.h" />
@@ -977,7 +995,14 @@
     </CustomBuildStep>
     <ClInclude Include="x86\BaseblockEx.h" />
     <ClInclude Include="ps2\BiosTools.h" />
+    <ClInclude Include="ps2\eeHwTraceLog.inl" />
     <ClInclude Include="MemoryTypes.h" />
+    <ClInclude Include="MTGS.h" />
+    <ClInclude Include="VU1Trace.h" />
+    <ClInclude Include="ee_divtrace.h" />
+    <ClInclude Include="microVU_Divtrace.h" />
+    <ClInclude Include="no-jit-improvements.h" />
+    <ClInclude Include="vu_capture.h" />
     <ClInclude Include="x86\iCore.h" />
   </ItemGroup>
   <ItemGroup>
