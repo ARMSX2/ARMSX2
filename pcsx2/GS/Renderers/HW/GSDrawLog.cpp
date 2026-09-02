@@ -130,6 +130,10 @@ namespace GSDrawLog
 		rec.area_y = static_cast<s16>(config.drawarea.y);
 		rec.area_z = static_cast<s16>(config.drawarea.z);
 		rec.area_w = static_cast<s16>(config.drawarea.w);
+		rec.sample_x = static_cast<s16>(std::clamp(config.samplearea.x, -32768, 32767));
+		rec.sample_y = static_cast<s16>(std::clamp(config.samplearea.y, -32768, 32767));
+		rec.sample_z = static_cast<s16>(std::clamp(config.samplearea.z, -32768, 32767));
+		rec.sample_w = static_cast<s16>(std::clamp(config.samplearea.w, -32768, 32767));
 	}
 
 	void NoteSWDraw(const GSVector4i& rect)
@@ -197,7 +201,8 @@ namespace GSDrawLog
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
-			"area_x,area_y,area_w,area_h\n");
+			"area_x,area_y,area_w,area_h,"
+			"sample_x,sample_y,sample_w,sample_h\n");
 
 		for (const Record& r : s_records)
 		{
@@ -272,8 +277,18 @@ namespace GSDrawLog
 			// backend drawarea. Same columns, same meaning: where the draw landed.
 			if (submitted || r.sw)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d\n", r.area_x, r.area_y, r.area_z - r.area_x,
+				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.area_x, r.area_y, r.area_z - r.area_x,
 					r.area_w - r.area_y);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,");
+			}
+
+			if (submitted)
+			{
+				std::fprintf(fp.get(), "%d,%d,%d,%d\n", r.sample_x, r.sample_y,
+					r.sample_z - r.sample_x, r.sample_w - r.sample_y);
 			}
 			else
 			{

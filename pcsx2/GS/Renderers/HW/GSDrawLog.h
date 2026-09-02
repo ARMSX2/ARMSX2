@@ -91,6 +91,16 @@ namespace GSDrawLog
 		s16 area_z;
 		s16 area_w;
 
+		// GSHWDrawConfig::samplearea -- the region of the SOURCE the draw reads, in the same
+		// scaled coordinates as the draw rect above. Without it a self-reading draw's row says
+		// only where it wrote, so "read the pixel it is writing" and "read a different part of
+		// the target it is writing" are the same row -- and those two take different roads and
+		// have different hazards. Zero on a draw with no texture, and on software rows.
+		s16 sample_x;
+		s16 sample_y;
+		s16 sample_z;
+		s16 sample_w;
+
 		// Row came from the software rasterizer. Such a row carries no backend view, so
 		// it serialises as submitted=0 with the draw rect filled. The column exists
 		// because the software arm is an oracle in its own right: reconciling it against
