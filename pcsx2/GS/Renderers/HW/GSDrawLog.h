@@ -118,6 +118,9 @@ namespace GSDrawLog
 		u8 rt_fbmask_a; ///< the alpha mask CalculateAlphaRange worked from (FbMask.a, or 0)
 		u8 rt_alpha_fmt_mask; ///< the target format's alpha mask (fmsk >> 24)
 
+		/// TargetEvent for a row that records something other than a draw; zero on draws.
+		u8 evt_kind;
+
 		s16 area_x;
 		s16 area_y;
 		s16 area_z;
@@ -183,6 +186,7 @@ namespace GSDrawLog
 		Flags2AlphaRanges = 1 << 0, ///< src_alpha_* / rt_alpha_* were filled
 		Flags2DATEModes = 1 << 1, ///< date_mode_* were filled
 		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
+		Flags2Event = 1 << 3, ///< the row is a target event, not a draw; see evt_kind
 	};
 
 	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.
@@ -206,6 +210,26 @@ namespace GSDrawLog
 		RTAlphaCoversValid = 1 << 5, ///< the draw rect contains the whole valid rect
 		RTAlphaNoGaps = 1 << 6, ///< m_primitive_covers_without_gaps == FullCover
 		RTAlphaTestsPass = 1 << 7, ///< no DATE, alpha test always writes alpha, depth always passes
+	};
+
+	/// Everything other than a draw that moves what a render target's alpha holds.
+	///
+	/// A draw ledger alone cannot answer "was this bit known when that draw ran", because
+	/// the answer is set by things that are not draws: the target being created, cleared,
+	/// refilled from local memory, or handed another target's contents. Each of those gets
+	/// a row of its own, in stream order with the draws.
+	enum TargetEvent : u8
+	{
+		TargetEventNone = 0,
+		TargetEventCreate, ///< target constructed; payload is the alpha range it starts with
+		TargetEventDestroy,
+		TargetEventClear, ///< TryTargetClear wrote a constant colour; payload is its alpha
+		TargetEventUploadFull, ///< local memory refilled the whole valid rect; payload is its alpha range
+		TargetEventUploadPartial, ///< local memory refilled part of it; payload likewise
+		TargetEventUploadNoAlpha, ///< local memory refilled colour only; alpha untouched
+		TargetEventInherit, ///< took another target's alpha range wholesale; tbp0 names the source
+		TargetEventClobber, ///< alpha range forced, contents no longer described by it
+		TargetEventValidGrow, ///< the valid rect grew, so it now covers pixels nothing has written
 	};
 
 	/// Record::packet when the draw did not come from a dump packet.
@@ -249,8 +273,15 @@ namespace GSDrawLog
 
 	/// Marks the open row as having actually assigned the target's new alpha range. A draw
 	/// can compute the range and then return before the assignment, and a reconstruction
-	/// that misses that reads one draw ahead of the renderer for the rest of the frame.
+	/// that misses that reads one draw ahead of the renderer forever after.
 	void NoteRTAlphaCommitted();
+
+	/// Records something other than a draw happening to a target: see TargetEvent. Opens
+	/// and closes its own row, so it is safe to call from outside a draw. payload_min and
+	/// payload_max describe what the event brought in (a clear colour's alpha, an upload's
+	/// alpha range); rt_min and rt_max are the target's tracked range after it.
+	void NoteTargetEvent(u8 kind, u32 target_id, u32 tbp0, int payload_min, int payload_max,
+		int rt_min, int rt_max, const GSVector4i& valid);
 
 	/// Records how a target-aliasing source was resolved, on the open row. Called from
 	/// hazard handling rather than at submit because the resolution is not recoverable

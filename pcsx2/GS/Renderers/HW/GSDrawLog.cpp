@@ -4,6 +4,8 @@
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/GSExtra.h"
 #include "GS/GSState.h"
+#include "GS/GSPerfMon.h"
+#include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/GSUtil.h"
 
 #include "common/Console.h"
@@ -150,6 +152,45 @@ namespace GSDrawLog
 		s_records[s_open_record].rt_alpha_flags |= RTAlphaCommitted;
 	}
 
+	void NoteTargetEvent(u8 kind, u32 target_id, u32 tbp0, int payload_min, int payload_max,
+		int rt_min, int rt_max, const GSVector4i& valid)
+	{
+		if (!IsActive())
+			return;
+
+		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
+			s_records.reserve(MAX_RECORDS);
+
+		if (s_records.size() >= MAX_RECORDS)
+		{
+			s_truncated = true;
+			return;
+		}
+
+		// An event row is not a draw, so it does not disturb the row a draw has open: it is
+		// appended past it and s_open_record is left where it was. Ordering against the
+		// draws is what the row is for, so it carries the same frame and draw serial the
+		// next draw will -- an event between draws N and N+1 sorts as N+1 with no
+		// FlagSubmitted, which reads correctly in stream order.
+		Record rec = {};
+		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
+		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
+		rec.packet = s_packet_mark;
+		rec.flags2 = Flags2Event | Flags2AlphaRanges;
+		rec.evt_kind = kind;
+		rec.rt_id = target_id;
+		rec.rt_tbp0 = tbp0;
+		rec.src_alpha_min = static_cast<s16>(payload_min);
+		rec.src_alpha_max = static_cast<s16>(payload_max);
+		rec.rt_alpha_min = static_cast<s16>(rt_min);
+		rec.rt_alpha_max = static_cast<s16>(rt_max);
+		rec.area_x = static_cast<s16>(std::clamp(valid.x, -32768, 32767));
+		rec.area_y = static_cast<s16>(std::clamp(valid.y, -32768, 32767));
+		rec.area_z = static_cast<s16>(std::clamp(valid.z, -32768, 32767));
+		rec.area_w = static_cast<s16>(std::clamp(valid.w, -32768, 32767));
+		s_records.push_back(rec);
+	}
+
 	void NoteSelfRead(SelfRead resolution)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -220,6 +261,33 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetTargetEventName(u8 kind)
+	{
+		switch (kind)
+		{
+			case TargetEventCreate:
+				return "CREATE";
+			case TargetEventDestroy:
+				return "DESTROY";
+			case TargetEventClear:
+				return "CLEAR";
+			case TargetEventUploadFull:
+				return "UPLOAD_FULL";
+			case TargetEventUploadPartial:
+				return "UPLOAD_PARTIAL";
+			case TargetEventUploadNoAlpha:
+				return "UPLOAD_NO_ALPHA";
+			case TargetEventInherit:
+				return "INHERIT";
+			case TargetEventClobber:
+				return "CLOBBER";
+			case TargetEventValidGrow:
+				return "VALID_GROW";
+			default:
+				return "";
+		}
+	}
+
 	static const char* GetPrimOverlapName(u8 overlap)
 	{
 		switch (overlap)
@@ -254,8 +322,9 @@ namespace GSDrawLog
 			"sample_x,sample_y,sample_w,sample_h,"
 			"src_alpha_min,src_alpha_max,rt_alpha_min,rt_alpha_max,"
 			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck,"
-			"rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,rt_alpha_committed,"
-			"rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,rt_fbmask_a,rt_alpha_fmt_mask\n");
+			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
+			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
+			"rt_fbmask_a,rt_alpha_fmt_mask\n");
 
 		for (const Record& r : s_records)
 		{
@@ -373,9 +442,20 @@ namespace GSDrawLog
 				std::fprintf(fp.get(), ",,,");
 			}
 
+			std::fprintf(fp.get(), "%s,", GetTargetEventName(r.evt_kind));
+
+			if (r.flags2 & (Flags2RTAlpha | Flags2Event))
+			{
+				std::fprintf(fp.get(), "%u,%05x,", r.rt_id, r.rt_tbp0);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,");
+			}
+
 			if (r.flags2 & Flags2RTAlpha)
 			{
-				std::fprintf(fp.get(), "%u,%05x,%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x\n", r.rt_id, r.rt_tbp0,
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x\n",
 					(r.rt_alpha_flags & RTAlphaWritten) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaShuffle) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaFullCover) ? 1 : 0,
@@ -388,7 +468,7 @@ namespace GSDrawLog
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,\n");
 			}
 		}
 

@@ -4,6 +4,7 @@
 #include "GSTextureCache.h"
 #include "GSTextureReplacements.h"
 #include "GSRendererHW.h"
+#include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/GSState.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -2939,6 +2940,12 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				dst_match->m_dirty = {};
 				dst->m_alpha_max = dst_match->m_alpha_max;
 				dst->m_alpha_min = dst_match->m_alpha_min;
+				if (GSDrawLog::IsActive()) [[unlikely]]
+				{
+					GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, dst_match->m_TEX0.TBP0,
+						dst_match->m_alpha_min, dst_match->m_alpha_max, dst->m_alpha_min, dst->m_alpha_max,
+						dst->m_valid);
+				}
 
 				// Don't bother copying the old target in if the whole thing is dirty.
 				if (dst->m_dirty.empty() || (~dst->m_dirty.GetDirtyChannels() & GSUtil::GetChannelMask(TEX0.PSM)) != 0 ||
@@ -3071,6 +3078,11 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_texture = tex;
 		dst->m_alpha_min = 0;
 		dst->m_alpha_max = 0;
+		if (GSDrawLog::IsActive()) [[unlikely]]
+		{
+			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, dst->m_id, dst->m_TEX0.TBP0, 0, 0,
+				dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
+		}
 	}
 	else if ((used || type == GSTextureCache::DepthStencil) && (std::abs(static_cast<s16>(GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp - GSLocalMemory::m_psm[TEX0.PSM].bpp)) == 16))
 	{
@@ -3760,6 +3772,12 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_alpha_max = old_dst->m_alpha_max;
 							dst->m_alpha_min = old_dst->m_alpha_min;
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
+							if (GSDrawLog::IsActive()) [[unlikely]]
+							{
+								GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id,
+									old_dst->m_TEX0.TBP0, old_dst->m_alpha_min, old_dst->m_alpha_max,
+									dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
+							}
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, copy_rect, 0, 0);
 						}
@@ -5722,6 +5740,11 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		dst->m_alpha_max = src->m_alpha_max;
 		dst->m_alpha_min = src->m_alpha_min;
 		dst->m_alpha_range |= src->m_alpha_range;
+		if (GSDrawLog::IsActive()) [[unlikely]]
+		{
+			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, src->m_TEX0.TBP0,
+				src->m_alpha_min, src->m_alpha_max, dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
+		}
 	}
 
 	u32 page_mask = GSLocalMemory::IsPageAlignedMasked(src->m_TEX0.PSM, GSVector4i(sx, sy, sx + w, sy + h));
@@ -5841,6 +5864,11 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		tgt->m_alpha_min = 0;
 		tgt->m_alpha_max = 255;
 		tgt->m_alpha_range = true;
+		if (GSDrawLog::IsActive()) [[unlikely]]
+		{
+			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, tgt->m_id, tgt->m_TEX0.TBP0, 0, 255,
+				tgt->m_alpha_min, tgt->m_alpha_max, tgt->m_valid);
+		}
 	}
 
 	return true;
@@ -8155,10 +8183,21 @@ GSTextureCache::Target::Target(GIFRegTEX0 TEX0, int type, const GSVector2i& unsc
 	m_32_bits_fmt |= (GSLocalMemory::m_psm[TEX0.PSM].trbpp != 16);
 
 	m_id = ++s_next_target_id;
+	if (GSDrawLog::IsActive()) [[unlikely]]
+	{
+		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventCreate, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
+			m_alpha_min, m_alpha_max, m_valid);
+	}
 }
 
 GSTextureCache::Target::~Target()
 {
+	if (GSDrawLog::IsActive()) [[unlikely]]
+	{
+		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventDestroy, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
+			m_alpha_min, m_alpha_max, m_valid);
+	}
+
 	// Targets should never be shared.
 	pxAssert(!m_shared_texture);
 
@@ -8345,9 +8384,10 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		g_gs_device->DrawMultiStretchRects(drects, ndrects, m_texture, shader);
 	}
 
+	const bool full_alpha_upload = transferring_alpha && bpp >= 16 && m_dirty.size() == 1 && total_rect.eq(m_valid);
 	if (transferring_alpha && bpp >= 16)
 	{
-		if (m_dirty.size() != 1 || !total_rect.eq(m_valid))
+		if (!full_alpha_upload)
 		{
 			m_alpha_min = std::min(static_cast<int>(alpha_minmax.first), m_alpha_min);
 			m_alpha_max = std::max(static_cast<int>(alpha_minmax.second), m_alpha_max);
@@ -8359,6 +8399,16 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		}
 
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;
+	}
+
+	if (GSDrawLog::IsActive()) [[unlikely]]
+	{
+		const u8 kind = (transferring_alpha && bpp >= 16) ?
+							(full_alpha_upload ? GSDrawLog::TargetEventUploadFull :
+												 GSDrawLog::TargetEventUploadPartial) :
+							GSDrawLog::TargetEventUploadNoAlpha;
+		GSDrawLog::NoteTargetEvent(kind, m_id, m_TEX0.TBP0, alpha_minmax.first, alpha_minmax.second, m_alpha_min,
+			m_alpha_max, m_valid);
 	}
 	g_gs_device->Recycle(t);
 
@@ -8487,6 +8537,8 @@ void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 
 void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_resize)
 {
+	const GSVector4i old_valid = m_valid;
+
 	if (m_valid.eq(GSVector4i::zero()))
 	{
 		m_valid = rect;
@@ -8498,6 +8550,14 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 		m_valid = m_valid.runion(rect);
 
 		m_end_block = GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid);
+	}
+
+	// Growth matters to any claim of the form "every pixel of this target holds X": the
+	// pixels the rect just gained have had nothing written to them.
+	if (GSDrawLog::IsActive() && !m_valid.eq(old_valid)) [[unlikely]]
+	{
+		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventValidGrow, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
+			m_alpha_min, m_alpha_max, m_valid);
 	}
 	// GL_CACHE("TC: UpdateValidity (0x%x->0x%x) from R:%d,%d Valid: %d,%d", m_TEX0.TBP0, m_end_block, rect.z, rect.w, m_valid.z, m_valid.w);
 }

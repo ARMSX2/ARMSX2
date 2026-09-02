@@ -10819,6 +10819,13 @@ bool GSRendererHW::TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Ta
 				rt->m_alpha_min &= 128;
 			}
 			rt->m_alpha_range = false;
+
+			if (GSDrawLog::IsActive()) [[unlikely]]
+			{
+				GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClear, rt->m_id, rt->m_TEX0.TBP0,
+					static_cast<int>(c >> 24), static_cast<int>(c >> 24), rt->m_alpha_min, rt->m_alpha_max,
+					rt->m_valid);
+			}
 		}
 		else
 		{
