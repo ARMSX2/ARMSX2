@@ -30,6 +30,7 @@
 #include "common/ProgressCallback.h"
 #include "common/SettingsWrapper.h"
 #include "common/StringUtil.h"
+#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "pcsx2/PrecompiledHeader.h"
@@ -120,6 +121,15 @@ static std::string s_output_prefix;
 static s32 s_loop_count = 1;
 static std::optional<bool> s_use_window;
 static bool s_no_console = false;
+
+// -gspin. The CPU set the GS thread was asked to run on, exactly as it was typed, and
+// the set it turned out to be on once the pin was applied. Both travel to the stats
+// JSON because a measurement of GS-thread CPU time is only comparable between runs if
+// the thread sat on the same kind of core in both, and on a big.LITTLE device the
+// scheduler decides that, not the run. Empty request means the flag was not given.
+static std::string s_gs_pin_request;
+static u64 s_gs_pin_mask = 0;
+static std::string s_gs_pin_effective("none");
 
 // -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
 static std::string s_renderdoc_path;
@@ -816,6 +826,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -fediff <path>: Replay under the same arm and byte-compare against a -fedump recording. "
 						 "Reports the FIRST divergence (event, record, field, byte) and exits non-zero. Record and "
 						 "diff must use the same dump, the same renderer arm and the same -loop count.\n");
+	std::fprintf(stderr, "  -gspin <cpu[,cpu...]>: Pin the GS thread to these CPUs, e.g. '-gspin 4' or '-gspin 0,1,2,3'. "
+						 "On a big.LITTLE device an unpinned GS thread migrates between core types mid-run, which moves "
+						 "its CPU time without anything in the renderer changing. The pin is read back afterwards and "
+						 "both the request and the result are written to -stats-json; a pin that did not take warns and "
+						 "the run continues.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -842,6 +857,50 @@ void GSRunner::InitializeConsole()
 	s_no_console = (var && StringUtil::FromChars<bool>(var).value_or(false));
 	if (!s_no_console)
 		Log::SetConsoleOutputLevel(LOGLEVEL_DEBUG);
+}
+
+// Renders a CPU-affinity mask as the comma list the stats JSON carries: 4, or 0,1,2,3.
+static std::string FormatCpuMask(u64 mask)
+{
+	std::string out;
+	for (u32 i = 0; i < 64; i++)
+	{
+		if (!(mask & (static_cast<u64>(1) << i)))
+			continue;
+		if (!out.empty())
+			out.push_back(',');
+		out += std::to_string(i);
+	}
+	return out;
+}
+
+// Parses the -gspin argument, a comma-separated list of CPU indices, into an affinity
+// mask. Rejects anything that is not a number, but tolerates an index this mask cannot
+// express (>= 64) by dropping it -- whether the CPU exists is the kernel's answer to
+// give at pin time, not something to guess at parse time.
+static bool ParseCpuList(const std::string_view list, u64* mask)
+{
+	*mask = 0;
+	size_t pos = 0;
+	while (pos <= list.size())
+	{
+		const size_t comma = list.find(',', pos);
+		const std::string_view tok =
+			StringUtil::StripWhitespace(list.substr(pos, (comma == std::string_view::npos) ? std::string_view::npos : (comma - pos)));
+		if (tok.empty())
+			return false;
+
+		const std::optional<u32> cpu = StringUtil::FromChars<u32>(tok);
+		if (!cpu.has_value())
+			return false;
+		if (cpu.value() < 64)
+			*mask |= (static_cast<u64>(1) << cpu.value());
+
+		if (comma == std::string_view::npos)
+			break;
+		pos = comma + 1;
+	}
+	return true;
 }
 
 bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params)
@@ -1203,6 +1262,18 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				s_fediff_path = argv[++i];
 				Console.WriteLn(fmt::format("Diffing the front-end decode surface against {}", s_fediff_path));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-gspin"))
+			{
+				const std::string cpus(StringUtil::StripWhitespace(argv[++i]));
+				if (!ParseCpuList(cpus, &s_gs_pin_mask))
+				{
+					Console.Error(fmt::format("Invalid -gspin CPU list '{}' (expected e.g. 4 or 0,1,2,3)", cpus));
+					return false;
+				}
+				s_gs_pin_request = cpus;
+				Console.WriteLn(fmt::format("Pinning the GS thread to CPU(s) {}", s_gs_pin_request));
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-stats-json"))
@@ -1589,6 +1660,10 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
 		Percentile(gs_cpu_per_draw_us, 0.50), Percentile(gs_cpu_per_draw_us, 0.95));
 	std::fprintf(fp.get(), "    \"gs_cpu_partial\": %s,\n", s_saw_gs_back_thread_in_stats ? "true" : "false");
+	// Where the GS thread was asked to sit, and where it actually did. "none" when no pin
+	// was requested, "unsupported" when the platform cannot pin or cannot be asked.
+	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
+		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
@@ -1758,6 +1833,61 @@ void GSRunner::DumpStats()
 #define main real_main
 #endif
 
+// Pins the GS thread where -gspin asked, then reads the pin back, because a request is
+// not a result: sched_setaffinity fails on a CPU that does not exist, and a cpuset or
+// cgroup clamp can narrow what was asked for without failing at all. A mismatch is
+// reported and the run continues -- the harness reads the JSON, so the run's own record
+// of where its GS thread sat is what decides whether its timings are comparable.
+//
+// Applied once, here, rather than per frame: the pin is a property of the run.
+static void ApplyGSThreadPin()
+{
+	if (s_gs_pin_request.empty())
+	{
+		s_gs_pin_effective = "none";
+		return;
+	}
+
+	const Threading::ThreadHandle& gs_thread = MTGS::GetThreadHandle();
+	if (!gs_thread)
+	{
+		s_gs_pin_effective = "unsupported";
+		std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: there is no GS thread to pin.\n", s_gs_pin_request.c_str());
+		return;
+	}
+
+	// A zero mask means "every processor" to SetAffinity, so a request naming only CPUs
+	// the mask cannot express must not be passed through: that would un-pin the thread
+	// while reporting that a pin was asked for.
+	if (s_gs_pin_mask != 0)
+		gs_thread.SetAffinity(s_gs_pin_mask);
+
+	const u64 effective = gs_thread.GetAffinity();
+	if (effective == 0)
+	{
+		// No per-thread affinity introspection on this platform (Darwin and Windows both
+		// return 0 here, and Darwin cannot pin at all), so there is nothing to report but
+		// that the platform does not answer the question.
+		s_gs_pin_effective = "unsupported";
+		std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: this platform does not support pinning a thread.\n",
+			s_gs_pin_request.c_str());
+		return;
+	}
+
+	s_gs_pin_effective = FormatCpuMask(effective);
+	if (effective != s_gs_pin_mask)
+	{
+		std::fprintf(stderr,
+			"pcsx2-gsrunner: -gspin %s did not take -- the GS thread may run on %s. The run continues, but its "
+			"GS-thread CPU time is not placement-controlled.\n",
+			s_gs_pin_request.c_str(), s_gs_pin_effective.c_str());
+	}
+	else
+	{
+		Console.WriteLn(fmt::format("GS thread pinned to CPU(s) {}", s_gs_pin_effective));
+	}
+}
+
 static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 {
 	ret->store(EXIT_FAILURE);
@@ -1770,6 +1900,16 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 		if (VMManager::Initialize(*params) == VMBootResult::StartupSuccess)
 		{
+			// The GS thread exists from here on, and this is the last quiet moment before
+			// frames start, so the pin lands before the first one is timed.
+			//
+			// It also has to land AFTER VMManager::Initialize, not before: with
+			// EmuCore/EnableThreadPinning on -- which it is by default -- Initialize pins
+			// the GS thread itself, to whichever processor its frequency sort ranked next.
+			// Moving this call any earlier means that pin quietly overwrites -gspin, and
+			// the only visible symptom would be that the flag stops doing anything.
+			ApplyGSThreadPin();
+
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);
 			// Armed before the first packet, so rung zero is the state the freeze left
