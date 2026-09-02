@@ -8158,14 +8158,14 @@ GSVector2i GSState::GSPCRTCRegs::GetFramebufferSize(int display)
 		if (combined_rect.z >= 2048)
 		{
 			const int high_x = (PCRTCDisplays[0].framebufferRect.x > PCRTCDisplays[1].framebufferRect.x) ? PCRTCDisplays[0].framebufferRect.x : PCRTCDisplays[1].framebufferRect.x;
-			combined_rect.z -= GSIsHardwareRenderer() ? 2048 : high_x;
+			combined_rect.z -= GSPresenterOffsetsFramebufferRead() ? high_x : 2048;
 			combined_rect.x = 0;
 		}
 
 		if (combined_rect.w >= 2048)
 		{
 			const int high_y = (PCRTCDisplays[0].framebufferRect.y > PCRTCDisplays[1].framebufferRect.y) ? PCRTCDisplays[0].framebufferRect.y : PCRTCDisplays[1].framebufferRect.y;
-			combined_rect.w -= GSIsHardwareRenderer() ? 2048 : high_y;
+			combined_rect.w -= GSPresenterOffsetsFramebufferRead() ? high_y : 2048;
 			combined_rect.y = 0;
 		}
 
@@ -8178,8 +8178,8 @@ GSVector2i GSState::GSPCRTCRegs::GetFramebufferSize(int display)
 			offset = (offset - 1) / 2;
 		}
 
-		// Hardware mode needs a wider framebuffer as it can't offset the read.
-		if (GSIsHardwareRenderer())
+		// A presenter that can't offset the read needs a wider framebuffer to cover the offset.
+		if (!GSPresenterOffsetsFramebufferRead())
 		{
 			combined_rect.z += std::max(PCRTCDisplays[0].framebufferOffsets.x, PCRTCDisplays[1].framebufferOffsets.x);
 			combined_rect.w += std::max(PCRTCDisplays[0].framebufferOffsets.y, PCRTCDisplays[1].framebufferOffsets.y);
@@ -8378,8 +8378,8 @@ void GSState::GSPCRTCRegs::RemoveFramebufferOffset(int display)
 {
 	if (display >= 0)
 	{
-		// Hardware needs nothing but handling for wrapped framebuffers.
-		if (GSIsHardwareRenderer())
+		// A whole-framebuffer read needs nothing but handling for wrapped framebuffers.
+		if (!GSPresenterOffsetsFramebufferRead())
 		{
 			if (PCRTCDisplays[display].framebufferRect.z >= 2048)
 			{
@@ -8414,8 +8414,8 @@ void GSState::GSPCRTCRegs::RemoveFramebufferOffset(int display)
 	{
 		// Software Mode Note:
 		// This code is to read the framebuffer nicely block aligned in software, then leave the remaining offset in to the block.
-		// In hardware mode this doesn't happen, it reads the whole framebuffer, so we need to keep the offset.
-		if (!GSIsHardwareRenderer())
+		// A whole-framebuffer presenter doesn't do this, it reads everything, so we need to keep the offset.
+		if (GSPresenterOffsetsFramebufferRead())
 		{
 			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[PCRTCDisplays[1].PSM];
 

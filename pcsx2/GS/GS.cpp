@@ -65,6 +65,7 @@
 Pcsx2Config::GSOptions GSConfig;
 
 static GSRendererType GSCurrentRenderer;
+static bool GSCurrentPresenterOffsetsRead;
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -75,6 +76,14 @@ bool GSIsHardwareRenderer()
 {
 	// Null gets flagged as hw.
 	return (GSCurrentRenderer != GSRendererType::SW);
+}
+
+bool GSPresenterOffsetsFramebufferRead()
+{
+	// Resolved per renderer instance in OpenGSRenderer, because the answer does not follow
+	// from the renderer type alone: a hardware renderer that inherits the software output
+	// path offsets the read while GSIsHardwareRenderer() says hardware.
+	return GSCurrentPresenterOffsetsRead;
 }
 
 std::string GetDefaultAdapter()
@@ -258,6 +267,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 {
 	// Must be done first, initialization routines in GSState use GSIsHardwareRenderer().
 	GSCurrentRenderer = renderer;
+
+	// Default for everything that reads the whole framebuffer and leaves the offset to the
+	// presenter. A hardware renderer that inherits GSRendererSW's output path has to raise it
+	// where it is constructed. Set before any renderer is constructed, for the reason above.
+	GSCurrentPresenterOffsetsRead = (renderer == GSRendererType::SW);
 
 	GSVertexSW::InitStatic();
 
