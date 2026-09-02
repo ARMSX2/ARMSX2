@@ -3906,45 +3906,6 @@ void GSState::Move()
 
 	InvalidateLocalMem(m_env.BITBLTBUF, GSVector4i(sx, sy, sx + w, sy + h));
 	InvalidateVideoMem(m_env.BITBLTBUF, GSVector4i(dx, dy, dx + w, dy + h));
-	const bool overlaps = m_env.BITBLTBUF.SBP == m_env.BITBLTBUF.DBP;
-	const bool intersect = overlaps && !(GSVector4i(sx, sy, sx + w, sy + h).rintersect(GSVector4i(dx, dy, dx + w, dy + h)).rempty());
-
-	int xinc = 1;
-	int yinc = 1;
-
-	if (m_env.TRXPOS.DIRX)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sx < dx)
-		{
-			sx += w - 1;
-			dx += w - 1;
-			xinc = -1;
-		}
-	}
-	if (m_env.TRXPOS.DIRY)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sy < dy)
-		{
-			sy += h - 1;
-			dy += h - 1;
-			yinc = -1;
-		}
-	}
-
-	const GSLocalMemory::psm_t& spsm = GSLocalMemory::m_psm[m_env.BITBLTBUF.SPSM];
-	const GSLocalMemory::psm_t& dpsm = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM];
-
-	// TODO: unroll inner loops (width has special size requirement, must be multiples of 1 << n, depending on the format)
-
-	const int sbp = m_env.BITBLTBUF.SBP;
-	const int sbw = m_env.BITBLTBUF.SBW;
-	const int dbp = m_env.BITBLTBUF.DBP;
-	const int dbw = m_env.BITBLTBUF.DBW;
-	const GSOffset spo = m_mem.GetOffset(sbp, sbw, m_env.BITBLTBUF.SPSM);
-	const GSOffset dpo = m_mem.GetOffset(dbp, dbw, m_env.BITBLTBUF.DPSM);
-
 	GSVector4i r;
 	r.left = m_env.TRXPOS.DSAX;
 	r.top = m_env.TRXPOS.DSAY;
@@ -3968,147 +3929,15 @@ void GSState::Move()
 		m_draw_transfers.push_back(new_transfer);
 	}
 
-	auto copy = [this, sbp, dbp, sx, sy, dx, dy, w, h, yinc, xinc, intersect](const GSOffset& dpo, const GSOffset& spo, auto&& pxCopyFn)
-	{
-		int _sy = sy, _dy = dy; // Faster with local copied variables, compiler optimizations are dumb
-		if (xinc > 0)
-		{
-			const int page_width = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM].pgs.x;
-			const int page_height = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM].pgs.y;
-			const int xpage = sx & ~(page_width - 1);
-			const int ypage = _sy & ~(page_height - 1);
-			// Copying from itself to itself (rotating textures) used in Gitaroo Man stage 8
-			// What probably happens is because the copy is buffered, the source stays just ahead of the destination.
-			// No need to do all this if the copy source/destination don't intersect, however.
-			if (intersect && sbp == dbp && (((_sy < _dy) && ((ypage + page_height) > _dy)) || ((sx < dx) && ((xpage + page_width) > dx))))
-			{
-				int starty = (yinc > 0) ? 0 : h-1;
-				int endy = (yinc > 0) ? h : -1;
-				int y_inc = yinc;
-
-				if (((_sy < _dy) && ((ypage + page_height) > _dy)) && yinc > 0)
-				{
-					_sy += h-1;
-					_dy += h-1;
-					starty = h-1;
-					endy = -1;
-					y_inc = -y_inc;
-				}
-
-				for (int y = starty; y != endy; y+= y_inc, _sy += y_inc, _dy += y_inc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					if (((sx < dx) && ((xpage + page_width) > dx)))
-					{
-						for (int x = w - 1; x >= 0; x--)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-					else
-					{
-						for (int x = 0; x < w; x++)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-				}
-			}
-			else
-			{
-				for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					for (int x = 0; x < w; x++)
-					{
-						pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-					}
-				}
-			}
-		}
-		else
-		{
-			for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-			{
-				GSOffset::PAHelper s = spo.paMulti(0, _sy);
-				GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-				for (int x = 0; x < w; x++)
-				{
-					pxCopyFn(d.value((dx - x) & 2047), s.value((sx - x) & 2047));
-				}
-			}
-		}
-	};
-
-	// Parameterized on the destination memory so the local->local move can be replayed
-	// verbatim into the asynchronous-readback shadow below.
-	const auto move_in_memory = [&](GSLocalMemory& local_mem)
-	{
-		if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
-		{
-			if (spsm.trbpp == 32)
-			{
-				u32* vm = local_mem.vm32();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = vm[soff];
-				});
-			}
-			else if (spsm.trbpp == 24)
-			{
-				u32* vm = local_mem.vm32();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
-				});
-			}
-			else // if (spsm.trbpp == 16)
-			{
-				u16* vm = local_mem.vm16();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = vm[soff];
-				});
-			}
-		}
-		else if (m_env.BITBLTBUF.SPSM == PSMT8 && m_env.BITBLTBUF.DPSM == PSMT8)
-		{
-			u8* vm = local_mem.m_vm8;
-			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
-			{
-				vm[doff] = vm[soff];
-			});
-		}
-		else if (m_env.BITBLTBUF.SPSM == PSMT4 && m_env.BITBLTBUF.DPSM == PSMT4)
-		{
-			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [&local_mem](u32 doff, u32 soff)
-			{
-				local_mem.WritePixel4(doff, local_mem.ReadPixel4(soff));
-			});
-		}
-		else
-		{
-			copy(dpo, spo, [&local_mem, &dpsm, &spsm](u32 doff, u32 soff)
-			{
-				(local_mem.*dpsm.wpa)(doff, (local_mem.*spsm.rpa)(soff));
-			});
-		}
-	};
-
-	move_in_memory(m_mem);
+	m_mem.Move(m_env.BITBLTBUF, m_env.TRXPOS, m_env.TRXREG);
 
 	// Same reasoning as the EE upload path: the move is authoritative for its destination
 	// pages, so replay it and bump their generations to fence off older in-flight downloads.
 	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && m_async_readback_mem)
 	{
 		const std::lock_guard lock(m_async_readback_mutex);
-		move_in_memory(*m_async_readback_mem);
-		MarkAsyncReadbackPagesWritten(dpo, r);
+		m_async_readback_mem->Move(m_env.BITBLTBUF, m_env.TRXPOS, m_env.TRXREG);
+		MarkAsyncReadbackPagesWritten(m_mem.GetOffset(m_env.BITBLTBUF.DBP, m_env.BITBLTBUF.DBW, m_env.BITBLTBUF.DPSM), r);
 	}
 
 	m_env.TRXDIR.XDIR = 3;

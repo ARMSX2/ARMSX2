@@ -537,6 +537,181 @@ bool GSLocalMemory::HasOverlap(const u32 src_bp, const u32 src_bw, const u32 src
 
 ///////////////////
 
+void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& TRXPOS, const GIFRegTRXREG& TRXREG)
+{
+	int sx = TRXPOS.SSAX;
+	int sy = TRXPOS.SSAY;
+	int dx = TRXPOS.DSAX;
+	int dy = TRXPOS.DSAY;
+
+	const int w = TRXREG.RRW;
+	const int h = TRXREG.RRH;
+
+	const bool overlaps = BITBLTBUF.SBP == BITBLTBUF.DBP;
+	const bool intersect = overlaps && !(GSVector4i(sx, sy, sx + w, sy + h).rintersect(GSVector4i(dx, dy, dx + w, dy + h)).rempty());
+
+	int xinc = 1;
+	int yinc = 1;
+
+	if (TRXPOS.DIRX)
+	{
+		// Only allow it to reverse if the destination is behind the source.
+		if (!intersect || sx < dx)
+		{
+			sx += w - 1;
+			dx += w - 1;
+			xinc = -1;
+		}
+	}
+	if (TRXPOS.DIRY)
+	{
+		// Only allow it to reverse if the destination is behind the source.
+		if (!intersect || sy < dy)
+		{
+			sy += h - 1;
+			dy += h - 1;
+			yinc = -1;
+		}
+	}
+
+	const psm_t& spsm = m_psm[BITBLTBUF.SPSM];
+	const psm_t& dpsm = m_psm[BITBLTBUF.DPSM];
+
+	const int sbp = BITBLTBUF.SBP;
+	const int sbw = BITBLTBUF.SBW;
+	const int dbp = BITBLTBUF.DBP;
+	const int dbw = BITBLTBUF.DBW;
+	const GSOffset spo = GetOffset(sbp, sbw, BITBLTBUF.SPSM);
+	const GSOffset dpo = GetOffset(dbp, dbw, BITBLTBUF.DPSM);
+
+	auto copy = [this, &BITBLTBUF, sbp, dbp, sx, sy, dx, dy, w, h, yinc, xinc, intersect](const GSOffset& dpo, const GSOffset& spo, auto&& pxCopyFn)
+	{
+		int _sy = sy, _dy = dy; // Faster with local copied variables, compiler optimizations are dumb
+		if (xinc > 0)
+		{
+			const int page_width = m_psm[BITBLTBUF.DPSM].pgs.x;
+			const int page_height = m_psm[BITBLTBUF.DPSM].pgs.y;
+			const int xpage = sx & ~(page_width - 1);
+			const int ypage = _sy & ~(page_height - 1);
+			// Copying from itself to itself (rotating textures) used in Gitaroo Man stage 8
+			// What probably happens is because the copy is buffered, the source stays just ahead of the destination.
+			// No need to do all this if the copy source/destination don't intersect, however.
+			if (intersect && sbp == dbp && (((_sy < _dy) && ((ypage + page_height) > _dy)) || ((sx < dx) && ((xpage + page_width) > dx))))
+			{
+				int starty = (yinc > 0) ? 0 : h - 1;
+				int endy = (yinc > 0) ? h : -1;
+				int y_inc = yinc;
+
+				if (((_sy < _dy) && ((ypage + page_height) > _dy)) && yinc > 0)
+				{
+					_sy += h - 1;
+					_dy += h - 1;
+					starty = h - 1;
+					endy = -1;
+					y_inc = -y_inc;
+				}
+
+				for (int y = starty; y != endy; y += y_inc, _sy += y_inc, _dy += y_inc)
+				{
+					GSOffset::PAHelper s = spo.paMulti(0, _sy);
+					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
+
+					if (((sx < dx) && ((xpage + page_width) > dx)))
+					{
+						for (int x = w - 1; x >= 0; x--)
+						{
+							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
+						}
+					}
+					else
+					{
+						for (int x = 0; x < w; x++)
+						{
+							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
+						}
+					}
+				}
+			}
+			else
+			{
+				for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
+				{
+					GSOffset::PAHelper s = spo.paMulti(0, _sy);
+					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
+
+					for (int x = 0; x < w; x++)
+					{
+						pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
+					}
+				}
+			}
+		}
+		else
+		{
+			for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
+			{
+				GSOffset::PAHelper s = spo.paMulti(0, _sy);
+				GSOffset::PAHelper d = dpo.paMulti(0, _dy);
+
+				for (int x = 0; x < w; x++)
+				{
+					pxCopyFn(d.value((dx - x) & 2047), s.value((sx - x) & 2047));
+				}
+			}
+		}
+	};
+
+	if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
+	{
+		if (spsm.trbpp == 32)
+		{
+			u32* vm = vm32();
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+			{
+				vm[doff] = vm[soff];
+			});
+		}
+		else if (spsm.trbpp == 24)
+		{
+			u32* vm = vm32();
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+			{
+				vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
+			});
+		}
+		else // if (spsm.trbpp == 16)
+		{
+			u16* vm = vm16();
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
+			{
+				vm[doff] = vm[soff];
+			});
+		}
+	}
+	else if (BITBLTBUF.SPSM == PSMT8 && BITBLTBUF.DPSM == PSMT8)
+	{
+		u8* vm = m_vm8;
+		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
+		{
+			vm[doff] = vm[soff];
+		});
+	}
+	else if (BITBLTBUF.SPSM == PSMT4 && BITBLTBUF.DPSM == PSMT4)
+	{
+		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [this](u32 doff, u32 soff)
+		{
+			WritePixel4(doff, ReadPixel4(soff));
+		});
+	}
+	else
+	{
+		copy(dpo, spo, [this, &dpsm, &spsm](u32 doff, u32 soff)
+		{
+			(this->*dpsm.wpa)(doff, (this->*spsm.rpa)(soff));
+		});
+	}
+}
+
 void GSLocalMemory::ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA)
 {
 	const psm_t& psm = m_psm[off.psm()];
