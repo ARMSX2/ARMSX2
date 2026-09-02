@@ -5887,7 +5887,9 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 				!(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing);
 
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
-			const u32 fb_mask = m_conf.colormask.wa ? (m_conf.ps.fbmask ? m_conf.cb_ps.FbMask.a : 0) : 0xFF;
+			// The mask the draw asked for, not the one the shader emulates: the target's recorded alpha
+			// has to come out the same whether or not the exact drop cleared the byte.
+			const u32 fb_mask = m_conf.colormask.wa ? RequestedAlphaFbMask() : 0xFF;
 			const u32 alpha_mask = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24;
 
 			log_alpha_flags |= GSDrawLog::RTAlphaWritten | (full_cover ? GSDrawLog::RTAlphaFullCover : 0);
@@ -6011,7 +6013,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 
 		can_scale_rt_alpha = !needs_ad && (GSUtil::GetChannelMask(m_cached_ctx.FRAME.PSM) & 0x8) && rt_new_alpha_max <= 128;
 
-		const bool partial_fbmask = (m_conf.ps.fbmask && m_conf.cb_ps.FbMask.a != 0xFF && m_conf.cb_ps.FbMask.a != 0);
+		const bool partial_fbmask = GSDrawAlphaMask::IsPartial(RequestedAlphaFbMask());
 		const bool rta_decorrection = m_channel_shuffle || m_texture_shuffle || (m_conf.colormask.wa && (rt_new_alpha_max > 128 || partial_fbmask));
 
 		if (rta_decorrection)
@@ -6851,7 +6853,18 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		if (GSDrawLog::IsActive()) [[unlikely]]
 			GSDrawLog::NoteExactAlphaDrop(exact_drop);
 		if (exact_drop == GSDrawLog::ExactAlphaDropTaken && GSConfig.ExactAlphaMaskDrop)
+		{
+			// Keep the byte. What the drop is entitled to change is the shader and the barrier;
+			// decisions about what the draw asked for -- the target's tracked alpha, and whether it
+			// has to come out of RTA scaling -- read it back through RequestedAlphaFbMask() and see
+			// the mask as it stood here. Recorded only when the mask would have been emulated at
+			// all, so that at AccBlendLevel::Minimum, where it would not have been, the two arms
+			// still read the same zero.
+			if (enable_fbmask_emulation)
+				m_exact_alpha_drop_fbmask_a = static_cast<int>((static_cast<u32>(fbmask) >> 24) & 0xFF);
+
 			fbmask &= 0x00FFFFFF;
+		}
 
 		const GSVector4i fbmask_v = GSVector4i::load(fbmask);
 		const GSVector4i fbmask_vr = GSVector4i::load(fbmask_r);
@@ -9926,6 +9939,8 @@ void GSRendererHW::ResetStates()
 	// We don't want to zero out the constant buffers, since fields used by the current draw could result in redundant uploads.
 	// This memset should be pretty efficient - the struct is 16 byte aligned, as is the cb_vs offset.
 	memset(static_cast<void*>(&m_conf), 0, reinterpret_cast<const char*>(&m_conf.cb_vs) - reinterpret_cast<const char*>(&m_conf));
+
+	m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
 }
 
 __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm)

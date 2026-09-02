@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GSTextureCache.h"
+#include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSSwPrimRender.h"
@@ -222,6 +223,13 @@ private:
 	/// Whether this draw's alpha FBMSK can be cleared without changing a pixel, and if not, why.
 	/// Answered whatever EmuCore/GS/ExactAlphaMaskDrop says, so the ledger counts both arms.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
+	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
+	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
+	u32 RequestedAlphaFbMask() const
+	{
+		return GSDrawAlphaMask::AsRequested(m_exact_alpha_drop_fbmask_a, m_conf.ps.fbmask != 0,
+			static_cast<u32>(m_conf.cb_ps.FbMask.a));
+	}
 	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
 	void EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options, GSTextureCache::Target* rt,
 		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);
@@ -357,6 +365,10 @@ private:
 
 	GSHWDrawConfig m_conf = {};
 	HWCachedCtx m_cached_ctx;
+
+	// The alpha byte of FBMSK that the exact alpha drop cleared out of this draw, or
+	// GSDrawAlphaMask::NothingDropped. Reset per draw by ResetStates().
+	int m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
 
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;
