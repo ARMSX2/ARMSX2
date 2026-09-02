@@ -265,7 +265,7 @@ VkCommandBuffer GSTextureVK::GetCommandBufferForUpdate()
 	if (!IsTexture() || m_use_fence_counter == GSDeviceVK::GetInstance()->GetCurrentFenceCounter())
 	{
 		// Console.WriteLn("Texture update within frame, can't use do beforehand");
-		GSDeviceVK::GetInstance()->EndRenderPass();
+		GSDeviceVK::GetInstance()->EndRenderPass(GSDrawLog::PassEndTextureUpload);
 		return GSDeviceVK::GetInstance()->GetCurrentCommandBuffer();
 	}
 
@@ -547,7 +547,7 @@ void GSTextureVK::CommitClear()
 	if (m_state != GSTexture::State::Cleared)
 		return;
 
-	GSDeviceVK::GetInstance()->EndRenderPass();
+	GSDeviceVK::GetInstance()->EndRenderPass(GSDrawLog::PassEndClear);
 
 	CommitClear(GSDeviceVK::GetInstance()->GetCurrentCommandBuffer());
 }

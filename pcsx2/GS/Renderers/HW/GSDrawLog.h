@@ -126,6 +126,33 @@ namespace GSDrawLog
 		/// target's known alpha bits, which only exist while the draw is running.
 		u8 exact_alpha_drop;
 
+		/// TFX-call view. One GS draw can issue several TFX draw calls (the alpha second pass,
+		/// the blend multi-pass, the PrimID pre-pass), and the run rule Phase 5 is pricing
+		/// compares the identities the *device* binds, not the ones the PS2 registers name. So a
+		/// call gets a row of its own, appended in stream order beside the draw rows and carrying
+		/// the draw's frame and serial as the join key. Flags2TFXCall says the row is one.
+		u64 tfx_pipe_hash;
+		u64 tfx_ps_key_lo;
+		u64 tfx_ps_key_hi;
+		u32 tfx_call; ///< serial across the whole capture, so calls can be ordered without sorting
+		u32 tfx_pass; ///< render-pass instance serial in effect; a change is a pass boundary
+		u32 tfx_pipe_key; ///< PipelineSelector::key -- topology, rt, ds, line_width, feedback flags
+		u32 tfx_bs_key;
+		u32 tfx_rt_obj; ///< identity of the bound colour attachment (hashed object address)
+		u32 tfx_ds_obj;
+		u32 tfx_tex_obj; ///< the sampled source texture, and its palette
+		u32 tfx_pal_obj;
+		s16 tfx_sc_x;
+		s16 tfx_sc_y;
+		s16 tfx_sc_z;
+		s16 tfx_sc_w;
+		u8 tfx_vs_key;
+		u8 tfx_dss_key;
+		u8 tfx_cms_key;
+		u8 tfx_samp_sel;
+		u8 tfx_kind; ///< TFXCallKind
+		u8 tfx_pass_end; ///< PassEndReason: why the FIRST pass since the previous call ended
+
 		s16 area_x;
 		s16 area_y;
 		s16 area_z;
@@ -192,6 +219,68 @@ namespace GSDrawLog
 		Flags2DATEModes = 1 << 1, ///< date_mode_* were filled
 		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
 		Flags2Event = 1 << 3, ///< the row is a target event, not a draw; see evt_kind
+		Flags2TFXCall = 1 << 4, ///< the row is one TFX draw call, not a draw; see tfx_*
+	};
+
+	/// Which of a GS draw's TFX calls a row is. The main call is the draw proper; the others
+	/// are extra binds the backend issues for the same GS draw, and they are what makes
+	/// "submitted draws" a different count from "GS draws".
+	enum TFXCallKind : u8
+	{
+		TFXCallMain = 0,
+		TFXCallBlendMultiPass,
+		TFXCallAlphaSecondPass,
+		TFXCallPrimIDPrepass,
+	};
+
+	/// Why the render pass in effect before a TFX call ended.
+	///
+	/// A pass boundary between two consecutive calls breaks a batched run whatever the state
+	/// says, so the run-length census needs the reason as well as the fact. The reason is the
+	/// FIRST end since the previous TFX call: later ones are consequences of the first.
+	///
+	/// Only the sites on the draw path are named; everything else reports Other rather than
+	/// being guessed at, because a wrong attribution is worse than an unattributed one.
+	enum PassEndReason : u8
+	{
+		PassEndNone = 0, ///< no pass ended between this call and the previous one
+		PassEndOther, ///< a site that was not tagged (present, post-processing, teardown)
+		PassEndTargetSwitch, ///< OMSetRenderTargets: attachment set or feedback-loop flag moved
+		PassEndResourceTransition, ///< a texture being bound as a source had to change layout
+		PassEndTextureUnbound, ///< the bound attachment was destroyed or recycled
+		PassEndTextureUpload, ///< local memory was uploaded into a texture
+		PassEndClear, ///< a deferred clear was committed
+		PassEndCopy, ///< a texture-to-texture copy
+		PassEndCloneCopy, ///< the copy road: the RT was cloned so the draw could sample it
+		PassEndDATE, ///< destination-alpha-test setup (stencil prefill or PrimID pre-pass)
+		PassEndColClip, ///< colour-clip target setup or resolve
+		PassEndSubmit, ///< the command buffer was executed
+	};
+
+	/// One TFX pipeline bind, as the device issued it. Assembled at the bind site because that
+	/// is the only point where every identity the run rule compares is final at once.
+	struct TFXCall
+	{
+		u64 pipe_hash;
+		u64 ps_key_lo;
+		u64 ps_key_hi;
+		u32 pass_serial;
+		u32 pipe_key;
+		u32 bs_key;
+		u32 rt_obj;
+		u32 ds_obj;
+		u32 tex_obj;
+		u32 pal_obj;
+		s32 scissor_x;
+		s32 scissor_y;
+		s32 scissor_z;
+		s32 scissor_w;
+		u8 vs_key;
+		u8 dss_key;
+		u8 cms_key;
+		u8 samp_sel;
+		u8 kind;
+		u8 pass_end;
 	};
 
 	/// What the exact alpha-mask-drop rule decided about a draw.
@@ -305,6 +394,11 @@ namespace GSDrawLog
 	/// alpha range); rt_min and rt_max are the target's tracked range after it.
 	void NoteTargetEvent(u8 kind, u32 target_id, u32 tbp0, int payload_min, int payload_max,
 		int rt_min, int rt_max, const GSVector4i& valid);
+
+	/// Records one TFX draw call. Opens and closes its own row, so it does not disturb the row
+	/// the enclosing draw has open -- the backend issues these from inside GSRendererHW::Draw,
+	/// after the draw's own row has been completed with the backend view.
+	void NoteTFXCall(const TFXCall& call);
 
 	/// Records how a target-aliasing source was resolved, on the open row. Called from
 	/// hazard handling rather than at submit because the resolution is not recoverable

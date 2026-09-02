@@ -31,6 +31,9 @@ namespace GSDrawLog
 	static size_t s_open_record = SIZE_MAX;
 	// GS-thread-side dump packet mark; see MarkPacket.
 	static u32 s_packet_mark = PacketNone;
+	// Serial handed to each TFX-call row, so calls stay orderable without relying on the
+	// row order surviving a sort by frame and draw serial.
+	static u32 s_tfx_call_serial = 0;
 
 	bool IsActive()
 	{
@@ -68,6 +71,7 @@ namespace GSDrawLog
 		s_records.shrink_to_fit();
 		s_truncated = false;
 		s_open_record = SIZE_MAX;
+		s_tfx_call_serial = 0;
 	}
 
 	size_t GetRecordCount()
@@ -199,6 +203,52 @@ namespace GSDrawLog
 		s_records.push_back(rec);
 	}
 
+	void NoteTFXCall(const TFXCall& call)
+	{
+		if (!IsActive())
+			return;
+
+		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
+			s_records.reserve(MAX_RECORDS);
+
+		if (s_records.size() >= MAX_RECORDS)
+		{
+			s_truncated = true;
+			return;
+		}
+
+		// Same discipline as NoteTargetEvent: appended past the open draw row, s_open_record
+		// left alone. The frame and draw serial are the join key back to that row, which is
+		// where the PS2 view and the barrier decision live.
+		Record rec = {};
+		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
+		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
+		rec.packet = s_packet_mark;
+		rec.flags2 = Flags2TFXCall;
+		rec.tfx_call = s_tfx_call_serial++;
+		rec.tfx_pipe_hash = call.pipe_hash;
+		rec.tfx_ps_key_lo = call.ps_key_lo;
+		rec.tfx_ps_key_hi = call.ps_key_hi;
+		rec.tfx_pass = call.pass_serial;
+		rec.tfx_pipe_key = call.pipe_key;
+		rec.tfx_bs_key = call.bs_key;
+		rec.tfx_rt_obj = call.rt_obj;
+		rec.tfx_ds_obj = call.ds_obj;
+		rec.tfx_tex_obj = call.tex_obj;
+		rec.tfx_pal_obj = call.pal_obj;
+		rec.tfx_sc_x = static_cast<s16>(std::clamp(call.scissor_x, -32768, 32767));
+		rec.tfx_sc_y = static_cast<s16>(std::clamp(call.scissor_y, -32768, 32767));
+		rec.tfx_sc_z = static_cast<s16>(std::clamp(call.scissor_z, -32768, 32767));
+		rec.tfx_sc_w = static_cast<s16>(std::clamp(call.scissor_w, -32768, 32767));
+		rec.tfx_vs_key = call.vs_key;
+		rec.tfx_dss_key = call.dss_key;
+		rec.tfx_cms_key = call.cms_key;
+		rec.tfx_samp_sel = call.samp_sel;
+		rec.tfx_kind = call.kind;
+		rec.tfx_pass_end = call.pass_end;
+		s_records.push_back(rec);
+	}
+
 	void NoteSelfRead(SelfRead resolution)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -315,6 +365,54 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetTFXCallKindName(u8 kind)
+	{
+		switch (kind)
+		{
+			case TFXCallMain:
+				return "MAIN";
+			case TFXCallBlendMultiPass:
+				return "BLEND_MULTI";
+			case TFXCallAlphaSecondPass:
+				return "ALPHA_SECOND";
+			case TFXCallPrimIDPrepass:
+				return "PRIMID_PREPASS";
+			default:
+				return "";
+		}
+	}
+
+	static const char* GetPassEndReasonName(u8 reason)
+	{
+		switch (reason)
+		{
+			case PassEndOther:
+				return "OTHER";
+			case PassEndTargetSwitch:
+				return "TARGET_SWITCH";
+			case PassEndResourceTransition:
+				return "RESOURCE_TRANSITION";
+			case PassEndTextureUnbound:
+				return "TEXTURE_UNBOUND";
+			case PassEndTextureUpload:
+				return "TEXTURE_UPLOAD";
+			case PassEndClear:
+				return "CLEAR";
+			case PassEndCopy:
+				return "COPY";
+			case PassEndCloneCopy:
+				return "CLONE_COPY";
+			case PassEndDATE:
+				return "DATE";
+			case PassEndColClip:
+				return "COLCLIP";
+			case PassEndSubmit:
+				return "SUBMIT";
+			default:
+				return "";
+		}
+	}
+
 	static const char* GetPrimOverlapName(u8 overlap)
 	{
 		switch (overlap)
@@ -351,7 +449,11 @@ namespace GSDrawLog
 			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck,"
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
-			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop\n");
+			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
+			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
+			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
+			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
+			"tfx_sc_x,tfx_sc_y,tfx_sc_w,tfx_sc_h\n");
 
 		for (const Record& r : s_records)
 		{
@@ -482,7 +584,7 @@ namespace GSDrawLog
 
 			if (r.flags2 & Flags2RTAlpha)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x,%s\n",
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x,%s,",
 					(r.rt_alpha_flags & RTAlphaWritten) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaShuffle) ? 1 : 0,
 					(r.rt_alpha_flags & RTAlphaFullCover) ? 1 : 0,
@@ -497,7 +599,26 @@ namespace GSDrawLog
 			{
 				// The drop decision is taken before the alpha-range calculation, so a draw that
 				// returned in between still has one worth printing.
-				std::fprintf(fp.get(), ",,,,,,,,,,%s\n", GetExactAlphaDropName(r.exact_alpha_drop));
+				std::fprintf(fp.get(), ",,,,,,,,,,%s,", GetExactAlphaDropName(r.exact_alpha_drop));
+			}
+
+			if (r.flags2 & Flags2TFXCall)
+			{
+				std::fprintf(fp.get(),
+					"%u,%s,%u,%s,%016llx,%016llx,%016llx,%02x,%02x,%02x,%08x,%08x,%08x,%08x,%08x,%08x,%02x,"
+					"%d,%d,%d,%d\n",
+					r.tfx_call, GetTFXCallKindName(r.tfx_kind), r.tfx_pass,
+					GetPassEndReasonName(r.tfx_pass_end),
+					static_cast<unsigned long long>(r.tfx_pipe_hash),
+					static_cast<unsigned long long>(r.tfx_ps_key_lo),
+					static_cast<unsigned long long>(r.tfx_ps_key_hi),
+					r.tfx_vs_key, r.tfx_dss_key, r.tfx_cms_key, r.tfx_bs_key, r.tfx_pipe_key,
+					r.tfx_rt_obj, r.tfx_ds_obj, r.tfx_tex_obj, r.tfx_pal_obj, r.tfx_samp_sel,
+					r.tfx_sc_x, r.tfx_sc_y, r.tfx_sc_z - r.tfx_sc_x, r.tfx_sc_w - r.tfx_sc_y);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,,,,,,,,,,,,,,,,\n");
 			}
 		}
 

@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/GSVector.h"
+#include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
@@ -878,7 +879,8 @@ public:
 	void SetVSConstantBuffer(const GSHWDrawConfig::VSConstantBuffer& cb);
 	void SetPSConstantBuffer(const GSHWDrawConfig::PSConstantBuffer& cb);
 	void SetVSPushConstants(u32 base_vertex, u32 base_index = 0, bool force_update = false);
-	bool BindDrawPipeline(const PipelineSelector& p);
+	bool BindDrawPipeline(const PipelineSelector& p,
+		GSDrawLog::TFXCallKind kind = GSDrawLog::TFXCallMain);
 
 	void DoRenderHW(GSHWDrawConfig& config) override;
 	void UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe);
@@ -931,7 +933,7 @@ public:
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, float depth, u8 stencil);
-	void EndRenderPass();
+	void EndRenderPass(GSDrawLog::PassEndReason reason = GSDrawLog::PassEndOther);
 
 	void SetViewport(const VkViewport& viewport);
 	void SetScissor(const GSVector4i& scissor);
@@ -1059,4 +1061,14 @@ private:
 	PipelineSelector m_last_tfx_selector = {};
 	bool m_last_tfx_selector_valid = false;
 	void CountTFXPipelineSwitch(const PipelineSelector& p);
+
+	// Census scaffolding for the batched-submission phase: the run-length ledger needs to
+	// know which render-pass instance a TFX call landed in, and why the previous one ended.
+	// A serial rather than the VkRenderPass handle, because handles are cached and reused --
+	// two consecutive draws in two different passes can name the same handle.
+	u32 m_render_pass_serial = 0;
+	// The FIRST pass end since the last recorded TFX call. Later ends in the same gap are
+	// consequences of the first, so keeping the first is what attributes the break.
+	GSDrawLog::PassEndReason m_pass_end_since_tfx = GSDrawLog::PassEndNone;
+	void RecordTFXCall(const PipelineSelector& p, GSDrawLog::TFXCallKind kind);
 };
