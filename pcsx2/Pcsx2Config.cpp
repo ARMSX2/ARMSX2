@@ -761,6 +761,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	DisableVertexShaderExpand = false;
 	EnableAdrenoFramebufferFetch = false;
 	ForceMaliFramebufferFetch = false;
+	RenderPassExternalDependency = true;
 	SkipDuplicateFrames = true;
 	OsdMessagesPos = OsdOverlayPos::TopLeft;
 	OsdPerformancePos = OsdOverlayPos::TopRight;
@@ -981,6 +982,7 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"DisableVertexShaderExpand",
 		"EnableAdrenoFramebufferFetch",
 		"ForceMaliFramebufferFetch",
+		"RenderPassExternalDependency",
 		"OverrideTextureBarriers",
 		"DepthFeedbackMode",
 		"GSBackThreadMode",
@@ -1011,6 +1013,7 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(DisableVertexShaderExpand) &&
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
+		   OpEqu(RenderPassExternalDependency) &&
 		   OpEqu(OverrideTextureBarriers) &&
 		   OpEqu(DepthFeedbackMode) &&
 		   OpEqu(BackThreadMode) &&
@@ -1067,6 +1070,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(EnableAdrenoFramebufferFetch);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
+	SettingsWrapBitBool(RenderPassExternalDependency);
 	SettingsWrapBitBool(SkipDuplicateFrames);
 	SettingsWrapBitBool(OsdShowSpeed);
 	SettingsWrapBitBool(OsdShowFPS);

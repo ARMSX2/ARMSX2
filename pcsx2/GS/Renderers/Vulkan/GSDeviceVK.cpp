@@ -2389,7 +2389,12 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	// The outgoing (subpass -> EXTERNAL) direction is deliberately not declared: every consumer of
 	// an attachment outside a render pass -- a compute sample, a transfer copy, a fragment sample --
 	// reaches the image through a layout transition, and those carry their own scopes.
-	if (num_attachments > 0)
+	//
+	// EmuCore/GS/RenderPassExternalDependency gates the whole block. It is scaffolding for
+	// the Phase 1 A/B that decides whether declaring this costs anything on a real tiler,
+	// and it is deleted in the round that decides it, whichever way that goes. False builds
+	// the pass exactly as it was built before this dependency existed.
+	if (GSConfig.RenderPassExternalDependency && num_attachments > 0)
 	{
 		VkSubpassDependency& dep = subpass_dependency[num_subpass_dependencies++];
 		dep = {};

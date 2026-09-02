@@ -940,6 +940,12 @@ struct Pcsx2Config
 					HWROV : 1,
 					HWROVLogging : 1,
 					HWROVBarriersVK : 1,
+					// SCAFFOLDING for the Phase 1 render-pass dependency A/B, and deleted in
+					// the round that decides it. When false, GSDeviceVK::CreateCachedRenderPass
+					// declares no VK_SUBPASS_EXTERNAL incoming dependency, which is how every
+					// pass was built before 9877eba526. Restart-scoped: the render-pass cache
+					// is built once per device and its key does not carry this bit.
+					RenderPassExternalDependency : 1,
 					// Hold hardware draws back so consecutive draws to the same target
 					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
 					// where every pass boundary is a full tile load and store. Hot-
