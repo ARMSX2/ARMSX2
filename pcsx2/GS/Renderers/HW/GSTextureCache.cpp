@@ -2940,6 +2940,9 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				dst_match->m_dirty = {};
 				dst->m_alpha_max = dst_match->m_alpha_max;
 				dst->m_alpha_min = dst_match->m_alpha_min;
+				// The range is inherited; the per-bit knowledge is not, because what actually lands
+				// here depends on dirty rects and a possible format conversion.
+				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 				if (GSDrawLog::IsActive()) [[unlikely]]
 				{
 					GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, dst_match->m_TEX0.TBP0,
@@ -3078,6 +3081,7 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_texture = tex;
 		dst->m_alpha_min = 0;
 		dst->m_alpha_max = 0;
+		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
 			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, dst->m_id, dst->m_TEX0.TBP0, 0, 0,
@@ -3771,6 +3775,7 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_valid_alpha_high = old_dst->m_valid_alpha_high;
 							dst->m_alpha_max = old_dst->m_alpha_max;
 							dst->m_alpha_min = old_dst->m_alpha_min;
+							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
 							if (GSDrawLog::IsActive()) [[unlikely]]
 							{
@@ -5739,6 +5744,8 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 			dst->m_valid_alpha_high |= src->m_valid_alpha_high;
 		dst->m_alpha_max = src->m_alpha_max;
 		dst->m_alpha_min = src->m_alpha_min;
+		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
+		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		dst->m_alpha_range |= src->m_alpha_range;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
@@ -5863,6 +5870,7 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		// Because we don't know the new alpha value which came from green, just go full paranoid.
 		tgt->m_alpha_min = 0;
 		tgt->m_alpha_max = 255;
+		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		tgt->m_alpha_range = true;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
@@ -7442,6 +7450,11 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 
 	Target* t = new Target(TEX0, type, GSVector2i(w, h), scale, texture);
 
+	// FetchSurface cleared the whole surface, so every alpha bit holds the value the constructor
+	// recorded as the range. Without the clear the contents are whatever the pool handed back.
+	if (clear && type == RenderTarget)
+		t->m_alpha_known = GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min));
+
 	g_texture_cache->m_target_memory_usage += t->m_texture->GetMemUsage();
 
 	g_texture_cache->m_dst[type].push_front(t);
@@ -8398,6 +8411,9 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			m_alpha_max = alpha_minmax.second;
 		}
 
+		m_alpha_known = GSAlphaKnownBits::AfterUpload(
+			m_alpha_known, alpha_minmax.first, alpha_minmax.second, full_alpha_upload);
+
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;
 	}
 
@@ -8521,6 +8537,20 @@ void GSTextureCache::Target::UpdateDrawn(const GSVector4i& rect, bool can_update
 	}
 }
 
+void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) const
+{
+#ifdef PCSX2_DEVBUILD
+	if (!GSAlphaKnownBits::RangeAdmits(m_alpha_min, m_alpha_max, m_alpha_known))
+	{
+		Console.Error("TC: target %u alpha known bits %02x=%02x contradict range %d-%d at %s", m_id,
+			m_alpha_known.bits, m_alpha_known.value, m_alpha_min, m_alpha_max, site);
+		pxFailRel("alpha known bits contradict the alpha range");
+	}
+#else
+	(void)site;
+#endif
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
@@ -8554,6 +8584,9 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 
 	// Growth matters to any claim of the form "every pixel of this target holds X": the
 	// pixels the rect just gained have had nothing written to them.
+	if (!m_valid.eq(old_valid))
+		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
+
 	if (GSDrawLog::IsActive() && !m_valid.eq(old_valid)) [[unlikely]]
 	{
 		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventValidGrow, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
@@ -8633,6 +8666,10 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 
 	m_texture = tex;
 	m_unscaled_size = new_unscaled_size;
+
+	// The pixels a larger allocation gained are the zero it was cleared to.
+	if (clear)
+		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
 
 	UpdateTextureDebugName();
 

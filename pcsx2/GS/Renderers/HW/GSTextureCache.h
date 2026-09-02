@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
+#include "GS/Renderers/HW/GSAlphaKnownBits.h"
 
 #include <array>
 #include <deque>
@@ -244,6 +245,13 @@ public:
 		int m_alpha_min = 0;
 		bool m_alpha_range = false;
 
+		/// Which alpha bits every pixel in m_valid is known to hold, and what they hold. A strict
+		/// refinement of m_alpha_min/max, maintained beside it at the same sites: the range cannot
+		/// carry a bit through a partial alpha mask and this can. Nothing reads it but the exact
+		/// FBMSK-drop rule -- the range stays authoritative for DATE, alpha scaling and source
+		/// seeding. See GSAlphaKnownBits.h.
+		GSAlphaKnownBits::Known m_alpha_known;
+
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;
@@ -279,6 +287,10 @@ public:
 
 		void ScaleRTAlpha();
 		void UnscaleRTAlpha();
+
+		/// Devbuild tripwire for m_alpha_known drifting away from m_alpha_min/max. Cheap, and a
+		/// no-op outside devbuilds.
+		void AssertAlphaKnownAgreesWithRange(const char* site) const;
 
 		void Update(bool cannot_scale = false);
 

@@ -847,6 +847,7 @@
     <ClInclude Include="GS\GSVector8.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertex.h" />
     <ClInclude Include="GS\Renderers\HW\GSVertexHW.h" />
+    <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
