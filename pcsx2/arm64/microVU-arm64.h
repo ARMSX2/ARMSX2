@@ -115,7 +115,9 @@
 //       changes shape too), ADD and SUB mask their operands through the guard
 //       mask, and the divide unit and all thirteen EFU ops become out-of-line
 //       model calls.
-static constexpr u32 kMvuCompilerAbiVersion = 19;
+//  20 — the zero-divisor Q is 0x7FFFFFFF from vuClampMode 3 and maxvals below,
+//       so DIV and RSQRT carry the signbit/maxvals pair again at modes 0-2.
+static constexpr u32 kMvuCompilerAbiVersion = 20;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

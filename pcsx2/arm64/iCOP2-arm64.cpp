@@ -2961,12 +2961,20 @@ void recCOP2_VDIV()
 	{
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 
-		// Q saturates at the EE's largest single, 0x7FFFFFFF, signed by the xor
-		// of the operands (FPU.cpp's checkDivideByZero). Written before the flag
-		// temps below claim w1 and w2.
+		// The console word goes out only where the FMAC models it (mVU_DIV's
+		// zero path). Written before the flag temps claim w1 and w2; RWSCRATCH
+		// is free until the statusflag load past the Csel.
 		armAsm->Eor(a64::w3, a64::w1, a64::w2);
 		armAsm->And(a64::w3, a64::w3, 0x80000000);
-		armAsm->Orr(a64::w3, a64::w3, 0x7FFFFFFF);
+		if (cop2ExactDivUnit())
+		{
+			armAsm->Orr(a64::w3, a64::w3, 0x7FFFFFFF);
+		}
+		else
+		{
+			armAsm->Mov(RWSCRATCH, 0x7F7FFFFFu);
+			armAsm->Orr(a64::w3, a64::w3, RWSCRATCH);
+		}
 		armAsm->Str(a64::w3, armVU0Mem(&VU0.q));
 
 		// 0/0 is invalid (D flag = 0x10), else divide-by-zero (I flag = 0x20).
@@ -3119,7 +3127,16 @@ void recCOP2_VRSQRT()
 	{
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->And(a64::w2, a64::w1, 0x80000000);
-		armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
+		// w3, not RWSCRATCH: the status word is live across this.
+		if (cop2ExactDivUnit())
+		{
+			armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
+		}
+		else
+		{
+			armAsm->Mov(a64::w3, 0x7F7FFFFFu);
+			armAsm->Orr(a64::w2, a64::w2, a64::w3);
+		}
 
 		armAsm->Tst(a64::w1, kEeExpMask);
 		armAsm->Mov(a64::w1, 0x10);

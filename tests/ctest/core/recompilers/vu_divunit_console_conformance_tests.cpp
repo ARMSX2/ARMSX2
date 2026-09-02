@@ -29,9 +29,9 @@
 //   Q. Settled on the interpreters, which read the EE's divide-unit model and
 //   match every row. The recompilers run a host divide, so their two gaps --
 //   the ceiling and the arithmetic -- are pinned as exact tallies instead, for
-//   whoever emits the model there to move. Both engines' zero-divisor paths
-//   return the console's 0x7FFFFFFF; what still comes back a binade low is
-//   every quotient either engine reaches by dividing.
+//   whoever emits the model there to move. microVU's ceiling closes at
+//   vuClampMode 3 and the macro path's at 4; the arithmetic closes at 4 on
+//   both.
 
 #include <gtest/gtest.h>
 
@@ -240,12 +240,9 @@ TEST(VuDivUnitConsole, InterpreterQMatchesConsoleOnEveryRow)
 	EXPECT_EQ(micro, 422);
 }
 
-// The console's saturated quotient is the EE maximum 0x7FFFFFFF. Where a
-// recompiler writes that word outright -- the zero-divisor branch -- it can
-// carry it, and all four of recCOP2_VDIV, recCOP2_VRSQRT, mVU_DIV and mVU_RSQRT
-// do. Where it arrives by dividing, the ceiling is whatever the host clamp
-// holds -- FLT_MAX, one binade lower -- and that is all `sat` has left: the
-// same fourteen rows on either engine. The sign is not part of the
+// The console's saturated quotient is the EE maximum 0x7FFFFFFF. At the harness
+// default neither recompiler ceiling reaches it, the zero-divisor branch's
+// included, so `sat` is nearly every saturated row. The sign is not part of the
 // difference, so the class is defined with the sign carried over -- which is
 // what makes it a statement about the clamp and not a place for a sign bug to
 // hide. What is left over is the host divide's arithmetic.
@@ -260,15 +257,15 @@ TEST(VuDivUnitConsole, OnlyDividedQuotientsSaturateABinadeLowOfTheConsole)
 	// Rows that saturate on the console and come back as something other than
 	// the sign-matched ceiling fall in `unit` below rather than being counted as
 	// clamp misses.
-	EXPECT_EQ(mj.sat, 14);
-	EXPECT_EQ(uj.sat, 14);
+	EXPECT_EQ(mj.sat, 224);
+	EXPECT_EQ(uj.sat, 176);
 
 	// The arithmetic gap left once the ceiling is accounted for.
 	EXPECT_EQ(mj.unit, 86);
 	EXPECT_EQ(uj.unit, 82);
 
-	EXPECT_EQ(mj.ok, 402);
-	EXPECT_EQ(uj.ok, 326);
+	EXPECT_EQ(mj.ok, 192);
+	EXPECT_EQ(uj.ok, 164);
 
 	EXPECT_EQ(mj.ok + mj.sat + mj.unit, static_cast<int>(std::size(kVursCases)));
 	EXPECT_EQ(uj.ok + uj.sat + uj.unit, 422);
@@ -293,8 +290,12 @@ TEST(VuDivUnitConsole, TheDivideUnitsArithmeticLandsAtClampModeFour)
 
 		if (mode < 4)
 		{
-			EXPECT_EQ(s.macro.sat, 14);
-			EXPECT_EQ(s.micro.sat, 14);
+			// microVU's zero-divisor branch reaches the console word from mode 3,
+			// where mVUclamp2 bounds it back to a number sign-preservingly; the
+			// macro path's q-forms have no operand clamp, so its ceiling waits
+			// for the model.
+			EXPECT_EQ(s.macro.sat, 224);
+			EXPECT_EQ(s.micro.sat, mode < 3 ? 176 : 14);
 			EXPECT_EQ(s.macro.unit, 86);
 			EXPECT_EQ(s.micro.unit, 82);
 			continue;
