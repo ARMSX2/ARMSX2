@@ -223,6 +223,7 @@ private:
 	/// Whether this draw's alpha FBMSK can be cleared without changing a pixel, and if not, why.
 	/// Feeds the ledger column so a run can be audited for how often the drop applies.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
+	void ResolveUnionAlphaDrop();
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
 	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
 	u32 RequestedAlphaFbMask() const
@@ -251,7 +252,8 @@ private:
 
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
 		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-		GSAlphaKnownBits::Known& rt_new_alpha_known, GSAlphaKnownBits::Reason& rt_new_alpha_reason);
+		GSAlphaKnownBits::Known& rt_new_alpha_known, GSAlphaKnownBits::Reason& rt_new_alpha_reason,
+		bool& rt_new_alpha_via_union);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
 		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
@@ -369,6 +371,17 @@ private:
 	// The alpha byte of FBMSK that the exact alpha drop cleared out of this draw, or
 	// GSDrawAlphaMask::NothingDropped. Reset per draw by ResetStates().
 	int m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
+
+	// An exact alpha drop whose exactness rests on the sprite-union cover, held over the blend
+	// selection. While fbmask is non-zero the shader has no mask but the blend decisions read the
+	// barrier that mask would have required, so the blend road cannot move because of the drop.
+	// ResolveUnionAlphaDrop() settles it. Reset per draw by ResetStates().
+	struct UnionAlphaDrop
+	{
+		u32 fbmask = 0; ///< FBMSK as the draw asked for it; zero means nothing is held
+		u32 ps_fbmask = 0; ///< the shader's four-channel nibble for that mask
+	};
+	UnionAlphaDrop m_union_alpha_drop;
 
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;

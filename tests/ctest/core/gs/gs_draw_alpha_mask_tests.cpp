@@ -181,3 +181,11 @@ TEST(GSDrawAlphaMask, TheClaimIsExactlyTheTwoMasksTogether)
 			<< "dropped " << alpha_mask;
 	}
 }
+
+TEST(GSDrawAlphaMask, AHeldDropStandsOnlyWhenTheBlendNeedsNoBarrier)
+{
+	// The drop's whole value is the barrier it removes. A blend that needs one for its own
+	// reasons has it either way, so the drop buys nothing and the draw goes back to its mask.
+	EXPECT_TRUE(DropStandsAfterBlend(false));
+	EXPECT_FALSE(DropStandsAfterBlend(true));
+}

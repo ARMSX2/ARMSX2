@@ -2957,6 +2957,7 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				// The range is inherited; the per-bit knowledge is not, because what actually lands
 				// here depends on dirty rects and a possible format conversion.
 				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+				dst->m_alpha_known_via_union = false;
 				dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Inherit;
 				if (GSDrawLog::IsActive()) [[unlikely]]
 				{
@@ -3097,6 +3098,7 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_alpha_min = 0;
 		dst->m_alpha_max = 0;
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		dst->m_alpha_known_via_union = false;
 		dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Clobber;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
@@ -3792,6 +3794,7 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_alpha_max = old_dst->m_alpha_max;
 							dst->m_alpha_min = old_dst->m_alpha_min;
 							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+							dst->m_alpha_known_via_union = false;
 							dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Inherit;
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
 							if (GSDrawLog::IsActive()) [[unlikely]]
@@ -5763,6 +5766,7 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		dst->m_alpha_min = src->m_alpha_min;
 		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		dst->m_alpha_known_via_union = false;
 		dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Move;
 		dst->m_alpha_range |= src->m_alpha_range;
 		if (GSDrawLog::IsActive()) [[unlikely]]
@@ -5889,6 +5893,7 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		tgt->m_alpha_min = 0;
 		tgt->m_alpha_max = 255;
 		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		tgt->m_alpha_known_via_union = false;
 		tgt->m_alpha_known_reason = GSAlphaKnownBits::Reason::ChannelShuffle;
 		tgt->m_alpha_range = true;
 		if (GSDrawLog::IsActive()) [[unlikely]]
@@ -7475,6 +7480,7 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 	if (clear && type == RenderTarget)
 	{
 		t->m_alpha_known = GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min));
+		t->m_alpha_known_via_union = false;
 		t->m_alpha_known_reason = GSAlphaKnownBits::Reason::CreateCleared;
 	}
 
@@ -8452,6 +8458,8 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 		m_alpha_known = GSAlphaKnownBits::AfterUpload(
 			m_alpha_known, alpha_minmax.first, alpha_minmax.second, full_alpha_upload);
+		if (full_alpha_upload)
+			m_alpha_known_via_union = false;
 		m_alpha_known_reason = GSAlphaKnownBits::Reason::Upload;
 
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;

@@ -252,6 +252,14 @@ public:
 		/// seeding. See GSAlphaKnownBits.h.
 		GSAlphaKnownBits::Known m_alpha_known;
 
+		/// Whether what m_alpha_known currently holds rests on a sprite-union cover
+		/// (GSState::m_primitive_union_covers_rect). Sticky: a write that narrows the pair keeps
+		/// the provenance, one that replaces or destroys it sets its own. The exact FBMSK-drop
+		/// rule reads it to decide whether the drop it is about to take is one this target could
+		/// answer for before the union test existed -- a drop that predates it has already been
+		/// through the campaign's byte-identity gate and is not re-litigated here.
+		bool m_alpha_known_via_union = false;
+
 		/// What last set m_alpha_known. Census only -- see GSAlphaKnownBits::Reason. Maintained at
 		/// every site that assigns the pair, so the ledger can say why a draw found the target
 		/// unable to answer for the bits its mask holds back.

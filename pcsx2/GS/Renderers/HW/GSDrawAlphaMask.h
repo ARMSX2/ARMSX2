@@ -78,6 +78,19 @@ namespace GSDrawAlphaMask
 		return shader_masks_any_channel || requested_alpha_mask != 0;
 	}
 
+	/// Whether an exact alpha-mask drop that was held over the blend selection still stands.
+	///
+	/// A drop is worth taking for one thing: the barrier it removes, and with it, on a device with
+	/// no framebuffer fetch, the render-target clone the barrier becomes. So if the blend the draw
+	/// ended up with needs a barrier for its own reasons, the barrier is there whether the mask is
+	/// or not, and the drop has bought nothing -- the draw is better off back on the road it asked
+	/// for, with the same shader, the same blend and the same pixels it had before the rule
+	/// existed. `blend_requires_barrier` is the post-selection barrier state, one or full.
+	inline constexpr bool DropStandsAfterBlend(bool blend_requires_barrier)
+	{
+		return !blend_requires_barrier;
+	}
+
 	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
 	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
 	/// target's alpha stays describable without reading the mask.

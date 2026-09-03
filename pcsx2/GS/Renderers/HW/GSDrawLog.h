@@ -187,6 +187,12 @@ namespace GSDrawLog
 		u8 exact_alpha_src_lo;
 		u8 exact_alpha_src_hi;
 
+		/// UnionAlphaDrop: what became of an exact alpha drop that rested on the sprite-union
+		/// cover and was therefore held over the blend selection. Zero on every draw that held
+		/// none, which is every draw whose target could already answer for the bits its mask
+		/// holds back.
+		u8 union_alpha_drop;
+
 		/// BlendFactorAlpha: which variant of the blend-mix factor-in-alpha road this draw was on,
 		/// and whether the exact alpha drop refused it the primary output's alpha byte. Only ever
 		/// non-zero on a GPU with no dual-source blend unit.
@@ -428,6 +434,17 @@ namespace GSDrawLog
 		BlendFactorAlphaRefusedScaled, ///< would have scaled a target the exact alpha drop is keeping
 	};
 
+	/// What became of an exact alpha drop held over the blend selection. The drop stands when the
+	/// blend the draw ended up with needs no barrier of its own; it goes back to the mask it asked
+	/// for when the blend needs one anyway, because then the barrier is there either way and the
+	/// drop would buy nothing.
+	enum UnionAlphaDrop : u8
+	{
+		UnionAlphaDropNone = 0, ///< nothing was held: the drop, if any, did not rest on the union cover
+		UnionAlphaDropStood, ///< held, and kept: no mask, no barrier, no clone
+		UnionAlphaDropRestored, ///< held, and put back: the blend needed a barrier regardless
+	};
+
 	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.
 	///
 	/// The distinction that matters is whether the alpha write reached the bits it wrote
@@ -515,6 +532,9 @@ namespace GSDrawLog
 	/// Records which blend-mix factor-in-alpha road the draw took, on the open row. See
 	/// BlendFactorAlpha.
 	void NoteBlendFactorAlpha(u8 road);
+
+	/// Records what became of a held exact alpha drop, on the open row. See UnionAlphaDrop.
+	void NoteUnionAlphaDrop(u8 outcome);
 
 	/// Records one primitive of a draw whose rectangle contains the target's valid rect and whose
 	/// gapless test refused it, as its own appended row. Coordinates in 1/16 pixel units with
