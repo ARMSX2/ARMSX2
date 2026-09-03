@@ -29,6 +29,9 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_host_pointer(move.m_host_pointer)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_wait_site(move.m_wait_site)
+	, m_non_coherent(move.m_non_coherent)
+	, m_flush_calls(move.m_flush_calls)
+	, m_flush_bytes(move.m_flush_bytes)
 {
 	move.m_size = 0;
 	move.m_current_offset = 0;
@@ -37,6 +40,9 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	move.m_allocation = VK_NULL_HANDLE;
 	move.m_buffer = VK_NULL_HANDLE;
 	move.m_host_pointer = nullptr;
+	move.m_non_coherent = false;
+	move.m_flush_calls = 0;
+	move.m_flush_bytes = 0;
 }
 
 VKStreamBuffer::~VKStreamBuffer()
@@ -58,6 +64,9 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_host_pointer, move.m_host_pointer);
 	std::swap(m_tracked_fences, move.m_tracked_fences);
 	std::swap(m_wait_site, move.m_wait_site);
+	std::swap(m_non_coherent, move.m_non_coherent);
+	std::swap(m_flush_calls, move.m_flush_calls);
+	std::swap(m_flush_bytes, move.m_flush_bytes);
 
 	return *this;
 }
@@ -107,6 +116,16 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	if (GSConfig.StreamRingsHostCached)
 		aci.preferredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
+	// Arm A2. On aarch64 Turnip a cached type is always offered and a cached COHERENT one only
+	// sometimes, so the preference above can silently resolve to the same write-combined type it
+	// started on. Requiring HOST_CACHED takes the cached type whether or not it is coherent;
+	// coherence stays in the preferred set, so where a cached coherent type exists this lands on
+	// the same type arm A does. The cost of the non-coherent case is that CommitMemory's
+	// vmaFlushAllocation stops being a no-op and starts cleaning the range just written, which is
+	// the flush the spec requires before the GPU reads it -- counted below and printed at teardown.
+	if (GSConfig.StreamRingsCachedNonCoherent)
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
 	VmaAllocationInfo ai = {};
 	VkBuffer new_buffer = VK_NULL_HANDLE;
 	VmaAllocation new_allocation = VK_NULL_HANDLE;
@@ -125,6 +144,9 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// with it instead of needing a separate probe.
 	VkMemoryPropertyFlags mem_flags = 0;
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
+	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
+	m_flush_calls = 0;
+	m_flush_bytes = 0;
 	// Bytes, not KiB: the expand-index ring is four bytes when AA1 is off, and "0 KiB" reads as a
 	// failed allocation.
 	Console.WriteLn("GS/Vulkan: stream ring %s, %u bytes, memory type %u (%s)%s",
@@ -148,6 +170,13 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 
 void VKStreamBuffer::Destroy(bool defer)
 {
+	if (m_flush_calls != 0)
+	{
+		Console.WriteLn("GS/Vulkan: stream ring %s ran non-coherent: %llu flushes, %llu bytes cleaned",
+			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(m_wait_site)),
+			static_cast<unsigned long long>(m_flush_calls), static_cast<unsigned long long>(m_flush_bytes));
+	}
+
 	if (m_buffer != VK_NULL_HANDLE)
 	{
 		if (defer)
@@ -163,6 +192,9 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_buffer = VK_NULL_HANDLE;
 	m_allocation = VK_NULL_HANDLE;
 	m_host_pointer = nullptr;
+	m_non_coherent = false;
+	m_flush_calls = 0;
+	m_flush_bytes = 0;
 }
 
 bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
@@ -239,7 +271,16 @@ void VKStreamBuffer::CommitMemory(u32 final_num_bytes)
 	pxAssert((m_current_offset + final_num_bytes) <= m_size);
 	pxAssert(final_num_bytes <= m_current_space);
 
-	// For non-coherent mappings, flush the memory range
+	// For non-coherent mappings, flush the memory range. VMA skips the call entirely on a coherent
+	// type, so on every device that has ever run this it is one predictable branch and nothing
+	// else; the counters are here because on a non-coherent type it becomes a cache clean per
+	// commit -- once per draw on the vertex ring -- and a round that takes that road has to be
+	// able to say how many.
+	if (m_non_coherent)
+	{
+		m_flush_calls++;
+		m_flush_bytes += final_num_bytes;
+	}
 	vmaFlushAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, m_current_offset, final_num_bytes);
 
 	m_current_offset += final_num_bytes;

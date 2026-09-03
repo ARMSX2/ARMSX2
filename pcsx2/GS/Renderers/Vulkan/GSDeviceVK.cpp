@@ -5869,8 +5869,10 @@ bool GSDeviceVK::CreateBuffers()
 	// SCAFFOLDING for rung T1, deleted with the two keys it names. A device round that reports a
 	// null result has to be able to prove the arm it thought it was running actually arrived: an
 	// override that never reaches GSConfig looks exactly like a change that did nothing.
-	Console.WriteLn("GS/Vulkan: rung T1 arms: StreamRingsHostCached=%s StreamRingsPlainStores=%s",
-		GSConfig.StreamRingsHostCached ? "on" : "off", GSConfig.StreamRingsPlainStores ? "on" : "off");
+	Console.WriteLn("GS/Vulkan: rung T1 arms: StreamRingsHostCached=%s StreamRingsCachedNonCoherent=%s "
+					"StreamRingsPlainStores=%s",
+		GSConfig.StreamRingsHostCached ? "on" : "off", GSConfig.StreamRingsCachedNonCoherent ? "on" : "off",
+		GSConfig.StreamRingsPlainStores ? "on" : "off");
 
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),

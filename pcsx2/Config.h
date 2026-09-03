@@ -947,6 +947,17 @@ struct Pcsx2Config
 					// scoped -- the rings are allocated once at device init, so a mid-session
 					// flip does nothing until the renderer restarts.
 					StreamRingsHostCached : 1,
+					// SCAFFOLDING for the same A/B, second arm, deleted in the same round.
+					// True makes HOST_CACHED a REQUIREMENT rather than a preference, so a
+					// device whose only cached type is non-coherent takes it anyway and pays
+					// the cache clean CommitMemory's vmaFlushAllocation then stops skipping.
+					// It exists because on aarch64 Turnip a cached type always exists and the
+					// coherent one does not: whether the coherent one is offered depends on
+					// the kernel and the GPU, so without this arm a null result cannot be told
+					// from "there was no cached coherent type to move to". Implies the
+					// preference above; coherence is still preferred, so where a cached
+					// coherent type exists both arms land on it.
+					StreamRingsCachedNonCoherent : 1,
 					// SCAFFOLDING for the SD662-tier rung T1 store-path A/B, and deleted in
 					// the round that decides it. True copies a draw's vertices into the ring
 					// with a plain memcpy; false uses GSVector4i::storent, which on ARM64 is

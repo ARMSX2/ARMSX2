@@ -789,6 +789,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	HWROVLogging = false;
 	HWROVBarriersVK = false;
 	StreamRingsHostCached = false;
+	StreamRingsCachedNonCoherent = false;
 	StreamRingsPlainStores = false;
 	CoalesceRenderPasses = false;
 
@@ -1137,6 +1138,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(HWROVLogging);
 	SettingsWrapBitBool(HWROVBarriersVK);
 	SettingsWrapBitBool(StreamRingsHostCached);
+	SettingsWrapBitBool(StreamRingsCachedNonCoherent);
 	SettingsWrapBitBool(StreamRingsPlainStores);
 	SettingsWrapBitBool(CoalesceRenderPasses);
 	SettingsWrapIntEnumEx(AccurateBlendingUnit, "accurate_blending_unit");
