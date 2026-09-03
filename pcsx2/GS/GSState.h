@@ -7,6 +7,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/GSVertexKick.h"
+#include "GS/GSVertexKickKernel.h"
 #include "GS/GSBackQueue.h"
 #include "GS/GSDrawingContext.h"
 #include "GS/GSDrawingEnvironment.h"
@@ -93,8 +94,6 @@ private:
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZF2[8] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZ2[8] = {};
 
-	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
-	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
 	void GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r, u32 size);
 
 	template<int i> void ApplyTEX0(GIFRegTEX0& TEX0);
@@ -357,6 +356,29 @@ protected:
 
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
+
+	// The two fused packed-vertex handlers and the two batch shapes behind them.
+	// They sit here rather than with the other GIF handlers because the
+	// differential suite (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) drives both
+	// batch shapes through a GSState-derived probe and compares the results.
+	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
+	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
+	template<u32 prim, bool xyzf2> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, bool xyzf2> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, bool xyzf2> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
+	template<bool xyzf2> void SetLastParsedVertex(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
+	template<u32 prim> bool KickKernelApplies();
+
+	// Which arm the two fused handlers take. Nothing in the emulator writes this:
+	// it is not a settings key and not an env gate, it exists so the differential
+	// suite can drive one register run through both arms and compare every byte
+	// the kick leaves behind.
+	static bool s_fused_kick_use_kernel;
+
+	// Side table for the two-pass kernel: one 16-byte mirror entry per vertex of a
+	// chunk. A member rather than a kernel local so pass one's stores and pass
+	// two's loads reach it off a register base instead of the frame.
+	alignas(16) GSVertexKernels::CullMirrorEntry m_kick_side[GSVertexKickKernel::kChunkVertices] = {};
 
 	// following functions need m_vt to be initialized
 
