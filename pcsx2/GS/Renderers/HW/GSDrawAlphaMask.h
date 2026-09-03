@@ -58,6 +58,26 @@ namespace GSDrawAlphaMask
 		return requested != 0u && emulated == 0u;
 	}
 
+	/// Whether this draw's primary colour output alpha already carries a value of its own, so
+	/// nothing downstream may claim the byte for something else.
+	///
+	/// The blend-mix factor substitution does exactly that on a GPU with no dual-source blend unit:
+	/// with nothing keeping the pass's alpha, it overwrites the byte with the blend factor
+	/// (ps.blend_factor_in_alpha), or takes the target into RTA scaling so the byte already reads
+	/// as one. Its own guard was "no shuffle and no fbmask", which was complete until the exact
+	/// alpha drop started clearing ps.fbmask on a draw that still means to write a particular
+	/// alpha byte. Reading the mask the draw ASKED for closes it: a dropped draw counts as spoken
+	/// for, exactly as it did before the drop existed.
+	///
+	/// `shader_masks_any_channel` is the live ps.fbmask flag; `requested_alpha_mask` is
+	/// AsRequested() above. Neither the M2 nor any desktop GPU takes this road -- they all have a
+	/// dual-source blend unit -- so the coupling is only reachable on Mali and under
+	/// EmuCore/GS/DisableDualSourceBlend.
+	inline constexpr bool AlphaOutputIsSpokenFor(bool shader_masks_any_channel, u32 requested_alpha_mask)
+	{
+		return shader_masks_any_channel || requested_alpha_mask != 0;
+	}
+
 	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
 	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
 	/// target's alpha stays describable without reading the mask.

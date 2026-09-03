@@ -127,3 +127,57 @@ TEST(GSDrawAlphaMask, TheBitIsExactlyLeavingTheRoad)
 		}
 	}
 }
+
+// The third rule: who owns the primary colour output's alpha byte. On a GPU with no dual-source
+// blend unit the blend-mix factor substitution hands the blend unit its factor through that byte,
+// which is only sound when nothing else is keeping it. Its own guard asked ps.fbmask -- true until
+// the exact alpha drop started clearing that flag on a draw that is still writing a particular
+// alpha byte on purpose.
+
+TEST(GSDrawAlphaMask, AnUnmaskedDrawLeavesItsAlphaByteFree)
+{
+	// The road's whole population: no mask anywhere, nothing asked for. It must stay open, or the
+	// Mali blend-mix substitution stops working for the draws it was built for.
+	EXPECT_FALSE(AlphaOutputIsSpokenFor(false, 0));
+}
+
+TEST(GSDrawAlphaMask, AShaderMaskClaimsTheAlphaByte)
+{
+	// The pre-existing half of the guard, restated: any channel still masked in the shader.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(true, 0));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(true, 0x80));
+}
+
+TEST(GSDrawAlphaMask, ADroppedDrawStillClaimsTheAlphaByte)
+{
+	// The hole. The shader carries no mask -- the drop cleared it -- and the byte it writes is
+	// exactly the one the mask was protecting. Before this rule the factor road saw an unmasked
+	// draw and took the byte.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x80));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x7F));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x01));
+}
+
+TEST(GSDrawAlphaMask, TheClaimIsExactlyTheTwoMasksTogether)
+{
+	// Stated over every pair, and tied to AsRequested so the two rules cannot drift: a draw that
+	// dropped nothing is spoken for on exactly the old condition, and one that dropped something is
+	// always spoken for.
+	for (u32 alpha_mask = 0; alpha_mask <= 0xFF; alpha_mask++)
+	{
+		for (int shader_masks = 0; shader_masks <= 1; shader_masks++)
+		{
+			const bool masks = shader_masks != 0;
+			// A draw that dropped nothing is spoken for exactly when the shader still masks
+			// something, which is the guard the road always had.
+			EXPECT_EQ(AlphaOutputIsSpokenFor(masks, AsRequested(NothingDropped, masks, alpha_mask)), masks)
+				<< "undropped, mask " << alpha_mask;
+		}
+
+		if (alpha_mask == 0)
+			continue;
+
+		EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(static_cast<int>(alpha_mask), false, 0)))
+			<< "dropped " << alpha_mask;
+	}
+}

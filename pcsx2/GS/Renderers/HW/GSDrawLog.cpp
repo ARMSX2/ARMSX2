@@ -149,6 +149,14 @@ namespace GSDrawLog
 		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
 	}
 
+	void NoteBlendFactorAlpha(u8 road)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		s_records[s_open_record].blend_factor_alpha = road;
+	}
+
 	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -452,6 +460,25 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetBlendFactorAlphaName(u8 road)
+	{
+		switch (road)
+		{
+			case BlendFactorAlphaFactor:
+				return "FACTOR";
+			case BlendFactorAlphaScaled:
+				return "SCALED";
+			case BlendFactorAlphaSoftware:
+				return "SW";
+			case BlendFactorAlphaRefusedFactor:
+				return "REFUSED_FACTOR";
+			case BlendFactorAlphaRefusedScaled:
+				return "REFUSED_SCALED";
+			default:
+				return "";
+		}
+	}
+
 	static const char* GetTFXCallKindName(u8 kind)
 	{
 		switch (kind)
@@ -537,7 +564,7 @@ namespace GSDrawLog
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
-			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,"
+			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,blend_factor_alpha,"
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
 			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
@@ -700,6 +727,8 @@ namespace GSDrawLog
 			{
 				std::fprintf(fp.get(), ",,,");
 			}
+
+			std::fprintf(fp.get(), "%s,", GetBlendFactorAlphaName(r.blend_factor_alpha));
 
 			if (r.flags2 & Flags2TFXCall)
 			{

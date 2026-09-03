@@ -7553,7 +7553,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	const bool blend_mix1_rewrites_src1 =
 		(m_conf.ps.blend_b == m_conf.ps.blend_d && (alpha_c0_high_min_one || alpha_c1_high_min_one || alpha_c2_high_one)) ||
 		(m_conf.ps.blend_a == m_conf.ps.blend_d);
-	const bool blend_mix_factor_is_alpha =
+	const bool blend_mix_factor_road =
 		!features.dual_source_blend && blend_mix && blend_mix1 && !blend_mix2 && !blend_mix3 &&
 		!blend_mix1_rewrites_src1 && !blend_ad_alpha_masked && !PABE &&
 		// Only As reaches the blend unit through SRC1; Ad and Af already use DST_ALPHA/CONST_COLOR.
@@ -7562,6 +7562,15 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 		!m_conf.ps.shuffle && !m_conf.ps.fbmask &&
 		// So does an alpha test that feeds the target's old alpha back into the output.
 		m_conf.ps.afail != PS_AFAIL::RGB_ONLY && m_conf.ps.afail != PS_AFAIL::RGB_ONLY_SW_Z;
+
+	// And so does an alpha framebuffer mask the exact alpha drop cleared. `ps.fbmask` above is the
+	// mask the SHADER still emulates; a dropped draw has none and yet is writing a particular
+	// alpha byte on purpose -- the one the mask used to protect. Claiming that byte for the blend
+	// factor, or taking the target into RTA scaling so it reads as one, would put the wrong value
+	// in the framebuffer on exactly the draws the drop promised not to change.
+	const bool alpha_output_spoken_for =
+		GSDrawAlphaMask::AlphaOutputIsSpokenFor(m_conf.ps.fbmask != 0, RequestedAlphaFbMask());
+	const bool blend_mix_factor_is_alpha = blend_mix_factor_road && !alpha_output_spoken_for;
 
 	// The alpha the shader would write is already the factor when the target holds its alpha
 	// double-scaled: tfx computes both alpha_blend and o_col0.a as C.a/128 under RTA correction. So
@@ -7584,6 +7593,35 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 		blend_mix_factor_is_alpha && !blend_mix_factor_fits_dst_alpha &&
 		(m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY);
 
+	if (GSDrawLog::IsActive()) [[unlikely]]
+	{
+		// Census for the coupling above: which variant of the factor road this draw is on, and
+		// whether the exact alpha drop took it away. The two variants are recomputed here without
+		// the exclusion so a refusal can be told from a draw that was never on the road at all.
+		u8 road = GSDrawLog::BlendFactorAlphaNone;
+		if (blend_mix_factor_road)
+		{
+			const bool fits = m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_context->FBA.FBA &&
+			                  (rt->m_rt_alpha_scale || can_scale_rt_alpha);
+			const bool rides = !fits && (m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY);
+			if (fits)
+			{
+				road = alpha_output_spoken_for ? GSDrawLog::BlendFactorAlphaRefusedScaled :
+				                                 GSDrawLog::BlendFactorAlphaScaled;
+			}
+			else if (rides)
+			{
+				road = alpha_output_spoken_for ? GSDrawLog::BlendFactorAlphaRefusedFactor :
+				                                 GSDrawLog::BlendFactorAlphaFactor;
+			}
+			else
+			{
+				road = GSDrawLog::BlendFactorAlphaSoftware;
+			}
+		}
+		GSDrawLog::NoteBlendFactorAlpha(road);
+	}
+
 	const bool force_sw_blending =
 		// If we have fbfetch, use software blending when we need the fb value for anything else.
 		// This saves outputting the second color when it's not needed.
@@ -7601,7 +7639,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 
 		// Force SW blending with barriers.
 		GSConfig.UseDebugBlend;
-	
+
 	if (force_sw_blending)
 	{
 		sw_blending = true;

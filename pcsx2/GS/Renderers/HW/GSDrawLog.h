@@ -134,6 +134,11 @@ namespace GSDrawLog
 		u8 exact_alpha_known_value;
 		u8 exact_alpha_known_reason;
 
+		/// BlendFactorAlpha: which variant of the blend-mix factor-in-alpha road this draw was on,
+		/// and whether the exact alpha drop refused it the primary output's alpha byte. Only ever
+		/// non-zero on a GPU with no dual-source blend unit.
+		u8 blend_factor_alpha;
+
 		/// TFX-call view. One GS draw can issue several TFX draw calls (the alpha second pass,
 		/// the blend multi-pass, the PrimID pre-pass), and the run rule Phase 5 is pricing
 		/// compares the identities the *device* binds, not the ones the PS2 registers name. So a
@@ -346,6 +351,21 @@ namespace GSDrawLog
 		ExactAlphaDropLoadBearing, ///< known and constant, and different: the mask is doing work
 	};
 
+	/// Which variant of the blend-mix factor-in-alpha road a draw was on. The road hands the blend
+	/// unit its factor through the primary colour output's alpha, which only works when nothing
+	/// else is keeping that byte -- and an exact alpha drop is keeping it, without
+	/// leaving ps.fbmask set to say so. The Refused values are that near-miss, counted so the
+	/// corpus can be asked whether the two ever co-occur.
+	enum BlendFactorAlpha : u8
+	{
+		BlendFactorAlphaNone = 0, ///< not on the road (or the GPU has a dual-source blend unit)
+		BlendFactorAlphaFactor, ///< the shader overwrites the alpha byte with the factor
+		BlendFactorAlphaScaled, ///< the target goes into RTA scaling so the byte already reads as one
+		BlendFactorAlphaSoftware, ///< on the road, but neither variant applies; blends in software
+		BlendFactorAlphaRefusedFactor, ///< would have overwritten a byte the exact alpha drop is keeping
+		BlendFactorAlphaRefusedScaled, ///< would have scaled a target the exact alpha drop is keeping
+	};
+
 	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.
 	///
 	/// The distinction that matters is whether the alpha write reached the bits it wrote
@@ -427,6 +447,10 @@ namespace GSDrawLog
 	/// Records which target the draw is about to write and how it touched its alpha, on the
 	/// open row. Read where CalculateAlphaRange already has all of it in hand.
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask);
+
+	/// Records which blend-mix factor-in-alpha road the draw took, on the open row. See
+	/// BlendFactorAlpha.
+	void NoteBlendFactorAlpha(u8 road);
 
 	/// Records what the exact alpha-mask-drop rule decided, on the open row, together with the
 	/// target's known-bits pair and what last set it. See ExactAlphaDrop.
