@@ -125,8 +125,10 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// with it instead of needing a separate probe.
 	VkMemoryPropertyFlags mem_flags = 0;
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
-	Console.WriteLn("GS/Vulkan: stream ring %s, %u KiB, memory type %u (%s)%s",
-		GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), size / 1024u, ai.memoryType,
+	// Bytes, not KiB: the expand-index ring is four bytes when AA1 is off, and "0 KiB" reads as a
+	// failed allocation.
+	Console.WriteLn("GS/Vulkan: stream ring %s, %u bytes, memory type %u (%s)%s",
+		GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), size, ai.memoryType,
 		DescribeMemoryProperties(mem_flags).c_str(),
 		(mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "" : " -- NON-COHERENT, CommitMemory's flush is live");
 
