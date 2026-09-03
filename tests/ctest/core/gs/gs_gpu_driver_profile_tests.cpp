@@ -13,9 +13,12 @@
 // So every driver identity we key a rule on gets pinned here from the exact strings the device
 // reports, captured from an emulog rather than reconstructed by hand.
 
+#include "GS/GSUtil.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
 
 #include <gtest/gtest.h>
+
+#include <string>
 
 namespace
 {
@@ -35,12 +38,14 @@ constexpr u32 PackVulkanVersion(u32 major, u32 minor, u32 patch)
 	return (major << 22) | (minor << 12) | patch;
 }
 
-GpuProfileSelection ResolveGL(const char* vendor, const char* renderer, const char* version)
+GpuProfileSelection ResolveGL(const char* vendor, const char* renderer, const char* version,
+	std::string_view platform_hints = std::string_view())
 {
 	MobileDriverContext context;
 	context.api = MobileGpuApi::OpenGL;
 	context.driver_name = renderer;
 	context.api_version_string = version;
+	context.platform_hints = platform_hints;
 	return GpuProfileDetector::Resolve("auto", vendor, renderer, context);
 }
 
@@ -77,6 +82,21 @@ bool DeniesRoaaDestinationRead(const GpuProfileSelection& sel)
 bool TakesTheRenderTargetCopyPath(const GpuProfileSelection& sel)
 {
 	return sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
+}
+
+bool DatabasePrefersVulkan(const GpuProfileSelection& sel)
+{
+	return sel.driver.UsesWorkaround(DriverWorkaround::PreferVulkanRenderer);
+}
+
+// The Auto renderer decision itself, run the way the Android app runs it -- the GL strings the
+// device reports, plus the SoC hint the platform would have supplied. Android passes no hints and
+// lets the resolver read the system properties; the tests pass them so a device can be pinned from
+// a desktop.
+bool AutoPrefersVulkan(const char* vendor, const char* renderer, const char* version,
+	std::string_view platform_hints = std::string_view())
+{
+	return GSUtil::AndroidAutoPrefersVulkan(vendor, renderer, version, platform_hints);
 }
 } // namespace
 
@@ -323,4 +343,94 @@ TEST(GSGpuDriverProfile, ProprietaryQualcommKeepsItsStencilBuffer)
 
 	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
 	EXPECT_FALSE(KillsTheStencilBuffer(sel));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Auto renderer on the MT6897, and the rule that steers it.
+//
+// Auto sent this device to OpenGL for as long as it has existed, and correctly so: its GL driver
+// runs GL_ARM_shader_framebuffer_fetch, and the Vulkan side was denied the in-tile destination
+// read by two rules above, which left every source-alpha blend copying the render target. Both
+// denies now exempt this SoC, so the Vulkan road reads the destination in tile memory and a full
+// 22-dump device round came out 21 of 22 titles under budget at p95 (geometric mean frame time
+// 6.17 ms against 7.93 before). That makes Vulkan the better default here, and the two facts are
+// one decision -- so the steering rule keys on the SAME SoC hint as the exemptions do.
+//
+// The failure this pins is drift between them: an exemption narrowed or a hint respelled on one
+// side and not the other leaves the device on the renderer whose fast path it no longer has, and
+// nothing in a log or a frame says so.
+
+// The rule is a preference, not a defect: no bug bit, no copy path, and it is declared on the
+// OPENGL side because the Auto decision is made from GL strings before any Vulkan device exists.
+TEST(GSGpuDriverProfile, Mt6897CarriesTheVulkanPreferenceOnTheOpenGLPath)
+{
+	const GpuProfileSelection android =
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897AndroidHints);
+	const GpuProfileSelection linux_dt =
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints);
+
+	EXPECT_TRUE(DatabasePrefersVulkan(android));
+	EXPECT_TRUE(DatabasePrefersVulkan(linux_dt));
+	// The GL road it leaves behind is untouched: no bug claimed, no render-target copy imposed.
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(android));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(android));
+}
+
+// The exclusion half. A hint_require that matched too loosely would move every MediaTek Mali
+// device -- or every Mali device -- to a renderer none of them was measured on.
+TEST(GSGpuDriverProfile, OtherMaliPartsCarryNoVulkanPreference)
+{
+	EXPECT_FALSE(DatabasePrefersVulkan(
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kOtherMediaTekHints)));
+	EXPECT_FALSE(DatabasePrefersVulkan(
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion)));
+	// The rule is keyed on the vendor as well as the SoC, and both keys carry weight: a part that
+	// is not Mali does not inherit the preference even standing on the measured chipset.
+	EXPECT_FALSE(DatabasePrefersVulkan(
+		ResolveGL("Qualcomm", "Adreno (TM) 650", "OpenGL ES 3.2 V@0676.0", kMt6897AndroidHints)));
+}
+
+// And the Vulkan path never sees it: the rule answers a question only the GL-side resolution is
+// ever asked, and a copy of it on the Vulkan side would be a second place for the two to disagree.
+TEST(GSGpuDriverProfile, TheVulkanPreferenceDoesNotReachTheVulkanPath)
+{
+	EXPECT_FALSE(DatabasePrefersVulkan(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints)));
+}
+
+// The decision as the app makes it, end to end. Both SoC spellings resolve Auto to Vulkan.
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMt6897)
+{
+	EXPECT_TRUE(AutoPrefersVulkan(
+		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897AndroidHints));
+	EXPECT_TRUE(AutoPrefersVulkan(
+		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints));
+}
+
+// The other polarity, which is the one that costs a whole device class if it is wrong: every other
+// Mali part keeps OpenGL, including the same driver revision on a different MediaTek SoC and the
+// same strings with no SoC hint at all. Sending an unmeasured Mali to Vulkan re-ships the 2.6.6.5
+// complaint in the opposite direction -- the GL fetch path there is the fast one.
+TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForEveryOtherMaliPart)
+{
+	EXPECT_FALSE(AutoPrefersVulkan(
+		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kOtherMediaTekHints));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G715",
+		"OpenGL ES 3.2 v1.r46p0-01eac0.deadbeefdeadbeefdeadbeefdeadbeef", kOtherMediaTekHints));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G57 MC2",
+		"OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef"));
+}
+
+// Adreno was steered to Vulkan long before any of this and must still be, for its own reason. The
+// risk is ordering: a new term added ahead of the vendor test that answered first would change
+// which reason the log reports for a device whose answer did not change.
+TEST(GSGpuDriverProfile, AutoStillResolvesToVulkanOnAdrenoForItsOwnReason)
+{
+	EXPECT_TRUE(AutoPrefersVulkan("Qualcomm", "Adreno (TM) 650", "OpenGL ES 3.2 V@0676.0"));
+	EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("Adreno"), std::string::npos);
+
+	EXPECT_TRUE(AutoPrefersVulkan(
+		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897AndroidHints));
+	EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("SoC"), std::string::npos);
 }

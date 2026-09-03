@@ -166,6 +166,17 @@ enum class DriverWorkaround : u8
 	/// a depth-stencil attachment rather than merely rendering it wrong; DATE falls back to
 	/// primitive-ID tracking, then Full, then Off.
 	DisableStencilBuffer,
+	/// Steer the Auto renderer to Vulkan on this part. Declared by a rule on the OPENGL side,
+	/// because the Auto decision asks the database through the GL strings the app probes at
+	/// startup -- there is no Vulkan device yet when it is made.
+	///
+	/// The odd one out in this enum: it answers "which of the device's two roads is the better
+	/// one", not "what do we do about a defect". It lives here anyway because the Auto decision
+	/// already reads a workaround bit (UseRenderTargetCopyForFeedback: a driver whose GL cannot
+	/// read the target in tile memory is better served by Vulkan), so this is the same mechanism
+	/// with a different reason rather than a second one. Nothing in either backend consumes it;
+	/// GSUtil::AndroidAutoPrefersVulkan is its only reader.
+	PreferVulkanRenderer,
 	Count,
 };
 

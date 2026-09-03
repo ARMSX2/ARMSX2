@@ -70,7 +70,22 @@ struct DriverRule
 	/// deliberately one-directional -- a rule can be narrowed by a device but never widened by
 	/// one, so no defect is ever claimed for hardware nobody measured.
 	const char* hint_exclude = nullptr;
+	/// The inclusion mirror of hint_exclude: a lowercase substring that must appear in the hints
+	/// for this rule to match at all. The only honest use is a rule that says something about ONE
+	/// measured part -- a preference, not a defect, since a defect narrowed to a single part is
+	/// better written as a version or model bound that other devices can also satisfy.
+	const char* hint_require = nullptr;
 };
+
+/// The SoC hint the Anbernic RG 477V reports, in the one spelling both platforms share: Android's
+/// ro.soc.model and ro.board.platform give "mt6897", the Linux device tree gives "mediatek,mt6897".
+///
+/// Three rules key on it -- the two that exempt this part from a destination-read deny, and the
+/// one that steers the Auto renderer to Vulkan on it -- and they are three parts of one decision,
+/// because the in-tile read is what makes Vulkan the better road here. Spelling the hint once
+/// means they cannot drift apart, which is the failure mode where a device keeps the renderer
+/// whose fast path it no longer has and nothing says so.
+constexpr const char* MEASURED_SOC_MT6897 = "mt6897";
 
 constexpr int CompareVersion(const MobileDriverVersion& lhs, VersionBound rhs)
 {
@@ -314,6 +329,8 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 {
 	if (rule.hint_exclude != nullptr && lowered_hints.find(rule.hint_exclude) != std::string_view::npos)
 		return false;
+	if (rule.hint_require != nullptr && lowered_hints.find(rule.hint_require) == std::string_view::npos)
+		return false;
 	if (rule.mediatek_soc_only && !selection.is_mediatek_soc)
 		return false;
 	if (rule.api != MobileGpuApi::Unknown && rule.api != profile.api)
@@ -356,7 +373,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 32> s_driver_rules = {{
+static constexpr std::array<DriverRule, 33> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -386,6 +403,22 @@ static constexpr std::array<DriverRule, 32> s_driver_rules = {{
 	// correct-rendering choice for the affected games. Restored 2026-08-12, this time on
 	// purpose. If a rule is ever re-added here, it also flips Auto back to Vulkan for these
 	// devices via GSUtil::AndroidAutoPrefersVulkan, which asks this table.
+	//
+	// Which is what the next rule does for one part, deliberately and for a different reason.
+	// MT6897 (Dimensity 8300, Mali-G615 MC6, Anbernic RG 477V) keeps a working GL fetch path --
+	// nothing above changes -- but its Vulkan road is now the faster one by a wide margin, so Auto
+	// sends it there. What earned it: this is the part exempted from the two destination-read
+	// denies below, so on Vulkan it reads the render target in tile memory instead of copying it,
+	// and a full 22-dump round on the device came out 21 of 22 titles under their frame budget at
+	// p95 with the geometric mean of frame time at 6.17 ms, against 7.93 before the exemption.
+	// The GL road was never measured against that and has no equivalent of the copies it removes.
+	//
+	// A preference, then, not a defect: no bug bit, and the GL backend's own behaviour on this
+	// device is untouched. It is stated as a rule rather than a branch in GSUtil so that it keys
+	// on the same SoC hint as the two exemptions and cannot drift away from them.
+	{"gl-mt6897-prefer-vulkan", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		0, Workaround(DriverWorkaround::PreferVulkanRenderer), false, nullptr, MEASURED_SOC_MT6897},
 	{"gl-qualcomm-compiler", MobileGpuApi::OpenGL, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenNegatedBoolean) |
@@ -476,7 +509,7 @@ static constexpr std::array<DriverRule, 32> s_driver_rules = {{
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
-		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, "mt6897"},
+		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, MEASURED_SOC_MT6897},
 	// The ROAA destination-read deny list. Both rules were an inline vendor test in
 	// GSDeviceVK::CheckFeatures until they moved here; the claim is unchanged. These parts
 	// advertise rasterization-order attachment access and return zero or stale destination colour
@@ -494,7 +527,7 @@ static constexpr std::array<DriverRule, 32> s_driver_rules = {{
 	// measured, and the destination read is correct there.
 	{"vk-mediatek-mali-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
-		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, "mt6897"},
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, MEASURED_SOC_MT6897},
 	// Mali-G57 across SoC vendors, which is why it is keyed on the model rather than on the SoC.
 	{"vk-arm-g57-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
