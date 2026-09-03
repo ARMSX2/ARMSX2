@@ -156,6 +156,11 @@ enum class DriverWorkaround : u8
 	RewriteUniformIndexing,
 	ForceFifoPresent,
 	AlignSwapchainWidthTo32,
+	/// Report no stencil buffer, so depth targets are created as plain D32_SFLOAT and neither a
+	/// stencil attachment nor the stencil DATE pre-pass is ever emitted. For drivers that hang on
+	/// a depth-stencil attachment rather than merely rendering it wrong; DATE falls back to
+	/// primitive-ID tracking, then Full, then Off.
+	DisableStencilBuffer,
 	Count,
 };
 

@@ -339,7 +339,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 29> s_driver_rules = {{
+static constexpr std::array<DriverRule, 30> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -476,6 +476,26 @@ static constexpr std::array<DriverRule, 29> s_driver_rules = {{
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
 		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
+	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a VK_FORMAT_D32_SFLOAT_S8_UINT
+	// depth-stencil attachment + a fragment shader that can discard. Enabling the stencil buffer
+	// makes every depth target D32S8, and GSDeviceVK::SetupDATE's stencil pre-pass quad is that
+	// draw exactly, so the first DATE draw of a run is enough. Round 20260903-0135 on an A650 /
+	// turnip 26.1.2: 8 of 8 titles lost the device in 6-9 s, and the devcoredump latches
+	// Z_MODE = A6XX_EARLY_Z_LATE_Z, DEPTH_FORMAT = DEPTH6_32 + SEPARATE_STENCIL and our DATM
+	// stencil op set -- decode in umbrella
+	// devs/bmdhacks/campaigns/gs-classic-tiler/phase3-adreno-stencil-date/CRASHDEC.md. Fixed by
+	// Mesa a70d2af590d ("tu/a6xx: Work around D32S8 EARLY_Z_LATE_Z hang", MR !41858), which
+	// demotes the z-mode to LATE_Z; in main and 26.2, in no 26.1.x.
+	//
+	// Turnip-bounded on purpose. This replaces a vendorID-wide `is_adreno` clause in
+	// GSDeviceVK::CheckFeatures whose own commit (05998bc5c4) recorded that it was left vendor-wide
+	// only because turnip was the only Adreno driver we shipped against; the proprietary blob was
+	// never tested for this and does not inherit turnip's bug. vk-adreno5xx-depth-stencil declares
+	// BrokenDepthStencilDiscard on its own evidence and deliberately does not take this workaround.
+	{"vk-turnip-d32s8-early-z-late-z-hang", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {26, 2, 0},
+		0, 0, true, Bug(DriverBug::BrokenDepthStencilDiscard),
+		Workaround(DriverWorkaround::DisableStencilBuffer)},
 	{"vk-qualcomm-pre-adreno8-readback", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 200, 799, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::SlowOptimalImageToBufferCopy),

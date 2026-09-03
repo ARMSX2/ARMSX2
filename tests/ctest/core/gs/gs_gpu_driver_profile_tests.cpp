@@ -137,3 +137,96 @@ TEST(GSGpuDriverProfile, OtherMaliOpenGLRevisionsKeepTheInTileRead)
 	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
 		ResolveGL("ARM", "Mali-G57 MC2", "OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef")));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Turnip's D32S8 EARLY_Z_LATE_Z hang, and the version window that ends it.
+//
+// The gate this pins used to be `if (is_adreno) stencil_buffer = false;` in
+// GSDeviceVK::CheckFeatures -- vendor-wide and driver-unbounded. Round 20260903-0135 turned it
+// into a fact (A650 / turnip 26.1.2, 8 of 8 titles lost the device, devcoredump latching
+// Z_MODE = A6XX_EARLY_Z_LATE_Z with DEPTH6_32 + SEPARATE_STENCIL) and Mesa a70d2af590d / MR !41858
+// ended it in 26.2, so the clause became a driver rule with a version window.
+//
+// Both edges are load-bearing. Too wide and a fixed driver keeps paying the PrimID DATE road for
+// a bug it no longer has; too narrow and an A650 on 26.1.x goes back to hanging the GPU within
+// seconds of the first DATE draw, with no diagnostic beyond a kernel hangcheck.
+namespace
+{
+// DRIVER_ID_MESA_TURNIP is 18, DRIVER_ID_QUALCOMM_PROPRIETARY is 8. Turnip reports Mesa's own
+// version in driverVersion, so 26.1.2 arrives as major 26, minor 1, patch 2 (raw 0x06801002).
+constexpr u32 kTurnipDriverId = 18;
+constexpr u32 kQualcommProprietaryDriverId = 8;
+constexpr u32 kAdrenoVendorId = 0x5143u;
+
+GpuProfileSelection ResolveAdrenoVK(const char* device_name, u32 driver_id, const char* driver_name,
+	u32 packed_version)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::Vulkan;
+	context.vendor_id = kAdrenoVendorId;
+	context.driver_id = driver_id;
+	context.driver_version = packed_version;
+	context.driver_name = driver_name;
+	return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+}
+
+bool KillsTheStencilBuffer(const GpuProfileSelection& sel)
+{
+	return sel.driver.UsesWorkaround(DriverWorkaround::DisableStencilBuffer);
+}
+} // namespace
+
+// The device the round ran on, at the version it ran at. This is the "did the rule stop firing"
+// guard: nothing else turns the stencil buffer off on an A650, so a rule that quietly matches
+// nothing puts the device straight back on the state that wedges it.
+TEST(GSGpuDriverProfile, TurnipBefore26_2KillsTheStencilBufferOnAdreno650)
+{
+	const GpuProfileSelection sel =
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2));
+
+	EXPECT_EQ(sel.runtime_profile, RuntimeGpuProfile::Adreno);
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
+	EXPECT_TRUE(sel.driver.version.known);
+	EXPECT_EQ(sel.driver.version.major, 26);
+	EXPECT_EQ(sel.driver.version.minor, 1);
+	EXPECT_TRUE(sel.driver.HasBug(DriverBug::BrokenDepthStencilDiscard));
+	EXPECT_TRUE(KillsTheStencilBuffer(sel));
+}
+
+// The upper edge. 26.2.0 is the first release carrying a70d2af590d, so it is the first release
+// that gets its stencil buffer -- and with it the one-quad stencil DATE road -- back.
+TEST(GSGpuDriverProfile, TurnipFrom26_2KeepsTheStencilBuffer)
+{
+	EXPECT_FALSE(KillsTheStencilBuffer(
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 2, 0))));
+	EXPECT_FALSE(KillsTheStencilBuffer(
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 3, 0))));
+	EXPECT_FALSE(KillsTheStencilBuffer(
+		ResolveAdrenoVK("Adreno (TM) 750", kTurnipDriverId, "turnip", PackVulkanVersion(27, 0, 0))));
+}
+
+// Older turnip is inside the window too, and a turnip that reports no usable version resolves as
+// "old" (match_unknown_version), because the failure mode on the wrong side of that guess is a
+// GPU hang rather than a slower DATE path.
+TEST(GSGpuDriverProfile, OlderAndUnversionedTurnipStayInsideTheWindow)
+{
+	EXPECT_TRUE(KillsTheStencilBuffer(
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(25, 3, 6))));
+	EXPECT_TRUE(KillsTheStencilBuffer(
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", 0)));
+}
+
+// The narrowing this rule makes, stated so it cannot happen by accident. The founding commit
+// (05998bc5c4) left the kill on the Adreno vendor ID and said why in its own notes: turnip was the
+// only Adreno driver we shipped against. The blob was never tested for this hang, the decoded
+// evidence is entirely turnip's, and an untested driver does not inherit another driver's bug --
+// so the proprietary stack keeps its stencil buffer. If a blob device ever reproduces the hang it
+// gets its own rule with its own evidence, not a widened version of this one.
+TEST(GSGpuDriverProfile, ProprietaryQualcommKeepsItsStencilBuffer)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVK(
+		"Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u);
+
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
+	EXPECT_FALSE(KillsTheStencilBuffer(sel));
+}

@@ -340,6 +340,7 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::RewriteUniformIndexing: return "RewriteUniformIndexing";
 		case DriverWorkaround::ForceFifoPresent: return "ForceFifoPresent";
 		case DriverWorkaround::AlignSwapchainWidthTo32: return "AlignSwapchainWidthTo32";
+		case DriverWorkaround::DisableStencilBuffer: return "DisableStencilBuffer";
 		case DriverWorkaround::Count:
 		default: return "Unknown";
 	}
