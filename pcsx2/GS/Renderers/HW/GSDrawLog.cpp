@@ -285,6 +285,22 @@ namespace GSDrawLog
 		rec.destination_alpha = static_cast<u8>(config.destination_alpha);
 		rec.colormask = static_cast<u8>(config.colormask.wrgba);
 		rec.barrier = config.require_full_barrier ? 2 : (config.require_one_barrier ? 1 : 0);
+		rec.blend_key = config.blend.key;
+		// Everything about the shader that says how this draw blends, in one word. blend_a..d and
+		// blend_mix are the software equations; blend_hw the hardware-assisted variants; a_masked,
+		// pabe and blend_factor_in_alpha the three things that change what the second output or
+		// the primary alpha carries; colclip and colclip_hw the wrap emulation the blend rides in.
+		rec.blend_ps = static_cast<u32>(config.ps.blend_a) | (static_cast<u32>(config.ps.blend_b) << 2) |
+		               (static_cast<u32>(config.ps.blend_c) << 4) | (static_cast<u32>(config.ps.blend_d) << 6) |
+		               (static_cast<u32>(config.ps.blend_hw) << 8) | (static_cast<u32>(config.ps.blend_mix) << 11) |
+		               (static_cast<u32>(config.ps.a_masked) << 13) | (static_cast<u32>(config.ps.pabe) << 14) |
+		               (static_cast<u32>(config.ps.blend_factor_in_alpha) << 15) |
+		               (static_cast<u32>(config.ps.fixed_one_a) << 16) |
+		               (static_cast<u32>(config.ps.round_inv) << 17) |
+		               (static_cast<u32>(config.ps.colclip) << 18) |
+		               (static_cast<u32>(config.ps.colclip_hw) << 19) |
+		               (static_cast<u32>(config.ps.no_color1) << 20) |
+		               (static_cast<u32>(config.ps.rta_correction) << 21);
 		rec.area_x = static_cast<s16>(config.drawarea.x);
 		rec.area_y = static_cast<s16>(config.drawarea.y);
 		rec.area_z = static_cast<s16>(config.drawarea.z);
@@ -565,6 +581,7 @@ namespace GSDrawLog
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
 			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,blend_factor_alpha,"
+			"blend_key,blend_ps,"
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
 			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
@@ -729,6 +746,11 @@ namespace GSDrawLog
 			}
 
 			std::fprintf(fp.get(), "%s,", GetBlendFactorAlphaName(r.blend_factor_alpha));
+
+			if (submitted)
+				std::fprintf(fp.get(), "%08x,%08x,", r.blend_key, r.blend_ps);
+			else
+				std::fprintf(fp.get(), ",,");
 
 			if (r.flags2 & Flags2TFXCall)
 			{

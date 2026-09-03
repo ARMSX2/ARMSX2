@@ -139,6 +139,14 @@ namespace GSDrawLog
 		/// non-zero on a GPU with no dual-source blend unit.
 		u8 blend_factor_alpha;
 
+		/// The blend selection this draw ended up with: the backend blend state key, and the
+		/// pixel shader's own blend fields packed beside it. Census scaffolding for the rung that
+		/// asks whether removing a framebuffer mask changed how the draw blends -- it does, when
+		/// the barrier the mask forced was what made software blending free, and that is not
+		/// visible in any column the ledger had.
+		u32 blend_key;
+		u32 blend_ps;
+
 		/// TFX-call view. One GS draw can issue several TFX draw calls (the alpha second pass,
 		/// the blend multi-pass, the PrimID pre-pass), and the run rule Phase 5 is pricing
 		/// compares the identities the *device* binds, not the ones the PS2 registers name. So a
