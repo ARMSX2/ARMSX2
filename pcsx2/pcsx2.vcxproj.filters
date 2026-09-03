@@ -1550,6 +1550,9 @@
     <ClInclude Include="VUops.h">
       <Filter>System\Ps2\EmotionEngine\VU\Interpreter</Filter>
     </ClInclude>
+    <ClInclude Include="VuMulBand.h">
+      <Filter>System\Ps2\EmotionEngine\VU\Interpreter</Filter>
+    </ClInclude>
     <ClInclude Include="Sif.h">
       <Filter>System\Ps2\EmotionEngine\DMAC\Sif</Filter>
     </ClInclude>

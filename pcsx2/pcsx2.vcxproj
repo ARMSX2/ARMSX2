@@ -935,6 +935,7 @@
     <ClInclude Include="x86\R5900_Profiler.h" />
     <ClInclude Include="VUflags.h" />
     <ClInclude Include="VUops.h" />
+    <ClInclude Include="VuMulBand.h" />
     <ClInclude Include="Sif.h" />
     <ClInclude Include="Sifcmd.h" />
     <ClInclude Include="Vif.h" />
