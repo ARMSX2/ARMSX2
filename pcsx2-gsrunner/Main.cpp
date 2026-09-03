@@ -407,6 +407,7 @@ static std::string s_fediff_path;
 static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
+static std::string s_stream_ring_memory;
 static u64 s_frame_timer_last = 0;
 static u64 s_gs_cpu_time_last = 0;
 // Previous frame's wait bill, so each sample carries its own delta rather than a running total.
@@ -762,6 +763,11 @@ void Host::BeginPresentFrame()
 		{
 			s_device_name = g_gs_device->GetName();
 			s_driver_info = g_gs_device->GetDriverInfo();
+			// Which host-visible memory the backend's stream rings landed in, in the same words the
+			// device banner uses. A round's numbers are only readable against the road the device
+			// took, and reconstructing that from a log after the fact is how a round gets
+			// attributed to the wrong one.
+			s_stream_ring_memory = g_gs_device->GetStreamRingMemoryDescription();
 		}
 
 		// Same reasoning, every frame rather than once: the device's wait counters have to be read
@@ -2092,6 +2098,8 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "{\n  \"run\": {\n");
 	std::fprintf(fp.get(), "    \"device_name\": \"%s\",\n    \"driver_info\": \"%s\",\n",
 		json_escape(s_device_name).c_str(), json_escape(s_driver_info).c_str());
+	std::fprintf(fp.get(), "    \"stream_ring_memory\": \"%s\",\n",
+		json_escape(s_stream_ring_memory.empty() ? std::string("n/a") : s_stream_ring_memory).c_str());
 	std::fprintf(fp.get(), "    \"frames\": %u,\n    \"drawn_frames\": %u,\n", s_total_frames, s_total_drawn_frames);
 	// What the run was asked to replay, so a reader can cut the frame series into loops.
 	// loop_count is the -loop value verbatim (1 when the flag was absent, 0 meaning
