@@ -167,8 +167,6 @@ void Discord_RegisterSteamGame(const char* applicationId, const char* steamId) {
 #include "Host.h"
 #include "GS/GS.h"
 #include "Input/InputManager.h"
-void Host::OnCaptureStarted(const std::string& filename) {}
-void Host::OnCaptureStopped() {}
 
 // g_host_hotkeys - normally defined in pcsx2-qt, empty on iOS
 BEGIN_HOTKEY_LIST(g_host_hotkeys)

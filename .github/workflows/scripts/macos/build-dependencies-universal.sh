@@ -30,10 +30,6 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-# The bundled ffmpeg has a lot of things disabled to reduce code size.
-# Users may want to use system ffmpeg for additional features
-: ${BUILD_FFMPEG:=1}
-
 export MACOSX_DEPLOYMENT_TARGET=11.0
 
 NPROCS="$(getconf _NPROCESSORS_ONLN)"
@@ -54,7 +50,6 @@ LZ4=1.10.0
 LIBPNG=1.6.58
 LIBJPEGTURBO=3.2.0
 LIBWEBP=1.6.0
-FFMPEG=8.1
 MOLTENVK=1.4.1
 KDDOCKWIDGETS=2.4.1
 PLUTOVG=1.3.2
@@ -101,7 +96,6 @@ eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-$ZSTD.tar
 e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564  libwebp-$LIBWEBP.tar.gz
 eee7dea22ed502868017971c86c63c4ed1e6085de0baebfdcc3d3322f00f3eb0  libpng-$LIBPNG-apng.patch.gz
 6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e  libjpeg-turbo-$LIBJPEGTURBO.tar.gz
-b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a  ffmpeg-$FFMPEG.tar.xz
 9985f141902a17de818e264d17c1ce334b748e499ee02fcb4703e4dc0038f89c  MoltenVK-$MOLTENVK.tar.gz
 5cd9495d9316cf6cc937bb328a7fd491c3248ef2469cfa42511f1039f6148aca  KDDockWidgets-$KDDOCKWIDGETS.tar.gz
 7bd4e79ce18b1d47517e7e91fbb7cf19d4f01942804a519bc7c0bf32b6325dd5  plutovg-$PLUTOVG.tar.gz
@@ -125,7 +119,6 @@ if ! shasum -sa 256 --check SHASUMS 2> /dev/null; then
 		-O "https://download.sourceforge.net/libpng-apng/libpng-$LIBPNG-apng.patch.gz" \
 		-O "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LIBJPEGTURBO/libjpeg-turbo-$LIBJPEGTURBO.tar.gz" \
 		-O "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$LIBWEBP.tar.gz" \
-		-O "https://ffmpeg.org/releases/ffmpeg-$FFMPEG.tar.xz" \
 		-O "https://github.com/KhronosGroup/MoltenVK/archive/v$MOLTENVK/MoltenVK-$MOLTENVK.tar.gz" \
 		-O "https://download.qt.io/archive/qt/${QT%.*}/$QT/submodules/qtbase-everywhere-src-$QT.tar.xz" \
 		-O "https://download.qt.io/archive/qt/${QT%.*}/$QT/submodules/qtimageformats-everywhere-src-$QT.tar.xz" \
@@ -153,43 +146,6 @@ cmake -B build "${CMAKE_COMMON[@]}" "$CMAKE_ARCH_UNIVERSAL" -DSDL_VIDEO=OFF -DSD
 make -C build "-j$NPROCS"
 make -C build install
 cd ..
-
-if [ "$BUILD_FFMPEG" -ne 0 ]; then
-	echo "Installing FFmpeg..."
-	rm -fr "ffmpeg-$FFMPEG"
-	tar xf "ffmpeg-$FFMPEG.tar.xz"
-	cd "ffmpeg-$FFMPEG"
-	mkdir build
-	cd build
-	LDFLAGS="-dead_strip $LDFLAGS" CFLAGS="-Os $CFLAGS" CXXFLAGS="-Os $CXXFLAGS" \
-		../configure --prefix="$INSTALLDIR" \
-		--enable-cross-compile --arch=x86_64 --cc='clang -arch x86_64' --cxx='clang++ -arch x86_64' \
-		--disable-all --disable-autodetect --disable-static --enable-shared \
-		--enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
-		--enable-audiotoolbox --enable-videotoolbox \
-		--enable-encoder=ffv1,qtrle,pcm_s16be,pcm_s16le,*_at,*_videotoolbox \
-		--enable-muxer=avi,matroska,mov,mp3,mp4,wav \
-		--enable-protocol=file
-	make "-j$NPROCS"
-	cd ..
-	mkdir build-arm64
-	cd build-arm64
-	LDFLAGS="-dead_strip $LDFLAGS" CFLAGS="-Os $CFLAGS" CXXFLAGS="-Os $CXXFLAGS" \
-		../configure --prefix="$INSTALLDIR" \
-		--enable-cross-compile --arch=arm64 --cc='clang -arch arm64' --cxx='clang++ -arch arm64' --disable-x86asm \
-		--disable-all --disable-autodetect --disable-static --enable-shared \
-		--enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
-		--enable-audiotoolbox --enable-videotoolbox \
-		--enable-encoder=ffv1,qtrle,pcm_s16be,pcm_s16le,*_at,*_videotoolbox \
-		--enable-muxer=avi,matroska,mov,mp3,mp4,wav \
-		--enable-protocol=file
-	make "-j$NPROCS"
-	cd ..
-	merge_binaries $(realpath build) $(realpath build-arm64)
-	cd build
-	make install
-	cd ../..
-fi
 
 echo "Installing Zstd..."
 rm -fr "zstd-$ZSTD"

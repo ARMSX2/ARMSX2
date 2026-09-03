@@ -238,7 +238,11 @@ fun TouchControlsOverlay() {
         // changes (screen tap / on-screen button press) and when they reappear.
         val visMode = TouchControls.visibilityMode.intValue
         val tick = TouchControls.interactionTick.intValue
-        if (visMode in 1..10 && TouchControls.visible.value && !edit) {
+        // Holding a control counts as using it. While anything is held this effect is not
+        // composed at all, so the countdown cannot fire; releasing bumps the tick and starts a
+        // fresh full-length timer from the release.
+        val holding = TouchControls.activeHolds.intValue > 0
+        if (visMode in 1..10 && TouchControls.visible.value && !edit && !holding) {
             LaunchedEffect(visMode, tick) {
                 delay(visMode * 1000L)
                 TouchControls.visible.value = false
@@ -724,6 +728,15 @@ private fun UnifiedTouchLayer(
                 var pressed = emptySet<TouchButtonId>()
                 fun updatePressed(next: Set<TouchButtonId>) {
                     if (pressed == next) return
+                    // This surface -- every face button and d-pad direction -- never told
+                    // TouchControls it was being used, so the auto-hide timer ran straight
+                    // through active play. Holding is tracked as well as pressing: the timer
+                    // must not fire while a finger is still down (see activeHolds).
+                    val wasHolding = pressed.isNotEmpty()
+                    val nowHolding = next.isNotEmpty()
+                    if (nowHolding && !wasHolding) TouchControls.beginTouchHold()
+                    else if (!nowHolding && wasHolding) TouchControls.endTouchHold()
+                    else TouchControls.noteTouchInteraction()
                     pressed = next
                     onPressedChange(next)
                 }
@@ -1755,8 +1768,11 @@ private fun Modifier.pressGestures(
                     val down: PointerInputChange =
                         ev.changes.firstOrNull { it.changedToDown() } ?: continue
                     val id = down.id
-                    // Keep the controls awake while the user is actively tapping.
-                    TouchControls.noteTouchInteraction()
+                    // Keep the controls awake while the user is actively tapping -- and for
+                    // the whole hold, not just the press. Balanced in the finally below so a
+                    // cancelled gesture cannot strand the count.
+                    TouchControls.beginTouchHold()
+                    try {
                     if (tapToHold) {
                         // Toggle the latch on this tap-down.
                         latched = !latched
@@ -1779,6 +1795,9 @@ private fun Modifier.pressGestures(
                         }
                         onPressedChange(false)
                         emitPress(false)
+                    }
+                    } finally {
+                        TouchControls.endTouchHold()
                     }
                 }
             }

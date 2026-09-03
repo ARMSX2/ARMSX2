@@ -72,9 +72,6 @@ bool IsRunningPSXMode();
 /// Returns the current sample rate the SPU2 is operating at.
 u32 GetConsoleSampleRate();
 
-/// Tells SPU2 to forward audio packets to GSCapture.
-void SetAudioCaptureActive(bool active);
-bool IsAudioCaptureActive();
 	// libretro: direct access to the output stream so the frontend can pull
 	// mixed frames from retro_run.
 	AudioStream* GetOutputStream();
@@ -100,6 +97,6 @@ void SPU2writeDMA7Mem(u16* pMem, u32 size);
 extern u64 lClocks;
 
 extern void CounterUpdate(u32 DMAICounter);
-extern void TimeUpdate(u32 cClocks);
+extern void TimeUpdate(u64 cClocks);
 extern void SPU2_FastWrite(u32 rmem, u16 value);
 

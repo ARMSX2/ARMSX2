@@ -871,6 +871,33 @@ object TouchControls {
         interactionTick.intValue++
     }
 
+    /**
+     * How many on-screen controls are held right now. The auto-hide timer must not fire while
+     * this is non-zero.
+     *
+     * Every handler bumped [interactionTick] on press-DOWN and then sat in a hold loop that never
+     * ticked again, so holding a button for longer than the timeout hid the controls with the
+     * user's finger still on them — mid-fight, mid-corner. "Auto-hide after N seconds" is
+     * supposed to mean N seconds without a touch, and a held button IS a touch.
+     *
+     * Balanced with try/finally at every call site so a cancelled gesture cannot strand a count
+     * and pin the controls on for the rest of the session.
+     */
+    val activeHolds = mutableIntStateOf(0)
+
+    fun beginTouchHold() {
+        if (visibilityMode.intValue == 0) return
+        activeHolds.intValue++
+        noteTouchInteraction()
+    }
+
+    fun endTouchHold() {
+        if (activeHolds.intValue > 0) activeHolds.intValue--
+        // Restart the countdown from the moment of RELEASE, not from the press: the user was
+        // still using the pad for the whole hold.
+        noteTouchInteraction()
+    }
+
     /** Commit the live edit. When a game is running, store the edited layout as
      *  that game's OWN per-serial layout (touch.layout.game.<serial>) so it is
      *  isolated from every other game and from the shared profiles — this is what

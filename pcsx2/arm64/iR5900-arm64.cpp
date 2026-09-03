@@ -1751,6 +1751,62 @@ namespace EERecFallback
 	u32 g_groups = 0;
 	u32 g_cop2RegMask[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
 	u64 g_cop2VuMask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
+	u64 g_fpuMask[kFpuIdCount / 64] = {~0ull, ~0ull};
+
+	enum : int
+	{
+		kFpuCvtSW = 0x40, kFpuMfc1, kFpuCfc1, kFpuMtc1, kFpuCtc1, kFpuBc1,
+		kFpuLwc1, kFpuSwc1,
+	};
+
+	int FpuOpId(u32 code)
+	{
+		const u32 primary = code >> 26;
+		if (primary == 0x31)
+			return kFpuLwc1;
+		if (primary == 0x39)
+			return kFpuSwc1;
+		if (primary != 0x11)
+			return -1;
+		const u32 rs = (code >> 21) & 0x1F;
+		if (rs == 0x10)
+			return static_cast<int>(code & 0x3F);
+		if (rs == 0x14)
+			return ((code & 0x3F) == 0x20) ? kFpuCvtSW : -1;
+		switch (rs)
+		{
+			case 0x00: return kFpuMfc1;
+			case 0x02: return kFpuCfc1;
+			case 0x04: return kFpuMtc1;
+			case 0x06: return kFpuCtc1;
+			case 0x08: return kFpuBc1;
+			default:   return -1;
+		}
+	}
+
+	const char* FpuOpName(int id)
+	{
+		switch (id)
+		{
+			case 0x00: return "add";    case 0x01: return "sub";
+			case 0x02: return "mul";    case 0x03: return "div";
+			case 0x04: return "sqrt";   case 0x05: return "abs";
+			case 0x06: return "mov";    case 0x07: return "neg";
+			case 0x16: return "rsqrt";  case 0x18: return "adda";
+			case 0x19: return "suba";   case 0x1A: return "mula";
+			case 0x1C: return "madd";   case 0x1D: return "msub";
+			case 0x1E: return "madda";  case 0x1F: return "msuba";
+			case 0x24: return "cvtw";   case 0x28: return "max";
+			case 0x29: return "min";    case 0x30: return "cf";
+			case 0x32: return "ceq";    case 0x34: return "clt";
+			case 0x36: return "cle";
+			case kFpuCvtSW: return "cvts"; case kFpuMfc1: return "mfc1";
+			case kFpuCfc1:  return "cfc1"; case kFpuMtc1: return "mtc1";
+			case kFpuCtc1:  return "ctc1"; case kFpuBc1:  return "bc1";
+			case kFpuLwc1:  return "lwc1"; case kFpuSwc1: return "swc1";
+			default: return nullptr;
+		}
+	}
 
 	// Mnemonics parallel to recCOP2_BC2t / recCOP2SPECIAL1t / recCOP2SPECIAL2t
 	// (iR5900Misc-arm64.cpp). nullptr marks a hole in the encoding.
@@ -1855,9 +1911,10 @@ namespace EERecFallback
 
 		u32 groups = 0;
 		u32 reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+		u64 fpu_mask[kFpuIdCount / 64] = {~0ull, ~0ull};
 		u64 vu_mask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
 		std::string error;
-		if (!ParseGroups(list, &groups, reg_masks, vu_mask, &error))
+		if (!ParseGroups(list, &groups, reg_masks, fpu_mask, vu_mask, &error))
 		{
 			Console.Error("ARMSX2_REC_FALLBACK: %s", error.c_str());
 			return;
@@ -1865,9 +1922,23 @@ namespace EERecFallback
 
 		g_groups = groups;
 		std::memcpy(g_cop2RegMask, reg_masks, sizeof(g_cop2RegMask));
+		std::memcpy(g_fpuMask, fpu_mask, sizeof(g_fpuMask));
 		std::memcpy(g_cop2VuMask, vu_mask, sizeof(g_cop2VuMask));
-		Console.WriteLn(Color_Yellow, "EERecFallback: forcing %s to the interpreter",
-			DescribeGroups(g_groups).c_str());
+		std::string detail;
+		if ((g_groups & Fpu) && (fpu_mask[0] != ~0ull || fpu_mask[1] != ~0ull))
+		{
+			for (int i = 0; i < kFpuIdCount; i++)
+			{
+				if ((g_fpuMask[i >> 6] & (1ull << (i & 63))) == 0)
+					continue;
+				if (const char* n = FpuOpName(i))
+					detail += detail.empty() ? fmt::format(" (fpu {}", n) : fmt::format(":{}", n);
+			}
+			if (!detail.empty())
+				detail += ")";
+		}
+		Console.WriteLn(Color_Yellow, "EERecFallback: forcing %s to the interpreter%s",
+			DescribeGroups(g_groups).c_str(), detail.c_str());
 	}
 
 	void MaybeLogCop2VuCensus(bool end_of_run)
@@ -1961,6 +2032,15 @@ namespace EERecFallback
 				break;
 		}
 
+		// An unfiltered `fpu` stays every COP1 encoding: the S format's
+		// unassigned functs have ids but no mnemonic to filter by.
+		if (group == Fpu && (g_fpuMask[0] != ~0ull || g_fpuMask[1] != ~0ull))
+		{
+			const int id = FpuOpId(code);
+			if (id < 0 || (g_fpuMask[id >> 6] & (1ull << (id & 63))) == 0)
+				return false;
+		}
+
 		if (group == Cop2Vu)
 		{
 			// Per-op filter: an unnamed/unmapped encoding is never selected, so a
@@ -1994,11 +2074,13 @@ namespace EERecFallback
 		}
 	}
 
-	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks,
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, u64* fpu_mask,
 		u64* cop2vu_mask, std::string* error)
 	{
 		u32 local_reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
 		bool reg_filtered[kCop2MoveOpCount] = {false, false, false, false};
+		u64 local_fpu_mask[kFpuIdCount / 64] = {~0ull, ~0ull};
+		bool fpu_filtered = false;
 		u64 local_vu_mask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
 		bool vu_filtered = false;
 		u32 mask = 0;
@@ -2042,7 +2124,47 @@ namespace EERecFallback
 						found = true;
 						mask |= g.bit;
 
-						if (!regs.empty() && g.bit == Cop2Vu)
+						if (!regs.empty() && g.bit == Fpu)
+						{
+							// "fpu:mul:madd" — narrow to named COP1 ops.
+							size_t rp = 0;
+							while (rp <= regs.size())
+							{
+								const size_t rc = regs.find(':', rp);
+								const size_t rend = (rc == std::string_view::npos) ? regs.size() : rc;
+								const std::string_view mnem = regs.substr(rp, rend - rp);
+								int id = -1;
+								for (int i = 0; i < kFpuIdCount; i++)
+								{
+									const char* n = FpuOpName(i);
+									if (n && mnem == n)
+									{
+										id = i;
+										break;
+									}
+								}
+								if (id < 0)
+								{
+									if (error)
+									{
+										*error = fmt::format("unknown COP1 op '{}' in EE rec fallback "
+											"filter '{}'", std::string(mnem), std::string(tok));
+									}
+									return false;
+								}
+								if (!fpu_filtered)
+								{
+									for (auto& w : local_fpu_mask)
+										w = 0;
+									fpu_filtered = true;
+								}
+								local_fpu_mask[id >> 6] |= (1ull << (id & 63));
+								if (rc == std::string_view::npos)
+									break;
+								rp = rc + 1;
+							}
+						}
+						else if (!regs.empty() && g.bit == Cop2Vu)
 						{
 							// "cop2vu:vmulaw:vmaddaz" — narrow to named macro ops.
 							size_t rp = 0;
@@ -2090,8 +2212,8 @@ namespace EERecFallback
 								if (error)
 								{
 									*error = fmt::format("EE rec fallback group '{}' does not take a register "
-										"filter (only qmfc2/cfc2/qmtc2/ctc2 take ':<reg>', cop2vu takes "
-										"':<mnemonic>')", std::string(name));
+										"filter (only qmfc2/cfc2/qmtc2/ctc2 take ':<reg>', fpu and cop2vu "
+										"take ':<mnemonic>')", std::string(name));
 								}
 								return false;
 							}
@@ -2149,6 +2271,8 @@ namespace EERecFallback
 		*out = mask;
 		for (int i = 0; i < kCop2MoveOpCount; i++)
 			reg_masks[i] = local_reg_masks[i];
+		for (int i = 0; i < kFpuIdCount / 64; i++)
+			fpu_mask[i] = local_fpu_mask[i];
 		for (int i = 0; i < kCop2VuIdCount / 64; i++)
 			cop2vu_mask[i] = local_vu_mask[i];
 		return true;

@@ -129,17 +129,11 @@ if(ANDROID)
 		set(SHADERC_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/3rdparty/shaderc/libshaderc/include")
 	endif()
 
-	set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
 elseif(UNIX AND NOT APPLE)
 	# Desktop Linux deps
 	find_package(CURL REQUIRED)
 	find_package(PCAP REQUIRED)
 
-	find_package(FFMPEG COMPONENTS avcodec avformat avutil swresample swscale)
-	if(NOT FFMPEG_FOUND)
-		message(WARNING "FFmpeg not found, using bundled headers.")
-		set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
-	endif()
 
 	include(CheckLib)
 
@@ -191,18 +185,12 @@ else()
 		add_subdirectory(3rdparty/D3D12MemAlloc EXCLUDE_FROM_ALL)
 		add_subdirectory(3rdparty/winpixeventruntime EXCLUDE_FROM_ALL)
 		add_subdirectory(3rdparty/winwil EXCLUDE_FROM_ALL)
-		set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
 		find_package(Vtune)
 	else()
 		find_package(CURL REQUIRED)
 		find_package(PCAP REQUIRED)
 		find_package(Vtune)
 
-		find_package(FFMPEG COMPONENTS avcodec avformat avutil swresample swscale)
-		if(NOT FFMPEG_FOUND)
-			message(WARNING "FFmpeg not found, using bundled headers.")
-			set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
-		endif()
 
 		include(CheckLib)
 

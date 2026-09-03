@@ -70,6 +70,9 @@ namespace GSLsfg
 		// initialisation can fail. Both are InitFailed to the settings screen, but they are
 		// different problems: one is fixed by updating Lossless Scaling, the other is not.
 		std::atomic<float> s_display_fps{0.0f};
+		/// Set when the swap chain cannot spare an image for generated frames. Distinct from
+		/// "failed": everything initialised, there is simply nowhere to put a generated frame.
+		std::atomic<bool> s_no_headroom{false};
 		std::atomic<bool> s_no_shaders{false};
 	} // namespace
 
@@ -213,6 +216,9 @@ namespace GSLsfg
 			default:
 				return "LSFG: unavailable";
 		}
+
+		if (s_no_headroom.load(std::memory_order_relaxed))
+			return "LSFG: no display headroom";
 
 		// Available but no window has closed yet: bring-up, or the first second of a session.
 		const float fps = s_display_fps.load(std::memory_order_relaxed);
@@ -593,6 +599,40 @@ namespace GSLsfg
 		s_frame_index = 0;
 		s_active = true;
 		s_init_failed.store(false, std::memory_order_relaxed);
+
+		// ★ The swap chain only asks for the extra images frame generation needs when
+		// GSConfig.LsfgEnabled was true AT CREATION (see VKSwapChain::CreateSwapChain). Enabling
+		// LSFG per-game turns it on LONG after that -- observed 17 seconds after the swap chain
+		// was built -- so the chain was sized without the extra image, GetExtraAcquirableImages()
+		// is 0, and every generation is silently skipped while this function still reports
+		// "active". Display rate then reads exactly the real rate forever, with nothing anywhere
+		// admitting why.
+		//
+		// Rebuild it now that the setting is actually on. Same size, so this is only about the
+		// image count. If the driver still will not give us headroom, say so rather than claiming
+		// to be running.
+		if (swap_chain->GetExtraAcquirableImages() == 0)
+		{
+			Console.WriteLn("LSFG: swap chain has no spare images; rebuilding it.");
+			// Scale passed through explicitly: ResizeSwapChain defaults it to 1.0, which would
+			// silently drop a non-default surface scale while we are only after the image count.
+			if (!swap_chain->ResizeSwapChain(swap_chain->GetWidth(), swap_chain->GetHeight(),
+					swap_chain->GetScale()) ||
+				swap_chain->GetExtraAcquirableImages() == 0)
+			{
+				Console.Error("LSFG: the display cannot spare an image for generated frames.");
+				s_no_headroom.store(true, std::memory_order_relaxed);
+				s_active = false;
+				DestroyResources();
+				s_frame_gen.reset();
+				s_allocator.reset();
+				s_device.reset();
+				s_vk_device = VK_NULL_HANDLE;
+				return false;
+			}
+		}
+		s_no_headroom.store(false, std::memory_order_relaxed);
+
 		Console.WriteLn("LSFG: frame generation active (%ux, %ux%u).", multiplier, extent.width, extent.height);
 		return true;
 	}

@@ -42,6 +42,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -937,12 +938,23 @@ private fun StickTargetPickerDialog(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
             tonalElevation = 6.dp,
         ) {
-            Column(Modifier.padding(20.dp)) {
+            // Capped to the display so the weighted list above has a bounded height to share
+            // out; without this the Column is unbounded and weight() changes nothing.
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.82f).dp),
+            ) {
                 Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Column(
                     Modifier
-                        .heightIn(max = 360.dp)
+                        // Bounded by the SCREEN, not a fixed 360dp. In landscape the display is
+                        // shorter than 360dp plus a title plus a button row, so the list took
+                        // more than there was and pushed Save/Cancel off the bottom -- with no
+                        // way to commit or dismiss (reported for the macro editor). weight()
+                        // lets the buttons claim their height first and gives the list the rest.
+                        .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState()),
                 ) {
                     Text(
@@ -1402,7 +1414,13 @@ private fun MacroConfigDialog(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
             tonalElevation = 6.dp,
         ) {
-            Column(Modifier.padding(20.dp)) {
+            // Capped to the display so the weighted list above has a bounded height to share
+            // out; without this the Column is unbounded and weight() changes nothing.
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.82f).dp),
+            ) {
                 Text(
                     "${str("pad.action.edit")}: ${macroId.label}",
                     color = MaterialTheme.colorScheme.onSurface,
@@ -1412,7 +1430,12 @@ private fun MacroConfigDialog(
                 // Plain Column, not Lazy — see the note on the stick picker.
                 Column(
                     Modifier
-                        .heightIn(max = 360.dp)
+                        // Bounded by the SCREEN, not a fixed 360dp. In landscape the display is
+                        // shorter than 360dp plus a title plus a button row, so the list took
+                        // more than there was and pushed Save/Cancel off the bottom -- with no
+                        // way to commit or dismiss (reported for the macro editor). weight()
+                        // lets the buttons claim their height first and gives the list the rest.
+                        .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState()),
                 ) {
                     Text(

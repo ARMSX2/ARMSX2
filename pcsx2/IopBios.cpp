@@ -8,6 +8,7 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "ps2/BiosTools.h"
+#include "Config.h"
 #include "VMManager.h"
 
 #include <ctype.h>
@@ -85,6 +86,30 @@ void Hle_SetHostRoot(const char* bootFilename)
 {
 	std::string path = Path::RealPath(bootFilename);
 	hostRoot = Path::ToNativePath(Path::GetDirectory(path));
+
+#if defined(__ANDROID__)
+	// A SAF content:// URI has no parent directory to derive a host: root from, and RealPath
+	// does not know the scheme: it sees a string that does not begin with '/', decides it is
+	// RELATIVE, and combines it with the working directory. What comes out exists nowhere, so
+	// host_path() below denies every read as "outside of ELF directory" and a game that loads
+	// through host: sits on its loading screen forever. That is the Biohazard Outbreak
+	// quick-load ELF on Android: the ELF itself boots (host_path has an explicit escape hatch
+	// for the override), and then every file it goes on to ask for is refused.
+	//
+	// Give host: its own real folder instead of deriving one. EmuFolders::DataRoot is a plain
+	// filesystem path on Android — set from Java at startup, not SAF — so the descendant checks
+	// work unchanged, and the user gets one known place to put the files such a game expects.
+	//
+	// Also covers a real path whose directory is simply gone, which fails the same way.
+	if (std::strncmp(bootFilename, "content://", 10) == 0 ||
+		hostRoot.empty() || !FileSystem::DirectoryExists(hostRoot.c_str()))
+	{
+		hostRoot = Path::Combine(EmuFolders::DataRoot, "hostfs");
+		FileSystem::EnsureDirectoryExists(hostRoot.c_str(), true);
+		Console.WriteLn("HLE Host: boot path has no usable directory; using the hostfs folder.");
+	}
+#endif
+
 	Console.WriteLn("HLE Host: Set 'host:' root path to: %s", hostRoot.c_str());
 }
 

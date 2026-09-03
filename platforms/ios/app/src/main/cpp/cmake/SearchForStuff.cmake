@@ -20,7 +20,7 @@
 #
 # iOS is METAL-ONLY: no OpenGL, no Vulkan, no shaderc (unlike Android, which
 # needs Vulkan + shaderc). There is also no oboe (Android audio) -- iOS uses
-# CoreAudio via cubeb. FFMPEG is headers-only (dynamically loaded at runtime).
+# CoreAudio via cubeb.
 #-------------------------------------------------------------------------------
 find_package(Git)
 
@@ -192,10 +192,6 @@ endif()
 # Prevent fmt from being built with exceptions, or being thrown at call sites.
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFMT_USE_EXCEPTIONS=0 -DFMT_USE_RTTI=0")
 add_subdirectory("${ARMSX2_ROOT}/3rdparty/fmt" "${CMAKE_BINARY_DIR}/3rdparty/fmt" EXCLUDE_FROM_ALL)
-
-# FFMPEG: headers-only on iOS (dynamically loaded at runtime via dlopen, like
-# Android). The bundled headers live in the monorepo root 3rdparty/ffmpeg/include.
-set(FFMPEG_INCLUDE_DIRS "${ARMSX2_ROOT}/3rdparty/ffmpeg/include")
 
 # Deliberately at the end. We don't want to set the flag on third-party projects.
 if(MSVC)

@@ -43,7 +43,6 @@ elseif(UNIX AND NOT APPLE)
 endif()
 
 if(UNIX)
-	option(USE_LINKED_FFMPEG "Links with ffmpeg instead of using dynamic loading" OFF)
 endif()
 
 if(APPLE)

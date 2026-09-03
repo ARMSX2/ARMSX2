@@ -785,14 +785,6 @@ void Host::SetFullscreen(bool enabled)
 {
 }
 
-void Host::OnCaptureStarted(const std::string& filename)
-{
-}
-
-void Host::OnCaptureStopped()
-{
-}
-
 void Host::RequestExitApplication(bool allow_confirm)
 {
 }
@@ -939,6 +931,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "advertises MAILBOX support but errors VK_ERROR_INITIALIZATION_FAILED on swapchain create.\n");
 	std::fprintf(stderr, "  -no-fb-fetch: Disable Vulkan framebuffer fetch (VK_EXT_rasterization_order_attachment_access). "
 						 "Use to A/B against drivers that mishandle subpass self-dependencies (e.g. libmali).\n");
+	std::fprintf(stderr, "  -no-dual-source: Report no dual-source blend unit, the way every Mali Vulkan blob does. "
+						 "Makes GSRendererHW take the SRC1 substitution and SW-blend fallbacks, so a Mali-only blending "
+						 "bug reproduces on a desktop GPU.\n");
 	std::fprintf(stderr, "  -no-vs-expand: Disable vertex-shader point/line/sprite expansion (storage-buffer path). "
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
@@ -1420,6 +1415,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				Console.WriteLn("Disabling framebuffer fetch (VK_EXT_rasterization_order_attachment_access)");
 				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableFramebufferFetch", true);
+				continue;
+			}
+			else if (CHECK_ARG("-no-dual-source"))
+			{
+				Console.WriteLn("Disabling dual-source blending (pretend to be a Mali blob)");
+				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableDualSourceBlend", true);
 				continue;
 			}
 			else if (CHECK_ARG("-no-vs-expand"))

@@ -170,7 +170,6 @@ namespace EmuFolders
 	std::string GameSettings;
 	std::string Textures;
 	std::string InputProfiles;
-	std::string Videos;
 
 	static bool ShouldUsePortableMode();
 	static std::string GetPortableModePath();
@@ -697,15 +696,6 @@ const char* Pcsx2Config::GSOptions::BlendingLevelNames[] = {
 	"Maximum",
 	nullptr};
 
-const char* Pcsx2Config::GSOptions::CaptureContainers[] = {
-	"mp4",
-	"mkv",
-	"mov",
-	"avi",
-	"wav",
-	"mp3",
-	nullptr};
-const char* Pcsx2Config::GSOptions::DEFAULT_CAPTURE_CONTAINER = "mp4";
 
 const char* Pcsx2Config::AchievementsOptions::OverlayPositionNames[(size_t)AchievementOverlayPosition::MaxCount + 1] = {
 	"TopLeft",
@@ -757,6 +747,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
 	DisableFramebufferFetch = false;
+	DisableDualSourceBlend = false;
 	DisablePS2DepthQuantization = false;
 	DisableVertexShaderExpand = false;
 	EnableAdrenoFramebufferFetch = false;
@@ -782,7 +773,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	OsdShowSettings = false;
 	OsdshowPatches = false;
 	OsdShowInputs = false;
-	OsdShowVideoCapture = true;
 	OsdShowInputRec = true;
 	OsdShowTextureReplacements = false;
 
@@ -826,10 +816,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	LoadTextureReplacementsAsync = true;
 	PrecacheTextureReplacements = false;
 
-	EnableVideoCapture = true;
-	EnableVideoCaptureParameters = false;
-	EnableAudioCapture = true;
-	EnableAudioCaptureParameters = false;
 }
 
 bool Pcsx2Config::GSOptions::operator==(const GSOptions& right) const
@@ -943,16 +929,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgFlowScale) &&
 		OpEqu(LsfgTargetRate) &&
 
-		OpEqu(CaptureContainer) &&
-		OpEqu(VideoCaptureCodec) &&
-		OpEqu(VideoCaptureFormat) &&
-		OpEqu(VideoCaptureParameters) &&
-		OpEqu(AudioCaptureCodec) &&
-		OpEqu(AudioCaptureParameters) &&
-		OpEqu(VideoCaptureBitrate) &&
-		OpEqu(VideoCaptureWidth) &&
-		OpEqu(VideoCaptureHeight) &&
-		OpEqu(AudioCaptureBitrate) &&
 
 		OpEqu(Adapter) &&
 		OpEqu(AndroidGpuProfileOverride) &&
@@ -979,6 +955,7 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"UseBlitSwapChain",
 		"DisableShaderCache",
 		"DisableFramebufferFetch",
+		"DisableDualSourceBlend",
 		"DisablePS2DepthQuantization",
 		"DisableVertexShaderExpand",
 		"EnableAdrenoFramebufferFetch",
@@ -1011,6 +988,7 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(UseBlitSwapChain) &&
 		   OpEqu(DisableShaderCache) &&
 		   OpEqu(DisableFramebufferFetch) &&
+		   OpEqu(DisableDualSourceBlend) &&
 		   OpEqu(DisablePS2DepthQuantization) &&
 		   OpEqu(DisableVertexShaderExpand) &&
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
@@ -1048,7 +1026,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(ScreenshotFormat, "ScreenshotFormat");
 	SettingsWrapEntry(ScreenshotQuality);
 	SettingsWrapBitBoolEx(OrganizeSnapshotsByGame, "OrganizeScreenshotsByGame");
-	SettingsWrapBitBoolEx(OrganizeVideoCaptureByGame, "OrganizeVideoCaptureByGame");
 	SettingsWrapEntry(StretchY);
 	SettingsWrapEntry(CustomAspectRatio);
 	SettingsWrapEntryEx(Crop[0], "CropLeft");
@@ -1069,6 +1046,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);
+	SettingsWrapBitBool(DisableDualSourceBlend);
 	SettingsWrapBitBool(DisablePS2DepthQuantization);
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(EnableAdrenoFramebufferFetch);
@@ -1092,7 +1070,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(OsdShowFrameTimes);
 	SettingsWrapBitBool(OsdShowVersion);
 	SettingsWrapBitBool(OsdShowHardwareInfo);
-	SettingsWrapBitBool(OsdShowVideoCapture);
 	SettingsWrapBitBool(OsdShowInputRec);
 	SettingsWrapBitBool(OsdShowTextureReplacements);
 	SettingsWrapBitBool(OsdBoldText);
@@ -1144,11 +1121,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(LoadTextureReplacements);
 	SettingsWrapBitBool(LoadTextureReplacementsAsync);
 	SettingsWrapBitBool(PrecacheTextureReplacements);
-	SettingsWrapBitBool(EnableVideoCapture);
-	SettingsWrapBitBool(EnableVideoCaptureParameters);
-	SettingsWrapBitBool(VideoCaptureAutoResolution);
-	SettingsWrapBitBool(EnableAudioCapture);
-	SettingsWrapBitBool(EnableAudioCaptureParameters);
 
 	SettingsWrapIntEnumEx(LinearPresent, "linear_present_mode");
 	SettingsWrapIntEnumEx(InterlaceMode, "deinterlace_mode");
@@ -1231,16 +1203,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
 	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
 
-	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
-	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");
-	SettingsWrapEntryEx(VideoCaptureFormat, "VideoCaptureFormat");
-	SettingsWrapEntryEx(VideoCaptureParameters, "VideoCaptureParameters");
-	SettingsWrapEntryEx(AudioCaptureCodec, "AudioCaptureCodec");
-	SettingsWrapEntryEx(AudioCaptureParameters, "AudioCaptureParameters");
-	SettingsWrapBitfieldEx(VideoCaptureBitrate, "VideoCaptureBitrate");
-	SettingsWrapBitfieldEx(VideoCaptureWidth, "VideoCaptureWidth");
-	SettingsWrapBitfieldEx(VideoCaptureHeight, "VideoCaptureHeight");
-	SettingsWrapBitfieldEx(AudioCaptureBitrate, "AudioCaptureBitrate");
 
 	SettingsWrapEntry(Adapter);
 	SettingsWrapEntry(AndroidGpuProfileOverride);
@@ -2558,7 +2520,6 @@ void EmuFolders::SetDefaults(SettingsInterface& si)
 	si.SetStringValue("Folders", "Cache", "cache");
 	si.SetStringValue("Folders", "Textures", "textures");
 	si.SetStringValue("Folders", "InputProfiles", "inputprofiles");
-	si.SetStringValue("Folders", "Videos", "videos");
 	si.SetStringValue("Folders", "DebuggerLayouts", "debuggerlayouts");
 	si.SetStringValue("Folders", "DebuggerSettings", "debuggersettings");
 }
@@ -2586,7 +2547,6 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
 	Cache = LoadPathFromSettings(si, DataRoot, "Cache", "cache");
 	Textures = LoadPathFromSettings(si, DataRoot, "Textures", "textures");
 	InputProfiles = LoadPathFromSettings(si, DataRoot, "InputProfiles", "inputprofiles");
-	Videos = LoadPathFromSettings(si, DataRoot, "Videos", "videos");
 	DebuggerLayouts = LoadPathFromSettings(si, Settings, "DebuggerLayouts", "debuggerlayouts");
 	DebuggerSettings = LoadPathFromSettings(si, Settings, "DebuggerSettings", "debuggersettings");
 
@@ -2604,7 +2564,6 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
 	Console.WriteLn("Cache Directory: %s", Cache.c_str());
 	Console.WriteLn("Textures Directory: %s", Textures.c_str());
 	Console.WriteLn("Input Profile Directory: %s", InputProfiles.c_str());
-	Console.WriteLn("Video Dumping Directory: %s", Videos.c_str());
 	Console.WriteLn("Debugger Layouts Directory: %s", DebuggerLayouts.c_str());
 	Console.WriteLn("Debugger Settings Directory: %s", DebuggerSettings.c_str());
 }
@@ -2625,7 +2584,6 @@ bool EmuFolders::EnsureFoldersExist()
 	result = FileSystem::CreateDirectoryPath(Cache.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(Textures.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(InputProfiles.c_str(), false) && result;
-	result = FileSystem::CreateDirectoryPath(Videos.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(DebuggerLayouts.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(DebuggerSettings.c_str(), false) && result;
 

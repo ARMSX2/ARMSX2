@@ -7562,8 +7562,9 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	const bool blend_mix_factor_fits_dst_alpha =
 		blend_mix_factor_is_alpha &&
 		// The primary alpha must still be C.a/128 when it is written, so nothing may rewrite it
-		// downstream of where the factor is captured - 16-bit/FBA alpha correction does.
-		m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_conf.ps.fba &&
+		// downstream of where the factor is captured - 16-bit/FBA alpha correction does. Read FBA
+		// from the context: m_conf.ps.fba is not populated until long after EmulateBlending runs.
+		m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_context->FBA.FBA &&
 		// And the target must be able to hold its alpha double-scaled. can_scale_rt_alpha already
 		// accounts for this draw's own alpha writes, so nothing above 128 is being lost here.
 		(rt->m_rt_alpha_scale || can_scale_rt_alpha);

@@ -234,6 +234,29 @@ object ConfigStore {
         if (g.vsyncQueueSize == 0) saveGlobal(g.copy(vsyncQueueSize = 2))
     }
 
+    private const val KEY_AFFINITY_PERF_CORES_MIGRATED = "config.migrated.affinityPerfCores"
+    /**
+     * One-time move of existing installs from Affinity Control Mode 0 (Disabled) to 7
+     * (Performance Cores), which is now the default.
+     *
+     * Only 0 is touched. Modes 1-6 are explicit per-core placements that somebody went looking
+     * for, so they are left exactly as they are.
+     *
+     * Caveat, deliberately accepted (same shape as migrateLowLatencyOff): a stored 0 cannot be
+     * told apart from a deliberate "Disabled", because the old default wrote 0 for everyone. Anyone
+     * who genuinely wanted Disabled has to set it once more. That is judged acceptable because
+     * mode 7 self-disables on any device where the performance tier cannot be resolved or is too
+     * narrow to hold the emu threads, so the worst case is the behaviour they already had.
+     */
+    fun migrateAffinityPerfCores(context: android.content.Context) {
+        if (MainActivityRuntime.prefs.getBoolean(KEY_AFFINITY_PERF_CORES_MIGRATED, false)) return
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_AFFINITY_PERF_CORES_MIGRATED, true).apply()
+        // Fresh installs are handled by seedFreshInstallDefaults; only touch an existing global save.
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
+        val g = loadGlobal()
+        if (g.affinityMode == 0) saveGlobal(g.copy(affinityMode = 7))
+    }
+
     /** Load the sparse per-game override blob, or null if there are none. */
     fun loadOverrides(serial: String): JSONObject? {
         val raw = MainActivityRuntime.prefs.getString(keyForGame(serial), null) ?: return null

@@ -5,6 +5,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.layout.heightIn
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -143,6 +146,12 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
+    // Separate from menuGame: the category sheet REPLACES the game menu rather than nesting
+    // inside it, so the menu closes as this opens and B backs out of one modal, not two.
+    var categoryGame by remember { mutableStateOf<GameInfo?>(null) }
+    // Category being renamed/deleted. Reachable by long-press from either presentation:
+    // the section header (Grid/Shelf) or a row in the filter picker (List).
+    var manageCategory by remember { mutableStateOf<String?>(null) }
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
@@ -161,6 +170,53 @@ fun HomeScreen(
     }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         picked?.let { LibraryBackground.set(context, it) }
+    }
+    // The ELF a disc is being chosen for. Held across the picker round-trip because the result
+    // callback has no idea which entry started it.
+    var discForElf by remember { mutableStateOf<GameInfo?>(null) }
+    // The ISO being set up for quick loading, held across its own picker round-trip.
+    var quickLoadIso by remember { mutableStateOf<GameInfo?>(null) }
+    var quickLoadBusy by remember { mutableStateOf(false) }
+    var quickLoadResult by remember { mutableStateOf<String?>(null) }
+    // Shown BEFORE the file picker: extraction writes gigabytes to internal storage, and a user
+    // who finds that out afterwards has no way to undo it from here.
+    var quickLoadConfirm by remember { mutableStateOf<GameInfo?>(null) }
+    var quickLoadRemove by remember { mutableStateOf<GameInfo?>(null) }
+    val scope = rememberCoroutineScope()
+    val quickLoadElfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        val iso = quickLoadIso
+        quickLoadIso = null
+        if (picked == null || iso == null) return@rememberLauncherForActivityResult
+        quickLoadBusy = true
+        scope.launch {
+            val outcome = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.armsx2.QuickLoadSetup.run(context, iso, picked)
+            }
+            quickLoadBusy = false
+            quickLoadResult = outcome
+            // The extracted ELF is a NEW library entry; without this it stays invisible until
+            // the next manual rescan, which reads as "nothing happened".
+            viewModel.refresh()
+        }
+    }
+    val discPickedMsg = str("games.elfDisc.set")
+    val discFailedMsg = str("games.elfDisc.failed")
+    val elfDiscPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        val elf = discForElf
+        discForElf = null
+        if (picked != null && elf != null) {
+            // Persist the grant: this URI is read at BOOT, in a later process, long after the
+            // picker is gone. Without takePersistableUriPermission the pairing survives in the
+            // INI and then fails to open, which looks exactly like the bug being fixed.
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    picked, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val ok = runCatching {
+                kr.co.iefriends.pcsx2.NativeApp.setElfDiscOverride(elf.uri.toString(), picked.toString())
+            }.getOrDefault(false)
+            Toast.makeText(context, if (ok) discPickedMsg else discFailedMsg, Toast.LENGTH_LONG).show()
+        }
     }
     // Search: both the controller (A on the Search zone) AND a touch tap open the app's own D-pad +
     // touch keyboard (LibraryKeyboard). The search bar is no longer an editable TextField, so the
@@ -525,6 +581,95 @@ fun HomeScreen(
                     }
                 }
 
+                // List layout: one filter control instead of category sections. Stacking shelves
+                // inside a single-column list just makes a longer list, so List narrows instead.
+                //
+                // A pill that opens a PadModal, NOT a DropdownMenu: a dropdown is its own focused
+                // window and swallows pad keys, which is exactly why the overflow menu beside it
+                // was already rebuilt the same way.
+                if (state.layout == LibraryLayout.List && state.initialized &&
+                    com.armsx2.GameCategories.names().isNotEmpty()
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        var picking by remember { mutableStateOf(false) }
+                        val allLabel = str("library.category.all")
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .controllerFocusable("library-category-filter", RoundedCornerShape(12.dp),
+                                    onConfirm = { picking = true })
+                                .clickable { picking = true }
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "\uD83C\uDFF7\uFE0F  " + (state.categoryFilter ?: allLabel),
+                                Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text("\u25BE", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (picking) {
+                            com.armsx2.ui.common.PadModal(
+                                key = "library-category-picker",
+                                onDismiss = { picking = false },
+                                alignment = Alignment.BottomCenter,
+                            ) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    tonalElevation = 2.dp,
+                                ) {
+                                    Column(
+                                        Modifier.fillMaxWidth().heightIn(max = 480.dp)
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(horizontal = 20.dp, vertical = 20.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        SectionTitle(str("library.category.filter"))
+                                        Spacer(Modifier.height(6.dp))
+                                        (listOf<String?>(null) + com.armsx2.GameCategories.names()).forEach { name ->
+                                            val label = name ?: allLabel
+                                            Row(
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .controllerFocusable("category-pick-${'$'}label", RoundedCornerShape(10.dp),
+                                                        onConfirm = { viewModel.setCategoryFilter(name); picking = false })
+                                                    .combinedClickable(
+                                                        onClick = { viewModel.setCategoryFilter(name); picking = false },
+                                                        // "All games" is not a category and has nothing to manage.
+                                                        onLongClick = name?.let { { picking = false; manageCategory = it } },
+                                                    )
+                                                    .padding(vertical = 12.dp, horizontal = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Text(
+                                                    label,
+                                                    Modifier.weight(1f),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                if (state.categoryFilter == name) {
+                                                    Text("\u2713", color = MaterialTheme.colorScheme.primary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (shownRecents.isNotEmpty()) {
                     val recentsSelected = HomeInputController.zone.value == HomeZone.Recents
                     val recentSel = if (recentsSelected) HomeInputController.recentIndex.intValue else -1
@@ -615,6 +760,80 @@ fun HomeScreen(
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Category sections, one row each, sitting between Recently Played and the
+                // full library. Grid and Shelf only: List gets a dropdown filter in the toolbar
+                // instead, because stacking rows in a one-column list just makes a longer list.
+                //
+                // Hidden while SEARCHING, exactly like Recently Played above — a search should
+                // show matches, not matches re-sorted into shelves.
+                if (state.layout != LibraryLayout.List && state.query.isBlank() && state.initialized) {
+                    val categoryNames = com.armsx2.GameCategories.names()
+                    categoryNames.forEach { categoryName ->
+                        val members = com.armsx2.GameCategories.members(categoryName)
+                        // Resolve against the games actually in the library, so a category
+                        // holding a game the user has since deleted simply shows fewer, rather
+                        // than an empty shelf with a title over it.
+                        val categoryGames = state.visibleGames.filter { g ->
+                            g.settingsKey?.let { it in members } == true
+                        }
+                        if (categoryGames.isEmpty()) return@forEach
+                        item(span = { GridItemSpan(maxLineSpan) }, key = "category-$categoryName") {
+                            Column {
+                                SectionTitle(
+                                    categoryName,
+                                    detail = categoryGames.size.toString(),
+                                    modifier = Modifier
+                                        .padding(start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp)
+                                        .combinedClickable(
+                                            onClick = {},
+                                            onLongClick = { manageCategory = categoryName },
+                                        ),
+                                )
+                                Spacer(Modifier.height(9.dp))
+                                if (state.layout == LibraryLayout.Shelf) {
+                                    GameShelf(
+                                        games = categoryGames,
+                                        shelfRes = R.drawable.shelf_frosted,
+                                        coverWidth = ((if (compact) 84f else 100f) * coverScale).dp,
+                                        scroll = true,
+                                        selectedIndex = -1,
+                                        onLaunch = { viewModel.launch(it) },
+                                        onDetails = { menuGame = it },
+                                        modifier = Modifier.layout { measurable, constraints ->
+                                            val edge = 8.dp.roundToPx()
+                                            val placeable = measurable.measure(
+                                                constraints.copy(
+                                                    minWidth = constraints.maxWidth + edge * 2,
+                                                    maxWidth = constraints.maxWidth + edge * 2,
+                                                ),
+                                            )
+                                            layout(constraints.maxWidth, placeable.height) {
+                                                placeable.placeRelative(-edge, 0)
+                                            }
+                                        },
+                                    )
+                                } else {
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp),
+                                    ) {
+                                        itemsIndexed(categoryGames, key = { _, g -> g.uri.toString() }) { _, game ->
+                                            RecentGameCard(
+                                                game = game,
+                                                selected = false,
+                                                onClick = { viewModel.launch(game) },
+                                                onDetails = { menuGame = game },
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
                             }
                         }
                     }
@@ -897,6 +1116,40 @@ fun HomeScreen(
                         menuGame = null
                     }
                 }
+                // Discs only: sets up the host:-loading ("quick load") layout for a game that
+                // wants one, by extracting this disc's files and pairing a modified ELF with it.
+                // Android cannot mount an ISO, so this is the only way the method is reachable
+                // here at all.
+                if (!game.uri.toString().endsWith(".elf", ignoreCase = true) &&
+                    !game.extension.equals("ELF", ignoreCase = true)
+                ) {
+                    GameMenuAction("⚡", str("games.quickLoad"), "game-menu.quickload") {
+                        menuGame = null
+                        quickLoadConfirm = game
+                    }
+                }
+                // Only for ELFs: this pairs a boot ELF with the disc it needs, which is
+                // meaningless for a disc entry (it IS the disc). Desktop exposes the same thing
+                // as Properties -> Disc Path.
+                if (game.uri.toString().endsWith(".elf", ignoreCase = true) ||
+                    game.extension.equals("ELF", ignoreCase = true)
+                ) {
+                    GameMenuAction("💿", str("games.elfDisc"), "game-menu.elfdisc") {
+                        menuGame = null
+                        discForElf = game
+                        elfDiscPicker.launch(arrayOf("*/*"))
+                    }
+                }
+                if (com.armsx2.QuickLoadSetup.isInstalledElf(game)) {
+                    GameMenuAction("🧹", str("games.quickLoad.remove"), "game-menu.quickload.remove") {
+                        menuGame = null
+                        quickLoadRemove = game
+                    }
+                }
+                GameMenuAction("🏷️", str("games.categories"), "game-menu.categories") {
+                    menuGame = null
+                    categoryGame = game
+                }
                 val hidden = com.armsx2.HiddenGames.isHidden(game)
                 GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide"), "game-menu.hide") {
                     viewModel.setHidden(game, !hidden)
@@ -904,6 +1157,359 @@ fun HomeScreen(
                 }
             }
           }
+        }
+    }
+
+    categoryGame?.let { game ->
+        CategorySheet(game = game, onDismiss = { categoryGame = null })
+    }
+
+    quickLoadConfirm?.let { game ->
+        val needBytes = remember(game.uri) { com.armsx2.QuickLoadSetup.estimatedBytes(context, game) }
+        val freeBytes = remember(game.uri) { com.armsx2.QuickLoadSetup.freeBytes() }
+        val need = android.text.format.Formatter.formatShortFileSize(context, needBytes)
+        val free = android.text.format.Formatter.formatShortFileSize(context, freeBytes)
+        // 1.15x: extraction needs headroom over the ISO's own size, and running the storage to
+        // zero mid-copy is a worse outcome than declining to start.
+        val tight = needBytes > 0 && freeBytes < (needBytes * 115 / 100)
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-confirm",
+            onDismiss = { quickLoadConfirm = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(
+                    Modifier.padding(24.dp).widthIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text(str("games.quickLoad.confirmTitle"), style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        String.format(str("games.quickLoad.confirmBody"), need, free),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (tight) {
+                        Text(
+                            String.format(str("games.quickLoad.confirmLowSpace"), need, free),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadConfirm = null }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = {
+                            quickLoadIso = game
+                            quickLoadConfirm = null
+                            quickLoadElfPicker.launch(arrayOf("*/*"))
+                        }) { Text(str("games.quickLoad.continue")) }
+                    }
+                }
+            }
+        }
+    }
+
+    quickLoadRemove?.let { elf ->
+        val okMsg = str("games.quickLoad.removed")
+        val failMsg = str("games.quickLoad.removeFailed")
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-remove",
+            onDismiss = { quickLoadRemove = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(
+                    Modifier.padding(24.dp).widthIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text(str("games.quickLoad.removeConfirm"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadRemove = null }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = {
+                            quickLoadRemove = null
+                            scope.launch {
+                                val ok = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    com.armsx2.QuickLoadSetup.remove(elf)
+                                }
+                                Toast.makeText(context, if (ok) okMsg else failMsg, Toast.LENGTH_LONG).show()
+                                viewModel.refresh()
+                            }
+                        }) {
+                            Text(str("games.quickLoad.remove"), color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (quickLoadBusy) {
+        com.armsx2.ui.common.PadModal(key = "quickload-busy", onDismiss = {}, alignment = Alignment.Center) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.width(16.dp))
+                    Text(str("games.quickLoad.working"), color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+    }
+    quickLoadResult?.let { message ->
+        com.armsx2.ui.common.PadModal(
+            key = "quickload-result",
+            onDismiss = { quickLoadResult = null },
+            alignment = Alignment.Center,
+        ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+                Column(Modifier.padding(24.dp).widthIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(message, color = MaterialTheme.colorScheme.onSurface)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        androidx.compose.material3.TextButton(onClick = { quickLoadResult = null }) {
+                            Text(str("action.ok"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    manageCategory?.let { category ->
+        CategoryManageSheet(
+            category = category,
+            onDismiss = { manageCategory = null },
+            onRenamed = { from, to ->
+                com.armsx2.GameCategories.rename(from, to)
+                // Follow the rename if this was the active filter, rather than dropping the
+                // user back to All Games because the name they were looking at stopped existing.
+                if (state.categoryFilter == from) viewModel.setCategoryFilter(to)
+                manageCategory = null
+            },
+            onDeleted = {
+                com.armsx2.GameCategories.delete(category)
+                if (state.categoryFilter == category) viewModel.setCategoryFilter(null)
+                manageCategory = null
+            },
+        )
+    }
+}
+
+/**
+ * Rename or delete one category. Reached by long-pressing its section header (Grid/Shelf) or its
+ * row in the filter picker (List) -- the two places the name is already on screen, so there is no
+ * separate management screen to find.
+ *
+ * Delete asks first and says what it does NOT do: the games stay in the library. Without that line
+ * "Delete category" reads like it might remove the games in it, which is the one thing a user
+ * cannot undo from here.
+ */
+@Composable
+private fun CategoryManageSheet(
+    category: String,
+    onDismiss: () -> Unit,
+    onRenamed: (String, String) -> Unit,
+    onDeleted: () -> Unit,
+) {
+    var name by remember(category) { mutableStateOf(category) }
+    var confirmingDelete by remember(category) { mutableStateOf(false) }
+    val count = com.armsx2.GameCategories.members(category).size
+
+    com.armsx2.ui.common.PadModal(
+        key = "category-manage",
+        onDismiss = onDismiss,
+        alignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SectionTitle(category, detail = count.toString())
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text(str("games.categories.rename")) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    androidx.compose.material3.TextButton(
+                        enabled = name.isNotBlank() && name.trim() != category,
+                        onClick = { onRenamed(category, name.trim()) },
+                    ) { Text(str("games.categories.rename")) }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+                if (!confirmingDelete) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .controllerFocusable("category-delete", RoundedCornerShape(12.dp),
+                                onConfirm = { confirmingDelete = true })
+                            .clickable { confirmingDelete = true }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("\uD83D\uDDD1\uFE0F", Modifier.padding(end = 10.dp))
+                        Text(
+                            str("games.categories.delete"),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    Text(
+                        String.format(str("games.categories.deleteConfirm"), category),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        androidx.compose.material3.TextButton(onClick = { confirmingDelete = false }) {
+                            Text(str("action.cancel"))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.material3.TextButton(onClick = onDeleted) {
+                            Text(
+                                str("games.categories.delete"),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Assigns one game to categories. Checkboxes rather than a single choice because a category is a
+ * TAG — see [com.armsx2.GameCategories] — so "Onimusha" and "Favorites" are both allowed at once.
+ *
+ * Stays open on every toggle: filing a game usually means ticking more than one box, and closing
+ * after each would mean re-opening the menu for the second.
+ */
+@Composable
+private fun CategorySheet(game: GameInfo, onDismiss: () -> Unit) {
+    val key = game.settingsKey
+    var newName by remember { mutableStateOf("") }
+    // Subscribe to edits: names() reads GameCategories.version internally.
+    val names = com.armsx2.GameCategories.names()
+
+    com.armsx2.ui.common.PadModal(
+        key = "game-categories",
+        onDismiss = onDismiss,
+        alignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    str("games.categories.title"),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    game.displayTitle(com.armsx2.EnglishTitles.enabled.value),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                if (names.isEmpty()) {
+                    Text(
+                        str("games.categories.none"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        str("games.categories.subtitle"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    names.forEach { name ->
+                        val checked = com.armsx2.GameCategories.contains(name, key)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .controllerFocusable("category-$name", RoundedCornerShape(12.dp),
+                                    onConfirm = { com.armsx2.GameCategories.setMembership(name, key, !checked) })
+                                .clickable { com.armsx2.GameCategories.setMembership(name, key, !checked) }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = checked,
+                                onCheckedChange = { com.armsx2.GameCategories.setMembership(name, key, it) },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                name,
+                                Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+                // Creating from here also files THIS game into it — that is invariably why
+                // someone types a new category name while looking at a game.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        singleLine = true,
+                        label = { Text(str("games.categories.newHint")) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    androidx.compose.material3.TextButton(
+                        enabled = newName.isNotBlank(),
+                        onClick = {
+                            val trimmed = newName.trim()
+                            com.armsx2.GameCategories.create(trimmed)
+                            com.armsx2.GameCategories.setMembership(trimmed, key, true)
+                            newName = ""
+                        },
+                    ) { Text(str("games.categories.add")) }
+                }
+            }
         }
     }
 }

@@ -11,6 +11,7 @@
 #include "arm64/EeFpuModelCall-arm64.h"
 
 #include "VUmicro.h" // CpuVU0 — VE-08 thin sync helpers
+#include "VuMulBand.h"
 
 #include "common/Assertions.h"
 
@@ -724,11 +725,20 @@ static void cop2EmitSub(const a64::VRegister& dst, const a64::VRegister& a,
 // The model wants two scratch registers and every FMAC body has RQSCRATCH3
 // free across its arithmetic. The second is q28, which is also where a
 // multiply's MAC O predicate lands; that one is built before the operand clamp
-// and read after the arithmetic, so where it exists the deficit parks it in the
-// rec's own scratch for the eleven instructions it needs the register. q27 is
+// and read after the arithmetic, so where it exists the deficit saves it to the
+// rec's own scratch for as long as it needs the register. q27 is
 // the multiply's MAC U predicate; every body that has no U model -- the MADD,
 // MSUB and A-forms -- has it free across its arithmetic.
 static const a64::VRegister kCop2MulDeficitScratch = a64::VRegister(27, 128);
+
+// The COP2 macro path keeps its operands in the recompiler's own state, which
+// the pinned base register addresses with a plain offset. VuMulBand.h explains
+// why microVU needs a separate area.
+static EEFPU_MODEL_CALL void cop2MulShortTailBand()
+{
+	EeCop2RecState& st = _cpuRegistersPack.cop2Rec;
+	vuMulShortTailBandLanes(st.bandFs, st.bandFt, st.bandProduct);
+}
 
 static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& u, bool uLive)
@@ -740,9 +750,71 @@ static void cop2EmitDefectiveMul(const a64::VRegister& dst, const a64::VRegister
 	}
 
 	const a64::MemOperand park = armCpuRegMem(&_cpuRegistersPack.cop2Rec.deficitPark);
+	const a64::MemOperand bandFs = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandFs);
+	const a64::MemOperand bandFt = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandFt);
+	const a64::MemOperand bandProduct = armCpuRegMem(&_cpuRegistersPack.cop2Rec.bandProduct);
+	const a64::VRegister& t = RQSCRATCH3;
+
+	// The words saved here are the ones the multiply consumed, which are not
+	// always VU0.VF[fs] and VU0.VF[ft]: callers pass broadcast lanes, VI[REG_Q],
+	// VI[REG_I], the rotated operands of the OP instructions, and copies that
+	// cop2ClampOperandInto has bounded. For most forms there is no architectural
+	// register the helper could read instead.
+	//
+	// That only differs from the architectural word for operands with a biased
+	// exponent of 255. EeFpuModel::Mul, which the interpreter uses, reads the
+	// unclamped word, but a product formed from an exponent-255 operand is wrong
+	// here for an unrelated reason: single precision has no binade above
+	// FLT_MAX to represent it. vu_mul_deficit_tests.cpp scores those operands in
+	// a table of their own.
+	//
+	// Only an operand the model is about to overwrite has to be saved before it
+	// runs. The other is still in its register afterwards, so its store goes on
+	// the branch that calls the helper.
+	const bool aliasFs = dst.Is(a);
+	const bool aliasFt = dst.Is(b);
+	if (aliasFs)
+		armAsm->Str(a, bandFs);
+	if (aliasFt)
+		armAsm->Str(b, bandFt);
+
 	if (uLive)
 		armAsm->Str(u, park);
-	armEmitVuDefectiveMul(dst, a, b, RQSCRATCH3, u);
+	armEmitVuDefectiveMul(dst, a, b, t, u, false, &RWARG2);
+
+	// The condition below only has to avoid false negatives: eeMulOneUlpLow
+	// checks the tail itself, so a lane sent to it unnecessarily comes back
+	// unchanged. A lane the model already decremented has a residue of exactly
+	// one ULP, which the exponent difference rejects.
+	if (aliasFs)
+		armAsm->Ldr(u, bandFs);
+	else if (aliasFt)
+		armAsm->Ldr(u, bandFt);
+	armAsm->Mov(t.V16B(), dst.V16B());
+	armAsm->Fmls(t.V4S(), aliasFs ? u.V4S() : a.V4S(), aliasFt ? u.V4S() : b.V4S());
+
+	armAsm->Shl(t.V4S(), t.V4S(), 1);
+	armAsm->Ushr(t.V4S(), t.V4S(), 24);       // the residue's exponent
+	armAsm->Shl(u.V4S(), dst.V4S(), 1);
+	armAsm->Ushr(u.V4S(), u.V4S(), 24);       // the product's
+	armAsm->Uqsub(u.V4S(), u.V4S(), t.V4S());
+	armAsm->Ushr(u.V4S(), u.V4S(), 5);        // exponents at least 32 apart
+	armAsm->Umin(u.V4S(), u.V4S(), t.V4S());  // and the residue is not zero
+	armAsm->Umaxv(u.S(), u.V4S());
+	armAsm->Fmov(RWARG1, u.S());
+	armAsm->Orr(RWARG1, RWARG1, RWARG2); // plus the lanes the exponent test cut
+
+	a64::Label done;
+	armAsm->Cbz(RWARG1, &done);
+	if (!aliasFs)
+		armAsm->Str(a, bandFs);
+	if (!aliasFt)
+		armAsm->Str(b, bandFt);
+	armAsm->Str(dst, bandProduct);
+	armEmitEeFpuModelCall(reinterpret_cast<const void*>(&cop2MulShortTailBand));
+	armAsm->Ldr(dst, bandProduct);
+	armAsm->Bind(&done);
+
 	if (uLive)
 		armAsm->Ldr(u, park);
 }
@@ -2889,12 +2961,20 @@ void recCOP2_VDIV()
 	{
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 
-		// Q saturates at the EE's largest single, 0x7FFFFFFF, signed by the xor
-		// of the operands (FPU.cpp's checkDivideByZero). Written before the flag
-		// temps below claim w1 and w2.
+		// The console word goes out only where the FMAC models it (mVU_DIV's
+		// zero path). Written before the flag temps claim w1 and w2; RWSCRATCH
+		// is free until the statusflag load past the Csel.
 		armAsm->Eor(a64::w3, a64::w1, a64::w2);
 		armAsm->And(a64::w3, a64::w3, 0x80000000);
-		armAsm->Orr(a64::w3, a64::w3, 0x7FFFFFFF);
+		if (cop2ExactDivUnit())
+		{
+			armAsm->Orr(a64::w3, a64::w3, 0x7FFFFFFF);
+		}
+		else
+		{
+			armAsm->Mov(RWSCRATCH, 0x7F7FFFFFu);
+			armAsm->Orr(a64::w3, a64::w3, RWSCRATCH);
+		}
 		armAsm->Str(a64::w3, armVU0Mem(&VU0.q));
 
 		// 0/0 is invalid (D flag = 0x10), else divide-by-zero (I flag = 0x20).
@@ -3047,7 +3127,16 @@ void recCOP2_VRSQRT()
 	{
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->And(a64::w2, a64::w1, 0x80000000);
-		armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
+		// w3, not RWSCRATCH: the status word is live across this.
+		if (cop2ExactDivUnit())
+		{
+			armAsm->Orr(a64::w2, a64::w2, 0x7FFFFFFF);
+		}
+		else
+		{
+			armAsm->Mov(a64::w3, 0x7F7FFFFFu);
+			armAsm->Orr(a64::w2, a64::w2, a64::w3);
+		}
 
 		armAsm->Tst(a64::w1, kEeExpMask);
 		armAsm->Mov(a64::w1, 0x10);

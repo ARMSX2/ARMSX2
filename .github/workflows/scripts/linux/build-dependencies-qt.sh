@@ -7,10 +7,6 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-# The bundled ffmpeg has a lot of things disabled to reduce code size.
-# Users may want to use system ffmpeg for additional features
-: ${BUILD_FFMPEG:=0}
-
 SCRIPTDIR=$(realpath $(dirname "${BASH_SOURCE[0]}"))
 NPROCS="$(getconf _NPROCESSORS_ONLN)"
 INSTALLDIR="$1"
@@ -21,15 +17,12 @@ fi
 QT=6.11.1
 QTAPNG=1.3.0
 
-FFMPEG=8.1
 LIBBACKTRACE=ad106d5fdd5d960bd33fae1c48a351af567fd075
 LIBJPEGTURBO=3.2.0
 LIBPNG=1.6.58
 LIBWEBP=1.6.0
-NVENC=13.0.19.0
 SDL=SDL3-3.4.12
 LZ4=1.10.0
-VULKAN=1.4.328.1
 ZSTD=1.5.7
 KDDOCKWIDGETS=2.4.1
 PLUTOVG=1.3.2
@@ -55,7 +48,6 @@ b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413  qtimageformats
 95788aa502f75441d4edf65932b235f76523084e13dbbb7b9ee2d207b32bd9b3  qtwayland-everywhere-src-$QT.tar.xz
 f1d3be3489f758efe1a8f12118a212febbe611aa670af32e0159fa3c1feab2a6  QtApng-$QTAPNG.tar.gz
 
-b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a  ffmpeg-$FFMPEG.tar.xz
 96e5c2d7f2c482a60d5804da48a2eb9a0db0719b2c65dcc169fbfdcf37f3a45d  libbacktrace-$LIBBACKTRACE.tar.gz
 6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e  libjpeg-turbo-$LIBJPEGTURBO.tar.gz
 28eb403f51f0f7405249132cecfe82ea5c0ef97f1b32c5a65828814ae0d34775  libpng-$LIBPNG.tar.xz
@@ -63,8 +55,6 @@ e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564  libwebp-$LIBWE
 f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7  $SDL.tar.gz
 eee7dea22ed502868017971c86c63c4ed1e6085de0baebfdcc3d3322f00f3eb0  libpng-$LIBPNG-apng.patch.gz
 537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b  lz4-$LZ4.tar.gz
-13da39edb3a40ed9713ae390ca89faa2f1202c9dda869ef306a8d4383e242bee  nv-codec-headers-$NVENC.tar.gz
-c465aa56757e7746ac707f582b6e2d51546569a4a2488c1172fb543aa5fdfc2c  vulkan-sdk-$VULKAN.tar.gz
 eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-$ZSTD.tar.gz
 5cd9495d9316cf6cc937bb328a7fd491c3248ef2469cfa42511f1039f6148aca  KDDockWidgets-$KDDOCKWIDGETS.tar.gz
 7bd4e79ce18b1d47517e7e91fbb7cf19d4f01942804a519bc7c0bf32b6325dd5  plutovg-$PLUTOVG.tar.gz
@@ -87,9 +77,6 @@ if ! shasum -sa 256 --check SHASUMS 2> /dev/null; then
 		-O "https://github.com/lz4/lz4/releases/download/v$LZ4/lz4-$LZ4.tar.gz" \
 		-O "https://libsdl.org/release/$SDL.tar.gz" \
 		-O "https://github.com/facebook/zstd/releases/download/v$ZSTD/zstd-$ZSTD.tar.gz" \
-		-O "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-$VULKAN.tar.gz" \
-		-O "https://github.com/FFmpeg/nv-codec-headers/releases/download/n$NVENC/nv-codec-headers-$NVENC.tar.gz" \
-		-O "https://ffmpeg.org/releases/ffmpeg-$FFMPEG.tar.xz" \
 		-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qtbase-everywhere-src-$QT.tar.xz" \
 		-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qtimageformats-everywhere-src-$QT.tar.xz" \
 		-O "https://download.qt.io/official_releases/qt/${QT%.*}/$QT/submodules/qtsvg-everywhere-src-$QT.tar.xz" \
@@ -108,37 +95,6 @@ if ! shasum -sa 256 --check SHASUMS 2> /dev/null; then
 fi
 
 shasum -a 256 --check --strict SHASUMS
-
-if [ "$BUILD_FFMPEG" -ne 0 ]; then
-	echo "Installing vulkan headers..."
-	rm -fr "Vulkan-Headers-vulkan-sdk-$VULKAN"
-	tar xf "vulkan-sdk-$VULKAN.tar.gz"
-	cd "Vulkan-Headers-vulkan-sdk-$VULKAN"
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$INSTALLDIR" -DCMAKE_INSTALL_PREFIX="$INSTALLDIR"
-	make -C build install
-	cd ..
-
-	echo "Installing nvenc headers..."
-	rm -fr "nv-codec-headers-$NVENC"
-	tar xf "nv-codec-headers-$NVENC.tar.gz"
-	make -C "nv-codec-headers-$NVENC" PREFIX="$INSTALLDIR" install
-
-	echo "Installing FFmpeg..."
-	rm -fr "ffmpeg-$FFMPEG"
-	tar xf "ffmpeg-$FFMPEG.tar.xz"
-	cd "ffmpeg-$FFMPEG"
-	CFLAGS="-Os $CFLAGS" CXXFLAGS="-Os $CXXFLAGS" \
-		./configure --prefix="$INSTALLDIR" \
-		--disable-all --disable-autodetect --disable-static --enable-shared \
-		--enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
-		--enable-gpl --enable-libx264 --enable-libopus --enable-vulkan --enable-ffnvcodec --enable-nvenc --enable-vaapi \
-		--enable-encoder=ffv1,qtrle,libx264*,aac,flac,libopus,pcm_s16be,pcm_s16le,*_vulkan,*_nvenc,*_vaapi \
-		--enable-muxer=avi,matroska,mov,mp3,mp4,wav \
-		--enable-protocol=file
-	make "-j$NPROCS"
-	make install
-	cd ..
-fi
 
 echo "Building libbacktrace..."
 rm -fr "libbacktrace-$LIBBACKTRACE"

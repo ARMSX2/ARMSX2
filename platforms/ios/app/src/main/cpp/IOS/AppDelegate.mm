@@ -52,7 +52,6 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     EmuFolders::GameSettings = dataRoot + "/gamesettings";
     EmuFolders::Textures = dataRoot + "/textures";
     EmuFolders::InputProfiles = dataRoot + "/inputprofiles";
-    EmuFolders::Videos = dataRoot + "/videos";
     EmuFolders::UserResources = dataRoot + "/resources";
 }
 

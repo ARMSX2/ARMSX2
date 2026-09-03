@@ -93,8 +93,6 @@ public:
 	bool IsDumpRecording() const { return static_cast<bool>(m_dump); }
 	void StopGSDump();
 	void PresentCurrentFrame();
-	bool BeginCapture(std::string filename, const GSVector2i& size = GSVector2i(0, 0));
-	void EndCapture();
 };
 
 extern std::unique_ptr<GSRenderer> g_gs_renderer;

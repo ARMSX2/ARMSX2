@@ -11,8 +11,10 @@
 #include "common/ZipHelpers.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/Counters.h"
+#include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/CDVD/IsoReader.h" // ISO extraction for host: quick-loading setups
 #include "pcsx2/CDVD/CDVD.h" // cdvdSaveNVRAM (flush BIOS NVM on background)
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Sio.h" // MemcardBusy — save-state refusal reason
@@ -68,6 +70,7 @@
 #include <deque>
 #include <future>
 #include <functional>
+#include <optional>
 #include <thread>
 #include <regex>
 #include <vector>
@@ -281,6 +284,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
+
+    // The host: filesystem root (see Hle_SetHostRoot). Created up front rather than at boot so
+    // it is already sitting in the data folder when someone goes looking for somewhere to put
+    // the files a host:-loading game wants -- an empty folder that exists is a usable
+    // instruction; one that appears only after a failed boot is not.
+    FileSystem::CreateDirectoryPath(Path::Combine(EmuFolders::DataRoot, "hostfs").c_str(), true);
 
 #ifdef ARMSX2_PGO_GENERATE
     // PGO instrument build: redirect the .profraw output to an on-device writable
@@ -639,6 +648,12 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setHardcoreMode(JNIEnv *env, jclass clazz, jboolean enabled) {
     Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", enabled == JNI_TRUE);
+    // This is the user driving the toggle, so it outranks whatever
+    // setAchievementsHostOverride stashed: drop the saved value so clearing the
+    // override later restores nothing and leaves this choice standing. Keeps
+    // hardcore under the user's own control while an override is active — the
+    // override only supplies the default.
+    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
@@ -779,9 +794,19 @@ static void PersistAndApplyAchievementsSettings() {
 
 // Point the RetroAchievements client at a loopback proxy. Drives the same
 // [Achievements] Host setting CreateClient reads, so the override survives a
-// cold start. Hardcore mode is left untouched here so it can be exercised
-// against the dev proxy; it stays under the user's own control. An empty
-// host is ignored (use the clear path instead).
+// cold start. An empty host is ignored (use the clear path instead).
+//
+// Hardcore is forced off for the duration. The receiver only accepts loopback
+// hosts, and what listens there in practice is an offline RA proxy, which
+// cannot honour a hardcore award: the unlock is rejected server-side and
+// rcheevos surfaces nothing, so the user loses achievements silently. The
+// user's own setting is stashed in HostOverrideSavedHardcore and put back by
+// clearAchievementsHostOverride, so this borrows the setting rather than
+// overwriting it. Turning hardcore back on by hand while the override is
+// active still works and still wins (see setHardcoreMode) — the dev-proxy
+// case keeps working, it just is not the default any more.
+//
+// Hardcore handling contributed by misantronic (PR #617).
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jclass clazz, jstring p_host) {
@@ -791,9 +816,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jc
 
     Host::SetBaseStringSettingValue("Achievements", "Host", host.c_str());
 
-    // Older builds saved/forced hardcore off while an override was active;
-    // we no longer touch hardcore, so drop any leftover saved-state key.
-    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+    // Only stash on the first set: a re-broadcast of the same override (the
+    // pending-replay path in RetroAchievementsHostOverrideReceiver fires one on
+    // every cold start) must not overwrite the saved value with the forced-off
+    // one and lose the user's setting.
+    if (!Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool hardcore = Host::GetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
+        Host::SetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", hardcore);
+        if (hardcore)
+            Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
+    }
 
     PersistAndApplyAchievementsSettings();
     RestartAchievementsForHostChange();
@@ -803,7 +835,17 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_clearAchievementsHostOverride(JNIEnv *env, jclass clazz) {
     Host::RemoveBaseSettingValue("Achievements", "Host");
-    Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+
+    // Give the user's hardcore setting back. Absent key = nothing was borrowed
+    // (no override was active, or the user set hardcore by hand while it was),
+    // in which case ChallengeMode is already what they want and must be left
+    // alone. A restored ON only engages on the next boot, same as any other
+    // hardcore enable.
+    if (Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool saved = Host::GetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", false);
+        Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+        Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", saved);
+    }
 
     PersistAndApplyAchievementsSettings();
     RestartAchievementsForHostChange();
@@ -2335,8 +2377,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAutoRendererGpuStrings(
     g_gs_android_prefer_vk = GSUtil::AndroidAutoPrefersVulkan(vendor_str, renderer_str, version_str);
 }
 
-// Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides (default), 1-6 = explicit
-// EE/VU/GS priority orders, 7 = Performance Cores. Read by SetEmuThreadAffinities when the VM
+// Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides, 1-6 = explicit
+// EE/VU/GS priority orders, 7 = Performance Cores (the default). Out-of-range values fall back
+// to 0 rather than the default: a bad value means a bug upstream, so do the least. Read by SetEmuThreadAffinities when the VM
 // boots, so the app sets it before runVMThread; changing it takes effect on the next boot.
 extern int g_android_affinity_mode;
 extern "C"
@@ -3651,14 +3694,6 @@ void Host::SetFullscreen(bool enabled)
 {
 }
 
-void Host::OnCaptureStarted(const std::string& filename)
-{
-}
-
-void Host::OnCaptureStopped()
-{
-}
-
 void Host::RequestExitApplication(bool allow_confirm)
 {
 }
@@ -4384,6 +4419,211 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWrite(JNIEnv*, jclass) {
 // file the JSON prune couldn't reach, which we rewrite from the post-reset settings the Kotlin
 // stream puts next; no match means there is nothing to shadow global and JNI_FALSE tells Kotlin
 // to skip the (now unnecessary) put/commit.
+/**
+ * Where host: reads from: <EmuFolders::DataRoot>/hostfs.
+ *
+ * Exposed because the Kotlin side must NOT recompute it. DataRoot and the app's user-facing
+ * "system directory" preference are different values whenever the data folder lives on an SD
+ * card, so deriving the path on both sides put extraction and the ELF copy in different
+ * folders -- and would have had the library scanning a directory nothing was ever written to.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getHostfsDir(JNIEnv* env, jclass) {
+    const std::string dir = Path::Combine(EmuFolders::DataRoot, "hostfs");
+    FileSystem::CreateDirectoryPath(dir.c_str(), true);
+    return env->NewStringUTF(dir.c_str());
+}
+
+/**
+ * Copy every file out of an ISO into <DataRoot>/hostfs/<subdir>/, for host:-loading setups.
+ *
+ * The obsrv "quick loading" method for Biohazard Outbreak wants the disc's contents sitting in a
+ * folder, with one file swapped for a modified ELF. On desktop you mount the ISO in the OS file
+ * manager and drag the files out. Android cannot mount an ISO at all, so that step is simply not
+ * available to a user here -- which is why the method has never worked on Android no matter what
+ * anyone put where. The app has to do it.
+ *
+ * Opened the way IsoHasher does (lock CDVD, point it at the file, DoCDVDopen), because IsoReader
+ * reads through the global CDVD rather than taking a handle. REFUSES to run while a VM is alive:
+ * that would yank the disc out from under a running game.
+ *
+ * Returns the number of files written, or -1 on failure. Flat copy of the root directory, which
+ * is the layout the method wants -- these discs keep their data files at the top level.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_extractIsoToHostfs(JNIEnv* env, jclass, jstring p_iso, jstring p_subdir) {
+    if (!p_iso || !p_subdir)
+        return -1;
+    if (VMManager::HasValidVM()) {
+        Console.Error("extractIsoToHostfs: refusing while a VM is running");
+        return -1;
+    }
+    const std::string iso_path = GetJavaString(env, p_iso);
+    const std::string subdir = GetJavaString(env, p_subdir);
+    if (iso_path.empty() || subdir.empty())
+        return -1;
+
+    const std::string dest = Path::Combine(Path::Combine(EmuFolders::DataRoot, "hostfs"), subdir);
+    if (!FileSystem::CreateDirectoryPath(dest.c_str(), true)) {
+        Console.Error("extractIsoToHostfs: cannot create '%s'", dest.c_str());
+        return -1;
+    }
+
+    Error error;
+    if (!cdvdLock(&error)) {
+        Console.Error("extractIsoToHostfs: cdvdLock failed");
+        return -1;
+    }
+    CDVDsys_SetFile(CDVD_SourceType::Iso, iso_path);
+    CDVDsys_ChangeSource(CDVD_SourceType::Iso);
+
+    int written = -1;
+    if (!DoCDVDopen(&error)) {
+        Console.Error("extractIsoToHostfs: cannot open '%s'", iso_path.c_str());
+    } else {
+        IsoReader iso;
+        if (!iso.Open(&error)) {
+            Console.Error("extractIsoToHostfs: not a readable ISO filesystem");
+        } else {
+            written = 0;
+            // Recursive: GetFilesInDirectory returns subdirectories alongside files, and a PS2
+            // disc keeps plenty below the root (Outbreak has /PROG and /NTGUI2). A flat copy of
+            // the root silently produced a folder missing most of the game.
+            std::function<void(const std::string&)> copy_dir = [&](const std::string& dir) {
+                for (const std::string& name : iso.GetFilesInDirectory(dir, &error)) {
+                    // Discs list files as NAME;1 -- the ISO9660 version suffix. Strip it, or every
+                    // filename the game asks for by name misses.
+                    const std::string clean(IsoReader::RemoveVersionIdentifierFromPath(name));
+                    const std::string out = Path::Combine(dest, clean);
+
+                    if (iso.DirectoryExists(name, nullptr)) {
+                        FileSystem::CreateDirectoryPath(out.c_str(), true);
+                        copy_dir(name);
+                        continue;
+                    }
+
+                    // STREAMED, sector at a time. IsoReader::ReadFile loads the whole file into a
+                    // vector first, and a PS2 disc carries files far too large for that: the
+                    // lowmemorykiller took the app at ~2GB RSS mid-extract. Copy through a fixed
+                    // buffer so peak memory is one sector regardless of how big the file is.
+                    const std::optional<IsoReader::ISODirectoryEntry> de = iso.LocateFile(name, &error);
+                    if (!de.has_value()) {
+                        Console.Error("extractIsoToHostfs: cannot locate '%s'", name.c_str());
+                        continue;
+                    }
+
+                    auto fp = FileSystem::OpenManagedCFile(out.c_str(), "wb", &error);
+                    if (!fp) {
+                        Console.Error("extractIsoToHostfs: failed opening '%s'", out.c_str());
+                        continue;
+                    }
+
+                    u8 sector[2048];
+                    u64 remaining = de->length_le;
+                    u32 lsn = de->location_le;
+                    bool ok = true;
+                    while (remaining > 0) {
+                        if (DoCDVDreadSector(sector, lsn, CDVD_MODE_2048) != 0) {
+                            Console.Error("extractIsoToHostfs: read error in '%s' at lsn %u",
+                                name.c_str(), lsn);
+                            ok = false;
+                            break;
+                        }
+                        const size_t chunk = static_cast<size_t>(
+                            std::min<u64>(remaining, sizeof(sector)));
+                        if (std::fwrite(sector, 1, chunk, fp.get()) != chunk) {
+                            Console.Error("extractIsoToHostfs: failed writing '%s'", out.c_str());
+                            ok = false;
+                            break;
+                        }
+                        remaining -= chunk;
+                        lsn++;
+                    }
+                    fp.reset();
+                    if (!ok) {
+                        FileSystem::DeleteFilePath(out.c_str());
+                        continue;
+                    }
+                    written++;
+                }
+            };
+            copy_dir(std::string());
+            Console.WriteLnFmt("extractIsoToHostfs: wrote {} file(s) to {}", written, dest);
+        }
+        DoCDVDclose();
+    }
+    cdvdUnlock();
+    // Leave CDVD pointing at nothing, so a later boot cannot inherit this ISO by accident.
+    CDVDsys_ChangeSource(CDVD_SourceType::NoDisc);
+    return written;
+}
+
+/**
+ * Pair a boot ELF with the disc it needs, the way desktop's "Properties -> Disc Path" does.
+ *
+ * VMManager::Initialize routes a filename ending in .elf through GetDiscOverrideFromGameSettings,
+ * which opens the ELF, takes its CRC, and reads EmuCore/DiscPath out of gamesettings/<CRC>.ini.
+ * With no disc it falls through to CDVD_SourceType::NoDisc -- the ELF runs, and the game then sits
+ * on its loading screen forever waiting on disc reads that never come.
+ *
+ * Nothing on Android wrote that key, so every ELF that needs a disc was unbootable here. That is
+ * the Biohazard Outbreak "quick-load" method: a modified SLPM_xxx.xx.elf plus the original ISO.
+ *
+ * Empty disc_path clears the pairing. Returns false when the ELF cannot be read or has no CRC,
+ * which is also how the caller learns a file is not a usable ELF.
+ */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setElfDiscOverride(JNIEnv* env, jclass, jstring p_elf, jstring p_disc) {
+    if (!p_elf)
+        return JNI_FALSE;
+    const std::string elf_path = GetJavaString(env, p_elf);
+    const std::string disc_path = p_disc ? GetJavaString(env, p_disc) : std::string();
+    if (elf_path.empty())
+        return JNI_FALSE;
+
+    // Same read the core does, so the CRC we key on is the one it will look for. OpenFile goes
+    // through FileSystem, which is content:// aware, so a SAF-picked ELF resolves here too.
+    ElfObject elfo;
+    if (!elfo.OpenFile(elf_path, false, nullptr)) {
+        Console.Error("setElfDiscOverride: cannot read ELF '%s'", elf_path.c_str());
+        return JNI_FALSE;
+    }
+    const u32 crc = elfo.GetCRC();
+    if (crc == 0) {
+        Console.Error("setElfDiscOverride: ELF '%s' has no CRC", elf_path.c_str());
+        return JNI_FALSE;
+    }
+
+    // Empty serial + CRC == gamesettings/<CRC>.ini, which is exactly the file
+    // GetDiscOverrideFromGameSettings loads.
+    const std::string ini_path = VMManager::GetGameSettingsPath(std::string_view(), crc);
+    INISettingsInterface si(ini_path);
+    si.Load();  // keep whatever else is in there; this is the same file per-game settings use
+    if (disc_path.empty())
+        si.DeleteValue("EmuCore", "DiscPath");
+    else
+        si.SetStringValue("EmuCore", "DiscPath", disc_path.c_str());
+    if (!si.Save()) {
+        Console.Error("setElfDiscOverride: failed writing '%s'", ini_path.c_str());
+        return JNI_FALSE;
+    }
+
+    Console.WriteLnFmt("setElfDiscOverride: ELF {:08X} -> disc '{}'", crc, disc_path);
+    return JNI_TRUE;
+}
+
+/** The disc currently paired with [p_elf], or empty when there is none. */
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getElfDiscOverride(JNIEnv* env, jclass, jstring p_elf) {
+    std::string out;
+    if (p_elf) {
+        const std::string elf_path = GetJavaString(env, p_elf);
+        if (!elf_path.empty())
+            out = VMManager::GetDiscOverrideFromGameSettings(elf_path);
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWriteForSerial(JNIEnv* env, jclass, jstring p_serial) {
     if (!p_serial)

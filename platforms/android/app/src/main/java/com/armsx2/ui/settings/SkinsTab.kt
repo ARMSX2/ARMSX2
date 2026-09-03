@@ -330,7 +330,17 @@ private fun RemoteSkinRow(
             )
             val mb = skin.sizeBytes / 1024.0 / 1024.0
             val meta = buildString {
-                if (skin.buttons > 0) append("${skin.buttons} images")
+                // Author first: with more than one creator in the repo, whose skin this is
+                // is the thing you want to read off the row (requested by bagasromadon).
+                // Skipped when it is the "community" placeholder fetchFromTree() fills in,
+                // which names nobody.
+                if (skin.author.isNotBlank() && !skin.author.equals("community", true)) {
+                    append(skin.author)
+                }
+                if (skin.buttons > 0) {
+                    if (isNotEmpty()) append("  ·  ")
+                    append("${skin.buttons} images")
+                }
                 if (skin.sizeBytes > 0) {
                     if (isNotEmpty()) append("  ·  ")
                     append(String.format(java.util.Locale.US, "%.1f MB", mb))

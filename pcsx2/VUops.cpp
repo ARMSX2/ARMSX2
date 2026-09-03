@@ -8,6 +8,50 @@
 #include "MTVU.h"
 #include "EeFpuModel.h"
 #include "VuEfuModel.h"
+#include "VuMulBand.h"
+#include "R5900OpcodeTables.h"
+
+VuMulBandSlot g_vuMulBand[2];
+
+// Applies eeMulRound's guards and then the multiply array, lane by lane.
+//
+// A lane is skipped when the emitted model has already decided it correctly:
+// that is when the product's biased exponent is at least 48 and the exact
+// 48-bit mantissa product has no bits below the result's last bit, because the
+// predicate over ft's mantissa agrees with the array exactly there. Every other
+// lane is one of the two cases VuMulBand.h describes.
+void vuMulShortTailBandLanes(const u32* fs, const u32* ft, u32* product)
+{
+	for (int lane = 0; lane < 4; lane++)
+	{
+		const u32 a = fs[lane];
+		const u32 b = ft[lane];
+		const u32 w = product[lane];
+		const u32 exp = w & 0x7F800000u;
+		if ((a & 0x7F800000u) == 0 || (b & 0x7F800000u) == 0)
+			continue;
+		if (exp == 0 || exp == 0x7F800000u || (w & 0x7FFFFFFFu) == 0x00800000u)
+			continue;
+		const u64 ma = 0x800000u | (a & 0x7FFFFFu);
+		const u64 mb = 0x800000u | (b & 0x7FFFFFu);
+		const u64 exact = ma * mb;
+		const int k = (exact >> 47) ? 24 : 23;
+		if ((exp >> 23) >= 48u && (exact & ((1ull << k) - 1u)) == 0)
+			continue;
+		if (R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow(a, b))
+			product[lane] = w - 1u;
+	}
+}
+
+EEFPU_MODEL_CALL void vuMulShortTailBandVu0()
+{
+	vuMulShortTailBandLanes(g_vuMulBand[0].fs, g_vuMulBand[0].ft, g_vuMulBand[0].product);
+}
+
+EEFPU_MODEL_CALL void vuMulShortTailBandVu1()
+{
+	vuMulShortTailBandLanes(g_vuMulBand[1].fs, g_vuMulBand[1].ft, g_vuMulBand[1].product);
+}
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
