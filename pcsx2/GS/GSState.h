@@ -375,13 +375,6 @@ protected:
 	// the kick leaves behind.
 	static bool s_fused_kick_use_kernel;
 
-	// Side table for the two-pass kernel: the window position and the cull
-	// metadata of every vertex in a chunk, as two parallel arrays (see
-	// GSVertexKickKernel::Buffers). Members rather than kernel locals so pass
-	// one's stores and pass two's loads reach them off a register base instead of
-	// the frame.
-	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
-	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
 
 	// following functions need m_vt to be initialized
 
@@ -847,6 +840,22 @@ public:
 	bool SpriteUnionCoversDrawRect();
 	void CalculatePrimitiveCoversWithoutGaps();
 	GIFRegTEX0 GetTex0Layer(u32 lod);
+
+	// Side table for the two-pass kernel: the window position and the cull
+	// metadata of every vertex in a chunk, as two parallel arrays (see
+	// GSVertexKickKernel::Buffers). Members rather than kernel locals so pass
+	// one's stores and pass two's loads reach them off a register base instead of
+	// the frame.
+	//
+	// LAST IN THE CLASS ON PURPOSE, and it must stay last. This is 2 KB of scratch
+	// that only the kernel touches. Declared anywhere else it pushes every member
+	// after it 2 KB further from `this`, which moves hot fields the rest of the
+	// front end reads -- for no benefit to anything, since nothing but the kernel
+	// reads these. Declared in the middle of the class it cost the autoflush
+	// handler, which never runs the kernel, measurable time on both the M2 and the
+	// SD865 (RESULT.md section 19a).
+	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
+	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
 };
 
 // GV7-1d-ii: the front parser object of the two-object pipelined split
