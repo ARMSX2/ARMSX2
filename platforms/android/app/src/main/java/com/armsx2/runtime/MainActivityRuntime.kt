@@ -2305,6 +2305,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // any rumble or unlock sound can fire (both default to 1.0 = as authored until set here).
         ControllerMappings.syncHapticIntensity()
         ControllerMappings.syncRumbleFallback()
+        // Direct USB rumble for a PlayStation pad. Asks for USB permission only when one is
+        // actually attached, so nobody sees a prompt for a controller they do not own.
+        com.armsx2.input.UsbRumble.start(this)
+        com.armsx2.input.UsbRumble.loadTakeover()
+        // Player-slot pins, so a controller the user assigned by hand is on its slot
+        // before the first button press rather than after it.
+        com.armsx2.input.PadRouter.loadPins()
         com.armsx2.ui.achievements.AchievementsViewModel.syncSoundVolume()
         // Seed the pad-router's multitap gate before any in-game input is dispatched, so
         // slot routing (2 vs 8 slots) is correct from the first controller event.

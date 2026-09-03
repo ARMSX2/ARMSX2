@@ -285,7 +285,12 @@ private fun DrawerSection(
     )
     items.forEachIndexed { index, item ->
         DrawerRow(
-            controllerId = "drawer.${item.destination?.let { it::class.simpleName } ?: item.titleKey}",
+            // Keyed by titleKey, NOT by the destination class: SettingsControllerNav keys both
+            // register() and setPosition() by this id, so two rows sharing one id collapse into a
+            // single entry at whichever row composed last -- and the other becomes unreachable by
+            // controller while still clickable by touch. Every row here happens to carry a distinct
+            // destination today, but that is luck; titleKeys are unique by construction.
+            controllerId = "drawer.${item.titleKey}",
             title = str(item.titleKey),
             glyph = item.glyph,
             iconRes = item.iconRes,
