@@ -2041,6 +2041,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_FBA", sel.fba);
 		sm.AddMacro("PS_FBMASK", sel.fbmask);
 		sm.AddMacro("PS_QUANTIZE_COLOR", sel.quantize_color);
+		sm.AddMacro("PS_SUBSTITUTE_ALPHA", sel.substitute_alpha);
 		sm.AddMacro("PS_LTF", sel.ltf);
 		sm.AddMacro("PS_TCOFFSETHACK", sel.tcoffsethack);
 		sm.AddMacro("PS_POINT_SAMPLER", sel.point_sampler);

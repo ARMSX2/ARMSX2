@@ -146,6 +146,20 @@ namespace GSDrawAlphaMask
 		return !blend_requires_barrier;
 	}
 
+	/// Whether a held substitution still stands after the blend selection.
+	///
+	/// It wants what the drop wants -- no barrier of the blend's own, or the barrier is there
+	/// either way and the substitution has bought nothing -- and one thing more. Colclip hardware
+	/// makes the masked-write road read the destination as `sample * 65535` on all four channels
+	/// including alpha, so the byte that road merges is not the tracked one and writing the
+	/// tracked one is not the same answer. The predicate at the framebuffer-mask site cannot see
+	/// that flag, because EmulateBlending sets it afterwards; holding the decision over the blend
+	/// is what makes it visible in time to refuse.
+	inline constexpr bool SubstitutionStandsAfterBlend(bool blend_requires_barrier, bool colclip_hw)
+	{
+		return DropStandsAfterBlend(blend_requires_barrier) && !colclip_hw;
+	}
+
 	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
 	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
 	/// target's alpha stays describable without reading the mask.

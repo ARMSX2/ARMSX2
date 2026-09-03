@@ -142,9 +142,9 @@ struct GSMTLMainPSUniform
 	vector_float4 scale_factor;
 
 	float line_cov_scale;
+	unsigned int substitute_alpha_keep;
+	unsigned int substitute_alpha_value;
 	float _pad0;
-	float _pad1;
-	float _pad2;
 };
 
 enum GSMTLAttributes
@@ -198,6 +198,7 @@ enum GSMTLFnConstants
 	GSMTLConstantIndex_PS_WRITE_RG,
 	GSMTLConstantIndex_PS_FBMASK,
 	GSMTLConstantIndex_PS_QUANTIZE_COLOR,
+	GSMTLConstantIndex_PS_SUBSTITUTE_ALPHA,
 	GSMTLConstantIndex_PS_BLEND_A,
 	GSMTLConstantIndex_PS_BLEND_B,
 	GSMTLConstantIndex_PS_BLEND_C,

@@ -18,4 +18,6 @@
 // their numbers; always bump past our own last value.
 // 112: PS_QUANTIZE_COLOR. Every TFX shader gains the define and the colour-clamp block's guard
 // gains a term, so the source text of every TFX permutation changed.
-static constexpr u32 SHADER_CACHE_VERSION = 112; // 108 was upstream PR 14688; their 109 = our 111
+// 113: PS_SUBSTITUTE_ALPHA. Every TFX shader gains the define, two constant-buffer pad words
+// become named fields, and the colour-clamp block's guard gains another term.
+static constexpr u32 SHADER_CACHE_VERSION = 113; // 108 was upstream PR 14688; their 109 = our 111

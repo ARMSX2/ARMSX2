@@ -452,8 +452,10 @@ namespace GSDrawLog
 	enum HeldAlphaMask : u8
 	{
 		HeldAlphaMaskNone = 0, ///< nothing was held
-		HeldAlphaMaskStood, ///< held, and kept: no mask, no barrier, no clone
-		HeldAlphaMaskRestored, ///< held, and put back: the blend needed a barrier regardless
+		HeldAlphaMaskStood, ///< a drop, held and kept: no mask, no barrier, no clone
+		HeldAlphaMaskRestored, ///< a drop, held and put back: the blend needed a barrier regardless
+		HeldAlphaMaskSubstituteStood, ///< a substitution, held and kept
+		HeldAlphaMaskSubstituteRestored, ///< a substitution, held and put back
 	};
 
 	/// How a draw touched its render target's alpha, as CalculateAlphaRange saw it.

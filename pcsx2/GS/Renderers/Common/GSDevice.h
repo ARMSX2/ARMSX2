@@ -755,6 +755,14 @@ struct alignas(16) GSHWDrawConfig
 				// render-target clone. Deliberately absent from IsFeedbackLoopRT(): this reads
 				// nothing.
 				u32 quantize_color : 1;
+				// Write the render target's known alpha bits into the alpha byte instead of
+				// reading the target to merge them. Set on a draw whose alpha framebuffer mask
+				// was proved to hold back bits the tracker knows for every pixel: the shader
+				// produces the masked write's own answer out of SubstituteAlphaKeep and
+				// SubstituteAlphaValue, so the mask, the destination read, the barrier and the
+				// render-target clone all go. Deliberately absent from IsFeedbackLoopRT(): this
+				// reads nothing either.
+				u32 substitute_alpha : 1;
 
 				// Blend and Colclip
 				u32 blend_a        : 2;
@@ -871,8 +879,9 @@ struct alignas(16) GSHWDrawConfig
 			// no point having fbmask, since we're not writing. DATE has to stay.
 			fbmask = 0;
 
-			// nor quantizing a colour that never reaches a target.
+			// nor quantizing a colour that never reaches a target, nor substituting its alpha.
 			quantize_color = 0;
+			substitute_alpha = 0;
 
 			// disable both outputs.
 			no_color = no_color1 = 1;
@@ -1140,9 +1149,15 @@ struct alignas(16) GSHWDrawConfig
 
 		GSVector4 ScaleFactor;
 		float LineCovScale;
+		/// PS_SUBSTITUTE_ALPHA: the alpha byte becomes (a & SubstituteAlphaKeep) |
+		/// SubstituteAlphaValue, which is the masked write's own (a & ~M) | (known & M) with the
+		/// negation done here. Keep is a full 32-bit word so an alpha above 255 survives it the
+		/// way the masked road's own AND leaves it alone. Not folded into FbMask: ConfigureROV
+		/// overwrites that whole vector with a channel mask on any draw whose shader is not
+		/// merging one, which a substituting draw's is not.
+		u32 SubstituteAlphaKeep;
+		u32 SubstituteAlphaValue;
 		float _pad0;
-		float _pad1;
-		float _pad2;
 
 		__fi PSConstantBuffer()
 		{

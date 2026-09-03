@@ -75,6 +75,7 @@
 #define PS_FBA 0
 #define PS_FBMASK 0
 #define PS_QUANTIZE_COLOR 0
+#define PS_SUBSTITUTE_ALPHA 0
 #define PS_LTF 1
 #define PS_TCOFFSETHACK 0
 #define PS_POINT_SAMPLER 0
@@ -281,9 +282,9 @@ cbuffer cb1
 	float _pad0_cb1;
 	float _pad1_cb1;
 	float LineCovScale;
+	uint SubstituteAlphaKeep;
+	uint SubstituteAlphaValue;
 	float _pad2_cb1;
-	float _pad3_cb1;
-	float _pad4_cb1;
 };
 
 float4 RtLoad(int2 xy)
@@ -1106,6 +1107,10 @@ uint4 quantize_color(float4 C)
 	return (uint4)C;
 }
 
+// PS_SUBSTITUTE_ALPHA: the alpha framebuffer mask this draw carried held back bits the render
+// target is known to hold at a fixed value on every pixel, so the merge's answer on those bits is
+// that value whatever the shader computed. Writing it directly is the same byte the masked road
+// would have produced, out of one AND and one OR against constants, with no destination read.
 void ps_fbmask(inout float4 C, float2 pos_xy)
 {
 	if (PS_FBMASK)
@@ -1114,9 +1119,12 @@ void ps_fbmask(inout float4 C, float2 pos_xy)
 		float4 RT = trunc(RtLoad(int2(pos_xy)) * multi + 0.1f);
 		C = (float4)((quantize_color(C) & ~FbMask) | ((uint4)RT & FbMask));
 	}
-	else if (PS_QUANTIZE_COLOR)
+	else if (PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA)
 	{
-		C = (float4)quantize_color(C);
+		uint4 Cq = quantize_color(C);
+		if (PS_SUBSTITUTE_ALPHA)
+			Cq.a = (Cq.a & SubstituteAlphaKeep) | SubstituteAlphaValue;
+		C = (float4)Cq;
 	}
 }
 
@@ -1152,7 +1160,7 @@ void ps_color_clamp_wrap(inout float3 C)
 {
 	// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 	// so we need to limit the color depth on dithered items
-	if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR)
+	if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA)
 	{
 		if (PS_DST_FMT == FMT_16 && PS_BLEND_MIX == 0 && PS_ROUND_INV)
 			C += 7.0f; // Need to round up, not down since the shader will invert

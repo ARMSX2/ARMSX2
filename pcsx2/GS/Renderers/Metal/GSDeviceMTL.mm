@@ -2384,6 +2384,7 @@ void GSDeviceMTL::MRESetHWPipelineState(GSHWDrawConfig::VSSelector vssel, GSHWDr
 		setFnConstantB(m_fn_constants, pssel.write_rg,              GSMTLConstantIndex_PS_WRITE_RG);
 		setFnConstantB(m_fn_constants, pssel.fbmask,                GSMTLConstantIndex_PS_FBMASK);
 		setFnConstantB(m_fn_constants, pssel.quantize_color,        GSMTLConstantIndex_PS_QUANTIZE_COLOR);
+		setFnConstantB(m_fn_constants, pssel.substitute_alpha,      GSMTLConstantIndex_PS_SUBSTITUTE_ALPHA);
 		setFnConstantI(m_fn_constants, pssel.blend_a,               GSMTLConstantIndex_PS_BLEND_A);
 		setFnConstantI(m_fn_constants, pssel.blend_b,               GSMTLConstantIndex_PS_BLEND_B);
 		setFnConstantI(m_fn_constants, pssel.blend_c,               GSMTLConstantIndex_PS_BLEND_C);

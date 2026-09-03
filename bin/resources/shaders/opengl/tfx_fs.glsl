@@ -110,9 +110,9 @@ layout(std140, binding = 0) uniform cb21
 	float _pad1_cb1;
 
 	float LineCovScale;
+	uint SubstituteAlphaKeep;
+	uint SubstituteAlphaValue;
 	float _pad2_cb1;
-	float _pad3_cb1;
-	float _pad4_cb1;
 };
 
 in SHADER
@@ -981,6 +981,10 @@ uvec4 quantize_color(vec4 C)
 	return uvec4(C);
 }
 
+// PS_SUBSTITUTE_ALPHA: the alpha framebuffer mask this draw carried held back bits the render
+// target is known to hold at a fixed value on every pixel, so the merge's answer on those bits is
+// that value whatever the shader computed. Writing it directly is the same byte the masked road
+// would have produced, out of one AND and one OR against constants, with no destination read.
 void ps_fbmask(inout vec4 C)
 {
 	// FIXME do I need special case for 16 bits
@@ -991,8 +995,12 @@ void ps_fbmask(inout vec4 C)
 		vec4 RT = trunc(sample_from_rt() * 255.0f + 0.1f);
 	#endif
 	C = vec4(gpu_bitwise_and(quantize_color(C), gpu_bitwise_not(FbMask)) | gpu_bitwise_and(uvec4(RT), FbMask));
-#elif PS_QUANTIZE_COLOR
-	C = vec4(quantize_color(C));
+#elif PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA
+	uvec4 Cq = quantize_color(C);
+	#if PS_SUBSTITUTE_ALPHA
+		Cq.a = (Cq.a & SubstituteAlphaKeep) | SubstituteAlphaValue;
+	#endif
+	C = vec4(Cq);
 #endif
 }
 
@@ -1030,7 +1038,7 @@ void ps_color_clamp_wrap(inout vec3 C)
 {
 	// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 	// so we need to limit the color depth on dithered items
-#if SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR
+#if SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA
 
 #if PS_DST_FMT == FMT_16 && PS_BLEND_MIX == 0 && PS_ROUND_INV
 	C += 7.0f; // Need to round up, not down since the shader will invert

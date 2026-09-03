@@ -382,6 +382,11 @@ private:
 	{
 		u32 fbmask = 0; ///< FBMSK as the draw asked for it; zero means nothing is held
 		u32 ps_fbmask = 0; ///< the shader's four-channel nibble for that mask
+		bool substitute = false; ///< what is held is the substitution, not the drop
+		/// The two constants a standing substitution hands the shader. Applied in
+		/// ResolveHeldAlphaMask() rather than at the framebuffer-mask site, so a substitution
+		/// that gets put back leaves the constant buffer exactly as it found it.
+		GSDrawAlphaMask::Substitution substitution;
 	};
 	HeldAlphaMask m_held_alpha_mask;
 

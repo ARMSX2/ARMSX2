@@ -6744,10 +6744,25 @@ void GSRendererHW::ResolveHeldAlphaMask()
 	m_held_alpha_mask = {};
 
 	const bool blend_requires_barrier = m_conf.require_one_barrier || m_conf.require_full_barrier;
-	if (GSDrawAlphaMask::DropStandsAfterBlend(blend_requires_barrier))
+	const bool stands = held.substitute ?
+	                        GSDrawAlphaMask::SubstitutionStandsAfterBlend(blend_requires_barrier, m_conf.ps.colclip_hw) :
+	                        GSDrawAlphaMask::DropStandsAfterBlend(blend_requires_barrier);
+	if (stands)
 	{
+		// The shader bit and its two constants go on here rather than at the framebuffer-mask
+		// site, so a substitution that gets put back has touched nothing at all.
+		if (held.substitute)
+		{
+			m_conf.ps.substitute_alpha = 1;
+			m_conf.cb_ps.SubstituteAlphaKeep = held.substitution.keep;
+			m_conf.cb_ps.SubstituteAlphaValue = held.substitution.value;
+		}
+
 		if (GSDrawLog::IsActive()) [[unlikely]]
-			GSDrawLog::NoteHeldAlphaMask(GSDrawLog::HeldAlphaMaskStood);
+		{
+			GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteStood :
+														   GSDrawLog::HeldAlphaMaskStood);
+		}
 		return;
 	}
 
@@ -6758,7 +6773,10 @@ void GSRendererHW::ResolveHeldAlphaMask()
 	m_conf.require_one_barrier = true;
 
 	if (GSDrawLog::IsActive()) [[unlikely]]
-		GSDrawLog::NoteHeldAlphaMask(GSDrawLog::HeldAlphaMaskRestored);
+	{
+		GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteRestored :
+													   GSDrawLog::HeldAlphaMaskRestored);
+	}
 }
 
 u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask)
@@ -6955,6 +6973,17 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// a drop the target could already answer for is one the campaign has measured and is
 		// taken outright, exactly as before.
 		const bool drop_via_union = (exact_drop == GSDrawLog::ExactAlphaDropTaken) && rt && rt->m_alpha_known_via_union;
+
+		// Where the mask is not the identity but the target still knows every bit it holds back,
+		// the merge's answer on those bits is that known value whatever this draw computed. So the
+		// shader can write it directly and the mask can go the same way, off the same road, for the
+		// same saving. Every such draw is held, not only one whose knowledge came from a union
+		// cover: losing the mask is what moves the blend road, and that is the substitution's own
+		// failure mode rather than a property of where the knowledge came from. Only when the mask
+		// would have been emulated at all: at AccBlendLevel::Minimum nothing is holding those bits
+		// back in the first place, and substituting there would change the picture rather than
+		// preserve it.
+		const bool substitute = GSDrawLog::IsExactAlphaSubstitute(exact_drop) && enable_fbmask_emulation;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
 			// The rule's own two inputs beside the pair, read exactly where it reads them: the
@@ -6970,7 +6999,7 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 				static_cast<u8>(GetAlphaMinMax().max | log_fba));
 		}
 
-		if (exact_drop == GSDrawLog::ExactAlphaDropTaken)
+		if (exact_drop == GSDrawLog::ExactAlphaDropTaken || substitute)
 		{
 			// Keep the byte. What the drop is entitled to change is the shader and the barrier;
 			// decisions about what the draw asked for -- the target's tracked alpha, and whether it
@@ -7004,16 +7033,29 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 			enable_fbmask_emulation ? static_cast<u32>(~requested_ff & ~requested_zero & 0xF) : 0;
 		m_conf.ps.quantize_color = GSDrawAlphaMask::NeedsColorQuantize(requested_ps_fbmask, m_conf.ps.fbmask);
 
-		// The held drop: the mask is off the shader from here, but the barrier it would have
+		// The substitution needs the colour quantized too -- it works on the integer alpha, and it
+		// is the same draw leaving the same road. NeedsColorQuantize already says so, because an
+		// alpha-only mask is the only shape the substitution takes and clearing it clears the whole
+		// nibble; asserted rather than assumed, because the shader reads the two bits
+		// independently.
+		pxAssert(!substitute || m_conf.ps.quantize_color);
+
+		// The held decision: the mask is off the shader from here, but the barrier it would have
 		// required stays visible to EmulateBlending, so this draw picks the blend it picks with
-		// the mask on. ResolveHeldAlphaMask() then keeps the drop if that blend needs no barrier
-		// of its own, and puts the mask back if it does. Alpha is the only partially masked
+		// the mask on. ResolveHeldAlphaMask() then keeps the decision if that blend needs no
+		// barrier of its own, and puts the mask back if it does. Alpha is the only partially masked
 		// channel -- DecideExactAlphaMaskDrop refuses the draw otherwise -- so the mask's own
 		// barrier is always the one-barrier road below, never the full-barrier one.
-		if (drop_via_union && requested_ps_fbmask != 0)
+		if ((drop_via_union || substitute) && requested_ps_fbmask != 0)
 		{
 			m_held_alpha_mask.fbmask = static_cast<u32>(requested_fbmask);
 			m_held_alpha_mask.ps_fbmask = requested_ps_fbmask;
+			m_held_alpha_mask.substitute = substitute;
+			if (substitute)
+			{
+				m_held_alpha_mask.substitution = GSDrawAlphaMask::SubstitutionFor(
+					static_cast<u8>((static_cast<u32>(requested_fbmask) >> 24) & 0xFF), rt->m_alpha_known.value);
+			}
 		}
 
 		if (m_conf.ps.fbmask)

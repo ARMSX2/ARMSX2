@@ -256,3 +256,46 @@ TEST(GSDrawAlphaMask, TheSubstitutionConstantsReproduceTheMaskedMerge)
 		}
 	}
 }
+
+TEST(GSDrawAlphaMask, AHeldSubstitutionStandsOnlyWhenTheBlendNeedsNoBarrier)
+{
+	// Same reason as the drop: the substitution's whole value is the barrier it removes, and a
+	// blend that needs one for its own reasons has it either way.
+	EXPECT_TRUE(SubstitutionStandsAfterBlend(false, false));
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(true, false));
+}
+
+TEST(GSDrawAlphaMask, AHeldSubstitutionIsRefusedOnColclipHardware)
+{
+	// Colclip hardware makes the masked-write road read the destination at the 65535 scale on all
+	// four channels, so the byte it merges is not the tracked one -- writing the tracked one is a
+	// different answer. Refused whether or not the blend would have allowed it.
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(false, true));
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(true, true));
+}
+
+TEST(GSDrawAlphaMask, TheSubstitutionNeverStandsWhereTheDropWouldNot)
+{
+	// The two settle rules stated together over both polarities of both inputs: the substitution
+	// asks for everything the drop asks for and one thing more, so it can only ever be the
+	// stricter of the two.
+	for (int barrier = 0; barrier <= 1; barrier++)
+	{
+		for (int colclip_hw = 0; colclip_hw <= 1; colclip_hw++)
+		{
+			const bool drop = DropStandsAfterBlend(barrier != 0);
+			const bool subst = SubstitutionStandsAfterBlend(barrier != 0, colclip_hw != 0);
+			EXPECT_TRUE(drop || !subst) << "barrier " << barrier << " colclip_hw " << colclip_hw;
+			EXPECT_EQ(subst, drop && colclip_hw == 0) << "barrier " << barrier << " colclip_hw " << colclip_hw;
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, ASubstitutedDrawStillClaimsTheAlphaByte)
+{
+	// A substituting draw carries no shader mask and writes a particular alpha byte, which is
+	// exactly the shape the blend-mix factor road used to mistake for a free byte. It reads the
+	// mask the draw asked for through the same route a dropped draw does.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x80, false, 0)));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x7F, false, 0)));
+}

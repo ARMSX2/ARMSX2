@@ -567,6 +567,10 @@ namespace GSDrawLog
 				return "STOOD";
 			case HeldAlphaMaskRestored:
 				return "RESTORED";
+			case HeldAlphaMaskSubstituteStood:
+				return "SUBST_STOOD";
+			case HeldAlphaMaskSubstituteRestored:
+				return "SUBST_RESTORED";
 			default:
 				return "";
 		}
