@@ -44,7 +44,8 @@ GpuProfileSelection ResolveGL(const char* vendor, const char* renderer, const ch
 	return GpuProfileDetector::Resolve("auto", vendor, renderer, context);
 }
 
-GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version)
+GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
+	std::string_view platform_hints = std::string_view())
 {
 	MobileDriverContext context;
 	context.api = MobileGpuApi::Vulkan;
@@ -52,7 +53,25 @@ GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version)
 	context.driver_id = kArmDriverId;
 	context.driver_version = packed_version;
 	context.driver_name = "ARM proprietary";
+	context.platform_hints = platform_hints;
 	return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+}
+
+// What the platform actually reports for the SoC, in both spellings the resolver can see it in.
+// Android hands over system properties (ro.soc.model / ro.board.platform); a Linux handheld has no
+// property service, so the identity comes from the device tree's compatible list. Passing them in
+// through MobileDriverContext::platform_hints exercises the same string the real device produces
+// without depending on the machine the test runs on.
+constexpr const char* kMt6897AndroidHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6897 | "
+										   "ro.board.platform=mt6897";
+constexpr const char* kMt6897LinuxHints = "anbernic,rg477v mediatek,mt6897";
+// A MediaTek part that is NOT the one we measured: the deny list still applies there.
+constexpr const char* kOtherMediaTekHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6985 | "
+										   "ro.board.platform=mt6985";
+
+bool DeniesRoaaDestinationRead(const GpuProfileSelection& sel)
+{
+	return sel.driver.HasBug(DriverBug::BrokenRoaaDestinationRead);
 }
 
 bool TakesTheRenderTargetCopyPath(const GpuProfileSelection& sel)
@@ -136,6 +155,81 @@ TEST(GSGpuDriverProfile, OtherMaliOpenGLRevisionsKeepTheInTileRead)
 		ResolveGL("ARM", "Mali-G615 MC6", "OpenGL ES 3.2 v1.r45p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef")));
 	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
 		ResolveGL("ARM", "Mali-G57 MC2", "OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef")));
+}
+
+// The exemption, and the whole point of step 2.2: the RG 477V's SoC is excluded from the r44p1
+// crash rule, so at default settings it keeps the in-tile read instead of the render-target copy.
+// The rule was written from a Motorola Edge 60 Pro; this device runs the same nominal driver
+// revision and does not fault, so the exclusion is per SoC rather than per version. Both spellings
+// of the SoC identity are pinned because the two runner paths see different ones.
+TEST(GSGpuDriverProfile, Mt6897IsExemptFromTheR44p1SelfReadRule)
+{
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints)));
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897LinuxHints)));
+}
+
+// The other half, and the one an over-eager exclusion breaks silently: every OTHER r44p1 device
+// still takes the copy path. A hint_exclude that matched too much would put the founding device
+// back on the read that loses it.
+TEST(GSGpuDriverProfile, OtherR44p1DevicesStillTakeTheRenderTargetCopyPath)
+{
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints)));
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0),
+		"ro.product.manufacturer=motorola | ro.product.model=edge 60 pro")));
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+}
+
+// The MediaTek ROAA deny list, which used to be an inline vendor test in the Vulkan backend. Same
+// scope as before on every part except the measured one.
+TEST(GSGpuDriverProfile, MediaTekMaliDeniesTheRoaaDestinationReadExceptOnMt6897)
+{
+	EXPECT_TRUE(DeniesRoaaDestinationRead(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints)));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints)));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(
+		ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897LinuxHints)));
+}
+
+// A Mali part on a SoC that is not MediaTek was never on the deny list and must not join it now --
+// the inline test this replaced asked IsMediaTekSoC(), and the rule has to be exactly as narrow.
+TEST(GSGpuDriverProfile, NonMediaTekMaliKeepsTheRoaaDestinationRead)
+{
+	EXPECT_FALSE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G715", PackVulkanVersion(46, 0, 0),
+		"ro.soc.manufacturer=Samsung | ro.board.platform=s5e9925")));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G610", PackVulkanVersion(38, 1, 0))));
+}
+
+// Mali-G57 is denied on its model number, across SoC vendors, which is what the inline
+// deviceName search did. Neighbouring models must not be caught by it.
+TEST(GSGpuDriverProfile, MaliG57DeniesTheRoaaDestinationReadOnAnySoC)
+{
+	EXPECT_TRUE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G57 MC2", PackVulkanVersion(32, 1, 0))));
+	EXPECT_TRUE(DeniesRoaaDestinationRead(
+		ResolveMaliVK("Mali-G57 MC2", PackVulkanVersion(32, 1, 0), kMt6897AndroidHints)));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G52 MC2", PackVulkanVersion(32, 1, 0))));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G77 MC9", PackVulkanVersion(32, 1, 0))));
+}
+
+// The deny list is a Vulkan rule about rasterization-order attachment access. The GL backend's
+// fetch comes from GL_ARM_shader_framebuffer_fetch, which is a different mechanism on a different
+// code path, and GSUtil::AndroidAutoPrefersVulkan asks the table through the GL path -- so a
+// Vulkan-only rule leaking into it would silently reroute Auto for every MediaTek Mali device.
+TEST(GSGpuDriverProfile, TheRoaaDenyListDoesNotReachTheOpenGLPath)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::OpenGL;
+	context.driver_name = kMaliR44p1GlRenderer;
+	context.api_version_string = kMaliR44p1GlVersion;
+	context.platform_hints = kOtherMediaTekHints;
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", kMaliR44p1GlVendor, kMaliR44p1GlRenderer, context);
+
+	EXPECT_FALSE(DeniesRoaaDestinationRead(sel));
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(sel));
 }
 
 // ---------------------------------------------------------------------------------------------

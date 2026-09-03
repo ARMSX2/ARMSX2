@@ -8,6 +8,8 @@
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
+#elif defined(__linux__)
+#include <cstdio>
 #endif
 
 namespace GpuProfileDetail
@@ -84,6 +86,38 @@ static std::string GetAndroidProperty(const char* name)
 	const int length = __system_property_get(name, value.data());
 	return (length > 0) ? std::string(value.data(), static_cast<size_t>(length)) : std::string();
 }
+#elif defined(__linux__)
+// The SoC identity on a Linux handheld (ROCKNIX and its relatives), where there is no Android
+// property service. /proc/device-tree/compatible is a NUL-separated list of "vendor,board" strings
+// ordered most specific first, and on a MediaTek part it names the chipset -- an Anbernic RG 477V
+// reads "anbernic,rg477v" then "mediatek,mt6897". Nothing else on this platform reports the SoC
+// without shelling out or parsing a distribution-specific file, and every driver string the Vulkan
+// and GL APIs hand us describes the GPU rather than the chip it sits in.
+//
+// Read once per device creation, four hundred bytes at most, off a file that either exists or does
+// not -- systems without a device tree simply contribute no hint.
+static std::string GetDeviceTreeCompatible()
+{
+	std::FILE* file = std::fopen("/proc/device-tree/compatible", "rb");
+	if (!file)
+		return std::string();
+
+	std::array<char, 512> buffer = {};
+	const size_t length = std::fread(buffer.data(), 1, buffer.size(), file);
+	std::fclose(file);
+
+	// Separators become spaces so a substring search cannot match across two entries, and so the
+	// result is one printable token list like every other hint.
+	std::string compatible;
+	compatible.reserve(length);
+	for (size_t i = 0; i < length; i++)
+		compatible.push_back((buffer[i] == '\0') ? ' ' : buffer[i]);
+
+	while (!compatible.empty() && compatible.back() == ' ')
+		compatible.pop_back();
+
+	return compatible;
+}
 #endif
 
 static std::string BuildHints(std::string_view gpu_vendor, std::string_view gpu_renderer_or_name,
@@ -95,6 +129,7 @@ static std::string BuildHints(std::string_view gpu_vendor, std::string_view gpu_
 	AppendHint(hints, "driver_name", driver_context.driver_name);
 	AppendHint(hints, "driver_info", driver_context.driver_info);
 	AppendHint(hints, "api_version", driver_context.api_version_string);
+	AppendHint(hints, "platform", driver_context.platform_hints);
 
 #if defined(__ANDROID__)
 	static constexpr const char* property_names[] = {
@@ -118,6 +153,8 @@ static std::string BuildHints(std::string_view gpu_vendor, std::string_view gpu_
 
 	for (const char* property_name : property_names)
 		AppendHint(hints, property_name, GetAndroidProperty(property_name));
+#elif defined(__linux__)
+	AppendHint(hints, "dt_compatible", GetDeviceTreeCompatible());
 #endif
 
 	return hints;
@@ -316,6 +353,7 @@ const char* GpuProfileDetector::BugToString(DriverBug value)
 		case DriverBug::BrokenExtendedDynamicState: return "BrokenExtendedDynamicState";
 		case DriverBug::BrokenPrimitiveTopologyDynamicState: return "BrokenPrimitiveTopologyDynamicState";
 		case DriverBug::BrokenGraphicsPipelineLibrary: return "BrokenGraphicsPipelineLibrary";
+		case DriverBug::BrokenRoaaDestinationRead: return "BrokenRoaaDestinationRead";
 		case DriverBug::Count:
 		default: return "Unknown";
 	}

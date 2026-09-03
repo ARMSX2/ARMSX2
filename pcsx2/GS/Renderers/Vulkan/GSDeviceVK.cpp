@@ -3947,23 +3947,28 @@ bool GSDeviceVK::CheckFeatures()
 	// can also force it from Settings → Renderer → GPU Profile (force_xclipse_profile) for
 	// drivers where the 0x144D vendorID doesn't report.
 	const bool is_xclipse_vk = IsDeviceXclipse() || force_xclipse_profile;
-	// MediaTek Mali + Mali-G57 expose ROAA but return zero/stale destination color from it
-	// (black or intermittently missing textures); force those onto the texture-barrier path
-	// instead of fbfetch. Ported from sashkinbro/EmuCoreX (MediaTek across GPU generations,
-	// plus the older Mali-G57 case). deviceName is null-terminated by Vulkan.
+	// deviceName is null-terminated by Vulkan. Kept for the FastMAD deinterlace fallback below;
+	// the G57 fbfetch deny lives in the driver-bug database now.
 	const bool is_mali_g57 = is_mali_vk &&
 		(std::string_view(m_device_properties.deviceName).find("Mali-G57") != std::string_view::npos);
-	const bool is_mediatek_mali_vk = is_mali_vk && IsMediaTekSoC();
-	// ForceMaliFramebufferFetch (default OFF) lets a MediaTek/G57 user re-enable fbfetch to A/B
-	// their own driver. The blanket disable above is a per-VENDOR guess ported wholesale from
-	// EmuCoreX ("MediaTek across GPU generations"), not a per-driver fact, and it is expensive
-	// on exactly this hardware: Mali reports dualSrcBlend=false, so GSRendererHW force-SW-blends
-	// every SRC1/blend-mix/PABE draw, and with fbfetch off the only way to read Cd is the
-	// per-PRIMITIVE texture barrier -- the "GT4 slideshow" path described above. Issue #339 is
-	// that collision on a Dimensity 8350 + Mali-G615 (Shadow of the Colossus lost perf when SW
-	// blend fixed its visuals). If a newer MediaTek driver reports ROAA honestly, this recovers
-	// the fast blend path; if it still lies, the user sees the black/missing textures and turns
-	// it back off -- which is why it must default OFF and stay a separate setting.
+	// The parts that expose ROAA and return zero or stale destination colour through it (black or
+	// intermittently missing textures) are rules vk-mediatek-mali-roaa-destination-read and
+	// vk-arm-g57-roaa-destination-read in the driver-bug database. That is where the exemption for
+	// a part we have measured lives, and it is why this is a table lookup rather than the inline
+	// `IsMediaTekSoC() || deviceName contains Mali-G57` test it replaces -- the inline one could
+	// not express "except MT6897", and it could not fire at all off Android, where the SoC is
+	// never pushed into the device.
+	//
+	// ForceMaliFramebufferFetch (default OFF) lets a user on a MediaTek part the database still
+	// denies re-enable fbfetch and A/B their own driver. The deny is a per-VENDOR guess, not a
+	// per-driver fact, and it is expensive where it is wrong: Mali reports dualSrcBlend=false, so
+	// GSRendererHW force-SW-blends every SRC1/blend-mix/PABE draw, and with fbfetch off the only
+	// way to read Cd is the per-PRIMITIVE texture barrier -- the "GT4 slideshow" path described
+	// above. Issue #339 is that collision on a Dimensity 8350 + Mali-G615 (Shadow of the Colossus
+	// lost perf when SW blend fixed its visuals). If a newer MediaTek driver reports ROAA
+	// honestly, this recovers the fast blend path; if it still lies, the user sees the
+	// black/missing textures and turns it back off -- which is why it must default OFF and stay a
+	// separate setting.
 	//
 	// Deliberately NOT reusing EnableAdrenoFramebufferFetch: that one is default-ON on Android
 	// (Settings.kt adrenoFbFetch = true, plus a ConfigStore migration that flips old saves ON),
@@ -3975,8 +3980,9 @@ bool GSDeviceVK::CheckFeatures()
 	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
 	// The working workaround remains the native GL renderer, whose fbfetch comes from
 	// GL_ARM_shader_framebuffer_fetch (GSDeviceOGL) and never touches the Vulkan ROAA path.
-	const bool unreliable_mali_fbfetch =
-		(is_mediatek_mali_vk || is_mali_g57) && !GSConfig.ForceMaliFramebufferFetch;
+	const bool roaa_destination_read_is_broken =
+		GetMobileDriverProfile().HasBug(DriverBug::BrokenRoaaDestinationRead);
+	const bool unreliable_mali_fbfetch = roaa_destination_read_is_broken && !GSConfig.ForceMaliFramebufferFetch;
 	// is_adreno (not just is_turnip): the removed `if (is_adreno)` block used to force fbfetch on
 	// for the whole vendor, so making it opt-in here would silently drop the proprietary blob onto
 	// the per-primitive barrier path — a regression unrelated to #442. Keeping the vendor listed

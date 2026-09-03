@@ -58,6 +58,18 @@ struct DriverRule
 	bool match_unknown_version = false;
 	u64 bugs = 0;
 	u64 workarounds = 0;
+	/// Match only on a MediaTek SoC (Dimensity/Helio, or a bare mtNNNN part number). The detector
+	/// answers this from the same hints, so a rule can say "this vendor's parts" without every
+	/// caller having to know how MediaTek spells itself.
+	bool mediatek_soc_only = false;
+	/// A lowercase substring that, when it appears in the hints, makes this rule NOT match. The
+	/// hints carry the SoC and board identity (Android system properties, the Linux device tree),
+	/// so this is how one measured part is exempted from a rule written for a family: a driver
+	/// defect claimed for a vendor is usually a guess across parts, and the exemption is the
+	/// cheapest way to record the one part where it was tested and found absent. Excluding is
+	/// deliberately one-directional -- a rule can be narrowed by a device but never widened by
+	/// one, so no defect is ever claimed for hardware nobody measured.
+	const char* hint_exclude = nullptr;
 };
 
 constexpr int CompareVersion(const MobileDriverVersion& lhs, VersionBound rhs)
@@ -297,8 +309,13 @@ static MobileGpuDriver DetectDriver(const GpuProfileSelection& selection,
 }
 
 static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selection,
-	const MobileDriverContext& context, const MobileDriverProfile& profile)
+	const MobileDriverContext& context, const MobileDriverProfile& profile,
+	std::string_view lowered_hints)
 {
+	if (rule.hint_exclude != nullptr && lowered_hints.find(rule.hint_exclude) != std::string_view::npos)
+		return false;
+	if (rule.mediatek_soc_only && !selection.is_mediatek_soc)
+		return false;
 	if (rule.api != MobileGpuApi::Unknown && rule.api != profile.api)
 		return false;
 	if (rule.vendor != RuntimeGpuProfile::Unknown && rule.vendor != selection.runtime_profile)
@@ -339,7 +356,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 30> s_driver_rules = {{
+static constexpr std::array<DriverRule, 32> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -446,11 +463,42 @@ static constexpr std::array<DriverRule, 30> s_driver_rules = {{
 	// nothing: r44p1 never advertises VK_EXT_attachment_feedback_loop_layout, so the disable was
 	// vacuous — the read that kills the device is the ROAA/barrier one, and nothing short of
 	// reading a separate copy survives.
+	//
+	// MT6897 is EXEMPT, and the exemption is a measurement rather than an opinion. The founding
+	// evidence for this rule is a Motorola Edge 60 Pro on r44p1 ("crashing effectively every
+	// game"), while an Anbernic RG 477V -- MediaTek MT6897, Mali-G615 MC6, its own r44p1 -- runs
+	// the in-tile read for 26 dumps x 3 runs x 10 loops with rc 0, no device loss on the wait side
+	// and no stale content. Two blobs both calling themselves r44p1 behave differently, and no
+	// version bound can separate them, so the exemption is per SoC. What it buys on that part:
+	// render-target copies 4,790 -> 3 a frame on Xenosaga and its frame time 51.1 -> 32.1 ms,
+	// with every other title's accuracy unchanged or better.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
-		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
+		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, "mt6897"},
+	// The ROAA destination-read deny list. Both rules were an inline vendor test in
+	// GSDeviceVK::CheckFeatures until they moved here; the claim is unchanged. These parts
+	// advertise rasterization-order attachment access and return zero or stale destination colour
+	// through it -- black or intermittently missing textures, not a crash -- so the renderer takes
+	// the per-primitive texture-barrier path instead of the in-tile read.
+	//
+	// The evidence behind them is a vendor-wide guess ("MediaTek across GPU generations", from
+	// sashkinbro/EmuCoreX, plus the older Mali-G57 case), not a per-driver fact, and it is
+	// expensive where it is wrong: Mali reports dualSrcBlend=false, so the renderer software-blends
+	// every SRC1 draw, and without the in-tile read the only way left to read the destination is a
+	// barrier per primitive. EmuCore/GS/ForceMaliFramebufferFetch is the way a user on any other
+	// MediaTek part lifts it and A/Bs their own driver.
+	//
+	// MT6897 (Dimensity 8300, Mali-G615, Anbernic RG 477V) is exempt for the reason above: it was
+	// measured, and the destination read is correct there.
+	{"vk-mediatek-mali-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, "mt6897"},
+	// Mali-G57 across SoC vendors, which is why it is keyed on the model rather than on the SoC.
+	{"vk-arm-g57-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0},
 	{"vk-qualcomm-proprietary", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenProvokingVertex) |
@@ -581,7 +629,7 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		{
 			continue;
 		}
-		if (!RuleMatches(rule, selection, context, profile))
+		if (!RuleMatches(rule, selection, context, profile, lowered_hints))
 			continue;
 
 		profile.bugs |= rule.bugs;

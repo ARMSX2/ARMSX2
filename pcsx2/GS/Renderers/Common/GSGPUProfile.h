@@ -128,6 +128,11 @@ enum class DriverBug : u8
 	BrokenExtendedDynamicState,
 	BrokenPrimitiveTopologyDynamicState,
 	BrokenGraphicsPipelineLibrary,
+	/// The driver advertises an in-tile destination read (Vulkan rasterization-order attachment
+	/// access) and returns zero or stale colour from it -- black or intermittently missing
+	/// textures rather than a crash. Distinct from BrokenSubpassFeedback, which is about the
+	/// in-pass self-read losing whole draws or the device.
+	BrokenRoaaDestinationRead,
 	Count,
 };
 
@@ -190,6 +195,11 @@ struct MobileDriverContext
 	std::string_view driver_name;
 	std::string_view driver_info;
 	std::string_view api_version_string;
+	/// Platform identity from outside the graphics API -- the SoC and board strings. The resolver
+	/// reads these itself where the platform offers them (Android system properties, the Linux
+	/// device tree); a caller that already knows them, or a test pinning a specific device without
+	/// one, supplies them here and they are folded into the same hint string the rules match on.
+	std::string_view platform_hints;
 };
 
 struct MobileDriverProfile
