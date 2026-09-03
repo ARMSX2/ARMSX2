@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Pins the OpenGL framebuffer-fetch decision (GS/Renderers/Common/GSFramebufferFetchPolicy.h).
+// Pins the framebuffer-fetch decisions (GS/Renderers/Common/GSFramebufferFetchPolicy.h): the
+// OpenGL one first, the Vulkan one at the bottom of the file.
 //
 // This suite exists because of a specific bug, not for coverage. GSDeviceOGL::CheckFeatures used
 // to decide framebuffer fetch three separate times across ~100 lines: an extension test, a
@@ -339,6 +340,143 @@ TEST(GSFramebufferFetchPolicy, NoVetoedFetchLeavesATilerOnThePerPrimitiveCopy)
 
 				// GLES: the texture barrier is fetch and nothing else.
 				EXPECT_FALSE(GLUsesPerPrimitiveFbCopy(d.enabled, /*tile_based_gpu=*/true));
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Vulkan decision, in the two shapes the device round cares about.
+//
+// Both are real device configurations rather than input sweeps: the sweeps live as static_asserts
+// beside the function, and these say what the two machines in the suite must do.
+namespace
+{
+	// Anbernic RG 477V at its default settings, after the driver database exempted its SoC from
+	// the two deny rules: Mali, ROAA present, nothing forced, nothing disabled.
+	constexpr GSVulkanFramebufferFetchInputs Rg477vAtDefaultIni()
+	{
+		GSVulkanFramebufferFetchInputs in;
+		in.roaa_available = true;
+		in.is_mali = true;
+		return in;
+	}
+
+	// SD865 / Adreno 650 on Turnip. The database denies its destination read (ARMSX2 #442,
+	// vk-turnip-attachment-self-read), which is a crash-class correctness gate, not a perf trade.
+	constexpr GSVulkanFramebufferFetchInputs Sd865OnTurnip()
+	{
+		GSVulkanFramebufferFetchInputs in;
+		in.roaa_available = true;
+		in.is_adreno = true;
+		in.broken_destination_read = true;
+		// The Android build ships this key on, so the SD865 arrives here with it set. It is not
+		// what decides the answer, and pinning it set is the point.
+		in.adreno_fetch_key = true;
+		return in;
+	}
+} // namespace
+
+// Polarity one: the RG 477V takes the in-tile read at DEFAULT settings. That is what step 2.2 is
+// for -- the two INI keys the measured arm needed become the shipped behaviour on this SoC.
+TEST(GSVulkanFramebufferFetchPolicy, TheMeasuredMaliPartTakesTheInTileReadAtDefaultSettings)
+{
+	EXPECT_TRUE(DecideVulkanFramebufferFetch(Rg477vAtDefaultIni()).enabled);
+	EXPECT_FALSE(DecideVulkanFramebufferFetch(Rg477vAtDefaultIni()).force_key_ignored);
+}
+
+// Polarity two, and the reason the force key had to be gated: setting it on the SD865 must not
+// move it. Before the gate this exact input turned Adreno's deny off and put it on the road
+// ARMSX2 #442 established it cannot take, with nothing in the key's name saying so.
+TEST(GSVulkanFramebufferFetchPolicy, TheForceKeyCannotPutAdrenoOnTheInTileRead)
+{
+	GSVulkanFramebufferFetchInputs forced = Sd865OnTurnip();
+	forced.force_mali_fetch_key = true;
+
+	EXPECT_FALSE(DecideVulkanFramebufferFetch(Sd865OnTurnip()).enabled);
+	EXPECT_FALSE(DecideVulkanFramebufferFetch(forced).enabled);
+	EXPECT_TRUE(DecideVulkanFramebufferFetch(forced).force_key_ignored);
+}
+
+// The key keeps its meaning where it was written to have one: a MediaTek part the database still
+// denies is exactly who it is for.
+TEST(GSVulkanFramebufferFetchPolicy, TheForceKeyStillLiftsTheDenyOnMali)
+{
+	GSVulkanFramebufferFetchInputs denied = Rg477vAtDefaultIni();
+	denied.broken_destination_read = true;
+
+	EXPECT_FALSE(DecideVulkanFramebufferFetch(denied).enabled);
+
+	denied.force_mali_fetch_key = true;
+	EXPECT_TRUE(DecideVulkanFramebufferFetch(denied).enabled);
+	EXPECT_FALSE(DecideVulkanFramebufferFetch(denied).force_key_ignored);
+}
+
+// DisableFramebufferFetch is the user's way back, from every state including a forced one, on
+// every vendor. Swept rather than spot-checked because it is the one guarantee the settings UI
+// makes about this path.
+TEST(GSVulkanFramebufferFetchPolicy, TheUserCanAlwaysTurnFetchOff)
+{
+	for (bool mali : {false, true})
+	{
+		for (bool adreno : {false, true})
+		{
+			for (bool forced : {false, true})
+			{
+				for (bool denied : {false, true})
+				{
+					GSVulkanFramebufferFetchInputs in;
+					in.roaa_available = true;
+					in.user_disabled = true;
+					in.is_mali = mali;
+					in.is_adreno = adreno;
+					in.force_mali_fetch_key = forced;
+					in.broken_destination_read = denied;
+					in.adreno_fetch_key = true;
+					SCOPED_TRACE(testing::Message() << "mali=" << mali << " adreno=" << adreno
+													<< " forced=" << forced << " denied=" << denied);
+
+					EXPECT_FALSE(DecideVulkanFramebufferFetch(in).enabled);
+				}
+			}
+		}
+	}
+}
+
+// The invariant behind the gate, over every input combination: the force key may only ever change
+// the answer on Mali. Anywhere else, flipping it must leave the decision exactly as it was -- which
+// is a stronger statement than "Adreno is not forced", and the one a future term in this function
+// could break without any test above noticing.
+TEST(GSVulkanFramebufferFetchPolicy, TheForceKeyChangesNothingOffMali)
+{
+	for (bool roaa : {false, true})
+	{
+		for (bool adreno : {false, true})
+		{
+			for (bool xclipse : {false, true})
+			{
+				for (bool denied : {false, true})
+				{
+					for (bool adreno_key : {false, true})
+					{
+						GSVulkanFramebufferFetchInputs in;
+						in.roaa_available = roaa;
+						in.is_adreno = adreno;
+						in.is_xclipse = xclipse;
+						in.broken_destination_read = denied;
+						in.adreno_fetch_key = adreno_key;
+
+						GSVulkanFramebufferFetchInputs forced = in;
+						forced.force_mali_fetch_key = true;
+						SCOPED_TRACE(testing::Message()
+									 << "roaa=" << roaa << " adreno=" << adreno << " xclipse=" << xclipse
+									 << " denied=" << denied << " adreno_key=" << adreno_key);
+
+						EXPECT_EQ(DecideVulkanFramebufferFetch(in).enabled,
+							DecideVulkanFramebufferFetch(forced).enabled);
+						EXPECT_TRUE(DecideVulkanFramebufferFetch(forced).force_key_ignored);
+					}
+				}
 			}
 		}
 	}

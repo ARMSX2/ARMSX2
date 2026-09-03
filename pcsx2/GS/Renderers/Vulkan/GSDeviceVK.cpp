@@ -38,6 +38,7 @@ namespace
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
+#include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 
 #include "BuildVersion.h"
 #include "Host.h"
@@ -3918,7 +3919,7 @@ bool GSDeviceVK::CheckFeatures()
 	//
 	// ADRENO / other non-Mali: opt-in via EnableAdrenoFramebufferFetch — but that is true only
 	// where the Pcsx2Config default (false) actually holds, i.e. DESKTOP. The Android build ships
-	// the key ON; see the vendor_allows_fbfetch note below before reasoning about who gets fbfetch.
+	// the key ON; see the deny-list note below before reasoning about who gets fbfetch.
 	// ROV is the wrong primitive on a tiler (fragment_shader_interlock serializes same-pixel
 	// fragments + bypasses tile memory), so on Adreno fbfetch is the way to make accurate
 	// blending fast. Historically kept off because the Adreno-840 PROPRIETARY driver returned
@@ -3980,9 +3981,13 @@ bool GSDeviceVK::CheckFeatures()
 	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
 	// The working workaround remains the native GL renderer, whose fbfetch comes from
 	// GL_ARM_shader_framebuffer_fetch (GSDeviceOGL) and never touches the Vulkan ROAA path.
+	//
+	// ⚠️ The key is MALI-ONLY, and it is the policy function below that makes it so. It reads as a
+	// Mali escape hatch and is named for one, but it used to sit in a term any vendor could reach:
+	// on an Adreno part whose database entry denies the destination read, setting it lifted that
+	// deny too and put Adreno on the in-tile road that ARMSX2 #442 says it cannot take.
 	const bool roaa_destination_read_is_broken =
 		GetMobileDriverProfile().HasBug(DriverBug::BrokenRoaaDestinationRead);
-	const bool unreliable_mali_fbfetch = roaa_destination_read_is_broken && !GSConfig.ForceMaliFramebufferFetch;
 	// is_adreno (not just is_turnip): the removed `if (is_adreno)` block used to force fbfetch on
 	// for the whole vendor, so making it opt-in here would silently drop the proprietary blob onto
 	// the per-primitive barrier path — a regression unrelated to #442. Keeping the vendor listed
@@ -3996,7 +4001,7 @@ bool GSDeviceVK::CheckFeatures()
 	// ConfigStore migration, so there the disjunction is (is_mali_vk || is_adreno || true) == true
 	// and the vendor terms restrict NOTHING: every GPU advertising ROAA takes the fbfetch path,
 	// including PowerVR/Broadcom and any vendor not named here. Only the two negative terms still
-	// bite — unreliable_mali_fbfetch and is_xclipse_vk.
+	// bite — the database's destination-read deny and is_xclipse_vk.
 	//
 	// So the effective Android policy is a DENY-list (ROAA is trusted unless the vendor is known to
 	// lie about it), not an allow-list. Do NOT "restore" the allow-list as a tidy-up: that would
@@ -4015,10 +4020,28 @@ bool GSDeviceVK::CheckFeatures()
 	const bool is_adreno8xx_proprietary = is_adreno &&
 		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
 		mobile_profile.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
-	const bool vendor_allows_fbfetch = !unreliable_mali_fbfetch && !is_adreno8xx_proprietary &&
-		(is_mali_vk || is_adreno || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
-	m_features.framebuffer_fetch = vendor_allows_fbfetch &&
-		m_optional_extensions.vk_ext_rasterization_order_attachment_access && !GSConfig.DisableFramebufferFetch;
+	// Every term above, in one place, in GSFramebufferFetchPolicy.h beside the OpenGL decision. The
+	// facts are collected here; which of them wins is pinned there and in gs_vertex_tests.
+	GSVulkanFramebufferFetchInputs fetch_inputs;
+	fetch_inputs.roaa_available = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+	fetch_inputs.user_disabled = GSConfig.DisableFramebufferFetch;
+	fetch_inputs.is_mali = is_mali_vk;
+	fetch_inputs.is_adreno = is_adreno;
+	fetch_inputs.is_xclipse = is_xclipse_vk;
+	fetch_inputs.is_adreno8xx_proprietary = is_adreno8xx_proprietary;
+	fetch_inputs.broken_destination_read = roaa_destination_read_is_broken;
+	fetch_inputs.force_mali_fetch_key = GSConfig.ForceMaliFramebufferFetch;
+	fetch_inputs.adreno_fetch_key = GSConfig.EnableAdrenoFramebufferFetch;
+	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
+	if (fetch_decision.force_key_ignored)
+	{
+		// Said once, because the banner below cannot say it: a setting that changed nothing looks
+		// exactly like a setting that was never read.
+		Console.WriteLn("VK: ForceMaliFramebufferFetch ignored — '%s' (vendor=0x%04X) is not Mali, and the "
+						"key only lifts the Mali destination-read deny. Framebuffer fetch is unchanged.",
+			m_device_properties.deviceName, m_device_properties.vendorID);
+	}
+	m_features.framebuffer_fetch = fetch_decision.enabled;
 	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
 	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
