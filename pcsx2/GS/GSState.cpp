@@ -2200,28 +2200,39 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 
 	CheckFlushes();
 
-	const u32 count = size / 3;
-
+	// The autoflush arm returns from inside, and walks `r` itself rather than a
+	// second cursor. That is not style: keeping the original `r` and `size` live
+	// past the loop -- which is what a shared `m_q = r[size - 3]` tail below does
+	// -- adds two long-lived values to a loop body that already uses every
+	// callee-saved register, and clang answers by spilling both and reloading them
+	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
+	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
+	// arm never touches the kernel, so it must cost exactly what it cost before.
 	if constexpr (auto_flush)
 	{
 		// HandleAutoFlush reads the incoming vertex out of m_v, so the autoflush
 		// instantiations keep the staged-m_v path.
 		const GIFPackedReg* RESTRICT r_end = r + size;
-		const GIFPackedReg* RESTRICT rp = r;
-		while (rp < r_end)
+		while (r < r_end)
 		{
 			GSVector4i m0, m1;
-			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rp, m_v.UV, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m0, m1);
 
 			m_v.m[0] = m0;
 			m_v.m[1] = m1;
 
-			VertexKick<prim, auto_flush>(rp[2].XYZF2.Skip());
+			VertexKick<prim, auto_flush>(r[2].XYZF2.Skip());
 
-			rp += 3;
+			r += 3;
 		}
+
+		m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+		return;
 	}
-	else if constexpr (KickKernelCarriesPrim<prim>())
+
+	const u32 count = size / 3;
+
+	if constexpr (KickKernelCarriesPrim<prim>())
 	{
 		if (s_fused_kick_use_kernel && KickKernelApplies<prim>())
 			KickPackedBatchKernel<prim, true>(r, count);
@@ -2243,30 +2254,41 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 
 	CheckFlushes();
 
-	const u32 count = size / 3;
-
+	// The autoflush arm returns from inside, and walks `r` itself rather than a
+	// second cursor. That is not style: keeping the original `r` and `size` live
+	// past the loop -- which is what a shared `m_q = r[size - 3]` tail below does
+	// -- adds two long-lived values to a loop body that already uses every
+	// callee-saved register, and clang answers by spilling both and reloading them
+	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
+	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
+	// arm never touches the kernel, so it must cost exactly what it cost before.
 	if constexpr (auto_flush)
 	{
 		// See GIFPackedRegHandlerSTQRGBAXYZF2: autoflush keeps the staged-m_v path.
 		const GIFPackedReg* RESTRICT r_end = r + size;
-		const GIFPackedReg* RESTRICT rp = r;
-		while (rp < r_end)
+		while (r < r_end)
 		{
 			u64 uvfog;
 			std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
 
 			GSVector4i m0, m1;
-			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rp, uvfog, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
 
 			m_v.m[0] = m0;
 			m_v.m[1] = m1;
 
-			VertexKick<prim, auto_flush>(rp[2].XYZ2.Skip());
+			VertexKick<prim, auto_flush>(r[2].XYZ2.Skip());
 
-			rp += 3;
+			r += 3;
 		}
+
+		m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+		return;
 	}
-	else if constexpr (KickKernelCarriesPrim<prim>())
+
+	const u32 count = size / 3;
+
+	if constexpr (KickKernelCarriesPrim<prim>())
 	{
 		if (s_fused_kick_use_kernel && KickKernelApplies<prim>())
 			KickPackedBatchKernel<prim, false>(r, count);
