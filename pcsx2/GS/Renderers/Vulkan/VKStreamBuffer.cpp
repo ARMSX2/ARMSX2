@@ -9,6 +9,9 @@
 #include "common/BitUtils.h"
 #include "common/Console.h"
 
+#include <string>
+#include <utility>
+
 VKStreamBuffer::VKStreamBuffer()
 	: m_wait_site(GpuWaitSite::StreamUnnamed)
 {
@@ -57,6 +60,31 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	return *this;
 }
 
+/// The six property bits a host-visible allocation can carry, as a fixed-width tag. Written out
+/// rather than printed as hex because the whole point of the line is that somebody reading a device
+/// log can tell at a glance whether the ring is cached or write-combined.
+static std::string DescribeMemoryProperties(VkMemoryPropertyFlags flags)
+{
+	static constexpr std::pair<VkMemoryPropertyFlagBits, const char*> names[] = {
+		{VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "DEVICE_LOCAL"},
+		{VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, "HOST_VISIBLE"},
+		{VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "HOST_COHERENT"},
+		{VK_MEMORY_PROPERTY_HOST_CACHED_BIT, "HOST_CACHED"},
+		{VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, "LAZILY_ALLOCATED"},
+	};
+
+	std::string str;
+	for (const auto& [bit, name] : names)
+	{
+		if (!(flags & bit))
+			continue;
+		if (!str.empty())
+			str.push_back('|');
+		str.append(name);
+	}
+	return str.empty() ? std::string("none") : str;
+}
+
 bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site)
 {
 	m_wait_site = wait_site;
@@ -78,6 +106,18 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 		LOG_VULKAN_ERROR(res, "vkCreateBuffer failed: ");
 		return false;
 	}
+
+	// Which memory type the ring actually got. Nothing else in the tree or in a device log says
+	// this, and the whole question of what a CPU write into one of these rings costs turns on it:
+	// a write-combined type is uncached store-buffer traffic, a HOST_CACHED type is ordinary
+	// cached stores. Printed at creation, six lines a run, so any device round carries the answer
+	// with it instead of needing a separate probe.
+	VkMemoryPropertyFlags mem_flags = 0;
+	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
+	Console.WriteLn("GS/Vulkan: stream ring %s, %u KiB, memory type %u (%s)%s",
+		GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), size / 1024u, ai.memoryType,
+		DescribeMemoryProperties(mem_flags).c_str(),
+		(mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "" : " -- NON-COHERENT, CommitMemory's flush is live");
 
 	if (IsValid())
 		Destroy(true);
