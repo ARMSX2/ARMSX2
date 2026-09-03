@@ -206,6 +206,14 @@ struct DeviceWaitBill
 	u64 sync_calls = 0;
 	u64 ring_ns = 0;
 	u64 ring_calls = 0;
+	// Neither of these is a fence wait. `submit` is time inside the queue-submit call and `map` is
+	// the cache invalidate a readback needs after its drain has ended -- both were previously in no
+	// counter at all. submit_calls is also the run's submit count, since the submit bill has one
+	// site.
+	u64 submit_ns = 0;
+	u64 submit_calls = 0;
+	u64 map_ns = 0;
+	u64 map_calls = 0;
 	// The same waits itemised by CALL SITE. The two bills above say what waiting cost; these say
 	// what it was waiting for, and the sites of a bill sum to that bill exactly (the device books
 	// both in one place). Names are latched too, because they are read after the device is gone --
@@ -227,6 +235,10 @@ static void LatchDeviceWaitBill()
 	s_device_wait_bill.sync_calls = g_gs_device->GetSyncWaitCalls();
 	s_device_wait_bill.ring_ns = g_gs_device->GetRingWaitNs();
 	s_device_wait_bill.ring_calls = g_gs_device->GetRingWaitCalls();
+	s_device_wait_bill.submit_ns = g_gs_device->GetSubmitWaitNs();
+	s_device_wait_bill.submit_calls = g_gs_device->GetSubmitWaitCalls();
+	s_device_wait_bill.map_ns = g_gs_device->GetMapWaitNs();
+	s_device_wait_bill.map_calls = g_gs_device->GetMapWaitCalls();
 
 	const u32 nsites = std::min(g_gs_device->GetGpuWaitSiteCount(), DeviceWaitBill::kMaxSites);
 	const u64* site_ns = g_gs_device->GetGpuWaitSiteNs();
@@ -325,6 +337,24 @@ struct FrameSample
 	/// sync). One per frame serializes the whole pipeline, so the number to read is whether it
 	/// is zero, not whether it fell.
 	u64 gpu_blocking_waits;
+
+	/// This frame's share of the device's four wait bills, in nanoseconds. The run totals have
+	/// always been there; the per-frame deltas are what says WHICH frames paid, and a run whose
+	/// p95 moved while its total barely did is exactly the shape those totals cannot show.
+	///
+	/// sync and ring are fence waits, so their nanoseconds are off-CPU and do not appear in
+	/// gs_cpu_ms. ⚠️ submit and map are not: a queue submit is a syscall and a cache invalidate is
+	/// cache maintenance, so part of those nanoseconds is ALSO inside gs_cpu_ms -- on the M2,
+	/// stuntman burns 235 ms inside vkQueueSubmit and its gs_cpu_ms sits within a millisecond of
+	/// its frame_ms. Read those two beside the untracked residual, never subtracted from it.
+	u64 sync_wait_ns;
+	u64 ring_wait_ns;
+	u64 submit_wait_ns;
+	u64 map_wait_ns;
+	/// Command buffers handed to the queue this frame. A frame that is GPU-synchronous pays a
+	/// pipeline bubble per submit, so this is the multiplier on every submit-side cost.
+	u64 submits;
+
 	u64 copies_rov;
 	u64 draw_calls_rov;
 	u64 barriers_rov;
@@ -356,6 +386,8 @@ static std::string s_device_name;
 static std::string s_driver_info;
 static u64 s_frame_timer_last = 0;
 static u64 s_gs_cpu_time_last = 0;
+// Previous frame's wait bill, so each sample carries its own delta rather than a running total.
+static DeviceWaitBill s_device_wait_bill_last;
 static bool s_saw_gs_back_thread_in_stats = false;
 static double s_last_prims = 0;
 static double s_last_tc_source_hit = 0;
@@ -683,6 +715,20 @@ void Host::BeginPresentFrame()
 			                                          static_cast<double>(Threading::GetThreadTicksPerSecond())) :
 			                       0.0f;
 			s_gs_cpu_time_last = gs_cpu_now;
+
+			// The device's counters are monotonic and were latched a few lines above this block,
+			// on this thread, with the device live -- so the delta since the last present is this
+			// frame's share exactly. First sample has no predecessor and reads as the whole run so
+			// far, which is the same convention frame_ms already uses for frame zero.
+			const DeviceWaitBill& w = s_device_wait_bill;
+			const DeviceWaitBill& wprev = s_device_wait_bill_last;
+			sample.sync_wait_ns = w.sync_ns - wprev.sync_ns;
+			sample.ring_wait_ns = w.ring_ns - wprev.ring_ns;
+			sample.submit_wait_ns = w.submit_ns - wprev.submit_ns;
+			sample.map_wait_ns = w.map_ns - wprev.map_ns;
+			sample.submits = w.submit_calls - wprev.submit_calls;
+			s_device_wait_bill_last = w;
+
 			sample.rss_kb = ReadResidentSetKB();
 			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
@@ -1687,6 +1733,38 @@ static void WriteStatsJson(const std::string& path)
 		gs_cpu_per_draw_us.push_back(static_cast<float>(s.gs_cpu_ms * 1000.0 / static_cast<double>(s.draws)));
 	}
 	std::sort(gs_cpu_per_draw_us.begin(), gs_cpu_per_draw_us.end());
+
+	// Where the frame went that nothing accounted for. A frame is wall clock; of that, gs_cpu_ms is
+	// what the GS thread executed and the fence bills are what it spent blocked. What is left over
+	// is time the runner cannot name, and on a GPU-synchronous title that residual is the whole
+	// question -- ac3 on Mali showed 2.5 ms a frame with every counter, every frame hash and every
+	// tracked wait site identical between two builds.
+	//
+	// ⚠️ Only the two FENCE bills are subtracted. sync and ring are blocked time, so they are
+	// disjoint from thread CPU by construction and the remainder cannot go negative. The submit
+	// and map bills are not: measured on the M2, stuntman spends 235 ms inside vkQueueSubmit
+	// across ten submits and its gs_cpu_ms is within a millisecond of its frame_ms, so that time
+	// is CPU the thread burned rather than time it waited. Subtracting it as well took the same
+	// four frames to a p50 of -70 ms, which is not a number a report can show.
+	//
+	// So submit and map are reported BESIDE this figure rather than inside it. Where a submit is
+	// genuinely off-CPU -- which is the ac3-on-Mali hypothesis -- its nanoseconds are absent from
+	// gs_cpu_ms and therefore land here, and submit_wait_ns per frame is what says whether the
+	// residual is submit-shaped.
+	std::vector<float> untracked_ms;
+	double untracked_ms_total = 0.0;
+	untracked_ms.reserve(s_frame_samples.size());
+	for (const FrameSample& s : s_frame_samples)
+	{
+		if (s.idle || s.frame_ms <= 0.0f)
+			continue;
+		const double blocked_ms = static_cast<double>(s.sync_wait_ns + s.ring_wait_ns) / 1e6;
+		const double residual = static_cast<double>(s.frame_ms) - static_cast<double>(s.gs_cpu_ms) - blocked_ms;
+		untracked_ms.push_back(static_cast<float>(residual));
+		untracked_ms_total += residual;
+	}
+	std::sort(untracked_ms.begin(), untracked_ms.end());
+
 	const double gs_cpu_us_per_draw = gs_cpu_draws ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws)) : 0.0;
 	const double gs_cpu_us_per_draw_call = gs_cpu_draw_calls ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draw_calls)) : 0.0;
 
@@ -1767,6 +1845,11 @@ static void WriteStatsJson(const std::string& path)
 		s_device_wait_bill.sync_ns, s_device_wait_bill.sync_calls);
 	std::fprintf(fp.get(), "    \"ring_wait_ns\": %" PRIu64 ",\n    \"ring_wait_calls\": %" PRIu64 ",\n",
 		s_device_wait_bill.ring_ns, s_device_wait_bill.ring_calls);
+	// The two bills that are not fence waits. submit_wait_calls is also the run's submit count.
+	std::fprintf(fp.get(), "    \"submit_wait_ns\": %" PRIu64 ",\n    \"submit_wait_calls\": %" PRIu64 ",\n",
+		s_device_wait_bill.submit_ns, s_device_wait_bill.submit_calls);
+	std::fprintf(fp.get(), "    \"map_wait_ns\": %" PRIu64 ",\n    \"map_wait_calls\": %" PRIu64 ",\n",
+		s_device_wait_bill.map_ns, s_device_wait_bill.map_calls);
 	// The same population a THIRD way: by the call site that paid, which is the only cut that names
 	// a mechanism. Every site is emitted, zeros included, so a reader diffing two runs never has to
 	// decide whether a missing key means zero or means the instrument was absent. The families sum
@@ -1784,6 +1867,11 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
 		Percentile(gs_cpu_per_draw_us, 0.50), Percentile(gs_cpu_per_draw_us, 0.95));
 	std::fprintf(fp.get(), "    \"gs_cpu_partial\": %s,\n", s_saw_gs_back_thread_in_stats ? "true" : "false");
+	// Frame time nothing accounted for: wall clock less GS-thread CPU less the two fence bills, over
+	// drawn frames. The submit and map bills are deliberately not subtracted -- see where it is
+	// computed -- so submit_wait_ns is the thing to read next to this, not something already in it.
+	std::fprintf(fp.get(), "    \"untracked_ms_p50\": %.3f,\n    \"untracked_ms_p95\": %.3f,\n    \"untracked_ms_total\": %.3f,\n",
+		Percentile(untracked_ms, 0.50), Percentile(untracked_ms, 0.95), untracked_ms_total);
 	// Where the GS thread was asked to sit, where it actually sat, and who put it there.
 	// requested is "none" when the flag was absent; effective is always the read-back, and
 	// is "unsupported" only when the platform cannot be asked.
@@ -1811,6 +1899,8 @@ static void WriteStatsJson(const std::string& path)
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
 			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
+			"\"sync_wait_ns\":%" PRIu64 ",\"ring_wait_ns\":%" PRIu64 ","
+			"\"submit_wait_ns\":%" PRIu64 ",\"map_wait_ns\":%" PRIu64 ",\"submits\":%" PRIu64 ","
 			"\"rss_kb\":%" PRIu64 "}%s\n",
 			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
@@ -1821,6 +1911,7 @@ static void WriteStatsJson(const std::string& path)
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
 			s.pipeline_switches, s.gpu_blocking_waits,
+			s.sync_wait_ns, s.ring_wait_ns, s.submit_wait_ns, s.map_wait_ns, s.submits,
 			s.rss_kb,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
@@ -1883,15 +1974,21 @@ void GSRunner::DumpStats()
 		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Wait ms: {:.3f} over {} waits; "
 									"ring backpressure {:.3f} ms over {} waits",
 			w.sync_ns / 1e6, w.sync_calls, w.ring_ns / 1e6, w.ring_calls));
+		// The two bills that are not fence waits, on their own line so they cannot be read as part
+		// of the blocking-wait population above. The submit count is the run's command-buffer
+		// count, which is the multiplier on every submit-side cost.
+		Console.WriteLn(fmt::format("@HWSTAT@ Queue Submit ms: {:.3f} over {} submits; "
+									"readback map {:.3f} ms over {} invalidates",
+			w.submit_ns / 1e6, w.submit_calls, w.map_ns / 1e6, w.map_calls));
 		// ...and the same bill by SITE. Nonzero sites only, with each family's sum appended so the
 		// reconciliation against the line above is a read rather than an arithmetic exercise. A run
 		// that blocked nowhere prints "none", which is a reading and not a blank.
 		std::string sites;
-		u64 sum_ns[2] = {}, sum_calls[2] = {};
-		static constexpr const char* kFamilies[2] = {"sync", "ring"};
+		u64 sum_ns[4] = {}, sum_calls[4] = {};
+		static constexpr const char* kFamilies[4] = {"sync", "ring", "submit", "map"};
 		for (u32 i = 0; i < w.site_count; i++)
 		{
-			for (u32 f = 0; f < 2; f++)
+			for (u32 f = 0; f < 4; f++)
 			{
 				if (std::strcmp(w.site_families[i], kFamilies[f]) != 0)
 					continue;
@@ -1905,9 +2002,9 @@ void GSRunner::DumpStats()
 				w.site_ns[i] / 1e6);
 		}
 		Console.WriteLn(fmt::format("@HWSTAT@ GPU Wait Sites:{}   [sums: sync {:.3f} ms over {}; "
-									"ring {:.3f} ms over {}]",
+									"ring {:.3f} ms over {}; submit {:.3f} ms over {}; map {:.3f} ms over {}]",
 			sites.empty() ? std::string("  none") : sites, sum_ns[0] / 1e6, sum_calls[0], sum_ns[1] / 1e6,
-			sum_calls[1]));
+			sum_calls[1], sum_ns[2] / 1e6, sum_calls[2], sum_ns[3] / 1e6, sum_calls[3]));
 	}
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
@@ -1969,6 +2066,36 @@ void GSRunner::DumpStats()
 			Console.WriteLn(fmt::format("@HWSTAT@ GS Thread CPU per draw: {:.3f} us ({:.3f} ms over {} draws{})",
 				gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws), gs_cpu_ms_total, gs_cpu_draws,
 				s_saw_gs_back_thread_in_stats ? ", front thread only" : ""));
+		}
+
+		// What the frame cost that nothing named: wall clock less GS-thread CPU less the two fence
+		// bills. Same arithmetic as untracked_ms_* in the JSON summary; the submit and map bills
+		// are partly CPU time gs_cpu_ms already counted, so they sit on their own line above
+		// rather than inside this one.
+		std::vector<float> untracked_ms;
+		double untracked_ms_total = 0.0;
+		u64 submits_total = 0;
+		untracked_ms.reserve(s_frame_samples.size());
+		for (const FrameSample& s : s_frame_samples)
+		{
+			if (s.idle || s.frame_ms <= 0.0f)
+				continue;
+			const double blocked_ms = static_cast<double>(s.sync_wait_ns + s.ring_wait_ns) / 1e6;
+			const double residual = static_cast<double>(s.frame_ms) - static_cast<double>(s.gs_cpu_ms) - blocked_ms;
+			untracked_ms.push_back(static_cast<float>(residual));
+			untracked_ms_total += residual;
+			submits_total += s.submits;
+		}
+		std::sort(untracked_ms.begin(), untracked_ms.end());
+		if (!untracked_ms.empty())
+		{
+			Console.WriteLn(fmt::format("@HWSTAT@ Untracked Frame Time p50/p95: {:.3f} / {:.3f} ms "
+										"({:.3f} ms over {} drawn frames; fence bills only)",
+				Percentile(untracked_ms, 0.50), Percentile(untracked_ms, 0.95), untracked_ms_total,
+				untracked_ms.size()));
+			Console.WriteLn(fmt::format("@HWSTAT@ Submits per drawn frame: {:.2f} ({} over {} frames)",
+				static_cast<double>(submits_total) / static_cast<double>(untracked_ms.size()), submits_total,
+				untracked_ms.size()));
 		}
 	}
 	for (const std::string& line : s_extended_stats_snapshot)
