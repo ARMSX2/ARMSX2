@@ -5407,6 +5407,8 @@ void GSDeviceVK::IASetVertexBuffer(const void* vertex, size_t stride, size_t cou
 	m_vertex.start = m_vertex_stream_buffer.GetCurrentOffset() / stride;
 	m_vertex.count = count;
 
+	// Census: write-only, non-temporal, into uncached host-visible memory. Nothing reads it back.
+	g_perfmon.Put(GSPerfMon::BytesVertexStream, static_cast<double>(size));
 	GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
 	m_vertex_stream_buffer.CommitMemory(size);
 }
@@ -5427,6 +5429,8 @@ void GSDeviceVK::UploadIndices(VKStreamBuffer& buffer, const void* index, size_t
 	m_index.start = buffer.GetCurrentOffset() / sizeof(u16);
 	m_index.count = count;
 
+	// Census: write-only into the ring; the source index array is small and hot in cache.
+	g_perfmon.Put(GSPerfMon::BytesIndexStream, static_cast<double>(size));
 	std::memcpy(buffer.GetCurrentHostPointer(), index, size);
 	buffer.CommitMemory(size);
 }
@@ -8272,6 +8276,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			return ApplyTFXState(true);
 		}
 
+		g_perfmon.Put(GSPerfMon::BytesUniformStream, static_cast<double>(sizeof(m_vs_cb_cache)));
 		std::memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &m_vs_cb_cache, sizeof(m_vs_cb_cache));
 		m_tfx_dynamic_offsets[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
 		m_vertex_uniform_stream_buffer.CommitMemory(sizeof(m_vs_cb_cache));
@@ -8293,6 +8298,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			return ApplyTFXState(true);
 		}
 
+		g_perfmon.Put(GSPerfMon::BytesUniformStream, static_cast<double>(sizeof(m_ps_cb_cache)));
 		std::memcpy(m_fragment_uniform_stream_buffer.GetCurrentHostPointer(), &m_ps_cb_cache, sizeof(m_ps_cb_cache));
 		m_tfx_dynamic_offsets[1] = m_fragment_uniform_stream_buffer.GetCurrentOffset();
 		m_fragment_uniform_stream_buffer.CommitMemory(sizeof(m_ps_cb_cache));

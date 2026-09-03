@@ -32,6 +32,20 @@
 std::unique_ptr<GSTextureCache> g_texture_cache;
 
 static u8* s_unswizzle_buffer;
+
+// Byte census (SD662 tier): what one rtx/rtxP call moves. It walks the block-aligned rect,
+// reading the swizzled source out of local memory at the format's own bit depth and writing a
+// linear copy at four bytes a pixel -- or one, when the palette is left for the GPU to apply.
+// Both halves are counted because the pair is what makes this read+write work, which is the
+// class that costs 5-9x on single-channel LPDDR4X rather than the 3x a write-only path pays.
+__fi static void CountTextureExpand(GSPerfMon::counter_t read_c, GSPerfMon::counter_t write_c,
+	const GSVector4i& block_rect, const GSLocalMemory::psm_t& psm, bool paletted)
+{
+	const double px = static_cast<double>(block_rect.width()) * static_cast<double>(block_rect.height());
+	g_perfmon.Put(read_c, px * static_cast<double>(psm.bpp) / 8.0);
+	g_perfmon.Put(write_c, px * (paletted ? 1.0 : 4.0));
+}
+
 // Ledger identity for targets; see GSTextureCache::Target::m_id.
 static u32 s_next_target_id = 0;
 
@@ -6986,6 +7000,7 @@ GSTextureCache::Source* GSTextureCache::CreateMergedSource(GIFRegTEX0 TEX0, GIFR
 		const GSVector4i rect(
 			dst_x, dst_y, std::min(dst_x + page_width, tex_width), std::min(dst_y + page_height, tex_height));
 
+		CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, rect, psm, false);
 		if (lmtex_mapped)
 		{
 			psm.rtx(g_gs_renderer->m_mem, lm_off, rect, lmtex_map.bits + dst_y * lmtex_map.pitch + dst_x * sizeof(u32),
@@ -7753,6 +7768,14 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 	}
 
 	const auto write_download = [&](GSLocalMemory& local_mem) {
+		// Census: the downloaded rect is read back out of the mapped host-visible buffer at
+		// four bytes a pixel and written swizzled into local memory at the format's depth.
+		// Counted as the total both ways, because both halves land on the same core.
+		{
+			const double px = static_cast<double>(r.width()) * static_cast<double>(r.height());
+			g_perfmon.Put(GSPerfMon::BytesReadbackToVmem,
+				px * (4.0 + static_cast<double>(GSLocalMemory::m_psm[TEX0.PSM].bpp) / 8.0));
+		}
 		const GSOffset off = local_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 		switch (TEX0.PSM)
 		{
@@ -8112,6 +8135,7 @@ void GSTextureCache::Source::Flush(u32 count, int layer, const GSOffset& off)
 			const GSVector4i map_r(r - tex_r.xyxy());
 			if (m_texture->Map(m, &map_r, layer))
 			{
+				CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, r, psm, m_palette != nullptr);
 				rtx(mem, off, r, m.bits, m.pitch, m_TEXA);
 				m_texture->Unmap();
 				continue;
@@ -8122,6 +8146,7 @@ void GSTextureCache::Source::Flush(u32 count, int layer, const GSOffset& off)
 		if (rint.width() == 0 || rint.height() == 0)
 			continue;
 
+		CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, r, psm, m_palette != nullptr);
 		rtx(mem, off, r, s_unswizzle_buffer, pitch, m_TEXA);
 
 		// need to offset if we're a region texture
@@ -8337,6 +8362,8 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			{
 				// TODO: Only read once in 32bit and copy to the mapped texture. Bit out of scope of this PR and not a huge impact.
 				const int pitch = VectorAlign(read_r.width() * sizeof(u32));
+				CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, read_r,
+					GSLocalMemory::m_psm[m_TEX0.PSM], false);
 				g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
 
 				std::pair<u8, u8> new_alpha_minmax = GSGetRGBA8AlphaMinMax(s_unswizzle_buffer, read_r.width(), read_r.height(), pitch);
@@ -8344,12 +8371,16 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 				alpha_minmax.second = std::max(alpha_minmax.second, new_alpha_minmax.second);
 			}
 
+			CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, read_r,
+				GSLocalMemory::m_psm[m_TEX0.PSM], false);
 			g_gs_renderer->m_mem.ReadTexture(
 				off, read_r, m.bits + t_r.y * static_cast<u32>(m.pitch) + (t_r.x * sizeof(u32)), m.pitch, TEXA);
 		}
 		else
 		{
 			const int pitch = VectorAlign(read_r.width() * sizeof(u32));
+			CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, read_r,
+				GSLocalMemory::m_psm[m_TEX0.PSM], false);
 			g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
 
 			if ((m_TEX0.PSM & 0xf) != PSMCT24 && m_dirty[i].rgba.c.a && bpp >= 16)
@@ -9430,11 +9461,13 @@ __fi static void BlockHashReset(BlockHashState& st)
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp)
 {
+	g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(GS_BLOCK_SIZE));
 	GSXXH3_64bits_update(&st, bp, GS_BLOCK_SIZE);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp, u32 size)
 {
+	g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(size));
 	GSXXH3_64bits_update(&st, bp, size);
 }
 
@@ -9473,6 +9506,7 @@ static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GST
 		const GSLocalMemory::readTexture rtx = palette ? psm.rtxP : psm.rtx;
 
 		// Use temp buffer for expanding, since we may not need to update.
+		CountTextureExpand(GSPerfMon::BytesHashReadVmem, GSPerfMon::BytesHashExpandOut, block_rect, psm, palette);
 		rtx(mem, off, block_rect, temp, pitch, TEXA);
 
 		// Hash the expanded texture.
@@ -9540,6 +9574,7 @@ void GSTextureCache::PreloadTexture(const GIFRegTEX0& TEX0, const GIFRegTEXA& TE
 	GSTexture::GSMap map;
 	if (rect.eq(block_rect) && !alpha_minmax && tex->Map(map, &unoffset_rect, level))
 	{
+		CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, block_rect, psm, paltex);
 		rtx(mem, off, block_rect, map.bits, map.pitch, TEXA);
 		tex->Unmap();
 
@@ -9552,6 +9587,7 @@ void GSTextureCache::PreloadTexture(const GIFRegTEX0& TEX0, const GIFRegTEXA& TE
 		pitch = VectorAlign(pitch);
 
 		u8* buff = s_unswizzle_buffer;
+		CountTextureExpand(GSPerfMon::BytesTexReadVmem, GSPerfMon::BytesTexExpandOut, block_rect, psm, paltex);
 		rtx(mem, off, block_rect, buff, pitch, TEXA);
 
 		const u8* ptr = buff + (pitch * static_cast<u32>(rect.top - block_rect.top)) +

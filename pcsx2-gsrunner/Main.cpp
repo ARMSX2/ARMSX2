@@ -421,6 +421,42 @@ static double s_last_hash_cache_hit = 0;
 static double s_last_hash_cache_miss = 0;
 static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
+
+// --- Per-frame byte census (SD662 tier).
+//
+// One table rather than a static pair per counter, because the point of the census is the
+// per-class total and a table can be summed. `cls` is what the byte movement is, and it is
+// the load-bearing field: on single-channel LPDDR4X read+write traffic runs 5.2x behind the
+// SD865 at 16 MiB and 8.75x at 64 MiB while write-only traffic holds a flat ~3x, so two paths
+// moving the same number of bytes do not cost the same and the class says which is which.
+// Emitted as totals; bytes per frame is the total over drawn_frames, which is the figure the
+// census tabulates.
+struct ByteCounterDesc
+{
+	GSPerfMon::counter_t counter;
+	const char* name;
+	const char* cls; ///< "rw" read+write, "w" write-only, "r" read-only
+};
+static constexpr ByteCounterDesc s_byte_counters[] = {
+	{GSPerfMon::BytesGifImageIn, "gif_image_in", "rw"},
+	{GSPerfMon::BytesGifImageOut, "gif_image_out", "rw"},
+	{GSPerfMon::BytesTexReadVmem, "tex_read_vmem", "rw"},
+	{GSPerfMon::BytesTexExpandOut, "tex_expand_out", "rw"},
+	{GSPerfMon::BytesHashReadVmem, "hash_read_vmem", "rw"},
+	{GSPerfMon::BytesHashExpandOut, "hash_expand_out", "rw"},
+	{GSPerfMon::BytesUploadRing, "upload_ring", "rw"},
+	{GSPerfMon::BytesReadbackToVmem, "readback_to_vmem", "rw"},
+	{GSPerfMon::BytesVertexStream, "vertex_stream", "w"},
+	{GSPerfMon::BytesIndexStream, "index_stream", "w"},
+	{GSPerfMon::BytesUniformStream, "uniform_stream", "w"},
+	{GSPerfMon::BytesLocalMemClear, "local_mem_clear", "w"},
+	{GSPerfMon::BytesSwSprite, "sw_sprite", "w"},
+	{GSPerfMon::BytesGifPacket, "gif_packet", "rw"},
+	{GSPerfMon::BytesHashed, "hashed", "r"},
+};
+static constexpr size_t NUM_BYTE_COUNTERS = std::size(s_byte_counters);
+static u64 s_total_bytes[NUM_BYTE_COUNTERS] = {};
+static double s_last_bytes[NUM_BYTE_COUNTERS] = {};
 // Census scaffolding for the Adreno dynamic-state rung; delete with it.
 static double s_last_tfx_switches = 0;
 static double s_last_tfx_switches_blend = 0;
@@ -770,6 +806,8 @@ void Host::BeginPresentFrame()
 		sample.hash_cache_hit = update_stat(GSPerfMon::HashCacheHit, s_total_hash_cache_hit, s_last_hash_cache_hit);
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
+		for (size_t bc = 0; bc < NUM_BYTE_COUNTERS; bc++)
+			update_stat(s_byte_counters[bc].counter, s_total_bytes[bc], s_last_bytes[bc]);
 		update_stat(GSPerfMon::TFXPipelineSwitches, s_total_tfx_switches, s_last_tfx_switches);
 		update_stat(GSPerfMon::TFXPipelineSwitchesBlendOnly, s_total_tfx_switches_blend, s_last_tfx_switches_blend);
 		update_stat(GSPerfMon::TFXPipelineSwitchesMaskOnly, s_total_tfx_switches_mask, s_last_tfx_switches_mask);
@@ -2077,6 +2115,15 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
+	// Every path is emitted, zeros included, so a reader diffing two runs never has to decide
+	// whether a missing key means the path moved nothing or means the instrument was absent.
+	std::fprintf(fp.get(), "    \"bytes\": {");
+	for (size_t bc = 0; bc < NUM_BYTE_COUNTERS; bc++)
+	{
+		std::fprintf(fp.get(), "%s\n      \"%s\": {\"class\": \"%s\", \"total\": %" PRIu64 "}",
+			(bc > 0) ? "," : "", s_byte_counters[bc].name, s_byte_counters[bc].cls, s_total_bytes[bc]);
+	}
+	std::fprintf(fp.get(), "\n    },\n");
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
 	// The same population, split by cause, so an attribution round needs no teardown-ordering print
 	// to survive. Wall time in nanoseconds because that is the unit the device counts in; a reader
@@ -2263,6 +2310,20 @@ void GSRunner::DumpStats()
 		Ratio(s_total_tc_target_hit, s_total_tc_target_hit + s_total_tc_target_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Hit/Miss: {}/{} ({:.1f}% hit)", s_total_hash_cache_hit, s_total_hash_cache_miss,
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
+	{
+		const double frames = std::max(1.0, static_cast<double>(s_total_drawn_frames));
+		double per_class[3] = {};
+		for (size_t bc = 0; bc < NUM_BYTE_COUNTERS; bc++)
+		{
+			const double per_frame = static_cast<double>(s_total_bytes[bc]) / frames;
+			Console.WriteLn(fmt::format("@HWSTAT@ Bytes {} [{}]: {} total, {:.1f} KiB/frame",
+				s_byte_counters[bc].name, s_byte_counters[bc].cls, s_total_bytes[bc], per_frame / 1024.0));
+			const std::string_view cls(s_byte_counters[bc].cls);
+			per_class[(cls == "rw") ? 0 : ((cls == "w") ? 1 : 2)] += per_frame;
+		}
+		Console.WriteLn(fmt::format("@HWSTAT@ Bytes by class KiB/frame: rw {:.1f}, w {:.1f}, r {:.1f}",
+			per_class[0] / 1024.0, per_class[1] / 1024.0, per_class[2] / 1024.0));
+	}
 	if (s_perf_enable)
 	{
 		Console.WriteLn(fmt::format("@HWSTAT@ Minimum Frame Time: {:.3f} ms ({:.3f} FPS)", PerformanceMetrics::GetMinimumFrameTime(), 1000.0f / PerformanceMetrics::GetMinimumFrameTime()));

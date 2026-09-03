@@ -3065,6 +3065,13 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 	}
 
 	g_perfmon.Put(GSPerfMon::Swizzle, rec.stat_len);
+	// Census: the packet is read once and written into local memory swizzled. The written
+	// volume is the same pixels at the destination format's depth, which for the common
+	// same-format case is the payload size again -- read+write, not write-only.
+	g_perfmon.Put(GSPerfMon::BytesGifImageIn, static_cast<double>(rec.stat_len));
+	g_perfmon.Put(GSPerfMon::BytesGifImageOut,
+		static_cast<double>(r.width()) * static_cast<double>(r.height())
+			* static_cast<double>(GSLocalMemory::m_psm[rec.env_blit.DPSM].bpp) / 8.0);
 	// The executing object counts the same slice stream the submitter did, so
 	// its own copy tracks serial order (the split front bumps its copy at
 	// submit; a single object counts here only).
@@ -4191,6 +4198,10 @@ template void GSState::Transfer<3>(const u8* mem, u32 size);
 template <int index>
 void GSState::Transfer(const u8* mem, u32 size)
 {
+	// Census: the whole GIF stream, quadword tags and register data alike, read once by the
+	// packed handlers and turned into vertices. Read+write: the vertex buffer is the write side.
+	g_perfmon.Put(GSPerfMon::BytesGifPacket, static_cast<double>(size));
+
 	const u8* start = mem;
 
 	GIFPath& path = m_path[index];
