@@ -855,6 +855,7 @@
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
     <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />

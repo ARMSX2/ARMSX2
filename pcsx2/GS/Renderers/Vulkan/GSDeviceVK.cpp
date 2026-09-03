@@ -4084,6 +4084,14 @@ bool GSDeviceVK::CheckFeatures()
 	// Fbfetch is useless if we don't have barriers enabled.
 	m_features.framebuffer_fetch &= m_features.texture_barrier;
 
+	// Which spelling of the in-pass self-read this backend uses, published so GSRendererHW can tell
+	// the two apart without knowing about Vulkan extensions. The layout road samples the attachment
+	// through an ordinary sampler in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL; the fetch road reads it in
+	// tile memory through subpassLoad. UseFeedbackLoopLayout() requires the rasterization-order
+	// extension to be ABSENT, so the two are mutually exclusive -- the renderer is told anyway
+	// rather than being left to rely on that.
+	m_features.feedback_loop_layout = UseFeedbackLoopLayout();
+
 	// The Vulkan spelling of framebuffer fetch *is* rasterization-order attachment access, whose
 	// contract is that overlapping fragments in one draw observe each other in primitive order.
 	// So the ordering a full barrier would provide is already guaranteed, and keeping the barrier

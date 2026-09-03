@@ -6,6 +6,7 @@
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -8694,7 +8695,8 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 		if (rt && m_conf.tex == m_conf.rt)
 		{
 			// Can we read the framebuffer directly? (i.e. sample location matches up).
-			if (CanUseTexIsFB(rt, tex, tmm) && !(m_channel_shuffle && tex_diff != frame_diff))
+			const bool same_pixel_read = CanUseTexIsFB(rt, tex, tmm) && !(m_channel_shuffle && tex_diff != frame_diff);
+			if (same_pixel_read)
 			{
 				m_conf.tex = nullptr;
 				m_conf.ps.tex_is_fb = true;
@@ -8709,7 +8711,20 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				return;
 			}
 
-			if (!m_channel_shuffle)
+			// We are past the destination read, so whatever this draw samples, it is not the
+			// pixel it is writing. On a backend that reads the destination in tile memory there is
+			// nothing that can serve such a read: the backend's render-target clone is gated on the
+			// absence of a texture barrier, and the barrier below is then dropped on the grounds
+			// that fetch "replaces the destination read" -- which this is not. Take the copy.
+			// See GSSelfReadCopyPolicy.h for the whole road and the device it was measured on.
+			GSSelfReadCopyInputs copy_policy;
+			copy_policy.same_pixel_read = same_pixel_read;
+			copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
+			copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
+			copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
+			copy_policy.copy_key = GSConfig.FetchOffsetReadCopies;
+
+			if (!m_channel_shuffle && !SelfReadNeedsSourceCopy(copy_policy))
 			{
 				const GSVector4i src_box_rect = GSVector4i(m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y);
 				const GSVector4i src_rect = src_box_rect + source_region.GetRect(rt->GetUnscaledSize().x, rt->GetUnscaledSize().y).xyxy();
@@ -8749,6 +8764,15 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				}
 			}
 
+			// No GSSelfReadCopyPolicy gate here, deliberately. This block is the depth twin of the
+			// render-target disjoint-rect shortcut above, but it cannot skip a copy: it is guarded
+			// by !m_channel_shuffle, so it is only reached when the direct-read branch above
+			// declined, which for a non-shuffle draw means DepthWrite() is set -- and with depth
+			// being written HandleBarrierHazard's depth arm returns false for every device. So the
+			// block always falls through to the copy already. The depth road that does skip both a
+			// copy and a barrier is the direct read above, which needs neither: it requires the
+			// draw not to write depth, and a pass that samples depth carries the read-only depth
+			// feedback flag, so no draw in it wrote the depth being sampled.
 			if (!m_channel_shuffle)
 			{
 				const GSVector4i src_box_rect = GSVector4i(m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y);

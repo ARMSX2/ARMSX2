@@ -2528,6 +2528,9 @@
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
