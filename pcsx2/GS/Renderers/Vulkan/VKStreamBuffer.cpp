@@ -181,8 +181,8 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// paid at startup instead of smeared across the ring's first lap. These are persistent
 	// mappings, created once and written a little at a time every frame for the life of the
 	// device -- on a device where every VkDeviceMemory allocation is a shmem GEM object faulted
-	// on first touch (Turnip/msm), a 32 MiB ring at roughly 1 MiB of writes a frame takes about
-	// 30 frames to be touched end to end, and each of those pages faults on its first write
+	// on first touch (Turnip/msm), a 16 MiB ring at roughly 1 MiB of writes a frame takes about
+	// 16 frames to be touched end to end, and each of those pages faults on its first write
 	// whenever that lap gets to it. One store per page over the whole mapped range up front pays
 	// that once, before anything is being timed.
 	std::memset(ai.pMappedData, 0, ai.size);

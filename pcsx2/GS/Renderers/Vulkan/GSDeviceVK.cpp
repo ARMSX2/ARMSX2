@@ -84,11 +84,17 @@ enum : u32
 	MAX_INPUT_ATTACHMENT_IMAGE_DESCRIPTORS_PER_FRAME = MAX_DRAW_CALLS_PER_FRAME,
 	MAX_DESCRIPTOR_SETS_PER_FRAME = MAX_DRAW_CALLS_PER_FRAME * 2,
 
-	VERTEX_BUFFER_SIZE = 32 * 1024 * 1024,
-	INDEX_BUFFER_SIZE = 16 * 1024 * 1024,
-	VERTEX_UNIFORM_BUFFER_SIZE = 8 * 1024 * 1024,
-	FRAGMENT_UNIFORM_BUFFER_SIZE = 8 * 1024 * 1024,
-	TEXTURE_BUFFER_SIZE = 64 * 1024 * 1024,
+	// Halved from the original 32/16/8/8/64 MiB sizing on the ring-size sweep
+	// (two-device corpus run, MQ65 + SD865): zero stream-ring waits and
+	// byte-identical frames at this size on both devices. At this size the
+	// vertex ring holds about seven stuntman frames; a further halving
+	// (quarter of original) starts waiting on the texture ring on
+	// flatout2/bgda2. Record: umbrella devs/bmdhacks/campaigns/gs-classic-tiler/ring-size-sweep/RESULT.md
+	VERTEX_BUFFER_SIZE = 16 * 1024 * 1024,
+	INDEX_BUFFER_SIZE = 8 * 1024 * 1024,
+	VERTEX_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024,
+	FRAGMENT_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024,
+	TEXTURE_BUFFER_SIZE = 32 * 1024 * 1024,
 };
 
 
