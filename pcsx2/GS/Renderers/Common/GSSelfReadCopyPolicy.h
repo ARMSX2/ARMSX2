@@ -33,6 +33,21 @@
 //
 // So: on a device whose destination read is in-tile, an offset read of the target takes the copy.
 //
+// There are TWO roads out of the copy that leave a draw reading the target at a location it is not
+// writing, and this one decision serves both:
+//
+//   * the disjoint-rect shortcut described above -- the write rect and the read rect do not
+//     intersect, so the draw asks for one barrier and skips the copy;
+//   * a channel shuffle whose source page differs from its destination page, which samples the live
+//     target at gl_FragCoord + ChannelShuffleOffset and skips the copy the same way.
+//
+// The remedies differ, because the second addresses its source through a shader-side offset added
+// to the fragment's own position: its copy has to be coordinate-identity, so the source region
+// lands in the copy where it sits in the target and the shader offset still finds it. That is the
+// copy GSDeviceVK's draw_rt_clone already makes for the same draw on every device without a
+// texture barrier. The decision -- "does this read need a copy at all" -- is the same question in
+// both places, so it is one function and one key.
+//
 // Note the barrier would not have been enough anyway. The one this road asks for is
 // VK_DEPENDENCY_BY_REGION_BIT, and so is the render pass's self-dependency; by-region is
 // framebuffer-local, which is the wrong dependency for a read of a different location on any
@@ -47,6 +62,10 @@ struct GSSelfReadCopyInputs
 	/// The read lands on the pixel the fragment is writing (tex_is_fb). This is the read
 	/// framebuffer fetch exists to serve, and the one road this policy must never touch --
 	/// it is where step 2.0's speed win lives.
+	///
+	/// A channel shuffle reaching the offset road has this false by construction: a same-page
+	/// shuffle is resolved as tex_is_fb before either offset road is reached, so a shuffle that
+	/// gets as far as the page-offset block is reading a different page.
 	bool same_pixel_read = false;
 
 	/// The backend reads the destination in tile memory: Vulkan rasterization-order attachment
@@ -113,3 +132,9 @@ static_assert(!SelfReadNeedsSourceCopy(
 
 // The key off is the old behaviour, everywhere.
 static_assert(!SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .texture_barrier = true}));
+
+// The channel-shuffle page-offset road asks with same_pixel_read false, so it is the same answer
+// as the disjoint-rect road on every device. Spelled out because the two sites are far apart.
+static_assert(SelfReadNeedsSourceCopy(
+	{.same_pixel_read = false, .framebuffer_fetch = true, .texture_barrier = true, .copy_key = true}));
+static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = false, .texture_barrier = true, .copy_key = true}));

@@ -166,6 +166,8 @@ namespace GSDrawLog
 				return "DEPTH_DIRECT";
 			case SelfReadCopy:
 				return "COPY";
+			case SelfReadShuffleOffset:
+				return "SHUFFLE_OFFSET";
 			default:
 				return "";
 		}

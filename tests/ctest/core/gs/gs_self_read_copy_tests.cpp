@@ -8,6 +8,11 @@
 // express the read, and the barrier the disjoint-rect shortcut asks for is dropped on the grounds
 // that fetch replaces the destination read. That is the change.
 //
+// Two sites in GSRendererHW::HandleTextureHazards ask this question -- the disjoint-rect shortcut
+// and the channel shuffle whose source page differs from its destination page -- and they get the
+// same answer from the same function under the same key. The remedies differ (the shuffle needs a
+// coordinate-identity copy, because its shader offset addresses the source), the decision does not.
+//
 // What these tests are mostly for is the other half. Three roads must be bit-for-bit what they
 // were -- the destination read that fetch does serve, the desktop barrier road, and the
 // render-target-copy road every Adreno and every default Mali is on -- and none of them can be
@@ -159,4 +164,53 @@ TEST(GSSelfReadCopy, TheCensusDrawsTakeTheCopy)
 	// which is what the A/B needs it to do.
 	census_draw.copy_key = false;
 	EXPECT_FALSE(SelfReadNeedsSourceCopy(census_draw));
+}
+
+// The channel-shuffle page offset is the second site. It reaches the policy with same_pixel_read
+// false by construction -- a shuffle whose source page equals its destination page is resolved as
+// tex_is_fb long before this road -- so it must get the same answer as the disjoint-rect road on
+// every device. If those two ever disagree, one of the sites has stopped sharing the decision.
+TEST(GSSelfReadCopy, ShuffleOffsetRoadMatchesTheDisjointRectRoad)
+{
+	for (int bits = 0; bits < 8; bits++)
+	{
+		GSSelfReadCopyInputs in;
+		in.same_pixel_read = false;
+		in.framebuffer_fetch = (bits & 1) != 0;
+		in.texture_barrier = (bits & 2) != 0;
+		in.feedback_loop_layout = (bits & 4) != 0;
+
+		in.copy_key = true;
+		const bool expected = in.framebuffer_fetch && in.texture_barrier && !in.feedback_loop_layout;
+		EXPECT_EQ(SelfReadNeedsSourceCopy(in), expected) << "key on, bits=" << bits;
+
+		in.copy_key = false;
+		EXPECT_FALSE(SelfReadNeedsSourceCopy(in)) << "key off, bits=" << bits;
+	}
+}
+
+// The shuffle escape on the fetch road, by name: it copies with the key on and takes the live
+// sample with it off, which is the A/B the device round runs.
+TEST(GSSelfReadCopy, FetchRoadShuffleOffsetCopies)
+{
+	GSSelfReadCopyInputs shuffle = FetchRoad();
+	shuffle.same_pixel_read = false;
+	EXPECT_TRUE(SelfReadNeedsSourceCopy(shuffle));
+
+	shuffle.copy_key = false;
+	EXPECT_FALSE(SelfReadNeedsSourceCopy(shuffle));
+}
+
+// And the two roads every guard device is on keep the shuffle escape exactly as it was. The M2 is
+// the barrier road; Adreno and a default Mali are the copy road, where the backend clones the
+// target for this draw already.
+TEST(GSSelfReadCopy, ShuffleOffsetIsUnchangedOffTheFetchRoad)
+{
+	GSSelfReadCopyInputs barrier = BarrierRoad();
+	barrier.same_pixel_read = false;
+	EXPECT_FALSE(SelfReadNeedsSourceCopy(barrier));
+
+	GSSelfReadCopyInputs copy = CopyRoad();
+	copy.same_pixel_read = false;
+	EXPECT_FALSE(SelfReadNeedsSourceCopy(copy));
 }

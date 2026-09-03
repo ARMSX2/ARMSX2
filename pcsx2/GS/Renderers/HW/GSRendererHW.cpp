@@ -8633,8 +8633,23 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	// below rewrites m_conf to resolve that, so it is not recoverable afterwards -- hence
 	// the ledger is told here, pessimistically, and each road that avoids the copy corrects
 	// it on the way out.
-	const bool log_self_read =
-		GSDrawLog::IsActive() && ((rt && m_conf.tex == m_conf.rt) || (ds && m_conf.tex == m_conf.ds));
+	const bool rt_self_read = rt && m_conf.tex == m_conf.rt;
+	const bool ds_self_read = ds && m_conf.tex == m_conf.ds;
+	const bool log_self_read = GSDrawLog::IsActive() && (rt_self_read || ds_self_read);
+
+	// The device half of the offset-self-read rule. Two roads below leave a draw sampling the
+	// render target at a location it is not writing: the disjoint-rect shortcut, and the
+	// channel shuffle whose source page differs from its destination page. Neither is served by
+	// anything on a backend that reads the destination in tile memory -- the backend's clone is
+	// gated on the absence of a texture barrier, and the barrier is then dropped on the grounds
+	// that fetch "replaces the destination read", which an offset read is not. Both sites ask
+	// this one function, under one key. See GSSelfReadCopyPolicy.h for the whole road and the
+	// device it was measured on; same_pixel_read is filled in per site.
+	GSSelfReadCopyInputs copy_policy;
+	copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
+	copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
+	copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
+	copy_policy.copy_key = GSConfig.FetchOffsetReadCopies;
 	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
 		if (log_self_read) [[unlikely]]
 			GSDrawLog::NoteSelfRead(resolution);
@@ -8713,16 +8728,10 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 
 			// We are past the destination read, so whatever this draw samples, it is not the
 			// pixel it is writing. On a backend that reads the destination in tile memory there is
-			// nothing that can serve such a read: the backend's render-target clone is gated on the
-			// absence of a texture barrier, and the barrier below is then dropped on the grounds
-			// that fetch "replaces the destination read" -- which this is not. Take the copy.
-			// See GSSelfReadCopyPolicy.h for the whole road and the device it was measured on.
-			GSSelfReadCopyInputs copy_policy;
+			// nothing that can serve such a read, so take the copy -- the policy hoisted at the
+			// top of this function decides it, and the channel-shuffle road below asks the same
+			// question with the same key.
 			copy_policy.same_pixel_read = same_pixel_read;
-			copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
-			copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
-			copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
-			copy_policy.copy_key = GSConfig.FetchOffsetReadCopies;
 
 			if (!m_channel_shuffle && !SelfReadNeedsSourceCopy(copy_policy))
 			{
@@ -8858,9 +8867,35 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 			const int horizontal_offset = ((page_offset % src_target->m_TEX0.TBW) * GSLocalMemory::m_psm[src_target->m_TEX0.PSM].pgs.x) + draw_offset.x;
 			const int vertical_offset = ((page_offset / src_target->m_TEX0.TBW) * GSLocalMemory::m_psm[src_target->m_TEX0.PSM].pgs.y) + draw_offset.y;
 
-			if (HandleBarrierHazard(false) || (rt != tex->m_from_target && ds != tex->m_from_target))
+			// The channel-shuffle twin of the offset read at the top of this function. The escape
+			// below samples the live target at gl_FragCoord + ChannelShuffleOffset -- a page away
+			// from the pixel the fragment is writing -- so on a backend whose destination read
+			// happens in tile memory nothing serves it, for the reasons in GSSelfReadCopyPolicy.h.
+			// Same decision, same key, one test file.
+			//
+			// The remedy differs, because the shader offset is what addresses the source. The copy
+			// has to be COORDINATE-IDENTITY: ChannelShuffleOffset is added to the fragment's own
+			// position, so the source region must land in the copy at the coordinates it occupies
+			// in the target, and the shader offset stays. That is exactly the copy GSDeviceVK's
+			// draw_rt_clone already makes for this same draw on every device without a texture
+			// barrier, so the shape is proven rather than invented. It is NOT the shape of the
+			// relocating copy in the else below, which moves the source region onto the draw rect
+			// and leaves ChannelShuffleOffset at zero -- that road belongs to the depth shuffle
+			// that cannot read the live target at all.
+			//
+			// Colour only, and not the downscale road. The depth twin of this escape
+			// (test_and_sample_depth with depth not written) is out of scope for the same reason
+			// the depth disjoint-rect block is: a pass that samples depth carries the read-only
+			// depth flag, so no draw in it wrote the depth being sampled. The downscale road
+			// ignores copy_dst_offset entirely, so an identity copy is not expressible there.
+			copy_policy.same_pixel_read = false;
+			const bool shuffle_offset_copies =
+				rt_self_read && !m_downscale_source && SelfReadNeedsSourceCopy(copy_policy);
+
+			if (!shuffle_offset_copies &&
+				(HandleBarrierHazard(false) || (rt != tex->m_from_target && ds != tex->m_from_target)))
 			{
-				NoteResolution(GSDrawLog::SelfReadBarrier);
+				NoteResolution(GSDrawLog::SelfReadShuffleOffset);
 				m_conf.cb_ps.ChannelShuffleOffset = GSVector2((horizontal_offset - m_r.x) * tex->GetScale(), (vertical_offset - m_r.y) * tex->GetScale());
 				target_region = false;
 				source_region.bits = 0;
@@ -8868,6 +8903,25 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				unscaled_size = src_target->GetUnscaledSize();
 				scale = src_target->GetScale();
 				return;
+			}
+			else if (shuffle_offset_copies)
+			{
+				// Keep the shader offset, and snapshot the region it will fetch at the same
+				// coordinates it has in the target. copy_size is already the whole target (set
+				// above for shuffles), so the copy is the target's size with the read window
+				// filled in where the window sits.
+				m_conf.cb_ps.ChannelShuffleOffset = GSVector2((horizontal_offset - m_r.x) * tex->GetScale(), (vertical_offset - m_r.y) * tex->GetScale());
+				target_region = false;
+				source_region.bits = 0;
+
+				copy_range.x += horizontal_offset;
+				copy_range.y += vertical_offset;
+				copy_range.z = std::min(copy_range.z + horizontal_offset, src_target->m_unscaled_size.x);
+				copy_range.w = std::min(copy_range.w + vertical_offset, src_target->m_unscaled_size.y);
+
+				// Destination offset equal to the source position is what makes the copy an
+				// identity map, which is what ChannelShuffleOffset assumes about its source.
+				GSVector4i::storel(&copy_dst_offset, copy_range);
 			}
 			else
 			{

@@ -124,6 +124,13 @@ namespace GSDrawLog
 		SelfReadBarrier, ///< sampled the live attachment under a barrier
 		SelfReadDepthDirect, ///< sampled the depth buffer directly, no barrier needed
 		SelfReadCopy, ///< copied the target and sampled the copy
+		/// Channel shuffle whose source page differs from its destination: sampled the live
+		/// attachment at gl_FragCoord + ChannelShuffleOffset, a page away from the pixel the
+		/// fragment writes. Split out of SelfReadBarrier because it is a different road with a
+		/// different remedy, and the two were indistinguishable in the column -- which is what
+		/// the offset-read census could not resolve. Rows recorded as BARRIER by a build older
+		/// than this one include these.
+		SelfReadShuffleOffset,
 	};
 
 	enum Flags : u8
