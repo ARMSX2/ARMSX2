@@ -1721,7 +1721,17 @@ void GSDeviceVK::ReportDeviceFault()
 
 GSDeviceVK::GpuWaitCause GSDeviceVK::CauseOfSite(GpuWaitSite site)
 {
-	return (site == GpuWaitSite::CommandBufferRing) ? GpuWaitCause::Ring : GpuWaitCause::Sync;
+	switch (site)
+	{
+		case GpuWaitSite::CommandBufferRing:
+			return GpuWaitCause::Ring;
+		case GpuWaitSite::QueueSubmit:
+			return GpuWaitCause::Submit;
+		case GpuWaitSite::ReadbackMap:
+			return GpuWaitCause::Map;
+		default:
+			return GpuWaitCause::Sync;
+	}
 }
 
 const char* GSDeviceVK::NameOfSite(GpuWaitSite site)
@@ -1758,6 +1768,10 @@ const char* GSDeviceVK::NameOfSite(GpuWaitSite site)
 			return "texture-alloc-fallback";
 		case GpuWaitSite::SyncUnnamed:
 			return "sync-unnamed";
+		case GpuWaitSite::QueueSubmit:
+			return "queue-submit";
+		case GpuWaitSite::ReadbackMap:
+			return "readback-map";
 		default:
 			return "?";
 	}
@@ -1767,7 +1781,17 @@ const char* GSDeviceVK::GetGpuWaitSiteFamily(u32 site) const
 {
 	if (site >= kGpuWaitSiteCount)
 		return "";
-	return (CauseOfSite(static_cast<GpuWaitSite>(site)) == GpuWaitCause::Ring) ? "ring" : "sync";
+	switch (CauseOfSite(static_cast<GpuWaitSite>(site)))
+	{
+		case GpuWaitCause::Ring:
+			return "ring";
+		case GpuWaitCause::Submit:
+			return "submit";
+		case GpuWaitCause::Map:
+			return "map";
+		default:
+			return "sync";
+	}
 }
 
 void GSDeviceVK::BookGpuWait(GpuWaitSite site, u64 wait_ns)
@@ -1780,16 +1804,25 @@ void GSDeviceVK::BookGpuWait(GpuWaitSite site, u64 wait_ns)
 	// Ring is backpressure and stays out of the blocking-wait population; Sync is in it.
 	m_wait_site_ns[static_cast<u32>(site)] += wait_ns;
 	m_wait_site_calls[static_cast<u32>(site)]++;
-	if (CauseOfSite(site) == GpuWaitCause::Sync)
+	switch (CauseOfSite(site))
 	{
-		m_sync_wait_ns += wait_ns;
-		m_sync_wait_calls++;
-		g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
-	}
-	else
-	{
-		m_ring_wait_ns += wait_ns;
-		m_ring_wait_calls++;
+		case GpuWaitCause::Sync:
+			m_sync_wait_ns += wait_ns;
+			m_sync_wait_calls++;
+			g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+			break;
+		case GpuWaitCause::Ring:
+			m_ring_wait_ns += wait_ns;
+			m_ring_wait_calls++;
+			break;
+		case GpuWaitCause::Submit:
+			m_submit_wait_ns += wait_ns;
+			m_submit_wait_calls++;
+			break;
+		case GpuWaitCause::Map:
+			m_map_wait_ns += wait_ns;
+			m_map_wait_calls++;
+			break;
 	}
 }
 
@@ -1941,7 +1974,14 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		submit_info.pSignalSemaphores = &m_spin_resources[m_current_frame].semaphore;
 	}
 
+	// Timed, because on some drivers this is where the frame's time actually goes and no counter
+	// said so. It is not a fence wait -- nothing has been asked to complete -- so it is booked to
+	// its own bill and leaves the sync and ring figures exactly where they were. The call count is
+	// also the frame's submit count, which is the other thing nobody could read off a run.
+	const u64 submit_t0 = Common::Timer::GetCurrentValue();
 	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
+	BookGpuWait(GpuWaitSite::QueueSubmit,
+		Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - submit_t0));
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkQueueSubmit failed: ");

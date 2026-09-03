@@ -1926,6 +1926,20 @@ public:
 	virtual u64 GetRingWaitNs() const { return 0; }
 	virtual u64 GetRingWaitCalls() const { return 0; }
 
+	/// Two more bills that are not fence waits. `Submit` is time inside the queue-submit call
+	/// itself and `Map` is the host cache invalidate a readback needs after its drain has already
+	/// ended; neither had a counter before, and on a driver where the submit is where the frame's
+	/// cost lands, that time appeared in no figure the runner reported.
+	///
+	/// ⚠️ They are only PARTLY off-CPU -- a submit is a syscall and an invalidate is cache
+	/// maintenance, so some of these nanoseconds are also inside a thread-CPU figure. Subtract
+	/// them from wall clock next to a CPU-time figure and you subtract some nanoseconds twice,
+	/// which makes the remainder a lower bound rather than an exact residual.
+	virtual u64 GetSubmitWaitNs() const { return 0; }
+	virtual u64 GetSubmitWaitCalls() const { return 0; }
+	virtual u64 GetMapWaitNs() const { return 0; }
+	virtual u64 GetMapWaitCalls() const { return 0; }
+
 	/// The same waits again, itemised by the CALL SITE that paid rather than by the bill it landed
 	/// on. The getters above answer "what did waiting cost"; these answer "what was it waiting
 	/// for", which is the question a fix needs and the one a frame-level counter cannot reach -- a
@@ -1940,7 +1954,7 @@ public:
 	virtual const u64* GetGpuWaitSiteNs() const { return nullptr; }
 	virtual const u64* GetGpuWaitSiteCalls() const { return nullptr; }
 	virtual const char* GetGpuWaitSiteName(u32 site) const { return ""; }
-	/// Which of sync / ring this site is charged to.
+	/// Which bill this site is charged to: sync, ring, submit or map.
 	virtual const char* GetGpuWaitSiteFamily(u32 site) const { return ""; }
 
 	/// Returns true if not enough time has passed for present to not block.

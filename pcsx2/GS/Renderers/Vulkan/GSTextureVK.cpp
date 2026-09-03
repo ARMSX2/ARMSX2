@@ -10,6 +10,7 @@
 #include "common/Assertions.h"
 #include "common/Console.h"
 #include "common/BitUtils.h"
+#include "common/Timer.h"
 
 VkFramebuffer GSTextureVK::CreateNullFramebuffer(u32 w, u32 h)
 {
@@ -1016,8 +1017,15 @@ bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
 		GetTransferSize(read_rc, &copy_offset, &copy_row_bytes, &copy_rows);
 		// Every row the caller is about to read, not just the first: this is the invalidate the
 		// non-coherent readback profile is built on, and one row of it is 1/height of the map.
+		//
+		// Timed and booked to the readback-map site. It runs AFTER the drain the readback-drain
+		// site measures -- the fence has already signalled -- so on a non-coherent heap this is
+		// readback cost that fell outside every counter the runner had.
+		const u64 map_t0 = Common::Timer::GetCurrentValue();
 		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset,
 			GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows));
+		GSDeviceVK::GetInstance()->BookReadbackMapWait(
+			Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - map_t0));
 		m_needs_cache_invalidate = false;
 	}
 

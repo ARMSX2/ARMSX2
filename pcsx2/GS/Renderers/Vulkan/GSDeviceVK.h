@@ -87,6 +87,22 @@ enum class GpuWaitSite : u8
 	/// ExecuteCommandBuffer(WaitType) reached with no site named. Should stay zero.
 	SyncUnnamed,
 
+	// ---- the Submit bill: time inside the submit call itself, not on a fence ----
+
+	/// SubmitCommandBuffer's vkQueueSubmit. Not a fence wait at all -- the host is handing a
+	/// command buffer to the driver -- but on some drivers that call is where the frame's cost
+	/// actually lands, and until it was timed it belonged to no counter the runner had. It is on
+	/// its own bill rather than on Sync so that adding it does not move the sync figure every
+	/// earlier round was read off.
+	QueueSubmit,
+
+	// ---- the Map bill: host cache maintenance over a readback, after the drain ----
+
+	/// GSDownloadTextureVK::Map's vmaInvalidateAllocation. The drain site above ends when the
+	/// fence signals; the CPU still has to invalidate its cache over every row it is about to
+	/// read, and on a non-coherent readback heap that is real time spent outside the drain.
+	ReadbackMap,
+
 	Count
 };
 
@@ -97,6 +113,10 @@ public:
 	u64 GetSyncWaitCalls() const override { return m_sync_wait_calls; }
 	u64 GetRingWaitNs() const override { return m_ring_wait_ns; }
 	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
+	u64 GetSubmitWaitNs() const override { return m_submit_wait_ns; }
+	u64 GetSubmitWaitCalls() const override { return m_submit_wait_calls; }
+	u64 GetMapWaitNs() const override { return m_map_wait_ns; }
+	u64 GetMapWaitCalls() const override { return m_map_wait_calls; }
 	u32 GetGpuWaitSiteCount() const override { return kGpuWaitSiteCount; }
 	const u64* GetGpuWaitSiteNs() const override { return m_wait_site_ns.data(); }
 	const u64* GetGpuWaitSiteCalls() const override { return m_wait_site_calls.data(); }
@@ -264,6 +284,10 @@ public:
 	// Wait for a fence to be completed.
 	// Also invokes callbacks for completion.
 	void WaitForFenceCounter(u64 fence_counter, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
+	/// Charge a readback's post-drain cache invalidate to the ReadbackMap site. Public because the
+	/// download texture lives in its own translation unit and is the only caller; everything else
+	/// books its waits from inside the device.
+	void BookReadbackMapWait(u64 wait_ns) { BookGpuWait(GpuWaitSite::ReadbackMap, wait_ns); }
 
 	void WaitForGPUIdle();
 
@@ -339,10 +363,19 @@ private:
 	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
 	/// paid out of turn to get an answer, and that is the population readback work is judged
 	/// against (see GSPerfMon::GpuBlockingWaits).
+	///
+	/// `Submit` and `Map` are not fence waits at all -- they are time inside vkQueueSubmit and
+	/// inside the readback's cache invalidate -- and they have their own bills for the same reason
+	/// the sites exist: folding them into Sync would have moved a number every earlier round is
+	/// quoted against. ⚠️ Unlike the two fence bills, they are partly CPU time, so a reader
+	/// subtracting them from wall clock alongside a thread-CPU figure is subtracting some of the
+	/// same nanoseconds twice.
 	enum class GpuWaitCause
 	{
 		Ring,
 		Sync,
+		Submit,
+		Map,
 	};
 
 	/// The bill a site is charged to. One table, consulted once per wait, and the only place the
@@ -455,6 +488,10 @@ private:
 	u64 m_sync_wait_calls = 0;
 	u64 m_ring_wait_ns = 0;
 	u64 m_ring_wait_calls = 0;
+	u64 m_submit_wait_ns = 0;
+	u64 m_submit_wait_calls = 0;
+	u64 m_map_wait_ns = 0;
+	u64 m_map_wait_calls = 0;
 	// The same bills, itemised by the site that paid. Written only by BookGpuWait, alongside the
 	// aggregate it belongs to, so sum-over-sites-of-a-cause == that cause's aggregate on every run
 	// without anybody reconciling them. Two u64 increments at a point that has already read a clock
