@@ -74,6 +74,31 @@ constexpr const char* kMt6897LinuxHints = "anbernic,rg477v mediatek,mt6897";
 constexpr const char* kOtherMediaTekHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6985 | "
 										   "ro.board.platform=mt6985";
 
+// The RG 477V's own hint string, read off the device over adb on 2026-09-03 and written out in
+// full: every ro.* property GSGPUProfile.cpp's BuildHints asks for, in the order it asks for them,
+// joined the way AppendHint joins them, with the ones the device leaves empty dropped. The
+// constants above are shortened by hand to the part a rule keys on; this one is the whole string
+// the app's probe actually hands the resolver, so a property renamed, dropped or reordered on the
+// Android side is caught here instead of on the device.
+//
+// ro.build.fingerprint is deliberately not in it -- BuildHints does not read that property, and a
+// hint the resolver never sees would make this pin claim coverage it does not have. Recorded here
+// instead, since it is the one string that identifies the exact build the strings came off:
+// alps/vext_k6897v1_64/k6897v1_64:14/UP1A.231005.007/V654202605290319:user/test-keys.
+//
+// Worth seeing in the full string: three properties carry "mt6897" and the board does not.
+// ro.product.board is k6897v1_64 -- the part number without the vendor prefix -- so a device that
+// reported only its board would not satisfy the rule.
+constexpr const char* kRg477vDeviceHints2026_09_03 =
+	"ro.soc.manufacturer=Mediatek | ro.soc.model=MT6897 | ro.board.platform=mt6897 | "
+	"ro.hardware=mt6897 | ro.product.board=k6897v1_64";
+// The same device with one thing changed: a different MediaTek part, spelled through the same five
+// properties. Nothing about the GPU or the driver moves, which is the point -- the steering is a
+// statement about a measured SoC, and this is the nearest neighbour that was not measured.
+constexpr const char* kMt6895BoardHints2026_09_03 =
+	"ro.soc.manufacturer=Mediatek | ro.soc.model=MT6895 | ro.board.platform=mt6895 | "
+	"ro.hardware=mt6895 | ro.product.board=k6895v1_64";
+
 bool DeniesRoaaDestinationRead(const GpuProfileSelection& sel)
 {
 	return sel.driver.HasBug(DriverBug::BrokenRoaaDestinationRead);
@@ -433,4 +458,70 @@ TEST(GSGpuDriverProfile, AutoStillResolvesToVulkanOnAdrenoForItsOwnReason)
 	EXPECT_TRUE(AutoPrefersVulkan(
 		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897AndroidHints));
 	EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("SoC"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The RG 477V as it actually reports itself, 2026-09-03.
+//
+// The six cases above were written from an emulog and pin the rule's logic. These two pin the
+// device: the GL strings dumpsys SurfaceFlinger prints and the whole ro.* hint string the app's
+// JNI probe builds, both verbatim, fed through the same two entry points the app uses. The
+// hand-shortened constants and the real ones agree today; if a property is renamed on the Android
+// side, or BuildHints stops asking for one, only this pair notices.
+//
+// The end-to-end launch on the device was not run to confirm this. The debug applicationId equals
+// the shipping one, so installing a test build replaces the user's install, and a side-by-side
+// package would need the BIOS and a game copied into its own private storage before it could get
+// as far as a renderer decision.
+
+// GL vendor "ARM", renderer "Mali-G615 MC6", version "...v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688",
+// with the device's five non-empty SoC properties: the preference rule matches, and Auto says
+// Vulkan for the database's reason rather than for one of the other two.
+TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903ResolveAutoToVulkan)
+{
+	const GpuProfileSelection with_soc = ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer,
+		kMaliR44p1GlVersion, kRg477vDeviceHints2026_09_03);
+	const GpuProfileSelection without_soc =
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion);
+
+	EXPECT_EQ(with_soc.runtime_profile, RuntimeGpuProfile::Mali);
+	EXPECT_TRUE(with_soc.is_mediatek_soc);
+
+	// gl-mt6897-prefer-vulkan is the only rule in the table that declares PreferVulkanRenderer, so
+	// the bit names the rule. The count says it is an ADDITIONAL match rather than a rule that
+	// changed what it claims -- no GL rule excludes this SoC, so the same strings without the hint
+	// match everything this one does bar the new rule.
+	EXPECT_TRUE(DatabasePrefersVulkan(with_soc));
+	EXPECT_EQ(with_soc.driver.matched_rule_count, without_soc.driver.matched_rule_count + 1);
+
+	// It stays a preference: no defect claimed against the GL driver it steers away from.
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(with_soc));
+	EXPECT_FALSE(DeniesRoaaDestinationRead(with_soc));
+
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion,
+		kRg477vDeviceHints2026_09_03));
+	// Which of the three terms answered matters as much as the answer: this device is not an
+	// Adreno, and its GL driver reads the render target in tile memory perfectly well.
+	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "the driver database prefers Vulkan on this SoC");
+}
+
+// The same strings with the SoC changed to a part nobody measured. This is the case that decides
+// how far the flip travels: the GPU, the driver revision and the vendor are identical, so if the
+// rule keyed on any of those instead of on the SoC, this device would move too.
+TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903OnAnMt6895BoardStayOnOpenGL)
+{
+	const GpuProfileSelection other_soc = ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer,
+		kMaliR44p1GlVersion, kMt6895BoardHints2026_09_03);
+	const GpuProfileSelection without_soc =
+		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion);
+
+	EXPECT_EQ(other_soc.runtime_profile, RuntimeGpuProfile::Mali);
+	EXPECT_TRUE(other_soc.is_mediatek_soc);
+
+	EXPECT_FALSE(DatabasePrefersVulkan(other_soc));
+	EXPECT_EQ(other_soc.driver.matched_rule_count, without_soc.driver.matched_rule_count);
+
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion,
+		kMt6895BoardHints2026_09_03));
+	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
 }
