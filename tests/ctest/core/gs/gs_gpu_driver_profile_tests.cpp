@@ -371,6 +371,37 @@ TEST(GSGpuDriverProfile, ProprietaryQualcommKeepsItsStencilBuffer)
 }
 
 // ---------------------------------------------------------------------------------------------
+// The stream rings' memory preference, which is the other half of GSStreamRingMemoryPolicy: the
+// policy asks the database whether the write-combined road is expensive here, and this rule is the
+// answer for Turnip.
+
+// Both Turnip parts the round measured. The MQ65's A610 is what earned the rule -- it has no cached
+// coherent type, so this bit is what moves it -- and the SD865's A650 matches too, where it changes
+// nothing because the policy takes the cached coherent type before it ever asks. Deliberate: the
+// rule is keyed on the driver, and the memory table does the narrowing.
+TEST(GSGpuDriverProfile, TurnipPrefersCachedStreamRingMemoryOnEveryAdreno)
+{
+	for (const char* device : {"Adreno (TM) 610", "Adreno (TM) 650", "Adreno (TM) 750"})
+	{
+		const GpuProfileSelection sel =
+			ResolveAdrenoVK(device, kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2));
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
+		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory)) << device;
+	}
+}
+
+// The blob is not implicated. Nobody has read its memory table, so no preference is claimed for it;
+// a blob device that reproduces the MQ65's cost gets its own rule with its own numbers.
+TEST(GSGpuDriverProfile, ProprietaryQualcommMakesNoStreamRingMemoryClaim)
+{
+	const GpuProfileSelection sel =
+		ResolveAdrenoVK("Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u);
+
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
+	EXPECT_FALSE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory));
+}
+
+// ---------------------------------------------------------------------------------------------
 // The Auto renderer on the MT6897, and the rule that steers it.
 //
 // Auto sent this device to OpenGL for as long as it has existed, and correctly so: its GL driver
