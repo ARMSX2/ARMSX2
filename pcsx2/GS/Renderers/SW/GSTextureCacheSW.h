@@ -27,6 +27,13 @@ public:
 		std::array<u16, GS_MAX_PAGES> m_erase_it;
 		const u32* RESTRICT m_sharedbits;
 
+		// What the most recent Update() cost, for the per-draw ledger. Bytes the buffer
+		// allocation cleared (zero when the buffer was reused) and blocks unswizzled out of
+		// local memory. Kept here rather than returned because Update() has three callers
+		// and only one of them is measuring.
+		u32 m_last_clear_bytes = 0;
+		u32 m_last_blocks = 0;
+
 		// m_valid
 		// fast mode: each u32 bits map to the 32 blocks of that page
 		// repeating mode: 1 bpp image of the texture tiles (8x8), also having 512 elements is just a coincidence (worst case: (1024*1024)/(8*8)/(sizeof(u32)*8))

@@ -3245,11 +3245,15 @@ void GSRendererHW::Draw()
 	m_process_texture = PRIM->TME && !(NeedsBlending() && m_context->ALPHA.IsBlack() && !m_cached_ctx.TEX0.TCC) && !(no_rt && (!m_cached_ctx.TEST.ATE || m_cached_ctx.TEST.ATST <= ATST_ALWAYS));
 
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
-	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture) && SwPrimRender(*this, true, true))
+	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
 	{
-		GL_CACHE("HW: Possible texture decompression, drawn with SwPrimRender() (BP %x BW %u TBP0 %x TBW %u)",
-			m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBMSK, m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW);
-		return;
+		GSDrawLog::NoteSWRoad(GSDrawLog::SWRoadSprite);
+		if (SwPrimRender(*this, true, true))
+		{
+			GL_CACHE("HW: Possible texture decompression, drawn with SwPrimRender() (BP %x BW %u TBP0 %x TBW %u)",
+				m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBMSK, m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW);
+			return;
+		}
 	}
 
 	// We want to fix up the context if we're doing a double half clear, regardless of whether we do the CPU fill.
@@ -3287,6 +3291,7 @@ void GSRendererHW::Draw()
 		m_mem.m_clut.ClearDrawInvalidity();
 		if (result == CLUTDrawTestResult::CLUTDrawOnCPU && GSConfig.UserHacks_CPUCLUTRender > 0)
 		{
+			GSDrawLog::NoteSWRoad(GSDrawLog::SWRoadCLUT);
 			if (SwPrimRender(*this, true, true))
 			{
 				GL_CACHE("HW: Possible clut draw, drawn with SwPrimRender()");

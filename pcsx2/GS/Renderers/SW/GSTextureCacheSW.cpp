@@ -199,6 +199,9 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 
 bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 {
+	m_last_clear_bytes = 0;
+	m_last_blocks = 0;
+
 	if (m_complete)
 	{
 		return true;
@@ -234,6 +237,7 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 		// This _shouldn't_ be necessary, but apparently our texture min/max is wrong somewhere,
 		// and we end up sampling from "random" malloc memory, which breaks GS dump runs.
 		std::memset(m_buff, 0, size);
+		m_last_clear_bytes = static_cast<u32>(size);
 	}
 
 	GSLocalMemory& mem = g_gs_renderer->m_mem;
@@ -301,6 +305,8 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 			}
 		}
 	}
+
+	m_last_blocks = blocks;
 
 	if (blocks > 0)
 	{

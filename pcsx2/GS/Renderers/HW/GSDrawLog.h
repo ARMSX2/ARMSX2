@@ -174,6 +174,46 @@ namespace GSDrawLog
 		// console captures needs the pixels and the per-draw state to come out of the
 		// same run, not out of a second arm assumed to enumerate draws the same way.
 		u8 sw;
+
+		/// The HW renderer's software-rasterizer fallback, as it ran.
+		///
+		/// A draw that takes this road leaves no backend view at all -- no pipeline, no
+		/// target, no draw call -- so every question about it ("which draws", "how big",
+		/// "what did it cost") has to be answered from columns filled on the road itself.
+		/// The road is recorded rather than inferred from the register state because the
+		/// three entry points admit different draws and the register state does not say
+		/// which one let a draw through.
+		u8 sw_road; ///< SWRoad; SWRoadNone on rows that did not take the fallback
+
+		/// Whether the sampled texture aliases a live HW render target. This is the usual
+		/// reason CanUseSwPrimRender lets a draw through, and it is only knowable while
+		/// the draw is running.
+		u8 sw_tex_is_target;
+
+		/// The block range the rasterizer wrote, from the same bbox the road hands the
+		/// scanline core. What makes the fallback matter for a frame is whether anything
+		/// later reads these blocks back, and a later draw's texture is named by blocks,
+		/// not by a rectangle -- so the range is recorded in the unit the join needs.
+		u32 sw_bp_start;
+		u32 sw_bp_end;
+
+		/// What the per-draw software texture cost this draw: bytes the texture buffer
+		/// allocation cleared (zero when the buffer was reused), and blocks unswizzled out
+		/// of local memory. Both are per draw because the road rebuilds the texture every
+		/// time; recording them is how "the memset is clearing more than the draw touches"
+		/// stops being an assertion about the code and becomes a number.
+		u32 sw_tex_clear_bytes;
+		u32 sw_tex_blocks;
+	};
+
+	/// Which entry point let a draw onto the software-rasterizer road.
+	enum SWRoad : u8
+	{
+		SWRoadNone = 0, ///< the draw did not take the fallback
+		SWRoadSprite, ///< the CPU-sprite test at the top of GSRendererHW::Draw
+		SWRoadCLUT, ///< the CPU-CLUT draw test
+		SWRoadHack, ///< a per-CRC hack in GSHwHack
+		SWRoadRenderer, ///< the software renderer proper, which is not a fallback at all
 	};
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
@@ -414,6 +454,17 @@ namespace GSDrawLog
 	/// draw rect it will rasterize into (bbox ∩ scissor). No backend view exists for
 	/// these draws. No-op if BeginDraw did not record a row.
 	void NoteSWDraw(const GSVector4i& rect);
+
+	/// Names the road a draw is about to take onto the software rasterizer. Called at the
+	/// decision site, before the road runs, because that is the only place that knows which
+	/// test let the draw through.
+	void NoteSWRoad(u8 road);
+
+	/// Completes the row with what the HW renderer's software fallback actually did: the
+	/// rect it rasterized, the block range that landed in local memory, whether its source
+	/// texture aliased a render target, and what rebuilding the software texture cost.
+	void NoteSWPrimRender(const GSVector4i& rect, u32 bp_start, u32 bp_end, u8 tex_is_target,
+		u32 tex_clear_bytes, u32 tex_blocks);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.

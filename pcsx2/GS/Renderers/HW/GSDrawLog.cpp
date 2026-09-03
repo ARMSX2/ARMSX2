@@ -289,6 +289,38 @@ namespace GSDrawLog
 
 		Record& rec = s_records[s_open_record];
 		rec.sw = 1;
+		rec.sw_road = SWRoadRenderer;
+		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
+		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
+		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
+		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
+	}
+
+	void NoteSWRoad(u8 road)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		s_records[s_open_record].sw_road = road;
+	}
+
+	void NoteSWPrimRender(const GSVector4i& rect, u32 bp_start, u32 bp_end, u8 tex_is_target,
+		u32 tex_clear_bytes, u32 tex_blocks)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		rec.sw = 1;
+		// The road was named at the decision site; a row that reaches here without one took
+		// an entry point nothing tagged, and saying so beats guessing.
+		if (rec.sw_road == SWRoadNone)
+			rec.sw_road = SWRoadHack;
+		rec.sw_tex_is_target = tex_is_target;
+		rec.sw_bp_start = bp_start;
+		rec.sw_bp_end = bp_end;
+		rec.sw_tex_clear_bytes = tex_clear_bytes;
+		rec.sw_tex_blocks = tex_blocks;
 		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
 		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
 		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
@@ -314,6 +346,23 @@ namespace GSDrawLog
 				return "COPY";
 			case SelfReadShuffleOffset:
 				return "SHUFFLE_OFFSET";
+			default:
+				return "";
+		}
+	}
+
+	static const char* GetSWRoadName(u8 road)
+	{
+		switch (road)
+		{
+			case SWRoadSprite:
+				return "SPRITE";
+			case SWRoadCLUT:
+				return "CLUT";
+			case SWRoadHack:
+				return "HACK";
+			case SWRoadRenderer:
+				return "RENDERER";
 			default:
 				return "";
 		}
@@ -453,7 +502,8 @@ namespace GSDrawLog
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
 			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
-			"tfx_sc_x,tfx_sc_y,tfx_sc_w,tfx_sc_h\n");
+			"tfx_sc_x,tfx_sc_y,tfx_sc_w,tfx_sc_h,"
+			"sw_road,sw_tex_target,sw_bp_start,sw_bp_end,sw_tex_clear_bytes,sw_tex_blocks\n");
 
 		for (const Record& r : s_records)
 		{
@@ -606,7 +656,7 @@ namespace GSDrawLog
 			{
 				std::fprintf(fp.get(),
 					"%u,%s,%u,%s,%016llx,%016llx,%016llx,%02x,%02x,%02x,%08x,%08x,%08x,%08x,%08x,%08x,%02x,"
-					"%d,%d,%d,%d\n",
+					"%d,%d,%d,%d",
 					r.tfx_call, GetTFXCallKindName(r.tfx_kind), r.tfx_pass,
 					GetPassEndReasonName(r.tfx_pass_end),
 					static_cast<unsigned long long>(r.tfx_pipe_hash),
@@ -618,7 +668,18 @@ namespace GSDrawLog
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,,,,,,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,,,,,,,,,,,,");
+			}
+
+			if (r.sw)
+			{
+				std::fprintf(fp.get(), ",%s,%d,%05x,%05x,%u,%u\n", GetSWRoadName(r.sw_road),
+					r.sw_tex_is_target ? 1 : 0, r.sw_bp_start, r.sw_bp_end, r.sw_tex_clear_bytes,
+					r.sw_tex_blocks);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,,\n");
 			}
 		}
 

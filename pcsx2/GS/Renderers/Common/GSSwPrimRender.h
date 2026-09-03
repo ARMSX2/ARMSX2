@@ -28,6 +28,12 @@ struct GSSwPrimRenderState
 	std::vector<GSVertexSW> vertex_buffer;
 	std::unique_ptr<GSTextureCacheSW::Texture> texture[7 + 1];
 	std::unique_ptr<GSVirtualAlignedClass<32>> rasterizer;
+
+	// What rebuilding the software texture cost the draw that just ran, summed over the
+	// mip levels it touched: bytes a buffer allocation cleared, and blocks unswizzled out
+	// of local memory. Per draw, because the road rebuilds the texture on every one.
+	u32 last_tex_clear_bytes = 0;
+	u32 last_tex_blocks = 0;
 };
 
 // The rectangle the scanline core walks, and the rectangle the caller must account for in guest
