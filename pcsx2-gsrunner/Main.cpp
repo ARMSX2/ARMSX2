@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -316,6 +317,49 @@ static u64 ReadResidentSetKB()
 #endif
 }
 
+// Process minor page fault count, cumulative since process start, or 0 where the platform has
+// no procfs to ask. /proc/[pid]/stat field 10 (minflt, see `man proc`) -- comm (field 2) is
+// parenthesized and can itself contain spaces or parens, so the safe parse skips to the LAST
+// ')' before splitting the remaining space-separated fields, same as every other /proc/[pid]/stat
+// reader has to.
+//
+// ⚠️ Deliberately NOT /proc/self: that symlink resolves per CALLING THREAD, not per process, and
+// the kernel only aggregates minflt across the whole thread group when the directory numerically
+// names the group leader -- /proc/self/stat opened from any other thread (this runs on the GS
+// thread, not main) reads back that one thread's own count, which sits near zero while every
+// other thread's faults, and the RSS growth they cause, go uncounted. getpid() always returns the
+// thread-group id regardless of which thread calls it, so the path is built from that instead of
+// trusted to the symlink.
+static u64 ReadMinorFaultsCumulative()
+{
+#if defined(__linux__)
+	static const std::string path = "/proc/" + std::to_string(getpid()) + "/stat";
+	static const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+
+	char buf[512];
+	const ssize_t len = pread(fd, buf, sizeof(buf) - 1, 0);
+	if (len <= 0)
+		return 0;
+	buf[len] = '\0';
+
+	const char* rparen = std::strrchr(buf, ')');
+	if (!rparen)
+		return 0;
+
+	// From field 3 (state) onward: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt --
+	// skip the first seven to land on minflt (field 10).
+	unsigned long long minflt = 0;
+	if (std::sscanf(rparen + 1, "%*s %*d %*d %*d %*d %*d %*u %llu", &minflt) != 1)
+		return 0;
+
+	return static_cast<u64>(minflt);
+#else
+	return 0;
+#endif
+}
+
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
 // every presented frame is recorded and written out as JSON at the end of the run.
 // Counters are exact per-frame deltas; frame_ms is measured here rather than taken
@@ -394,6 +438,13 @@ struct FrameSample
 	/// merely started big have the same closing figure and different curves, and a
 	/// 50-loop run is exactly where that difference shows up.
 	u64 rss_kb;
+
+	/// Minor page faults since the previous sample (first sample reads as the whole run
+	/// so far, same convention as sync_wait_ns). Exists to tell a loop-count-sensitive
+	/// warm-up fault tax apart from real per-frame churn -- rss_kb alone can plateau
+	/// while faults are still high if pages are being re-faulted without growing RSS,
+	/// and can grow without a fault spike if the growth came from one large mmap.
+	u64 minflt_delta;
 };
 // Work posted from other threads (the PINE server) to run on the CPU thread.
 static std::mutex s_cpu_thread_tasks_mutex;
@@ -413,6 +464,7 @@ static std::string s_stream_ring_memory;
 static GSDevice::StreamRingFlushStats s_stream_ring_flush;
 static u64 s_frame_timer_last = 0;
 static u64 s_gs_cpu_time_last = 0;
+static u64 s_minflt_last = 0;
 // Previous frame's wait bill, so each sample carries its own delta rather than a running total.
 static DeviceWaitBill s_device_wait_bill_last;
 static bool s_saw_gs_back_thread_in_stats = false;
@@ -883,6 +935,26 @@ void Host::BeginPresentFrame()
 			s_device_wait_bill_last = w;
 
 			sample.rss_kb = ReadResidentSetKB();
+
+			// Same "first sample reads as the whole run so far" convention as the wait bill
+			// above: the pre-frame-0 warm-up burst (process start through the first present)
+			// is exactly the kind of thing this counter exists to catch, so frame 0 is not
+			// zeroed. A read failure comes back as 0 from ReadMinorFaultsCumulative, which a
+			// live process's monotonic count can never legitimately return to once it has
+			// already advanced past zero -- treated as a dropped sample rather than recorded
+			// as a fabricated delta, and s_minflt_last is left alone so the next successful
+			// read still deltas against the last known-good value.
+			const u64 minflt_now = ReadMinorFaultsCumulative();
+			if (minflt_now == 0 && s_minflt_last != 0)
+			{
+				sample.minflt_delta = 0;
+			}
+			else
+			{
+				sample.minflt_delta = minflt_now - s_minflt_last;
+				s_minflt_last = minflt_now;
+			}
+
 			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
 		}
@@ -2217,7 +2289,7 @@ static void WriteStatsJson(const std::string& path)
 			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
 			"\"sync_wait_ns\":%" PRIu64 ",\"ring_wait_ns\":%" PRIu64 ","
 			"\"submit_wait_ns\":%" PRIu64 ",\"map_wait_ns\":%" PRIu64 ",\"submits\":%" PRIu64 ","
-			"\"rss_kb\":%" PRIu64 "}%s\n",
+			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 "}%s\n",
 			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
@@ -2228,7 +2300,7 @@ static void WriteStatsJson(const std::string& path)
 			s.hash_cache_hit, s.hash_cache_miss,
 			s.pipeline_switches, s.gpu_blocking_waits,
 			s.sync_wait_ns, s.ring_wait_ns, s.submit_wait_ns, s.map_wait_ns, s.submits,
-			s.rss_kb,
+			s.rss_kb, s.minflt_delta,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
