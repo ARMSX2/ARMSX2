@@ -228,17 +228,50 @@ namespace GSReplayPayload
 		/// asked for; the emit refuses a dump with a transfer in flight instead. XYZ
 		/// kicks a vertex, and the freeze's copy is the last vertex the game queued,
 		/// not a piece of state anything downstream reads.
+		///
+		/// The CLUT is the third thing the freeze does not carry, and it is the reason
+		/// two more orderings here are load-bearing.
+		///
+		/// There is one CLUT buffer and two contexts, and a TEX0 write naming an indexed
+		/// format with a loading CLD is what fills it. Restoring both contexts' TEX0
+		/// verbatim therefore loads the CLUT twice and leaves whichever context was
+		/// written last owning it -- context 1, always, because that is the loop order.
+		/// The emulator's own savestate reload applies exactly one of them, the active
+		/// context's, so a dump whose inactive context also names an indexed format
+		/// starts the replay on a palette the same dump loaded normally would not have.
+		/// So the inactive context's TEX0 goes out with CLD forced to zero: every other
+		/// field is restored, and only the load is suppressed.
+		///
+		/// ⚠️ This is a latent divergence, not a measured one. Of the four dumps replayed
+		/// so far only OutRun 2006 has an inactive context that would load at all, and
+		/// on it the change moves zero words -- the game rewrites TEX0 before its first
+		/// paletted draw of the frame, so the wrong palette never reaches a pixel. It is
+		/// here because "the replay's CLUT is whatever context 1 happened to name" is
+		/// not a property anyone should have to re-derive on the dump where it does bite.
+		///
+		/// TEXCLUT moves ahead of the contexts for the same reason. A CSM=1 load reads
+		/// COU/COV/CBW out of TEXCLUT at the moment of the TEX0 write, so restoring it
+		/// afterwards means the one load that matters read the wrong window.
 		std::vector<u8> BuildEnvironment(const std::vector<u8>& state)
 		{
 			std::vector<u8> regs;
+
+			// A CSM=1 CLUT load reads this at the TEX0 write below, so it goes first.
+			PushAD(regs, ReadU64(state, OFF_TEXCLUT), GIF_TEXCLUT);
+
+			const u32 active_ctx = static_cast<u32>((ReadU64(state, OFF_PRIM) >> 9) & 1);
 
 			for (u32 c = 0; c < 2; c++)
 			{
 				const u32 base = OFF_CTXT + c * CTXT_STRIDE;
 				const u8 ctx = static_cast<u8>(c); // context 2's registers sit one above context 1's
 
+				u64 tex0 = ReadU64(state, base + CTX_TEX0);
+				if (c != active_ctx)
+					tex0 &= ~(u64(7) << 61); // CLD = 0: restore the register, load no palette
+
 				PushAD(regs, ReadU64(state, base + CTX_TEX1), GIF_TEX1_1 + ctx);
-				PushAD(regs, ReadU64(state, base + CTX_TEX0), GIF_TEX0_1 + ctx);
+				PushAD(regs, tex0, GIF_TEX0_1 + ctx);
 				PushAD(regs, ReadU64(state, base + CTX_MIPTBP1), GIF_MIPTBP1_1 + ctx);
 				PushAD(regs, ReadU64(state, base + CTX_MIPTBP2), GIF_MIPTBP2_1 + ctx);
 				PushAD(regs, ReadU64(state, base + CTX_CLAMP), GIF_CLAMP_1 + ctx);
@@ -251,7 +284,6 @@ namespace GSReplayPayload
 				PushAD(regs, ReadU64(state, base + CTX_ZBUF), GIF_ZBUF_1 + ctx);
 			}
 
-			PushAD(regs, ReadU64(state, OFF_TEXCLUT), GIF_TEXCLUT);
 			PushAD(regs, ReadU64(state, OFF_SCANMSK), GIF_SCANMSK);
 			PushAD(regs, ReadU64(state, OFF_TEXA), GIF_TEXA);
 			PushAD(regs, ReadU64(state, OFF_FOGCOL), GIF_FOGCOL);
