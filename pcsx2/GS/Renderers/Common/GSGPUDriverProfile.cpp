@@ -373,7 +373,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 33> s_driver_rules = {{
+static constexpr std::array<DriverRule, 34> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -553,6 +553,33 @@ static constexpr std::array<DriverRule, 33> s_driver_rules = {{
 	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
 	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
 	// failure on the proprietary blob.
+	// Every Turnip device writes its stream rings into write-combined memory, because
+	// VKStreamBuffer asks VMA for HOST_COHERENT and Turnip's write-combined type is the first one
+	// that satisfies it. On an MQ65 (Adreno 610, four A73 at 2.1 GHz) that costs about a third of
+	// the GS thread on the streaming-heavy titles: taking the cached non-coherent type instead,
+	// and paying the cache clean per commit, took GS-thread p50 down 29.5% on legosw, 28.4% on
+	// gow2, 21.0% on yugioh and 20.6% on ac5, with draw-heavy controls flat and every frame
+	// byte-identical (records under devs/bmdhacks/campaigns/gs-classic-tiler/sd662-tier/
+	// rung-t1-vertex-ring-writes/).
+	//
+	// KEYED ON TURNIP, EVERY ADRENO GENERATION, and the choice matters enough to spell out. The
+	// mechanism is the HOST core's write combining -- an uncached store is fast only if the store
+	// buffer merges adjacent writes, and small cores merge badly -- so the honest key is the CPU
+	// tier, which this table cannot express. The proxy it can use is the memory table itself:
+	// GSStreamRingMemoryPolicy takes a cached COHERENT type wherever one exists, and Turnip offers
+	// one only on an IO-coherent GPU with msm_minor_version >= 8. So this rule is inert on every
+	// Turnip part that has the better road -- the SD865 among them, where it matched and changed
+	// nothing -- and what it actually selects is "Turnip with no cached coherent type", which is
+	// the low tier by construction and without guessing a model number.
+	//
+	// A model bound ("Adreno below 650") was the alternative and is the worse claim: it denies the
+	// road to a part above the line with the same missing coherent type, which is a device with the
+	// problem and no remedy. Widening is what this table forbids for DEFECTS; this is a preference,
+	// and a device that does not need it never reaches the rule. Bounded to Turnip because the
+	// proprietary blob's memory table has never been read by us.
+	{"vk-turnip-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		0, Workaround(DriverWorkaround::PreferCachedStreamRingMemory)},
 	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),

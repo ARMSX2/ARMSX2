@@ -3219,6 +3219,14 @@ std::string GSDeviceVK::GetDriverInfo() const
 	return ret;
 }
 
+std::string GSDeviceVK::GetStreamRingMemoryDescription() const
+{
+	// The same spelling the device banner uses, so a stats.json field and a log line can be
+	// grepped for with one string.
+	return StringUtil::StdStringFromFormat("%s(type %u)", GSStreamRingMemoryRoadName(m_stream_ring_memory.road),
+		m_stream_ring_memory.type_index);
+}
+
 void GSDeviceVK::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 {
 	m_allow_present_throttle = allow_present_throttle;
@@ -4201,13 +4209,76 @@ bool GSDeviceVK::CheckFeatures()
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
 	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
 
+	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
+	// because it is one: the rings are allocated once at device init and the choice cannot be
+	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device numbers;
+	// what this does is read the memory-type table, ask the driver database its one question, and
+	// hand VKStreamBuffer::Create the answer.
+	{
+		VkPhysicalDeviceMemoryProperties memory_properties = {};
+		vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
+
+		// The policy mirrors the Vulkan property bits so it stays backend-neutral and testable.
+		// If Vulkan ever renumbers them this is where it breaks, loudly, at compile time.
+		static_assert(GS_MEMORY_PROPERTY_DEVICE_LOCAL == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		static_assert(GS_MEMORY_PROPERTY_HOST_VISIBLE == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		static_assert(GS_MEMORY_PROPERTY_HOST_COHERENT == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		static_assert(GS_MEMORY_PROPERTY_HOST_CACHED == VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+
+		u32 type_flags[VK_MAX_MEMORY_TYPES] = {};
+		for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
+			type_flags[i] = static_cast<u32>(memory_properties.memoryTypes[i].propertyFlags);
+
+		GSStreamRingMemoryInputs inputs;
+		inputs.type_flags = type_flags;
+		inputs.type_count = memory_properties.memoryTypeCount;
+		inputs.prefer_cached_over_write_combined =
+			UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
+		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
+
+		// Why the write-combined road was taken is the half a log has to carry: "unchanged" covers
+		// a desktop card whose cached memory is system RAM, a device with no cached type at all,
+		// and a device that has one but that no rule names, and those are three different reads.
+		const char* reason = "the device offers a cached coherent host-visible type";
+		if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::CachedNonCoherent)
+		{
+			reason = "no cached coherent type, and the driver database prefers cached memory on this GPU";
+		}
+		else if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::WriteCombined)
+		{
+			bool any_cached = false, any_device_local_cached = false;
+			for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
+			{
+				constexpr u32 host_cached = GS_MEMORY_PROPERTY_HOST_VISIBLE | GS_MEMORY_PROPERTY_HOST_CACHED;
+				if ((type_flags[i] & host_cached) != host_cached)
+					continue;
+				any_cached = true;
+				any_device_local_cached |= (type_flags[i] & GS_MEMORY_PROPERTY_DEVICE_LOCAL) != 0;
+			}
+			if (!any_cached)
+				reason = "the device offers no cached host-visible memory type";
+			else if (!any_device_local_cached)
+				reason = "every cached host-visible type is host-local, and the GPU reads these rings";
+			else
+				reason = "a device-local cached type exists, but no rule says write-combined is expensive here";
+		}
+
+		const u32 chosen = m_stream_ring_memory.type_index;
+		const u32 chosen_flags = (chosen < memory_properties.memoryTypeCount) ? type_flags[chosen] : 0;
+		Console.WriteLn("VK: stream rings: %s, memory type %u (%s)%s -- %s",
+			GSStreamRingMemoryRoadName(m_stream_ring_memory.road), chosen,
+			GSDescribeMemoryProperties(chosen_flags).c_str(),
+			(m_stream_ring_memory.road == GSStreamRingMemoryRoad::CachedNonCoherent) ? ", flushed per commit" : "",
+			reason);
+	}
+
 	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
 	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
 	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
 	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
 	// Mali driver-support deep dive.
 	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
-					"inpAttFB=%s dualSrc=%s testSampleDepth=%s madFallback=%s pushdesc=%s",
+					"inpAttFB=%s dualSrc=%s testSampleDepth=%s madFallback=%s pushdesc=%s streamRings=%s(type %u)",
 		m_device_properties.deviceName,
 		m_device_properties.vendorID,
 		m_device_driver_properties.driverName,
@@ -4222,7 +4293,8 @@ bool GSDeviceVK::CheckFeatures()
 		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
 		m_features.test_and_sample_depth ? "on" : "off",
 		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
-		m_use_push_descriptors ? "on" : "off");
+		m_use_push_descriptors ? "on" : "off",
+		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
 
 	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
 	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
@@ -5409,14 +5481,12 @@ void GSDeviceVK::IASetVertexBuffer(const void* vertex, size_t stride, size_t cou
 
 	// Census: write-only, non-temporal, into uncached host-visible memory. Nothing reads it back.
 	g_perfmon.Put(GSPerfMon::BytesVertexStream, static_cast<double>(size));
-	// Arm B of rung T1. storent is __builtin_nontemporal_store on ARM64, which lowers to STNP --
-	// a non-temporal PAIR store, 16 bytes at a time, with a hint that tells the core not to
-	// allocate. Into a write-combined ring that hint buys nothing and may cost the store buffer
-	// its chance to merge. memcpy writes the same bytes with the platform's own tuned routine.
-	if (GSConfig.StreamRingsPlainStores)
-		std::memcpy(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
-	else
-		GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
+	// storent, not memcpy. On ARM64 this is __builtin_nontemporal_store lowering to STNP -- a
+	// non-temporal PAIR store in 8-byte halves, twelve instructions per 64 bytes where an ordinary
+	// copy uses two ldp/stp pairs -- which looked like the reason writing 800 KiB of vertices costs
+	// a third of the MQ65's GS thread. It is not: swapping it for memcpy moved nothing on any title
+	// on either device, base or cached (rung T1, 2026-09-03). The memory type was the whole story.
+	GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
 	m_vertex_stream_buffer.CommitMemory(size);
 }
 
@@ -5866,14 +5936,6 @@ bool GSDeviceVK::CreateNullTexture()
 
 bool GSDeviceVK::CreateBuffers()
 {
-	// SCAFFOLDING for rung T1, deleted with the two keys it names. A device round that reports a
-	// null result has to be able to prove the arm it thought it was running actually arrived: an
-	// override that never reaches GSConfig looks exactly like a change that did nothing.
-	Console.WriteLn("GS/Vulkan: rung T1 arms: StreamRingsHostCached=%s StreamRingsCachedNonCoherent=%s "
-					"StreamRingsPlainStores=%s",
-		GSConfig.StreamRingsHostCached ? "on" : "off", GSConfig.StreamRingsCachedNonCoherent ? "on" : "off",
-		GSConfig.StreamRingsPlainStores ? "on" : "off");
-
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),
 			VERTEX_BUFFER_SIZE, GpuWaitSite::StreamVertex))

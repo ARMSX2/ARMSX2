@@ -177,6 +177,16 @@ enum class DriverWorkaround : u8
 	/// with a different reason rather than a second one. Nothing in either backend consumes it;
 	/// GSUtil::AndroidAutoPrefersVulkan is its only reader.
 	PreferVulkanRenderer,
+	/// Allocate the Vulkan stream rings from a HOST_CACHED memory type even when the only one the
+	/// device offers is non-coherent, paying the per-region cache clean VKStreamBuffer::CommitMemory
+	/// already issues. For GPUs whose host-visible write-combined memory makes CPU writes into a
+	/// ring far more expensive than the clean.
+	///
+	/// The second preference in this enum rather than a defect: nothing renders differently either
+	/// way, and the flush it turns on is the one the Vulkan spec requires of any non-coherent
+	/// mapping. It never applies where the device offers a cached COHERENT type -- that road is
+	/// better than both and is taken without asking the database. See GSStreamRingMemoryPolicy.h.
+	PreferCachedStreamRingMemory,
 	Count,
 };
 

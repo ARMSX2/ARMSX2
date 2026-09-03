@@ -91,8 +91,8 @@ private:
 	std::deque<std::pair<u64, u32>> m_tracked_fences;
 
 	/// Whether the memory type this ring landed on lacks HOST_COHERENT, in which case
-	/// CommitMemory's flush is a real cache clean rather than a no-op. Scaffolding for rung T1's
-	/// arm A2, along with the two counters below; all three go when the keys do.
+	/// CommitMemory's flush is a real cache clean rather than a no-op. The two counters below say
+	/// how many of those a run paid, which is the whole price of the cached non-coherent road.
 	bool m_non_coherent = false;
 	u64 m_flush_calls = 0;
 	u64 m_flush_bytes = 0;

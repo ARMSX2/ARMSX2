@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
@@ -164,6 +165,11 @@ public:
 	__fi u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
+
+	/// Which memory the six stream rings are allocated from, decided once in CheckFeatures from the
+	/// device's memory-type table and the driver database. VKStreamBuffer::Create reads it; nothing
+	/// else should, and nothing may change it after the rings exist.
+	__fi const GSStreamRingMemoryDecision& GetStreamRingMemory() const { return m_stream_ring_memory; }
 
 	// The interaction between raster order attachment access and fbfetch is unclear.
 	__fi bool UseFeedbackLoopLayout() const
@@ -466,6 +472,8 @@ private:
 	// Set false for Mali (vendorID 0x13B5) in CreateDevice: its driver crashes inside
 	// vkCmdPushDescriptorSetKHR, so texture binding falls back to per-frame descriptor sets.
 	bool m_use_push_descriptors = true;
+
+	GSStreamRingMemoryDecision m_stream_ring_memory;
 
 	// MediaTek-SoC detection now lives in the base GSDevice (SetMediaTekSoC/IsMediaTekSoC),
 	// so both backends and GS.cpp's Android GameDB overrides can read it.
@@ -841,6 +849,7 @@ public:
 	bool SupportsExclusiveFullscreen() const override;
 	void DestroySurface() override;
 	std::string GetDriverInfo() const override;
+	std::string GetStreamRingMemoryDescription() const override;
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 

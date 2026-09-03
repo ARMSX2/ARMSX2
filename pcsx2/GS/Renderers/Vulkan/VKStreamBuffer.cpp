@@ -5,14 +5,11 @@
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
 
-#include "GS/GS.h"
-
 #include "common/Assertions.h"
 #include "common/BitUtils.h"
 #include "common/Console.h"
 
 #include <string>
-#include <utility>
 
 VKStreamBuffer::VKStreamBuffer()
 	: m_wait_site(GpuWaitSite::StreamUnnamed)
@@ -71,31 +68,6 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	return *this;
 }
 
-/// The six property bits a host-visible allocation can carry, as a fixed-width tag. Written out
-/// rather than printed as hex because the whole point of the line is that somebody reading a device
-/// log can tell at a glance whether the ring is cached or write-combined.
-static std::string DescribeMemoryProperties(VkMemoryPropertyFlags flags)
-{
-	static constexpr std::pair<VkMemoryPropertyFlagBits, const char*> names[] = {
-		{VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "DEVICE_LOCAL"},
-		{VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, "HOST_VISIBLE"},
-		{VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "HOST_COHERENT"},
-		{VK_MEMORY_PROPERTY_HOST_CACHED_BIT, "HOST_CACHED"},
-		{VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, "LAZILY_ALLOCATED"},
-	};
-
-	std::string str;
-	for (const auto& [bit, name] : names)
-	{
-		if (!(flags & bit))
-			continue;
-		if (!str.empty())
-			str.push_back('|');
-		str.append(name);
-	}
-	return str.empty() ? std::string("none") : str;
-}
-
 bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site)
 {
 	m_wait_site = wait_site;
@@ -107,30 +79,33 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	// Arm A of rung T1. Adding HOST_CACHED to the PREFERRED set (never to the required set) makes
-	// VMA choose a cached type where the device has one and change nothing where it does not: its
-	// cost function counts missing preferred bits, so a HOST_COHERENT|HOST_CACHED type scores 0
-	// against the plain HOST_COHERENT type's 1, while a HOST_CACHED-but-not-coherent type scores 1
-	// -- a tie the lower type index wins, which is the coherent one. So this can gain a cached
-	// coherent type and cannot silently land on a non-coherent one.
-	if (GSConfig.StreamRingsHostCached)
-		aci.preferredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-
-	// Arm A2. On aarch64 Turnip a cached type is always offered and a cached COHERENT one only
-	// sometimes, so the preference above can silently resolve to the same write-combined type it
-	// started on. Requiring HOST_CACHED takes the cached type whether or not it is coherent;
-	// coherence stays in the preferred set, so where a cached coherent type exists this lands on
-	// the same type arm A does. The cost of the non-coherent case is that CommitMemory's
-	// vmaFlushAllocation stops being a no-op and starts cleaning the range just written, which is
-	// the flush the spec requires before the GPU reads it -- counted below and printed at teardown.
-	if (GSConfig.StreamRingsCachedNonCoherent)
-		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	// Which memory the rings get was decided once, at device creation, from this device's
+	// memory-type table and the driver database (GSStreamRingMemoryPolicy.h). On the write-combined
+	// road it adds nothing, so that road is literally the selection every device had before the
+	// decision existed rather than a reconstruction of it; on the two cached roads it adds the bits
+	// the policy already proved some type carries.
+	const GSStreamRingMemoryDecision& memory = GSDeviceVK::GetInstance()->GetStreamRingMemory();
+	aci.requiredFlags |= static_cast<VkMemoryPropertyFlags>(memory.extra_required_flags);
 
 	VmaAllocationInfo ai = {};
 	VkBuffer new_buffer = VK_NULL_HANDLE;
 	VmaAllocation new_allocation = VK_NULL_HANDLE;
 	VkResult res =
 		vmaCreateBuffer(GSDeviceVK::GetInstance()->GetAllocator(), &bci, &aci, &new_buffer, &new_allocation, &ai);
+	if (res != VK_SUCCESS && aci.requiredFlags != 0)
+	{
+		// The policy read the device's memory types, not this buffer's. A driver may narrow which
+		// types a given buffer can live in, and if that leaves the cached road with nothing, the
+		// ring still has to be allocated -- a device that cannot create its vertex buffer does not
+		// start. Retry on the road every device took before this decision existed, and say so:
+		// a device quietly off the road its banner names is the one failure this rung cannot
+		// afford.
+		Console.Error("GS/Vulkan: stream ring %s could not be allocated from the chosen memory; "
+					  "falling back to the write-combined road for this ring.",
+			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)));
+		aci.requiredFlags = 0;
+		res = vmaCreateBuffer(GSDeviceVK::GetInstance()->GetAllocator(), &bci, &aci, &new_buffer, &new_allocation, &ai);
+	}
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkCreateBuffer failed: ");
@@ -151,8 +126,20 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// failed allocation.
 	Console.WriteLn("GS/Vulkan: stream ring %s, %u bytes, memory type %u (%s)%s",
 		GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), size, ai.memoryType,
-		DescribeMemoryProperties(mem_flags).c_str(),
+		GSDescribeMemoryProperties(static_cast<u32>(mem_flags)).c_str(),
 		(mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "" : " -- NON-COHERENT, CommitMemory's flush is live");
+
+	// The banner names a memory type index before any ring exists, by reproducing VMA's own
+	// selection rule. If VMA disagreed, the banner -- and every stats.json row taken from it -- is
+	// describing a ring that is somewhere else, and a round read off them would be reading the
+	// instrumentation rather than the device.
+	if (ai.memoryType != memory.type_index)
+	{
+		Console.Error("GS/Vulkan: stream ring %s landed on memory type %u, but the device banner says %u. "
+					  "Trust the line above, not the banner.",
+			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), ai.memoryType,
+			memory.type_index);
+	}
 
 	if (IsValid())
 		Destroy(true);
