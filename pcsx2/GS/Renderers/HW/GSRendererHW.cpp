@@ -5970,8 +5970,12 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
+			// m_r and rt->m_valid, not the scaled draw area: these are the two rectangles the
+			// cover tests above compare, and a region model has to replay them in that space.
 			GSDrawLog::NoteRTAlpha(rt->m_id, rt->m_TEX0.TBP0, log_alpha_flags, static_cast<u8>(log_fb_mask),
-				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24));
+				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24), m_r,
+				rt->m_valid, rt->m_alpha_erosion_rect, rt->m_alpha_erosion_draw,
+				rt->m_alpha_erosion_count);
 		}
 
 		GL_INS("HW: RT Alpha Range: %d-%d => %d-%d", blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max);
@@ -6860,9 +6864,17 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
+			// The rule's own two inputs beside the pair, read exactly where it reads them: the
+			// masked alpha bits, and the fragment alpha range BEFORE CorrectATEAlphaMinMax
+			// narrows it. CalculateAlphaRange logs the narrowed one, and on a draw with an
+			// alpha test the two are different numbers.
+			const int log_fba = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
 			GSDrawLog::NoteExactAlphaDrop(exact_drop, rt ? rt->m_alpha_known.bits : 0,
 				rt ? rt->m_alpha_known.value : 0,
-				static_cast<u8>(rt ? rt->m_alpha_known_reason : GSAlphaKnownBits::Reason::NeverEstablished));
+				static_cast<u8>(rt ? rt->m_alpha_known_reason : GSAlphaKnownBits::Reason::NeverEstablished),
+				static_cast<u8>((static_cast<u32>(fbmask) & 0xFF000000u) >> 24),
+				static_cast<u8>(GetAlphaMinMax().min | log_fba),
+				static_cast<u8>(GetAlphaMinMax().max | log_fba));
 		}
 
 		if (exact_drop == GSDrawLog::ExactAlphaDropTaken)
@@ -10170,6 +10182,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	{
 		rt->m_alpha_max = rt_new_alpha_max;
 		rt->m_alpha_min = rt_new_alpha_min;
+		rt->NoteAlphaErosion(rt_new_alpha_known, rt_new_alpha_reason, m_r, static_cast<u32>(s_n));
 		rt->m_alpha_known = rt_new_alpha_known;
 		if (rt_new_alpha_reason != GSAlphaKnownBits::Reason::Unchanged)
 			rt->m_alpha_known_reason = rt_new_alpha_reason;

@@ -8560,6 +8560,36 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #endif
 }
 
+void GSTextureCache::Target::NoteAlphaErosion(GSAlphaKnownBits::Known next,
+	GSAlphaKnownBits::Reason why, const GSVector4i& rect, u32 draw_serial)
+{
+	// The chain is only meaningful while the last thing to touch the pair was a partial-cover
+	// draw. Any other reason -- a clear, an upload, an inherit, a full-cover draw -- replaced it,
+	// so whatever chain was running ended there. Applying that on read is what keeps this out of
+	// the sixteen assignment sites.
+	if (m_alpha_known_reason != GSAlphaKnownBits::Reason::DrawPartialCover)
+	{
+		m_alpha_erosion_rect = GSVector4i::zero();
+		m_alpha_erosion_draw = 0;
+		m_alpha_erosion_count = 0;
+	}
+
+	if (why != GSAlphaKnownBits::Reason::DrawPartialCover)
+		return;
+
+	// An erosion is a bit the target knew and no longer will. A partial-cover draw that agrees
+	// with what was known costs nothing and does not start a chain.
+	if ((m_alpha_known.bits & ~next.bits) == 0)
+		return;
+
+	if (m_alpha_erosion_count == 0)
+	{
+		m_alpha_erosion_rect = rect;
+		m_alpha_erosion_draw = draw_serial;
+	}
+	m_alpha_erosion_count++;
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))

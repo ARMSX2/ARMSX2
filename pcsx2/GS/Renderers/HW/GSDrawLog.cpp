@@ -36,6 +36,13 @@ namespace GSDrawLog
 	// row order surviving a sort by frame and draw serial.
 	static u32 s_tfx_call_serial = 0;
 
+	/// Rectangle coordinates are stored as s16 to keep the row small. A target rect never
+	/// approaches that range in practice, but a clamp is cheaper than a corrupted row.
+	static __fi s16 ClampCoord(int v)
+	{
+		return static_cast<s16>(std::clamp(v, -32768, 32767));
+	}
+
 	bool IsActive()
 	{
 		// Tracks the setting directly rather than an explicit start, so recording works
@@ -135,7 +142,9 @@ namespace GSDrawLog
 		rec.date_mode_selfcheck = selfcheck;
 	}
 
-	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask)
+	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask,
+		const GSVector4i& draw_rect, const GSVector4i& valid_rect, const GSVector4i& erosion_rect,
+		u32 erosion_draw, u32 erosion_count)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -147,6 +156,20 @@ namespace GSDrawLog
 		rec.rt_alpha_flags = alpha_flags;
 		rec.rt_fbmask_a = fbmask_a;
 		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
+		rec.rt_draw_x = ClampCoord(draw_rect.x);
+		rec.rt_draw_y = ClampCoord(draw_rect.y);
+		rec.rt_draw_z = ClampCoord(draw_rect.z);
+		rec.rt_draw_w = ClampCoord(draw_rect.w);
+		rec.rt_valid_x = ClampCoord(valid_rect.x);
+		rec.rt_valid_y = ClampCoord(valid_rect.y);
+		rec.rt_valid_z = ClampCoord(valid_rect.z);
+		rec.rt_valid_w = ClampCoord(valid_rect.w);
+		rec.rt_erosion_x = ClampCoord(erosion_rect.x);
+		rec.rt_erosion_y = ClampCoord(erosion_rect.y);
+		rec.rt_erosion_z = ClampCoord(erosion_rect.z);
+		rec.rt_erosion_w = ClampCoord(erosion_rect.w);
+		rec.rt_erosion_draw = erosion_draw;
+		rec.rt_erosion_count = erosion_count;
 	}
 
 	void NoteBlendFactorAlpha(u8 road)
@@ -157,7 +180,8 @@ namespace GSDrawLog
 		s_records[s_open_record].blend_factor_alpha = road;
 	}
 
-	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason)
+	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason, u8 masked,
+		u8 src_lo, u8 src_hi)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -167,6 +191,9 @@ namespace GSDrawLog
 		rec.exact_alpha_known_bits = known_bits;
 		rec.exact_alpha_known_value = known_value;
 		rec.exact_alpha_known_reason = known_reason;
+		rec.exact_alpha_masked = masked;
+		rec.exact_alpha_src_lo = src_lo;
+		rec.exact_alpha_src_hi = src_hi;
 	}
 
 	void NoteRTAlphaCommitted()
@@ -586,7 +613,11 @@ namespace GSDrawLog
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
 			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
 			"tfx_sc_x,tfx_sc_y,tfx_sc_w,tfx_sc_h,"
-			"sw_road,sw_tex_target,sw_bp_start,sw_bp_end,sw_tex_clear_bytes,sw_tex_blocks\n");
+			"sw_road,sw_tex_target,sw_bp_start,sw_bp_end,sw_tex_clear_bytes,sw_tex_blocks,"
+			"exact_masked,exact_src_lo,exact_src_hi,"
+			"rt_draw_x,rt_draw_y,rt_draw_w,rt_draw_h,"
+			"rt_valid_x,rt_valid_y,rt_valid_w,rt_valid_h,"
+			"rt_erosion_x,rt_erosion_y,rt_erosion_w,rt_erosion_h,rt_erosion_draw,rt_erosion_n\n");
 
 		for (const Record& r : s_records)
 		{
@@ -773,13 +804,37 @@ namespace GSDrawLog
 
 			if (r.sw)
 			{
-				std::fprintf(fp.get(), ",%s,%d,%05x,%05x,%u,%u\n", GetSWRoadName(r.sw_road),
+				std::fprintf(fp.get(), ",%s,%d,%05x,%05x,%u,%u,", GetSWRoadName(r.sw_road),
 					r.sw_tex_is_target ? 1 : 0, r.sw_bp_start, r.sw_bp_end, r.sw_tex_clear_bytes,
 					r.sw_tex_blocks);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,");
+			}
+
+			if (r.exact_alpha_drop != ExactAlphaDropNotConsidered)
+			{
+				std::fprintf(fp.get(), "%02x,%u,%u,", r.exact_alpha_masked, r.exact_alpha_src_lo,
+					r.exact_alpha_src_hi);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,");
+			}
+
+			if (r.flags2 & Flags2RTAlpha)
+			{
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u\n",
+					r.rt_draw_x, r.rt_draw_y, r.rt_draw_z - r.rt_draw_x, r.rt_draw_w - r.rt_draw_y,
+					r.rt_valid_x, r.rt_valid_y, r.rt_valid_z - r.rt_valid_x,
+					r.rt_valid_w - r.rt_valid_y, r.rt_erosion_x, r.rt_erosion_y,
+					r.rt_erosion_z - r.rt_erosion_x, r.rt_erosion_w - r.rt_erosion_y,
+					r.rt_erosion_draw, r.rt_erosion_count);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,,,,,,,,,\n");
 			}
 		}
 
