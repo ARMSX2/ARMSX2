@@ -9,6 +9,7 @@
 #include "common/BitUtils.h"
 #include "common/Console.h"
 
+#include <cstring>
 #include <string>
 
 // Test hook, not a setting. Defined to 1 on the command line, every ring is treated as
@@ -175,6 +176,23 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	m_allocation = new_allocation;
 	m_buffer = new_buffer;
 	m_host_pointer = static_cast<u8*>(ai.pMappedData);
+
+	// Touch every page of the mapping once, here, at creation, so the first-touch fault cost is
+	// paid at startup instead of smeared across the ring's first lap. These are persistent
+	// mappings, created once and written a little at a time every frame for the life of the
+	// device -- on a device where every VkDeviceMemory allocation is a shmem GEM object faulted
+	// on first touch (Turnip/msm), a 32 MiB ring at roughly 1 MiB of writes a frame takes about
+	// 30 frames to be touched end to end, and each of those pages faults on its first write
+	// whenever that lap gets to it. One store per page over the whole mapped range up front pays
+	// that once, before anything is being timed.
+	std::memset(ai.pMappedData, 0, ai.size);
+	if (m_non_coherent)
+	{
+		// Same cache clean CommitMemory would issue for this range, so the pre-touch doesn't
+		// leave dirty lines the GPU could read stale.
+		vmaFlushAllocation(GSDeviceVK::GetInstance()->GetAllocator(), new_allocation, 0, ai.size);
+	}
+
 	return true;
 }
 
