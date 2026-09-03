@@ -761,7 +761,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	DisableVertexShaderExpand = false;
 	EnableAdrenoFramebufferFetch = false;
 	ForceMaliFramebufferFetch = false;
-	RenderPassExternalDependency = true;
 	FeedbackLoopCarry = true;
 	FetchOffsetReadCopies = true;
 	SkipDuplicateFrames = true;
@@ -984,7 +983,6 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"DisableVertexShaderExpand",
 		"EnableAdrenoFramebufferFetch",
 		"ForceMaliFramebufferFetch",
-		"RenderPassExternalDependency",
 		"FeedbackLoopCarry",
 		"FetchOffsetReadCopies",
 		"OverrideTextureBarriers",
@@ -1017,7 +1015,6 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(DisableVertexShaderExpand) &&
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
-		   OpEqu(RenderPassExternalDependency) &&
 		   OpEqu(FeedbackLoopCarry) &&
 		   OpEqu(FetchOffsetReadCopies) &&
 		   OpEqu(OverrideTextureBarriers) &&
@@ -1076,7 +1073,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(EnableAdrenoFramebufferFetch);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
-	SettingsWrapBitBool(RenderPassExternalDependency);
 	SettingsWrapBitBool(FeedbackLoopCarry);
 	SettingsWrapBitBool(FetchOffsetReadCopies);
 	SettingsWrapBitBool(SkipDuplicateFrames);
