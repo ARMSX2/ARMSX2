@@ -63,6 +63,7 @@
 
 #include "GSLadder.h"
 #include "GSReplayPayload.h"
+#include "GSRunnerAffinity.h"
 #include "RenderDocCapture.h"
 
 #include "svnrev.h"
@@ -144,6 +145,24 @@ static const char* s_gs_pin_source = "none";
 // Captured rather than derived from the online CPU count because Android runs the app
 // inside a cpuset, where the inherited set is already narrower than the machine.
 static u64 s_baseline_cpu_mask = 0;
+
+#if defined(__ANDROID__)
+// VMManager's compiled-in thread-placement mode. It is an app-facing knob -- only the
+// Android app's JNI bridge writes it -- and its default has moved before now, which the
+// headless runner then inherited without saying so anywhere. A measurement binary must
+// not carry app policy silently, so the runner overrides it with a default of its own
+// and records what it used.
+extern int g_android_affinity_mode;
+#endif
+
+// -affinity. The thread-placement mode this run asked VMManager for, and where that
+// number came from. The runner's own default is 0 (unpinned) on every platform that has
+// the mode at all, whatever the app's default happens to be that month, because an
+// unpinned run is the one whose numbers are comparable against every other unpinned run.
+// s_affinity_mode is -1 where the platform compiles no affinity path, and the source is
+// then "unsupported" -- there is no mode in effect to report.
+static int s_affinity_mode = 0;
+static const char* s_affinity_source = "runner-default";
 
 // -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
 static std::string s_renderdoc_path;
@@ -969,6 +988,14 @@ static void PrintCommandLineHelp(const char* progname)
 						 "its CPU time without anything in the renderer changing. The pin is read back afterwards and "
 						 "both the request and the result are written to -stats-json; a pin that did not take warns and "
 						 "the run continues.\n");
+	std::fprintf(stderr, "  -affinity <0-7>: Thread-placement mode handed to VMManager before the VM boots. "
+						 "0 = unpinned (every emu thread gets every processor), 1-6 = explicit per-core placements by "
+						 "EE/VU/GS priority, 7 = Performance Cores (confine the emu threads to the big tier). The "
+						 "runner defaults to 0 regardless of what the app build defaults to, because an app policy "
+						 "inherited silently makes two rounds incomparable without either of them saying so. Written "
+						 "to -stats-json as affinity_mode / affinity_source, alongside inherited_cpu_mask, the CPU set "
+						 "this process started with. No effect on platforms with no affinity path (a notice is "
+						 "logged).\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1415,6 +1442,27 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				s_gs_pin_request = cpus;
 				Console.WriteLn(fmt::format("Pinning the GS thread to CPU(s) {}", s_gs_pin_request));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-affinity"))
+			{
+				const char* mode_arg = argv[++i];
+				const std::optional<int> mode = GSRunnerAffinity::ParseMode(mode_arg);
+				if (!mode.has_value())
+				{
+					// stderr, not Console.Error: a rejection here returns straight out of main,
+					// and nothing has flushed the log by then -- every other flag's parse error
+					// in this function is invisible on the terminal for that reason. A run that
+					// dies with no message is the same problem this flag exists to fix, one
+					// layer up, so this one says why.
+					std::fprintf(stderr,
+						"pcsx2-gsrunner: invalid -affinity mode '%s' -- expected an integer %d-%d "
+						"(0 unpinned, 1-6 explicit per-core placements, 7 Performance Cores).\n",
+						mode_arg, GSRunnerAffinity::MODE_MIN, GSRunnerAffinity::MODE_MAX);
+					return false;
+				}
+				s_affinity_mode = mode.value();
+				s_affinity_source = "flag";
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-stats-json"))
@@ -1878,6 +1926,14 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
 		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
 	std::fprintf(fp.get(), "    \"gs_pin_source\": \"%s\",\n", s_gs_pin_source);
+	// The thread-placement mode VMManager ran under, who chose it, and the CPU set this
+	// process inherited before anything narrowed it. affinity_mode is -1 with source
+	// "unsupported" on a build with no affinity path. inherited_cpu_mask is a hex mask
+	// because that is how taskset's argument is written, and it is 0x0 where the platform
+	// does not answer the question at all.
+	std::fprintf(fp.get(), "    \"affinity_mode\": %d,\n    \"affinity_source\": \"%s\",\n", s_affinity_mode,
+		s_affinity_source);
+	std::fprintf(fp.get(), "    \"inherited_cpu_mask\": \"0x%" PRIx64 "\",\n", s_baseline_cpu_mask);
 	std::fprintf(fp.get(), "    \"rss_kb_first\": %" PRIu64 ",\n    \"rss_kb_last\": %" PRIu64 ",\n    \"rss_kb_max\": %" PRIu64 ",\n",
 		rss_kb_first, rss_kb_last, rss_kb_max);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
@@ -2114,6 +2170,38 @@ void GSRunner::DumpStats()
 #define main real_main
 #endif
 
+// Hands VMManager the thread-placement mode this run is to use, and says so.
+//
+// This has to run before VMManager::Initialize: SetEmuThreadAffinities is called from
+// inside it, so a mode written afterwards would not reach the first placement, and on a
+// big.LITTLE device the first placement is the one the whole run happens under.
+//
+// The runner overrides the compiled-in default rather than accepting it. That default is
+// the Android app's policy, pushed from the app's settings before the VM boots, and a
+// headless measurement binary has no app to push anything -- so it silently keeps
+// whatever the last app-side change left behind. That is not hypothetical: 07bf25a171
+// moved the default from 0 to 7, and on the RG477V an ac3 dump's frame p95 went 14.2 ->
+// 17.2 ms with GS-thread CPU time flat, which took a four-arm bisect to attribute
+// because no artifact of either round named the mode it ran under. Hence 0 here and the
+// three keys in the stats JSON.
+static void ApplyAffinityMode()
+{
+#if defined(__ANDROID__)
+	g_android_affinity_mode = s_affinity_mode;
+#else
+	// No affinity path compiled in on this platform, so there is no mode to be in. Say so
+	// once if the flag was given, and record -1 rather than a number that did nothing.
+	if (std::strcmp(s_affinity_source, "flag") == 0)
+	{
+		std::fprintf(stderr,
+			"pcsx2-gsrunner: -affinity %d: this build has no thread-placement path, so the flag does nothing.\n",
+			s_affinity_mode);
+	}
+	s_affinity_mode = -1;
+	s_affinity_source = "unsupported";
+#endif
+}
+
 // Pins the GS thread where -gspin asked, if it asked, and then reads back where the
 // thread actually ended up -- always, flag or no flag.
 //
@@ -2136,6 +2224,15 @@ void GSRunner::DumpStats()
 // placement-controlled one, which is exactly what these three keys let it work out.
 static void ApplyGSThreadPin()
 {
+	// Reported here rather than where the mode is applied, so the run's whole thread
+	// placement -- the mode VMManager was given, where that number came from, and the CPU
+	// set the process was handed before anything narrowed it -- reads as one block next to
+	// the GS pin line below. The suite runs the runner under taskset, so the inherited mask
+	// is the thing mode 0 is measured against: mode 0 hands every emu thread an empty mask,
+	// which means every processor, so it widens past whatever taskset asked for.
+	Console.WriteLn(fmt::format("Affinity mode {} (source: {}), inherited CPU mask 0x{:x}", s_affinity_mode,
+		s_affinity_source, s_baseline_cpu_mask));
+
 	const Threading::ThreadHandle& gs_thread = MTGS::GetThreadHandle();
 	if (!gs_thread)
 	{
@@ -2299,6 +2396,10 @@ int main(int argc, char* argv[])
 	VMBootParameters params;
 	if (!GSRunner::ParseCommandLineArgs(argc, argv, params))
 		return EXIT_FAILURE;
+
+	// Before the CPU thread is started, and so before VMManager::Initialize calls
+	// SetEmuThreadAffinities for the first time.
+	ApplyAffinityMode();
 
 	// Emitting a console replay payload needs no VM, no GS device and no window: the
 	// dump already carries the freeze and the packet stream, so this is a transform on
