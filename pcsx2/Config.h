@@ -938,6 +938,15 @@ struct Pcsx2Config
 					HWROV : 1,
 					HWROVLogging : 1,
 					HWROVBarriersVK : 1,
+					// SCAFFOLDING for the SD662-tier rung T1 memory-type A/B, and deleted in
+					// the round that decides it. True asks VMA for a HOST_CACHED memory type
+					// for the six host-visible stream rings, falling back to the type they
+					// already get where the device offers no cached one. False is the
+					// behaviour every device had before: HOST_COHERENT preferred and nothing
+					// else, which on Turnip means the write-combined uncached type. Creation-
+					// scoped -- the rings are allocated once at device init, so a mid-session
+					// flip does nothing until the renderer restarts.
+					StreamRingsHostCached : 1,
 					// Hold hardware draws back so consecutive draws to the same target
 					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
 					// where every pass boundary is a full tile load and store. Hot-

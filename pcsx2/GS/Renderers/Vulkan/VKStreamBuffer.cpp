@@ -5,6 +5,8 @@
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
 
+#include "GS/GS.h"
+
 #include "common/Assertions.h"
 #include "common/BitUtils.h"
 #include "common/Console.h"
@@ -95,6 +97,15 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+	// Arm A of rung T1. Adding HOST_CACHED to the PREFERRED set (never to the required set) makes
+	// VMA choose a cached type where the device has one and change nothing where it does not: its
+	// cost function counts missing preferred bits, so a HOST_COHERENT|HOST_CACHED type scores 0
+	// against the plain HOST_COHERENT type's 1, while a HOST_CACHED-but-not-coherent type scores 1
+	// -- a tie the lower type index wins, which is the coherent one. So this can gain a cached
+	// coherent type and cannot silently land on a non-coherent one.
+	if (GSConfig.StreamRingsHostCached)
+		aci.preferredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
 	VmaAllocationInfo ai = {};
 	VkBuffer new_buffer = VK_NULL_HANDLE;
