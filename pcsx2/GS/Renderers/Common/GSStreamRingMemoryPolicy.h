@@ -17,40 +17,48 @@
 // writes into full bursts, and the small in-order-ish cores this emulator targets merge badly.
 //
 // What the devices said (rung T1, 2026-09-03, records under
-// devs/bmdhacks/campaigns/gs-classic-tiler/sd662-tier/rung-t1-vertex-ring-writes/):
+// devs/bmdhacks/campaigns/gs-classic-tiler/sd662-tier/):
 //
 //   * MQ65 (Adreno 610, Turnip 26.1.2) offers NO cached coherent host-visible type. Moving the
 //     rings to the cached NON-coherent type, paying the per-region flush CommitMemory already
 //     issues, took GS-thread p50 down 29.5% on legosw, 28.4% on gow2, 21.0% on yugioh and 20.6%
 //     on ac5. Draw-heavy controls flat, 24 of 24 frame grids byte-identical.
-//   * SD865 (Adreno 650, same driver) DOES offer a cached coherent type and we were not using it,
-//     because VMA returns the first zero-cost type and the write-combined one scores zero. On the
-//     cached coherent type: gt4opb -13.8%, yugioh -2.7%, gow2 and stuntman flat, ac5 +3.6% and
-//     legosw +5.3% -- the two regressions about 0.11 ms on titles running 5-15x under budget.
-//   * RG 477V (MT6897, Mali-G615) has no cached coherent type either -- the same shape as the
-//     MQ65 -- and taking its cached NON-coherent type made every title slower, +2.6% (legosw) to
+//   * RG 477V (MT6897, Mali-G615) reports the MQ65's memory table bit for bit and gives the
+//     opposite answer: its cached NON-coherent type made every title slower, +2.6% (legosw) to
 //     +12.4% (ac5), scaling with the flush count.
+//   * SD865 (Adreno 650, same driver) DOES offer a cached coherent type, and it is NOT free. The
+//     keyed round (one binary, runtime key on/off) read gt4opb -13.8% against legosw +5.3% and
+//     ac5 +3.6%, and the -13.8% was taken as the headline. The keyless confirmation round -- two
+//     real binaries, pre-policy 8a836e93b9 against 535200c107, banners verified on every run,
+//     n=3 + warm, loop 10 -- reproduced the two regressions and not the win: legosw +6.16% and
+//     ac5 +5.54% with non-overlapping rep ranges across three reps, gow2 +3.03% borderline,
+//     gt4opb -1.08% inside a 5.98% policy-arm spread. Two losses that replicate under two
+//     independent methods, one win that replicates under neither.
 //   * The store INSTRUCTION is not the story. Replacing the storent (STNP) copy with memcpy moved
 //     nothing anywhere, on any device, with or without the memory-type change.
 //
-// So: take a cached coherent type wherever one exists, take a cached non-coherent one only where
-// the driver database names the part, and otherwise change nothing.
+// So: write-combined is the default everywhere, and the driver database's
+// PreferCachedStreamRingMemory bit is what grants a cached road at all. Given the bit, the memory
+// table picks WHICH cached road: coherent if the device has such a type, non-coherent otherwise.
 //
-// ⚠️ The asymmetry between the two cached roads is the whole finding, and it is easy to undo by
-// accident. The coherent road is free on both sides -- ordinary cached stores, no cache
-// maintenance -- so it needs no permission. The non-coherent road TRADES: cached stores in
-// exchange for a cache clean per commit, and whether that trade wins is a property of the host's
-// cores and its cache maintenance, not of the memory table. "This device has no cached coherent
-// type" says the trade is available, not that it pays: the MQ65 and the RG 477V satisfy that
-// condition identically and land 30% apart in opposite directions. So the database bit means
-// "measured, on this part, and it won" -- never "looks like the kind of device that would".
+// ⚠️ Neither cached road is a shape the policy may infer. That was the original mistake and it is
+// easy to make twice, because each road has an argument for why it should be free. The
+// non-coherent road TRADES -- cached stores in exchange for a cache clean per commit -- and
+// whether the trade pays is a property of the host's cores and its cache maintenance, not of the
+// memory table: the MQ65 and the RG 477V satisfy "has no cached coherent type" identically and
+// land 30% apart in opposite directions. The coherent road pays no flush at all, which is why it
+// was originally taken without asking, and the SD865 still lost two titles on it reproducibly for
+// a reason nobody has named. So the database bit means "measured, on this part, and it won", for
+// both roads. A device with a cached coherent type and no rule stays write-combined; the A650 is
+// that device today.
 //
 // ⚠️ Both cached roads require DEVICE_LOCAL, and that requirement is load-bearing on desktop. On a
 // discrete GPU a HOST_VISIBLE|HOST_COHERENT|HOST_CACHED type is ordinary system RAM, and moving
 // the rings there would send every vertex, index, uniform and texture staging byte across PCIe on
 // the GPU's side of the read. Today's HOST_COHERENT-only ask lands on the device-local BAR type
 // there, which is the right answer for memory the GPU reads. A device whose only cached
-// host-visible types are host-local therefore stays on the write-combined road.
+// host-visible types are host-local therefore stays on the write-combined road even with the bit
+// set.
 //
 // Written as a pure function of the memory-type table and one database bit so the roads no device
 // on this desk takes can still be pinned. See gs_stream_ring_memory_tests.cpp.
@@ -71,12 +79,14 @@ constexpr u32 GS_INVALID_MEMORY_TYPE = 0xFFFFFFFFu;
 
 enum class GSStreamRingMemoryRoad : u8
 {
-	/// Today's behaviour, and the only road that leaves VMA's selection alone: HOST_VISIBLE
-	/// required, HOST_COHERENT preferred, whatever that resolves to. Write-combined on Turnip.
+	/// The default on every device, and the only road that leaves VMA's selection alone:
+	/// HOST_VISIBLE required, HOST_COHERENT preferred, whatever that resolves to. Write-combined
+	/// on Turnip.
 	WriteCombined,
 	/// A device-local type that is both cached and coherent. No flush: coherent means the GPU sees
 	/// the stores without one, so CommitMemory's vmaFlushAllocation stays the no-op it has always
-	/// been.
+	/// been. Costing nothing on paper is not the same as costing nothing, so this road is granted
+	/// by the database bit like the other one.
 	CachedCoherent,
 	/// A device-local cached type that is NOT coherent, with CommitMemory's flush now live -- a
 	/// real cache clean over the range just written, once per commit.
@@ -91,12 +101,12 @@ struct GSStreamRingMemoryInputs
 	const u32* type_flags = nullptr;
 	u32 type_count = 0;
 
-	/// The driver database has MEASURED this part and found the cached non-coherent road faster
-	/// than the write-combined one (DriverWorkaround::PreferCachedStreamRingMemory). Only consulted
-	/// when no cached coherent type exists -- a device that has one takes it whatever the database
-	/// thinks, because that road costs no flushes and was measured on the SD865. Never infer this
-	/// bit from the memory table: the RG 477V's table is the MQ65's and its answer is the
-	/// opposite.
+	/// The driver database has MEASURED this part and found a cached road faster than the
+	/// write-combined one (DriverWorkaround::PreferCachedStreamRingMemory). Without it the rings
+	/// stay write-combined whatever the memory table offers; with it, the table decides which
+	/// cached road. Never infer this bit from the memory table: the RG 477V's table is the MQ65's
+	/// and its answer is the opposite, and the SD865 lost two titles on the road its table says it
+	/// should want.
 	bool prefer_cached_over_write_combined = false;
 };
 
@@ -151,29 +161,32 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 {
 	GSStreamRingMemoryDecision decision;
 
-	// (a) Cached AND coherent AND device-local. Free on the CPU side and free on the GPU side, so
-	// it is taken wherever it exists without asking the database anything. On the M2 dev box
-	// (Honeykrisp, Mesa 25.3.6) this is memory type 0, which is the type the rings already have --
-	// the decision changes nothing there, which is what makes that host's identity grid meaningful.
 	constexpr u32 cached_coherent = GS_MEMORY_PROPERTY_DEVICE_LOCAL | GS_MEMORY_PROPERTY_HOST_VISIBLE |
 									GS_MEMORY_PROPERTY_HOST_COHERENT | GS_MEMORY_PROPERTY_HOST_CACHED;
-	const u32 coherent_index = GSPickStreamRingMemoryType(in, cached_coherent, cached_coherent);
-	if (coherent_index != GS_INVALID_MEMORY_TYPE)
-	{
-		decision.road = GSStreamRingMemoryRoad::CachedCoherent;
-		decision.type_index = coherent_index;
-		decision.extra_required_flags = cached_coherent;
-		return decision;
-	}
-
-	// (b) Cached, device-local, not coherent -- the MQ65's road, and ONLY on a part the database
-	// names, one at a time and each on its own measurement. The cost is a cache clean per commit;
-	// the gain is that the stores become ordinary cached stores instead of uncached ones the store
-	// buffer has to merge. Which of the two is larger is not visible from here.
 	constexpr u32 cached_only =
 		GS_MEMORY_PROPERTY_DEVICE_LOCAL | GS_MEMORY_PROPERTY_HOST_VISIBLE | GS_MEMORY_PROPERTY_HOST_CACHED;
+
+	// (a) The bit is what opens either cached road. No bit, no cached memory, whatever the table
+	// says it could offer -- which is what every device did before this policy existed, so a
+	// device with no rule is bit for bit where it was.
 	if (in.prefer_cached_over_write_combined)
 	{
+		// (a1) Cached AND coherent AND device-local, preferred over the non-coherent type because
+		// it gets the cached stores without the cache clean. Nothing on this desk takes this road
+		// today: the A650 is the only part that has such a type and no rule names it.
+		const u32 coherent_index = GSPickStreamRingMemoryType(in, cached_coherent, cached_coherent);
+		if (coherent_index != GS_INVALID_MEMORY_TYPE)
+		{
+			decision.road = GSStreamRingMemoryRoad::CachedCoherent;
+			decision.type_index = coherent_index;
+			decision.extra_required_flags = cached_coherent;
+			return decision;
+		}
+
+		// (a2) Cached, device-local, not coherent -- the MQ65's road. The cost is a cache clean per
+		// commit; the gain is that the stores become ordinary cached stores instead of uncached
+		// ones the store buffer has to merge. Which is larger is not visible from here, which is
+		// why a device gets here only by being named.
 		const u32 cached_index =
 			GSPickStreamRingMemoryType(in, cached_only, cached_only | GS_MEMORY_PROPERTY_HOST_COHERENT);
 		if (cached_index != GS_INVALID_MEMORY_TYPE)
@@ -183,11 +196,17 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 			decision.extra_required_flags = cached_only;
 			return decision;
 		}
+
+		// A named device with nothing cached and device-local to move to. Falls through: the rings
+		// still have to live somewhere, and where they already are is the answer.
 	}
 
-	// (c) What every device did before this policy: HOST_VISIBLE required, HOST_COHERENT and
-	// DEVICE_LOCAL preferred, VMA's choice. Nothing is added to the required set, so this road is
-	// the old selection and not a reconstruction of it.
+	// (b) HOST_VISIBLE required, HOST_COHERENT and DEVICE_LOCAL preferred, VMA's choice. Nothing is
+	// added to the required set, so this road is the old selection and not a reconstruction of it.
+	// On the M2 dev box (Honeykrisp, Mesa 25.3.6) the single host-visible type is cached, coherent
+	// and device-local, so this resolves to memory type 0 there either way -- the decision cannot
+	// move that host, which is what makes its identity grid a gate on the code rather than a
+	// measurement of the road.
 	decision.type_index = GSPickStreamRingMemoryType(in, GS_MEMORY_PROPERTY_HOST_VISIBLE,
 		GS_MEMORY_PROPERTY_HOST_COHERENT | GS_MEMORY_PROPERTY_DEVICE_LOCAL);
 	return decision;

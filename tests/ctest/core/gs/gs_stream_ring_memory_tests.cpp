@@ -5,11 +5,17 @@
 // (GS/Renderers/Common/GSStreamRingMemoryPolicy.h).
 //
 // The decision is a pure function of the device's memory-type table and one driver-database bit,
-// which is the only reason the roads can be pinned at all: two of the three are taken by devices
-// that are not this one, and the third -- a discrete desktop GPU whose cached host-visible memory
-// is system RAM -- by a device nobody on this desk owns. Each table below is written from a real
-// device's reported types, named, so a future reader can tell a measured shape from an invented
-// one.
+// which is the only reason the roads can be pinned at all: only the MQ65 takes a cached road today,
+// and the cached coherent road is taken by nothing on this desk. Each table below is written from a
+// real device's reported types, named, so a future reader can tell a measured shape from an
+// invented one.
+//
+// The load-bearing pair is SD865-with-and-without-the-bit. Without it the A650 must land on the
+// write-combined type it had before this policy, because the keyless confirmation round found the
+// cached coherent road cost legosw +6.16% and ac5 +5.54% on that part with non-overlapping rep
+// ranges. With it, it must land on the cached coherent type -- nothing sets the bit for an A650
+// today, and pinning the road keeps a future A650 rule a one-line database change rather than a
+// policy change.
 //
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
@@ -112,33 +118,60 @@ TEST(GSStreamRingMemory, RG477VKeepsWriteCombinedBecauseNoRuleNamesIt)
 	EXPECT_EQ(d.extra_required_flags, 0u);
 }
 
-// The SD865: a cached coherent type exists, so it is taken -- and taken whether or not the rule
-// matched, because that road costs no flush and needs no permission.
-TEST(GSStreamRingMemory, SD865TakesCachedCoherentWhateverTheRuleSays)
+// The same part if a rule ever named it. Its only cached type is non-coherent, so that is the road
+// it would get -- the one its own round measured at +2.6% to +12.4%. Here to show the bit selects
+// a road rather than a device: the table, not the rule, decides which.
+TEST(GSStreamRingMemory, RG477VWithARuleWouldTakeCachedNonCoherent)
 {
-	for (const bool rule : {false, true})
-	{
-		const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(SD865_TYPES, 2, rule));
-		EXPECT_EQ(d.road, GSStreamRingMemoryRoad::CachedCoherent);
-		EXPECT_EQ(d.type_index, 1u);
-		EXPECT_EQ(d.extra_required_flags, DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED);
-		EXPECT_STREQ(GSStreamRingMemoryRoadName(d.road), "cached-coherent");
-	}
+	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(RG477V_TYPES, 2, true));
+	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::CachedNonCoherent);
+	EXPECT_EQ(d.type_index, 1u);
 }
 
-// The dev box. Type 0 already carries every bit, so the cached coherent road resolves to the type
-// the rings have always been on and nothing about the M2 changes. This is what makes the 24-row
-// byte-identity grid a gate on this lane's code rather than a measurement of the road.
+// The SD865 as it ships: a cached coherent type exists and no rule names the A650, so the rings
+// stay on the write-combined type 0 they were on before this policy. The confirmation round
+// measured that road on this exact part and it lost two titles reproducibly; a type table is not a
+// measurement.
+TEST(GSStreamRingMemory, SD865WithoutARuleStaysWriteCombined)
+{
+	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(SD865_TYPES, 2, false));
+	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::WriteCombined);
+	EXPECT_EQ(d.type_index, 0u);
+	EXPECT_EQ(d.extra_required_flags, 0u);
+	EXPECT_STREQ(GSStreamRingMemoryRoadName(d.road), "write-combined");
+}
+
+// The same table with the bit set. Nothing sets it for an A650 today; this pins where such a rule
+// would land the rings, so adding one stays a database edit.
+TEST(GSStreamRingMemory, SD865WithTheRuleTakesCachedCoherent)
+{
+	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(SD865_TYPES, 2, true));
+	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::CachedCoherent);
+	EXPECT_EQ(d.type_index, 1u);
+	EXPECT_EQ(d.extra_required_flags, DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED);
+	EXPECT_STREQ(GSStreamRingMemoryRoadName(d.road), "cached-coherent");
+}
+
+// The dev box. Its one host-visible type already carries every bit, so every road resolves to the
+// type the rings have always been on and nothing about the M2 moves whichever way the bit goes.
+// This is what makes the 24-row byte-identity grid a gate on the code rather than a measurement of
+// the road.
 TEST(GSStreamRingMemory, M2StaysOnTheTypeItAlreadyHas)
 {
-	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(M2_TYPES, 1, false));
-	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::CachedCoherent);
-	EXPECT_EQ(d.type_index, 0u);
+	const GSStreamRingMemoryDecision without = GSDecideStreamRingMemory(Device(M2_TYPES, 1, false));
+	EXPECT_EQ(without.road, GSStreamRingMemoryRoad::WriteCombined);
+	EXPECT_EQ(without.type_index, 0u);
+	EXPECT_EQ(without.extra_required_flags, 0u);
+
+	const GSStreamRingMemoryDecision with = GSDecideStreamRingMemory(Device(M2_TYPES, 1, true));
+	EXPECT_EQ(with.road, GSStreamRingMemoryRoad::CachedCoherent);
+	EXPECT_EQ(with.type_index, 0u);
 }
 
-// A discrete GPU. Both cached types are host-local, so both cached roads decline them and the
-// rings stay on the device-local write-combined BAR type -- which is where they are today, and the
-// right place for memory the GPU reads over PCIe.
+// A discrete GPU, with the bit set as well as clear. Its cached host-visible type is host-local,
+// so both cached roads decline it and the rings stay on the device-local write-combined BAR type --
+// where they are today, and the right place for memory the GPU reads over PCIe. The DEVICE_LOCAL
+// requirement is the whole of what stops a named desktop part sending its rings across PCIe.
 TEST(GSStreamRingMemory, DiscreteGpuKeepsItsRingsInDeviceLocalMemory)
 {
 	for (const bool rule : {false, true})
@@ -169,7 +202,7 @@ TEST(GSStreamRingMemory, TwoEqualTypesResolveToTheLowerIndex)
 		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED,
 		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED,
 	};
-	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(types, 3, false));
+	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(types, 3, true));
 	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::CachedCoherent);
 	EXPECT_EQ(d.type_index, 1u);
 }
