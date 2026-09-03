@@ -5409,7 +5409,14 @@ void GSDeviceVK::IASetVertexBuffer(const void* vertex, size_t stride, size_t cou
 
 	// Census: write-only, non-temporal, into uncached host-visible memory. Nothing reads it back.
 	g_perfmon.Put(GSPerfMon::BytesVertexStream, static_cast<double>(size));
-	GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
+	// Arm B of rung T1. storent is __builtin_nontemporal_store on ARM64, which lowers to STNP --
+	// a non-temporal PAIR store, 16 bytes at a time, with a hint that tells the core not to
+	// allocate. Into a write-combined ring that hint buys nothing and may cost the store buffer
+	// its chance to merge. memcpy writes the same bytes with the platform's own tuned routine.
+	if (GSConfig.StreamRingsPlainStores)
+		std::memcpy(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
+	else
+		GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), vertex, count * stride);
 	m_vertex_stream_buffer.CommitMemory(size);
 }
 

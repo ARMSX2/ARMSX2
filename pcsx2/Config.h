@@ -947,6 +947,12 @@ struct Pcsx2Config
 					// scoped -- the rings are allocated once at device init, so a mid-session
 					// flip does nothing until the renderer restarts.
 					StreamRingsHostCached : 1,
+					// SCAFFOLDING for the SD662-tier rung T1 store-path A/B, and deleted in
+					// the round that decides it. True copies a draw's vertices into the ring
+					// with a plain memcpy; false uses GSVector4i::storent, which on ARM64 is
+					// __builtin_nontemporal_store and lowers to STNP. Both write the same
+					// bytes. Read per draw, so it can be flipped at any time.
+					StreamRingsPlainStores : 1,
 					// Hold hardware draws back so consecutive draws to the same target
 					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
 					// where every pass boundary is a full tile load and store. Hot-
