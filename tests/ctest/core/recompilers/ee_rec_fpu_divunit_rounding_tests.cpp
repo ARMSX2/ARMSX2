@@ -39,6 +39,7 @@
 #include "common/FPControl.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 #include <gtest/gtest.h>
@@ -521,4 +522,309 @@ TEST(EeRecFpuDivUnitRounding, ArithmeticStillChopsUnderTheAmbientMode)
 		EXPECT_EQ(run(false), kRounded)
 			<< "[interp] control is DEAD -- see above";
 	}
+}
+
+// ---------------------------------------------------------------------------
+// What the one ULP is worth.
+//
+// Mortal Kombat: Shaolin Monks derives a texture's log2 dimension the usual
+// way, at EE 0x0026b1c4 and 0x0026b1d8:
+//
+//     lhu     v0, 8(s1)          ; the dimension, 64
+//     cvt.s.w f12, f12
+//     jal     logf
+//     lwc1    f20, ln2
+//     div.s   f0, f0, f20        ; log2(n) = ln(n) / ln(2)
+//     cvt.w.s f1, f0             ; truncate
+//
+// ln(64) and ln(2) are singles, so their quotient is not 6: it is
+// 5.99999965603464, and nearest rounding keeps it under 6 while the divide
+// unit's A<B branch takes it up to exactly 6.0. cvt.w.s then truncates, and the
+// gap between the engines stops being one ULP of a float and becomes a whole
+// integer -- the game builds its dialog panel a power of two too small and the
+// message overruns the border it is drawn inside.
+//
+// Both the quotient and its cvt.w.s are asserted. Mode 3 returns the unit's
+// word on this row.
+// ---------------------------------------------------------------------------
+namespace {
+
+enum class Tier { Fast, Full, Exact };
+
+const char* TierName(Tier t)
+{
+	switch (t)
+	{
+		case Tier::Fast: return "fast path";
+		case Tier::Full: return "eeClampMode 3";
+		default: return "eeClampMode 4";
+	}
+}
+
+void EnableTier(EeRecTestHarness& h, Tier t)
+{
+	if (t == Tier::Full)
+		h.EnableFpuFullMode();
+	else if (t == Tier::Exact)
+		h.EnableFpuExactMode();
+}
+
+} // namespace
+
+TEST(EeRecFpuDivUnitRounding, ATruncatedLog2NeedsTheUnitsOwnRoundUp)
+{
+	constexpr u32 kLnSixtyFour = 0x40851590u; // logf(64.0f) as the game computes it
+	constexpr u32 kLnTwo = 0x3F317216u;
+	constexpr u32 kConsole = 0x40C00000u; // 6.0
+	constexpr u32 kRounded = 0x40BFFFFFu; // 5.9999995
+
+	const auto run = [](bool jit, Tier tier, bool truncate) {
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (jit)
+			EnableTier(h, tier);
+		h.SetFprBits(1, kLnSixtyFour);
+		h.SetFprBits(2, kLnTwo);
+		if (truncate)
+			h.LoadProgram({ee::DIV_S(3, 1, 2), ee::CVT_W_S(3, 3)});
+		else
+			h.LoadProgram({ee::DIV_S(3, 1, 2)});
+		if (jit)
+		{
+			h.RunJitNoDiff();
+			return h.GetFprBitsJit(3);
+		}
+		h.RunInterpOnly();
+		return h.GetFprBitsInterp(3);
+	};
+
+	EXPECT_EQ(run(false, Tier::Fast, false), kConsole) << "interp";
+	EXPECT_EQ(run(true, Tier::Exact, false), kConsole) << "jit, " << TierName(Tier::Exact);
+	EXPECT_EQ(run(true, Tier::Full, false), kConsole)
+		<< "jit, " << TierName(Tier::Full) << ": the integer guard fires on this row";
+	EXPECT_EQ(run(true, Tier::Fast, false), kRounded)
+		<< "the fast path is the nearest-rounding engine and this operand is "
+		   "one of the rows where that is not what the console returns";
+
+	EXPECT_EQ(run(false, Tier::Fast, true), 6u) << "interp, truncated";
+	EXPECT_EQ(run(true, Tier::Exact, true), 6u) << "jit " << TierName(Tier::Exact) << ", truncated";
+	EXPECT_EQ(run(true, Tier::Full, true), 6u) << "jit " << TierName(Tier::Full) << ", truncated";
+	EXPECT_EQ(run(true, Tier::Fast, true), 5u)
+		<< "fast path, truncated: 6 means the operand no longer witnesses the deficit";
+}
+
+// ---------------------------------------------------------------------------
+// At mode 3 the quotient's cvt.w.s integer must be the unit's. The pool puts
+// quotients on or one word beside an integer: n times a divisor with a short
+// significand is an exact single, and the word either side of it divided by
+// the same divisor is one ULP off n. Register aliasing is varied.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct DivIntCase
+{
+	u32 fs, ft;
+	u32 fd, fi; // fd: the quotient's register; fi: the integer's
+	const char* what;
+};
+
+// n = m * 2^j and ft = mb * 2^k, m and mb sharing 24 bits so n * ft is exact;
+// fs is that product or the word either side of it.
+DivIntCase MakeDivIntCase(Lcg& r)
+{
+	const u32 mbits = 1u + r.next() % 22u;
+	const u32 m = (1u << (mbits - 1)) | (r.next() & ((1u << (mbits - 1)) - 1u));
+	// n from 2^-2 (its integer is 0) up past 2^33 (its cvt.w.s saturates)
+	const int j = -2 - static_cast<int>(mbits - 1) + static_cast<int>(r.next() % 36u);
+	const u32 dbits = 2u + r.next() % (23u - mbits); // 2..24-mbits: never a power of two
+	const u32 mb = (1u << (dbits - 1)) | (r.next() & ((1u << (dbits - 1)) - 1u));
+	const int k = -30 + static_cast<int>(r.next() % 61u);
+
+	// product = m * mb * 2^(j + k), normalised to a 24-bit significand
+	u64 pm = static_cast<u64>(m) * mb;
+	int pe = j + k;
+	while (pm < (1ull << 23)) { pm <<= 1; --pe; }
+	// exponent field of a single whose significand is pm (in [2^23, 2^24)) and value pm * 2^pe
+	const int field = pe + 23 + 127;
+	if (field < 1 || field > 254)
+		return MakeDivIntCase(r); // out of range: draw again
+
+	const u32 sign_s = (r.next() & 1u) << 31;
+	const u32 sign_t = (r.next() & 1u) << 31;
+	u32 fs = sign_s | (static_cast<u32>(field) << 23) | (static_cast<u32>(pm) & 0x7FFFFFu);
+	switch (r.next() % 3u)
+	{
+		case 0: break;          // exact: the quotient is n itself
+		case 1: fs += 1u; break; // one word up the magnitude
+		default: fs -= 1u; break;
+	}
+	// ft: mb normalised the same way
+	u64 tm = mb;
+	int te = k;
+	while (tm < (1ull << 23)) { tm <<= 1; --te; }
+	const int tfield = te + 23 + 127;
+	if (tfield < 1 || tfield > 254)
+		return MakeDivIntCase(r);
+	const u32 ft = sign_t | (static_cast<u32>(tfield) << 23) | (static_cast<u32>(tm) & 0x7FFFFFu);
+
+	DivIntCase c{fs, ft, 3, 4, "fd, fs, ft distinct"};
+	switch (r.next() % 4u)
+	{
+		case 0: break;
+		case 1: c.fd = 1; c.what = "fd == fs"; break;
+		case 2: c.fd = 2; c.what = "fd == ft"; break;
+		default: c.fi = 3; c.what = "fi == fd"; break;
+	}
+	return c;
+}
+
+u32 TruncateLikeCvtWS(u32 w)
+{
+	const int e = static_cast<int>((w >> 23) & 0xFFu) - 127;
+	if (e < 0)
+		return 0;
+	if (e >= 31)
+		return (w & 0x80000000u) ? 0x80000000u : 0x7FFFFFFFu;
+	const u32 mag = (0x800000u | (w & 0x7FFFFFu)) >> (23 - e);
+	return (w & 0x80000000u) ? static_cast<u32>(-static_cast<s32>(mag)) : mag;
+}
+
+} // namespace
+
+TEST(EeRecFpuDivUnitRounding, FullModeTruncatesTheQuotientLikeTheUnit)
+{
+	RequireDistinctDivideRoundingMode();
+	Lcg r{0x1D1E5C7A5E1D1E5Cull};
+	int fast_int_gaps = 0, full_word_gaps = 0, guard_answered = 0, exact_rows = 0;
+	for (u32 iter = 0; iter < 1200; ++iter)
+	{
+		// Every fourth row is an arbitrary pair.
+		DivIntCase c = (iter % 4u == 3u)
+			? DivIntCase{fuzzOperand(r), fuzzOperand(r), 3, 4, "arbitrary"}
+			: MakeDivIntCase(r);
+		const u32 pre = (r.next() % 4u == 0u) ? (kSI | kSD) : 0u;
+		SCOPED_TRACE(::testing::Message()
+			<< "iter=" << iter << " Fs=" << std::hex << c.fs << " Ft=" << c.ft
+			<< " fd=" << c.fd << " fi=" << c.fi << " (" << c.what << ") pre=" << pre);
+
+		u32 word[3] = {}, integer[3] = {}, fcr[3] = {};
+		for (int engine = 0; engine < 3; ++engine) // interp, jit full, jit fast
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			if (engine == 1)
+				h.EnableFpuFullMode();
+			h.SetFprBits(1, c.fs);
+			h.SetFprBits(2, c.ft);
+			h.SetFcr31(pre);
+			h.LoadProgram({ee::DIV_S(c.fd, 1, 2), ee::CVT_W_S(c.fi, c.fd)});
+			if (engine == 0)
+			{
+				h.RunInterpOnly();
+				word[0] = h.GetFprBitsInterp(c.fd);
+				integer[0] = h.GetFprBitsInterp(c.fi);
+				fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+			}
+			else
+			{
+				h.RunJitNoDiff();
+				word[engine] = h.GetFprBitsJit(c.fd);
+				integer[engine] = h.GetFprBitsJit(c.fi);
+				fcr[engine] = h.JitSnapshot().fprs.fprc[31];
+			}
+		}
+		// fi == fd overwrites the quotient.
+		const bool word_visible = c.fi != c.fd;
+
+		EXPECT_EQ(integer[1], integer[0])
+			<< "mode 3's cvt.w.s integer is not the unit's: interp word=" << std::hex
+			<< word[0] << " jit word=" << word[1];
+		if (word_visible)
+		{
+			if (word[1] != word[0])
+			{
+				++full_word_gaps;
+				EXPECT_TRUE(IsOneUlpApart(word[0], word[1]))
+					<< "mode 3 word is not adjacent to the unit's; interp=" << std::hex << word[0]
+					<< " jit=" << word[1];
+				EXPECT_EQ(TruncateLikeCvtWS(word[1]), TruncateLikeCvtWS(word[0]))
+					<< "mode 3 kept the host word on a row whose integer differs";
+			}
+			if (integer[2] != integer[0])
+			{
+				++fast_int_gaps;
+				if (word[1] == word[0])
+					++guard_answered;
+			}
+		}
+		else if (integer[2] != integer[0])
+		{
+			++fast_int_gaps;
+			++guard_answered;
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask) << "mode 3 moved a sticky flag";
+		if (IsTopBinadeTierGap(word[0], word[1]))
+			ADD_FAILURE() << "mode 3 holds the EE range; a FLT_MAX word is the fast path's";
+		if (c.what[0] != 'a' && (c.fs & 0x7FFFFFFFu) != 0 && word_visible && word[1] == word[0] &&
+			integer[2] == integer[0])
+			++exact_rows;
+		if (::testing::Test::HasFailure())
+			return;
+	}
+	RecordProperty("fast_int_gaps", fast_int_gaps);
+	RecordProperty("full_word_gaps", full_word_gaps);
+	RecordProperty("guard_answered", guard_answered);
+	RecordProperty("exact_rows", exact_rows);
+	EXPECT_GT(fast_int_gaps, 0) << "anti-vacuity: no row where the fast path's integer differs";
+	EXPECT_GT(full_word_gaps, 0) << "anti-vacuity: mode 3 returned the unit's word on every row";
+	EXPECT_GT(guard_answered, 0) << "liveness: the guard never fired";
+	EXPECT_GT(exact_rows, 0) << "the pool's exact arm produced nothing";
+}
+
+// ---------------------------------------------------------------------------
+// A temp allocated inside a runtime arm. _allocTempNEONreg evicts when the pool
+// is full, and an eviction writes the evicted guest register back at the point
+// of allocation while the allocator forgets it unconditionally. Inside the
+// divide's normal arm that store is skipped whenever the divisor is zero, and
+// the guest register's newest value is lost. The block below fills the pool
+// with dirty FPRs, divides by zero, and reads every one of them back.
+// ---------------------------------------------------------------------------
+TEST(EeRecFpuDivUnitRounding, DivideByZeroWithAFullPoolKeepsEveryDirtyFpr)
+{
+	constexpr int kFirst = 4, kLast = 29; // f4..f29 dirtied, f0..f3 are the divide's
+	const auto run = [&](bool zero_divisor, bool exact_mode) {
+		std::vector<u32> prog;
+		for (int i = kFirst; i <= kLast; ++i)
+			prog.push_back(ee::ADD_S(i, i, 1)); // f_i = i + 1.0
+		prog.push_back(ee::DIV_S(3, 2, 0));
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (exact_mode)
+			h.EnableFpuExactMode();
+		else
+			h.EnableFpuFullMode();
+		h.SetFpr(0, zero_divisor ? 0.0f : 2.0f);
+		h.SetFpr(1, 1.0f);
+		h.SetFpr(2, 6.0f);
+		for (int i = kFirst; i <= kLast; ++i)
+			h.SetFpr(i, static_cast<float>(i));
+		h.LoadProgram(prog);
+		h.RunJitNoDiff();
+		int lost = 0;
+		for (int i = kFirst; i <= kLast; ++i)
+		{
+			const u32 expect = std::bit_cast<u32>(static_cast<float>(i + 1));
+			const u32 got = h.GetFprBitsJit(i);
+			if (got != expect)
+				++lost;
+			EXPECT_EQ(got, expect) << "f" << i << (zero_divisor ? " after a divide by zero" : "")
+								   << (exact_mode ? " at eeClampMode 4" : " at eeClampMode 3");
+		}
+		return lost;
+	};
+
+	EXPECT_EQ(run(false, false), 0) << "control: the normal arm ran, so every eviction's store ran";
+	EXPECT_EQ(run(true, true), 0) << "control: mode 4 allocates nothing inside the arm";
+	EXPECT_EQ(run(true, false), 0)
+		<< "a dirty FPR evicted for a temp inside the normal arm was never written back";
 }

@@ -898,7 +898,8 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 // model above eeSrtDigit; this is the call into it.
 //
 // Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
-// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest.
+// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest;
+// Mode 3 also takes it, from the integer guard below.
 //
 // Silicon composes RSQRT.S out of the other two with an ordinary single in
 // between, so this does as well; the intermediate crosses the sqrt's call
@@ -951,16 +952,53 @@ static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ft
 	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
 }
 
+// Mode 3 keeps the host quotient unless the divide unit's word truncates to a
+// different integer. The unit's word is the host's or the adjacent word on the
+// side the host rounded away from (FPU.cpp, eeDivideCap); the sign of
+// |fs| - q*|ft| gives that side, zero means exact. Computed at value scale: in
+// slot scale it can underflow under FZ.
+//
+// areg, treg, qreg: fs, ft, q at value scale, clobbered; the caller owns them.
+// sreg: the slot; the island overwrites it.
+static void emitDivideIntegerGuard(int sreg, int areg, int treg, int qreg, int srcS, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fabs(armDRegister(areg), armDRegister(areg));
+	armAsm->Fabs(armDRegister(treg), armDRegister(treg));
+	armAsm->Fabs(armDRegister(qreg), armDRegister(qreg));
+	armAsm->Fmsub(armDRegister(areg), armDRegister(qreg), armDRegister(treg), armDRegister(areg));
+	armAsm->Fcmp(armDRegister(areg), 0.0);
+	armAsm->B(&same, a64::eq);
+
+	// Csneg reads the Fcmp's flags.
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(1) << 29); // one word of the single
+	armAsm->Csneg(RXARG2, RXARG2, RXARG2, a64::gt);
+	armAsm->Add(RXARG1, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(treg), RXARG1);
+	armAsm->Fcvtzs(RWARG1, armDRegister(treg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	armAsm->B(&same, a64::eq);
+
+	emitDivideUnitIsland(DivUnitOp::Divide, sreg, srcS, srcT);
+	armAsm->Bind(&same);
+}
+
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
 // flag/result shape, otherwise the quotient -- from the recurrence under mode 4
-// and in double below it. sreg/treg are write-only temps, srcS/srcT the guest
-// slots; the result lands in sreg as a slot on both arms. treg is -1 under
-// mode 4, which has no double to hold.
+// and in double below it, guarded at mode 3. sreg/treg/areg/qreg are write-only
+// temps the caller allocated before anything was emitted -- an allocation can
+// evict, and an eviction's writeback emitted inside the normal arm is skipped
+// by every divide by zero -- srcS/srcT the guest slots; the result lands in
+// sreg as a slot on both arms. treg, areg and qreg are -1 under mode 4, which
+// has no double to hold.
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
 // ~2^255), so ToPS2FPU_Full's finite-only contract holds.
-static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
+static void recDIVhelper1(int sreg, int treg, int areg, int qreg, int srcS, int srcT)
 {
 	ClearIDFlags();
 
@@ -994,11 +1032,13 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	}
 	else
 	{
-		SlotToDouble(sreg, srcS);
+		SlotToDouble(areg, srcS);
 		SlotToDouble(treg, srcT);
-		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(areg), armDRegister(treg));
 		ToPS2FPU_Full(sreg, false, treg, false, false);
+		armAsm->Fcvt(armDRegister(qreg), armSRegister(sreg));
 		SingleToSlot(sreg, sreg);
+		emitDivideIntegerGuard(sreg, areg, treg, qreg, srcS, srcT);
 	}
 
 	armAsm->Bind(&done);
@@ -1015,11 +1055,17 @@ void recDIV_S_xmm(int info)
 	// both, so the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
 	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
-	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
+	const int areg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	const int qreg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	recDIVhelper1(sreg, treg, areg, qreg, EEREC_S, EEREC_T);
 	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
 	if (!CHECK_FPU_EXACT)
+	{
 		_freeNEONreg(treg);
+		_freeNEONreg(areg);
+		_freeNEONreg(qreg);
+	}
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
