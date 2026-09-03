@@ -1992,7 +1992,7 @@ static constexpr bool KickKernelCarriesPrim()
 // cross MaxVerticesForPrim -- the handler runs exactly the code that ran before,
 // in the order it ran, and the kernel re-enters afterwards holding nothing.
 template <u32 prim, bool xyzf2>
-__fi void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp)
+__noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp)
 {
 	GSVector4i m0, m1;
 	if constexpr (xyzf2)
@@ -2076,18 +2076,20 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
 	const GSLimit24BitDepth depth_clamp = GetDepthClampMode();
 
+	// uvfog and the depth-clamp mode are hoisted once, as the per-vertex batch
+	// hoists them: neither can change inside a batch, and the per-vertex path does
+	// not re-read them either.
+	//
+	// EVERYTHING ELSE IS RE-READ BEFORE EVERY KERNEL ENTRY. The per-vertex kick
+	// reads m_xyof, the cull bounds, m_scissor_invalid and PRIM's shading bits out
+	// of memory on every vertex, and a legacy kick in the loop below can flush --
+	// restoring a buffered environment, switching context, moving the scissor. A
+	// kernel holding a copy from before that seam would decide the rest of the run
+	// against an environment that no longer exists.
 	GSVertexKickKernel::Invariants inv;
-	inv.xyof = m_xyof;
-	inv.bounds = m_cull_bounds_band;
 	inv.uvfog = uvfog;
 	GSVertexKickKernel::MakeDepthClampMasks(depth_clamp, inv.clamp_keep, inv.clamp_shifted);
-	inv.scissor_invalid = static_cast<u32>(m_scissor_invalid);
 	inv.clamp_enabled = (depth_clamp != GSLimit24BitDepth::Disabled);
-	inv.nativeres = m_nativeres;
-	inv.tme = PRIM->TME != 0;
-	inv.fst = PRIM->FST != 0;
-	inv.iip = PRIM->IIP != 0;
-	inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 
 	// The per-draw environment snapshot fires at every window-full vertex while the
 	// index buffer is empty -- 44.6 times per draw on stuntman, all of them writing
@@ -2102,8 +2104,12 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	{
 		const bool overlap_active = m_recent_buffer_switch && GSConfig.UserHacks_DrawBuffering;
 		const bool snapshot_pending = !snapshot_done && (m_index->tail == 0);
+		// Re-checked across the seam like the rest: a flush can restore an
+		// environment whose PRIM has AA1 set, and the kernel's scalar-outcode cull
+		// is only exact while the per-vertex kick would have taken it too.
+		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>();
 
-		if (overlap_active || snapshot_pending)
+		if (overlap_active || snapshot_pending || !cull_ok)
 		{
 			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
 			KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
@@ -2139,13 +2145,20 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		while ((m_vertex->tail + chunk + 3) > m_vertex->maxcount)
 			GrowVertexBuffer();
 
+		// Re-read across the seam: see the comment on inv above.
+		inv.xyof = m_xyof;
+		inv.bounds = m_cull_bounds_band;
+		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
+		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
+
 		VertexKickCursor c;
 		c.Load(*this);
 
 		GSVertexKickKernel::Buffers bufs;
 		bufs.vbuff = c.vbuff;
 		bufs.ibuff = c.ibuff;
-		bufs.side = m_kick_side;
+		bufs.side_xyp = m_kick_side_xyp;
+		bufs.side_meta = m_kick_side_meta;
 		bufs.xy_ring = c.vb->xy;
 		bufs.kick_ring = c.vb->kick_ring;
 		bufs.fmm_acc = &c.vb->fmm_acc;

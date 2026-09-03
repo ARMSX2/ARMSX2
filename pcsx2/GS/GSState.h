@@ -375,10 +375,13 @@ protected:
 	// the kick leaves behind.
 	static bool s_fused_kick_use_kernel;
 
-	// Side table for the two-pass kernel: one 16-byte mirror entry per vertex of a
-	// chunk. A member rather than a kernel local so pass one's stores and pass
-	// two's loads reach it off a register base instead of the frame.
-	alignas(16) GSVertexKernels::CullMirrorEntry m_kick_side[GSVertexKickKernel::kChunkVertices] = {};
+	// Side table for the two-pass kernel: the window position and the cull
+	// metadata of every vertex in a chunk, as two parallel arrays (see
+	// GSVertexKickKernel::Buffers). Members rather than kernel locals so pass
+	// one's stores and pass two's loads reach them off a register base instead of
+	// the frame.
+	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
+	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
 
 	// following functions need m_vt to be initialized
 

@@ -75,10 +75,11 @@ namespace GSVertexKickKernel
 		u64 uvfog;                             // XYZ2: {UV, FOG}; XYZF2: UV in the low word
 		GSVector4i clamp_keep;                 // depth clamp, as two lane masks over m[1]:
 		GSVector4i clamp_shifted;              //   m1' = (m1 & keep) | ((m1 >> 8) & shifted)
-		u32 scissor_invalid;                   // 0 or 1, OR'd into every prim's skip
+		// TME, FST and IIP in one word rather than three: they are read only on the
+		// accept path, and pass two is tight enough on general-purpose registers
+		// that three separate ones cost a spill.
+		u32 shade;                             // bit 0 TME, bit 1 FST, bit 2 IIP
 		bool clamp_enabled;
-		bool nativeres;
-		bool tme, fst, iip;
 		bool sprite_q_fix;                     // sprite only: !PRIM.FST
 	};
 
@@ -96,7 +97,14 @@ namespace GSVertexKickKernel
 	{
 		GSVertex* vbuff;
 		u16* ibuff;
-		GSVertexKernels::CullMirrorEntry* side;     // kChunkVertices entries
+		// The side table, as two parallel arrays rather than one array of
+		// CullMirrorEntry. Split, pass one's quad build writes each field straight
+		// out instead of interleaving the two against each other, and pass two's
+		// cull decision reads them as plain 64-bit scalars -- as one aggregate,
+		// clang keeps the entries in NEON registers and pays a cross-domain move
+		// for every field the decision touches, six per completed prim.
+		u64* side_xyp;                              // kChunkVertices entries
+		u64* side_meta;                             // ... the ADC bit in bit 60
 		GSVector4i* xy_ring;                        // [4]
 		GSVertexKernels::CullMirrorEntry* kick_ring; // [4]
 		GSVertexKernels::FmmAcc* fmm_acc;
@@ -138,6 +146,91 @@ namespace GSVertexKickKernel
 		}
 	}
 
+#ifdef ARCH_ARM64
+	// ------------------------------------------------------------------------
+	// The mirror-entry build, four vertices at a time.
+	//
+	// Per vertex the offset subtract, the two band shifts, the four bound
+	// compares and the pack are 29 scalar instructions -- two thirds of pass one
+	// (RESULT.md section 5). Every step of it is lane-parallel, so it goes
+	// four-wide over a transpose of the four packed XYZ words the parse has
+	// already loaded, and the four 16-byte entries come out of six zips.
+	// DESIGN 3.1 named this shape as the one to take if the objdump found the
+	// scalar build dominant. It did.
+	//
+	// Byte-exact with MakeCullMirrorEntry<true> -- the band and outcode fields are
+	// the same expressions on the same inputs, and the entry is assembled in its
+	// memory layout rather than as a u64 pair. GsKickKernel.NeonMirrorQuadMatches
+	// pins it at every outcode boundary; the differential suite pins it again
+	// through the mirror ring.
+	//
+	// v0..v3 are the raw GIFPacked XYZ2/XYZF2 words of four consecutive vertices:
+	// lane 0 carries X in its low half, lane 1 carries Y, lane 3 carries ADC in
+	// bit 15. Both packed layouts agree on all three.
+	// ------------------------------------------------------------------------
+	struct MirrorBounds
+	{
+		int32x4_t ofx, ofy, l, t, r, b;
+	};
+
+	__forceinline_odr MirrorBounds MakeMirrorBounds(const GSVector4i& xyof, const GSVertexKernels::CullBounds& bounds)
+	{
+		MirrorBounds m;
+		m.ofx = vdupq_n_s32(xyof.I32[0]);
+		m.ofy = vdupq_n_s32(xyof.I32[1]);
+		m.l = vdupq_n_s32(bounds.l);
+		m.t = vdupq_n_s32(bounds.t);
+		m.r = vdupq_n_s32(bounds.r);
+		m.b = vdupq_n_s32(bounds.b);
+		return m;
+	}
+
+	__forceinline_odr void BuildMirrorQuad(uint32x4_t v0, uint32x4_t v1, uint32x4_t v2, uint32x4_t v3,
+		const MirrorBounds& k, u64* RESTRICT xyp_out, u64* RESTRICT meta_out)
+	{
+		// Transpose to planar X / Y / flags.
+		const uint64x2_t a01 = vreinterpretq_u64_u32(vzip1q_u32(v0, v1));
+		const uint64x2_t a23 = vreinterpretq_u64_u32(vzip1q_u32(v2, v3));
+		const uint64x2_t b01 = vreinterpretq_u64_u32(vzip2q_u32(v0, v1));
+		const uint64x2_t b23 = vreinterpretq_u64_u32(vzip2q_u32(v2, v3));
+		const uint32x4_t X = vreinterpretq_u32_u64(vzip1q_u64(a01, a23));
+		const uint32x4_t Y = vreinterpretq_u32_u64(vzip2q_u64(a01, a23));
+		const uint32x4_t F = vreinterpretq_u32_u64(vzip2q_u64(b01, b23));
+
+		// Window position: the raw 12.4 coordinate is the low half-word, and the
+		// offset subtract is over the full 32-bit lane, exactly as the ring's.
+		const uint32x4_t m16 = vdupq_n_u32(0xFFFFu);
+		const int32x4_t wx = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(X, m16)), k.ofx);
+		const int32x4_t wy = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(Y, m16)), k.ofy);
+
+		const int32x4_t one = vdupq_n_s32(1);
+		const int32x4_t bx = vshrq_n_s32(vsubq_s32(wx, one), 4);
+		const int32x4_t by = vshrq_n_s32(vsubq_s32(wy, one), 4);
+
+		uint32x4_t oc = vandq_u32(vcltq_s32(bx, k.l), vdupq_n_u32(1));
+		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(bx, k.r), vdupq_n_u32(2)));
+		oc = vorrq_u32(oc, vandq_u32(vcltq_s32(by, k.t), vdupq_n_u32(4)));
+		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(by, k.b), vdupq_n_u32(8)));
+		// ADC rides in meta bit 60, four above the outcode field, so it joins the
+		// outcode here and lands with it in one shift.
+		oc = vorrq_u32(oc, vshrq_n_u32(vandq_u32(F, vdupq_n_u32(0x8000u)), 11));
+
+		// meta, as its two words: low = bandx[0..27] | bandy[0..3] << 28,
+		// high = bandy[4..27] | outcode << 24.
+		const uint32x4_t lo = vorrq_u32(vandq_u32(vreinterpretq_u32_s32(bx), vdupq_n_u32(0x0FFFFFFFu)),
+			vshlq_n_u32(vreinterpretq_u32_s32(by), 28));
+		const uint32x4_t hi = vorrq_u32(vandq_u32(vshrq_n_u32(vreinterpretq_u32_s32(by), 4), vdupq_n_u32(0x00FFFFFFu)),
+			vshlq_n_u32(oc, 24));
+
+		// One zip per pair and straight out: the two fields live in separate arrays,
+		// so nothing has to be interleaved against the other.
+		vst1q_u64(xyp_out + 0, vreinterpretq_u64_u32(vzip1q_u32(vreinterpretq_u32_s32(wx), vreinterpretq_u32_s32(wy))));
+		vst1q_u64(xyp_out + 2, vreinterpretq_u64_u32(vzip2q_u32(vreinterpretq_u32_s32(wx), vreinterpretq_u32_s32(wy))));
+		vst1q_u64(meta_out + 0, vreinterpretq_u64_u32(vzip1q_u32(lo, hi)));
+		vst1q_u64(meta_out + 2, vreinterpretq_u64_u32(vzip2q_u32(lo, hi)));
+	}
+#endif // ARCH_ARM64
+
 	// ------------------------------------------------------------------------
 	// Pass one: parse, store, side entry. `clamp` is a template parameter rather
 	// than a per-vertex test because the disabled case is the default and must
@@ -145,7 +238,7 @@ namespace GSVertexKickKernel
 	// ------------------------------------------------------------------------
 	template <bool xyzf2, bool clamp>
 	__forceinline_odr void PassOne(const GIFPackedReg* RESTRICT r, u32 count,
-		GSVertex* RESTRICT out, GSVertexKernels::CullMirrorEntry* RESTRICT side, const Invariants& inv)
+		GSVertex* RESTRICT out, u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv)
 	{
 		const u64 uvfog = inv.uvfog;
 		const int ofx = inv.xyof.I32[0];
@@ -158,9 +251,77 @@ namespace GSVertexKickKernel
 		// function-local statics that clang rematerializes from the frame every
 		// iteration.
 		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts();
+		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds);
 #endif
 
-		for (u32 i = 0; i < count; i++)
+		// The vertex parse is per vertex (one TBL pair each); the mirror build is
+		// four at a time.
+		//
+		// The remainder does not get a scalar mirror build: when there are four
+		// vertices to look back on, one more quad starting at count - 4 covers it,
+		// recomputing the entries the loop already wrote with the same values from
+		// the same inputs. That costs one quad and deletes the 33-instruction
+		// scalar tail, which on stuntman's 31-vertex tags is three vertices in
+		// every call. Only a run shorter than four vertices takes the scalar path
+		// below, which is also the whole of the non-aarch64 path.
+		u32 i = 0;
+#ifdef ARCH_ARM64
+		for (const u32 quads = count & ~3u; i < quads; i += 4)
+		{
+			for (u32 j = 0; j < 4; j++)
+			{
+				const GIFPackedReg* RESTRICT rv = r + (i + j) * 3;
+				GSVector4i m0, m1;
+				if constexpr (xyzf2)
+					GSVertexKernels::ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), kc, m0, m1);
+				else
+					GSVertexKernels::ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, kc, m0, m1);
+
+				if constexpr (clamp)
+					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
+
+				out[i + j].m[0] = m0;
+				out[i + j].m[1] = m1;
+			}
+
+			BuildMirrorQuad(
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 0) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 1) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 2) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 3) * 3 + 2)),
+				mb, side_xyp + i, side_meta + i);
+		}
+
+		if (i < count && count >= 4)
+		{
+			const u32 back = count - 4;
+			BuildMirrorQuad(
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 0) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 1) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 2) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 3) * 3 + 2)),
+				mb, side_xyp + back, side_meta + back);
+
+			for (; i < count; i++)
+			{
+				const GIFPackedReg* RESTRICT rv = r + i * 3;
+				GSVector4i m0, m1;
+				if constexpr (xyzf2)
+					GSVertexKernels::ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), kc, m0, m1);
+				else
+					GSVertexKernels::ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, kc, m0, m1);
+
+				if constexpr (clamp)
+					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
+
+				out[i].m[0] = m0;
+				out[i].m[1] = m1;
+			}
+			return;
+		}
+#endif
+
+		for (; i < count; i++)
 		{
 			const GIFPackedReg* RESTRICT rv = r + i * 3;
 
@@ -183,9 +344,9 @@ namespace GSVertexKickKernel
 			out[i].m[0] = m0;
 			out[i].m[1] = m1;
 
-			// The window position and its cull metadata, scalar (it dual-issues
-			// against the NEON parse). Same expressions as MakeCullMirrorEntry,
-			// with the ADC bit folded into the spare meta bits.
+			// The window position and its cull metadata. Same expressions as
+			// MakeCullMirrorEntry, with the ADC bit folded into the spare meta
+			// bits -- and the same expressions BuildMirrorQuad evaluates lane-wise.
 			const u32 raw = rv[2].U32[0];
 			const u32 raw_y = rv[2].U32[1];
 			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
@@ -199,8 +360,8 @@ namespace GSVertexKickKernel
 			oc |= (by < bt) ? 4u : 0u;
 			oc |= (by >= bb) ? 8u : 0u;
 
-			side[i].xyp = static_cast<u64>(static_cast<u32>(wx)) | (static_cast<u64>(static_cast<u32>(wy)) << 32);
-			side[i].meta = (static_cast<u64>(static_cast<u32>(bx)) & GSVertexKernels::kCullMetaBandXMask) |
+			side_xyp[i] = static_cast<u64>(static_cast<u32>(wx)) | (static_cast<u64>(static_cast<u32>(wy)) << 32);
+			side_meta[i] = (static_cast<u64>(static_cast<u32>(bx)) & GSVertexKernels::kCullMetaBandXMask) |
 			               ((static_cast<u64>(static_cast<u32>(by)) << 28) & GSVertexKernels::kCullMetaBandYMask) |
 			               (static_cast<u64>(oc) << 56) |
 			               (static_cast<u64>(rv[2].U32[3] & 0x8000u) << kAdcShift);
@@ -212,7 +373,10 @@ namespace GSVertexKickKernel
 	// GS_SPRITE; `xyzf2` selects the packed layout. The caller guarantees:
 	//   * itail != 0, so the per-draw environment snapshot cannot fire inside;
 	//   * m_recent_buffer_switch is clear or draw buffering is off;
-	//   * the scalar-outcode cull applies (native res, no AA1 expansion);
+	//   * the scissor is valid, so the ADC bit is the whole pre-cull rejection;
+	//   * the scalar-outcode cull applies -- native res and no AA1 expansion, so
+	//     the bounding box takes the interior-pixel-centre rounding
+	//     unconditionally and nothing has to carry a `nativeres` flag;
 	//   * tail + count + 3 <= maxcount, so no growth can be needed;
 	//   * tail + count < MaxVerticesForPrim, so no VERTEXCOUNT flush can be
 	//     needed.
@@ -229,30 +393,35 @@ namespace GSVertexKickKernel
 
 		GSVertex* RESTRICT vbuff = bufs.vbuff;
 		u16* RESTRICT ibuff = bufs.ibuff;
-		GSVertexKernels::CullMirrorEntry* RESTRICT side = bufs.side;
+		u64* RESTRICT side_xyp = bufs.side_xyp;
+		u64* RESTRICT side_meta = bufs.side_meta;
 
 		const u32 tail0 = cur.tail;
 
 		if (inv.clamp_enabled)
-			PassOne<xyzf2, true>(rin, count, vbuff + tail0, side, inv);
+			PassOne<xyzf2, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
 		else
-			PassOne<xyzf2, false>(rin, count, vbuff + tail0, side, inv);
+			PassOne<xyzf2, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
 
 		// ---- pass two -------------------------------------------------------
 		u32 head = cur.head;
 		u32 tail = cur.tail;
 		u32 next = cur.next;
 		u32 itail = cur.itail;
+		// The index write cursor walks: itail only ever grows inside a chunk, so
+		// carrying the pointer costs one register where carrying the base and
+		// recomputing the address costs one register and an add -- and, at this
+		// loop's pressure, a reload of the base from the frame on every accept.
+		u16* RESTRICT ib = ibuff + itail;
 		u32 watermark = cur.fmm_watermark;
 		bool fmm_valid = cur.fmm_valid;
 		u32 acc_state = cur.acc_state;
 		GSVector4i acc_rect = cur.acc_rect;
 
-		const u32 scissor_invalid = inv.scissor_invalid;
-		const bool nativeres = inv.nativeres;
-		const bool tme = inv.tme;
-		const bool fst = inv.fst;
-		const bool iip = inv.iip;
+		const u32 shade = inv.shade;
+		const bool tme = (shade & 1u) != 0;
+		const bool fst = (shade & 2u) != 0;
+		const bool iip = (shade & 4u) != 0;
 
 		GSVertexKernels::FmmAcc acc;
 		bool fmm_dirty = false;
@@ -272,15 +441,23 @@ namespace GSVertexKickKernel
 		// The three most recent mirror entries, most recent first. Seeded from the
 		// ring because a chunk can begin mid-prim; after that they rotate in
 		// registers and the ring is not read again.
-		GSVertexKernels::CullMirrorEntry e0 = bufs.kick_ring[(cur.xy_tail - 1) & 3];
-		GSVertexKernels::CullMirrorEntry e1 = bufs.kick_ring[(cur.xy_tail - 2) & 3];
-		GSVertexKernels::CullMirrorEntry e2 = bufs.kick_ring[(cur.xy_tail - 3) & 3];
+		u64 xyp0 = bufs.kick_ring[(cur.xy_tail - 1) & 3].xyp, meta0 = bufs.kick_ring[(cur.xy_tail - 1) & 3].meta;
+		u64 xyp1 = bufs.kick_ring[(cur.xy_tail - 2) & 3].xyp, meta1 = bufs.kick_ring[(cur.xy_tail - 2) & 3].meta;
+		u64 xyp2 = bufs.kick_ring[(cur.xy_tail - 3) & 3].xyp, meta2 = bufs.kick_ring[(cur.xy_tail - 3) & 3].meta;
+
+		// Walked rather than indexed: the provisional cursor advances by exactly
+		// one vertex an iteration, so it is a post-incremented pointer instead of
+		// an address recomputed from tail0 + i every time.
+		const GSVertex* RESTRICT prov = vbuff + tail0;
 
 		for (u32 i = 0; i < count; i++)
 		{
-			e2 = e1;
-			e1 = e0;
-			e0 = side[i];
+			xyp2 = xyp1;
+			meta2 = meta1;
+			xyp1 = xyp0;
+			meta1 = meta0;
+			xyp0 = side_xyp[i];
+			meta0 = side_meta[i];
 
 			// Move the vertex from its provisional slot to the live tail, so the
 			// buffer below tail is what the per-vertex kick would have left there
@@ -290,15 +467,23 @@ namespace GSVertexKickKernel
 			// or below the source and a later vertex's source is never written
 			// over; when they coincide (an unbroken run of accepts, or any chunk
 			// with no compaction in it) this is a self-copy the store buffer eats.
-			vbuff[tail] = vbuff[tail0 + i];
+			vbuff[tail] = *prov++;
 
 			tail++;
 			if ((tail - head) < n)
 				continue;
 
-			u32 skip = scissor_invalid | static_cast<u32>((e0.meta >> 60) & 1u);
+			// The ADC bit is the whole rejection test before the cull: a run with an
+			// invalid scissor never reaches the kernel (the handler keeps it on the
+			// per-vertex path), so nothing else has to be OR'd in here.
+			u32 skip = static_cast<u32>((meta0 >> 60) & 1u);
 			if (skip == 0)
+			{
+				const GSVertexKernels::CullMirrorEntry e0{xyp0, meta0};
+				const GSVertexKernels::CullMirrorEntry e1{xyp1, meta1};
+				const GSVertexKernels::CullMirrorEntry e2{xyp2, meta2};
 				skip = GSVertexKernels::CullTestScalar<n, primclass>(e0, e1, e2);
+			}
 
 			if (skip != 0)
 			{
@@ -330,9 +515,8 @@ namespace GSVertexKickKernel
 			}
 
 			const GSVector4i bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(
-				BroadcastXY(e0.xyp), BroadcastXY(e1.xyp), BroadcastXY(e2.xyp), nativeres, false);
+				BroadcastXY(xyp0), BroadcastXY(xyp1), BroadcastXY(xyp2), true, false);
 
-			u16* RESTRICT ib = ibuff + itail;
 			if constexpr (prim == GS_TRIANGLESTRIP)
 			{
 				ib[0] = static_cast<u16>(dst + 0);
@@ -342,6 +526,7 @@ namespace GSVertexKickKernel
 				next = dst + 3;
 				tail = dst + 3;
 				itail += 3;
+				ib += 3;
 			}
 			else if constexpr (prim == GS_TRIANGLELIST)
 			{
@@ -352,6 +537,7 @@ namespace GSVertexKickKernel
 				next = dst + 3;
 				tail = dst + 3;
 				itail += 3;
+				ib += 3;
 			}
 			else
 			{
@@ -363,6 +549,7 @@ namespace GSVertexKickKernel
 				next = dst + 2;
 				tail = dst + 2;
 				itail += 2;
+				ib += 2;
 			}
 
 #ifdef ARCH_ARM64
@@ -412,11 +599,11 @@ namespace GSVertexKickKernel
 			for (u32 j = first; j < count; j++)
 			{
 				const u32 slot = (cur.xy_tail + j) & 3;
-				bufs.xy_ring[slot] = BroadcastXY(side[j].xyp);
+				bufs.xy_ring[slot] = BroadcastXY(side_xyp[j]);
 				// The ring's entries carry no ADC bit -- the legacy kick's do not
 				// and the differential test compares the bytes.
-				bufs.kick_ring[slot].xyp = side[j].xyp;
-				bufs.kick_ring[slot].meta = side[j].meta & ~kCullMetaAdcBit;
+				bufs.kick_ring[slot].xyp = side_xyp[j];
+				bufs.kick_ring[slot].meta = side_meta[j] & ~kCullMetaAdcBit;
 			}
 		}
 
