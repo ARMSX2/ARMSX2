@@ -105,6 +105,30 @@ namespace
 		bool draw_buffering = false;
 		bool recent_buffer_switch = false;
 		bool empty_scissor = false; // drives m_scissor_invalid
+
+		// Autoflush. `autoflush` installs the global level the handler tables are
+		// built from; `autoflush_hit` points TEX0 at FRAME's block so
+		// IsAutoFlushDraw can answer true, and clearing it points TEX0 somewhere
+		// else so the predicate runs to the end and answers false -- which is the
+		// case stage 3b routes into the kernel.
+		GSHWAutoFlushLevel autoflush = GSHWAutoFlushLevel::Disabled;
+		bool autoflush_hit = false;
+	};
+
+	// The autoflush level is a global, read by GetAutoFlushLevel through GSConfig;
+	// every test that moves it restores it.
+	class AutoFlushGuard
+	{
+	public:
+		explicit AutoFlushGuard(GSHWAutoFlushLevel level)
+			: m_saved(GSConfig.UserHacks_AutoFlush)
+		{
+			GSConfig.UserHacks_AutoFlush = level;
+		}
+		~AutoFlushGuard() { GSConfig.UserHacks_AutoFlush = m_saved; }
+
+	private:
+		GSHWAutoFlushLevel m_saved;
 	};
 
 	// Draw buffering is a global; every test restores it.
@@ -141,9 +165,26 @@ namespace
 		// restore does to a real title mid-tag.
 		bool m_draw_moves_environment = false;
 
+		// A draw is also the only place the autoflush predicate can move inside a
+		// handler call: IsAutoFlushDraw reads TEX0 against FRAME, and a flush is
+		// what restores a different one. With this set every draw flips TEX0
+		// between FRAME's own block and a different one, so a run that flushes
+		// crosses the predicate in both directions -- which is what the per-chunk
+		// re-evaluation has to notice.
+		bool m_draw_moves_autoflush = false;
+
+		// Which of the two fused handler instantiations a KickCall drives.
+		bool m_auto_flush_arm = false;
+
 		void Draw() override
 		{
 			m_draws++;
+			if (m_draw_moves_autoflush)
+			{
+				GSDrawingContext& afctx = m_env.CTXT[m_env.PRIM.CTXT];
+				afctx.TEX0.TBP0 = (m_draws & 1) ? 0u : 0x400u;
+				UpdateContext();
+			}
 			if (!m_draw_moves_environment)
 				return;
 
@@ -197,6 +238,30 @@ namespace
 			ctx.XYOFFSET.OFY = s.ofy;
 			ctx.UpdateScissor();
 
+			// The autoflush context. IsAutoFlushDraw wants a texture whose block
+			// is (or is not) FRAME's, an unmasked FRAME, no alpha-fail rule that
+			// takes FRAME out of the draw, and no mipmap range to walk.
+			ctx.FRAME.FBP = 0;
+			ctx.FRAME.FBW = 10;
+			ctx.FRAME.PSM = PSMCT32;
+			ctx.FRAME.FBMSK = 0;
+			ctx.ZBUF.ZBP = 0x100;
+			ctx.ZBUF.PSM = PSMZ32;
+			ctx.ZBUF.ZMSK = 1;
+			ctx.TEX0.TBP0 = s.autoflush_hit ? 0u : 0x400u;
+			ctx.TEX0.TBW = 4;
+			ctx.TEX0.PSM = PSMCT32;
+			ctx.TEX0.TW = 8;
+			ctx.TEX0.TH = 8;
+			ctx.TEX0.TCC = 1;
+			ctx.TEX0.TFX = 0;
+			ctx.TEX1.MXL = 0;
+			ctx.TEX1.MMIN = 0;
+			ctx.TEX1.LCM = 0;
+			ctx.TEST.ATE = 0;
+			ctx.CLAMP.WMS = 0;
+			ctx.CLAMP.WMT = 0;
+
 			m_env.PRIM.CTXT = s.ctxt;
 			m_env.PRIM.IIP = s.iip;
 			m_env.PRIM.TME = s.tme;
@@ -232,8 +297,32 @@ namespace
 				GIFPackedRegHandlerSTQRGBAXYZ2<prim, false>(r, size);
 		}
 
+		// The auto_flush = true instantiation of the same handler -- the one stage
+		// 3b routes into the kernel when the predicate is inert.
+		template <u32 prim>
+		void KickCallAF(const GIFPackedReg* r, u32 size, bool xyzf2)
+		{
+			if (xyzf2)
+				GIFPackedRegHandlerSTQRGBAXYZF2<prim, true>(r, size);
+			else
+				GIFPackedRegHandlerSTQRGBAXYZ2<prim, true>(r, size);
+		}
+
 		void KickCallDyn(u32 prim, const GIFPackedReg* r, u32 size, bool xyzf2)
 		{
+			if (m_auto_flush_arm)
+			{
+				switch (prim)
+				{
+					case GS_TRIANGLESTRIP: KickCallAF<GS_TRIANGLESTRIP>(r, size, xyzf2); break;
+					case GS_TRIANGLELIST: KickCallAF<GS_TRIANGLELIST>(r, size, xyzf2); break;
+					case GS_SPRITE: KickCallAF<GS_SPRITE>(r, size, xyzf2); break;
+					case GS_TRIANGLEFAN: KickCallAF<GS_TRIANGLEFAN>(r, size, xyzf2); break;
+					case GS_LINESTRIP: KickCallAF<GS_LINESTRIP>(r, size, xyzf2); break;
+					default: FAIL() << "unhandled prim " << prim;
+				}
+				return;
+			}
 			switch (prim)
 			{
 				case GS_TRIANGLESTRIP: KickCall<GS_TRIANGLESTRIP>(r, size, xyzf2); break;
@@ -243,6 +332,14 @@ namespace
 				case GS_LINESTRIP: KickCall<GS_LINESTRIP>(r, size, xyzf2); break;
 				default: FAIL() << "unhandled prim " << prim;
 			}
+		}
+
+		// The routing predicate itself, so a test can assert which case it is
+		// driving instead of assuming the context it built produces it.
+		bool AutoFlushPredicate(u32 prim)
+		{
+			int tex_layer = 0;
+			return IsAutoFlushDraw(prim, tex_layer);
 		}
 	};
 
@@ -389,14 +486,20 @@ namespace
 	// the flush path can assert that it did.
 	u32 RunAndCompare(const KickSetup& setup, u32 prim, bool xyzf2,
 		const std::vector<VertexSpec>& verts, const std::vector<u32>& call_sizes, bool arm_b_kernel = true,
-		bool draw_moves_environment = false)
+		bool draw_moves_environment = false, bool auto_flush_arm = false, bool draw_moves_autoflush = false,
+		bool* predicate_out = nullptr)
 	{
 		const DrawBufferingGuard guard(setup.draw_buffering);
+		const AutoFlushGuard af_guard(setup.autoflush);
 		const std::vector<GIFPackedReg> stream = EncodeStream(verts, xyzf2);
 
 		auto run = [&](bool use_kernel) {
 			auto p = MakeProbe(setup, prim, use_kernel);
 			p->m_draw_moves_environment = draw_moves_environment;
+			p->m_draw_moves_autoflush = draw_moves_autoflush;
+			p->m_auto_flush_arm = auto_flush_arm;
+			if (predicate_out)
+				*predicate_out = p->AutoFlushPredicate(prim);
 			u32 k = 0;
 			for (u32 nv : call_sizes)
 			{
@@ -1019,4 +1122,375 @@ TEST(GsKickKernel, EnvironmentMovingUnderTheRunIsPickedUp)
 	KickSetup s;
 	EXPECT_GT(RunAndCompare(s, GS_TRIANGLESTRIP, false, v, {5000}, true, true), 0u)
 		<< "the run never flushed, so the environment never moved";
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3b: the auto_flush = true instantiations.
+//
+// The whole autoflush test is a no-op for a run of vertices whenever
+// IsAutoFlushDraw is false -- every store and every flush HandleAutoFlush can
+// perform is inside that predicate's body, and the predicate reads only draw
+// state, which nothing inside a kernel chunk can change. So the chunk is routed:
+// predicate false takes the two-pass kernel, predicate true keeps the staged
+// per-vertex loop that reads the incoming vertex out of m_v.
+//
+// These tests drive the SAME differential comparison as the rest of the file
+// through the auto_flush = true handler, in both predicate states, and across a
+// flush that moves the predicate under the run.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	// A setup whose IsAutoFlushDraw answers false with the whole predicate having
+	// run: autoflush enabled, texture mapping on, and TEX0 pointing at a block
+	// that is neither FRAME's nor ZBUF's. This is the case 3b routes.
+	KickSetup AutoFlushInertSetup()
+	{
+		KickSetup s;
+		s.autoflush = GSHWAutoFlushLevel::Enabled;
+		s.autoflush_hit = false;
+		s.tme = 1;
+		return s;
+	}
+
+	// The same, with TEX0 on FRAME's own block, so the predicate answers true and
+	// the run must stay on the staged loop.
+	KickSetup AutoFlushLiveSetup()
+	{
+		KickSetup s = AutoFlushInertSetup();
+		s.autoflush_hit = true;
+		return s;
+	}
+} // namespace
+
+// The setups do what they claim. Everything below reads as a routing test only
+// because of this, so it is asserted rather than assumed.
+TEST(GsKickKernel, AutoFlushSetupsProduceTheIntendedPredicate)
+{
+	const AutoFlushGuard guard(GSHWAutoFlushLevel::Enabled);
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		SCOPED_TRACE(::testing::Message() << "prim=" << prim);
+		auto inert = MakeProbe(AutoFlushInertSetup(), prim, true);
+		EXPECT_FALSE(inert->AutoFlushPredicate(prim)) << "the inert setup must answer false";
+
+		auto live = MakeProbe(AutoFlushLiveSetup(), prim, true);
+		EXPECT_TRUE(live->AutoFlushPredicate(prim)) << "the live setup must answer true";
+	}
+	KickProbe::s_fused_kick_use_kernel = true;
+}
+
+// The whole matrix -- three prims, both packed layouts, three ADC patterns, every
+// run length -- through the auto_flush = true handler with the predicate inert.
+// This is the case the routing sends to the kernel, so it is the case where the
+// kernel arm and the staged arm are different code and the comparison has content.
+TEST(GsKickKernel, AutoFlushInertMatchesStagedAcrossPrimsLayoutsAndRunLengths)
+{
+	const u32 prims[] = {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE};
+	const AdcPattern adcs[] = {AdcPattern::None, AdcPattern::Stuntman, AdcPattern::Katamari};
+
+	u32 seed = 5000;
+	for (u32 prim : prims)
+	{
+		for (bool xyzf2 : {false, true})
+		{
+			for (AdcPattern adc : adcs)
+			{
+				for (u32 len : kRunLengths)
+				{
+					SCOPED_TRACE(::testing::Message() << "prim=" << prim << " xyzf2=" << xyzf2
+					                                  << " adc=" << static_cast<int>(adc) << " len=" << len);
+					bool predicate = true;
+					RunAndCompare(AutoFlushInertSetup(), prim, xyzf2, MakeStream(len, adc, seed++), {len},
+						true, false, true, false, &predicate);
+					EXPECT_FALSE(predicate) << "this stream was supposed to run with the predicate inert";
+				}
+			}
+		}
+	}
+}
+
+// The same streams split across handler calls, which is where the per-call
+// snapshot rule and the per-chunk re-evaluation both become observable.
+TEST(GsKickKernel, AutoFlushInertMatchesStagedAcrossCallSplits)
+{
+	const std::vector<std::vector<u32>> splits = {
+		{1, 1, 1, 1, 1, 1, 1, 1},
+		{2, 3, 5, 7, 11, 13},
+		{127, 1, 128, 1},
+		{64, 64, 64, 64},
+		{300},
+	};
+
+	u32 seed = 5300;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (const auto& split : splits)
+		{
+			SCOPED_TRACE(::testing::Message() << "prim=" << prim << " split[0]=" << split[0]);
+			RunAndCompare(AutoFlushInertSetup(), prim, false, MakeStream(400, AdcPattern::Stuntman, seed++),
+				split, true, false, true);
+		}
+	}
+}
+
+// The predicate live. Both arms must stay on the staged loop, so the two sides of
+// this comparison are the same code and it can only fail if the routing sent a
+// live chunk to the kernel.
+TEST(GsKickKernel, AutoFlushLiveStaysStaged)
+{
+	u32 seed = 5600;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (bool xyzf2 : {false, true})
+		{
+			for (u32 len : {5u, 127u, 128u, 129u, 400u})
+			{
+				SCOPED_TRACE(::testing::Message() << "prim=" << prim << " xyzf2=" << xyzf2 << " len=" << len);
+				bool predicate = false;
+				RunAndCompare(AutoFlushLiveSetup(), prim, xyzf2, MakeStream(len, AdcPattern::Stuntman, seed++),
+					{len}, true, false, true, false, &predicate);
+				EXPECT_TRUE(predicate) << "this stream was supposed to run with the predicate live";
+			}
+		}
+	}
+}
+
+// Sprites are not routed at all in 3b: EarlyDetectShuffle reads the incoming
+// vertex out of m_v, so the predicate is per-prim state for the sprite class and
+// not chunk-invariant. Drive the sprite handler in both predicate states with a
+// texture-mapped 16-bit FRAME and TEX0, which is the shape EarlyDetectShuffle
+// actually inspects, so a routing decision that ignored the prim class would show.
+TEST(GsKickKernel, AutoFlushSpritesStayStagedUnderShuffleShapedState)
+{
+	for (bool hit : {false, true})
+	{
+		KickSetup s = hit ? AutoFlushLiveSetup() : AutoFlushInertSetup();
+		s.fst = 1;
+		SCOPED_TRACE(::testing::Message() << "autoflush_hit=" << hit);
+		RunAndCompare(s, GS_SPRITE, false, MakeStream(300, AdcPattern::Stuntman, 5900 + hit), {300},
+			true, false, true);
+		RunAndCompare(s, GS_SPRITE, true, MakeStream(300, AdcPattern::None, 5910 + hit), {7, 7, 286},
+			true, false, true);
+	}
+}
+
+// The predicate moving under a run in progress.
+//
+// The routing decision is taken once per chunk, and what can move it is a flush:
+// a flush restores a buffered environment, which is a different TEX0 against the
+// same FRAME. A driver that took the decision once per handler call instead of
+// once per chunk would run the rest of a call on the wrong arm. This drives it:
+// the probe's Draw() flips TEX0 between FRAME's block and another one on every
+// draw, and the stream is long enough that the vertex-count flush fires inside a
+// call, so the predicate crosses in both directions mid-call.
+TEST(GsKickKernel, AutoFlushPredicateMovingUnderTheRunIsPickedUp)
+{
+	std::vector<VertexSpec> v;
+	std::mt19937 rng(41);
+	for (u32 i = 0; i < 70000; i++)
+	{
+		VertexSpec s = {};
+		s.x = static_cast<u16>(((i * 37) % 600 + 10) * 16);
+		s.y = static_cast<u16>(((i * 53) % 400 + 10) * 16);
+		s.z = rng();
+		s.rgba = rng();
+		s.q = 1.0f;
+		v.push_back(s);
+	}
+
+	EXPECT_GT(RunAndCompare(AutoFlushInertSetup(), GS_TRIANGLESTRIP, false, v, {5000},
+				  true, false, true, true),
+		0u)
+		<< "the run never flushed, so the predicate never moved";
+	EXPECT_GT(RunAndCompare(AutoFlushLiveSetup(), GS_TRIANGLESTRIP, false, v, {5000},
+				  true, false, true, true),
+		0u)
+		<< "the run never flushed, so the predicate never moved";
+}
+
+// The environment moving under a run, on the autoflush arm. Same shape as
+// EnvironmentMovingUnderTheRunIsPickedUp: the scissor, the offset and the shading
+// bits all move at every draw, and the vertices after a flush must be decided
+// against the new ones. On this arm the invariants are rebuilt at a chunk
+// boundary that is also a routing decision, so both have to be re-read together.
+TEST(GsKickKernel, AutoFlushEnvironmentMovingUnderTheRunIsPickedUp)
+{
+	std::vector<VertexSpec> v;
+	std::mt19937 rng(43);
+	for (u32 i = 0; i < 70000; i++)
+	{
+		VertexSpec s = {};
+		s.x = static_cast<u16>(((i * 37) % 600 + 10) * 16);
+		s.y = static_cast<u16>(((i * 53) % 400 + 10) * 16);
+		s.z = rng();
+		s.rgba = rng();
+		s.q = 1.0f;
+		v.push_back(s);
+	}
+
+	EXPECT_GT(RunAndCompare(AutoFlushInertSetup(), GS_TRIANGLESTRIP, false, v, {5000}, true, true, true), 0u)
+		<< "the run never flushed, so the environment never moved";
+}
+
+// The remaining shapes from the direct arm, repeated on the autoflush arm: an
+// invalid scissor (every prim rejected before the cull), a nonzero XYOFFSET, AA1
+// (the kernel does not apply, so the handler must fall back), the prim types the
+// kernel does not carry, draw buffering's overlap prologue, and a run that grows
+// the vertex buffer.
+TEST(GsKickKernel, AutoFlushInertCoversTheSeamShapes)
+{
+	{
+		KickSetup s = AutoFlushInertSetup();
+		s.empty_scissor = true;
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+		{
+			SCOPED_TRACE(::testing::Message() << "invalid scissor, prim=" << prim);
+			RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::None, 6000 + prim), {300}, true, false, true);
+		}
+	}
+	{
+		KickSetup s = AutoFlushInertSetup();
+		s.ofx = 1728 * 16;
+		s.ofy = 1808 * 16;
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+		{
+			SCOPED_TRACE(::testing::Message() << "xyoffset, prim=" << prim);
+			RunAndCompare(s, prim, false, MakeStream(500, AdcPattern::Stuntman, 6100 + prim), {500}, true, false, true);
+		}
+	}
+	{
+		KickSetup s = AutoFlushInertSetup();
+		s.aa1 = 1;
+		SCOPED_TRACE("aa1");
+		RunAndCompare(s, GS_TRIANGLESTRIP, false, MakeStream(300, AdcPattern::Stuntman, 6200), {300}, true, false, true);
+	}
+	{
+		KickSetup s = AutoFlushInertSetup();
+		for (u32 prim : {GS_TRIANGLEFAN, GS_LINESTRIP})
+		{
+			SCOPED_TRACE(::testing::Message() << "uncarried prim=" << prim);
+			RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::Stuntman, 6300 + prim), {300}, true, false, true);
+		}
+	}
+	{
+		KickSetup s = AutoFlushInertSetup();
+		s.draw_buffering = true;
+		s.recent_buffer_switch = true;
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+		{
+			SCOPED_TRACE(::testing::Message() << "overlap prologue, prim=" << prim);
+			RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::Stuntman, 6400 + prim), {300}, true, false, true);
+			RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::None, 6410 + prim), {7, 7, 286}, true, false, true);
+		}
+	}
+	{
+		std::vector<VertexSpec> v;
+		std::mt19937 rng(47);
+		for (u32 i = 0; i < 12000; i++)
+		{
+			VertexSpec s = {};
+			s.x = static_cast<u16>(((i * 37) % 600 + 10) * 16);
+			s.y = static_cast<u16>(((i * 53) % 400 + 10) * 16);
+			s.z = rng();
+			s.rgba = rng();
+			s.q = 1.0f;
+			v.push_back(s);
+		}
+		SCOPED_TRACE("buffer growth");
+		RunAndCompare(AutoFlushInertSetup(), GS_TRIANGLESTRIP, false, v, {1000}, true, false, true);
+	}
+}
+
+// Short streams with a bimodal value spread, on the autoflush arm: the fused
+// min/max accumulator is the subtlest part of the contract and the arm that
+// reaches it through the routing is a different driver.
+TEST(GsKickKernel, AutoFlushInertShortStreamsPinTheAccumulator)
+{
+	for (u32 seed = 0; seed < 120; seed++)
+	{
+		std::mt19937 rng(seed * 2246822519u + 7);
+		std::vector<VertexSpec> v;
+		const u32 len = 6 + (seed % 24);
+		for (u32 i = 0; i < len; i++)
+		{
+			VertexSpec s = {};
+			const bool extreme = (rng() % 3) == 0;
+			const bool offscreen = (rng() % 3) == 0;
+			if (offscreen)
+			{
+				s.x = static_cast<u16>(3000 * 16 + (rng() % 64));
+				s.y = static_cast<u16>((rng() % 448) * 16);
+			}
+			else
+			{
+				s.x = static_cast<u16>((rng() % 640) * 16);
+				s.y = static_cast<u16>((rng() % 448) * 16);
+			}
+			s.z = extreme ? ((rng() & 1) ? 0xFFFFFFFFu : 0u) : rng();
+			s.rgba = extreme ? ((rng() & 1) ? 0xFFFFFFFFu : 0u) : rng();
+			s.fog = extreme ? ((rng() & 1) ? 0xFFu : 0u) : (rng() & 0xFF);
+			s.s = extreme ? ((rng() & 1) ? 1.0e18f : -1.0e18f) : static_cast<float>(static_cast<int>(rng() % 200) - 100);
+			s.t = extreme ? ((rng() & 1) ? 1.0e18f : -1.0e18f) : static_cast<float>(static_cast<int>(rng() % 200) - 100);
+			s.q = ((rng() % 8) == 0) ? 0.0f : (0.25f + static_cast<float>(rng() % 8));
+			s.adc = (rng() % 5) < 2;
+			v.push_back(s);
+		}
+
+		for (u32 iip : {0u, 1u})
+		{
+			SCOPED_TRACE(::testing::Message() << "seed=" << seed << " len=" << len << " iip=" << iip);
+			KickSetup s = AutoFlushInertSetup();
+			s.iip = iip;
+			RunAndCompare(s, GS_TRIANGLESTRIP, false, v, {len}, true, false, true);
+			RunAndCompare(s, GS_TRIANGLELIST, false, v, {len}, true, false, true);
+		}
+	}
+}
+
+// The autoflush arm's own harness control: the same streams with the STAGED arm
+// on both sides. Anything this reports is a property of the harness -- the
+// autoflush context it builds, the flushes that context causes, the predicate
+// toggling -- and not of the routing.
+TEST(GsKickKernel, AutoFlushHarnessControlIsNotVacuous)
+{
+	u32 seed = 6600;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (bool xyzf2 : {false, true})
+		{
+			for (bool hit : {false, true})
+			{
+				SCOPED_TRACE(::testing::Message() << "prim=" << prim << " xyzf2=" << xyzf2 << " hit=" << hit);
+				const KickSetup s = hit ? AutoFlushLiveSetup() : AutoFlushInertSetup();
+				RunAndCompare(s, prim, xyzf2, MakeStream(400, AdcPattern::Stuntman, seed++), {400}, false, false, true);
+			}
+		}
+	}
+}
+
+// The small-count bypass. Below the compile-time threshold the handler runs the
+// per-vertex batch for its own arm rather than entering the kernel; every count
+// on both sides of the threshold has to land on the same state, and the counts
+// that matter are the ones below a prim's worth.
+TEST(GsKickKernel, SmallCountsMatchOnBothArms)
+{
+	u32 seed = 6900;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (bool xyzf2 : {false, true})
+		{
+			for (u32 len = 1; len <= 16; len++)
+			{
+				SCOPED_TRACE(::testing::Message() << "prim=" << prim << " xyzf2=" << xyzf2 << " len=" << len);
+				RunAndCompare(KickSetup{}, prim, xyzf2, MakeStream(len, AdcPattern::Stuntman, seed++), {len});
+				RunAndCompare(AutoFlushInertSetup(), prim, xyzf2, MakeStream(len, AdcPattern::None, seed++), {len},
+					true, false, true);
+				// One vertex per handler call, which is the shape a bypass gets
+				// wrong by carrying state between calls it must not carry.
+				RunAndCompare(KickSetup{}, prim, xyzf2, MakeStream(len, AdcPattern::Stuntman, seed++),
+					std::vector<u32>(len, 1u));
+			}
+		}
+	}
 }
