@@ -134,7 +134,31 @@ namespace
 			m_regs = m_regs_storage.get();
 		}
 
-		void Draw() override { m_draws++; }
+		// A draw is where the environment can move under a run: FlushPrim executes
+		// it, and anything the flush restores afterwards is what the rest of the
+		// run must be decided against. With this set, every draw moves the scissor,
+		// the offset and the shading bits, which is what a buffered-environment
+		// restore does to a real title mid-tag.
+		bool m_draw_moves_environment = false;
+
+		void Draw() override
+		{
+			m_draws++;
+			if (!m_draw_moves_environment)
+				return;
+
+			GSDrawingContext& ctx = m_env.CTXT[m_env.PRIM.CTXT];
+			ctx.SCISSOR.SCAX0 = 40 + (m_draws * 13) % 100;
+			ctx.SCISSOR.SCAY0 = 30 + (m_draws * 7) % 80;
+			ctx.SCISSOR.SCAX1 = 300 + (m_draws * 11) % 200;
+			ctx.SCISSOR.SCAY1 = 200 + (m_draws * 5) % 150;
+			ctx.XYOFFSET.OFX = (m_draws & 1) ? 0u : 64u;
+			ctx.XYOFFSET.OFY = (m_draws & 1) ? 32u : 0u;
+			ctx.UpdateScissor();
+			m_env.PRIM.IIP = (m_draws & 1) ? 0 : 1;
+			m_env.PRIM.TME = (m_draws & 1) ? 1 : 0;
+			UpdateContext();
+		}
 
 		// The base asserts "not implemented"; the kick only reaches it for AA1
 		// prims, and the answer decides whether the scalar-outcode cull applies.
@@ -364,13 +388,15 @@ namespace
 	// Returns the number of draws the run flushed, so a test that exists to reach
 	// the flush path can assert that it did.
 	u32 RunAndCompare(const KickSetup& setup, u32 prim, bool xyzf2,
-		const std::vector<VertexSpec>& verts, const std::vector<u32>& call_sizes, bool arm_b_kernel = true)
+		const std::vector<VertexSpec>& verts, const std::vector<u32>& call_sizes, bool arm_b_kernel = true,
+		bool draw_moves_environment = false)
 	{
 		const DrawBufferingGuard guard(setup.draw_buffering);
 		const std::vector<GIFPackedReg> stream = EncodeStream(verts, xyzf2);
 
 		auto run = [&](bool use_kernel) {
 			auto p = MakeProbe(setup, prim, use_kernel);
+			p->m_draw_moves_environment = draw_moves_environment;
 			u32 k = 0;
 			for (u32 nv : call_sizes)
 			{
@@ -800,4 +826,197 @@ TEST(GsKickKernel, ShortStreamsWithExtremeValuesPinTheAccumulator)
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The mirror entry, at the boundaries.
+//
+// Pass one builds four entries at a time in NEON (GSVertexKickKernel::
+// BuildMirrorQuad). That is a second implementation of MakeCullMirrorEntry's
+// arithmetic, and the place a second implementation goes wrong is the edges: the
+// band shift is arithmetic on a value that can be negative, the two bound tests
+// are strict on one side and not the other, and the pack splits a 28-bit field
+// across two words. The differential suite would catch a wrong entry only if
+// some stream happened to place a vertex on the edge; this places every vertex
+// on an edge.
+//
+// Two things are pinned. First, both scalar builders (banded and raw) against a
+// model written from the documented formula rather than from the code. Second,
+// the NEON quad against the banded scalar builder, byte for byte.
+// ---------------------------------------------------------------------------
+namespace
+{
+	// The formula as GSVertexKick.h's header comment states it, written out.
+	GSVertexKernels::CullMirrorEntry ModelEntry(int wx, int wy, const GSVertexKernels::CullBounds& b, bool banded)
+	{
+		const int bx = (wx - 1) >> 4;
+		const int by = (wy - 1) >> 4;
+		const int cx = banded ? bx : wx;
+		const int cy = banded ? by : wy;
+
+		u64 oc = 0;
+		if (cx < b.l) oc |= 1;
+		if (cx >= b.r) oc |= 2;
+		if (cy < b.t) oc |= 4;
+		if (cy >= b.b) oc |= 8;
+
+		GSVertexKernels::CullMirrorEntry e;
+		e.xyp = (static_cast<u64>(static_cast<u32>(wy)) << 32) | static_cast<u32>(wx);
+		e.meta = (static_cast<u64>(static_cast<u32>(bx)) & 0xFFFFFFFull) |
+		         ((static_cast<u64>(static_cast<u32>(by)) & 0xFFFFFFFull) << 28) |
+		         (oc << 56);
+		return e;
+	}
+
+	// Every window coordinate whose band sits on or beside a bound, plus both ends
+	// of the band itself (wx = bx*16 + 1 is the first coordinate in band bx and
+	// bx*16 + 16 the last), plus a coordinate whose band is negative.
+	std::vector<int> BoundaryCoords(int lo_band, int hi_band)
+	{
+		std::vector<int> out;
+		for (int band : {lo_band - 2, lo_band - 1, lo_band, lo_band + 1,
+			     hi_band - 2, hi_band - 1, hi_band, hi_band + 1, 0, -1, -2})
+		{
+			out.push_back(band * 16 + 1);  // first coordinate in the band
+			out.push_back(band * 16 + 8);  // middle
+			out.push_back(band * 16 + 16); // last
+		}
+		return out;
+	}
+} // namespace
+
+TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
+{
+	const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
+	const std::vector<int> xs = BoundaryCoords(bounds.l, bounds.r);
+	const std::vector<int> ys = BoundaryCoords(bounds.t, bounds.b);
+
+	for (int wx : xs)
+	{
+		for (int wy : ys)
+		{
+			SCOPED_TRACE(::testing::Message() << "wx=" << wx << " wy=" << wy);
+
+			const auto banded = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds);
+			const auto banded_ref = ModelEntry(wx, wy, bounds, true);
+			EXPECT_EQ(banded.xyp, banded_ref.xyp) << "banded xyp";
+			EXPECT_EQ(banded.meta, banded_ref.meta) << "banded meta";
+
+			const auto raw = GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds);
+			const auto raw_ref = ModelEntry(wx, wy, bounds, false);
+			EXPECT_EQ(raw.xyp, raw_ref.xyp) << "raw xyp";
+			EXPECT_EQ(raw.meta, raw_ref.meta) << "raw meta";
+		}
+	}
+}
+
+#ifdef ARCH_ARM64
+TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
+{
+	// The offsets are subtracted from the raw 12.4 coordinate, so a target window
+	// coordinate wx is reached as X = wx + ofx with X inside a u16. Both offsets
+	// are exercised: zero, and the usual PS2 screen-centre value.
+	for (int ofx : {0, 1728 * 16})
+	{
+		for (int ofy : {0, 1808 * 16})
+		{
+			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
+			const GSVector4i xyof(ofx, ofy, ofx, ofy);
+			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds);
+
+			std::vector<int> xs, ys;
+			for (int v : BoundaryCoords(bounds.l, bounds.r))
+			{
+				if (v + ofx >= 0 && v + ofx <= 0xFFFF)
+					xs.push_back(v);
+			}
+			for (int v : BoundaryCoords(bounds.t, bounds.b))
+			{
+				if (v + ofy >= 0 && v + ofy <= 0xFFFF)
+					ys.push_back(v);
+			}
+			ASSERT_FALSE(xs.empty());
+			ASSERT_FALSE(ys.empty());
+
+			// Four vertices per call, so the sweep is walked four at a time with
+			// every lane carrying a different boundary and a different ADC bit.
+			std::vector<std::pair<int, int>> pts;
+			for (int wx : xs)
+			{
+				for (int wy : ys)
+					pts.emplace_back(wx, wy);
+			}
+			while (pts.size() % 4 != 0)
+				pts.push_back(pts.back());
+
+			for (size_t base = 0; base < pts.size(); base += 4)
+			{
+				alignas(16) u32 raw[4][4] = {};
+				GSVertexKernels::CullMirrorEntry expect[4];
+				for (int k = 0; k < 4; k++)
+				{
+					const int wx = pts[base + k].first;
+					const int wy = pts[base + k].second;
+					raw[k][0] = static_cast<u32>(wx + ofx) & 0xFFFFu;
+					raw[k][1] = static_cast<u32>(wy + ofy) & 0xFFFFu;
+					raw[k][2] = 0x12345678u;
+					// ADC on two lanes of every quad, so a stuck lane shows up.
+					raw[k][3] = (k & 1) ? 0x8000u : 0u;
+
+					expect[k] = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds);
+					if (k & 1)
+						expect[k].meta |= GSVertexKickKernel::kCullMetaAdcBit;
+				}
+
+				alignas(16) u64 got_xyp[4] = {};
+				alignas(16) u64 got_meta[4] = {};
+				GSVertexKickKernel::BuildMirrorQuad(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
+					vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
+
+				for (int k = 0; k < 4; k++)
+				{
+					SCOPED_TRACE(::testing::Message() << "ofx=" << ofx << " ofy=" << ofy << " lane=" << k
+					                                  << " wx=" << pts[base + k].first
+					                                  << " wy=" << pts[base + k].second);
+					EXPECT_EQ(got_xyp[k], expect[k].xyp) << "xyp";
+					EXPECT_EQ(got_meta[k], expect[k].meta) << "meta";
+				}
+			}
+		}
+	}
+}
+#endif // ARCH_ARM64
+
+// The environment moving under a run in progress.
+//
+// The two-pass kernel reads the offset, the cull bounds and PRIM's shading bits
+// once per chunk and then decides a whole chunk against them. The per-vertex kick
+// reads all of them out of memory on EVERY vertex. Between those two positions
+// sits a flush: a legacy kick inside the handler's loop can flush on vertex count
+// or on a draw-buffer overlap, and what a flush restores afterwards is a
+// different environment. A kernel still holding the copy it took before that seam
+// decides the rest of the run against an environment that no longer exists.
+//
+// This drives it directly: the probe's Draw() -- which FlushPrim calls -- moves
+// the scissor, the offset and the shading bits, so the vertices after the flush
+// must be culled, offset and shaded by the new ones. Both arms see the same
+// mutation, so any difference is the kernel reading a stale copy.
+TEST(GsKickKernel, EnvironmentMovingUnderTheRunIsPickedUp)
+{
+	std::vector<VertexSpec> v;
+	std::mt19937 rng(31);
+	for (u32 i = 0; i < 70000; i++)
+	{
+		VertexSpec s = {};
+		s.x = static_cast<u16>(((i * 37) % 600 + 10) * 16);
+		s.y = static_cast<u16>(((i * 53) % 400 + 10) * 16);
+		s.z = rng();
+		s.rgba = rng();
+		s.q = 1.0f;
+		v.push_back(s);
+	}
+
+	KickSetup s;
+	EXPECT_GT(RunAndCompare(s, GS_TRIANGLESTRIP, false, v, {5000}, true, true), 0u)
+		<< "the run never flushed, so the environment never moved";
 }
