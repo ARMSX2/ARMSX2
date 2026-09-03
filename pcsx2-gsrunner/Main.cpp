@@ -12,7 +12,10 @@
 #include <functional>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <thread>
+#include <type_traits>
+#include <utility>
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -30,6 +33,7 @@
 #include "common/CocoaTools.h"
 #include "common/Console.h"
 #include "common/CrashHandler.h"
+#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
@@ -466,17 +470,98 @@ static bool s_perf_saw_gs_back_thread = false;
 static float s_perf_sum_gpu_time = 0.0f;
 static float s_perf_sum_gpu_usage = 0.0f;
 
+// Failures that happen before the log is usable are reported through here.
+//
+// Two things hide them otherwise. The file log only opens during VM startup, which is
+// after argument parsing and after InitializeConfig, so nothing written before then ever
+// reaches an emulog. And the measurement harnesses run with PCSX2_NOCONSOLE set, which
+// puts the console sink at LOGLEVEL_NONE (see InitializeConsole), so Console.Error
+// reaches nothing either. A run that died in either place left an empty emulog, an empty
+// terminal and exit code 1 -- which is exactly what a crash looks like from outside. That
+// is how a staged binary older than the flag its caller had just learned cost a device
+// round: it rejected the argument and said nothing.
+//
+// stderr is written unconditionally. PCSX2_NOCONSOLE asks for a quiet log, not for a
+// fatal error to be swallowed.
+template <typename... T>
+static void EarlyError(fmt::format_string<T...> format, T&&... args)
+{
+	const std::string message = fmt::format(format, std::forward<T>(args)...);
+	std::fprintf(stderr, "pcsx2-gsrunner: %s\n", message.c_str());
+	std::fflush(stderr);
+
+	// Only when the console sink is off, otherwise the terminal gets the same line twice.
+	// This is for the file and host sinks, on the chance one is already open.
+	if (!Log::IsConsoleOutputEnabled())
+		Console.Error(message);
+}
+
+// The same, plus the pointer to -help. Everything ParseCommandLineArgs rejects uses this,
+// so a caller holding a wrong command line is told both what is wrong and where the list
+// of accepted arguments is.
+template <typename... T>
+static void ArgError(fmt::format_string<T...> format, T&&... args)
+{
+	EarlyError(format, std::forward<T>(args)...);
+	std::fprintf(stderr, "pcsx2-gsrunner: run with -help for the arguments this build accepts.\n");
+	std::fflush(stderr);
+}
+
+// Parses a numeric flag argument, rejecting anything that is not entirely a number.
+// These were FromChars<>(...).value_or(<default>), which silently substituted the default
+// for a typo: '-loop tow' looped forever and '-swthreads x' ran with none, both without a
+// word, and both looking from outside like the run that was asked for.
+template <typename T>
+static std::optional<T> ParseNumericArg(const char* flag, const std::string_view text)
+{
+	const std::string_view trimmed = StringUtil::StripWhitespace(text);
+	std::string_view rest;
+	std::optional<T> value;
+	if constexpr (std::is_integral_v<T>)
+		value = StringUtil::FromChars<T>(trimmed, 10, &rest);
+	else
+		value = StringUtil::FromChars<T>(trimmed, &rest);
+
+	if (!value.has_value() || !rest.empty())
+	{
+		ArgError("{}: '{}' is not a number.", flag, text);
+		return std::nullopt;
+	}
+
+	return value;
+}
+
 bool GSRunner::InitializeConfig()
 {
 	EmuFolders::SetAppRoot();
-	if (!EmuFolders::SetResourcesDirectory() || !EmuFolders::SetDataDirectory(nullptr))
+	if (!EmuFolders::SetResourcesDirectory())
+	{
+		EarlyError("resources directory '{}' is missing (looked for it under the application root '{}'). "
+				   "A staged tree copied without dereferencing symlinks lands here.",
+			EmuFolders::Resources, EmuFolders::AppRoot);
 		return false;
+	}
+
+	Error data_error;
+	if (!EmuFolders::SetDataDirectory(&data_error))
+	{
+		EarlyError("could not create the data directory '{}' or its inis subdirectory: {}", EmuFolders::DataRoot,
+			data_error.GetDescription());
+		return false;
+	}
 
 	CrashHandler::SetWriteDirectory(EmuFolders::DataRoot);
 
-	const char* error;
+	const char* error = nullptr;
 	if (!VMManager::PerformEarlyHardwareChecks(&error))
+	{
+		// Those messages are written for a dialog box and carry embedded newlines. Flatten
+		// them, so the reason is one line a harness log can be grepped for.
+		std::string text(error ? error : "no reason given");
+		std::replace(text.begin(), text.end(), '\n', ' ');
+		EarlyError("early hardware check failed: {}", text);
 		return false;
+	}
 
 	{
 		const std::string roboto_path =
@@ -484,7 +569,7 @@ bool GSRunner::InitializeConfig()
 		const auto roboto_data = FileSystem::MapBinaryFileForRead(roboto_path.c_str());
 		if (roboto_data.empty())
 		{
-			Console.ErrorFmt("Failed to load font file '{}'.", roboto_path);
+			EarlyError("could not read the font '{}' (resources directory '{}').", roboto_path, EmuFolders::Resources);
 			return false;
 		}
 
@@ -948,6 +1033,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -help: Displays this information and exits.\n");
 	std::fprintf(stderr, "  -version: Displays version information and exits.\n");
 	std::fprintf(stderr, "  -dumpdir <dir>: Frame dump directory (will be dumped as filename_frameN.png).\n");
+	std::fprintf(stderr, "  -dumpdirhw <dir>: Directory for the hardware renderer's -dump output. Defaults to -dumpdir.\n");
+	std::fprintf(stderr, "  -dumpdirsw <dir>: Directory for the software renderer's -dump output. Defaults to -dumpdir.\n");
 	std::fprintf(stderr, "  -dump [rt|tex|z|f|a|i|tr|ds|fs|hw]: Enabling dumping of render target, texture, z buffer, frame, "
 		"alphas, and info (context, vertices, list of transfers), transfers images, draw stats, frame stats, HW config, respectively, per draw. Generates lots of data.\n");
 	std::fprintf(stderr, "  -dumprange N[,L,B]: Start dumping from draw N (base 0), stops after L draws, and only "
@@ -969,11 +1056,19 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -variant <auto|classic>: Selects the HW renderer variant. This build has only the "
 						 "classic renderer, so both values are the same run; any other value is an error.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
+	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
+	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
+						 "conversion, disable depth support, disable partial invalidation, disable safe features, texture "
+						 "inside render target, preload frame with GS data, respectively.\n");
+	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
+						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <mode>: GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined). Defaults to 0.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
 	std::fprintf(stderr, "  -noshadercache: Disables the shader cache (useful for parallel runs).\n");
+	std::fprintf(stderr, "  -debugdevice: Enable the graphics API debug device (Vulkan validation layers / GL debug output). "
+						 "Slow; for diagnosing API misuse, not for measurement.\n");
 	std::fprintf(stderr, "  -perf: Enable frame timing performance stats.\n");
 	std::fprintf(stderr, "  -drawlog <path.csv>: Record a per-draw ledger (PS2 register state + backend draw config).\n");
 	std::fprintf(stderr, "  -fedump <path>: Record the front-end decode surface -- every draw, upload, move, CLUT "
@@ -996,6 +1091,20 @@ static void PrintCommandLineHelp(const char* progname)
 						 "to -stats-json as affinity_mode / affinity_source, alongside inherited_cpu_mask, the CPU set "
 						 "this process started with. No effect on platforms with no affinity path (a notice is "
 						 "logged).\n");
+	std::fprintf(stderr, "  -emit-payload <path>: Transform the dump into a console replay payload and exit. Needs no VM, "
+						 "no GS device and no window -- the dump already carries the freeze and the packet stream.\n");
+	std::fprintf(stderr, "  -payload-frames <count>: Stop the emitted payload after this many dump frames. 0 (the default) "
+						 "means all of them. Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -payload-readback bp,bw,psm,w,h | bp,bw,psm,x,y,w,h: The region every payload checkpoint reads "
+						 "back. Left alone it comes from the freeze's context-0 FRAME, which is wrong for a dump that "
+						 "renders somewhere other than where it displays. Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -payload-ladder <n>: Emit a payload checkpoint every n draws as well as at frame boundaries. "
+						 "Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -ladder bp,bw,psm,x,y,w,h: Read back this window at every rung of a host-side ladder run, the "
+						 "arm the console payload is compared against. Keep the window small: a rung is only useful if "
+						 "hundreds of them fit.\n");
+	std::fprintf(stderr, "  -ladder-every <n>: Take a ladder rung every n draws. Only used if -ladder is used.\n");
+	std::fprintf(stderr, "  -ladder-out <path>: Where to write the ladder rungs. Only used if -ladder is used.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1077,10 +1186,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 	bool no_more_args = false;
 	for (int i = 1; i < argc; i++)
 	{
+		// A flag that takes a parameter but was given none used to fail its CHECK_ARG_PARAM
+		// test, fall through the whole chain, and come out of the unknown-argument branch at
+		// the bottom -- reported as an unknown flag, which sends the reader hunting a typo
+		// that is not there. The name is recorded here instead, and a branch just above that
+		// one says what is actually wrong.
+		const char* missing_param = nullptr;
 		if (!no_more_args)
 		{
 #define CHECK_ARG(str) !std::strcmp(argv[i], str)
-#define CHECK_ARG_PARAM(str) (!std::strcmp(argv[i], str) && ((i + 1) < argc))
+#define CHECK_ARG_PARAM(str) (!std::strcmp(argv[i], str) && (((i + 1) < argc) ? true : ((missing_param = (str)), false)))
 
 			if (CHECK_ARG("-help"))
 			{
@@ -1097,13 +1212,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				dumpdir = s_output_prefix = StringUtil::StripWhitespace(argv[++i]);
 				if (s_output_prefix.empty())
 				{
-					Console.Error("Invalid dump directory specified.");
+					ArgError("-dumpdir: the directory name is empty.");
 					return false;
 				}
 
 				if (!FileSystem::DirectoryExists(s_output_prefix.c_str()) && !FileSystem::CreateDirectoryPath(s_output_prefix.c_str(), false))
 				{
-					Console.Error("Failed to create output directory");
+					ArgError("-dumpdir: could not create the output directory '{}'.", s_output_prefix);
 					return false;
 				}
 
@@ -1147,15 +1262,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				int by = 1;
 				if (split.size() > 0)
 				{
-					start = StringUtil::FromChars<int>(split[0]).value_or(0);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[0]);
+					if (!v.has_value())
+						return false;
+					start = v.value();
 				}
 				if (split.size() > 1)
 				{
-					num = StringUtil::FromChars<int>(split[1]).value_or(-1);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[1]);
+					if (!v.has_value())
+						return false;
+					num = v.value();
 				}
 				if (split.size() > 2)
 				{
-					by = std::max(1, StringUtil::FromChars<int>(split[2]).value_or(1));
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[2]);
+					if (!v.has_value())
+						return false;
+					by = std::max(1, v.value());
 				}
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveDrawStart", start);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveDrawCount", num);
@@ -1172,15 +1296,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				int by = 1;
 				if (split.size() > 0)
 				{
-					start = StringUtil::FromChars<int>(split[0]).value_or(0);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[0]);
+					if (!v.has_value())
+						return false;
+					start = v.value();
 				}
 				if (split.size() > 1)
 				{
-					num = StringUtil::FromChars<int>(split[1]).value_or(-1);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[1]);
+					if (!v.has_value())
+						return false;
+					num = v.value();
 				}
 				if (split.size() > 2)
 				{
-					by = std::max(1, StringUtil::FromChars<int>(split[2]).value_or(1));
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[2]);
+					if (!v.has_value())
+						return false;
+					by = std::max(1, v.value());
 				}
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameStart", start);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameCount", num);
@@ -1192,7 +1325,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_renderdoc_path = StringUtil::StripWhitespace(argv[++i]);
 				if (s_renderdoc_path.empty())
 				{
-					Console.Error("Invalid RenderDoc capture path specified.");
+					ArgError("-renderdoc: the capture path is empty.");
 					return false;
 				}
 				continue;
@@ -1203,9 +1336,19 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				std::vector<std::string_view> split = StringUtil::SplitString(str, ',');
 				if (split.size() > 0)
-					s_renderdoc_start_frame = StringUtil::FromChars<u32>(split[0]).value_or(1);
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-renderdoc-frame", split[0]);
+					if (!v.has_value())
+						return false;
+					s_renderdoc_start_frame = v.value();
+				}
 				if (split.size() > 1)
-					s_renderdoc_frame_count = std::max(1u, StringUtil::FromChars<u32>(split[1]).value_or(1));
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-renderdoc-frame", split[1]);
+					if (!v.has_value())
+						return false;
+					s_renderdoc_frame_count = std::max(1u, v.value());
+				}
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-dumpdirhw"))
@@ -1220,7 +1363,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-loop"))
 			{
-				s_loop_count = StringUtil::FromChars<s32>(argv[++i]).value_or(0);
+				// A typo here used to become 0, which is the spelling of "loop forever".
+				const std::optional<s32> count = ParseNumericArg<s32>("-loop", argv[++i]);
+				if (!count.has_value())
+					return false;
+				s_loop_count = count.value();
 				Console.WriteLn("Looping dump playback %d times.", s_loop_count);
 				continue;
 			}
@@ -1253,7 +1400,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					type = GSRendererType::SW;
 				else
 				{
-					Console.Error("Unknown renderer '%s'", rname);
+					ArgError("-renderer: unknown renderer '{}'.", rname);
 					return false;
 				}
 
@@ -1271,15 +1418,9 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const char* vname = argv[++i];
 				if (StringUtil::Strcasecmp(vname, "auto") != 0 && StringUtil::Strcasecmp(vname, "classic") != 0)
 				{
-					// stderr as well as the log: argument parsing runs before the console sink is
-					// attached, so a Console.Error here reaches nothing a caller can read, and a
-					// harness that only sees the exit code cannot tell a rejected arm from a
-					// crashed one.
-					std::fprintf(stderr,
-						"pcsx2-gsrunner: unknown HW renderer variant '%s' -- this build has only the classic "
-						"renderer (accepted: auto, classic)\n",
+					ArgError("-variant: unknown HW renderer variant '{}' -- this build has only the classic "
+							 "renderer (accepted: auto, classic).",
 						vname);
-					Console.Error("Unknown HW renderer variant '%s' (accepted: auto, classic)", vname);
 					return false;
 				}
 
@@ -1288,10 +1429,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-backthread"))
 			{
-				const int mode = StringUtil::FromChars<int>(argv[++i]).value_or(-1);
+				const char* mode_arg = argv[++i];
+				const std::optional<int> parsed = ParseNumericArg<int>("-backthread", mode_arg);
+				if (!parsed.has_value())
+					return false;
+				const int mode = parsed.value();
 				if (mode < 0 || mode > 3)
 				{
-					Console.Error("Invalid GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined)");
+					ArgError("-backthread: mode '{}' is out of range (0=off, 1=inline-records, 2=lockstep, "
+							 "3=pipelined).",
+						mode_arg);
 					return false;
 				}
 
@@ -1301,10 +1448,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-swthreads"))
 			{
-				const int swthreads = StringUtil::FromChars<int>(argv[++i]).value_or(0);
+				const std::optional<int> parsed = ParseNumericArg<int>("-swthreads", argv[++i]);
+				if (!parsed.has_value())
+					return false;
+				const int swthreads = parsed.value();
 				if (swthreads < 0)
 				{
-					Console.WriteLn("Invalid number of software threads");
+					ArgError("-swthreads: {} is negative.", swthreads);
 					return false;
 				}
 				
@@ -1345,7 +1495,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				std::string path = std::string(StringUtil::StripWhitespace(argv[++i]));
 				if (!FileSystem::FileExists(path.c_str()))
 				{
-					Console.ErrorFmt("INI file {} does not exit.", path);
+					ArgError("-ini: no such file '{}'.", path);
 					return false;
 				}
 
@@ -1353,7 +1503,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				if (!si_ini.Load())
 				{
-					Console.ErrorFmt("Unable to load INI settings from {}.", path);
+					ArgError("-ini: could not load settings from '{}'.", path);
 					return false;
 				}
 
@@ -1364,10 +1514,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-upscale"))
 			{
-				const float upscale = StringUtil::FromChars<float>(argv[++i]).value_or(0.0f);
+				const std::optional<float> parsed = ParseNumericArg<float>("-upscale", argv[++i]);
+				if (!parsed.has_value())
+					return false;
+				const float upscale = parsed.value();
 				if (upscale < 0.5f)
 				{
-					Console.WriteLn("Invalid upscale multiplier");
+					ArgError("-upscale: multiplier {} is below the minimum of 0.5.", upscale);
 					return false;
 				}
 
@@ -1437,7 +1590,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string cpus(StringUtil::StripWhitespace(argv[++i]));
 				if (!ParseCpuList(cpus, &s_gs_pin_mask))
 				{
-					Console.Error(fmt::format("Invalid -gspin CPU list '{}' (expected e.g. 4 or 0,1,2,3)", cpus));
+					ArgError("-gspin: '{}' is not a CPU list (expected e.g. 4 or 0,1,2,3).", cpus);
 					return false;
 				}
 				s_gs_pin_request = cpus;
@@ -1450,14 +1603,8 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::optional<int> mode = GSRunnerAffinity::ParseMode(mode_arg);
 				if (!mode.has_value())
 				{
-					// stderr, not Console.Error: a rejection here returns straight out of main,
-					// and nothing has flushed the log by then -- every other flag's parse error
-					// in this function is invisible on the terminal for that reason. A run that
-					// dies with no message is the same problem this flag exists to fix, one
-					// layer up, so this one says why.
-					std::fprintf(stderr,
-						"pcsx2-gsrunner: invalid -affinity mode '%s' -- expected an integer %d-%d "
-						"(0 unpinned, 1-6 explicit per-core placements, 7 Performance Cores).\n",
+					ArgError("-affinity: invalid mode '{}' -- expected an integer {}-{} (0 unpinned, 1-6 explicit "
+							 "per-core placements, 7 Performance Cores).",
 						mode_arg, GSRunnerAffinity::MODE_MIN, GSRunnerAffinity::MODE_MAX);
 					return false;
 				}
@@ -1480,7 +1627,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string_view::size_type slash = arg.rfind('/', eq);
 				if (eq == std::string_view::npos || slash == std::string_view::npos || slash == 0)
 				{
-					Console.Error(fmt::format("Malformed -set '{}', expected <Section/Key>=<value>", arg));
+					ArgError("-set: malformed override '{}', expected <Section/Key>=<value>.", arg);
 					return false;
 				}
 
@@ -1489,7 +1636,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string value(arg.substr(eq + 1));
 				if (key.empty())
 				{
-					Console.Error(fmt::format("Malformed -set '{}', empty key", arg));
+					ArgError("-set: malformed override '{}', the key is empty.", arg);
 					return false;
 				}
 
@@ -1531,10 +1678,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))
 			{
-				const std::optional<int> level = StringUtil::FromChars<int>(argv[++i]);
-				if (!level.has_value() || level.value() < 0 || level.value() > 5)
+				const char* level_arg = argv[++i];
+				const std::optional<int> level = ParseNumericArg<int>("-accblend", level_arg);
+				if (!level.has_value())
+					return false;
+				if (level.value() < 0 || level.value() > 5)
 				{
-					Console.Error("Invalid -accblend level (expected 0=Minimum .. 5=Maximum)");
+					ArgError("-accblend: level '{}' is out of range (expected 0=Minimum .. 5=Maximum).", level_arg);
 					return false;
 				}
 				Console.WriteLn(fmt::format("Forcing accurate blending unit = {}", level.value()));
@@ -1544,12 +1694,20 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG_PARAM("-emit-payload"))
 			{
 				s_payload_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_payload_opts.output_path.empty())
+				{
+					ArgError("-emit-payload: the output path is empty.");
+					return false;
+				}
 				s_emit_payload = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-payload-frames"))
 			{
-				s_payload_opts.frame_limit = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				const std::optional<u32> frames = ParseNumericArg<u32>("-payload-frames", argv[++i]);
+				if (!frames.has_value())
+					return false;
+				s_payload_opts.frame_limit = frames.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-payload-readback"))
@@ -1563,25 +1721,38 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
 				if (parts.size() != 5 && parts.size() != 7)
 				{
-					Console.Error("-payload-readback wants bp,bw,psm,w,h or bp,bw,psm,x,y,w,h");
+					ArgError("-payload-readback: got {} fields, wants bp,bw,psm,w,h or bp,bw,psm,x,y,w,h.",
+						parts.size());
 					return false;
 				}
-				s_payload_opts.rb_bp = StringUtil::FromChars<u32>(parts[0]).value_or(0);
-				s_payload_opts.rb_bw = StringUtil::FromChars<u32>(parts[1]).value_or(0);
-				s_payload_opts.rb_psm = StringUtil::FromChars<u32>(parts[2]).value_or(0);
-				if (parts.size() == 7)
+				std::vector<u32> rb;
+				rb.reserve(parts.size());
+				for (const std::string_view& part : parts)
 				{
-					s_payload_opts.rb_x = StringUtil::FromChars<u32>(parts[3]).value_or(0);
-					s_payload_opts.rb_y = StringUtil::FromChars<u32>(parts[4]).value_or(0);
+					const std::optional<u32> v = ParseNumericArg<u32>("-payload-readback", part);
+					if (!v.has_value())
+						return false;
+					rb.push_back(v.value());
 				}
-				s_payload_opts.rb_w = StringUtil::FromChars<u32>(parts[parts.size() - 2]).value_or(0);
-				s_payload_opts.rb_h = StringUtil::FromChars<u32>(parts[parts.size() - 1]).value_or(0);
+				s_payload_opts.rb_bp = rb[0];
+				s_payload_opts.rb_bw = rb[1];
+				s_payload_opts.rb_psm = rb[2];
+				if (rb.size() == 7)
+				{
+					s_payload_opts.rb_x = rb[3];
+					s_payload_opts.rb_y = rb[4];
+				}
+				s_payload_opts.rb_w = rb[rb.size() - 2];
+				s_payload_opts.rb_h = rb[rb.size() - 1];
 				s_payload_opts.rb_explicit = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-payload-ladder"))
 			{
-				s_payload_opts.ladder_every = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				const std::optional<u32> every = ParseNumericArg<u32>("-payload-ladder", argv[++i]);
+				if (!every.has_value())
+					return false;
+				s_payload_opts.ladder_every = every.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-ladder"))
@@ -1592,26 +1763,42 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
 				if (parts.size() != 7)
 				{
-					Console.Error("-ladder wants bp,bw,psm,x,y,w,h");
+					ArgError("-ladder: got {} fields, wants bp,bw,psm,x,y,w,h.", parts.size());
 					return false;
 				}
-				s_ladder_opts.bp = StringUtil::FromChars<u32>(parts[0]).value_or(0);
-				s_ladder_opts.bw = StringUtil::FromChars<u32>(parts[1]).value_or(0);
-				s_ladder_opts.psm = StringUtil::FromChars<u32>(parts[2]).value_or(0);
-				s_ladder_opts.x = StringUtil::FromChars<u32>(parts[3]).value_or(0);
-				s_ladder_opts.y = StringUtil::FromChars<u32>(parts[4]).value_or(0);
-				s_ladder_opts.w = StringUtil::FromChars<u32>(parts[5]).value_or(0);
-				s_ladder_opts.h = StringUtil::FromChars<u32>(parts[6]).value_or(0);
+				u32 rung[7] = {};
+				for (size_t p = 0; p < parts.size(); p++)
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-ladder", parts[p]);
+					if (!v.has_value())
+						return false;
+					rung[p] = v.value();
+				}
+				s_ladder_opts.bp = rung[0];
+				s_ladder_opts.bw = rung[1];
+				s_ladder_opts.psm = rung[2];
+				s_ladder_opts.x = rung[3];
+				s_ladder_opts.y = rung[4];
+				s_ladder_opts.w = rung[5];
+				s_ladder_opts.h = rung[6];
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-ladder-every"))
 			{
-				s_ladder_opts.every = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				const std::optional<u32> every = ParseNumericArg<u32>("-ladder-every", argv[++i]);
+				if (!every.has_value())
+					return false;
+				s_ladder_opts.every = every.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-ladder-out"))
 			{
 				s_ladder_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_ladder_opts.output_path.empty())
+				{
+					ArgError("-ladder-out: the output path is empty.");
+					return false;
+				}
 				continue;
 			}
 			else if (CHECK_ARG("-debugdevice"))
@@ -1625,9 +1812,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				no_more_args = true;
 				continue;
 			}
+			else if (missing_param)
+			{
+				ArgError("{}: needs a parameter, and it was the last argument on the command line.", missing_param);
+				return false;
+			}
 			else if (argv[i][0] == '-')
 			{
-				Console.Error("Unknown parameter: '%s'", argv[i]);
+				ArgError("unknown argument '{}'.", argv[i]);
 				return false;
 			}
 
@@ -1642,13 +1834,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 	if (params.filename.empty())
 	{
-		Console.Error("No dump filename provided.");
+		ArgError("no GS dump filename was given.");
 		return false;
 	}
 
 	if (!VMManager::IsGSDumpFileName(params.filename))
 	{
-		Console.Error("Provided filename is not a GS dump.");
+		ArgError("'{}' is not a GS dump (expected .gs, .gs.xz or .gs.zst).", params.filename);
 		return false;
 	}
 
@@ -2389,7 +2581,10 @@ int main(int argc, char* argv[])
 
 	if (!GSRunner::InitializeConfig())
 	{
-		Console.Error("Failed to initialize config.");
+		// Each failing step in there names itself and the path it was looking at. This line
+		// is the backstop, so a future early return that forgets to say anything still
+		// leaves something on the terminal rather than an exit code on its own.
+		EarlyError("startup configuration failed, cannot continue.");
 		return EXIT_FAILURE;
 	}
 
@@ -2420,7 +2615,7 @@ int main(int argc, char* argv[])
 
 	if (s_use_window.value_or(true) && !GSRunner::CreatePlatformWindow())
 	{
-		Console.Error("Failed to create window.");
+		EarlyError("could not create the host window. A headless device run wants -surfaceless.");
 		return EXIT_FAILURE;
 	}
 
