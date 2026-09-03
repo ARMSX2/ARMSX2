@@ -498,10 +498,10 @@ namespace GSDrawLog
 				return "INELIGIBLE";
 			case ExactAlphaDropTargetUnknown:
 				return "TARGET_UNKNOWN";
-			case ExactAlphaDropSourceNotConstant:
-				return "SRC_NOT_CONST";
-			case ExactAlphaDropLoadBearing:
-				return "LOAD_BEARING";
+			case ExactAlphaDropSubstituteVarying:
+				return "SUBST_SRC_NOT_CONST";
+			case ExactAlphaDropSubstituteLoadBearing:
+				return "SUBST_LOAD_BEARING";
 			default:
 				return "";
 		}

@@ -404,20 +404,31 @@ namespace GSDrawLog
 		u8 pass_end;
 	};
 
-	/// What the exact alpha-mask-drop rule decided about a draw.
+	/// What the exact alpha-mask rules decided about a draw.
 	///
-	/// The three refusals are separated because they say different things about the title: an
-	/// unknown target is a tracker problem, a non-constant source is a geometry fact, and a
-	/// load-bearing mask is a draw the rule must never touch.
+	/// The refusals are separated because they say different things about the title. An unknown
+	/// target is a tracker problem, and nothing can be done with the draw. The other two are the
+	/// substitution's population: the target knows the bits, so the shader can write them itself,
+	/// and the split records whether the source alpha was constant on them (the mask was doing
+	/// real work) or varied across the draw.
 	enum ExactAlphaDrop : u8
 	{
 		ExactAlphaDropNotConsidered = 0, ///< not an alpha-only partial mask on a 32-bit target
 		ExactAlphaDropTaken, ///< the mask was the identity; it was cleared
 		ExactAlphaDropIneligible, ///< an alpha-only partial mask, refused on a precondition
 		ExactAlphaDropTargetUnknown, ///< the target does not know the bits the mask holds back
-		ExactAlphaDropSourceNotConstant, ///< the fragment alpha straddles one of those bits
-		ExactAlphaDropLoadBearing, ///< known and constant, and different: the mask is doing work
+		ExactAlphaDropSubstituteVarying, ///< known, and the fragment alpha straddles one of those bits
+		ExactAlphaDropSubstituteLoadBearing, ///< known and constant, and different: the mask is doing work
 	};
+
+	/// Whether a verdict is one of the two the substitution acts on. Both mean the same thing
+	/// about the draw -- the target knows every bit the mask holds back, and the drop cannot have
+	/// it because the source does not already carry them -- and differ only in why, which the
+	/// ledger keeps because the two classes size different follow-on work.
+	inline constexpr bool IsExactAlphaSubstitute(u8 decision)
+	{
+		return decision == ExactAlphaDropSubstituteVarying || decision == ExactAlphaDropSubstituteLoadBearing;
+	}
 
 	/// Which variant of the blend-mix factor-in-alpha road a draw was on. The road hands the blend
 	/// unit its factor through the primary colour output's alpha, which only works when nothing

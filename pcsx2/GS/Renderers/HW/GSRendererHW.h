@@ -220,8 +220,10 @@ private:
 	void HandleFlatShadedVertices();
 	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
-	/// Whether this draw's alpha FBMSK can be cleared without changing a pixel, and if not, why.
-	/// Feeds the ledger column so a run can be audited for how often the drop applies.
+	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
+	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
+	/// nothing -- and where nothing, why. Feeds the ledger column so a run can be audited for how
+	/// often each applies.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
 	void ResolveUnionAlphaDrop();
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once

@@ -6792,9 +6792,6 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlphaFixedOne())
 		return GSDrawLog::ExactAlphaDropIneligible;
 
-	if ((rt->m_alpha_known.bits & masked) != masked)
-		return GSDrawLog::ExactAlphaDropTargetUnknown;
-
 	// The fragment alpha, with FBA folded in the way CalculateAlphaRange folds it. Read here, so
 	// before CorrectATEAlphaMinMax narrows the range to the values that pass the alpha test:
 	// pixels that fail the test can still write alpha, so the wider range is the honest one.
@@ -6802,12 +6799,21 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	const u8 src_lo = static_cast<u8>(GetAlphaMinMax().min | fba_value);
 	const u8 src_hi = static_cast<u8>(GetAlphaMinMax().max | fba_value);
 
-	if ((GSAlphaKnownBits::ConstantBits(src_lo, src_hi) & masked) != masked)
-		return GSDrawLog::ExactAlphaDropSourceNotConstant;
-	if (!GSAlphaKnownBits::MaskIsIdentity(rt->m_alpha_known, masked, src_lo, src_hi))
-		return GSDrawLog::ExactAlphaDropLoadBearing;
+	switch (GSDrawAlphaMask::DecideExact(rt->m_alpha_known, masked, src_lo, src_hi))
+	{
+		case GSDrawAlphaMask::ExactVerdict::TargetUnknown:
+			return GSDrawLog::ExactAlphaDropTargetUnknown;
 
-	return GSDrawLog::ExactAlphaDropTaken;
+		case GSDrawAlphaMask::ExactVerdict::Drop:
+			return GSDrawLog::ExactAlphaDropTaken;
+
+		case GSDrawAlphaMask::ExactVerdict::Substitute:
+		default:
+			// Both halves substitute; the split is for the ledger, which sizes them separately.
+			return ((GSAlphaKnownBits::ConstantBits(src_lo, src_hi) & masked) == masked) ?
+			           GSDrawLog::ExactAlphaDropSubstituteLoadBearing :
+			           GSDrawLog::ExactAlphaDropSubstituteVarying;
+	}
 }
 
 void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex)

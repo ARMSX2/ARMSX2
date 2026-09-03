@@ -189,3 +189,70 @@ TEST(GSDrawAlphaMask, AHeldDropStandsOnlyWhenTheBlendNeedsNoBarrier)
 	EXPECT_TRUE(DropStandsAfterBlend(false));
 	EXPECT_FALSE(DropStandsAfterBlend(true));
 }
+
+TEST(GSDrawAlphaMask, AnUnknownTargetGetsNeitherRoad)
+{
+	// The one thing both roads need is that the target can answer for every bit the mask holds
+	// back. Nothing else about the draw can make up for it.
+	EXPECT_EQ(DecideExact({0x00, 0x00}, 0x80, 0x00, 0x00), ExactVerdict::TargetUnknown);
+	EXPECT_EQ(DecideExact({0x7F, 0x00}, 0x80, 0x80, 0x80), ExactVerdict::TargetUnknown);
+	// Known on some of the masked bits is not known on the mask.
+	EXPECT_EQ(DecideExact({0x80, 0x80}, 0xC0, 0x80, 0x80), ExactVerdict::TargetUnknown);
+}
+
+TEST(GSDrawAlphaMask, ACoveredTargetAlwaysGetsOneOfTheTwoRoads)
+{
+	// Over every (known value, mask, source range) the preconditions admit: once the target knows
+	// the masked bits, the draw is either a drop or a substitution. There is no third answer, and
+	// it is the drop exactly when masking the write off was the identity.
+	for (u32 value = 0; value <= 0xFF; value += 5)
+	{
+		const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(static_cast<u8>(value));
+		for (u32 masked = 1; masked <= 0xFE; masked += 3)
+		{
+			for (u32 lo = 0; lo <= 0xFF; lo += 17)
+			{
+				for (u32 hi = lo; hi <= 0xFF; hi += 17)
+				{
+					const ExactVerdict v = DecideExact(target, static_cast<u8>(masked),
+						static_cast<u8>(lo), static_cast<u8>(hi));
+					const bool identity = GSAlphaKnownBits::MaskIsIdentity(target,
+						static_cast<u8>(masked), static_cast<u8>(lo), static_cast<u8>(hi));
+					EXPECT_EQ(v, identity ? ExactVerdict::Drop : ExactVerdict::Substitute)
+						<< "value " << value << " masked " << masked << " src " << lo << ".." << hi;
+				}
+			}
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, TheSourceIsIrrelevantToTheSubstitution)
+{
+	// What the drop refused for -- a source that varies on the masked bits, or one that is
+	// constant there and disagrees with the target -- the substitution does not care about, since
+	// the bits the source holds there never reach the framebuffer.
+	const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(0x00);
+	EXPECT_EQ(DecideExact(target, 0x80, 0x80, 0x80), ExactVerdict::Substitute); // constant, different
+	EXPECT_EQ(DecideExact(target, 0x80, 0x00, 0xFF), ExactVerdict::Substitute); // straddles the bit
+	EXPECT_EQ(DecideExact(target, 0x80, 0x00, 0x00), ExactVerdict::Drop); // agrees: the drop wins
+}
+
+TEST(GSDrawAlphaMask, TheSubstitutionConstantsReproduceTheMaskedMerge)
+{
+	// (a & keep) | value has to be (a & ~M) | (known & M) on every alpha the shader can hand it,
+	// including one above 255 -- the masked road's own AND leaves those alone and so must this.
+	for (u32 masked = 1; masked <= 0xFE; masked++)
+	{
+		for (u32 known = 0; known <= 0xFF; known += 5)
+		{
+			const Substitution sub = SubstitutionFor(static_cast<u8>(masked), static_cast<u8>(known));
+			EXPECT_EQ(sub.value & masked, sub.value) << "masked " << masked;
+			for (u32 a = 0; a <= 0x1FF; a += 7)
+			{
+				const u32 substituted = (a & sub.keep) | sub.value;
+				const u32 merged = (a & ~masked) | (known & masked);
+				EXPECT_EQ(substituted, merged) << "masked " << masked << " known " << known << " a " << a;
+			}
+		}
+	}
+}

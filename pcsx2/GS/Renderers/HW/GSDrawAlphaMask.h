@@ -5,6 +5,8 @@
 
 #include "common/Pcsx2Defs.h"
 
+#include "GS/Renderers/HW/GSAlphaKnownBits.h"
+
 /// Two different questions get asked about a draw's alpha framebuffer mask, and after the exact
 /// alpha drop they have two different answers.
 ///
@@ -56,6 +58,59 @@ namespace GSDrawAlphaMask
 	inline constexpr bool NeedsColorQuantize(u32 requested, u32 emulated)
 	{
 		return requested != 0u && emulated == 0u;
+	}
+
+	/// What an exact-alpha rule can do with a draw that has passed every structural precondition
+	/// -- alpha the only partially masked channel, 32 bits both sides, no shuffle, no AA1 coverage
+	/// alpha, the target not RTA-scaled.
+	enum class ExactVerdict : u8
+	{
+		TargetUnknown, ///< the target does not know every bit the mask holds back; nothing to do
+		Drop, ///< the mask is the identity: clear it and let the source's own alpha land
+		Substitute, ///< the masked bits are known but the source does not already carry them
+	};
+
+	/// Which of the two the draw gets. `masked` is the alpha byte of the mask (non-zero and not
+	/// the whole byte, by the caller's preconditions), `target` what the render target is known to
+	/// hold, and [src_lo, src_hi] the fragment alpha the draw would write.
+	///
+	/// The drop wins wherever both apply. It is the cheaper of the two -- no shader bit, no
+	/// constant, no permutation -- and where the source already carries the target's bits the two
+	/// write the same byte.
+	///
+	/// Substitution needs less than the drop, not more: the drop writes the source's own bits
+	/// through the hole the mask used to cover, so it needs the source to be constant there and to
+	/// agree with the target. Substitution writes the target's known bits instead, so what the
+	/// source holds on those bits never reaches the framebuffer and does not have to be anything
+	/// in particular. Both need the same thing of the target: that its knowledge is exact.
+	inline constexpr ExactVerdict DecideExact(GSAlphaKnownBits::Known target, u8 masked, u8 src_lo, u8 src_hi)
+	{
+		if (masked == 0 || (target.bits & masked) != masked)
+			return ExactVerdict::TargetUnknown;
+
+		if (GSAlphaKnownBits::MaskIsIdentity(target, masked, src_lo, src_hi))
+			return ExactVerdict::Drop;
+
+		return ExactVerdict::Substitute;
+	}
+
+	/// The two constants a substituting shader needs, so it can produce the masked write's own
+	/// result -- (src.a & ~M) | (known & M) -- out of one AND and one OR and no negation.
+	///
+	/// `keep` is every bit the source keeps, as a full 32-bit word, so the AND leaves an alpha
+	/// above 255 alone exactly as the masked-write road's `& ~FbMask` does. `value` is what the
+	/// target is known to hold on the masked bits, already narrowed to them.
+	struct Substitution
+	{
+		u32 keep = 0;
+		u32 value = 0;
+
+		constexpr bool operator==(const Substitution& r) const { return keep == r.keep && value == r.value; }
+	};
+
+	inline constexpr Substitution SubstitutionFor(u8 masked, u8 known_value)
+	{
+		return {~static_cast<u32>(masked), static_cast<u32>(known_value & masked)};
 	}
 
 	/// Whether this draw's primary colour output alpha already carries a value of its own, so
