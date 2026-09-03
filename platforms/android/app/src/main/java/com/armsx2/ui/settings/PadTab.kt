@@ -298,6 +298,19 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 refreshToken.intValue++
             }
             SettingsDivider()
+            // Escape hatch for pads Android will not drive. #433 stopped the phone buzzing for
+            // an external pad; #646 (same reporter) is the other half of that trade -- their
+            // Xbox pad exposes no motor, so suppressing the fallback left them with nothing.
+            // A handheld's own built-in pad is not external and never took this path.
+            ToggleRow(
+                str("pad.rumbleFallback.label"),
+                ControllerMappings.rumbleFallbackExternal(),
+                description = str("pad.rumbleFallback.description"),
+            ) { on ->
+                ControllerMappings.setRumbleFallbackExternal(on)
+                refreshToken.intValue++
+            }
+            SettingsDivider()
             // Buzz the selected player's controller and report whether Android can drive
             // its rumble — separates a routing problem from a pad whose haptics simply
             // aren't exposed to Android (common for DualSense/DS4 over Bluetooth).

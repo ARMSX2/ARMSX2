@@ -555,7 +555,7 @@ public class NativeApp {
 			// (#433). The #241 case is the opposite shape: a handheld whose own built-in pad
 			// has no actuator, where the "device" and the thing in your hands are the same
 			// object and buzzing it is exactly right.
-			if (!drove && allowSystemFallback && !isExternalPad(dev)) {
+			if (!drove && allowSystemFallback && (sRumbleFallbackExternal || !isExternalPad(dev))) {
 				rumbleOne(systemVibrator(), combined, ms);
 			}
 		} catch (Throwable ignored) {
@@ -567,6 +567,15 @@ public class NativeApp {
 	 *  "Vibration Strength" slider tames or boosts all of it. Set from Kotlin
 	 *  (ControllerMappings.setHapticIntensity) live and at app start. */
 	public static volatile float sHapticScale = 1.0f;
+
+	/** Opt back in to buzzing THIS device when an external controller exposes no motor.
+	 *  Default false, which is the #433 behaviour: a phone in a pocket must not buzz for a
+	 *  pad in your hands. But some pads (Xbox Series X/S over Bluetooth, some DualSense BT
+	 *  modes) cannot be driven through InputDevice at all, so suppressing the fallback leaves
+	 *  the user with no feedback whatsoever (#646 — filed by the same reporter as #433).
+	 *  Neither default is right for everyone, so the choice is the user's.
+	 *  Mirrored from ControllerMappings.setRumbleFallbackExternal. */
+	public static volatile boolean sRumbleFallbackExternal = false;
 
 	/**
 	 * True when [dev] is a controller the user is holding SEPARATELY from this device.
@@ -695,7 +704,9 @@ public class NativeApp {
 		return "Player " + (port + 1) + ": " + name
 				+ (mapped ? "" : " (not active in-game yet)")
 				+ (hasRumble ? " — rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")"
-						: " — NO rumble exposed by Android");
+						: " — NO rumble exposed by Android"
+					+ (sRumbleFallbackExternal ? " (vibrating this device instead)"
+						: " (turn on \"Vibrate this device instead\" to feel it here)"));
 	}
 
 	public static native void setAspectRatio(int type);

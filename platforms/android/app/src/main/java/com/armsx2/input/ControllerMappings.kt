@@ -389,6 +389,23 @@ object ControllerMappings {
         kr.co.iefriends.pcsx2.NativeApp.sHapticScale = hapticIntensity() / 100f
     }
 
+    // What to do when the active controller exposes NO motor to Android. Off (default) leaves
+    // an external pad silent rather than buzzing the phone it is paired to (#433). On buzzes
+    // this device instead, which is the only feedback available for pads Android cannot drive
+    // at all -- Xbox Series X/S over Bluetooth, some DualSense BT modes (#646). Built-in
+    // handheld pads are unaffected either way: they are not external, so #241 still buzzes.
+    private const val KEY_RUMBLE_FALLBACK = "pad.rumble.fallbackExternal"
+    fun rumbleFallbackExternal(): Boolean =
+        MainActivityRuntime.prefs.getBoolean(KEY_RUMBLE_FALLBACK, false)
+    fun setRumbleFallbackExternal(on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(KEY_RUMBLE_FALLBACK, on) }
+        kr.co.iefriends.pcsx2.NativeApp.sRumbleFallbackExternal = on
+    }
+    /** Push the persisted fallback choice into the native gate; call once at app start. */
+    fun syncRumbleFallback() {
+        kr.co.iefriends.pcsx2.NativeApp.sRumbleFallbackExternal = rumbleFallbackExternal()
+    }
+
     // PS2 Multitap master switch. OFF (default) = classic 2-player co-op. ON = up to 8
     // controllers routed to the 2 ports x 4 slots. Extra pads (slots 2-7) reuse the P1
     // button mapping. Also drives PadRouter's routing gate.

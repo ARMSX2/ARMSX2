@@ -982,6 +982,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.multitap.label" to "Multitap (up to 8 players)",
     "pad.rumble.description" to "Master switch for controller rumble and the device's built-in vibration. Turn off to silence all haptics.",
     "pad.rumble.label" to "Rumble / Vibration",
+    "pad.rumbleFallback.description" to "Some controllers — Xbox Series X|S over Bluetooth, and some DualSense Bluetooth modes — expose no motor to Android, so the emulator cannot rumble them at all. Turn this on to feel that rumble through this device instead. Leave it off if your phone or tablet sits in a stand or a pocket while you play.",
+    "pad.rumbleFallback.label" to "Vibrate this device instead",
     "pad.hapticStrength.description" to "Scales all vibration — controller rumble and on-screen touch haptics alike. Below 100% tames a strong motor; above 100% boosts a weak one.",
     "pad.hapticStrength.label" to "Vibration Strength",
     "pad.scopeHint.global" to "○ Editing GLOBAL controls (all games).",

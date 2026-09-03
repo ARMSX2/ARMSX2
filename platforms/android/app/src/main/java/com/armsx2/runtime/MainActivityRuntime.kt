@@ -2304,6 +2304,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // Push the saved haptic strength + achievement-sound volume into their native gates before
         // any rumble or unlock sound can fire (both default to 1.0 = as authored until set here).
         ControllerMappings.syncHapticIntensity()
+        ControllerMappings.syncRumbleFallback()
         com.armsx2.ui.achievements.AchievementsViewModel.syncSoundVolume()
         // Seed the pad-router's multitap gate before any in-game input is dispatched, so
         // slot routing (2 vs 8 slots) is correct from the first controller event.
