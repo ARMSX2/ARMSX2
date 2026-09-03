@@ -8723,12 +8723,25 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		                                (config.alpha_second_pass.require_one_barrier || config.alpha_second_pass.require_full_barrier);
 		carry.draw_needs_own_barrier =
 			config.require_one_barrier || config.require_full_barrier || alpha_pass_barrier;
+		// A pass carrying the depth feedback bits is a pass in which nothing wrote the depth
+		// being sampled -- that is what makes an in-tile depth read well defined, since the
+		// renderer only lets a draw sample its own depth buffer when it does not write it.
+		// Carrying those bits onto a depth writer says the opposite of what the draw does, and
+		// puts a depth writer and a depth sampler in one pass. So the carried word for a depth
+		// writer drops the depth bits; the colour carry is unaffected, because there is no
+		// read-only colour flag to contradict -- the colour attachment is written by every draw
+		// in the pass either way, and the RT bit only adds an input attachment and an ordering
+		// guarantee over a read this draw does not perform. Reasoning in full in
+		// GSFeedbackLoopCarryPolicy.h. The alpha second pass is included because it rebinds
+		// pipe.dss inside the pass this decision opens.
+		carry.draw_writes_depth = pipe.dss.zwe ||
+		                          (config.alpha_second_pass.enable && config.alpha_second_pass.depth.zwe);
 
 		if (CarryFeedbackLoopAcrossTargetRun(carry))
 		{
 			if (draw_rt && m_current_render_target == draw_rt)
 				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
-			if (draw_ds && m_current_depth_target == draw_ds)
+			if (draw_ds && m_current_depth_target == draw_ds && CarryDepthFeedbackAcrossTargetRun(carry))
 			{
 				pipe.feedback_loop_flags |= (m_current_framebuffer_feedback_loop &
 					(FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth));

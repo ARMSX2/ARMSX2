@@ -143,3 +143,68 @@ TEST(GSFeedbackLoopCarry, KeyOnStillRequiresTheFetchPath)
 		EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), expected) << "bits=" << bits;
 	}
 }
+
+// The depth half. A pass carrying the depth feedback bits is a pass in which nothing wrote the
+// depth being sampled -- the renderer only lets a draw sample its own depth buffer when it does
+// not write it -- so carrying those bits onto a draw that WRITES depth puts a depth writer and a
+// depth sampler in one pass and leaves the depth image in the feedback layout while it is written.
+TEST(GSFeedbackLoopCarry, DepthBitsAreNotCarriedAcrossADepthWriter)
+{
+	GSFeedbackLoopCarryInputs writer = MaliWithFetch();
+	writer.draw_writes_depth = true;
+
+	// The colour carry is untouched: the pass is still kept open for it.
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(writer));
+	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(writer));
+}
+
+// The case that must stay carried: a non-reader that does not write depth, inside a run whose
+// pass already declared the depth sampling. Dropping this one would give back the pass boundary
+// the carry exists to remove.
+TEST(GSFeedbackLoopCarry, DepthBitsStayCarriedAcrossANonWriter)
+{
+	GSFeedbackLoopCarryInputs non_writer = MaliWithFetch();
+	non_writer.draw_writes_depth = false;
+
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(non_writer));
+	EXPECT_TRUE(CarryDepthFeedbackAcrossTargetRun(non_writer));
+}
+
+// The unconditional Broadcom carry is not an exemption from this. Its colour carry predates the
+// policy and stays unconditional; its depth carry across a depth writer is the same hazard on the
+// same hardware class, so the depth term reaches it.
+TEST(GSFeedbackLoopCarry, BroadcomDepthCarryStopsAtADepthWriter)
+{
+	GSFeedbackLoopCarryInputs in;
+	in.device_always_carries = true;
+	EXPECT_TRUE(CarryDepthFeedbackAcrossTargetRun(in));
+
+	in.draw_writes_depth = true;
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
+	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(in));
+}
+
+// Swept: the depth answer is the colour answer with the depth writer removed, for every
+// combination of the rest, key on and key off. If a term is ever added that lets the depth bits
+// through on their own, this is what catches it.
+TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
+{
+	for (int bits = 0; bits < 64; bits++)
+	{
+		GSFeedbackLoopCarryInputs in;
+		in.device_always_carries = (bits & 1) != 0;
+		in.device_is_measured_vendor = (bits & 2) != 0;
+		in.framebuffer_fetch = (bits & 4) != 0;
+		in.feedback_loop_layout = (bits & 8) != 0;
+		in.draw_needs_own_barrier = (bits & 16) != 0;
+		in.draw_writes_depth = (bits & 32) != 0;
+
+		for (const bool key : {false, true})
+		{
+			in.carry_key = key;
+			const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
+			EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
+				<< "bits=" << bits << " key=" << key;
+		}
+	}
+}

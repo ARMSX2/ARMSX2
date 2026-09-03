@@ -28,7 +28,9 @@
 struct GSFeedbackLoopCarryInputs
 {
 	/// Devices that carried the flag before this policy existed and keep carrying it
-	/// unconditionally (Broadcom/V3D). Their behaviour is not this policy's to change.
+	/// unconditionally (Broadcom/V3D). Their COLOUR carry is not this policy's to change.
+	/// The depth term below does reach them, because it is a correctness rule about what the
+	/// render pass declares and V3D is a tiler with the same hazard, not a tuning decision.
 	bool device_always_carries = false;
 
 	/// The device is one the carry has been measured on. Mali only for now -- see the note on
@@ -56,6 +58,10 @@ struct GSFeedbackLoopCarryInputs
 	/// fetch), so this term costs nothing today. It is here so the invariant is enforced rather
 	/// than assumed.
 	bool draw_needs_own_barrier = false;
+
+	/// The draw writes depth (the pipeline's depth-stencil selector, or the alpha second pass's).
+	/// Only the depth half of the carry looks at this -- see CarryDepthFeedbackAcrossTargetRun.
+	bool draw_writes_depth = false;
 };
 
 // Returns true when the open pass's feedback-loop flags may be carried onto this draw.
@@ -78,6 +84,37 @@ constexpr bool CarryFeedbackLoopAcrossTargetRun(const GSFeedbackLoopCarryInputs&
 	return !in.draw_needs_own_barrier;
 }
 
+// Whether the open pass's DEPTH feedback bits may be carried onto this draw, on top of the
+// enclosing decision above.
+//
+// The depth bits say something about the pass that the colour bit does not. The read-only depth
+// bit is set for a draw that samples the depth buffer it has attached, and the renderer only lets
+// such a draw exist when it does not write depth (GSRendererHW::HandleTextureHazards' direct
+// depth read requires !DepthWrite()). So a pass carrying the depth bits is a pass in which nothing
+// wrote the depth being sampled -- and that, not any barrier, is what makes the in-tile depth
+// sample well defined. Carrying the bits onto a depth WRITER states the opposite of what the draw
+// does: it puts a depth writer and a depth sampler in one pass with nothing between them, and it
+// leaves the depth image in the feedback/GENERAL layout while it is written. Rasterization-order
+// depth access would order those two, but that subpass flag is set only when depth_feedback,
+// framebuffer_fetch and vk_ext_roaa_depth all hold, so it cannot be relied on to cover this.
+//
+// The colour bit is safe under the same reasoning, which is why it is not gated here. There is no
+// read-only colour flag to contradict: the colour attachment is written by every draw in the pass
+// whether or not the bit is set, and FeedbackLoopFlag_ReadAndWriteRT adds an input-attachment
+// reference, VK_IMAGE_LAYOUT_GENERAL and -- on the fetch path -- the rasterization-order colour
+// access subpass flag. Carried onto a non-reader that is an ordinary writer, that ADDS an ordering
+// guarantee over a read the draw does not perform. Nothing it declares is falsified by writing
+// colour, because writing colour is what the pass was already for.
+//
+// Both depth bits are dropped, not only the read-only one. Whether a draw that writes depth is
+// safe inside a pass declared ReadAndWriteDepth is a question nothing here has measured, and the
+// conservative word -- the one that matches what the draw actually does -- costs at most the pass
+// boundary the carry was trying to save, on depth-sampling passes only. No corpus title has one.
+constexpr bool CarryDepthFeedbackAcrossTargetRun(const GSFeedbackLoopCarryInputs& in)
+{
+	return CarryFeedbackLoopAcrossTargetRun(in) && !in.draw_writes_depth;
+}
+
 // The unconditional carry is exactly as unconditional as it was: the key does not reach it, and
 // neither does a barrier-requesting draw.
 static_assert(CarryFeedbackLoopAcrossTargetRun({.device_always_carries = true}));
@@ -92,3 +129,12 @@ static_assert(!CarryFeedbackLoopAcrossTargetRun(
 	{.device_is_measured_vendor = true, .framebuffer_fetch = true, .carry_key = false}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun(
 	{.device_is_measured_vendor = false, .framebuffer_fetch = true, .carry_key = true}));
+
+// A depth writer never inherits the depth bits, on any device -- including the one whose colour
+// carry is unconditional.
+static_assert(!CarryDepthFeedbackAcrossTargetRun({.device_always_carries = true, .draw_writes_depth = true}));
+static_assert(CarryDepthFeedbackAcrossTargetRun({.device_always_carries = true}));
+static_assert(!CarryDepthFeedbackAcrossTargetRun({.device_is_measured_vendor = true, .framebuffer_fetch = true,
+	.carry_key = true, .draw_writes_depth = true}));
+static_assert(CarryDepthFeedbackAcrossTargetRun(
+	{.device_is_measured_vendor = true, .framebuffer_fetch = true, .carry_key = true}));
