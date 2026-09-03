@@ -963,12 +963,6 @@ struct Pcsx2Config
 					// where every pass boundary is a full tile load and store. Hot-
 					// appliable: turning it off just stops deferring.
 					CoalesceRenderPasses : 1,
-					// Keep the software texture cache's pixel buffer across draws and zero only
-					// what the previous draw wrote, instead of freeing it and taking a fresh
-					// zeroed one on nearly every draw of the hardware renderer's SwPrimRender
-					// road. Byte-identical either way. Scaffolding for the lever that prices it;
-					// deleted when that lever is decided.
-					SwPrimPersistentTexture : 1,
 					ManualUserHacks : 1,
 					UserHacks_AlignSpriteX : 1,
 					UserHacks_CPUFBConversion : 1,

@@ -35,14 +35,11 @@ public:
 		u32 m_last_clear_bytes = 0;
 		u32 m_last_blocks = 0;
 
-		// Keeping the pixel buffer across Reset(), under EmuCore/GS/SwPrimPersistentTexture.
-		// m_buff_size is the allocation's capacity, grow-only; m_buff_stale says Reset() saw the
-		// texture's shape move and Update() therefore owes the rasterizer a buffer that reads
-		// zero outside what it unswizzles; m_dirty and m_valid_dirty are what that costs instead
-		// of a blanket memset. GSSwTextureDirty.h states the invariant and why it is byte-exact.
-		//
-		// The key is a restart option, so it cannot flip while a texture is alive: the tracking
-		// below is only maintained on the arm that uses it, which would go stale otherwise.
+		// Keeping the pixel buffer across Reset(). m_buff_size is the allocation's capacity,
+		// grow-only; m_buff_stale says Reset() saw the texture's shape move and Update() therefore
+		// owes the rasterizer a buffer that reads zero outside what it unswizzles; m_dirty and
+		// m_valid_dirty are what that costs instead of a blanket memset. GSSwTextureDirty.h states
+		// the invariant and why it is byte-exact.
 		size_t m_buff_size = 0;
 		bool m_buff_stale = false;
 		GSSwTextureDirty m_dirty;

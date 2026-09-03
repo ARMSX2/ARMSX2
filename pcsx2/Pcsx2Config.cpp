@@ -763,7 +763,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	ForceMaliFramebufferFetch = false;
 	FeedbackLoopCarry = true;
 	FetchOffsetReadCopies = true;
-	SwPrimPersistentTexture = true;
 	SkipDuplicateFrames = true;
 	OsdMessagesPos = OsdOverlayPos::TopLeft;
 	OsdPerformancePos = OsdOverlayPos::TopRight;
@@ -911,7 +910,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_Limit24BitDepth) &&
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(OverrideTextureBarriers) &&
-		OpEqu(SwPrimPersistentTexture) &&
 		OpEqu(DepthFeedbackMode) &&
 		OpEqu(BackThreadMode) &&
 
@@ -988,7 +986,6 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"FeedbackLoopCarry",
 		"FetchOffsetReadCopies",
 		"OverrideTextureBarriers",
-		"SwPrimPersistentTexture",
 		"DepthFeedbackMode",
 		"GSBackThreadMode",
 		"HWAA1",
@@ -1021,10 +1018,6 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(FeedbackLoopCarry) &&
 		   OpEqu(FetchOffsetReadCopies) &&
 		   OpEqu(OverrideTextureBarriers) &&
-		   // The software texture cache's persistent buffer carries state across draws (the
-		   // dirty range that says what it owes a clear); flipping it under a live texture
-		   // would leave that state describing the other arm's history.
-		   OpEqu(SwPrimPersistentTexture) &&
 		   OpEqu(DepthFeedbackMode) &&
 		   OpEqu(BackThreadMode) &&
 		   OpEqu(HWAA1) &&
@@ -1082,7 +1075,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
 	SettingsWrapBitBool(FeedbackLoopCarry);
 	SettingsWrapBitBool(FetchOffsetReadCopies);
-	SettingsWrapBitBool(SwPrimPersistentTexture);
 	SettingsWrapBitBool(SkipDuplicateFrames);
 	SettingsWrapBitBool(OsdShowSpeed);
 	SettingsWrapBitBool(OsdShowFPS);

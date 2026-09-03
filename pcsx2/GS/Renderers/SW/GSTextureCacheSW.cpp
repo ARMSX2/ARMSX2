@@ -168,21 +168,10 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 	if (m_buff && (m_TEX0.TW != TEX0.TW || m_TEX0.TH != TEX0.TH))
 	{
 		// The texture's shape moved, so Update() has to hand the rasterizer a buffer that reads
-		// zero outside the blocks it unswizzles. Without the key that is done by dropping this
-		// allocation and taking a freshly zeroed one; with it the allocation is kept and Update()
-		// zeroes exactly the bytes previous draws wrote into it. The two produce identical bytes
-		// -- GSSwTextureDirty.h has the argument.
-		if (GSConfig.SwPrimPersistentTexture)
-		{
-			m_buff_stale = true;
-		}
-		else
-		{
-			_aligned_free(m_buff);
-			m_buff = nullptr;
-			m_buff_size = 0;
-			m_dirty.MakeEmpty();
-		}
+		// zero outside the blocks it unswizzles. The allocation is kept and Update() zeroes
+		// exactly the bytes previous draws wrote into it -- GSSwTextureDirty.h has the argument
+		// for why that produces identical bytes to a freshly zeroed allocation.
+		m_buff_stale = true;
 	}
 
 	m_tw = tw0;
@@ -202,16 +191,9 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 	// so nothing can dirty a word this never saw. Reset() is reached from the hardware renderer's
 	// SwPrimRender road alone -- the software renderer's own cache goes through Lookup() and
 	// never resets a texture -- so this cannot change what that renderer sees either.
-	if (GSConfig.SwPrimPersistentTexture)
-	{
-		const GSSwTextureDirty::Range vr = m_valid_dirty.ClearRange(GS_MAX_PAGES);
-		if (vr.Size() > 0)
-			memset(&m_valid[vr.begin], 0, vr.Size() * sizeof(m_valid[0]));
-	}
-	else
-	{
-		memset(m_valid, 0, sizeof(m_valid));
-	}
+	const GSSwTextureDirty::Range vr = m_valid_dirty.ClearRange(GS_MAX_PAGES);
+	if (vr.Size() > 0)
+		memset(&m_valid[vr.begin], 0, vr.Size() * sizeof(m_valid[0]));
 	m_valid_dirty.MakeEmpty();
 
 	m_sharedbits = GSUtil::HasSharedBitsPtr(m_TEX0.PSM);
@@ -263,9 +245,7 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 		if (m_buff_size < size)
 		{
 			// No buffer, or one too small to hold this draw. Grow-only: the allocation settles on
-			// the largest shape the road asks for and stops churning. Without the key m_buff_size
-			// is zero whenever m_buff is null, so this is the only branch that ever runs and it is
-			// the original allocate-and-clear.
+			// the largest shape the road asks for and stops churning.
 			if (m_buff)
 				_aligned_free(m_buff);
 
@@ -289,10 +269,10 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 		{
 			// The allocation is kept and put back the way a fresh zeroed one would have been:
 			// everything outside the tracked range is already zero, so zeroing the range makes the
-			// whole capacity zero. INVARIANT, and the reason this lever is byte-identical: after
-			// Update() returns, every byte the rasterizer may read -- inside the unswizzled rect,
-			// in the rest of the nominal buffer, or anywhere in the x4 guard band -- holds exactly
-			// what the allocate-and-memset path would have left there.
+			// whole capacity zero. INVARIANT: after Update() returns, every byte the rasterizer may
+			// read -- inside the unswizzled rect, in the rest of the nominal buffer, or anywhere in
+			// the x4 guard band -- holds exactly what the allocate-and-memset path would have left
+			// there.
 			const GSSwTextureDirty::Range dr = m_dirty.ClearRange(m_buff_size);
 			if (dr.Size() > 0)
 				std::memset(static_cast<u8*>(m_buff) + dr.begin, 0, dr.Size());
@@ -324,7 +304,6 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 	// shape block_pitch above already assumes. Taken before shift picks up blockShiftX, which
 	// turns it from "bytes per pixel" into "bytes per block column".
 	const size_t block_extent = GSSwTextureDirty::BlockExtent(bs.y, pitch, static_cast<size_t>(bs.x) << shift);
-	const bool track_dirty = GSConfig.SwPrimPersistentTexture;
 
 	shift += off.blockShiftX();
 	int bottom = r.bottom >> off.blockShiftY();
@@ -348,14 +327,11 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 				{
 					m_valid[row] |= col;
 
-					if (track_dirty)
-					{
-						const ptrdiff_t block_off = (dst - buff_base) + (static_cast<ptrdiff_t>(bn.blkX()) << shift);
-						if (block_off >= 0)
-							m_dirty.Add(static_cast<size_t>(block_off), static_cast<size_t>(block_off) + block_extent);
+					const ptrdiff_t block_off = (dst - buff_base) + (static_cast<ptrdiff_t>(bn.blkX()) << shift);
+					if (block_off >= 0)
+						m_dirty.Add(static_cast<size_t>(block_off), static_cast<size_t>(block_off) + block_extent);
 
-						m_valid_dirty.Add(row, row + 1);
-					}
+					m_valid_dirty.Add(row, row + 1);
 
 					rtxbP(mem, block, &dst[bn.blkX() << shift], pitch, m_TEXA);
 
@@ -379,14 +355,11 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 				{
 					m_valid[row] |= col;
 
-					if (track_dirty)
-					{
-						const ptrdiff_t block_off = (dst - buff_base) + (static_cast<ptrdiff_t>(bn.blkX()) << shift);
-						if (block_off >= 0)
-							m_dirty.Add(static_cast<size_t>(block_off), static_cast<size_t>(block_off) + block_extent);
+					const ptrdiff_t block_off = (dst - buff_base) + (static_cast<ptrdiff_t>(bn.blkX()) << shift);
+					if (block_off >= 0)
+						m_dirty.Add(static_cast<size_t>(block_off), static_cast<size_t>(block_off) + block_extent);
 
-						m_valid_dirty.Add(row, row + 1);
-					}
+					m_valid_dirty.Add(row, row + 1);
 
 					rtxbP(mem, block, &dst[bn.blkX() << shift], pitch, m_TEXA);
 
