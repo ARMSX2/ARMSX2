@@ -897,6 +897,11 @@ struct Pcsx2Config
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
+					// Pretend the device has no dual-source blend unit, the way every Mali
+					// Vulkan blob reports it. GSRendererHW then takes the SRC1 substitution
+					// and SW-blend fallbacks, so a Mali-only blending bug reproduces on a
+					// desktop GPU instead of needing a device round-trip to see.
+					DisableDualSourceBlend : 1,
 					EnableAdrenoFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
 					DisablePS2DepthQuantization : 1,
