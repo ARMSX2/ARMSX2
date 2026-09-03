@@ -6725,29 +6725,29 @@ void GSRendererHW::EmulateDither()
 	}
 }
 
-// An exact alpha-mask drop is worth taking for one thing: the barrier it removes, and with it, on
-// a device with no framebuffer fetch, the render-target clone the barrier becomes. A drop whose
-// exactness rests on the sprite-union cover is held across the blend selection so that selection
-// is made under the barrier the mask would have required -- the blend road never moves because of
-// the drop, which is what put 2/255 of colour on xenosaga when it did
+// An exact alpha-mask decision is worth taking for one thing: the barrier it removes, and with it,
+// on a device with no framebuffer fetch, the render-target clone the barrier becomes. Such a
+// decision is held across the blend selection so that selection is made under the barrier the mask
+// would have required -- the blend road never moves because of the decision, which is what put
+// 2/255 of colour on xenosaga when it did
 // (`campaigns/gs-classic-tiler/phase3-a1b-known-bit-substitution/RESULT.md`, and A4 measured the
-// same coupling from the other side). Here the held drop is settled: if the blend needs no barrier
-// the drop stands, and if it needs one the barrier is there whatever the mask does, so the draw
+// same coupling from the other side). Here the held decision is settled: if the blend needs no
+// barrier it stands, and if it needs one the barrier is there whatever the mask does, so the draw
 // goes back to the road it asked for -- same shader, same blend, same pixels as before the rule
 // existed.
-void GSRendererHW::ResolveUnionAlphaDrop()
+void GSRendererHW::ResolveHeldAlphaMask()
 {
-	if (m_union_alpha_drop.fbmask == 0)
+	if (m_held_alpha_mask.fbmask == 0)
 		return;
 
-	const UnionAlphaDrop held = m_union_alpha_drop;
-	m_union_alpha_drop = {};
+	const HeldAlphaMask held = m_held_alpha_mask;
+	m_held_alpha_mask = {};
 
 	const bool blend_requires_barrier = m_conf.require_one_barrier || m_conf.require_full_barrier;
 	if (GSDrawAlphaMask::DropStandsAfterBlend(blend_requires_barrier))
 	{
 		if (GSDrawLog::IsActive()) [[unlikely]]
-			GSDrawLog::NoteUnionAlphaDrop(GSDrawLog::UnionAlphaDropStood);
+			GSDrawLog::NoteHeldAlphaMask(GSDrawLog::HeldAlphaMaskStood);
 		return;
 	}
 
@@ -6758,7 +6758,7 @@ void GSRendererHW::ResolveUnionAlphaDrop()
 	m_conf.require_one_barrier = true;
 
 	if (GSDrawLog::IsActive()) [[unlikely]]
-		GSDrawLog::NoteUnionAlphaDrop(GSDrawLog::UnionAlphaDropRestored);
+		GSDrawLog::NoteHeldAlphaMask(GSDrawLog::HeldAlphaMaskRestored);
 }
 
 u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask)
@@ -7006,14 +7006,14 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 
 		// The held drop: the mask is off the shader from here, but the barrier it would have
 		// required stays visible to EmulateBlending, so this draw picks the blend it picks with
-		// the mask on. ResolveUnionAlphaDrop() then keeps the drop if that blend needs no barrier
+		// the mask on. ResolveHeldAlphaMask() then keeps the drop if that blend needs no barrier
 		// of its own, and puts the mask back if it does. Alpha is the only partially masked
 		// channel -- DecideExactAlphaMaskDrop refuses the draw otherwise -- so the mask's own
 		// barrier is always the one-barrier road below, never the full-barrier one.
 		if (drop_via_union && requested_ps_fbmask != 0)
 		{
-			m_union_alpha_drop.fbmask = static_cast<u32>(requested_fbmask);
-			m_union_alpha_drop.ps_fbmask = requested_ps_fbmask;
+			m_held_alpha_mask.fbmask = static_cast<u32>(requested_fbmask);
+			m_held_alpha_mask.ps_fbmask = requested_ps_fbmask;
 		}
 
 		if (m_conf.ps.fbmask)
@@ -7506,8 +7506,8 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	bool blend_ad_alpha_masked = blend_ad && !m_conf.colormask.wa && fast_ad_alpha_masked_feedback;
 	const bool is_basic_blend = GSConfig.AccurateBlendingUnit != AccBlendLevel::Minimum;
 	// A held exact alpha drop reads as the barrier it took away, so every blend decision below is
-	// the one this draw makes with its framebuffer mask on. See ResolveUnionAlphaDrop().
-	const bool held_one_barrier = m_conf.require_one_barrier || (m_union_alpha_drop.fbmask != 0);
+	// the one this draw makes with its framebuffer mask on. See ResolveHeldAlphaMask().
+	const bool held_one_barrier = m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0);
 	if (blend_ad_alpha_masked && ((is_basic_blend || (COLCLAMP.CLAMP == 0) || held_one_barrier)))
 	{
 		// Swap Ad with As for hw blend.
@@ -7569,12 +7569,12 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	// We don't want to enable blend mix if we are doing a multi pass, it's useless.
 	blend_mix &= !(bmix1_multi_pass1 || bmix1_multi_pass2 || bmix3_multi_pass);
 
-	const bool one_barrier = m_conf.require_one_barrier || (m_union_alpha_drop.fbmask != 0) || blend_ad_alpha_masked;
+	const bool one_barrier = m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0) || blend_ad_alpha_masked;
 	// Condition 1: Require full sw blend for full barrier.
 	// Condition 2: One barrier is already enabled, prims don't overlap or is a channel shuffle so let's use sw blend instead.
 	// Condition 3: A texture shuffle is unlikely to overlap, so we can prefer full sw blend.
 	// Condition 4: If it's tex in fb draw and there's no overlap prefer sw blend, fb is already being read.
-	const bool prefer_sw_blend = (features.feedback_loops() && m_conf.require_full_barrier) || ((m_conf.require_one_barrier || (m_union_alpha_drop.fbmask != 0)) && (no_prim_overlap || m_channel_shuffle)) || m_conf.ps.shuffle || (no_prim_overlap && (m_conf.tex == m_conf.rt));
+	const bool prefer_sw_blend = (features.feedback_loops() && m_conf.require_full_barrier) || ((m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0)) && (no_prim_overlap || m_channel_shuffle)) || m_conf.ps.shuffle || (no_prim_overlap && (m_conf.tex == m_conf.rt));
 	const bool free_blend = blend_non_recursive // Free sw blending, doesn't require barriers or reading fb
 	                        || accumulation_blend; // Mix of hw/sw blending
 
@@ -10123,7 +10123,7 @@ void GSRendererHW::ResetStates()
 	memset(static_cast<void*>(&m_conf), 0, reinterpret_cast<const char*>(&m_conf.cb_vs) - reinterpret_cast<const char*>(&m_conf));
 
 	m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
-	m_union_alpha_drop = {};
+	m_held_alpha_mask = {};
 }
 
 __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm)
@@ -10267,8 +10267,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		}
 	}
 
-	// The blend is chosen. A held exact alpha drop is now either free or pointless.
-	ResolveUnionAlphaDrop();
+	// The blend is chosen. A held exact alpha-mask decision is now either free or pointless.
+	ResolveHeldAlphaMask();
 
 	// Similar to IsRTWritten(), check if the rt will change.
 	const bool no_rt = !rt || m_conf.colormask.wrgba == 0;

@@ -180,12 +180,12 @@ namespace GSDrawLog
 		s_records[s_open_record].blend_factor_alpha = road;
 	}
 
-	void NoteUnionAlphaDrop(u8 outcome)
+	void NoteHeldAlphaMask(u8 outcome)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
 
-		s_records[s_open_record].union_alpha_drop = outcome;
+		s_records[s_open_record].held_alpha_mask = outcome;
 	}
 
 	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason, u8 masked,
@@ -559,13 +559,13 @@ namespace GSDrawLog
 		}
 	}
 
-	static const char* GetUnionAlphaDropName(u8 outcome)
+	static const char* GetHeldAlphaMaskName(u8 outcome)
 	{
 		switch (outcome)
 		{
-			case UnionAlphaDropStood:
+			case HeldAlphaMaskStood:
 				return "STOOD";
-			case UnionAlphaDropRestored:
+			case HeldAlphaMaskRestored:
 				return "RESTORED";
 			default:
 				return "";
@@ -658,7 +658,7 @@ namespace GSDrawLog
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
 			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,blend_factor_alpha,"
-			"union_alpha_drop,"
+			"held_alpha_mask,"
 			"blend_key,blend_ps,"
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
@@ -829,7 +829,7 @@ namespace GSDrawLog
 			}
 
 			std::fprintf(fp.get(), "%s,", GetBlendFactorAlphaName(r.blend_factor_alpha));
-			std::fprintf(fp.get(), "%s,", GetUnionAlphaDropName(r.union_alpha_drop));
+			std::fprintf(fp.get(), "%s,", GetHeldAlphaMaskName(r.held_alpha_mask));
 
 			if (submitted)
 				std::fprintf(fp.get(), "%08x,%08x,", r.blend_key, r.blend_ps);

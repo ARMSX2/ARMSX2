@@ -225,7 +225,7 @@ private:
 	/// nothing -- and where nothing, why. Feeds the ledger column so a run can be audited for how
 	/// often each applies.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
-	void ResolveUnionAlphaDrop();
+	void ResolveHeldAlphaMask();
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
 	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
 	u32 RequestedAlphaFbMask() const
@@ -374,16 +374,16 @@ private:
 	// GSDrawAlphaMask::NothingDropped. Reset per draw by ResetStates().
 	int m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
 
-	// An exact alpha drop whose exactness rests on the sprite-union cover, held over the blend
-	// selection. While fbmask is non-zero the shader has no mask but the blend decisions read the
-	// barrier that mask would have required, so the blend road cannot move because of the drop.
-	// ResolveUnionAlphaDrop() settles it. Reset per draw by ResetStates().
-	struct UnionAlphaDrop
+	// An exact alpha-mask decision held over the blend selection. While fbmask is non-zero the
+	// shader has no mask but the blend decisions read the barrier that mask would have required,
+	// so the blend road cannot move because of the decision. ResolveHeldAlphaMask() settles it.
+	// Reset per draw by ResetStates().
+	struct HeldAlphaMask
 	{
 		u32 fbmask = 0; ///< FBMSK as the draw asked for it; zero means nothing is held
 		u32 ps_fbmask = 0; ///< the shader's four-channel nibble for that mask
 	};
-	UnionAlphaDrop m_union_alpha_drop;
+	HeldAlphaMask m_held_alpha_mask;
 
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;
