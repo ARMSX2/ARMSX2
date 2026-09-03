@@ -6810,6 +6810,16 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlphaFixedOne())
 		return GSDrawLog::ExactAlphaDropIneligible;
 
+	// The target has to know every bit the mask holds back before either road below can be exact
+	// -- checked here, cheaply, before GetAlphaMinMax() runs. DecideExact() below would reach the
+	// same TargetUnknown verdict on its own first branch without ever reading src_lo/src_hi, so
+	// this is the same decision taken earlier, not a new one: it just stops the vertex-colour and
+	// CLUT scan GetAlphaMinMax() does from running on a draw that was never going to use its
+	// answer, which is the whole TargetUnknown population -- every alpha-partially-masked draw
+	// whose target the tracker does not (yet) know, not only the ones that end up substituting.
+	if ((rt->m_alpha_known.bits & masked) != masked)
+		return GSDrawLog::ExactAlphaDropTargetUnknown;
+
 	// The fragment alpha, with FBA folded in the way CalculateAlphaRange folds it. Read here, so
 	// before CorrectATEAlphaMinMax narrows the range to the values that pass the alpha test:
 	// pixels that fail the test can still write alpha, so the wider range is the honest one.
@@ -6820,6 +6830,9 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	switch (GSDrawAlphaMask::DecideExact(rt->m_alpha_known, masked, src_lo, src_hi))
 	{
 		case GSDrawAlphaMask::ExactVerdict::TargetUnknown:
+			// Unreachable from here now that the guard above has already returned on this
+			// condition -- DecideExact() keeps the branch for its other callers and its own unit
+			// tests, so the case stays here too rather than falling through to default.
 			return GSDrawLog::ExactAlphaDropTargetUnknown;
 
 		case GSDrawAlphaMask::ExactVerdict::Drop:

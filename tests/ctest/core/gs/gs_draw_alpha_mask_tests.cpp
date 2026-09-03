@@ -200,6 +200,38 @@ TEST(GSDrawAlphaMask, AnUnknownTargetGetsNeitherRoad)
 	EXPECT_EQ(DecideExact({0x80, 0x80}, 0xC0, 0x80, 0x80), ExactVerdict::TargetUnknown);
 }
 
+TEST(GSDrawAlphaMask, AnUnknownTargetIgnoresTheSourceRange)
+{
+	// GSRendererHW::DecideExactAlphaMaskDrop checks the target's known bits before it calls
+	// GetAlphaMinMax() at all -- a cheap precondition ahead of a vertex-colour/TFX-modulation
+	// scan, and on an indexed texture a CLUT-table read. That is only a safe reordering because
+	// the verdict below never looks at src_lo/src_hi once the target does not cover the mask, so
+	// this pins the property the caller's early-out relies on: sweep the source range over every
+	// value it can take and the verdict does not move off TargetUnknown.
+	const GSAlphaKnownBits::Known uncovered = {0x00, 0x00}; // knows nothing
+	for (u32 lo = 0; lo <= 0xFF; lo += 17)
+	{
+		for (u32 hi = lo; hi <= 0xFF; hi += 17)
+		{
+			EXPECT_EQ(DecideExact(uncovered, 0x80, static_cast<u8>(lo), static_cast<u8>(hi)),
+				ExactVerdict::TargetUnknown)
+				<< "src " << lo << ".." << hi;
+		}
+	}
+
+	// Same with a target that knows some, but not all, of the masked bits.
+	const GSAlphaKnownBits::Known partially_covered = {0x80, 0x80}; // knows only bit 7
+	for (u32 lo = 0; lo <= 0xFF; lo += 17)
+	{
+		for (u32 hi = lo; hi <= 0xFF; hi += 17)
+		{
+			EXPECT_EQ(DecideExact(partially_covered, 0xC0, static_cast<u8>(lo), static_cast<u8>(hi)),
+				ExactVerdict::TargetUnknown)
+				<< "src " << lo << ".." << hi;
+		}
+	}
+}
+
 TEST(GSDrawAlphaMask, ACoveredTargetAlwaysGetsOneOfTheTwoRoads)
 {
 	// Over every (known value, mask, source range) the preconditions admit: once the target knows
