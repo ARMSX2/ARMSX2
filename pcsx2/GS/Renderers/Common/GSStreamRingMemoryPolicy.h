@@ -139,9 +139,9 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 	GSStreamRingMemoryDecision decision;
 
 	// (a) Cached AND coherent AND device-local. Free on the CPU side and free on the GPU side, so
-	// it is taken wherever it exists without asking the database anything. On the M2 under
-	// MoltenVK this is memory type 0, which is the type the rings already have -- the decision
-	// changes nothing there, which is what makes that host's identity grid meaningful.
+	// it is taken wherever it exists without asking the database anything. On the M2 dev box
+	// (Honeykrisp, Mesa 25.3.6) this is memory type 0, which is the type the rings already have --
+	// the decision changes nothing there, which is what makes that host's identity grid meaningful.
 	constexpr u32 cached_coherent = GS_MEMORY_PROPERTY_DEVICE_LOCAL | GS_MEMORY_PROPERTY_HOST_VISIBLE |
 									GS_MEMORY_PROPERTY_HOST_COHERENT | GS_MEMORY_PROPERTY_HOST_CACHED;
 	const u32 coherent_index = GSPickStreamRingMemoryType(in, cached_coherent, cached_coherent);

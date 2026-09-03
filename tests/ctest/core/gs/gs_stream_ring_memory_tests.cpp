@@ -40,9 +40,10 @@ namespace
 		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED,
 	};
 
-	// M2 Max under MoltenVK, from this lane's own log line: one host-visible type, and it is
-	// already cached, coherent and device-local. The dev box has to come out of this decision on
-	// exactly the type it went in on, or its identity grid proves nothing.
+	// M2 Max under Asahi's Honeykrisp (Mesa 25.3.6), from this lane's own log line: one
+	// host-visible type, and it is already cached, coherent and device-local. The dev box has to
+	// come out of this decision on exactly the type it went in on, or its identity grid proves
+	// nothing.
 	constexpr u32 M2_TYPES[] = {
 		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED,
 	};
