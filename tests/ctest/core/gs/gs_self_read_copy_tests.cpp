@@ -27,8 +27,7 @@
 
 namespace
 {
-	// A device that reads the destination in tile memory, with the key at its default: Mali or
-	// Adreno on Vulkan with rasterization-order attachment access, Mali on GL through
+	// A device that reads the destination in tile memory: Mali or Adreno on Vulkan with rasterization-order attachment access, Mali on GL through
 	// GL_ARM_shader_framebuffer_fetch, an Apple GPU under Metal. framebuffer_fetch implies
 	// texture_barrier on every one of them.
 	constexpr GSSelfReadCopyInputs FetchRoad()
@@ -36,7 +35,6 @@ namespace
 		GSSelfReadCopyInputs in;
 		in.framebuffer_fetch = true;
 		in.texture_barrier = true;
-		in.copy_key = true;
 		return in;
 	}
 
@@ -46,7 +44,6 @@ namespace
 	{
 		GSSelfReadCopyInputs in;
 		in.texture_barrier = true;
-		in.copy_key = true;
 		return in;
 	}
 
@@ -54,9 +51,7 @@ namespace
 	// ARMSX2 #442, the RG477V at its default settings, iOS Metal.
 	constexpr GSSelfReadCopyInputs CopyRoad()
 	{
-		GSSelfReadCopyInputs in;
-		in.copy_key = true;
-		return in;
+		return GSSelfReadCopyInputs();
 	}
 } // namespace
 
@@ -109,9 +104,10 @@ TEST(GSSelfReadCopy, FeedbackLoopLayoutIsUnchanged)
 	EXPECT_FALSE(SelfReadNeedsSourceCopy(in));
 }
 
-// The key is what makes one binary run both arms of the device round. False has to be the old
-// behaviour exactly, on every device.
-TEST(GSSelfReadCopy, KeyOffNeverCopiesAnywhere)
+// The copy happens for exactly one combination of the inputs. This sweep is the statement the
+// guard devices need: "nothing off the fetch road moved", which is invisible on any machine we can
+// run here.
+TEST(GSSelfReadCopy, CopiesOnlyOnTheFetchRoad)
 {
 	for (int bits = 0; bits < 16; bits++)
 	{
@@ -120,24 +116,6 @@ TEST(GSSelfReadCopy, KeyOffNeverCopiesAnywhere)
 		in.framebuffer_fetch = (bits & 2) != 0;
 		in.texture_barrier = (bits & 4) != 0;
 		in.feedback_loop_layout = (bits & 8) != 0;
-		in.copy_key = false;
-		EXPECT_FALSE(SelfReadNeedsSourceCopy(in)) << "bits=" << bits;
-	}
-}
-
-// And with the key on, the copy happens for exactly one combination of the rest. This sweep is the
-// statement the guard devices need: "nothing off the fetch road moved", which is invisible on any
-// machine we can run here.
-TEST(GSSelfReadCopy, KeyOnCopiesOnlyOnTheFetchRoad)
-{
-	for (int bits = 0; bits < 16; bits++)
-	{
-		GSSelfReadCopyInputs in;
-		in.same_pixel_read = (bits & 1) != 0;
-		in.framebuffer_fetch = (bits & 2) != 0;
-		in.texture_barrier = (bits & 4) != 0;
-		in.feedback_loop_layout = (bits & 8) != 0;
-		in.copy_key = true;
 
 		const bool expected = !in.same_pixel_read && in.framebuffer_fetch && in.texture_barrier &&
 		                      !in.feedback_loop_layout;
@@ -159,11 +137,6 @@ TEST(GSSelfReadCopy, TheCensusDrawsTakeTheCopy)
 	census_draw.same_pixel_read = false;
 
 	EXPECT_TRUE(SelfReadNeedsSourceCopy(census_draw));
-
-	// And with the arm's key off, the same draw takes the road that produced the nondeterminism,
-	// which is what the A/B needs it to do.
-	census_draw.copy_key = false;
-	EXPECT_FALSE(SelfReadNeedsSourceCopy(census_draw));
 }
 
 // The channel-shuffle page offset is the second site. It reaches the policy with same_pixel_read
@@ -180,25 +153,17 @@ TEST(GSSelfReadCopy, ShuffleOffsetRoadMatchesTheDisjointRectRoad)
 		in.texture_barrier = (bits & 2) != 0;
 		in.feedback_loop_layout = (bits & 4) != 0;
 
-		in.copy_key = true;
 		const bool expected = in.framebuffer_fetch && in.texture_barrier && !in.feedback_loop_layout;
-		EXPECT_EQ(SelfReadNeedsSourceCopy(in), expected) << "key on, bits=" << bits;
-
-		in.copy_key = false;
-		EXPECT_FALSE(SelfReadNeedsSourceCopy(in)) << "key off, bits=" << bits;
+		EXPECT_EQ(SelfReadNeedsSourceCopy(in), expected) << "bits=" << bits;
 	}
 }
 
-// The shuffle escape on the fetch road, by name: it copies with the key on and takes the live
-// sample with it off, which is the A/B the device round runs.
+// The shuffle escape on the fetch road, by name.
 TEST(GSSelfReadCopy, FetchRoadShuffleOffsetCopies)
 {
 	GSSelfReadCopyInputs shuffle = FetchRoad();
 	shuffle.same_pixel_read = false;
 	EXPECT_TRUE(SelfReadNeedsSourceCopy(shuffle));
-
-	shuffle.copy_key = false;
-	EXPECT_FALSE(SelfReadNeedsSourceCopy(shuffle));
 }
 
 // And the two roads every guard device is on keep the shuffle escape exactly as it was. The M2 is

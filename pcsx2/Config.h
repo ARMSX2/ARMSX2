@@ -938,24 +938,6 @@ struct Pcsx2Config
 					HWROV : 1,
 					HWROVLogging : 1,
 					HWROVBarriersVK : 1,
-					// SCAFFOLDING for the Phase 2 feedback-loop carry A/B, and deleted in the
-					// round that decides it. True lets GSDeviceVK keep the feedback-loop flag
-					// set across a run of draws on one target when the framebuffer-fetch path
-					// is live, instead of ending the render pass to clear it for every
-					// non-reader. False is the alternating behaviour every device had before.
-					// Restart-scoped: the two arms build different render passes and different
-					// pipelines, and a mid-session flip leaves a mixture of both cached, which
-					// is not either arm.
-					FeedbackLoopCarry : 1,
-					// SCAFFOLDING for the Phase 2 offset-self-read A/B, and deleted in the
-					// round that decides it. True makes a draw that samples its own render
-					// target at a location it is NOT writing take a copy of the source when
-					// the device reads the destination in tile memory, instead of the
-					// disjoint-rect shortcut's barrier -- which that device then drops,
-					// leaving the read with nothing. False is the behaviour every device had
-					// before. Restart-scoped for the same reason as the carry: the two arms
-					// build different render passes.
-					FetchOffsetReadCopies : 1,
 					// Hold hardware draws back so consecutive draws to the same target
 					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
 					// where every pass boundary is a full tile load and store. Hot-

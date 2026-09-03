@@ -8936,13 +8936,12 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	// anything on a backend that reads the destination in tile memory -- the backend's clone is
 	// gated on the absence of a texture barrier, and the barrier is then dropped on the grounds
 	// that fetch "replaces the destination read", which an offset read is not. Both sites ask
-	// this one function, under one key. See GSSelfReadCopyPolicy.h for the whole road and the
-	// device it was measured on; same_pixel_read is filled in per site.
+	// this one function. See GSSelfReadCopyPolicy.h for the whole road and the device it was
+	// measured on; same_pixel_read is filled in per site.
 	GSSelfReadCopyInputs copy_policy;
 	copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
 	copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
 	copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
-	copy_policy.copy_key = GSConfig.FetchOffsetReadCopies;
 	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
 		if (log_self_read) [[unlikely]]
 			GSDrawLog::NoteSelfRead(resolution);

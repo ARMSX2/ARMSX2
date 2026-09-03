@@ -56,6 +56,12 @@
 //
 // Written as a pure function of the device's facts so the no-change cases can be pinned without
 // the device that takes the changed one. See gs_self_read_copy_policy_tests.cpp.
+//
+// This shipped for one round behind EmuCore/GS/FetchOffsetReadCopies so the device suite could run
+// both arms off one binary. The round decided it: on the RG 477V, MGS3 and OutRun 2006 are
+// run-to-run byte-identical with the copy and reproduce their old every-run-different signature
+// without it, and both score closer to the software golden than the copy-path arm. The key is
+// gone; the copy is what the function returns.
 
 struct GSSelfReadCopyInputs
 {
@@ -87,9 +93,6 @@ struct GSSelfReadCopyInputs
 	/// rather than resting on that coincidence.
 	bool feedback_loop_layout = false;
 
-	/// EmuCore/GS/FetchOffsetReadCopies. Scaffolding for the device round; false is exactly the
-	/// behaviour every device had before this policy existed.
-	bool copy_key = false;
 };
 
 // Returns true when this draw's self-read must be served from a copy of the target.
@@ -98,9 +101,6 @@ struct GSSelfReadCopyInputs
 // synchronisation, only that whatever HandleTextureHazards was going to do is unchanged.
 constexpr bool SelfReadNeedsSourceCopy(const GSSelfReadCopyInputs& in)
 {
-	if (!in.copy_key)
-		return false;
-
 	// The destination read. Fetch serves it, tex_is_fb expresses it, and forcing a copy here
 	// would undo the entire reason the fetch path exists.
 	if (in.same_pixel_read)
@@ -118,23 +118,20 @@ constexpr bool SelfReadNeedsSourceCopy(const GSSelfReadCopyInputs& in)
 }
 
 // The fetch road: an offset read copies, the destination read does not.
-static_assert(SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .texture_barrier = true, .copy_key = true}));
+static_assert(SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .texture_barrier = true}));
 static_assert(!SelfReadNeedsSourceCopy(
-	{.same_pixel_read = true, .framebuffer_fetch = true, .texture_barrier = true, .copy_key = true}));
+	{.same_pixel_read = true, .framebuffer_fetch = true, .texture_barrier = true}));
 
 // Desktop: a texture barrier and no in-tile read. The existing shortcut stands.
-static_assert(!SelfReadNeedsSourceCopy({.texture_barrier = true, .copy_key = true}));
+static_assert(!SelfReadNeedsSourceCopy({.texture_barrier = true}));
 
 // The RT-copy road already copies; the feedback-loop-layout road is not the one reasoned about.
-static_assert(!SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .copy_key = true}));
+static_assert(!SelfReadNeedsSourceCopy({.framebuffer_fetch = true}));
 static_assert(!SelfReadNeedsSourceCopy(
-	{.framebuffer_fetch = true, .texture_barrier = true, .feedback_loop_layout = true, .copy_key = true}));
-
-// The key off is the old behaviour, everywhere.
-static_assert(!SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .texture_barrier = true}));
+	{.framebuffer_fetch = true, .texture_barrier = true, .feedback_loop_layout = true}));
 
 // The channel-shuffle page-offset road asks with same_pixel_read false, so it is the same answer
 // as the disjoint-rect road on every device. Spelled out because the two sites are far apart.
 static_assert(SelfReadNeedsSourceCopy(
-	{.same_pixel_read = false, .framebuffer_fetch = true, .texture_barrier = true, .copy_key = true}));
-static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = false, .texture_barrier = true, .copy_key = true}));
+	{.same_pixel_read = false, .framebuffer_fetch = true, .texture_barrier = true}));
+static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = false, .texture_barrier = true}));

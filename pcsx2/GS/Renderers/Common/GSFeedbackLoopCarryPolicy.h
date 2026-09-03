@@ -24,6 +24,12 @@
 //
 // The decision is a pure function of the device's facts so it can be pinned without a device; the
 // backend supplies the facts. See gs_feedback_loop_carry_tests.cpp.
+//
+// This shipped for one round behind EmuCore/GS/FeedbackLoopCarry so the device suite could run both
+// arms off one binary. The round decided it: on the RG 477V with fetch on, frames are identical
+// with and without the carry on all 22 corpus dumps, while OutRun 2006 goes from 599.5 render
+// passes a frame to 31.1 and Xenosaga from 75,899 per run to 133, taking its frame time from about
+// 32 ms to 16.7. The key is gone; the carry is what the function returns.
 
 struct GSFeedbackLoopCarryInputs
 {
@@ -46,9 +52,6 @@ struct GSFeedbackLoopCarryInputs
 	/// (UseFeedbackLoopLayout tests for the absence of the ROAA extension); listed anyway so the
 	/// carry stays tied to the path it was reasoned about.
 	bool feedback_loop_layout = false;
-
-	/// EmuCore/GS/FeedbackLoopCarry.
-	bool carry_key = false;
 
 	/// The draw asks for a feedback barrier of its own. Carrying the flag onto such a draw would
 	/// hand the backend a render target to barrier against where it previously had none, which
@@ -74,9 +77,6 @@ constexpr bool CarryFeedbackLoopAcrossTargetRun(const GSFeedbackLoopCarryInputs&
 {
 	if (in.device_always_carries)
 		return true;
-
-	if (!in.carry_key)
-		return false;
 
 	if (!in.device_is_measured_vendor || !in.framebuffer_fetch || in.feedback_loop_layout)
 		return false;
@@ -120,21 +120,20 @@ constexpr bool CarryDepthFeedbackAcrossTargetRun(const GSFeedbackLoopCarryInputs
 static_assert(CarryFeedbackLoopAcrossTargetRun({.device_always_carries = true}));
 static_assert(CarryFeedbackLoopAcrossTargetRun({.device_always_carries = true, .draw_needs_own_barrier = true}));
 
-// The fetch path carries; without fetch, or with the key off, nothing changes.
+// The fetch path carries; without fetch, or on a vendor the carry was not measured on, nothing
+// changes.
 static_assert(CarryFeedbackLoopAcrossTargetRun(
-	{.device_is_measured_vendor = true, .framebuffer_fetch = true, .carry_key = true}));
+	{.device_is_measured_vendor = true, .framebuffer_fetch = true}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun(
-	{.device_is_measured_vendor = true, .framebuffer_fetch = false, .carry_key = true}));
+	{.device_is_measured_vendor = true, .framebuffer_fetch = false}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun(
-	{.device_is_measured_vendor = true, .framebuffer_fetch = true, .carry_key = false}));
-static_assert(!CarryFeedbackLoopAcrossTargetRun(
-	{.device_is_measured_vendor = false, .framebuffer_fetch = true, .carry_key = true}));
+	{.device_is_measured_vendor = false, .framebuffer_fetch = true}));
 
 // A depth writer never inherits the depth bits, on any device -- including the one whose colour
 // carry is unconditional.
 static_assert(!CarryDepthFeedbackAcrossTargetRun({.device_always_carries = true, .draw_writes_depth = true}));
 static_assert(CarryDepthFeedbackAcrossTargetRun({.device_always_carries = true}));
 static_assert(!CarryDepthFeedbackAcrossTargetRun({.device_is_measured_vendor = true, .framebuffer_fetch = true,
-	.carry_key = true, .draw_writes_depth = true}));
+	.draw_writes_depth = true}));
 static_assert(CarryDepthFeedbackAcrossTargetRun(
-	{.device_is_measured_vendor = true, .framebuffer_fetch = true, .carry_key = true}));
+	{.device_is_measured_vendor = true, .framebuffer_fetch = true}));

@@ -8838,8 +8838,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// The framebuffer-fetch path reads the attachment in-tile through subpassLoad under
 		// rasterization-order attachment access, so a pass declared self-reading by a draw
 		// that never reads is the same pass with one unused input attachment — it costs
-		// nothing to leave the flag set. Gated to Mali, where that was measured, and to
-		// EmuCore/GS/FeedbackLoopCarry so the device suite can run both arms off one binary.
+		// nothing to leave the flag set. Gated to Mali, where it was measured: OutRun 2006
+		// 599.5 render passes a frame down to 31.1, Xenosaga 75,899 per run down to 133 and
+		// its frame time from about 32 ms to 16.7, frames identical either way on all 22
+		// corpus dumps.
 		//
 		// Everything else keeps feedback-loop state draw-local: carrying it over can leave
 		// later draws in the previous feedback render pass/layout and cause Vulkan-only
@@ -8855,7 +8857,6 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		carry.device_is_measured_vendor = IsDeviceMali();
 		carry.framebuffer_fetch = m_features.framebuffer_fetch;
 		carry.feedback_loop_layout = UseFeedbackLoopLayout();
-		carry.carry_key = GSConfig.FeedbackLoopCarry;
 		// SendHWDraw only receives a target to barrier against when the pipeline's matching
 		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
 		// would emit one where none was emitted before. On the fetch path a non-reader never

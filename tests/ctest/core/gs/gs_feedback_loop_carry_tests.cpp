@@ -21,37 +21,25 @@
 
 namespace
 {
-	// A device on the framebuffer-fetch path with the key at its default.
+	// A device on the framebuffer-fetch path.
 	constexpr GSFeedbackLoopCarryInputs MaliWithFetch()
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_is_measured_vendor = true;
 		in.framebuffer_fetch = true;
-		in.carry_key = true;
 		return in;
 	}
 
 	// A desktop GPU: no fetch, no vendor match. The M2 and the SD865 both land here.
 	constexpr GSFeedbackLoopCarryInputs OffTheFetchPath()
 	{
-		GSFeedbackLoopCarryInputs in;
-		in.carry_key = true;
-		return in;
+		return GSFeedbackLoopCarryInputs();
 	}
 } // namespace
 
 TEST(GSFeedbackLoopCarry, FetchPathCarries)
 {
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(MaliWithFetch()));
-}
-
-// The key is what makes one binary run both arms of the device A/B. False must be the old
-// behaviour exactly, on the same device.
-TEST(GSFeedbackLoopCarry, KeyOffIsTheOldBehaviour)
-{
-	GSFeedbackLoopCarryInputs in = MaliWithFetch();
-	in.carry_key = false;
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(in));
 }
 
 // The gate that makes every guard device a no-op by construction. Without fetch the destination
@@ -95,44 +83,26 @@ TEST(GSFeedbackLoopCarry, ABarrierRequestBlocksTheCarry)
 }
 
 // Broadcom carried the flag unconditionally before this policy existed. Nothing here may change
-// that: neither the key nor the barrier term reaches it.
+// that: the barrier term does not reach it.
 TEST(GSFeedbackLoopCarry, BroadcomCarryIsUnchanged)
 {
 	GSFeedbackLoopCarryInputs in;
 	in.device_always_carries = true;
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
 
-	in.carry_key = false;
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
-
 	in.draw_needs_own_barrier = true;
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
 }
 
-// The invariant, swept: with the key off and the unconditional device out of the picture, the
-// answer is no for every combination of the remaining inputs. This is the statement the guard
-// devices need, and it fails if a later term is added that can carry without the key.
-TEST(GSFeedbackLoopCarry, KeyOffNeverCarriesAnywhere)
+// The invariant, swept: carrying requires the fetch path on the measured vendor, whatever else is
+// true. This is the statement every guard device needs -- the M2 and the SD865 are the
+// device_is_measured_vendor=false and framebuffer_fetch=false rows -- and it fails if a later term
+// is added that can carry without them.
+TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresTheFetchPath)
 {
 	for (int bits = 0; bits < 16; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
-		in.carry_key = false;
-		in.device_is_measured_vendor = (bits & 1) != 0;
-		in.framebuffer_fetch = (bits & 2) != 0;
-		in.feedback_loop_layout = (bits & 4) != 0;
-		in.draw_needs_own_barrier = (bits & 8) != 0;
-		EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(in)) << "bits=" << bits;
-	}
-}
-
-// And the same sweep with the key on: carrying requires the fetch path, whatever else is true.
-TEST(GSFeedbackLoopCarry, KeyOnStillRequiresTheFetchPath)
-{
-	for (int bits = 0; bits < 16; bits++)
-	{
-		GSFeedbackLoopCarryInputs in;
-		in.carry_key = true;
 		in.device_is_measured_vendor = (bits & 1) != 0;
 		in.framebuffer_fetch = (bits & 2) != 0;
 		in.feedback_loop_layout = (bits & 4) != 0;
@@ -185,8 +155,8 @@ TEST(GSFeedbackLoopCarry, BroadcomDepthCarryStopsAtADepthWriter)
 }
 
 // Swept: the depth answer is the colour answer with the depth writer removed, for every
-// combination of the rest, key on and key off. If a term is ever added that lets the depth bits
-// through on their own, this is what catches it.
+// combination of the rest. If a term is ever added that lets the depth bits through on their own,
+// this is what catches it.
 TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 {
 	for (int bits = 0; bits < 64; bits++)
@@ -199,12 +169,8 @@ TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 		in.draw_needs_own_barrier = (bits & 16) != 0;
 		in.draw_writes_depth = (bits & 32) != 0;
 
-		for (const bool key : {false, true})
-		{
-			in.carry_key = key;
-			const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
-			EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
-				<< "bits=" << bits << " key=" << key;
-		}
+		const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
+		EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
+			<< "bits=" << bits;
 	}
 }
