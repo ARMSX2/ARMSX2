@@ -11,6 +11,21 @@
 
 #include <string>
 
+// Test hook, not a setting. Defined to 1 on the command line, every ring is treated as
+// non-coherent whatever memory it actually landed on: the ranges are tracked and the flushes are
+// issued, exactly as on a device that needs them.
+//
+// It exists because the deferred-flush path cannot otherwise be run on this desk at all. The dev
+// box's only host-visible memory type is coherent, so its rings take road (a), m_non_coherent is
+// false, and every line below is dead. With the hook on, the same identity grid exercises the
+// bookkeeping and the flush calls -- harmless against a coherent allocation, where VMA returns
+// from vmaFlushAllocation without issuing anything -- and the counters show the collapse from one
+// clean per commit to one per ring per submit. What it cannot show is the cache maintenance
+// itself; only the MQ65 can.
+#ifndef GS_STREAM_RING_FORCE_NON_COHERENT
+#define GS_STREAM_RING_FORCE_NON_COHERENT 0
+#endif
+
 VKStreamBuffer::VKStreamBuffer()
 	: m_wait_site(GpuWaitSite::StreamUnnamed)
 {
@@ -27,7 +42,9 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_wait_site(move.m_wait_site)
 	, m_non_coherent(move.m_non_coherent)
+	, m_pending_flush(move.m_pending_flush)
 	, m_flush_calls(move.m_flush_calls)
+	, m_flush_commits(move.m_flush_commits)
 	, m_flush_bytes(move.m_flush_bytes)
 {
 	move.m_size = 0;
@@ -38,7 +55,9 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	move.m_buffer = VK_NULL_HANDLE;
 	move.m_host_pointer = nullptr;
 	move.m_non_coherent = false;
+	move.m_pending_flush.Reset();
 	move.m_flush_calls = 0;
+	move.m_flush_commits = 0;
 	move.m_flush_bytes = 0;
 }
 
@@ -62,7 +81,9 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_tracked_fences, move.m_tracked_fences);
 	std::swap(m_wait_site, move.m_wait_site);
 	std::swap(m_non_coherent, move.m_non_coherent);
+	std::swap(m_pending_flush, move.m_pending_flush);
 	std::swap(m_flush_calls, move.m_flush_calls);
+	std::swap(m_flush_commits, move.m_flush_commits);
 	std::swap(m_flush_bytes, move.m_flush_bytes);
 
 	return *this;
@@ -119,8 +140,10 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// with it instead of needing a separate probe.
 	VkMemoryPropertyFlags mem_flags = 0;
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
-	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
+	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0 || GS_STREAM_RING_FORCE_NON_COHERENT;
+	m_pending_flush.Reset();
 	m_flush_calls = 0;
+	m_flush_commits = 0;
 	m_flush_bytes = 0;
 	// Bytes, not KiB: the expand-index ring is four bytes when AA1 is off, and "0 KiB" reads as a
 	// failed allocation.
@@ -157,11 +180,21 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 
 void VKStreamBuffer::Destroy(bool defer)
 {
-	if (m_flush_calls != 0)
+	// A deferred destruction hands the buffer to the GPU's retirement queue, so anything committed
+	// and not yet submitted still has to be cleaned. Empty on every ordinary shutdown -- the
+	// device drains its command buffers first -- and the buffer is still alive here either way.
+	FlushPendingWrites();
+
+	if (m_flush_calls != 0 || m_flush_commits != 0)
 	{
-		Console.WriteLn("GS/Vulkan: stream ring %s ran non-coherent: %llu flushes, %llu bytes cleaned",
+		// Both counts, because the whole rung is the ratio between them: the commits are the
+		// cleans the per-commit road would have issued, the calls are what the deferred road
+		// actually issued for the same bytes.
+		Console.WriteLn("GS/Vulkan: stream ring %s ran non-coherent: %llu flushes over %llu commits, "
+						"%llu bytes cleaned",
 			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(m_wait_site)),
-			static_cast<unsigned long long>(m_flush_calls), static_cast<unsigned long long>(m_flush_bytes));
+			static_cast<unsigned long long>(m_flush_calls), static_cast<unsigned long long>(m_flush_commits),
+			static_cast<unsigned long long>(m_flush_bytes));
 	}
 
 	if (m_buffer != VK_NULL_HANDLE)
@@ -180,7 +213,9 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_allocation = VK_NULL_HANDLE;
 	m_host_pointer = nullptr;
 	m_non_coherent = false;
+	m_pending_flush.Reset();
 	m_flush_calls = 0;
+	m_flush_commits = 0;
 	m_flush_bytes = 0;
 }
 
@@ -258,21 +293,46 @@ void VKStreamBuffer::CommitMemory(u32 final_num_bytes)
 	pxAssert((m_current_offset + final_num_bytes) <= m_size);
 	pxAssert(final_num_bytes <= m_current_space);
 
-	// For non-coherent mappings, flush the memory range. VMA skips the call entirely on a coherent
-	// type, so on every device that has ever run this it is one predictable branch and nothing
-	// else; the counters are here because on a non-coherent type it becomes a cache clean per
-	// commit -- once per draw on the vertex ring -- and a round that takes that road has to be
-	// able to say how many.
-	if (m_non_coherent)
+	// A non-coherent ring's writes have to be cleaned out of the CPU's caches before the GPU reads
+	// them, and the GPU cannot read any of this until the queue submission that consumes it. So
+	// the region is recorded rather than cleaned: FlushPendingWrites cleans the lot once, at the
+	// submit. Cache maintenance is priced per byte and the call is priced per call, and this pays
+	// the call price once per ring per submit instead of once per commit for the same bytes.
+	//
+	// A coherent ring records nothing and calls nothing. vmaFlushAllocation returned immediately
+	// on a coherent type anyway, so that is the same behaviour with the call taken out.
+	if (m_non_coherent && !m_pending_flush.Add(m_current_offset, final_num_bytes))
 	{
-		m_flush_calls++;
-		m_flush_bytes += final_num_bytes;
+		// Only reachable if the ring wrapped twice with the first wrap still unflushed, which
+		// needs a fence to have completed, which needs a submit, which would have flushed. Handled
+		// rather than asserted: falling back to a flush here is exactly the old behaviour.
+		FlushPendingWrites();
+		m_pending_flush.Add(m_current_offset, final_num_bytes);
 	}
-	vmaFlushAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, m_current_offset, final_num_bytes);
 
 	m_current_offset += final_num_bytes;
 	m_current_space -= final_num_bytes;
 	UpdateCurrentFencePosition();
+}
+
+void VKStreamBuffer::FlushPendingWrites()
+{
+	if (m_pending_flush.IsEmpty())
+		return;
+
+	const VmaAllocator allocator = GSDeviceVK::GetInstance()->GetAllocator();
+	for (u32 i = 0; i < m_pending_flush.count; i++)
+	{
+		const GSStreamRingFlushRanges::Range& range = m_pending_flush.ranges[i];
+		// VMA rounds the range out to nonCoherentAtomSize before issuing the clean. Safe here: a
+		// clean writes back and never invalidates, and nothing but the CPU ever writes a ring.
+		vmaFlushAllocation(allocator, m_allocation, range.begin, range.size());
+		m_flush_calls++;
+		m_flush_bytes += range.size();
+	}
+
+	m_flush_commits += m_pending_flush.commits;
+	m_pending_flush.Reset();
 }
 
 void VKStreamBuffer::RetainForCurrentCommandBuffer()

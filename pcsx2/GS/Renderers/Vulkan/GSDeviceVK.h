@@ -791,6 +791,11 @@ private:
 	bool CheckFeatures();
 	bool CreateNullTexture();
 	bool CreateBuffers();
+
+	/// Cleans every stream ring's outstanding writes out of the CPU's caches. Called from
+	/// SubmitCommandBuffer immediately before vkQueueSubmit, which is the last point before the
+	/// GPU can read any of them, and the only point that needs it.
+	void FlushStreamRingWrites();
 	bool CreatePipelineLayouts();
 	bool CreateRenderPasses();
 

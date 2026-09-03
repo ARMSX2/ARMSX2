@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "GS/Renderers/Common/GSStreamRingFlushRange.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 
 #include "vk_mem_alloc.h"
@@ -44,6 +45,16 @@ public:
 
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
 	void CommitMemory(u32 final_num_bytes);
+
+	/// Cleans everything committed since the last call out of the CPU's caches, on a ring whose
+	/// memory type is not coherent. A no-op on every other ring, and on a non-coherent ring that
+	/// has not been written since the last flush.
+	///
+	/// Must be called on every ring before the queue submission that reads it, which is the only
+	/// point the GPU can see any of it: command recording does not execute anything, so a draw
+	/// recorded into the command buffer being built reads nothing until that buffer is submitted.
+	/// GSDeviceVK::SubmitCommandBuffer does it for all six, immediately before vkQueueSubmit.
+	void FlushPendingWrites();
 
 	/// Hold the newest committed range until the command buffer being recorded NOW retires, not
 	/// merely until the one it was committed under does.
@@ -90,10 +101,18 @@ private:
 	// List of fences and the corresponding positions in the buffer
 	std::deque<std::pair<u64, u32>> m_tracked_fences;
 
-	/// Whether the memory type this ring landed on lacks HOST_COHERENT, in which case
-	/// CommitMemory's flush is a real cache clean rather than a no-op. The two counters below say
-	/// how many of those a run paid, which is the whole price of the cached non-coherent road.
+	/// Whether the memory type this ring landed on lacks HOST_COHERENT, in which case its writes
+	/// need a real cache clean before the GPU reads them. False on every coherent ring, and then
+	/// nothing below it is ever touched.
 	bool m_non_coherent = false;
+
+	/// What has been committed since the last flush, at most one range plus one more for a wrap.
+	GSStreamRingFlushRanges m_pending_flush;
+
+	/// The price of the cached non-coherent road, as a run has to be able to state it: how many
+	/// cache cleans were issued, how many committed regions they covered -- the number of cleans
+	/// the per-commit road would have issued for the same bytes -- and how many bytes were cleaned.
 	u64 m_flush_calls = 0;
+	u64 m_flush_commits = 0;
 	u64 m_flush_bytes = 0;
 };
