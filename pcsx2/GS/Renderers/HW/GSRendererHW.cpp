@@ -5976,6 +5976,28 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24), m_r,
 				rt->m_valid, rt->m_alpha_erosion_rect, rt->m_alpha_erosion_draw,
 				rt->m_alpha_erosion_count);
+
+			// The draws worth a per-primitive row: the rectangle contains the whole valid rect,
+			// so on the rectangle alone this is a full cover, and the gapless test refused it
+			// anyway. Whether the primitives really leave a gap is a question about their union,
+			// which no column on the draw row can answer. Sprites only -- the vertex pairs are
+			// the geometry, and every other primitive class needs a different reading of the
+			// buffer. Coordinates go out raw, in 1/16 pixel units with XYOFFSET subtracted.
+			if ((log_alpha_flags & GSDrawLog::RTAlphaCoversValid) &&
+				!(log_alpha_flags & GSDrawLog::RTAlphaNoGaps) &&
+				m_vt.m_primclass == GS_SPRITE_CLASS && m_vertex->next >= 4)
+			{
+				const int off_x = static_cast<int>(m_context->XYOFFSET.OFX);
+				const int off_y = static_cast<int>(m_context->XYOFFSET.OFY);
+				const GSVertex* v = &m_vertex->buff[0];
+				for (u32 i = 0; (i + 1) < m_vertex->next; i += 2)
+				{
+					GSDrawLog::NoteSpriteRect(static_cast<u16>(i >> 1),
+						static_cast<int>(v[i].XYZ.X) - off_x, static_cast<int>(v[i].XYZ.Y) - off_y,
+						static_cast<int>(v[i + 1].XYZ.X) - off_x,
+						static_cast<int>(v[i + 1].XYZ.Y) - off_y);
+				}
+			}
 		}
 
 		GL_INS("HW: RT Alpha Range: %d-%d => %d-%d", blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max);

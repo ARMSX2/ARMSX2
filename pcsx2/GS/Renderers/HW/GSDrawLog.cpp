@@ -243,6 +243,35 @@ namespace GSDrawLog
 		s_records.push_back(rec);
 	}
 
+	void NoteSpriteRect(u16 index, int x0, int y0, int x1, int y1)
+	{
+		if (!IsActive())
+			return;
+
+		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
+			s_records.reserve(MAX_RECORDS);
+
+		if (s_records.size() >= MAX_RECORDS)
+		{
+			s_truncated = true;
+			return;
+		}
+
+		// Same discipline as NoteTargetEvent: appended past the open draw row, s_open_record
+		// left alone, the draw's frame and serial carried as the join key.
+		Record rec = {};
+		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
+		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
+		rec.packet = s_packet_mark;
+		rec.flags2 = Flags2SpriteRect;
+		rec.spr_i = index;
+		rec.spr_x0 = x0;
+		rec.spr_y0 = y0;
+		rec.spr_x1 = x1;
+		rec.spr_y1 = y1;
+		s_records.push_back(rec);
+	}
+
 	void NoteTFXCall(const TFXCall& call)
 	{
 		if (!IsActive())
@@ -617,7 +646,8 @@ namespace GSDrawLog
 			"exact_masked,exact_src_lo,exact_src_hi,"
 			"rt_draw_x,rt_draw_y,rt_draw_w,rt_draw_h,"
 			"rt_valid_x,rt_valid_y,rt_valid_w,rt_valid_h,"
-			"rt_erosion_x,rt_erosion_y,rt_erosion_w,rt_erosion_h,rt_erosion_draw,rt_erosion_n\n");
+			"rt_erosion_x,rt_erosion_y,rt_erosion_w,rt_erosion_h,rt_erosion_draw,rt_erosion_n,"
+			"spr_i,spr_x0,spr_y0,spr_x1,spr_y1\n");
 
 		for (const Record& r : s_records)
 		{
@@ -825,7 +855,7 @@ namespace GSDrawLog
 
 			if (r.flags2 & Flags2RTAlpha)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u\n",
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,",
 					r.rt_draw_x, r.rt_draw_y, r.rt_draw_z - r.rt_draw_x, r.rt_draw_w - r.rt_draw_y,
 					r.rt_valid_x, r.rt_valid_y, r.rt_valid_z - r.rt_valid_x,
 					r.rt_valid_w - r.rt_valid_y, r.rt_erosion_x, r.rt_erosion_y,
@@ -834,7 +864,19 @@ namespace GSDrawLog
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,,,,,,");
+			}
+
+			// Raw coordinates, not a width and a height: the row is a pair of vertices in 1/16
+			// pixel units and the pixel span is derived from it offline.
+			if (r.flags2 & Flags2SpriteRect)
+			{
+				std::fprintf(fp.get(), "%u,%d,%d,%d,%d\n", r.spr_i, r.spr_x0, r.spr_y0, r.spr_x1,
+					r.spr_y1);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,\n");
 			}
 		}
 

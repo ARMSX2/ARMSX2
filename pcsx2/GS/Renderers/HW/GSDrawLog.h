@@ -147,6 +147,21 @@ namespace GSDrawLog
 		u32 rt_erosion_draw;
 		u32 rt_erosion_count;
 
+		/// One primitive of a draw whose rectangle contains the target's valid rect but whose
+		/// gapless test refused it. Whether that draw really covers the target is not answerable
+		/// from a bounding box -- it is a question about the union of the primitives -- so each
+		/// primitive gets a row of its own, appended in stream order beside the draw rows and
+		/// carrying the draw's frame and serial as the join key. The coordinates are the raw GS
+		/// ones in 1/16 pixel units with XYOFFSET subtracted, unrounded, so the vertex-to-pixel
+		/// convention is applied offline and can be applied twice: the HW renderer's rule and
+		/// the software rasteriser's differ by half a pixel and a coverage claim has to survive
+		/// both. Flags2SpriteRect says the row is one.
+		s32 spr_x0;
+		s32 spr_y0;
+		s32 spr_x1;
+		s32 spr_y1;
+		u16 spr_i; ///< the primitive's index within the draw
+
 		/// TargetEvent for a row that records something other than a draw; zero on draws.
 		u8 evt_kind;
 
@@ -319,6 +334,7 @@ namespace GSDrawLog
 		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
 		Flags2Event = 1 << 3, ///< the row is a target event, not a draw; see evt_kind
 		Flags2TFXCall = 1 << 4, ///< the row is one TFX draw call, not a draw; see tfx_*
+		Flags2SpriteRect = 1 << 5, ///< the row is one primitive of a draw, not a draw; see spr_*
 	};
 
 	/// Which of a GS draw's TFX calls a row is. The main call is the draw proper; the others
@@ -499,6 +515,11 @@ namespace GSDrawLog
 	/// Records which blend-mix factor-in-alpha road the draw took, on the open row. See
 	/// BlendFactorAlpha.
 	void NoteBlendFactorAlpha(u8 road);
+
+	/// Records one primitive of a draw whose rectangle contains the target's valid rect and whose
+	/// gapless test refused it, as its own appended row. Coordinates in 1/16 pixel units with
+	/// XYOFFSET subtracted. See spr_x0.
+	void NoteSpriteRect(u16 index, int x0, int y0, int x1, int y1);
 
 	/// Records what the exact alpha-mask-drop rule decided, on the open row, together with the
 	/// target's known-bits pair and what last set it. See ExactAlphaDrop.
