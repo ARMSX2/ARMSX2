@@ -21,6 +21,14 @@
 /// cause. Reading the same window every N packets turns "they disagree" into "they
 /// first disagree here", which is a question about one draw rather than about a game.
 ///
+/// ⚠️ **A rung retires the pending draw, on both arms, and that is deliberate.** The
+/// console arm's rung is a local-to-host transfer, so the GS finishes every primitive
+/// queued ahead of it before serving one. This arm therefore flushes too. Without that
+/// the two are a whole draw apart at any boundary with a batch still open -- which a
+/// vsync routinely is, because a game kicks the next frame's opening geometry before
+/// the vsync packet and nothing flushes it until the frame's first state change. The
+/// diff then reads as a renderer disagreement and is a sampling instant.
+///
 /// ⚠️ **What each arm's readback actually means differs, and it is not a detail.** Under
 /// the software renderer local memory *is* the result. Under a hardware renderer the
 /// result lives on the GPU and only reaches local memory through a download, so this

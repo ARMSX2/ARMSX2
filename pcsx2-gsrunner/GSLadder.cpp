@@ -86,6 +86,21 @@ namespace GSLadder
 			d.bytes = w * h * 4;
 			d.status = 0;
 
+			// Retire whatever the GIF still holds, because the arm this is compared
+			// against does. A rung on the console is a local-to-host transfer, and the
+			// GS retires every primitive queued ahead of it before serving one; a rung
+			// here is a read of the renderer's memory and retires nothing. Where a
+			// packet boundary has a primitive batch still open -- which a vsync
+			// routinely does, because a game kicks the next frame's first geometry
+			// before the vsync packet and the batch is not flushed until something
+			// forces it -- the two arms are then a whole draw apart at the same rung,
+			// and the diff reads as a renderer disagreement rather than as two
+			// different instants. Measured on OutRun 2006: the local rung at the vsync
+			// matched the console arm's rung at the PREVIOUS one, byte for byte, and
+			// the console arm's rung at the vsync matched the local arm's NEXT one.
+			// DOWNLOADFIFO is the reason the GIF's own TRXDIR=1 handler uses.
+			r->Flush(GSState::GSFlushReason::DOWNLOADFIFO);
+
 			// Ask for the download a game's own readback would trigger. A no-op under
 			// the software renderer, where local memory is already the result.
 			GIFRegBITBLTBUF bb = {};
