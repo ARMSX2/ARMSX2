@@ -56,6 +56,12 @@ public:
 	/// GSDeviceVK::SubmitCommandBuffer does it for all six, immediately before vkQueueSubmit.
 	void FlushPendingWrites();
 
+	/// The cache maintenance this ring has paid so far: cleans issued, committed regions those
+	/// cleans covered, bytes cleaned. Zero for the whole run on a coherent ring.
+	__fi u64 GetFlushCalls() const { return m_flush_calls; }
+	__fi u64 GetFlushCommits() const { return m_flush_commits; }
+	__fi u64 GetFlushBytes() const { return m_flush_bytes; }
+
 	/// Hold the newest committed range until the command buffer being recorded NOW retires, not
 	/// merely until the one it was committed under does.
 	///

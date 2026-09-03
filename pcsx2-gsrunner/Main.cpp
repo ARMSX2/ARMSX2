@@ -408,6 +408,9 @@ static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
 static std::string s_stream_ring_memory;
+// Latched every frame for the same reason as the wait bill: the device is gone by the time the
+// stats file is written, and these counters live on it.
+static GSDevice::StreamRingFlushStats s_stream_ring_flush;
 static u64 s_frame_timer_last = 0;
 static u64 s_gs_cpu_time_last = 0;
 // Previous frame's wait bill, so each sample carries its own delta rather than a running total.
@@ -773,6 +776,8 @@ void Host::BeginPresentFrame()
 		// Same reasoning, every frame rather than once: the device's wait counters have to be read
 		// somewhere the device certainly exists, and this is the only per-frame point that qualifies.
 		LatchDeviceWaitBill();
+		if (g_gs_device)
+			s_stream_ring_flush = g_gs_device->GetStreamRingFlushStats();
 
 		const u32 last_draws = s_total_internal_draws;
 
@@ -2100,6 +2105,14 @@ static void WriteStatsJson(const std::string& path)
 		json_escape(s_device_name).c_str(), json_escape(s_driver_info).c_str());
 	std::fprintf(fp.get(), "    \"stream_ring_memory\": \"%s\",\n",
 		json_escape(s_stream_ring_memory.empty() ? std::string("n/a") : s_stream_ring_memory).c_str());
+	// What the non-coherent road cost, and what it would have cost per commit. Zero on every
+	// coherent ring, which is every device that does not take that road -- so a non-zero
+	// stream_ring_flush_commits with a far smaller stream_ring_flushes is the deferral working,
+	// and equal numbers would be the old per-commit behaviour.
+	std::fprintf(fp.get(),
+		"    \"stream_ring_flushes\": %" PRIu64 ",\n    \"stream_ring_flush_commits\": %" PRIu64 ",\n"
+		"    \"stream_ring_flush_bytes\": %" PRIu64 ",\n",
+		s_stream_ring_flush.calls, s_stream_ring_flush.commits, s_stream_ring_flush.bytes);
 	std::fprintf(fp.get(), "    \"frames\": %u,\n    \"drawn_frames\": %u,\n", s_total_frames, s_total_drawn_frames);
 	// What the run was asked to replay, so a reader can cut the frame series into loops.
 	// loop_count is the -loop value verbatim (1 when the flag was absent, 0 meaning
