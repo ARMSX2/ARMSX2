@@ -252,6 +252,11 @@ public:
 		/// seeding. See GSAlphaKnownBits.h.
 		GSAlphaKnownBits::Known m_alpha_known;
 
+		/// What last set m_alpha_known. Census only -- see GSAlphaKnownBits::Reason. Maintained at
+		/// every site that assigns the pair, so the ledger can say why a draw found the target
+		/// unable to answer for the bits its mask holds back.
+		GSAlphaKnownBits::Reason m_alpha_known_reason = GSAlphaKnownBits::Reason::NeverEstablished;
+
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;

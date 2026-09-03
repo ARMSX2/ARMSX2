@@ -126,6 +126,14 @@ namespace GSDrawLog
 		/// target's known alpha bits, which only exist while the draw is running.
 		u8 exact_alpha_drop;
 
+		/// What the render target's alpha known-bits pair held when that decision was taken, and
+		/// what last set it (GSAlphaKnownBits::Reason). Census: the largest class the exact rules
+		/// refuse is "the target does not know these bits", and this says which event is
+		/// responsible on that target rather than leaving it to be guessed.
+		u8 exact_alpha_known_bits;
+		u8 exact_alpha_known_value;
+		u8 exact_alpha_known_reason;
+
 		/// TFX-call view. One GS draw can issue several TFX draw calls (the alpha second pass,
 		/// the blend multi-pass, the PrimID pre-pass), and the run rule Phase 5 is pricing
 		/// compares the identities the *device* binds, not the ones the PS2 registers name. So a
@@ -420,8 +428,9 @@ namespace GSDrawLog
 	/// open row. Read where CalculateAlphaRange already has all of it in hand.
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask);
 
-	/// Records what the exact alpha-mask-drop rule decided, on the open row. See ExactAlphaDrop.
-	void NoteExactAlphaDrop(u8 decision);
+	/// Records what the exact alpha-mask-drop rule decided, on the open row, together with the
+	/// target's known-bits pair and what last set it. See ExactAlphaDrop.
+	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason);
 
 	/// Marks the open row as having actually assigned the target's new alpha range. A draw
 	/// can compute the range and then return before the assignment, and a reconstruction

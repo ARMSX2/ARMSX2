@@ -5848,7 +5848,7 @@ void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
 
 void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds,
 	DATEOptions& date_options, int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-	GSAlphaKnownBits::Known& rt_new_alpha_known)
+	GSAlphaKnownBits::Known& rt_new_alpha_known, GSAlphaKnownBits::Reason& rt_new_alpha_reason)
 {
 	// Calculate alpha range for RT.
 	if (rt)
@@ -5910,6 +5910,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			rt_new_alpha_known = GSAlphaKnownBits::AfterWrite(rt_new_alpha_known,
 				static_cast<u8>(~fb_mask & alpha_mask), static_cast<u8>(s_alpha_min),
 				static_cast<u8>(s_alpha_max), full_cover);
+			rt_new_alpha_reason = full_cover ? GSAlphaKnownBits::Reason::DrawFullCover : GSAlphaKnownBits::Reason::DrawPartialCover;
 			rt_new_alpha_known.bits &= static_cast<u8>(alpha_mask);
 			rt_new_alpha_known.value &= rt_new_alpha_known.bits;
 
@@ -5963,6 +5964,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			}
 			rt->m_alpha_range = true;
 			rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
+			rt_new_alpha_reason = GSAlphaKnownBits::Reason::ChannelShuffle;
 			log_alpha_flags |= GSDrawLog::RTAlphaShuffle;
 		}
 
@@ -6857,7 +6859,12 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		const int requested_fbmask = fbmask;
 		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
 		if (GSDrawLog::IsActive()) [[unlikely]]
-			GSDrawLog::NoteExactAlphaDrop(exact_drop);
+		{
+			GSDrawLog::NoteExactAlphaDrop(exact_drop, rt ? rt->m_alpha_known.bits : 0,
+				rt ? rt->m_alpha_known.value : 0,
+				static_cast<u8>(rt ? rt->m_alpha_known_reason : GSAlphaKnownBits::Reason::NeverEstablished));
+		}
+
 		if (exact_drop == GSDrawLog::ExactAlphaDropTaken)
 		{
 			// Keep the byte. What the drop is entitled to change is the shader and the barrier;
@@ -10031,8 +10038,10 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	int blend_alpha_min = 0, blend_alpha_max = 255;
 	int rt_new_alpha_min = 0, rt_new_alpha_max = 255;
 	GSAlphaKnownBits::Known rt_new_alpha_known;
-	CalculateAlphaRange(
-		rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max, rt_new_alpha_known);
+	// Unchanged means this draw did not touch the pair; the target keeps whatever last set it.
+	GSAlphaKnownBits::Reason rt_new_alpha_reason = GSAlphaKnownBits::Reason::Unchanged;
+	CalculateAlphaRange(rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max,
+		rt_new_alpha_known, rt_new_alpha_reason);
 
 	// DATE: selection of the algorithm.
 	EmulateDATESelectMethod(date_options, rt, blend_alpha_min, blend_alpha_max);
@@ -10124,6 +10133,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		rt->m_alpha_max = rt_new_alpha_max;
 		rt->m_alpha_min = rt_new_alpha_min;
 		rt->m_alpha_known = rt_new_alpha_known;
+		if (rt_new_alpha_reason != GSAlphaKnownBits::Reason::Unchanged)
+			rt->m_alpha_known_reason = rt_new_alpha_reason;
 		rt->AssertAlphaKnownAgreesWithRange("draw");
 
 		if (GSDrawLog::IsActive()) [[unlikely]]
@@ -10963,6 +10974,7 @@ bool GSRendererHW::TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Ta
 			// The clear reaches the whole texture, so every alpha bit is known again.
 			rt->m_alpha_known = has_alpha ? GSAlphaKnownBits::Known::All(static_cast<u8>(rt->m_alpha_min)) :
 											GSAlphaKnownBits::Known::Nothing();
+			rt->m_alpha_known_reason = GSAlphaKnownBits::Reason::Clear;
 			rt->AssertAlphaKnownAgreesWithRange("TryTargetClear");
 
 			if (GSDrawLog::IsActive()) [[unlikely]]

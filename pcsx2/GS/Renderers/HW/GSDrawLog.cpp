@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/HW/GSDrawLog.h"
+#include "GS/Renderers/HW/GSAlphaKnownBits.h"
 #include "GS/GSExtra.h"
 #include "GS/GSState.h"
 #include "GS/GSPerfMon.h"
@@ -148,12 +149,16 @@ namespace GSDrawLog
 		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
 	}
 
-	void NoteExactAlphaDrop(u8 decision)
+	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
 
-		s_records[s_open_record].exact_alpha_drop = decision;
+		Record& rec = s_records[s_open_record];
+		rec.exact_alpha_drop = decision;
+		rec.exact_alpha_known_bits = known_bits;
+		rec.exact_alpha_known_value = known_value;
+		rec.exact_alpha_known_reason = known_reason;
 	}
 
 	void NoteRTAlphaCommitted()
@@ -414,6 +419,39 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetAlphaKnownReasonName(u8 reason)
+	{
+		switch (static_cast<GSAlphaKnownBits::Reason>(reason))
+		{
+			case GSAlphaKnownBits::Reason::NeverEstablished:
+				return "NEVER";
+			case GSAlphaKnownBits::Reason::CreateCleared:
+				return "CREATE_CLEARED";
+			case GSAlphaKnownBits::Reason::Clear:
+				return "CLEAR";
+			case GSAlphaKnownBits::Reason::DrawFullCover:
+				return "DRAW_FULL";
+			case GSAlphaKnownBits::Reason::DrawPartialCover:
+				return "DRAW_PARTIAL";
+			case GSAlphaKnownBits::Reason::ChannelShuffle:
+				return "SHUFFLE";
+			case GSAlphaKnownBits::Reason::Upload:
+				return "UPLOAD";
+			case GSAlphaKnownBits::Reason::Grow:
+				return "GROW";
+			case GSAlphaKnownBits::Reason::Inherit:
+				return "INHERIT";
+			case GSAlphaKnownBits::Reason::Move:
+				return "MOVE";
+			case GSAlphaKnownBits::Reason::Clobber:
+				return "CLOBBER";
+			case GSAlphaKnownBits::Reason::HwHack:
+				return "HW_HACK";
+			default:
+				return "";
+		}
+	}
+
 	static const char* GetTFXCallKindName(u8 kind)
 	{
 		switch (kind)
@@ -499,6 +537,7 @@ namespace GSDrawLog
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
+			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,"
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
 			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
 			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
@@ -650,6 +689,16 @@ namespace GSDrawLog
 				// The drop decision is taken before the alpha-range calculation, so a draw that
 				// returned in between still has one worth printing.
 				std::fprintf(fp.get(), ",,,,,,,,,,%s,", GetExactAlphaDropName(r.exact_alpha_drop));
+			}
+
+			if (r.exact_alpha_drop != ExactAlphaDropNotConsidered)
+			{
+				std::fprintf(fp.get(), "%02x,%02x,%s,", r.exact_alpha_known_bits, r.exact_alpha_known_value,
+					GetAlphaKnownReasonName(r.exact_alpha_known_reason));
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,");
 			}
 
 			if (r.flags2 & Flags2TFXCall)
