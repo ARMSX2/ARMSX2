@@ -5,9 +5,10 @@
 # scratchpad/mq65-gs-2026-07-18/GIFPACKED-VERTEX-DESIGN.md for the campaign.
 #
 # gs_interlace_policy_tests.cpp, gs_framebuffer_fetch_policy_tests.cpp,
-# gs_feedback_loop_carry_tests.cpp, gs_self_read_copy_tests.cpp and
-# gs_stream_ring_memory_tests.cpp ride this target rather than adding one: those policies are
-# header-only constexpr, so they need no extra linkage.
+# gs_feedback_loop_carry_tests.cpp, gs_self_read_copy_tests.cpp,
+# gs_stream_ring_memory_tests.cpp and gs_stream_ring_flush_tests.cpp ride this
+# target rather than adding one: those policies are header-only, so they need no
+# extra linkage.
 add_pcsx2_test(gs_vertex_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	gs_vertex_tests.cpp
@@ -17,6 +18,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_feedback_loop_carry_tests.cpp
 	gs_self_read_copy_tests.cpp
 	gs_stream_ring_memory_tests.cpp
+	gs_stream_ring_flush_tests.cpp
 	gs_gpu_driver_profile_tests.cpp
 	gs_draw_staging_tests.cpp
 	gs_draw_env_snapshot_tests.cpp
