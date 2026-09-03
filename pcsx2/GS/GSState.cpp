@@ -4,6 +4,7 @@
 #include "GS/GSState.h"
 #include "GS/GSDump.h"
 #include "GS/GSFeDecode.h"
+#include "GS/GSSpriteCover.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -5852,9 +5853,59 @@ bool GSState::SpriteDrawWithoutGaps()
 	return false;
 }
 
+// The union of this draw's sprites against its own rect, at pixel precision. SpriteDrawWithoutGaps()
+// above asks whether the sprites tile; this asks whether every pixel of m_r is written by at least
+// one of them, which is a different question and the one the alpha tracker is actually asking. Two
+// coincident screen-sized sprites tile nothing and cover everything.
+//
+// The tree turns a vertex into a pixel two different ways -- the hardware renderer rounds to
+// nearest (floor(v + 0.5), the `+8 >> 4` below) and the software rasteriser takes the ceiling --
+// and they differ by half a pixel on a sprite that is not integer-aligned. A cover claim is only
+// worth having if it holds in both, so the sweep runs twice and both have to say yes.
+bool GSState::SpriteUnionCoversDrawRect()
+{
+	const u32 count = m_vertex->next / 2;
+	if (count < 2 || count > GSSpriteCover::MaxSprites)
+		return false;
+
+	const int off_x = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int off_y = static_cast<int>(m_context->XYOFFSET.OFY);
+	const GSVertex* v = &m_vertex->buff[0];
+
+	// floor(v + 0.5) then ceil(v), as the two conventions.
+	static constexpr int kRoundingBias[2] = {8, 15};
+	for (const int bias : kRoundingBias)
+	{
+		GSVector4i rects[GSSpriteCover::MaxSprites];
+		u32 n = 0;
+		for (u32 i = 0; i < count; i++)
+		{
+			int x0 = static_cast<int>(v[i * 2].XYZ.X) - off_x;
+			int x1 = static_cast<int>(v[i * 2 + 1].XYZ.X) - off_x;
+			int y0 = static_cast<int>(v[i * 2].XYZ.Y) - off_y;
+			int y1 = static_cast<int>(v[i * 2 + 1].XYZ.Y) - off_y;
+			if (x0 > x1)
+				std::swap(x0, x1);
+			if (y0 > y1)
+				std::swap(y0, y1);
+
+			const GSVector4i sprite((x0 + bias) >> 4, (y0 + bias) >> 4, (x1 + bias) >> 4, (y1 + bias) >> 4);
+			const GSVector4i r = sprite.rintersect(m_r);
+			if (!r.rempty())
+				rects[n++] = r;
+		}
+
+		if (!GSSpriteCover::UnionCoversRect(rects, n, m_r))
+			return false;
+	}
+
+	return true;
+}
+
 void GSState::CalculatePrimitiveCoversWithoutGaps()
 {
 	m_primitive_covers_without_gaps = FullCover;
+	m_primitive_union_covers_rect = false;
 
 	// Draw shouldn't be offset.
 	if (((m_r.eq32(GSVector4i::zero())).mask() & 0xff) != 0xff)
@@ -5881,6 +5932,10 @@ void GSState::CalculatePrimitiveCoversWithoutGaps()
 		return;
 
 	m_primitive_covers_without_gaps = SpriteDrawWithoutGaps() ? (m_primitive_covers_without_gaps == GapsFound ? SpriteNoGaps : m_primitive_covers_without_gaps) : GapsFound;
+
+	// Asked only where the tiling test refused, and answered onto a flag of its own.
+	if (m_primitive_covers_without_gaps == GapsFound)
+		m_primitive_union_covers_rect = SpriteUnionCoversDrawRect();
 }
 
 __forceinline bool GSState::EarlyDetectShuffle(u32 prim)

@@ -575,6 +575,7 @@ set(pcsx2GSHeaders
 	GS/GSPerfMon.h
 	GS/GSPng.h
 	GS/GSRingHeap.h
+	GS/GSSpriteCover.h
 	GS/GSState.h
 	GS/GSVertexKick.h
 	GS/GSTables.h

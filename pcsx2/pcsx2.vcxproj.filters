@@ -1946,6 +1946,9 @@
     <ClInclude Include="GS\GSPerfMon.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\GSSpriteCover.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\GSState.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

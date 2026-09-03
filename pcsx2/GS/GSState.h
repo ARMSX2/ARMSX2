@@ -493,6 +493,13 @@ public:
 	int m_backed_up_ctx = 0;
 	std::vector<GSUploadQueue> m_draw_transfers;
 	NoGapsType m_primitive_covers_without_gaps;
+	/// Whether the union of this draw's sprites covers m_r, under both of the pixel conventions
+	/// the tree rasterises with. Deliberately NOT folded into m_primitive_covers_without_gaps:
+	/// widening that value tells the render-target-alpha-scale sites the draw overwrites the whole
+	/// target and moves pixels on titles that have nothing to do with this rule
+	/// (`campaigns/gs-classic-tiler/phase3-a4-gapless-sprite-cover/RESULT.md`). One reader only,
+	/// GSRendererHW::CalculateAlphaRange.
+	bool m_primitive_union_covers_rect = false;
 	GSVector4i m_r = {};
 	GSVector4i m_r_no_scissor = {};
 
@@ -812,6 +819,7 @@ public:
 		float bbox_scale = 1.0f, u32* max_size = nullptr);
 	PRIM_OVERLAP PrimitiveOverlap(bool save_drawlist = false);
 	bool SpriteDrawWithoutGaps();
+	bool SpriteUnionCoversDrawRect();
 	void CalculatePrimitiveCoversWithoutGaps();
 	GIFRegTEX0 GetTex0Layer(u32 lod);
 };
