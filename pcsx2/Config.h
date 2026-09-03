@@ -963,10 +963,6 @@ struct Pcsx2Config
 					// where every pass boundary is a full tile load and store. Hot-
 					// appliable: turning it off just stops deferring.
 					CoalesceRenderPasses : 1,
-					// Drop an alpha FBMSK the target's known alpha bits prove is the identity,
-					// so the draw takes no barrier and no render-target clone. Scaffolding for
-					// the rung that prices it; deleted when that rung is decided.
-					ExactAlphaMaskDrop : 1,
 					// Keep the software texture cache's pixel buffer across draws and zero only
 					// what the previous draw wrote, instead of freeing it and taking a fresh
 					// zeroed one on nearly every draw of the hardware renderer's SwPrimRender

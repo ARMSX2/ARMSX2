@@ -221,7 +221,7 @@ private:
 	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 	/// Whether this draw's alpha FBMSK can be cleared without changing a pixel, and if not, why.
-	/// Answered whatever EmuCore/GS/ExactAlphaMaskDrop says, so the ledger counts both arms.
+	/// Feeds the ledger column so a run can be audited for how often the drop applies.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
 	/// the exact drop has cleared it. See GSDrawAlphaMask.h.

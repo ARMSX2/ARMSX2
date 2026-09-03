@@ -763,7 +763,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	ForceMaliFramebufferFetch = false;
 	FeedbackLoopCarry = true;
 	FetchOffsetReadCopies = true;
-	ExactAlphaMaskDrop = true;
 	SwPrimPersistentTexture = true;
 	SkipDuplicateFrames = true;
 	OsdMessagesPos = OsdOverlayPos::TopLeft;
@@ -912,7 +911,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_Limit24BitDepth) &&
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(OverrideTextureBarriers) &&
-		OpEqu(ExactAlphaMaskDrop) &&
 		OpEqu(SwPrimPersistentTexture) &&
 		OpEqu(DepthFeedbackMode) &&
 		OpEqu(BackThreadMode) &&
@@ -1084,7 +1082,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
 	SettingsWrapBitBool(FeedbackLoopCarry);
 	SettingsWrapBitBool(FetchOffsetReadCopies);
-	SettingsWrapBitBool(ExactAlphaMaskDrop);
 	SettingsWrapBitBool(SwPrimPersistentTexture);
 	SettingsWrapBitBool(SkipDuplicateFrames);
 	SettingsWrapBitBool(OsdShowSpeed);

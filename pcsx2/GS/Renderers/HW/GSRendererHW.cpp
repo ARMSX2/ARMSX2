@@ -6858,7 +6858,7 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
 		if (GSDrawLog::IsActive()) [[unlikely]]
 			GSDrawLog::NoteExactAlphaDrop(exact_drop);
-		if (exact_drop == GSDrawLog::ExactAlphaDropTaken && GSConfig.ExactAlphaMaskDrop)
+		if (exact_drop == GSDrawLog::ExactAlphaDropTaken)
 		{
 			// Keep the byte. What the drop is entitled to change is the shader and the barrier;
 			// decisions about what the draw asked for -- the target's tracked alpha, and whether it
