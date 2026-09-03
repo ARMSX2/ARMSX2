@@ -4211,9 +4211,11 @@ bool GSDeviceVK::CheckFeatures()
 
 	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
 	// because it is one: the rings are allocated once at device init and the choice cannot be
-	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device numbers;
-	// what this does is read the memory-type table, ask the driver database its one question, and
-	// hand VKStreamBuffer::Create the answer.
+	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device
+	// numbers; what this does is read the memory-type table, ask the driver database its one
+	// question, and hand VKStreamBuffer::Create the answer. Leaving a cached road is opt-in: with
+	// no rule for this GPU the answer is the write-combined selection every device had before the
+	// policy existed, whatever the table offers.
 	{
 		VkPhysicalDeviceMemoryProperties memory_properties = {};
 		vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
@@ -4236,15 +4238,12 @@ bool GSDeviceVK::CheckFeatures()
 			UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
 		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
 
-		// Why the write-combined road was taken is the half a log has to carry: "unchanged" covers
-		// a desktop card whose cached memory is system RAM, a device with no cached type at all,
-		// and a device that has one but that no rule names, and those are three different reads.
-		const char* reason = "the device offers a cached coherent host-visible type";
-		if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::CachedNonCoherent)
-		{
-			reason = "no cached coherent type, and the driver database prefers cached memory on this GPU";
-		}
-		else if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::WriteCombined)
+		// Why the write-combined road was taken is the half a log has to carry, because it is the
+		// default and "unchanged" covers four different reads: no rule names this GPU, a desktop
+		// card whose cached memory is system RAM, a device with no cached type at all, and a named
+		// device that still had nothing to move to.
+		const char* reason = "the driver database prefers cached memory on this GPU";
+		if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::WriteCombined)
 		{
 			bool any_cached = false, any_device_local_cached = false;
 			for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
@@ -4255,12 +4254,13 @@ bool GSDeviceVK::CheckFeatures()
 				any_cached = true;
 				any_device_local_cached |= (type_flags[i] & GS_MEMORY_PROPERTY_DEVICE_LOCAL) != 0;
 			}
-			if (!any_cached)
-				reason = "the device offers no cached host-visible memory type";
+			if (!inputs.prefer_cached_over_write_combined)
+				reason = "no rule says the write-combined road is expensive on this GPU";
+			else if (!any_cached)
+				reason = "the driver database prefers cached memory, but the device offers no cached "
+						 "host-visible type";
 			else if (!any_device_local_cached)
 				reason = "every cached host-visible type is host-local, and the GPU reads these rings";
-			else
-				reason = "a device-local cached type exists, but no rule says write-combined is expensive here";
 		}
 
 		const u32 chosen = m_stream_ring_memory.type_index;

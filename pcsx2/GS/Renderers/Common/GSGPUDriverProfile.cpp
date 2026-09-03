@@ -572,10 +572,11 @@ static constexpr std::array<DriverRule, 34> s_driver_rules = {{
 	//
 	// Hence Turnip AND model 610 -- the SM6115 class. The other Adreno 6xx low tiers (605, 608,
 	// 612, 618, 619, 620) are the obvious candidates to MEASURE, not to include: they are the same
-	// argument that just failed on Mali. The A650 matches nothing here and needs to match nothing,
-	// because it offers a cached coherent type and GSStreamRingMemoryPolicy takes that road before
-	// it ever asks this table. Bounded to Turnip because the proprietary blob's memory table has
-	// never been read by us.
+	// argument that just failed on Mali. The A650 matches nothing here on its own evidence: it
+	// offers a cached COHERENT type, the policy briefly took that road on the strength of the
+	// table alone, and the keyless confirmation round then measured legosw +6.16% and ac5 +5.54%
+	// on that part with non-overlapping rep ranges. Bounded to Turnip because the proprietary
+	// blob's memory table has never been read by us.
 	{"vk-turnip-a610-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 610, 610, 0, {}, {}, 0, 0, false,
 		0, Workaround(DriverWorkaround::PreferCachedStreamRingMemory)},

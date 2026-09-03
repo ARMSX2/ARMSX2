@@ -393,11 +393,13 @@ TEST(GSGpuDriverProfile, TurnipOnAdreno610PrefersCachedStreamRingMemory)
 	EXPECT_TRUE(PrefersCachedStreamRings(sel));
 }
 
-// Every other Adreno on the same driver does not, and the two reasons are different. The A650 has a
-// cached COHERENT type, so the policy takes that road without asking this table at all. The low
-// tiers next to the 610 -- 605, 608, 612, 618, 619, 620 -- are unmeasured, and "no cached coherent
-// type" is precisely the argument that failed on Mali, so they are candidates to measure rather
-// than devices to include.
+// Every other Adreno on the same driver does not, and the A650 is the interesting one: it HAS a
+// cached coherent type, the policy used to take that road on the strength of the table alone, and
+// the keyless confirmation round then measured it losing legosw +6.16% and ac5 +5.54% on that
+// part. So it claims nothing here and stays write-combined. The low tiers next to the 610 -- 605,
+// 608, 612, 618, 619, 620 -- are unmeasured, and "no cached coherent type" is precisely the
+// argument that failed on Mali, so they are candidates to measure rather than devices to
+// include.
 TEST(GSGpuDriverProfile, OtherAdrenoPartsMakeNoStreamRingMemoryClaim)
 {
 	for (const char* device : {"Adreno (TM) 608", "Adreno (TM) 619", "Adreno (TM) 650", "Adreno (TM) 750"})

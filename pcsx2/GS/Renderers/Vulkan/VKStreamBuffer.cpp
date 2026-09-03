@@ -79,9 +79,9 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	// Which memory the rings get was decided once, at device creation, from this device's
-	// memory-type table and the driver database (GSStreamRingMemoryPolicy.h). On the write-combined
-	// road it adds nothing, so that road is literally the selection every device had before the
+	// Which memory the rings get was decided once, at device creation, from the driver database and
+	// this device's memory-type table (GSStreamRingMemoryPolicy.h). The write-combined road is the
+	// default and adds nothing, so an unnamed device gets literally the selection it had before the
 	// decision existed rather than a reconstruction of it; on the two cached roads it adds the bits
 	// the policy already proved some type carries.
 	const GSStreamRingMemoryDecision& memory = GSDeviceVK::GetInstance()->GetStreamRingMemory();
