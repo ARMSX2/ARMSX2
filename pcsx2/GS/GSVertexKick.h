@@ -68,44 +68,73 @@ namespace GSVertexKernels
 	// pack chain alone). Out-of-range TBL indices read as zero, which provides the
 	// 24-bit Z and 8-bit F masks for free. Bit-identical to the legacy kernels —
 	// pinned by gs_vertex_tests.
-	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
+	//
+	// The TBL patterns and the Q fix-up constant are lifted into a struct a caller
+	// can hoist out of a batch loop. As function-local statics inside a
+	// force-inlined parse, clang materializes them in the caller's frame and
+	// reloads all three every iteration (measured: `ldur q0, [x29,#-112]` and two
+	// siblings in the fused handler's loop). A batch loop passes them in once.
+	struct PackedParseConsts
 	{
-		// m0 = {S, T, RGBA, Q}: S/T = r0 bytes 0-7, RGBA = r1 bytes 0/4/8/12, Q = r0 bytes 8-11.
+		uint8x16_t pat_m0;   // {S, T, RGBA, Q}, shared by both layouts
+		uint8x16_t pat_m1;   // XYZF2: {X|Y<<16, Z, -, F}
+		uint8x16_t pat_xyz;  // XYZ2:  {X|Y<<16, Z32} into the low half
+		uint32x4_t q_fixup;  // Q == +0.0 rewrites to FLT_MIN
+	};
+
+	__forceinline_odr PackedParseConsts MakePackedParseConsts()
+	{
 		alignas(16) static constexpr u8 pat_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
-		// m1 = {X|Y<<16, Z, UV, F}: X/Y = r2 bytes 0-1/4-5, Z = (r2>>4) bytes 8-10, F = (r2>>4) byte 12.
 		alignas(16) static constexpr u8 pat_m1[16] = {0, 1, 4, 5, 24, 25, 26, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 28, 0xFF, 0xFF, 0xFF};
-		// Q == +0.0 (integer compare) rewrites to FLT_MIN; other lanes OR with 0.
+		alignas(16) static constexpr u8 pat_xyz[16] = {0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 		alignas(16) static constexpr u32 q_fixup[4] = {0, 0, 0, 0x00800000};
 
+		PackedParseConsts k;
+		k.pat_m0 = vld1q_u8(pat_m0);
+		k.pat_m1 = vld1q_u8(pat_m1);
+		k.pat_xyz = vld1q_u8(pat_xyz);
+		k.q_fixup = vld1q_u32(q_fixup);
+		return k;
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
+	{
 		const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(r + 0)), vld1q_u8(reinterpret_cast<const u8*>(r + 1))};
-		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, vld1q_u8(pat_m0)));
-		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), vld1q_u32(q_fixup)));
+		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
+		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
 
 		const uint8x16_t xyzf = vld1q_u8(reinterpret_cast<const u8*>(r + 2));
 		const uint8x16x2_t xyzf_pair = {xyzf, vreinterpretq_u8_u32(vshrq_n_u32(vreinterpretq_u32_u8(xyzf), 4))};
-		uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, vld1q_u8(pat_m1)));
+		uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, k.pat_m1));
 		v1 = vsetq_lane_u32(uv, v1, 2);
 
 		m0 = GSVector4i(vreinterpretq_s32_u32(v0));
 		m1 = GSVector4i(vreinterpretq_s32_u32(v1));
 	}
 
-	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
+	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
 	{
-		alignas(16) static constexpr u8 pat_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
-		// m1 low half = {X|Y<<16, Z32} straight out of r2; high half = {UV, FOG} verbatim.
-		alignas(16) static constexpr u8 pat_xyz[16] = {0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-		alignas(16) static constexpr u32 q_fixup[4] = {0, 0, 0, 0x00800000};
-
 		const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(r + 0)), vld1q_u8(reinterpret_cast<const u8*>(r + 1))};
-		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, vld1q_u8(pat_m0)));
-		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), vld1q_u32(q_fixup)));
+		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
+		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
 
-		const uint8x16_t xyz = vqtbl1q_u8(vld1q_u8(reinterpret_cast<const u8*>(r + 2)), vld1q_u8(pat_xyz));
+		const uint8x16_t xyz = vqtbl1q_u8(vld1q_u8(reinterpret_cast<const u8*>(r + 2)), k.pat_xyz);
 		const uint64x2_t v1 = vsetq_lane_u64(uvfog, vreinterpretq_u64_u8(xyz), 1);
 
 		m0 = GSVector4i(vreinterpretq_s32_u32(v0));
 		m1 = GSVector4i(vreinterpretq_s32_u64(v1));
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
+	{
+		ParsePackedSTQRGBAXYZF2_Neon(r, uv, MakePackedParseConsts(), m0, m1);
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
+	{
+		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, MakePackedParseConsts(), m0, m1);
 	}
 #endif // ARCH_ARM64
 
