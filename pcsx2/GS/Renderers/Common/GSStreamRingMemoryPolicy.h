@@ -27,12 +27,23 @@
 //     because VMA returns the first zero-cost type and the write-combined one scores zero. On the
 //     cached coherent type: gt4opb -13.8%, yugioh -2.7%, gow2 and stuntman flat, ac5 +3.6% and
 //     legosw +5.3% -- the two regressions about 0.11 ms on titles running 5-15x under budget.
+//   * RG 477V (MT6897, Mali-G615) has no cached coherent type either -- the same shape as the
+//     MQ65 -- and taking its cached NON-coherent type made every title slower, +2.6% (legosw) to
+//     +12.4% (ac5), scaling with the flush count.
 //   * The store INSTRUCTION is not the story. Replacing the storent (STNP) copy with memcpy moved
-//     nothing anywhere, on either device, with or without the memory-type change.
+//     nothing anywhere, on any device, with or without the memory-type change.
 //
-// So: take a cached coherent type wherever one exists, take a cached non-coherent one where the
-// driver database says the write-combined road is expensive on this GPU, and otherwise change
-// nothing.
+// So: take a cached coherent type wherever one exists, take a cached non-coherent one only where
+// the driver database names the part, and otherwise change nothing.
+//
+// ⚠️ The asymmetry between the two cached roads is the whole finding, and it is easy to undo by
+// accident. The coherent road is free on both sides -- ordinary cached stores, no cache
+// maintenance -- so it needs no permission. The non-coherent road TRADES: cached stores in
+// exchange for a cache clean per commit, and whether that trade wins is a property of the host's
+// cores and its cache maintenance, not of the memory table. "This device has no cached coherent
+// type" says the trade is available, not that it pays: the MQ65 and the RG 477V satisfy that
+// condition identically and land 30% apart in opposite directions. So the database bit means
+// "measured, on this part, and it won" -- never "looks like the kind of device that would".
 //
 // ⚠️ Both cached roads require DEVICE_LOCAL, and that requirement is load-bearing on desktop. On a
 // discrete GPU a HOST_VISIBLE|HOST_COHERENT|HOST_CACHED type is ordinary system RAM, and moving
@@ -80,10 +91,12 @@ struct GSStreamRingMemoryInputs
 	const u32* type_flags = nullptr;
 	u32 type_count = 0;
 
-	/// The driver database says CPU writes into a write-combined ring are expensive on this GPU
-	/// (DriverWorkaround::PreferCachedStreamRingMemory). Only consulted when no cached coherent
-	/// type exists -- a device that has one takes it whatever the database thinks, because that
-	/// road costs no flushes and was measured on the SD865.
+	/// The driver database has MEASURED this part and found the cached non-coherent road faster
+	/// than the write-combined one (DriverWorkaround::PreferCachedStreamRingMemory). Only consulted
+	/// when no cached coherent type exists -- a device that has one takes it whatever the database
+	/// thinks, because that road costs no flushes and was measured on the SD865. Never infer this
+	/// bit from the memory table: the RG 477V's table is the MQ65's and its answer is the
+	/// opposite.
 	bool prefer_cached_over_write_combined = false;
 };
 
@@ -153,9 +166,10 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 		return decision;
 	}
 
-	// (b) Cached, device-local, not coherent -- the MQ65's road, and only on a device the database
-	// names. The cost is a cache clean per commit; the gain is that the stores themselves become
-	// ordinary cached stores instead of uncached ones the store buffer has to merge.
+	// (b) Cached, device-local, not coherent -- the MQ65's road, and ONLY on a part the database
+	// names, one at a time and each on its own measurement. The cost is a cache clean per commit;
+	// the gain is that the stores become ordinary cached stores instead of uncached ones the store
+	// buffer has to merge. Which of the two is larger is not visible from here.
 	constexpr u32 cached_only =
 		GS_MEMORY_PROPERTY_DEVICE_LOCAL | GS_MEMORY_PROPERTY_HOST_VISIBLE | GS_MEMORY_PROPERTY_HOST_CACHED;
 	if (in.prefer_cached_over_write_combined)

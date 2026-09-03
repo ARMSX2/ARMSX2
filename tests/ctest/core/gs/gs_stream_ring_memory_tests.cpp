@@ -40,6 +40,16 @@ namespace
 		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED,
 	};
 
+	// RG 477V: MediaTek MT6897, Mali-G615 MC6, Arm r44p1, from its own ring log. Bit for bit the
+	// MQ65's table -- write-combined type 0, cached non-coherent type 1, both device-local -- and
+	// the opposite answer, because on this part the cache clean costs more than the write-combined
+	// stores it replaces: every title in the suite ran slower on the cached type, +2.6% to +12.4%.
+	// No rule names it, so it keeps what it has.
+	constexpr u32 RG477V_TYPES[] = {
+		DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT,
+		DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED,
+	};
+
 	// M2 Max under Asahi's Honeykrisp (Mesa 25.3.6), from this lane's own log line: one
 	// host-visible type, and it is already cached, coherent and device-local. The dev box has to
 	// come out of this decision on exactly the type it went in on, or its identity grid proves
@@ -89,6 +99,17 @@ TEST(GSStreamRingMemory, MQ65ShapeWithoutTheRuleStaysWriteCombined)
 	EXPECT_EQ(d.type_index, 0u);
 	EXPECT_EQ(d.extra_required_flags, 0u);
 	EXPECT_STREQ(GSStreamRingMemoryRoadName(d.road), "write-combined");
+}
+
+// The RG 477V. The table is identical to the MQ65's, and this is the case that stops the policy
+// from being written as "no cached coherent type -> take the cached one": that rule would have
+// shipped a regression on every title of this device. The database names parts, not shapes.
+TEST(GSStreamRingMemory, RG477VKeepsWriteCombinedBecauseNoRuleNamesIt)
+{
+	const GSStreamRingMemoryDecision d = GSDecideStreamRingMemory(Device(RG477V_TYPES, 2, false));
+	EXPECT_EQ(d.road, GSStreamRingMemoryRoad::WriteCombined);
+	EXPECT_EQ(d.type_index, 0u);
+	EXPECT_EQ(d.extra_required_flags, 0u);
 }
 
 // The SD865: a cached coherent type exists, so it is taken -- and taken whether or not the rule

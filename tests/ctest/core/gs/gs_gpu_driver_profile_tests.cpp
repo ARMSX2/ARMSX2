@@ -372,33 +372,62 @@ TEST(GSGpuDriverProfile, ProprietaryQualcommKeepsItsStencilBuffer)
 
 // ---------------------------------------------------------------------------------------------
 // The stream rings' memory preference, which is the other half of GSStreamRingMemoryPolicy: the
-// policy asks the database whether the write-combined road is expensive here, and this rule is the
-// answer for Turnip.
+// policy asks the database whether the write-combined road is worth leaving here, and this rule is
+// the answer for the one part where that was measured.
 
-// Both Turnip parts the round measured. The MQ65's A610 is what earned the rule -- it has no cached
-// coherent type, so this bit is what moves it -- and the SD865's A650 matches too, where it changes
-// nothing because the policy takes the cached coherent type before it ever asks. Deliberate: the
-// rule is keyed on the driver, and the memory table does the narrowing.
-TEST(GSGpuDriverProfile, TurnipPrefersCachedStreamRingMemoryOnEveryAdreno)
+namespace
 {
-	for (const char* device : {"Adreno (TM) 610", "Adreno (TM) 650", "Adreno (TM) 750"})
+	bool PrefersCachedStreamRings(const GpuProfileSelection& sel)
+	{
+		return sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
+	}
+} // namespace
+
+// The MQ65's A610 on Turnip: the part the round measured, and the only part that claims this.
+TEST(GSGpuDriverProfile, TurnipOnAdreno610PrefersCachedStreamRingMemory)
+{
+	const GpuProfileSelection sel =
+		ResolveAdrenoVK("Adreno (TM) 610", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2));
+
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
+	EXPECT_TRUE(PrefersCachedStreamRings(sel));
+}
+
+// Every other Adreno on the same driver does not, and the two reasons are different. The A650 has a
+// cached COHERENT type, so the policy takes that road without asking this table at all. The low
+// tiers next to the 610 -- 605, 608, 612, 618, 619, 620 -- are unmeasured, and "no cached coherent
+// type" is precisely the argument that failed on Mali, so they are candidates to measure rather
+// than devices to include.
+TEST(GSGpuDriverProfile, OtherAdrenoPartsMakeNoStreamRingMemoryClaim)
+{
+	for (const char* device : {"Adreno (TM) 608", "Adreno (TM) 619", "Adreno (TM) 650", "Adreno (TM) 750"})
 	{
 		const GpuProfileSelection sel =
 			ResolveAdrenoVK(device, kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2));
 		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
-		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory)) << device;
+		EXPECT_FALSE(PrefersCachedStreamRings(sel)) << device;
 	}
 }
 
-// The blob is not implicated. Nobody has read its memory table, so no preference is claimed for it;
-// a blob device that reproduces the MQ65's cost gets its own rule with its own numbers.
+// The blob on the same silicon does not inherit it: nobody has read its memory table, and its
+// cache maintenance is not turnip's.
 TEST(GSGpuDriverProfile, ProprietaryQualcommMakesNoStreamRingMemoryClaim)
 {
 	const GpuProfileSelection sel =
-		ResolveAdrenoVK("Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u);
+		ResolveAdrenoVK("Adreno (TM) 610", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u);
 
 	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
-	EXPECT_FALSE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory));
+	EXPECT_FALSE(PrefersCachedStreamRings(sel));
+}
+
+// The RG 477V, which is why the rule is one part wide. Its Mali-G615 has no cached coherent type
+// either -- the same shape as the A610 -- and taking its cached non-coherent type made every title
+// in the suite slower, +2.6% to +12.4%, scaling with the flush count. A rule keyed on "no cached
+// coherent type" would have shipped that regression.
+TEST(GSGpuDriverProfile, MaliMakesNoStreamRingMemoryClaim)
+{
+	EXPECT_FALSE(PrefersCachedStreamRings(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+	EXPECT_FALSE(PrefersCachedStreamRings(ResolveMaliVK("Mali-G610", PackVulkanVersion(38, 1, 0))));
 }
 
 // ---------------------------------------------------------------------------------------------

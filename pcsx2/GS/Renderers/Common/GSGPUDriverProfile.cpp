@@ -556,29 +556,28 @@ static constexpr std::array<DriverRule, 34> s_driver_rules = {{
 	// Every Turnip device writes its stream rings into write-combined memory, because
 	// VKStreamBuffer asks VMA for HOST_COHERENT and Turnip's write-combined type is the first one
 	// that satisfies it. On an MQ65 (Adreno 610, four A73 at 2.1 GHz) that costs about a third of
-	// the GS thread on the streaming-heavy titles: taking the cached non-coherent type instead,
-	// and paying the cache clean per commit, took GS-thread p50 down 29.5% on legosw, 28.4% on
-	// gow2, 21.0% on yugioh and 20.6% on ac5, with draw-heavy controls flat and every frame
-	// byte-identical (records under devs/bmdhacks/campaigns/gs-classic-tiler/sd662-tier/
-	// rung-t1-vertex-ring-writes/).
+	// the GS thread on the streaming-heavy titles: taking the cached NON-coherent type instead, and
+	// paying a cache clean per commit, took GS-thread p50 down 29.5% on legosw, 28.4% on gow2,
+	// 21.0% on yugioh and 20.6% on ac5, controls flat, every frame byte-identical.
 	//
-	// KEYED ON TURNIP, EVERY ADRENO GENERATION, and the choice matters enough to spell out. The
-	// mechanism is the HOST core's write combining -- an uncached store is fast only if the store
-	// buffer merges adjacent writes, and small cores merge badly -- so the honest key is the CPU
-	// tier, which this table cannot express. The proxy it can use is the memory table itself:
-	// GSStreamRingMemoryPolicy takes a cached COHERENT type wherever one exists, and Turnip offers
-	// one only on an IO-coherent GPU with msm_minor_version >= 8. So this rule is inert on every
-	// Turnip part that has the better road -- the SD865 among them, where it matched and changed
-	// nothing -- and what it actually selects is "Turnip with no cached coherent type", which is
-	// the low tier by construction and without guessing a model number.
+	// ONE MEASURED PART, and the round that widened it is the round that proved it must not be.
+	// The obvious rule was "any device with no cached coherent type", since that is the condition
+	// under which the trade is even available. The RG 477V (MT6897, Mali-G615) satisfies exactly
+	// that condition -- its cached type is non-coherent too -- and on it the same trade LOSES on
+	// every title, +2.6% to +12.4% GS-thread p50, scaling with the flush count. So the flush is not
+	// cheap everywhere, and "has no cached coherent type" predicts nothing about whether the clean
+	// costs less than the write-combined stores it replaces. That is a CPU and cache-maintenance
+	// property, and the only honest statement this table can make about it is the part it was
+	// measured on.
 	//
-	// A model bound ("Adreno below 650") was the alternative and is the worse claim: it denies the
-	// road to a part above the line with the same missing coherent type, which is a device with the
-	// problem and no remedy. Widening is what this table forbids for DEFECTS; this is a preference,
-	// and a device that does not need it never reaches the rule. Bounded to Turnip because the
-	// proprietary blob's memory table has never been read by us.
-	{"vk-turnip-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
-		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+	// Hence Turnip AND model 610 -- the SM6115 class. The other Adreno 6xx low tiers (605, 608,
+	// 612, 618, 619, 620) are the obvious candidates to MEASURE, not to include: they are the same
+	// argument that just failed on Mali. The A650 matches nothing here and needs to match nothing,
+	// because it offers a cached coherent type and GSStreamRingMemoryPolicy takes that road before
+	// it ever asks this table. Bounded to Turnip because the proprietary blob's memory table has
+	// never been read by us.
+	{"vk-turnip-a610-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 610, 610, 0, {}, {}, 0, 0, false,
 		0, Workaround(DriverWorkaround::PreferCachedStreamRingMemory)},
 	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
