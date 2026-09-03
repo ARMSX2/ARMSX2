@@ -36,6 +36,7 @@
 #include "harness/EeRecTestHarness.h"
 
 #include "Config.h"
+#include "EeFpuModel.h"
 #include "common/FPControl.h"
 
 #include <algorithm>
@@ -779,6 +780,403 @@ TEST(EeRecFpuDivUnitRounding, FullModeTruncatesTheQuotientLikeTheUnit)
 	EXPECT_GT(full_word_gaps, 0) << "anti-vacuity: mode 3 returned the unit's word on every row";
 	EXPECT_GT(guard_answered, 0) << "liveness: the guard never fired";
 	EXPECT_GT(exact_rows, 0) << "the pool's exact arm produced nothing";
+}
+
+// ---------------------------------------------------------------------------
+// What the SQRT.S and RSQRT.S guards rely on, checked against the interpreter's
+// models. SQRT.S: the unit's root is the nearest single or one word below it,
+// and nearest whenever nearest rounds down or is exact. Every input of the
+// recurrence: 2^23 significands at both exponent parities.
+// ---------------------------------------------------------------------------
+namespace {
+
+// floor(sqrt(x)) for x below 2^48, from a double seed corrected both ways.
+u64 ISqrt48(u64 x)
+{
+	u64 r = static_cast<u64>(std::sqrt(static_cast<double>(x)));
+	while (r > 0 && r * r > x)
+		--r;
+	while ((r + 1) * (r + 1) <= x)
+		++r;
+	return r;
+}
+
+// The nearest single root of a normal word, and whether nearest rounded up.
+// Placed as the recurrence places it: the significand shifted one place on
+// an odd exponent field and two on an even one, rooted at 2^22 scale.
+u32 NearestSqrtWord(u32 ft, bool* rounded_up, bool* exact)
+{
+	const u32 E = (ft >> 23) & 0xFFu;
+	const u64 m = static_cast<u64>(0x800000u | (ft & 0x7FFFFFu)) << ((E & 1u) ? 1 : 2);
+	const u64 x = m << 22;
+	const u64 R = ISqrt48(x);
+	const u64 rem = x - R * R;
+	*exact = rem == 0;
+	*rounded_up = rem > R; // the exact root exceeds R + 1/2
+	const u32 sig = static_cast<u32>(R) + (*rounded_up ? 1u : 0u);
+	return (((E + 127u) >> 1) << 23) | (sig & 0x7FFFFFu);
+}
+
+} // namespace
+
+TEST(EeRecFpuDivUnitRounding, TheUnitsRootIsNearestOrTheWordBelow)
+{
+	u64 equal = 0, below = 0, above = 0, other = 0, down_rows = 0, down_and_below = 0;
+	for (u32 E : {127u, 128u})
+	{
+		for (u32 man = 0; man < (1u << 23); ++man)
+		{
+			const u32 ft = (E << 23) | man;
+			bool up = false, exact = false;
+			const u32 nearest = NearestSqrtWord(ft, &up, &exact);
+			const u32 unit = EeFpuModel::SqrtBits(ft);
+			if (unit == nearest)
+				++equal;
+			else if (unit + 1u == nearest)
+				++below;
+			else if (unit == nearest + 1u)
+				++above;
+			else
+				++other;
+			if (!up)
+			{
+				++down_rows;
+				if (unit != nearest)
+					++down_and_below;
+			}
+		}
+	}
+	EXPECT_EQ(above, 0u) << "a root above nearest: the recurrence has no such row";
+	EXPECT_EQ(other, 0u) << "a root more than one word from nearest";
+	EXPECT_EQ(down_and_below, 0u) << "nearest rounded down or was exact and the unit differs";
+	EXPECT_GT(below, 0u) << "liveness: no row where the unit sits below nearest";
+	EXPECT_GT(equal, 0u);
+	EXPECT_GT(down_rows, 0u);
+	RecordProperty("equal", static_cast<int>(equal));
+	RecordProperty("below", static_cast<int>(below));
+}
+
+// ---------------------------------------------------------------------------
+// RSQRT.S at mode 3 divides by the double root, so the unit's word is within a
+// window of the host's rather than adjacent to it. The bound: the single root
+// is at most 1.5 words below the true root and 0.5 above; one root word is at
+// most two quotient words; the recurrence adds T or T+1. That gives [-2, +4].
+// Flag paths and flushed or saturated quotients are skipped and counted.
+// ---------------------------------------------------------------------------
+TEST(EeRecFpuDivUnitRounding, RsqrtSAtFullModeStaysInsideTheWindow)
+{
+	RequireDistinctDivideRoundingMode();
+	Lcg r{0x5E1DC0DE5E1DC0DEull};
+	constexpr int kLo = -2, kHi = 4;
+	int hist[kHi - kLo + 1] = {};
+	int measured = 0, skipped = 0, outside = 0, min_d = 0, max_d = 0;
+	// Normal operands; every fourth row is the widest-window corner, a root
+	// just above a power of two (odd exponent field, small significand) under
+	// a quotient just below one.
+	const auto normal = [&](u32 lo_exp, u32 n_exp) {
+		return (lo_exp + r.next() % n_exp) << 23 | (r.next() & 0x7FFFFFu);
+	};
+	for (u32 iter = 0; iter < 20000; ++iter)
+	{
+		u32 fsBits, ftBits;
+		if (iter % 4u == 3u)
+		{
+			ftBits = ((1u + 2u * (r.next() % 127u)) << 23) | (r.next() & 0xFFu);
+			fsBits = normal(1u, 254u) | (0x7FFFFFu - (r.next() & 0xFFu));
+		}
+		else
+		{
+			fsBits = normal(1u, 254u);
+			ftBits = normal(1u, 254u);
+		}
+		fsBits |= (r.next() & 1u) << 31;
+		SCOPED_TRACE(::testing::Message()
+			<< "iter=" << iter << " Fs=" << std::hex << fsBits << " Ft=" << ftBits);
+
+		u32 res[2] = {};
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			if (jit)
+				h.EnableFpuFullMode();
+			h.SetFprBits(1, fsBits);
+			h.SetFprBits(2, ftBits);
+			h.SetFcr31(0);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				res[1] = h.GetFprBitsJit(3);
+			}
+			else
+			{
+				h.RunInterpOnly();
+				res[0] = h.GetFprBitsInterp(3);
+			}
+		}
+		const u32 um = res[0] & 0x7FFFFFFFu, hm = res[1] & 0x7FFFFFFFu;
+		if (((fsBits >> 23) & 0xFFu) == 0 || ((ftBits >> 23) & 0xFFu) == 0 || um == 0 || hm == 0 ||
+			um >= 0x7F800000u || hm >= 0x7F800000u)
+		{
+			++skipped;
+			continue;
+		}
+		EXPECT_EQ(res[0] & 0x80000000u, res[1] & 0x80000000u) << "signs differ";
+		const s64 d = static_cast<s64>(um) - static_cast<s64>(hm);
+		++measured;
+		if (measured == 1)
+			min_d = max_d = static_cast<int>(d);
+		min_d = std::min<int>(min_d, static_cast<int>(d));
+		max_d = std::max<int>(max_d, static_cast<int>(d));
+		if (d < kLo || d > kHi)
+		{
+			++outside;
+			ADD_FAILURE() << "unit word " << std::hex << res[0] << " is " << std::dec << d
+						  << " words from the mode-3 word " << std::hex << res[1];
+		}
+		else
+			++hist[d - kLo];
+		if (::testing::Test::HasFailure())
+			return;
+	}
+	for (int i = 0; i < kHi - kLo + 1; ++i)
+		RecordProperty((std::string("d_") + std::to_string(i + kLo)).c_str(), hist[i]);
+	RecordProperty("measured", measured);
+	RecordProperty("skipped", skipped);
+	RecordProperty("min_d", min_d);
+	RecordProperty("max_d", max_d);
+	EXPECT_GT(measured, 10000);
+	EXPECT_GT(hist[0 - kLo], 0) << "no row where the engines agree";
+	EXPECT_LT(min_d, 0) << "liveness: the unit was never below the host word";
+	EXPECT_GT(max_d, 1) << "liveness: the unit was never more than one word above the host";
+}
+
+// ---------------------------------------------------------------------------
+// The same class for the root and the reciprocal root. SQRT.S: the radicand
+// is an exact square n^2 (n of at most twelve significant bits) or the word
+// either side of it. RSQRT.S: the divisor is such a square or its neighbour,
+// the dividend n times the root or its neighbour.
+// ---------------------------------------------------------------------------
+namespace {
+
+// The single nearest to m * 2^e for m below 2^24, or 0 when the exponent
+// field would leave [1, 254].
+u32 SingleFromScaled(u64 m, int e)
+{
+	if (m == 0)
+		return 0;
+	while (m < (1ull << 23)) { m <<= 1; --e; }
+	while (m >= (1ull << 24)) { m >>= 1; ++e; } // only reached by the product below
+	const int field = e + 23 + 127;
+	if (field < 1 || field > 254)
+		return 0;
+	return (static_cast<u32>(field) << 23) | (static_cast<u32>(m) & 0x7FFFFFu);
+}
+
+// A square n^2 as an exact single, with n = mn * 2^j, mn of `bits` bits.
+u32 ExactSquare(Lcg& r, u32 bits, int j, u32* n_word)
+{
+	const u32 mn = (1u << (bits - 1)) | (r.next() & ((1u << (bits - 1)) - 1u));
+	*n_word = SingleFromScaled(mn, j);
+	return SingleFromScaled(static_cast<u64>(mn) * mn, 2 * j);
+}
+
+u32 Nudge(Lcg& r, u32 w)
+{
+	switch (r.next() % 3u)
+	{
+		case 0: return w;
+		case 1: return w + 1u;
+		default: return w - 1u;
+	}
+}
+
+struct RootCase
+{
+	u32 fs, ft, fd, fi;
+	const char* what;
+};
+
+RootCase MakeSqrtCase(Lcg& r)
+{
+	u32 n = 0;
+	const u32 bits = 1u + r.next() % 12u;
+	const int j = -2 - static_cast<int>(bits - 1) + static_cast<int>(r.next() % 36u);
+	const u32 sq = ExactSquare(r, bits, j, &n);
+	if (sq == 0 || n == 0)
+		return MakeSqrtCase(r);
+	RootCase c{0, Nudge(r, sq), 3, 4, "fd, ft distinct"};
+	switch (r.next() % 3u)
+	{
+		case 0: break;
+		case 1: c.fd = 2; c.what = "fd == ft"; break;
+		default: c.fi = 3; c.what = "fi == fd"; break;
+	}
+	return c;
+}
+
+RootCase MakeRsqrtCase(Lcg& r)
+{
+	u32 t = 0;
+	const u32 tbits = 1u + r.next() % 12u;
+	const int k = -20 + static_cast<int>(r.next() % 41u);
+	const u32 sq = ExactSquare(r, tbits, k, &t);
+	if (sq == 0 || t == 0)
+		return MakeRsqrtCase(r);
+	// n * t exactly: n's bits and t's share the 24
+	const u32 nbits = 1u + r.next() % (24u - tbits);
+	const u32 mn = (1u << (nbits - 1)) | (r.next() & ((1u << (nbits - 1)) - 1u));
+	const int j = -2 - static_cast<int>(nbits - 1) + static_cast<int>(r.next() % 36u);
+	const u64 mt = 0x800000u | (t & 0x7FFFFFu);
+	const int et = static_cast<int>((t >> 23) & 0xFFu) - 127 - 23;
+	const u32 prod = SingleFromScaled(static_cast<u64>(mn) * mt, j + et);
+	if (prod == 0)
+		return MakeRsqrtCase(r);
+	RootCase c{Nudge(r, prod) | ((r.next() & 1u) << 31), Nudge(r, sq), 3, 4, "fd, fs, ft distinct"};
+	switch (r.next() % 4u)
+	{
+		case 0: break;
+		case 1: c.fd = 1; c.what = "fd == fs"; break;
+		case 2: c.fd = 2; c.what = "fd == ft"; break;
+		default: c.fi = 3; c.what = "fi == fd"; break;
+	}
+	return c;
+}
+
+// Runs one op on the three engines: interp, jit at mode 3, jit on the fast
+// path. word[] is the op's result, integer[] its cvt.w.s.
+void RunRootCase(const RootCase& c, bool rsqrt, u32 pre, u32 word[3], u32 integer[3], u32 fcr[3])
+{
+	for (int engine = 0; engine < 3; ++engine)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (engine == 1)
+			h.EnableFpuFullMode();
+		h.SetFprBits(1, c.fs);
+		h.SetFprBits(2, c.ft);
+		h.SetFcr31(pre);
+		h.LoadProgram({rsqrt ? ee::RSQRT_S(c.fd, 1, 2) : ee::SQRT_S(c.fd, 2), ee::CVT_W_S(c.fi, c.fd)});
+		if (engine == 0)
+		{
+			h.RunInterpOnly();
+			word[0] = h.GetFprBitsInterp(c.fd);
+			integer[0] = h.GetFprBitsInterp(c.fi);
+			fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+		}
+		else
+		{
+			h.RunJitNoDiff();
+			word[engine] = h.GetFprBitsJit(c.fd);
+			integer[engine] = h.GetFprBitsJit(c.fi);
+			fcr[engine] = h.JitSnapshot().fprs.fprc[31];
+		}
+	}
+}
+
+} // namespace
+
+TEST(EeRecFpuDivUnitRounding, FullModeTruncatesTheRootLikeTheUnit)
+{
+	RequireDistinctDivideRoundingMode();
+	Lcg r{0x5011EE7A5011EE7Aull};
+	int fast_int_gaps = 0, full_word_gaps = 0, guard_answered = 0;
+	for (u32 iter = 0; iter < 1200; ++iter)
+	{
+		const RootCase c = (iter % 4u == 3u) ? RootCase{0, fuzzOperand(r), 3, 4, "arbitrary"} : MakeSqrtCase(r);
+		const u32 pre = (r.next() % 4u == 0u) ? (kSI | kSD) : 0u;
+		SCOPED_TRACE(::testing::Message() << "iter=" << iter << " Ft=" << std::hex << c.ft
+										  << " fd=" << c.fd << " fi=" << c.fi << " (" << c.what << ")");
+		u32 word[3] = {}, integer[3] = {}, fcr[3] = {};
+		RunRootCase(c, false, pre, word, integer, fcr);
+		const bool word_visible = c.fi != c.fd;
+
+		EXPECT_EQ(integer[1], integer[0])
+			<< "mode 3's cvt.w.s integer is not the unit's: interp word=" << std::hex << word[0]
+			<< " jit word=" << word[1];
+		if (word_visible && word[1] != word[0])
+		{
+			++full_word_gaps;
+			EXPECT_TRUE(IsOneUlpTowardZero(word[0], word[1]))
+				<< "the unit's root is nearest or the word below; interp=" << std::hex << word[0]
+				<< " jit=" << word[1];
+			EXPECT_EQ(TruncateLikeCvtWS(word[1]), TruncateLikeCvtWS(word[0]))
+				<< "mode 3 kept the host word on a row whose integer differs";
+		}
+		if (integer[2] != integer[0])
+		{
+			++fast_int_gaps;
+			if (!word_visible || word[1] == word[0])
+				++guard_answered;
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask) << "mode 3 moved a sticky flag";
+		if (::testing::Test::HasFailure())
+			return;
+	}
+	RecordProperty("fast_int_gaps", fast_int_gaps);
+	RecordProperty("full_word_gaps", full_word_gaps);
+	RecordProperty("guard_answered", guard_answered);
+	EXPECT_GT(fast_int_gaps, 0) << "anti-vacuity: no row where the fast path's integer differs";
+	EXPECT_GT(full_word_gaps, 0) << "anti-vacuity: mode 3 returned the unit's word on every row";
+	EXPECT_GT(guard_answered, 0) << "liveness: the guard never fired";
+}
+
+TEST(EeRecFpuDivUnitRounding, FullModeTruncatesTheReciprocalRootLikeTheUnit)
+{
+	RequireDistinctDivideRoundingMode();
+	Lcg r{0x25C1B00725C1B007ull};
+	int fast_int_gaps = 0, full_word_gaps = 0, guard_answered = 0, min_d = 0, max_d = 0;
+	for (u32 iter = 0; iter < 1200; ++iter)
+	{
+		const RootCase c = (iter % 4u == 3u)
+			? RootCase{fuzzOperand(r), fuzzOperand(r) & 0x7FFFFFFFu, 3, 4, "arbitrary"}
+			: MakeRsqrtCase(r);
+		const u32 pre = (r.next() % 4u == 0u) ? (kSI | kSD) : 0u;
+		SCOPED_TRACE(::testing::Message() << "iter=" << iter << " Fs=" << std::hex << c.fs << " Ft=" << c.ft
+										  << " fd=" << c.fd << " fi=" << c.fi << " (" << c.what << ")");
+		u32 word[3] = {}, integer[3] = {}, fcr[3] = {};
+		RunRootCase(c, true, pre, word, integer, fcr);
+		const bool word_visible = c.fi != c.fd;
+
+		EXPECT_EQ(integer[1], integer[0])
+			<< "mode 3's cvt.w.s integer is not the unit's: interp word=" << std::hex << word[0]
+			<< " jit word=" << word[1];
+		if (word_visible && word[1] != word[0] && !IsTopBinadeTierGap(word[0], word[1]))
+		{
+			++full_word_gaps;
+			const u32 um = word[0] & 0x7FFFFFFFu, hm = word[1] & 0x7FFFFFFFu;
+			const int d = static_cast<int>(static_cast<s64>(um) - static_cast<s64>(hm));
+			EXPECT_EQ(word[0] & 0x80000000u, word[1] & 0x80000000u);
+			if (um != 0 && hm != 0 && um < 0x7F800000u && hm < 0x7F800000u)
+			{
+				EXPECT_TRUE(d >= -2 && d <= 4)
+					<< "outside the window the guard spans: interp=" << std::hex << word[0]
+					<< " jit=" << word[1];
+				min_d = std::min(min_d, d);
+				max_d = std::max(max_d, d);
+			}
+			EXPECT_EQ(TruncateLikeCvtWS(word[1]), TruncateLikeCvtWS(word[0]))
+				<< "mode 3 kept the host word on a row whose integer differs";
+		}
+		if (integer[2] != integer[0])
+		{
+			++fast_int_gaps;
+			if (!word_visible || word[1] == word[0])
+				++guard_answered;
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask) << "mode 3 moved a sticky flag";
+		if (::testing::Test::HasFailure())
+			return;
+	}
+	RecordProperty("fast_int_gaps", fast_int_gaps);
+	RecordProperty("full_word_gaps", full_word_gaps);
+	RecordProperty("guard_answered", guard_answered);
+	RecordProperty("min_d", min_d);
+	RecordProperty("max_d", max_d);
+	EXPECT_GT(fast_int_gaps, 0) << "anti-vacuity: no row where the fast path's integer differs";
+	EXPECT_GT(full_word_gaps, 0) << "anti-vacuity: mode 3 returned the unit's word on every row";
+	EXPECT_GT(guard_answered, 0) << "liveness: the guard never fired";
 }
 
 // ---------------------------------------------------------------------------

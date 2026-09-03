@@ -899,7 +899,7 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 //
 // Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
 // FPUDivFPCR swap, which is right on most operands and one ULP out on the rest;
-// Mode 3 also takes it, from the integer guard below.
+// Mode 3 also takes it, from the integer guards below.
 //
 // Silicon composes RSQRT.S out of the other two with an ordinary single in
 // between, so this does as well; the intermediate crosses the sqrt's call
@@ -983,6 +983,62 @@ static void emitDivideIntegerGuard(int sreg, int areg, int treg, int qreg, int s
 	armAsm->B(&same, a64::eq);
 
 	emitDivideUnitIsland(DivUnitOp::Divide, sreg, srcS, srcT);
+	armAsm->Bind(&same);
+}
+
+// The unit's root is the nearest single or one word below it, and nearest
+// whenever the host rounded down or the root was exact
+// (TheUnitsRootIsNearestOrTheWordBelow). Only a rounded-up root is tested.
+//
+// xreg: |ft|, qreg: the root, at value scale, both freed here. sreg: the slot;
+// the island overwrites it.
+static void emitSqrtIntegerGuard(int sreg, int xreg, int qreg, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fmsub(armDRegister(xreg), armDRegister(qreg), armDRegister(qreg), armDRegister(xreg));
+	armAsm->Fcmp(armDRegister(xreg), 0.0);
+	armAsm->B(&same, a64::ge);
+
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(1) << 29);
+	armAsm->Sub(RXARG1, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(xreg), RXARG1);
+	armAsm->Fcvtzs(RWARG1, armDRegister(xreg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	armAsm->B(&same, a64::eq);
+
+	_freeNEONreg(xreg);
+	_freeNEONreg(qreg);
+	emitDivideUnitIsland(DivUnitOp::Sqrt, sreg, srcT, srcT);
+	armAsm->Bind(&same);
+}
+
+// The unit's RSQRT.S word lies within 2 words below the host's and 4 above
+// (RsqrtSAtFullModeStaysInsideTheWindow). The guard tests whether an integer
+// boundary falls inside that window. A zero quotient is skipped.
+//
+// qreg: q at value scale, clobbered. sreg: the slot; the island overwrites it.
+static void emitRsqrtIntegerGuard(int sreg, int qreg, int srcS, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fabs(armDRegister(qreg), armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Cbz(RXARG1, &same);
+	armAsm->Mov(RXARG2, static_cast<u64>(2) << 29);
+	armAsm->Sub(RXARG2, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(qreg), RXARG2);
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(4) << 29);
+	armAsm->Add(RXARG2, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(qreg), RXARG2);
+	armAsm->Fcvtzs(RWARG1, armDRegister(qreg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	armAsm->B(&same, a64::eq);
+
+	emitDivideUnitIsland(DivUnitOp::RecipSqrt, sreg, srcS, srcT);
 	armAsm->Bind(&same);
 }
 
@@ -1104,16 +1160,22 @@ void recSQRT_S_xmm(int info)
 	}
 	else
 	{
-		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		// Temps, not EEREC_D: it may be EEREC_T, which the island reads.
+		const int qreg = _allocTempNEONreg();
+		const int sreg = _allocTempNEONreg();
+		armAsm->Fsqrt(armDRegister(qreg), armDRegister(treg));
 		// A root cannot leave the in-range band, so the narrowing is the plain
 		// Fcvt with none of ToPS2FPU_Full's arms around it: the largest operand
 		// is a shade under 2^129 and roots to under 2^65, the smallest one FZ
 		// does not flush is 2^-126 and roots to 2^-63, and both sit inside
 		// [2^-126, 2^128). The one result outside it is a zero, which the
 		// underflow arm would have flushed to the same zero.
-		armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
-		SingleToSlot(EEREC_D, treg);
-		_freeNEONreg(treg);
+		armAsm->Fcvt(armSRegister(qreg), armDRegister(qreg));
+		SingleToSlot(sreg, qreg);
+		armAsm->Fcvt(armDRegister(qreg), armSRegister(qreg));
+		emitSqrtIntegerGuard(sreg, treg, qreg, EEREC_T);
+		armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
+		_freeNEONreg(sreg);
 	}
 
 	if (swapFpcr)
@@ -1174,7 +1236,9 @@ void recRSQRT_S_xmm(int info)
 		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
 		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 		ToPS2FPU_Full(sreg, false, treg, false, false);
+		armAsm->Fcvt(armDRegister(treg), armSRegister(sreg));
 		SingleToSlot(sreg, sreg);
+		emitRsqrtIntegerGuard(sreg, treg, EEREC_S, EEREC_T);
 	}
 
 	armAsm->Bind(&done);
