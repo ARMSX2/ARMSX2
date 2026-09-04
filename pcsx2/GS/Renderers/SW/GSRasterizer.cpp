@@ -412,13 +412,13 @@ void GSRasterizer::DrawEdgeTriangle(const GSVertexSW& v0, const GSVertexSW& v1, 
 
 		if (d > 0.0f)
 		{
-			cov = static_cast<int>(GSVertexSW::COVERAGE_ONE * (side ? 1.0 - d : d));
+			cov = static_cast<int>(0xffff * (side ? 1.0 - d : d));
 			[[maybe_unused]] constexpr int offset = (side ? 0 : 1);
 			GetOffsetVars.template operator()<offset>();
 		}
 		else if (d < 0.0f)
 		{
-			cov = static_cast<int>(GSVertexSW::COVERAGE_ONE * (side ? -d : 1.0 + d));
+			cov = static_cast<int>(0xffff * (side ? -d : 1.0 + d));
 			[[maybe_unused]] constexpr int offset = (side ? -1 : 0);
 			GetOffsetVars.template operator()<offset>();
 		}
@@ -426,7 +426,7 @@ void GSRasterizer::DrawEdgeTriangle(const GSVertexSW& v0, const GSVertexSW& v1, 
 		{
 			// When exactly on the pixel center, top-left edges can create 0 coverage points and
 			// bottom-right edges can create full coverage points (with some rounding error).
-			cov = tl ? 0 : GSVertexSW::COVERAGE_ONE;
+			cov = tl ? 0 : 0xffff;
 			[[maybe_unused]] constexpr int offset = tl ? (side ? -1 : 1) : 0;
 			GetOffsetVars.template operator()<offset>();
 		}
@@ -441,7 +441,7 @@ void GSRasterizer::DrawEdgeTriangle(const GSVertexSW& v0, const GSVertexSW& v1, 
 			// may not be totally accurate to do it here.
 			AddScanline(e, 1, xi2, yi2, ClampVertex(edge, zpsm));
 
-			e->p.U32[0] = std::clamp(cov, 0, GSVertexSW::COVERAGE_ONE);
+			e->p.U32[0] = std::clamp(cov, 0, 0xffff);
 
 			e++;
 		}
@@ -594,11 +594,11 @@ void GSRasterizer::DrawEdgeLine(const GSVertexSW& v0, const GSVertexSW& v1, cons
 	{
 		if constexpr (aa)
 		{
-			const float cov = GSVertexSW::COVERAGE_ONE * std::abs(static_cast<float>(D) / scaleDf);
-			const int covi = std::clamp(static_cast<int>(cov), 0, GSVertexSW::COVERAGE_ONE);
+			const float cov = 0xffff * std::abs(static_cast<float>(D) / scaleDf);
+			const int covi = std::clamp(static_cast<int>(cov), 0, 0xffff);
 			const int offset = D >= 0 ? 1 : -1;
 
-			AddScanlineStepEdge(xi, yi, GSVertexSW::COVERAGE_ONE - covi);
+			AddScanlineStepEdge(xi, yi, 0xffff - covi);
 			AddScanlineStepEdge(xi + (step_x ? 0 : offset), yi + (step_x ? offset : 0), covi);
 		}
 		else
@@ -1252,7 +1252,7 @@ void GSRasterizer::DrawEdge(const GSVertexSW& v0, const GSVertexSW& v1, const GS
 				{
 					AddScanline(e, 1, xi, top, edge);
 
-					e->p.U32[0] = ((0x10000 - xf) & 0xffff) >> 1;
+					e->p.U32[0] = (0x10000 - xf) & 0xffff;
 
 					e++;
 				}
@@ -1342,7 +1342,7 @@ void GSRasterizer::DrawEdge(const GSVertexSW& v0, const GSVertexSW& v1, const GS
 				{
 					AddScanline(e, 1, left, yi, edge);
 
-					e->p.U32[0] = ((0x10000 - yf) & 0xffff) >> 1;
+					e->p.U32[0] = (0x10000 - yf) & 0xffff;
 
 					e++;
 				}

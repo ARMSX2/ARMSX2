@@ -22,14 +22,6 @@ struct alignas(32) GSVertexSW
 
 	GSVector4 p, _pad, t, c;
 
-	// AA1 coverage rides in p.U32[0] once x and y are dead. The GS's coverage is an
-	// alpha in 0 .. 128 -- 0 on the outer side of the widened band, 0x80 on the
-	// original side -- so the walk stores that alpha scaled up by COVERAGE_SHIFT
-	// bits, and the scanline shifts it back down. Both halves take the shift from
-	// here: two transcriptions of one encoding is how they drift.
-	static constexpr int COVERAGE_SHIFT = 8;
-	static constexpr int COVERAGE_ONE = 128 << COVERAGE_SHIFT;
-
 	__forceinline GSVertexSW() {}
 	__forceinline GSVertexSW(const GSVertexSW& v) { *this = v; }
 

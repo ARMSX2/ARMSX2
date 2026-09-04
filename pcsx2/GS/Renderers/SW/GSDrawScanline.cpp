@@ -588,9 +588,9 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 		if (sel.edge)
 		{
 #if _M_SSE >= 0x501
-			cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16<GSVertexSW::COVERAGE_SHIFT>();
+			cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16<9>();
 #else
-			cov = GSVector4i::cast(scan.p).xxxxl().xxxx().srl16<GSVertexSW::COVERAGE_SHIFT>();
+			cov = GSVector4i::cast(scan.p).xxxxl().xxxx().srl16<9>();
 #endif
 		}
 

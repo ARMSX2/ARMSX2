@@ -333,8 +333,8 @@ void GSDrawScanlineCodeGenerator::Init()
 
 		if (m_sel.edge)
 		{
-			// m_local.temp.cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16(COVERAGE_SHIFT);
-			armAsm->Ushr(v3.V8H(), v3.V8H(), GSVertexSW::COVERAGE_SHIFT);
+			// m_local.temp.cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16(9);
+			armAsm->Ushr(v3.V8H(), v3.V8H(), 9);
 			armAsm->Str(v3, _local(temp.cov));
 		}
 
