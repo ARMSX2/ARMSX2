@@ -377,6 +377,16 @@ namespace
 			}
 		}
 
+		// One GIF packet through Transfer, tag and all. This is the only shape
+		// that drives SetTag, the type dispatch and the fused handler as one
+		// thing, which is what the base binary and the lane actually differ by.
+		void FeedPacket(const void* mem, u32 qwords)
+		{
+			Transfer<0>(static_cast<const u8*>(mem), qwords);
+		}
+
+		using GSState::UnpublishLayoutHandlers;
+
 		// The routing predicate itself, so a test can assert which case it is
 		// driving instead of assuming the context it built produces it.
 		bool AutoFlushPredicate(u32 prim)
@@ -485,6 +495,12 @@ namespace
 
 		EXPECT_TRUE(SameBytes("vertex buffer [0, tail)", a.m_vertex->buff, b.m_vertex->buff,
 			sizeof(GSVertex) * a.m_vertex->tail));
+		// The decode instrument's own surface is max(tail, next) vertices, which
+		// reaches one slot past tail whenever a flush left a partial prim there.
+		// That slot is where the front-end -fediff caught stage 3c's flush-point
+		// divergence, so it is compared here too.
+		EXPECT_TRUE(SameBytes("vertex buffer [0, max(tail,next))", a.m_vertex->buff, b.m_vertex->buff,
+			sizeof(GSVertex) * std::max(a.m_vertex->tail, a.m_vertex->next)));
 		EXPECT_TRUE(SameBytes("index buffer [0, itail)", a.m_index->buff, b.m_index->buff,
 			sizeof(u16) * a.m_index->tail));
 
@@ -2099,5 +2115,166 @@ TEST(GsKickKernel, LayoutHarnessControlIsNotVacuous)
 		auto a = run();
 		auto b = run();
 		ExpectSameKickResult(*a, *b);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The same layouts, driven through Transfer rather than through the handler.
+//
+// Everything above calls the fused handler directly with a descriptor list the
+// test supplies. That leaves out three things the real stream has: SetTag
+// classifying the tag (including the nreg 4 -> 2 reinterpretation), Transfer
+// picking the handler and publishing the layout, and the register writes BETWEEN
+// vertex tags -- which are what leave m_dirty_gs_regs set, and therefore what
+// decides where the per-qword path's per-vertex CheckFlushes lands.
+//
+// Arm A is Transfer with the stage-3c handlers unpublished, which is exactly
+// what the binary before the stage does with these tags. Arm B is Transfer with
+// them published.
+// ---------------------------------------------------------------------------
+namespace
+{
+	void AppendTag(std::vector<GIFPackedReg>& out, const std::vector<u8>& descs, u32 nloop)
+	{
+		GIFPackedReg t = {};
+		GIFTag tag = MakePackedTag(descs, nloop);
+		std::memcpy(&t, &tag, sizeof(tag));
+		out.push_back(t);
+	}
+
+	// One A+D-only tag writing a register, so m_dirty_gs_regs is set going into
+	// the next vertex tag.
+	void AppendRegWrite(std::vector<GIFPackedReg>& out, u8 addr, u64 data)
+	{
+		AppendTag(out, {GIF_REG_A_D}, 1);
+		GIFPackedReg r = {};
+		r.U64[0] = data;
+		r.U32[2] = addr;
+		out.push_back(r);
+	}
+
+	std::vector<GIFPackedReg> BuildPacket(const LayoutCase& lc, const std::vector<VertexSpec>& verts,
+		u32 verts_per_tag, bool reg_writes_between)
+	{
+		std::vector<GIFPackedReg> out;
+		const u32 stride = static_cast<u32>(lc.descs.size());
+		u32 i = 0;
+		u32 n = 0;
+		while (i < verts.size())
+		{
+			const u32 take = std::min<u32>(verts_per_tag, static_cast<u32>(verts.size()) - i);
+			if (reg_writes_between && (n & 1))
+			{
+				// XYOFFSET on the live context, alternating, which is a register
+				// TestDrawChanged reacts to.
+				AppendRegWrite(out, 0x18, (n & 2) ? 0u : 0x0000002000000010ull);
+			}
+			AppendTag(out, lc.descs, take);
+			std::vector<GIFPackedReg> body(take * stride);
+			for (u32 v = 0; v < take; v++)
+				EncodeLayoutRecord(&body[v * stride], lc.descs, verts[i + v], (i + v) * 0x9E3779B9u + 1u);
+			out.insert(out.end(), body.begin(), body.end());
+			i += take;
+			n++;
+		}
+		return out;
+	}
+
+	void RunAndComparePacket(const KickSetup& setup, u32 prim, const LayoutCase& lc,
+		const std::vector<VertexSpec>& verts, u32 verts_per_tag, bool reg_writes)
+	{
+		const DrawBufferingGuard guard(setup.draw_buffering);
+		const AutoFlushGuard af_guard(setup.autoflush);
+		const std::vector<GIFPackedReg> packet = BuildPacket(lc, verts, verts_per_tag, reg_writes);
+
+		auto run = [&](bool fuse) {
+			auto p = MakeProbe(setup, prim, true);
+			SeedLatchedState(*p);
+			if (!fuse)
+				p->UnpublishLayoutHandlers();
+			p->FeedPacket(packet.data(), static_cast<u32>(packet.size()));
+			return p;
+		};
+
+		auto replay = run(false);
+		auto fused = run(true);
+		ExpectSameKickResult(*replay, *fused);
+	}
+} // namespace
+
+TEST(GsKickKernel, LayoutsMatchThroughTransfer)
+{
+	u32 seed = 9700;
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV,
+		&kPairRGBAQ, &kPairRGBAQNop};
+	for (const LayoutCase* lc : cases)
+	{
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+		{
+			for (u32 per_tag : {3u, 8u, 31u})
+			{
+				for (bool regs : {false, true})
+				{
+					SCOPED_TRACE(::testing::Message() << lc->name << " prim=" << prim
+					                                  << " per_tag=" << per_tag << " regs=" << regs);
+					RunAndComparePacket(KickSetup{}, prim,
+						*lc, MakeStream(120, AdcPattern::Stuntman, seed++), per_tag, regs);
+				}
+			}
+		}
+	}
+}
+
+// The repeated pair, which only SetTag can produce: a four-register tag holding
+// {a, XYZ2} twice, reinterpreted to nreg 2 with nloop doubled.
+TEST(GsKickKernel, RepeatedPairThroughTransferMatchesTheReplay)
+{
+	u32 seed = 9800;
+	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}};
+	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}};
+	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv})
+	{
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+		{
+			for (bool regs : {false, true})
+			{
+				SCOPED_TRACE(::testing::Message() << lc->name << " prim=" << prim << " regs=" << regs);
+				// verts_per_tag counts RECORDS of the tag as written, which for a
+				// repeated pair is two vertices each.
+				RunAndComparePacket(KickSetup{}, prim, *lc,
+					MakeStream(120, AdcPattern::Stuntman, seed++), 8, regs);
+			}
+		}
+	}
+}
+
+// The shape that caught stage 3c: draw buffering on, register writes between
+// vertex tags, so m_dirty_gs_regs is live when a tag starts.
+//
+// CheckFlushes is not a tag-level operation in the path the fused handlers
+// replace. GIFPackedRegHandlerXYZ2 calls it per vertex, conditionally, and only
+// after that vertex's own colour is already in m_v -- and the draw-buffering
+// decision it reaches reads m_v.RGBAQ.A. A fused handler that calls it once at
+// the top sees the previous tag's alpha and can buffer a draw the per-qword path
+// flushes. Six of the 24 corpus dumps diverge on that; every stream above misses
+// it, because they all leave draw buffering off.
+TEST(GsKickKernel, LayoutsMatchThroughTransferWithDrawBuffering)
+{
+	u32 seed = 9900;
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairRGBAQ,
+		&kPairRGBAQNop};
+	for (const LayoutCase* lc : cases)
+	{
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+		{
+			for (u32 per_tag : {3u, 8u, 31u})
+			{
+				KickSetup s;
+				s.draw_buffering = true;
+				s.tme = 1;
+				SCOPED_TRACE(::testing::Message() << lc->name << " prim=" << prim << " per_tag=" << per_tag);
+				RunAndComparePacket(s, prim, *lc, MakeStream(200, AdcPattern::Stuntman, seed++), per_tag, true);
+			}
+		}
 	}
 }

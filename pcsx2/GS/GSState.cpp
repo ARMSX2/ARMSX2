@@ -2657,11 +2657,61 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 	static_assert(KickKernelCarriesPrim<prim>(),
 		"a layout handler is only instantiated for the prims the kernel carries");
 
-	CheckFlushes();
-
 	const u32 stride = m_packed_layout.stride;
 	pxAssert(size > 0 && (size % stride) == 0);
 	const u32 count = size / stride;
+
+	// The per-qword path this replaces does not check for a flush once per tag,
+	// and collapsing it into one call at the top of the handler is exact only
+	// while m_dirty_gs_regs is zero. Two things go wrong when it is not:
+	//
+	//  * GIFPackedRegHandlerXYZ2 makes the call CONDITIONAL -- !ADC || the prim
+	//    class changed || XYOFFSET is dirty -- and evaluates it per vertex, so
+	//    the flush can land in the middle of the tag rather than before it.
+	//  * it makes the call AFTER that vertex's own colour is already in m_v, and
+	//    the draw-buffering decision CheckFlushes reaches (CanBufferNewDraw)
+	//    READS m_v.RGBAQ.A. Called at the top of the handler it sees the
+	//    previous tag's alpha and can buffer a draw the per-qword path would
+	//    have flushed.
+	//
+	// Neither is theoretical: collapsing the call moved the flush point on six
+	// of the corpus's 24 dumps -- spiderman3, stuntman, outrun-a, outrun-b,
+	// xenosaga and gow2 -- and the decode instrument caught all six. So while
+	// m_dirty_gs_regs is live the tag is replayed descriptor by descriptor
+	// through the piecemeal handlers, which IS that path; it stops as soon as
+	// the flag clears, which is normally the first record. When the flag is
+	// zero, CheckFlushes does nothing at all and where it is called from cannot
+	// matter, which is why the fused arm is exact then.
+	//
+	// The two shipped fused triples get away with the collapsed call because the
+	// tags they fuse were already fused before them: there is nothing for them
+	// to diverge from.
+	u32 done = 0;
+	if (m_dirty_gs_regs)
+	{
+		constexpr u32 reg_a = (layout == GSVertexKernels::PackedLayout::PairUVXYZ2) ?
+								  GIF_REG_UV :
+								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2) ? GIF_REG_RGBA :
+																							  GIF_REG_STQ);
+		constexpr u32 reg_xyz = GSVertexKernels::LayoutIsXYZF2(layout) ? GIF_REG_XYZF2 : GIF_REG_XYZ2;
+		const u32 off_a = m_packed_layout.off_a;
+		const u32 off_rgba = m_packed_layout.off_rgba;
+		const u32 off_xyz = m_packed_layout.off_xyz;
+
+		while (done < count && m_dirty_gs_regs)
+		{
+			const GIFPackedReg* RESTRICT rv = r + done * stride;
+			ReplayPackedQword(reg_a, rv + off_a);
+			if constexpr (GSVertexKernels::LayoutIsTriple(layout))
+				ReplayPackedQword(GIF_REG_RGBA, rv + off_rgba);
+			ReplayPackedQword(reg_xyz, rv + off_xyz);
+			done++;
+		}
+	}
+	else
+	{
+		CheckFlushes();
+	}
 
 	if constexpr (layout == GSVertexKernels::PackedLayout::PairUVXYZ2)
 	{
@@ -2674,24 +2724,30 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 			m_isPackedUV_HackFlag = true;
 	}
 
-	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
+	if (done < count)
 	{
-		// Sprites, at either autoflush level: HandleAutoFlush reads the incoming
-		// vertex out of m_v and its EarlyDetectShuffle is per-prim state, so the
-		// run stays on the staged loop. It still loses the per-qword dispatch and
-		// the two indirect handler calls a vertex, which is what stage 3c option
-		// (a) is.
-		KickPackedStagedRun<prim, layout>(r, count);
-	}
-	else
-	{
-		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
-			KickKernelApplies<prim>())
-			KickPackedBatchKernel<prim, layout, auto_flush>(r, count);
-		else if constexpr (auto_flush)
-			KickPackedStagedRun<prim, layout>(r, count);
+		const GIFPackedReg* RESTRICT rest = r + done * stride;
+		const u32 n = count - done;
+
+		if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
+		{
+			// Sprites, at either autoflush level: HandleAutoFlush reads the
+			// incoming vertex out of m_v and its EarlyDetectShuffle is per-prim
+			// state, so the run stays on the staged loop. It still loses the
+			// per-qword dispatch and the two indirect handler calls a vertex,
+			// which is what stage 3c option (a) is.
+			KickPackedStagedRun<prim, layout>(rest, n);
+		}
 		else
-			KickPackedBatchLegacy<prim, layout>(r, count);
+		{
+			if (s_fused_kick_use_kernel && n >= GSVertexKickKernel::kMinKernelVertices &&
+				KickKernelApplies<prim>())
+				KickPackedBatchKernel<prim, layout, auto_flush>(rest, n);
+			else if constexpr (auto_flush)
+				KickPackedStagedRun<prim, layout>(rest, n);
+			else
+				KickPackedBatchLegacy<prim, layout>(rest, n);
+		}
 	}
 
 	if constexpr (GSVertexKernels::LayoutLatchesQ(layout))

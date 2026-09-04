@@ -197,6 +197,18 @@ protected:
 		(this->*m_fpGIFPackedRegHandlers[reg & 0xF])(r);
 	}
 
+	// Unpublishes the stage-3c fused handlers, so Transfer replays their tags a
+	// qword at a time -- which is what the binary before the stage does. The
+	// differential suite drives one GIF packet through Transfer twice, once with
+	// them and once without, and that is the only way to compare SetTag, the
+	// dispatch and the handler as one thing. Nothing in the emulator calls this
+	// either; UpdateVertexKick publishes them again on the next prim change.
+	void UnpublishLayoutHandlers()
+	{
+		for (GIFPackedRegHandlerC& e : m_fpGIFPackedRegHandlersLayoutC)
+			e = nullptr;
+	}
+
 	// Executor-owned HOST->LOCAL write cursor (advanced by wi() across transfer
 	// slices; mirrored back into m_tr.x/y inline for savestate coherence).
 	int m_exec_tr_x = 0;
