@@ -144,6 +144,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_compare_console_tests.cpp
 	ee_fpu_divunit_console_tests.cpp
 	ee_fpu_divunit_exhaustive_tests.cpp
+	ee_fpu_divunit_arm64_form_tests.cpp
 	ee_fpu_guarded_addsub_console_tests.cpp
 	ee_fpu_ou_rounding_console_tests.cpp
 	ee_fpu_underflow_console_tests.cpp

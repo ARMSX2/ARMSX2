@@ -6,8 +6,8 @@
 
 /*	The recompilers call this mid-block, where a plain AAPCS call would cost
 	them their register allocators. preserve_all moves the cost into the callee,
-	which saves only the five GPRs the recurrence uses, so a site spills q0-q7
-	and x2-x8 and nothing else.
+	which saves the general registers its digit loop uses and no vector
+	register, so a site spills q0-q7 and x2-x8 and nothing else.
 
 	Without the attribute the convention is plain AAPCS;
 	EEFPU_MODEL_CALL_SPARES_MOST is what the emitters read to widen the spill to
@@ -72,6 +72,18 @@ namespace EeFpuModel
 	// The composition silicon performs, as one call: the root has nowhere to
 	// live across a second.
 	EEFPU_MODEL_CALL u32 RecipSqrt(u32 a, u32 t);
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	/*	The divide unit's digit recurrence on the two 24-bit significands, hidden
+		bit in, cap shortcut included, in the form Divide normalises: 25 bits when
+		ma >= mb, 24 when not. DivideSignificand is what Divide runs;
+		DivideSignificandPortable is the reference loop. */
+	namespace Internal
+	{
+		u32 DivideSignificand(u32 ma, u32 mb);
+		u32 DivideSignificandPortable(u32 ma, u32 mb);
+	} // namespace Internal
+#endif
 
 	/*	The same unit against a register file in EeFpuFormat.h's relocated form.
 		The recompiler holds every FPR as a double there, so reaching the word
