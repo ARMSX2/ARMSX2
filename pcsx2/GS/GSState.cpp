@@ -2081,8 +2081,12 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// against an environment that no longer exists.
 	GSVertexKickKernel::Invariants inv;
 	inv.uvfog = uvfog;
-	GSVertexKickKernel::MakeDepthClampMasks(depth_clamp, inv.clamp_keep, inv.clamp_shifted);
+	// The two clamp masks are read only by the depth-clamp instantiation of pass
+	// one, so on the default path (no title in the corpus enables the hack) they
+	// are two dead stores a call.
 	inv.clamp_enabled = (depth_clamp != GSLimit24BitDepth::Disabled);
+	if (inv.clamp_enabled)
+		GSVertexKickKernel::MakeDepthClampMasks(depth_clamp, inv.clamp_keep, inv.clamp_shifted);
 	// m_v is written by whichever path kicks the batch's last vertex: the kernel
 	// from its own parse, the seam from KickPackedOneLegacy's.
 	inv.last_out = &m_v;
