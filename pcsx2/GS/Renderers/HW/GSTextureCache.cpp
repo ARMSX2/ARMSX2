@@ -124,6 +124,11 @@ void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 		m_target_heights.clear();
 		m_surface_offset_cache.clear();
 		m_target_memory_usage = 0;
+
+		// Nothing is left to display from. On the savestate / GS-dump path that gets here,
+		// local memory has just been replaced wholesale too, so until a target exists it is
+		// the only copy of the picture there is. See LookupDisplayTarget.
+		m_no_target_since_purge = true;
 	}
 
 	if (hash_cache)
@@ -3369,6 +3374,8 @@ GSTextureCache::Target* GSTextureCache::CreateTarget(GIFRegTEX0 TEX0, const GSVe
 	if (!dst) [[unlikely]]
 		return nullptr;
 
+	m_no_target_since_purge = false;
+
 	const bool was_clear = PreloadTarget(TEX0, size, valid_size, is_frame, preload, preserve_target, draw_rect, dst, src);
 
 	dst->m_is_frame = is_frame;
@@ -4223,6 +4230,18 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 			else
 				++iter;
 		}
+	}
+	else if (!is_feedback && m_no_target_since_purge)
+	{
+		// No target, and no upload to build one from either. Normally that means the game has
+		// not produced this frame yet and there is nothing to show. With an empty cache it
+		// means the opposite: the cache was purged, which on the savestate / GS-dump path also
+		// replaced local memory wholesale, and nothing has rendered since -- so the picture is
+		// in local memory and only a frame target preloaded from it can present it. A GS dump
+		// that captures a still frame (Dirge of Cerberus 20260721214308 issues no draws and no
+		// transfers at all) otherwise presents nothing under the hardware renderer, while the
+		// software renderer, which scans local memory directly, draws it.
+		can_create = true;
 	}
 
 	if (can_create)
