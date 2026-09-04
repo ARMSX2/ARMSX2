@@ -365,15 +365,61 @@ namespace
 				GIFPackedRegHandlerLayout<prim, layout, false>(r, size);
 		}
 
+		// Only the (prim, layout) pairs the corpus has traffic for are
+		// instantiated -- GSState::LayoutHandlerExists is the one source of
+		// truth, and this mirrors it rather than restating it. A pair that does
+		// not exist is not driven here because it is not driven anywhere: its
+		// table entry is null and Transfer replays the tag, which is the arm
+		// this suite compares against in the first place.
 		template <GSVertexKernels::PackedLayout layout>
 		void KickLayoutCallDyn(u32 prim, const GIFPackedReg* r, u32 size, const GIFPackedLayout& off)
 		{
 			switch (prim)
 			{
-				case GS_TRIANGLESTRIP: KickLayoutCall<GS_TRIANGLESTRIP, layout>(r, size, off); break;
-				case GS_TRIANGLELIST: KickLayoutCall<GS_TRIANGLELIST, layout>(r, size, off); break;
-				case GS_SPRITE: KickLayoutCall<GS_SPRITE, layout>(r, size, off); break;
-				default: FAIL() << "layout handlers exist only for the kernel-carried prims";
+				case GS_TRIANGLESTRIP:
+					if constexpr (LayoutHandlerExists<GS_TRIANGLESTRIP, layout>())
+						KickLayoutCall<GS_TRIANGLESTRIP, layout>(r, size, off);
+					break;
+				case GS_TRIANGLELIST:
+					if constexpr (LayoutHandlerExists<GS_TRIANGLELIST, layout>())
+						KickLayoutCall<GS_TRIANGLELIST, layout>(r, size, off);
+					break;
+				case GS_SPRITE:
+					if constexpr (LayoutHandlerExists<GS_SPRITE, layout>())
+						KickLayoutCall<GS_SPRITE, layout>(r, size, off);
+					break;
+				default: FAIL() << "unhandled prim " << prim;
+			}
+		}
+
+		// Whether this build instantiates a handler for the pair, so a test
+		// drives exactly the pairs that ship. GSState::LayoutHandlerExists is the
+		// one source of truth; this only reaches it.
+		static bool LayoutShipsForDyn(GSVertexKernels::PackedLayout l, u32 prim)
+		{
+			switch (l)
+			{
+				case GSVertexKernels::PackedLayout::NopTripleXYZF2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::NopTripleXYZF2>(prim);
+				case GSVertexKernels::PackedLayout::PairSTQXYZ2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairSTQXYZ2>(prim);
+				case GSVertexKernels::PackedLayout::PairUVXYZ2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairUVXYZ2>(prim);
+				case GSVertexKernels::PackedLayout::PairRGBAQXYZ2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(prim);
+				default: return false;
+			}
+		}
+
+		template <GSVertexKernels::PackedLayout layout>
+		static bool LayoutShipsFor(u32 prim)
+		{
+			switch (prim)
+			{
+				case GS_TRIANGLESTRIP: return LayoutHandlerExists<GS_TRIANGLESTRIP, layout>();
+				case GS_TRIANGLELIST: return LayoutHandlerExists<GS_TRIANGLELIST, layout>();
+				case GS_SPRITE: return LayoutHandlerExists<GS_SPRITE, layout>();
+				default: return false;
 			}
 		}
 
@@ -1752,6 +1798,7 @@ namespace
 		const char* name;
 		std::vector<u8> descs;
 		GIFPackedLayout off;
+		GSVertexKernels::PackedLayout layout;
 	};
 
 	// One record of a layout. NOP qwords are filled with a changing pattern
@@ -1840,6 +1887,13 @@ namespace
 		const std::vector<VertexSpec>& verts, const std::vector<u32>& call_sizes, bool use_kernel = true,
 		bool auto_flush_arm = false, bool draw_moves_environment = false)
 	{
+		// A (prim, layout) pair the build does not instantiate is not driven here,
+		// because it is not driven anywhere: its table entry is null and Transfer
+		// replays the tag a qword at a time, which is the arm this suite compares
+		// against in the first place.
+		if (!KickProbe::LayoutShipsFor<layout>(prim))
+			return 0;
+
 		const DrawBufferingGuard guard(setup.draw_buffering);
 		const AutoFlushGuard af_guard(setup.autoflush);
 		const std::vector<GIFPackedReg> stream = EncodeLayoutStream(verts, lc.descs);
@@ -1879,13 +1933,13 @@ namespace
 
 	// Every layout stage 3c fuses, with the descriptor arrangement the census
 	// found it in.
-	const LayoutCase kNopTriple40 = {"4:2,f,1,4", {2, 0xF, 1, 4}, {4, 0, 2, 3}};
-	const LayoutCase kNopTriple41 = {"4:f,2,1,4", {0xF, 2, 1, 4}, {4, 1, 2, 3}};
-	const LayoutCase kNopTriple52 = {"5:f,f,2,1,4", {0xF, 0xF, 2, 1, 4}, {5, 2, 3, 4}};
-	const LayoutCase kPairSTQ = {"2:2,5", {2, 5}, {2, 0, 0, 1}};
-	const LayoutCase kPairUV = {"2:3,5", {3, 5}, {2, 0, 0, 1}};
-	const LayoutCase kPairRGBAQ = {"2:1,5", {1, 5}, {2, 0, 0, 1}};
-	const LayoutCase kPairRGBAQNop = {"3:f,1,5", {0xF, 1, 5}, {3, 1, 0, 2}};
+	const LayoutCase kNopTriple40 = {"4:2,f,1,4", {2, 0xF, 1, 4}, {4, 0, 2, 3}, GSVertexKernels::PackedLayout::NopTripleXYZF2};
+	const LayoutCase kNopTriple41 = {"4:f,2,1,4", {0xF, 2, 1, 4}, {4, 1, 2, 3}, GSVertexKernels::PackedLayout::NopTripleXYZF2};
+	const LayoutCase kNopTriple52 = {"5:f,f,2,1,4", {0xF, 0xF, 2, 1, 4}, {5, 2, 3, 4}, GSVertexKernels::PackedLayout::NopTripleXYZF2};
+	const LayoutCase kPairSTQ = {"2:2,5", {2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
+	const LayoutCase kPairUV = {"2:3,5", {3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
+	const LayoutCase kPairRGBAQ = {"2:1,5", {1, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
+	const LayoutCase kPairRGBAQNop = {"3:f,1,5", {0xF, 1, 5}, {3, 1, 0, 2}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
 } // namespace
 
 // The layouts against the per-qword path, over the whole prim / ADC / run-length
@@ -2001,10 +2055,17 @@ TEST(GsKickKernel, LayoutsPickUpAnEnvironmentMovingUnderTheRun)
 	for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
 	{
 		SCOPED_TRACE(::testing::Message() << "prim=" << prim);
-		EXPECT_GT(RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
-					  s, prim, kPairSTQ, v, {5000}, true, false, true),
-			0u)
-			<< "the run never flushed, so the environment never moved";
+		// The flush assertion goes on a pair that ships for THIS prim, so it
+		// stays an assertion about the run and not about the instantiation set.
+		const u32 flushed = (prim == GS_TRIANGLESTRIP) ?
+								RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+									s, prim, kPairRGBAQ, v, {5000}, true, false, true) :
+								RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+									s, prim, kPairSTQ, v, {5000}, true, false, true);
+		EXPECT_GT(flushed, 0u) << "the run never flushed, so the environment never moved";
+
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+			s, prim, kPairSTQ, v, {5000}, true, false, true);
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
 			s, prim, kPairUV, v, {5000}, true, false, true);
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
@@ -2036,7 +2097,7 @@ TEST(GsKickKernel, LayoutQLatchTakesTheStqFixups)
 		// The pair layout is exact in both places: its vertex Q is carried and
 		// only the latch moves.
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
-			KickSetup{}, GS_TRIANGLESTRIP, kPairSTQ, v, {8u});
+			KickSetup{}, GS_SPRITE, kPairSTQ, v, {8u});
 
 		if (!std::isnan(q))
 		{
@@ -2183,6 +2244,9 @@ namespace
 	void RunAndComparePacket(const KickSetup& setup, u32 prim, const LayoutCase& lc,
 		const std::vector<VertexSpec>& verts, u32 verts_per_tag, bool reg_writes)
 	{
+		if (!KickProbe::LayoutShipsForDyn(lc.layout, prim))
+			return;
+
 		const DrawBufferingGuard guard(setup.draw_buffering);
 		const AutoFlushGuard af_guard(setup.autoflush);
 		const std::vector<GIFPackedReg> packet = BuildPacket(lc, verts, verts_per_tag, reg_writes);
@@ -2230,8 +2294,8 @@ TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 TEST(GsKickKernel, RepeatedPairThroughTransferMatchesTheReplay)
 {
 	u32 seed = 9800;
-	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}};
-	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}};
+	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
+	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
 	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv})
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})

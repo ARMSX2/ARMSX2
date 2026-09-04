@@ -398,6 +398,65 @@ protected:
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
+	// Which (prim, layout) pairs stage 3c instantiates a fused handler for.
+	//
+	// NOT every pair that could exist. A pair costs its handler, its staged loop,
+	// its per-vertex batch and -- if it takes the kernel -- RunChunk, the driver and
+	// the seam kick, which is about 17 KB of .text each with VertexKick inlined into
+	// three of them. Instantiating all twelve cost 256 KB, and the two titles that
+	// paid for it on the SD865 run none of them (RESULT-3c.md sections 13 and 14).
+	//
+	// So the set is the one the corpus asks for, counted over all 24 dumps under
+	// both renderers. Four pairs carry 54,716 of the 55,316 fused-layout handler
+	// calls the corpus makes; the two it leaves out are gow2's triangle-strip
+	// {ST, XYZ2} (592 calls) and dirge's triangle-list {RGBAQ, XYZ2} (8), which
+	// together are 1.1% and are not worth 10 KB of footprint on the titles that
+	// never run them. Everything not below keeps a null in the table, and
+	// Transfer replays the tag a qword at a time -- which is exact, and is what
+	// the tag got before SetTag learned to name it.
+	template <u32 prim, GSVertexKernels::PackedLayout layout>
+	static constexpr bool LayoutHandlerExists()
+	{
+		if constexpr (prim == GS_TRIANGLESTRIP)
+		{
+			// outrun-a/-b and mgs3's NOP-padded triple, 13,900 handler calls
+			// across the corpus; spiderman3's and stuntman's {RGBAQ, XYZ2},
+			// 13,560.
+			return layout == GSVertexKernels::PackedLayout::NopTripleXYZF2 ||
+				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2;
+		}
+		else if constexpr (prim == GS_SPRITE)
+		{
+			// spiderman3's whole sprite stream: {ST, XYZ2} 25,368 calls and
+			// {UV, XYZ2} 1,796.
+			return layout == GSVertexKernels::PackedLayout::PairSTQXYZ2 ||
+				   layout == GSVertexKernels::PackedLayout::PairUVXYZ2;
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	// And which of those enter the two-pass kernel, which is the expensive half:
+	// RunChunk, its driver and its seam kick are about 9 KB of .text a pair.
+	//
+	// Sprites never enter it -- they are auto_flush = true at both GameDB levels
+	// and under the software renderer, so they stay on the staged loop, and
+	// 27,164 sprite handler calls across the corpus produced ZERO kernel entries.
+	// Both triangle-strip pairs enter it -- the NOP-padded triple 12,214 times
+	// and {RGBAQ, XYZ2} 11,600 -- and that is all of it.
+	template <u32 prim, GSVertexKernels::PackedLayout layout>
+	static constexpr bool LayoutUsesKernel()
+	{
+		return prim == GS_TRIANGLESTRIP && LayoutHandlerExists<prim, layout>();
+	}
+
+	// The fused handler for a (prim, layout) pair, or null when the corpus shows
+	// no traffic for it. A null entry makes Transfer replay the tag a qword at a
+	// time, which is exact.
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+	static constexpr GIFPackedRegHandlerC LayoutHandlerOrNull();
 	// The latched Q a tag with an ST descriptor leaves behind, with the two
 	// fix-ups GIFPackedRegHandlerSTQ applies.
 	void StoreLatchedQ(const GIFPackedReg* RESTRICT stq);

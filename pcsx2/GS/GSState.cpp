@@ -400,13 +400,13 @@ void GSState::SetPrimHandlers()
 // keeps a null here and goes through Transfer's per-qword replay.
 #define SetHandlerLayout(P, auto_flush) \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZF2 - 2][P] = \
-		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::NopTripleXYZF2, auto_flush>; \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZF2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_STQXYZ2 - 2][P] = \
-		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairSTQXYZ2, auto_flush>; \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairSTQXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZ2 - 2][P] = \
-		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairUVXYZ2, auto_flush>; \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
-		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>;
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2059,6 +2059,15 @@ static constexpr bool KickKernelCarriesPrim()
 	return prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLELIST || prim == GS_SPRITE;
 }
 
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+constexpr GSState::GIFPackedRegHandlerC GSState::LayoutHandlerOrNull()
+{
+	if constexpr (LayoutHandlerExists<prim, layout>())
+		return &GSState::GIFPackedRegHandlerLayout<prim, layout, auto_flush>;
+	else
+		return nullptr;
+}
+
 // Whether the auto_flush instantiation of this prim's fused handler routes its
 // chunks between the kernel and the staged loop (stage 3b), or stays on the
 // staged loop outright. Sprites stay: IsAutoFlushDraw's EarlyDetectShuffle reads
@@ -2654,8 +2663,8 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 {
 	static_assert(!GSVertexKernels::LayoutIsContiguousTriple(layout),
 		"the two shipped triples keep their own handlers");
-	static_assert(KickKernelCarriesPrim<prim>(),
-		"a layout handler is only instantiated for the prims the kernel carries");
+	static_assert(LayoutHandlerExists<prim, layout>(),
+		"a layout handler is only instantiated for a pair the corpus has traffic for");
 
 	const u32 stride = m_packed_layout.stride;
 	pxAssert(size > 0 && (size % stride) == 0);
@@ -2740,13 +2749,28 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		}
 		else
 		{
-			if (s_fused_kick_use_kernel && n >= GSVertexKickKernel::kMinKernelVertices &&
-				KickKernelApplies<prim>())
-				KickPackedBatchKernel<prim, layout, auto_flush>(rest, n);
-			else if constexpr (auto_flush)
-				KickPackedStagedRun<prim, layout>(rest, n);
-			else
-				KickPackedBatchLegacy<prim, layout>(rest, n);
+			// The kernel only for the pairs the corpus enters it on. For the
+			// rest `kicked` is a compile-time false and this folds away to the
+			// per-vertex loop stage 3c found them on, which is what they run
+			// today anyway -- sprites never reach the kernel at all.
+			bool kicked = false;
+			if constexpr (LayoutUsesKernel<prim, layout>())
+			{
+				if (s_fused_kick_use_kernel && n >= GSVertexKickKernel::kMinKernelVertices &&
+					KickKernelApplies<prim>())
+				{
+					KickPackedBatchKernel<prim, layout, auto_flush>(rest, n);
+					kicked = true;
+				}
+			}
+
+			if (!kicked)
+			{
+				if constexpr (auto_flush)
+					KickPackedStagedRun<prim, layout>(rest, n);
+				else
+					KickPackedBatchLegacy<prim, layout>(rest, n);
+			}
 		}
 	}
 
