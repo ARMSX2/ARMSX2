@@ -594,16 +594,41 @@ namespace GSVertexKickKernel
 		// The rings hold the last four kicked vertices. Nothing reads them
 		// mid-chunk: every reader runs inside a flush, and a flush only happens
 		// inside a legacy kick.
+		//
+		// Written straight-line, not looped. The ring is four deep, so a chunk of
+		// four or more vertices writes every slot exactly once and the loop is
+		// four iterations of a body whose three base pointers and whose xy_tail
+		// are all loop-invariant -- which clang reloaded on every one of them
+		// (measured: 19 instructions an entry, 76 a call, the largest single item
+		// in the kernel's fixed cost). Hoisted and unrolled it is the four stores
+		// plus the four slot computations.
 		{
-			const u32 first = (count > 4) ? (count - 4) : 0;
-			for (u32 j = first; j < count; j++)
+			GSVector4i* RESTRICT xy_ring = bufs.xy_ring;
+			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = bufs.kick_ring;
+			const u32 xyt = cur.xy_tail;
+			const auto put = [&](u32 j) __attribute__((always_inline))
 			{
-				const u32 slot = (cur.xy_tail + j) & 3;
-				bufs.xy_ring[slot] = BroadcastXY(side_xyp[j]);
+				const u32 slot = (xyt + j) & 3;
+				const u64 xyp = side_xyp[j];
+				xy_ring[slot] = BroadcastXY(xyp);
 				// The ring's entries carry no ADC bit -- the legacy kick's do not
 				// and the differential test compares the bytes.
-				bufs.kick_ring[slot].xyp = side_xyp[j];
-				bufs.kick_ring[slot].meta = side_meta[j] & ~kCullMetaAdcBit;
+				kick_ring[slot].xyp = xyp;
+				kick_ring[slot].meta = side_meta[j] & ~kCullMetaAdcBit;
+			};
+
+			if (count >= 4)
+			{
+				const u32 j0 = count - 4;
+				put(j0 + 0);
+				put(j0 + 1);
+				put(j0 + 2);
+				put(j0 + 3);
+			}
+			else
+			{
+				for (u32 j = 0; j < count; j++)
+					put(j);
 			}
 		}
 
