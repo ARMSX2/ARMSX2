@@ -635,6 +635,38 @@ namespace GSVertexKickKernel
 				kick_ring[slot].meta = side_meta[j] & ~kCullMetaAdcBit;
 			};
 
+#ifdef ARCH_ARM64
+			if (count >= 4)
+			{
+				// The four entries are four consecutive u64s of each side array
+				// and four 16-byte stores into each ring, so the whole writeback
+				// is two pairs of vector loads, one mask, and eight zips: the
+				// mirror entry {xyp, meta} is a zip of the two arrays, and the xy
+				// ring's entry is the position broadcast to both halves, which is
+				// a zip of the position with itself.
+				const u32 j0 = count - 4;
+				const uint64x2_t p01 = vld1q_u64(side_xyp + j0);
+				const uint64x2_t p23 = vld1q_u64(side_xyp + j0 + 2);
+				const uint64x2_t keep = vdupq_n_u64(~kCullMetaAdcBit);
+				const uint64x2_t m01 = vandq_u64(vld1q_u64(side_meta + j0), keep);
+				const uint64x2_t m23 = vandq_u64(vld1q_u64(side_meta + j0 + 2), keep);
+
+				u64* RESTRICT kr = reinterpret_cast<u64*>(kick_ring);
+				const u32 s0 = (xyt + j0) & 3;
+				const u32 s1 = (s0 + 1) & 3, s2 = (s0 + 2) & 3, s3 = (s0 + 3) & 3;
+
+				vst1q_u64(kr + s0 * 2, vzip1q_u64(p01, m01));
+				vst1q_u64(kr + s1 * 2, vzip2q_u64(p01, m01));
+				vst1q_u64(kr + s2 * 2, vzip1q_u64(p23, m23));
+				vst1q_u64(kr + s3 * 2, vzip2q_u64(p23, m23));
+
+				u64* RESTRICT xr = reinterpret_cast<u64*>(xy_ring);
+				vst1q_u64(xr + s0 * 2, vzip1q_u64(p01, p01));
+				vst1q_u64(xr + s1 * 2, vzip2q_u64(p01, p01));
+				vst1q_u64(xr + s2 * 2, vzip1q_u64(p23, p23));
+				vst1q_u64(xr + s3 * 2, vzip2q_u64(p23, p23));
+			}
+#else
 			if (count >= 4)
 			{
 				const u32 j0 = count - 4;
@@ -643,6 +675,7 @@ namespace GSVertexKickKernel
 				put(j0 + 2);
 				put(j0 + 3);
 			}
+#endif
 			else
 			{
 				for (u32 j = 0; j < count; j++)
