@@ -40,8 +40,8 @@ struct EdgePixel
 {
 	int x;
 	int y;
-	u32 cov;   // the 16-bit coverage the edge walk stores in scan.p.U32[0]
-	u32 alpha; // what the scanline makes of it: cov >> 9, the GS's 0..128 range
+	u32 cov;   // the coverage the edge walk stores in scan.p.U32[0]
+	u32 alpha; // what the scanline makes of it, through the renderer's own constant
 };
 
 std::vector<EdgePixel>* g_edges = nullptr;
@@ -49,9 +49,12 @@ int g_spans = 0;
 
 void RecordEdge(int pixels, int left, int top, const GSVertexSW& scan, GSScanlineLocalData&)
 {
-	const u32 cov = scan.p.U32[0];
+	// The shift is the scanline's own, taken from the shared constant rather than
+	// re-typed here: a test that transcribes the encoding a second time checks the
+	// transcription against itself.
+	const u32 cov = static_cast<u16>(scan.p.U32[0]);
 	for (int i = 0; i < pixels; i++)
-		g_edges->push_back({left + i, top, cov, cov >> 9});
+		g_edges->push_back({left + i, top, cov, cov >> GSVertexSW::COVERAGE_SHIFT});
 }
 
 void RecordSpan(int, int, int, const GSVertexSW&, GSScanlineLocalData&)
@@ -164,6 +167,30 @@ TEST(Aa1EdgeBand, TheBandDoesNotReachTwoColumnsOut)
 	EXPECT_EQ(CountAtX(px, 79), 0);
 	for (const EdgePixel& p : px)
 		EXPECT_LE(p.x, 96) << "edge pixel past the primitive at (" << p.x << "," << p.y << ")";
+}
+
+TEST(Aa1EdgeBand, FullCoverageIsTheGsAlphaOf128)
+{
+	const std::vector<EdgePixel> px = EdgePixelsOfTriangle(kRightTriangle);
+
+	// The coverage scale runs 0 .. 128, not 0 .. 127: the AA band's inner side is
+	// full coverage and the GS converts that to an alpha of 0x80. gs-prim case 373
+	// reads 0x80 back off a triangle whose sides sit on integer pixels; ours stored
+	// one below, because the coverage was scaled to 0xffff and shifted nine.
+	u32 top = 0;
+	for (const EdgePixel& p : px)
+		top = std::max(top, p.alpha);
+	EXPECT_EQ(top, 128u);
+
+	// And full coverage is exactly the constant, so the walk and the scanline cannot
+	// drift apart on what "all of it" means.
+	bool saw_one = false;
+	for (const EdgePixel& p : px)
+	{
+		EXPECT_LE(p.cov, static_cast<u32>(GSVertexSW::COVERAGE_ONE));
+		saw_one |= (p.cov == static_cast<u32>(GSVertexSW::COVERAGE_ONE));
+	}
+	EXPECT_TRUE(saw_one);
 }
 
 } // namespace

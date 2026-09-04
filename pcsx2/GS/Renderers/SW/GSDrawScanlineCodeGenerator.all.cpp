@@ -770,7 +770,7 @@ void GSDrawScanlineCodeGenerator::Init()
 	{
 		if (m_sel.edge)
 		{
-			// m_local.temp.cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16(9);
+			// m_local.temp.cov = GSVector8i::broadcast16(GSVector4i::cast(scan.p)).srl16(COVERAGE_SHIFT);
 
 			if (hasAVX2)
 			{
@@ -782,7 +782,7 @@ void GSDrawScanlineCodeGenerator::Init()
 				punpcklwd(xmm3, xmm3);
 				pshufd(xmm3, xmm3, _MM_SHUFFLE(0, 0, 0, 0));
 			}
-			psrlw(xym3, 9);
+			psrlw(xym3, GSVertexSW::COVERAGE_SHIFT);
 
 			movdqa(_rip_local(temp.cov), xym3);
 		}
