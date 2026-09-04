@@ -336,12 +336,17 @@ void GSRasterizer::DrawEdgeTriangle(const GSVertexSW& v0, const GSVertexSW& v1, 
 	const int rxi1 = static_cast<int>(rx1);
 	const int ryi1 = static_cast<int>(ry1);
 
-	// Note: appears to be asymmetry in how x bound and y bound is handled. Y bounds checking
-	// seems to be accurate here but not x. PS2 sometimes allows antialiased pixel to be +/-1 away
-	// from min/max x values and sometimes not. Not sure the reason so just arbitrarily pick the following for x.
-	int bxi0 = static_cast<int>(std::floor(std::min(x0, x1)));
+	// AA1 widens a side by one pixel, and it widens it in whichever axis the side is
+	// steeper in -- so a vertical side puts its zero-coverage column one pixel outside
+	// the primitive's x extent exactly as a horizontal side puts its zero-coverage row
+	// one pixel outside the y extent. Both bounds therefore carry the same slack. The
+	// x bound used to be the un-widened extent, under a note saying the hardware's rule
+	// was unknown and this was an arbitrary pick; an SCPH-30001 capture of a right
+	// triangle with a vertical left side draws that column on every row of the side, at
+	// coverage zero, and draws nothing a second column out.
+	int bxi0 = static_cast<int>(std::ceil(std::min(x0, x1) - 1.0f));
 	int byi0 = static_cast<int>(std::ceil(std::min(y0, y1) - 1.0f));
-	int bxi1 = static_cast<int>(std::ceil(std::max(x0, x1)));
+	int bxi1 = static_cast<int>(std::floor(std::max(x0, x1) + 1.0f));
 	int byi1 = static_cast<int>(std::floor(std::max(y0, y1) + 1.0f));
 
 	// Combine with scissor region.
