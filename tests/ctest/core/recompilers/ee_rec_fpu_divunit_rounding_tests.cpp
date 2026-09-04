@@ -1179,6 +1179,33 @@ TEST(EeRecFpuDivUnitRounding, FullModeTruncatesTheReciprocalRootLikeTheUnit)
 	EXPECT_GT(guard_answered, 0) << "liveness: the guard never fired";
 }
 
+u32 recTestColdIslandBodiesEmitted(); // iR5900-arm64.cpp
+
+TEST(EeRecFpuDivUnitRounding, GuardIslandsAreOutlined)
+{
+	constexpr u32 kLnSixtyFour = 0x40851590u, kLnTwo = 0x3F317216u;
+
+	const auto run = [&](int divides) {
+		std::vector<u32> prog;
+		for (int i = 0; i < divides; ++i)
+			prog.push_back(ee::DIV_S(3, 1, 2));
+		prog.push_back(ee::CVT_W_S(3, 3));
+		const u32 before = recTestColdIslandBodiesEmitted();
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(1, kLnSixtyFour);
+		h.SetFprBits(2, kLnTwo);
+		h.LoadProgram(prog);
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(3), 6u) << divides << " divides: the last one's integer is not the unit's";
+		return recTestColdIslandBodiesEmitted() - before;
+	};
+
+	EXPECT_EQ(run(1), 1u) << "the guard's island was not outlined";
+	EXPECT_EQ(run(19), 19u) << "every guard in a block gets its own body";
+}
+
 // ---------------------------------------------------------------------------
 // A temp allocated inside a runtime arm. _allocTempNEONreg evicts when the pool
 // is full, and an eviction writes the evicted guest register back at the point

@@ -20,6 +20,7 @@
 // counterpart.
 
 #include "arm64/iR5900-arm64.h"
+#include "arm64/EeFpuModelCall-arm64.h"
 
 #include <cfloat>
 
@@ -898,8 +899,8 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 // model above eeSrtDigit; this is the call into it.
 //
 // Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
-// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest;
-// Mode 3 also takes it, from the integer guards below.
+// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest.
+// Mode 3's guards call the same models through emitDivideUnitModelCall.
 //
 // Silicon composes RSQRT.S out of the other two with an ordinary single in
 // between, so this does as well; the intermediate crosses the sqrt's call
@@ -952,6 +953,25 @@ static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ft
 	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
 }
 
+// The guards' body, emitted after the block: no allocator frame.
+static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+{
+	if (op == DivUnitOp::Sqrt)
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	else
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	const void* fn = op == DivUnitOp::Divide ? reinterpret_cast<const void*>(&EeFpuModel::Divide) :
+	                 op == DivUnitOp::Sqrt   ? reinterpret_cast<const void*>(&EeFpuModel::SqrtBits) :
+	                                           reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
+	armEmitEeFpuModelCall(fn);
+	armEmitEeFprWiden(armDRegister(dstidx), RWARG1, RXSCRATCH);
+}
+
 // Mode 3 keeps the host quotient unless the divide unit's word truncates to a
 // different integer. The unit's word is the host's or the adjacent word on the
 // side the host rounded away from (FPU.cpp, eeDivideCap); the sign of
@@ -980,9 +1000,7 @@ static void emitDivideIntegerGuard(int sreg, int areg, int treg, int qreg, int s
 	armAsm->Fmov(armDRegister(treg), RXARG1);
 	armAsm->Fcvtzs(RWARG1, armDRegister(treg));
 	armAsm->Cmp(RWSCRATCH, RWARG1);
-	armAsm->B(&same, a64::eq);
-
-	emitDivideUnitIsland(DivUnitOp::Divide, sreg, srcS, srcT);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::Divide, sreg, srcS, srcT); });
 	armAsm->Bind(&same);
 }
 
@@ -1007,11 +1025,9 @@ static void emitSqrtIntegerGuard(int sreg, int xreg, int qreg, int srcT)
 	armAsm->Fmov(armDRegister(xreg), RXARG1);
 	armAsm->Fcvtzs(RWARG1, armDRegister(xreg));
 	armAsm->Cmp(RWSCRATCH, RWARG1);
-	armAsm->B(&same, a64::eq);
-
 	_freeNEONreg(xreg);
 	_freeNEONreg(qreg);
-	emitDivideUnitIsland(DivUnitOp::Sqrt, sreg, srcT, srcT);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::Sqrt, sreg, srcT, srcT); });
 	armAsm->Bind(&same);
 }
 
@@ -1036,9 +1052,7 @@ static void emitRsqrtIntegerGuard(int sreg, int qreg, int srcS, int srcT)
 	armAsm->Fmov(armDRegister(qreg), RXARG2);
 	armAsm->Fcvtzs(RWARG1, armDRegister(qreg));
 	armAsm->Cmp(RWSCRATCH, RWARG1);
-	armAsm->B(&same, a64::eq);
-
-	emitDivideUnitIsland(DivUnitOp::RecipSqrt, sreg, srcS, srcT);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::RecipSqrt, sreg, srcS, srcT); });
 	armAsm->Bind(&same);
 }
 
