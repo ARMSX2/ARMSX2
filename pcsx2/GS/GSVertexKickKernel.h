@@ -82,6 +82,9 @@ namespace GSVertexKickKernel
 		u32 shade;                             // bit 0 TME, bit 1 FST, bit 2 IIP
 		bool clamp_enabled;
 		bool sprite_q_fix;                     // sprite only: !PRIM.FST
+		// Where the batch's last parsed vertex goes -- GSState::m_v, which the
+		// piecemeal handlers and the next tag read. Call-invariant.
+		GSVertex* last_out;
 	};
 
 	// The buffer cursor, in and out by value.
@@ -399,6 +402,14 @@ namespace GSVertexKickKernel
 			PassOne<xyzf2, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
 		else
 			PassOne<xyzf2, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
+
+		// m_v carries the last parsed vertex out of the batch. Pass one has just
+		// written it to its provisional slot and pass two has not run yet, so
+		// nothing has moved it: the batch tail is a 32-byte copy from there rather
+		// than a second parse of the last record by the caller (which cost 25
+		// instructions a call). Taken per chunk rather than per call, which is
+		// redundant on a multi-chunk call and free on a single-chunk one.
+		*inv.last_out = vbuff[tail0 + count - 1];
 
 		// ---- pass two -------------------------------------------------------
 		u32 head = cur.head;

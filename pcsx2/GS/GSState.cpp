@@ -2001,6 +2001,15 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
 	ApplyDepthClampMode(depth_clamp, m1.U32[1]);
 
+	// This vertex may be the batch's last, and m_v carries the last parsed vertex
+	// out of a batch. The kernel arm writes m_v from its own parse, so the seam
+	// writes it too rather than the handler re-parsing the final record after the
+	// loop; every path that can kick the last vertex now leaves m_v behind it.
+	// The overlap check inside VertexKickDirect writes the same two vectors again
+	// on its own rare path.
+	m_v.m[0] = m0;
+	m_v.m[1] = m1;
+
 	VertexKickCursor c;
 	c.Load(*this);
 	if constexpr (xyzf2)
@@ -2008,22 +2017,6 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 	else
 		VertexKickDirect<prim, false>(rv[2].XYZ2.Skip(), rv[2].XYZ2.X, rv[2].XYZ2.Y, m0, m1, c);
 	c.Store();
-}
-
-// m_v carries the last parsed vertex out of the batch, so the piecemeal handlers
-// and the next tag see the same state they always did. The kernel does not stage
-// vertices through m_v, so the last record is re-parsed here.
-template <bool xyzf2>
-__fi void GSState::SetLastParsedVertex(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp)
-{
-	GSVector4i m0, m1;
-	if constexpr (xyzf2)
-		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
-	else
-		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
-	ApplyDepthClampMode(depth_clamp, m1.U32[1]);
-	m_v.m[0] = m0;
-	m_v.m[1] = m1;
 }
 
 // The per-vertex direct batch: parsed vertices go straight to the buffer with the
@@ -2090,6 +2083,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	inv.uvfog = uvfog;
 	GSVertexKickKernel::MakeDepthClampMasks(depth_clamp, inv.clamp_keep, inv.clamp_shifted);
 	inv.clamp_enabled = (depth_clamp != GSLimit24BitDepth::Disabled);
+	// m_v is written by whichever path kicks the batch's last vertex: the kernel
+	// from its own parse, the seam from KickPackedOneLegacy's.
+	inv.last_out = &m_v;
 
 	// The per-draw environment snapshot fires at every window-full vertex while the
 	// index buffer is empty -- 44.6 times per draw on stuntman, all of them writing
@@ -2181,8 +2177,6 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 
 		k += chunk;
 	}
-
-	SetLastParsedVertex<xyzf2>(r + (count - 1) * 3, uvfog, depth_clamp);
 }
 
 template <u32 prim, bool auto_flush>

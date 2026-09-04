@@ -366,7 +366,6 @@ protected:
 	template<u32 prim, bool xyzf2> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, bool xyzf2> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, bool xyzf2> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
-	template<bool xyzf2> void SetLastParsedVertex(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
 
 	// Which arm the two fused handlers take. Nothing in the emulator writes this:
