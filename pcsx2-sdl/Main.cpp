@@ -698,14 +698,6 @@ void Host::SetFullscreen(bool enabled)
 	// host a windowed mode.
 }
 
-void Host::OnCaptureStarted(const std::string& filename)
-{
-}
-
-void Host::OnCaptureStopped()
-{
-}
-
 void Host::RequestExitApplication(bool allow_confirm)
 {
 	s_shutdown_requested.store(true, std::memory_order_release);

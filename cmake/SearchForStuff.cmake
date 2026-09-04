@@ -24,14 +24,6 @@ find_package(plutosvg 0.0.7 REQUIRED)
 # NOT taking upstream's find_package(ryml): we re-vendor rapidyaml in-tree (see the
 # add_subdirectory note further down) precisely so handheld and cross builds stay
 # self-contained. Upstream un-bundled it; we deliberately did not follow.
-#
-# ffmpeg is only needed where GS/GSCapture.cpp is compiled, which is everywhere except
-# Android (see pcsx2/CMakeLists.txt). REQUIRED without this guard fails the Android
-# configure outright, hunting a library the NDK does not ship for a feature no Android
-# user can reach.
-if(NOT ANDROID)
-	find_package(FFMPEG 7.1 COMPONENTS avcodec avformat avutil swresample swscale REQUIRED)
-endif()
 if (WIN32)
 	find_package(DirectX-Headers 1.618.1 REQUIRED)
 endif()

@@ -40,11 +40,6 @@ else()
 	)
 endif()
 
-if(USE_LINKED_FFMPEG)
-	target_compile_definitions(PCSX2_FLAGS INTERFACE USE_LINKED_FFMPEG)
-	target_link_libraries(PCSX2_FLAGS INTERFACE FFMPEG::avcodec FFMPEG::avformat FFMPEG::avutil FFMPEG::swscale FFMPEG::swresample)
-endif()
-
 if(WIN32)
 	set(MIN_WIN32 0x0A00)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE
@@ -564,7 +559,6 @@ set(pcsx2GSHeaders
 	GS/GSAlignedClass.h
 	GS/GSBlock.h
 	GS/GSBackQueue.h
-	GS/GSCapture.h
 	GS/GSClut.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
@@ -633,18 +627,6 @@ elseif(ARCH_ARM64)
 		GS/GSVector4_arm64.h
 		GS/GSVector4i_arm64.h
 	)
-endif()
-
-# Video capture, and with it the only thing in the tree that needs ffmpeg's headers. Not built on
-# Android: the platform records the screen better than we can from in here, and a gsdump in
-# RenderDoc is the more useful artefact anyway. GSCapture.h supplies inline no-op stubs there, so
-# no call site changes and nothing else notices.
-#
-# Keeping ffmpeg out also stops upstream's 2.9.x header removal from becoming our problem -- it
-# deletes 3rdparty/ffmpeg/include, which the NDK cannot replace, so the alternative was vendoring
-# ffmpeg per-ABI to keep compiling a feature no Android user can reach.
-if(NOT ANDROID)
-	list(APPEND pcsx2GSSources GS/GSCapture.cpp)
 endif()
 
 if(USE_OPENGL)
@@ -1448,8 +1430,6 @@ target_include_directories(PCSX2_FLAGS INTERFACE
 	"${CMAKE_CURRENT_SOURCE_DIR}"
 	"${CMAKE_BINARY_DIR}/pcsx2"
 	"${CMAKE_BINARY_DIR}/common/include"
-	# Empty on Android by design -- see the GSCapture.cpp exclusion above.
-	"${FFMPEG_INCLUDE_DIRS}"
 )
 
 set_source_files_properties(PrecompiledHeader.cpp PROPERTIES HEADER_FILE_ONLY TRUE)

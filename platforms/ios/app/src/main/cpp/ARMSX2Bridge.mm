@@ -3990,7 +3990,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         EmuConfig.GS.OsdShowIndicators = indicators;
         EmuConfig.GS.OsdShowSettings = settings;
         EmuConfig.GS.OsdShowInputs = inputs;
-        EmuConfig.GS.OsdShowVideoCapture = false;
         EmuConfig.GS.OsdShowInputRec = false;
     });
 }

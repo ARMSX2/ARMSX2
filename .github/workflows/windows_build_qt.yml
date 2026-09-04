@@ -6,7 +6,6 @@ name: Windows Build Steps - Qt (arm64)
 # (build-dependencies-arm64.bat) builds the arm64 Qt + libraries with the native
 # arm64 MSVC toolchain (vcvarsarm64.bat), and Qt builds its own arm64 host tools,
 # so no x64 host deps or QT_HOST_PATH are required. PCSX2 is then configured
-# natively against deps-arm64/. ffmpeg is loaded dynamically at runtime, so it is
 # intentionally absent from deps-arm64.
 #
 # The emulator itself compiles with clang-cl, NOT cl: the arm64 recompiler

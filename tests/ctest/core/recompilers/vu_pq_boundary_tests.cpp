@@ -56,6 +56,11 @@ inline VuOp Nop() { return IBit(VuOp{VLitZero(), VNOP_U()}); }
 // DIV/SQRT latency is 7 cycles (microVU_Lower-arm64.inl, mVUanalyzeFDIV);
 // ESADD's EFU latency is 11. Padding by exactly the latency puts the
 // instance flip immediately before the branch, which is the state under test.
+// A zero divisor saturates to the console's 0x7FFFFFFF on the interpreter and,
+// below vuClampMode 3, to FLT_MAX in the recompiler; VuDivUnitConsole scores it.
+constexpr const char* kWhyQCeiling =
+	"Q: the recompiler's saturation ceiling is FLT_MAX, the interpreter's is 0x7FFFFFFF";
+
 constexpr int kDivLatency = 7;
 constexpr int kEsaddLatency = 11;
 
@@ -226,13 +231,13 @@ TEST(VuPqBoundary, DivByZeroFlagReachesStatusWhenProgramEndsInsideLatency)
 		EBitNopPair(),
 	});
 
-	h.Run();
+	h.RunRequiringDivergence(kWhyQCeiling);
 
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x20u, 0u)
 		<< "mVUendProgram must fold the pending divide-by-zero flag into STATUS "
 		   "when the program ends before the FDIV flag latency elapses";
 	// The quotient itself still has to be committed on the way out.
-	EXPECT_EQ(h.GetViJit(REG_Q), 0x7FFFFFFFu);
+	EXPECT_EQ(h.GetViJit(REG_Q), 0x7F7FFFFFu);
 }
 
 TEST(VuPqBoundary, DivInvalidFlagReachesStatusWhenProgramEndsInsideLatency)
@@ -248,12 +253,12 @@ TEST(VuPqBoundary, DivInvalidFlagReachesStatusWhenProgramEndsInsideLatency)
 		EBitNopPair(),
 	});
 
-	h.Run();
+	h.RunRequiringDivergence(kWhyQCeiling);
 
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x10u, 0u)
 		<< "mVUendProgram must fold the pending invalid-operation flag into "
 		   "STATUS when the program ends before the FDIV flag latency elapses";
-	EXPECT_EQ(h.GetViJit(REG_Q), 0x7FFFFFFFu);
+	EXPECT_EQ(h.GetViJit(REG_Q), 0x7F7FFFFFu);
 }
 
 // =========================================================================

@@ -129,7 +129,6 @@ jobs:
                 -DCMAKE_OSX_ARCHITECTURES="arm64" \
                 -DDISABLE_ADVANCE_SIMD=ON \
                 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
-                -DUSE_LINKED_FFMPEG=ON \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
                 -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \

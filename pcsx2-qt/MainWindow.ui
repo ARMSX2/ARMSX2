@@ -80,7 +80,6 @@
     <addaction name="menuChangeDisc"/>
     <addaction name="separator"/>
     <addaction name="actionScreenshot"/>
-    <addaction name="actionVideoCapture"/>
     <addaction name="separator"/>
     <addaction name="menuLoadState"/>
     <addaction name="menuSaveState"/>
@@ -254,7 +253,6 @@
    <addaction name="actionToolbarChangeDisc"/>
    <addaction name="separator"/>
    <addaction name="actionToolbarScreenshot"/>
-   <addaction name="actionVideoCapture"/>
    <addaction name="separator"/>
    <addaction name="actionToolbarLoadState"/>
    <addaction name="actionToolbarSaveState"/>
@@ -1014,17 +1012,6 @@
   <action name="actionInputRecOpenViewer">
    <property name="text">
     <string>&amp;Recording Viewer</string>
-   </property>
-  </action>
-  <action name="actionVideoCapture">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="icon">
-    <iconset theme="camera-video"/>
-   </property>
-   <property name="text">
-    <string comment="In Toolbar">&amp;Video Capture</string>
    </property>
   </action>
   <action name="actionEditCheats">

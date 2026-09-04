@@ -10,7 +10,6 @@
 #include "pcsx2/Host.h"
 #include "pcsx2/Patch.h"
 #include "pcsx2/GS/GS.h"
-#include "pcsx2/GS/GSCapture.h"
 #include "pcsx2/GS/GSUtil.h"
 
 struct RendererInfo
@@ -68,7 +67,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	m_upscaling_fixes_tab = setupTab(m_upscaling, tr("Upscaling Fixes"));
 	m_texture_replacement_tab = setupTab(m_texture, tr("Texture Replacement"));
 	setupTab(m_post, tr("Post-Processing"));
-	setupTab(m_capture, tr("Media Capture"));
+	setupTab(m_capture, tr("Screenshots"));
 	m_advanced_tab = setupTab(m_advanced, tr("Advanced"));
 
 	//////////////////////////////////////////////////////////////////////////
@@ -370,55 +369,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		m_display.noInterlacingPatches = nullptr;
 	}
 
-	// Capture settings
-	{
-		for (const char** container = Pcsx2Config::GSOptions::CaptureContainers; *container; container++)
-		{
-			const QString name(QString::fromUtf8(*container));
-			m_capture.captureContainer->addItem(name.toUpper(), name);
-		}
-
-		SettingWidgetBinder::BindWidgetToStringSetting(sif, m_capture.captureContainer, "EmuCore/GS", "CaptureContainer");
-		connect(m_capture.captureContainer, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onCaptureContainerChanged);
-
-		SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_capture.enableVideoCapture, "EmuCore/GS", "EnableVideoCapture", true);
-		SettingWidgetBinder::BindWidgetToIntSetting(
-			sif, m_capture.videoCaptureBitrate, "EmuCore/GS", "VideoCaptureBitrate", Pcsx2Config::GSOptions::DEFAULT_VIDEO_CAPTURE_BITRATE);
-		SettingWidgetBinder::BindWidgetToIntSetting(
-			sif, m_capture.videoCaptureWidth, "EmuCore/GS", "VideoCaptureWidth", Pcsx2Config::GSOptions::DEFAULT_VIDEO_CAPTURE_WIDTH);
-		SettingWidgetBinder::BindWidgetToIntSetting(
-			sif, m_capture.videoCaptureHeight, "EmuCore/GS", "VideoCaptureHeight", Pcsx2Config::GSOptions::DEFAULT_VIDEO_CAPTURE_HEIGHT);
-		SettingWidgetBinder::BindWidgetToBoolSetting(
-			sif, m_capture.videoCaptureResolutionAuto, "EmuCore/GS", "VideoCaptureAutoResolution", true);
-		SettingWidgetBinder::BindWidgetToBoolSetting(
-			sif, m_capture.enableVideoCaptureArguments, "EmuCore/GS", "EnableVideoCaptureParameters", false);
-		SettingWidgetBinder::BindWidgetToStringSetting(sif, m_capture.videoCaptureArguments, "EmuCore/GS", "VideoCaptureParameters");
-		SettingWidgetBinder::BindWidgetToIntSetting(
-			sif, m_capture.screenshotQuality, "EmuCore/GS", "ScreenshotQuality", 90);
-		connect(m_capture.enableVideoCapture, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onEnableVideoCaptureChanged);
-		connect(
-			m_capture.videoCaptureResolutionAuto, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onVideoCaptureAutoResolutionChanged);
-		connect(m_capture.enableVideoCaptureArguments, &QCheckBox::checkStateChanged, this,
-			&GraphicsSettingsWidget::onEnableVideoCaptureArgumentsChanged);
-
-		SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_capture.enableAudioCapture, "EmuCore/GS", "EnableAudioCapture", true);
-		SettingWidgetBinder::BindWidgetToIntSetting(
-			sif, m_capture.audioCaptureBitrate, "EmuCore/GS", "AudioCaptureBitrate", Pcsx2Config::GSOptions::DEFAULT_AUDIO_CAPTURE_BITRATE);
-		SettingWidgetBinder::BindWidgetToBoolSetting(
-			sif, m_capture.enableAudioCaptureArguments, "EmuCore/GS", "EnableAudioCaptureParameters", false);
-		SettingWidgetBinder::BindWidgetToStringSetting(sif, m_capture.audioCaptureArguments, "EmuCore/GS", "AudioCaptureParameters");
-		connect(m_capture.enableAudioCapture, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onEnableAudioCaptureChanged);
-		connect(m_capture.enableAudioCaptureArguments, &QCheckBox::checkStateChanged, this,
-			&GraphicsSettingsWidget::onEnableAudioCaptureArgumentsChanged);
-
-		onCaptureContainerChanged();
-		onCaptureCodecChanged();
-		onEnableVideoCaptureChanged();
-		onEnableVideoCaptureArgumentsChanged();
-		onVideoCaptureAutoResolutionChanged();
-		onEnableAudioCaptureChanged();
-		onEnableAudioCaptureArgumentsChanged();
-	}
+	SettingWidgetBinder::BindWidgetToIntSetting(
+		sif, m_capture.screenshotQuality, "EmuCore/GS", "ScreenshotQuality", 90);
 
 	// Header & Display tab
 	{
@@ -748,61 +700,6 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 			tr("Applies a shader which replicates the visual effects of different styles of television sets."));
 	}
 
-	// Recording tab
-	{
-		dialog()->registerWidgetHelp(m_capture.enableVideoCapture, tr("Capture Video"), tr("Checked"),
-			tr("Enables video recording during gameplay capture."));
-
-		dialog()->registerWidgetHelp(m_capture.captureContainer, tr("Container Format"), tr("MKV"),
-			tr("Selects the media container file format for video recordings."));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureCodec, tr("Video Codec"), tr("Default"),
-			tr("Selects the Video Codec to be used for Video Capture. "
-			   "<b>If unsure, leave it on default.<b>"));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureFormat, tr("Video Format"), tr("Default"),
-			tr("Selects the Video Format to be used for Video Capture. If by chance the codec does not support the format, the first format available will be used. "
-			   "<b>If unsure, leave it on default.<b>"));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureBitrate, tr("Video Bitrate"), tr("6000 kbps"),
-			tr("Sets the video bitrate to be used. "
-			   "Higher bitrates generally yield better video quality at the cost of larger resulting file sizes."));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureResolutionAuto, tr("Automatic Resolution"), tr("Unchecked"),
-			tr("When checked, the video capture resolution will follow the internal resolution of the running game.<br><br>"
-
-			   "<b>Be careful when using this setting especially when you are upscaling, as higher internal resolutions (above 4x) can result in very large video capture and can cause system overload.</b>"));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureWidth, tr("Video Capture Width"), tr("1280"),
-			tr("Custom horizontal resolution width for video recordings when automatic resolution is unchecked."));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureHeight, tr("Video Capture Height"), tr("720"),
-			tr("Custom vertical resolution height for video recordings when automatic resolution is unchecked."));
-
-		dialog()->registerWidgetHelp(m_capture.enableVideoCaptureArguments, tr("Enable Extra Video Arguments"), tr("Unchecked"), tr("Allows you to pass arguments to the selected video codec."));
-
-		dialog()->registerWidgetHelp(m_capture.videoCaptureArguments, tr("Extra Video Arguments"), tr("Leave It Blank"),
-			tr("Parameters passed to the selected video codec.<br>"
-			   "<b>You must use '=' to separate key from value and ':' to separate two pairs from each other.</b><br>"
-			   "For example: \"crf = 21 : preset = veryfast\""));
-
-		dialog()->registerWidgetHelp(m_capture.enableAudioCapture, tr("Capture Audio"), tr("Checked"),
-			tr("Enables audio stream recording into video captures."));
-
-		dialog()->registerWidgetHelp(m_capture.audioCaptureCodec, tr("Audio Codec"), tr("Default"),
-			tr("Selects the Audio Codec to be used for Video Capture. "
-			   "<b>If unsure, leave it on default.<b>"));
-
-		dialog()->registerWidgetHelp(m_capture.audioCaptureBitrate, tr("Audio Bitrate"), tr("192 kbps"), tr("Sets the audio bitrate to be used."));
-
-		dialog()->registerWidgetHelp(m_capture.enableAudioCaptureArguments, tr("Enable Extra Audio Arguments"), tr("Unchecked"), tr("Allows you to pass arguments to the selected audio codec."));
-
-		dialog()->registerWidgetHelp(m_capture.audioCaptureArguments, tr("Extra Audio Arguments"), tr("Leave It Blank"),
-			tr("Parameters passed to the selected audio codec.<br>"
-			   "<b>You must use '=' to separate key from value and ':' to separate two pairs from each other.</b><br>"
-			   "For example: \"compression_level = 4 : joint_stereo = 1\""));
-	}
-
 	// Advanced tab
 	{
 		dialog()->registerWidgetHelp(m_advanced.gsDumpCompression, tr("GS Dump Compression"), tr("Zstandard (zst)"),
@@ -956,95 +853,6 @@ void GraphicsSettingsWidget::onTextureReplacementChanged()
 	const bool enabled = dialog()->getEffectiveBoolValue("EmuCore/GS", "LoadTextureReplacements", false);
 	m_texture.loadTextureReplacementsAsync->setEnabled(enabled);
 	m_texture.precacheTextureReplacements->setEnabled(enabled);
-}
-
-void GraphicsSettingsWidget::onCaptureContainerChanged()
-{
-	const std::string container(
-		dialog()->getEffectiveStringValue("EmuCore/GS", "CaptureContainer", Pcsx2Config::GSOptions::DEFAULT_CAPTURE_CONTAINER));
-
-	QObject::disconnect(m_capture.videoCaptureCodec, &QComboBox::currentIndexChanged, nullptr, nullptr);
-	m_capture.videoCaptureCodec->clear();
-	//: This string refers to a default codec, whether it's an audio codec or a video codec.
-	m_capture.videoCaptureCodec->addItem(tr("Default"), QString());
-	for (const auto& [format, name] : GSCapture::GetVideoCodecList(container.c_str()))
-	{
-		const QString qformat(QString::fromStdString(format));
-		const QString qname(QString::fromStdString(name));
-		m_capture.videoCaptureCodec->addItem(QStringLiteral("%1 [%2]").arg(qformat).arg(qname), qformat);
-	}
-
-	SettingWidgetBinder::BindWidgetToStringSetting(
-		dialog()->getSettingsInterface(), m_capture.videoCaptureCodec, "EmuCore/GS", "VideoCaptureCodec");
-	connect(m_capture.videoCaptureCodec, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onCaptureCodecChanged);
-
-	QObject::disconnect(m_capture.audioCaptureCodec, &QComboBox::currentIndexChanged, nullptr, nullptr);
-	m_capture.audioCaptureCodec->clear();
-	m_capture.audioCaptureCodec->addItem(tr("Default"), QString());
-	for (const auto& [format, name] : GSCapture::GetAudioCodecList(container.c_str()))
-	{
-		const QString qformat(QString::fromStdString(format));
-		const QString qname(QString::fromStdString(name));
-		m_capture.audioCaptureCodec->addItem(QStringLiteral("%1 [%2]").arg(qformat).arg(qname), qformat);
-	}
-
-	SettingWidgetBinder::BindWidgetToStringSetting(
-		dialog()->getSettingsInterface(), m_capture.audioCaptureCodec, "EmuCore/GS", "AudioCaptureCodec");
-}
-
-void GraphicsSettingsWidget::GraphicsSettingsWidget::onCaptureCodecChanged()
-{
-	QObject::disconnect(m_capture.videoCaptureFormat, &QComboBox::currentIndexChanged, nullptr, nullptr);
-	m_capture.videoCaptureFormat->clear();
-	//: This string refers to a default pixel format
-	m_capture.videoCaptureFormat->addItem(tr("Default"), "");
-
-	const std::string codec(
-		dialog()->getEffectiveStringValue("EmuCore/GS", "VideoCaptureCodec", ""));
-
-	if (!codec.empty())
-	{
-		for (const auto& [id, name] : GSCapture::GetVideoFormatList(codec.c_str()))
-		{
-			const QString qid(QString::number(id));
-			const QString qname(QString::fromStdString(name));
-			m_capture.videoCaptureFormat->addItem(qname, qid);
-		}
-	}
-
-	SettingWidgetBinder::BindWidgetToStringSetting(
-		dialog()->getSettingsInterface(), m_capture.videoCaptureFormat, "EmuCore/GS", "VideoCaptureFormat");
-}
-
-void GraphicsSettingsWidget::onEnableVideoCaptureChanged()
-{
-	const bool enabled = dialog()->getEffectiveBoolValue("EmuCore/GS", "EnableVideoCapture", true);
-	m_capture.videoCaptureOptions->setEnabled(enabled);
-}
-
-void GraphicsSettingsWidget::onEnableVideoCaptureArgumentsChanged()
-{
-	const bool enabled = dialog()->getEffectiveBoolValue("EmuCore/GS", "EnableVideoCaptureParameters", false);
-	m_capture.videoCaptureArguments->setEnabled(enabled);
-}
-
-void GraphicsSettingsWidget::onVideoCaptureAutoResolutionChanged()
-{
-	const bool enabled = !dialog()->getEffectiveBoolValue("EmuCore/GS", "VideoCaptureAutoResolution", true);
-	m_capture.videoCaptureWidth->setEnabled(enabled);
-	m_capture.videoCaptureHeight->setEnabled(enabled);
-}
-
-void GraphicsSettingsWidget::onEnableAudioCaptureChanged()
-{
-	const bool enabled = dialog()->getEffectiveBoolValue("EmuCore/GS", "EnableAudioCapture", true);
-	m_capture.audioCaptureOptions->setEnabled(enabled);
-}
-
-void GraphicsSettingsWidget::onEnableAudioCaptureArgumentsChanged()
-{
-	const bool enabled = dialog()->getEffectiveBoolValue("EmuCore/GS", "EnableAudioCaptureParameters", false);
-	m_capture.audioCaptureArguments->setEnabled(enabled);
 }
 
 void GraphicsSettingsWidget::onGpuPaletteConversionChanged(int state)

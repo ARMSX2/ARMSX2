@@ -3590,9 +3590,6 @@ void FullscreenUI::DrawOSDSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_PF_GAMEPAD_ALT, "Show Inputs"),
 		FSUI_CSTR("Shows the current controller state of the system in the bottom-left corner of the display."), "EmuCore/GS",
 		"OsdShowInputs", false);
-	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_VIDEO, "Show Video Capture Status"),
-		FSUI_CSTR("Shows the status of the currently active video capture in the top-right corner of the display."), "EmuCore/GS",
-		"OsdShowVideoCapture", true);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_KEYBOARD, "Show Input Recording Status"),
 		FSUI_CSTR("Shows the status of the currently active input recording in the top-right corner of the display."), "EmuCore/GS",
 		"OsdShowInputRec", true);
@@ -5617,13 +5614,10 @@ void FullscreenUI::DrawFoldersSettingsPage()
 	DrawFolderSetting(bsi, FSUI_ICONSTR(ICON_PF_INFINITY, "Cheats Directory"), "Folders", "Cheats", EmuFolders::Cheats);
 	DrawFolderSetting(bsi, FSUI_ICONSTR(ICON_FA_BANDAGE, "Patches Directory"), "Folders", "Patches", EmuFolders::Patches);
 	DrawFolderSetting(bsi, FSUI_ICONSTR(ICON_FA_SHIRT, "Texture Replacements Directory"), "Folders", "Textures", EmuFolders::Textures);
-	DrawFolderSetting(bsi, FSUI_ICONSTR(ICON_FA_VIDEO, "Video Recording Directory"), "Folders", "Videos", EmuFolders::Videos);
 
 	MenuHeading(FSUI_CSTR("Organization"));
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Save Snapshots in Game-Specific Folders"),
 		FSUI_CSTR("Saves snapshots to per-game subfolders instead of a shared folder."), "EmuCore/GS", "OrganizeScreenshotsByGame", false);
-	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Save Video Recordings in Game-Specific Folders"),
-		FSUI_CSTR("Saves video recordings to per-game subfolders instead of a shared folder."), "EmuCore/GS", "OrganizeVideoCaptureByGame", false);
 
 	EndMenuButtons();
 }
@@ -6835,7 +6829,6 @@ TRANSLATE_NOOP("FullscreenUI", "Show Frame Times");
 TRANSLATE_NOOP("FullscreenUI", "Show Settings");
 TRANSLATE_NOOP("FullscreenUI", "Show Patches");
 TRANSLATE_NOOP("FullscreenUI", "Show Inputs");
-TRANSLATE_NOOP("FullscreenUI", "Show Video Capture Status");
 TRANSLATE_NOOP("FullscreenUI", "Show Input Recording Status");
 TRANSLATE_NOOP("FullscreenUI", "Show Texture Replacement Status");
 TRANSLATE_NOOP("FullscreenUI", "Warn About Unsafe Settings");

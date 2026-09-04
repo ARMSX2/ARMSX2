@@ -47,6 +47,11 @@ mVUop(mVU_DIV)
 		// part of the model a host divide does reproduce.
 		const bool exact = CHECK_VU_EXACT(mVU.index);
 		const bool flush = !exact && mVUneedsSoftwareFlush(mVU);
+		// 0x7FFFFFFF is a NaN to a host Fmul. mVUclamp3 bounds every FMAC
+		// operand from vuClampMode 2, but sign-preservingly only from 3, where
+		// mVUclamp2's integer min replaces mVUclamp1's Fminnm -- so that is
+		// where the console word becomes a number the FMAC can read.
+		const bool consoleQ = CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Test if Ft is zero (a NaN's exponent is 255, so it takes the not-zero
 		// branch as the Fcmp this replaces did).
@@ -73,12 +78,18 @@ mVUop(mVU_DIV)
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
 
 		armAsm->Bind(&afterDivFlag);
-		// Q saturates at the EE's largest single, 0x7FFFFFFF, signed by the xor
-		// of the operands. mVUglob.maxvals is a binade below that and cannot be
-		// retargeted: mVUclamp1 and mVU_SQRT feed it to Fminnm, where 0x7FFFFFFF
-		// is a NaN.
+		// Q = sign(Fs) xor sign(Ft), magnitude the ceiling the FMAC can read.
 		armAsm->Eor(Fs.V16B(), Fs.V16B(), Ft.V16B());
-		armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
+		if (consoleQ)
+		{
+			armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
+		}
+		else
+		{
+			armAsm->Ldr(t1, mVUglobMem(&mVUglob.signbit[0]));
+			armAsm->And(Fs.V16B(), Fs.V16B(), t1.V16B());
+			armAsm->Ldr(t1, mVUglobMem(&mVUglob.maxvals[0]));
+		}
 		armAsm->Orr(Fs.V16B(), Fs.V16B(), t1.V16B());
 		a64::Label skipNormalDiv;
 		armAsm->B(&skipNormalDiv);
@@ -247,6 +258,7 @@ mVUop(mVU_RSQRT)
 		// so a denormal radicand is a zero divisor where a host Fsqrt's is not.
 		const bool exact = CHECK_VU_EXACT(mVU.index);
 		const bool flush = !exact && mVUneedsSoftwareFlush(mVU);
+		const bool consoleQ = CHECK_VU_SIGN_OVERFLOW(mVU.index);
 		armAsm->Umov(gprT2.W(), Ft.V4S(), 0);
 		if (!exact)
 			armAsm->Fsqrt(sFt, sFt);
@@ -276,9 +288,17 @@ mVUop(mVU_RSQRT)
 		mVUldrField(mVU, gprT1, &mVU.divFlag);
 		armAsm->Orr(gprT1.W(), gprT1.W(), gprT2.W());
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
-		// Q keeps the dividend's sign and saturates at 0x7FFFFFFF; mVU_DIV's zero
-		// path says why that word is built rather than loaded.
-		armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
+		// Q = sign(Fs) | ceiling; mVU_DIV's zero path has the mode.
+		if (consoleQ)
+		{
+			armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
+		}
+		else
+		{
+			armAsm->Ldr(t1, mVUglobMem(&mVUglob.signbit[0]));
+			armAsm->And(Fs.V16B(), Fs.V16B(), t1.V16B());
+			armAsm->Ldr(t1, mVUglobMem(&mVUglob.maxvals[0]));
+		}
 		armAsm->Orr(Fs.V16B(), Fs.V16B(), t1.V16B());
 		armAsm->B(&rsqrtDone);
 

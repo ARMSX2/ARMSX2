@@ -205,7 +205,6 @@ private Q_SLOTS:
 	void onSaveGSDumpActionTriggered();
 	void onBlockDumpActionToggled(bool checked);
 	void onShowAdvancedSettingsToggled(bool checked);
-	void onVideoCaptureToggled(bool checked);
 	void onSettingsTriggeredFromToolbar();
 
 	// Input Recording
@@ -221,9 +220,6 @@ private Q_SLOTS:
 
 	void onGameChanged(const QString& title, const QString& elf_override, const QString& disc_path,
 		const QString& serial, quint32 disc_crc, quint32 crc);
-
-	void onCaptureStarted(const QString& filename);
-	void onCaptureStopped();
 
 	void onAchievementsLoginRequested(Achievements::LoginRequestReason reason);
 	void onAchievementsHardcoreModeChanged(bool enabled);
@@ -303,7 +299,6 @@ private:
 	void openMemoryCardFolder();
 	void openSnapshotsFolderForGame(const GameList::Entry& entry);
 	void openTextureFolderForGame(const GameList::Entry& entry);
-	void openVideoCaptureFolder(const GameList::Entry& entry);
 
 	std::optional<bool> promptForResumeState(const QString& save_state_path);
 	void loadSaveStateSlot(s32 slot, bool load_backup = false);

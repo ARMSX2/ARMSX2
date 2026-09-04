@@ -7,7 +7,6 @@
 #include "SPU2/Dma.h"
 #include "Host/AudioStream.h"
 #include "Host.h"
-#include "GS/GSCapture.h"
 #include "MTGS.h"
 #include "R3000A.h"
 #include "VMManager.h"
@@ -30,7 +29,6 @@ namespace SPU2
 
 u64 lClocks = 0;
 
-static bool s_audio_capture_active = false;
 static bool s_psxmode = false;
 static bool s_output_muted = false;
 static bool s_swap_channels = false;
@@ -149,13 +147,6 @@ void SPU2::UpdateSampleRate()
 		return;
 
 	CreateOutputStream();
-
-	// Can't be capturing when the sample rate changes.
-	if (IsAudioCaptureActive())
-	{
-		MTGS::RunOnGSThread(&GSEndCapture);
-		MTGS::WaitGS(false, false, false);
-	}
 }
 
 u32 SPU2::GetOutputVolume()
@@ -248,16 +239,6 @@ void SPU2::SetOutputPaused(bool paused)
 void SPU2::SetOutputPauseSuppressed(bool suppressed)
 {
 	s_output_pause_suppressed = suppressed;
-}
-
-void SPU2::SetAudioCaptureActive(bool active)
-{
-	s_audio_capture_active = active;
-}
-
-bool SPU2::IsAudioCaptureActive()
-{
-	return s_audio_capture_active;
 }
 
 void SPU2::InternalReset(bool psxmode)
@@ -579,8 +560,5 @@ __forceinline void spu2Output(StereoOut32 out)
 		s_current_chunk_pos = 0;
 
 		s_output_stream->WriteChunk(s_current_chunk.data());
-
-		if (SPU2::IsAudioCaptureActive()) [[unlikely]]
-			GSCapture::DeliverAudioPacket(s_current_chunk.data());
 	}
 }

@@ -94,6 +94,7 @@ add_pcsx2_test(recompiler_tests
 	vu_broadcast_lane_tests.cpp
 	vu_minmax_order_tests.cpp
 	vu_pq_boundary_tests.cpp
+	vu_saturated_q_consumer_tests.cpp
 	vu_branch_terminator_tests.cpp
 	vu_overflow_hack_tests.cpp
 	vu_mac_flag_pack_tests.cpp
