@@ -1859,6 +1859,63 @@ __inline void GSState::CheckFlushes()
 	}
 }
 
+// Deleting the NOPs from a tag's descriptor list, and recognising what is left.
+// Declared in GSRegs.h beside GIFPath; defined here because it is out of line and
+// SetTag is force-inlined into Transfer.
+//
+// Exactness: GIF_REG_NOP dispatches GIFPackedRegHandlerNOP, which is empty, so a
+// NOP qword's only effect on the stream is to advance the pointer. Parsing the
+// remaining descriptors at their own offsets and stepping by the full nreg is the
+// same state transition, qword for qword.
+__noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& type, GIFPackedLayout& layout)
+{
+	u32 pos[3] = {};
+	u8 desc[3] = {};
+	u32 n = 0;
+
+	for (u32 i = 0; i < nreg; i++)
+	{
+		const u8 d = regs.U8[i];
+		if (d == GIF_REG_NOP)
+			continue;
+		if (n == 3)
+			return false;
+		desc[n] = d;
+		pos[n] = i;
+		n++;
+	}
+
+	// {ST, RGBAQ, XYZF2} with NOPs between: most of outrun-b's and mgs3's traffic.
+	if (n == 3)
+	{
+		if (desc[0] == GIF_REG_STQ && desc[1] == GIF_REG_RGBA && desc[2] == GIF_REG_XYZF2)
+		{
+			type = GIFPath::TYPE_NOPSTQRGBAXYZF2;
+			layout = {nreg, pos[0], pos[1], pos[2]};
+			return true;
+		}
+		return false;
+	}
+
+	// The two-register layouts, NOP-padded. XYZF2 twins are deliberately not
+	// recognised: no corpus title carries one, and every recognised type costs an
+	// instantiation of the kernel, the staged loop and the per-vertex batch.
+	if (n == 2 && desc[1] == GIF_REG_XYZ2)
+	{
+		switch (desc[0])
+		{
+			case GIF_REG_STQ: type = GIFPath::TYPE_STQXYZ2; break;
+			case GIF_REG_UV: type = GIFPath::TYPE_UVXYZ2; break;
+			case GIF_REG_RGBA: type = GIFPath::TYPE_RGBAQXYZ2; break;
+			default: return false;
+		}
+		layout = {nreg, pos[0], 0, pos[1]};
+		return true;
+	}
+
+	return false;
+}
+
 void GSState::GIFPackedRegHandlerNull(const GIFPackedReg* RESTRICT r)
 {
 }
@@ -4670,45 +4727,43 @@ void GSState::Transfer(const u8* mem, u32 size)
 					{
 						size -= total;
 
-						switch (path.type)
+						// Every fused layout sits at or above TYPE_STQRGBAXYZF2 and
+						// indexes the handler table by (type - TYPE_STQRGBAXYZF2).
+						// A null entry means SetTag recognised the layout but
+						// nothing fuses it, and the replay below -- the
+						// TYPE_UNKNOWN path, unchanged -- is exact for it.
+						const GIFPackedRegHandlerC fused =
+							(path.type >= GIFPath::TYPE_STQRGBAXYZF2) ?
+								m_fpGIFPackedRegHandlersC[path.type - GIFPath::TYPE_STQRGBAXYZF2] :
+								nullptr;
+
+						if (fused)
 						{
-							case GIFPath::TYPE_UNKNOWN:
+							(this->*fused)((GIFPackedReg*)mem, total);
+
+							mem += total * sizeof(GIFPackedReg);
+						}
+						else if (path.type == GIFPath::TYPE_ADONLY) // very common
+						{
+							do
 							{
-								u32 reg = 0;
+								(this->*m_fpGIFRegHandlers[((GIFPackedReg*)mem)->A_D.ADDR & 0x7F])(&((GIFPackedReg*)mem)->r);
 
-								do
-								{
-									(this->*m_fpGIFPackedRegHandlers[path.GetReg(reg++)])((GIFPackedReg*)mem);
+								mem += sizeof(GIFPackedReg);
+							} while (--total > 0);
+						}
+						else
+						{
+							u32 reg = 0;
 
-									mem += sizeof(GIFPackedReg);
+							do
+							{
+								(this->*m_fpGIFPackedRegHandlers[path.GetReg(reg++)])((GIFPackedReg*)mem);
 
-									reg = reg & ((int)(reg - path.nreg) >> 31); // resets reg back to 0 when it becomes equal to path.nreg
-								} while (--total > 0);
-							}
-							break;
-							case GIFPath::TYPE_ADONLY: // very common
-								do
-								{
-									(this->*m_fpGIFRegHandlers[((GIFPackedReg*)mem)->A_D.ADDR & 0x7F])(&((GIFPackedReg*)mem)->r);
+								mem += sizeof(GIFPackedReg);
 
-									mem += sizeof(GIFPackedReg);
-								} while (--total > 0);
-
-								break;
-							case GIFPath::TYPE_STQRGBAXYZF2: // majority of the vertices are formatted like this
-								(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2])((GIFPackedReg*)mem, total);
-
-								mem += total * sizeof(GIFPackedReg);
-
-								break;
-							case GIFPath::TYPE_STQRGBAXYZ2:
-								(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2])((GIFPackedReg*)mem, total);
-
-								mem += total * sizeof(GIFPackedReg);
-
-								break;
-							default:
-								ASSUME(0);
+								reg = reg & ((int)(reg - path.nreg) >> 31); // resets reg back to 0 when it becomes equal to path.nreg
+							} while (--total > 0);
 						}
 
 						path.nloop = 0;

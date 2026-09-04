@@ -1494,3 +1494,177 @@ TEST(GsKickKernel, SmallCountsMatchOnBothArms)
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GIFPath::SetTag, stage 3c: the layouts it now recognises.
+//
+// Every layout string below is one the layout census
+// (LAYOUT-CENSUS.md) actually observed in the 24-dump corpus, including the ones
+// that must stay TYPE_UNKNOWN. A reinterpretation that changes nreg must leave
+// nloop * nreg -- the qword count Transfer consumes -- exactly where it was.
+// ---------------------------------------------------------------------------
+namespace
+{
+	GIFTag MakePackedTag(const std::vector<u8>& descs, u32 nloop)
+	{
+		GIFTag t = {};
+		t.NLOOP = nloop;
+		t.NREG = static_cast<u32>(descs.size()) & 0xF; // 16 registers encode as 0
+		t.FLG = GIF_FLG_PACKED;
+		u64 regs = 0;
+		for (size_t i = 0; i < descs.size(); i++)
+			regs |= static_cast<u64>(descs[i] & 0xF) << (i * 4);
+		t.REGS = regs;
+		return t;
+	}
+
+	GIFPath ClassifyTag(const std::vector<u8>& descs, u32 nloop = 7)
+	{
+		const GIFTag t = MakePackedTag(descs, nloop);
+		GIFPath path = {};
+		path.SetTag(&t);
+		return path;
+	}
+} // namespace
+
+TEST(GifSetTag, ContiguousTriplesAreUnchanged)
+{
+	// The two shipped fused types, and the two repeat reinterpretations beside
+	// which the new ones sit. Guards against a new case swallowing an old one.
+	EXPECT_EQ(ClassifyTag({2, 1, 4}).type, static_cast<u32>(GIFPath::TYPE_STQRGBAXYZF2));
+	EXPECT_EQ(ClassifyTag({2, 1, 5}).type, static_cast<u32>(GIFPath::TYPE_STQRGBAXYZ2));
+
+	const GIFPath ffx = ClassifyTag({2, 1, 4, 2, 1, 4, 2, 1, 4}, 7);
+	EXPECT_EQ(ffx.type, static_cast<u32>(GIFPath::TYPE_STQRGBAXYZF2));
+	EXPECT_EQ(ffx.nreg, 3u);
+	EXPECT_EQ(ffx.nloop * ffx.nreg, 7u * 9u);
+
+	const GIFPath dq8 = ClassifyTag({2, 1, 4, 2, 1, 4, 2, 1, 4, 2, 1, 4}, 7);
+	EXPECT_EQ(dq8.type, static_cast<u32>(GIFPath::TYPE_STQRGBAXYZF2));
+	EXPECT_EQ(dq8.nreg, 3u);
+	EXPECT_EQ(dq8.nloop * dq8.nreg, 7u * 12u);
+
+	EXPECT_EQ(ClassifyTag({0xE}).type, static_cast<u32>(GIFPath::TYPE_ADONLY));
+	EXPECT_EQ(ClassifyTag({0xE, 0xE, 0xE, 0xE}).type, static_cast<u32>(GIFPath::TYPE_ADONLY));
+}
+
+TEST(GifSetTag, TwoRegisterLayouts)
+{
+	// spiderman3's 2:1,5 and stuntman's / sotc's siblings.
+	const GIFPath rgbaq = ClassifyTag({1, 5});
+	EXPECT_EQ(rgbaq.type, static_cast<u32>(GIFPath::TYPE_RGBAQXYZ2));
+	EXPECT_EQ(rgbaq.nreg, 2u);
+	EXPECT_EQ(rgbaq.layout.stride, 2u);
+	EXPECT_EQ(rgbaq.layout.off_a, 0u);
+	EXPECT_EQ(rgbaq.layout.off_xyz, 1u);
+
+	const GIFPath stq = ClassifyTag({2, 5});
+	EXPECT_EQ(stq.type, static_cast<u32>(GIFPath::TYPE_STQXYZ2));
+	const GIFPath uv = ClassifyTag({3, 5});
+	EXPECT_EQ(uv.type, static_cast<u32>(GIFPath::TYPE_UVXYZ2));
+
+	// The XYZF2 twins are deliberately NOT recognised (out of 3c's scope).
+	EXPECT_EQ(ClassifyTag({1, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	EXPECT_EQ(ClassifyTag({3, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	// Two positions and nothing else: no layout carries it.
+	EXPECT_EQ(ClassifyTag({5, 5}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+}
+
+TEST(GifSetTag, RepeatedPairHalvesNregAndDoublesNloop)
+{
+	// spiderman3's entire sprite stream: 4:2,5,2,5 and 4:3,5,3,5.
+	const GIFPath stq = ClassifyTag({2, 5, 2, 5}, 11);
+	EXPECT_EQ(stq.type, static_cast<u32>(GIFPath::TYPE_STQXYZ2));
+	EXPECT_EQ(stq.nreg, 2u);
+	EXPECT_EQ(stq.nloop, 22u);
+	EXPECT_EQ(stq.nloop * stq.nreg, 11u * 4u) << "the qword count Transfer consumes must not move";
+	EXPECT_EQ(stq.GetReg(0), 2);
+	EXPECT_EQ(stq.GetReg(1), 5);
+
+	const GIFPath uv = ClassifyTag({3, 5, 3, 5}, 11);
+	EXPECT_EQ(uv.type, static_cast<u32>(GIFPath::TYPE_UVXYZ2));
+	EXPECT_EQ(uv.nreg, 2u);
+	EXPECT_EQ(uv.nloop * uv.nreg, 11u * 4u);
+
+	const GIFPath rgbaq = ClassifyTag({1, 5, 1, 5}, 11);
+	EXPECT_EQ(rgbaq.type, static_cast<u32>(GIFPath::TYPE_RGBAQXYZ2));
+	EXPECT_EQ(rgbaq.nloop * rgbaq.nreg, 11u * 4u);
+
+	// A four-register tag that is not a repeat of a recognised pair stays unknown.
+	EXPECT_EQ(ClassifyTag({2, 4, 2, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	EXPECT_EQ(ClassifyTag({2, 5, 3, 5}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	EXPECT_EQ(ClassifyTag({0xE, 1, 5, 5}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+}
+
+TEST(GifSetTag, NopPaddedTriples)
+{
+	struct Case
+	{
+		std::vector<u8> descs;
+		u32 stride, off_st, off_rgba, off_xyz;
+	};
+	// Every NOP-padded triple the census observed, in outrun-b and mgs3.
+	const Case cases[] = {
+		{{2, 0xF, 1, 4}, 4, 0, 2, 3},
+		{{0xF, 2, 1, 4}, 4, 1, 2, 3},
+		{{0xF, 0xF, 2, 1, 4}, 5, 2, 3, 4},
+		{{0xF, 2, 0xF, 1, 4}, 5, 1, 3, 4},
+		{{2, 0xF, 0xF, 1, 4}, 5, 0, 3, 4},
+	};
+	for (const Case& c : cases)
+	{
+		const GIFPath p = ClassifyTag(c.descs, 9);
+		SCOPED_TRACE(::testing::Message() << "nreg=" << c.descs.size());
+		EXPECT_EQ(p.type, static_cast<u32>(GIFPath::TYPE_NOPSTQRGBAXYZF2));
+		EXPECT_EQ(p.nreg, c.stride) << "a NOP-padded tag keeps its nreg";
+		EXPECT_EQ(p.nloop, 9u);
+		EXPECT_EQ(p.layout.stride, c.stride);
+		EXPECT_EQ(p.layout.off_a, c.off_st);
+		EXPECT_EQ(p.layout.off_rgba, c.off_rgba);
+		EXPECT_EQ(p.layout.off_xyz, c.off_xyz);
+	}
+}
+
+TEST(GifSetTag, NopPaddedPairs)
+{
+	// stuntman's 3:f,1,5 -- 4.8% of its packed qwords.
+	const GIFPath p = ClassifyTag({0xF, 1, 5}, 9);
+	EXPECT_EQ(p.type, static_cast<u32>(GIFPath::TYPE_RGBAQXYZ2));
+	EXPECT_EQ(p.nreg, 3u);
+	EXPECT_EQ(p.layout.stride, 3u);
+	EXPECT_EQ(p.layout.off_a, 1u);
+	EXPECT_EQ(p.layout.off_xyz, 2u);
+
+	const GIFPath stq = ClassifyTag({2, 0xF, 5}, 9);
+	EXPECT_EQ(stq.type, static_cast<u32>(GIFPath::TYPE_STQXYZ2));
+	EXPECT_EQ(stq.layout.off_a, 0u);
+	EXPECT_EQ(stq.layout.off_xyz, 2u);
+}
+
+TEST(GifSetTag, LayoutsThatMustStayUnknown)
+{
+	// Every remaining unfused layout in the census. These are the ones 3c
+	// declared out of scope, and a classifier that reaches one of them by
+	// accident would be parsing a stream it cannot reproduce.
+	const std::vector<std::vector<u8>> unknown = {
+		{0xF, 0xF, 1, 4},                            // outrun-b: no ST to carry from
+		{2, 1, 4, 2, 0xF, 4},                        // mgs3: two vertices, unlike members
+		{1, 3, 4},                                   // mgs3: {RGBAQ, UV, XYZF2}
+		{3, 1, 4},                                   // katamari
+		{1, 3, 5, 3, 5},                             // stuntman, xenosaga
+		{6, 1, 3, 5, 3, 5},                          // xenosaga
+		{2, 1, 4, 2, 4, 2, 4, 2, 4},                 // flatout2
+		{0xE, 0xE, 1, 2, 4, 2, 4, 2, 4, 2, 4},       // rcuya
+		{0xE, 0xE, 0xE, 0xE, 2, 1, 5, 2, 1, 5, 2, 1, 5, 2, 1, 5}, // spiderman3
+		{0xE, 0xE, 0xE, 0xE, 0xE, 0xF, 0xF},         // mgs3
+		{0xF},                                       // outrun-b, mgs3
+		{5},                                         // spiderman3
+		{4},                                         // outrun-b
+	};
+	for (const std::vector<u8>& d : unknown)
+	{
+		const GIFPath p = ClassifyTag(d);
+		SCOPED_TRACE(::testing::Message() << "nreg=" << d.size() << " first=" << static_cast<int>(d[0]));
+		EXPECT_EQ(p.type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	}
+}

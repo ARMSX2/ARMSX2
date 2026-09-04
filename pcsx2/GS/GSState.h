@@ -90,7 +90,12 @@ private:
 
 	typedef void (GSState::*GIFPackedRegHandlerC)(const GIFPackedReg* RESTRICT r, u32 size);
 
-	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersC[2] = {};
+	// Indexed by (GIFPath::type - GIFPath::TYPE_STQRGBAXYZF2), i.e. by
+	// GIF_REG_COMPLEX. A null entry means the layout is recognised but has no
+	// fused handler, and Transfer replays its descriptors one qword at a time --
+	// which is exact, because that is what it did with the tag before SetTag
+	// learned to name it.
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersC[GIF_REG_COMPLEX_COUNT] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZF2[8] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZ2[8] = {};
 
