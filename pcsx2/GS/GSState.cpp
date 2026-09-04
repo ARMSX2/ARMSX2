@@ -396,6 +396,18 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerSTQRGBAXYZF2[P] = &GSState::GIFPackedRegHandlerSTQRGBAXYZF2<P, auto_flush>; \
 	m_fpGIFPackedRegHandlerSTQRGBAXYZ2[P] = &GSState::GIFPackedRegHandlerSTQRGBAXYZ2<P, auto_flush>;
 
+// The stage-3c layouts, for the three prims the kernel carries. Everything else
+// keeps a null here and goes through Transfer's per-qword replay.
+#define SetHandlerLayout(P, auto_flush) \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZF2 - 2][P] = \
+		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::NopTripleXYZF2, auto_flush>; \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_STQXYZ2 - 2][P] = \
+		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairSTQXYZ2, auto_flush>; \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZ2 - 2][P] = \
+		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairUVXYZ2, auto_flush>; \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
+		&GSState::GIFPackedRegHandlerLayout<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>;
+
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
 	SetHandlerXYZ(GS_LINESTRIP, non_sprite_af);
@@ -405,7 +417,12 @@ void GSState::SetPrimHandlers()
 	SetHandlerXYZ(GS_SPRITE, auto_flush);
 	SetHandlerXYZ(GS_INVALID, non_sprite_af);
 
+	SetHandlerLayout(GS_TRIANGLELIST, non_sprite_af);
+	SetHandlerLayout(GS_TRIANGLESTRIP, non_sprite_af);
+	SetHandlerLayout(GS_SPRITE, auto_flush);
+
 #undef SetHandlerXYZ
+#undef SetHandlerLayout
 }
 
 static constexpr u32 NumIndicesForPrim(u32 prim)
@@ -2608,6 +2625,79 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r, u32 size)
 {
 }
 
+// The latched Q a tag carrying an ST descriptor leaves behind.
+// GIFPackedRegHandlerSTQ applies two fix-ups on the way -- an integer +0.0
+// becomes FLT_MIN, so a negative zero passes through, and a NaN becomes
+// GSVector4::m_max -- and the next RGBAQ write copies the result into the
+// vertex. So the per-qword path's m_q is the fixed-up value, and a fused handler
+// that wants to be exact against it has to leave the same one behind.
+void GSState::StoreLatchedQ(const GIFPackedReg* RESTRICT stq)
+{
+	GSVector4i q = GSVector4i::loadl(&stq->U64[1]);
+	q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+	q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	GSVector4::store(&m_q, GSVector4::cast(q));
+}
+
+// The layouts stage 3c added: the NOP-padded {ST, RGBAQ, XYZF2} triple, and the
+// three two-register layouts. One handler covers all four, because everything
+// that differs between them is inside the parse and the parse is a template
+// parameter.
+//
+// Instantiated only for the three prim types the kernel carries. Every other
+// prim leaves a null in the handler table and Transfer replays the tag's
+// descriptors one qword at a time, which is exact by construction and is what
+// keeps four layouts from costing eight prims' worth of kernel, staged loop and
+// per-vertex batch each.
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size)
+{
+	static_assert(!GSVertexKernels::LayoutIsContiguousTriple(layout),
+		"the two shipped triples keep their own handlers");
+	static_assert(KickKernelCarriesPrim<prim>(),
+		"a layout handler is only instantiated for the prims the kernel carries");
+
+	CheckFlushes();
+
+	const u32 stride = m_packed_layout.stride;
+	pxAssert(size > 0 && (size % stride) == 0);
+	const u32 count = size / stride;
+
+	if constexpr (layout == GSVertexKernels::PackedLayout::PairUVXYZ2)
+	{
+		// UserHacks_ForceEvenSpritePosition swaps GIFPackedRegHandlerUV for a
+		// version whose only extra effect is this sticky flag. Nothing inside one
+		// handler call can clear it -- only a UV write through the A+D path does,
+		// and a packed vertex tag contains none -- so setting it once per call is
+		// exactly what the per-qword path leaves behind.
+		if (GSConfig.UserHacks_ForceEvenSpritePosition)
+			m_isPackedUV_HackFlag = true;
+	}
+
+	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
+	{
+		// Sprites, at either autoflush level: HandleAutoFlush reads the incoming
+		// vertex out of m_v and its EarlyDetectShuffle is per-prim state, so the
+		// run stays on the staged loop. It still loses the per-qword dispatch and
+		// the two indirect handler calls a vertex, which is what stage 3c option
+		// (a) is.
+		KickPackedStagedRun<prim, layout>(r, count);
+	}
+	else
+	{
+		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
+			KickKernelApplies<prim>())
+			KickPackedBatchKernel<prim, layout, auto_flush>(r, count);
+		else if constexpr (auto_flush)
+			KickPackedStagedRun<prim, layout>(r, count);
+		else
+			KickPackedBatchLegacy<prim, layout>(r, count);
+	}
+
+	if constexpr (GSVertexKernels::LayoutLatchesQ(layout))
+		StoreLatchedQ(&r[(count - 1) * stride + m_packed_layout.off_a]);
+}
+
 void GSState::GIFRegHandlerNull(const GIFReg* RESTRICT r)
 {
 }
@@ -4790,7 +4880,14 @@ void GSState::Transfer(const u8* mem, u32 size)
 						// exact for it.
 						GIFPackedRegHandlerC fused = nullptr;
 						if (path.type >= GIFPath::TYPE_NOPSTQRGBAXYZF2)
+						{
 							fused = m_fpGIFPackedRegHandlersLayoutC[path.type - GIFPath::TYPE_NOPSTQRGBAXYZF2];
+							// Where the record's descriptors sit. The handler
+							// signature is fixed by the table it is called
+							// through, and only these layouts read it.
+							if (fused)
+								m_packed_layout = path.layout;
+						}
 						else if (path.type >= GIFPath::TYPE_STQRGBAXYZF2)
 							fused = m_fpGIFPackedRegHandlersC[path.type - GIFPath::TYPE_STQRGBAXYZF2];
 
@@ -5285,6 +5382,9 @@ void GSState::UpdateVertexKick()
 
 	m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2] = m_fpGIFPackedRegHandlerSTQRGBAXYZF2[prim];
 	m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2] = m_fpGIFPackedRegHandlerSTQRGBAXYZ2[prim];
+
+	for (u32 i = 0; i < GIF_REG_COMPLEX_COUNT - 2; i++)
+		m_fpGIFPackedRegHandlersLayoutC[i] = m_fpGIFPackedRegHandlerLayout[i][prim];
 }
 
 void GSState::GrowVertexBuffer()

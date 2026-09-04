@@ -185,6 +185,18 @@ private:
 	bool EnsureAsyncReadbackMemory();
 
 protected:
+	// One qword of a tag through the per-descriptor handler table, which is the
+	// path Transfer takes for TYPE_UNKNOWN. It is here because the differential
+	// suite (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) replays a tag one
+	// qword at a time and compares that against the fused handler for the same
+	// layout -- that replay is the oracle every stage-3c layout is checked
+	// against, and the table it needs is private. Nothing in the emulator calls
+	// this.
+	void ReplayPackedQword(u32 reg, const GIFPackedReg* RESTRICT r)
+	{
+		(this->*m_fpGIFPackedRegHandlers[reg & 0xF])(r);
+	}
+
 	// Executor-owned HOST->LOCAL write cursor (advanced by wi() across transfer
 	// slices; mirrored back into m_tr.x/y inline for savestate coherence).
 	int m_exec_tr_x = 0;
@@ -363,12 +375,20 @@ protected:
 	// batch shapes through a GSState-derived probe and compares the results.
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
+	// The layouts stage 3c added, all through one handler: they differ only in
+	// where the record's descriptors sit and which of them it omits, and that is
+	// a template parameter of the parse.
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+	void GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
+	// The latched Q a tag with an ST descriptor leaves behind, with the two
+	// fix-ups GIFPackedRegHandlerSTQ applies.
+	void StoreLatchedQ(const GIFPackedReg* RESTRICT stq);
 
 	// Which arm the two fused handlers take. Nothing in the emulator writes this:
 	// it is not a settings key and not an env gate, it exists so the differential
@@ -862,6 +882,9 @@ public:
 	// object offsets the fused handlers use by 0x40 and changed 1,600
 	// instructions across them, buying nothing.
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersLayoutC[GIF_REG_COMPLEX_COUNT - 2] = {};
+	// The same, per prim, as SetPrimHandlers built them; UpdateVertexKick
+	// publishes the live prim's column into the table above.
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerLayout[GIF_REG_COMPLEX_COUNT - 2][8] = {};
 
 	// The live tag's descriptor offsets, copied out of the GIFPath by Transfer
 	// just before it calls one of those. The handler signature is fixed by the

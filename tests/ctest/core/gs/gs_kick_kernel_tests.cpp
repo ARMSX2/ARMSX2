@@ -56,6 +56,9 @@ namespace
 		float s, t, q;
 		u32 fog;
 		bool adc;
+		// Only the stage-3c layouts carry a UV descriptor. Raw, not masked: the
+		// 14-bit mask GIFPackedRegHandlerUV applies is part of what is compared.
+		u32 uv_u = 0, uv_v = 0;
 	};
 
 	// One PACKED {STQ, RGBAQ, XYZ2} or {STQ, RGBAQ, XYZF2} record.
@@ -210,6 +213,8 @@ namespace
 
 		using GSState::m_env_buffers;
 		using GSState::m_index;
+		using GSState::m_isPackedUV_HackFlag;
+		using GSState::m_packed_layout;
 		using GSState::m_q;
 		using GSState::m_v;
 		using GSState::m_vertex;
@@ -331,6 +336,44 @@ namespace
 				case GS_TRIANGLEFAN: KickCall<GS_TRIANGLEFAN>(r, size, xyzf2); break;
 				case GS_LINESTRIP: KickCall<GS_LINESTRIP>(r, size, xyzf2); break;
 				default: FAIL() << "unhandled prim " << prim;
+			}
+		}
+
+		// ------------------------------------------------------- stage 3c ---
+		// The per-qword replay: the arm every stage-3c layout is compared
+		// against. It is what Transfer's TYPE_UNKNOWN path does, driven off the
+		// same descriptor list SetTag classified, through the same prim-specific
+		// handler table the fused arm's kick uses.
+		void ReplayPerQword(const std::vector<u8>& descs, const GIFPackedReg* r, u32 total)
+		{
+			u32 reg = 0;
+			for (u32 i = 0; i < total; i++)
+			{
+				ReplayPackedQword(descs[reg], r + i);
+				if (++reg == static_cast<u32>(descs.size()))
+					reg = 0;
+			}
+		}
+
+		template <u32 prim, GSVertexKernels::PackedLayout layout>
+		void KickLayoutCall(const GIFPackedReg* r, u32 size, const GIFPackedLayout& off)
+		{
+			m_packed_layout = off;
+			if (m_auto_flush_arm)
+				GIFPackedRegHandlerLayout<prim, layout, true>(r, size);
+			else
+				GIFPackedRegHandlerLayout<prim, layout, false>(r, size);
+		}
+
+		template <GSVertexKernels::PackedLayout layout>
+		void KickLayoutCallDyn(u32 prim, const GIFPackedReg* r, u32 size, const GIFPackedLayout& off)
+		{
+			switch (prim)
+			{
+				case GS_TRIANGLESTRIP: KickLayoutCall<GS_TRIANGLESTRIP, layout>(r, size, off); break;
+				case GS_TRIANGLELIST: KickLayoutCall<GS_TRIANGLELIST, layout>(r, size, off); break;
+				case GS_SPRITE: KickLayoutCall<GS_SPRITE, layout>(r, size, off); break;
+				default: FAIL() << "layout handlers exist only for the kernel-carried prims";
 			}
 		}
 
@@ -599,6 +642,10 @@ namespace
 			s.t = static_cast<float>(static_cast<int>(rng() % 2000) - 1000) / 64.0f;
 			s.q = ((rng() % 16) == 0) ? 0.0f : (1.0f + static_cast<float>(rng() % 100) / 32.0f);
 			s.adc = AdcAt(adc, i, rng);
+			// Derived, not drawn from the generator, so adding UV to the corpus
+			// does not move any existing test's stream.
+			s.uv_u = s.z ^ 0xA5A5A5A5u;
+			s.uv_v = s.rgba ^ 0x5A5A5A5Au;
 			v.push_back(s);
 		}
 		return v;
@@ -1666,5 +1713,391 @@ TEST(GifSetTag, LayoutsThatMustStayUnknown)
 		const GIFPath p = ClassifyTag(d);
 		SCOPED_TRACE(::testing::Message() << "nreg=" << d.size() << " first=" << static_cast<int>(d[0]));
 		EXPECT_EQ(p.type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3c: the NOP-padded triple and the three two-register layouts, against
+// the per-qword path they replace.
+//
+// The comparison is not "kernel against per-vertex batch" as the rest of this
+// file's is. It is "one fused handler call against the same qwords dispatched
+// one at a time through GIFPackedRegHandlerSTQ / RGBA / UV / XYZ2", which is
+// what Transfer did with these tags before the stage and what it still does for
+// every prim the fused handler is not instantiated for. Everything the kick
+// leaves behind is compared, m_v and the latched Q included -- and those two are
+// the whole point here, because a layout that omits a register is only exact if
+// the omitted field keeps the value the previous write left in m_v.
+// ---------------------------------------------------------------------------
+namespace
+{
+	struct LayoutCase
+	{
+		const char* name;
+		std::vector<u8> descs;
+		GIFPackedLayout off;
+	};
+
+	// One record of a layout. NOP qwords are filled with a changing pattern
+	// rather than zeroed: their only correct treatment is to be skipped, and a
+	// parse that reads one gets a number nothing else in the stream produces.
+	void EncodeLayoutRecord(GIFPackedReg* rec, const std::vector<u8>& descs, const VertexSpec& v, u32 filler)
+	{
+		for (size_t i = 0; i < descs.size(); i++)
+		{
+			GIFPackedReg* r = rec + i;
+			std::memset(r, 0, sizeof(*r));
+			switch (descs[i])
+			{
+				case GIF_REG_STQ:
+					std::memcpy(&r->U32[0], &v.s, sizeof(float));
+					std::memcpy(&r->U32[1], &v.t, sizeof(float));
+					std::memcpy(&r->U32[2], &v.q, sizeof(float));
+					break;
+				case GIF_REG_RGBA:
+					r->U32[0] = (v.rgba >> 0) & 0xFF;
+					r->U32[1] = (v.rgba >> 8) & 0xFF;
+					r->U32[2] = (v.rgba >> 16) & 0xFF;
+					r->U32[3] = (v.rgba >> 24) & 0xFF;
+					break;
+				case GIF_REG_UV:
+					r->U32[0] = v.uv_u;
+					r->U32[1] = v.uv_v;
+					break;
+				case GIF_REG_XYZF2:
+					r->U32[0] = v.x;
+					r->U32[1] = v.y;
+					r->U32[2] = (v.z & 0x00FFFFFF) << 4;
+					r->U32[3] = (v.fog & 0xFF) << 4;
+					if (v.adc)
+						r->U32[3] |= 0x8000;
+					break;
+				case GIF_REG_XYZ2:
+					r->U32[0] = v.x;
+					r->U32[1] = v.y;
+					r->U32[2] = v.z;
+					if (v.adc)
+						r->U32[3] |= 0x8000;
+					break;
+				default: // NOP
+					r->U32[0] = filler;
+					r->U32[1] = ~filler;
+					r->U32[2] = filler ^ 0xDEADBEEFu;
+					r->U32[3] = filler * 2654435761u;
+					break;
+			}
+		}
+	}
+
+	std::vector<GIFPackedReg> EncodeLayoutStream(const std::vector<VertexSpec>& verts, const std::vector<u8>& descs)
+	{
+		std::vector<GIFPackedReg> out(verts.size() * descs.size());
+		for (size_t i = 0; i < verts.size(); i++)
+			EncodeLayoutRecord(&out[i * descs.size()], descs, verts[i], static_cast<u32>(i) * 0x9E3779B9u + 1u);
+		return out;
+	}
+
+	// m_v starts zeroed on a fresh probe, which would make "the omitted field is
+	// carried" trivially true. This puts something in every field a stage-3c
+	// layout can omit -- ST, the colour, the latched Q, UV and FOG -- through the
+	// piecemeal handlers, on both arms, before the tag under test runs.
+	void SeedLatchedState(KickProbe& p)
+	{
+		VertexSpec seed = {};
+		seed.s = 12.5f;
+		seed.t = -3.25f;
+		seed.q = 2.75f;
+		seed.rgba = 0x8090A0B0u;
+		seed.uv_u = 0x1234u;
+		seed.uv_v = 0x2345u;
+		seed.fog = 0x5Au;
+		const std::vector<u8> descs = {GIF_REG_STQ, GIF_REG_RGBA, GIF_REG_UV, GIF_REG_FOG};
+		std::vector<GIFPackedReg> rec(descs.size());
+		EncodeLayoutRecord(rec.data(), descs, seed, 0x11111111u);
+		// FOG is not one of EncodeLayoutRecord's cases; write it directly.
+		rec[3].U32[3] = (seed.fog & 0xFF) << 4;
+		p.ReplayPerQword(descs, rec.data(), static_cast<u32>(descs.size()));
+	}
+
+	template <GSVertexKernels::PackedLayout layout>
+	u32 RunAndCompareLayout(const KickSetup& setup, u32 prim, const LayoutCase& lc,
+		const std::vector<VertexSpec>& verts, const std::vector<u32>& call_sizes, bool use_kernel = true,
+		bool auto_flush_arm = false, bool draw_moves_environment = false)
+	{
+		const DrawBufferingGuard guard(setup.draw_buffering);
+		const AutoFlushGuard af_guard(setup.autoflush);
+		const std::vector<GIFPackedReg> stream = EncodeLayoutStream(verts, lc.descs);
+		const u32 stride = static_cast<u32>(lc.descs.size());
+
+		auto run = [&](bool fused) {
+			auto p = MakeProbe(setup, prim, use_kernel);
+			p->m_draw_moves_environment = draw_moves_environment;
+			p->m_auto_flush_arm = auto_flush_arm;
+			SeedLatchedState(*p);
+			u32 k = 0;
+			auto one = [&](u32 take) {
+				if (fused)
+					p->KickLayoutCallDyn<layout>(prim, &stream[k * stride], take * stride, lc.off);
+				else
+					p->ReplayPerQword(lc.descs, &stream[k * stride], take * stride);
+				k += take;
+			};
+			for (u32 nv : call_sizes)
+			{
+				if (k >= verts.size())
+					break;
+				one(std::min<u32>(nv, static_cast<u32>(verts.size()) - k));
+			}
+			if (k < verts.size())
+				one(static_cast<u32>(verts.size()) - k);
+			return p;
+		};
+
+		auto piecemeal = run(false);
+		auto fused = run(true);
+		KickProbe::s_fused_kick_use_kernel = true;
+
+		ExpectSameKickResult(*piecemeal, *fused);
+		return piecemeal->m_draws;
+	}
+
+	// Every layout stage 3c fuses, with the descriptor arrangement the census
+	// found it in.
+	const LayoutCase kNopTriple40 = {"4:2,f,1,4", {2, 0xF, 1, 4}, {4, 0, 2, 3}};
+	const LayoutCase kNopTriple41 = {"4:f,2,1,4", {0xF, 2, 1, 4}, {4, 1, 2, 3}};
+	const LayoutCase kNopTriple52 = {"5:f,f,2,1,4", {0xF, 0xF, 2, 1, 4}, {5, 2, 3, 4}};
+	const LayoutCase kPairSTQ = {"2:2,5", {2, 5}, {2, 0, 0, 1}};
+	const LayoutCase kPairUV = {"2:3,5", {3, 5}, {2, 0, 0, 1}};
+	const LayoutCase kPairRGBAQ = {"2:1,5", {1, 5}, {2, 0, 0, 1}};
+	const LayoutCase kPairRGBAQNop = {"3:f,1,5", {0xF, 1, 5}, {3, 1, 0, 2}};
+} // namespace
+
+// The layouts against the per-qword path, over the whole prim / ADC / run-length
+// matrix, on both the kernel arm and the per-vertex arm.
+TEST(GsKickKernel, LayoutsMatchThePerQwordPath)
+{
+	u32 seed = 8100;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (AdcPattern adc : {AdcPattern::None, AdcPattern::Stuntman, AdcPattern::Katamari})
+		{
+			for (u32 len : {1u, 2u, 3u, 5u, 8u, 127u, 128u, 129u, 400u})
+			{
+				for (bool use_kernel : {false, true})
+				{
+					const std::vector<VertexSpec> v = MakeStream(len, adc, seed++);
+					SCOPED_TRACE(::testing::Message()
+					             << "prim=" << prim << " adc=" << static_cast<int>(adc) << " len=" << len
+					             << " kernel=" << use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+						KickSetup{}, prim, kNopTriple40, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+						KickSetup{}, prim, kNopTriple52, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+						KickSetup{}, prim, kPairSTQ, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
+						KickSetup{}, prim, kPairUV, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+						KickSetup{}, prim, kPairRGBAQ, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+						KickSetup{}, prim, kPairRGBAQNop, v, {len}, use_kernel);
+				}
+			}
+		}
+	}
+}
+
+// The other NOP arrangement of the same triple, and the split-across-calls shape
+// -- a tag whose data arrives in pieces is handed to the handler in pieces, and
+// nothing may carry between them that the per-qword path does not carry.
+TEST(GsKickKernel, LayoutsMatchAcrossCallSplits)
+{
+	u32 seed = 8500;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+	{
+		const std::vector<VertexSpec> v = MakeStream(60, AdcPattern::Stuntman, seed++);
+		for (u32 chunk : {1u, 2u, 3u, 7u})
+		{
+			SCOPED_TRACE(::testing::Message() << "prim=" << prim << " chunk=" << chunk);
+			const std::vector<u32> calls(60 / chunk + 1, chunk);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+				KickSetup{}, prim, kNopTriple41, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+				KickSetup{}, prim, kPairSTQ, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
+				KickSetup{}, prim, kPairUV, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+				KickSetup{}, prim, kPairRGBAQ, v, calls);
+		}
+	}
+}
+
+// The autoflush instantiations. Sprites are the case stage 3c is aimed at, and
+// they stay on the staged loop at both levels; the triangle classes route.
+TEST(GsKickKernel, LayoutsMatchOnTheAutoFlushArm)
+{
+	u32 seed = 8700;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+	{
+		for (bool live : {false, true})
+		{
+			const KickSetup s = live ? AutoFlushLiveSetup() : AutoFlushInertSetup();
+			for (u32 len : {3u, 8u, 200u})
+			{
+				const std::vector<VertexSpec> v = MakeStream(len, AdcPattern::Stuntman, seed++);
+				SCOPED_TRACE(::testing::Message() << "prim=" << prim << " live=" << live << " len=" << len);
+				RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+					s, prim, kNopTriple40, v, {len}, true, true);
+				RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+					s, prim, kPairSTQ, v, {len}, true, true);
+				RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
+					s, prim, kPairUV, v, {len}, true, true);
+				RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+					s, prim, kPairRGBAQ, v, {len}, true, true);
+			}
+		}
+	}
+}
+
+// A flush inside the run restores an environment, and a carrying layout's carry
+// has to be re-read after it -- which is why the kernel driver rebuilds it per
+// chunk rather than hoisting it per call.
+TEST(GsKickKernel, LayoutsPickUpAnEnvironmentMovingUnderTheRun)
+{
+	// Long enough to hit the vertex-count flush, which is what makes the draw
+	// happen at all -- same shape as EnvironmentMovingUnderTheRunIsPickedUp.
+	std::vector<VertexSpec> v;
+	std::mt19937 rng(8900);
+	for (u32 i = 0; i < 70000; i++)
+	{
+		VertexSpec s = {};
+		s.x = static_cast<u16>(((i * 37) % 600 + 10) * 16);
+		s.y = static_cast<u16>(((i * 53) % 400 + 10) * 16);
+		s.z = rng();
+		s.rgba = rng();
+		s.q = 1.0f;
+		s.uv_u = rng();
+		s.uv_v = rng();
+		v.push_back(s);
+	}
+
+	KickSetup s;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+	{
+		SCOPED_TRACE(::testing::Message() << "prim=" << prim);
+		EXPECT_GT(RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+					  s, prim, kPairSTQ, v, {5000}, true, false, true),
+			0u)
+			<< "the run never flushed, so the environment never moved";
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
+			s, prim, kPairUV, v, {5000}, true, false, true);
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
+			s, prim, kPairRGBAQ, v, {5000}, true, false, true);
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+			s, prim, kNopTriple52, v, {5000}, true, false, true);
+	}
+}
+
+// The latched Q. GIFPackedRegHandlerSTQ rewrites an integer +0.0 to FLT_MIN and
+// a NaN to GSVector4::m_max before latching it, and a layout that carries an ST
+// descriptor has to leave the same value behind.
+//
+// The vertex's own Q lane is a different question for the triple layouts: the
+// shipped fused triple takes only the zero fix-up into the vertex, so the
+// NOP-padded triple takes only the zero fix-up too -- deliberately, to be the
+// same parse. That is why the NaN case below drives the pair layout, whose Q is
+// carried, and asserts only the latch for the triple.
+TEST(GsKickKernel, LayoutQLatchTakesTheStqFixups)
+{
+	for (float q : {0.0f, -0.0f, std::numeric_limits<float>::quiet_NaN(), 3.5f})
+	{
+		std::vector<VertexSpec> v = MakeStream(8, AdcPattern::None, 9100);
+		for (VertexSpec& s : v)
+			s.q = q;
+		SCOPED_TRACE(::testing::Message() << "q bits" << std::hex
+		                                  << *reinterpret_cast<const u32*>(&q));
+
+		// The pair layout is exact in both places: its vertex Q is carried and
+		// only the latch moves.
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
+			KickSetup{}, GS_TRIANGLESTRIP, kPairSTQ, v, {8u});
+
+		if (!std::isnan(q))
+		{
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+				KickSetup{}, GS_TRIANGLESTRIP, kNopTriple40, v, {8u});
+		}
+		else
+		{
+			// The inherited divergence, pinned so it cannot drift further: the
+			// NOP-padded triple leaves the same vertex bytes as the shipped
+			// contiguous triple, and the same latch as the per-qword path.
+			const AutoFlushGuard af(GSHWAutoFlushLevel::Disabled);
+			auto a = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
+			auto b = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
+			SeedLatchedState(*a);
+			SeedLatchedState(*b);
+			const std::vector<GIFPackedReg> nop = EncodeLayoutStream(v, kNopTriple40.descs);
+			const std::vector<GIFPackedReg> flat = EncodeStream(v, true);
+			a->KickLayoutCall<GS_TRIANGLESTRIP, GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+				nop.data(), static_cast<u32>(nop.size()), kNopTriple40.off);
+			b->KickCall<GS_TRIANGLESTRIP>(flat.data(), static_cast<u32>(flat.size()), true);
+			EXPECT_TRUE(SameBytes("vertex buffer", a->m_vertex->buff, b->m_vertex->buff,
+				sizeof(GSVertex) * a->m_vertex->tail));
+			// The latch itself IS exact against the per-qword path.
+			auto c = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
+			SeedLatchedState(*c);
+			c->ReplayPerQword(kNopTriple40.descs, nop.data(), static_cast<u32>(nop.size()));
+			EXPECT_EQ(std::isnan(a->m_q), std::isnan(c->m_q));
+			EXPECT_EQ(a->m_q, c->m_q);
+		}
+	}
+}
+
+// UserHacks_ForceEvenSpritePosition installs a UV handler whose only extra
+// effect is a sticky flag. The fused UV layout has to leave it set too.
+TEST(GsKickKernel, LayoutUVSetsThePackedUVHackFlag)
+{
+	const bool saved = GSConfig.UserHacks_ForceEvenSpritePosition;
+	for (bool hack : {false, true})
+	{
+		GSConfig.UserHacks_ForceEvenSpritePosition = hack;
+		SCOPED_TRACE(::testing::Message() << "hack=" << hack);
+		const std::vector<VertexSpec> v = MakeStream(12, AdcPattern::None, 9300);
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
+			KickSetup{}, GS_SPRITE, kPairUV, v, {12u});
+
+		auto p = MakeProbe(KickSetup{}, GS_SPRITE, true);
+		SeedLatchedState(*p);
+		const std::vector<GIFPackedReg> stream = EncodeLayoutStream(v, kPairUV.descs);
+		p->KickLayoutCall<GS_SPRITE, GSVertexKernels::PackedLayout::PairUVXYZ2>(
+			stream.data(), static_cast<u32>(stream.size()), kPairUV.off);
+		EXPECT_EQ(p->m_isPackedUV_HackFlag, hack);
+	}
+	GSConfig.UserHacks_ForceEvenSpritePosition = saved;
+}
+
+// The layout suite's own control: the same streams with the PER-QWORD arm on
+// both sides. Anything this reports is a property of the harness, not of the
+// fused handlers.
+TEST(GsKickKernel, LayoutHarnessControlIsNotVacuous)
+{
+	u32 seed = 9500;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+	{
+		const std::vector<VertexSpec> v = MakeStream(200, AdcPattern::Stuntman, seed++);
+		SCOPED_TRACE(::testing::Message() << "prim=" << prim);
+		const DrawBufferingGuard guard(false);
+		const AutoFlushGuard af(GSHWAutoFlushLevel::Disabled);
+		const std::vector<GIFPackedReg> stream = EncodeLayoutStream(v, kPairSTQ.descs);
+		auto run = [&]() {
+			auto p = MakeProbe(KickSetup{}, prim, true);
+			SeedLatchedState(*p);
+			p->ReplayPerQword(kPairSTQ.descs, stream.data(), static_cast<u32>(stream.size()));
+			return p;
+		};
+		auto a = run();
+		auto b = run();
+		ExpectSameKickResult(*a, *b);
 	}
 }
