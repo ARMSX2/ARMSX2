@@ -87,14 +87,23 @@ namespace GSVertexKickKernel
 		GSVertex* last_out;
 	};
 
-	// The buffer cursor, in and out by value.
-	struct Cursor
+	// The buffer cursor is NOT marshalled. Every field of it -- head, tail, next,
+	// xy_tail, the fused-min/max watermark and its valid flag, and the index
+	// tail -- is a member of the two buffer objects the kernel is already handed,
+	// so it reads them at entry and writes them at exit itself. Passing them in
+	// and back out by value cost a 44-byte structure through memory each way plus
+	// the caller's unpack, and bought nothing: the caller's own cursor is loaded
+	// from and stored to exactly those members.
+	//
+	// The one thing that does come back is the deferred draw-rect accumulation,
+	// which is not a buffer member: the union of the chunk's accepted prim rects,
+	// returned in a vector register, plus a two-bit state saying whether it is
+	// empty, unions into temp_draw_rect, or replaces it.
+	enum AccState : u32
 	{
-		u32 head, tail, next, itail, xy_tail;
-		u32 fmm_watermark;
-		u32 acc_state;
-		bool fmm_valid;
-		GSVector4i acc_rect;
+		kAccEmpty = 0,
+		kAccUnion = 1,
+		kAccReplace = 2,
 	};
 
 	// The kernel takes the two buffer objects rather than the seven pointers it
@@ -384,9 +393,9 @@ namespace GSVertexKickKernel
 	// Every vertex of the chunk is consumed; the caller advances by `count`.
 	// ------------------------------------------------------------------------
 	template <u32 prim, bool xyzf2>
-	__noinline Cursor RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
+	__noinline GSVector4i RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
 		GSBackQueue::VertexBuff* RESTRICT vertex_buf, GSBackQueue::IndexBuff* RESTRICT index_buf,
-		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, Cursor cur)
+		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, u32* RESTRICT acc_state_out)
 	{
 		constexpr u32 n = (prim == GS_SPRITE) ? 2u : 3u;
 		constexpr int primclass = GSUtil::GetPrimClass(prim);
@@ -396,7 +405,8 @@ namespace GSVertexKickKernel
 		GSVertex* RESTRICT vbuff = vertex_buf->buff;
 		u16* RESTRICT ibuff = index_buf->buff;
 
-		const u32 tail0 = cur.tail;
+		const u32 tail0 = vertex_buf->tail;
+		const u32 xy_tail0 = vertex_buf->xy_tail;
 
 		if (inv.clamp_enabled)
 			PassOne<xyzf2, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
@@ -412,19 +422,19 @@ namespace GSVertexKickKernel
 		*inv.last_out = vbuff[tail0 + count - 1];
 
 		// ---- pass two -------------------------------------------------------
-		u32 head = cur.head;
-		u32 tail = cur.tail;
-		u32 next = cur.next;
-		u32 itail = cur.itail;
+		u32 head = vertex_buf->head;
+		u32 tail = tail0;
+		u32 next = vertex_buf->next;
+		u32 itail = index_buf->tail;
 		// The index write cursor walks: itail only ever grows inside a chunk, so
 		// carrying the pointer costs one register where carrying the base and
 		// recomputing the address costs one register and an add -- and, at this
 		// loop's pressure, a reload of the base from the frame on every accept.
 		u16* RESTRICT ib = ibuff + itail;
-		u32 watermark = cur.fmm_watermark;
-		bool fmm_valid = cur.fmm_valid;
-		u32 acc_state = cur.acc_state;
-		GSVector4i acc_rect = cur.acc_rect;
+		u32 watermark = vertex_buf->fmm_watermark;
+		bool fmm_valid = vertex_buf->fmm_valid;
+		u32 acc_state = kAccEmpty;
+		GSVector4i acc_rect = GSVector4i::zero();
 
 		const u32 shade = inv.shade;
 		const bool tme = (shade & 1u) != 0;
@@ -449,9 +459,9 @@ namespace GSVertexKickKernel
 		// The three most recent mirror entries, most recent first. Seeded from the
 		// ring because a chunk can begin mid-prim; after that they rotate in
 		// registers and the ring is not read again.
-		u64 xyp0 = vertex_buf->kick_ring[(cur.xy_tail - 1) & 3].xyp, meta0 = vertex_buf->kick_ring[(cur.xy_tail - 1) & 3].meta;
-		u64 xyp1 = vertex_buf->kick_ring[(cur.xy_tail - 2) & 3].xyp, meta1 = vertex_buf->kick_ring[(cur.xy_tail - 2) & 3].meta;
-		u64 xyp2 = vertex_buf->kick_ring[(cur.xy_tail - 3) & 3].xyp, meta2 = vertex_buf->kick_ring[(cur.xy_tail - 3) & 3].meta;
+		u64 xyp0 = vertex_buf->kick_ring[(xy_tail0 - 1) & 3].xyp, meta0 = vertex_buf->kick_ring[(xy_tail0 - 1) & 3].meta;
+		u64 xyp1 = vertex_buf->kick_ring[(xy_tail0 - 2) & 3].xyp, meta1 = vertex_buf->kick_ring[(xy_tail0 - 2) & 3].meta;
+		u64 xyp2 = vertex_buf->kick_ring[(xy_tail0 - 3) & 3].xyp, meta2 = vertex_buf->kick_ring[(xy_tail0 - 3) & 3].meta;
 
 		// Walked rather than indexed: the provisional cursor advances by exactly
 		// one vertex an iteration, so it is a post-incremented pointer instead of
@@ -594,7 +604,7 @@ namespace GSVertexKickKernel
 			else
 			{
 				acc_rect = draw_rect;
-				acc_state = (itail == n) ? 2 : 1;
+				acc_state = (itail == n) ? kAccReplace : kAccUnion;
 			}
 		}
 
@@ -613,7 +623,7 @@ namespace GSVertexKickKernel
 		{
 			GSVector4i* RESTRICT xy_ring = vertex_buf->xy;
 			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = vertex_buf->kick_ring;
-			const u32 xyt = cur.xy_tail;
+			const u32 xyt = xy_tail0;
 			const auto put = [&](u32 j) __attribute__((always_inline))
 			{
 				const u32 slot = (xyt + j) & 3;
@@ -650,16 +660,15 @@ namespace GSVertexKickKernel
 		(void)fmm_dirty;
 #endif
 
-		Cursor out;
-		out.head = head;
-		out.tail = tail;
-		out.next = next;
-		out.itail = itail;
-		out.xy_tail = cur.xy_tail + count;
-		out.fmm_watermark = watermark;
-		out.acc_state = acc_state;
-		out.fmm_valid = fmm_valid;
-		out.acc_rect = acc_rect;
-		return out;
+		vertex_buf->head = head;
+		vertex_buf->tail = tail;
+		vertex_buf->next = next;
+		vertex_buf->xy_tail = xy_tail0 + count;
+		vertex_buf->fmm_watermark = watermark;
+		vertex_buf->fmm_valid = fmm_valid;
+		index_buf->tail = itail;
+
+		*acc_state_out = acc_state;
+		return acc_rect;
 	}
 } // namespace GSVertexKickKernel

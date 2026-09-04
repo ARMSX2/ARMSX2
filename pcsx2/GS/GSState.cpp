@@ -2147,33 +2147,21 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 
-		VertexKickCursor c;
-		c.Load(*this);
+		// No cursor marshalling: the kernel reads and writes the buffer members
+		// itself. What comes back is the chunk's accumulated draw rect, which is
+		// not a buffer member, folded here under one scissor clamp exactly as
+		// VertexKickCursor::Store does it.
+		u32 acc_state = GSVertexKickKernel::kAccEmpty;
+		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, xyzf2>(r + k * 3, chunk,
+			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state);
 
-		GSVertexKickKernel::Cursor kc;
-		kc.head = c.head;
-		kc.tail = c.tail;
-		kc.next = c.next;
-		kc.itail = c.itail;
-		kc.xy_tail = c.xy_tail;
-		kc.fmm_watermark = c.vb->fmm_watermark;
-		kc.acc_state = 0;
-		kc.fmm_valid = c.vb->fmm_valid;
-		kc.acc_rect = GSVector4i::zero();
-
-		kc = GSVertexKickKernel::RunChunk<prim, xyzf2>(r + k * 3, chunk, c.vb, c.ib,
-			m_kick_side_xyp, m_kick_side_meta, inv, kc);
-
-		c.head = kc.head;
-		c.tail = kc.tail;
-		c.next = kc.next;
-		c.itail = kc.itail;
-		c.xy_tail = kc.xy_tail;
-		c.vb->fmm_watermark = kc.fmm_watermark;
-		c.vb->fmm_valid = kc.fmm_valid;
-		c.acc_rect = kc.acc_rect;
-		c.acc_state = kc.acc_state;
-		c.Store();
+		if (acc_state != GSVertexKickKernel::kAccEmpty)
+		{
+			const GSVector4i merged = (acc_state == GSVertexKickKernel::kAccReplace) ?
+										  acc_rect :
+										  temp_draw_rect.runion(acc_rect);
+			temp_draw_rect = merged.rintersect(m_context->scissor.in);
+		}
 
 		k += chunk;
 	}
