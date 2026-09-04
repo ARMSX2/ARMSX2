@@ -90,12 +90,7 @@ private:
 
 	typedef void (GSState::*GIFPackedRegHandlerC)(const GIFPackedReg* RESTRICT r, u32 size);
 
-	// Indexed by (GIFPath::type - GIFPath::TYPE_STQRGBAXYZF2), i.e. by
-	// GIF_REG_COMPLEX. A null entry means the layout is recognised but has no
-	// fused handler, and Transfer replays its descriptors one qword at a time --
-	// which is exact, because that is what it did with the tag before SetTag
-	// learned to name it.
-	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersC[GIF_REG_COMPLEX_COUNT] = {};
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersC[2] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZF2[8] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZ2[8] = {};
 
@@ -368,11 +363,11 @@ protected:
 	// batch shapes through a GSState-derived probe and compares the results.
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
-	template<u32 prim, bool xyzf2> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
-	template<u32 prim, bool xyzf2, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
-	template<u32 prim, bool xyzf2> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
-	template<u32 prim, bool xyzf2> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
-	template<u32 prim, bool xyzf2> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
 
 	// Which arm the two fused handlers take. Nothing in the emulator writes this:
@@ -853,6 +848,28 @@ public:
 	// one's stores and pass two's loads reach them off a register base instead of
 	// the frame.
 	//
+	// The stage-3c layouts' fused handlers, indexed by
+	// (GIFPath::type - GIFPath::TYPE_NOPSTQRGBAXYZF2). A null entry means the
+	// layout is recognised but nothing fuses it for the live prim, and Transfer
+	// replays its descriptors one qword at a time -- which is exact, and is what
+	// keeps four layouts from having to be instantiated for the prims that never
+	// carry them.
+	//
+	// A SECOND ARRAY rather than four more entries in m_fpGIFPackedRegHandlersC,
+	// for exactly the reason the comment below gives: growing that array moves
+	// every member declared after it, and those are the ones the whole front end
+	// reads on every vertex. Measured -- four extra entries there shifted the
+	// object offsets the fused handlers use by 0x40 and changed 1,600
+	// instructions across them, buying nothing.
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersLayoutC[GIF_REG_COMPLEX_COUNT - 2] = {};
+
+	// The live tag's descriptor offsets, copied out of the GIFPath by Transfer
+	// just before it calls one of those. The handler signature is fixed by the
+	// table it is called through, and the two contiguous triple layouts never read
+	// this, so it costs one 16-byte copy per NOP-padded or two-register tag and
+	// nothing at all on the shipped path.
+	GIFPackedLayout m_packed_layout = {3, 0, 1, 2};
+
 	// LAST IN THE CLASS ON PURPOSE, and it must stay last. This is 2 KB of scratch
 	// that only the kernel touches. Declared anywhere else it pushes every member
 	// after it 2 KB further from `this`, which moves hot fields the rest of the
@@ -862,6 +879,7 @@ public:
 	// SD865 (RESULT.md section 19a).
 	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
 	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
+
 };
 
 // GV7-1d-ii: the front parser object of the two-object pipelined split

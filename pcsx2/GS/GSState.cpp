@@ -2060,14 +2060,31 @@ static constexpr bool KickRoutesAutoFlush()
 // of a draw (which takes the environment snapshot), a vertex whose accept would
 // cross MaxVerticesForPrim -- the handler runs exactly the code that ran before,
 // in the order it ran, and the kernel re-enters afterwards holding nothing.
-template <u32 prim, bool xyzf2>
+template <u32 prim, GSVertexKernels::PackedLayout layout>
 __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp)
 {
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
 	GSVector4i m0, m1;
-	if constexpr (xyzf2)
-		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+	if constexpr (GSVertexKernels::LayoutIsContiguousTriple(layout))
+	{
+		if constexpr (xyzf2)
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+		else
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+	}
 	else
-		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+	{
+		// A carrying layout takes its carry from m_v here rather than from the
+		// caller's hoisted copy. This is the seam: the vertex before it may have
+		// flushed, and what m_v holds now is what the per-qword path would be
+		// parsing against.
+		u64 uvf;
+		std::memcpy(&uvf, &m_v.UV, sizeof(uvf));
+		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvf, carry, m0, m1);
+	}
 	ApplyDepthClampMode(depth_clamp, m1.U32[1]);
 
 	// This vertex may be the batch's last, and m_v carries the last parsed vertex
@@ -2082,9 +2099,9 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 	VertexKickCursor c;
 	c.Load(*this);
 	if constexpr (xyzf2)
-		VertexKickDirect<prim, false>(rv[2].XYZF2.Skip(), rv[2].XYZF2.X, rv[2].XYZF2.Y, m0, m1, c);
+		VertexKickDirect<prim, false>(rv[off_xyz].XYZF2.Skip(), rv[off_xyz].XYZF2.X, rv[off_xyz].XYZF2.Y, m0, m1, c);
 	else
-		VertexKickDirect<prim, false>(rv[2].XYZ2.Skip(), rv[2].XYZ2.X, rv[2].XYZ2.Y, m0, m1, c);
+		VertexKickDirect<prim, false>(rv[off_xyz].XYZ2.Skip(), rv[off_xyz].XYZ2.X, rv[off_xyz].XYZ2.Y, m0, m1, c);
 	c.Store();
 }
 
@@ -2093,42 +2110,53 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 // they write m_v first and go through VertexKick. This is the arm the routing
 // falls back to -- the code that ran before stage 3b, in the order it ran -- and
 // it is what a chunk whose IsAutoFlushDraw is true runs, unchanged.
-template <u32 prim, bool xyzf2>
+template <u32 prim, GSVertexKernels::PackedLayout layout>
 __fi void GSState::KickPackedOneStaged(const GIFPackedReg* RESTRICT rv)
 {
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
 	GSVector4i m0, m1;
-	if constexpr (xyzf2)
+	if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
 	{
 		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, m_v.UV, m0, m1);
+	}
+	else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
+	{
+		u64 uvfog;
+		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
 	}
 	else
 	{
 		u64 uvfog;
 		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
-		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
 	}
 
 	m_v.m[0] = m0;
 	m_v.m[1] = m1;
 
 	if constexpr (xyzf2)
-		VertexKick<prim, true>(rv[2].XYZF2.Skip());
+		VertexKick<prim, true>(rv[off_xyz].XYZF2.Skip());
 	else
-		VertexKick<prim, true>(rv[2].XYZ2.Skip());
+		VertexKick<prim, true>(rv[off_xyz].XYZ2.Skip());
 }
 
-template <u32 prim, bool xyzf2>
+template <u32 prim, GSVertexKernels::PackedLayout layout>
 __noinline void GSState::KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count)
 {
-	// Walks `r` rather than indexing r + i * 3, which is what the handler's own
-	// loop did before this arm was lifted out of it. Indexing costs an add and a
-	// reload of the base per vertex on a path that must be instruction for
+	// Walks `r` rather than indexing r + i * stride, which is what the handler's
+	// own loop did before this arm was lifted out of it. Indexing costs an add and
+	// a reload of the base per vertex on a path that must be instruction for
 	// instruction what it was.
-	const GIFPackedReg* RESTRICT end = r + count * 3;
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
+	const GIFPackedReg* RESTRICT end = r + count * stride;
 	while (r < end)
 	{
-		KickPackedOneStaged<prim, xyzf2>(r);
-		r += 3;
+		KickPackedOneStaged<prim, layout>(r);
+		r += stride;
 	}
 }
 
@@ -2137,12 +2165,24 @@ __noinline void GSState::KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32
 // cursor lives in locals across the batch. This is the shape the two-pass kernel
 // replaced; it stays as the fallback for everything the kernel does not carry,
 // and as the reference the differential suite compares against.
-template <u32 prim, bool xyzf2>
+template <u32 prim, GSVertexKernels::PackedLayout layout>
 void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
 {
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
 	u64 uvfog;
 	std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog)); // packed XYZ2/XYZF2 write neither UV nor FOG
 	const GSLimit24BitDepth depth_clamp = GetDepthClampMode(); // batch-invariant
+
+	// The fields a carrying layout omits are batch-invariant by construction:
+	// nothing in the tag writes them, and a flush inside the batch does not touch
+	// m_v or the latched Q either. m_v itself is only written at batch exit, so
+	// this is the same value every vertex would read.
+	GSVector4i carry = GSVector4i::zero();
+	if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+		carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
 
 	VertexKickCursor c;
 	c.Load(*this);
@@ -2150,18 +2190,20 @@ void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
 	GSVector4i m0, m1;
 	for (u32 i = 0; i < count; i++)
 	{
-		const GIFPackedReg* RESTRICT rv = r + i * 3;
+		const GIFPackedReg* RESTRICT rv = r + i * stride;
 
-		if constexpr (xyzf2)
+		if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
 			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
-		else
+		else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
 			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+		else
+			GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
 		ApplyDepthClampMode(depth_clamp, m1.U32[1]);
 
 		if constexpr (xyzf2)
-			VertexKickDirect<prim, false>(rv[2].XYZF2.Skip(), rv[2].XYZF2.X, rv[2].XYZF2.Y, m0, m1, c);
+			VertexKickDirect<prim, false>(rv[off_xyz].XYZF2.Skip(), rv[off_xyz].XYZF2.X, rv[off_xyz].XYZF2.Y, m0, m1, c);
 		else
-			VertexKickDirect<prim, false>(rv[2].XYZ2.Skip(), rv[2].XYZ2.X, rv[2].XYZ2.Y, m0, m1, c);
+			VertexKickDirect<prim, false>(rv[off_xyz].XYZ2.Skip(), rv[off_xyz].XYZ2.X, rv[off_xyz].XYZ2.Y, m0, m1, c);
 	}
 
 	c.Store();
@@ -2172,11 +2214,12 @@ void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
 // The two-pass batch. The handler owns every seam; the kernel owns the runs
 // between them. See GSVertexKickKernel.h for what each pass does and why the
 // result is byte-identical to the loop above.
-template <u32 prim, bool xyzf2, bool auto_flush>
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
 void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 {
 	constexpr u32 n = NumIndicesForPrim(prim);
 	constexpr u32 max_vertices = MaxVerticesForPrim(prim);
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
 
 	u64 uvfog;
 	std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
@@ -2203,6 +2246,8 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// m_v is written by whichever path kicks the batch's last vertex: the kernel
 	// from its own parse, the seam from KickPackedOneLegacy's.
 	inv.last_out = &m_v;
+	if constexpr (!GSVertexKernels::LayoutIsContiguousTriple(layout))
+		inv.off = m_packed_layout;
 
 	// The per-draw environment snapshot fires at every window-full vertex while the
 	// index buffer is empty -- 44.6 times per draw on stuntman, all of them writing
@@ -2234,7 +2279,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			if (!cull_ok)
 			{
 				const u32 run = std::min<u32>(count - k, GSVertexKickKernel::kChunkVertices);
-				KickPackedStagedRun<prim, xyzf2>(r + k * 3, run);
+				KickPackedStagedRun<prim, layout>(r + k * stride, run);
 				k += run;
 				snapshot_done = false;
 				continue;
@@ -2251,11 +2296,11 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 				// VertexKickDirect into the function that holds the kernel loops,
 				// which is the register-allocation collision RESULT.md section
 				// 19a cost a device round.
-				KickPackedStagedRun<prim, xyzf2>(r + k * 3, 1);
+				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
 			}
 			else
 			{
-				KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+				KickPackedOneLegacy<prim, layout>(r + k * stride, uvfog, depth_clamp);
 			}
 			k++;
 			snapshot_done = (!overlap_active && snapshot_pending && fills);
@@ -2283,11 +2328,11 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 				// VertexKickDirect into the function that holds the kernel loops,
 				// which is the register-allocation collision RESULT.md section
 				// 19a cost a device round.
-				KickPackedStagedRun<prim, xyzf2>(r + k * 3, 1);
+				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
 			}
 			else
 			{
-				KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+				KickPackedOneLegacy<prim, layout>(r + k * stride, uvfog, depth_clamp);
 			}
 			k++;
 			snapshot_done = false;
@@ -2318,7 +2363,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			int tex_layer = 0;
 			if (IsAutoFlushDraw(prim, tex_layer))
 			{
-				KickPackedStagedRun<prim, xyzf2>(r + k * 3, chunk);
+				KickPackedStagedRun<prim, layout>(r + k * stride, chunk);
 				k += chunk;
 				// A staged kick can flush, which restores an environment and can
 				// move the snapshot condition; re-take it at the next window fill.
@@ -2339,13 +2384,22 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		inv.bounds = m_cull_bounds_band;
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
+		// A carrying layout's carry is re-read here for the same reason the cull
+		// bounds are: a seam kick can flush, and after a flush what the rest of
+		// the run parses against is whatever m_v and the latched Q hold now. The
+		// contiguous layouts read neither, and their invariant build is unchanged.
+		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+		{
+			std::memcpy(&inv.uvfog, &m_v.UV, sizeof(inv.uvfog));
+			inv.carry_m0 = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		}
 
 		// No cursor marshalling: the kernel reads and writes the buffer members
 		// itself. What comes back is the chunk's accumulated draw rect, which is
 		// not a buffer member, folded here under one scissor clamp exactly as
 		// VertexKickCursor::Store does it.
 		u32 acc_state = GSVertexKickKernel::kAccEmpty;
-		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, xyzf2>(r + k * 3, chunk,
+		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
 			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state);
 
 		if (acc_state != GSVertexKickKernel::kAccEmpty)
@@ -2435,19 +2489,19 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 	{
 		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
 			KickKernelApplies<prim>())
-			KickPackedBatchKernel<prim, true, auto_flush>(r, count);
+			KickPackedBatchKernel<prim, GSVertexKernels::PackedLayout::TripleXYZF2, auto_flush>(r, count);
 		else if constexpr (auto_flush)
-			KickPackedStagedRun<prim, true>(r, count);
+			KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 		else
-			KickPackedBatchLegacy<prim, true>(r, count);
+			KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 	}
 	else if constexpr (auto_flush)
 	{
-		KickPackedStagedRun<prim, true>(r, count);
+		KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 	}
 	else
 	{
-		KickPackedBatchLegacy<prim, true>(r, count);
+		KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 	}
 
 	m_q = r[size - 3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
@@ -2532,19 +2586,19 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 	{
 		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
 			KickKernelApplies<prim>())
-			KickPackedBatchKernel<prim, false, auto_flush>(r, count);
+			KickPackedBatchKernel<prim, GSVertexKernels::PackedLayout::TripleXYZ2, auto_flush>(r, count);
 		else if constexpr (auto_flush)
-			KickPackedStagedRun<prim, false>(r, count);
+			KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 		else
-			KickPackedBatchLegacy<prim, false>(r, count);
+			KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 	}
 	else if constexpr (auto_flush)
 	{
-		KickPackedStagedRun<prim, false>(r, count);
+		KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 	}
 	else
 	{
-		KickPackedBatchLegacy<prim, false>(r, count);
+		KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 	}
 
 	m_q = r[size - 3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
@@ -4727,15 +4781,18 @@ void GSState::Transfer(const u8* mem, u32 size)
 					{
 						size -= total;
 
-						// Every fused layout sits at or above TYPE_STQRGBAXYZF2 and
-						// indexes the handler table by (type - TYPE_STQRGBAXYZF2).
-						// A null entry means SetTag recognised the layout but
-						// nothing fuses it, and the replay below -- the
-						// TYPE_UNKNOWN path, unchanged -- is exact for it.
-						const GIFPackedRegHandlerC fused =
-							(path.type >= GIFPath::TYPE_STQRGBAXYZF2) ?
-								m_fpGIFPackedRegHandlersC[path.type - GIFPath::TYPE_STQRGBAXYZF2] :
-								nullptr;
+						// Every fused layout sits at or above TYPE_STQRGBAXYZF2:
+						// the two contiguous triples index
+						// m_fpGIFPackedRegHandlersC, the stage-3c layouts the
+						// second table. A null entry means SetTag recognised the
+						// layout but nothing fuses it for this prim, and the
+						// replay below -- the TYPE_UNKNOWN path, unchanged -- is
+						// exact for it.
+						GIFPackedRegHandlerC fused = nullptr;
+						if (path.type >= GIFPath::TYPE_NOPSTQRGBAXYZF2)
+							fused = m_fpGIFPackedRegHandlersLayoutC[path.type - GIFPath::TYPE_NOPSTQRGBAXYZF2];
+						else if (path.type >= GIFPath::TYPE_STQRGBAXYZF2)
+							fused = m_fpGIFPackedRegHandlersC[path.type - GIFPath::TYPE_STQRGBAXYZF2];
 
 						if (fused)
 						{

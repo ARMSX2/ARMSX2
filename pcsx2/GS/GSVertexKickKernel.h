@@ -101,6 +101,16 @@ namespace GSVertexKickKernel
 		// Where the batch's last parsed vertex goes -- GSState::m_v, which the
 		// piecemeal handlers and the next tag read. Call-invariant.
 		GSVertex* last_out;
+		// Appended, not interleaved: the two contiguous triple layouts never read
+		// either of these, and keeping every field they DO read at the offset it
+		// had is what makes their code identical to what it was.
+		//
+		// carry_m0 is what a layout that omits a register parses against, and it
+		// is re-read at every kernel entry rather than hoisted per call -- the
+		// same rule the cull bounds follow, for the same reason: a seam kick can
+		// flush, and a flush can move what the rest of the run is decided against.
+		GSVector4i carry_m0;
+		GIFPackedLayout off;
 	};
 
 	// The buffer cursor is NOT marshalled. Every field of it -- head, tail, next,
@@ -262,10 +272,18 @@ namespace GSVertexKickKernel
 	// than a per-vertex test because the disabled case is the default and must
 	// carry no cost at all.
 	// ------------------------------------------------------------------------
-	template <bool xyzf2, bool clamp>
+	template <GSVertexKernels::PackedLayout layout, bool clamp>
 	__forceinline_odr void PassOne(const GIFPackedReg* RESTRICT r, u32 count,
 		GSVertex* RESTRICT out, u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv)
 	{
+		// Compile-time 3 / 2 for the two contiguous triples, so their addressing
+		// is the constant-offset addressing it has always been.
+		const u32 stride = GSVertexKernels::LayoutStride<layout>(inv.off);
+		const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(inv.off);
+		GSVector4i carry = GSVector4i::zero();
+		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+			carry = inv.carry_m0;
+
 		const u64 uvfog = inv.uvfog;
 		const int ofx = inv.xyof.I32[0];
 		const int ofy = inv.xyof.I32[1];
@@ -296,12 +314,9 @@ namespace GSVertexKickKernel
 		{
 			for (u32 j = 0; j < 4; j++)
 			{
-				const GIFPackedReg* RESTRICT rv = r + (i + j) * 3;
+				const GIFPackedReg* RESTRICT rv = r + (i + j) * stride;
 				GSVector4i m0, m1;
-				if constexpr (xyzf2)
-					GSVertexKernels::ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), kc, m0, m1);
-				else
-					GSVertexKernels::ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, kc, m0, m1);
+				GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
 
 				if constexpr (clamp)
 					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
@@ -311,10 +326,10 @@ namespace GSVertexKickKernel
 			}
 
 			BuildMirrorQuad(
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 0) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 1) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 2) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 3) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 0) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 1) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 2) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 3) * stride + off_xyz)),
 				mb, side_xyp + i, side_meta + i);
 		}
 
@@ -322,20 +337,17 @@ namespace GSVertexKickKernel
 		{
 			const u32 back = count - 4;
 			BuildMirrorQuad(
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 0) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 1) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 2) * 3 + 2)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 3) * 3 + 2)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 0) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 1) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 2) * stride + off_xyz)),
+				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 3) * stride + off_xyz)),
 				mb, side_xyp + back, side_meta + back);
 
 			for (; i < count; i++)
 			{
-				const GIFPackedReg* RESTRICT rv = r + i * 3;
+				const GIFPackedReg* RESTRICT rv = r + i * stride;
 				GSVector4i m0, m1;
-				if constexpr (xyzf2)
-					GSVertexKernels::ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), kc, m0, m1);
-				else
-					GSVertexKernels::ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, kc, m0, m1);
+				GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
 
 				if constexpr (clamp)
 					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
@@ -349,19 +361,13 @@ namespace GSVertexKickKernel
 
 		for (; i < count; i++)
 		{
-			const GIFPackedReg* RESTRICT rv = r + i * 3;
+			const GIFPackedReg* RESTRICT rv = r + i * stride;
 
 			GSVector4i m0, m1;
 #ifdef ARCH_ARM64
-			if constexpr (xyzf2)
-				GSVertexKernels::ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), kc, m0, m1);
-			else
-				GSVertexKernels::ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, kc, m0, m1);
+			GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
 #else
-			if constexpr (xyzf2)
-				GSVertexKernels::ParsePackedSTQRGBAXYZF2(rv, static_cast<u32>(uvfog), m0, m1);
-			else
-				GSVertexKernels::ParsePackedSTQRGBAXYZ2(rv, uvfog, m0, m1);
+			GSVertexKernels::ParsePackedRecord<layout>(rv, inv.off, uvfog, carry, m0, m1);
 #endif
 
 			if constexpr (clamp)
@@ -373,8 +379,8 @@ namespace GSVertexKickKernel
 			// The window position and its cull metadata. Same expressions as
 			// MakeCullMirrorEntry, with the ADC bit folded into the spare meta
 			// bits -- and the same expressions BuildMirrorQuad evaluates lane-wise.
-			const u32 raw = rv[2].U32[0];
-			const u32 raw_y = rv[2].U32[1];
+			const u32 raw = rv[off_xyz].U32[0];
+			const u32 raw_y = rv[off_xyz].U32[1];
 			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
 			const int wy = static_cast<int>(raw_y & 0xFFFFu) - ofy;
 			const int bx = (wx - 1) >> 4;
@@ -390,13 +396,15 @@ namespace GSVertexKickKernel
 			side_meta[i] = (static_cast<u64>(static_cast<u32>(bx)) & GSVertexKernels::kCullMetaBandXMask) |
 			               ((static_cast<u64>(static_cast<u32>(by)) << 28) & GSVertexKernels::kCullMetaBandYMask) |
 			               (static_cast<u64>(oc) << 56) |
-			               (static_cast<u64>(rv[2].U32[3] & 0x8000u) << kAdcShift);
+			               (static_cast<u64>(rv[off_xyz].U32[3] & 0x8000u) << kAdcShift);
 		}
 	}
 
 	// ------------------------------------------------------------------------
 	// The kernel. `prim` is one of GS_TRIANGLESTRIP / GS_TRIANGLELIST /
-	// GS_SPRITE; `xyzf2` selects the packed layout. The caller guarantees:
+	// GS_SPRITE; `layout` says where the record's descriptors sit and which of
+	// them the tag omits -- the only per-layout part of the whole kernel is pass
+	// one's parse and the offset the position is read at. The caller guarantees:
 	//   * itail != 0, so the per-draw environment snapshot cannot fire inside;
 	//   * m_recent_buffer_switch is clear or draw buffering is off;
 	//   * the scissor is valid, so the ADC bit is the whole pre-cull rejection;
@@ -408,7 +416,7 @@ namespace GSVertexKickKernel
 	//     needed.
 	// Every vertex of the chunk is consumed; the caller advances by `count`.
 	// ------------------------------------------------------------------------
-	template <u32 prim, bool xyzf2>
+	template <u32 prim, GSVertexKernels::PackedLayout layout>
 	__noinline GSVector4i RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
 		GSBackQueue::VertexBuff* RESTRICT vertex_buf, GSBackQueue::IndexBuff* RESTRICT index_buf,
 		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, u32* RESTRICT acc_state_out)
@@ -425,9 +433,9 @@ namespace GSVertexKickKernel
 		const u32 xy_tail0 = vertex_buf->xy_tail;
 
 		if (inv.clamp_enabled)
-			PassOne<xyzf2, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
+			PassOne<layout, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
 		else
-			PassOne<xyzf2, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
+			PassOne<layout, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
 
 		// m_v carries the last parsed vertex out of the batch. Pass one has just
 		// written it to its provisional slot and pass two has not run yet, so
