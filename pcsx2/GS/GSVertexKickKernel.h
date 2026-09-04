@@ -50,6 +50,22 @@ namespace GSVertexKickKernel
 	// wastes less parse work when the handler has to break out to a legacy kick.
 	static constexpr u32 kChunkVertices = 128;
 
+	// Below this many vertices in a handler call, the caller runs its own
+	// per-vertex batch instead of entering the kernel. The kernel pays a fixed
+	// cost per call -- pass one's setup, pass two's preheader, the ring writeback
+	// and the two prologues -- that a short call cannot amortize, and the bypass
+	// target is the arm that ran before the kernel existed, so it is exact for
+	// free. Compile-time, not a settings key and not an env gate.
+	//
+	// The executed-path walker puts the break-even at 4.3 vertices on a triangle
+	// strip: the kernel arm costs 314 instructions a call plus 49.25 a vertex
+	// against the per-vertex batch's 111 plus 96. An M2 A/B at 0, 2, 4, 6 and 8
+	// on the four titles that reach this arm (sotc, spiderman3, stuntman,
+	// katamari) could not separate any two of them -- every threshold's three
+	// reps overlap every other's -- so the value is the arithmetic's, rounded up
+	// to cover the instantiations whose fixed cost is higher than the strip's.
+	static constexpr u32 kMinKernelVertices = 6;
+
 	// The ADC (skip) bit rides in CullMirrorEntry::meta's spare bits, so the side
 	// entry IS a mirror entry: the ring can be filled by copying and
 	// CullTestScalar runs on side entries unchanged. Bits 0-27 are the X band,

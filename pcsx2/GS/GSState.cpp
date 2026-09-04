@@ -2212,7 +2212,8 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 
 	if constexpr (KickKernelCarriesPrim<prim>())
 	{
-		if (s_fused_kick_use_kernel && KickKernelApplies<prim>())
+		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
+			KickKernelApplies<prim>())
 			KickPackedBatchKernel<prim, true>(r, count);
 		else
 			KickPackedBatchLegacy<prim, true>(r, count);
@@ -2268,7 +2269,8 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 
 	if constexpr (KickKernelCarriesPrim<prim>())
 	{
-		if (s_fused_kick_use_kernel && KickKernelApplies<prim>())
+		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
+			KickKernelApplies<prim>())
 			KickPackedBatchKernel<prim, false>(r, count);
 		else
 			KickPackedBatchLegacy<prim, false>(r, count);
