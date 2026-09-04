@@ -4927,29 +4927,33 @@ void GSState::Transfer(const u8* mem, u32 size)
 					{
 						size -= total;
 
-						// Every fused layout sits at or above TYPE_STQRGBAXYZF2:
-						// the two contiguous triples index
-						// m_fpGIFPackedRegHandlersC, the stage-3c layouts the
-						// second table. A null entry means SetTag recognised the
-						// layout but nothing fuses it for this prim, and the
-						// replay below -- the TYPE_UNKNOWN path, unchanged -- is
-						// exact for it.
-						GIFPackedRegHandlerC fused = nullptr;
-						if (path.type >= GIFPath::TYPE_NOPSTQRGBAXYZF2)
+						// EVERY ARM BELOW LOADS ITS HANDLER AT A CONSTANT
+						// INDEX. That is not style. Indexing this table by
+						// (path.type - TYPE_STQRGBAXYZF2) -- one line, and the
+						// obvious way to write it once there are six types --
+						// makes the array base a live value, and clang answers
+						// by keeping it in the frame and reloading it: measured
+						// on the M2 at +5 instructions and one stack access on
+						// EVERY packed tag, which is 16,427 a frame on xenosaga
+						// and 12,205 on rcuya-effects (RESULT-3c.md section 13).
+						// Both titles regressed about 3% on the SD865 for it,
+						// and neither runs a single stage-3c layout.
+						//
+						// So the two types that carry essentially all of every
+						// title's traffic keep the shape they had before stage
+						// 3c: one compare, and the handler pointer loaded at an
+						// immediate offset from `this`. The stage-3c layouts sit
+						// behind a `type >= TYPE_NOPSTQRGBAXYZF2` test the
+						// common path never takes.
+						if (path.type == GIFPath::TYPE_STQRGBAXYZF2) // majority of the vertices are formatted like this
 						{
-							fused = m_fpGIFPackedRegHandlersLayoutC[path.type - GIFPath::TYPE_NOPSTQRGBAXYZF2];
-							// Where the record's descriptors sit. The handler
-							// signature is fixed by the table it is called
-							// through, and only these layouts read it.
-							if (fused)
-								m_packed_layout = path.layout;
-						}
-						else if (path.type >= GIFPath::TYPE_STQRGBAXYZF2)
-							fused = m_fpGIFPackedRegHandlersC[path.type - GIFPath::TYPE_STQRGBAXYZF2];
+							(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2])((GIFPackedReg*)mem, total);
 
-						if (fused)
+							mem += total * sizeof(GIFPackedReg);
+						}
+						else if (path.type == GIFPath::TYPE_STQRGBAXYZ2)
 						{
-							(this->*fused)((GIFPackedReg*)mem, total);
+							(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2])((GIFPackedReg*)mem, total);
 
 							mem += total * sizeof(GIFPackedReg);
 						}
@@ -4964,16 +4968,41 @@ void GSState::Transfer(const u8* mem, u32 size)
 						}
 						else
 						{
-							u32 reg = 0;
-
-							do
+							// Cold: TYPE_UNKNOWN, and the stage-3c layouts. A
+							// null entry means SetTag recognised the layout but
+							// nothing fuses it for this prim, and the per-qword
+							// replay below is exact for it -- it is what the tag
+							// got before SetTag learned to name it.
+							GIFPackedRegHandlerC fused = nullptr;
+							if (path.type >= GIFPath::TYPE_NOPSTQRGBAXYZF2)
 							{
-								(this->*m_fpGIFPackedRegHandlers[path.GetReg(reg++)])((GIFPackedReg*)mem);
+								fused = m_fpGIFPackedRegHandlersLayoutC[path.type - GIFPath::TYPE_NOPSTQRGBAXYZF2];
+								// Where the record's descriptors sit. The handler
+								// signature is fixed by the table it is called
+								// through, and only these layouts read it.
+								if (fused)
+									m_packed_layout = path.layout;
+							}
 
-								mem += sizeof(GIFPackedReg);
+							if (fused)
+							{
+								(this->*fused)((GIFPackedReg*)mem, total);
 
-								reg = reg & ((int)(reg - path.nreg) >> 31); // resets reg back to 0 when it becomes equal to path.nreg
-							} while (--total > 0);
+								mem += total * sizeof(GIFPackedReg);
+							}
+							else
+							{
+								u32 reg = 0;
+
+								do
+								{
+									(this->*m_fpGIFPackedRegHandlers[path.GetReg(reg++)])((GIFPackedReg*)mem);
+
+									mem += sizeof(GIFPackedReg);
+
+									reg = reg & ((int)(reg - path.nreg) >> 31); // resets reg back to 0 when it becomes equal to path.nreg
+								} while (--total > 0);
+							}
 						}
 
 						path.nloop = 0;
