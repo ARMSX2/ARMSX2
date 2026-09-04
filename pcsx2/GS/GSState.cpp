@@ -1985,6 +1985,18 @@ static constexpr bool KickKernelCarriesPrim()
 	return prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLELIST || prim == GS_SPRITE;
 }
 
+// Whether the auto_flush instantiation of this prim's fused handler routes its
+// chunks between the kernel and the staged loop (stage 3b), or stays on the
+// staged loop outright. Sprites stay: IsAutoFlushDraw's EarlyDetectShuffle reads
+// the incoming vertex out of m_v for the sprite class, so the predicate is
+// per-prim state there and not invariant across a chunk. For the triangle
+// classes EarlyDetectShuffle is a constant false and the predicate is invariant.
+template <u32 prim>
+static constexpr bool KickRoutesAutoFlush()
+{
+	return KickKernelCarriesPrim<prim>() && prim != GS_SPRITE;
+}
+
 // Parse one packed vertex and kick it through the per-vertex path, cursor loaded
 // and stored around the single kick. This is the seam: whenever the kernel cannot
 // carry a vertex -- the draw-buffering overlap check, the first window-full vertex
@@ -2017,6 +2029,42 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 	else
 		VertexKickDirect<prim, false>(rv[2].XYZ2.Skip(), rv[2].XYZ2.X, rv[2].XYZ2.Y, m0, m1, c);
 	c.Store();
+}
+
+// The staged single kick, and a run of them. HandleAutoFlush reads the incoming
+// vertex out of m_v, so the auto_flush instantiations cannot use the direct kick:
+// they write m_v first and go through VertexKick. This is the arm the routing
+// falls back to -- the code that ran before stage 3b, in the order it ran -- and
+// it is what a chunk whose IsAutoFlushDraw is true runs, unchanged.
+template <u32 prim, bool xyzf2>
+__fi void GSState::KickPackedOneStaged(const GIFPackedReg* RESTRICT rv)
+{
+	GSVector4i m0, m1;
+	if constexpr (xyzf2)
+	{
+		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, m_v.UV, m0, m1);
+	}
+	else
+	{
+		u64 uvfog;
+		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+	}
+
+	m_v.m[0] = m0;
+	m_v.m[1] = m1;
+
+	if constexpr (xyzf2)
+		VertexKick<prim, true>(rv[2].XYZF2.Skip());
+	else
+		VertexKick<prim, true>(rv[2].XYZ2.Skip());
+}
+
+template <u32 prim, bool xyzf2>
+__noinline void GSState::KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count)
+{
+	for (u32 i = 0; i < count; i++)
+		KickPackedOneStaged<prim, xyzf2>(r + i * 3);
 }
 
 // The per-vertex direct batch: parsed vertices go straight to the buffer with the
@@ -2059,7 +2107,7 @@ void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
 // The two-pass batch. The handler owns every seam; the kernel owns the runs
 // between them. See GSVertexKickKernel.h for what each pass does and why the
 // result is byte-identical to the loop above.
-template <u32 prim, bool xyzf2>
+template <u32 prim, bool xyzf2, bool auto_flush>
 void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 {
 	constexpr u32 n = NumIndicesForPrim(prim);
@@ -2109,10 +2157,41 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// is only exact while the per-vertex kick would have taken it too.
 		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>();
 
+		// The autoflush arm's first escape. A run the kernel's cull does not
+		// cover -- an invalid scissor, or an environment a flush moved to one the
+		// scalar-outcode decision is not exact for -- goes to the staged loop
+		// whole rather than one vertex at a time through the seam, because the
+		// staged loop IS the path that ran before and it costs what it always
+		// cost. It also means the predicate below is not evaluated on a run that
+		// could not have entered the kernel anyway.
+		if constexpr (auto_flush)
+		{
+			if (!cull_ok)
+			{
+				const u32 run = std::min<u32>(count - k, GSVertexKickKernel::kChunkVertices);
+				KickPackedStagedRun<prim, xyzf2>(r + k * 3, run);
+				k += run;
+				snapshot_done = false;
+				continue;
+			}
+		}
+
 		if (overlap_active || snapshot_pending || !cull_ok)
 		{
 			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
-			KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+			if constexpr (auto_flush)
+			{
+				// One staged kick, through the out-of-line run: inlining the kick
+				// at the driver's three seam sites puts the whole of
+				// VertexKickDirect into the function that holds the kernel loops,
+				// which is the register-allocation collision RESULT.md section
+				// 19a cost a device round.
+				KickPackedStagedRun<prim, xyzf2>(r + k * 3, 1);
+			}
+			else
+			{
+				KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+			}
 			k++;
 			snapshot_done = (!overlap_active && snapshot_pending && fills);
 			continue;
@@ -2132,10 +2211,55 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 
 		if (chunk == 0)
 		{
-			KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+			if constexpr (auto_flush)
+			{
+				// One staged kick, through the out-of-line run: inlining the kick
+				// at the driver's three seam sites puts the whole of
+				// VertexKickDirect into the function that holds the kernel loops,
+				// which is the register-allocation collision RESULT.md section
+				// 19a cost a device round.
+				KickPackedStagedRun<prim, xyzf2>(r + k * 3, 1);
+			}
+			else
+			{
+				KickPackedOneLegacy<prim, xyzf2>(r + k * 3, uvfog, depth_clamp);
+			}
 			k++;
 			snapshot_done = false;
 			continue;
+		}
+
+		// The routing decision, once per chunk (stage 3b).
+		//
+		// HandleAutoFlush performs no store and no flush when IsAutoFlushDraw is
+		// false: every Flush(AUTOFLUSH) it can reach is inside that predicate's
+		// body, the predicate writes only its own tex_layer out parameter, and
+		// the parity gate above it returns before either. So for a run of
+		// vertices whose predicate is false, the auto_flush kick and the direct
+		// kick leave identical state, and the run can take the kernel.
+		//
+		// The predicate is invariant across a chunk for the triangle classes: it
+		// reads PRIM, the config level and the context's TEX0/TEX1/FRAME/ZBUF/
+		// TEST/CLAMP, none of which a chunk can change (a chunk contains no
+		// register write and the kernel's preconditions forbid a flush inside
+		// it), and its one per-prim input, EarlyDetectShuffle, is a constant
+		// false for anything that is not a sprite. Sprites therefore never reach
+		// here -- the handler keeps them on the staged loop.
+		//
+		// Evaluated here rather than before the seam tests so that a call whose
+		// vertices all go through seams pays for it once, not once a vertex.
+		if constexpr (auto_flush)
+		{
+			int tex_layer = 0;
+			if (IsAutoFlushDraw(prim, tex_layer))
+			{
+				KickPackedStagedRun<prim, xyzf2>(r + k * 3, chunk);
+				k += chunk;
+				// A staged kick can flush, which restores an environment and can
+				// move the snapshot condition; re-take it at the next window fill.
+				snapshot_done = false;
+				continue;
+			}
 		}
 
 		// Reserve room for the whole chunk plus a prim's worth of slack, so no
@@ -2186,10 +2310,12 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
 	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
 	// arm never touches the kernel, so it must cost exactly what it cost before.
-	if constexpr (auto_flush)
+	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
 		// HandleAutoFlush reads the incoming vertex out of m_v, so the autoflush
-		// instantiations keep the staged-m_v path.
+		// instantiations keep the staged-m_v path. Sprites and the prim types the
+		// kernel does not carry keep this loop verbatim: stage 3b routes only the
+		// triangle classes, and this arm must cost exactly what it cost before.
 		const GIFPackedReg* RESTRICT r_end = r + size;
 		while (r < r_end)
 		{
@@ -2214,9 +2340,15 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 	{
 		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
 			KickKernelApplies<prim>())
-			KickPackedBatchKernel<prim, true>(r, count);
+			KickPackedBatchKernel<prim, true, auto_flush>(r, count);
+		else if constexpr (auto_flush)
+			KickPackedStagedRun<prim, true>(r, count);
 		else
 			KickPackedBatchLegacy<prim, true>(r, count);
+	}
+	else if constexpr (auto_flush)
+	{
+		KickPackedStagedRun<prim, true>(r, count);
 	}
 	else
 	{
@@ -2241,9 +2373,10 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
 	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
 	// arm never touches the kernel, so it must cost exactly what it cost before.
-	if constexpr (auto_flush)
+	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
-		// See GIFPackedRegHandlerSTQRGBAXYZF2: autoflush keeps the staged-m_v path.
+		// See GIFPackedRegHandlerSTQRGBAXYZF2: sprites and the uncarried prims
+		// keep this loop verbatim.
 		const GIFPackedReg* RESTRICT r_end = r + size;
 		while (r < r_end)
 		{
@@ -2271,9 +2404,15 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 	{
 		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
 			KickKernelApplies<prim>())
-			KickPackedBatchKernel<prim, false>(r, count);
+			KickPackedBatchKernel<prim, false, auto_flush>(r, count);
+		else if constexpr (auto_flush)
+			KickPackedStagedRun<prim, false>(r, count);
 		else
 			KickPackedBatchLegacy<prim, false>(r, count);
+	}
+	else if constexpr (auto_flush)
+	{
+		KickPackedStagedRun<prim, false>(r, count);
 	}
 	else
 	{

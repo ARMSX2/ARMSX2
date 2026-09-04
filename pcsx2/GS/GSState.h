@@ -364,7 +364,9 @@ protected:
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
 	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
 	template<u32 prim, bool xyzf2> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
-	template<u32 prim, bool xyzf2> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, bool xyzf2, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, bool xyzf2> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
+	template<u32 prim, bool xyzf2> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, bool xyzf2> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
 
