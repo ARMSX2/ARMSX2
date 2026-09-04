@@ -2063,8 +2063,16 @@ __fi void GSState::KickPackedOneStaged(const GIFPackedReg* RESTRICT rv)
 template <u32 prim, bool xyzf2>
 __noinline void GSState::KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count)
 {
-	for (u32 i = 0; i < count; i++)
-		KickPackedOneStaged<prim, xyzf2>(r + i * 3);
+	// Walks `r` rather than indexing r + i * 3, which is what the handler's own
+	// loop did before this arm was lifted out of it. Indexing costs an add and a
+	// reload of the base per vertex on a path that must be instruction for
+	// instruction what it was.
+	const GIFPackedReg* RESTRICT end = r + count * 3;
+	while (r < end)
+	{
+		KickPackedOneStaged<prim, xyzf2>(r);
+		r += 3;
+	}
 }
 
 // The per-vertex direct batch: parsed vertices go straight to the buffer with the
@@ -2334,6 +2342,36 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 		return;
 	}
 
+	// A routed instantiation whose call is too short for the kernel, or whose
+	// environment the kernel's cull does not cover, runs the same loop, with its
+	// own `r` walk and its own m_q tail. Written out a second time rather than
+	// called: this is the arm RESULT.md section 19a was about, and it has to cost
+	// what it cost before, which means the handler must not keep the original `r`
+	// and `size` live across it.
+	if constexpr (auto_flush)
+	{
+		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
+			!KickKernelApplies<prim>())
+		{
+			const GIFPackedReg* RESTRICT r_end = r + size;
+			while (r < r_end)
+			{
+				GSVector4i m0, m1;
+				GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m0, m1);
+
+				m_v.m[0] = m0;
+				m_v.m[1] = m1;
+
+				VertexKick<prim, auto_flush>(r[2].XYZF2.Skip());
+
+				r += 3;
+			}
+
+			m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+			return;
+		}
+	}
+
 	const u32 count = size / 3;
 
 	if constexpr (KickKernelCarriesPrim<prim>())
@@ -2396,6 +2434,39 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 
 		m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
 		return;
+	}
+
+	// A routed instantiation whose call is too short for the kernel, or whose
+	// environment the kernel's cull does not cover, runs the same loop, with its
+	// own `r` walk and its own m_q tail. Written out a second time rather than
+	// called: this is the arm RESULT.md section 19a was about, and it has to cost
+	// what it cost before, which means the handler must not keep the original `r`
+	// and `size` live across it.
+	if constexpr (auto_flush)
+	{
+		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
+			!KickKernelApplies<prim>())
+		{
+			const GIFPackedReg* RESTRICT r_end = r + size;
+			while (r < r_end)
+			{
+				u64 uvfog;
+				std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+
+				GSVector4i m0, m1;
+				GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
+
+				m_v.m[0] = m0;
+				m_v.m[1] = m1;
+
+				VertexKick<prim, auto_flush>(r[2].XYZ2.Skip());
+
+				r += 3;
+			}
+
+			m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+			return;
+		}
 	}
 
 	const u32 count = size / 3;
