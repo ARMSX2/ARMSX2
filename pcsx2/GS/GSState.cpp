@@ -2154,15 +2154,6 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		VertexKickCursor c;
 		c.Load(*this);
 
-		GSVertexKickKernel::Buffers bufs;
-		bufs.vbuff = c.vbuff;
-		bufs.ibuff = c.ibuff;
-		bufs.side_xyp = m_kick_side_xyp;
-		bufs.side_meta = m_kick_side_meta;
-		bufs.xy_ring = c.vb->xy;
-		bufs.kick_ring = c.vb->kick_ring;
-		bufs.fmm_acc = &c.vb->fmm_acc;
-
 		GSVertexKickKernel::Cursor kc;
 		kc.head = c.head;
 		kc.tail = c.tail;
@@ -2174,7 +2165,8 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		kc.fmm_valid = c.vb->fmm_valid;
 		kc.acc_rect = GSVector4i::zero();
 
-		kc = GSVertexKickKernel::RunChunk<prim, xyzf2>(r + k * 3, chunk, bufs, inv, kc);
+		kc = GSVertexKickKernel::RunChunk<prim, xyzf2>(r + k * 3, chunk, c.vb, c.ib,
+			m_kick_side_xyp, m_kick_side_meta, inv, kc);
 
 		c.head = kc.head;
 		c.tail = kc.tail;

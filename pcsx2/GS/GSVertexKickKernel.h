@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "GS/GSBackQueue.h"
 #include "GS/GSUtil.h"
 #include "GS/GSVertexKick.h"
 #include "GS/Renderers/Common/GSVertex.h"
@@ -93,22 +94,19 @@ namespace GSVertexKickKernel
 		GSVector4i acc_rect;
 	};
 
-	struct Buffers
-	{
-		GSVertex* vbuff;
-		u16* ibuff;
-		// The side table, as two parallel arrays rather than one array of
-		// CullMirrorEntry. Split, pass one's quad build writes each field straight
-		// out instead of interleaving the two against each other, and pass two's
-		// cull decision reads them as plain 64-bit scalars -- as one aggregate,
-		// clang keeps the entries in NEON registers and pays a cross-domain move
-		// for every field the decision touches, six per completed prim.
-		u64* side_xyp;                              // kChunkVertices entries
-		u64* side_meta;                             // ... the ADC bit in bit 60
-		GSVector4i* xy_ring;                        // [4]
-		GSVertexKernels::CullMirrorEntry* kick_ring; // [4]
-		GSVertexKernels::FmmAcc* fmm_acc;
-	};
+	// The kernel takes the two buffer objects rather than the seven pointers it
+	// reads out of them. Six of those seven -- the vertex and index arrays, both
+	// mirror rings and the fused min/max accumulator -- are the buffer's own
+	// members at compile-time offsets, so handing over the two objects costs the
+	// kernel two loads and saves the caller building and the callee unpacking a
+	// seven-pointer aggregate that AAPCS passes in memory. Only the side table,
+	// which lives in GSState rather than in the vertex buffer, stays an argument:
+	// two parallel u64 arrays rather than one array of CullMirrorEntry, because
+	// split, pass one's quad build writes each field straight out instead of
+	// interleaving the two against each other, and pass two's cull decision reads
+	// them as plain 64-bit scalars -- as one aggregate, clang keeps the entries in
+	// NEON registers and pays a cross-domain move for every field the decision
+	// touches, six per completed prim.
 
 	// {wx, wy, wx, wy} from a mirror entry's packed position -- the shape
 	// ComputeCullBBox's runion consumes, and the shape the xy ring holds.
@@ -384,17 +382,16 @@ namespace GSVertexKickKernel
 	// ------------------------------------------------------------------------
 	template <u32 prim, bool xyzf2>
 	__noinline Cursor RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
-		const Buffers& bufs, const Invariants& inv, Cursor cur)
+		GSBackQueue::VertexBuff* RESTRICT vertex_buf, GSBackQueue::IndexBuff* RESTRICT index_buf,
+		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, Cursor cur)
 	{
 		constexpr u32 n = (prim == GS_SPRITE) ? 2u : 3u;
 		constexpr int primclass = GSUtil::GetPrimClass(prim);
 		constexpr bool strip = (prim == GS_TRIANGLESTRIP);
 		static_assert(prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLELIST || prim == GS_SPRITE);
 
-		GSVertex* RESTRICT vbuff = bufs.vbuff;
-		u16* RESTRICT ibuff = bufs.ibuff;
-		u64* RESTRICT side_xyp = bufs.side_xyp;
-		u64* RESTRICT side_meta = bufs.side_meta;
+		GSVertex* RESTRICT vbuff = vertex_buf->buff;
+		u16* RESTRICT ibuff = index_buf->buff;
 
 		const u32 tail0 = cur.tail;
 
@@ -430,7 +427,7 @@ namespace GSVertexKickKernel
 		{
 			// Only meaningful while fmm_valid; the reset at the first emission of
 			// a draw initializes it for real.
-			acc = *bufs.fmm_acc;
+			acc = vertex_buf->fmm_acc;
 		}
 		else
 #endif
@@ -441,9 +438,9 @@ namespace GSVertexKickKernel
 		// The three most recent mirror entries, most recent first. Seeded from the
 		// ring because a chunk can begin mid-prim; after that they rotate in
 		// registers and the ring is not read again.
-		u64 xyp0 = bufs.kick_ring[(cur.xy_tail - 1) & 3].xyp, meta0 = bufs.kick_ring[(cur.xy_tail - 1) & 3].meta;
-		u64 xyp1 = bufs.kick_ring[(cur.xy_tail - 2) & 3].xyp, meta1 = bufs.kick_ring[(cur.xy_tail - 2) & 3].meta;
-		u64 xyp2 = bufs.kick_ring[(cur.xy_tail - 3) & 3].xyp, meta2 = bufs.kick_ring[(cur.xy_tail - 3) & 3].meta;
+		u64 xyp0 = vertex_buf->kick_ring[(cur.xy_tail - 1) & 3].xyp, meta0 = vertex_buf->kick_ring[(cur.xy_tail - 1) & 3].meta;
+		u64 xyp1 = vertex_buf->kick_ring[(cur.xy_tail - 2) & 3].xyp, meta1 = vertex_buf->kick_ring[(cur.xy_tail - 2) & 3].meta;
+		u64 xyp2 = vertex_buf->kick_ring[(cur.xy_tail - 3) & 3].xyp, meta2 = vertex_buf->kick_ring[(cur.xy_tail - 3) & 3].meta;
 
 		// Walked rather than indexed: the provisional cursor advances by exactly
 		// one vertex an iteration, so it is a post-incremented pointer instead of
@@ -603,8 +600,8 @@ namespace GSVertexKickKernel
 		// in the kernel's fixed cost). Hoisted and unrolled it is the four stores
 		// plus the four slot computations.
 		{
-			GSVector4i* RESTRICT xy_ring = bufs.xy_ring;
-			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = bufs.kick_ring;
+			GSVector4i* RESTRICT xy_ring = vertex_buf->xy;
+			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = vertex_buf->kick_ring;
 			const u32 xyt = cur.xy_tail;
 			const auto put = [&](u32 j) __attribute__((always_inline))
 			{
@@ -636,7 +633,7 @@ namespace GSVertexKickKernel
 		if constexpr (primclass == GS_TRIANGLE_CLASS)
 		{
 			if (fmm_dirty)
-				*bufs.fmm_acc = acc;
+				vertex_buf->fmm_acc = acc;
 		}
 #else
 		(void)fmm_dirty;
