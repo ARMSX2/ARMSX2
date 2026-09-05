@@ -1,27 +1,28 @@
-// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
 #pragma once
 
 #include "GS/GSRegs.h"
 
+#include <atomic>
 #include <string>
 #include <type_traits>
 
 // Front-end decode recorder: a byte-diff instrument over everything the GIF
 // decode hands to a renderer.
 //
-// Stage 1.5 replaces the shipping front end (GSState::Transfer -> vertex kick ->
-// FlushPrim) with a flat tag-walk decoder. The swap is gated on the new decoder
-// producing a byte-identical output surface over the same stream, so the gate
-// needs an instrument that (a) serializes that surface canonically and (b)
-// locates the FIRST byte that moved. This is it: `-fedump <path>` records,
-// `-fediff <path>` replays and compares, and a divergence names the event, the
-// record, the field and the byte.
+// It answers one question: did anything the GIF front end produces move?
+// `-fedump <path>` writes a canonical serialisation of that output surface over
+// a whole replay; `-fediff <path>` runs the same replay again and compares
+// against the recording, and a divergence names the frame, the event, the
+// record, the field and the byte. So any change to GIF decode or to the vertex
+// kick can be gated on "byte-identical", and when it is not, the first byte
+// that moved is located rather than searched for.
 //
 // WHERE THIS TAPS, AND WHY.
 //
-// GV-7 already split the GS into a front (GIF parse / vertex kick / draw
+// The GS is already split into a front (GIF parse / vertex kick / draw
 // buffering) and a back (local memory, texture cache, draw, present), with
 // self-contained records crossing the seam -- GSBackQueue.h. Those records are
 // the output surface, and they were designed under exactly the constraint this
@@ -44,12 +45,12 @@
 //
 //  - Derived state. The vertex trace (GSState::m_vt), the per-context cached
 //    scissor and GSOffset block (GSDrawingContext::scissor / ::offset -- one of
-//    which is a raw pointer) are computed FROM the recorded words. A flat decoder
-//    is not obliged to reproduce a cache, and folding one into the contract makes
+//    which is a raw pointer) are computed FROM the recorded words. A decoder is
+//    not obliged to reproduce a cache, and folding one into the contract makes
 //    the gate fail on things that are not divergences.
 //  - Everything DrawRecordTail itself does after the tap: the texel-coordinate
 //    rounding pass (it reads m_vt, so it is consumer-side by construction) and
-//    the ZTST_NEVER skip. Both keep running after the swap; neither is decode output.
+//    the ZTST_NEVER skip. Both are consumer work, not decode output.
 //  - PCRTC display geometry (GSBackQueue::PcrtcSyncRecord). GSvsync computes it
 //    from the privileged registers, not from the GIF stream, so no GIF decoder
 //    produces it.
@@ -251,13 +252,17 @@ namespace GSFeDecode
 	// Arming
 	// ------------------------------------------------------------------
 
-	/// Set only by BeginRecord/BeginDiff/End. Read on the GS hot path, which is
-	/// why it is a plain extern rather than an accessor behind a config lookup.
-	extern bool g_active;
+	/// Set only by BeginRecord/BeginDiff/End (and by Disarm on a write failure).
+	/// Read on the GS hot path, which is why it is a plain extern rather than an
+	/// accessor behind a config lookup. Atomic because the arming calls come from
+	/// whichever thread drives the session while the taps run on the GS thread;
+	/// relaxed is enough, since the arming order already establishes ordering for
+	/// everything the instrument touches.
+	extern std::atomic<bool> g_active;
 
 	__forceinline_odr bool IsActive()
 	{
-		return g_active;
+		return g_active.load(std::memory_order_relaxed);
 	}
 
 	/// Start recording the front-end output surface to `path`. Returns false (and

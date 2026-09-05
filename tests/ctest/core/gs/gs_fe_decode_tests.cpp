@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The front-end decode recorder (GS/GSFeDecode.h) is the gate instrument for the
-// GIF-decoder swap: a replacement front end is "done" when its recording is
-// byte-identical to the shipping decode's. Two things have to hold for that gate
-// to mean anything, and both are pinned here.
+// The front-end decode recorder (GS/GSFeDecode.h) serialises everything the GIF
+// front end hands a renderer, so a change to GIF decode or to the vertex kick
+// can be gated on the recording coming back byte-identical. Two things have to
+// hold for that gate to mean anything, and both are pinned here.
 //
 //   1. The record layout is FIXED. Every offset and size below is written out as
 //      a literal rather than derived from the struct, because deriving it from
