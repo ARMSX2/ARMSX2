@@ -2320,8 +2320,8 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 				// One staged kick, through the out-of-line run: inlining the kick
 				// at the driver's three seam sites puts the whole of
 				// VertexKickDirect into the function that holds the kernel loops,
-				// which is the register-allocation collision RESULT.md section
-				// 19a cost a device round.
+				// which is the register-allocation collision that cost the
+				// autoflush arm measurable time on both the M2 and the SD865.
 				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
 			}
 			else
@@ -2352,8 +2352,8 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 				// One staged kick, through the out-of-line run: inlining the kick
 				// at the driver's three seam sites puts the whole of
 				// VertexKickDirect into the function that holds the kernel loops,
-				// which is the register-allocation collision RESULT.md section
-				// 19a cost a device round.
+				// which is the register-allocation collision that cost the
+				// autoflush arm measurable time on both the M2 and the SD865.
 				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
 			}
 			else
@@ -2453,8 +2453,8 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 	// -- adds two long-lived values to a loop body that already uses every
 	// callee-saved register, and clang answers by spilling both and reloading them
 	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
-	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
-	// arm never touches the kernel, so it must cost exactly what it cost before.
+	// +0.19 ms a frame for it, and the SD865 +0.62. This arm never touches the
+	// kernel, so it must cost exactly what it cost before.
 	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
 		// HandleAutoFlush reads the incoming vertex out of m_v, so the autoflush
@@ -2482,9 +2482,9 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 	// A routed instantiation whose call is too short for the kernel, or whose
 	// environment the kernel's cull does not cover, runs the same loop, with its
 	// own `r` walk and its own m_q tail. Written out a second time rather than
-	// called: this is the arm RESULT.md section 19a was about, and it has to cost
-	// what it cost before, which means the handler must not keep the original `r`
-	// and `size` live across it.
+	// called: this is the arm the +0.19/+0.62 ms measurement above was about, and
+	// it has to cost what it cost before, which means the handler must not keep
+	// the original `r` and `size` live across it.
 	if constexpr (auto_flush)
 	{
 		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
@@ -2546,8 +2546,8 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 	// -- adds two long-lived values to a loop body that already uses every
 	// callee-saved register, and clang answers by spilling both and reloading them
 	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
-	// +0.19 ms a frame for it, and the SD865 +0.62 (RESULT.md section 19a). This
-	// arm never touches the kernel, so it must cost exactly what it cost before.
+	// +0.19 ms a frame for it, and the SD865 +0.62. This arm never touches the
+	// kernel, so it must cost exactly what it cost before.
 	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
 		// See GIFPackedRegHandlerSTQRGBAXYZF2: sprites and the uncarried prims
@@ -2576,9 +2576,9 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 	// A routed instantiation whose call is too short for the kernel, or whose
 	// environment the kernel's cull does not cover, runs the same loop, with its
 	// own `r` walk and its own m_q tail. Written out a second time rather than
-	// called: this is the arm RESULT.md section 19a was about, and it has to cost
-	// what it cost before, which means the handler must not keep the original `r`
-	// and `size` live across it.
+	// called: this is the arm the +0.19/+0.62 ms measurement above was about, and
+	// it has to cost what it cost before, which means the handler must not keep
+	// the original `r` and `size` live across it.
 	if constexpr (auto_flush)
 	{
 		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
@@ -3729,12 +3729,7 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 		}
 	}
 
-	// Whether `r` is exactly what the wi() below writes, for a consumer that plans on the shadow
-	// holding those bytes and no others (see the member's own comment). One packet only: a sliced
-	// transfer hands the whole image rect to every slice, and a truncated one hands a guess.
-	m_upload_writes_whole_rect = rec.first_slice && rec.end >= rec.total;
 	InvalidateVideoMem(rec.env_blit, r);
-	m_upload_writes_whole_rect = false;
 
 	const GSLocalMemory::writeImage wi = GSLocalMemory::m_psm[rec.env_blit.DPSM].wi;
 
@@ -4667,11 +4662,7 @@ void GSState::Move()
 			 sx, sy, dx, dy, w, h);
 
 	InvalidateLocalMem(m_env.BITBLTBUF, GSVector4i(sx, sy, sx + w, sy + h));
-	// A move copies its whole destination rect below, in this call and no other -- the exact form
-	// the flag names (see GSState.h).
-	m_upload_writes_whole_rect = true;
 	InvalidateVideoMem(m_env.BITBLTBUF, GSVector4i(dx, dy, dx + w, dy + h));
-	m_upload_writes_whole_rect = false;
 	GSVector4i r;
 	r.left = m_env.TRXPOS.DSAX;
 	r.top = m_env.TRXPOS.DSAY;
@@ -4959,7 +4950,7 @@ void GSState::Transfer(const u8* mem, u32 size)
 						// by keeping it in the frame and reloading it: measured
 						// on the M2 at +5 instructions and one stack access on
 						// EVERY packed tag, which is 16,427 a frame on xenosaga
-						// and 12,205 on rcuya-effects (RESULT-3c.md section 13).
+						// and 12,205 on rcuya-effects.
 						// Both titles regressed about 3% on the SD865 for it,
 						// and neither runs a single stage-3c layout.
 						//

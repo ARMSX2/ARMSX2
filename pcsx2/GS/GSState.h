@@ -214,19 +214,6 @@ protected:
 	int m_exec_tr_x = 0;
 	int m_exec_tr_y = 0;
 
-	/// True only while an InvalidateVideoMem call describes a write whose ENTIRE rect the very next
-	/// thing this thread does lands in local memory: a host->local transfer arriving as one packet
-	/// (first slice and last), or a local->local Move, whose copy is always the whole rect.
-	///
-	/// It exists because the rect a renderer is handed is a CLAIM, not a record. A sliced transfer
-	/// passes the WHOLE image rect on every slice while each slice writes only its own part, and a
-	/// truncated one passes a rect the trimming heuristic guessed at. Everything the memory model
-	/// does with the rect is safe under an over-claim -- it invalidates more than it must. A consumer
-	/// that instead plans work on "the shadow is about to hold exactly these bytes and nobody else's"
-	/// needs the exact form, and gets a wrong pixel where the claim over-reaches. Nothing on this
-	/// branch reads it yet; false is always the safe answer and every non-setter reads false.
-	bool m_upload_writes_whole_rect = false;
-
 	static constexpr int INVALID_ALPHA_MINMAX = 500;
 	static constexpr int MAX_DRAW_BUFFERS = 3;
 
@@ -404,7 +391,7 @@ protected:
 	// its per-vertex batch and -- if it takes the kernel -- RunChunk, the driver and
 	// the seam kick, which is about 17 KB of .text each with VertexKick inlined into
 	// three of them. Instantiating all twelve cost 256 KB, and the two titles that
-	// paid for it on the SD865 run none of them (RESULT-3c.md sections 13 and 14).
+	// paid for it on the SD865 run none of them.
 	//
 	// So the set is the one the corpus asks for, counted over all 24 dumps under
 	// both renderers. Four pairs carry 54,716 of the 55,316 fused-layout handler
@@ -606,8 +593,7 @@ public:
 	/// Whether the union of this draw's sprites covers m_r, under both of the pixel conventions
 	/// the tree rasterises with. Deliberately NOT folded into m_primitive_covers_without_gaps:
 	/// widening that value tells the render-target-alpha-scale sites the draw overwrites the whole
-	/// target and moves pixels on titles that have nothing to do with this rule
-	/// (`campaigns/gs-classic-tiler/phase3-a4-gapless-sprite-cover/RESULT.md`). One reader only,
+	/// target and moves pixels on titles that have nothing to do with this rule. One reader only,
 	/// GSRendererHW::CalculateAlphaRange.
 	bool m_primitive_union_covers_rect = false;
 	GSVector4i m_r = {};
@@ -746,7 +732,7 @@ public:
 
 	virtual void Move();
 
-	// GV-7 front/back seam (SEAM-AUDIT.md): the front builds a self-contained
+	// The front/back seam: the front builds a self-contained
 	// record, the Exec*Record executor consumes it — inline today, on the back
 	// thread once GV7-1 lands. The executor owns the HOST->LOCAL write cursor
 	// across transfer slices.
@@ -970,14 +956,14 @@ public:
 	// front end reads -- for no benefit to anything, since nothing but the kernel
 	// reads these. Declared in the middle of the class it cost the autoflush
 	// handler, which never runs the kernel, measurable time on both the M2 and the
-	// SD865 (RESULT.md section 19a).
+	// SD865.
 	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
 	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
 
 };
 
-// GV7-1d-ii: the front parser object of the two-object pipelined split
-// (SEAM-AUDIT.md §7). Owns all parse state (env, vertex kick, draw buffering,
+// The front parser object of the two-object pipelined split. Owns all parse
+// state (env, vertex kick, draw buffering,
 // transfer staging, CLUT decision) and emits records into the back renderer's
 // channel; the back object executes them on the back thread, installing record
 // state into its own members. The front never draws, and reaches the
