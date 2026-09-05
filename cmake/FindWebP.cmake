@@ -152,7 +152,10 @@ if (WebP_LIBRARY AND NOT TARGET WebP::libwebp)
         INTERFACE_INCLUDE_DIRECTORIES "${WebP_INCLUDE_DIR}"
     )
     if (WebP_SHARPYUV_LIBRARY)
-        set_target_properties(WebP::libwebp PROPERTIES
+        # Appended, not set: nothing else puts a link dependency on this target
+        # today, and overwriting the property would silently drop it the day
+        # something does.
+        set_property(TARGET WebP::libwebp APPEND PROPERTY
             INTERFACE_LINK_LIBRARIES "${WebP_SHARPYUV_LIBRARY}"
         )
     endif ()
