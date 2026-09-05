@@ -2447,6 +2447,16 @@ float VMManager::GetTargetSpeedForLimiterMode(LimiterModeType mode)
 
 void VMManager::UpdateTargetSpeed()
 {
+	// Captured before anything below is recomputed, because most calls here do not change
+	// the deadline at all - a fullscreen toggle, a vsync settings apply, the ELF-executed
+	// path and FrameRateChanged all land in this function with the same answer coming out.
+	// The cycle-rate governor treats a moved deadline as a lifecycle reset, and a reset it
+	// did not need costs it the rate it had chosen plus a full warm-up before it could
+	// choose it again.
+	const s64 old_limiter_ticks_per_frame = s_limiter_ticks_per_frame;
+	const float old_target_speed = s_target_speed;
+	const bool old_use_vsync_for_timing = s_use_vsync_for_timing;
+
 	const float frame_rate = GetFrameRate();
 	float target_speed = GetTargetSpeedForLimiterMode(s_limiter_mode);
 
@@ -2496,11 +2506,15 @@ void VMManager::UpdateTargetSpeed()
 		ResetFrameLimiter();
 	}
 
-	// The deadline the governor measures against just moved, or stopped existing. Anything it
-	// inferred from the old one is a statement about a different machine - and if the limiter
-	// has gone unlimited or host-vsync paced, Throttle() will not close another window, so
-	// this is also the only chance to hand back a rate it had lowered.
-	EECycleRateSampler::OnLifecycleReset("the frame limiter changed");
+	// Only when the deadline actually moved, or stopped existing. When it did, anything the
+	// governor inferred from the old one is a statement about a different machine - and if
+	// the limiter has gone unlimited or host-vsync paced, Throttle() will not close another
+	// window, so this is also the only chance to hand back a rate it had lowered.
+	if (s_limiter_ticks_per_frame != old_limiter_ticks_per_frame || s_target_speed != old_target_speed ||
+		s_use_vsync_for_timing != old_use_vsync_for_timing)
+	{
+		EECycleRateSampler::OnLifecycleReset("the frame limiter changed");
+	}
 }
 
 bool VMManager::IsTargetSpeedAdjustedToHost()
