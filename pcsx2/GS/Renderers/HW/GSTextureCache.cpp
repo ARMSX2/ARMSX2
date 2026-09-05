@@ -124,12 +124,6 @@ void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 		m_target_heights.clear();
 		m_surface_offset_cache.clear();
 		m_target_memory_usage = 0;
-
-		// Nothing is left to display from. On the savestate / GS-dump path that gets here,
-		// local memory has just been replaced wholesale too, so until something the renderer
-		// has drawn reaches the screen it is the only copy of the picture there is. See
-		// LookupDisplayTarget.
-		m_no_display_hit_since_purge = true;
 	}
 
 	if (hash_cache)
@@ -4243,8 +4237,8 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 
 	// Nothing above found a target or an upload to build one from. Normally that means the game
 	// has not produced this frame yet and there is nothing to show. Before the first display hit
-	// since a purge it means the opposite: the purge came with local memory being replaced
-	// wholesale (savestate or GS-dump load), and nothing the renderer has drawn has reached the
+	// since a renderer reset it means the opposite: the reset came with local memory being
+	// replaced wholesale (savestate or GS-dump load), and nothing the renderer has drawn has reached the
 	// screen yet, so the buffer the CRTC is pointing at was filled before the snapshot and lives
 	// only in local memory. Only a frame target preloaded from it can present it. Double-buffered
 	// games hit this on the first pass over a dump: the buffer shown at the first vsync was drawn

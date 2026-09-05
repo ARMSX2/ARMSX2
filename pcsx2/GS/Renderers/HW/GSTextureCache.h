@@ -496,11 +496,11 @@ protected:
 	FastList<TargetHeightElem> m_target_heights;
 	u64 m_target_memory_usage = 0;
 
-	/// True from the moment RemoveAll() empties the target lists until a display lookup first
-	/// finds a target to present. Only LookupDisplayTarget touches it: while it holds, nothing
-	/// the hardware renderer has drawn has reached the screen yet, so a display that finds no
-	/// target and no upload to build one from has to come from local memory. Deliberately a
-	/// display-path fact rather than a draw counter -- this costs nothing per draw.
+	/// True from a renderer reset until a display lookup first finds a target to present. While
+	/// it holds, nothing the hardware renderer has drawn has reached the screen yet, so a display
+	/// that finds no target and no upload to build one from has to come from local memory.
+	/// Deliberately a display-path fact rather than a draw counter -- this costs nothing per draw.
+	/// Raised by NoteColdStart(), cleared by LookupDisplayTarget.
 	bool m_no_display_hit_since_purge = false;
 
 	int m_expected_src_bp = -1;
@@ -607,6 +607,14 @@ public:
 	/// Drops every queued asynchronous download (mode change, target flush, reset).
 	void DiscardPendingDownloads();
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
+
+	/// Says the renderer has just been reset: the targets are gone and local memory may have been
+	/// replaced under them (savestate or GS-dump load), so until a display finds a target to
+	/// present, local memory holds the only copy of the picture. A mid-game purge -- a settings
+	/// change, a device loss -- does not get this: local memory is untouched there and under the
+	/// hardware renderer it is usually stale, so preloading a frame target from it would show a
+	/// stale frame instead of nothing.
+	void NoteColdStart() { m_no_display_hit_since_purge = true; }
 	void ReadbackAll();
 	static void AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
 	void ResizeTarget(Target* t, GSVector4i rect, u32 tbp, u32 psm, u32 tbw);

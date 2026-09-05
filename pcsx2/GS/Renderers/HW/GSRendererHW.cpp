@@ -94,6 +94,7 @@ void GSRendererHW::Reset(bool hardware_reset)
 		g_texture_cache->ReadbackAll();
 
 	g_texture_cache->RemoveAll(true, true, true);
+	g_texture_cache->NoteColdStart();
 	GSHwHack::ResetState();
 
 	GSRenderer::Reset(hardware_reset);
