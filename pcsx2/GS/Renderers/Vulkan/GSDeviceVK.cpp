@@ -3254,14 +3254,6 @@ std::string GSDeviceVK::GetDriverInfo() const
 	return ret;
 }
 
-std::string GSDeviceVK::GetStreamRingMemoryDescription() const
-{
-	// The same spelling the device banner uses, so a stats.json field and a log line can be
-	// grepped for with one string.
-	return StringUtil::StdStringFromFormat("%s(type %u)", GSStreamRingMemoryRoadName(m_stream_ring_memory.road),
-		m_stream_ring_memory.type_index);
-}
-
 void GSDeviceVK::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 {
 	m_allow_present_throttle = allow_present_throttle;
@@ -4280,39 +4272,6 @@ bool GSDeviceVK::CheckFeatures()
 		inputs.prefer_cached_over_write_combined =
 			UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
 		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
-
-		// Why the write-combined road was taken is the half a log has to carry, because it is the
-		// default and "unchanged" covers four different reads: no rule names this GPU, a desktop
-		// card whose cached memory is system RAM, a device with no cached type at all, and a named
-		// device that still had nothing to move to.
-		const char* reason = "the driver database prefers cached memory on this GPU";
-		if (m_stream_ring_memory.road == GSStreamRingMemoryRoad::WriteCombined)
-		{
-			bool any_cached = false, any_device_local_cached = false;
-			for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
-			{
-				constexpr u32 host_cached = GS_MEMORY_PROPERTY_HOST_VISIBLE | GS_MEMORY_PROPERTY_HOST_CACHED;
-				if ((type_flags[i] & host_cached) != host_cached)
-					continue;
-				any_cached = true;
-				any_device_local_cached |= (type_flags[i] & GS_MEMORY_PROPERTY_DEVICE_LOCAL) != 0;
-			}
-			if (!inputs.prefer_cached_over_write_combined)
-				reason = "no rule says the write-combined road is expensive on this GPU";
-			else if (!any_cached)
-				reason = "the driver database prefers cached memory, but the device offers no cached "
-						 "host-visible type";
-			else if (!any_device_local_cached)
-				reason = "every cached host-visible type is host-local, and the GPU reads these rings";
-		}
-
-		const u32 chosen = m_stream_ring_memory.type_index;
-		const u32 chosen_flags = (chosen < memory_properties.memoryTypeCount) ? type_flags[chosen] : 0;
-		Console.WriteLn("VK: stream rings: %s, memory type %u (%s)%s -- %s",
-			GSStreamRingMemoryRoadName(m_stream_ring_memory.road), chosen,
-			GSDescribeMemoryProperties(chosen_flags).c_str(),
-			(m_stream_ring_memory.road == GSStreamRingMemoryRoad::CachedNonCoherent) ? ", flushed per commit" : "",
-			reason);
 	}
 
 	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are

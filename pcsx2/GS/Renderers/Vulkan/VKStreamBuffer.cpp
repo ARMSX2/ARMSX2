@@ -110,33 +110,12 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 		return false;
 	}
 
-	// Which memory type the ring actually got. Nothing else in the tree or in a device log says
-	// this, and the whole question of what a CPU write into one of these rings costs turns on it:
-	// a write-combined type is uncached store-buffer traffic, a HOST_CACHED type is ordinary
-	// cached stores. Printed at creation, six lines a run, so any device round carries the answer
-	// with it instead of needing a separate probe.
+	// A ring on a memory type without HOST_COHERENT needs a real cache clean before the GPU
+	// reads it; CommitMemory's deferred flush is what pays for that.
 	VkMemoryPropertyFlags mem_flags = 0;
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
 	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
 	m_pending_flush.Reset();
-	// Bytes, not KiB: the expand-index ring is four bytes when AA1 is off, and "0 KiB" reads as a
-	// failed allocation.
-	Console.WriteLn("GS/Vulkan: stream ring %s, %u bytes, memory type %u (%s)%s",
-		GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), size, ai.memoryType,
-		GSDescribeMemoryProperties(static_cast<u32>(mem_flags)).c_str(),
-		(mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "" : " -- NON-COHERENT, CommitMemory's flush is live");
-
-	// The banner names a memory type index before any ring exists, by reproducing VMA's own
-	// selection rule. If VMA disagreed, the banner -- and every stats.json row taken from it -- is
-	// describing a ring that is somewhere else, and a round read off them would be reading the
-	// instrumentation rather than the device.
-	if (ai.memoryType != memory.type_index)
-	{
-		Console.Error("GS/Vulkan: stream ring %s landed on memory type %u, but the device banner says %u. "
-					  "Trust the line above, not the banner.",
-			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)), ai.memoryType,
-			memory.type_index);
-	}
 
 	if (IsValid())
 		Destroy(true);

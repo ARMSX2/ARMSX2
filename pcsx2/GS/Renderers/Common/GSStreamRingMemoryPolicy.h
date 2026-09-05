@@ -5,8 +5,6 @@
 
 #include "common/Pcsx2Types.h"
 
-#include <string>
-
 // Which host-visible memory the six Vulkan stream rings live in.
 //
 // The rings -- vertex, index, expand-index, VS uniform, PS uniform, texture upload -- are written
@@ -209,35 +207,6 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 	decision.type_index = GSPickStreamRingMemoryType(in, GS_MEMORY_PROPERTY_HOST_VISIBLE,
 		GS_MEMORY_PROPERTY_HOST_COHERENT | GS_MEMORY_PROPERTY_DEVICE_LOCAL);
 	return decision;
-}
-
-/// The property bits of one memory type, spelled out. Written rather than printed as hex because
-/// the whole point of naming a type in a log is that a reader can tell at a glance whether the ring
-/// is cached or write-combined.
-inline std::string GSDescribeMemoryProperties(u32 flags)
-{
-	static constexpr struct
-	{
-		u32 bit;
-		const char* name;
-	} names[] = {
-		{GS_MEMORY_PROPERTY_DEVICE_LOCAL, "DEVICE_LOCAL"},
-		{GS_MEMORY_PROPERTY_HOST_VISIBLE, "HOST_VISIBLE"},
-		{GS_MEMORY_PROPERTY_HOST_COHERENT, "HOST_COHERENT"},
-		{GS_MEMORY_PROPERTY_HOST_CACHED, "HOST_CACHED"},
-		{0x0010, "LAZILY_ALLOCATED"},
-	};
-
-	std::string str;
-	for (const auto& entry : names)
-	{
-		if (!(flags & entry.bit))
-			continue;
-		if (!str.empty())
-			str.push_back('|');
-		str.append(entry.name);
-	}
-	return str.empty() ? std::string("none") : str;
 }
 
 /// The road's name, for the device banner and for stats.json's run block. Short and stable: a

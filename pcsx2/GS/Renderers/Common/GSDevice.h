@@ -1912,12 +1912,6 @@ public:
 	/// Returns a string of information about the graphics driver being used.
 	virtual std::string GetDriverInfo() const = 0;
 
-	/// Which host-visible memory this backend's CPU-written stream rings live in, as one of the
-	/// short road names in GSStreamRingMemoryPolicy.h. The runner puts it in stats.json so a round
-	/// can be audited for which road the device took without reading its log. Empty on a backend
-	/// that makes no such choice, which is every backend but Vulkan.
-	virtual std::string GetStreamRingMemoryDescription() const { return std::string(); }
-
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 
