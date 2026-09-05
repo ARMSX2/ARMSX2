@@ -721,9 +721,12 @@ namespace
 		return fields;
 	}
 
-	// Replays a CSV of recorded window samples, checking every decision. Columns are
-	// valid,frames,target_seconds,p90,late,own,cpu,blocked,enabled,eligible,baseline,
-	// expected_decision. Blank lines and '#' comments are skipped.
+	// Replays a CSV of recorded window samples, checking every decision. The first twelve
+	// columns are the contract - valid,frames,target_seconds,p90,late,own,cpu,blocked,
+	// enabled,eligible,baseline,expected_decision - and anything after them is ignored, so
+	// a trace captured from a live run replays here without being cut down first. Blank
+	// lines and '#' comments are skipped, which is also how a live trace's header and its
+	// lifecycle rows pass through.
 	void ReplayCsvFile(const std::string& path, EECycleRateController& controller)
 	{
 		std::ifstream in(path);
@@ -741,7 +744,7 @@ namespace
 				continue;
 
 			const std::vector<std::string> f = SplitFields(line);
-			ASSERT_EQ(f.size(), 12u) << "row " << row << ": " << line;
+			ASSERT_GE(f.size(), 12u) << "row " << row << ": " << line;
 
 			EECycleRateWindowSample sample;
 			sample.valid = std::stoi(f[0]) != 0;
@@ -766,6 +769,46 @@ namespace
 		EXPECT_GT(replayed, 0) << "no rows in " << path;
 	}
 } // namespace
+
+// The shape a live trace actually has: the header comments, the diagnostic columns after
+// the twelfth, and a lifecycle row in the middle. Trimmed to the rows that matter - the
+// point is the parsing contract, not the sequence, which the test above already covers.
+namespace
+{
+	const char* const kLiveTraceCsv =
+		"# armsx2 ee-cycle-rate trace v1 build=deadbeef serial=SLUS-20000 crc=00000000 mode=live configured=0 floor=-2\n"
+		"# policy window_s=0.500 warmup_s=2.000 cooldown_s=2.000\n"
+		"# valid,frames,target_seconds,p90,late,own,cpu,blocked,enabled,eligible,baseline,decision,window,usable,state\n"
+		"1,30,0.5,0.85,0.10,0.80,0.85,0.05,1,1,0,none,0,1,warmup\n"
+		"1,30,0.5,0.85,0.10,0.80,0.85,0.05,1,1,0,none,1,1,warmup\n"
+		"# reset,settings apply,configured=0,effective=0,transitions=0\n"
+		"1,30,0.5,0.85,0.10,0.80,0.85,0.05,1,1,0,none,2,1,warmup\n"
+		"1,30,0.5,0.85,0.10,0.80,0.85,0.05,1,1,0,none,3,1,warmup\n"
+		"1,30,0.5,1.20,0.40,0.95,1.00,0.05,1,1,0,none,4,1,observe\n"
+		"1,30,0.5,1.20,0.40,0.95,1.00,0.05,1,1,0,stepdown,5,1,observe\n";
+} // namespace
+
+TEST(EECycleRateControllerReplay, ATraceWithDiagnosticColumnsAndCommentsStillReplays)
+{
+	const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+	const std::filesystem::path path = std::filesystem::temp_directory_path() /
+	                                   (std::string("armsx2-ee-cycle-rate-live-") + std::to_string(stamp) + ".csv");
+
+	{
+		std::ofstream out(path);
+		ASSERT_TRUE(out.is_open()) << path.string();
+		out << kLiveTraceCsv;
+	}
+
+	EECycleRateController c;
+	c.Reset(0);
+	ReplayCsvFile(path.string(), c);
+
+	EXPECT_EQ(c.GetEffective(), -1);
+	EXPECT_EQ(c.GetSnapshot().transitions, 1u);
+
+	std::filesystem::remove(path);
+}
 
 TEST(EECycleRateControllerReplay, ARecordedWindowSequenceProducesTheRecordedDecisions)
 {

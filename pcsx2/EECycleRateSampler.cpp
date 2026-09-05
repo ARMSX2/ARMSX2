@@ -3,17 +3,24 @@
 
 #include "EECycleRateSampler.h"
 
+#include "BuildVersion.h"
+#include "Config.h"
 #include "EECycleRate.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
 
 #include "common/Console.h"
+#include "common/FileSystem.h"
 #include "common/HostSys.h"
 #include "common/Threading.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <string>
+
+#include "fmt/format.h"
 
 namespace
 {
@@ -56,6 +63,135 @@ namespace
 	u64 s_tick_frequency = 0;
 	u64 s_window_close_ticks = 0;
 
+	// --- shadow mode and the development trace ------------------------------------------
+
+	// The controller runs and its decisions are recorded, but nothing is applied. This is
+	// what the trace is for: it says what the governor would have done to a run whose
+	// timing it did not change, which is the only way to judge a classifier against a
+	// fixed-rate A/B of the same scene.
+	bool s_shadow = false;
+
+	std::FILE* s_trace = nullptr;
+	bool s_trace_header_written = false;
+	u32 s_trace_window = 0;
+
+	// The session summary, written once at shutdown whether or not a trace is open.
+	// Target-time spent at each selector, indexed by (selector - MIN_EE_CYCLE_RATE).
+	constexpr int kSelectorCount =
+		Pcsx2Config::SpeedhackOptions::MAX_EE_CYCLE_RATE - Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE + 1;
+	double s_seconds_at_selector[kSelectorCount] = {};
+	u32 s_windows_rejected = 0;
+	u32 s_windows_seen = 0;
+	bool s_ran_this_session = false;
+
+	const char* StateName(EECycleRateController::State state)
+	{
+		switch (state)
+		{
+			case EECycleRateController::State::Disabled:
+				return "disabled";
+			case EECycleRateController::State::Warmup:
+				return "warmup";
+			case EECycleRateController::State::Observe:
+				return "observe";
+			case EECycleRateController::State::Cooldown:
+				return "cooldown";
+			default:
+				return "?";
+		}
+	}
+
+	const char* DecisionName(EECycleRateDecision decision)
+	{
+		switch (decision)
+		{
+			case EECycleRateDecision::StepDown:
+				return "stepdown";
+			case EECycleRateDecision::StepUp:
+				return "stepup";
+			case EECycleRateDecision::RestoreBaseline:
+				return "restorebaseline";
+			case EECycleRateDecision::None:
+			default:
+				return "none";
+		}
+	}
+
+	// The reason strings carry commas, and the replay fixture splits on every one. Trailing
+	// columns it does not understand are harmless, extra columns are not, so the commas go.
+	std::string CsvSafe(const char* text)
+	{
+		std::string out(text ? text : "");
+		std::replace(out.begin(), out.end(), ',', ';');
+		return out;
+	}
+
+	// The header is written at the first row rather than at open, because the two things
+	// worth having in it - the disc serial and the ELF CRC - are not known until the game
+	// has actually booted, and a header full of zeroes identifies nothing.
+	void WriteTraceHeader()
+	{
+		const EECycleRatePolicy& p = s_controller.GetPolicy();
+		std::fprintf(s_trace,
+			"# armsx2 ee-cycle-rate trace v1 build=%s serial=%s crc=%08x mode=%s configured=%d floor=%d\n",
+			BuildVersion::GitHash, VMManager::GetDiscSerial().c_str(), VMManager::GetCurrentCRC(),
+			s_shadow ? "shadow" : "live", static_cast<int>(EECycleRate::GetConfigured()),
+			static_cast<int>(EECycleRate::GetFloor()));
+		std::fprintf(s_trace,
+			"# policy window_s=%.3f warmup_s=%.3f cooldown_s=%.3f overload_p90=%.3f overload_late=%.3f "
+			"min_own=%.3f max_blocked=%.3f down_dwell=%u headroom_p90=%.3f up_dwell=%u "
+			"eff_margin=%.3f eff_windows=%u ineffective_hold_s=%.3f max_steps_down=%u\n",
+			p.window_seconds, p.warmup_seconds, p.cooldown_seconds, p.overload_p90, p.overload_late,
+			p.min_own_time, p.max_blocked, p.downshift_dwell, p.headroom_p90, p.upshift_dwell,
+			p.effectiveness_margin, p.effectiveness_windows, p.ineffective_hold_seconds, p.max_steps_down);
+		// The first twelve columns are the replay contract the controller's CSV fixture reads;
+		// everything after them is diagnostics it ignores. Do not reorder the first twelve.
+		std::fprintf(s_trace,
+			"# valid,frames,target_seconds,p90,late,own,cpu,blocked,enabled,eligible,baseline,decision,"
+			"window,usable,active_seconds,gs_wait_seconds,vu1_wait_seconds,state,configured,ctl_effective,"
+			"applied_effective,overload_dwell,headroom_dwell,clock_seconds,inhibit_seconds,transitions,"
+			"ineffective,applied,shadow,gen_ee,gen_iop,gen_vu0,gen_vu1,gen_vif,enabled_reason,eligible_reason\n");
+		s_trace_header_written = true;
+	}
+
+	void OpenTrace()
+	{
+		const std::string& path = EmuConfig.Speedhacks.DynamicEECycleRateTrace;
+		if (path.empty() || s_trace)
+			return;
+
+		// Append: a scene is usually captured over several runs, and a run that silently
+		// truncated the one before it is a lost afternoon.
+		s_trace = FileSystem::OpenCFile(path.c_str(), "ab");
+		s_trace_header_written = false;
+		s_trace_window = 0;
+		if (!s_trace)
+			Console.Error("EE cycle rate: could not open trace '%s' for append.", path.c_str());
+	}
+
+	void CloseTrace()
+	{
+		if (!s_trace)
+			return;
+
+		std::fclose(s_trace);
+		s_trace = nullptr;
+		s_trace_header_written = false;
+	}
+
+	void TraceLifecycle(const char* reason)
+	{
+		if (!s_trace)
+			return;
+
+		// A comment, so a trace stays replayable by the fixture whatever happened to the VM
+		// while it was being recorded.
+		std::fprintf(s_trace, "# reset,%s,configured=%d,effective=%d,transitions=%u\n",
+			CsvSafe(reason).c_str(), static_cast<int>(EECycleRate::GetConfigured()),
+			static_cast<int>(EECycleRate::GetEffective()), EECycleRate::GetTransitionCount());
+		std::fflush(s_trace);
+	}
+
 	void StartWindow()
 	{
 		s_frame_count = 0;
@@ -70,10 +206,77 @@ namespace
 	// the "was the governor asked for" half matters here: a suspension - turbo, a frame
 	// advance, hardcore mode - still has to produce windows, because the controller
 	// answers a suspension by asking for the baseline back.
+	//
+	// A trace path with the governor off is shadow mode: everything measures and decides,
+	// nothing is applied.
 	void RefreshActivation(const EECycleRateEligibility& eligibility)
 	{
-		s_active = eligibility.enabled;
+		s_shadow = !eligibility.enabled && (s_trace != nullptr);
+		s_active = eligibility.enabled || s_shadow;
+		s_ran_this_session |= s_active;
 		s_measuring_waits.store(s_active, std::memory_order_relaxed);
+	}
+
+	// The session summary's raw material. Time is charged to the selector that was in force
+	// while the window ran, which is the one the controller was still believing in when it
+	// returned this window's decision.
+	void AccountWindow(const EECycleRateWindowSample& sample)
+	{
+		s_windows_seen++;
+		if (!EECycleRateController::IsSampleUsable(sample))
+		{
+			s_windows_rejected++;
+			return;
+		}
+
+		const int index = static_cast<int>(EECycleRate::GetEffective()) - Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
+		if (index >= 0 && index < kSelectorCount)
+			s_seconds_at_selector[index] += sample.target_seconds;
+	}
+
+	void TraceWindow(const EECycleRateWindowSample& sample, const EECycleRateEligibility& eligibility,
+		const EECycleRate::EligibilityReasons& why, EECycleRateDecision decision, bool applied)
+	{
+		if (!s_trace)
+			return;
+
+		if (!s_trace_header_written)
+			WriteTraceHeader();
+
+		const EECycleRateController::Snapshot snap = s_controller.GetSnapshot();
+		const EECycleRate::ResetGenerations gen = EECycleRate::GetResetGenerations();
+
+		double active_seconds = 0.0;
+		double gs_wait_seconds = 0.0;
+		double vu1_wait_seconds = 0.0;
+		for (u32 i = 0; i < s_frame_count; i++)
+		{
+			active_seconds += static_cast<double>(s_frames[i].active_ticks);
+			gs_wait_seconds += static_cast<double>(s_frames[i].gs_wait_ticks);
+			vu1_wait_seconds += static_cast<double>(s_frames[i].vu1_wait_ticks);
+		}
+		const double to_seconds = (s_tick_frequency != 0) ? (1.0 / static_cast<double>(s_tick_frequency)) : 0.0;
+		active_seconds *= to_seconds;
+		gs_wait_seconds *= to_seconds;
+		vu1_wait_seconds *= to_seconds;
+
+		// Columns 1-12 are the replay contract; everything after is diagnostics.
+		std::fprintf(s_trace,
+			"%d,%u,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%s,"
+			"%u,%d,%.6f,%.6f,%.6f,%s,%d,%d,%d,%u,%u,%.3f,%.3f,%u,%u,%d,%d,%u,%u,%u,%u,%u,%s,%s\n",
+			sample.valid ? 1 : 0, sample.frames, sample.target_seconds, sample.p90_active_ratio, sample.late_ratio,
+			sample.own_time_ratio, sample.cpu_time_ratio, sample.blocked_ratio, eligibility.enabled ? 1 : 0,
+			eligibility.eligible ? 1 : 0, static_cast<int>(eligibility.baseline), DecisionName(decision),
+			s_trace_window++, EECycleRateController::IsSampleUsable(sample) ? 1 : 0, active_seconds, gs_wait_seconds,
+			vu1_wait_seconds, StateName(snap.state), static_cast<int>(EECycleRate::GetConfigured()),
+			static_cast<int>(snap.effective), static_cast<int>(EECycleRate::GetEffective()), snap.overload_dwell,
+			snap.headroom_dwell, snap.clock_seconds, snap.downshift_inhibit_seconds, snap.transitions,
+			snap.ineffective_count, applied ? 1 : 0, s_shadow ? 1 : 0, gen.ee, gen.iop, gen.vu0, gen.vu1, gen.vif,
+			CsvSafe(why.enabled).c_str(), CsvSafe(why.eligible).c_str());
+
+		// Per window, not per session: a trace whose tail is missing because the run was
+		// killed is exactly the trace of the run worth looking at.
+		std::fflush(s_trace);
 	}
 
 	void CloseWindow()
@@ -87,32 +290,41 @@ namespace
 		in.invalidated = s_window_invalid;
 
 		const EECycleRateWindowSample sample = EECycleRateSampler::BuildWindowSample(in);
-		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility();
+
+		EECycleRate::EligibilityReasons why;
+		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility(EECycleRate::ReadEligibilityInputs(), &why);
 		const EECycleRateDecision decision = s_controller.Update(sample, eligibility);
 
-		switch (decision)
+		bool applied = false;
+		if (!s_shadow)
 		{
-			case EECycleRateDecision::StepDown:
-				EECycleRate::ApplyEffective(s_controller.GetEffective(), "the host is missing the frame deadline");
-				break;
+			switch (decision)
+			{
+				case EECycleRateDecision::StepDown:
+					applied = EECycleRate::ApplyEffective(s_controller.GetEffective(), "the host is missing the frame deadline");
+					break;
 
-			case EECycleRateDecision::StepUp:
-				EECycleRate::ApplyEffective(s_controller.GetEffective(), "there is deadline headroom again");
-				break;
+				case EECycleRateDecision::StepUp:
+					applied = EECycleRate::ApplyEffective(s_controller.GetEffective(), "there is deadline headroom again");
+					break;
 
-			case EECycleRateDecision::RestoreBaseline:
-				EECycleRate::ApplyEffective(EECycleRate::GetConfigured(), "the governor is no longer eligible");
-				break;
+				case EECycleRateDecision::RestoreBaseline:
+					applied = EECycleRate::ApplyEffective(EECycleRate::GetConfigured(), "the governor is no longer eligible");
+					break;
 
-			case EECycleRateDecision::None:
-				break;
+				case EECycleRateDecision::None:
+					break;
+			}
+
+			// Correct the controller's belief from what actually happened. It updates that
+			// belief optimistically when it returns a decision, so a request the selector
+			// refused - out of bounds, or coalesced with a settings apply that landed in the
+			// same event test - would otherwise leave it acting on a rate we are not running.
+			s_controller.OnApplied(EECycleRate::GetEffective());
 		}
 
-		// Correct the controller's belief from what actually happened. It updates that
-		// belief optimistically when it returns a decision, so a request the selector
-		// refused - out of bounds, or coalesced with a settings apply that landed in the
-		// same event test - would otherwise leave it acting on a rate we are not running.
-		s_controller.OnApplied(EECycleRate::GetEffective());
+		AccountWindow(sample);
+		TraceWindow(sample, eligibility, why, decision, applied);
 
 		RefreshActivation(eligibility);
 		StartWindow();
@@ -228,12 +440,50 @@ void EECycleRateSampler::OnVMStart()
 	s_window_close_ticks =
 		static_cast<u64>(s_controller.GetPolicy().window_seconds * static_cast<double>(s_tick_frequency));
 
+	for (double& seconds : s_seconds_at_selector)
+		seconds = 0.0;
+	s_windows_rejected = 0;
+	s_windows_seen = 0;
+	s_ran_this_session = false;
+
+	OpenTrace();
+
 	s_vm_started = true;
 	OnLifecycleReset("VM start");
+
+	if (s_shadow)
+	{
+		Console.WriteLn("EE cycle rate: governor running in SHADOW mode - windows are measured and decided, "
+						"nothing is applied. Trace: %s",
+			EmuConfig.Speedhacks.DynamicEECycleRateTrace.c_str());
+	}
 }
 
 void EECycleRateSampler::OnVMShutdown()
 {
+	if (s_ran_this_session)
+	{
+		// The one line the governor writes outside a trace. Everything else it has to say
+		// per session is either a transition, which logs itself, or in the trace.
+		std::string at_rate;
+		for (int i = 0; i < kSelectorCount; i++)
+		{
+			if (s_seconds_at_selector[i] <= 0.0)
+				continue;
+			at_rate += fmt::format("{}{}={:.1f}s", at_rate.empty() ? "" : " ",
+				i + Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE, s_seconds_at_selector[i]);
+		}
+
+		Console.WriteLn("EE cycle rate: %s session over - %u windows (%u rejected), %u transitions, "
+						"%u ineffective; time at rate: %s",
+			s_shadow ? "shadow" : "governor", s_windows_seen, s_windows_rejected,
+			s_controller.GetSnapshot().transitions, s_controller.GetSnapshot().ineffective_count,
+			at_rate.empty() ? "none" : at_rate.c_str());
+	}
+
+	TraceLifecycle("VM shutdown");
+	CloseTrace();
+
 	// Put the selector back before the recompilers go away, so the next VM starts from the
 	// configured value rather than inheriting a decision about a machine that is gone.
 	// SyncToConfigured() rather than ApplyEffective(): there is no generated code left to
@@ -242,6 +492,7 @@ void EECycleRateSampler::OnVMShutdown()
 
 	s_vm_started = false;
 	s_active = false;
+	s_shadow = false;
 	s_measuring_waits.store(false, std::memory_order_relaxed);
 	s_controller.Reset(EECycleRate::GetConfigured());
 	StartWindow();
@@ -263,6 +514,7 @@ void EECycleRateSampler::OnLifecycleReset(const char* reason)
 
 	s_controller.Reset(eligibility.baseline);
 	StartWindow();
+	TraceLifecycle(reason);
 }
 
 void EECycleRateSampler::OnFrameThrottled(u64 active_ticks, u64 target_ticks, bool late)
