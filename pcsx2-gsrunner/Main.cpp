@@ -79,6 +79,13 @@
 // does in the APK). A bare NDK executable has no JVM: the Java-backed paths
 // (scoped-storage fallbacks, content:// fds, Java sound, pad rumble) cannot
 // trigger under adb shell on plain filesystem paths, so they stub to failure.
+//
+// The declaring headers are included rather than the signatures re-typed, so a
+// signature that drifts is a compile error here instead of an unresolved
+// external on the one platform nobody builds this for by default.
+#include "common/HostSys.h"
+#include "pcsx2/Input/AndroidNativeRumble.h"
+
 namespace Common
 {
 	bool PlaySoundAsync(const char* path) { return false; }
@@ -1950,6 +1957,25 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		return false;
 	}
 
+	// Half a ladder is not a smaller ladder, it is a run that produces no file
+	// and exits 0. A harness diffing two arms then finds one output missing and
+	// has to work backwards to a flag it did not pass.
+	const bool ladder_rect = (s_ladder_opts.w != 0 && s_ladder_opts.h != 0);
+	if (ladder_rect != !s_ladder_opts.output_path.empty())
+	{
+		ArgError("-ladder and -ladder-out go together; got only {}.",
+			ladder_rect ? "-ladder" : "-ladder-out");
+		return false;
+	}
+
+	// -fedump records a stream and -fediff replays one against it. Accepting
+	// both silently picks record and the diff the caller asked for never runs.
+	if (!s_fedump_path.empty() && !s_fediff_path.empty())
+	{
+		ArgError("-fedump and -fediff are exclusive: one records the decode stream, the other checks against it.");
+		return false;
+	}
+
 	if (s_settings_interface.GetBoolValue("EmuCore/GS", "DumpGSData") && !dumpdir.empty())
 	{
 		if (s_settings_interface.GetStringValue("EmuCore/GS", "HWDumpDirectory").empty())
@@ -2628,7 +2654,12 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			s_dump_frames_per_loop = GSDumpReplayer::GetDumpFrameCount();
 			// Armed before the first packet, so rung zero is the state the freeze left
 			// and every later rung is named by the packet it follows.
-			GSLadder::Begin(s_ladder_opts);
+			//
+			// A refusal is a failed run, not a note in the log: the alternative is a
+			// replay that completes, writes no ladder file, and exits 0, which reads
+			// downstream as "this arm produced nothing to compare" rather than as a
+			// misconfigured command line.
+			const bool ladder_ok = GSLadder::Begin(s_ladder_opts);
 			// The front-end decode instrument arms here for the same reason: the
 			// stream must start at the first record the run produces, and nothing
 			// before this point emits one (the dump's initial state arrives as a
@@ -2640,7 +2671,10 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// The ledger's join key to the ladder. Only paid for when a ledger is being
 			// written, because it costs a queued store per packet.
 			GSDumpReplayer::SetPublishPacketMarks(!s_drawlog_path.empty());
-			VMManager::SetState(VMState::Running);
+			// Left un-Running when the ladder refused, so the execute loop below is
+			// never entered and teardown runs on a VM that did nothing.
+			if (ladder_ok)
+				VMManager::SetState(VMState::Running);
 			// gsrunner is diagnostic-by-design; always collect extended stats so DumpStats has data.
 			if (g_gs_device)
 				g_gs_device->EnableExtendedStats(true);
@@ -2666,7 +2700,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// run, not a note in the log -- this is a gate, so it must be readable
 			// from the exit code alone.
 			GSFeDecode::End();
-			ret->store(GSFeDecode::Diverged() ? EXIT_FAILURE : EXIT_SUCCESS);
+			ret->store((!ladder_ok || GSFeDecode::Diverged()) ? EXIT_FAILURE : EXIT_SUCCESS);
 		}
 	}
 
