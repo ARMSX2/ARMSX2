@@ -2508,6 +2508,8 @@ SCAJ-20190:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCAJ-20191:
   name: "Super Robot Taisen OG - Original Generations Gaiden [Limited Edition]"
   region: "NTSC-Unk"
@@ -2730,6 +2732,8 @@ SCAJ-30011:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCCS-40001:
   name: "捉猴啦 2"
   name-sort: "Zhuo Hou La 2"
@@ -4641,6 +4645,8 @@ SCED-54680:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCED-54682:
   name: "UPS2 Speciale Platinum 2007"
   region: "PAL-M5"
@@ -6405,6 +6411,8 @@ SCES-54206:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCES-54219:
   name: "Buzz! Junior - Jungle Party"
   region: "PAL-M7"
@@ -8306,6 +8314,8 @@ SCKA-30006:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCKA-30007:
   name: "God of War 2 [PlayStation 2 BigHit Series]" # No listed Korean name on ReDump
   region: "NTSC-K"
@@ -8316,6 +8326,8 @@ SCKA-30007:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCKA-80003:
   name: "라쳇 & 클랭크: 공구전사 리로디드 [Public Beta]" # Undumped on ReDump as of 2025-08-28
   name-sort: "Ratchet & Clank - Gonggu Jeonsa Reloaded [Public Beta]"
@@ -12517,6 +12529,8 @@ SCUS-97481:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCUS-97482:
   name: "God of War II - The Colossus Battle [Demo]"
   region: "NTSC-U"
@@ -12527,6 +12541,8 @@ SCUS-97482:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCUS-97483:
   name: "Gran Turismo 4 MX-5 Edition [Demo]"
   region: "NTSC-U"
@@ -37151,6 +37167,8 @@ SLPM-61161:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-61162:
   name: "ドラゴンボールZ スパーキング！ メテオ [体験版]"
   name-sort: "どらごんぼーるZ すぱーきんぐ めてお [たいけんばん]"
@@ -53462,6 +53480,8 @@ SLPM-67013:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-67014:
   name: "戦国無双2 猛将伝"
   name-sort: "せんごくむそう2 もうしょうでん"
@@ -53484,6 +53504,8 @@ SLPM-67017:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-67502:
   name: "Devil May Cry" # No listed Korean name on ReDump
   region: "NTSC-K"
