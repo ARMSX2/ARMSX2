@@ -64,6 +64,39 @@ namespace EECycleRate
 	// How many times ApplyEffective has actually moved the selector this session.
 	u32 GetTransitionCount();
 
+	// What the last transition that actually moved the selector cost, in the
+	// units GetCPUTicks() counts (divide by GetTickFrequency() for seconds).
+	//
+	// Split three ways because only one of the three is a candidate for
+	// removal. The EE recompiler's reset rewrites an 88 MiB block-pointer LUT
+	// and memsets a 32 MiB RAM snapshot; microVU0's reset is program-count
+	// work with no bulk memset. A design that patches the EE charge immediates
+	// in place instead of resetting has to know which of the two the measured
+	// transition cost actually is.
+	//
+	// cpu_reset is the wall time of the `Cpu->Reset()` CALL, which is not the
+	// same thing as the EE rebuild: recResetEE defers to the next safe
+	// execution boundary when the EE is mid-execute, in which case the call
+	// returns in microseconds and the rebuild happens later. ee_rebuild is the
+	// EE recompiler's own measurement of the rebuild itself, whenever it last
+	// ran; ee_rebuild_generation is the value of GetResetGenerations().ee at
+	// that moment, so a reader can tell whether the rebuild it is looking at
+	// belongs to this transition or to an earlier one.
+	struct TransitionCost
+	{
+		u64 cpu_reset = 0;              // Cpu->Reset()
+		u64 vu0_reset = 0;              // CpuVU0->Reset()
+		u64 ee_rebuild = 0;             // the EE recompiler rebuild itself
+		u32 ee_rebuild_generation = 0;  // which EE reset ee_rebuild measured
+	};
+
+	TransitionCost GetLastTransitionCost();
+
+	// Published by the EE recompiler's own reset with the duration it measured
+	// for itself. Separate from NoteEeReset() because the x86 recompiler bumps
+	// the generation counter without measuring anything.
+	void NoteEeRebuildCost(u64 ticks);
+
 	// Per-provider code-cache reset counts, so a test or a diagnostic run can
 	// assert that a rate transition touched the EE and VU0 caches and nothing
 	// else. Plain CPU-thread counters bumped from each provider's reset.

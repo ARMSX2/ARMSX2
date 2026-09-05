@@ -50,6 +50,7 @@
 #include "common/CrashHandler.h"
 #include "common/Error.h"
 #include "common/FileSystem.h"
+#include "common/HostSys.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 #include "common/Perf.h"
@@ -284,11 +285,26 @@ private:
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 		const EECycleRate::ResetGenerations after = EECycleRate::GetResetGenerations();
 
+		// Where the transition time actually went. The EE reset defers when it
+		// is called mid-execute, so "Cpu->Reset() call" is not the same number
+		// as "the EE rebuild" — the driver runs between Execute() calls, where
+		// they coincide, but the governor does not. Report both, and say
+		// whether the rebuild belongs to this transition (its generation stamp
+		// matches the post-transition EE generation) or to an earlier one.
+		const EECycleRate::TransitionCost cost = EECycleRate::GetLastTransitionCost();
+		const double tick_ms = 1000.0 / static_cast<double>(GetTickFrequency());
+		const bool rebuild_is_ours = (cost.ee_rebuild_generation == after.ee) && (after.ee != before.ee);
+
 		Console.WriteLn(fmt::format(
-			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); generations ee {}->{} vu0 {}->{} "
-			"iop {}->{} vu1 {}->{} vif {}->{}",
+			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); "
+			"split Cpu->Reset() call {:.3f} ms, EE rebuild {:.3f} ms ({}), mVUreset(VU0) {:.3f} ms; "
+			"generations ee {}->{} vu0 {}->{} iop {}->{} vu1 {}->{} vif {}->{}",
 			m_pass, frame, static_cast<int>(old), static_cast<int>(selector),
 			ok ? "applied" : "REJECTED", apply_ms,
+			static_cast<double>(cost.cpu_reset) * tick_ms,
+			static_cast<double>(cost.ee_rebuild) * tick_ms,
+			rebuild_is_ours ? "this transition" : "deferred, an earlier reset",
+			static_cast<double>(cost.vu0_reset) * tick_ms,
 			before.ee, after.ee, before.vu0, after.vu0, before.iop, after.iop,
 			before.vu1, after.vu1, before.vif, after.vif));
 

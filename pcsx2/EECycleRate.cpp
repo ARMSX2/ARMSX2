@@ -12,6 +12,7 @@
 
 #include "common/Assertions.h"
 #include "common/Console.h"
+#include "common/HostSys.h"
 
 #include <algorithm>
 
@@ -24,6 +25,7 @@ namespace
 	u32 s_transitions = 0;
 
 	EECycleRate::ResetGenerations s_generations = {};
+	EECycleRate::TransitionCost s_last_cost = {};
 } // namespace
 
 s8 EECycleRate::GetEffective()
@@ -71,13 +73,29 @@ bool EECycleRate::ApplyEffective(s8 selector, const char* reason)
 	// the EE is mid-execute; mVUreset is immediate. Between the two, a live EE
 	// block that reaches VU0 does so through a C entry point, so it meets the
 	// fresh mVU0 rather than a half-torn-down one.
+	const u64 t0 = GetCPUTicks();
 	Cpu->Reset();
+	const u64 t1 = GetCPUTicks();
 	CpuVU0->Reset();
+	const u64 t2 = GetCPUTicks();
+	s_last_cost.cpu_reset = t1 - t0;
+	s_last_cost.vu0_reset = t2 - t1;
 
 	DevCon.WriteLn("EE cycle rate: effective %d -> %d (configured %d), reason '%s'",
 		static_cast<int>(old), static_cast<int>(selector), static_cast<int>(configured),
 		reason ? reason : "");
 	return true;
+}
+
+EECycleRate::TransitionCost EECycleRate::GetLastTransitionCost()
+{
+	return s_last_cost;
+}
+
+void EECycleRate::NoteEeRebuildCost(u64 ticks)
+{
+	s_last_cost.ee_rebuild = ticks;
+	s_last_cost.ee_rebuild_generation = s_generations.ee;
 }
 
 u32 EECycleRate::GetTransitionCount()

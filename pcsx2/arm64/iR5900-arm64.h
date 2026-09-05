@@ -741,6 +741,20 @@ void recBranchCall(void (*func)());
 void recCall(void (*func)());
 u32 scaleblockcycles_clear();
 
+// ---------------------------------------------------------------------------
+// Cycle-charge instrumentation
+//
+// The dynamic EE cycle-rate governor transitions by resetting the EE
+// recompiler, which costs tens of milliseconds plus the lazy re-JIT of the
+// next frame's working set. The alternative under investigation is to patch
+// the baked charge immediates in place, and every cost estimate for that pass
+// scales off numbers nobody has measured. These accessors are that
+// measurement, not the pass.
+// ---------------------------------------------------------------------------
+
+// The most recent EE recompiler reset's own duration, in GetCPUTicks() units.
+u64 recEeGetLastResetTicks();
+
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).
 // interlock=true mirrors x86 COP2_Interlock (CFC2/CTC2/QMFC2/QMTC2 path);
 // interlock=false mirrors mVUSyncVU0 / mVUFinishVU0 gating used by LQC2/SQC2
