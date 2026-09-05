@@ -7707,65 +7707,16 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	return pipeline;
 }
 
-// Census scaffolding for the Adreno dynamic-state rung: how much of the per-draw pipeline
-// churn is blend state and colour write mask, the two the extended-dynamic-state-3 path
-// could set without a pipeline bind. Counted on the selector, not on the emitted bind: the
-// question is how consecutive draws differ, and a re-bind of an unchanged selector after a
-// utility pipeline is not a draw-to-draw difference.
-//
-// Delete with the rung.
-void GSDeviceVK::CountTFXPipelineSwitch(const PipelineSelector& p)
-{
-	const bool first = !m_last_tfx_selector_valid;
-	const PipelineSelector prev = m_last_tfx_selector;
-	m_last_tfx_selector = p;
-	m_last_tfx_selector_valid = true;
-
-	if (first || prev == p)
-		return;
-
-	g_perfmon.Put(GSPerfMon::TFXPipelineSwitches, 1);
-
-	const bool bs_moved = (prev.bs.key != p.bs.key);
-	const bool cms_moved = (prev.cms.key != p.cms.key);
-	if (bs_moved)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendMoved, 1);
-	if (cms_moved)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesMaskMoved, 1);
-	if (prev.ps.key_hi != p.ps.key_hi || prev.ps.key_lo != p.ps.key_lo)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesPSMoved, 1);
-	if (prev.vs.key != p.vs.key || prev.dss.key != p.dss.key || prev.key != p.key)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesRestMoved, 1);
-
-	// Everything else in the key: compare a copy with bs and cms neutralised, so a field
-	// added to the selector later counts as "other" rather than silently as absorbable.
-	PipelineSelector prev_rest = prev;
-	PipelineSelector p_rest = p;
-	prev_rest.bs = p_rest.bs = GSHWDrawConfig::BlendState();
-	prev_rest.cms = p_rest.cms = GSHWDrawConfig::ColorMaskSelector();
-	if (prev_rest != p_rest)
-		return; // "other" is the residual: switches minus the three classes below
-
-	if (bs_moved && cms_moved)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendMaskOnly, 1);
-	else if (bs_moved)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesBlendOnly, 1);
-	else if (cms_moved)
-		g_perfmon.Put(GSPerfMon::TFXPipelineSwitchesMaskOnly, 1);
-}
-
-// Census scaffolding for the batched-submission phase: one ledger row per TFX draw call,
-// carrying the identities a run rule has to compare. Taken here rather than at the draw
+// One draw-log row per TFX draw call, carrying the identities a reader of the log has to
+// compare to tell why a pass ended where it did. Taken here rather than at the draw
 // command because this is the point where all of them are simultaneously final -- the
 // attachment set, the bound source and palette, the sampler and the scissor are settled by
 // OMSetRenderTargets and the PSSetShaderResource calls that precede the bind, and the
 // selector is settled by the caller.
 //
 // Texture identity is the object address, mixed down to 32 bits. That is identity in the
-// only sense the descriptor cares about, and the comparison the census makes is between
+// only sense the descriptor cares about, and the comparison the log makes is between
 // adjacent calls: an address can only be reused after a recycle, which itself ends the pass.
-//
-// Delete with the phase.
 void GSDeviceVK::RecordTFXCall(const PipelineSelector& p, GSDrawLog::TFXCallKind kind)
 {
 	const auto object_id = [](const void* ptr) -> u32 {
@@ -7805,8 +7756,6 @@ void GSDeviceVK::RecordTFXCall(const PipelineSelector& p, GSDrawLog::TFXCallKind
 
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p, GSDrawLog::TFXCallKind kind)
 {
-	CountTFXPipelineSwitch(p);
-
 	VkPipeline pipeline = GetTFXPipeline(p);
 	if (pipeline == VK_NULL_HANDLE)
 		return false;
@@ -8316,8 +8265,9 @@ void GSDeviceVK::EndRenderPass(GSDrawLog::PassEndReason reason)
 	if (m_current_render_pass == VK_NULL_HANDLE)
 		return;
 
-	// Census scaffolding: keep the first reason since the last TFX call, so a call that had
-	// three passes torn down before it is attributed to what started the teardown.
+	// Pass-end attribution for the draw log: keep the FIRST reason since the last TFX call, so
+	// a call that had three passes torn down before it is attributed to what started the
+	// teardown rather than to whatever happened last.
 	if (m_pass_end_since_tfx == GSDrawLog::PassEndNone)
 		m_pass_end_since_tfx = reason;
 

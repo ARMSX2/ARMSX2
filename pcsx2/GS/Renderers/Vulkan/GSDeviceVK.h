@@ -1108,16 +1108,10 @@ private:
 	// current pipeline selector - we save this in the struct to avoid re-zeroing it every draw
 	PipelineSelector m_pipeline_selector = {};
 
-	// Census scaffolding: the previous TFX selector, so a switch can be classified by which
-	// part of the key moved. Delete with the dynamic-state rung.
-	PipelineSelector m_last_tfx_selector = {};
-	bool m_last_tfx_selector_valid = false;
-	void CountTFXPipelineSwitch(const PipelineSelector& p);
-
-	// Census scaffolding for the batched-submission phase: the run-length ledger needs to
-	// know which render-pass instance a TFX call landed in, and why the previous one ended.
-	// A serial rather than the VkRenderPass handle, because handles are cached and reused --
-	// two consecutive draws in two different passes can name the same handle.
+	// The draw log's pass-end attribution: which render-pass instance a TFX call landed in,
+	// and why the previous one ended. A serial rather than the VkRenderPass handle, because
+	// handles are cached and reused -- two consecutive draws in two different passes can name
+	// the same handle.
 	u32 m_render_pass_serial = 0;
 	// The FIRST pass end since the last recorded TFX call. Later ends in the same gap are
 	// consequences of the first, so keeping the first is what attributes the break.
