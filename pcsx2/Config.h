@@ -188,6 +188,13 @@ enum class SpeedHack
 	MTVU,
 	EECycleRate,
 	IOPThread,
+	// The dynamic EE cycle-rate governor. It is in this enum because that is what
+	// gives it a bit in PerGameOverrides::speedhacks, which is how "the player wrote
+	// this key in the per-game file" is asked — and the governor has to know that,
+	// because a per-game key is an opt-in it must obey. It is NOT a game database
+	// key: gamedb-schema.json's speedHacks object is closed (additionalProperties
+	// false), so no entry can carry it until someone deliberately opens it.
+	DynamicEECycleRate,
 	MaxCount,
 };
 
@@ -1409,7 +1416,11 @@ struct Pcsx2Config
 			// JIT code tests vuThread by its bit position in this word (microVU-arm64.cpp), so the
 			// flags below stay after every older one.
 			iopThread : 1, // Run the IOP on its own thread (IopThread::ResolveMode decides whether it can)
-			iopThreadLockstep : 1; // With iopThread: strict turns with the EE instead of concurrent. Testing only, no UI.
+			iopThreadLockstep : 1, // With iopThread: strict turns with the EE instead of concurrent. Testing only, no UI.
+			// Let the governor lower the EE cycle rate below EECycleRate, by up to two
+			// steps, when the host cannot hold the frame deadline. Never above it, and
+			// never written back — EECycleRate stays the player's baseline.
+			DynamicEECycleRate : 1;
 		BITFIELD_END
 
 		s8 EECycleRate; // EE cycle rate selector (1.0, 1.5, 2.0)
@@ -1418,6 +1429,16 @@ struct Pcsx2Config
 		// The IOP thread's lag bound L, in EE cycles. Clamped by IopThread::ClampLag when it is read
 		// from the settings file. An advanced setting: INI only, never in a simple settings view.
 		int iopThreadLag;
+
+		// Development trace for the governor: one CSV row per sampling window, written
+		// to this path. Empty means no trace, which is the shipped state.
+		//
+		// ⚠️ Deliberately outside operator==, so CheckForCPUConfigChanges() cannot see
+		// it. Where a trace file goes has nothing to do with generated code, and that
+		// comparison is what decides whether the EE and microVU code caches are thrown
+		// away — turning the trace on mid-session must not cost a recompile of
+		// everything, or the first windows it records are measuring the reset.
+		std::string DynamicEECycleRateTrace;
 
 		SpeedhackOptions();
 		void LoadSave(SettingsWrapper& conf);
