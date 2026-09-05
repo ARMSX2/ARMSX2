@@ -20,4 +20,6 @@
 // gains a term, so the source text of every TFX permutation changed.
 // 113: PS_SUBSTITUTE_ALPHA. Every TFX shader gains the define, two constant-buffer pad words
 // become named fields, and the colour-clamp block's guard gains another term.
-static constexpr u32 SHADER_CACHE_VERSION = 113; // 108 was upstream PR 14688; their 109 = our 111
+// 114: PS_AF_IN_SRC1. The Vulkan TFX shader gains the define and a block that overrides
+// alpha_blend with the fixed AFIX value, so its source text changed after 113 was set.
+static constexpr u32 SHADER_CACHE_VERSION = 114; // 108 was upstream PR 14688; their 109 = our 111
