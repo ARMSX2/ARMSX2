@@ -11,6 +11,7 @@ target_sources(pcsx2-gsrunner PRIVATE
 	GSLadder.h
 	GSReplayPayload.cpp
 	GSReplayPayload.h
+	GSRunnerAffinity.h
 	Main.cpp
 	RenderDocCapture.cpp
 	RenderDocCapture.h

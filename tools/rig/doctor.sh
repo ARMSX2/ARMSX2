@@ -244,11 +244,15 @@ if [ -f "$SOURCE_DIR/tools/rig/check-msvc-filelist.py" ]; then
 	MSVC_OUT="$(python3 "$SOURCE_DIR/tools/rig/check-msvc-filelist.py" 2>&1)"
 	MSVC_RC=$?
 	# The skipped-lists tail prints on success too, so under-coverage never reads
-	# as silence; keep it out of the one-line pass.
+	# as silence; keep it out of the pass lines. One pass per project file the
+	# checker covers -- collapsing them to the first would hide a second project
+	# silently, which is the exact failure this check exists to catch.
 	if [ "$MSVC_RC" -eq 0 ]; then
-		pass "$(printf '%s' "$MSVC_OUT" | sed -n 's/^ok    //p' | head -1)"
+		while IFS= read -r ok_line; do
+			pass "$ok_line"
+		done < <(printf '%s\n' "$MSVC_OUT" | sed -n 's/^ok    //p')
 	else
-		fail "msvc file list: pcsx2.vcxproj is missing files CMake builds everywhere"
+		fail "msvc file list: a project file is missing files CMake builds everywhere"
 		printf '%s\n' "$MSVC_OUT" >&2
 	fi
 fi
