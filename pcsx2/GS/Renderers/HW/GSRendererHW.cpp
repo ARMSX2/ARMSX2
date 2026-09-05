@@ -5,6 +5,7 @@
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
+#include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
@@ -2751,42 +2752,19 @@ void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 	const u32 count = m_vertex->next;
 	GSVertex* v = &m_vertex->buff[0];
 
-	// ceil(a / 16) * 16, negative a included: >> rounds towards -inf.
-	const auto snap = [](int a) { return ((a + 15) >> 4) << 4; };
-
 	for (u32 i = 0; i + 1 < count; i += 2)
 	{
-		const int x0 = static_cast<int>(v[i].XYZ.X) - ox;
-		const int x1 = static_cast<int>(v[i + 1].XYZ.X) - ox;
-		const int y0 = static_cast<int>(v[i].XYZ.Y) - oy;
-		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
-		const int dx = (x1 > x0) ? (snap(x1) - x1) : 0;
-		const int dy = (y1 > y0) ? (snap(y1) - y1) : 0;
-		if ((dx | dy) == 0)
+		const GSSpriteEdgeSnap::Delta d = GSSpriteEdgeSnap::FarEdge(static_cast<int>(v[i].XYZ.X) - ox,
+			static_cast<int>(v[i].XYZ.Y) - oy, static_cast<int>(v[i + 1].XYZ.X) - ox,
+			static_cast<int>(v[i + 1].XYZ.Y) - oy, static_cast<int>(v[i].U), static_cast<int>(v[i].V),
+			static_cast<int>(v[i + 1].U), static_cast<int>(v[i + 1].V), adjust_uv);
+		if (d.IsZero())
 			continue;
 
-		// The slide has to be a whole step of the coordinate's own 1/16-texel grid. When it is
-		// not, writing it down means rounding, and rounding resamples the whole sprite to buy
-		// one edge pixel -- a bad trade, so leave that sprite alone.
-		int du = 0, dv = 0;
-		if (adjust_uv)
-		{
-			const int lx = x1 - x0;
-			const int ly = y1 - y0;
-			const int lu = static_cast<int>(v[i + 1].U) - static_cast<int>(v[i].U);
-			const int lv = static_cast<int>(v[i + 1].V) - static_cast<int>(v[i].V);
-			if (dx != 0 && (lx == 0 || (lu * dx) % lx != 0))
-				continue;
-			if (dy != 0 && (ly == 0 || (lv * dy) % ly != 0))
-				continue;
-			du = (lx != 0) ? ((lu * dx) / lx) : 0;
-			dv = (ly != 0) ? ((lv * dy) / ly) : 0;
-		}
-
-		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + dx);
-		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + dy);
-		v[i + 1].U = static_cast<u16>(static_cast<int>(v[i + 1].U) + du);
-		v[i + 1].V = static_cast<u16>(static_cast<int>(v[i + 1].V) + dv);
+		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + d.dx);
+		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + d.dy);
+		v[i + 1].U = static_cast<u16>(static_cast<int>(v[i + 1].U) + d.du);
+		v[i + 1].V = static_cast<u16>(static_cast<int>(v[i + 1].V) + d.dv);
 	}
 }
 
@@ -5362,24 +5340,21 @@ void GSRendererHW::Draw()
 		const u32 count = m_vertex->next;
 		GSVertex* v = &m_vertex->buff[0];
 
-		// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
-		// into a pixel covers exactly what one ending on the boundary covers. Upscaling
-		// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
-		// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
-		// straight back through DATE with one ending at x=320: identical at 1x, one device
-		// column apart at 2x, and that column is the bright line down the middle of the screen.
-		SnapSpriteEdgesToPixelGrid();
-
 		// Hack to avoid vertical black line in various games (ace combat/tekken)
+		//
+		// This runs before SnapSpriteEdgesToPixelGrid because its one decision is read off the
+		// first sprite's coordinates, and the snap moves exactly those.
+		bool align_sprite_x = false;
 		if (GSConfig.UserHacks_AlignSpriteX)
 		{
 			// Note for performance reason I do the check only once on the first
 			// primitive
-			const int win_position = v[1].XYZ.X - context->XYOFFSET.OFX;
-			const bool unaligned_position = ((win_position & 0xF) == 8);
 			const bool unaligned_texture = ((v[1].U & 0xF) == 0) && PRIM->FST; // I'm not sure this check is useful
-			const bool hole_in_vertex = (count < 4) || (v[1].XYZ.X != v[2].XYZ.X);
-			if (hole_in_vertex && unaligned_position && (unaligned_texture || !PRIM->FST))
+			const int win_position = v[1].XYZ.X - context->XYOFFSET.OFX;
+			// v[2] only exists, and is only asked about, when the batch has a second sprite.
+			align_sprite_x = GSSpriteEdgeSnap::AlignSpriteXApplies(win_position, v[1].U, PRIM->FST, count,
+				v[1].XYZ.X, (count >= 4) ? v[2].XYZ.X : 0);
+			if (align_sprite_x)
 			{
 				// Normaly vertex are aligned on full pixels and texture in half
 				// pixels. Let's extend the coverage of an half-pixel to avoid
@@ -5393,6 +5368,20 @@ void GSRendererHW::Draw()
 				}
 			}
 		}
+
+		// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
+		// into a pixel covers exactly what one ending on the boundary covers. Upscaling
+		// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
+		// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
+		// straight back through DATE with one ending at x=320: identical at 1x, one device
+		// column apart at 2x, and that column is the bright line down the middle of the screen.
+		//
+		// The hack above has already pushed every far X in this batch out by half a pixel for
+		// the same reason, on a batch-wide decision the snap does not get to second-guess per
+		// sprite. Snapping on top of that would move some of them a second time, so leave the
+		// batch alone when it fired.
+		if (!align_sprite_x)
+			SnapSpriteEdgesToPixelGrid();
 
 		// Noting to do if no texture is sampled
 		if (PRIM->FST && draw_sprite_tex && m_process_texture)
