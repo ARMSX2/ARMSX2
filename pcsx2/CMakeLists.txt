@@ -61,6 +61,7 @@ set(pcsx2Sources
 	Dmac.cpp
 	EECycleRate.cpp
 	EECycleRateController.cpp
+	EECycleRateSampler.cpp
 	GameDatabase.cpp
 	Elfheader.cpp
 	FW.cpp
@@ -158,6 +159,7 @@ set(pcsx2Headers
 	Dmac.h
 	EECycleRate.h
 	EECycleRateController.h
+	EECycleRateSampler.h
 	EeFpuFormat.h
 	EeFpuModel.h
 	GameDatabase.h
