@@ -16,9 +16,10 @@ function(detect_operating_system)
 	elseif(APPLE AND NOT IOS)
 		message(STATUS "Building for MacOS.")
 	elseif(ANDROID)
-		# Deliberately its own branch rather than folding into LINUX: the
-		# LINUX-guarded code below reaches for udev, D-Bus and a runtime page
-		# size probe, none of which exist under the NDK.
+		# Its own branch rather than folding into LINUX. This function only
+		# reports, but the LINUX-guarded code elsewhere in the build reaches for
+		# udev, D-Bus and a runtime page-size probe, none of which exist under
+		# the NDK — so Android must not answer to LINUX anywhere.
 		message(STATUS "Building for Android.")
 	elseif(LINUX)
 		message(STATUS "Building for Linux.")
