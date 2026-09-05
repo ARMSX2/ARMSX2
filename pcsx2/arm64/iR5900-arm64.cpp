@@ -3442,8 +3442,17 @@ static void recReserve()
 		pxFailRel("Failed to allocate R5900 InstCache array.");
 }
 
+// The rebuild's own measured duration, in GetCPUTicks() units. Published to
+// EECycleRate at the end of every reset, because the caller that most wants it
+// (EECycleRate::ApplyEffective) usually does not get it from timing its own
+// Cpu->Reset() call: recResetEE defers when the EE is mid-execute, so the call
+// returns long before the rebuild happens.
+static u64 s_lastResetRawTicks = 0;
+
 static void recResetRaw()
 {
+	const u64 reset_t0 = GetCPUTicks();
+
 	Console.WriteLn(Color_Green, "iR5900-ARM64 Recompiler reset.");
 	EECycleRate::NoteEeReset();
 
@@ -3592,6 +3601,14 @@ static void recResetRaw()
 		memset(recRAMCopy.data(), 0, recRAMCopy.size());
 
 	g_branch = 0;
+
+	s_lastResetRawTicks = GetCPUTicks() - reset_t0;
+	EECycleRate::NoteEeRebuildCost(s_lastResetRawTicks);
+}
+
+u64 recEeGetLastResetTicks()
+{
+	return s_lastResetRawTicks;
 }
 
 static void recShutdown()
