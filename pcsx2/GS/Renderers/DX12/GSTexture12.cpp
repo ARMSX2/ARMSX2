@@ -1221,10 +1221,10 @@ void GSDownloadTexture12::DoCopyFromTexture(
 	pxAssert(src_level < static_cast<u32>(tex12->GetMipmapLevels()));
 	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch = GetTransferPitch(
 		use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
 
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
 	GSDevice12::GetInstance()->EndRenderPass();

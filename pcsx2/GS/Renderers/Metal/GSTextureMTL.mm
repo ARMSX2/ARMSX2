@@ -188,10 +188,10 @@ void GSDownloadTextureMTL::DoCopyFromTexture(
 	pxAssert(src_level < static_cast<u32>(mtlTex->GetMipmapLevels()));
 	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch =
 		GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, PITCH_ALIGNMENT);
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
 
 	mtlTex->FlushClears();
 	m_dev->EndRenderPass();
