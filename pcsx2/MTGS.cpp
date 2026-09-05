@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "EECycleRateSampler.h"
 #include "GS.h"
 #include "Gif_Unit.h"
 #include "MTGS.h"
@@ -280,7 +281,12 @@ void MTGS::PostVsyncStart(bool registers_written)
 	s_VsyncSignalListener.store(true, std::memory_order_release);
 	//Console.WriteLn( Color_Blue, "(EEcore Sleep) Vsync\t\tringpos=0x%06x, writepos=0x%06x", m_ReadPos.load(), m_WritePos.load() );
 
+	// The dominant GS-bound blocker: the EE thread is held here for as long as the GS thread
+	// is behind. Timed on this branch only - the queue-has-room return above is the frame's
+	// normal path and must not read a clock.
+	const u64 wait_begin = EECycleRateSampler::BeginWait();
 	s_sem_Vsync.Wait();
+	EECycleRateSampler::EndGSWait(wait_begin);
 }
 
 void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
@@ -654,6 +660,12 @@ void MTGS::WaitGS(bool syncRegs, bool weakWait, bool isMTVU)
 	// we don't want to access the content of the queue
 
 	SetEvent();
+
+	// Both branches block: the MTVU weak wait spins on the ring-busy mutex, the ordinary one
+	// sleeps until the ring drains. BeginWait() returns nothing when the caller is the MTVU
+	// thread, which is where the weak wait comes from.
+	const u64 wait_begin = EECycleRateSampler::BeginWait();
+
 	if (weakWait && isMTVU)
 	{
 		// On weakWait we will stop waiting on the MTGS thread if the
@@ -680,6 +692,8 @@ void MTGS::WaitGS(bool syncRegs, bool weakWait, bool isMTVU)
 		if (!s_sem_event.WaitForEmpty())
 			pxFailRel("MTGS Thread Died");
 	}
+
+	EECycleRateSampler::EndGSWait(wait_begin);
 
 	pxAssert(!(weakWait && syncRegs) && "No synchronization for this!");
 
@@ -760,6 +774,10 @@ void MTGS::GenericStall(uint size)
 
 	if (freeroom <= size)
 	{
+		// Both branches below block the EE thread on the GS thread - one sleeping, one
+		// spinning - so both are timed, and the fast return above is untouched.
+		const u64 wait_begin = EECycleRateSampler::BeginWait();
+
 		// writepos will overlap readpos if we commit the data, so we need to wait until
 		// readpos is out past the end of the future write pos, or until it wraps around
 		// (in which case writepos will be >= readpos).
@@ -820,6 +838,8 @@ void MTGS::GenericStall(uint size)
 					break;
 			}
 		}
+
+		EECycleRateSampler::EndGSWait(wait_begin);
 	}
 }
 
