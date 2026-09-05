@@ -35,6 +35,7 @@ void EECycleRateController::Reset(s8 baseline)
 	m_effective = m_baseline;
 	ClearDwell();
 	ClearEffectiveness();
+	m_downshift_inhibit_seconds = 0.0;
 	m_last_p90 = 0;
 	m_transitions = 0;
 	m_ineffective_count = 0;
@@ -61,6 +62,7 @@ EECycleRateController::Snapshot EECycleRateController::GetSnapshot() const
 	s.overload_dwell = m_overload_dwell;
 	s.headroom_dwell = m_headroom_dwell;
 	s.clock_seconds = m_clock_seconds;
+	s.downshift_inhibit_seconds = m_downshift_inhibit_seconds;
 	s.last_p90 = m_last_p90;
 	s.transitions = m_transitions;
 	s.ineffective_count = m_ineffective_count;
@@ -125,9 +127,34 @@ EECycleRateDecision EECycleRateController::GoToBaseline(State next_state)
 	++m_transitions;
 	ClearDwell();
 	ClearEffectiveness();
+	m_downshift_inhibit_seconds = 0.0;
 	m_state = next_state;
 	m_clock_seconds = 0.0;
 	return EECycleRateDecision::RestoreBaseline;
+}
+
+// A downshift that measurably bought nothing gives back one step, not the whole
+// underclock: any step below it was judged on its own two windows and passed, and
+// throwing those away would cost real time already proven to be there.
+//
+// The inhibit that follows is deliberately not a state. It drains through Observe
+// and Cooldown alike, so the cooldown of this very upshift - or of a later one -
+// cannot shorten it, and headroom keeps working throughout, so the controller can
+// still climb back to the baseline while it runs.
+EECycleRateDecision EECycleRateController::UndoIneffectiveStep()
+{
+	++m_ineffective_count;
+	m_downshift_inhibit_seconds = m_policy.ineffective_hold_seconds;
+	ClearDwell();
+
+	if (m_effective >= m_baseline)
+		return EECycleRateDecision::None;
+
+	++m_effective;
+	++m_transitions;
+	m_state = State::Cooldown;
+	m_clock_seconds = 0.0;
+	return EECycleRateDecision::StepUp;
 }
 
 EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample& sample, const EECycleRateEligibility& eligibility)
@@ -144,6 +171,7 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 
 		ClearDwell();
 		ClearEffectiveness();
+		m_downshift_inhibit_seconds = 0.0;
 		m_state = State::Disabled;
 		m_clock_seconds = 0.0;
 		return EECycleRateDecision::None;
@@ -156,6 +184,7 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 		m_effective = baseline;
 		ClearDwell();
 		ClearEffectiveness();
+		m_downshift_inhibit_seconds = 0.0;
 		EnterWarmup();
 	}
 	else if (baseline != m_baseline)
@@ -169,13 +198,14 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 
 		ClearDwell();
 		ClearEffectiveness();
+		m_downshift_inhibit_seconds = 0.0;
 		EnterWarmup();
 	}
 
 	// A window we could not measure is not evidence either way. It cannot move the
-	// selector, and it does not advance the warm-up, cooldown or hold clocks, but it
-	// does break a dwell run: two overloaded windows either side of a gap are not
-	// two consecutive overloaded windows.
+	// selector, and it advances none of the clocks - not the warm-up, not the
+	// cooldown, not the downshift inhibit - but it does break a dwell run: two
+	// overloaded windows either side of a gap are not two consecutive ones.
 	if (!IsSampleUsable(sample))
 	{
 		ClearDwell();
@@ -184,9 +214,14 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 
 	m_last_p90 = sample.p90_active_ratio;
 
-	// The timed states sit windows out. Hold blocks downshifts specifically, but the
-	// ineffective step it follows was already undone, so there is nothing left to
-	// upshift from and sitting the window out entirely is the same behaviour.
+	// The inhibit is read before it is drained, so the window that spends the last
+	// of it is still inhibited - the same rule the timed states use, where the
+	// window that fills the cooldown is consumed by it.
+	const bool downshift_inhibited = m_downshift_inhibit_seconds > 0.0;
+	if (downshift_inhibited)
+		m_downshift_inhibit_seconds = std::max(0.0, m_downshift_inhibit_seconds - sample.target_seconds);
+
+	// The timed states sit windows out entirely.
 	if (m_state != State::Observe)
 	{
 		double limit = 0.0;
@@ -197,9 +232,6 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 				break;
 			case State::Cooldown:
 				limit = m_policy.cooldown_seconds;
-				break;
-			case State::Hold:
-				limit = m_policy.ineffective_hold_seconds;
 				break;
 			default:
 				break;
@@ -226,12 +258,7 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 			ClearEffectiveness();
 
 			if (mean > wanted)
-			{
-				// The EE was not the cost. Give the player their rate back and stop
-				// trying for a while, rather than walking to the floor.
-				++m_ineffective_count;
-				return GoToBaseline(State::Hold);
-			}
+				return UndoIneffectiveStep();
 		}
 	}
 
@@ -246,13 +273,17 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 	const bool overload = over_deadline && missing_frames && ee_is_the_cost && not_blocked_elsewhere;
 	const bool headroom = sample.p90_active_ratio <= m_policy.headroom_p90 && sample.late_ratio <= 0.0f;
 
-	if (overload)
+	// An overloaded window during the inhibit is not counted against the downshift
+	// dwell - the last step already answered this classification and it did not
+	// work. It falls through to the decay path instead. Headroom is untouched, so
+	// the way back to the baseline stays open the whole time.
+	if (overload && !downshift_inhibited)
 	{
 		m_headroom_dwell = 0;
 		if (m_overload_dwell < m_policy.downshift_dwell)
 			++m_overload_dwell;
 	}
-	else if (headroom)
+	else if (headroom && !overload)
 	{
 		m_overload_dwell = 0;
 		if (m_headroom_dwell < m_policy.upshift_dwell)
