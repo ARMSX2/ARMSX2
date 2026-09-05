@@ -34,11 +34,17 @@
 // Capture: hardware-oracle/captures/gs-shape, SCPH-30001, GS revision 0x15,
 // two byte-identical console runs.
 //
-// The rasterizer is per-architecture, so this rides ARCH_ARM64 like its siblings.
+// The rule lives in GSRasterizer::DrawTriangle, which has an ARM64/SSE4 body and an
+// AVX2 twin, so this runs on both hosts: on x86 it is the AVX2 twin that is on trial.
+// The gate is multi-ISA, not architecture -- a multi-ISA x86 build compiles the
+// rasterizer into isa_sse4/isa_avx/isa_avx2 and has no isa_native at all, so the
+// header cannot even be included there. That is every x86 CI configuration today, so
+// on x86 this suite only runs in a local build with DISABLE_ADVANCE_SIMD=OFF.
 
 #include "common/Pcsx2Defs.h"
+#include "GS/MultiISA.h"
 
-#ifdef ARCH_ARM64
+#ifndef MULTI_ISA_SHARED_COMPILATION
 
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
@@ -226,4 +232,4 @@ TEST(SwSetupReciprocal, DepthDoesNotTakeIt)
 	EXPECT_EQ(a.p.F64[1], b.p.F64[1]);
 }
 
-#endif // ARCH_ARM64
+#endif // MULTI_ISA_SHARED_COMPILATION

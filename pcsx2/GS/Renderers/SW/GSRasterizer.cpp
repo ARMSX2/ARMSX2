@@ -872,8 +872,23 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
-	// ⚠️ Not compiled on this tree's ARM64 host (this is the AVX2 twin) -- mirrors
-	// the scalar path above so an x86 software renderer walks the same depth.
+	// ⚠️ Not compiled on this tree's ARM64 host (this is the AVX2 twin). Everything
+	// from here to TruncateDepthGradient mirrors the scalar path below lane for lane,
+	// so an x86 software renderer forms the same gradients as an ARM64 one.
+	//
+	// Colour and fog take silicon's truncated reciprocal; s, t, q and the position
+	// lanes keep the exact quotient above. GSVertexSW2::tc is t in lanes 0-3 and c in
+	// lanes 4-7, so the blend takes lane 3 (fog) and lanes 4-7 (colour) and leaves
+	// lanes 0-2 alone. The reasoning is on the scalar copy below.
+	{
+		const GSVector8 dxy01r(dxy01 * TruncatedSetupReciprocal(cross));
+		const GSVector8 scan_r = dv1.tc * dxy01r.yyyy() - dv0.tc * dxy01r.wwww();
+		const GSVector8 edge_r = dv0.tc * dxy01r.zzzz() - dv1.tc * dxy01r.xxxx();
+
+		dscan.tc = dscan.tc.blend32<0xf8>(scan_r);
+		dedge.tc = dedge.tc.blend32<0xf8>(edge_r);
+	}
+
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(dscan.p);
 
