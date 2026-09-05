@@ -1387,11 +1387,13 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				// lod = -log2(Q) * 2^L + K, so lod > 0 is exactly Q < 2^(K / 2^L),
 				// which is one constant. No logarithm is needed in the inner loop.
 				//
-				// Gated to ARM64 because only that scanline codegen implements it. The
-				// C++ reference scanline implements it on every host, so leaving x86
-				// ungated would make an x86 build's JIT and its own fallback disagree --
-				// a worse failure than the per-primitive approximation. This fork builds
-				// and ships ARM64 only; the rule to copy is in GSDrawScanline.cpp.
+				// Per-pixel MMAG/MMIN is implemented in the C++ reference scanline and in
+				// the ARM64 scanline generator. The x86 generator does not have it yet,
+				// so the selector is gated: leaving it set on x86 would make an x86
+				// build's JIT and its own C++ fallback disagree, which is worse than the
+				// per-primitive approximation. The consequence is that x86 software
+				// output differs from ARM64 software output on draws that cross the LOD
+				// filter threshold. The rule to port is in GSDrawScanline.cpp.
 #ifdef ARCH_ARM64
 				if (m_vt.IsFilterCrossover() && !gd.sel.fst)
 				{
