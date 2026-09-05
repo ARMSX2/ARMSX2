@@ -29,6 +29,17 @@ GSHWAutoFlushLevel GSState::GetAutoFlushLevel() const
 {
 	// Default follows the process renderer type, matching the historical global gate; the SW
 	// renderer overrides with the SW rule.
+	//
+	// The override is the point of making this virtual, and it is a deliberate behaviour
+	// change: the old gate asked GSIsHardwareRenderer(), which is a property of the process,
+	// so a hardware renderer running the SW engine as its fallback floor took the hardware
+	// key and the floor stopped matching the renderer above it on self-texturing draws.
+	// The level has to follow the engine that consumes the draws.
+	//
+	// The SW override never returns SpritesOnly, so a software run with the hardware key at
+	// SpritesOnly now arms the full auto-flush handlers where it used to arm the narrowed
+	// ones. That costs the staged vertex on non-sprite prims and nothing else:
+	// IsAutoFlushDraw still early-outs on those prims, so the draws are the same.
 	return GSIsHardwareRenderer() ?
 			   GSConfig.UserHacks_AutoFlush :
 			   (GSConfig.AutoFlushSW ? GSHWAutoFlushLevel::Enabled : GSHWAutoFlushLevel::Disabled);
@@ -380,8 +391,10 @@ void GSState::SetPrimHandlers()
 	// disjoint. That is -4.7% of GS-thread time in a title spending 8% of it in this one
 	// handler, and 581 GameDB entries ship autoFlush: 1.
 	//
-	// Mirrors IsAutoFlushDraw's early-out exactly, which keys on the level alone and
-	// not on the renderer, so the software path narrows in step with it.
+	// Mirrors IsAutoFlushDraw's early-out, which reads GSConfig.UserHacks_AutoFlush
+	// directly. On a hardware renderer the two are the same level. On the software
+	// engine GetAutoFlushLevel never reports SpritesOnly, so the narrowing is simply
+	// not taken there -- more staging work, same draws.
 	constexpr bool non_sprite_af = auto_flush && !sprites_only;
 
 #define SetHandlerXYZ(P, auto_flush) \
