@@ -1507,8 +1507,15 @@ VkDescriptorSet GSDeviceVK::AllocateDescriptorSetFromFramePool(VkDescriptorSetLa
 			resources.descriptor_pool_cursor_sets = 0;
 			Vulkan::SetObjectName(m_device, pool, "Frame Descriptor Pool %u.%u", m_current_frame,
 				static_cast<u32>(resources.descriptor_pools.size() - 1));
-			Console.WriteLn("VK: frame %u descriptor pool chain grew to %u pools of %u sets.", m_current_frame,
-				static_cast<u32>(resources.descriptor_pools.size()), FRAME_DESCRIPTOR_POOL_CHUNK_SETS);
+			// At powers of two only. A heavy frame can need several thousand sets, and one line
+			// per link buries the log in a dozen identical messages per frame slot on the first
+			// lap. The doubling points still show the ceiling the chain settles at.
+			const u32 links = static_cast<u32>(resources.descriptor_pools.size());
+			if ((links & (links - 1)) == 0)
+			{
+				Console.WriteLn("VK: frame %u descriptor pool chain grew to %u pools of %u sets.", m_current_frame,
+					links, FRAME_DESCRIPTOR_POOL_CHUNK_SETS);
+			}
 		}
 
 		const VkDescriptorSetAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
