@@ -35,6 +35,7 @@ add_pcsx2_test(core_test
 	texture_upscale_setting_tests.cpp
 	ee_cycle_rate_controller_tests.cpp
 	ee_cycle_rate_eligibility_tests.cpp
+	ee_cycle_rate_sampler_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )

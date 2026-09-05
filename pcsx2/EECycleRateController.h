@@ -63,6 +63,12 @@ struct EECycleRateWindowSample
 	// Time blocked on the GS or VU1 threads / active wall time. Its own ceiling, so
 	// a VU1 or GS bottleneck is not answered by slowing the EE down.
 	float blocked_ratio = 0;
+
+	// blocked_ratio split by what the EE thread waited on. gs + vu1 equals blocked_ratio:
+	// a wait the frame cannot hold is clamped to the frame, the GS share first. The
+	// controller does not read these; a trace and other consumers of the window do.
+	float gs_wait_ratio = 0;
+	float vu1_wait_ratio = 0;
 };
 
 // The answer to "may the governor act at all right now", resolved by the caller
