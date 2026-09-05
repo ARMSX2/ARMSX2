@@ -13,6 +13,7 @@
 #include "common/AlignedMalloc.h"
 #include "common/Console.h"
 #include "common/StringUtil.h"
+#include <cstring>
 
 #define ENABLE_DRAW_STATS 0
 
@@ -45,6 +46,48 @@ MULTI_ISA_UNSHARED_IMPL;
 __forceinline static void TruncateDepthGradient(GSVector4& p)
 {
 	p.F64[1] = std::trunc(p.F64[1] * 1024.0) / 1024.0;
+}
+
+// The setup does not DIVIDE to form a colour or a fog gradient. It multiplies by a
+// reciprocal read out of a table eight significant bits wide, and the quantity it
+// inverts is the setup's own cross product.
+//
+// Both halves of that are console measurements and the second one needed its own
+// capture. gs-walk2 (SCPH-30001, 2026-09-05) established the eight-bit truncation
+// over twenty-four baselines -- but every triangle it drew was 1024 rows tall, a
+// power of two, and under that shape the reciprocal of the horizontal baseline and
+// the reciprocal of the cross product have the identical mantissa. gs-shape swept
+// the height alone, which the exact gradient does not contain: if the denominator
+// were the baseline every height would draw the same row. Silicon's rows move --
+// up to 340 of 442 readings between two heights -- while two heights a power of
+// two apart stay byte-identical. Across four shape classes, including one whose
+// cross product is neither edge's length, the cross product's truncated reciprocal
+// explains 93.7% to 96.3% where the exact quotient explains 56% to 81%, the peak
+// in the width is sharp (74.9% at seven bits, 96.2% at eight, 80.8% at nine) and
+// truncation beats rounding at the same width by thirty points.
+//
+// Taken in double so the reciprocal's own rounding sits far below the granularity
+// being modelled, then the mantissa truncated toward zero to eight significant
+// binary digits -- one implicit leading bit and seven stored ones, which on a
+// binary64 is the low forty-five fraction bits cleared. The conversion back to
+// float is exact: eight significant bits fit a binary32 with room to spare.
+//
+// This file compiles with the project-wide -ffp-contract=fast, and the rule is
+// deliberately immune to it: the truncation is an integer mask, which no fused
+// multiply-add can absorb, and the multiply that consumes the result has nothing
+// to fuse with. Contraction still reaches the mul-subs below exactly as it
+// already reached the divides they replace -- a rounding at 2^-24, twenty-four
+// binades under the granularity being modelled.
+__forceinline static GSVector4 TruncatedSetupReciprocal(const GSVector4& cross)
+{
+	double r = 1.0 / static_cast<double>(cross.x);
+	u64 bits;
+
+	std::memcpy(&bits, &r, sizeof(bits));
+	bits &= ~((static_cast<u64>(1) << 45) - 1);
+	std::memcpy(&r, &bits, sizeof(r));
+
+	return GSVector4(static_cast<float>(r));
 }
 
 // The depth gradients are formed from the PLANE, in double, not from the float32
@@ -1068,6 +1111,32 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 
 	out.dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	GSVertexSW dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
+
+	// Colour and fog are formed again on silicon's truncated reciprocal; s, t, q
+	// and the position lanes keep the exact quotient above.
+	//
+	// The split is not a hedge, it is what the console reads. On the same height
+	// sweep, at heights where the truncated reciprocal would put a sampled texture
+	// coordinate in a different sixteenth of a texel on 206 of 221 pixels and move
+	// a depth value by more than a whole per-pixel step, silicon's coordinates and
+	// depths do not move at all -- and this renderer's exact quotient scores
+	// 100.00% against it on both sections. Colour and fog move at every height
+	// where the model says they should.
+	//
+	// Depth would be immune anyway: FormDepthGradients below overwrites the double
+	// lane from the plane. The texture lanes would not have been, which is why the
+	// two are separated here rather than left to the vector they share with fog.
+	{
+		const GSVector4 dxy01r = dxy01 * TruncatedSetupReciprocal(cross);
+		const GSVector4 scan_t = dv1.t * dxy01r.yyyy() - dv0.t * dxy01r.wwww();
+		const GSVector4 edge_t = dv0.t * dxy01r.zzzz() - dv1.t * dxy01r.xxxx();
+
+		out.dscan.c = dv1.c * dxy01r.yyyy() - dv0.c * dxy01r.wwww();
+		dedge.c = dv0.c * dxy01r.zzzz() - dv1.c * dxy01r.xxxx();
+		// blend32<8> keeps x, y, z -- s, t and q -- and takes only w, the fog.
+		out.dscan.t = out.dscan.t.blend32<8>(scan_t);
+		dedge.t = dedge.t.blend32<8>(edge_t);
+	}
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], out.dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(out.dscan.p);
