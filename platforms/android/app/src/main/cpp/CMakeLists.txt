@@ -38,9 +38,16 @@ set(ARMSX2_USE_ADRENOTOOLS ON CACHE BOOL "" FORCE)
 # Same for the Oboe audio backend: SearchForStuff below adds the vendored
 # 3rdparty/oboe, and this is the only build that has it.
 set(ARMSX2_USE_OBOE ON CACHE BOOL "" FORCE)
-# This build vendors shaderc (3rdparty/shaderc) and links the `shaderc` target
-# below; pcsx2/CMakeLists.txt leaves Shaderc::shaderc_shared alone when it sees
-# this, so the two do not both end up on the link line.
+
+# This build vendors shaderc (3rdparty/shaderc) and links the `shaderc` target;
+# pcsx2/CMakeLists.txt leaves Shaderc::shaderc_shared alone when it sees this.
+#
+# Belt-and-braces, not load-bearing: this build's SearchForStuff only calls
+# find_package(Shaderc) in its "upstream desktop, not used by ARMSX2" branch, so
+# Shaderc::shaderc_shared is never created here and the TARGET test over there
+# already excludes us. It earns its keep the day this build's shaderc sourcing
+# changes - which is the day the two copies could otherwise both be linked, and
+# a duplicate-symbol pile is a poor way to find that out.
 set(ARMSX2_USE_BUNDLED_SHADERC ON CACHE BOOL "" FORCE)
 
 # The core's common/ and pcsx2/ CMakeLists guard on this sentinel (it is normally
