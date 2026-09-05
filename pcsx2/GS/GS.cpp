@@ -280,6 +280,12 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	}
 	else if (renderer != GSRendererType::SW)
 	{
+		// Verify-by-effect for measurement harnesses: a scorer should not trust the command
+		// line about which renderer a run used. It can read this line out of the emulog and
+		// refuse a run whose identity does not match what it asked for; without it a
+		// misconfigured run scores as whatever actually ran, under the name that was asked for.
+		Console.WriteLn("GS: Classic renderer active (renderer=%s)",
+			Pcsx2Config::GSOptions::GetRendererName(renderer));
 		GSClampUpscaleMultiplier(GSConfig);
 		g_gs_renderer = std::make_unique<GSRendererHW>();
 	}
