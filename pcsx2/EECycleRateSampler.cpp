@@ -10,6 +10,7 @@
 #include "VMManager.h"
 
 #include "common/Console.h"
+#include "common/Pcsx2Defs.h"
 #include "common/FileSystem.h"
 #include "common/HostSys.h"
 #include "common/Threading.h"
@@ -326,7 +327,11 @@ namespace
 		std::fflush(s_trace);
 	}
 
-	void CloseWindow()
+	// Deliberately not inlined into OnFrameThrottled(). It is a big function - the window
+	// arithmetic, an eligibility resolution, a trace row - and inlined it forces its whole
+	// register save and its 576-byte stack frame onto the per-frame path, which runs it
+	// thirty times for every once this does.
+	__noinline void CloseWindow()
 	{
 		EECycleRateSampler::WindowInputs in;
 		in.frames = s_frames;
@@ -352,7 +357,12 @@ namespace
 		// header's mode= says which run it was.
 		EECycleRateEligibility fed = eligibility;
 		if (s_shadow)
+		{
 			fed.enabled = true;
+			// ...and the reason column says so, rather than leaving the row claiming the
+			// governor is enabled next to a reason explaining that it is off.
+			why.enabled = "shadow mode: the switch is off and the controller is told it is on";
+		}
 
 		const EECycleRateDecision decision = s_controller.Update(sample, fed);
 
