@@ -47,6 +47,7 @@
 #include "common/Path.h"
 
 #include "arm64/microVU_ProgCache-arm64.h"
+#include "EECycleRate.h"
 
 // kMvuCompilerAbiVersion lives in microVU-arm64.h, but that header
 // also #includes the .inl files at the bottom — including it from
@@ -717,4 +718,70 @@ TEST(ProgCacheIndexFormatV3, tombstone_skipped_on_load)
 	EXPECT_EQ(pcs[0], 0x100u);
 
 	mVUProgCache::ResetForTest(1);
+}
+
+// ---------------------------------------------------------------------------
+// EE cycle rate in the options sentinel: a VU0-only code-generation input.
+//
+// mVUtestCycles applies the EE nominal-rate adjustment when compiling VU0 and
+// only VU0 — VU1's generated code has never depended on the EE cycle-rate
+// selector. The sentinel used to bake the selector for both indices anyway, so
+// changing the EE speedhack changed every VU1 program's identity and threw the
+// whole VU1 disk cache away for nothing. With a dynamic governor moving the
+// effective rate at runtime that would be a cache eviction per transition.
+//
+// These pin the property in both directions: VU0's identity must move with the
+// effective rate (its emitted cycle counts really do change), and VU1's must
+// not move at all.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	XXH128_hash_t SentinelAtEffectiveRate(u32 vu_index, int rate)
+	{
+		EmuConfig.Speedhacks.EECycleRate = static_cast<s8>(rate);
+		EECycleRate::SyncToConfigured();
+		XXH128_hash_t h{};
+		EXPECT_TRUE(mVUProgCache::TestBuildSentinelForIndex(vu_index, &h));
+		return h;
+	}
+
+	bool SameHash(const XXH128_hash_t& a, const XXH128_hash_t& b)
+	{
+		return a.low64 == b.low64 && a.high64 == b.high64;
+	}
+} // namespace
+
+TEST(MvuOptionsSentinelEECycleRate, Vu0IdentityFollowsTheEffectiveRate)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	const XXH128_hash_t at0  = SentinelAtEffectiveRate(0, 0);
+	const XXH128_hash_t atm1 = SentinelAtEffectiveRate(0, -1);
+	const XXH128_hash_t atm2 = SentinelAtEffectiveRate(0, -2);
+	const XXH128_hash_t at0_again = SentinelAtEffectiveRate(0, 0);
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+
+	EXPECT_FALSE(SameHash(at0, atm1)) << "VU0 emits different cycle counts at -1; its identity must say so";
+	EXPECT_FALSE(SameHash(atm1, atm2));
+	EXPECT_TRUE(SameHash(at0, at0_again)) << "the sentinel is not a pure function of the config";
+}
+
+TEST(MvuOptionsSentinelEECycleRate, Vu1IdentityIsInvariant)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	const XXH128_hash_t at0  = SentinelAtEffectiveRate(1, 0);
+	const XXH128_hash_t atm1 = SentinelAtEffectiveRate(1, -1);
+	const XXH128_hash_t atm2 = SentinelAtEffectiveRate(1, -2);
+	const XXH128_hash_t atp3 = SentinelAtEffectiveRate(1, 3);
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+
+	EXPECT_TRUE(SameHash(at0, atm1)) << "VU1 program identity moved with the EE cycle rate";
+	EXPECT_TRUE(SameHash(at0, atm2));
+	EXPECT_TRUE(SameHash(at0, atp3));
 }

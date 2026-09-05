@@ -123,6 +123,13 @@ namespace mVUProgCache
 	// versa).
 	bool TestGetLiveSentinel(u32 vu_index, XXH128_hash_t* out_sentinel);
 
+	// Test-only: the options sentinel the given VU hashes against, rebuilt from
+	// the live config rather than trusting the cached one. Unlike
+	// TestGetLiveSentinel it also does not require the microVU object to have
+	// been through mVUinit — it stamps the VU index itself — so a test TU with
+	// no VM behind it can still compare the two VUs' program identities.
+	bool TestBuildSentinelForIndex(u32 vu_index, XXH128_hash_t* out_sentinel);
+
 	// Test-only: block until the background payload preload spawned by Init
 	// (if any) has finished. Lets tests deterministically assert the RAM-
 	// served hydration path (e.g. by deleting the on-disk payload after the
