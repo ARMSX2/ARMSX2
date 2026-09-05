@@ -130,18 +130,6 @@ namespace GSDrawLog
 		rec.rt_alpha_max = static_cast<s16>(rt_max);
 	}
 
-	void NoteDATEModes(u8 adreno, u8 stencil, u8 selfcheck)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.flags2 |= Flags2DATEModes;
-		rec.date_mode_adreno = adreno;
-		rec.date_mode_stencil = stencil;
-		rec.date_mode_selfcheck = selfcheck;
-	}
-
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask,
 		const GSVector4i& draw_rect, const GSVector4i& valid_rect, const GSVector4i& erosion_rect,
 		u32 erosion_draw, u32 erosion_count)
@@ -657,7 +645,6 @@ namespace GSDrawLog
 			"area_x,area_y,area_w,area_h,"
 			"sample_x,sample_y,sample_w,sample_h,"
 			"src_alpha_min,src_alpha_max,rt_alpha_min,rt_alpha_max,"
-			"date_mode_adreno,date_mode_stencil,date_mode_selfcheck,"
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
@@ -774,21 +761,6 @@ namespace GSDrawLog
 			else
 			{
 				std::fprintf(fp.get(), ",,,,");
-			}
-
-			if (r.flags2 & Flags2DATEModes)
-			{
-				std::fprintf(fp.get(), "%s,%s,%s,",
-					GSGetDestinationAlphaModeName(
-						static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.date_mode_adreno)),
-					GSGetDestinationAlphaModeName(
-						static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.date_mode_stencil)),
-					GSGetDestinationAlphaModeName(
-						static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.date_mode_selfcheck)));
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,");
 			}
 
 			std::fprintf(fp.get(), "%s,", GetTargetEventName(r.evt_kind));

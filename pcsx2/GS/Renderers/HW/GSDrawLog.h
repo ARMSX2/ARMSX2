@@ -97,14 +97,6 @@ namespace GSDrawLog
 		s16 rt_alpha_min;
 		s16 rt_alpha_max;
 
-		/// Census scaffolding: the DestinationAlphaMode this draw would take on the Adreno
-		/// feature set, on the same set with a stencil buffer, and on this device (the last
-		/// is the self-check -- it must equal destination_alpha). Filled only for draws that
-		/// reach the DATE method selection; Flags2DATEModes says which those are.
-		u8 date_mode_adreno;
-		u8 date_mode_stencil;
-		u8 date_mode_selfcheck;
-
 		/// Which render target the draw wrote, and how it touched that target's alpha.
 		///
 		/// fb_addr names the address the draw asked for; it does not name the target
@@ -336,11 +328,10 @@ namespace GSDrawLog
 	enum Flags2 : u8
 	{
 		Flags2AlphaRanges = 1 << 0, ///< src_alpha_* / rt_alpha_* were filled
-		Flags2DATEModes = 1 << 1, ///< date_mode_* were filled
-		Flags2RTAlpha = 1 << 2, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
-		Flags2Event = 1 << 3, ///< the row is a target event, not a draw; see evt_kind
-		Flags2TFXCall = 1 << 4, ///< the row is one TFX draw call, not a draw; see tfx_*
-		Flags2SpriteRect = 1 << 5, ///< the row is one primitive of a draw, not a draw; see spr_*
+		Flags2RTAlpha = 1 << 1, ///< rt_id / rt_alpha_flags / rt_fbmask_a were filled
+		Flags2Event = 1 << 2, ///< the row is a target event, not a draw; see evt_kind
+		Flags2TFXCall = 1 << 3, ///< the row is one TFX draw call, not a draw; see tfx_*
+		Flags2SpriteRect = 1 << 4, ///< the row is one primitive of a draw, not a draw; see spr_*
 	};
 
 	/// Which of a GS draw's TFX calls a row is. The main call is the draw proper; the others
@@ -531,10 +522,6 @@ namespace GSDrawLog
 	/// open row. Both are read where the renderer already computes them; nothing here
 	/// evaluates them a second time.
 	void NoteAlphaRanges(int src_min, int src_max, int rt_min, int rt_max);
-
-	/// Records the DATE road this draw would take on the two hypothetical feature sets and on
-	/// this device, on the open row. Census scaffolding; see Record::date_mode_adreno.
-	void NoteDATEModes(u8 adreno, u8 stencil, u8 selfcheck);
 
 	/// Records which target the draw is about to write and how it touched its alpha, on the
 	/// open row. Read where CalculateAlphaRange already has all of it in hand.
