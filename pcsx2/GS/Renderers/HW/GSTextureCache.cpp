@@ -126,9 +126,10 @@ void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 		m_target_memory_usage = 0;
 
 		// Nothing is left to display from. On the savestate / GS-dump path that gets here,
-		// local memory has just been replaced wholesale too, so until a target exists it is
-		// the only copy of the picture there is. See LookupDisplayTarget.
-		m_no_target_since_purge = true;
+		// local memory has just been replaced wholesale too, so until something the renderer
+		// has drawn reaches the screen it is the only copy of the picture there is. See
+		// LookupDisplayTarget.
+		m_no_display_hit_since_purge = true;
 	}
 
 	if (hash_cache)
@@ -3374,8 +3375,6 @@ GSTextureCache::Target* GSTextureCache::CreateTarget(GIFRegTEX0 TEX0, const GSVe
 	if (!dst) [[unlikely]]
 		return nullptr;
 
-	m_no_target_since_purge = false;
-
 	const bool was_clear = PreloadTarget(TEX0, size, valid_size, is_frame, preload, preserve_target, draw_rect, dst, src);
 
 	dst->m_is_frame = is_frame;
@@ -4155,11 +4154,20 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 	}
 	
 	if (dst)
+	{
+		// Something the renderer drew is on screen from here on, so the cold-start rule below
+		// is done: a later display that finds nothing means the game has not produced that
+		// buffer yet, not that the picture is sitting in local memory.
+		if (!is_feedback)
+			m_no_display_hit_since_purge = false;
+
 		return dst;
+	}
 
 	// Didn't find a target, check if the frame was uploaded.
 
 	bool can_create = is_feedback;
+	bool refused_by_transfer = false;
 	bool exact_match = false;
 	u32 exact_match_psm = 0;
 	GSVector2i new_size = size;
@@ -4194,6 +4202,7 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 				if (iter->transfer_type == GSRendererHW::GetInstance()->EEGS_TransferType::Clear && iter->draw == last_draw)
 				{
 					can_create = false;
+					refused_by_transfer = true;
 					break;
 				}
 
@@ -4231,18 +4240,19 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 				++iter;
 		}
 	}
-	else if (!is_feedback && m_no_target_since_purge)
-	{
-		// No target, and no upload to build one from either. Normally that means the game has
-		// not produced this frame yet and there is nothing to show. With an empty cache it
-		// means the opposite: the cache was purged, which on the savestate / GS-dump path also
-		// replaced local memory wholesale, and nothing has rendered since -- so the picture is
-		// in local memory and only a frame target preloaded from it can present it. A GS dump
-		// that captures a still frame (Dirge of Cerberus 20260721214308 issues no draws and no
-		// transfers at all) otherwise presents nothing under the hardware renderer, while the
-		// software renderer, which scans local memory directly, draws it.
+
+	// Nothing above found a target or an upload to build one from. Normally that means the game
+	// has not produced this frame yet and there is nothing to show. Before the first display hit
+	// since a purge it means the opposite: the purge came with local memory being replaced
+	// wholesale (savestate or GS-dump load), and nothing the renderer has drawn has reached the
+	// screen yet, so the buffer the CRTC is pointing at was filled before the snapshot and lives
+	// only in local memory. Only a frame target preloaded from it can present it. Double-buffered
+	// games hit this on the first pass over a dump: the buffer shown at the first vsync was drawn
+	// before the capture started, while the draws that have run since went to the other buffer.
+	// A transfer that just cleared the area is left alone -- that is a decision about this frame,
+	// not an absence of one.
+	if (!can_create && !refused_by_transfer && !is_feedback && m_no_display_hit_since_purge)
 		can_create = true;
-	}
 
 	if (can_create)
 	{

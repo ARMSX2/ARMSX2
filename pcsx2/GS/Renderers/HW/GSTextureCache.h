@@ -496,11 +496,12 @@ protected:
 	FastList<TargetHeightElem> m_target_heights;
 	u64 m_target_memory_usage = 0;
 
-	/// True from the moment RemoveAll() empties the target lists until the next target is
-	/// created. Only LookupDisplayTarget reads it: while it holds, the cache has nothing, so
-	/// a display that finds no target and no upload to build one from has to come from local
-	/// memory. Deliberately not a draw counter -- this costs nothing per draw.
-	bool m_no_target_since_purge = false;
+	/// True from the moment RemoveAll() empties the target lists until a display lookup first
+	/// finds a target to present. Only LookupDisplayTarget touches it: while it holds, nothing
+	/// the hardware renderer has drawn has reached the screen yet, so a display that finds no
+	/// target and no upload to build one from has to come from local memory. Deliberately a
+	/// display-path fact rather than a draw counter -- this costs nothing per draw.
+	bool m_no_display_hit_since_purge = false;
 
 	int m_expected_src_bp = -1;
 	int m_remembered_src_bp = -1;
