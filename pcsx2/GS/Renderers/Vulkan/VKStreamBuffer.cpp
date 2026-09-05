@@ -170,12 +170,21 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// 16 frames to be touched end to end, and each of those pages faults on its first write
 	// whenever that lap gets to it. One store per page over the whole mapped range up front pays
 	// that once, before anything is being timed.
-	std::memset(ai.pMappedData, 0, ai.size);
-	if (m_non_coherent)
+	//
+	// Not on a discrete GPU. There the host-visible ring lives behind the PCIe BAR rather than in
+	// system memory, so there is no page to fault in and the memset is 72 MiB of write-combined
+	// stores across the bus buying nothing -- paid again on every device recreation (renderer
+	// switch, fullscreen toggle). Integrated and mobile parts, which is where the fault cost was
+	// measured, keep it.
+	if (GSDeviceVK::GetInstance()->GetDeviceProperties().deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
 	{
-		// Same cache clean CommitMemory would issue for this range, so the pre-touch doesn't
-		// leave dirty lines the GPU could read stale.
-		vmaFlushAllocation(GSDeviceVK::GetInstance()->GetAllocator(), new_allocation, 0, ai.size);
+		std::memset(ai.pMappedData, 0, ai.size);
+		if (m_non_coherent)
+		{
+			// Same cache clean CommitMemory would issue for this range, so the pre-touch doesn't
+			// leave dirty lines the GPU could read stale.
+			vmaFlushAllocation(GSDeviceVK::GetInstance()->GetAllocator(), new_allocation, 0, ai.size);
+		}
 	}
 
 	return true;
