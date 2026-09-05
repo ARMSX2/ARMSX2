@@ -606,10 +606,6 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// the driver and not the silicon. A source check of 259 Turnip commits between 26.1.2 and main
 	// (2026-09-04) finds no blend-constant fix, and the factor mapping and constant emission are
 	// byte-identical between the two, so there is nothing to wait for or to bound the top at.
-	//
-	// Evidence, including the capture and the applied-factor solve: umbrella
-	// devs/bmdhacks/campaigns/gs-exactness-round/classic-fixes/katamari-turnip-overbright/RESULT.md
-	// sections D1 to D4.
 	{"vk-turnip-blend-constant-ignored", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBlendConstant), 0},
@@ -619,8 +615,7 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// draw exactly, so the first DATE draw of a run is enough. Round 20260903-0135 on an A650 /
 	// turnip 26.1.2: 8 of 8 titles lost the device in 6-9 s, and the devcoredump latches
 	// Z_MODE = A6XX_EARLY_Z_LATE_Z, DEPTH_FORMAT = DEPTH6_32 + SEPARATE_STENCIL and our DATM
-	// stencil op set -- decode in umbrella
-	// devs/bmdhacks/campaigns/gs-classic-tiler/phase3-adreno-stencil-date/CRASHDEC.md. Fixed by
+	// stencil op set. Fixed by
 	// Mesa a70d2af590d ("tu/a6xx: Work around D32S8 EARLY_Z_LATE_Z hang", MR !41858), which
 	// demotes the z-mode to LATE_Z; in main and 26.2, in no 26.1.x.
 	//

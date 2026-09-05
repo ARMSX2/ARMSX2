@@ -22,8 +22,8 @@
 // run history, not anything the draw carries, so no emission change reaches it; re-emitting the
 // constant before every draw that reads it (17 -> 58 vkCmdSetBlendConstants a frame) moves zero
 // pixels. Reproduced on Adreno 650 and 610 (Mesa 26.1.2) and Adreno 740 (26.3.0-devel), with the
-// Qualcomm blob correct on the same silicon. Evidence and the RenderDoc solve of the applied factor:
-// umbrella devs/bmdhacks/campaigns/gs-exactness-round/classic-fixes/katamari-turnip-overbright/.
+// Qualcomm blob correct on the same silicon; the applied factor was solved out of a RenderDoc
+// capture over 648 texels and comes out at 1.0 where the state asks for 1/128.
 //
 // So on a device the driver-bug database marks BrokenBlendConstant, stop asking for the constant and
 // send the same number through the second output. That is a pure rewrite of the blend state plus one

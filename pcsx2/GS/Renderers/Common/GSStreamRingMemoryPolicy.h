@@ -16,8 +16,7 @@
 // is not a free choice. An uncached store is only fast if the core's store buffer merges adjacent
 // writes into full bursts, and the small in-order-ish cores this emulator targets merge badly.
 //
-// What the devices said (rung T1, 2026-09-03, records under
-// devs/bmdhacks/campaigns/gs-classic-tiler/sd662-tier/):
+// What the devices said (a keyed corpus round on three parts, 2026-09-03):
 //
 //   * MQ65 (Adreno 610, Turnip 26.1.2) offers NO cached coherent host-visible type. Moving the
 //     rings to the cached NON-coherent type, paying the per-region flush CommitMemory already

@@ -28,8 +28,7 @@
 // have not resolved. Which of them have resolved by the time the sample executes is the driver's
 // scheduling, not program order. Measured on an Anbernic RG 477V (Mali-G615 r44p1) with fetch
 // forced on: MGS3 and OutRun 2006 render differently every run, and they are the only two titles
-// in the 22-dump corpus that read their own render target at an offset (census
-// devs/bmdhacks/campaigns/gs-classic-tiler/phase2-0-fetch-ini/NONDETERMINISM-CENSUS.md).
+// in the 22-dump corpus that read their own render target at an offset.
 //
 // So: on a device whose destination read is in-tile, an offset read of the target takes the copy.
 //

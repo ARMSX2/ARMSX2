@@ -89,7 +89,7 @@ enum : u32
 	// byte-identical frames at this size on both devices. At this size the
 	// vertex ring holds about seven stuntman frames; a further halving
 	// (quarter of original) starts waiting on the texture ring on
-	// flatout2/bgda2. Record: umbrella devs/bmdhacks/campaigns/gs-classic-tiler/ring-size-sweep/RESULT.md
+	// flatout2/bgda2.
 	VERTEX_BUFFER_SIZE = 16 * 1024 * 1024,
 	INDEX_BUFFER_SIZE = 8 * 1024 * 1024,
 	VERTEX_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024,
