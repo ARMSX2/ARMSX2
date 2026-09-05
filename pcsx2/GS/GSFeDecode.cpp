@@ -494,6 +494,9 @@ namespace GSFeDecode
 				Console.Error(fmt::format("GSFeDecode: write failed at event {} ({}); recording "
 										  "disarmed and '{}' is incomplete",
 					s_state.event_index, TypeName(type), s_state.path));
+				// A truncated recording is unusable; report it the way a diff
+				// divergence is reported so the run exits non-zero.
+				s_state.diverged = true;
 				Disarm();
 				return;
 			}

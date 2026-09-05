@@ -31,8 +31,8 @@
 // tests below hold both halves, because a fix that spreads is as wrong as one
 // that does not land.
 //
-// Capture: hardware-oracle/captures/gs-shape, SCPH-30001, GS revision 0x15,
-// two byte-identical console runs.
+// Capture: the gs-shape console capture, SCPH-30001, GS revision 0x15, two
+// byte-identical console runs.
 //
 // The rule lives in GSRasterizer::DrawTriangle, which has an ARM64/SSE4 body and an
 // AVX2 twin, so this runs on both hosts: on x86 it is the AVX2 twin that is on trial.

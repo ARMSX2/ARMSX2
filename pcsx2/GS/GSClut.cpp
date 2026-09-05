@@ -436,7 +436,10 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 				const u32 dst_size = is_4bit ? 16 : 256;
 				// Entry width by bit 1 of CPSM, the same decode the expansion above
 				// uses, so the undocumented CPSM values land on the same side here
-				// as they do there.
+				// as they do there. The CSA mask here is the reverse of the CPU
+				// expansion's (five bits for 32-bit palettes, four for 16-bit); that is
+				// upstream's and unmeasured, and after the refusal above it only
+				// matters for CSA above 15, which no capture has exercised.
 				const u32 dOffset = (TEX0.CSA & ((TEX0.CPSM & 0x2) ? 15u : 31u)) << 4;
 
 				if (src != m_current_gpu_clut && (src != m_last_gpu_clut || m_gpu_clut_last_offset != offset))
