@@ -989,6 +989,7 @@ struct GSTriangleSetup
 	int bottom[2];
 	int nsections;
 	int i[3];       // y-sorted vertex indices
+	int top_prim;   // ceil(y) of the sorted top vertex, before the scissor clamp
 	GSVector4 cross; // the (negated, broadcast) cross product, for the edge-AA orientation
 };
 
