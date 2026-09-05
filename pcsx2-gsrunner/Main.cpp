@@ -1112,8 +1112,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto.\n");
-	std::fprintf(stderr, "  -variant <auto|classic>: Selects the HW renderer variant. This build has only the "
-						 "classic renderer, so both values are the same run; any other value is an error.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1462,25 +1460,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				Console.WriteLn("Using %s renderer.", Pcsx2Config::GSOptions::GetRendererName(type));
 				s_settings_interface.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(type));
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-variant"))
-			{
-				// This tree has exactly one hardware renderer, so the only variant it can run is
-				// the one it already runs. The flag exists so a measurement harness that names the
-				// arm on the command line works here unchanged -- and so that an arm this tree
-				// cannot run FAILS THE RUN instead of quietly being measured as Classic under
-				// another name, which is how a comparison ends up reporting two identical arms.
-				const char* vname = argv[++i];
-				if (StringUtil::Strcasecmp(vname, "auto") != 0 && StringUtil::Strcasecmp(vname, "classic") != 0)
-				{
-					ArgError("-variant: unknown HW renderer variant '{}' -- this build has only the classic "
-							 "renderer (accepted: auto, classic).",
-						vname);
-					return false;
-				}
-
-				Console.WriteLn("Using classic HW renderer variant.");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-backthread"))
