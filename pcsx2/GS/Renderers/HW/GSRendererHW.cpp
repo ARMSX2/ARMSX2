@@ -7797,13 +7797,21 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			// dual-source GPUs do not. Refuse them here too: an approximation with no upper bound
 			// on its error is not a blending-accuracy trade, it is a wrong picture.
 			//
-			// Deliberately not gated on (no_prim_overlap || barriers_supported) the way
-			// blend_requires_barrier is: force_sw_blending takes the no-dual-source GPUs down this
-			// same road with no such gate, and that is the arm measured correct on all six. A GPU
-			// with neither a barrier nor an in-tile read gets one pre-draw destination snapshot for
-			// the whole draw, so overlapping primitives composite one draw stale -- which is still
-			// bounded, where dropping the destination term is not.
-			sw_blending |= blend_mix_alpha_over_one;
+			// A GPU with neither a barrier nor an in-tile read gets one pre-draw destination
+			// snapshot for the whole draw, so a draw whose own primitives overlap composites
+			// everything after the first primitive against colour the earlier ones already replaced.
+			// That error is not small: on Ace Combat 5's cloud sprites it is 67 levels over a tenth
+			// of the frame, against the 25 levels of the hardware mix it replaced. So exclude
+			// PRIM_OVERLAP_YES there and leave those draws the old approximation, which is the lesser
+			// error and costs nothing.
+			//
+			// Not the (no_prim_overlap || barriers_supported) idiom above: that demands a positive
+			// PRIM_OVERLAP_NO, and no draw this line promotes is NO on any dump we measure, so that
+			// spelling would make the promotion inert wherever there is no barrier. UNKNOWN stays
+			// promoted, which is the point -- Black's flicker strips and Brian Lara's pitch are
+			// UNKNOWN, and force_sw_blending takes the no-dual-source GPUs down this same road with
+			// no gate at all, which is the arm measured correct on all six.
+			sw_blending |= blend_mix_alpha_over_one && (barriers_supported || m_prim_overlap != PRIM_OVERLAP_YES);
 			// Do not run BLEND MIX if sw blending is already present, it's less accurate.
 			blend_mix &= !sw_blending;
 			sw_blending |= blend_mix;
