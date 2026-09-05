@@ -59,7 +59,13 @@ namespace GSLadder
 			// PSMCT24 shares PSMCT32's addressing and its unused byte rides along, which
 			// is more information rather than less. The 16- and 4/8-bit formats would
 			// need their own readers and no render target we chase uses them.
-			return psm == 0x00 || psm == 0x01 || psm == 0x30 || psm == 0x31;
+			//
+			// The Z formats are NOT here even though they are 32- and 24-bit: PSMZ32/24
+			// swizzle through PixelAddress32Z, a different block layout from the colour
+			// table this reads with. Accepting them would compare a correctly
+			// deswizzled console rung against a locally mis-addressed one, and every
+			// rung would differ for a reason that is neither renderer.
+			return psm == 0x00 || psm == 0x01;
 		}
 
 		/// Runs on the GS thread, in order behind every packet queued before it.
@@ -171,7 +177,7 @@ namespace GSLadder
 		}
 		if (!IsWordFormat(opts.psm))
 		{
-			LADDER_LOG("refusing: format %u is not one this reads (32- and 24-bit only)\n", opts.psm);
+			LADDER_LOG("refusing: format %u is not one this reads (PSMCT32/24 only)\n", opts.psm);
 			return false;
 		}
 
