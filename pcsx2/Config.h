@@ -1179,7 +1179,7 @@ struct Pcsx2Config
 		};
 
 		static constexpr s32 MAX_VOLUME = 200;
-#ifdef __ANDROID__
+#ifdef ARMSX2_USE_OBOE
 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Oboe;
 #else
 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Cubeb;
