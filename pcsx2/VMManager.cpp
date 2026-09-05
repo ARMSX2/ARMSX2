@@ -755,8 +755,20 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	// a frontend also wrote the mask — only iOS does. This is what makes MaskUserHacks()
 	// below spare it, so the value survives long enough for the database to be told to
 	// leave it alone.
+	//
+	// The two cycle-rate claims come from the same read. They are key presence, not
+	// value comparison: a per-game EECycleRate that happens to equal the global one is
+	// still the player saying "this game runs at this rate", and the dynamic governor
+	// has to leave it alone.
+	EmuConfig.PerGameClaimsEECycleRate = false;
+	EmuConfig.PerGameClaimsDynamicEECycleRate = false;
 	if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-		EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
+	{
+		const PerGameOverrides overrides = ComputePerGameOverrides(*game_layer);
+		EmuConfig.GS.UserHackOverrides |= overrides.gs_hacks;
+		EmuConfig.PerGameClaimsEECycleRate = overrides.Has(SpeedHack::EECycleRate);
+		EmuConfig.PerGameClaimsDynamicEECycleRate = overrides.Has(SpeedHack::DynamicEECycleRate);
+	}
 
 	Patch::ApplyPatchSettingOverrides();
 
@@ -858,6 +870,11 @@ void VMManager::WarnAboutUnconfiguredController()
 
 void VMManager::ApplyGameFixes()
 {
+	// Cleared here rather than where it is set, because the setter only runs when a
+	// database entry exists. Every path out of this function has to leave the flag
+	// saying what THIS apply found, including the paths that find nothing.
+	EmuConfig.GameDBSetEECycleRate = false;
+
 	if (!HasBootedELF() && !GSDumpReplayer::IsReplayingDump())
 	{
 		// Instant DMA needs to be on for this BIOS (font rendering is broken without it, possible cache issues).

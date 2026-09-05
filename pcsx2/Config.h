@@ -1660,6 +1660,21 @@ struct Pcsx2Config
 	float CurrentCustomAspectRatio = 0.f;
 	bool IsPortableMode = false;
 
+	// Where the resolved EE cycle rate came from, which is not something the resolved
+	// integer can answer: the same -1 can be the global default, a game database entry,
+	// or a key the player wrote for this game, and only the first of those is a value
+	// nobody has staked a compatibility claim on. Comparing the final value against the
+	// global one gets this wrong every time the two happen to agree.
+	//
+	// The dynamic governor is the consumer: it may only move a rate nobody claimed.
+	//
+	// Re-derived on every settings apply and never loaded, saved or copied — see the
+	// deliberate absence from CopyRuntimeConfig(), which would otherwise carry a stale
+	// answer across the config rebuild that ApplySettings() does.
+	bool GameDBSetEECycleRate = false;
+	bool PerGameClaimsEECycleRate = false;
+	bool PerGameClaimsDynamicEECycleRate = false;
+
 	Pcsx2Config();
 	void LoadSave(SettingsWrapper& wrap);
 	void LoadSaveCore(SettingsWrapper& wrap);
