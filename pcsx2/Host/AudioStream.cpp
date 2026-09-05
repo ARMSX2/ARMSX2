@@ -119,7 +119,7 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
 		case AudioBackend::SDL:
 			return CreateSDLAudioStream(sample_rate, parameters, stretch_enabled, error);
 
-#ifdef __ANDROID__
+#ifdef ARMSX2_USE_OBOE
 		case AudioBackend::Oboe:
 			return CreateOboeAudioStream(sample_rate, parameters, stretch_enabled, error);
 #endif
