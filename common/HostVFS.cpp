@@ -5,6 +5,8 @@
 #include "common/Console.h"
 
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 // The libretro VFS access flags, kept here rather than pulled from libretro.h:
 // common/ does not depend on the core.
@@ -40,20 +42,42 @@ const HostVFS::Ops* HostVFS::GetOps()
 	return s_installed ? &s_ops : nullptr;
 }
 
+namespace
+{
+	// The exact size of a file, which the host's stat() cannot give: its size
+	// argument is 32 bits wide, so a 4 GB DVD image comes back reporting a few
+	// megabytes of it. size() is the 64-bit one, and it wants an open handle.
+	s64 ExactSizeOf(const char* path)
+	{
+		if (!s_ops.size || !s_ops.open || !s_ops.close)
+			return -1;
+
+		void* handle = s_ops.open(path, VFS_ACCESS_READ, 0 /* RETRO_VFS_FILE_ACCESS_HINT_NONE */);
+		if (!handle)
+			return -1;
+
+		const s64 size = s_ops.size(handle);
+		s_ops.close(handle);
+		return (size < 0) ? -1 : size;
+	}
+} // namespace
+
 bool HostVFS::StatPath(const char* path, bool* is_directory, s64* size)
 {
 	if (!s_installed || !s_ops.stat)
 		return false;
 
-	s32 file_size = 0;
-	const int flags = s_ops.stat(path, &file_size);
+	s32 truncated_size = 0;
+	const int flags = s_ops.stat(path, &truncated_size);
 	if (!(flags & STAT_IS_VALID))
 		return false;
 
+	const bool directory = (flags & STAT_IS_DIRECTORY) != 0;
 	if (is_directory)
-		*is_directory = (flags & STAT_IS_DIRECTORY) != 0;
+		*is_directory = directory;
+	// Deliberately not truncated_size - see ExactSizeOf() above.
 	if (size)
-		*size = static_cast<s64>(file_size);
+		*size = directory ? 0 : ExactSizeOf(path);
 	return true;
 }
 
@@ -95,8 +119,36 @@ namespace
 		}
 	}
 
+	// The wrapped streams. A cookie stream has no file descriptor - fileno()
+	// on one returns -1 - so the few callers in FileSystem that would fstat()
+	// a std::FILE* have to ask the host about the handle behind it instead,
+	// and that is the only thing this maps. A handful of entries at most, and
+	// only touched on open and close.
+	std::mutex s_streams_lock;
+	std::vector<std::pair<std::FILE*, void*>> s_streams;
+
+	void RememberStream(std::FILE* fp, void* handle)
+	{
+		std::unique_lock lock(s_streams_lock);
+		s_streams.emplace_back(fp, handle);
+	}
+
+	void ForgetStream(void* handle)
+	{
+		std::unique_lock lock(s_streams_lock);
+		for (auto it = s_streams.begin(); it != s_streams.end(); ++it)
+		{
+			if (it->second == handle)
+			{
+				s_streams.erase(it);
+				return;
+			}
+		}
+	}
+
 	int CookieClose(void* cookie)
 	{
+		ForgetStream(cookie);
 		const HostVFS::Ops* ops = HostVFS::GetOps();
 		return (ops && ops->close) ? ops->close(cookie) : 0;
 	}
@@ -162,10 +214,12 @@ namespace
 		return (res < 0) ? -1 : static_cast<int>(res);
 	}
 
-#if defined(__APPLE__)
-	using FunopenOffset = fpos_t;
-#else
+	// bionic has funopen64 and 64-bit off64_t callbacks; Apple and the BSDs
+	// have only funopen, whose callbacks take fpos_t (64-bit on both).
+#if defined(__BIONIC__)
 	using FunopenOffset = off64_t;
+#else
+	using FunopenOffset = fpos_t;
 #endif
 
 	FunopenOffset CookieSeekF(void* cookie, FunopenOffset offset, int whence)
@@ -183,10 +237,10 @@ namespace
 	std::FILE* WrapHandle(void* handle, const char* mode)
 	{
 		const bool writable = (std::strchr(mode, 'w') || std::strchr(mode, 'a') || std::strchr(mode, '+'));
-#if defined(__APPLE__)
-		return funopen(handle, CookieReadF, writable ? CookieWriteF : nullptr, CookieSeekF, CookieClose);
-#else
+#if defined(__BIONIC__)
 		return funopen64(handle, CookieReadF, writable ? CookieWriteF : nullptr, CookieSeekF, CookieClose);
+#else
+		return funopen(handle, CookieReadF, writable ? CookieWriteF : nullptr, CookieSeekF, CookieClose);
 #endif
 	}
 
@@ -218,10 +272,44 @@ std::FILE* HostVFS::OpenAsCFile(const char* path, const char* mode)
 		return nullptr;
 	}
 
+	RememberStream(fp, handle);
 	return fp;
 #else
 	// No fopencookie and no funopen: nothing to build a std::FILE* out of, so
 	// the caller falls back to the OS.
 	return nullptr;
+#endif
+}
+
+bool HostVFS::SizeOfCFile(std::FILE* fp, s64* size)
+{
+#if defined(HOSTVFS_HAVE_FILE_WRAPPER)
+	if (!s_installed || !s_ops.size || !fp)
+		return false;
+
+	void* handle = nullptr;
+	{
+		std::unique_lock lock(s_streams_lock);
+		for (const auto& [stream, stream_handle] : s_streams)
+		{
+			if (stream == fp)
+			{
+				handle = stream_handle;
+				break;
+			}
+		}
+	}
+
+	if (!handle)
+		return false;
+
+	const s64 res = s_ops.size(handle);
+	if (res < 0)
+		return false;
+
+	*size = res;
+	return true;
+#else
+	return false;
 #endif
 }

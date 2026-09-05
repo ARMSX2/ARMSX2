@@ -40,7 +40,8 @@ namespace HostVFS
 		int (*truncate)(void* handle, s64 length);
 
 		/// Returns a bitmask: 1 = exists, 2 = directory, 4 = character device.
-		/// size receives the file size, in bytes.
+		/// size receives the file size, in bytes - but only 32 bits of it, so
+		/// it is never read for a size. size() below is the 64-bit one.
 		int (*stat)(const char* path, s32* size);
 		int (*mkdir)(const char* dir);
 
@@ -72,8 +73,21 @@ namespace HostVFS
 	/// Opens a file through the host and wraps it in a std::FILE*, so every
 	/// existing caller keeps working unchanged. Returns nullptr if the host
 	/// cannot open it, or if this platform has no way to build such a wrapper.
+	///
+	/// The stream has no file descriptor - fileno() on it returns -1 - so the
+	/// handful of callers that need one ask SizeOfCFile() instead of fstat().
 	std::FILE* OpenAsCFile(const char* path, const char* mode);
 
+	/// The size of a stream OpenAsCFile() returned, from the host's own 64-bit
+	/// size(). False when this is not one of ours, or the host cannot say.
+	bool SizeOfCFile(std::FILE* fp, s64* size);
+
 	/// stat(), for the callers that only want the answers FileSystem asks for.
+	///
+	/// *size is the exact 64-bit size, which costs an open: the frontend's
+	/// stat() reports only 32 bits of it, and a PS2 DVD image does not fit in
+	/// those. It is set to -1 when the host cannot answer exactly, and the
+	/// caller should then ask the OS. Pass nullptr when the size is not wanted
+	/// - existence and directory-ness cost one call either way.
 	bool StatPath(const char* path, bool* is_directory, s64* size);
 } // namespace HostVFS

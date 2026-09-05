@@ -9,19 +9,25 @@ namespace
 {
 	GLContextLibretro::GetProcAddressCallback s_get_proc_address = nullptr;
 	GLContextLibretro::GetFramebufferCallback s_get_framebuffer = nullptr;
+	GLContext::Version s_version = {};
 } // namespace
 
 GLContextLibretro::GLContextLibretro(const WindowInfo& wi)
 	: GLContext(wi)
 {
+	// Nothing is negotiated here - the context already exists, and this is the
+	// flavour the core asked the frontend for.
+	m_version = s_version;
 }
 
 GLContextLibretro::~GLContextLibretro() = default;
 
-void GLContextLibretro::SetCallbacks(GetProcAddressCallback get_proc_address, GetFramebufferCallback get_framebuffer)
+void GLContextLibretro::SetCallbacks(GetProcAddressCallback get_proc_address, GetFramebufferCallback get_framebuffer,
+	Profile profile, int major_version, int minor_version)
 {
 	s_get_proc_address = get_proc_address;
 	s_get_framebuffer = get_framebuffer;
+	s_version = {profile, major_version, minor_version};
 }
 
 bool GLContextLibretro::IsAvailable()

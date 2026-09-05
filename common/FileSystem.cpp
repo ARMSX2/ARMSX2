@@ -1390,7 +1390,15 @@ std::span<const u8> FileSystem::MapBinaryFileForRead(std::FILE* fp)
 #ifdef _WIN32
 	return ::MapBinaryFileForRead(reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(fp))));
 #else
-	return ::MapBinaryFileForRead(fileno(fp));
+	// A host-opened stream has no descriptor to map, and mmap() must not be
+	// handed the -1 that comes back - the path-taking version above guards the
+	// same way. There is nothing to fall back to here: the caller reads the
+	// file instead when this returns empty.
+	const int fd = fileno(fp);
+	if (fd < 0)
+		return {};
+
+	return ::MapBinaryFileForRead(fd);
 #endif
 }
 
@@ -2287,9 +2295,10 @@ static u32 RecursiveFindFilesVFS(const char* OriginPath, const char* ParentPath,
 				continue;
 
 			// Only the size is worth a second call, and only for files that
-			// are going to be returned.
+			// are going to be returned. A negative one means the host could
+			// not say exactly, and zero is the honest answer then.
 			s64 size = 0;
-			if (HostVFS::StatPath(full_path.c_str(), nullptr, &size))
+			if (HostVFS::StatPath(full_path.c_str(), nullptr, &size) && size > 0)
 				outData.Size = static_cast<u64>(size);
 		}
 
@@ -2475,7 +2484,7 @@ bool FileSystem::FindFiles(const char* path, const char* pattern, u32 flags, Fin
 	// be walked with opendir(). Frontends that offer files but not directories
 	// leave opendir null, and those fall through to the OS below.
 	if (HostVFS::IsInstalled() && HostVFS::GetOps()->opendir && HostVFS::GetOps()->readdir &&
-		HostVFS::GetOps()->dirent_get_name && HostVFS::GetOps()->closedir)
+		HostVFS::GetOps()->dirent_get_name && HostVFS::GetOps()->dirent_is_dir && HostVFS::GetOps()->closedir)
 	{
 		if (RecursiveFindFilesVFS(path, nullptr, nullptr, pattern, flags, results, cancel) == 0)
 			return false;
@@ -2522,7 +2531,19 @@ bool FileSystem::StatFile(std::FILE* fp, struct stat* st)
 {
 	const int fd = fileno(fp);
 	if (fd < 0)
-		return false;
+	{
+		// A host-opened stream has no descriptor. Only the size is knowable
+		// through the host's interface, so that is all that gets filled in -
+		// enough for the callers that ask this to size a buffer.
+		s64 size = 0;
+		if (!HostVFS::SizeOfCFile(fp, &size))
+			return false;
+
+		std::memset(st, 0, sizeof(*st));
+		st->st_mode = S_IFREG;
+		st->st_size = static_cast<off_t>(size);
+		return true;
+	}
 
 	return fstat(fd, st) == 0;
 }
@@ -2543,6 +2564,16 @@ bool FileSystem::StatFile(const char* path, FILESYSTEM_STAT_DATA* sd)
 		s64 size = 0;
 		if (HostVFS::StatPath(path, &is_directory, &size))
 		{
+			if (size < 0)
+			{
+				// The host knows the path exists but cannot give an exact
+				// size. The OS still can, for any path it can see - which is
+				// everything except the content:// and network URIs the host
+				// is here for in the first place.
+				struct stat sysStatData;
+				size = (stat(path, &sysStatData) == 0) ? static_cast<s64>(sysStatData.st_size) : 0;
+			}
+
 			sd->CreationTime = 0;
 			sd->ModificationTime = 0;
 			sd->Attributes = is_directory ? FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY : 0;
@@ -2577,7 +2608,20 @@ bool FileSystem::StatFile(std::FILE* fp, FILESYSTEM_STAT_DATA* sd)
 {
 	const int fd = fileno(fp);
 	if (fd < 0)
-		return false;
+	{
+		// As above: no descriptor behind a host stream, and the host answers
+		// for the size. ELF loading from a host path is the caller that made
+		// this show up - it opens through OpenCFile and stats the result.
+		s64 size = 0;
+		if (!HostVFS::SizeOfCFile(fp, &size))
+			return false;
+
+		sd->CreationTime = 0;
+		sd->ModificationTime = 0;
+		sd->Attributes = 0;
+		sd->Size = size;
+		return true;
+	}
 
 	// stat file
 	struct stat sysStatData;
@@ -2685,6 +2729,57 @@ bool FileSystem::DirectoryIsEmpty(const char* path)
 	return true;
 }
 
+// The host's mkdir, which reports "already exists" as -2 and success as 0.
+static bool HostMkdir(const char* path)
+{
+	const int res = HostVFS::GetOps()->mkdir(path);
+	return (res == 0 || res == -2);
+}
+
+// CreateDirectoryPath through the host. Its own function rather than a branch
+// inside the OS one because the two cannot share the error handling: the host
+// sets no errno, so everything the OS path does after a failed mkdir() - the
+// EEXIST check, the ENOENT recursion, the Android permission retry - would be
+// reading whatever the last unrelated library call happened to leave behind.
+// The recursive case is also the one that matters (a fresh data folder), and
+// it has to walk the segments through the host as well: calling the OS for
+// them cannot work on a content:// URI.
+static bool CreateDirectoryPathVFS(const char* path, size_t pathLength, bool recursive, Error* error)
+{
+	// might work as-is, if there are no missing segments above it
+	if (HostMkdir(path))
+		return true;
+
+	if (!recursive)
+	{
+		Error::SetStringView(error, "Host mkdir() failed.");
+		return false;
+	}
+
+	std::string tempPath;
+	tempPath.reserve(pathLength);
+
+	for (size_t i = 0; i < pathLength; i++)
+	{
+		if (i > 0 && path[i] == '/' && !HostMkdir(tempPath.c_str()))
+		{
+			Error::SetStringView(error, "Host mkdir() failed.");
+			return false;
+		}
+
+		tempPath.push_back(path[i]);
+	}
+
+	// and the last segment, when the path does not end in a separator
+	if (path[pathLength - 1] != '/' && !HostMkdir(path))
+	{
+		Error::SetStringView(error, "Host mkdir() failed.");
+		return false;
+	}
+
+	return true;
+}
+
 bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* error)
 {
 	// has a path
@@ -2692,18 +2787,12 @@ bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* er
 	if (pathLength == 0)
 		return false;
 
-	// try just flat-out, might work if there's no other segments that have to be made
 	if (HostVFS::IsInstalled() && HostVFS::GetOps()->mkdir)
-	{
-		// 0 is success, -2 is "already exists" in the frontend's interface.
-		const int res = HostVFS::GetOps()->mkdir(path);
-		if (res == 0 || res == -2)
-			return true;
-	}
-	else if (mkdir(path, 0777) == 0)
-	{
+		return CreateDirectoryPathVFS(path, pathLength, recursive, error);
+
+	// try just flat-out, might work if there's no other segments that have to be made
+	if (mkdir(path, 0777) == 0)
 		return true;
-	}
 
 	// check error
 	int lastError = errno;

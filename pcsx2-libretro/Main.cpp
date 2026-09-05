@@ -1342,7 +1342,20 @@ static u32 GLGetCurrentFramebuffer()
 
 static void OnGLContextReset(void)
 {
-	GLContextLibretro::SetCallbacks(GLGetProcAddress, GLGetCurrentFramebuffer);
+	// The flavour goes with the callbacks: it is what GLContext::Create picks
+	// the desktop or the ES entry-point loader from, and what GSDeviceOGL asks
+	// before it decides which GL feature set it is allowed to use. It is the
+	// context type asked for in retro_load_game, since that is what the
+	// frontend has just made current.
+	const GLContext::Profile profile =
+		(s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES2 ||
+			s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES3 ||
+			s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION) ?
+			GLContext::Profile::ES :
+			GLContext::Profile::Core;
+
+	GLContextLibretro::SetCallbacks(GLGetProcAddress, GLGetCurrentFramebuffer, profile,
+		static_cast<int>(s_gl_hw_render.version_major), static_cast<int>(s_gl_hw_render.version_minor));
 	LibretroCore::s_context_ready.store(true, std::memory_order_release);
 }
 
@@ -1387,49 +1400,82 @@ RETRO_API unsigned retro_api_version(void)
 // everything reached through the Storage Access Framework (content:// URIs)
 // and everything on a network share - which is to say most of a user's games.
 //
-// Version 3 is asked for because that is where stat(), mkdir() and directory
-// iteration arrive; the frontend answers with the version it actually has, and
-// the members above it stay null, so an older frontend still gets file access
-// and simply falls back to the OS for the rest.
+// The interface itself, so the trampolines below can reach it: HostVFS::Ops
+// is typed in terms of void* handles, because common/ does not get to know
+// what libretro is, and casting the frontend's function pointers to that shape
+// would be undefined - the truncate one differs in return type, not just in
+// pointer types, and the compiler says so. Small forwarders instead.
+static retro_vfs_interface* s_vfs = nullptr;
+
 static void InstallFrontendVFS(retro_environment_t cb)
 {
-	retro_vfs_interface_info info = {3, nullptr};
-	if (!cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &info) || !info.iface)
+	// Descending, because the contract is all-or-nothing: "if the core asks
+	// for a newer VFS API version than the frontend supports, the frontend
+	// must return false". Asking only for 3 - where stat(), mkdir() and the
+	// directory iterator live - would mean a pre-v3 frontend hands back
+	// nothing at all rather than the file half, and the Android storage
+	// support this exists for is exactly what runs on those.
+	unsigned version = 0;
+	for (const unsigned wanted : {3u, 2u, 1u})
+	{
+		retro_vfs_interface_info info = {wanted, nullptr};
+		if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &info) && info.iface)
+		{
+			// The frontend answers with what it actually has, which can be
+			// newer than what was asked for.
+			version = std::max(wanted, info.required_interface_version);
+			s_vfs = info.iface;
+			break;
+		}
+	}
+
+	if (!s_vfs)
 		return;
 
-	const unsigned version = info.required_interface_version;
-	retro_vfs_interface* iface = info.iface;
-
 	HostVFS::Ops ops = {};
-	ops.open = reinterpret_cast<void* (*)(const char*, unsigned, unsigned)>(iface->open);
-	ops.close = reinterpret_cast<int (*)(void*)>(iface->close);
-	ops.size = reinterpret_cast<s64 (*)(void*)>(iface->size);
-	ops.tell = reinterpret_cast<s64 (*)(void*)>(iface->tell);
-	ops.seek = reinterpret_cast<s64 (*)(void*, s64, int)>(iface->seek);
-	ops.read = reinterpret_cast<s64 (*)(void*, void*, u64)>(iface->read);
-	ops.write = reinterpret_cast<s64 (*)(void*, const void*, u64)>(iface->write);
-	ops.flush = reinterpret_cast<int (*)(void*)>(iface->flush);
-	ops.remove = iface->remove;
-	ops.rename = iface->rename;
+	ops.open = [](const char* path, unsigned mode, unsigned hints) -> void* {
+		return s_vfs->open(path, mode, hints);
+	};
+	ops.close = [](void* handle) { return s_vfs->close(static_cast<retro_vfs_file_handle*>(handle)); };
+	ops.size = [](void* handle) -> s64 { return s_vfs->size(static_cast<retro_vfs_file_handle*>(handle)); };
+	ops.tell = [](void* handle) -> s64 { return s_vfs->tell(static_cast<retro_vfs_file_handle*>(handle)); };
+	ops.seek = [](void* handle, s64 offset, int whence) -> s64 {
+		return s_vfs->seek(static_cast<retro_vfs_file_handle*>(handle), offset, whence);
+	};
+	ops.read = [](void* handle, void* buffer, u64 length) -> s64 {
+		return s_vfs->read(static_cast<retro_vfs_file_handle*>(handle), buffer, length);
+	};
+	ops.write = [](void* handle, const void* buffer, u64 length) -> s64 {
+		return s_vfs->write(static_cast<retro_vfs_file_handle*>(handle), buffer, length);
+	};
+	ops.remove = s_vfs->remove;
+	ops.rename = s_vfs->rename;
 
-	if (version >= 2)
-		ops.truncate = reinterpret_cast<int (*)(void*, s64)>(iface->truncate);
+	// flush() and truncate() are deliberately not wired up: nothing in the
+	// tree asks for either through this path.
 
 	if (version >= 3)
 	{
-		ops.stat = iface->stat;
-		ops.mkdir = iface->mkdir;
-		ops.opendir = reinterpret_cast<void* (*)(const char*, bool)>(iface->opendir);
-		ops.readdir = reinterpret_cast<bool (*)(void*)>(iface->readdir);
-		ops.dirent_get_name = reinterpret_cast<const char* (*)(void*)>(iface->dirent_get_name);
-		ops.dirent_is_dir = reinterpret_cast<bool (*)(void*)>(iface->dirent_is_dir);
-		ops.closedir = reinterpret_cast<int (*)(void*)>(iface->closedir);
+		ops.stat = s_vfs->stat;
+		ops.mkdir = s_vfs->mkdir;
+		ops.opendir = [](const char* dir, bool include_hidden) -> void* {
+			return s_vfs->opendir(dir, include_hidden);
+		};
+		ops.readdir = [](void* handle) { return s_vfs->readdir(static_cast<retro_vfs_dir_handle*>(handle)); };
+		ops.dirent_get_name = [](void* handle) {
+			return s_vfs->dirent_get_name(static_cast<retro_vfs_dir_handle*>(handle));
+		};
+		ops.dirent_is_dir = [](void* handle) { return s_vfs->dirent_is_dir(static_cast<retro_vfs_dir_handle*>(handle)); };
+		ops.closedir = [](void* handle) { return s_vfs->closedir(static_cast<retro_vfs_dir_handle*>(handle)); };
 	}
 
 	HostVFS::Install(ops);
 
 	if (log_cb)
-		log_cb(RETRO_LOG_INFO, "Using the frontend's VFS (interface version %u)\n", version);
+	{
+		log_cb(RETRO_LOG_INFO, "Using the frontend's VFS (interface version %u)%s\n", version,
+			(version >= 3) ? "" : " - files only, the OS answers for directories and stat()");
+	}
 }
 
 RETRO_API void retro_set_environment(retro_environment_t cb)
