@@ -335,10 +335,15 @@ void GSDumpReplayerCpuStep()
 						Console.Error("GSDumpReplayer: Path1Old transfer exceeds 16KB buffer. Skipping transfer");
 						break;
 					}
-					std::unique_ptr<u8[]> data(new u8[16384]);
-					const size_t addr = 16384 - packet.length;
-					std::memcpy(data.get(), packet.data + addr, packet.length);
-					GSDumpReplayerSendPacketToMTGS(GIF_PATH_1, data.get(), packet.length);
+					// The dump stores exactly packet.length bytes for this packet, so
+					// the transfer is packet.data[0, length). This used to read from
+					// packet.data + (16384 - length): that offset is the VU1 address the
+					// bytes came FROM on the console, not an offset into the packet, so
+					// the read walked into the following packets' bytes and, for a short
+					// packet at the end of a dump, past the end of the buffer entirely.
+					// The staging copy that offset needed went with it -- the send path
+					// copies into the GIF path's own ring anyway.
+					GSDumpReplayerSendPacketToMTGS(GIF_PATH_1, packet.data, packet.length);
 				}
 				break;
 

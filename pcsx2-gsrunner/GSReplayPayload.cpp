@@ -700,15 +700,22 @@ namespace GSReplayPayload
 					if (packet.length == 0)
 						break;
 
-					// A wrapped PATH1 packet is recorded as the tail of VU1 memory; the
-					// replayer reads it from the offset the length implies, and so do we.
+					// The dump stores exactly packet.length bytes per Transfer packet,
+					// back to back in one buffer, so the transfer IS packet.data[0,
+					// length). The old PATH1 encoding names the VU1-memory offset the
+					// bytes came FROM, which is 16384 - length; that is a source address
+					// on the console, not an offset into the packet, and adding it here
+					// would read the following packets' bytes (or past the end of the
+					// last one). A length that could not have fitted the buffer it
+					// claims to come from is a corrupt packet, so refuse it rather than
+					// clamp and emit something plausible.
 					const u8* data = packet.data;
-					size_t length = packet.length;
-					if (packet.path == GSDumpTypes::GSTransferPath::Path1Old)
+					const size_t length = packet.length;
+					if (packet.path == GSDumpTypes::GSTransferPath::Path1Old && length > 16384)
 					{
-						if (length > 16384)
-							length = 16384;
-						data = packet.data + (16384 - length);
+						Console.Error("GSReplayPayload: PATH1 transfer of %zu bytes exceeds the 16KB VU1 buffer; skipping.",
+							length);
+						break;
 					}
 
 					TrackGifPath(data, length);
