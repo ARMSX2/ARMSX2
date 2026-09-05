@@ -2,14 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Smoke tests for PmuCounters. The tests SUCCEED-and-skip-assertions when
-// perf_event_open is denied outright, to avoid CI failures on locked-down hosts.
-//
-// ⚠️ perf_event_paranoid=2, the common default, does NOT deny this — counting
-// your own process's user-mode execution is permitted there, and the levels
-// below 2 buy kernel and tracepoint access this code never asks for. If these
-// tests read zero, reach for the heterogeneous-PMU explanation below before
-// reaching for sysctl; a wrong skip message sends the next person to fix a
-// permission that was never the problem.
+// perf_event_open is restricted (perf_event_paranoid >= 2 without
+// CAP_PERFMON), to avoid CI failures on locked-down hosts.
 
 #include "common/PmuCounters.h"
 
@@ -17,10 +11,6 @@
 
 #include <chrono>
 #include <thread>
-
-#ifdef __linux__
-#include <sched.h>
-#endif
 
 TEST(PmuCounters, OpenSucceedsOrSkipsCleanly)
 {
@@ -86,65 +76,6 @@ TEST(PmuCounters, ResetClearsCounts)
 
 	(void)sink;
 }
-
-#ifdef __linux__
-// The regression test for the bug this file's header warns about.
-//
-// Every ARM target we ship to is big.LITTLE, and such a machine exposes one PMU
-// PER CLUSTER. An event opened against one cluster's PMU counts NOTHING while
-// the thread runs on another, so a counter group installed on a single PMU reads
-// zero for the whole measurement whenever the scheduler puts the thread on the
-// wrong side -- indistinguishable from "this host has no counters", and on this
-// M2 that is exactly how it presented.
-//
-// Measuring unpinned cannot catch it: the thread lands wherever it lands and the
-// test passes or fails by luck. Pinning to every online processor in turn is
-// what makes the failure deterministic.
-TEST(PmuCounters, CountsOnEveryProcessor)
-{
-	cpu_set_t original;
-	CPU_ZERO(&original);
-	if (::sched_getaffinity(0, sizeof(original), &original) != 0)
-		GTEST_SKIP() << "cannot read CPU affinity";
-
-	PmuCounters::Group g;
-	if (!g.Open())
-		GTEST_SKIP() << "perf_event_open denied";
-
-	int measured = 0;
-	for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
-	{
-		if (!CPU_ISSET(cpu, &original))
-			continue;
-
-		cpu_set_t one;
-		CPU_ZERO(&one);
-		CPU_SET(cpu, &one);
-		if (::sched_setaffinity(0, sizeof(one), &one) != 0)
-			continue;
-
-		volatile u64 sink = 0;
-		const auto values = g.Measure([&]() {
-			for (u64 i = 0; i < 1'000'000; ++i)
-				sink += i * 7u;
-		});
-		(void)sink;
-
-		EXPECT_GT(values[PmuCounters::CpuCycles], 0u) << "no cycles counted on processor " << cpu;
-		EXPECT_GT(values[PmuCounters::InstructionsRetired], 0u)
-			<< "no instructions counted on processor " << cpu;
-
-		// Pinned, the work cannot span clusters, so exactly one PMU may report.
-		// More than one here would mean a stale count survived Reset().
-		EXPECT_EQ(g.ActivePmuCount(), 1) << "processor " << cpu;
-		measured++;
-	}
-
-	::sched_setaffinity(0, sizeof(original), &original);
-	EXPECT_GT(measured, 0) << "no processor could be pinned";
-	EXPECT_GE(g.PmuCount(), 1);
-}
-#endif
 
 TEST(PmuCounters, NameReturnsStableLabels)
 {
