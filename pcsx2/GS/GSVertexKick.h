@@ -294,11 +294,20 @@ namespace GSVertexKernels
 
 			if constexpr (LayoutIsTriple(L))
 			{
+				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branch above");
+
 				const GSVector4i st = GSVector4i::loadl(&rv[off_a].U64[0]);
 				GSVector4i q = GSVector4i::loadl(&rv[off_a].U64[1]);
 				const GSVector4i rgba =
 					(GSVector4i::load<false>(&rv[LayoutOffRgba<L>(off)]) & GSVector4i::x000000ff()).ps32().pu16();
 				q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+				// GIFPackedRegHandlerSTQ applies a second fix-up, NaN to FLT_MAX,
+				// and the next RGBAQ write copies the fixed-up latch into the
+				// vertex. So the per-qword path this layout replaces puts the
+				// replaced value in the vertex, and so must we. (The two
+				// contiguous triples above skip it; that divergence is inherited
+				// from upstream and is pinned as it stands.)
+				q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
 				m0 = st.upl64(rgba.upl32(q));
 			}
 			else
@@ -361,10 +370,26 @@ namespace GSVertexKernels
 			// m[0].
 			if constexpr (LayoutIsTriple(L))
 			{
+				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branches above");
+
 				const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(rv + off_a)),
 					vld1q_u8(reinterpret_cast<const u8*>(rv + LayoutOffRgba<L>(off)))};
 				uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
 				v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
+
+				// The second STQ fix-up: a NaN Q becomes FLT_MAX. pat_m0 puts Q in
+				// lane 3, so the compare's other three lanes -- S, T and the packed
+				// colour, any of which can carry a NaN bit pattern -- are masked
+				// out. FCMEQ is false for a NaN operand, so BIC of the lane mask
+				// with it leaves ones only in a lane 3 that is NaN, and BSL takes
+				// FLT_MAX there and the parsed bits everywhere else.
+				// See the portable branch above for why this layout needs it and
+				// the contiguous triples do not.
+				const float32x4_t f = vreinterpretq_f32_u32(v0);
+				const uint32x4_t q_lane = vsetq_lane_u32(0xFFFFFFFFu, vdupq_n_u32(0), 3);
+				const uint32x4_t q_is_nan = vbicq_u32(q_lane, vceqq_f32(f, f));
+				v0 = vbslq_u32(q_is_nan, vreinterpretq_u32_f32(vdupq_n_f32(FLT_MAX)), v0);
+
 				m0 = GSVector4i(vreinterpretq_s32_u32(v0));
 			}
 			else if constexpr (L == PackedLayout::PairSTQXYZ2)

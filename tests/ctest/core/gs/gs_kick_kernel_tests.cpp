@@ -2079,11 +2079,10 @@ TEST(GsKickKernel, LayoutsPickUpAnEnvironmentMovingUnderTheRun)
 // a NaN to GSVector4::m_max before latching it, and a layout that carries an ST
 // descriptor has to leave the same value behind.
 //
-// The vertex's own Q lane is a different question for the triple layouts: the
-// shipped fused triple takes only the zero fix-up into the vertex, so the
-// NOP-padded triple takes only the zero fix-up too -- deliberately, to be the
-// same parse. That is why the NaN case below drives the pair layout, whose Q is
-// carried, and asserts only the latch for the triple.
+// The vertex's own Q lane takes both fix-ups too on the layouts stage 3c added,
+// because the per-qword path they replace copies the fixed-up latch into the
+// vertex on the next RGBAQ write. So NaN is driven through the full comparison
+// here, not excluded from it.
 TEST(GsKickKernel, LayoutQLatchTakesTheStqFixups)
 {
 	for (float q : {0.0f, -0.0f, std::numeric_limits<float>::quiet_NaN(), 3.5f})
@@ -2099,34 +2098,28 @@ TEST(GsKickKernel, LayoutQLatchTakesTheStqFixups)
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
 			KickSetup{}, GS_SPRITE, kPairSTQ, v, {8u});
 
-		if (!std::isnan(q))
+		// The NOP-padded triple, vertex bytes and latch both, against the
+		// per-qword replay -- NaN included.
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
+			KickSetup{}, GS_TRIANGLESTRIP, kNopTriple40, v, {8u});
+
+		if (std::isnan(q))
 		{
-			RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
-				KickSetup{}, GS_TRIANGLESTRIP, kNopTriple40, v, {8u});
-		}
-		else
-		{
-			// The inherited divergence, pinned so it cannot drift further: the
-			// NOP-padded triple leaves the same vertex bytes as the shipped
-			// contiguous triple, and the same latch as the per-qword path.
+			// The contiguous triple is the one place the NaN fix-up is still
+			// skipped: its parse predates this branch and upstream x86 has the
+			// same hole, so it is left alone and pinned here instead. If this
+			// ever starts failing, upstream changed and the NOP-padded layout's
+			// special case above can go away with it.
 			const AutoFlushGuard af(GSHWAutoFlushLevel::Disabled);
 			auto a = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
-			auto b = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
 			SeedLatchedState(*a);
-			SeedLatchedState(*b);
-			const std::vector<GIFPackedReg> nop = EncodeLayoutStream(v, kNopTriple40.descs);
 			const std::vector<GIFPackedReg> flat = EncodeStream(v, true);
-			a->KickLayoutCall<GS_TRIANGLESTRIP, GSVertexKernels::PackedLayout::NopTripleXYZF2>(
-				nop.data(), static_cast<u32>(nop.size()), kNopTriple40.off);
-			b->KickCall<GS_TRIANGLESTRIP>(flat.data(), static_cast<u32>(flat.size()), true);
-			EXPECT_TRUE(SameBytes("vertex buffer", a->m_vertex->buff, b->m_vertex->buff,
-				sizeof(GSVertex) * a->m_vertex->tail));
-			// The latch itself IS exact against the per-qword path.
-			auto c = MakeProbe(KickSetup{}, GS_TRIANGLESTRIP, true);
-			SeedLatchedState(*c);
-			c->ReplayPerQword(kNopTriple40.descs, nop.data(), static_cast<u32>(nop.size()));
-			EXPECT_EQ(std::isnan(a->m_q), std::isnan(c->m_q));
-			EXPECT_EQ(a->m_q, c->m_q);
+			a->KickCall<GS_TRIANGLESTRIP>(flat.data(), static_cast<u32>(flat.size()), true);
+			ASSERT_GT(a->m_vertex->tail, 0u);
+			EXPECT_TRUE(std::isnan(a->m_vertex->buff[0].RGBAQ.Q));
+			// Its latch is raw too -- the shipped handler assigns the last
+			// record's Q straight across, so neither fix-up reaches it.
+			EXPECT_TRUE(std::isnan(a->m_q));
 		}
 	}
 }
