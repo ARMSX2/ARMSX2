@@ -127,23 +127,53 @@ TEST(GSDepthWalk, BiasMovesIntegerLandingsAndNothingElse)
 // walk a function of the plane and the pixel, which is what a fragment shader (and
 // silicon) can compute.
 
-#ifdef ARCH_ARM64
+// The rasterizer is compiled per-ISA. This section drives the real one, so it needs a
+// build that has an isa_native -- ARM64, or an x86 build with DISABLE_ADVANCE_SIMD off.
+// A multi-ISA x86 build compiles the rasterizer into isa_sse4/isa_avx/isa_avx2 and
+// cannot even include the header.
+#ifndef MULTI_ISA_SHARED_COMPILATION
 
+#include "GS/MultiISA.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
+#include "GS/Renderers/SW/GSScanlineEnvironment.h"
+#include "GS/Renderers/SW/GSVertexSW.h"
 
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace
 {
+	// What one run of the rasterizer says about the plane it walked: the per-pixel
+	// step the setup formed, and the z seed of every row the walk emitted.
+	struct WalkRecord
+	{
+		bool setup_ran = false;
+		double dscan_z = 0.0;
+		std::vector<std::pair<int, double>> rows; // (top, z at the span's first pixel)
+	};
+
+	WalkRecord g_rec;
+
+	void RecordSetup(const GSVertexSW*, const u16*, const GSVertexSW& dscan, GSScanlineLocalData&)
+	{
+		g_rec.setup_ran = true;
+		g_rec.dscan_z = dscan.p.F64[1];
+	}
+
+	void RecordSpan(int, int, int top, const GSVertexSW& scan, GSScanlineLocalData&)
+	{
+		g_rec.rows.emplace_back(top, scan.p.F64[1]);
+	}
+
 	// A flat-topped right triangle: A=(x0,y) B=(x1,y) C=(x0,y+h) in pixels, with z as
 	// the caller says. The gs-block anchor shape.
 	void MakeAnchorTriangle(GSVertexSW* v, float x0, float x1, float y, float h, double za, double zb)
 	{
 		for (int i = 0; i < 3; i++)
 		{
-			v[i].p = GSVector4::zero();
-			v[i].t = GSVector4::zero();
-			v[i].c = GSVector4::zero();
+			v[i] = GSVertexSW::zero();
+			v[i].p.F64[1] = 0.0;
 		}
 		v[0].p.x = x0;
 		v[0].p.y = y;
@@ -156,6 +186,38 @@ namespace
 		v[2].p.F64[1] = za;
 	}
 
+	// Draw the triangle through the real rasterizer, with the two callbacks standing in
+	// for the generated scanline. Nothing here compiles a scanline: what is under test
+	// is the setup's own arithmetic and the walk's own geometry.
+	const WalkRecord& WalkTriangle(GSVertexSW* v)
+	{
+		static const u16 index[3] = {0, 1, 2};
+
+		g_rec = WalkRecord();
+
+		isa_native::GSRasterizerData data;
+		data.primclass = GS_TRIANGLE_CLASS;
+		data.vertex = v;
+		data.vertex_count = 3;
+		data.index = const_cast<u16*>(index);
+		data.index_count = 3;
+		data.scissor = GSVector4i(0, 0, 640, 448);
+		data.bbox = GSVector4i(0, 0, 640, 448);
+		data.global.sel.key = 0;
+		data.global.sel.zb = 1;
+		data.setup_prim = &RecordSetup;
+		data.draw_scanline = &RecordSpan;
+		// ⚠️ nullptr, deliberately. HasEdge() is "is there an edge callback", not "is
+		// AA1 on", and a triangle with one runs a SECOND Flush carrying a zeroed dscan.
+		data.draw_edge = nullptr;
+
+		isa_native::GSRasterizer r(nullptr, 0, 1);
+		r.Draw(data);
+
+		EXPECT_TRUE(g_rec.setup_ran) << "the setup callback never ran, so nothing was measured";
+		return g_rec;
+	}
+
 	double TruncStep(double g) { return std::trunc(g * 1024.0) / 1024.0; }
 } // namespace
 
@@ -164,18 +226,16 @@ TEST(GSDepthWalk, GradientIsThePlanesNotTheTriangles)
 	// The gs-block anchor sweep, set 0: plane z = (x - 8.5) * 100000/3, left edge at
 	// 8.5 + k for k in {0,3,...,21}, right vertex fixed at 98.5. Same plane, eight
 	// triangles, one truncated gradient.
-	const GSVector4 fscissor_y = GSVector4(0.0f, 448.0f, 0.0f, 448.0f); // GSVector4(scissor).ywyw(): top, bottom, top, bottom
 	const double exact = 100000.0 / 3.0;
 	const double want = TruncStep(exact);
 	for (int k = 0; k <= 21; k += 3)
 	{
 		GSVertexSW v[3];
 		MakeAnchorTriangle(v, 8.5f + k, 98.5f, 16.0f, 30.0f, k * 100000.0 / 3.0, 90 * 100000.0 / 3.0);
-		isa_native::GSTileZPlane zp;
-		ASSERT_TRUE(isa_native::GSComputeTriangleZPlane(v, fscissor_y, zp)) << "k=" << k;
-		EXPECT_EQ(zp.dscan_z, want) << "k=" << k << ": the walk's step must be the truncation of the "
-									   "exact gradient; a step above it lets the walk overtake "
-									   "the plane and integer landings read N instead of N-1";
+		EXPECT_EQ(WalkTriangle(v).dscan_z, want)
+			<< "k=" << k << ": the walk's step must be the truncation of the exact "
+			   "gradient; a step above it lets the walk overtake the plane and integer "
+			   "landings read N instead of N-1";
 	}
 }
 
@@ -183,16 +243,13 @@ TEST(GSDepthWalk, GradientTruncatesTheExactSlopeAtEveryWidth)
 {
 	// Sweep the triangle width so 1/dx rounds both ways in float32; the truncated
 	// gradient must not follow the rounding.
-	const GSVector4 fscissor_y = GSVector4(0.0f, 448.0f, 0.0f, 448.0f); // GSVector4(scissor).ywyw(): top, bottom, top, bottom
 	int wrong = 0;
 	for (int dx = 8; dx <= 200; dx++)
 	{
 		const double slope = 100000.0 / 3.0;
 		GSVertexSW v[3];
 		MakeAnchorTriangle(v, 8.5f, 8.5f + dx, 16.0f, 30.0f, 0.0, dx * slope);
-		isa_native::GSTileZPlane zp;
-		ASSERT_TRUE(isa_native::GSComputeTriangleZPlane(v, fscissor_y, zp)) << "dx=" << dx;
-		if (zp.dscan_z != TruncStep(slope))
+		if (WalkTriangle(v).dscan_z != TruncStep(slope))
 			wrong++;
 	}
 	EXPECT_EQ(wrong, 0) << "widths whose float32 reciprocal rounded the gradient onto the wrong 2^-10 step";
@@ -200,9 +257,11 @@ TEST(GSDepthWalk, GradientTruncatesTheExactSlopeAtEveryWidth)
 
 TEST(GSDepthWalk, EdgeGradientTruncatesTheExactSlopeAtEveryHeight)
 {
-	// The same for the row step along the edge: a plane with a pure Y gradient,
-	// carried by triangles of different height.
-	const GSVector4 fscissor_y = GSVector4(0.0f, 448.0f, 0.0f, 448.0f); // GSVector4(scissor).ywyw(): top, bottom, top, bottom
+	// The same for the row step along the edge, read off the walk itself: a plane with
+	// a pure Y gradient, carried by triangles of different height. The left edge is
+	// vertical and the pixel step is zero, so the difference between two consecutive
+	// rows' seeds IS the edge step -- and the seed bias is a constant off the first
+	// row, so it cancels in the difference.
 	int wrong = 0;
 	for (int h = 4; h <= 120; h++)
 	{
@@ -211,17 +270,18 @@ TEST(GSDepthWalk, EdgeGradientTruncatesTheExactSlopeAtEveryHeight)
 		// A=(8.5,16) z=0, B=(98.5,16) z=0, C=(8.5,16+h) z=h*slope -> dz/dy = slope, dz/dx = 0
 		MakeAnchorTriangle(v, 8.5f, 98.5f, 16.0f, static_cast<float>(h), 0.0, 0.0);
 		v[2].p.F64[1] = h * slope;
-		isa_native::GSTileZPlane zp;
-		ASSERT_TRUE(isa_native::GSComputeTriangleZPlane(v, fscissor_y, zp)) << "h=" << h;
-		ASSERT_GE(zp.nsections, 1);
-		// dedge_z is carried at full precision (not truncated) -- it must be the exact
-		// slope to double rounding, not a float32-coefficient product.
-		if (std::abs(zp.sec[0].dedge_z - slope) > slope * 1e-12)
+
+		const WalkRecord& rec = WalkTriangle(v);
+		ASSERT_GE(rec.rows.size(), 3u) << "h=" << h;
+
+		// Rows 1 and 2, so both carry the same bias and it subtracts out.
+		const double step = rec.rows[2].second - rec.rows[1].second;
+		if (std::abs(step - slope) > slope * 1e-12)
 			wrong++;
-		if (zp.dscan_z != 0.0)
+		if (rec.dscan_z != 0.0)
 			wrong++;
 	}
 	EXPECT_EQ(wrong, 0) << "heights whose float32 reciprocal moved the row step or leaked into the pixel step";
 }
 
-#endif // ARCH_ARM64
+#endif // MULTI_ISA_SHARED_COMPILATION

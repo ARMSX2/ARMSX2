@@ -15,37 +15,6 @@ MULTI_ISA_UNSHARED_START
 
 class GSDrawScanline;
 
-/// The depth plane of one triangle, as the scanline pipeline would interpolate it —
-/// extracted by the SAME compiled setup body GSRasterizer::DrawTriangle runs, so the
-/// values carry every rounding the software renderer's setup performs (the fp32
-/// barycentric division, the fused multiply-adds the compiler chose, the truncation of
-/// the scan gradient onto the 2^-10 grid). The Tile renderer transports these per
-/// primitive and replays the scanline's per-fragment walk in-shader; anything that
-/// changes how the gradient is FORMED in DrawTriangle propagates here by construction.
-struct GSTileZPlaneSection
-{
-	float edge_x;   // left-edge x seed at the section's reference row (pre-ceil)
-	float dedge_x;  // left-edge x step per row
-	float p0x, p0y; // the section's reference vertex position (dy/prestep origin)
-	double zseed;   // z at the reference vertex (always an exact vertex value)
-	double dedge_z; // z step per row along the edge (full precision, not quantised)
-	int top, bottom; // scissor-clamped row range [top, bottom)
-};
-
-struct GSTileZPlane
-{
-	GSTileZPlaneSection sec[2];
-	double dscan_z;  // z step per pixel, already truncated onto the 2^-10 grid
-	float dscan_z32; // the fp32 narrowing SetupPrim performs once per primitive for the lane offsets
-	int nsections;
-};
-
-/// Computes the depth plane for one triangle (three GSVertexSW, in kick order) through
-/// GSRasterizer's own triangle setup. Returns false for triangles the rasterizer would
-/// not draw (degenerate y-order or zero cross product) — the caller must treat those as
-/// planeless. fscissor_y is GSVector4(scissor).ywyw(), matching the rasterizer's own.
-bool GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVector4& fscissor_y, GSTileZPlane& out);
-
 class alignas(32) GSRasterizerData : public GSAlignedClass<32>
 {
 	static int s_counter;

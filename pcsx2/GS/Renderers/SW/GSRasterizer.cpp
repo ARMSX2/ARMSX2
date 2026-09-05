@@ -1020,23 +1020,13 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 	m_edge.count += e - &m_edge.buff[m_edge.count];
 }
 
-// The AVX2 rasterizer's setup runs GSVertexSW2/GSVector8 arithmetic, whose roundings
-// have never been validated against the Tile depth transcription (the parity bar is
-// the scalar/NEON pipeline). Report no plane; the Tile renderer floors instead.
-bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVector4& fscissor_y, GSTileZPlane& out)
-{
-	return false;
-}
-
 #else
 
-// The whole of DrawTriangle's setup, extracted so it exists exactly ONCE in the
-// binary: __noinline, called both by DrawTriangle below and by the Tile renderer's
-// depth-plane export (GSComputeTriangleZPlane). The z gradient's value is sensitive
-// to which multiply-adds the compiler contracts into fused ops — an ULP under an
-// on-grid gradient flips the truncated 2^-10 step by a whole unit — so two source
-// copies of this arithmetic in different translation units could legitimately
-// disagree. One compiled body cannot.
+// The whole of DrawTriangle's setup, in one __noinline body, so the setup's
+// arithmetic is compiled exactly once. The z gradient's value is sensitive to which
+// multiply-adds the compiler contracts into fused ops — an ULP under an on-grid
+// gradient flips the truncated 2^-10 step by a whole unit — so a second source copy
+// of this arithmetic could legitimately disagree with this one.
 struct GSTriangleSetup
 {
 	GSVertexSW edge[2];
@@ -1213,34 +1203,6 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 		}
 	}
 
-	return true;
-}
-
-bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVector4& fscissor_y, GSTileZPlane& out)
-{
-	static constexpr u16 index[3] = {0, 1, 2};
-
-	GSTriangleSetup s;
-	if (!SetupTriangle(vertex, index, fscissor_y, s))
-		return false;
-
-	out.dscan_z = s.dscan.p.F64[1];
-	// The fp32 narrowing GSSetupPrimCodeGenerator performs once per primitive when it
-	// builds the per-lane offset table (Fcvtn of the double gradient); the lane offsets
-	// the scanline adds are fp32 products of THIS value, not of the double.
-	out.dscan_z32 = static_cast<float>(out.dscan_z);
-	out.nsections = s.nsections;
-	for (int n = 0; n < s.nsections; n++)
-	{
-		out.sec[n].edge_x = s.edge[n].p.x;
-		out.sec[n].dedge_x = s.dedge[n].p.x;
-		out.sec[n].p0x = s.p0[n].x;
-		out.sec[n].p0y = s.p0[n].y;
-		out.sec[n].zseed = s.edge[n].p.F64[1];
-		out.sec[n].dedge_z = s.dedge[n].p.F64[1];
-		out.sec[n].top = s.top[n];
-		out.sec[n].bottom = s.bottom[n];
-	}
 	return true;
 }
 
