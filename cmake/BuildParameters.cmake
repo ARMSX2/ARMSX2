@@ -47,6 +47,10 @@ if(ENABLE_RIG)
 	set(ENABLE_GSRUNNER ON)
 	set(ENABLE_EERUNNER ON)
 	set(ENABLE_VURUNNER ON)
+	# Said out loud because these are plain sets, so CMakeCache.txt still shows
+	# each option at its own value while the build behaves as if it were ON.
+	# Reading the cache to find out what got built is otherwise misleading.
+	message(STATUS "ENABLE_RIG: forcing ENABLE_TESTS, ENABLE_RECOMPILER_TEST_HOOKS, ENABLE_GSRUNNER, ENABLE_EERUNNER, ENABLE_VURUNNER ON for this configure (CMakeCache.txt still shows their own values)")
 endif()
 
 #-------------------------------------------------------------------------------
