@@ -62,6 +62,17 @@ protected:
 	int index; // VU0 or VU1
 	bool neonCop2Mode; // SL-13: macro mode — q25/q26 unallocatable (EE clamp consts)
 
+	// The clone-write copy allocReg emitted last, while it is still the final
+	// word in the buffer: dst holds nothing but a copy of src, so an emitter
+	// that reads dst and writes dst can read src instead and the copy goes
+	// away. takeCloneSource() is the consumer; see mVUclamp1/mVUclamp2.
+	struct
+	{
+		int dst = -1;
+		int src = -1;
+		ptrdiff_t end = -1;
+	} clone;
+
 	VURegs& regs() const { return ::vuRegs[index]; }
 
 	// Load I register (immediate) into NEON reg
@@ -295,6 +306,7 @@ public:
 		}
 		counter = 0;
 		neonWatermark = 0;
+		clone.dst = -1;
 	}
 
 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
@@ -306,6 +318,41 @@ public:
 	//------------------------------------------------------------------
 	// VF Register Allocation (NEON Q registers)
 	//------------------------------------------------------------------
+
+	// Record a whole-register copy as foldable. Single-lane copies (the
+	// emitSSShuffle rotations) are not: their consumer is the single-lane
+	// clamp, which leaves lanes 1-3 of dst alone and so still needs them
+	// filled in.
+	__fi void noteClone(int dst, int src)
+	{
+		clone.dst = dst;
+		clone.src = src;
+		clone.end = armAsm->GetCursorOffset();
+	}
+
+	// The register `dst` was copied from, or -1 when there is no such copy to
+	// fold. On a hit the copy is dropped from the buffer, and the caller owes
+	// dst a write that reads the returned register in its place. A copy is
+	// only foldable while it is the last word emitted: that is what says
+	// nothing has read dst, and that no label was bound over it.
+	int takeCloneSource(int dst)
+	{
+		if (clone.dst != dst || clone.end != armAsm->GetCursorOffset() || clone.end < 4)
+			return -1;
+
+		// MOV Vd.16B, Vn.16B is ORR Vd.16B, Vn.16B, Vn.16B.
+		const u32 expect = 0x4EA01C00u | (clone.src << 16) | (clone.src << 5) | clone.dst;
+		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(clone.end - 4);
+		if (*word != expect)
+		{
+			pxFailRel("mVU clone fold: unexpected word");
+			return -1;
+		}
+
+		armAsm->GetBuffer()->Rewind(clone.end - 4);
+		clone.dst = -1;
+		return clone.src;
+	}
 
 	// Emit the NEON equivalent of x86's PSHUF.D(dst, src, imm) used in the
 	// clone-write path for single-scalar VF ops. Moves src's lane `srcLane`
@@ -373,7 +420,10 @@ public:
 							else if (xyzw == 1)
 								emitSSShuffle(qmmZ, qmmI, 3); // W to lane 0
 							else if (z != i)
+							{
 								armAsm->Mov(qmmZ.V16B(), qmmI.V16B());
+								noteClone(z, i);
+							}
 
 							mapI.count = counter; // Reg i was used, so update counter.
 						}

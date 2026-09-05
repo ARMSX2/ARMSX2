@@ -117,7 +117,7 @@
 //       model calls.
 //  20 — the zero-divisor Q is 0x7FFFFFFF from vuClampMode 3 and maxvals below,
 //       so DIV and RSQRT carry the signbit/maxvals pair again at modes 0-2.
-static constexpr u32 kMvuCompilerAbiVersion = 20;
+static constexpr u32 kMvuCompilerAbiVersion = 21;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

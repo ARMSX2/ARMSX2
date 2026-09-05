@@ -270,6 +270,16 @@ constexpr AbiPin kPins[] = {
 	// moves -- the default-mode probe; signClampDivUnit and exactDivUnit keep
 	// abi 19's values.
 	{20, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x01dc53e64a60783b, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0xa2465092b0e3404a, 0x04899f265502aa58, 0x6b119d8d1e4fd199, 0x97c76bda811bc8e4, 0xd933afa738820832, 0xa7ad93456cba5eb2}},
+	// abi 21: an operand clamp reads the register the clone-write copy in front
+	// of it copied, and the copy goes. Five probes move -- broadcastChain at
+	// the default mode and maddClampE at 2, through mVUclamp1's four-lane arm,
+	// and signClampMulAdd, signClampDivUnit and signClampEfu at 3, through
+	// mVUclamp2's. The rest emit copies the clamp cannot reach, because
+	// something stands between: an allocation of the other operand
+	// (msubClampE) or a MAC predicate (the vuClampMode:4 probes). signClampSS
+	// emits no whole-register copy at all -- a single-lane clone rotates the
+	// lane it wants into place instead.
+	{21, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xc745a3959fa555ed, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x01dc53e64a60783b, 0x7b2cf129a0112eb5, 0x1270eee2b9725c68, 0xdd9e01f04dfdf231, 0x00410ea5fd07a5f9, 0xa2465092b0e3404a, 0x04899f265502aa58, 0xe2c3e03122ce9e70, 0x97c76bda811bc8e4, 0x9600d0c470905660, 0xa7ad93456cba5eb2}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

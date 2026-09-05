@@ -43,8 +43,12 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 			}
 			default:
 			{
+				// Fminnm rewrites every lane of reg, so a clone-write copy
+				// standing in front of it is dead weight: read the original.
+				const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
+				const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
 				armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.maxvals[0]));
-				armAsm->Fminnm(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
+				armAsm->Fminnm(reg.V4S(), src.V4S(), RQSCRATCH3.V4S());
 				armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.minvals[0]));
 				armAsm->Fmaxnm(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
 				break;
@@ -73,8 +77,14 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 		// (e.g. routing COP2 macro FMACs through these emitters, where
 		// mVU_MADDw's cACC would clamp the rotated live ACC). (AX-02)
 		const int row = (xyzw == 1 || xyzw == 2 || xyzw == 4 || xyzw == 8) ? 0 : 1;
+		// Smin writes all four lanes here even on the single-lane row -- lanes
+		// 1-3 pass through the sentinel bounds -- so a clone-write copy in
+		// front of it is foldable either way (mVUclamp1's single-lane case,
+		// which really does leave lanes 1-3 alone, is not).
+		const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
+		const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signMaxvals[row][0]));
-		armAsm->Smin(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
+		armAsm->Smin(reg.V4S(), src.V4S(), RQSCRATCH3.V4S());
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signMinvals[row][0]));
 		armAsm->Umin(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
 		return;
