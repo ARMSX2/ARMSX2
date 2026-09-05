@@ -352,3 +352,17 @@ TEST(GSDrawAlphaMask, ACoverageAlphaDrawNeverDrops)
 	// drops, which is what the rule exists for.
 	EXPECT_EQ(DecideExact(target, 0x7F, 0x80, 0x80), ExactVerdict::Drop);
 }
+
+TEST(GSDrawAlphaMask, AHeldMaskCountsAsItsOwnBarrier)
+{
+	// Every road chosen while the decision is held -- the blend, the alpha test -- reads the
+	// barrier through here, so all four of them see the same answer and cannot drift apart. The
+	// held mask counts as a barrier because its own barrier is deferred, not gone: if the road
+	// chosen needs one, ResolveHeldAlphaMask brings the mask and the barrier back together.
+	EXPECT_TRUE(OneBarrierWithHeldMask(false, true));
+	EXPECT_TRUE(OneBarrierWithHeldMask(true, false));
+	EXPECT_TRUE(OneBarrierWithHeldMask(true, true));
+
+	// Nothing held and no barrier of its own is the only draw that gets the barrier-free road.
+	EXPECT_FALSE(OneBarrierWithHeldMask(false, false));
+}

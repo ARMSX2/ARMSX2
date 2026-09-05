@@ -6719,19 +6719,32 @@ void GSRendererHW::ResolveHeldAlphaMask()
 			GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteStood :
 														   GSDrawLog::HeldAlphaMaskStood);
 		}
-		return;
+	}
+	else
+	{
+		m_conf.ps.fbmask = (held.ps_fbmask != 0);
+		m_conf.cb_ps.FbMask = GSVector4i::load(static_cast<int>(held.fbmask)).u8to32();
+		m_conf.ps.quantize_color = false;
+		m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
+		m_conf.require_one_barrier = true;
+
+		if (GSDrawLog::IsActive()) [[unlikely]]
+		{
+			GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteRestored :
+														   GSDrawLog::HeldAlphaMaskRestored);
+		}
 	}
 
-	m_conf.ps.fbmask = (held.ps_fbmask != 0);
-	m_conf.cb_ps.FbMask = GSVector4i::load(static_cast<int>(held.fbmask)).u8to32();
-	m_conf.ps.quantize_color = false;
-	m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
-	m_conf.require_one_barrier = true;
-
-	if (GSDrawLog::IsActive()) [[unlikely]]
+	// EmulateAlphaTest took its copy of ps for the second pass before this ran, so whatever was
+	// decided here has to reach that copy too. An AFAIL second pass writes the fragments the first
+	// one did not, with the same alpha and the same colour: a mask that came back, a substitution
+	// that stood, and the quantization that goes with either. Without this the failing fragments
+	// take the road the draw asked for and the passing ones do not, on the same target.
+	if (m_conf.alpha_second_pass.enable)
 	{
-		GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteRestored :
-													   GSDrawLog::HeldAlphaMaskRestored);
+		m_conf.alpha_second_pass.ps.fbmask = m_conf.ps.fbmask;
+		m_conf.alpha_second_pass.ps.substitute_alpha = m_conf.ps.substitute_alpha;
+		m_conf.alpha_second_pass.ps.quantize_color = m_conf.ps.quantize_color;
 	}
 }
 
@@ -7529,7 +7542,8 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	const bool is_basic_blend = GSConfig.AccurateBlendingUnit != AccBlendLevel::Minimum;
 	// A held exact alpha drop reads as the barrier it took away, so every blend decision below is
 	// the one this draw makes with its framebuffer mask on. See ResolveHeldAlphaMask().
-	const bool held_one_barrier = m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0);
+	const bool held_one_barrier =
+		GSDrawAlphaMask::OneBarrierWithHeldMask(m_conf.require_one_barrier, m_held_alpha_mask.fbmask != 0);
 	if (blend_ad_alpha_masked && ((is_basic_blend || (COLCLAMP.CLAMP == 0) || held_one_barrier)))
 	{
 		// Swap Ad with As for hw blend.
@@ -7595,12 +7609,14 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	// strength it needs can be decided at emission time.
 	const bool blend_mix_alpha_over_one = blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
 
-	const bool one_barrier = m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0) || blend_ad_alpha_masked;
+	const bool one_barrier =
+		GSDrawAlphaMask::OneBarrierWithHeldMask(m_conf.require_one_barrier, m_held_alpha_mask.fbmask != 0) ||
+		blend_ad_alpha_masked;
 	// Condition 1: Require full sw blend for full barrier.
 	// Condition 2: One barrier is already enabled, prims don't overlap or is a channel shuffle so let's use sw blend instead.
 	// Condition 3: A texture shuffle is unlikely to overlap, so we can prefer full sw blend.
 	// Condition 4: If it's tex in fb draw and there's no overlap prefer sw blend, fb is already being read.
-	const bool prefer_sw_blend = (features.feedback_loops() && m_conf.require_full_barrier) || ((m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0)) && (no_prim_overlap || m_channel_shuffle)) || m_conf.ps.shuffle || (no_prim_overlap && (m_conf.tex == m_conf.rt));
+	const bool prefer_sw_blend = (features.feedback_loops() && m_conf.require_full_barrier) || (GSDrawAlphaMask::OneBarrierWithHeldMask(m_conf.require_one_barrier, m_held_alpha_mask.fbmask != 0) && (no_prim_overlap || m_channel_shuffle)) || m_conf.ps.shuffle || (no_prim_overlap && (m_conf.tex == m_conf.rt));
 	const bool free_blend = blend_non_recursive // Free sw blending, doesn't require barriers or reading fb
 	                        || accumulation_blend; // Mix of hw/sw blending
 
@@ -9885,9 +9901,16 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 	// Determine whether the feedback methods require a single pass.
 	const bool feedback_one_pass = simple_fb_only || simple_rgb_only || simple_zb_only;
 	
-	// If we already have the required barriers for the accurate feedback path.
+	// If we already have the required barriers for the accurate feedback path. A held exact
+	// alpha-mask decision counts as a barrier here for the same reason EmulateBlending counts it:
+	// the mask is off the shader but its barrier is only deferred, and ResolveHeldAlphaMask puts
+	// both back if anything downstream needs one. Reading the live flag instead would let a held
+	// draw pick the two-pass road where it used to pick the feedback road -- and those two are
+	// not the same pixels once primitives overlap, because two passes composite RGB out of order.
+	const bool held_one_barrier =
+		GSDrawAlphaMask::OneBarrierWithHeldMask(m_conf.require_one_barrier, m_held_alpha_mask.fbmask != 0);
 	const bool free_barrier_feedback =
-		((m_conf.require_one_barrier && feedback_one_pass) || m_conf.require_full_barrier) &&
+		((held_one_barrier && feedback_one_pass) || m_conf.require_full_barrier) &&
 		features.feedback_loops() &&
 		(!afail_needs_depth || m_conf.ps.IsFeedbackLoopDepth());
 

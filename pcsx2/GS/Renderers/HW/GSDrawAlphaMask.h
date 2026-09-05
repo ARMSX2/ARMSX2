@@ -160,6 +160,24 @@ namespace GSDrawAlphaMask
 		return DropStandsAfterBlend(blend_requires_barrier) && !colclip_hw;
 	}
 
+	/// Whether a draw whose exact alpha-mask decision is still held has a one-barrier road.
+	///
+	/// The decision takes the mask off the shader but only defers the barrier it required --
+	/// ResolveHeldAlphaMask puts mask and barrier back together if anything downstream needs a
+	/// barrier anyway. So every road chosen in between (the blend, the alpha test) has to be
+	/// chosen as if the barrier were there. Reading the live flag instead sends the draw down a
+	/// road it would not have taken with the mask on, and those roads are not always the same
+	/// pixels: the two-pass alpha-test road composites RGB out of order where overlapping
+	/// primitives meet, which is the whole reason the feedback road is preferred when a barrier
+	/// is already paid for.
+	///
+	/// `live_one_barrier` is m_conf.require_one_barrier as it stands; `mask_held` says a decision
+	/// is outstanding.
+	inline constexpr bool OneBarrierWithHeldMask(bool live_one_barrier, bool mask_held)
+	{
+		return live_one_barrier || mask_held;
+	}
+
 	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
 	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
 	/// target's alpha stays describable without reading the mask.
