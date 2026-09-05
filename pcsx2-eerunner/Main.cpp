@@ -202,6 +202,7 @@ struct EeRateStep
 static std::vector<EeRateStep> s_ee_rate_script; // --ee-rate-script, sorted by frame
 static uint32_t s_ee_rate_hitch = 0;             // --ee-rate-hitch N (0 = no timing)
 static bool s_ee_rate_failed = false;            // a transition reset something it must not
+static std::string s_ee_rate_trace_path;         // --ee-rate-trace <path>
 
 // Bounds-check the script against the configured baseline. Callable only once
 // the VM is up, since the baseline is settled by GameDB + settings.
@@ -808,6 +809,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               every pass of --contmem, so the interpreter and JIT trajectories are compared\n");
 	std::fprintf(stderr, "               under the same rate schedule. The run FAILS if a transition resets the IOP\n");
 	std::fprintf(stderr, "               recompiler, microVU1 or the VIF dynarec.\n");
+	std::fprintf(stderr, "  --ee-rate-trace <path>: set EmuCore/Speedhacks/DynamicEECycleRateTrace for the run, so the\n");
+	std::fprintf(stderr, "               governor's window trace and its lifecycle rows are written. The runner does not\n");
+	std::fprintf(stderr, "               pace - the limiter is off and frames come from FrameAdvance - so every window is\n");
+	std::fprintf(stderr, "               recorded as unmeasurable, which is correct and is what the trace will say. Use it\n");
+	std::fprintf(stderr, "               to exercise the writer and the lifecycle path, not to judge the classifier.\n");
 	std::fprintf(stderr, "  --ee-rate-hitch <N>: with --ee-rate-script, report the median wall time of the N frames\n");
 	std::fprintf(stderr, "               before each transition and the wall time of the N frames after it, so the\n");
 	std::fprintf(stderr, "               recompile hitch is a number rather than a guess.\n");
@@ -1152,6 +1158,16 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					[](const EeRateStep& a, const EeRateStep& b) { return a.frame < b.frame; });
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--ee-rate-trace"))
+			{
+				s_ee_rate_trace_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_ee_rate_trace_path.empty())
+				{
+					std::fprintf(stderr, "--ee-rate-trace: want a file path\n");
+					return false;
+				}
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--ee-rate-hitch"))
 			{
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
@@ -1334,6 +1350,11 @@ void EERunner::SettingsOverride()
 		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleSkip", std::atoi(e));
 	if (const char* e = std::getenv("EERUNNER_EECYCLERATE"))
 		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleRate", std::atoi(e));
+
+	// The governor's development trace. The switch itself stays off: with no limiter there
+	// is nothing for it to act on, and shadow mode is what writes the rows.
+	if (!s_ee_rate_trace_path.empty())
+		s_settings_interface.SetStringValue("EmuCore/Speedhacks", "DynamicEECycleRateTrace", s_ee_rate_trace_path.c_str());
 
 	// EE recompiler ON by default for LiveRun; gate on EERUNNER_EE=interp (or 0) to
 	// run the clean EE-interpreter control pass — for jit-vs-interp comparison of the
