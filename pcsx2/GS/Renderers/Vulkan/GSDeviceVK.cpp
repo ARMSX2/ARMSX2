@@ -3262,19 +3262,6 @@ std::string GSDeviceVK::GetStreamRingMemoryDescription() const
 		m_stream_ring_memory.type_index);
 }
 
-GSDevice::StreamRingFlushStats GSDeviceVK::GetStreamRingFlushStats() const
-{
-	StreamRingFlushStats stats;
-	for (const VKStreamBuffer* ring : {&m_vertex_stream_buffer, &m_index_stream_buffer, &m_expand_index_stream_buffer,
-			 &m_vertex_uniform_stream_buffer, &m_fragment_uniform_stream_buffer, &m_texture_stream_buffer})
-	{
-		stats.calls += ring->GetFlushCalls();
-		stats.commits += ring->GetFlushCommits();
-		stats.bytes += ring->GetFlushBytes();
-	}
-	return stats;
-}
-
 void GSDeviceVK::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 {
 	m_allow_present_throttle = allow_present_throttle;

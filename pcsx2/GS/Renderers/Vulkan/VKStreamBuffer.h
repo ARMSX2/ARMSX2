@@ -56,12 +56,6 @@ public:
 	/// GSDeviceVK::SubmitCommandBuffer does it for all six, immediately before vkQueueSubmit.
 	void FlushPendingWrites();
 
-	/// The cache maintenance this ring has paid so far: cleans issued, committed regions those
-	/// cleans covered, bytes cleaned. Zero for the whole run on a coherent ring.
-	__fi u64 GetFlushCalls() const { return m_flush_calls; }
-	__fi u64 GetFlushCommits() const { return m_flush_commits; }
-	__fi u64 GetFlushBytes() const { return m_flush_bytes; }
-
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);
 	void UpdateCurrentFencePosition();
@@ -92,11 +86,4 @@ private:
 
 	/// What has been committed since the last flush, at most one range plus one more for a wrap.
 	GSStreamRingFlushRanges m_pending_flush;
-
-	/// The price of the cached non-coherent road, as a run has to be able to state it: how many
-	/// cache cleans were issued, how many committed regions they covered -- the number of cleans
-	/// the per-commit road would have issued for the same bytes -- and how many bytes were cleaned.
-	u64 m_flush_calls = 0;
-	u64 m_flush_commits = 0;
-	u64 m_flush_bytes = 0;
 };

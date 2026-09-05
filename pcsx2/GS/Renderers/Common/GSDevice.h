@@ -1918,19 +1918,6 @@ public:
 	/// that makes no such choice, which is every backend but Vulkan.
 	virtual std::string GetStreamRingMemoryDescription() const { return std::string(); }
 
-	/// What the stream rings' cache maintenance cost this run, on a backend and a device where
-	/// they are on non-coherent memory. `calls` is the number of cache cleans issued, `commits`
-	/// the number of committed regions those cleans covered -- which is the number of cleans the
-	/// per-commit road would have issued for the same bytes -- and `bytes` how much was cleaned.
-	/// All zero on a coherent ring, which is every device but the one the driver database names.
-	struct StreamRingFlushStats
-	{
-		u64 calls = 0;
-		u64 commits = 0;
-		u64 bytes = 0;
-	};
-	virtual StreamRingFlushStats GetStreamRingFlushStats() const { return StreamRingFlushStats(); }
-
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 

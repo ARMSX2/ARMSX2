@@ -855,7 +855,6 @@ public:
 	void DestroySurface() override;
 	std::string GetDriverInfo() const override;
 	std::string GetStreamRingMemoryDescription() const override;
-	StreamRingFlushStats GetStreamRingFlushStats() const override;
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 

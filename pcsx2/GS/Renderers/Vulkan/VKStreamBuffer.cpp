@@ -29,9 +29,6 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_non_coherent(move.m_non_coherent)
 	, m_pending_flush(move.m_pending_flush)
-	, m_flush_calls(move.m_flush_calls)
-	, m_flush_commits(move.m_flush_commits)
-	, m_flush_bytes(move.m_flush_bytes)
 {
 	move.m_size = 0;
 	move.m_current_offset = 0;
@@ -42,9 +39,6 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	move.m_host_pointer = nullptr;
 	move.m_non_coherent = false;
 	move.m_pending_flush.Reset();
-	move.m_flush_calls = 0;
-	move.m_flush_commits = 0;
-	move.m_flush_bytes = 0;
 }
 
 VKStreamBuffer::~VKStreamBuffer()
@@ -68,9 +62,6 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_wait_site, move.m_wait_site);
 	std::swap(m_non_coherent, move.m_non_coherent);
 	std::swap(m_pending_flush, move.m_pending_flush);
-	std::swap(m_flush_calls, move.m_flush_calls);
-	std::swap(m_flush_commits, move.m_flush_commits);
-	std::swap(m_flush_bytes, move.m_flush_bytes);
 
 	return *this;
 }
@@ -128,9 +119,6 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
 	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
 	m_pending_flush.Reset();
-	m_flush_calls = 0;
-	m_flush_commits = 0;
-	m_flush_bytes = 0;
 	// Bytes, not KiB: the expand-index ring is four bytes when AA1 is off, and "0 KiB" reads as a
 	// failed allocation.
 	Console.WriteLn("GS/Vulkan: stream ring %s, %u bytes, memory type %u (%s)%s",
@@ -197,18 +185,6 @@ void VKStreamBuffer::Destroy(bool defer)
 	// device drains its command buffers first -- and the buffer is still alive here either way.
 	FlushPendingWrites();
 
-	if (m_flush_calls != 0 || m_flush_commits != 0)
-	{
-		// Both counts, because the whole rung is the ratio between them: the commits are the
-		// cleans the per-commit road would have issued, the calls are what the deferred road
-		// actually issued for the same bytes.
-		Console.WriteLn("GS/Vulkan: stream ring %s ran non-coherent: %llu flushes over %llu commits, "
-						"%llu bytes cleaned",
-			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(m_wait_site)),
-			static_cast<unsigned long long>(m_flush_calls), static_cast<unsigned long long>(m_flush_commits),
-			static_cast<unsigned long long>(m_flush_bytes));
-	}
-
 	if (m_buffer != VK_NULL_HANDLE)
 	{
 		if (defer)
@@ -226,9 +202,6 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_host_pointer = nullptr;
 	m_non_coherent = false;
 	m_pending_flush.Reset();
-	m_flush_calls = 0;
-	m_flush_commits = 0;
-	m_flush_bytes = 0;
 }
 
 bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
@@ -339,11 +312,8 @@ void VKStreamBuffer::FlushPendingWrites()
 		// VMA rounds the range out to nonCoherentAtomSize before issuing the clean. Safe here: a
 		// clean writes back and never invalidates, and nothing but the CPU ever writes a ring.
 		vmaFlushAllocation(allocator, m_allocation, range.begin, range.size());
-		m_flush_calls++;
-		m_flush_bytes += range.size();
 	}
 
-	m_flush_commits += m_pending_flush.commits;
 	m_pending_flush.Reset();
 }
 
