@@ -292,19 +292,27 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	// Truncated attributes step one hardware BLOCK at a time, not one host
 	// vector -- see GSBlockWalk.h. Here that only widens the step: the block is
-	// eight pixels wide without texture mapping, which is two vectors, and the
-	// scanline walks the alternating pair in local.dw.
+	// eight pixels wide on every draw, which is two vectors, and the scanline
+	// walks the alternating pair in local.dw.
 	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(sel, vlen);
 
 #if _M_SSE >= 0x501
 	auto load_shift = [](int i) { return GSVector8::load<false>(&g_const_256b.m_shift[8 - i]); };
 	const GSVector4 step_shift = GSVector4::broadcast32(&g_const_256b.m_shift[0]);
+	// One vector IS one block here, so the coordinate's step and the block step
+	// are the same number.
+	const GSVector4 coord_step_shift = step_shift;
 #else
 	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
 	auto load_shift = [](int i) { return shift[1 + i]; };
 	const GSVector4 step_shift = block_split
 		? *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8)
 		: shift[0];
+	// The texture coordinate steps one VECTOR, not one block -- GSBlockWalk.h says
+	// why, and the pin is TheCoordinateStepStaysOneVector. Taking the block step
+	// here would advance the coordinate eight pixels every four and sample the
+	// texture twice as fast as the draw walks.
+	const GSVector4 coord_step_shift = shift[0];
 #endif
 
 	GSVector4 tstep = dscan.t * step_shift;
@@ -406,29 +414,23 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
 		}
 
-		// A TEXTURED draw's block is four pixels wide, so on a four-lane host the
-		// group step below already IS one hardware block and this path needs none
-		// of the splitting the untextured case does above. That equality is
-		// arithmetic, not design: an eight-lane host walks one vector across two
-		// blocks and steps by eight where the hardware steps by four, which is the
-		// gap GSBlockWalk.h records against the x86 generators. So the width has to
-		// keep coming from the block -- never from sizeof(VectorF), which is what
-		// makes it right here for a reason that survives a change of host.
-		pxAssert(!block_split && GSBlockWalkWidth(sel) == 4);
+		// The colour and fog steps above take the block; this one does not. The
+		// coordinate keeps a per-vector step whatever the block width is, which is
+		// the same footing depth is on a few lines up.
+		const GSVector4 coord_tstep = dscan.t * coord_step_shift;
 
 		if (sel.fst)
 		{
-			// Truncating the block step and accumulating it is the hardware's own
-			// shape, not an approximation of an exact plane -- see GSBlockWalk.h,
-			// where a block contributes B*trunc(g*W). On a gradient that is a power
+			// Truncating the step and accumulating it is the hardware's own shape,
+			// not an approximation of an exact plane. On a gradient that is a power
 			// of two per pixel the truncation is identity and this walk is exact,
 			// which is every sprite gradient in every capture we own; what silicon
 			// does on a sprite at a NON-binary gradient has never been measured.
-			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(tstep));
+			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(coord_tstep));
 		}
 		else
 		{
-			LOCAL_STEP.stq = tstep;
+			LOCAL_STEP.stq = coord_tstep;
 		}
 
 		VectorF dt(dscan.t);

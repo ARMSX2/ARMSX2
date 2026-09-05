@@ -6,13 +6,8 @@
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
 
 // The GS interpolates a BLOCK of pixels at a time, and the block is not our
-// vector register.
-//
-// Sony's own internals documentation describes the drawing hardware as sixteen
-// pixel engines that the DDA feeds in parallel -- two rows by eight columns
-// without texture mapping, two rows by four columns with it.  So the horizontal
-// span of one DDA step is a property of the DRAW: eight pixels when TME is off,
-// four when it is on.
+// vector register.  The horizontal span of one DDA step is EIGHT pixels, on every
+// draw, textured or not.
 //
 // Our software scanline already walks in exactly that shape.  It seeds at the
 // span's first pixel, adds a truncated per-lane offset inside the vector, and
@@ -38,18 +33,21 @@
 // the block width.
 //
 // The three things this comment used to list as unasked have now been put to the
-// console (gs-walk2, SCPH-30001, 2026-09-05, two byte-identical run pairs).  None
-// of the answers changes the code; two of them change what the code is known to
-// be, and the third is a defect we do not model.
+// console (gs-walk2, SCPH-30001, 2026-09-05, two byte-identical run pairs).  One
+// of the answers is the width above, one changes what the code is known to be,
+// and the third is a defect we do not model.
 //
 //   THE TEXTURED BLOCK.  Turning TME on does change silicon's picture -- 1,664 of
 //   7,136 readings on one gouraud gradient, 23.32%, identically on two gradient
-//   sets and two console pairs, with a MODULATE pass-through control exact.  So
-//   the width really is a property of the draw.  It is NOT evidence that the
-//   textured width is four: scored against this walk, silicon's textured arm fits
-//   eight better than four, and the difference has somewhere else to come from
-//   (the texture function's own truncation of the vertex colour).  Keeping four
-//   here is the documentation's answer, not a measured one.
+//   sets and two console pairs, with a MODULATE pass-through control exact.  What
+//   it does NOT do is narrow the block.  This walk shipped a textured width of
+//   four on the strength of a document rather than a measurement, and the console
+//   refuses it: scoring gs-walk2's width section under the corrected gradient
+//   splits by TME into an untextured arm at 93.0% and a textured arm at 92.6%,
+//   and the same model scored at eight puts the textured arm at 96.9%.  Two
+//   errors were partly cancelling -- the gradient was wrong in the direction that
+//   hid a block half the width it should be -- so correcting the gradient is what
+//   made the width measurable, and correcting the width is what this is.
 //
 //   THE VERTICAL HALF.  The pairing is exactly two rows.  Eight vertical
 //   translations of one primitive: every odd one differs and every even one is
@@ -74,28 +72,25 @@
 // vertical left edge, which is the one shape where the gradient IS delta over
 // baseline, while SetupTriangle divides by the cross product -- so the capture
 // says a reciprocal is truncated to eight bits and does not say which one's.
-// See hardware-oracle/captures/gs-walk2/RESULT.md.
-//
-// Note the consequence of the width as it stands: the four-wide textured case is
-// unchanged on a four-lane host, so this makes x86 agree with ARM rather than
-// moving the reference.
+// See hardware-oracle/captures/gs-walk2/RESULT.md.  It has since been fitted on a
+// shape sweep and landed; that is the gradient the width above is measured under.
 
 // ⚠️ HALF DONE. The ARM64 generators and the C++ reference take the width from
-// here; the x86 generators still take it from the register file, so an SSE4
-// build's reference path and its generated path now disagree on an untextured
-// gouraud draw, and an AVX2 build still walks eights through a textured one.
-// Neither is measurable on this box. Until they are converted, x86 output is not
-// the ARM output and the goldens are ARM goldens.
+// here; the x86 SSE4 generators still take it from the register file, so an SSE4
+// build's reference path and its generated path disagree on any gouraud draw.
+// That is not measurable on this box. Until they are converted, x86 output is not
+// the ARM output and the goldens are ARM goldens.  An AVX2 build's vector IS the
+// block, so it needs no split and it is now right by arithmetic on both arms.
 
 /// Horizontal span of one DDA step, in pixels.
-__forceinline static constexpr int GSBlockWalkWidth(GSScanlineSelector sel)
+__forceinline static constexpr int GSBlockWalkWidth([[maybe_unused]] GSScanlineSelector sel)
 {
-	return sel.tfx == TFX_NONE ? 8 : 4;
+	return 8;
 }
 
 /// Whether the block is wider than the host vector, so that one block takes two
-/// vectors and the per-vector step alternates between two values.  Only ever
-/// true for an untextured draw on a four-lane host.
+/// vectors and the per-vector step alternates between two values.  True for every
+/// draw on a four-lane host, false on an eight-lane one.
 __forceinline static constexpr bool GSBlockWalkIsSplit(GSScanlineSelector sel, int vlen)
 {
 	return GSBlockWalkWidth(sel) > vlen;
@@ -108,14 +103,23 @@ __forceinline static constexpr bool GSBlockWalkIsSplit(GSScanlineSelector sel, i
 //     value(x) = trunc(seed) + B*trunc(g*W) + trunc(g*(m - s))
 //     B = (x - xb0) div W,  m = (x - xb0) mod W,  xb0 = x0 & ~(W-1)
 //
-// which for W == vlen is bit-for-bit what the scanline did before.  The two
-// cases that move:
+// which for W == vlen is bit-for-bit what the scanline did before, and that is an
+// eight-lane host.  On a FOUR-lane one, one block is two vectors: B advances every
+// second vector and m jumps by vlen between them, so the difference between
+// consecutive vectors alternates between A and trunc(g*W) - A.  Both are
+// precomputed per (s, phase) into GSScanlineLocalData::dw and the scanline just
+// walks the pair.
 //
-//   W > vlen (untextured, four-lane host).  One block is two vectors, B advances
-//   every second vector, and m jumps by vlen between them, so the difference
-//   between consecutive vectors alternates between A and trunc(g*W) - A.  Both
-//   are precomputed per (s, phase) into GSScanlineLocalData::dw and the scanline
-//   just walks the pair.
+// WHAT TAKES THE BLOCK, and what does not.  Truncation is the only thing that
+// makes a block observable -- with an exact step, W blocks of one and one block of
+// W land on the same value -- so an attribute the walk does not truncate has no
+// block in it and keeps stepping one VECTOR at a time.  That is depth, carried in
+// double, and the perspective texture coordinate, carried in float; neither moves
+// with the width.
 //
-//   W < vlen (textured, eight-lane host).  One vector is two blocks: the upper
-//   half carries an extra trunc(g*W) and the per-vector step is two of them.
+// The AFFINE texture coordinate is truncated and could carry one, and it does not:
+// it keeps its per-vector step.  The console evidence above is the colour walk's,
+// on colour readings, and no capture we own has swept the coordinate's own width
+// -- while gs-shade has measured the coordinate itself to a sixteenth of a texel
+// and our answer agrees with silicon on 13,324 of 13,336 readings.  Widening a
+// walk that is already right, on no measurement, is how the four above got here.

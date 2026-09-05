@@ -34,6 +34,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sw_scanline_dither_tests.cpp
 	gs_sw_scanline_texfunc_tests.cpp
 	gs_sw_scanline_tclag_tests.cpp
+	gs_sw_textured_block_width_tests.cpp
 	gs_sw_depth_walk_tests.cpp
 	gs_local_memory_move_tests.cpp
 	gs_clut_tests.cpp
