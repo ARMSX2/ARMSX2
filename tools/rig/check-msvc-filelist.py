@@ -158,12 +158,27 @@ def vcxproj_files(path: Path):
 	# Case-folded: MSVC paths are case-insensitive and the project genuinely spells some
 	# directories differently from CMake (Ipu vs IPU). A case-sensitive compare reports
 	# those as missing, which is how a checker earns a reputation for crying wolf.
-	return {m.group(1).replace("\\", "/").lower()
-			for m in re.finditer(r'<Cl(?:Compile|Include)\s+Include="([^"]+)"', text)}
+	#
+	# Two sets, not one: a <None Include> item still shows the file in Solution Explorer
+	# (the entire point of the header half of this check) but never compiles it, so it
+	# cannot cover a SOURCE. .inl files are the case in point -- they are textually
+	# #include'd rather than built, and every one of them in this project (the microVU_*
+	# x86 set, VKEntryPoints.inl, eeHwTraceLog.inl) is listed as None for exactly that
+	# reason. Requiring ClInclude for those would fight the convention it is supposed
+	# to police, so headers may satisfy the check via either item type; sources may not.
+	strict = set()
+	any_named = set()
+	for m in re.finditer(r'<(Cl(?:Compile|Include)|None)\s+Include="([^"]+)"', text):
+		rel = m.group(2).replace("\\", "/").lower()
+		any_named.add(rel)
+		if m.group(1) != "None":
+			strict.add(rel)
+	return strict, any_named
 
 
-def report(vcx_name: str, base: Path, in_project: set, named: list, skipped: list):
+def report(vcx_name: str, base: Path, in_project, named: list, skipped: list):
 	"""Compare one CMake file list against one project file. Returns files missing."""
+	in_project_strict, in_project_any = in_project
 	missing = []
 	checked = 0
 	for rel, origin in named:
@@ -172,6 +187,9 @@ def report(vcx_name: str, base: Path, in_project: set, named: list, skipped: lis
 		if not (base / rel).is_file():
 			continue
 		checked += 1
+		# A SOURCE only counts if something actually compiles it; a header (including
+		# .inl) counts if the project names it at all, None included.
+		in_project = in_project_strict if rel.endswith(CODE_SUFFIXES) else in_project_any
 		if rel.lower() not in in_project:
 			missing.append((rel, origin))
 
