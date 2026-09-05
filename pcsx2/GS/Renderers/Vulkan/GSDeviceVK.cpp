@@ -2468,15 +2468,30 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 			dep.dstAccessMask |=
 				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		}
-		// subpassLoad reads the fragment's own coordinate, so this stays framebuffer-local too. A
-		// SAMPLER read of the attachment (the feedback-loop-layout road) is VK_ACCESS_SHADER_READ,
-		// not INPUT_ATTACHMENT_READ, and is deliberately absent here for that reason -- it was
-		// absent from the implicit dependency as well, and its ordering comes from the layout
-		// transition and the framebuffer-local self-dependency built above.
+		// subpassLoad reads the fragment's own coordinate, so this stays framebuffer-local too.
 		if (num_subpass_inputs > 0)
 		{
 			dep.dstStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			dep.dstAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+		}
+		// The other road to the same read. With VK_EXT_attachment_feedback_loop_layout the
+		// attachment is not a subpass input at all -- num_subpass_inputs is zero and the shader
+		// SAMPLES the attachment, which is VK_ACCESS_SHADER_READ in the fragment stage, not
+		// INPUT_ATTACHMENT_READ. So it needs naming separately, and the two are mutually
+		// exclusive by construction (the input reference above is only built when
+		// UseFeedbackLoopLayout() is false).
+		//
+		// The layout transition does not cover it. Both passes use the same image in the same
+		// FEEDBACK_LOOP_OPTIMAL layout, and TransitionToLayout returns early when the layout is
+		// unchanged, so two consecutive feedback passes on the same target -- any pass end that
+		// is not a target switch: a texture upload, a copy, DATE, colclip -- emit no barrier at
+		// all between the first pass's colour writes and the second pass's sampler reads of the
+		// same pixels. The framebuffer-local self-dependency built above only orders a pass
+		// against itself.
+		if (key.color_feedback_loop && UseFeedbackLoopLayout())
+		{
+			dep.dstStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dep.dstAccessMask |= VK_ACCESS_SHADER_READ_BIT;
 		}
 		dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 	}
