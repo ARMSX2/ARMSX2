@@ -48,6 +48,11 @@ public:
 	virtual bool SetSwapInterval(s32 interval) = 0;
 	virtual std::unique_ptr<GLContext> CreateSharedContext(const WindowInfo& wi, Error* error) = 0;
 
+	/// The framebuffer a finished frame belongs in. Zero - the window's own -
+	/// for every context that owns its surface; a libretro frontend hands the
+	/// core an FBO of its own instead.
+	virtual u32 GetDefaultFramebuffer() const { return 0; }
+
 	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, Error* error);
 
 protected:

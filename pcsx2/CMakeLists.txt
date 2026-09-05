@@ -650,6 +650,13 @@ if(USE_OPENGL)
 	)
 	target_link_libraries(PCSX2_FLAGS INTERFACE glad)
 
+	if(ENABLE_LIBRETRO)
+		# The context the frontend owns; picked over the platform ones below
+		# when the core installs its callbacks.
+		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextLibretro.cpp)
+		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextLibretro.h)
+	endif()
+
 	if(WIN32)
 		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextWGL.cpp)
 		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextWGL.h)
