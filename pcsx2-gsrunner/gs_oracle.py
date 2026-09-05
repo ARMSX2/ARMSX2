@@ -69,6 +69,9 @@ Golden layout (lives beside the dumps, outside any repo -- goldens are ~1 GB):
   <golden-root>/<gsname>/manifest.json
   <golden-root>/<gsname>/frames/<title>_frameNNNNN.png
 
+Dependencies: numpy, and Pillow for every scoring path that reads pixels (only the
+hash-only comparison avoids it).
+
 Typical use:
   ./gs_oracle.py golden  --runner build/bin/pcsx2-gsrunner --corpus corpus.txt --golden-root ~/gs-oracle/golden
   ./gs_oracle.py score   --runner build/bin/pcsx2-gsrunner --golden-root ~/gs-oracle/golden --arm classic --dump <dump>
@@ -144,8 +147,14 @@ def load_corpus(path):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if gs_name(line) is None:
+            name = gs_name(line)
+            if name is None:
                 raise SystemExit(f"corpus entry is not a GS dump: {line}")
+            # The key becomes a directory name under golden_root, and that
+            # directory is rmtree'd before a golden rebuild. An entry like
+            # ".gs" keys to "" and would aim the removal at golden_root itself.
+            if name in ("", ".", ".."):
+                raise SystemExit(f"corpus entry has no name before its extension: {line}")
             if not os.path.isfile(line):
                 raise SystemExit(f"corpus dump does not exist: {line}")
             dumps.append(line)

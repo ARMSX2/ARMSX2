@@ -658,7 +658,11 @@ def compare_files(ref_path, test_path, ppd=None, allow_resize=False):
 
     if ref.shape != test.shape:
         if not allow_resize:
-            raise SystemExit(
+            # ValueError, not SystemExit: gs_oracle calls this inside an
+            # `except Exception` so one unscoreable frame does not end a corpus
+            # run, and SystemExit is a BaseException that guard does not catch.
+            # main() turns it back into an exit.
+            raise ValueError(
                 f"resolution mismatch: {ref.shape[1]}x{ref.shape[0]} vs "
                 f"{test.shape[1]}x{test.shape[0]}. These are different "
                 f"measurements, not a difference -- pass --allow-resize only if "
@@ -1003,8 +1007,14 @@ def main():
     if len(args.images) != 2:
         p.error("give exactly two images, or use --calibrate/--selftest/--verify-flip")
 
-    block = compare_files(args.images[0], args.images[1], ppd=args.ppd,
-                          allow_resize=args.allow_resize)
+    try:
+        block = compare_files(args.images[0], args.images[1], ppd=args.ppd,
+                              allow_resize=args.allow_resize)
+    except ValueError as e:
+        # compare_files is library code and refuses with ValueError; as a CLI
+        # that is an exit, not a traceback.
+        print(str(e), file=sys.stderr)
+        return 2
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(block, f, indent=2)
