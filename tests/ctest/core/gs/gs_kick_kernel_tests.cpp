@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
 // Differential suite for the two-pass packed-vertex kick kernel
