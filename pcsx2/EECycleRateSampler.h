@@ -87,4 +87,32 @@ namespace EECycleRateSampler
 	// rather than an interpolated percentile because the value has to be one a frame
 	// actually produced; an interpolated p90 of a bimodal window is a ratio no frame had.
 	EECycleRateWindowSample BuildWindowSample(const WindowInputs& in);
+
+	// --- wait accounting -----------------------------------------------------------
+	//
+	// Bracket the EE thread's blocking sites on the GS and VU1 threads. These are the
+	// difference between "the EE thread is the cost" and "the EE thread is waiting", and
+	// slowing the guest down only answers the first.
+	//
+	// Both sleeping and spinning waits count. The spin branches burn a core without
+	// retiring guest work, so from the deadline's point of view they are identical to the
+	// sleeping ones, and they are the branches an underclock most obviously cannot help.
+	//
+	// Every call site must be on a path that is already about to block. BeginWait() reads
+	// a clock, and a call that finds the ring or the queue with room must not reach it.
+
+	// Opens a wait. Returns 0 - and touches no clock - when the governor and its trace are
+	// both off, or when the caller is not the CPU thread: MTVU reaches MTGS::WaitGS and the
+	// ring-full stall from its own thread, and the per-frame counters belong to the EE.
+	//
+	// Zero is the "not timing" sentinel, so a tick value of exactly zero costs one
+	// unmeasured wait. GetCPUTicks() counts from host boot on every platform we build for,
+	// so that is a theoretical case, and losing one wait out of a window of thousands is
+	// not worth a wider return type to rule out.
+	u64 BeginWait();
+
+	// Closes a wait opened by BeginWait(), charging it to the current frame. A zero start
+	// is a wait that was never opened and is ignored.
+	void EndGSWait(u64 begin_ticks);
+	void EndVU1Wait(u64 begin_ticks);
 } // namespace EECycleRateSampler

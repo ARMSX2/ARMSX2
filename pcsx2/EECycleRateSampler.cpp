@@ -3,11 +3,28 @@
 
 #include "EECycleRateSampler.h"
 
+#include "VMManager.h"
+
+#include "common/HostSys.h"
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace
 {
+	// Whether the blocking sites should time themselves at all. Read from the MTVU thread
+	// as well as the CPU thread, because MTVU reaches MTGS::WaitGS and the ring-full stall
+	// on its own; relaxed, because a window either side of the flag moving is a window the
+	// lifecycle reset that moved it has already thrown away.
+	std::atomic<bool> s_measuring_waits{false};
+
+	// Charged to the frame in progress and read out at the frame boundary. CPU-thread
+	// owned: BeginWait() hands out a start only to the CPU thread, so only the CPU thread
+	// can reach the accumulate.
+	u64 s_frame_gs_wait_ticks = 0;
+	u64 s_frame_vu1_wait_ticks = 0;
+
 	// A ratio the caller can still use. Anything the arithmetic cannot produce a finite,
 	// non-negative number for comes back as a zero on an invalidated window, not as a NaN
 	// that IsSampleUsable would have to catch downstream.
@@ -79,4 +96,35 @@ EECycleRateWindowSample EECycleRateSampler::BuildWindowSample(const WindowInputs
 
 	out.valid = !in.invalidated;
 	return out;
+}
+
+u64 EECycleRateSampler::BeginWait()
+{
+	if (!s_measuring_waits.load(std::memory_order_relaxed))
+		return 0;
+
+	if (!VMManager::Internal::IsOnCPUThread())
+		return 0;
+
+	return GetCPUTicks();
+}
+
+void EECycleRateSampler::EndGSWait(u64 begin_ticks)
+{
+	if (begin_ticks == 0)
+		return;
+
+	const u64 now = GetCPUTicks();
+	if (now > begin_ticks)
+		s_frame_gs_wait_ticks += now - begin_ticks;
+}
+
+void EECycleRateSampler::EndVU1Wait(u64 begin_ticks)
+{
+	if (begin_ticks == 0)
+		return;
+
+	const u64 now = GetCPUTicks();
+	if (now > begin_ticks)
+		s_frame_vu1_wait_ticks += now - begin_ticks;
 }
