@@ -2017,6 +2017,15 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 
 	if (i == m_ps.end())
 	{
+		// af_in_src1 reroutes a fixed (AFIX) blend factor through the second fragment output, for a
+		// driver whose blend constant is broken. Only the Vulkan shader implements it, and only
+		// GSDeviceVK raises features.broken_blend_constant, so nothing reaches this today. If a
+		// driver-database entry ever does, the blend state moves to SRC1 factors while this shader
+		// keeps writing As, which is wrong colour and nothing else would say so.
+		if (sel.af_in_src1)
+			Console.Error("PS_AF_IN_SRC1 is not implemented in this backend's shader.");
+		pxAssert(!sel.af_in_src1);
+
 		ShaderMacro sm;
 
 		sm.AddMacro("PIXEL_SHADER", 1);
