@@ -714,6 +714,11 @@ void VMManager::LoadSettings()
 	{
 		WarnAboutUnsafeSettings();
 		ApplyGameFixes();
+
+		// After the database, because a database cycle rate is one of the things that
+		// decides the answer. Once per apply, not once per frame: the governor resolves
+		// this for itself every window and does not log.
+		EECycleRate::LogResolvedEligibility();
 	}
 }
 
@@ -973,6 +978,7 @@ void VMManager::ApplyCoreSettings()
 		LoadCoreSettings(*Host::GetSettingsInterface());
 		WarnAboutUnsafeSettings();
 		ApplyGameFixes();
+		EECycleRate::LogResolvedEligibility();
 	}
 
 	CheckForConfigChanges(old_config);
@@ -2485,6 +2491,11 @@ bool VMManager::IsTargetSpeedAdjustedToHost()
 	return s_target_speed_synced_to_host;
 }
 
+bool VMManager::IsUsingVSyncForTiming()
+{
+	return s_use_vsync_for_timing;
+}
+
 float VMManager::GetFrameRate()
 {
 	return GetVerticalFrequency();
@@ -2568,6 +2579,11 @@ void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
 
 	s_frame_advance_count = num_frames;
 	SetState(VMState::Running);
+}
+
+bool VMManager::IsFrameAdvancing()
+{
+	return s_frame_advance_count > 0;
 }
 
 bool VMManager::ChangeDisc(CDVD_SourceType source, std::string path)
@@ -3607,9 +3623,7 @@ void VMManager::EnforceAchievementsChallengeModeSettings()
 	EmuConfig.GS.FrameratePAL = Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL;
 
 	// You can overclock, but not underclock (since that might slow down the game and make it easier).
-	EmuConfig.Speedhacks.EECycleRate =
-		std::max<decltype(EmuConfig.Speedhacks.EECycleRate)>(EmuConfig.Speedhacks.EECycleRate, 0);
-	EmuConfig.Speedhacks.EECycleSkip = 0;
+	EmuConfig.Speedhacks.ClampForHardcoreMode();
 }
 
 void VMManager::LogUnsafeSettingsToConsole(const std::string& messages)

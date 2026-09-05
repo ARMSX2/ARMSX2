@@ -1393,6 +1393,12 @@ struct Pcsx2Config
 
 		void Set(SpeedHack id, int value);
 
+		/// RetroAchievements hardcore mode. Overclocking stays allowed; underclocking
+		/// does not, because it slows the game down and makes it easier. That rules out
+		/// cycle skip and the dynamic governor outright — the governor exists to
+		/// underclock, and it does it without being asked.
+		void ClampForHardcoreMode();
+
 		bool operator==(const SpeedhackOptions& right) const;
 		bool operator!=(const SpeedhackOptions& right) const;
 

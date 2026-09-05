@@ -232,6 +232,11 @@ namespace VMManager
 	/// Returns true if the target speed is being synchronized with the host's refresh rate.
 	bool IsTargetSpeedAdjustedToHost();
 
+	/// Returns true when pacing comes from the host's vsync rather than the limiter's
+	/// sleep. Throttle() returns immediately in that case, so there is no frame deadline
+	/// to measure work against.
+	bool IsUsingVSyncForTiming();
+
 	/// Returns the current frame rate of the virtual machine.
 	float GetFrameRate();
 
@@ -243,6 +248,9 @@ namespace VMManager
 
 	/// Runs the virtual machine for the specified number of video frames, and then automatically pauses.
 	void FrameAdvance(u32 num_frames = 1);
+
+	/// Returns true while a frame-advance request still has frames left to run.
+	bool IsFrameAdvancing();
 
 	/// Changes the disc in the virtual CD/DVD drive. Passing an empty will remove any current disc.
 	/// Returns false if the new disc can't be opened.

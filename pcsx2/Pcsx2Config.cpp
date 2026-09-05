@@ -373,6 +373,13 @@ void Pcsx2Config::SpeedhackOptions::Set(SpeedHack id, int value)
 	}
 }
 
+void Pcsx2Config::SpeedhackOptions::ClampForHardcoreMode()
+{
+	EECycleRate = std::max<s8>(EECycleRate, 0);
+	EECycleSkip = 0;
+	DynamicEECycleRate = false;
+}
+
 // DynamicEECycleRateTrace is not compared, on purpose. This operator is what
 // CheckForCPUConfigChanges() asks before throwing the EE and microVU code caches
 // away, and a trace file path changes no generated code. Everything else here does.

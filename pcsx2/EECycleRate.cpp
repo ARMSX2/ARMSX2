@@ -3,7 +3,9 @@
 
 #include "EECycleRate.h"
 
+#include "Achievements.h"
 #include "Config.h"
+#include "GSDumpReplayer.h"
 #include "R5900.h"
 #include "VMManager.h"
 #include "VUmicro.h"
@@ -109,4 +111,107 @@ void EECycleRate::NoteVuReset(int vu_index)
 void EECycleRate::NoteVifReset()
 {
 	s_generations.vif++;
+}
+
+EECycleRateEligibility EECycleRate::ResolveEligibility(const EligibilityInputs& in, EligibilityReasons* reasons)
+{
+	EligibilityReasons why;
+	EECycleRateEligibility out;
+
+	// The configured selector is the baseline whether the governor runs or not: it is
+	// both the ceiling and what a restore goes back to.
+	out.baseline = in.configured;
+
+	// Precedence. A per-game dynamic key is the player answering this exact question
+	// for this exact game, so it wins over everything, including a fixed-rate claim it
+	// sits next to. Failing that, any fixed-rate claim — from the database or from the
+	// per-game file — is a statement about this game's timing that a transient
+	// underclock would contradict, so the governor stays out. Only when nobody has
+	// claimed the rate does the global switch get to decide.
+	if (in.pergame_claims_dynamic)
+	{
+		out.enabled = in.dynamic_setting;
+		why.enabled = out.enabled ? "the per-game key opts this game in" : "the per-game key opts this game out";
+	}
+	else if (in.gamedb_set_rate)
+	{
+		out.enabled = false;
+		why.enabled = "the game database sets this game's cycle rate";
+	}
+	else if (in.pergame_claims_rate)
+	{
+		out.enabled = false;
+		why.enabled = "the per-game file sets this game's cycle rate";
+	}
+	else
+	{
+		out.enabled = in.dynamic_setting;
+		why.enabled = out.enabled ? "on globally, and nothing claims this game's rate" : "off globally";
+	}
+
+	// Ordered so the reason names the thing a player would have to change first.
+	if (!in.vm_running)
+		why.eligible = "no VM is running";
+	else if (in.hardcore)
+		why.eligible = "hardcore mode forbids underclocking";
+	else if (in.ee_cycle_skip != 0)
+		why.eligible = "EE cycle skip is not zero";
+	else if (!in.limiter_nominal)
+		why.eligible = "the limiter is not at normal speed";
+	else if (in.paced_by_host_vsync)
+		why.eligible = "pacing comes from host vsync, not the limiter";
+	else if (in.gs_dump_replay)
+		why.eligible = "a GS dump is being replayed";
+	else if (in.frame_advancing)
+		why.eligible = "a frame advance is in progress";
+	else
+	{
+		out.eligible = true;
+		why.eligible = "nothing is suspending it";
+	}
+
+	if (reasons)
+		*reasons = why;
+
+	return out;
+}
+
+EECycleRate::EligibilityInputs EECycleRate::ReadEligibilityInputs()
+{
+	pxAssertMsg(VMManager::Internal::IsOnCPUThread(),
+		"EECycleRate::ReadEligibilityInputs reads EmuConfig and VM state, which the CPU thread owns.");
+
+	EligibilityInputs in;
+
+	in.dynamic_setting = EmuConfig.Speedhacks.DynamicEECycleRate;
+	in.pergame_claims_dynamic = EmuConfig.PerGameClaimsDynamicEECycleRate;
+	in.pergame_claims_rate = EmuConfig.PerGameClaimsEECycleRate;
+	in.gamedb_set_rate = EmuConfig.GameDBSetEECycleRate;
+	in.configured = GetConfigured();
+
+	in.hardcore = Achievements::IsHardcoreModeActive();
+	in.ee_cycle_skip = EmuConfig.Speedhacks.EECycleSkip;
+	in.limiter_nominal = (VMManager::GetLimiterMode() == LimiterModeType::Nominal);
+	in.paced_by_host_vsync = VMManager::IsUsingVSyncForTiming();
+	in.gs_dump_replay = GSDumpReplayer::IsReplayingDump();
+	in.frame_advancing = VMManager::IsFrameAdvancing();
+	in.vm_running = (VMManager::GetState() == VMState::Running);
+
+	return in;
+}
+
+EECycleRateEligibility EECycleRate::ResolveEligibility()
+{
+	return ResolveEligibility(ReadEligibilityInputs());
+}
+
+void EECycleRate::LogResolvedEligibility()
+{
+	EligibilityReasons why;
+	const EECycleRateEligibility e = ResolveEligibility(ReadEligibilityInputs(), &why);
+
+	DevCon.WriteLn("EE cycle rate: dynamic is %s (%s); %s (%s); baseline %d",
+		e.enabled ? "on" : "off", why.enabled,
+		e.eligible ? "eligible" : "suspended", why.eligible,
+		static_cast<int>(e.baseline));
 }
