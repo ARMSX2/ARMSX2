@@ -256,10 +256,12 @@ namespace
 		s_measuring_waits.store(s_active, std::memory_order_relaxed);
 	}
 
-	// The session summary's raw material. Time is charged to the selector that was in force
-	// while the window ran, which is the one the controller was still believing in when it
-	// returned this window's decision.
-	void AccountWindow(const EECycleRateWindowSample& sample)
+	// The session summary's raw material. Time is charged to the selector the window
+	// actually ran at, which is why the caller passes it in rather than letting this read
+	// the live one: by the time this is called the window's own decision may already have
+	// moved the selector, and charging the window to the rate that replaced it would put
+	// the cost of a slow scene against the step taken to answer it.
+	void AccountWindow(const EECycleRateWindowSample& sample, s8 effective_during_window)
 	{
 		s_windows_seen++;
 		if (!EECycleRateController::IsSampleUsable(sample))
@@ -268,7 +270,7 @@ namespace
 			return;
 		}
 
-		const int index = static_cast<int>(EECycleRate::GetEffective()) - Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
+		const int index = static_cast<int>(effective_during_window) - Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
 		if (index >= 0 && index < kSelectorCount)
 			s_seconds_at_selector[index] += sample.target_seconds;
 	}
@@ -334,6 +336,10 @@ namespace
 
 		const EECycleRateWindowSample sample = EECycleRateSampler::BuildWindowSample(in);
 
+		// The rate the frames below were actually run at. Read before the decision, because
+		// the decision may replace it.
+		const s8 effective_during_window = EECycleRate::GetEffective();
+
 		EECycleRate::EligibilityReasons why;
 		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility(EECycleRate::ReadEligibilityInputs(), &why);
 
@@ -385,7 +391,7 @@ namespace
 			s_controller.OnApplied(EECycleRate::GetEffective());
 		}
 
-		AccountWindow(sample);
+		AccountWindow(sample, effective_during_window);
 		TraceWindow(sample, fed, why, decision, applied);
 
 		RefreshActivation(eligibility);
