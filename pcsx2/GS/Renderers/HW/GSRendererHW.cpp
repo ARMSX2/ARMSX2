@@ -2550,16 +2550,6 @@ void GSRendererHW::SwSpriteRender()
 	const GSOffset spo = m_mem.GetOffset(m_context->TEX0.TBP0, m_context->TEX0.TBW, m_context->TEX0.PSM);
 	const GSOffset& dpo = m_context->offset.fb;
 
-	// Census: the CPU sprite path reads the source texture out of local memory (when textured)
-	// and writes the destination back into it, both swizzled, both on this core.
-	{
-		const double px = static_cast<double>(w) * static_cast<double>(h);
-		double bytes = px * static_cast<double>(GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].bpp) / 8.0;
-		if (PRIM->TME)
-			bytes += px * static_cast<double>(GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].bpp) / 8.0;
-		g_perfmon.Put(GSPerfMon::BytesSwSprite, bytes);
-	}
-
 	const bool alpha_blending_enabled = NeedsBlending();
 
 	const GSVertex& v = m_index->tail > 0 ? m_vertex->buff[m_index->buff[m_index->tail - 1]] : GSVertex(); // Last vertex if any.
@@ -11380,12 +11370,6 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 
 	const u32 psm = (off.psm() == PSMCT32 && m_cached_ctx.FRAME.FBMSK == 0xFF000000u) ? PSMCT24 : off.psm();
 	const int format = GSLocalMemory::m_psm[psm].fmt;
-
-	// Census: write-only stores into already-resident local memory. Nothing is read to produce
-	// them, so this is the class that prices on the memset line, not the memcpy one.
-	g_perfmon.Put(GSPerfMon::BytesLocalMemClear,
-		static_cast<double>(r.width()) * static_cast<double>(r.height())
-			* static_cast<double>(GSLocalMemory::m_psm[psm].bpp) / 8.0);
 
 	const int left = r.left;
 	const int right = r.right;

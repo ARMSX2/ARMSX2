@@ -61,41 +61,6 @@ public:
 		// stats.json without reconstructing it from a draw stream.
 		RenderPassAreaPixels,
 
-		// --- Per-frame byte census (SD662 tier). Bytes, not counts.
-		//
-		// The MQ65's GS thread costs 3.9-10x the SD865's on the same dumps, and the split
-		// sorts by what the work is rather than how much of it there is. Its bandwidth floor
-		// says why that could be: write-only traffic runs a flat ~3x behind the SD865 at every
-		// working-set size, read-plus-write traffic slides to 5.2x at 16 MiB and 8.75x at
-		// 64 MiB. That predicts two slopes -- but only if the bytes are there, and nobody had
-		// counted them. These do.
-		//
-		// Grouped by class, because the class is the whole point: a path that reads one buffer
-		// and writes another is priced on the memcpy line, a path that only writes is priced on
-		// the memset line, and a path that only reads is its own thing.
-
-		// Read+write: source read from one place, result written to another.
-		BytesGifImageIn, ///< GIF image-transfer payload read out of the packet
-		BytesGifImageOut, ///< ... and written into GS local memory, swizzled
-		BytesTexReadVmem, ///< texture-cache source/target: swizzled bytes read out of local memory
-		BytesTexExpandOut, ///< ... and the expanded linear bytes written out (4 B/px, or 1 B/px paletted)
-		BytesHashReadVmem, ///< the same read, done again by the hash cache before it knows if it needs it
-		BytesHashExpandOut, ///< ... and its expanded copy
-		BytesUploadRing, ///< strided memcpy of an expanded texture into the host-visible upload ring
-		BytesReadbackToVmem, ///< downloaded pixels written back into local memory
-
-		// Write-only: nothing is read to produce these bytes.
-		BytesVertexStream, ///< non-temporal stores into the vertex ring
-		BytesIndexStream, ///< memcpy into the index ring
-		BytesUniformStream, ///< VS+PS constant-buffer pushes into the uniform rings
-		BytesLocalMemClear, ///< ClearGSLocalMemory's vector stores into local memory
-		BytesSwSprite, ///< the CPU sprite path writing pixels straight into local memory
-
-		BytesGifPacket, ///< the whole GIF stream handed to GSState::Transfer, decoded into vertices
-
-		// Read-only.
-		BytesHashed, ///< bytes fed to xxh3 by the hash cache
-
 		CounterLast,
 
 		// Reused counters for HW.

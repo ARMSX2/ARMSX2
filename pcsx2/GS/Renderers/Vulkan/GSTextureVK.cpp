@@ -277,9 +277,6 @@ void GSTextureVK::CopyTextureDataForUpload(void* dst, const void* src, u32 pitch
 {
 	const GSTexture::BlockInfo bi = GetBlockInfo(m_format);
 	const u32 count = (height + bi.height - 1) / bi.height;
-	// Census: read from the expanded scratch copy, write into the host-visible upload ring.
-	// This is the second full pass over a texture the CPU already walked once to expand it.
-	g_perfmon.Put(GSPerfMon::BytesUploadRing, static_cast<double>(std::min(upload_pitch, pitch)) * count);
 	StringUtil::StrideMemCpy(dst, upload_pitch, src, pitch, std::min(upload_pitch, pitch), count);
 }
 
