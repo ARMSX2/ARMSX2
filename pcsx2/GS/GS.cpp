@@ -79,9 +79,9 @@ bool GSIsHardwareRenderer()
 
 bool GSPresenterOffsetsFramebufferRead()
 {
-	// Resolved per renderer instance in OpenGSRenderer, because the answer does not follow
-	// from the renderer type alone: a hardware renderer that inherits the software output
-	// path offsets the read while GSIsHardwareRenderer() says hardware.
+	// Resolved per renderer instance in OpenGSRenderer rather than derived from the renderer
+	// type here, because it is a property of the output path. Today it equals "is the software
+	// renderer".
 	return GSCurrentPresenterOffsetsRead;
 }
 
@@ -267,9 +267,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	// Must be done first, initialization routines in GSState use GSIsHardwareRenderer().
 	GSCurrentRenderer = renderer;
 
-	// Default for everything that reads the whole framebuffer and leaves the offset to the
-	// presenter. A hardware renderer that inherits GSRendererSW's output path has to raise it
-	// where it is constructed. Set before any renderer is constructed, for the reason above.
+	// The software renderer's GetOutput() offsets the read itself; everything else reads the
+	// whole framebuffer and leaves the offset to the presenter. Set before any renderer is
+	// constructed, for the reason above.
 	GSCurrentPresenterOffsetsRead = (renderer == GSRendererType::SW);
 
 	GSVertexSW::InitStatic();

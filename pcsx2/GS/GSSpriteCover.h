@@ -18,7 +18,7 @@
 /// The rule is a header of its own because it is pure rectangle arithmetic, so it can be tested
 /// without a GS device, and because the answer is deliberately not the same fact as
 /// m_primitive_covers_without_gaps: widening that value moves pixels through the render-target
-/// alpha scale decision (`campaigns/gs-classic-tiler/phase3-a4-gapless-sprite-cover/RESULT.md`).
+/// alpha scale decision.
 namespace GSSpriteCover
 {
 	/// Above this many sprites the answer is no, whatever the geometry. The class that pays is a

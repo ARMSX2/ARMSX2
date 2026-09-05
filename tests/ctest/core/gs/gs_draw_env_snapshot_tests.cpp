@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
 // Contract suite for GSState::SetDrawBufferEnv -- the per-draw snapshot the vertex
