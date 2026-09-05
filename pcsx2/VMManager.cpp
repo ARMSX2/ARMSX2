@@ -10,6 +10,7 @@
 #include "DebugTools/DebugInterface.h"
 #include "DebugTools/SymbolImporter.h"
 #include "Elfheader.h"
+#include "EECycleRate.h"
 #include "FW.h"
 #include "GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
@@ -1703,6 +1704,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	UpdateCPUImplementations();
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
+	EECycleRate::SyncToConfigured();
 	Internal::ClearCPUExecutionCaches();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	memBindConditionalHandlers();
@@ -1989,6 +1991,7 @@ void VMManager::Reset()
 
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
+	EECycleRate::SyncToConfigured();
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 	SysMemory::Reset();
@@ -3233,6 +3236,9 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	// mVUreset that ClearCPUExecutionCaches triggers below — recording and the
 	// disk cache are re-synced there from the live config, so no explicit sync
 	// is needed here.
+	// A settings apply resolves the configured selector afresh; the governor's
+	// transient choice does not survive it, and the caches are going anyway.
+	EECycleRate::SyncToConfigured();
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 

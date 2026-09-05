@@ -33,6 +33,7 @@
 #include "Config.h"
 #include "vtlb.h"
 #include "Dmac.h"
+#include "EECycleRate.h"
 #include "GS.h"
 #ifdef PCSX2_RECOMPILER_TESTS
 #include "ee_divtrace.h" // diagnostic divergence-trace hooks (test builds only)
@@ -704,7 +705,7 @@ void recBranchCall(void (*func)())
 static u32 scaleblockcycles_calculation()
 {
 	const bool lowcycles = (s_nBlockCycles <= 40);
-	const s8 cyclerate = EmuConfig.Speedhacks.EECycleRate;
+	const s8 cyclerate = EECycleRate::GetEffective();
 	u32 scale_cycles = 0;
 
 	if (cyclerate == 0 || lowcycles || cyclerate < -99 || cyclerate > 3)
@@ -729,7 +730,7 @@ u32 scaleblockcycles_clear()
 {
 	const u32 scaled = scaleblockcycles_calculation();
 
-	const s8 cyclerate = EmuConfig.Speedhacks.EECycleRate;
+	const s8 cyclerate = EECycleRate::GetEffective();
 	const bool lowcycles = (s_nBlockCycles <= 40);
 
 	if (!lowcycles && cyclerate > 1)
@@ -3216,6 +3217,7 @@ static void recReserve()
 static void recResetRaw()
 {
 	Console.WriteLn(Color_Green, "iR5900-ARM64 Recompiler reset.");
+	EECycleRate::NoteEeReset();
 
 	// The code-cache rewind below dangles every host landing pointer in the
 	// call-ret ring — sentinel-fill so no stale frame can match. (recClear

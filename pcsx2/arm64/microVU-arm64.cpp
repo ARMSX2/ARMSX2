@@ -362,7 +362,7 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu1ExactMode     = EmuConfig.Cpu.Recompiler.vu1ExactMode     ? 1 : 0;
 
 	s.vuFlagHack      = EmuConfig.Speedhacks.vuFlagHack ? 1 : 0;
-	s.EECycleRate     = static_cast<s8>(EmuConfig.Speedhacks.EECycleRate);
+	s.EECycleRate     = static_cast<s8>(EECycleRate::GetEffective());
 	s.EECycleSkip     = static_cast<u8>(EmuConfig.Speedhacks.EECycleSkip);
 	s.IbitHack        = EmuConfig.Gamefixes.IbitHack         ? 1 : 0;
 	s.VUSyncHack      = EmuConfig.Gamefixes.VUSyncHack       ? 1 : 0;
@@ -1049,6 +1049,8 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 // Resets Rec Data
 void mVUreset(microVU& mVU, bool resetReserve)
 {
+	EECycleRate::NoteVuReset(mVU.index);
+
 #ifdef mVUcacheTrace
 	mVUCacheTraceDump(mVU, "pre-reset");
 	++g_mVUCacheTrace[mVU.index & 1].reset_calls;
