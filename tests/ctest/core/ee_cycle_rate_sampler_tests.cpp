@@ -12,6 +12,8 @@
 
 #include "EECycleRateSampler.h"
 
+#include "Config.h"
+
 #include <gtest/gtest.h>
 
 #include <vector>
@@ -283,4 +285,74 @@ TEST(EECycleRateSamplerWindow, AGSBoundWindowFailsTheBlockedGateEvenThoughItIsLa
 	EXPECT_GE(s.late_ratio, policy.overload_late);
 	EXPECT_LT(s.own_time_ratio, policy.min_own_time);
 	EXPECT_GT(s.blocked_ratio, policy.max_blocked);
+}
+
+// --- overlay word ----------------------------------------------------------
+//
+// The one piece of governor state that crosses a thread boundary. It is a single word so
+// the display can never pair a configured selector from one window with an effective
+// selector from the next, and that only holds if the round trip is exact over the whole
+// selector range - including the negative half, which is where a bias that is off by one
+// or a sign extension would show up.
+
+TEST(EECycleRateSamplerOverlay, EverySelectorPairRoundTrips)
+{
+	using OverlayState = EECycleRateSampler::OverlayState;
+
+	for (int configured = Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
+		 configured <= Pcsx2Config::SpeedhackOptions::MAX_EE_CYCLE_RATE; configured++)
+	{
+		for (int effective = Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
+			 effective <= Pcsx2Config::SpeedhackOptions::MAX_EE_CYCLE_RATE; effective++)
+		{
+			OverlayState in;
+			in.configured = static_cast<s8>(configured);
+			in.effective = static_cast<s8>(effective);
+
+			const OverlayState out = EECycleRateSampler::UnpackOverlayWord(EECycleRateSampler::PackOverlayWord(in));
+			EXPECT_EQ(out.configured, in.configured) << configured << "," << effective;
+			EXPECT_EQ(out.effective, in.effective) << configured << "," << effective;
+		}
+	}
+}
+
+TEST(EECycleRateSamplerOverlay, StateAndFlagsRoundTrip)
+{
+	using OverlayState = EECycleRateSampler::OverlayState;
+	using State = EECycleRateController::State;
+
+	for (const State state : {State::Disabled, State::Warmup, State::Observe, State::Cooldown})
+	{
+		for (const bool enabled : {false, true})
+		{
+			for (const bool shadow : {false, true})
+			{
+				OverlayState in;
+				in.configured = -1;
+				in.effective = -3;
+				in.state = state;
+				in.enabled = enabled;
+				in.shadow = shadow;
+
+				const OverlayState out = EECycleRateSampler::UnpackOverlayWord(EECycleRateSampler::PackOverlayWord(in));
+				EXPECT_EQ(out.state, in.state);
+				EXPECT_EQ(out.enabled, in.enabled);
+				EXPECT_EQ(out.shadow, in.shadow);
+				EXPECT_EQ(out.configured, in.configured);
+				EXPECT_EQ(out.effective, in.effective);
+			}
+		}
+	}
+}
+
+TEST(EECycleRateSamplerOverlay, TheZeroWordMeansTheGovernorIsNotRunning)
+{
+	// The published word before any VM has started, and what the display falls back on.
+	const EECycleRateSampler::OverlayState out = EECycleRateSampler::UnpackOverlayWord(0);
+
+	EXPECT_FALSE(out.enabled);
+	EXPECT_FALSE(out.shadow);
+	EXPECT_EQ(out.state, EECycleRateController::State::Disabled);
+	EXPECT_EQ(out.configured, Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE);
+	EXPECT_EQ(out.effective, Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE);
 }

@@ -148,4 +148,33 @@ namespace EECycleRateSampler
 	// execution was interrupted. The window in progress is marked unmeasurable rather
 	// than having a sample invented for it.
 	void OnFrameNotThrottled();
+
+	// --- overlay ---------------------------------------------------------------------
+	//
+	// What the on-screen display is allowed to know, as one packed word published by the
+	// CPU thread. A word rather than the fields, because the overlay runs on the GS thread
+	// and a field-by-field read can pair a configured selector from one window with an
+	// effective selector from the next - which is exactly the frame a screenshot of a bug
+	// report gets taken on. This is the only cross-thread read of governor state there is.
+	struct OverlayState
+	{
+		s8 configured = 0;
+		s8 effective = 0;
+		EECycleRateController::State state = EECycleRateController::State::Disabled;
+
+		// The governor is live: it may lower the selector.
+		bool enabled = false;
+
+		// Measuring and deciding into a trace, applying nothing.
+		bool shadow = false;
+	};
+
+	// Pure, and each other's inverse over the whole selector range.
+	u32 PackOverlayWord(const OverlayState& state);
+	OverlayState UnpackOverlayWord(u32 word);
+
+	// The published word. Any thread. A word whose enabled and shadow bits are both clear
+	// says the governor is not running, and the display should fall back to the configured
+	// settings it already reads.
+	u32 GetOverlayWord();
 } // namespace EECycleRateSampler

@@ -84,6 +84,21 @@ namespace
 	u32 s_windows_seen = 0;
 	bool s_ran_this_session = false;
 
+	// Published for the on-screen display. Written by the CPU thread at every window close
+	// and every lifecycle reset; read by the GS thread.
+	std::atomic<u32> s_overlay_word{0};
+
+	void PublishOverlay()
+	{
+		EECycleRateSampler::OverlayState state;
+		state.configured = EECycleRate::GetConfigured();
+		state.effective = EECycleRate::GetEffective();
+		state.state = s_controller.GetState();
+		state.enabled = s_active && !s_shadow;
+		state.shadow = s_shadow;
+		s_overlay_word.store(EECycleRateSampler::PackOverlayWord(state), std::memory_order_relaxed);
+	}
+
 	const char* StateName(EECycleRateController::State state)
 	{
 		switch (state)
@@ -327,6 +342,7 @@ namespace
 		TraceWindow(sample, eligibility, why, decision, applied);
 
 		RefreshActivation(eligibility);
+		PublishOverlay();
 		StartWindow();
 	}
 
@@ -495,6 +511,7 @@ void EECycleRateSampler::OnVMShutdown()
 	s_shadow = false;
 	s_measuring_waits.store(false, std::memory_order_relaxed);
 	s_controller.Reset(EECycleRate::GetConfigured());
+	PublishOverlay();
 	StartWindow();
 }
 
@@ -513,6 +530,7 @@ void EECycleRateSampler::OnLifecycleReset(const char* reason)
 	RefreshActivation(eligibility);
 
 	s_controller.Reset(eligibility.baseline);
+	PublishOverlay();
 	StartWindow();
 	TraceLifecycle(reason);
 }
@@ -561,4 +579,49 @@ void EECycleRateSampler::OnFrameNotThrottled()
 	s_window_invalid = true;
 	s_frame_gs_wait_ticks = 0;
 	s_frame_vu1_wait_ticks = 0;
+}
+
+// The word is four bits of configured selector, four of effective, two of controller state
+// and two flags. The selectors are biased by -MIN_EE_CYCLE_RATE so the whole -3..3 range is
+// unsigned, which is what makes the round trip exact rather than sign-extension-dependent.
+namespace
+{
+	constexpr int kSelectorBias = -Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE;
+
+	constexpr u32 kConfiguredShift = 0;
+	constexpr u32 kEffectiveShift = 4;
+	constexpr u32 kStateShift = 8;
+	constexpr u32 kEnabledBit = 1u << 10;
+	constexpr u32 kShadowBit = 1u << 11;
+
+	constexpr u32 kSelectorMask = 0xF;
+	constexpr u32 kStateMask = 0x3;
+} // namespace
+
+u32 EECycleRateSampler::PackOverlayWord(const OverlayState& state)
+{
+	const u32 configured = static_cast<u32>(
+		std::clamp<int>(static_cast<int>(state.configured) + kSelectorBias, 0, static_cast<int>(kSelectorMask)));
+	const u32 effective = static_cast<u32>(
+		std::clamp<int>(static_cast<int>(state.effective) + kSelectorBias, 0, static_cast<int>(kSelectorMask)));
+
+	return (configured << kConfiguredShift) | (effective << kEffectiveShift) |
+		   ((static_cast<u32>(state.state) & kStateMask) << kStateShift) | (state.enabled ? kEnabledBit : 0u) |
+		   (state.shadow ? kShadowBit : 0u);
+}
+
+EECycleRateSampler::OverlayState EECycleRateSampler::UnpackOverlayWord(u32 word)
+{
+	OverlayState state;
+	state.configured = static_cast<s8>(static_cast<int>((word >> kConfiguredShift) & kSelectorMask) - kSelectorBias);
+	state.effective = static_cast<s8>(static_cast<int>((word >> kEffectiveShift) & kSelectorMask) - kSelectorBias);
+	state.state = static_cast<EECycleRateController::State>((word >> kStateShift) & kStateMask);
+	state.enabled = (word & kEnabledBit) != 0;
+	state.shadow = (word & kShadowBit) != 0;
+	return state;
+}
+
+u32 EECycleRateSampler::GetOverlayWord()
+{
+	return s_overlay_word.load(std::memory_order_relaxed);
 }
