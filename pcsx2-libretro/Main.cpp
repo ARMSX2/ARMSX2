@@ -1422,9 +1422,13 @@ static void InstallFrontendVFS(retro_environment_t cb)
 		retro_vfs_interface_info info = {wanted, nullptr};
 		if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &info) && info.iface)
 		{
-			// The frontend answers with what it actually has, which can be
-			// newer than what was asked for.
-			version = std::max(wanted, info.required_interface_version);
+			// What the frontend accepted, not what it claims to have. The loop
+			// above exists precisely because required_interface_version cannot
+			// be relied on to tell us; taking the larger of the two would wire
+			// up members on the strength of the same field, and only differs
+			// for a frontend that refuses 3 while reporting 3 - which is one
+			// contradicting itself, in the direction that crashes.
+			version = wanted;
 			s_vfs = info.iface;
 			break;
 		}
