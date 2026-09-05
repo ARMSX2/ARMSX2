@@ -447,7 +447,14 @@ public class NativeApp {
 	public static void onPadRumble(int pad, int largeMotor, int smallMotor) {
 		if (!sRumbleEnabled) return;
 		int devId = com.armsx2.input.PadRouter.INSTANCE.deviceIdForPort(pad);
-		if (devId < 0) devId = sRumbleDeviceId;
+		// Nothing has claimed this slot yet: deal out the pads nobody has spoken for, rather
+		// than guessing. "The pad you last touched" names the SAME controller for every port,
+		// so one DualSense answered for BOTH players and the second pad stayed silent whatever
+		// slot it was in.
+		if (devId < 0) devId = com.armsx2.input.PadRouter.INSTANCE.fallbackDeviceIdForPort(pad);
+		// Player 1 alone may fall back to whatever last sent input -- Player 2 stays silent,
+		// because buzzing Player 1's controller for Player 2 is worse than not buzzing.
+		if (devId < 0 && pad == 0) devId = sRumbleDeviceId;
 		// devId may stay -1 for touch-only Player 1 (no gamepad); vibrateDevice still
 		// drives the device's own haptic for P1 (issue #241). P2 with no pad has no target.
 		if (devId < 0 && pad != 0) return;
@@ -516,6 +523,18 @@ public class NativeApp {
 	 *  Odin 3 whose built-in gamepad has no rumble actuator, only system haptics). */
 	private static void vibrateDevice(int devId, float low, float high, int ms, boolean allowSystemFallback) {
 		try {
+			InputDevice dev = (devId >= 0) ? InputDevice.getDevice(devId) : null;
+
+			// Per-controller override. A pad can ADVERTISE motors it cannot drive -- a handheld
+			// that bridges an external controller through its own HID node presents that node with
+			// a full vibrator inventory, accepts every vibrate() call without error, and moves
+			// nothing. Nothing in the API distinguishes that from a working motor, so "send this
+			// player's rumble somewhere else" has to be sayable by hand.
+			com.armsx2.input.PadRouter.RumbleMode mode =
+				com.armsx2.input.PadRouter.INSTANCE.rumbleModeForDevice(devId);
+			if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return;
+			boolean forceDevice = mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE;
+
 			// Single combined motor can't reproduce both PS2 actuators, so blend
 			// them the way AetherSX2/NetherSX2 do (org.libsdl.app
 			// SDLControllerManager): 0.6*large + 0.4*small. The PS2 small motor is
@@ -525,25 +544,21 @@ public class NativeApp {
 			// mix keeps a small-only pulse light and distinct from a large pulse.
 			float combined = Math.min(1f, low * 0.6f + high * 0.4f);
 			boolean drove = false;
-			InputDevice dev = (devId >= 0) ? InputDevice.getDevice(devId) : null;
-			if (dev != null) {
-				if (Build.VERSION.SDK_INT >= 31) {
-					VibratorManager vm = dev.getVibratorManager();
-					int[] ids = vm.getVibratorIds();
-					if (ids.length >= 2) {
-						drove = rumbleOne(vm.getVibrator(ids[0]), low, ms);
-						drove |= rumbleOne(vm.getVibrator(ids[1]), high, ms);
-					} else if (ids.length == 1) {
-						drove = rumbleOne(vm.getVibrator(ids[0]), combined, ms);
-					} else {
-						// Some pads (e.g. certain DualShock/DualSense BT modes) expose 0
-						// vibrators to VibratorManager but still drive via the legacy API.
-						drove = rumbleOne(dev.getVibrator(), combined, ms);
-					}
-				} else {
-					drove = rumbleOne(dev.getVibrator(), combined, ms);
+
+			if (!forceDevice) {
+				// The pad addressed directly over USB wins. On a handheld that bridges the
+				// controller, the motors the input API offers for it are fiction; this is the
+				// hardware itself, and it carries BOTH motors independently.
+				com.armsx2.input.UsbRumble.Pad usb = com.armsx2.input.UsbRumble.INSTANCE.padFor(dev);
+				if (usb != null) {
+					float scale = (Float.isFinite(sHapticScale) && sHapticScale >= 0f) ? sHapticScale : 1f;
+					int l = Math.round(Math.min(1f, low * scale) * 255f);
+					int h = Math.round(Math.min(1f, high * scale) * 255f);
+					if (usb.rumble(Math.max(0, l), Math.max(0, h))) return;
 				}
+				drove = driveMotors(motorsOf(dev), low, high, combined, ms);
 			}
+
 			// No controller actuator handled it → fall back to the device's built-in
 			// haptic (issue #241), when permitted (Player 1 / explicit test) so a
 			// vibrator-less P2 pad never buzzes the handheld that P1 is holding.
@@ -555,11 +570,59 @@ public class NativeApp {
 			// (#433). The #241 case is the opposite shape: a handheld whose own built-in pad
 			// has no actuator, where the "device" and the thing in your hands are the same
 			// object and buzzing it is exactly right.
-			if (!drove && allowSystemFallback && !isExternalPad(dev)) {
+			if (!drove && allowSystemFallback
+				&& (forceDevice || sRumbleFallbackExternal || !isExternalPad(dev))) {
 				rumbleOne(systemVibrator(), combined, ms);
 			}
 		} catch (Throwable ignored) {
 		}
+	}
+
+	/**
+	 * Every motor on [dev], or an empty list when Android exposes none.
+	 *
+	 * defaultVibrator FIRST: it is the addressing mode that actually drives hardware on the
+	 * handhelds that bridge a controller. Per-id vibrators are a fallback for pads whose default
+	 * reports nothing, NOT a replacement -- putting them first silenced pads that worked. The
+	 * legacy per-device API is last: some pads (certain DualShock/DualSense Bluetooth modes)
+	 * expose nothing at all to VibratorManager while still driving fine through it.
+	 */
+	private static java.util.List<Vibrator> motorsOf(InputDevice dev) {
+		java.util.ArrayList<Vibrator> motors = new java.util.ArrayList<>(2);
+		if (dev == null) return motors;
+		try {
+			if (Build.VERSION.SDK_INT >= 31) {
+				VibratorManager vm = dev.getVibratorManager();
+				if (vm != null) {
+					Vibrator def = vm.getDefaultVibrator();
+					if (def != null && def.hasVibrator()) motors.add(def);
+					if (motors.isEmpty()) {
+						for (int id : vm.getVibratorIds()) {
+							Vibrator v = vm.getVibrator(id);
+							if (v != null && v.hasVibrator()) motors.add(v);
+						}
+					}
+				}
+			}
+			if (motors.isEmpty()) {
+				Vibrator legacy = dev.getVibrator();
+				if (legacy != null && legacy.hasVibrator()) motors.add(legacy);
+			}
+		} catch (Throwable ignored) {
+		}
+		return motors;
+	}
+
+	/** Drive [motors]: two get a motor each, one gets the blend. */
+	private static boolean driveMotors(java.util.List<Vibrator> motors, float low, float high,
+	                                   float combined, int ms) {
+		if (motors.isEmpty()) return false;
+		if (motors.size() >= 2) {
+			boolean drove = rumbleOne(motors.get(0), low, ms);
+			drove |= rumbleOne(motors.get(1), high, ms);
+			return drove;
+		}
+		return rumbleOne(motors.get(0), combined, ms);
 	}
 
 	/** User-set haptic strength multiplier (0..2, default 1.0 = as authored). Scales EVERY
@@ -567,6 +630,15 @@ public class NativeApp {
 	 *  "Vibration Strength" slider tames or boosts all of it. Set from Kotlin
 	 *  (ControllerMappings.setHapticIntensity) live and at app start. */
 	public static volatile float sHapticScale = 1.0f;
+
+	/** Opt back in to buzzing THIS device when an external controller exposes no motor.
+	 *  Default false, which is the #433 behaviour: a phone in a pocket must not buzz for a
+	 *  pad in your hands. But some pads (Xbox Series X/S over Bluetooth, some DualSense BT
+	 *  modes) cannot be driven through InputDevice at all, so suppressing the fallback leaves
+	 *  the user with no feedback whatsoever (#646 — filed by the same reporter as #433).
+	 *  Neither default is right for everyone, so the choice is the user's.
+	 *  Mirrored from ControllerMappings.setRumbleFallbackExternal. */
+	public static volatile boolean sRumbleFallbackExternal = false;
 
 	/**
 	 * True when [dev] is a controller the user is holding SEPARATELY from this device.
@@ -665,6 +737,9 @@ public class NativeApp {
 	 *  Falls back to the Nth gamepad when no port is claimed yet (tested outside a game). */
 	public static void testRumble(int port) {
 		int devId = com.armsx2.input.PadRouter.INSTANCE.deviceIdForPort(port);
+		// Resolved exactly as in-game rumble resolves it, so the test cannot pass while the
+		// real thing buzzes a different pad.
+		if (devId < 0) devId = com.armsx2.input.PadRouter.INSTANCE.fallbackDeviceIdForPort(port);
 		if (devId < 0) devId = nthGamepadDeviceId(port);
 		// devId may stay -1 (touch-only / Odin built-in with no rumble); vibrateDevice
 		// then falls back to the device's own haptic so the test still buzzes (issue #241).
@@ -677,25 +752,30 @@ public class NativeApp {
 	public static String rumbleStatusForPort(int port) {
 		int devId = com.armsx2.input.PadRouter.INSTANCE.deviceIdForPort(port);
 		boolean mapped = devId >= 0;
+		if (devId < 0) devId = com.armsx2.input.PadRouter.INSTANCE.fallbackDeviceIdForPort(port);
 		if (devId < 0) devId = nthGamepadDeviceId(port);
 		if (devId < 0) return "Player " + (port + 1) + ": no controller found";
 		InputDevice d = InputDevice.getDevice(devId);
 		String name = (d != null && d.getName() != null) ? d.getName() : ("device " + devId);
-		int vmCount = 0;
-		boolean legacy = false;
-		try {
-			Vibrator lv = (d != null) ? d.getVibrator() : null;
-			legacy = lv != null && lv.hasVibrator();
-		} catch (Throwable ignored) {}
-		if (Build.VERSION.SDK_INT >= 31 && d != null) {
-			try { vmCount = d.getVibratorManager().getVibratorIds().length; } catch (Throwable ignored) {}
+		String head = "Player " + (port + 1) + ": " + name + (mapped ? "" : " (not active in-game yet)");
+
+		com.armsx2.input.PadRouter.RumbleMode mode =
+			com.armsx2.input.PadRouter.INSTANCE.rumbleModeForDevice(devId);
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return head + " — rumble turned off for this pad";
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE) return head + " — set to vibrate this device";
+
+		// Reported through the SAME discovery the motors are actually driven from, so the
+		// diagnosis cannot disagree with the behaviour it is describing.
+		if (com.armsx2.input.UsbRumble.INSTANCE.padFor(d) != null) {
+			return head + " — rumble OK (driven directly over USB, 2 motors)";
 		}
-		boolean hasRumble = vmCount > 0 || legacy;
-		int motors = Math.max(vmCount, legacy ? 1 : 0);
-		return "Player " + (port + 1) + ": " + name
-				+ (mapped ? "" : " (not active in-game yet)")
-				+ (hasRumble ? " — rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")"
-						: " — NO rumble exposed by Android");
+		int motors = motorsOf(d).size();
+		if (motors > 0) {
+			return head + " — rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")";
+		}
+		return head + " — NO rumble exposed by Android"
+			+ (sRumbleFallbackExternal ? " (vibrating this device instead)"
+				: " (turn on \"Vibrate this device instead\" to feel it here)");
 	}
 
 	public static native void setAspectRatio(int type);

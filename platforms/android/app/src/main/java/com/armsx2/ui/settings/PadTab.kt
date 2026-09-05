@@ -298,6 +298,88 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 refreshToken.intValue++
             }
             SettingsDivider()
+            // Which physical controller is which player, and where its rumble goes.
+            //
+            // Slots are otherwise claimed first-to-press, which cannot express "the DualSense is
+            // player 1 and the built-in pad is player 2" -- and on a handheld the built-in pad is
+            // usually whatever presses something first. Pins are stored per controller (by
+            // descriptor, so they survive reconnects) and set once, rather than raced for at the
+            // start of every session.
+            val pads = remember(refreshToken.intValue) { com.armsx2.input.PadRouter.connectedPads() }
+            if (pads.isNotEmpty()) {
+                HelpText(str("pad.assign.help"))
+                // Only the slots Multitap actually arms. Offering player 3-8 with Multitap off
+                // would let the user pin a pad at an un-armed PS2 port, where its input goes
+                // nowhere at all -- the router ignores such a pin, so the picker must not show it.
+                val slotCount =
+                    if (ControllerMappings.multitapEnabled()) com.armsx2.input.PadRouter.MAX_PADS else 2
+                val slotLabels = listOf(str("pad.assign.auto")) +
+                    (0 until slotCount).map { str("pad.player${it + 1}") }
+                val rumbleModes = com.armsx2.input.PadRouter.RumbleMode.entries
+                val rumbleLabels = listOf(
+                    str("pad.assign.auto"),
+                    str("pad.assign.rumble.controller"),
+                    str("pad.assign.rumble.device"),
+                    str("pad.assign.rumble.off"),
+                )
+                pads.forEach { pad ->
+                    val pinnedPort = com.armsx2.input.PadRouter.pins()[pad.descriptor]
+                    SegmentedRow(
+                        label = pad.name,
+                        options = slotLabels,
+                        selectedIndex = (pinnedPort?.plus(1) ?: 0).coerceIn(0, slotLabels.lastIndex),
+                        onChange = { index ->
+                            com.armsx2.input.PadRouter.setPin(
+                                pad.descriptor,
+                                if (index == 0) null else index - 1,
+                            )
+                            refreshToken.intValue++
+                        },
+                    )
+                    // Where THIS pad's rumble goes. A controller can report motors it never
+                    // drives -- a handheld bridging an external pad through its own HID node
+                    // does exactly that -- and no API call can tell that apart from a working
+                    // motor, so the fallback has to be selectable rather than detected.
+                    SegmentedRow(
+                        label = pad.name + " — " + str("pad.assign.rumble"),
+                        options = rumbleLabels,
+                        selectedIndex = rumbleModes.indexOf(
+                            com.armsx2.input.PadRouter.rumbleMode(pad.descriptor),
+                        ).coerceAtLeast(0),
+                        onChange = { index ->
+                            com.armsx2.input.PadRouter.setRumbleMode(pad.descriptor, rumbleModes[index])
+                            refreshToken.intValue++
+                        },
+                    )
+                }
+                SettingsDivider()
+                // Taking the pad over on USB is the only way to reach a PlayStation controller's
+                // motors when the platform's own vibrator for it does nothing. It claims the
+                // pad's single HID interface, so input has to come through us too -- which is
+                // why it is a switch and not something done quietly on the user's behalf.
+                ToggleRow(
+                    str("pad.usbTakeover.label"),
+                    com.armsx2.input.UsbRumble.takeover,
+                    description = str("pad.usbTakeover.description"),
+                ) {
+                    com.armsx2.input.UsbRumble.setTakeover(it)
+                    refreshToken.intValue++
+                }
+                SettingsDivider()
+            }
+            // Escape hatch for pads Android will not drive. #433 stopped the phone buzzing for
+            // an external pad; #646 (same reporter) is the other half of that trade -- their
+            // Xbox pad exposes no motor, so suppressing the fallback left them with nothing.
+            // A handheld's own built-in pad is not external and never took this path.
+            ToggleRow(
+                str("pad.rumbleFallback.label"),
+                ControllerMappings.rumbleFallbackExternal(),
+                description = str("pad.rumbleFallback.description"),
+            ) { on ->
+                ControllerMappings.setRumbleFallbackExternal(on)
+                refreshToken.intValue++
+            }
+            SettingsDivider()
             // Buzz the selected player's controller and report whether Android can drive
             // its rumble — separates a routing problem from a pad whose haptics simply
             // aren't exposed to Android (common for DualSense/DS4 over Bluetooth).

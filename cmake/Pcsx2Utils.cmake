@@ -15,8 +15,12 @@ function(detect_operating_system)
 		message(STATUS "Building for iOS.")
 	elseif(APPLE AND NOT IOS)
 		message(STATUS "Building for MacOS.")
-	elseif(APPLE AND IOS)
-		message(STATUS "Building for iOS.")
+	elseif(ANDROID)
+		# Its own branch rather than folding into LINUX. This function only
+		# reports, but the LINUX-guarded code elsewhere in the build reaches for
+		# udev, D-Bus and a runtime page-size probe, none of which exist under
+		# the NDK — so Android must not answer to LINUX anywhere.
+		message(STATUS "Building for Android.")
 	elseif(LINUX)
 		message(STATUS "Building for Linux.")
 	elseif(BSD)
@@ -250,6 +254,14 @@ function(disable_compiler_warnings_for_target target)
 endfunction()
 
 function(detect_page_size)
+	# Allow a build to pin the page size rather than take the machine's, by
+	# pre-setting HOST_PAGE_SIZE (e.g. -DHOST_PAGE_SIZE=4096). Also the only way
+	# through here when cross-compiling, where the try_run below is fatal. The
+	# Android and iOS copies of this file already work this way.
+	if(DEFINED HOST_PAGE_SIZE)
+		message(STATUS "Host page size (preset): ${HOST_PAGE_SIZE}")
+		return()
+	endif()
 	message(STATUS "Determining host page size")
 	set(detect_page_size_file ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/src.c)
 	file(WRITE ${detect_page_size_file} "

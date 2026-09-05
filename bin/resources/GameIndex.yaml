@@ -23750,8 +23750,6 @@ SLES-53523:
 SLES-53524:
   name: "Mortal Kombat - Shaolin Monks"
   region: "PAL-M5"
-  roundModes:
-    eeDivRoundMode: 2 # Fixes elongated text on the menu screen.
   clampModes:
     eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
   gsHWFixes:
@@ -23760,8 +23758,6 @@ SLES-53524:
 SLES-53525:
   name: "Mortal Kombat - Shaolin Monks"
   region: "PAL-G"
-  roundModes:
-    eeDivRoundMode: 2 # Fixes elongated text on the menu screen.
   clampModes:
     eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
   gsHWFixes:
@@ -70219,8 +70215,6 @@ SLUS-21087:
   name: "Mortal Kombat - Shaolin Monks"
   region: "NTSC-U"
   compat: 5
-  roundModes:
-    eeDivRoundMode: 2 # Fixes elongated text on the menu screen.
   clampModes:
     eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
   gsHWFixes:

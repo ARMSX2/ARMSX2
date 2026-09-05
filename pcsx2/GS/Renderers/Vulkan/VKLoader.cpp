@@ -14,7 +14,7 @@
 #include <cstring>
 #include <string>
 
-#if defined(__ANDROID__)
+#if defined(ARMSX2_USE_ADRENOTOOLS)
 #include <dlfcn.h>
 #include <mutex>
 #include "adrenotools/driver.h"
@@ -44,7 +44,7 @@ void Vulkan::ResetVulkanLibraryFunctionPointers()
 
 static DynamicLibrary s_vulkan_library;
 
-#if defined(__ANDROID__)
+#if defined(ARMSX2_USE_ADRENOTOOLS)
 namespace
 {
 	std::mutex s_custom_driver_mutex;
@@ -136,7 +136,7 @@ bool Vulkan::LoadVulkanLibrary(Error* error)
 		return false;
 	}
 #else
-#if defined(__ANDROID__)
+#if defined(ARMSX2_USE_ADRENOTOOLS)
 	// User-picked custom driver (e.g. Mesa Turnip from K11MCH1/AdrenoToolsDrivers)
 	// takes priority. Falls back to the system loader on any failure so the boot
 	// still proceeds — the Console.Warning above already logged the cause.

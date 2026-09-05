@@ -9,6 +9,7 @@
 #include "VU.h"
 #include "arm64/iCore-arm64.h"
 
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -707,6 +708,12 @@ void LoadBranchState();
 // emits the normal flush + event-check + linked-B tail.
 bool recSuperblockIsContSite(u32 branch_pc);
 vixl::aarch64::Label* recSuperblockAddSideExit(u32 branch_target, bool need_delay_slot);
+
+// B.cond to an island whose body is emitted in the cold arena at block end.
+void recEmitColdIslandBranch(vixl::aarch64::Condition cond, std::function<void()> body);
+#ifdef PCSX2_RECOMPILER_TESTS
+u32 recTestColdIslandBodiesEmitted();
+#endif
 
 void recompileNextInstruction(bool delayslot, bool swapped_delay_slot);
 

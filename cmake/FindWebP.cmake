@@ -136,6 +136,14 @@ find_package_handle_standard_args(WebP
     VERSION_VAR WebP_VERSION
 )
 
+# libwebp 1.3 split its sharp YUV conversion into its own library. A shared
+# libwebp records the dependency itself, but a static one does not: linking
+# then fails on SharpYuvConvert/SharpYuvInit unless the archive is named too.
+find_library(WebP_SHARPYUV_LIBRARY
+    NAMES sharpyuv libsharpyuv
+    HINTS ${PC_WEBP_LIBDIR} ${PC_WEBP_LIBRARY_DIRS}
+)
+
 if (WebP_LIBRARY AND NOT TARGET WebP::libwebp)
     add_library(WebP::libwebp UNKNOWN IMPORTED GLOBAL)
     set_target_properties(WebP::libwebp PROPERTIES
@@ -143,6 +151,14 @@ if (WebP_LIBRARY AND NOT TARGET WebP::libwebp)
         INTERFACE_COMPILE_OPTIONS "${WebP_COMPILE_OPTIONS}"
         INTERFACE_INCLUDE_DIRECTORIES "${WebP_INCLUDE_DIR}"
     )
+    if (WebP_SHARPYUV_LIBRARY)
+        # Appended, not set: nothing else puts a link dependency on this target
+        # today, and overwriting the property would silently drop it the day
+        # something does.
+        set_property(TARGET WebP::libwebp APPEND PROPERTY
+            INTERFACE_LINK_LIBRARIES "${WebP_SHARPYUV_LIBRARY}"
+        )
+    endif ()
 endif ()
 
 if (WebP_DEMUX_LIBRARY AND NOT TARGET WebP::demux)
@@ -157,6 +173,7 @@ endif ()
 mark_as_advanced(
     WebP_INCLUDE_DIR
     WebP_LIBRARY
+    WebP_SHARPYUV_LIBRARY
     WebP_DEMUX_LIBRARY
 )
 

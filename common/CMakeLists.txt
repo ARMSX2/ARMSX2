@@ -16,6 +16,7 @@ target_sources(common PRIVATE
 	Error.cpp
 	FastJmp.cpp
 	FileSystem.cpp
+	HostVFS.cpp
 	HostSys.cpp
 	Image.cpp
 	HTTPDownloader.cpp
@@ -53,6 +54,7 @@ target_sources(common PRIVATE
 	FPControl.h
 	FastJmp.h
 	FileSystem.h
+	HostVFS.h
 	HashCombine.h
 	HostSys.h
 	HeterogeneousContainers.h
@@ -196,6 +198,7 @@ else()
 		Linux/LnxThreads.cpp
 		Linux/LnxMisc.cpp
 	)
+	# Empty on Android, where LnxMisc.cpp leaves the D-Bus path out entirely.
 	target_include_directories(common PRIVATE
 		${DBUS_INCLUDE_DIRS}
 	)

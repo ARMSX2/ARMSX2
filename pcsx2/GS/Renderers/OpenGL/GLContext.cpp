@@ -22,6 +22,10 @@
 
 #include "glad/gl.h"
 
+#if defined(ENABLE_LIBRETRO)
+#include "GS/Renderers/OpenGL/GLContextLibretro.h"
+#endif
+
 static bool ShouldPreferESContext()
 {
 	const char* value = std::getenv("PREFER_GLES_CONTEXT");
@@ -74,15 +78,24 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 	}
 
 	std::unique_ptr<GLContext> context;
+	// A frontend-owned context wins over anything we could open ourselves, so
+	// it is asked first: in a libretro core there is no window for any of the
+	// platform contexts below to attach to in the first place.
+#if defined(ENABLE_LIBRETRO)
+	if (GLContextLibretro::IsAvailable())
+		context = GLContextLibretro::Create(wi, error);
+#endif
+
 #ifdef __ANDROID__
-	if (wi.type == WindowInfo::Type::Android)
+	if (!context && wi.type == WindowInfo::Type::Android)
 		context = GLContextEGLAndroid::Create(wi, versions_to_try, num_versions_to_try);
 #endif
 #if defined(_WIN32)
-	context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+	if (!context)
+		context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
 #else
 #ifdef X11_API
-	if (wi.type == WindowInfo::Type::X11)
+	if (!context && wi.type == WindowInfo::Type::X11)
 		context = GLContextEGLX11::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
 #endif
 #ifdef WAYLAND_API

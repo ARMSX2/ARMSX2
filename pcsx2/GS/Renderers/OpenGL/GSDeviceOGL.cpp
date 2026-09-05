@@ -1522,7 +1522,9 @@ GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 	if (m_gpu_pipeline_statistics_enabled)
 		PopPipelineStatisticsQuery();
 
-	OMSetFBO(0);
+	// Not necessarily zero: a libretro frontend hands the core its own FBO to
+	// draw the finished frame into.
+	OMSetFBO(m_gl_context->GetDefaultFramebuffer());
 	OMSetColorMaskState();
 
 	// On TBDR, hint that the default framebuffer's prior content is throwaway
@@ -3449,7 +3451,7 @@ void GSDeviceOGL::RenderImGui()
 
 void GSDeviceOGL::RenderBlankFrame()
 {
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_gl_context->GetDefaultFramebuffer());
 	glDisable(GL_SCISSOR_TEST);
 	if (m_is_gles) // GLES/TBDR-only tile-bandwidth hint; inert on desktop, gated to keep it canonical
 	{

@@ -16,6 +16,10 @@
          isn't gated for devices without a gyroscope. -->
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
 
+    <!-- Rumble for a PlayStation pad is written to it directly over USB, because a handheld
+         that bridges the controller through its own HID node reports motors it never drives.
+         required="false" so devices with no USB host support still install. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <!--
         The Discord Social SDK .aar is now a real dependency, so its manifest merges into ours and
         brings its <queries> for CustomTabsService with it — no need to restate that here.

@@ -20,6 +20,7 @@
 // counterpart.
 
 #include "arm64/iR5900-arm64.h"
+#include "arm64/EeFpuModelCall-arm64.h"
 
 #include <cfloat>
 
@@ -899,6 +900,7 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 //
 // Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
 // FPUDivFPCR swap, which is right on most operands and one ULP out on the rest.
+// Mode 3's guards call the same models through emitDivideUnitModelCall.
 //
 // Silicon composes RSQRT.S out of the other two with an ordinary single in
 // between, so this does as well; the intermediate crosses the sqrt's call
@@ -951,16 +953,122 @@ static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ft
 	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
 }
 
+// The guards' body, emitted after the block: no allocator frame.
+static void emitDivideUnitModelCall(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+{
+	if (op == DivUnitOp::Sqrt)
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	else
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	const void* fn = op == DivUnitOp::Divide ? reinterpret_cast<const void*>(&EeFpuModel::Divide) :
+	                 op == DivUnitOp::Sqrt   ? reinterpret_cast<const void*>(&EeFpuModel::SqrtBits) :
+	                                           reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt);
+	armEmitEeFpuModelCall(fn);
+	armEmitEeFprWiden(armDRegister(dstidx), RWARG1, RXSCRATCH);
+}
+
+// Mode 3 keeps the host quotient unless the divide unit's word truncates to a
+// different integer. The unit's word is the host's or the adjacent word on the
+// side the host rounded away from (FPU.cpp, eeDivideCap); the sign of
+// |fs| - q*|ft| gives that side, zero means exact. Computed at value scale: in
+// slot scale it can underflow under FZ.
+//
+// areg, treg, qreg: fs, ft, q at value scale, clobbered; the caller owns them.
+// sreg: the slot; the island overwrites it.
+static void emitDivideIntegerGuard(int sreg, int areg, int treg, int qreg, int srcS, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fabs(armDRegister(areg), armDRegister(areg));
+	armAsm->Fabs(armDRegister(treg), armDRegister(treg));
+	armAsm->Fabs(armDRegister(qreg), armDRegister(qreg));
+	armAsm->Fmsub(armDRegister(areg), armDRegister(qreg), armDRegister(treg), armDRegister(areg));
+	armAsm->Fcmp(armDRegister(areg), 0.0);
+	armAsm->B(&same, a64::eq);
+
+	// Csneg reads the Fcmp's flags.
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(1) << 29); // one word of the single
+	armAsm->Csneg(RXARG2, RXARG2, RXARG2, a64::gt);
+	armAsm->Add(RXARG1, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(treg), RXARG1);
+	armAsm->Fcvtzs(RWARG1, armDRegister(treg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::Divide, sreg, srcS, srcT); });
+	armAsm->Bind(&same);
+}
+
+// The unit's root is the nearest single or one word below it, and nearest
+// whenever the host rounded down or the root was exact
+// (TheUnitsRootIsNearestOrTheWordBelow). Only a rounded-up root is tested.
+//
+// xreg: |ft|, qreg: the root, at value scale, both freed here. sreg: the slot;
+// the island overwrites it.
+static void emitSqrtIntegerGuard(int sreg, int xreg, int qreg, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fmsub(armDRegister(xreg), armDRegister(qreg), armDRegister(qreg), armDRegister(xreg));
+	armAsm->Fcmp(armDRegister(xreg), 0.0);
+	armAsm->B(&same, a64::ge);
+
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(1) << 29);
+	armAsm->Sub(RXARG1, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(xreg), RXARG1);
+	armAsm->Fcvtzs(RWARG1, armDRegister(xreg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	_freeNEONreg(xreg);
+	_freeNEONreg(qreg);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::Sqrt, sreg, srcT, srcT); });
+	armAsm->Bind(&same);
+}
+
+// The unit's RSQRT.S word lies within 2 words below the host's and 4 above
+// (RsqrtSAtFullModeStaysInsideTheWindow). The guard tests whether an integer
+// boundary falls inside that window. A zero quotient is skipped.
+//
+// qreg: q at value scale, clobbered. sreg: the slot; the island overwrites it.
+static void emitRsqrtIntegerGuard(int sreg, int qreg, int srcS, int srcT)
+{
+	a64::Label same;
+
+	armAsm->Fabs(armDRegister(qreg), armDRegister(qreg));
+	armAsm->Fmov(RXARG1, armDRegister(qreg));
+	armAsm->Cbz(RXARG1, &same);
+	armAsm->Mov(RXARG2, static_cast<u64>(2) << 29);
+	armAsm->Sub(RXARG2, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(qreg), RXARG2);
+	armAsm->Fcvtzs(RWSCRATCH, armDRegister(qreg));
+	armAsm->Mov(RXARG2, static_cast<u64>(4) << 29);
+	armAsm->Add(RXARG2, RXARG1, RXARG2);
+	armAsm->Fmov(armDRegister(qreg), RXARG2);
+	armAsm->Fcvtzs(RWARG1, armDRegister(qreg));
+	armAsm->Cmp(RWSCRATCH, RWARG1);
+	recEmitColdIslandBranch(a64::ne, [=]() { emitDivideUnitModelCall(DivUnitOp::RecipSqrt, sreg, srcS, srcT); });
+	armAsm->Bind(&same);
+}
+
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
 // flag/result shape, otherwise the quotient -- from the recurrence under mode 4
-// and in double below it. sreg/treg are write-only temps, srcS/srcT the guest
-// slots; the result lands in sreg as a slot on both arms. treg is -1 under
-// mode 4, which has no double to hold.
+// and in double below it, guarded at mode 3. sreg/treg/areg/qreg are write-only
+// temps the caller allocated before anything was emitted -- an allocation can
+// evict, and an eviction's writeback emitted inside the normal arm is skipped
+// by every divide by zero -- srcS/srcT the guest slots; the result lands in
+// sreg as a slot on both arms. treg, areg and qreg are -1 under mode 4, which
+// has no double to hold.
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
 // ~2^255), so ToPS2FPU_Full's finite-only contract holds.
-static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
+static void recDIVhelper1(int sreg, int treg, int areg, int qreg, int srcS, int srcT)
 {
 	ClearIDFlags();
 
@@ -994,11 +1102,13 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	}
 	else
 	{
-		SlotToDouble(sreg, srcS);
+		SlotToDouble(areg, srcS);
 		SlotToDouble(treg, srcT);
-		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(areg), armDRegister(treg));
 		ToPS2FPU_Full(sreg, false, treg, false, false);
+		armAsm->Fcvt(armDRegister(qreg), armSRegister(sreg));
 		SingleToSlot(sreg, sreg);
+		emitDivideIntegerGuard(sreg, areg, treg, qreg, srcS, srcT);
 	}
 
 	armAsm->Bind(&done);
@@ -1015,11 +1125,17 @@ void recDIV_S_xmm(int info)
 	// both, so the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
 	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
-	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
+	const int areg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	const int qreg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	recDIVhelper1(sreg, treg, areg, qreg, EEREC_S, EEREC_T);
 	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
 	if (!CHECK_FPU_EXACT)
+	{
 		_freeNEONreg(treg);
+		_freeNEONreg(areg);
+		_freeNEONreg(qreg);
+	}
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
@@ -1058,16 +1174,22 @@ void recSQRT_S_xmm(int info)
 	}
 	else
 	{
-		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		// Temps, not EEREC_D: it may be EEREC_T, which the island reads.
+		const int qreg = _allocTempNEONreg();
+		const int sreg = _allocTempNEONreg();
+		armAsm->Fsqrt(armDRegister(qreg), armDRegister(treg));
 		// A root cannot leave the in-range band, so the narrowing is the plain
 		// Fcvt with none of ToPS2FPU_Full's arms around it: the largest operand
 		// is a shade under 2^129 and roots to under 2^65, the smallest one FZ
 		// does not flush is 2^-126 and roots to 2^-63, and both sit inside
 		// [2^-126, 2^128). The one result outside it is a zero, which the
 		// underflow arm would have flushed to the same zero.
-		armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
-		SingleToSlot(EEREC_D, treg);
-		_freeNEONreg(treg);
+		armAsm->Fcvt(armSRegister(qreg), armDRegister(qreg));
+		SingleToSlot(sreg, qreg);
+		armAsm->Fcvt(armDRegister(qreg), armSRegister(qreg));
+		emitSqrtIntegerGuard(sreg, treg, qreg, EEREC_T);
+		armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
+		_freeNEONreg(sreg);
 	}
 
 	if (swapFpcr)
@@ -1128,7 +1250,9 @@ void recRSQRT_S_xmm(int info)
 		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
 		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 		ToPS2FPU_Full(sreg, false, treg, false, false);
+		armAsm->Fcvt(armDRegister(treg), armSRegister(sreg));
 		SingleToSlot(sreg, sreg);
+		emitRsqrtIntegerGuard(sreg, treg, EEREC_S, EEREC_T);
 	}
 
 	armAsm->Bind(&done);

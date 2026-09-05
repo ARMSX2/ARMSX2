@@ -154,8 +154,13 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 	message(STATUS "Building for ARM64.")
 	set(ARCH_ARM64 TRUE)
 	if(APPLE)
-		# Min spec is an M1
-		add_compile_options("-march=armv8.4-a" "-mcpu=apple-m1")
+		# Min spec is an M1. +crypto because -march is the flag clang resolves
+		# the feature set from here, and armv8.4-a alone leaves the crypto
+		# extension off: 3rdparty/lzma's AesOpt.c then fails to compile its
+		# vaeseq_u8 intrinsics ("requires target feature 'aes'") even though
+		# every Apple Silicon part has them. Older clang (Xcode 15) trips on
+		# this; newer ones happen to take the feature set from -mcpu instead.
+		add_compile_options("-march=armv8.4-a+crypto" "-mcpu=apple-m1")
 	elseif(NOT MSVC)
 		# Require atomic rmw instructions (LSE, ARMv8.1+). This is the upstream
 		# default and targets the broad arm64 ecosystem. MSVC (and clang-cl)
@@ -179,7 +184,27 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		detect_cache_line_size()
 		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=${HOST_CACHE_LINE_SIZE})
 	endif()
-	
+
+	# Android is neither LINUX nor WIN32 to CMake, so without this branch it
+	# falls through to the ARM64 default in Pcsx2Defs.h — 16K pages — while
+	# every current Android device runs a 4K kernel. The ARM64 memory manager
+	# needs its compile-time page size to match the kernel's at runtime, and a
+	# mismatch is a hard failure on the device, not a build warning. Detection
+	# is not an option here (cross-compile), so it is a knob, defaulted to 4K
+	# and named the same as in the APK's own copy of this file.
+	if(ANDROID)
+		set(ARMSX2_ANDROID_HOST_PAGE_SIZE "0x1000" CACHE STRING "Compile-time Android host page size for the PCSX2 core")
+		list(APPEND PCSX2_DEFS OVERRIDE_HOST_PAGE_SIZE=${ARMSX2_ANDROID_HOST_PAGE_SIZE})
+		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=64)
+		# 16K-page compatibility for the ELF itself: a 4K-internal-page build
+		# still has to load on a 16K kernel, which requires the segments be
+		# aligned to 16K. Independent of the page size above.
+		add_link_options(
+			"LINKER:-z,max-page-size=16384"
+			"LINKER:-z,common-page-size=16384"
+		)
+	endif()
+
 	# Windows page size matches x86-64 (4K).
 	if(WIN32)
 		list(APPEND PCSX2_DEFS OVERRIDE_HOST_PAGE_SIZE=0x1000)
@@ -331,6 +356,12 @@ endif()
 
 if(USE_OPENGL)
 	list(APPEND PCSX2_DEFS ENABLE_OPENGL)
+endif()
+
+if(ENABLE_LIBRETRO)
+	# Guards the pieces that only exist for the core - the frontend-owned GL
+	# context, for one - so a Qt or SDL build never compiles them.
+	list(APPEND PCSX2_DEFS ENABLE_LIBRETRO)
 endif()
 
 if(USE_VULKAN)
