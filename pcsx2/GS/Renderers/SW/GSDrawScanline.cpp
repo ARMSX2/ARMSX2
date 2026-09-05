@@ -294,7 +294,7 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 	// vector -- see GSBlockWalk.h. Here that only widens the step: the block is
 	// eight pixels wide on every draw, which is two vectors, and the scanline
 	// walks the alternating pair in local.dw.
-	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(sel, vlen);
+	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(vlen);
 
 #if _M_SSE >= 0x501
 	auto load_shift = [](int i) { return GSVector8::load<false>(&g_const_256b.m_shift[8 - i]); };
@@ -696,7 +696,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 	// Where this span starts inside its eight-pixel block decides which of the
 	// two alternating steps it begins on, so it has to be read off the true left
 	// edge before the vector alignment rounds it down.
-	const bool block_split = GSBlockWalkIsSplit(sel, vlen);
+	const bool block_split = GSBlockWalkIsSplit(vlen);
 	const GSScanlineLocalData::blockstep* const dw = local.dw[left & 7];
 	int dwphase = 0;
 #endif

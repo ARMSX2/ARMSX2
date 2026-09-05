@@ -111,7 +111,7 @@ GSDrawScanlineCodeGenerator::GSDrawScanlineCodeGenerator(u64 key, void* code, si
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch.GetCode());
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch2.GetCode());
 
-	m_block_split = GSBlockWalkIsSplit(m_sel, 4);
+	m_block_split = GSBlockWalkIsSplit(4);
 }
 
 void GSDrawScanlineCodeGenerator::Generate()
