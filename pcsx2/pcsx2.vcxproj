@@ -738,6 +738,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="Host.h" />
+    <ClInclude Include="Input\AndroidNativeRumble.h" />
     <ClInclude Include="Input\DInputSource.h" />
     <ClInclude Include="Input\InputManager.h" />
     <ClInclude Include="Input\InputSource.h" />
@@ -825,6 +826,7 @@
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
+    <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
@@ -839,6 +841,7 @@
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSTextureCache.h" />
     <ClInclude Include="GS\Renderers\SW\GSTextureCacheSW.h" />
+    <ClInclude Include="GS\Renderers\SW\GSSwTextureDirty.h" />
     <ClInclude Include="GS\GSJobQueue.h" />
     <ClInclude Include="GS\GSUtil.h" />
     <ClInclude Include="GS\GSVector.h" />
@@ -852,19 +855,24 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
+    <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
     <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />
     <ClInclude Include="GS\GSBackQueue.h" />
     <ClInclude Include="GS\GSVertexKick.h" />
+    <ClInclude Include="GS\GSVertexKickKernel.h" />
     <ClInclude Include="IPU\IPUdma.h" />
     <ClInclude Include="Mdec.h" />
     <ClInclude Include="Patch.h" />

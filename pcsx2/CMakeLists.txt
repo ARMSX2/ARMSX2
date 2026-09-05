@@ -578,11 +578,13 @@ set(pcsx2GSHeaders
 	GS/GSSpriteCover.h
 	GS/GSState.h
 	GS/GSVertexKick.h
+	GS/GSVertexKickKernel.h
 	GS/GSTables.h
 	GS/GSUtil.h
 	GS/GSVector.h
 	GS/GSXXH.h
 	GS/MultiISA.h
+	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSFastList.h
@@ -599,6 +601,8 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSelfReadCopyPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
+	GS/Renderers/Common/GSStreamRingFlushRange.h
+	GS/Renderers/Common/GSStreamRingMemoryPolicy.h
 	GS/Renderers/Common/GSTexture.h
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
@@ -610,10 +614,12 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSRendererHW.h
+	GS/Renderers/HW/GSSpriteEdgeSnap.h
 	GS/Renderers/HW/GSTextureCache.h
 	GS/Renderers/HW/GSTextureReplacements.h
 	GS/Renderers/HW/GSVertexHW.h
 	GS/Renderers/SW/GSBlockWalk.h
+	GS/Renderers/SW/GSDepthWalk.h
 	GS/Renderers/SW/GSDrawScanlineCodeGenerator.all.h
 	GS/Renderers/SW/GSDrawScanline.h
 	GS/Renderers/SW/GSNewCodeGenerator.h
@@ -621,6 +627,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSRendererSW.h
 	GS/Renderers/SW/GSScanlineEnvironment.h
 	GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h
+	GS/Renderers/SW/GSSwTextureDirty.h
 	GS/Renderers/SW/GSTextureCacheSW.h
 	GS/Renderers/SW/GSVertexSW.h
 	)
@@ -996,6 +1003,7 @@ set(pcsx2InputSources
 	Input/SDLInputSource.cpp
 )
 set(pcsx2InputHeaders
+	Input/AndroidNativeRumble.h
 	Input/InputManager.h
 	Input/InputSource.h
 	Input/SDLInputSource.h

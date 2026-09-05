@@ -2030,6 +2030,9 @@
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
@@ -2037,6 +2040,9 @@
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSTextureCacheSW.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSSwTextureDirty.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h">
@@ -2319,6 +2325,9 @@
     <ClInclude Include="Achievements.h">
       <Filter>Misc</Filter>
     </ClInclude>
+    <ClInclude Include="Input\AndroidNativeRumble.h">
+      <Filter>Misc\Input</Filter>
+    </ClInclude>
     <ClInclude Include="Input\InputManager.h">
       <Filter>Misc\Input</Filter>
     </ClInclude>
@@ -2531,7 +2540,13 @@
     <ClInclude Include="GS\GSVertexKick.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\GSVertexKickKernel.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h">
@@ -2552,6 +2567,12 @@
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
@@ -2562,6 +2583,9 @@
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h">
