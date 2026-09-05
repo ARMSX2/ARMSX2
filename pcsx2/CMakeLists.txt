@@ -769,9 +769,13 @@ if(USE_VULKAN)
 	)
 	target_link_libraries(PCSX2_FLAGS INTERFACE vulkan-headers)
 	target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
-	if(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-		# VKLoader.cpp's adrenotools_open_libvulkan splice needs adrenotools/driver.h.
+	# The custom-driver splice in VKLoader.cpp, which only the APK build has the
+	# library for - the buildbot's Android core build adds no adrenotools, and
+	# an unknown target name here becomes a bare -ladrenotools with no include
+	# path, which is how that job came to stop on a missing driver.h.
+	if(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" AND ARMSX2_USE_ADRENOTOOLS)
 		target_link_libraries(PCSX2_FLAGS INTERFACE adrenotools)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_USE_ADRENOTOOLS)
 	endif()
 endif()
 
