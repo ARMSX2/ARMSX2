@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+# SPDX-License-Identifier: GPL-3.0+
 #
 # doctor.sh -- prove the measurement rig is the tree, before measuring with it.
 #
