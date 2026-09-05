@@ -4,7 +4,6 @@
 #include "GSRendererHW.h"
 
 #include "GS/Renderers/Common/GSSwPrimRender.h"
-#include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 
@@ -51,22 +50,6 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 	if (!GSSwPrimRenderFunctions::Run(hw, hw.m_sw_prim, bbox))
 		return false;
 
-	if (GSDrawLog::IsActive()) [[unlikely]]
-	{
-		// The target lookup is the ledger's, not the road's: CanUseSwPrimRender did one of
-		// its own but did not keep the answer, and re-deriving it after the fact from the
-		// register state cannot see what the texture cache holds.
-		const bool tex_is_target = hw.PRIM->TME &&
-			g_texture_cache->GetTargetWithSharedBits(hw.m_cached_ctx.TEX0.TBP0, hw.m_cached_ctx.TEX0.PSM) != nullptr;
-
-		GSDrawLog::NoteSWPrimRender(bbox,
-			GSLocalMemory::GetStartBlockAddress(hw.m_cached_ctx.FRAME.Block(), hw.m_cached_ctx.FRAME.FBW,
-				hw.m_cached_ctx.FRAME.PSM, bbox),
-			GSLocalMemory::GetEndBlockAddress(hw.m_cached_ctx.FRAME.Block(), hw.m_cached_ctx.FRAME.FBW,
-				hw.m_cached_ctx.FRAME.PSM, bbox),
-			tex_is_target ? 1 : 0, hw.m_sw_prim.last_tex_clear_bytes, hw.m_sw_prim.last_tex_blocks);
-	}
-
 	if (invalidate_tc)
 		g_texture_cache->InvalidateVideoMem(hw.m_context->offset.fb, bbox);
 
@@ -97,9 +80,6 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 
 	GSRasterizerData data;
 	GSScanlineGlobalData& gd = data.global;
-
-	sw.last_tex_clear_bytes = 0;
-	sw.last_tex_blocks = 0;
 
 	sw.vertex_buffer.resize(((hw.m_vertex->next + 1) & ~1));
 
@@ -245,8 +225,6 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 				sw.texture[0]->Reset(0, TEX0, env.TEXA);
 
 			sw.texture[0]->Update(r);
-			sw.last_tex_clear_bytes += sw.texture[0]->m_last_clear_bytes;
-			sw.last_tex_blocks += sw.texture[0]->m_last_blocks;
 			gd.tex[0] = sw.texture[0]->m_buff;
 
 			gd.sel.tw = sw.texture[0]->m_tw - 3;
@@ -342,8 +320,6 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 
 					GSVector4i r = hw.GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage;
 					sw.texture[i]->Update(r);
-					sw.last_tex_clear_bytes += sw.texture[i]->m_last_clear_bytes;
-					sw.last_tex_blocks += sw.texture[i]->m_last_blocks;
 					gd.tex[i] = sw.texture[i]->m_buff;
 				}
 

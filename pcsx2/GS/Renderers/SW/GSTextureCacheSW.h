@@ -28,13 +28,6 @@ public:
 		std::array<u16, GS_MAX_PAGES> m_erase_it;
 		const u32* RESTRICT m_sharedbits;
 
-		// What the most recent Update() cost, for the per-draw ledger. Bytes the buffer
-		// allocation cleared (zero when the buffer was reused) and blocks unswizzled out of
-		// local memory. Kept here rather than returned because Update() has three callers
-		// and only one of them is measuring.
-		u32 m_last_clear_bytes = 0;
-		u32 m_last_blocks = 0;
-
 		// Keeping the pixel buffer across Reset(). m_buff_size is the allocation's capacity,
 		// grow-only; m_buff_stale says Reset() saw the texture's shape move and Update() therefore
 		// owes the rasterizer a buffer that reads zero outside what it unswizzles; m_dirty and

@@ -237,10 +237,6 @@ public:
 	{
 	public:
 		const int m_type = 0;
-		/// Serial, unique for the life of the process. Ledger identity only: TBP0 names an
-		/// address, and several targets pass through one address in a frame, so a question
-		/// about what a particular target already held cannot be asked by address.
-		u32 m_id = 0;
 		int m_alpha_max = 0;
 		int m_alpha_min = 0;
 		bool m_alpha_range = false;

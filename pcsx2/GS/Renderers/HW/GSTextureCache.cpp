@@ -4,7 +4,6 @@
 #include "GSTextureCache.h"
 #include "GSTextureReplacements.h"
 #include "GSRendererHW.h"
-#include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/GSState.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -32,9 +31,6 @@
 std::unique_ptr<GSTextureCache> g_texture_cache;
 
 static u8* s_unswizzle_buffer;
-
-// Ledger identity for targets; see GSTextureCache::Target::m_id.
-static u32 s_next_target_id = 0;
 
 /// List of candidates for purging when the hash cache gets too large.
 static std::vector<std::pair<GSTextureCache::HashCacheMap::iterator, s32>> s_hash_cache_purge_list;
@@ -2945,12 +2941,6 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				// here depends on dirty rects and a possible format conversion.
 				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 				dst->m_alpha_known_via_union = false;
-				if (GSDrawLog::IsActive()) [[unlikely]]
-				{
-					GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, dst_match->m_TEX0.TBP0,
-						dst_match->m_alpha_min, dst_match->m_alpha_max, dst->m_alpha_min, dst->m_alpha_max,
-						dst->m_valid);
-				}
 
 				// Don't bother copying the old target in if the whole thing is dirty.
 				if (dst->m_dirty.empty() || (~dst->m_dirty.GetDirtyChannels() & GSUtil::GetChannelMask(TEX0.PSM)) != 0 ||
@@ -3085,11 +3075,6 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_alpha_max = 0;
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		dst->m_alpha_known_via_union = false;
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, dst->m_id, dst->m_TEX0.TBP0, 0, 0,
-				dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
-		}
 	}
 	else if ((used || type == GSTextureCache::DepthStencil) && (std::abs(static_cast<s16>(GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp - GSLocalMemory::m_psm[TEX0.PSM].bpp)) == 16))
 	{
@@ -3781,12 +3766,6 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 							dst->m_alpha_known_via_union = false;
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
-							if (GSDrawLog::IsActive()) [[unlikely]]
-							{
-								GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id,
-									old_dst->m_TEX0.TBP0, old_dst->m_alpha_min, old_dst->m_alpha_max,
-									dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
-							}
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, copy_rect, 0, 0);
 						}
@@ -5775,11 +5754,6 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		dst->m_alpha_known_via_union = false;
 		dst->m_alpha_range |= src->m_alpha_range;
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, src->m_TEX0.TBP0,
-				src->m_alpha_min, src->m_alpha_max, dst->m_alpha_min, dst->m_alpha_max, dst->m_valid);
-		}
 	}
 
 	u32 page_mask = GSLocalMemory::IsPageAlignedMasked(src->m_TEX0.PSM, GSVector4i(sx, sy, sx + w, sy + h));
@@ -5901,11 +5875,6 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		tgt->m_alpha_known_via_union = false;
 		tgt->m_alpha_range = true;
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, tgt->m_id, tgt->m_TEX0.TBP0, 0, 255,
-				tgt->m_alpha_min, tgt->m_alpha_max, tgt->m_valid);
-		}
 	}
 
 	return true;
@@ -8226,23 +8195,10 @@ GSTextureCache::Target::Target(GIFRegTEX0 TEX0, int type, const GSVector2i& unsc
 		m_alpha_max = 0;
 	}
 	m_32_bits_fmt |= (GSLocalMemory::m_psm[TEX0.PSM].trbpp != 16);
-
-	m_id = ++s_next_target_id;
-	if (GSDrawLog::IsActive()) [[unlikely]]
-	{
-		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventCreate, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
-			m_alpha_min, m_alpha_max, m_valid);
-	}
 }
 
 GSTextureCache::Target::~Target()
 {
-	if (GSDrawLog::IsActive()) [[unlikely]]
-	{
-		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventDestroy, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
-			m_alpha_min, m_alpha_max, m_valid);
-	}
-
 	// Targets should never be shared.
 	pxAssert(!m_shared_texture);
 
@@ -8451,15 +8407,6 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;
 	}
 
-	if (GSDrawLog::IsActive()) [[unlikely]]
-	{
-		const u8 kind = (transferring_alpha && bpp >= 16) ?
-							(full_alpha_upload ? GSDrawLog::TargetEventUploadFull :
-												 GSDrawLog::TargetEventUploadPartial) :
-							GSDrawLog::TargetEventUploadNoAlpha;
-		GSDrawLog::NoteTargetEvent(kind, m_id, m_TEX0.TBP0, alpha_minmax.first, alpha_minmax.second, m_alpha_min,
-			m_alpha_max, m_valid);
-	}
 	g_gs_device->Recycle(t);
 
 	if (m_type == DepthStencil && g_texture_cache->GetTemporaryZ() != nullptr)
@@ -8576,7 +8523,7 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #ifdef PCSX2_DEVBUILD
 	if (!GSAlphaKnownBits::RangeAdmits(m_alpha_min, m_alpha_max, m_alpha_known))
 	{
-		Console.Error("TC: target %u alpha known bits %02x=%02x contradict range %d-%d at %s", m_id,
+		Console.Error("TC: target 0x%x alpha known bits %02x=%02x contradict range %d-%d at %s", m_TEX0.TBP0,
 			m_alpha_known.bits, m_alpha_known.value, m_alpha_min, m_alpha_max, site);
 		pxFailRel("alpha known bits contradict the alpha range");
 	}
@@ -8623,11 +8570,6 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
 	}
 
-	if (GSDrawLog::IsActive() && !m_valid.eq(old_valid)) [[unlikely]]
-	{
-		GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventValidGrow, m_id, m_TEX0.TBP0, m_alpha_min, m_alpha_max,
-			m_alpha_min, m_alpha_max, m_valid);
-	}
 	// GL_CACHE("TC: UpdateValidity (0x%x->0x%x) from R:%d,%d Valid: %d,%d", m_TEX0.TBP0, m_end_block, rect.z, rect.w, m_valid.z, m_valid.w);
 }
 

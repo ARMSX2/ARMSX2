@@ -5,7 +5,6 @@
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
-#include "GS/Renderers/HW/GSDrawLog.h"
 
 #include "common/StringUtil.h"
 
@@ -431,68 +430,9 @@ void GSVertexSWInitStatic()
 
 MULTI_ISA_UNSHARED_END
 
-void GSRendererSW::RecordDrawLogEntry() const
-{
-	const GSDrawingContext* context = m_context;
-	const GIFRegTEST& TEST = context->TEST;
-	const GIFRegALPHA& ALPHA = context->ALPHA;
-
-	GSDrawLog::Record rec = {};
-	rec.frame = static_cast<u32>(g_perfmon.GetFrame());
-	rec.draw = static_cast<u32>(s_n);
-	rec.prim_type = static_cast<u8>(PRIM->PRIM);
-	rec.prim_count = static_cast<u16>(std::min<u32>(m_index->tail, 0xFFFFu));
-
-	rec.frame_block = context->FRAME.Block();
-	rec.frame_psm = static_cast<u8>(context->FRAME.PSM);
-	rec.frame_fbw = static_cast<u8>(context->FRAME.FBW);
-	rec.frame_fbmsk = context->FRAME.FBMSK;
-
-	rec.z_block = context->ZBUF.Block();
-	rec.z_psm = static_cast<u8>(context->ZBUF.PSM);
-	rec.z_ztst = static_cast<u8>(TEST.ZTST);
-
-	rec.tex_tbp0 = context->TEX0.TBP0;
-	rec.tex_psm = static_cast<u8>(context->TEX0.PSM);
-	rec.tex_tbw = static_cast<u8>(context->TEX0.TBW);
-	rec.tex_tw = static_cast<u8>(context->TEX0.TW);
-	rec.tex_th = static_cast<u8>(context->TEX0.TH);
-
-	rec.alpha = static_cast<u16>((ALPHA.A << 6) | (ALPHA.B << 4) | (ALPHA.C << 2) | ALPHA.D);
-	rec.atst = static_cast<u8>(TEST.ATST);
-	rec.afail = static_cast<u8>(TEST.AFAIL);
-	rec.datm = static_cast<u8>(TEST.DATM);
-
-	rec.flags = static_cast<u8>((PRIM->TME ? GSDrawLog::FlagTextured : 0) |
-								(PRIM->ABE ? GSDrawLog::FlagBlend : 0) |
-								(TEST.ATE ? GSDrawLog::FlagAlphaTest : 0) |
-								(TEST.DATE ? GSDrawLog::FlagDate : 0) |
-								(TEST.ZTE ? GSDrawLog::FlagZTest : 0) |
-								(context->ZBUF.ZMSK ? GSDrawLog::FlagZMask : 0));
-
-	GSDrawLog::BeginDraw(rec);
-}
-
 void GSRendererSW::Draw()
 {
 	const GSDrawingContext* context = m_context;
-
-	// Closes on every exit path, so a draw that returns before it is queued still
-	// leaves a row rather than leaking its open row onto the next draw's. Carries the
-	// flag so it closes only a row this draw actually opened.
-	struct ScopedDrawLogRow
-	{
-		bool open;
-		~ScopedDrawLogRow()
-		{
-			if (open) [[unlikely]]
-				GSDrawLog::FinishDraw();
-		}
-	};
-	const bool log_draw = GSDrawLog::IsActive();
-	if (log_draw) [[unlikely]]
-		RecordDrawLogEntry();
-	const ScopedDrawLogRow drawlog_row{log_draw};
 
 	switch (m_vt.m_primclass)
 	{
@@ -564,9 +504,6 @@ void GSRendererSW::Draw()
 	{
 		return;
 	}
-
-	if (log_draw) [[unlikely]]
-		GSDrawLog::NoteSWDraw(r);
 
 	if constexpr (LOG && false)
 	{

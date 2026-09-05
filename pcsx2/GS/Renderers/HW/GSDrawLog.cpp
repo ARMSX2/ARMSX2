@@ -2,11 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/HW/GSDrawLog.h"
-#include "GS/Renderers/HW/GSAlphaKnownBits.h"
 #include "GS/GSExtra.h"
 #include "GS/GSState.h"
-#include "GS/GSPerfMon.h"
-#include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/GSUtil.h"
 
 #include "common/Console.h"
@@ -14,7 +11,6 @@
 
 #include "fmt/format.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <vector>
 
@@ -30,16 +26,6 @@ namespace GSDrawLog
 	static bool s_truncated = false;
 	// Index of the row opened by BeginDraw, or SIZE_MAX when no row is open.
 	static size_t s_open_record = SIZE_MAX;
-	// Serial handed to each TFX-call row, so calls stay orderable without relying on the
-	// row order surviving a sort by frame and draw serial.
-	static u32 s_tfx_call_serial = 0;
-
-	/// Rectangle coordinates are stored as s16 to keep the row small. A target rect never
-	/// approaches that range in practice, but a clamp is cheaper than a corrupted row.
-	static __fi s16 ClampCoord(int v)
-	{
-		return static_cast<s16>(std::clamp(v, -32768, 32767));
-	}
 
 	bool IsActive()
 	{
@@ -72,7 +58,6 @@ namespace GSDrawLog
 		s_records.shrink_to_fit();
 		s_truncated = false;
 		s_open_record = SIZE_MAX;
-		s_tfx_call_serial = 0;
 	}
 
 	size_t GetRecordCount()
@@ -107,192 +92,6 @@ namespace GSDrawLog
 		s_open_record = s_records.size() - 1;
 	}
 
-	void NoteAlphaRanges(int src_min, int src_max, int rt_min, int rt_max)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.flags2 |= Flags2AlphaRanges;
-		rec.src_alpha_min = static_cast<s16>(src_min);
-		rec.src_alpha_max = static_cast<s16>(src_max);
-		rec.rt_alpha_min = static_cast<s16>(rt_min);
-		rec.rt_alpha_max = static_cast<s16>(rt_max);
-	}
-
-	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask,
-		const GSVector4i& draw_rect, const GSVector4i& valid_rect)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.flags2 |= Flags2RTAlpha;
-		rec.rt_id = target_id;
-		rec.rt_tbp0 = tbp0;
-		rec.rt_alpha_flags = alpha_flags;
-		rec.rt_fbmask_a = fbmask_a;
-		rec.rt_alpha_fmt_mask = alpha_fmt_mask;
-		rec.rt_draw_x = ClampCoord(draw_rect.x);
-		rec.rt_draw_y = ClampCoord(draw_rect.y);
-		rec.rt_draw_z = ClampCoord(draw_rect.z);
-		rec.rt_draw_w = ClampCoord(draw_rect.w);
-		rec.rt_valid_x = ClampCoord(valid_rect.x);
-		rec.rt_valid_y = ClampCoord(valid_rect.y);
-		rec.rt_valid_z = ClampCoord(valid_rect.z);
-		rec.rt_valid_w = ClampCoord(valid_rect.w);
-	}
-
-	void NoteBlendFactorAlpha(u8 road)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		s_records[s_open_record].blend_factor_alpha = road;
-	}
-
-	void NoteHeldAlphaMask(u8 outcome)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		s_records[s_open_record].held_alpha_mask = outcome;
-	}
-
-	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 masked,
-		u8 src_lo, u8 src_hi)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.exact_alpha_drop = decision;
-		rec.exact_alpha_known_bits = known_bits;
-		rec.exact_alpha_known_value = known_value;
-		rec.exact_alpha_masked = masked;
-		rec.exact_alpha_src_lo = src_lo;
-		rec.exact_alpha_src_hi = src_hi;
-	}
-
-	void NoteRTAlphaCommitted()
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		s_records[s_open_record].rt_alpha_flags |= RTAlphaCommitted;
-	}
-
-	void NoteTargetEvent(u8 kind, u32 target_id, u32 tbp0, int payload_min, int payload_max,
-		int rt_min, int rt_max, const GSVector4i& valid)
-	{
-		if (!IsActive())
-			return;
-
-		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
-			s_records.reserve(MAX_RECORDS);
-
-		if (s_records.size() >= MAX_RECORDS)
-		{
-			s_truncated = true;
-			return;
-		}
-
-		// An event row is not a draw, so it does not disturb the row a draw has open: it is
-		// appended past it and s_open_record is left where it was. Ordering against the
-		// draws is what the row is for, so it carries the same frame and draw serial the
-		// next draw will -- an event between draws N and N+1 sorts as N+1 with no
-		// FlagSubmitted, which reads correctly in stream order.
-		Record rec = {};
-		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
-		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.flags2 = Flags2Event | Flags2AlphaRanges;
-		rec.evt_kind = kind;
-		rec.rt_id = target_id;
-		rec.rt_tbp0 = tbp0;
-		rec.src_alpha_min = static_cast<s16>(payload_min);
-		rec.src_alpha_max = static_cast<s16>(payload_max);
-		rec.rt_alpha_min = static_cast<s16>(rt_min);
-		rec.rt_alpha_max = static_cast<s16>(rt_max);
-		rec.area_x = static_cast<s16>(std::clamp(valid.x, -32768, 32767));
-		rec.area_y = static_cast<s16>(std::clamp(valid.y, -32768, 32767));
-		rec.area_z = static_cast<s16>(std::clamp(valid.z, -32768, 32767));
-		rec.area_w = static_cast<s16>(std::clamp(valid.w, -32768, 32767));
-		s_records.push_back(rec);
-	}
-
-	void NoteSpriteRect(u16 index, int x0, int y0, int x1, int y1)
-	{
-		if (!IsActive())
-			return;
-
-		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
-			s_records.reserve(MAX_RECORDS);
-
-		if (s_records.size() >= MAX_RECORDS)
-		{
-			s_truncated = true;
-			return;
-		}
-
-		// Same discipline as NoteTargetEvent: appended past the open draw row, s_open_record
-		// left alone, the draw's frame and serial carried as the join key.
-		Record rec = {};
-		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
-		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.flags2 = Flags2SpriteRect;
-		rec.spr_i = index;
-		rec.spr_x0 = x0;
-		rec.spr_y0 = y0;
-		rec.spr_x1 = x1;
-		rec.spr_y1 = y1;
-		s_records.push_back(rec);
-	}
-
-	void NoteTFXCall(const TFXCall& call)
-	{
-		if (!IsActive())
-			return;
-
-		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
-			s_records.reserve(MAX_RECORDS);
-
-		if (s_records.size() >= MAX_RECORDS)
-		{
-			s_truncated = true;
-			return;
-		}
-
-		// Same discipline as NoteTargetEvent: appended past the open draw row, s_open_record
-		// left alone. The frame and draw serial are the join key back to that row, which is
-		// where the PS2 view and the barrier decision live.
-		Record rec = {};
-		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
-		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.flags2 = Flags2TFXCall;
-		rec.tfx_call = s_tfx_call_serial++;
-		rec.tfx_pipe_hash = call.pipe_hash;
-		rec.tfx_ps_key_lo = call.ps_key_lo;
-		rec.tfx_ps_key_hi = call.ps_key_hi;
-		rec.tfx_pass = call.pass_serial;
-		rec.tfx_pipe_key = call.pipe_key;
-		rec.tfx_bs_key = call.bs_key;
-		rec.tfx_rt_obj = call.rt_obj;
-		rec.tfx_ds_obj = call.ds_obj;
-		rec.tfx_tex_obj = call.tex_obj;
-		rec.tfx_pal_obj = call.pal_obj;
-		rec.tfx_sc_x = static_cast<s16>(std::clamp(call.scissor_x, -32768, 32767));
-		rec.tfx_sc_y = static_cast<s16>(std::clamp(call.scissor_y, -32768, 32767));
-		rec.tfx_sc_z = static_cast<s16>(std::clamp(call.scissor_z, -32768, 32767));
-		rec.tfx_sc_w = static_cast<s16>(std::clamp(call.scissor_w, -32768, 32767));
-		rec.tfx_vs_key = call.vs_key;
-		rec.tfx_dss_key = call.dss_key;
-		rec.tfx_cms_key = call.cms_key;
-		rec.tfx_samp_sel = call.samp_sel;
-		rec.tfx_kind = call.kind;
-		rec.tfx_pass_end = call.pass_end;
-		s_records.push_back(rec);
-	}
-
 	void NoteSelfRead(SelfRead resolution)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -316,75 +115,10 @@ namespace GSDrawLog
 		rec.destination_alpha = static_cast<u8>(config.destination_alpha);
 		rec.colormask = static_cast<u8>(config.colormask.wrgba);
 		rec.barrier = config.require_full_barrier ? 2 : (config.require_one_barrier ? 1 : 0);
-		rec.blend_key = config.blend.key;
-		// Everything about the shader that says how this draw blends, in one word. blend_a..d and
-		// blend_mix are the software equations; blend_hw the hardware-assisted variants; a_masked,
-		// pabe and blend_factor_in_alpha the three things that change what the second output or
-		// the primary alpha carries; colclip and colclip_hw the wrap emulation the blend rides in.
-		rec.blend_ps = static_cast<u32>(config.ps.blend_a) | (static_cast<u32>(config.ps.blend_b) << 2) |
-		               (static_cast<u32>(config.ps.blend_c) << 4) | (static_cast<u32>(config.ps.blend_d) << 6) |
-		               (static_cast<u32>(config.ps.blend_hw) << 8) | (static_cast<u32>(config.ps.blend_mix) << 11) |
-		               (static_cast<u32>(config.ps.a_masked) << 13) | (static_cast<u32>(config.ps.pabe) << 14) |
-		               (static_cast<u32>(config.ps.blend_factor_in_alpha) << 15) |
-		               (static_cast<u32>(config.ps.fixed_one_a) << 16) |
-		               (static_cast<u32>(config.ps.round_inv) << 17) |
-		               (static_cast<u32>(config.ps.colclip) << 18) |
-		               (static_cast<u32>(config.ps.colclip_hw) << 19) |
-		               (static_cast<u32>(config.ps.no_color1) << 20) |
-		               (static_cast<u32>(config.ps.rta_correction) << 21);
 		rec.area_x = static_cast<s16>(config.drawarea.x);
 		rec.area_y = static_cast<s16>(config.drawarea.y);
 		rec.area_z = static_cast<s16>(config.drawarea.z);
 		rec.area_w = static_cast<s16>(config.drawarea.w);
-		rec.sample_x = static_cast<s16>(std::clamp(config.samplearea.x, -32768, 32767));
-		rec.sample_y = static_cast<s16>(std::clamp(config.samplearea.y, -32768, 32767));
-		rec.sample_z = static_cast<s16>(std::clamp(config.samplearea.z, -32768, 32767));
-		rec.sample_w = static_cast<s16>(std::clamp(config.samplearea.w, -32768, 32767));
-	}
-
-	void NoteSWDraw(const GSVector4i& rect)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.sw = 1;
-		rec.sw_road = SWRoadRenderer;
-		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
-		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
-		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
-		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
-	}
-
-	void NoteSWRoad(u8 road)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		s_records[s_open_record].sw_road = road;
-	}
-
-	void NoteSWPrimRender(const GSVector4i& rect, u32 bp_start, u32 bp_end, u8 tex_is_target,
-		u32 tex_clear_bytes, u32 tex_blocks)
-	{
-		if (s_open_record == SIZE_MAX)
-			return;
-
-		Record& rec = s_records[s_open_record];
-		rec.sw = 1;
-		// The road was named at the decision site; a row that reaches here without one took
-		// an entry point nothing tagged, and saying so beats guessing.
-		if (rec.sw_road == SWRoadNone)
-			rec.sw_road = SWRoadHack;
-		rec.sw_tex_is_target = tex_is_target;
-		rec.sw_bp_start = bp_start;
-		rec.sw_bp_end = bp_end;
-		rec.sw_tex_clear_bytes = tex_clear_bytes;
-		rec.sw_tex_blocks = tex_blocks;
-		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
-		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
-		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
-		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
 	}
 
 	void FinishDraw()
@@ -404,155 +138,6 @@ namespace GSDrawLog
 				return "DEPTH_DIRECT";
 			case SelfReadCopy:
 				return "COPY";
-			case SelfReadShuffleOffset:
-				return "SHUFFLE_OFFSET";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetSWRoadName(u8 road)
-	{
-		switch (road)
-		{
-			case SWRoadSprite:
-				return "SPRITE";
-			case SWRoadCLUT:
-				return "CLUT";
-			case SWRoadHack:
-				return "HACK";
-			case SWRoadRenderer:
-				return "RENDERER";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetTargetEventName(u8 kind)
-	{
-		switch (kind)
-		{
-			case TargetEventCreate:
-				return "CREATE";
-			case TargetEventDestroy:
-				return "DESTROY";
-			case TargetEventClear:
-				return "CLEAR";
-			case TargetEventUploadFull:
-				return "UPLOAD_FULL";
-			case TargetEventUploadPartial:
-				return "UPLOAD_PARTIAL";
-			case TargetEventUploadNoAlpha:
-				return "UPLOAD_NO_ALPHA";
-			case TargetEventInherit:
-				return "INHERIT";
-			case TargetEventClobber:
-				return "CLOBBER";
-			case TargetEventValidGrow:
-				return "VALID_GROW";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetExactAlphaDropName(u8 decision)
-	{
-		switch (decision)
-		{
-			case ExactAlphaDropTaken:
-				return "TAKEN";
-			case ExactAlphaDropIneligible:
-				return "INELIGIBLE";
-			case ExactAlphaDropTargetUnknown:
-				return "TARGET_UNKNOWN";
-			case ExactAlphaDropSubstituteVarying:
-				return "SUBST_SRC_NOT_CONST";
-			case ExactAlphaDropSubstituteLoadBearing:
-				return "SUBST_LOAD_BEARING";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetBlendFactorAlphaName(u8 road)
-	{
-		switch (road)
-		{
-			case BlendFactorAlphaFactor:
-				return "FACTOR";
-			case BlendFactorAlphaScaled:
-				return "SCALED";
-			case BlendFactorAlphaSoftware:
-				return "SW";
-			case BlendFactorAlphaRefusedFactor:
-				return "REFUSED_FACTOR";
-			case BlendFactorAlphaRefusedScaled:
-				return "REFUSED_SCALED";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetHeldAlphaMaskName(u8 outcome)
-	{
-		switch (outcome)
-		{
-			case HeldAlphaMaskStood:
-				return "STOOD";
-			case HeldAlphaMaskRestored:
-				return "RESTORED";
-			case HeldAlphaMaskSubstituteStood:
-				return "SUBST_STOOD";
-			case HeldAlphaMaskSubstituteRestored:
-				return "SUBST_RESTORED";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetTFXCallKindName(u8 kind)
-	{
-		switch (kind)
-		{
-			case TFXCallMain:
-				return "MAIN";
-			case TFXCallBlendMultiPass:
-				return "BLEND_MULTI";
-			case TFXCallAlphaSecondPass:
-				return "ALPHA_SECOND";
-			case TFXCallPrimIDPrepass:
-				return "PRIMID_PREPASS";
-			default:
-				return "";
-		}
-	}
-
-	static const char* GetPassEndReasonName(u8 reason)
-	{
-		switch (reason)
-		{
-			case PassEndOther:
-				return "OTHER";
-			case PassEndTargetSwitch:
-				return "TARGET_SWITCH";
-			case PassEndResourceTransition:
-				return "RESOURCE_TRANSITION";
-			case PassEndTextureUnbound:
-				return "TEXTURE_UNBOUND";
-			case PassEndTextureUpload:
-				return "TEXTURE_UPLOAD";
-			case PassEndClear:
-				return "CLEAR";
-			case PassEndCopy:
-				return "COPY";
-			case PassEndCloneCopy:
-				return "CLONE_COPY";
-			case PassEndDATE:
-				return "DATE";
-			case PassEndColClip:
-				return "COLCLIP";
-			case PassEndSubmit:
-				return "SUBMIT";
 			default:
 				return "";
 		}
@@ -581,31 +166,14 @@ namespace GSDrawLog
 		}
 
 		std::fprintf(fp.get(),
-			"frame,draw,arm,prim,prim_count,submitted,"
+			"frame,draw,prim,prim_count,submitted,"
 			"fb_addr,fb_psm,fb_bw,fbmsk,"
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
-			"area_x,area_y,area_w,area_h,"
-			"sample_x,sample_y,sample_w,sample_h,"
-			"src_alpha_min,src_alpha_max,rt_alpha_min,rt_alpha_max,"
-			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
-			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
-			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
-			"rt_alpha_known_bits,rt_alpha_known_value,blend_factor_alpha,"
-			"held_alpha_mask,"
-			"blend_key,blend_ps,"
-			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
-			"tfx_ps_lo,tfx_ps_hi,tfx_vs,tfx_dss,tfx_cms,tfx_bs,tfx_pipe_key,"
-			"tfx_rt,tfx_ds,tfx_tex,tfx_pal,tfx_samp,"
-			"tfx_sc_x,tfx_sc_y,tfx_sc_w,tfx_sc_h,"
-			"sw_road,sw_tex_target,sw_bp_start,sw_bp_end,sw_tex_clear_bytes,sw_tex_blocks,"
-			"exact_masked,exact_src_lo,exact_src_hi,"
-			"rt_draw_x,rt_draw_y,rt_draw_w,rt_draw_h,"
-			"rt_valid_x,rt_valid_y,rt_valid_w,rt_valid_h,"
-			"spr_i,spr_x0,spr_y0,spr_x1,spr_y1\n");
+			"area_x,area_y,area_w,area_h\n");
 
 		for (const Record& r : s_records)
 		{
@@ -614,10 +182,8 @@ namespace GSDrawLog
 			const bool blended = (r.flags & FlagBlend) != 0;
 			const bool ztest = (r.flags & FlagZTest) != 0;
 
-			std::fprintf(fp.get(), "%u,%u,", r.frame, r.draw);
-
-			std::fprintf(fp.get(), "%s,%s,%u,%d,", r.sw ? "sw" : "hw",
-				GSUtil::GetPrimName(r.prim_type), r.prim_count, submitted ? 1 : 0);
+			std::fprintf(fp.get(), "%u,%u,%s,%u,%d,", r.frame, r.draw, GSUtil::GetPrimName(r.prim_type),
+				r.prim_count, submitted ? 1 : 0);
 
 			std::fprintf(fp.get(), "%05x,%s,%u,%08x,", r.frame_block, GSUtil::GetPSMName(r.frame_psm),
 				r.frame_fbw, r.frame_fbmsk);
@@ -661,160 +227,16 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,",
+				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,%d,%d,%d,%d\n",
 					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), r.barrier,
 					(r.flags & FlagFeedbackLoopRT) ? 1 : 0,
 					GetPrimOverlapName(r.prim_overlap), GSGetTexHazardName(r.tex_hazard),
 					GSGetDestinationAlphaModeName(static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.destination_alpha)),
-					r.colormask);
+					r.colormask, r.area_x, r.area_y, r.area_z - r.area_x, r.area_w - r.area_y);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,");
-			}
-
-			// Software rows carry the draw rect (bbox n scissor) here; Classic rows the
-			// backend drawarea. Same columns, same meaning: where the draw landed.
-			if (submitted || r.sw)
-			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.area_x, r.area_y, r.area_z - r.area_x,
-					r.area_w - r.area_y);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,");
-			}
-
-			if (submitted)
-			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.sample_x, r.sample_y,
-					r.sample_z - r.sample_x, r.sample_w - r.sample_y);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,");
-			}
-
-			if (r.flags2 & Flags2AlphaRanges)
-			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.src_alpha_min, r.src_alpha_max, r.rt_alpha_min,
-					r.rt_alpha_max);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,");
-			}
-
-			std::fprintf(fp.get(), "%s,", GetTargetEventName(r.evt_kind));
-
-			if (r.flags2 & (Flags2RTAlpha | Flags2Event))
-			{
-				std::fprintf(fp.get(), "%u,%05x,", r.rt_id, r.rt_tbp0);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,");
-			}
-
-			if (r.flags2 & Flags2RTAlpha)
-			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%02x,%02x,%s,",
-					(r.rt_alpha_flags & RTAlphaWritten) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaShuffle) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaFullCover) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaCommitted) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaRangeWasSet) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaCoversValid) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaNoGaps) ? 1 : 0,
-					(r.rt_alpha_flags & RTAlphaTestsPass) ? 1 : 0,
-					r.rt_fbmask_a, r.rt_alpha_fmt_mask, GetExactAlphaDropName(r.exact_alpha_drop));
-			}
-			else
-			{
-				// The drop decision is taken before the alpha-range calculation, so a draw that
-				// returned in between still has one worth printing.
-				std::fprintf(fp.get(), ",,,,,,,,,,%s,", GetExactAlphaDropName(r.exact_alpha_drop));
-			}
-
-			if (r.exact_alpha_drop != ExactAlphaDropNotConsidered)
-			{
-				std::fprintf(fp.get(), "%02x,%02x,", r.exact_alpha_known_bits, r.exact_alpha_known_value);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,");
-			}
-
-			std::fprintf(fp.get(), "%s,", GetBlendFactorAlphaName(r.blend_factor_alpha));
-			std::fprintf(fp.get(), "%s,", GetHeldAlphaMaskName(r.held_alpha_mask));
-
-			if (submitted)
-				std::fprintf(fp.get(), "%08x,%08x,", r.blend_key, r.blend_ps);
-			else
-				std::fprintf(fp.get(), ",,");
-
-			if (r.flags2 & Flags2TFXCall)
-			{
-				std::fprintf(fp.get(),
-					"%u,%s,%u,%s,%016llx,%016llx,%016llx,%02x,%02x,%02x,%08x,%08x,%08x,%08x,%08x,%08x,%02x,"
-					"%d,%d,%d,%d",
-					r.tfx_call, GetTFXCallKindName(r.tfx_kind), r.tfx_pass,
-					GetPassEndReasonName(r.tfx_pass_end),
-					static_cast<unsigned long long>(r.tfx_pipe_hash),
-					static_cast<unsigned long long>(r.tfx_ps_key_lo),
-					static_cast<unsigned long long>(r.tfx_ps_key_hi),
-					r.tfx_vs_key, r.tfx_dss_key, r.tfx_cms_key, r.tfx_bs_key, r.tfx_pipe_key,
-					r.tfx_rt_obj, r.tfx_ds_obj, r.tfx_tex_obj, r.tfx_pal_obj, r.tfx_samp_sel,
-					r.tfx_sc_x, r.tfx_sc_y, r.tfx_sc_z - r.tfx_sc_x, r.tfx_sc_w - r.tfx_sc_y);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,,,,,,,,,,");
-			}
-
-			if (r.sw)
-			{
-				std::fprintf(fp.get(), ",%s,%d,%05x,%05x,%u,%u,", GetSWRoadName(r.sw_road),
-					r.sw_tex_is_target ? 1 : 0, r.sw_bp_start, r.sw_bp_end, r.sw_tex_clear_bytes,
-					r.sw_tex_blocks);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,,,,");
-			}
-
-			if (r.exact_alpha_drop != ExactAlphaDropNotConsidered)
-			{
-				std::fprintf(fp.get(), "%02x,%u,%u,", r.exact_alpha_masked, r.exact_alpha_src_lo,
-					r.exact_alpha_src_hi);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,");
-			}
-
-			if (r.flags2 & Flags2RTAlpha)
-			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,",
-					r.rt_draw_x, r.rt_draw_y, r.rt_draw_z - r.rt_draw_x, r.rt_draw_w - r.rt_draw_y,
-					r.rt_valid_x, r.rt_valid_y, r.rt_valid_z - r.rt_valid_x,
-					r.rt_valid_w - r.rt_valid_y);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,,,,,");
-			}
-
-			// Raw coordinates, not a width and a height: the row is a pair of vertices in 1/16
-			// pixel units and the pixel span is derived from it offline.
-			if (r.flags2 & Flags2SpriteRect)
-			{
-				std::fprintf(fp.get(), "%u,%d,%d,%d,%d\n", r.spr_i, r.spr_x0, r.spr_y0, r.spr_x1,
-					r.spr_y1);
-			}
-			else
-			{
-				std::fprintf(fp.get(), ",,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,,\n");
 			}
 		}
 

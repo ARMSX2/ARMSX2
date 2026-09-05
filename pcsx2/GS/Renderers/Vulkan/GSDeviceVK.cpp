@@ -4585,7 +4585,7 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 		{static_cast<s32>(destX), static_cast<s32>(destY), 0u},
 		{static_cast<u32>(r.width()), static_cast<u32>(r.height()), 1u}};
 
-	EndRenderPass(GSDrawLog::PassEndCopy);
+	EndRenderPass();
 
 	sTexVK->SetUseFenceCounter(GetCurrentFenceCounter());
 	dTexVK->SetUseFenceCounter(GetCurrentFenceCounter());
@@ -5426,7 +5426,7 @@ void GSDeviceVK::OMSetRenderTargets(
 		m_current_framebuffer == VK_NULL_HANDLE)
 	{
 		// framebuffer change or feedback loop enabled/disabled
-		EndRenderPass(GSDrawLog::PassEndTargetSwitch);
+		EndRenderPass();
 
 		if (vkRt)
 		{
@@ -7546,54 +7546,7 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	return pipeline;
 }
 
-// One draw-log row per TFX draw call, carrying the identities a reader of the log has to
-// compare to tell why a pass ended where it did. Taken here rather than at the draw
-// command because this is the point where all of them are simultaneously final -- the
-// attachment set, the bound source and palette, the sampler and the scissor are settled by
-// OMSetRenderTargets and the PSSetShaderResource calls that precede the bind, and the
-// selector is settled by the caller.
-//
-// Texture identity is the object address, mixed down to 32 bits. That is identity in the
-// only sense the descriptor cares about, and the comparison the log makes is between
-// adjacent calls: an address can only be reused after a recycle, which itself ends the pass.
-void GSDeviceVK::RecordTFXCall(const PipelineSelector& p, GSDrawLog::TFXCallKind kind)
-{
-	const auto object_id = [](const void* ptr) -> u32 {
-		const uintptr_t v = reinterpret_cast<uintptr_t>(ptr);
-		return static_cast<u32>(v >> 4) ^ static_cast<u32>(v >> 36);
-	};
-	const auto texture_id = [this, &object_id](u32 slot) -> u32 {
-		GSTextureVK* tex = m_tfx_textures[slot];
-		return (!tex || tex == m_null_texture.get()) ? 0u : object_id(tex);
-	};
-
-	GSDrawLog::TFXCall call = {};
-	call.pipe_hash = static_cast<u64>(PipelineSelectorHash()(p));
-	call.ps_key_lo = p.ps.key_lo;
-	call.ps_key_hi = p.ps.key_hi;
-	call.pass_serial = m_render_pass_serial;
-	call.pipe_key = p.key;
-	call.bs_key = p.bs.key;
-	call.rt_obj = object_id(m_current_render_target);
-	call.ds_obj = object_id(m_current_depth_target);
-	call.tex_obj = texture_id(TFX_TEXTURE_TEXTURE);
-	call.pal_obj = texture_id(TFX_TEXTURE_PALETTE);
-	call.scissor_x = m_scissor.x;
-	call.scissor_y = m_scissor.y;
-	call.scissor_z = m_scissor.z;
-	call.scissor_w = m_scissor.w;
-	call.vs_key = p.vs.key;
-	call.dss_key = p.dss.key;
-	call.cms_key = p.cms.key;
-	call.samp_sel = static_cast<u8>(m_tfx_sampler_sel);
-	call.kind = static_cast<u8>(kind);
-	call.pass_end = static_cast<u8>(m_pass_end_since_tfx);
-	GSDrawLog::NoteTFXCall(call);
-
-	m_pass_end_since_tfx = GSDrawLog::PassEndNone;
-}
-
-bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p, GSDrawLog::TFXCallKind kind)
+bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
 {
 	VkPipeline pipeline = GetTFXPipeline(p);
 	if (pipeline == VK_NULL_HANDLE)
@@ -7603,9 +7556,6 @@ bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p, GSDrawLog::TFXCallK
 
 	if (!ApplyTFXState())
 		return false;
-
-	if (GSDrawLog::IsActive()) [[unlikely]]
-		RecordTFXCall(p, kind);
 
 	return true;
 }
@@ -7674,7 +7624,7 @@ GSDeviceVK::WaitType GSDeviceVK::GetWaitType(bool wait, bool spin)
 
 void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion)
 {
-	EndRenderPass(GSDrawLog::PassEndSubmit);
+	EndRenderPass();
 	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks));
 }
 
@@ -7700,7 +7650,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completi
 	GSTexture* const current_ds = m_current_depth_target;
 	const FeedbackLoopFlag current_feedback_loop = m_current_framebuffer_feedback_loop;
 
-	EndRenderPass(GSDrawLog::PassEndSubmit);
+	EndRenderPass();
 	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks));
 
 	if (render_pass != VK_NULL_HANDLE)
@@ -7948,7 +7898,7 @@ void GSDeviceVK::PSSetShaderResource(int i, GSTexture* sr, bool check_state, Res
 				if (InRenderPass())
 				{
 					GL_INS("Ending render pass due to resource transition");
-					EndRenderPass(GSDrawLog::PassEndResourceTransition);
+					EndRenderPass();
 				}
 				vkTex->TransitionToLayout(layout);
 			}
@@ -8026,7 +7976,7 @@ void GSDeviceVK::UnbindTexture(GSTextureVK* tex)
 	}
 	if (m_current_render_target == tex || m_current_depth_target == tex)
 	{
-		EndRenderPass(GSDrawLog::PassEndTextureUnbound);
+		EndRenderPass();
 		m_current_framebuffer = VK_NULL_HANDLE;
 		m_current_render_target = nullptr;
 		m_current_depth_target = nullptr;
@@ -8045,7 +7995,6 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
-	m_render_pass_serial++;
 	CountRenderPassArea(rect);
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
@@ -8073,7 +8022,6 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
-	m_render_pass_serial++;
 	CountRenderPassArea(rect);
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
@@ -8098,16 +8046,10 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, f
 	BeginClearRenderPass(rp, rect, &cv, 1);
 }
 
-void GSDeviceVK::EndRenderPass(GSDrawLog::PassEndReason reason)
+void GSDeviceVK::EndRenderPass()
 {
 	if (m_current_render_pass == VK_NULL_HANDLE)
 		return;
-
-	// Pass-end attribution for the draw log: keep the FIRST reason since the last TFX call, so
-	// a call that had three passes torn down before it is attributed to what started the
-	// teardown rather than to whatever happened last.
-	if (m_pass_end_since_tfx == GSDrawLog::PassEndNone)
-		m_pass_end_since_tfx = reason;
 
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
@@ -8452,7 +8394,7 @@ void GSDeviceVK::SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSV
 	};
 
 	// sfex3 (after the capcom logo), vf4 (first menu fading in), ffxii shadows, rumble roses shadows, persona4 shadows
-	EndRenderPass(GSDrawLog::PassEndDATE);
+	EndRenderPass();
 	SetUtilityTexture(rt, m_point_sampler);
 	OMSetRenderTargets(nullptr, ds, bbox);
 	IASetVertexBuffer(vertices, sizeof(vertices[0]), 4);
@@ -8461,7 +8403,7 @@ void GSDeviceVK::SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSV
 	if (ApplyUtilityState())
 		DrawPrimitive();
 
-	EndRenderPass(GSDrawLog::PassEndDATE);
+	EndRenderPass();
 }
 
 GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
@@ -8482,7 +8424,7 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	if (!image)
 		return nullptr;
 
-	EndRenderPass(GSDrawLog::PassEndDATE);
+	EndRenderPass();
 
 	// setup the fill quad to prefill with existing alpha values
 	SetUtilityTexture(config.rt, m_point_sampler);
@@ -8536,11 +8478,11 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	pipe.ps.blend_a = pipe.ps.blend_b = pipe.ps.blend_c = pipe.ps.blend_d = false;
 	pipe.ps.no_color = false;
 	pipe.ps.no_color1 = true;
-	if (BindDrawPipeline(pipe, GSDrawLog::TFXCallPrimIDPrepass))
+	if (BindDrawPipeline(pipe))
 		Draw(config);
 
 	// image is initialized/prepass is done, so finish up and get ready to do the "real" draw
-	EndRenderPass(GSDrawLog::PassEndDATE);
+	EndRenderPass();
 
 	// .. by setting it to DATE=3
 	config.ps.date = 3;
@@ -8655,7 +8597,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		{
 			GL_PUSH("Blit ColorClip back to RT");
 
-			EndRenderPass(GSDrawLog::PassEndColClip);
+			EndRenderPass();
 			colclip_rt->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
 
 			draw_rt = static_cast<GSTextureVK*>(config.rt);
@@ -8733,7 +8675,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		if (!colclip_rt)
 		{
 			config.colclip_update_area = config.drawarea;
-			EndRenderPass(GSDrawLog::PassEndColClip);
+			EndRenderPass();
 			colclip_rt = static_cast<GSTextureVK*>(CreateFeedbackTarget(rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false));
 			if (!colclip_rt)
 			{
@@ -8781,7 +8723,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	if (colclip_rt && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve || config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly))
 	{
 		// colclip hw requires blitting.
-		EndRenderPass(GSDrawLog::PassEndColClip);
+		EndRenderPass();
 	}
 	else if (InRenderPass() &&
 		((draw_rt && m_current_render_target == draw_rt) ||
@@ -8881,7 +8823,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			GL_PUSH("VK: Copy RT to temp texture {%d,%d %dx%d}",
 				config.drawarea.left, config.drawarea.top,
 				config.drawarea.width(), config.drawarea.height());
-			EndRenderPass(GSDrawLog::PassEndCloneCopy);
+			EndRenderPass();
 			if (config.tex_hazard)
 			{
 				const GSVector4i union_rect = config.drawarea.runion(config.samplearea);
@@ -9050,7 +8992,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.ps.no_color1 = config.blend_multi_pass.no_color1;
 		pipe.ps.blend_hw = config.blend_multi_pass.blend_hw;
 		pipe.ps.dither = config.blend_multi_pass.dither;
-		if (BindDrawPipeline(pipe, GSDrawLog::TFXCallBlendMultiPass))
+		if (BindDrawPipeline(pipe))
 		{
 			// TODO: This probably should have barriers, in case we want to use it conditionally.
 			Draw(config);
@@ -9071,7 +9013,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.cms = config.alpha_second_pass.colormask;
 		pipe.dss = config.alpha_second_pass.depth;
 		pipe.bs = config.blend;
-		if (BindDrawPipeline(pipe, GSDrawLog::TFXCallAlphaSecondPass))
+		if (BindDrawPipeline(pipe))
 		{
 			SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
 				config.alpha_second_pass.require_one_barrier, config.alpha_second_pass.require_full_barrier);
@@ -9093,7 +9035,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		{
 			GL_PUSH("Blit ColorClip back to RT");
 
-			EndRenderPass(GSDrawLog::PassEndColClip);
+			EndRenderPass();
 
 			colclip_rt->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
 

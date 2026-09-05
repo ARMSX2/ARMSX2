@@ -3310,7 +3310,6 @@ void GSRendererHW::Draw()
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
 	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
 	{
-		GSDrawLog::NoteSWRoad(GSDrawLog::SWRoadSprite);
 		if (SwPrimRender(*this, true, true))
 		{
 			GL_CACHE("HW: Possible texture decompression, drawn with SwPrimRender() (BP %x BW %u TBP0 %x TBW %u)",
@@ -3354,7 +3353,6 @@ void GSRendererHW::Draw()
 		m_mem.m_clut.ClearDrawInvalidity();
 		if (result == CLUTDrawTestResult::CLUTDrawOnCPU && GSConfig.UserHacks_CPUCLUTRender > 0)
 		{
-			GSDrawLog::NoteSWRoad(GSDrawLog::SWRoadCLUT);
 			if (SwPrimRender(*this, true, true))
 			{
 				GL_CACHE("HW: Possible clut draw, drawn with SwPrimRender()");
@@ -5942,12 +5940,6 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 		blend_alpha_min = rt_new_alpha_min = rt->m_alpha_min;
 		blend_alpha_max = rt_new_alpha_max = rt->m_alpha_max;
 
-		// Ledger only: which branch below the draw takes, and the two masks it works from.
-		// Recorded rather than re-derived offline because full_cover and the effective
-		// FbMask are assembled here out of state that is not in the draw's registers.
-		u8 log_alpha_flags = rt->m_alpha_range ? GSDrawLog::RTAlphaRangeWasSet : 0;
-		u32 log_fb_mask = 0;
-
 		const int fba_value = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
 		const bool is_24_bit = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].trbpp == 24);
 		if (is_24_bit)
@@ -5961,12 +5953,6 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 		{
 			const int s_alpha_max = GetAlphaMinMax().max | fba_value;
 			const int s_alpha_min = GetAlphaMinMax().min | fba_value;
-
-			// Ledger only. Both ranges are already computed here for the renderer's own use;
-			// this reads them, it does not evaluate anything a second time. rt->m_alpha_min/max
-			// still hold the pre-draw range at this point.
-			if (GSDrawLog::IsActive()) [[unlikely]]
-				GSDrawLog::NoteAlphaRanges(s_alpha_min, s_alpha_max, rt->m_alpha_min, rt->m_alpha_max);
 
 			const bool afail_always_fb_alpha = m_cached_ctx.TEST.AFAIL == AFAIL_FB_ONLY || (m_cached_ctx.TEST.AFAIL == AFAIL_RGB_ONLY && GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32);
 			const bool always_passing_alpha = !m_cached_ctx.TEST.ATE || afail_always_fb_alpha || (m_cached_ctx.TEST.ATE && m_cached_ctx.TEST.ATST == ATST_ALWAYS);
@@ -5984,14 +5970,6 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// has to come out the same whether or not the exact drop cleared the byte.
 			const u32 fb_mask = m_conf.colormask.wa ? RequestedAlphaFbMask() : 0xFF;
 			const u32 alpha_mask = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24;
-
-			log_alpha_flags |= GSDrawLog::RTAlphaWritten | (full_cover ? GSDrawLog::RTAlphaFullCover : 0);
-			log_alpha_flags |= rt->m_valid.rintersect(m_r).eq(rt->m_valid) ? GSDrawLog::RTAlphaCoversValid : 0;
-			log_alpha_flags |= (m_primitive_covers_without_gaps == NoGapsType::FullCover) ? GSDrawLog::RTAlphaNoGaps : 0;
-			log_alpha_flags |= !(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing) ?
-								   GSDrawLog::RTAlphaTestsPass :
-								   0;
-			log_fb_mask = fb_mask;
 
 			// Beside the range, and out of the same two masks: the bits this draw writes take the
 			// source's constant bits, the bits the mask holds back keep what was known of them.
@@ -6060,38 +6038,8 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			rt->m_alpha_range = true;
 			rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
 			rt_new_alpha_via_union = false;
-			log_alpha_flags |= GSDrawLog::RTAlphaShuffle;
 		}
 
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			// m_r and rt->m_valid, not the scaled draw area: these are the two rectangles the
-			// cover tests above compare, and a region model has to replay them in that space.
-			GSDrawLog::NoteRTAlpha(rt->m_id, rt->m_TEX0.TBP0, log_alpha_flags, static_cast<u8>(log_fb_mask),
-				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24), m_r, rt->m_valid);
-
-			// The draws worth a per-primitive row: the rectangle contains the whole valid rect,
-			// so on the rectangle alone this is a full cover, and the gapless test refused it
-			// anyway. Whether the primitives really leave a gap is a question about their union,
-			// which no column on the draw row can answer. Sprites only -- the vertex pairs are
-			// the geometry, and every other primitive class needs a different reading of the
-			// buffer. Coordinates go out raw, in 1/16 pixel units with XYOFFSET subtracted.
-			if ((log_alpha_flags & GSDrawLog::RTAlphaCoversValid) &&
-				!(log_alpha_flags & GSDrawLog::RTAlphaNoGaps) &&
-				m_vt.m_primclass == GS_SPRITE_CLASS && m_vertex->next >= 4)
-			{
-				const int off_x = static_cast<int>(m_context->XYOFFSET.OFX);
-				const int off_y = static_cast<int>(m_context->XYOFFSET.OFY);
-				const GSVertex* v = &m_vertex->buff[0];
-				for (u32 i = 0; (i + 1) < m_vertex->next; i += 2)
-				{
-					GSDrawLog::NoteSpriteRect(static_cast<u16>(i >> 1),
-						static_cast<int>(v[i].XYZ.X) - off_x, static_cast<int>(v[i].XYZ.Y) - off_y,
-						static_cast<int>(v[i + 1].XYZ.X) - off_x,
-						static_cast<int>(v[i + 1].XYZ.Y) - off_y);
-				}
-			}
-		}
 
 		GL_INS("HW: RT Alpha Range: %d-%d => %d-%d", blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max);
 
@@ -6698,11 +6646,6 @@ void GSRendererHW::ResolveHeldAlphaMask()
 			m_conf.cb_ps.SubstituteAlphaValue = held.substitution.value;
 		}
 
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteStood :
-														   GSDrawLog::HeldAlphaMaskStood);
-		}
 	}
 	else
 	{
@@ -6712,11 +6655,6 @@ void GSRendererHW::ResolveHeldAlphaMask()
 		m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
 		m_conf.require_one_barrier = true;
 
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			GSDrawLog::NoteHeldAlphaMask(held.substitute ? GSDrawLog::HeldAlphaMaskSubstituteRestored :
-														   GSDrawLog::HeldAlphaMaskRestored);
-		}
 	}
 
 	// EmulateAlphaTest took its copy of ps for the second pass before this ran, so whatever was
@@ -6742,21 +6680,21 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	// to be the only channel that is. A partially masked colour byte keeps the barrier whatever
 	// alpha does, so dropping alpha's half of the mask would buy nothing and change the shader.
 	if (alpha_mask == 0 || masked == 0 || masked == alpha_mask)
-		return GSDrawLog::ExactAlphaDropNotConsidered;
+		return GSDrawAlphaMask::ExactAlphaDropNotConsidered;
 
 	const GSVector4i fbmask_v = GSVector4i::load(static_cast<int>(fbmask));
 	const GSVector4i fmsk_v = GSVector4i::load(static_cast<int>(fmsk));
 	const int ff_fbmask = fbmask_v.eq8(fmsk_v).mask();
 	const int zero_fbmask = fbmask_v.eq8(GSVector4i::zero()).mask();
 	if ((~ff_fbmask & ~zero_fbmask & 0xF) != 0x8)
-		return GSDrawLog::ExactAlphaDropNotConsidered;
+		return GSDrawAlphaMask::ExactAlphaDropNotConsidered;
 
 	// 32 bits both sides, and the target's alpha stored the way it is written: an RTA-scaled
 	// target holds alpha in a different representation on either side of the mask, and the two
 	// roads need not round back to the same byte.
 	if (!rt || GSLocalMemory::m_psm[rt->m_TEX0.PSM].trbpp != 32 ||
 		GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32 || rt->m_rt_alpha_scale)
-		return GSDrawLog::ExactAlphaDropIneligible;
+		return GSDrawAlphaMask::ExactAlphaDropIneligible;
 
 	// A shuffle does not write the alpha byte this mask names. A coverage draw does not write
 	// the fragment alpha either: the shader replaces it with the edge coverage, either as the
@@ -6766,7 +6704,7 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	// ORing bit 7 into both endpoints of that range is exactly such a thing. Refuse every
 	// coverage draw here instead of relying on the arithmetic downstream.
 	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlpha())
-		return GSDrawLog::ExactAlphaDropIneligible;
+		return GSDrawAlphaMask::ExactAlphaDropIneligible;
 
 	// The target has to know every bit the mask holds back before either road below can be exact
 	// -- checked here, cheaply, before GetAlphaMinMax() runs. DecideExact() below would reach the
@@ -6776,7 +6714,7 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	// answer, which is the whole TargetUnknown population -- every alpha-partially-masked draw
 	// whose target the tracker does not (yet) know, not only the ones that end up substituting.
 	if ((rt->m_alpha_known.bits & masked) != masked)
-		return GSDrawLog::ExactAlphaDropTargetUnknown;
+		return GSDrawAlphaMask::ExactAlphaDropTargetUnknown;
 
 	// The fragment alpha, with FBA folded in. Read here, so before CorrectATEAlphaMinMax narrows
 	// the range to the values that pass the alpha test: pixels that fail the test can still write
@@ -6797,17 +6735,17 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 			// Unreachable from here now that the guard above has already returned on this
 			// condition -- DecideExact() keeps the branch for its other callers and its own unit
 			// tests, so the case stays here too rather than falling through to default.
-			return GSDrawLog::ExactAlphaDropTargetUnknown;
+			return GSDrawAlphaMask::ExactAlphaDropTargetUnknown;
 
 		case GSDrawAlphaMask::ExactVerdict::Drop:
-			return GSDrawLog::ExactAlphaDropTaken;
+			return GSDrawAlphaMask::ExactAlphaDropTaken;
 
 		case GSDrawAlphaMask::ExactVerdict::Substitute:
 		default:
 			// Both halves substitute; the split is for the ledger, which sizes them separately.
 			return ((GSAlphaKnownBits::ConstantBits(src_lo, src_hi) & masked) == masked) ?
-			           GSDrawLog::ExactAlphaDropSubstituteLoadBearing :
-			           GSDrawLog::ExactAlphaDropSubstituteVarying;
+			           GSDrawAlphaMask::ExactAlphaDropSubstituteLoadBearing :
+			           GSDrawAlphaMask::ExactAlphaDropSubstituteVarying;
 	}
 }
 
@@ -6949,7 +6887,7 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// a drop is new here, so the barrier it removes is held over the blend selection below;
 		// a drop the target could already answer for is one the campaign has measured and is
 		// taken outright, exactly as before.
-		const bool drop_via_union = (exact_drop == GSDrawLog::ExactAlphaDropTaken) && rt && rt->m_alpha_known_via_union;
+		const bool drop_via_union = (exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken) && rt && rt->m_alpha_known_via_union;
 
 		// Where the mask is not the identity but the target still knows every bit it holds back,
 		// the merge's answer on those bits is that known value whatever this draw computed. So the
@@ -6960,22 +6898,9 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// would have been emulated at all: at AccBlendLevel::Minimum nothing is holding those bits
 		// back in the first place, and substituting there would change the picture rather than
 		// preserve it.
-		const bool substitute = GSDrawLog::IsExactAlphaSubstitute(exact_drop) && enable_fbmask_emulation;
-		if (GSDrawLog::IsActive()) [[unlikely]]
-		{
-			// The rule's own two inputs beside the pair, read exactly where it reads them: the
-			// masked alpha bits, and the fragment alpha range BEFORE CorrectATEAlphaMinMax
-			// narrows it. CalculateAlphaRange logs the narrowed one, and on a draw with an
-			// alpha test the two are different numbers.
-			const int log_fba = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
-			GSDrawLog::NoteExactAlphaDrop(exact_drop, rt ? rt->m_alpha_known.bits : 0,
-				rt ? rt->m_alpha_known.value : 0,
-				static_cast<u8>((static_cast<u32>(fbmask) & 0xFF000000u) >> 24),
-				static_cast<u8>(GetAlphaMinMax().min | log_fba),
-				static_cast<u8>(GetAlphaMinMax().max | log_fba));
-		}
+		const bool substitute = GSDrawAlphaMask::IsExactAlphaSubstitute(exact_drop) && enable_fbmask_emulation;
 
-		if (exact_drop == GSDrawLog::ExactAlphaDropTaken || substitute)
+		if (exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken || substitute)
 		{
 			// Keep the byte. What the drop is entitled to change is the shader and the barrier;
 			// decisions about what the draw asked for -- the target's tracked alpha, and whether it
@@ -7764,35 +7689,6 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	const bool blend_mix_factor_rides_masked_alpha =
 		blend_mix_factor_is_alpha && !blend_mix_factor_fits_dst_alpha &&
 		(m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY);
-
-	if (GSDrawLog::IsActive()) [[unlikely]]
-	{
-		// Census for the coupling above: which variant of the factor road this draw is on, and
-		// whether the exact alpha drop took it away. The two variants are recomputed here without
-		// the exclusion so a refusal can be told from a draw that was never on the road at all.
-		u8 road = GSDrawLog::BlendFactorAlphaNone;
-		if (blend_mix_factor_road)
-		{
-			const bool fits = m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_context->FBA.FBA &&
-			                  (rt->m_rt_alpha_scale || can_scale_rt_alpha);
-			const bool rides = !fits && (m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY);
-			if (fits)
-			{
-				road = alpha_output_spoken_for ? GSDrawLog::BlendFactorAlphaRefusedScaled :
-				                                 GSDrawLog::BlendFactorAlphaScaled;
-			}
-			else if (rides)
-			{
-				road = alpha_output_spoken_for ? GSDrawLog::BlendFactorAlphaRefusedFactor :
-				                                 GSDrawLog::BlendFactorAlphaFactor;
-			}
-			else
-			{
-				road = GSDrawLog::BlendFactorAlphaSoftware;
-			}
-		}
-		GSDrawLog::NoteBlendFactorAlpha(road);
-	}
 
 	const bool force_sw_blending =
 		// If we have fbfetch, use software blending when we need the fb value for anything else.
@@ -9449,7 +9345,7 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 			if (!shuffle_offset_copies &&
 				(HandleBarrierHazard(false) || (rt != tex->m_from_target && ds != tex->m_from_target)))
 			{
-				NoteResolution(GSDrawLog::SelfReadShuffleOffset);
+				NoteResolution(GSDrawLog::SelfReadBarrier);
 				m_conf.cb_ps.ChannelShuffleOffset = GSVector2((horizontal_offset - m_r.x) * tex->GetScale(), (vertical_offset - m_r.y) * tex->GetScale());
 				target_region = false;
 				source_region.bits = 0;
@@ -10401,8 +10297,6 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		rt->m_alpha_known_via_union = rt_new_alpha_via_union;
 		rt->AssertAlphaKnownAgreesWithRange("draw");
 
-		if (GSDrawLog::IsActive()) [[unlikely]]
-			GSDrawLog::NoteRTAlphaCommitted();
 	}
 
 	// No point outputting colours if we're just writing depth.
@@ -11241,12 +11135,6 @@ bool GSRendererHW::TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Ta
 											GSAlphaKnownBits::Known::Nothing();
 			rt->AssertAlphaKnownAgreesWithRange("TryTargetClear");
 
-			if (GSDrawLog::IsActive()) [[unlikely]]
-			{
-				GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClear, rt->m_id, rt->m_TEX0.TBP0,
-					static_cast<int>(c >> 24), static_cast<int>(c >> 24), rt->m_alpha_min, rt->m_alpha_max,
-					rt->m_valid);
-			}
 		}
 		else
 		{

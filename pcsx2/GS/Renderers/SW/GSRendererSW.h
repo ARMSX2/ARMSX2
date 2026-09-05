@@ -66,7 +66,6 @@ protected:
 	GSTexture* GetFeedbackOutput(float& scale) override;
 
 	void Draw() override;
-	void RecordDrawLogEntry() const;
 	void Queue(GSRingHeap::SharedPtr<GSRasterizerData>& item);
 	void Sync(int reason);
 	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
