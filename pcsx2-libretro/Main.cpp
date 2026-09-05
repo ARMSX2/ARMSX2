@@ -70,7 +70,9 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "pcsx2/GS/Renderers/Vulkan/VKLibretro.h"
+#ifdef ENABLE_OPENGL
 #include "pcsx2/GS/Renderers/OpenGL/GLContextLibretro.h"
+#endif
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -1063,8 +1065,10 @@ static void ApplyCoreOptions(bool startup)
 			// only honour this at startup.
 			if (!std::strcmp(var.value, "Software"))
 				s_base_settings->SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::SW));
+#ifdef ENABLE_OPENGL
 			else if (!std::strcmp(var.value, "OpenGL"))
 				s_base_settings->SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::OGL));
+#endif
 		}
 
 		var = {"armsx2_upscale", nullptr};
@@ -1325,6 +1329,10 @@ static bool CreateVulkanDevice(retro_vulkan_context* context, VkInstance instanc
 // The GL half of the same story. The frontend owns the context; the core only
 // needs its two callbacks - one to resolve entry points, one to ask which FBO
 // this frame belongs in - which GLContextLibretro hands to GSDeviceOGL.
+//
+// None of it exists where the GL renderer is not built: USE_OPENGL is not even
+// offered on Apple, where the GS is Metal and Vulkan.
+#ifdef ENABLE_OPENGL
 static struct retro_hw_render_callback s_gl_hw_render = {};
 
 static void* GLGetProcAddress(const char* name)
@@ -1365,6 +1373,7 @@ static void OnGLContextDestroy(void)
 	LibretroCore::s_context_ready.store(false, std::memory_order_release);
 	GLContextLibretro::SetCallbacks(nullptr, nullptr);
 }
+#endif // ENABLE_OPENGL
 
 static void OnContextReset(void)
 {
@@ -1631,10 +1640,15 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	// settings above; GL takes a different path from here, since it needs no
 	// device negotiation - the frontend simply makes a context current and
 	// hands the core an FBO to draw into.
+#ifdef ENABLE_OPENGL
 	const bool want_gl = (s_base_settings->GetIntValue("EmuCore/GS", "Renderer",
 							  static_cast<int>(GSRendererType::VK)) == static_cast<int>(GSRendererType::OGL));
+#else
+	const bool want_gl = false;
+#endif
 
 	LibretroCore::s_hw_render_gl = want_gl;
+#ifdef ENABLE_OPENGL
 	if (want_gl)
 	{
 		s_gl_hw_render = {};
@@ -1673,6 +1687,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 			VMManager::Internal::LoadStartupSettings();
 		}
 	}
+#endif // ENABLE_OPENGL
 	// Vulkan HW render. The negotiation interface must be registered inside
 	// retro_load_game; the frontend invokes it while creating its Vulkan
 	// context, after this returns.

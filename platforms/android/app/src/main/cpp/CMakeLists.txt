@@ -30,6 +30,11 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # Android is a non-desktop frontend: no Qt UI.
 set(ENABLE_QT_UI OFF CACHE BOOL "" FORCE)
 
+# This build has libadrenotools (added below), so the custom Vulkan driver
+# splice in VKLoader.cpp is compiled in. Other Android builds - the libretro
+# core the buildbot makes - do not.
+set(ARMSX2_USE_ADRENOTOOLS ON CACHE BOOL "" FORCE)
+
 # The core's common/ and pcsx2/ CMakeLists guard on this sentinel (it is normally
 # set by the desktop top-level CMakeLists.txt, which the Android build bypasses).
 set(TOP_CMAKE_WAS_SOURCED TRUE)
