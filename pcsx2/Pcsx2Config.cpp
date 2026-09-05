@@ -325,6 +325,10 @@ static constexpr const char* s_speed_hack_names[] = {
 	"instantVU1",
 	"mtvu",
 	"eeCycleRate",
+	// Not a game database name. gamedb-schema.json's speedHacks object is closed, so
+	// no entry can carry this one; it is here because GetSpeedHackName() is also the
+	// log and diagnostic spelling, and the table has to stay the length of the enum.
+	"dynamicEECycleRate",
 };
 
 const char* Pcsx2Config::SpeedhackOptions::GetSpeedHackName(SpeedHack id)
@@ -362,10 +366,16 @@ void Pcsx2Config::SpeedhackOptions::Set(SpeedHack id, int value)
 		case SpeedHack::EECycleRate:
 			EECycleRate = static_cast<int>(std::clamp<int>(value, MIN_EE_CYCLE_RATE, MAX_EE_CYCLE_RATE));
 			break;
+		case SpeedHack::DynamicEECycleRate:
+			DynamicEECycleRate = (value != 0);
+			break;
 			jNO_DEFAULT
 	}
 }
 
+// DynamicEECycleRateTrace is not compared, on purpose. This operator is what
+// CheckForCPUConfigChanges() asks before throwing the EE and microVU code caches
+// away, and a trace file path changes no generated code. Everything else here does.
 bool Pcsx2Config::SpeedhackOptions::operator==(const SpeedhackOptions& right) const
 {
 	return OpEqu(bitset) && OpEqu(EECycleRate) && OpEqu(EECycleSkip);
@@ -389,6 +399,8 @@ Pcsx2Config::SpeedhackOptions::SpeedhackOptions()
 
 Pcsx2Config::SpeedhackOptions& Pcsx2Config::SpeedhackOptions::DisableAll()
 {
+	// bitset covers DynamicEECycleRate along with the rest. DynamicEECycleRateTrace is
+	// left alone: where a development trace goes is not a speedhack to turn off.
 	bitset = 0;
 	EECycleRate = 0;
 	EECycleSkip = 0;
@@ -408,6 +420,8 @@ void Pcsx2Config::SpeedhackOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(vuFlagHack);
 	SettingsWrapBitBool(vuThread);
 	SettingsWrapBitBool(vu1Instant);
+	SettingsWrapBitBool(DynamicEECycleRate);
+	SettingsWrapEntry(DynamicEECycleRateTrace);
 
 	EECycleRate = std::clamp(EECycleRate, MIN_EE_CYCLE_RATE, MAX_EE_CYCLE_RATE);
 	EECycleSkip = std::min(EECycleSkip, MAX_EE_CYCLE_SKIP);
