@@ -332,12 +332,42 @@ def score_frame_arrays(golden, test):
     per_channel = [round(float((diff[:, :, c] > 0).sum()) * 100.0 / total, 4)
                    for c in range(diff.shape[2])]
 
+    # The campaign's primary "is this actually wrong" metric: pixels whose colour
+    # is 64+ levels off, and the largest connected run of them.
+    #
+    # ⚠️ NOT the same as the perceptual `perceptual_area_px`, which is the AREA
+    # of the region above the CIEDE2000 JND -- a colour *distance*. A 23-level
+    # shift on a saturated surface reads dE 59 and paints a 23,000 px "blob"
+    # containing no badly-wrong pixel at all; Rogue Galaxy shipped as an OBVIOUS
+    # defect exactly that way. Carry both, and read visibility off block64.
+    block64_px, block64_largest_px, block64_bbox = block64_counts(golden, test)
+
     return {
         "pct_gt": pct_gt,
         "per_channel_pct_gt0": per_channel,
         "max_diff": int(diff.max()),
         "mean_diff": round(float(diff.mean()), 5),
+        "block64_px": block64_px,
+        "block64_largest_px": block64_largest_px,
+        "block64_bbox": block64_bbox,
     }
+
+
+def block64_counts(golden, test):
+    """(count, largest run, bbox) of badly-wrong pixels, or (None, None, None).
+
+    Delegates to gs_perceptual so the harness has exactly ONE definition of
+    "badly wrong" -- the classifier and the scorecard must not be able to
+    disagree about it. Alpha is excluded there, deliberately: it is counted in
+    pct_gt and never scored, because it is not directly visible.
+    """
+    try:
+        if SCRIPT_DIR not in sys.path:
+            sys.path.insert(0, SCRIPT_DIR)
+        import gs_perceptual
+    except ImportError:
+        return None, None, None
+    return gs_perceptual.block64(golden, test)
 
 
 def perceptual_profile(golden_path, test_path, ppd):
@@ -372,11 +402,123 @@ def perceptual_profile(golden_path, test_path, ppd):
         "de_max": block.get("de_max"),
         "above_jnd_pct": block.get("above_jnd_pct"),
         "erosion_survival": block.get("erosion_survival"),
-        "largest_blob_px": block.get("largest_blob_px"),
-        "largest_blob_bbox": block.get("largest_blob_bbox"),
+        # ⚠️ Named for what it is. This is the AREA of the largest region above
+        # the CIEDE2000 JND -- not a count of badly-wrong pixels, and not a
+        # level difference. Read `block64_px` for that. It shipped as
+        # "largest_blob_px", was relayed as "blob px", and was read as
+        # wrongness; see gs_perceptual.BLOCK64_LEVELS.
+        "perceptual_area_px": block.get("largest_blob_px"),
+        "perceptual_bbox": block.get("largest_blob_bbox"),
         "affine_explained": block.get("affine_explained"),
         "ppd": block.get("ppd"),
     }
+
+
+SEVERITY_RANK = ["invisible", "subtle", "noticeable", "obvious", "gross"]
+
+
+def worst_frame(frames):
+    """The frame to headline: most badly-wrong pixels, then most differing
+    pixels, then lowest index.
+
+    Selection is on `block64_px` -- the campaign's primary metric -- not on
+    `pct_gt["0"]`, which counts a pixel that moved by one level the same as one
+    that moved by 200. Cards written before block64 existed have none, so the
+    key degrades to the old wrong-pixel percentage and those cards headline the
+    frame they always did.
+    """
+    cands = [f for f in frames if f.get("status") == "diff" and "pct_gt" in f]
+    if not cands:
+        return None
+    return max(cands, key=lambda f: (f.get("block64_px") or 0,
+                                     f["pct_gt"]["0"], -f["frame"]))
+
+
+def worst_perceptual_frame(frames):
+    """The perceptually worst frame -- often NOT the one with the most wrong
+    pixels, which is the entire point of carrying both. Ties to lowest index."""
+    cands = [f for f in frames
+             if (f.get("perceptual") or {}).get("severity") in SEVERITY_RANK]
+    if not cands:
+        return None
+    return max(cands, key=lambda f: (SEVERITY_RANK.index(f["perceptual"]["severity"]),
+                                     -f["frame"]))
+
+
+def headline_cell(f):
+    """Every headline field of ONE frame record, taken from that record.
+
+    ⚠️ `worst` and `worst_perceptual` are chosen by different metrics and land
+    on different frames. A summary that takes the frame index from one and the
+    blob from the other describes a frame that does not exist -- three cells of
+    the classic-2x sweep were handed over that way, one of them relabelled from
+    "noticeable / SPECKLE" to "obvious" by the mixing alone. Build a cell here,
+    from one record, or do not build one.
+    """
+    if f is None:
+        return None
+    p = f.get("perceptual") or {}
+    sev, verdict = p.get("severity"), p.get("verdict")
+    return {
+        "frame": f["frame"],
+        "pct_gt": f.get("pct_gt"),
+        "max_diff": f.get("max_diff"),
+        "mean_diff": f.get("mean_diff"),
+        # Badly wrong: pixels >= gs_perceptual.BLOCK64_LEVELS apart, and the
+        # largest run of them.
+        "block64_px": f.get("block64_px"),
+        "block64_largest_px": f.get("block64_largest_px"),
+        "block64_bbox": f.get("block64_bbox"),
+        # Perceptually different: area above the CIEDE2000 JND. NOT a wrongness
+        # count -- these two disagree by three orders of magnitude on real cells.
+        "perceptual_area_px": p.get("perceptual_area_px"),
+        "perceptual_bbox": p.get("perceptual_bbox"),
+        "de_max": p.get("de_max"),
+        "erosion_survival": p.get("erosion_survival"),
+        "severity": sev,
+        "verdict": verdict,
+        # Same shape as gs_perceptual.summarize(): a verdict that just repeats
+        # the severity is not printed twice.
+        "classification": (None if not (sev and verdict)
+                           else verdict if verdict == sev.upper()
+                           else f"{sev.upper()} / {verdict}"),
+        "detail": p.get("detail"),
+    }
+
+
+def check_headline_cell(cell, frames):
+    """Every field of a headline cell must come from the record it names.
+
+    Cheap, and it is the check that would have caught the shipped bug: the cell
+    said frame 3 and carried frame 1's blob, bbox and dE. Loud on failure --
+    silently pairing two frames is how a faint shading difference gets handed
+    over as the corpus's worst defect.
+    """
+    if cell is None:
+        return
+    rec = next((f for f in frames if f.get("frame") == cell["frame"]), None)
+    if rec is None:
+        raise AssertionError(
+            f"headline cell names frame {cell['frame']!r}, absent from this card")
+    p = rec.get("perceptual") or {}
+    for key, want in (("pct_gt", rec.get("pct_gt")),
+                      ("max_diff", rec.get("max_diff")),
+                      ("mean_diff", rec.get("mean_diff")),
+                      ("block64_px", rec.get("block64_px")),
+                      ("block64_largest_px", rec.get("block64_largest_px")),
+                      ("block64_bbox", rec.get("block64_bbox")),
+                      ("perceptual_area_px", p.get("perceptual_area_px")),
+                      ("perceptual_bbox", p.get("perceptual_bbox")),
+                      ("de_max", p.get("de_max")),
+                      ("erosion_survival", p.get("erosion_survival")),
+                      ("severity", p.get("severity")),
+                      ("verdict", p.get("verdict")),
+                      ("detail", p.get("detail"))):
+        if cell.get(key) != want:
+            raise AssertionError(
+                f"headline cell for frame {cell['frame']} carries {key}="
+                f"{cell.get(key)!r} but that frame's record says {want!r} -- "
+                "fields mixed across frames")
 
 
 def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
@@ -455,27 +597,13 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
     stability_ok = (min(manifest["stable_fraction"],
                         test_stability["stable_fraction"]) >= min_stable_fraction)
 
-    worst = None
-    for f in frames_out:
-        if f.get("status") == "diff" and "pct_gt" in f:
-            if worst is None or f["pct_gt"]["0"] > worst["pct_gt"]["0"]:
-                worst = f
-
-    # The perceptually worst frame is often NOT the one with the most wrong
-    # pixels -- that divergence is the entire point of carrying both.
-    severity_rank = ["invisible", "subtle", "noticeable", "obvious", "gross"]
-    worst_perceptual = None
-    for f in frames_out:
-        p = f.get("perceptual")
-        if not p or "severity" not in p:
-            continue
-        if (worst_perceptual is None
-                or severity_rank.index(p["severity"])
-                > severity_rank.index(worst_perceptual["severity"])):
-            worst_perceptual = {"frame": f["frame"], **p}
+    worst = headline_cell(worst_frame(frames_out))
+    worst_perceptual = headline_cell(worst_perceptual_frame(frames_out))
+    check_headline_cell(worst, frames_out)
+    check_headline_cell(worst_perceptual, frames_out)
 
     return {
-        "schema": 2,
+        "schema": 3,
         "gsname": gsname,
         "dump": manifest["dump"],
         "pass": failed == 0 and stability_ok,
@@ -494,8 +622,7 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
             "stable_fraction_golden": round(manifest["stable_fraction"], 4),
             "stable_fraction_test": round(test_stability["stable_fraction"], 4),
             "stability_ok": stability_ok,
-            "worst": ({"frame": worst["frame"], "pct_gt": worst["pct_gt"],
-                       "max_diff": worst.get("max_diff")} if worst else None),
+            "worst": worst,
             "worst_perceptual": worst_perceptual,
         },
     }
@@ -691,13 +818,22 @@ def print_card_line(card):
         w = s["worst"]
         detail += (f", worst f{w['frame']}: {w['pct_gt']['0']}%>0lv "
                    f"{w['pct_gt']['2']}%>2lv max{w['max_diff']}")
+        if w.get("block64_px") is not None:
+            detail += f" block64 {w['block64_px']}px"
     if s["missing"]:
         detail += f", {s['missing']} missing"
     log(f"  {status}  {name:<48} {detail}")
-    wp = s.get("worst_perceptual")
-    if wp:
-        log(f"        perceptual f{wp['frame']}: {wp['severity'].upper()} "
-            f"{wp['verdict']} -- {wp['detail']}")
+    # ⚠️ Both lines name their own frame and quote only that frame's numbers.
+    # Never read the frame index off one line and the blob off the other.
+    for label, cell in (("worst", s.get("worst")),
+                        ("perceptual", s.get("worst_perceptual"))):
+        if not cell or not cell.get("classification"):
+            continue
+        log(f"        {label} f{cell['frame']}: {cell['classification']} -- "
+            f"block64 {cell['block64_px']}px "
+            f"(largest run {cell['block64_largest_px']}px), "
+            f"perceptual area {cell['perceptual_area_px']}px "
+            f"at {cell['perceptual_bbox']}, worst dE {cell['de_max']}")
 
 
 def print_runner_cmds(args, dumps):
@@ -735,10 +871,26 @@ def cmd_score(args):
     return 0 if card["pass"] else 1
 
 
+def max_pct_gt(card, threshold):
+    """Highest wrong-pixel percentage at one threshold across a card's frames.
+
+    A card-level maximum, deliberately NOT read off `summary.worst`: that cell
+    is ranked by block64 and so names whichever frame is most badly wrong, which
+    is not always the frame with the most differing pixels. A regression check
+    that rode on it would fire whenever the headline moved frames.
+    """
+    best = 0.0
+    for f in card.get("frames", []):
+        pct = (f.get("pct_gt") or {}).get(str(threshold))
+        if pct is not None and pct > best:
+            best = pct
+    return best
+
+
 def compare_to_baseline(cards, baseline_path, regress_eps):
-    """Regression check against a pinned scorecard. A dump regresses when its worst
-    frame's wrong-pixel percentage (at any reported threshold) worsens by more than
-    regress_eps percentage points."""
+    """Regression check against a pinned scorecard. A dump regresses when its
+    highest per-frame wrong-pixel percentage (at any reported threshold) worsens
+    by more than regress_eps percentage points."""
     with open(baseline_path, "r", encoding="utf-8") as f:
         baseline = json.load(f)
     base_cards = {c["gsname"]: c for c in baseline.get("cards", [])}
@@ -751,16 +903,13 @@ def compare_to_baseline(cards, baseline_path, regress_eps):
         if base.get("pass") and not card["pass"]:
             regressions.append(f"{card['gsname']}: was PASS, now FAIL")
             continue
-        b_worst = (base.get("summary") or {}).get("worst")
-        c_worst = (card.get("summary") or {}).get("worst")
-        if c_worst is None:
+        if (card.get("summary") or {}).get("worst") is None:
             continue  # now byte-clean; strictly better
-        for t in map(str, THRESHOLDS):
-            base_pct = b_worst["pct_gt"].get(t, 0.0) if b_worst else 0.0
-            if c_worst["pct_gt"].get(t, 0.0) > base_pct + regress_eps:
+        for t in THRESHOLDS:
+            base_pct, cur_pct = max_pct_gt(base, t), max_pct_gt(card, t)
+            if cur_pct > base_pct + regress_eps:
                 regressions.append(
-                    f"{card['gsname']}: worst >{t}lv {base_pct}% -> "
-                    f"{c_worst['pct_gt'][t]}%")
+                    f"{card['gsname']}: worst >{t}lv {base_pct}% -> {cur_pct}%")
                 break
     missing = [name for name in base_cards if name not in {c["gsname"] for c in cards}]
     for name in missing:
