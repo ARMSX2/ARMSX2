@@ -43,18 +43,6 @@ namespace GSDrawLog
 		u32 frame;
 		u32 draw; // GS draw serial (s_n)
 
-		/// Index of the GS dump packet this draw came out of, or PacketNone when the run
-		/// is not a dump replay (or nobody asked the replayer to publish marks).
-		///
-		/// This is the join key between the ledger and a checkpoint ladder. A ladder rung
-		/// is named by a dump packet because that is the only identity a local run and a
-		/// console replay can both compute without reading each other's file; a ledger row
-		/// is named by a draw serial. Without this column, "the divergence appears after
-		/// packet 49" and "these draws are the filtered ones" are two facts about the same
-		/// stream that cannot be put in one table -- which is how an attribution ends up
-		/// resting on the assumption that two arms enumerate draws identically.
-		u32 packet;
-
 		u32 frame_block;
 		u32 frame_fbmsk;
 		u32 z_block;
@@ -476,21 +464,8 @@ namespace GSDrawLog
 		TargetEventValidGrow, ///< the valid rect grew, so it now covers pixels nothing has written
 	};
 
-	/// Record::packet when the draw did not come from a dump packet.
-	static constexpr u32 PacketNone = 0xFFFFFFFFu;
-
 	/// Whether recording is currently active. Cheap enough to test per draw.
 	bool IsActive();
-
-	/// Names the dump packet whose work is about to reach the GS thread. Every row opened
-	/// after this call carries that index until the next one.
-	///
-	/// ⚠️ Must be called ON THE GS THREAD, ordered against the packet's own work -- which
-	/// under MTGS means queued through the same channel the packet's registers travel
-	/// down, not read from the CPU thread's counter. The CPU thread runs ahead, so a
-	/// direct read names a packet several ahead of the draw it is stamping, and the error
-	/// is invisible: the numbers stay plausible and monotonic.
-	void MarkPacket(u32 packet_index);
 
 	/// Allocates the arena and begins recording. Safe to call when already active.
 	void Start();

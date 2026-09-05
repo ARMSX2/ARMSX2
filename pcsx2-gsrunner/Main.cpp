@@ -2289,9 +2289,6 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// downstream as "this arm produced nothing to compare" rather than as a
 			// misconfigured command line.
 			const bool ladder_ok = GSLadder::Begin(s_ladder_opts);
-			// The ledger's join key to the ladder. Only paid for when a ledger is being
-			// written, because it costs a queued store per packet.
-			GSDumpReplayer::SetPublishPacketMarks(!s_drawlog_path.empty());
 			// Left un-Running when the ladder refused, so the execute loop below is
 			// never entered and teardown runs on a VM that did nothing.
 			if (ladder_ok)

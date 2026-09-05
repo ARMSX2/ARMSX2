@@ -30,8 +30,6 @@ namespace GSDrawLog
 	static bool s_truncated = false;
 	// Index of the row opened by BeginDraw, or SIZE_MAX when no row is open.
 	static size_t s_open_record = SIZE_MAX;
-	// GS-thread-side dump packet mark; see MarkPacket.
-	static u32 s_packet_mark = PacketNone;
 	// Serial handed to each TFX-call row, so calls stay orderable without relying on the
 	// row order surviving a sort by frame and draw serial.
 	static u32 s_tfx_call_serial = 0;
@@ -66,11 +64,6 @@ namespace GSDrawLog
 	{
 		s_active = false;
 		s_open_record = SIZE_MAX;
-	}
-
-	void MarkPacket(u32 packet_index)
-	{
-		s_packet_mark = packet_index;
 	}
 
 	void Reset()
@@ -112,9 +105,6 @@ namespace GSDrawLog
 
 		s_records.push_back(ps2_state);
 		s_open_record = s_records.size() - 1;
-		// Stamped here rather than by each renderer's row builder, so every arm carries
-		// the column and none of them can carry a different idea of what it means.
-		s_records[s_open_record].packet = s_packet_mark;
 	}
 
 	void NoteAlphaRanges(int src_min, int src_max, int rt_min, int rt_max)
@@ -215,7 +205,6 @@ namespace GSDrawLog
 		Record rec = {};
 		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
 		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.packet = s_packet_mark;
 		rec.flags2 = Flags2Event | Flags2AlphaRanges;
 		rec.evt_kind = kind;
 		rec.rt_id = target_id;
@@ -250,7 +239,6 @@ namespace GSDrawLog
 		Record rec = {};
 		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
 		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.packet = s_packet_mark;
 		rec.flags2 = Flags2SpriteRect;
 		rec.spr_i = index;
 		rec.spr_x0 = x0;
@@ -280,7 +268,6 @@ namespace GSDrawLog
 		Record rec = {};
 		rec.frame = static_cast<u32>(g_perfmon.GetFrame());
 		rec.draw = g_gs_renderer ? static_cast<u32>(g_gs_renderer->s_n) : 0u;
-		rec.packet = s_packet_mark;
 		rec.flags2 = Flags2TFXCall;
 		rec.tfx_call = s_tfx_call_serial++;
 		rec.tfx_pipe_hash = call.pipe_hash;
@@ -594,7 +581,7 @@ namespace GSDrawLog
 		}
 
 		std::fprintf(fp.get(),
-			"frame,draw,packet,arm,prim,prim_count,submitted,"
+			"frame,draw,arm,prim,prim_count,submitted,"
 			"fb_addr,fb_psm,fb_bw,fbmsk,"
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
@@ -627,10 +614,7 @@ namespace GSDrawLog
 			const bool blended = (r.flags & FlagBlend) != 0;
 			const bool ztest = (r.flags & FlagZTest) != 0;
 
-			if (r.packet != PacketNone)
-				std::fprintf(fp.get(), "%u,%u,%u,", r.frame, r.draw, r.packet);
-			else
-				std::fprintf(fp.get(), "%u,%u,,", r.frame, r.draw);
+			std::fprintf(fp.get(), "%u,%u,", r.frame, r.draw);
 
 			std::fprintf(fp.get(), "%s,%s,%u,%d,", r.sw ? "sw" : "hw",
 				GSUtil::GetPrimName(r.prim_type), r.prim_count, submitted ? 1 : 0);

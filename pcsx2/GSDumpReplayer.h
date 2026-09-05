@@ -46,15 +46,5 @@ namespace GSDumpReplayer
 	using InitialStateHook = void (*)();
 	void SetInitialStateHook(InitialStateHook hook);
 
-	/// While enabled, every packet publishes its own index to the GS thread ahead of its
-	/// work, so per-draw instrumentation running there can name the packet a draw came
-	/// out of. Off by default -- it costs a queued store per packet, and outside a replay
-	/// there is no packet to name.
-	///
-	/// It has to travel down the GS queue rather than being read from the replayer's
-	/// counter: the CPU thread runs ahead of the GS thread, so a direct read is not the
-	/// packet whose draws are executing. The wrong answer looks entirely reasonable.
-	void SetPublishPacketMarks(bool enabled);
-
 	void RenderUI();
 } // namespace GSDumpReplayer
