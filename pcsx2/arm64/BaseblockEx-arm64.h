@@ -406,6 +406,12 @@ public:
 		emitting_fnptr = 0;
 	}
 
+	// How many blocks are registered right now. The x86 BaseBlocks exposes
+	// this through its BaseBlockArray; this class never did. It is the
+	// denominator for anything that has to walk or repair every live block —
+	// a cycle-rate transition's cost, for one.
+	__fi u32 size() const { return blocks.size(); }
+
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test-only introspection. Returns true iff a link patch site within the
 	// block containing src_pc targets a block at dst_pc. The link multimap
