@@ -1474,7 +1474,7 @@ void InputManager::SetUSBVibrationIntensity(u32 port, float large_or_single_moto
 // straight to the gamepad's Android vibrator via onPadRumble (NativeApp routes them to
 // that player's controller, or the handheld's own haptic as a fallback). Deduped per pad
 // to match the Java one-shot model (RUMBLE_MS re-issued only on change, cancelled on 0).
-namespace Native { void onPadRumble(int pad, int largeMotor, int smallMotor); }
+#include "Input/AndroidNativeRumble.h"
 #endif
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
