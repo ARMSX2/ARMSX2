@@ -129,6 +129,14 @@ namespace PmuCounters
 		// "not measured."
 		bool IsAvailable(Counter c) const;
 
+		// True iff the machine advertises per-cluster core PMUs but the kernel
+		// refused to open against them, so the group fell back to one anonymous
+		// counter set (PmuCount() == 1). On a big.LITTLE host that means the
+		// "sum across clusters" warning above applies with no way to see the
+		// migration: a thread that moves counts nothing for the time it spends
+		// off the PMU the kernel picked. Kernels below 6.6 land here.
+		bool MultiPmuUnsupported() const { return m_multi_pmu_unsupported; }
+
 		// Upper bound on core PMUs we will install on. Two clusters is the
 		// common shape; Snapdragon's prime/gold/silver split makes three. Eight
 		// is slack, not a prediction.
@@ -160,6 +168,7 @@ namespace PmuCounters
 
 		PmuGroup m_pmu[MaxPmus];
 		int m_pmu_count = 0;
+		bool m_multi_pmu_unsupported = false;
 
 		// Availability is the AND across every installed PMU: a counter present
 		// on one cluster and missing on another would otherwise report a sum

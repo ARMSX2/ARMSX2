@@ -18,11 +18,25 @@
 #include <cstdlib>
 #include <cstring>
 
-// Added in Linux 6.6 to let a legacy PERF_TYPE_HARDWARE event name a specific
-// PMU on a hybrid/heterogeneous machine. Defined here as well so the build does
-// not depend on the age of the installed uapi headers; the kernel ignores the
-// high bits when it does not implement them, which degrades to the old
-// single-PMU behaviour rather than failing.
+// Lets a legacy PERF_TYPE_HARDWARE event name a specific PMU on a
+// heterogeneous machine, by putting the PMU's sysfs type in the high 32 bits of
+// config. Defined here as well so the build does not depend on the age of the
+// installed uapi headers -- but note that having the macro is not the same as
+// the kernel honouring it, and an older kernel does NOT ignore the high bits:
+//
+//   >= 6.6        arm_pmu advertises PERF_PMU_CAP_EXTENDED_HW_TYPE; the
+//                 selector works and each cluster gets its own group.
+//   5.13 - 6.5    the uapi macro exists but arm_pmu does not advertise the cap,
+//                 so perf_init_event finds no PMU for the extended type and
+//                 perf_event_open returns ENOENT.
+//   < 5.13        the kernel knows nothing of the selector, so the high bits
+//                 leave config >= PERF_COUNT_HW_MAX and armpmu_map_hw_event
+//                 returns EINVAL.
+//
+// So Open() opens the per-PMU plan first and falls back to a single anonymous
+// group on either of those two errnos. Without the fallback every Android
+// vendor kernel (5.10/5.15/6.1) and every ROCKNIX image below 6.6 would report
+// no counters at all.
 #ifndef PERF_PMU_TYPE_SHIFT
 #define PERF_PMU_TYPE_SHIFT 32
 #endif
@@ -97,7 +111,9 @@ namespace PmuCounters
 			int count = 0;
 			while (const struct dirent* ent = ::readdir(dir))
 			{
-				if (ent->d_name[0] == '.' || count >= max_out)
+				if (count >= max_out)
+					break;
+				if (ent->d_name[0] == '.')
 					continue;
 
 				char path[512];
@@ -192,6 +208,7 @@ namespace PmuCounters
 				slot = -1;
 		}
 		m_pmu_count = 0;
+		m_multi_pmu_unsupported = false;
 		for (bool& a : m_available)
 			a = false;
 
@@ -202,64 +219,92 @@ namespace PmuCounters
 		// lands on the wrong side, which looks exactly like "this machine has no
 		// counters".
 		u32 pmu_types[MaxPmus];
-		const int pmu_count = CollectCorePmuTypes(pmu_types, MaxPmus);
-
-		// A homogeneous host advertises no per-cluster PMUs; open a single group
-		// naming no PMU, which is what every non-hybrid machine wants.
-		const int groups_to_open = (pmu_count > 0) ? pmu_count : 1;
+		int pmu_count = CollectCorePmuTypes(pmu_types, MaxPmus);
 
 		bool available[Counter::Count];
-		for (int i = 0; i < Counter::Count; ++i)
-			available[i] = true;
 
-		for (int p = 0; p < groups_to_open; ++p)
+		// Two attempts at most: the per-PMU plan, then the anonymous one. A
+		// kernel that does not implement the PMU selector rejects the leader
+		// outright rather than ignoring the high bits (see the header comment on
+		// PERF_PMU_TYPE_SHIFT), and every arm64 host advertises a core PMU, so
+		// without this the whole rig loses its counters on any kernel below 6.6.
+		for (;;)
 		{
-			// The high 32 bits of a legacy PERF_TYPE_HARDWARE config select the
-			// PMU; zero means "let the kernel choose", the homogeneous case.
-			const u64 pmu_bits = (pmu_count > 0) ? (static_cast<u64>(pmu_types[p]) << PERF_PMU_TYPE_SHIFT) : 0;
-			PmuGroup& g = m_pmu[m_pmu_count];
+			// A homogeneous host advertises no per-cluster PMUs; open a single
+			// group naming no PMU, which is what every non-hybrid machine wants.
+			const int groups_to_open = (pmu_count > 0) ? pmu_count : 1;
 
-			struct perf_event_attr leader_attr;
-			FillAttrFor(CpuCycles, leader_attr);
-			leader_attr.config |= pmu_bits;
-			// Leader: pid=0 (calling thread), cpu=-1 (any), group_fd=-1.
-			g.leader_fd = static_cast<int>(PerfEventOpen(&leader_attr, 0, -1, -1, 0));
-			if (g.leader_fd < 0)
-			{
-				g.leader_fd = -1;
-				// One cluster refusing the leader is not fatal while another
-				// accepts it -- but every counter then has a hole, so the thread
-				// running there would report zero. Treat it as a failed open only
-				// if NO group came up; otherwise carry on and let ActivePmuCount()
-				// expose the gap.
-				continue;
-			}
-			g.read_slot[CpuCycles] = g.installed_count++;
+			for (int i = 0; i < Counter::Count; ++i)
+				available[i] = true;
 
-			// Followers — failures are tolerated (e.g. Apple PMU under Asahi
-			// returns ENOENT for the L1D cache event). Read() returns 0 for
-			// any counter whose read_slot is -1.
-			for (int i = 1; i < Counter::Count; ++i)
+			int leader_errno = 0;
+
+			for (int p = 0; p < groups_to_open; ++p)
 			{
-				struct perf_event_attr attr;
-				FillAttrFor(static_cast<Counter>(i), attr);
-				if (attr.type == PERF_TYPE_HARDWARE)
-					attr.config |= pmu_bits;
-				const int fd = static_cast<int>(PerfEventOpen(&attr, 0, -1, g.leader_fd, 0));
-				if (fd < 0)
+				// The high 32 bits of a legacy PERF_TYPE_HARDWARE config select the
+				// PMU; zero means "let the kernel choose", the homogeneous case.
+				const u64 pmu_bits = (pmu_count > 0) ? (static_cast<u64>(pmu_types[p]) << PERF_PMU_TYPE_SHIFT) : 0;
+				PmuGroup& g = m_pmu[m_pmu_count];
+
+				struct perf_event_attr leader_attr;
+				FillAttrFor(CpuCycles, leader_attr);
+				leader_attr.config |= pmu_bits;
+				// Leader: pid=0 (calling thread), cpu=-1 (any), group_fd=-1.
+				g.leader_fd = static_cast<int>(PerfEventOpen(&leader_attr, 0, -1, -1, 0));
+				if (g.leader_fd < 0)
 				{
-					available[i] = false;
+					if (leader_errno == 0)
+						leader_errno = errno;
+					g.leader_fd = -1;
+					// One cluster refusing the leader is not fatal while another
+					// accepts it -- but every counter then has a hole, so the thread
+					// running there would report zero. Treat it as a failed open only
+					// if NO group came up; otherwise carry on and let ActivePmuCount()
+					// expose the gap.
 					continue;
 				}
-				g.follower_fds[i - 1] = fd;
-				g.read_slot[i] = g.installed_count++;
+				g.read_slot[CpuCycles] = g.installed_count++;
+
+				// Followers — failures are tolerated (e.g. Apple PMU under Asahi
+				// returns ENOENT for the L1D cache event). Read() returns 0 for
+				// any counter whose read_slot is -1.
+				for (int i = 1; i < Counter::Count; ++i)
+				{
+					struct perf_event_attr attr;
+					FillAttrFor(static_cast<Counter>(i), attr);
+					if (attr.type == PERF_TYPE_HARDWARE)
+						attr.config |= pmu_bits;
+					const int fd = static_cast<int>(PerfEventOpen(&attr, 0, -1, g.leader_fd, 0));
+					if (fd < 0)
+					{
+						available[i] = false;
+						continue;
+					}
+					g.follower_fds[i - 1] = fd;
+					g.read_slot[i] = g.installed_count++;
+				}
+
+				m_pmu_count++;
 			}
 
-			m_pmu_count++;
-		}
+			if (m_pmu_count > 0)
+				break;
 
-		if (m_pmu_count == 0)
+			// Nothing came up. If the plan named PMUs and the kernel answered
+			// with the two errnos that mean "I do not know that selector"
+			// (ENOENT from perf_init_event on 5.13-6.5, EINVAL from
+			// armpmu_map_hw_event before that, where the high bits push config
+			// past PERF_COUNT_HW_MAX), retry with no selector at all. Any other
+			// errno -- EACCES, EPERM, ENOSYS -- would fail the same way twice.
+			if (pmu_count > 0 && (leader_errno == ENOENT || leader_errno == EINVAL))
+			{
+				pmu_count = 0;
+				m_multi_pmu_unsupported = true;
+				continue;
+			}
+
 			return false;
+		}
 
 		// PERF_TYPE_HW_CACHE carries no PMU selector, so on a heterogeneous host
 		// it lands on whichever PMU the kernel picks and cannot be summed
