@@ -331,7 +331,21 @@ namespace
 
 		EECycleRate::EligibilityReasons why;
 		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility(EECycleRate::ReadEligibilityInputs(), &why);
-		const EECycleRateDecision decision = s_controller.Update(sample, eligibility);
+
+		// Shadow mode answers "what would the governor have done to this run", so the
+		// controller has to be told the switch is on - fed the real answer it would sit in
+		// Disabled and classify nothing, which is the opposite of observing. The suspension
+		// half is left alone: turbo and hardcore really do suspend it, and a shadow run
+		// should show that happening.
+		//
+		// The trace records what the controller was fed rather than what the settings say,
+		// because the twelve replay columns have to reproduce the decision column. The
+		// header's mode= says which run it was.
+		EECycleRateEligibility fed = eligibility;
+		if (s_shadow)
+			fed.enabled = true;
+
+		const EECycleRateDecision decision = s_controller.Update(sample, fed);
 
 		bool applied = false;
 		if (!s_shadow)
@@ -362,7 +376,7 @@ namespace
 		}
 
 		AccountWindow(sample);
-		TraceWindow(sample, eligibility, why, decision, applied);
+		TraceWindow(sample, fed, why, decision, applied);
 
 		RefreshActivation(eligibility);
 		PublishOverlay();
