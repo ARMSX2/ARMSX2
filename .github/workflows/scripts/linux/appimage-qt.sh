@@ -115,7 +115,10 @@ $LINUXDEPLOY --plugin qt --appdir="$OUTDIR" --executable="$BUILDDIR/bin/armsx2-q
 --desktop-file="net.armsx2.ARMSX2.desktop" --icon-file="ARMSX2.png"
 
 echo "Copying resources into AppDir..."
-cp -a "$BUILDDIR/bin/resources" "$OUTDIR/usr/bin"
+# -L, not a plain -a: a developer measurement build (ENABLE_RIG) links parts of
+# bin/resources into the source tree, and -a would preserve those links into the
+# package, where they point at a path that does not exist on a user's machine.
+cp -aL "$BUILDDIR/bin/resources" "$OUTDIR/usr/bin"
 
 # Restore unstripped deps (for cache).
 rm -fr "$DEPSDIR"

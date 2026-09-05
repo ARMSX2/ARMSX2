@@ -20,6 +20,11 @@
 #   ORPHANS     a test source declaring TEST() that no CMakeLists.txt names is
 #               compiled into nothing, and its suite passes by not existing.
 #
+# Linux only. It shells out to ninja, GNU coreutils (sha256sum, date -r FILE,
+# readlink -f) and checks a symlink layout that CMake only creates on Linux, so
+# on macOS or BSD it would not fail cleanly -- `date -r` there takes an epoch,
+# not a file, and would print a wrong mtime rather than an error.
+#
 # On success it writes rig-provenance.json into the build directory. That file is
 # the certificate: copy it next to any artifact a run produces and the artifact
 # can afterwards say which tree it came from. Its absence means the rig was never
@@ -30,6 +35,11 @@
 # that never started once read as success.
 
 set -uo pipefail
+
+if [ "$(uname -s)" != Linux ]; then
+	echo "doctor.sh: Linux only (needs ninja and GNU coreutils)" >&2
+	exit 2
+fi
 
 SOURCE_DIR=""
 BUILD_DIR=""
@@ -167,7 +177,7 @@ NINJA_CLEAN="${NINJA_CLEAN:-0}"
 # ---------------------------------------------------------------------------
 LINKS_FILE="$BUILD_DIR/rig-links.txt"
 if [ ! -f "$LINKS_FILE" ]; then
-	fail "no rig-links.txt in $BUILD_DIR -- reconfigure (this build predates the resource links)"
+	fail "no rig-links.txt in $BUILD_DIR -- reconfigure with -DENABLE_RIG=ON (only a rig build links its resources)"
 else
 	LINK_OK=0
 	LINK_N=0
@@ -299,5 +309,9 @@ if [ "$FAILURES" -ne 0 ]; then
 	exit 1
 fi
 
-say "rig doctor: ok at $GIT_SHA${GIT_DIRTY:+}"
+if [ "$GIT_DIRTY" = true ]; then
+	say "rig doctor: ok at $GIT_SHA (dirty)"
+else
+	say "rig doctor: ok at $GIT_SHA"
+fi
 exit 0

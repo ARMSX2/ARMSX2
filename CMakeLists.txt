@@ -63,7 +63,15 @@ write_svnrev_h()
 # miss a file. Only the files that get edited, though -- the staged directory
 # also carries things that are deliberately not the source tree's (docs/ comes
 # from bin/docs/), so linking the whole directory would break them.
-if(UNIX AND NOT APPLE)
+#
+# Gated on ENABLE_RIG, and not merely on the platform, because a link is only
+# correct for a build directory that stays put. Anything that copies build/bin
+# elsewhere -- the AppImage and tarball packaging, an rsync to a handheld, a
+# plain `scp -r` -- either carries the link and gets a dangling one on the far
+# side, or dereferences it, depending on the flags. A default Linux build must
+# therefore stage real copies exactly as upstream does; only a developer
+# measurement build, which is run in place, gets the links.
+if(ENABLE_RIG AND UNIX AND NOT APPLE)
 	set(_rig_links
 		"bin/resources/shaders"          "resources/shaders"
 		"bin/resources/GameIndex.yaml"   "resources/GameIndex.yaml")
