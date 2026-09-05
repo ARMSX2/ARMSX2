@@ -40,6 +40,12 @@ extern u32 recEeScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder
 extern u32 intScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder);
 extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
 
+// Emit-time census of the EE recompiler's cycle-charge sites (iR5900-arm64.cpp).
+// All four clear on a full recompiler reset.
+extern u32 recEeGetChargeSiteCount();
+extern u32 recEeGetFormChangeSiteCount();
+extern u32 recEeGetFormChangeBlockCount();
+
 using namespace recompiler_tests;
 using namespace mips;
 
@@ -119,6 +125,25 @@ std::vector<u32> LongBlock()
 	std::vector<u32> prog;
 	for (int i = 0; i < 32; i++)
 		prog.push_back(ADDIU(reg::a1, reg::a1, 1));
+	return prog;
+}
+
+// A block deep enough that its charge outgrows ADD's 12-bit immediate two
+// steps below the configured rate.
+//
+// The arithmetic: underclocking multiplies the charge by up to 2.25x (rate 0
+// charges raw/8, rate -3 charges 9*raw/32), so a site well inside imm12 at the
+// configured rate can leave it inside the governor's window. At configured 0
+// the window bottoms out at -2, which charges 7*raw/32; that first stops being
+// encodable at raw 18730 (see the boundary asserted in the test below). PDIVW
+// costs 176 raw units (Cycles::MMI_Div in R5900OpcodeTables.cpp), doubled again
+// when CP0 Config bit 18 is clear, so 128 of them clear the boundary either
+// way — 22528 raw at worst.
+std::vector<u32> DeepDivideBlock()
+{
+	std::vector<u32> prog;
+	for (int i = 0; i < 128; i++)
+		prog.push_back(ee::PDIVW(reg::a1, reg::a2));
 	return prog;
 }
 
@@ -369,4 +394,69 @@ TEST(EeRecCycleRate, TransitionResetsOnlyEeAndVu0)
 
 	Cpu = saved_cpu;
 	CpuVU0 = saved_vu0;
+}
+
+// The census the immediate-patching design needs before it can be costed: how
+// many charge sites would stop fitting the one instruction they were emitted
+// in if the governor moved the selector, and how many blocks hold one.
+//
+// An ordinary block is nowhere near the boundary. 32 ADDIUs cost 9 raw units
+// each, so the charge is double digits at every selector in the window and the
+// same ADD encoding covers all of them.
+TEST(EeRecCycleRate, AnOrdinaryBlockKeepsItsChargeEncodingAcrossTheWindow)
+{
+	ScopedCycleRate rate(0);
+	ASSERT_EQ(EECycleRate::GetFloor(), -2);
+
+	recCpu.Reset();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a1, 0);
+	h.LoadProgram(LongBlock());
+	h.Run();
+
+	EXPECT_GT(recEeGetChargeSiteCount(), 0u) << "nothing was compiled; the rest proves nothing";
+	EXPECT_EQ(recEeGetFormChangeSiteCount(), 0u);
+	EXPECT_EQ(recEeGetFormChangeBlockCount(), 0u);
+}
+
+// A block of 128 parallel divides is not exotic, and it is over the line. The
+// charge fits ADD's imm12 at the configured rate and does not fit it two steps
+// down, so the block cannot be repaired by rewriting the immediate in place —
+// a fresh compile would have emitted a longer sequence there.
+TEST(EeRecCycleRate, ADeepDivideBlockOutgrowsItsChargeEncodingTwoStepsDown)
+{
+	ScopedCycleRate rate(0);
+	ASSERT_EQ(EECycleRate::GetFloor(), -2);
+
+	// The boundary itself, stated against the production scaler rather than
+	// assumed. IsImmAddSub accepts a 12-bit immediate, or a 12-bit one shifted
+	// left by 12 with the low bits clear — so 4096 is still one instruction and
+	// 4097 is not. At rate -2 the charge is 7*raw/32, which reaches 4097 at raw
+	// 18730; 18729 still lands on 4096.
+	const auto fits_add_imm12 = [](u32 c) {
+		return (c <= 0xfffu) || (((c >> 12) <= 0xfffu) && ((c & 0xfffu) == 0));
+	};
+	EXPECT_TRUE(fits_add_imm12(recEeScaleBlockCyclesForTest(18730, nullptr)))
+		<< "at the configured rate this block is nowhere near the boundary";
+	{
+		ScopedCycleRate floor_rate(-2);
+		EXPECT_EQ(recEeScaleBlockCyclesForTest(18729, nullptr), 4096u);
+		EXPECT_TRUE(fits_add_imm12(recEeScaleBlockCyclesForTest(18729, nullptr)));
+		EXPECT_EQ(recEeScaleBlockCyclesForTest(18730, nullptr), 4097u);
+		EXPECT_FALSE(fits_add_imm12(recEeScaleBlockCyclesForTest(18730, nullptr)));
+	}
+
+	recCpu.Reset();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a1, 0x0001000200030004ull);
+	h.SetGpr64(reg::a2, 0x0000000500000007ull);
+	h.LoadProgram(DeepDivideBlock());
+	// JIT only: this is a test about what the compiler emits, not about what
+	// PDIVW computes.
+	h.RunJitNoDiff();
+
+	EXPECT_GE(recEeGetFormChangeSiteCount(), 1u);
+	EXPECT_GE(recEeGetFormChangeBlockCount(), 1u);
 }

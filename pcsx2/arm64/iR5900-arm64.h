@@ -739,7 +739,19 @@ void SetBranchImmCall(u32 imm, u32 return_pc);
 void iFlushCall(int flushtype);
 void recBranchCall(void (*func)());
 void recCall(void (*func)());
-u32 scaleblockcycles_clear();
+
+// The single-instruction shape a charge site emits its immediate in. Every
+// caller of scaleblockcycles_clear() below hands its own shape over, because
+// the scaled charge is only patchable in place while it still fits the form
+// already on the page — a charge that outgrows imm12 would have been emitted
+// as a multi-instruction materialise-then-add instead.
+enum class EeChargeForm : u8
+{
+	AddImm12,  // Add/Adds RECCYCLE, RECCYCLE, #charge
+	MovzImm16, // Mov RWARG2, #charge
+};
+
+u32 scaleblockcycles_clear(EeChargeForm form);
 
 // ---------------------------------------------------------------------------
 // Cycle-charge instrumentation
@@ -760,6 +772,16 @@ u64 recEeGetLastResetTicks();
 // it they are zero by construction.
 u32 recEeGetChargeSiteCount();
 u32 recEeGetLiveBlockCount();
+
+// Of those charge sites, how many would stop fitting their single-instruction
+// immediate form somewhere in [EECycleRate::GetFloor(), GetConfigured()], and
+// how many blocks hold at least one such site. Underclocking multiplies the
+// charge by up to 2.25x, so a site comfortably inside ADD's imm12 at the
+// configured rate can leave it two steps down. Those sites cannot be repaired
+// in place; the blocks holding them would have to be invalidated and
+// recompiled instead. Cleared by the reset, same as the two above.
+u32 recEeGetFormChangeSiteCount();
+u32 recEeGetFormChangeBlockCount();
 
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).
 // interlock=true mirrors x86 COP2_Interlock (CFC2/CTC2/QMFC2/QMTC2 path);

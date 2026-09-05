@@ -235,6 +235,31 @@ static bool ValidateEeRateScript()
 	return ok;
 }
 
+// End-of-run census of the EE recompiler's charge sites. Same four numbers the
+// EERATE transition line carries, for the state the run finished in — a run
+// with no transitions at all still gets to say how big the working set got and
+// what fraction of it a patch pass could not repair in place.
+static void ReportEeChargeCensus(const char* when)
+{
+#if defined(ARCH_ARM64)
+	const u32 blocks = recEeGetLiveBlockCount();
+	const u32 sites = recEeGetChargeSiteCount();
+	const u32 fc_sites = recEeGetFormChangeSiteCount();
+	const u32 fc_blocks = recEeGetFormChangeBlockCount();
+	const double site_pct = (sites != 0) ? (100.0 * fc_sites / sites) : 0.0;
+	const double block_pct = (blocks != 0) ? (100.0 * fc_blocks / blocks) : 0.0;
+
+	Console.WriteLn(fmt::format(
+		"EERATE-CENSUS[{}]: {} live blocks, {} charge sites ({:.2f} per block); "
+		"{} sites ({:.2f}%) in {} blocks ({:.2f}%) change encoding form across "
+		"[configured-2, configured]",
+		when, blocks, sites, (blocks != 0) ? (static_cast<double>(sites) / blocks) : 0.0,
+		fc_sites, site_pct, fc_blocks, block_pct));
+#else
+	(void)when;
+#endif
+}
+
 // Per-pass driver. One instance per Execute() loop, so --contmem's interpreter
 // and JIT passes each get the same script from the same starting selector.
 class EeRateDriver
@@ -286,8 +311,10 @@ private:
 #if defined(ARCH_ARM64)
 		const u32 live_blocks = recEeGetLiveBlockCount();
 		const u32 charge_sites = recEeGetChargeSiteCount();
+		const u32 fc_sites = recEeGetFormChangeSiteCount();
+		const u32 fc_blocks = recEeGetFormChangeBlockCount();
 #else
-		const u32 live_blocks = 0, charge_sites = 0;
+		const u32 live_blocks = 0, charge_sites = 0, fc_sites = 0, fc_blocks = 0;
 #endif
 
 		const auto t0 = std::chrono::steady_clock::now();
@@ -309,7 +336,8 @@ private:
 		Console.WriteLn(fmt::format(
 			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); "
 			"split Cpu->Reset() call {:.3f} ms, EE rebuild {:.3f} ms ({}), mVUreset(VU0) {:.3f} ms; "
-			"discarded {} live blocks / {} charge sites; "
+			"discarded {} live blocks / {} charge sites, of which {} sites in {} blocks change "
+			"encoding form across the window; "
 			"generations ee {}->{} vu0 {}->{} iop {}->{} vu1 {}->{} vif {}->{}",
 			m_pass, frame, static_cast<int>(old), static_cast<int>(selector),
 			ok ? "applied" : "REJECTED", apply_ms,
@@ -317,7 +345,7 @@ private:
 			static_cast<double>(cost.ee_rebuild) * tick_ms,
 			rebuild_is_ours ? "this transition" : "deferred, an earlier reset",
 			static_cast<double>(cost.vu0_reset) * tick_ms,
-			live_blocks, charge_sites,
+			live_blocks, charge_sites, fc_sites, fc_blocks,
 			before.ee, after.ee, before.vu0, after.vu0, before.iop, after.iop,
 			before.vu1, after.vu1, before.vif, after.vif));
 
@@ -3055,6 +3083,7 @@ static int RunContinuousMemTrajectory()
 		dump(false, "interp");
 		dump(true, "jit");
 	}
+	ReportEeChargeCensus("contmem end");
 	if (s_ee_rate_failed)
 	{
 		Console.Error("CONTMEM: FAILED — a scripted EE cycle-rate transition was refused or reset a "
@@ -4711,6 +4740,7 @@ static int RunLiveRun()
 	Console.WriteLn(fmt::format(
 		"LIVERUN: completed {} frames with NO wedge — this config did not reproduce the hang.",
 		s_frames));
+	ReportEeChargeCensus("liverun end");
 	if (s_ee_rate_failed)
 	{
 		Console.Error("LIVERUN: FAILED — a scripted EE cycle-rate transition was refused or reset a "

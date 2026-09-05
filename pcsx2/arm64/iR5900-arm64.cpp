@@ -684,7 +684,7 @@ void recBranchCall(void (*func)())
 	// before the C call — the interpreter's intEventTest reads
 	// cpuRegs.cycle. Re-derive after, so the g_branch=2 exit code that
 	// follows can keep using RECCYCLE.
-	u32 cycles = scaleblockcycles_clear();
+	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles > 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 
@@ -702,10 +702,16 @@ void recBranchCall(void (*func)())
 // Matches x86 scaleblockcycles_calculation() in ix86-32/iR5900.cpp
 #define DEFAULT_SCALED_BLOCKS() (s_nBlockCycles >> 3)
 
-static u32 scaleblockcycles_calculation()
+// The scaler, parameterised by selector. The production entry point below
+// passes the live effective one; the encoding-form classifier passes each
+// selector the governor could move to, so it can ask what this same block
+// would be charged there. One copy of the formula, driven twice — the formula
+// has already been transcribed by hand twice (recompiler and interpreter) and
+// ee_rec_cycle_rate_tests exists because a slip in either is a silent timing
+// change. A third copy is not on the table.
+static u32 scaleblockcycles_calculation_for(s8 cyclerate)
 {
 	const bool lowcycles = (s_nBlockCycles <= 40);
-	const s8 cyclerate = EECycleRate::GetEffective();
 	u32 scale_cycles = 0;
 
 	if (cyclerate == 0 || lowcycles || cyclerate < -99 || cyclerate > 3)
@@ -724,6 +730,11 @@ static u32 scaleblockcycles_calculation()
 		scale_cycles = ((5 + (-2 * (cyclerate + 1))) * s_nBlockCycles) >> 5;
 
 	return (scale_cycles < 1) ? 1 : scale_cycles;
+}
+
+static u32 scaleblockcycles_calculation()
+{
+	return scaleblockcycles_calculation_for(EECycleRate::GetEffective());
 }
 
 static u32 scaleblockcycles_clear_impl()
@@ -751,9 +762,68 @@ static u32 scaleblockcycles_clear_impl()
 // later is counted without anyone remembering to.
 static u32 s_eeChargeSites = 0;
 
-u32 scaleblockcycles_clear()
+// Sites whose charge would not stay in one instruction across the governor's
+// window, and blocks holding at least one of them.
+static u32 s_eeFormChangeSites = 0;
+static u32 s_eeFormChangeBlocks = 0;
+static bool s_eeBlockHasFormChange = false;
+
+// Does `charge` still fit the single-instruction form this site was emitted
+// in? A charge that stops fitting cannot be patched in place: vixl would have
+// emitted a longer sequence for it, and there is no room on the page.
+//
+// The MOVZ test is deliberately the narrow one the design names. vixl also
+// reaches one instruction through MOVN or an ORR-immediate for some values, so
+// for that single site the count below is an upper bound. It takes a charge
+// over 65535 to fail at all, which no realistic block reaches.
+static bool eeChargeFitsForm(u32 charge, EeChargeForm form)
+{
+	switch (form)
+	{
+		case EeChargeForm::AddImm12:
+			// vixl Assembler::IsImmAddSub. Anything else makes AddSubMacro
+			// acquire a scratch register and emit a materialise-then-add of
+			// two to five instructions.
+			return (charge <= 0xfffu) || (((charge >> 12) <= 0xfffu) && ((charge & 0xfffu) == 0));
+
+		case EeChargeForm::MovzImm16:
+			// vixl Assembler::IsImmMovz for a 32-bit destination: at least one
+			// of the two halfwords clear.
+			return ((charge & 0xffff0000u) == 0) || ((charge & 0x0000ffffu) == 0);
+	}
+	return false;
+}
+
+// Would this site's charge still be a single instruction at every selector the
+// governor could move to? The window is [GetFloor(), GetConfigured()] — at most
+// three values. Counting only: nothing is emitted differently, nothing is
+// recorded, nothing is patched.
+static void eeClassifyChargeForm(EeChargeForm form)
+{
+	const s8 floor = EECycleRate::GetFloor();
+	const s8 top = EECycleRate::GetConfigured();
+
+	for (int sel = floor; sel <= top; sel++)
+	{
+		if (eeChargeFitsForm(scaleblockcycles_calculation_for(static_cast<s8>(sel)), form))
+			continue;
+
+		s_eeFormChangeSites++;
+		if (!s_eeBlockHasFormChange)
+		{
+			s_eeBlockHasFormChange = true;
+			s_eeFormChangeBlocks++;
+		}
+		return;
+	}
+}
+
+u32 scaleblockcycles_clear(EeChargeForm form)
 {
 	s_eeChargeSites++;
+	// Before the impl: it masks s_nBlockCycles down to the retained remainder,
+	// and the classifier needs the raw this site actually saw.
+	eeClassifyChargeForm(form);
 	return scaleblockcycles_clear_impl();
 }
 
@@ -763,6 +833,16 @@ u32 scaleblockcycles_clear()
 u32 recEeGetChargeSiteCount()
 {
 	return s_eeChargeSites;
+}
+
+u32 recEeGetFormChangeSiteCount()
+{
+	return s_eeFormChangeSites;
+}
+
+u32 recEeGetFormChangeBlockCount()
+{
+	return s_eeFormChangeBlocks;
 }
 
 u32 recEeGetLiveBlockCount()
@@ -1121,7 +1201,7 @@ namespace
 // cycles are 16-bit scaled.
 static void emitCycleUpdateAndEventCheck()
 {
-	const u32 cycles = scaleblockcycles_clear();
+	const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Adds(RECCYCLE, RECCYCLE, cycles);
 	else
@@ -1381,7 +1461,7 @@ static void SetBranchBackedge()
 	// Cycle update + event check, side-exiting to a local cold stub instead of
 	// DispatcherEvent (the stub owes the spill + pc store first).
 	a64::Label spill;
-	const u32 cycles = scaleblockcycles_clear();
+	const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Adds(RECCYCLE, RECCYCLE, cycles);
 	else
@@ -1456,7 +1536,7 @@ void SetBranchImm(u32 imm)
 	// the x86 path in iR5900.cpp:iBranchTest under Speedhacks.WaitLoop.
 	if (EmuConfig.Speedhacks.WaitLoop && s_nBlockFF && imm == s_branchTo)
 	{
-		const u32 cycles = scaleblockcycles_clear();
+		const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 		if (cycles != 0)
 			armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 		armAsm->Cmp(RECCYCLE, 0);
@@ -1732,7 +1812,7 @@ static void recEmitSideExitTail(u32 imm)
 	iFlushCall(FLUSH_EVERYTHING);
 
 	armAsm->Mov(RWSCRATCH, imm);
-	armAsm->Mov(RWARG2, scaleblockcycles_clear());
+	armAsm->Mov(RWARG2, scaleblockcycles_clear(EeChargeForm::MovzImm16));
 	armEmitCall(SuperblockExitStub);
 
 	// RET lands here: the linked B (same patch protocol as SetBranchImm).
@@ -3396,6 +3476,9 @@ static void recResetRaw()
 
 	recBlocks.Reset();
 	s_eeChargeSites = 0;
+	s_eeFormChangeSites = 0;
+	s_eeFormChangeBlocks = 0;
+	s_eeBlockHasFormChange = false;
 	// The code cache is about to be rewound, so every fastmem backpatch record
 	// points at code that no longer exists. vtlb_AddLoadStoreInfo overwrites a
 	// colliding code_address, so a stale record cannot mispatch — but nothing
@@ -3869,6 +3952,7 @@ static void recRecompile(const u32 startpc)
 	s_pCurBlock->SetFnptr(block_fnptr);
 	s_nBlockCycles = 0;
 	s_nBlockInterlocked = false;
+	s_eeBlockHasFormChange = false; // per-block, so the block counter counts blocks
 
 	// A recompile at a startpc reuses the existing BASEBLOCKEX — drop any
 	// stale SL-1 back-edge registration from the previous compile.
@@ -4556,7 +4640,7 @@ StartRecomp:
 				armAsm->Mov(RWSCRATCH, pc);
 				armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.pc));
 
-				u32 cycles = scaleblockcycles_clear();
+				u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 				if (cycles != 0)
 					armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 

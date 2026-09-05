@@ -306,7 +306,7 @@ static void recVCallmsImpl(void (*func)())
 {
 	iFlushCall(FLUSH_INTERPRETER);
 
-	u32 cycles = scaleblockcycles_clear();
+	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 
