@@ -1607,9 +1607,8 @@ TEST(GsKickKernel, SmallCountsMatchOnBothArms)
 // ---------------------------------------------------------------------------
 // GIFPath::SetTag, stage 3c: the layouts it now recognises.
 //
-// Every layout string below is one the layout census
-// (LAYOUT-CENSUS.md) actually observed in the 24-dump corpus, including the ones
-// that must stay TYPE_UNKNOWN. A reinterpretation that changes nreg must leave
+// Every layout string below is one a census of packed tags actually observed in
+// the 24-dump corpus, including the ones that must stay TYPE_UNKNOWN. A reinterpretation that changes nreg must leave
 // nloop * nreg -- the qword count Transfer consumes -- exactly where it was.
 // ---------------------------------------------------------------------------
 namespace

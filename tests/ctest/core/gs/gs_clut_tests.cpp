@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Console-conformance pins for the CLUT (GSClut), from the gs-clut hardware
-// capture (SCPH-30001, 2026-08-11, umbrella/hardware-oracle/captures/gs-clut).
+// capture (SCPH-30001, 2026-08-11).
 //
 // Two measured rules, and one measured non-rule kept as a guard:
 //
@@ -238,8 +238,8 @@ TEST_F(GSClutTest, UndocumentedCPSMValuesLoadI4)
 		ASSERT_EQ((*m_clut)[i], documented[i]) << "entry " << i;
 }
 
-// gs-clut2 (SCPH-30001, 2026-08-12, umbrella/hardware-oracle/captures/gs-clut2)
-// result 2: a 32-bit CSM2 palette read with an eight-bit index reads 128 source
+// A second console capture (SCPH-30001, 2026-08-12), result 2: a 32-bit CSM2
+// palette read with an eight-bit index reads 128 source
 // words starting 128 pixels past (COU*16, COV), and fills all 256 entries from
 // them -- entry e and entry e+128 are the same word. Measured over 28 cases with
 // COU swept, and the +128 is the same at CBW 1, 2, 4 and 8, so it is a constant

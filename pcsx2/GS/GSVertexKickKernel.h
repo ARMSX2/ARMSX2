@@ -187,12 +187,11 @@ namespace GSVertexKickKernel
 	// The mirror-entry build, four vertices at a time.
 	//
 	// Per vertex the offset subtract, the two band shifts, the four bound
-	// compares and the pack are 29 scalar instructions -- two thirds of pass one
-	// (RESULT.md section 5). Every step of it is lane-parallel, so it goes
-	// four-wide over a transpose of the four packed XYZ words the parse has
-	// already loaded, and the four 16-byte entries come out of six zips.
-	// DESIGN 3.1 named this shape as the one to take if the objdump found the
-	// scalar build dominant. It did.
+	// compares and the pack are 29 scalar instructions -- two thirds of pass one,
+	// which an objdump of the scalar build confirmed was the dominant cost. Every
+	// step of it is lane-parallel, so it goes four-wide over a transpose of the
+	// four packed XYZ words the parse has already loaded, and the four 16-byte
+	// entries come out of six zips.
 	//
 	// Byte-exact with MakeCullMirrorEntry<true> -- the band and outcode fields are
 	// the same expressions on the same inputs, and the entry is assembled in its
