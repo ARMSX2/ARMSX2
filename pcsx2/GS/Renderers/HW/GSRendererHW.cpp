@@ -2727,6 +2727,72 @@ bool GSRendererHW::CanUseSwSpriteRender()
 	return true;
 }
 
+// Rounds every sprite edge up to the pixel boundary the GS itself would have rounded it
+// to, and slides the matching texture coordinate along the sprite's gradient by the same
+// amount. The covered pixel set is what the GS already draws, so at native resolution this
+// is a no-op in both position and sampling; only the upscaled rasterisation moves, and it
+// moves onto the native grid. Only called for sprites into an upscaled target.
+void GSRendererHW::SnapSpriteEdgesToPixelGrid()
+{
+	// STQ sprites interpolate through Q; leave those alone rather than guess a gradient.
+	if (m_process_texture && !PRIM->FST)
+		return;
+
+	const bool adjust_uv = m_process_texture && PRIM->FST;
+	const int ox = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int oy = static_cast<int>(m_context->XYOFFSET.OFY);
+	const u32 count = m_vertex->next;
+	GSVertex* v = &m_vertex->buff[0];
+
+	// ceil(a / 16) * 16, for negative a as well: >> rounds towards -inf.
+	const auto snap = [](int a) { return ((a + 15) >> 4) << 4; };
+
+	for (u32 i = 0; i + 1 < count; i += 2)
+	{
+		const int x0 = static_cast<int>(v[i].XYZ.X) - ox;
+		const int x1 = static_cast<int>(v[i + 1].XYZ.X) - ox;
+		const int y0 = static_cast<int>(v[i].XYZ.Y) - oy;
+		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
+		const int dx0 = snap(x0) - x0;
+		const int dx1 = snap(x1) - x1;
+		const int dy0 = snap(y0) - y0;
+		const int dy1 = snap(y1) - y1;
+		if ((dx0 | dx1 | dy0 | dy1) == 0)
+			continue;
+
+		if (adjust_uv)
+		{
+			if (dx0 | dx1)
+			{
+				const int lx = x1 - x0;
+				if (lx != 0)
+				{
+					const float gu = static_cast<float>(static_cast<int>(v[i + 1].U) - static_cast<int>(v[i].U)) /
+					                 static_cast<float>(lx);
+					v[i].U = static_cast<u16>(std::lround(static_cast<float>(v[i].U) + gu * static_cast<float>(dx0)));
+					v[i + 1].U = static_cast<u16>(std::lround(static_cast<float>(v[i + 1].U) + gu * static_cast<float>(dx1)));
+				}
+			}
+			if (dy0 | dy1)
+			{
+				const int ly = y1 - y0;
+				if (ly != 0)
+				{
+					const float gv = static_cast<float>(static_cast<int>(v[i + 1].V) - static_cast<int>(v[i].V)) /
+					                 static_cast<float>(ly);
+					v[i].V = static_cast<u16>(std::lround(static_cast<float>(v[i].V) + gv * static_cast<float>(dy0)));
+					v[i + 1].V = static_cast<u16>(std::lround(static_cast<float>(v[i + 1].V) + gv * static_cast<float>(dy1)));
+				}
+			}
+		}
+
+		v[i].XYZ.X = static_cast<u16>(static_cast<int>(v[i].XYZ.X) + dx0);
+		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + dx1);
+		v[i].XYZ.Y = static_cast<u16>(static_cast<int>(v[i].XYZ.Y) + dy0);
+		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + dy1);
+	}
+}
+
 template <bool linear>
 void GSRendererHW::RoundSpriteOffset()
 {
@@ -5298,6 +5364,20 @@ void GSRendererHW::Draw()
 	{
 		const u32 count = m_vertex->next;
 		GSVertex* v = &m_vertex->buff[0];
+
+		// The GS rasterises a sprite in whole pixels: an edge at x covers pixels from
+		// ceil(x) up, so a sprite offset by a fraction of a pixel covers exactly the same
+		// pixels as one that is not. Upscaling multiplies the edge before rasterising, so
+		// that fraction turns into whole device pixels and two sprites the GS covers
+		// identically stop covering the same columns. NASCAR Thunder 2002 writes its alpha
+		// plane with a sprite at x=[-0.5,319.5) and then reads it back through DATE with a
+		// sprite at x=[0,320): identical at 1x, one device column apart at 2x, and that
+		// column is the bright line down the middle of the screen.
+		//
+		// So round each edge to the pixel the GS would have started it at, and move the
+		// texture coordinate by the same distance along the sprite's own gradient, which
+		// leaves every native sample point exactly where it was.
+		SnapSpriteEdgesToPixelGrid();
 
 		// Hack to avoid vertical black line in various games (ace combat/tekken)
 		if (GSConfig.UserHacks_AlignSpriteX)

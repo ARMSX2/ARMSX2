@@ -211,6 +211,8 @@ private:
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
 
+	void SnapSpriteEdgesToPixelGrid();
+
 	template <bool linear>
 	void RoundSpriteOffset();
 
