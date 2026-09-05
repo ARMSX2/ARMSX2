@@ -73,6 +73,7 @@ namespace
 
 	std::FILE* s_trace = nullptr;
 	bool s_trace_header_written = false;
+	bool s_trace_game_written = false;
 	u32 s_trace_window = 0;
 
 	// The session summary, written once at shutdown whether or not a trace is open.
@@ -141,16 +142,18 @@ namespace
 		return out;
 	}
 
-	// The header is written at the first row rather than at open, because the two things
-	// worth having in it - the disc serial and the ELF CRC - are not known until the game
-	// has actually booted, and a header full of zeroes identifies nothing.
-	void WriteTraceHeader()
+	// Written once, before anything else, so a file that never gets a measurable window
+	// still says which binary and which policy produced it.
+	void EnsureTraceHeader()
 	{
+		if (!s_trace || s_trace_header_written)
+			return;
+
+		s_trace_header_written = true;
+
 		const EECycleRatePolicy& p = s_controller.GetPolicy();
-		std::fprintf(s_trace,
-			"# armsx2 ee-cycle-rate trace v1 build=%s serial=%s crc=%08x mode=%s configured=%d floor=%d\n",
-			BuildVersion::GitHash, VMManager::GetDiscSerial().c_str(), VMManager::GetCurrentCRC(),
-			s_shadow ? "shadow" : "live", static_cast<int>(EECycleRate::GetConfigured()),
+		std::fprintf(s_trace, "# armsx2 ee-cycle-rate trace v1 build=%s mode=%s configured=%d floor=%d\n",
+			BuildVersion::GitHash, s_shadow ? "shadow" : "live", static_cast<int>(EECycleRate::GetConfigured()),
 			static_cast<int>(EECycleRate::GetFloor()));
 		std::fprintf(s_trace,
 			"# policy window_s=%.3f warmup_s=%.3f cooldown_s=%.3f overload_p90=%.3f overload_late=%.3f "
@@ -166,7 +169,22 @@ namespace
 			"window,usable,active_seconds,gs_wait_seconds,vu1_wait_seconds,state,configured,ctl_effective,"
 			"applied_effective,overload_dwell,headroom_dwell,clock_seconds,inhibit_seconds,transitions,"
 			"ineffective,applied,shadow,gen_ee,gen_iop,gen_vu0,gen_vu1,gen_vif,enabled_reason,eligible_reason\n");
-		s_trace_header_written = true;
+	}
+
+	// Which game, written once. Separately from the header, because the ELF CRC is not known
+	// until the game has actually booted and a zero there identifies nothing: the line waits
+	// for a real CRC, and `force` is the VM-shutdown case where waiting longer is pointless.
+	void MaybeWriteTraceGame(bool force)
+	{
+		if (!s_trace || s_trace_game_written)
+			return;
+
+		const u32 crc = VMManager::GetCurrentCRC();
+		if (crc == 0 && !force)
+			return;
+
+		std::fprintf(s_trace, "# game serial=%s crc=%08x\n", VMManager::GetDiscSerial().c_str(), crc);
+		s_trace_game_written = true;
 	}
 
 	void OpenTrace()
@@ -179,6 +197,7 @@ namespace
 		// truncated the one before it is a lost afternoon.
 		s_trace = FileSystem::OpenCFile(path.c_str(), "ab");
 		s_trace_header_written = false;
+		s_trace_game_written = false;
 		s_trace_window = 0;
 		if (!s_trace)
 			Console.Error("EE cycle rate: could not open trace '%s' for append.", path.c_str());
@@ -192,12 +211,16 @@ namespace
 		std::fclose(s_trace);
 		s_trace = nullptr;
 		s_trace_header_written = false;
+		s_trace_game_written = false;
 	}
 
-	void TraceLifecycle(const char* reason)
+	void TraceLifecycle(const char* reason, bool shutting_down = false)
 	{
 		if (!s_trace)
 			return;
+
+		EnsureTraceHeader();
+		MaybeWriteTraceGame(shutting_down);
 
 		// A comment, so a trace stays replayable by the fixture whatever happened to the VM
 		// while it was being recorded.
@@ -255,8 +278,8 @@ namespace
 		if (!s_trace)
 			return;
 
-		if (!s_trace_header_written)
-			WriteTraceHeader();
+		EnsureTraceHeader();
+		MaybeWriteTraceGame(false);
 
 		const EECycleRateController::Snapshot snap = s_controller.GetSnapshot();
 		const EECycleRate::ResetGenerations gen = EECycleRate::GetResetGenerations();
@@ -497,7 +520,7 @@ void EECycleRateSampler::OnVMShutdown()
 			at_rate.empty() ? "none" : at_rate.c_str());
 	}
 
-	TraceLifecycle("VM shutdown");
+	TraceLifecycle("VM shutdown", true);
 	CloseTrace();
 
 	// Put the selector back before the recompilers go away, so the next VM starts from the
