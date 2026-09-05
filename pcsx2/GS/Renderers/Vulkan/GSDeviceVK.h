@@ -27,105 +27,9 @@
 
 class VKSwapChain;
 
-/// WHICH PIECE OF CODE is about to block on a GPU fence. GSDeviceVK::GpuWaitCause says which BILL
-/// the wait lands on; this says which SITE paid it, and every bill has several sites. A frame-level
-/// counter cannot discriminate between them -- a run that knows its waits cost 10 ms and not what
-/// they were WAITING FOR points at no fix at all, and the candidates want opposite ones (a bigger
-/// stream ring, a deeper command-buffer ring, a readback that should not exist).
-///
-/// The site and the cause are booked in ONE place, GSDeviceVK::BookGpuWait, off one table
-/// (CauseOfSite). So the per-site figures sum to the per-cause figures exactly, by construction
-/// rather than by discipline: there is no path that increments a cause without also incrementing
-/// exactly one site of that cause.
-///
-/// It lives at namespace scope rather than nested in GSDeviceVK because VKStreamBuffer stores one,
-/// and its header cannot see the device's -- GSDeviceVK.h includes VKStreamBuffer.h, not the other
-/// way round. The declaration there is an opaque-enum-declaration, which is why the underlying type
-/// is spelled out here and must stay spelled out.
-enum class GpuWaitSite : u8
-{
-	// ---- the Ring bill: backpressure, and deliberately OUTSIDE GpuBlockingWaits ----
-
-	/// ActivateCommandBuffer. The command-buffer ring came round to a buffer the GPU has not
-	/// finished, so the host waits for the submission NUM_COMMAND_BUFFERS ago. Nobody asked for
-	/// this wait; it is the pipeline being full. Deeper rings and fewer mid-frame submits both
-	/// move it.
-	CommandBufferRing,
-
-	// ---- the Sync bill: the GS thread blocking out of turn ----
-	//
-	// The stream sites below are all VKStreamBuffer::WaitForClearSpace: the host wanted room in a
-	// host-visible ring and the bytes it wants to reuse are still being read by an unretired
-	// submission. ⚠️ These are backpressure in the same SENSE as CommandBufferRing and they are
-	// nevertheless on the Sync bill, which is where they have always been booked (WaitForClearSpace
-	// calls WaitForFenceCounter, whose default cause is Sync). That is not being changed here -- an
-	// attribution instrument that moves a number it is measuring is useless -- but it is now VISIBLE,
-	// which it was not: a stream wait and a readback drain were the same digit.
-	//
-	// One site per buffer, because "the ring is too small" is a per-buffer verdict and the buffers
-	// are sized independently.
-	StreamVertex,
-	StreamIndex,
-	StreamExpandIndex,
-	StreamVertexUniform,
-	StreamFragmentUniform,
-	StreamTexture,
-	/// A stream buffer nobody named -- a bug in the Create call, not a road.
-	StreamUnnamed,
-
-	/// ExecuteCommandBufferForReadback: submit and block so the CPU can read what the GPU wrote.
-	/// The classic drain, and the one readback work is judged on.
-	Readback,
-	/// GSDownloadTextureVK::Flush waiting on a copy already submitted under an earlier buffer.
-	DownloadFence,
-	/// vkDeviceWaitIdle. Swapchain recreate, present-mode change, resize, teardown. Rare and
-	/// enormous; if this is nonzero mid-run, something is rebuilding the swapchain.
-	DeviceIdle,
-	/// ClearSamplerCache: submit and drain before destroying live samplers.
-	SamplerCacheClear,
-	/// CreateSurface's out-of-VRAM fallback: purge the pool, drain, retry the allocation.
-	TextureAllocFallback,
-	/// ExecuteCommandBuffer(WaitType) reached with no site named. Should stay zero.
-	SyncUnnamed,
-
-	// ---- the Submit bill: time inside the submit call itself, not on a fence ----
-
-	/// SubmitCommandBuffer's vkQueueSubmit. Not a fence wait at all -- the host is handing a
-	/// command buffer to the driver -- but on some drivers that call is where the frame's cost
-	/// actually lands, and until it was timed it belonged to no counter the runner had. It is on
-	/// its own bill rather than on Sync so that adding it does not move the sync figure every
-	/// earlier round was read off.
-	QueueSubmit,
-
-	// ---- the Map bill: host cache maintenance over a readback, after the drain ----
-
-	/// GSDownloadTextureVK::Map's vmaInvalidateAllocation. The drain site above ends when the
-	/// fence signals; the CPU still has to invalidate its cache over every row it is about to
-	/// read, and on a non-coherent readback heap that is real time spent outside the drain.
-	ReadbackMap,
-
-	Count
-};
-
 class GSDeviceVK final : public GSDevice
 {
 public:
-	u64 GetSyncWaitNs() const override { return m_sync_wait_ns; }
-	u64 GetSyncWaitCalls() const override { return m_sync_wait_calls; }
-	u64 GetRingWaitNs() const override { return m_ring_wait_ns; }
-	u64 GetRingWaitCalls() const override { return m_ring_wait_calls; }
-	u64 GetSubmitWaitNs() const override { return m_submit_wait_ns; }
-	u64 GetSubmitWaitCalls() const override { return m_submit_wait_calls; }
-	u64 GetMapWaitNs() const override { return m_map_wait_ns; }
-	u64 GetMapWaitCalls() const override { return m_map_wait_calls; }
-	u32 GetGpuWaitSiteCount() const override { return kGpuWaitSiteCount; }
-	const u64* GetGpuWaitSiteNs() const override { return m_wait_site_ns.data(); }
-	const u64* GetGpuWaitSiteCalls() const override { return m_wait_site_calls.data(); }
-	const char* GetGpuWaitSiteName(u32 site) const override
-	{
-		return (site < kGpuWaitSiteCount) ? NameOfSite(static_cast<GpuWaitSite>(site)) : "";
-	}
-	const char* GetGpuWaitSiteFamily(u32 site) const override;
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -289,11 +193,7 @@ public:
 
 	// Wait for a fence to be completed.
 	// Also invokes callbacks for completion.
-	void WaitForFenceCounter(u64 fence_counter, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
-	/// Charge a readback's post-drain cache invalidate to the ReadbackMap site. Public because the
-	/// download texture lives in its own translation unit and is the only caller; everything else
-	/// books its waits from inside the device.
-	void BookReadbackMapWait(u64 wait_ns) { BookGpuWait(GpuWaitSite::ReadbackMap, wait_ns); }
+	void WaitForFenceCounter(u64 fence_counter);
 
 	void WaitForGPUIdle();
 
@@ -317,7 +217,7 @@ private:
 	};
 
 	static WaitType GetWaitType(bool wait, bool spin);
-	void ExecuteCommandBuffer(WaitType wait_for_completion, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
+	void ExecuteCommandBuffer(WaitType wait_for_completion);
 
 	// Allocates a temporary CPU staging buffer, fires the callback with it to populate, then copies to a GPU buffer.
 	bool AllocatePreinitializedGPUBuffer(u32 size, VkBuffer* gpu_buffer, VmaAllocation* gpu_allocation,
@@ -364,37 +264,8 @@ private:
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
-	/// Why the host is about to block on a GPU fence. `Ring` is the command-buffer ring's own
-	/// recycle wait -- the pipeline is full and the frame ahead has to retire -- which is
-	/// backpressure and belongs in nobody's drain bill. Everything else is a wait the GS thread
-	/// paid out of turn to get an answer, and that is the population readback work is judged
-	/// against (see GSPerfMon::GpuBlockingWaits).
-	///
-	/// `Submit` and `Map` are not fence waits at all -- they are time inside vkQueueSubmit and
-	/// inside the readback's cache invalidate -- and they have their own bills for the same reason
-	/// the sites exist: folding them into Sync would have moved a number every earlier round is
-	/// quoted against. ⚠️ Unlike the two fence bills, they are partly CPU time, so a reader
-	/// subtracting them from wall clock alongside a thread-CPU figure is subtracting some of the
-	/// same nanoseconds twice.
-	enum class GpuWaitCause
-	{
-		Ring,
-		Sync,
-		Submit,
-		Map,
-	};
+	void WaitForCommandBufferCompletion(u32 index);
 
-	/// The bill a site is charged to. One table, consulted once per wait, and the only place the
-	/// site-to-cause mapping exists.
-	static GpuWaitCause CauseOfSite(GpuWaitSite site);
-	/// A stable short tag for the site, for logs and for the runner's stats.json. Stable is the
-	/// point: a round comparing two device runs compares these strings.
-	static const char* NameOfSite(GpuWaitSite site);
-	static constexpr u32 kGpuWaitSiteCount = static_cast<u32>(GpuWaitSite::Count);
-
-	void WaitForCommandBufferCompletion(u32 index, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
-	/// The one place a wait is charged: to its site and, off CauseOfSite, to its bill.
-	void BookGpuWait(GpuWaitSite site, u64 wait_ns);
 	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
 	/// structured fault records (addresses, kinds, vendor codes) before the exit.
 	void ReportDeviceFault();
@@ -492,20 +363,6 @@ private:
 	VmaAllocation m_spin_buffer_allocation = VK_NULL_HANDLE;
 	VkDescriptorSet m_spin_descriptor_set = VK_NULL_HANDLE;
 	std::array<SpinResources, NUM_COMMAND_BUFFERS> m_spin_resources;
-	u64 m_sync_wait_ns = 0;
-	u64 m_sync_wait_calls = 0;
-	u64 m_ring_wait_ns = 0;
-	u64 m_ring_wait_calls = 0;
-	u64 m_submit_wait_ns = 0;
-	u64 m_submit_wait_calls = 0;
-	u64 m_map_wait_ns = 0;
-	u64 m_map_wait_calls = 0;
-	// The same bills, itemised by the site that paid. Written only by BookGpuWait, alongside the
-	// aggregate it belongs to, so sum-over-sites-of-a-cause == that cause's aggregate on every run
-	// without anybody reconciling them. Two u64 increments at a point that has already read a clock
-	// twice and is about to block on a fence: unmeasurable, so always on.
-	std::array<u64, kGpuWaitSiteCount> m_wait_site_ns{};
-	std::array<u64, kGpuWaitSiteCount> m_wait_site_calls{};
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif
@@ -951,10 +808,10 @@ public:
 	__fi VkFramebuffer GetCurrentFramebuffer() const { return m_current_framebuffer; }
 
 	/// Ends any render pass, executes the command buffer, and invalidates cached state.
-	void ExecuteCommandBuffer(bool wait_for_completion, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
+	void ExecuteCommandBuffer(bool wait_for_completion);
 	void ExecuteCommandBuffer(bool wait_for_completion, const char* reason, ...);
 	void ExecuteCommandBufferAndRestartRenderPass(
-		bool wait_for_completion, const char* reason, GpuWaitSite site = GpuWaitSite::SyncUnnamed);
+		bool wait_for_completion, const char* reason);
 	void ExecuteCommandBufferAndRestartPresent(bool wait_for_completion, const char* reason, ...);
 	void ExecuteCommandBufferForReadback();
 

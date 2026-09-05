@@ -12,10 +12,7 @@
 #include <cstring>
 #include <string>
 
-VKStreamBuffer::VKStreamBuffer()
-	: m_wait_site(GpuWaitSite::StreamUnnamed)
-{
-}
+VKStreamBuffer::VKStreamBuffer() = default;
 
 VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	: m_size(move.m_size)
@@ -25,7 +22,6 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_allocation(move.m_allocation)
 	, m_buffer(move.m_buffer)
 	, m_host_pointer(move.m_host_pointer)
-	, m_wait_site(move.m_wait_site)
 	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_non_coherent(move.m_non_coherent)
 	, m_pending_flush(move.m_pending_flush)
@@ -59,16 +55,14 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_buffer, move.m_buffer);
 	std::swap(m_host_pointer, move.m_host_pointer);
 	std::swap(m_tracked_fences, move.m_tracked_fences);
-	std::swap(m_wait_site, move.m_wait_site);
 	std::swap(m_non_coherent, move.m_non_coherent);
 	std::swap(m_pending_flush, move.m_pending_flush);
 
 	return *this;
 }
 
-bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait_site)
+bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, const char* name)
 {
-	m_wait_site = wait_site;
 	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, static_cast<VkDeviceSize>(size),
 		usage, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
 
@@ -100,7 +94,7 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 		// afford.
 		Console.Error("GS/Vulkan: stream ring %s could not be allocated from the chosen memory; "
 					  "falling back to the write-combined road for this ring.",
-			GSDeviceVK::GetInstance()->GetGpuWaitSiteName(static_cast<u32>(wait_site)));
+			name);
 		aci.requiredFlags = 0;
 		res = vmaCreateBuffer(GSDeviceVK::GetInstance()->GetAllocator(), &bci, &aci, &new_buffer, &new_allocation, &ai);
 	}
@@ -409,7 +403,7 @@ bool VKStreamBuffer::WaitForClearSpace(u32 num_bytes)
 	// Charged to THIS buffer. Every stream ring used to land on the same undifferentiated sync
 	// figure, so "the host is out of staging room" and "the host is draining a readback" read as
 	// one number, and the two want opposite fixes.
-	GSDeviceVK::GetInstance()->WaitForFenceCounter(iter->first, m_wait_site);
+	GSDeviceVK::GetInstance()->WaitForFenceCounter(iter->first);
 	m_tracked_fences.erase(
 		m_tracked_fences.begin(), m_current_offset == iter->second ? m_tracked_fences.end() : ++iter);
 	m_current_offset = new_offset;

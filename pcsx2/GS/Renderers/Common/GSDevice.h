@@ -1933,47 +1933,6 @@ public:
 	/// Each line is a fully-formatted string, ready to print as-is. Default: empty.
 	virtual std::vector<std::string> GetExtendedStats() const { return {}; }
 
-	/// Host waits on GPU completion, split by who is to blame. `Sync` is the GS thread blocking
-	/// OUT OF TURN -- a readback's submit-and-wait, an explicit sync -- and that is the whole
-	/// population that serializes the frame. `Ring` is the command-buffer ring's own recycle
-	/// wait, which is backpressure and is reported separately so it cannot be mistaken for a
-	/// drain. Backends that do not count waits report zero.
-	virtual u64 GetSyncWaitNs() const { return 0; }
-	virtual u64 GetSyncWaitCalls() const { return 0; }
-	virtual u64 GetRingWaitNs() const { return 0; }
-	virtual u64 GetRingWaitCalls() const { return 0; }
-
-	/// Two more bills that are not fence waits. `Submit` is time inside the queue-submit call
-	/// itself and `Map` is the host cache invalidate a readback needs after its drain has already
-	/// ended; neither had a counter before, and on a driver where the submit is where the frame's
-	/// cost lands, that time appeared in no figure the runner reported.
-	///
-	/// ⚠️ They are only PARTLY off-CPU -- a submit is a syscall and an invalidate is cache
-	/// maintenance, so some of these nanoseconds are also inside a thread-CPU figure. Subtract
-	/// them from wall clock next to a CPU-time figure and you subtract some nanoseconds twice,
-	/// which makes the remainder a lower bound rather than an exact residual.
-	virtual u64 GetSubmitWaitNs() const { return 0; }
-	virtual u64 GetSubmitWaitCalls() const { return 0; }
-	virtual u64 GetMapWaitNs() const { return 0; }
-	virtual u64 GetMapWaitCalls() const { return 0; }
-
-	/// The same waits again, itemised by the CALL SITE that paid rather than by the bill it landed
-	/// on. The getters above answer "what did waiting cost"; these answer "what was it waiting
-	/// for", which is the question a fix needs and the one a frame-level counter cannot reach -- a
-	/// run can spend milliseconds a frame under "sync" with no readback in it, and no aggregate
-	/// says which of a dozen sites is spending it.
-	///
-	/// Sites of one bill sum to that bill EXACTLY (GSDeviceVK::BookGpuWait writes both in one
-	/// place), so a reader can reconcile without trusting the instrument. The arrays are
-	/// GetGpuWaitSiteCount() long, indexed by site, and stay valid for the device's lifetime;
-	/// the names are string literals and outlive it, which is what lets the runner latch them.
-	virtual u32 GetGpuWaitSiteCount() const { return 0; }
-	virtual const u64* GetGpuWaitSiteNs() const { return nullptr; }
-	virtual const u64* GetGpuWaitSiteCalls() const { return nullptr; }
-	virtual const char* GetGpuWaitSiteName(u32 site) const { return ""; }
-	/// Which bill this site is charged to: sync, ring, submit or map.
-	virtual const char* GetGpuWaitSiteFamily(u32 site) const { return ""; }
-
 	/// Returns true if not enough time has passed for present to not block.
 	/// ⚠️ Not a pure query: answering "present" books this frame as the one that was displayed,
 	/// so the next call within the same throttle period answers "skip". Ask exactly once per
