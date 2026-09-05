@@ -2164,6 +2164,7 @@ static void DumpPSSelector(DrawConfigWriter& out, const GSHWDrawConfig::PSSelect
 	out.WriteLn("no_color: {}", ps.no_color);
 	out.WriteLn("no_color1: {}", ps.no_color1);
 	out.WriteLn("blend_factor_in_alpha: {}", ps.blend_factor_in_alpha);
+	out.WriteLn("af_in_src1: {}", ps.af_in_src1);
 	out.WriteLn("channel: {} ({})", GetPSChannelName(static_cast<ChannelFetch>(ps.channel)), ps.channel);
 	out.WriteLn("dither: {} ({})", GetPSDitherName(ps.dither), ps.dither);
 	out.WriteLn("dither_adjust: {}", ps.dither_adjust);

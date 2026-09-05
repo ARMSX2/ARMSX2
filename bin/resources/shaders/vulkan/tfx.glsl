@@ -1876,7 +1876,13 @@ void main()
 	}
 #endif
 
-#if SW_AD_TO_HW
+#if PS_AF_IN_SRC1
+	// This driver ignores the blend constant, so the fixed blend factor rides the second output
+	// instead. Af is AFIX/128, the same number vkCmdSetBlendConstants would have carried, and the
+	// blend unit multiplies by it the same way either road. Only set when nothing else claims the
+	// second output -- see GSBlendConstantPolicy.h.
+	vec4 alpha_blend = vec4(Af);
+#elif SW_AD_TO_HW
 	#if PS_RTA_CORRECTION
 		vec4 RT = trunc(sample_from_rt() * 128.0f + 0.1f);
 	#else

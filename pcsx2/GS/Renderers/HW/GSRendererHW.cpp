@@ -6,6 +6,7 @@
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
@@ -8458,6 +8459,37 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 		                       !GSDevice::IsDualSourceBlendFactor(m_conf.blend.dst_factor);
 	}
 
+	// The fixed factor's road to the blend unit, on a driver that ignores the blend constant. Both
+	// roads hand the same number to the same fixed-function multiply, so this changes HOW the factor
+	// arrives and never WHETHER the draw is blended in hardware: every decision above is already
+	// made, and a refusal here leaves the constant path exactly as it was. GSBlendConstantPolicy.h
+	// carries the defect and what each guard protects.
+	if (features.broken_blend_constant)
+	{
+		GSBlendConstantPolicy::DrawInputs reroute;
+		reroute.broken_blend_constant = true;
+		reroute.dual_source_blend = features.dual_source_blend;
+		reroute.blend_c = m_conf.ps.blend_c;
+		reroute.pabe = m_conf.ps.pabe != 0;
+		reroute.blend_factor_in_alpha = m_conf.ps.blend_factor_in_alpha != 0;
+		// The two passes of a blend multi-pass share one pixel shader, so the second pass reading the
+		// second output makes it unavailable to the first.
+		reroute.multi_pass_reads_second_output = m_conf.blend_multi_pass.enable &&
+		                                         GSBlendConstantPolicy::ReadsSecondOutput(m_conf.blend_multi_pass.blend);
+
+		if (GSBlendConstantPolicy::CanRouteFixedFactorToSecondOutput(m_conf.blend, reroute))
+		{
+			// Af is what the shader writes there. The software-blending arms set it already; an arm
+			// that got here without setting it has no other use for the value, so this is free.
+			m_conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(m_conf.blend.constant) / 128.0f;
+			m_conf.ps.af_in_src1 = 1;
+			m_conf.blend = GSBlendConstantPolicy::RemapToSecondOutput(m_conf.blend);
+			// The second output is a blend factor now, so it has to be written. DrawPrims recomputes
+			// this from the final factors; say it here too so the state leaves this function coherent.
+			m_conf.ps.no_color1 = false;
+		}
+	}
+
 	// Notify the shader that it needs to invert rounding
 	if (m_conf.blend.op == GSDevice::OP_REV_SUBTRACT)
 		m_conf.ps.round_inv = 1;
@@ -8688,6 +8720,7 @@ void GSRendererHW::ConfigureROV(bool color_rov, bool depth_rov)
 			// Only needed with HW blend.
 			m_conf.ps.round_inv = false;
 			m_conf.ps.a_masked = false;
+			m_conf.ps.af_in_src1 = false;
 		}
 
 		// Dither setup

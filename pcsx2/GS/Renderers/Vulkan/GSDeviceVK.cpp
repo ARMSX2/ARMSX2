@@ -7462,6 +7462,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_NO_COLOR", sel.no_color);
 	AddMacro(ss, "PS_NO_COLOR1", sel.no_color1);
 	AddMacro(ss, "PS_BLEND_FACTOR_IN_ALPHA", sel.blend_factor_in_alpha);
+	AddMacro(ss, "PS_AF_IN_SRC1", sel.af_in_src1);
 	AddMacro(ss, "PS_ZTST", sel.ztst);
 	AddMacro(ss, "PS_AA1", static_cast<u32>(sel.aa1));
 	AddMacro(ss, "PS_ABE", sel.abe);
