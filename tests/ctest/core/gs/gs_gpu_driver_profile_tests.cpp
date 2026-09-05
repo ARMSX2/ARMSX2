@@ -637,3 +637,32 @@ TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903OnAnMt6895BoardStayOnOpenGL)
 		kMt6895BoardHints2026_09_03));
 	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
 }
+
+// The forced-bug override, which is how a test harness reaches a workaround road on a machine
+// whose driver does not have the defect. It replaces a settings key, so what has to hold is that
+// it is invisible until set, that it survives the rule loop (a bug nothing in the database grants
+// on this device still arrives set), and that it does not pretend to be a database match.
+TEST(GSGpuDriverProfile, ForcedBugsRideOnTopOfTheDatabaseAndAreNotCountedAsRules)
+{
+	// Qualcomm's own blob, not Turnip: the only rule granting BrokenBlendConstant keys on
+	// MesaTurnip, so on this device the bit can only have come from the override.
+	const auto resolve = [] {
+		return ResolveAdrenoVK(
+			"Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", PackVulkanVersion(512, 615, 0));
+	};
+
+	const GpuProfileSelection clean = resolve();
+	EXPECT_EQ(GpuProfileDetector::GetForcedBugs(), 0u);
+	EXPECT_FALSE(clean.driver.HasBug(DriverBug::BrokenBlendConstant));
+
+	GpuProfileDetector::SetForcedBugs(GpuProfileDetector::BugMask(DriverBug::BrokenBlendConstant));
+	const GpuProfileSelection forced = resolve();
+	EXPECT_TRUE(forced.driver.HasBug(DriverBug::BrokenBlendConstant));
+	// Everything the database did say is untouched, and the forced bit is not a match.
+	EXPECT_EQ(forced.driver.matched_rule_count, clean.driver.matched_rule_count);
+	EXPECT_EQ(forced.driver.workarounds, clean.driver.workarounds);
+	EXPECT_EQ(forced.driver.bugs, clean.driver.bugs | GpuProfileDetector::BugMask(DriverBug::BrokenBlendConstant));
+
+	GpuProfileDetector::SetForcedBugs(0);
+	EXPECT_FALSE(resolve().driver.HasBug(DriverBug::BrokenBlendConstant));
+}

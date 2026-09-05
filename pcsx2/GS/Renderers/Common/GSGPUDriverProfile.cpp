@@ -726,8 +726,27 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		profile.matched_rule_count++;
 	}
 
+	// Forced last, so a harness arm is not silently dropped by a rule filter above and does not
+	// move matched_rule_count -- the count is about the database, and this did not come from it.
+	profile.bugs |= GpuProfileDetector::GetForcedBugs();
+
 	profile.conservative_fallback =
 		(selection.runtime_profile == RuntimeGpuProfile::Unknown || profile.driver == MobileGpuDriver::Unknown);
 	return profile;
 }
 } // namespace GpuProfileDetail
+
+namespace
+{
+u64 s_forced_driver_bugs = 0;
+}
+
+void GpuProfileDetector::SetForcedBugs(u64 mask)
+{
+	s_forced_driver_bugs = mask;
+}
+
+u64 GpuProfileDetector::GetForcedBugs()
+{
+	return s_forced_driver_bugs;
+}

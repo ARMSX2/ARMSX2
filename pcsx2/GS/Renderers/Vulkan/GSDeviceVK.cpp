@@ -4239,10 +4239,10 @@ bool GSDeviceVK::CheckFeatures()
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
 	// driver-bug database rather than tested for: the defect is conditional on run history, so no
-	// start-up probe would see it. GSConfig.ForceBrokenBlendConstant is the gsrunner's way onto the
-	// rerouted road on a machine whose driver is fine, the way DisableDualSourceBlend is for Mali.
-	m_features.broken_blend_constant =
-		GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant) || GSConfig.ForceBrokenBlendConstant;
+	// start-up probe would see it. A harness reaching this road on a machine whose driver is fine
+	// does it through GpuProfileDetector::SetForcedBugs, which is already folded into the profile
+	// by the time this reads it.
+	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.

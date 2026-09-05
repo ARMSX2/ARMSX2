@@ -50,6 +50,7 @@
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
+#include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/GSFeDecode.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
@@ -1792,7 +1793,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-broken-blend-constant"))
 			{
 				Console.WriteLn("Pretending the driver ignores the blend constant (pretend to be Turnip)");
-				s_settings_interface.SetBoolValue("EmuCore/GS", "ForceBrokenBlendConstant", true);
+				// Not a setting: the driver-bug database is keyed on device identity, and this
+				// forces one of its bits on for a device that does not have it. Read when the
+				// device resolves its profile, which happens after argument parsing.
+				GpuProfileDetector::SetForcedBugs(GpuProfileDetector::GetForcedBugs() |
+												  GpuProfileDetector::BugMask(DriverBug::BrokenBlendConstant));
 				continue;
 			}
 			else if (CHECK_ARG("-no-vs-expand"))

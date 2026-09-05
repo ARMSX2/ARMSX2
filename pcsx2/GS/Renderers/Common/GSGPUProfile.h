@@ -311,4 +311,17 @@ public:
 	/// simply leaves GpuProfileSelection::driver in its conservative-fallback state.
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name, const MobileDriverContext& driver_context);
+
+	static constexpr u64 BugMask(DriverBug bug) { return u64{1} << static_cast<u8>(bug); }
+
+	/// Bugs to report as present whatever the database says, OR'd into every resolved profile.
+	///
+	/// This is how a test harness reaches a workaround road on a machine whose driver does not
+	/// have the defect -- the driver-bug database is keyed on device identity, so on the dev box
+	/// the rerouted path is simply unreachable and untestable otherwise. It exists for the
+	/// gsrunner and is set once before the VM starts; nothing in the emulator calls it, and it
+	/// deliberately is not a setting, because a user has no way to know which bugs their driver
+	/// actually has.
+	static void SetForcedBugs(u64 mask);
+	static u64 GetForcedBugs();
 };
