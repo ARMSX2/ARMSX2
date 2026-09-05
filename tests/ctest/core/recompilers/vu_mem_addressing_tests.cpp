@@ -235,4 +235,48 @@ TEST(VuMemAddressing, DISABLED_Vu0WindowIntoVu1Registers)
 	h.Run();
 }
 
+// VU0's window onto VU1's register file, reached by ILW and ILWR.
+//
+// An address index with bit 0x400 set does not address VU0's own memory:
+// mVUaddrFix answers a 64-bit offset from VU0.Mem to VU1's register file, and
+// the load adds it to the VURegs::Mem pointer. ILW and ILWR are the only
+// memory ops that add their lane offset to the address rather than carrying
+// it in the access, so they are the only ones that can lose the top half of
+// that offset -- the rest of the window is exercised by the sweeps above.
+//
+// The values are read out of VU1's register file, which this harness does not
+// drive, so the test writes the pattern there itself and both engines have to
+// come back with it.
+TEST(VuMemAddressing, Vu0IlwThroughTheWindow)
+{
+	for (u32 lane = 0; lane < 4; lane++)
+	{
+		VuTestHarness h(0);
+		// vi1 selects VF[17] of VU1: bit 0x400 opens the window, the low six
+		// bits are the quadword within the register file.
+		h.SetVi(vi::vi1, 0x400 + 17);
+		h.SetVi(vi::vi2, 0x400 + 18);
+		for (u32 r = 16; r < 20; r++)
+			for (u32 l = 0; l < 4; l++)
+				vuRegs[1].VF[r].UL[l] = 0x1000u * r + 0x10u * l + 7u;
+
+		const u32 m = kMasks[lane];
+		h.LoadProgram({
+			VuOp{VILW_L(m, vi::vi5, vi::vi1, 0), VNOP_U()},
+			VuOp{VILWR_L(m, vi::vi6, vi::vi2), VNOP_U()},
+			EBitNopPair(),
+		});
+		h.Run();
+
+		const u32 want5 = (0x1000u * 17 + 0x10u * lane + 7u) & 0xffffu;
+		const u32 want6 = (0x1000u * 18 + 0x10u * lane + 7u) & 0xffffu;
+		EXPECT_EQ(h.InterpSnapshot().regs.VI[vi::vi5].UL & 0xffffu, want5) << "interp ILW lane " << lane;
+		EXPECT_EQ(h.JitSnapshot().regs.VI[vi::vi5].UL & 0xffffu, want5) << "jit ILW lane " << lane;
+		EXPECT_EQ(h.InterpSnapshot().regs.VI[vi::vi6].UL & 0xffffu, want6) << "interp ILWR lane " << lane;
+		EXPECT_EQ(h.JitSnapshot().regs.VI[vi::vi6].UL & 0xffffu, want6) << "jit ILWR lane " << lane;
+		if (::testing::Test::HasFailure())
+			return;
+	}
+}
+
 } // namespace recompiler_tests

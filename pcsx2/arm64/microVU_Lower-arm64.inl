@@ -1649,8 +1649,11 @@ mVUop(mVU_ILW)
 			}
 			mVUaddrFix(mVU, gprT1);
 
-			// Add lane offset for the selected component
-			armAsm->Add(gprT1.W(), gprT1.W(), offsetSS);
+			// Add lane offset for the selected component, at the width
+			// mVUaddrFix answered in: on VU0 an index with bit 0x400 set is
+			// not an address in VU0's memory but a 64-bit offset from it to
+			// VU1's register file, and a 32-bit add keeps only the low half.
+			armAsm->Add(gprT1q, gprT1q, offsetSS);
 
 			// Add VU memory base
 			armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
@@ -1688,7 +1691,8 @@ mVUop(mVU_ILWR)
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		armAsm->Add(gprT1.W(), gprT1.W(), offsetSS);
+		// 64-bit, for the reason ILW gives above.
+		armAsm->Add(gprT1q, gprT1q, offsetSS);
 		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
 		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
 

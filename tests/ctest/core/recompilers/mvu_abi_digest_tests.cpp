@@ -290,6 +290,11 @@ constexpr AbiPin kPins[] = {
 	// Only the four exact-mode probes move; divUnit and signClampDivUnit run
 	// below mode 4 and stay bit-identical to abi 22.
 	{23, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5}},
+	// abi 24: ILW and ILWR add their lane offset to the address in the register
+	// width mVUaddrFix answered in rather than the low half of it. No probe
+	// here reaches a memory op, so all eighteen digests are bit-identical to
+	// abi 23; the bump evicts caches holding the truncating form.
+	{24, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

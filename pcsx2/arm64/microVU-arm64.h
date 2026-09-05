@@ -126,7 +126,10 @@
 //  23 — the EE FPU / EFU model calls reach their target through a stub in
 //       mVU.cache instead of spilling at the site, so every block carrying
 //       one is 22 instructions shorter and records a stub fixup id.
-static constexpr u32 kMvuCompilerAbiVersion = 23;
+//  24 — ILW and ILWR add their lane offset to the address at the width
+//       mVUaddrFix answered in, so VU0's window onto VU1's registers no
+//       longer loses the top half of its offset.
+static constexpr u32 kMvuCompilerAbiVersion = 24;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
