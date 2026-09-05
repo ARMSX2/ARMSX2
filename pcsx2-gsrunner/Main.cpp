@@ -1237,6 +1237,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -no-dual-source: Report no dual-source blend unit, the way every Mali Vulkan blob does. "
 						 "Makes GSRendererHW take the SRC1 substitution and SW-blend fallbacks, so a Mali-only blending "
 						 "bug reproduces on a desktop GPU.\n");
+	std::fprintf(stderr, "  -broken-blend-constant: Report the driver as ignoring the Vulkan blend constant, the way Mesa "
+						 "Turnip does on some draws. GSRendererHW then sends a fixed (AFIX) blend factor through the "
+						 "second fragment output instead of vkCmdSetBlendConstants, so that road can be A/B'd on a "
+						 "machine whose driver is fine.\n");
 	std::fprintf(stderr, "  -no-vs-expand: Disable vertex-shader point/line/sprite expansion (storage-buffer path). "
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
@@ -1783,6 +1787,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				Console.WriteLn("Disabling dual-source blending (pretend to be a Mali blob)");
 				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableDualSourceBlend", true);
+				continue;
+			}
+			else if (CHECK_ARG("-broken-blend-constant"))
+			{
+				Console.WriteLn("Pretending the driver ignores the blend constant (pretend to be Turnip)");
+				s_settings_interface.SetBoolValue("EmuCore/GS", "ForceBrokenBlendConstant", true);
 				continue;
 			}
 			else if (CHECK_ARG("-no-vs-expand"))

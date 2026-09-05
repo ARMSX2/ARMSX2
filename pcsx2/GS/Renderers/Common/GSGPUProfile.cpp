@@ -354,6 +354,7 @@ const char* GpuProfileDetector::BugToString(DriverBug value)
 		case DriverBug::BrokenPrimitiveTopologyDynamicState: return "BrokenPrimitiveTopologyDynamicState";
 		case DriverBug::BrokenGraphicsPipelineLibrary: return "BrokenGraphicsPipelineLibrary";
 		case DriverBug::BrokenRoaaDestinationRead: return "BrokenRoaaDestinationRead";
+		case DriverBug::BrokenBlendConstant: return "BrokenBlendConstant";
 		case DriverBug::Count:
 		default: return "Unknown";
 	}

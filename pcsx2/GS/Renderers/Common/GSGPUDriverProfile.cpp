@@ -373,7 +373,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 34> s_driver_rules = {{
+static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -584,6 +584,35 @@ static constexpr std::array<DriverRule, 34> s_driver_rules = {{
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
 		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
+	// Turnip applies VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR as if the blend constant were zero on
+	// some draws, while honouring ONE_MINUS_SRC1_COLOR correctly in the same render pass on the same
+	// frame. Katamari Damacy's ball is the visible case: its layers blend at 127/128, the destination
+	// comes back at full strength instead of at one 128th, every layer accumulates and the ball
+	// saturates towards white.
+	//
+	// The pipeline state we submit is right. A RenderDoc capture on an A650 shows the declared factor
+	// and the live constant (0.992188 = 127/128) correct at all 41 affected draws, its own replay
+	// reproduces the blown ball, and solving the destination factor the hardware actually applied
+	// over 648 texels gives 1.0 -- the constant ignored -- while dual-source draws in the same pass
+	// solve to the expected 0.0078. Re-emitting the constant immediately before every draw that reads
+	// it (17 -> 58 vkCmdSetBlendConstants a frame) moves zero pixels, so proximity is not the trigger;
+	// nor is the value, nor anything in the draw stream, which is identical frame for frame between a
+	// replay that is right and one that is wrong. The trigger is run history.
+	//
+	// NO VERSION BOUND, in either direction, and that is the measurement rather than caution. It is
+	// there on Mesa 26.1.2 on an Adreno 650 and an Adreno 610, and on PurpleVK 26.3.0-devel (built
+	// 2026-08-17, "upstream to latest Mesa source") on an Adreno 740, so it crosses two Adreno
+	// generations and every Mesa we have. The Qualcomm blob on that same a740 is correct, so it is
+	// the driver and not the silicon. A source check of 259 Turnip commits between 26.1.2 and main
+	// (2026-09-04) finds no blend-constant fix, and the factor mapping and constant emission are
+	// byte-identical between the two, so there is nothing to wait for or to bound the top at.
+	//
+	// Evidence, including the capture and the applied-factor solve: umbrella
+	// devs/bmdhacks/campaigns/gs-exactness-round/classic-fixes/katamari-turnip-overbright/RESULT.md
+	// sections D1 to D4.
+	{"vk-turnip-blend-constant-ignored", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::BrokenBlendConstant), 0},
 	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a VK_FORMAT_D32_SFLOAT_S8_UINT
 	// depth-stencil attachment + a fragment shader that can discard. Enabling the stencil buffer
 	// makes every depth target D32S8, and GSDeviceVK::SetupDATE's stencil pre-pass quad is that

@@ -133,6 +133,12 @@ enum class DriverBug : u8
 	/// textures rather than a crash. Distinct from BrokenSubpassFeedback, which is about the
 	/// in-pass self-read losing whole draws or the device.
 	BrokenRoaaDestinationRead,
+	/// The driver ignores the blend constant: a factor of CONST_COLOR / INV_CONST_COLOR is applied
+	/// as if the constant were zero, so the term it scales survives at full strength or vanishes
+	/// entirely. Conditional -- the same driver applies the same factor correctly on most content,
+	/// and the trigger is run history rather than anything the draw carries -- so it cannot be
+	/// probed for at start-up and there is no emission order that avoids it.
+	BrokenBlendConstant,
 	Count,
 };
 

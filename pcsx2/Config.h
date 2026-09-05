@@ -902,6 +902,13 @@ struct Pcsx2Config
 					// and SW-blend fallbacks, so a Mali-only blending bug reproduces on a
 					// desktop GPU instead of needing a device round-trip to see.
 					DisableDualSourceBlend : 1,
+					// Pretend the driver ignores the Vulkan blend constant, the way Mesa
+					// Turnip does on some draws. GSRendererHW then sends a fixed (AFIX)
+					// blend factor through the second fragment output instead, so that
+					// road can be A/B'd on a machine whose driver is fine. Test
+					// scaffolding for pcsx2-gsrunner -- there is no UI for it, and the
+					// shipped decision comes from the driver-bug database alone.
+					ForceBrokenBlendConstant : 1,
 					EnableAdrenoFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
 					DisablePS2DepthQuantization : 1,

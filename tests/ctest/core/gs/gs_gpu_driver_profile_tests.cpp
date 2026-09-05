@@ -433,6 +433,56 @@ TEST(GSGpuDriverProfile, MaliMakesNoStreamRingMemoryClaim)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Turnip ignoring the blend constant, and why the rule has no version bound at either end.
+//
+// A CONST_COLOR / INV_CONST_COLOR blend factor is applied as if the constant were zero on some
+// draws, so the term it scales survives at full strength. Katamari Damacy's ball is the visible
+// case. The reach is what these tests pin: two Adreno generations, every Mesa we have, and the
+// proprietary blob on the same silicon correct.
+
+namespace
+{
+bool IgnoresTheBlendConstant(const GpuProfileSelection& sel)
+{
+	return sel.driver.HasBug(DriverBug::BrokenBlendConstant);
+}
+} // namespace
+
+// The three parts it was reproduced on. The a740 on 26.3.0-devel is the one that fixes the top of
+// the window open: it is the newest Turnip anybody here can run, and it is still wrong.
+TEST(GSGpuDriverProfile, TurnipIgnoresTheBlendConstantOnEveryAdrenoAndEveryMesa)
+{
+	EXPECT_TRUE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2))));
+	EXPECT_TRUE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 610", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2))));
+	EXPECT_TRUE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 740", kTurnipDriverId, "turnip", PackVulkanVersion(26, 2, 99))));
+
+	// And parts and versions nobody has run, in both directions. A source check of the 259 Turnip
+	// commits between 26.1.2 and main found no blend-constant fix and no change to either the factor
+	// mapping or the constant emission, so there is nothing that would justify an upper bound; an
+	// older Mesa has no claim to being better either.
+	EXPECT_TRUE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 750", kTurnipDriverId, "turnip", PackVulkanVersion(27, 0, 0))));
+	EXPECT_TRUE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 630", kTurnipDriverId, "turnip", PackVulkanVersion(24, 0, 0))));
+}
+
+// The Qualcomm blob renders Katamari correctly on the same Adreno 740, which is what makes this the
+// driver's rather than the hardware's. So it claims nothing here, and neither does a GPU on another
+// vendor's stack.
+TEST(GSGpuDriverProfile, NobodyElseIgnoresTheBlendConstant)
+{
+	EXPECT_FALSE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 740", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u)));
+	EXPECT_FALSE(IgnoresTheBlendConstant(
+		ResolveAdrenoVK("Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u)));
+	EXPECT_FALSE(IgnoresTheBlendConstant(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+	EXPECT_FALSE(IgnoresTheBlendConstant(ResolveMaliVK("Mali-G610", PackVulkanVersion(38, 1, 0))));
+}
+
+// ---------------------------------------------------------------------------------------------
 // The Auto renderer on the MT6897, and the rule that steers it.
 //
 // Auto sent this device to OpenGL for as long as it has existed, and correctly so: its GL driver

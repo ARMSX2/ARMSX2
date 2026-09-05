@@ -4221,6 +4221,14 @@ bool GSDeviceVK::CheckFeatures()
 	// (which is why Mali no longer needs Blending=Max by hand). Ported from sashkinbro/EmuCoreX.
 	m_features.dual_source_blend = m_device_features.dualSrcBlend && !GSConfig.DisableDualSourceBlend;
 
+	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
+	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
+	// driver-bug database rather than tested for: the defect is conditional on run history, so no
+	// start-up probe would see it. GSConfig.ForceBrokenBlendConstant is the gsrunner's way onto the
+	// rerouted road on a machine whose driver is fine, the way DisableDualSourceBlend is for Mali.
+	m_features.broken_blend_constant =
+		GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant) || GSConfig.ForceBrokenBlendConstant;
+
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
 	m_features.broken_mad_deinterlace = is_mali_g57;
@@ -4304,7 +4312,8 @@ bool GSDeviceVK::CheckFeatures()
 	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
 	// Mali driver-support deep dive.
 	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
-					"inpAttFB=%s dualSrc=%s testSampleDepth=%s madFallback=%s pushdesc=%s streamRings=%s(type %u)",
+					"inpAttFB=%s dualSrc=%s blendConst=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
+					"streamRings=%s(type %u)",
 		m_device_properties.deviceName,
 		m_device_properties.vendorID,
 		m_device_driver_properties.driverName,
@@ -4317,6 +4326,7 @@ bool GSDeviceVK::CheckFeatures()
 		// path sashkinbro's stale-tile descriptor fix targets — the rainbow-blink suspect.
 		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
 		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
+		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
 		m_features.test_and_sample_depth ? "on" : "off",
 		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
 		m_use_push_descriptors ? "on" : "off",
