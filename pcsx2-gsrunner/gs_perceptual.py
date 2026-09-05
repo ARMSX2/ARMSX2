@@ -165,6 +165,13 @@ FLOOR = {
 # benign floor tops out at 7.996 and every injected defect clears 15.
 DE_DEFECT = 15.0
 
+# Levels apart at which a pixel is BADLY wrong -- a quarter of the range, far
+# past anything rounding produces. dE is a colour *distance* and does not answer
+# this: a 23-level shift on a saturated surface reads dE 59. Rogue Galaxy at 2x
+# shipped as an "obvious localised defect" on a 23,065 px dE region whose worst
+# pixel was 23 levels off, because nothing in the profile was measured in levels.
+BLOCK64_LEVELS = 64
+
 # Above this fraction of squared error explained by a per-channel gain+offset,
 # the difference is a global tone transform rather than a defect.
 AFFINE_GLOBAL = 0.95
@@ -344,6 +351,27 @@ def largest_component(mask):
             int((counts > 0).sum()))
 
 
+def block64(ref_rgb, test_rgb):
+    """Badly-wrong pixels: (count, largest 4-connected run, bbox of that run).
+
+    A pixel counts when some colour channel is >= BLOCK64_LEVELS off. Alpha is
+    excluded on purpose -- it is not directly visible, so it is counted
+    elsewhere and never scored.
+
+    The count says how much is badly wrong; the largest run says whether it is
+    one thing. Katamari's Turnip blend bug is 16,519 px in ONE region, Stuntman's
+    2x edge disagreement is 32,803 px in runs no bigger than 2,248 -- the same
+    order of magnitude, two entirely different defects.
+    """
+    import numpy as np
+
+    ref = np.asarray(ref_rgb)[..., :3].astype(np.int16)
+    test = np.asarray(test_rgb)[..., :3].astype(np.int16)
+    mask = np.abs(ref - test).max(axis=2) >= BLOCK64_LEVELS
+    largest, bbox, _count = largest_component(mask)
+    return int(mask.sum()), int(largest), (list(bbox) if bbox else None)
+
+
 # ---------------------------------------------------------------------------
 # Character: is the whole difference one global tone transform?
 # ---------------------------------------------------------------------------
@@ -399,6 +427,7 @@ def _core_metrics(ref_rgb, test_rgb, ppd):
 
     mask = de > JND
     blob_px, bbox, blob_count = largest_component(mask)
+    b64_px, b64_largest, b64_bbox = block64(ref_rgb, test_rgb)
 
     return {
         "flip_mean": round(flip_stats["mean"], 6),
@@ -417,6 +446,12 @@ def _core_metrics(ref_rgb, test_rgb, ppd):
         "largest_blob_px": blob_px,
         "largest_blob_bbox": bbox,
         "blob_count": blob_count,
+        # ⚠️ Not the same thing as largest_blob_px, and the gap is the point:
+        # largest_blob_px is the AREA above the JND, these are the pixels that
+        # are badly wrong. On real cells they differ by three orders of magnitude.
+        "block64_px": b64_px,
+        "block64_largest_px": b64_largest,
+        "block64_bbox": b64_bbox,
     }, err, de
 
 
@@ -539,10 +574,21 @@ def classify(block):
                 f"(erosion {block['erosion_survival']:.3f}) -- reads as sampling "
                 f"or filtering disagreement rather than one broken primitive")
 
-    if clustered and big_tail and frame_fraction < 5.0:
+    # "Missing or extra geometry" is a claim that something is WRONG, not merely
+    # a different colour, so it has to be earned in levels and not only in dE.
+    # A clustered dE region whose worst pixel is 23 levels off is a shading
+    # difference; calling it a localised defect is how Rogue Galaxy's faint sash
+    # gradient was handed over as the corpus's second-worst cell. A block that
+    # never measured block64 (an older cached profile) does not get vetoed.
+    b64 = block.get("block64_largest_px")
+    badly_wrong = b64 is None or b64 >= FLOOR["largest_blob_px"]
+    if clustered and big_tail and frame_fraction < 5.0 and badly_wrong:
+        core = (f"{block['block64_px']} px at 64+ levels (largest run {b64} px), "
+                if b64 is not None else "")
         return ("obvious", "LOCALISED DEFECT",
-                f"missing or extra geometry: {block['largest_blob_px']} px blob "
-                f"at {block['largest_blob_bbox']}, worst dE {block['de_max']:.1f}")
+                f"missing or extra geometry: {core}dE region "
+                f"{block['largest_blob_px']} px at {block['largest_blob_bbox']}, "
+                f"worst dE {block['de_max']:.1f}")
 
     if clustered and frame_fraction >= 5.0:
         sev = "gross" if (block["flip_mean"] > 0.08 and block["de_mean"] > 4.0) else "obvious"
@@ -972,8 +1018,12 @@ def main():
               f"p99.9 {block['de_p99_9']:.2f}  max {block['de_max']:.2f}  "
               f"above JND {block['above_jnd_pct']:.3f}%")
         print(f"  structure erosion survival {block['erosion_survival']:.3f}  "
-              f"largest blob {block['largest_blob_px']} px at "
+              f"largest dE blob {block['largest_blob_px']} px at "
               f"{block['largest_blob_bbox']}  ({block['blob_count']} blobs)")
+        if block.get("block64_px") is not None:
+            print(f"  badly wrong {block['block64_px']} px at 64+ levels, "
+                  f"largest run {block['block64_largest_px']} px at "
+                  f"{block['block64_bbox']}")
         print(f"  character affine explains "
               f"{100 * block['affine_explained']:.1f}%  gain {block['affine_gain']}")
         if block.get("residue"):
