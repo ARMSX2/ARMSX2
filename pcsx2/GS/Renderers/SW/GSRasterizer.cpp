@@ -1904,9 +1904,24 @@ bool GSRasterizerList::RowsFoldAcrossWorkers(int page_height) const
 {
 	// Rows fold by exactly one page height, bands are 1 << m_thread_height rows,
 	// and worker ownership is the band index modulo the worker count. So the fold
-	// returns to the same worker precisely when the worker count divides the page
-	// in bands -- true of every format at two workers, and of none at three.
-	return ((page_height >> m_thread_height) % static_cast<int>(m_workers.size())) != 0;
+	// returns to the same worker only when the page is a whole number of bands AND
+	// the worker count divides that number -- at the shipped four-row band that is
+	// every format at two workers and no format at three.
+	//
+	// A band taller than a page is not "zero bands per page", it is the worst case:
+	// the two folded rows sit in the same band for most of it and straddle its edge
+	// near the bottom, so the race is open at some y whatever the worker count.
+	// SWExtraThreadsHeight reaches 8 -- 256-row bands against 32-row pages -- so
+	// that is reachable from the INI, not hypothetical.
+	const int workers = static_cast<int>(m_workers.size());
+
+	if (workers <= 1)
+		return false;
+
+	if (page_height < (1 << m_thread_height))
+		return true;
+
+	return ((page_height >> m_thread_height) % workers) != 0;
 }
 
 std::unique_ptr<IRasterizer> GSRasterizerList::Create(int threads)

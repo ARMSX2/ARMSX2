@@ -498,19 +498,19 @@ namespace
 constexpr int kBandShift = 4; // GSRasterizer::m_thread_height, the shipped default
 
 // Worker that owns row y, under the rasterizer's own interleave.
-int BandOwner(int y, int threads)
+int BandOwner(int y, int threads, int band_shift = kBandShift)
 {
-	return (y >> kBandShift) % threads;
+	return (y >> band_shift) % threads;
 }
 
 // Does any pair of rows owned by DIFFERENT workers write the same word?
-bool RowsCollideAcrossWorkers(const GSOffset& off, const GSVector4i& r, int threads)
+bool RowsCollideAcrossWorkers(const GSOffset& off, const GSVector4i& r, int threads, int band_shift = kBandShift)
 {
 	std::vector<int> owner(1024 * 1024, -1);
 
 	for (int y = r.top; y < r.bottom; y++)
 	{
-		const int me = BandOwner(y, threads);
+		const int me = BandOwner(y, threads, band_shift);
 		for (int x = r.left; x < r.right; x++)
 		{
 			int& o = owner[off.pa(x, y) & (1024 * 1024 - 1)];
@@ -521,6 +521,17 @@ bool RowsCollideAcrossWorkers(const GSOffset& off, const GSVector4i& r, int thre
 	}
 
 	return false;
+}
+
+// The arithmetic of GSRasterizerList::RowsFoldAcrossWorkers, mirrored so it can be
+// checked against the exhaustive collision walk above. Change one, change the other.
+bool FoldRacesAcrossWorkers(int page_height, int band_shift, int workers)
+{
+	if (workers <= 1)
+		return false;
+	if (page_height < (1 << band_shift))
+		return true;
+	return ((page_height >> band_shift) % workers) != 0;
 }
 } // namespace
 
@@ -553,6 +564,53 @@ TEST(ScanlineBands, StopBeingAPartitionOfMemoryPastTheStride)
 	EXPECT_EQ(off16.pa(640, 0), off16.pa(0, 64));
 	EXPECT_FALSE(RowsCollideAcrossWorkers(off16, GSVector4i(0, 0, 641, 128), 4));
 	EXPECT_TRUE(RowsCollideAcrossWorkers(off16, GSVector4i(0, 0, 641, 128), 3));
+}
+
+TEST(ScanlineBands, ABandTallerThanAPageAlwaysRaces)
+{
+	// SWExtraThreadsHeight is an INI key that goes to 8, so bands of 32 rows and up
+	// are reachable while a 32-bit page stays 32 rows tall. Once the band is taller
+	// than the page the two folded rows share a band near the top and straddle its
+	// edge near the bottom, so there is always a y where they belong to different
+	// workers -- the modulo alone answers "no race" and is wrong.
+	const GSOffset off = GSOffset::fromKnownPSM(0, 10, PSMCT32); // 32-row pages
+
+	for (const int band_shift : {6, 7, 8})
+	{
+		for (const int threads : {2, 3, 4})
+		{
+			const GSVector4i r(0, 0, 641, 4 << band_shift);
+			EXPECT_TRUE(RowsCollideAcrossWorkers(off, r, threads, band_shift))
+				<< "band_shift " << band_shift << " threads " << threads;
+			EXPECT_TRUE(FoldRacesAcrossWorkers(32, band_shift, threads))
+				<< "band_shift " << band_shift << " threads " << threads;
+		}
+	}
+}
+
+TEST(ScanlineBands, ThePredicateMatchesTheWalkAtEveryBandHeight)
+{
+	// Over-prediction is only slow; a missed collision is the nondeterminism. Sweep
+	// every band height the INI can ask for against every page height the formats
+	// have, and require the predicate to cover the walk.
+	for (const auto& fmt : {std::make_pair(PSMCT32, 32), std::make_pair(PSMCT16, 64), std::make_pair(PSMT8, 64)})
+	{
+		const GSOffset off = GSOffset::fromKnownPSM(0, 10, fmt.first);
+
+		for (int band_shift = 1; band_shift <= 8; band_shift++)
+		{
+			for (int threads = 1; threads <= 8; threads++)
+			{
+				const GSVector4i r(0, 0, 641, std::max(4 * fmt.second, 4 << band_shift));
+				const bool collides = RowsCollideAcrossWorkers(off, r, threads, band_shift);
+				const bool predicted = FoldRacesAcrossWorkers(fmt.second, band_shift, threads);
+
+				EXPECT_TRUE(predicted || !collides)
+					<< "psm " << static_cast<int>(fmt.first) << " band_shift " << band_shift
+					<< " threads " << threads;
+			}
+		}
+	}
 }
 
 TEST(ScanlineBands, ThePredicateCoversEveryCollisionItIsAskedAbout)
