@@ -321,8 +321,7 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 	if (isVU1)
 	{
 		// VU1: mask to 0x3FF quadwords, shift left 4 (x16 bytes)
-		armAsm->And(gprReg.W(), gprReg.W(), 0x3ff);
-		armAsm->Lsl(gprReg.W(), gprReg.W(), 4);
+		armAsm->Ubfiz(gprReg.W(), gprReg.W(), 4, 10);
 	}
 	else
 	{
