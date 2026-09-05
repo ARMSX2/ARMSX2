@@ -315,54 +315,6 @@ void GSClut::WriteCLUT_NULL(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT
 	GL_INS("[WARNING] CLUT write ignored (psm: %d, cpsm: %d)", TEX0.PSM, TEX0.CPSM);
 }
 
-#if 0
-void GSClut::Read(const GIFRegTEX0& TEX0)
-{
-	if(m_read.IsDirty(TEX0))
-	{
-		m_read.TEX0 = TEX0;
-		m_read.dirty = false;
-
-		u16* clut = m_clut;
-
-		if(TEX0.CPSM == PSMCT32 || TEX0.CPSM == PSMCT24)
-		{
-			switch(TEX0.PSM)
-			{
-			case PSMT8:
-			case PSMT8H:
-				clut += (TEX0.CSA & 15) << 4;
-				ReadCLUT_T32_I8(clut, m_buff32);
-				break;
-			case PSMT4:
-			case PSMT4HL:
-			case PSMT4HH:
-				clut += (TEX0.CSA & 15) << 4;
-				ReadCLUT_T32_I4(clut, m_buff32, m_buff64);
-				break;
-			}
-		}
-		else if (TEX0.CPSM == PSMCT16 || TEX0.CPSM == PSMCT16S)
-		{
-			switch(TEX0.PSM)
-			{
-			case PSMT8:
-			case PSMT8H:
-				clut += TEX0.CSA << 4;
-				ReadCLUT_T16_I8(clut, m_buff32);
-				break;
-			case PSMT4:
-			case PSMT4HL:
-			case PSMT4HH:
-				clut += TEX0.CSA << 4;
-				ReadCLUT_T16_I4(clut, m_buff32, m_buff64);
-				break;
-			}
-		}
-	}
-}
-#endif
-
 void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 {
 	if (m_read.IsDirty(TEX0, TEXA))
