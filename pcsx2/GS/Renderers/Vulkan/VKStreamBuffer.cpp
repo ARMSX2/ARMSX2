@@ -12,21 +12,6 @@
 #include <cstring>
 #include <string>
 
-// Test hook, not a setting. Defined to 1 on the command line, every ring is treated as
-// non-coherent whatever memory it actually landed on: the ranges are tracked and the flushes are
-// issued, exactly as on a device that needs them.
-//
-// It exists because the deferred-flush path cannot otherwise be run on this desk at all. The dev
-// box's only host-visible memory type is coherent, so its rings take road (a), m_non_coherent is
-// false, and every line below is dead. With the hook on, the same identity grid exercises the
-// bookkeeping and the flush calls -- harmless against a coherent allocation, where VMA returns
-// from vmaFlushAllocation without issuing anything -- and the counters show the collapse from one
-// clean per commit to one per ring per submit. What it cannot show is the cache maintenance
-// itself; only the MQ65 can.
-#ifndef GS_STREAM_RING_FORCE_NON_COHERENT
-#define GS_STREAM_RING_FORCE_NON_COHERENT 0
-#endif
-
 VKStreamBuffer::VKStreamBuffer()
 	: m_wait_site(GpuWaitSite::StreamUnnamed)
 {
@@ -40,8 +25,8 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	, m_allocation(move.m_allocation)
 	, m_buffer(move.m_buffer)
 	, m_host_pointer(move.m_host_pointer)
-	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_wait_site(move.m_wait_site)
+	, m_tracked_fences(std::move(move.m_tracked_fences))
 	, m_non_coherent(move.m_non_coherent)
 	, m_pending_flush(move.m_pending_flush)
 	, m_flush_calls(move.m_flush_calls)
@@ -141,7 +126,7 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, GpuWaitSite wait
 	// with it instead of needing a separate probe.
 	VkMemoryPropertyFlags mem_flags = 0;
 	vmaGetMemoryTypeProperties(GSDeviceVK::GetInstance()->GetAllocator(), ai.memoryType, &mem_flags);
-	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0 || GS_STREAM_RING_FORCE_NON_COHERENT;
+	m_non_coherent = (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
 	m_pending_flush.Reset();
 	m_flush_calls = 0;
 	m_flush_commits = 0;
@@ -351,19 +336,6 @@ void VKStreamBuffer::FlushPendingWrites()
 
 	m_flush_commits += m_pending_flush.commits;
 	m_pending_flush.Reset();
-}
-
-void VKStreamBuffer::RetainForCurrentCommandBuffer()
-{
-	if (m_tracked_fences.empty())
-		return;
-
-	// Only the newest entry can still be under a live reader: everything older was committed
-	// before it and is covered by an earlier fence the ring already respects. Moving it forward
-	// keeps the deque sorted, because the back is by construction the largest counter.
-	const u64 counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
-	if (m_tracked_fences.back().first < counter)
-		m_tracked_fences.back().first = counter;
 }
 
 void VKStreamBuffer::UpdateCurrentFencePosition()
