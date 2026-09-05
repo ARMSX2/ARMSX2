@@ -86,6 +86,24 @@ namespace
 	u32 s_windows_seen = 0;
 	bool s_ran_this_session = false;
 
+	// Transitions and ineffective verdicts for the whole session. The controller's own
+	// counters cannot answer this: they are per-run, and every lifecycle reset zeroes them
+	// - including the pause that precedes a shutdown, which is why the session line used to
+	// report zero of both however busy the run had been. The trace's per-window columns
+	// still come from the controller, because there they mean the run they are in.
+	u32 s_session_transitions = 0;
+	u32 s_session_ineffective = 0;
+
+	// Take the controller's counters into the session totals. Every caller is about to make
+	// them unreachable - a reset zeroes them, and at shutdown the session is over - so
+	// nothing is counted twice.
+	void FoldControllerCountsIntoSession()
+	{
+		const EECycleRateController::Snapshot snap = s_controller.GetSnapshot();
+		s_session_transitions += snap.transitions;
+		s_session_ineffective += snap.ineffective_count;
+	}
+
 	// Published for the on-screen display. Written by the CPU thread at every window close
 	// and every lifecycle reset; read by the GS thread.
 	std::atomic<u32> s_overlay_word{0};
@@ -513,6 +531,8 @@ void EECycleRateSampler::OnVMStart()
 		seconds = 0.0;
 	s_windows_rejected = 0;
 	s_windows_seen = 0;
+	s_session_transitions = 0;
+	s_session_ineffective = 0;
 	s_ran_this_session = false;
 
 	OpenTrace();
@@ -530,6 +550,8 @@ void EECycleRateSampler::OnVMStart()
 
 void EECycleRateSampler::OnVMShutdown()
 {
+	FoldControllerCountsIntoSession();
+
 	if (s_ran_this_session)
 	{
 		// The one line the governor writes outside a trace. Everything else it has to say
@@ -545,9 +567,8 @@ void EECycleRateSampler::OnVMShutdown()
 
 		Console.WriteLn("EE cycle rate: %s session over - %u windows (%u rejected), %u transitions, "
 						"%u ineffective; time at rate: %s",
-			s_shadow ? "shadow" : "governor", s_windows_seen, s_windows_rejected,
-			s_controller.GetSnapshot().transitions, s_controller.GetSnapshot().ineffective_count,
-			at_rate.empty() ? "none" : at_rate.c_str());
+			s_shadow ? "shadow" : "governor", s_windows_seen, s_windows_rejected, s_session_transitions,
+			s_session_ineffective, at_rate.empty() ? "none" : at_rate.c_str());
 	}
 
 	TraceLifecycle("VM shutdown", true);
@@ -582,6 +603,7 @@ void EECycleRateSampler::OnLifecycleReset(const char* reason)
 	const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility();
 	RefreshActivation(eligibility);
 
+	FoldControllerCountsIntoSession();
 	s_controller.Reset(eligibility.baseline);
 	PublishOverlay();
 	StartWindow();
