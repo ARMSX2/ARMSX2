@@ -35,7 +35,8 @@ struct microMapGPR
 // ARM64 Register Pools
 //------------------------------------------------------------------
 
-// NEON allocatable: Q0-Q27 (28 registers). Q28=PQ, Q29-Q31=scratch.
+// NEON allocatable: Q0-Q27 less Q25/Q26 (26 registers). Q25/Q26 carry the
+// clamp bounds, Q28=PQ, Q29-Q31=scratch.
 static const int neonAllocTotal = 28;
 
 // GPR allocatable for VI: x14-x15 (2) + x26-x28 (3) = 5.
@@ -60,7 +61,6 @@ protected:
 	int counter;
 	int neonWatermark; // see getNeonWatermark()
 	int index; // VU0 or VU1
-	bool neonCop2Mode; // SL-13: macro mode — q25/q26 unallocatable (EE clamp consts)
 
 	// The clone-write copy allocReg emitted last, while it is still the final
 	// word in the buffer: dst holds nothing but a copy of src, so an emitter
@@ -100,10 +100,12 @@ protected:
 			armAsm->Dup(reg.V4S(), reg.V4S(), 0); // Broadcast to all lanes
 	}
 
-	// SL-13: NEON pool gate — cop2mode excludes q25/q26 (see reset()).
+	// NEON pool gate: q25/q26 hold the clamp bounds in either mode — micro
+	// mode's own qmmClampMax/qmmClampMin, macro mode the EE's SL-13
+	// broadcasts, which are the same two values.
 	__ri bool neonUsable(int i) const
 	{
-		return !neonCop2Mode || (i != 25 && i != 26);
+		return (i != 25 && i != 26);
 	}
 
 	// Find least-recently-used NEON reg (recursive, for eviction)
@@ -279,14 +281,14 @@ public:
 	// meaning — fastmem-base/text-pointer usability — doesn't apply here;
 	// those bases are pinned outside the allocatable set.)
 	//
-	// SL-13: cop2mode likewise gates the q25/q26 NEON slots — in EE-block
-	// context they hold the COP2 clamp-constant broadcasts (see
-	// NEON_RESERVED_COP2_CLAMPMAX/MIN, iCore-arm64.h), and the clamp validity
-	// flag deliberately RIDES THROUGH the mVU-reuse macro wrappers (they emit
-	// no C call), so an mVU allocation landing there would silently corrupt
-	// the constants for every later clamp site in the block. Micro mode keeps
-	// both (micro programs run under the dispatcher; EE re-materializes on
-	// every path back). Pinned by EeVu0Cop2ClampResidency.MacroModeNeonPool*.
+	// SL-13: q25/q26 are out of the NEON pool in both modes (see
+	// neonUsable). In EE-block context they hold the COP2 clamp-constant
+	// broadcasts (NEON_RESERVED_COP2_CLAMPMAX/MIN, iCore-arm64.h) and the
+	// clamp validity flag deliberately rides through the mVU-reuse macro
+	// wrappers, so an mVU allocation landing there would silently corrupt the
+	// constants for every later clamp site in the block; in micro mode they
+	// hold the same two values for mVUclamp1. Pinned by
+	// EeVu0Cop2ClampResidency.NeonPoolExcludesClampRegsInBothModes.
 	void reset(bool cop2mode = false)
 	{
 		// Clear x26/x27 unconditionally so no VI binding survives a
@@ -296,7 +298,6 @@ public:
 		clearGPR(27);
 		gprMap[26].usable = !cop2mode;
 		gprMap[27].usable = !cop2mode;
-		neonCop2Mode = cop2mode;
 		for (int i = 0; i < neonAllocTotal; i++)
 			clearNeon(i);
 		for (int i = 0; i < gprAllocCount; i++)
@@ -908,7 +909,7 @@ public:
 		int count = 0;
 		for (int i = 0; i < neonAllocTotal; i++)
 		{
-			if (!neonMap[i].isNeeded && neonMap[i].VFreg < 0)
+			if (neonUsable(i) && !neonMap[i].isNeeded && neonMap[i].VFreg < 0)
 				count++;
 		}
 		return count;

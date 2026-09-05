@@ -7,6 +7,22 @@
 // Micro VU - ARM64 NEON Clamp Functions
 //------------------------------------------------------------------
 
+#ifdef PCSX2_RECOMPILER_TESTS
+u32 g_mvuClampConstEstablishCount = 0;
+#endif
+
+// Lay the two bounds mVUclamp1 reads into qmmClampMax/qmmClampMin: once at a
+// block's entry, and again wherever a block resumes from a C call.
+static void mVUemitClampConsts(microVU& mVU)
+{
+	if (!CHECK_VU_OVERFLOW(mVU.index))
+		return;
+	armAsm->Ldp(qmmClampMin, qmmClampMax, mVUglobMem(&mVUglob.minvals[0]));
+#ifdef PCSX2_RECOMPILER_TESTS
+	g_mvuClampConstEstablishCount++;
+#endif
+}
+
 // Result clamping: clamp to [minFloat, maxFloat].
 // Uses FMINNM/FMAXNM (number-preserving) so NaN inputs clamp to ±maxfloat,
 // matching x86 SSE MINPS/MAXPS NaN-eating semantics. Plain FMIN/FMAX are
@@ -16,6 +32,11 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 {
 	if (((!clampE && CHECK_VU_OVERFLOW(mVU.index)) || (clampE && bClampE)) && mVU.regAlloc->checkVFClamp(reg.GetCode()))
 	{
+		// Macro mode is not on that contract -- there the two registers are the
+		// EE's, established lazily by its own first clamp site. None of the
+		// twelve emitters the COP2 macro adapter routes is arithmetic.
+		pxAssertRel(!mVU.cop2, "microVU: macro mode reached a clamp with no bounds of its own");
+
 		switch (xyzw)
 		{
 			case 1: case 2: case 4: case 8:
@@ -31,13 +52,11 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 				// vuClampMode:2 SPS / trembling geometry. Compute the clamped
 				// scalar in RQSCRATCH3 and INS it back into lane 0 only, mirroring
 				// the x86 mVUclamp1 SS path.
-				armAsm->Ldr(a64::VRegister(RQSCRATCH3.GetCode(), 32), mVUglobMem(&mVUglob.maxvals[0]));
 				armAsm->Fminnm(a64::VRegister(RQSCRATCH3.GetCode(), 32), a64::VRegister(reg.GetCode(), 32),
-				               a64::VRegister(RQSCRATCH3.GetCode(), 32));
+				               a64::VRegister(qmmClampMax.GetCode(), 32));
 				armAsm->Ins(reg.V4S(), 0, RQSCRATCH3.V4S(), 0);
-				armAsm->Ldr(a64::VRegister(RQSCRATCH3.GetCode(), 32), mVUglobMem(&mVUglob.minvals[0]));
 				armAsm->Fmaxnm(a64::VRegister(RQSCRATCH3.GetCode(), 32), a64::VRegister(reg.GetCode(), 32),
-				               a64::VRegister(RQSCRATCH3.GetCode(), 32));
+				               a64::VRegister(qmmClampMin.GetCode(), 32));
 				armAsm->Ins(reg.V4S(), 0, RQSCRATCH3.V4S(), 0);
 				break;
 			}
@@ -47,10 +66,8 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 				// standing in front of it is dead weight: read the original.
 				const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 				const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
-				armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.maxvals[0]));
-				armAsm->Fminnm(reg.V4S(), src.V4S(), RQSCRATCH3.V4S());
-				armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.minvals[0]));
-				armAsm->Fmaxnm(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
+				armAsm->Fminnm(reg.V4S(), src.V4S(), qmmClampMax.V4S());
+				armAsm->Fmaxnm(reg.V4S(), reg.V4S(), qmmClampMin.V4S());
 				break;
 			}
 		}

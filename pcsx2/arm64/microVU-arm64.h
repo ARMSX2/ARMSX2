@@ -117,7 +117,13 @@
 //       model calls.
 //  20 — the zero-divisor Q is 0x7FFFFFFF from vuClampMode 3 and maxvals below,
 //       so DIV and RSQRT carry the signbit/maxvals pair again at modes 0-2.
-static constexpr u32 kMvuCompilerAbiVersion = 21;
+//  21 — an operand clamp reads the register a clone-write copy was about to
+//       fill and the copy goes, so a clamped FMAC on a cached VF is a word
+//       shorter.
+//  22 — the clamp bounds are register-resident: every mVUclamp1 drops its two
+//       Ldrs, the block gains an Ldp at its entry, and q25/q26 leave the VF
+//       pool in micro mode as well, moving what the allocator hands out.
+static constexpr u32 kMvuCompilerAbiVersion = 22;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

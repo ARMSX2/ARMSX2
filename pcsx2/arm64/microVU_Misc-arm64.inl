@@ -282,6 +282,11 @@ __fi void mVUbackupRegs(microVU& mVU, bool toMemory = false, bool onlyNeeded = f
 __fi void mVUrestoreRegs(microVU& mVU, bool fromMemory = false, bool onlyNeeded = false)
 {
 	armAsm->Ldr(qmmPQ, mVUneonBackupMem(qmmPQ.GetCode()));
+	// A plain-AAPCS callee has been through qmmClampMax and qmmClampMin with
+	// the rest of the caller-saved NEON file. This is the only seam that
+	// needs them back: every other C call a block emits either ends it, or
+	// goes through the waitMTVU thunk, which spills q0-q28 itself.
+	mVUemitClampConsts(mVU);
 }
 
 //------------------------------------------------------------------

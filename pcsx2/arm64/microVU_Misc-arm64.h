@@ -128,6 +128,10 @@ alignas(32) static constexpr struct mVU_Globals mVUglob;
 static_assert(offsetof(mVU_Globals, macWeights) % 16 == 0,
 	"mVUglob.macWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
 
+// mVUemitClampConsts takes both clamp bounds in one Ldp.
+static_assert(offsetof(mVU_Globals, maxvals) == offsetof(mVU_Globals, minvals) + 16,
+	"mVUglob.maxvals must follow minvals for the clamp-bound Ldp");
+
 // Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
 // single-scalar path, which always keeps lane 0 alone in forward bit order.
 __fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant)
@@ -228,6 +232,13 @@ static const char branchSTR[16][8] = {
 
 // P/Q packed register (replaces x86 xmmPQ=xmm15)
 #define qmmPQ  a64::q28
+
+// The mVUclamp1 bounds, resident for the length of a block: +fMax in every
+// lane and -fMax. mVUemitClampConsts writes them, microRegAlloc keeps both out
+// of the VF pool. The COP2 macro path holds the same two values in the same
+// two registers (SL-13, iCOP2-arm64.cpp).
+#define qmmClampMax a64::q25
+#define qmmClampMin a64::q26
 
 // GPR scratch registers
 #define gprT1  a64::w9

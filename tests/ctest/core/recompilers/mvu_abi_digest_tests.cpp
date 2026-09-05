@@ -280,6 +280,11 @@ constexpr AbiPin kPins[] = {
 	// emits no whole-register copy at all -- a single-lane clone rotates the
 	// lane it wants into place instead.
 	{21, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xc745a3959fa555ed, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x01dc53e64a60783b, 0x7b2cf129a0112eb5, 0x1270eee2b9725c68, 0xdd9e01f04dfdf231, 0x00410ea5fd07a5f9, 0xa2465092b0e3404a, 0x04899f265502aa58, 0xe2c3e03122ce9e70, 0x97c76bda811bc8e4, 0x9600d0c470905660, 0xa7ad93456cba5eb2}},
+	// 22: mVUclamp1 reads its bounds out of q25/q26 instead of loading them,
+	// the block lays the pair down once at its entry, and q25/q26 leave the
+	// VF pool in micro mode -- so every probe moves, the clamp-free ones
+	// through the entry Ldp and what the allocator hands out.
+	{22, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0x0126dc75bb4430b9, 0xaebf14b1ed6decc1, 0xb43ff459f5b10828, 0x7b02c5ad05cbf2da, 0xbb97e4783596605e, 0xe140eff6bb95297c}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

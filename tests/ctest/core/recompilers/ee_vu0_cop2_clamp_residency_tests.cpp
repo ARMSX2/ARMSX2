@@ -279,19 +279,21 @@ TEST(EeVu0Cop2ClampResidency, EeAllocatorReservesClampRegs)
 		EXPECT_FALSE(eeTestNeonRegIsReserved(usable)) << "q" << usable;
 }
 
-// COP2 macro mode runs mVU emitters (the mVU-reuse wrappers) inline in EE
-// blocks WITHOUT a C-call seam, and clamp validity deliberately rides
-// through them — so the macro-mode mVU NEON pool must exclude q25/q26.
-// Micro mode keeps the full pool.
-TEST(EeVu0Cop2ClampResidency, MacroModeNeonPoolExcludesClampRegs)
+// Both modes keep q25/q26 out of the mVU NEON pool, for the same reason in
+// each: they hold the clamp bounds. Macro mode runs mVU emitters (the
+// mVU-reuse wrappers) inline in EE blocks WITHOUT a C-call seam and clamp
+// validity deliberately rides through them; micro mode reads the bounds out of
+// those two registers at every mVUclamp1.
+TEST(EeVu0Cop2ClampResidency, NeonPoolExcludesClampRegsInBothModes)
 {
-	EXPECT_FALSE(mVUTestProbe_NeonPoolUsable(25, /*cop2mode*/ true));
-	EXPECT_FALSE(mVUTestProbe_NeonPoolUsable(26, /*cop2mode*/ true));
-	EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(25, /*cop2mode*/ false));
-	EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(26, /*cop2mode*/ false));
-	EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(0, /*cop2mode*/ true));
-	EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(24, /*cop2mode*/ true));
-	EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(27, /*cop2mode*/ true));
+	for (bool cop2mode : {false, true})
+	{
+		EXPECT_FALSE(mVUTestProbe_NeonPoolUsable(25, cop2mode)) << "cop2mode " << cop2mode;
+		EXPECT_FALSE(mVUTestProbe_NeonPoolUsable(26, cop2mode)) << "cop2mode " << cop2mode;
+		EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(0, cop2mode)) << "cop2mode " << cop2mode;
+		EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(24, cop2mode)) << "cop2mode " << cop2mode;
+		EXPECT_TRUE(mVUTestProbe_NeonPoolUsable(27, cop2mode)) << "cop2mode " << cop2mode;
+	}
 }
 
 // The mVU-reuse wrappers must not disturb validity: FMAC → VMFIR (mVU-reuse
