@@ -9,6 +9,8 @@
 #include "common/HostSys.h"
 #include "common/Timer.h"
 
+#include <algorithm>
+
 #ifdef __APPLE__
 #include "common/Darwin/DarwinMisc.h"
 #endif
@@ -226,6 +228,85 @@ void armPatchCodeWord(void* site, u32 instr)
 	*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(rx_site)) = instr;
 	if (!in_open_window)
 		HostSys::EndCodeWriteRange(rx_site, sizeof(u32));
+}
+
+// The granule the cache-maintenance ops work on, read from CTR_EL0. This is a
+// different question from HostSys::GetRuntimeCacheLineSize(), which reports the
+// largest DATA line size so structures can be padded against false sharing;
+// what a CMO needs is the architected minimum line, and using the larger of the
+// two would skip lines. IminLine is CTR_EL0 bits 3:0 and DminLine bits 19:16,
+// both log2 of a count of 4-byte words. Take the smaller so one address list
+// covers both loops — a coarser line just gets its CMO issued more than once,
+// which is redundant, not wrong.
+static size_t armCodePatchGranule()
+{
+	static const size_t granule = []() -> size_t {
+		u64 ctr = 0;
+		__asm__ __volatile__("mrs %0, ctr_el0" : "=r"(ctr));
+		const size_t dline = static_cast<size_t>(4) << ((ctr >> 16) & 0xf);
+		const size_t iline = static_cast<size_t>(4) << (ctr & 0xf);
+		return std::min(dline, iline);
+	}();
+	return granule;
+}
+
+void ArmCodePatchFlusher::Note(const void* site)
+{
+	const uintptr_t line = reinterpret_cast<uintptr_t>(site) & ~(armCodePatchGranule() - 1);
+	// Sites arrive in increasing code order within an arena, and the ones a
+	// single block emits sit a few instructions apart, so checking only the
+	// previous entry collapses most of the repeats. A duplicate that slips
+	// through costs one redundant CMO pair, not correctness.
+	if (!m_lines.empty() && m_lines.back() == line)
+		return;
+	m_lines.push_back(line);
+}
+
+void ArmCodePatchFlusher::Finish()
+{
+	if (m_lines.empty())
+		return;
+
+#ifdef __APPLE__
+	// sys_icache_invalidate (what HostSys::FlushInstructionCache calls here) is
+	// the sanctioned interface on Darwin and the only one that stays correct
+	// under the iOS dual-map and Legacy W^X modes, so this path coalesces the
+	// touched lines into runs and flushes each run instead of issuing CMOs by
+	// hand. One call per run rather than one per word; a run costs an
+	// invalidate of the gaps inside it, which is why the gap cap is a page.
+	std::sort(m_lines.begin(), m_lines.end());
+	const size_t granule = armCodePatchGranule();
+	constexpr uintptr_t kMaxGap = 4096;
+
+	uintptr_t lo = m_lines[0];
+	uintptr_t hi = m_lines[0] + granule;
+	for (size_t i = 1; i < m_lines.size(); i++)
+	{
+		if (m_lines[i] - hi <= kMaxGap)
+		{
+			hi = m_lines[i] + granule;
+			continue;
+		}
+		HostSys::FlushInstructionCache(reinterpret_cast<void*>(lo), static_cast<u32>(hi - lo));
+		lo = m_lines[i];
+		hi = m_lines[i] + granule;
+	}
+	HostSys::FlushInstructionCache(reinterpret_cast<void*>(lo), static_cast<u32>(hi - lo));
+#else
+	// Clean every touched line to the point of unification, one barrier, then
+	// invalidate all of them for instruction fetch, then the closing pair. The
+	// `dsb ish` between the two loops is architecturally required — the clean
+	// has to have completed before the invalidate — and it is exactly the
+	// barrier a per-site flush would pay once per word instead of once per set.
+	for (const uintptr_t line : m_lines)
+		__asm__ __volatile__("dc cvau, %0" : : "r"(line) : "memory");
+	__asm__ __volatile__("dsb ish" : : : "memory");
+	for (const uintptr_t line : m_lines)
+		__asm__ __volatile__("ic ivau, %0" : : "r"(line) : "memory");
+	__asm__ __volatile__("dsb ish\n\tisb" : : : "memory");
+#endif
+
+	m_lines.clear();
 }
 
 void armDisassembleAndDumpCode(const void* ptr, size_t size)

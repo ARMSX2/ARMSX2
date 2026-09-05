@@ -11,6 +11,7 @@
 #include "vixl/aarch64/macro-assembler-aarch64.h"
 
 #include <unordered_map>
+#include <vector>
 
 #define RWRET vixl::aarch64::w0
 #define RXRET vixl::aarch64::x0
@@ -149,6 +150,39 @@ void armEmitCall(const void* ptr, bool force_inline = false);
 // code outside the block being emitted — link sites, entry stubs, fastmem
 // backpatch. No cache maintenance: callers own the flush policy.
 void armPatchCodeWord(void* site, u32 instr);
+
+// ---------------------------------------------------------------------------
+// Cache maintenance for many scattered single-word code patches
+//
+// HostSys::FlushInstructionCache is the wrong shape for this. On Linux/AArch64
+// it is __builtin___clear_cache, which ends in a `dsb ish` / `isb` pair, and
+// BaseblockEx-arm64.h's FlushPatchedSites already states the cost model: the
+// per-call cost is dominated by that pair, not by the DC/IC ops. That helper
+// answers the adjacent-sites case by coalescing into ranges, which is right for
+// the handful of link sites one block emits a few instructions apart. A pass
+// that rewrites tens of thousands of words spread over a multi-megabyte arena
+// has no adjacency to coalesce and would pay one barrier pair per site.
+//
+// Note() each patched word, then Finish() once. Finish issues the clean and
+// invalidate for every touched line and exactly ONE barrier pair for the whole
+// set. (`ic iallu` would collapse the I-side to a single instruction, but it is
+// EL1-only; EL0 gets `ic ivau` and nothing else.)
+//
+// Note() takes the EXECUTE address of the word, not the writable alias: cache
+// maintenance is architecturally on the address the instruction fetch uses.
+// ---------------------------------------------------------------------------
+class ArmCodePatchFlusher
+{
+public:
+	void Note(const void* site);
+	void Finish();
+
+	void Reset() { m_lines.clear(); }
+	size_t LineCount() const { return m_lines.size(); }
+
+private:
+	std::vector<uintptr_t> m_lines;
+};
 // In-place patch: overwrite the 4-byte B at `code_address` with a branch to
 // `target`. Used by EE block chaining to rewrite a link site (not tied to the
 // current emit cursor). `code_address` must already hold a single B instruction.
