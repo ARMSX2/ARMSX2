@@ -33,11 +33,19 @@ void Host::SetMouseLock(bool state)
 
 // The APK's JNI layer (platforms/android/.../native-lib.cpp) implements these,
 // and the libretro core is linked without it, so the Android core build ended
-// on five undefined symbols. Every one of them bridges to something the app
-// owns and the core does not have: the Storage Access Framework file it was
-// handed, the app's own directories, the Java vibrator, the notification
-// sound. The core reaches its files through the frontend's VFS instead, and
-// the frontend owns rumble and audio.
+// on undefined symbols. Each bridges to something the app owns and the core
+// does not have: the Storage Access Framework file it was handed, the app's own
+// directories, the notification sound. The core reaches its files through the
+// frontend's VFS instead, and the frontend owns audio.
+//
+// Nothing here can be reached with a frontend VFS installed - FileSystem tries
+// that first in every one of these paths - and without one, each returned
+// failure lands in the ordinary errno path rather than a hard stop.
+//
+// onPadRumble WAS stubbed here too. It is gone: InputManager now takes the
+// libretro core down its own rumble path (Host::SetPadVibration, wired to the
+// frontend's retro_rumble_interface) instead of the JNI one, so nothing
+// declares it in this build and a stub would only be a symbol nobody names.
 
 int FileSystem::OpenFDFileContent(const char* filename)
 {
@@ -57,16 +65,6 @@ bool FileSystem::CreateFileViaJava(const char* path)
 bool Common::PlaySoundAsync(const char* path)
 {
 	return false;
-}
-
-// Declared where it is called, in Input/InputManager.cpp.
-namespace Native
-{
-	void onPadRumble(int pad, int largeMotor, int smallMotor);
-}
-
-void Native::onPadRumble(int pad, int largeMotor, int smallMotor)
-{
 }
 
 #endif

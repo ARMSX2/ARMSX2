@@ -104,6 +104,7 @@ static retro_audio_sample_batch_t audio_batch_cb;
 static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 static retro_log_printf_t log_cb;
+static retro_set_rumble_state_t rumble_cb;
 
 namespace LibretroCore
 {
@@ -357,6 +358,37 @@ void Host::SetMouseMode(bool relative_mode, bool hide_cursor)
 
 void Host::SetMouseLock(bool state)
 {
+}
+
+void Host::SetPadVibration(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
+{
+	if (!rumble_cb)
+		return;
+
+	// Deduped because the pad re-sends its vibration state on every poll the game
+	// makes, not only when it changes, and set_rumble_state reaches the frontend's
+	// input driver. InputManager cannot do this for us: its own dedup lives in the
+	// per-motor bindings, and the core has none of those.
+	static float s_last[Pad::NUM_CONTROLLER_PORTS][2] = {};
+	if (s_last[pad_index][0] == large_or_single_motor_intensity &&
+		s_last[pad_index][1] == small_motor_intensity)
+	{
+		return;
+	}
+
+	s_last[pad_index][0] = large_or_single_motor_intensity;
+	s_last[pad_index][1] = small_motor_intensity;
+
+	// Clamped rather than trusted: the scale is the full u16 range, so a stray
+	// intensity above 1 would wrap to a near-zero strength instead of saturating.
+	const auto to_strength = [](float intensity) -> u16 {
+		return static_cast<u16>(std::clamp(intensity, 0.0f, 1.0f) * 65535.0f + 0.5f);
+	};
+
+	// STRONG is the large (low-frequency) motor, WEAK the small one - the same
+	// order this function takes them in.
+	rumble_cb(pad_index, RETRO_RUMBLE_STRONG, to_strength(large_or_single_motor_intensity));
+	rumble_cb(pad_index, RETRO_RUMBLE_WEAK, to_strength(small_motor_intensity));
 }
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
@@ -1506,6 +1538,14 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 	cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &support_no_game);
 
 	InstallFrontendVFS(cb);
+
+	// The core binds no motors of its own - it turns the SDL input source off and
+	// takes pads from the frontend - so this is the only route to a vibrator. A
+	// frontend that answers still need not have a pad that can rumble; the call
+	// just returns false per port in that case, which is not worth reporting.
+	struct retro_rumble_interface rumble_iface = {};
+	if (cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble_iface))
+		rumble_cb = rumble_iface.set_rumble_state;
 
 	PopulateBiosOptions(cb);
 
