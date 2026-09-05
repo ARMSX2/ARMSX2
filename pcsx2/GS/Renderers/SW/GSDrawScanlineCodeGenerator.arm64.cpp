@@ -279,6 +279,12 @@ void GSDrawScanlineCodeGenerator::Init()
 		// x26 = &m_local.dw[left & 7][0], x27 = the signed hop to the other phase.
 		// Stepping is then one add and one negate, which needs no assumption
 		// about how the local data happens to be aligned.
+		//
+		// The shift below is the row stride of dw, hard-coded. Pin both halves of
+		// it: a fifth GSVector4i in blockstep, or a third phase, would silently
+		// index the wrong row.
+		static_assert(sizeof(GSScanlineLocalData::blockstep) == 64);
+		static_assert(sizeof(GSScanlineLocalData::dw[0]) == 128);
 		armAsm->Add(_block_ptr, _locals, Operand(x9, LSL, 7));
 		armAsm->Add(_block_ptr, _block_ptr, OFFSETOF(GSScanlineLocalData, dw));
 		armAsm->Mov(_block_hop, sizeof(GSScanlineLocalData::blockstep));
