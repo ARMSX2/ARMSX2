@@ -308,3 +308,75 @@ TEST(EECycleRateSamplerWindow, AGSBoundWindowFailsTheBlockedGateEvenThoughItIsLa
 	EXPECT_LT(s.own_time_ratio, policy.min_own_time);
 	EXPECT_GT(s.blocked_ratio, policy.max_blocked);
 }
+
+// --- two segments per frame ----------------------------------------------------
+//
+// The limiter waits at vsync start and again at vsync end, so a frame's work reaches the
+// sampler as two segments. These pin how they fold into one frame: the sum is the frame's
+// active time, only the vsync-end segment closes it, and a frame that lost a segment is
+// unmeasurable rather than short.
+
+TEST(EECycleRateFrameAccumulator, TheTwoSegmentsAddAndOnlyTheLastClosesTheFrame)
+{
+	EECycleRateFrameAccumulator acc;
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	EXPECT_EQ(acc.AddSegment(10'000'000, false, false), Outcome::Pending);
+	EXPECT_EQ(acc.active_ticks, 10'000'000u);
+
+	EXPECT_EQ(acc.AddSegment(3'000'000, true, false), Outcome::Closed);
+	EXPECT_EQ(acc.active_ticks, 13'000'000u);
+	EXPECT_FALSE(acc.late);
+}
+
+TEST(EECycleRateFrameAccumulator, AMissingFirstSegmentMakesTheFrameUnmeasurable)
+{
+	// A pause or an unpaced frame zeroes the work period, so the vsync-start wait finds none.
+	EECycleRateFrameAccumulator acc;
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	EXPECT_EQ(acc.AddSegment(0, false, false), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(3'000'000, true, false), Outcome::Unmeasured)
+		<< "the second segment alone is not the frame; reading it as one would report a short frame";
+}
+
+TEST(EECycleRateFrameAccumulator, AMissingSecondSegmentMakesTheFrameUnmeasurable)
+{
+	EECycleRateFrameAccumulator acc;
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	EXPECT_EQ(acc.AddSegment(10'000'000, false, false), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(0, true, false), Outcome::Unmeasured);
+}
+
+TEST(EECycleRateFrameAccumulator, ALateVerdictFromEitherWaitSticks)
+{
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	// The vsync-start wait reports late only when the limiter had to move the frame start,
+	// which would otherwise hide the lateness from the vsync-end verdict.
+	EECycleRateFrameAccumulator first;
+	first.AddSegment(10'000'000, false, true);
+	EXPECT_EQ(first.AddSegment(3'000'000, true, false), Outcome::Closed);
+	EXPECT_TRUE(first.late);
+
+	EECycleRateFrameAccumulator second;
+	second.AddSegment(10'000'000, false, false);
+	EXPECT_EQ(second.AddSegment(3'000'000, true, true), Outcome::Closed);
+	EXPECT_TRUE(second.late);
+}
+
+TEST(EECycleRateFrameAccumulator, ClearStartsTheNextFrameFromNothing)
+{
+	EECycleRateFrameAccumulator acc;
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	acc.AddSegment(0, false, true);
+	acc.AddSegment(1'000'000, true, false);
+	acc.Clear();
+
+	EXPECT_EQ(acc.AddSegment(4'000'000, false, false), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(5'000'000, true, false), Outcome::Closed);
+	EXPECT_EQ(acc.active_ticks, 9'000'000u);
+	EXPECT_FALSE(acc.late);
+}
