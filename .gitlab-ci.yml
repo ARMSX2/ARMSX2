@@ -1,7 +1,7 @@
 # DESCRIPTION: GitLab CI/CD for libRetro (NOT FOR GitLab-proper)
 #
 # Builds armsx2_libretro.so on the libretro buildbot (git.libretro.com mirror)
-# for Linux x86_64/aarch64, macOS arm64 and Android arm64-v8a. Inert on GitHub
+# for Linux aarch64, macOS arm64 and Android arm64-v8a. Inert on GitHub
 # — the GitHub Actions workflows under .github/workflows/ are the project's
 # own CI.
 #
@@ -22,6 +22,13 @@
     # CMake puts the finished core in bin/ inside the build tree; the
     # ci-templates pick it up from $BUILD_DIR/$EXTRA_PATH/.
     EXTRA_PATH: bin
+    # On the page size below: it is HOST_PAGE_SIZE, not OVERRIDE_HOST_PAGE_SIZE.
+    # The latter is a compile define the build computes for itself, so passing
+    # it here would only set a cache variable nothing reads. HOST_PAGE_SIZE is
+    # the one detect_page_size() caches into, and a preset cache entry wins, so
+    # this pins the core to 4K pages instead of inheriting whatever the runner
+    # happens to have. Android is neither - it takes
+    # ARMSX2_ANDROID_HOST_PAGE_SIZE, set in .core-defs-android below.
     CORE_ARGS: >-
       -DCMAKE_C_COMPILER=clang-17
       -DCMAKE_CXX_COMPILER=clang++-17
@@ -40,7 +47,7 @@
       -DX11_API=OFF
       -DWAYLAND_API=OFF
       -DDISABLE_ADVANCE_SIMD=TRUE
-      -DOVERRIDE_HOST_PAGE_SIZE=4096
+      -DHOST_PAGE_SIZE=4096
       -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
 .core-defs-linux:
@@ -112,7 +119,7 @@
     # runner has no coreutils.
     - export NUMPROC=$(($(sysctl -n hw.ncpu)/2)); [ "$NUMPROC" -lt 1 ] && export NUMPROC=1
     - |
-      if [ ! -f "$CI_PROJECT_DIR/.deps/lib/libshaderc_combined.a" ] && [ ! -d "$CI_PROJECT_DIR/.deps/include/SDL3" ]; then
+      if [ ! -f "$CI_PROJECT_DIR/.deps/lib/libshaderc_combined.a" ] || [ ! -d "$CI_PROJECT_DIR/.deps/include/SDL3" ]; then
         OSX_ARCH=$ARCH BUILD_QT=0 BUILD_FFMPEG=0 \
           ./.github/workflows/scripts/macos/build-dependencies-slice.sh "$CI_PROJECT_DIR/.deps"
       fi
@@ -144,7 +151,7 @@
       -DX11_API=OFF
       -DWAYLAND_API=OFF
       -DDISABLE_ADVANCE_SIMD=TRUE
-      -DOVERRIDE_HOST_PAGE_SIZE=4096
+      -DARMSX2_ANDROID_HOST_PAGE_SIZE=0x1000
       -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
   cache:
     key:
@@ -190,18 +197,13 @@ stages:
 ##############################################################################
 #
 ################################### DESKTOPS #################################
-# Linux 64-bit
-libretro-build-linux-x64:
-  extends:
-    - .libretro-linux-cmake-x86_64
-    - .core-defs-linux
-  # Stock Ubuntu 22.04 rather than a buildbot image: the amd64 one is Ubuntu
-  # 18.04, whose libstdc++ predates the C++20 library the emulator needs and
-  # which ships neither libegl-dev nor libopengl-dev. Jammy is also what the
-  # project's own GitHub CI builds on, so the dependency script and the
-  # clang-17 packages are known to work there.
-  image: ubuntu:22.04
-
+# No x86_64 job. x86 is vestigial on this fork and must not deviate from
+# upstream PCSX2 to keep building, and pcsx2/x86/ no longer compiles against the
+# current tree (the FPU sources reach for a config macro that is gone and for a
+# register field that went away when the FPU representation widened). Fixing
+# that here is exactly the deviation we do not want, and lrps2 is the core to
+# use for x86 PS2 on RetroArch, so the job goes rather than staying red.
+#
 # Linux 64-bit (ARM)
 libretro-build-linux-aarch64:
   extends:

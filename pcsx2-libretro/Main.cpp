@@ -36,16 +36,16 @@
 
 #include "libretro.h"
 
-#define VK_NO_PROTOTYPES
-// libretro_vulkan.h pulls in vulkan.h, and vulkan.h only declares the Metal
-// surface types when this is defined. VKLoader.h defines it further down for
-// the rest of the renderer, but by then vulkan.h has already been included from
-// here with the header guard set, so its Metal section would be skipped for
-// good and VKEntryPoints.inl loses PFN_vkCreateMetalSurfaceEXT. Define it
-// before the first include instead.
-#if defined(__APPLE__)
-#define VK_USE_PLATFORM_METAL_EXT
-#endif
+// libretro_vulkan.h pulls in vulkan.h, which only declares a platform's surface
+// types when that platform's VK_USE_PLATFORM_* macro is already defined. The
+// header guard then locks the result in, so whichever of the two headers lands
+// first decides what the whole translation unit gets: include libretro_vulkan.h
+// first and the Metal, Xlib and Wayland sections are skipped for good, and
+// VKEntryPoints.inl loses PFN_vkCreateMetalSurfaceEXT / the Xlib and Wayland
+// entry points with it. VKLoader.h is the header that sets all five platform
+// macros (and cleans up the Xlib ones afterwards), so it has to come first.
+#include "pcsx2/GS/Renderers/Vulkan/VKLoader.h"
+
 #include "libretro_vulkan.h"
 
 #include "fmt/format.h"
