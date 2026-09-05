@@ -37,16 +37,27 @@ namespace PerformanceMetrics
 	/// Close the ADPF session and forget registered threads (VM shutdown).
 	void AdpfShutdown();
 
-	/// ADPF work-period brackets, driven by the frame limiter (VMManager::Internal::Throttle).
-	/// The reported duration must be the active EE/GS/VU work per frame, EXCLUDING the deliberate
-	/// limiter sleep and present wait, per the PerformanceHintManager contract (reportActualWork
-	/// = the last workload cycle, not the frame interval). OnFrameWorkComplete() reports the
-	/// period that just ended (called at Throttle entry, before the sleep); BeginFrameWork()
-	/// opens a new period after the sleep; PauseFrameWork() invalidates it when we are not
-	/// frame-limiting (unlimited / host-vsync pacing), so no bogus duration is reported.
-	void AdpfOnFrameWorkComplete();
-	void AdpfBeginFrameWork();
-	void AdpfPauseFrameWork();
+	/// The CPU thread's frame-work clock, driven by the frame limiter
+	/// (VMManager::Internal::Throttle). The period it measures is the frame's active EE/GS/VU
+	/// work, EXCLUDING the deliberate limiter sleep: OnFrameWorkComplete() closes the period
+	/// that just ended (called at Throttle entry, before the sleep) and returns its length in
+	/// GetCPUTicks() units; OnFrameWorkBegin() opens a new one after the sleep;
+	/// OnFrameWorkPaused() invalidates it when we are not frame-limiting (unlimited /
+	/// host-vsync pacing / execution interrupted), so no wall-time-with-wait duration is
+	/// measured. Zero back from OnFrameWorkComplete() means no period was open.
+	///
+	/// Two consumers share this one timestamp: the Android ADPF hint, which reports the
+	/// duration to PerformanceHintManager (reportActualWork = the last workload cycle, not the
+	/// frame interval), and the dynamic EE cycle-rate sampler, which is the same measurement
+	/// on every platform.
+	u64 OnFrameWorkComplete(u64 now_ticks);
+	void OnFrameWorkBegin();
+	void OnFrameWorkPaused();
+
+	/// The CPU (EE) thread's own CPU time, in Threading::GetThreadTicksPerSecond() units.
+	/// Reads the same handle SetCPUThread() registered, so there is one handle rather than
+	/// one per consumer. Zero if no CPU thread is registered.
+	u64 GetCPUThreadCPUTime();
 
 	/// Sets the EE thread for CPU usage calculations.
 	void SetCPUThread(Threading::ThreadHandle thread);

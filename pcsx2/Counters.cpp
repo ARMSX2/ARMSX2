@@ -506,7 +506,7 @@ static __fi void VSyncStart(u64 sCycle)
 	if (!VMManager::Internal::IsExecutionInterrupted())
 		VMManager::Internal::Throttle();
 	else
-		PerformanceMetrics::AdpfPauseFrameWork(); // interrupted → no Throttle → drop the ADPF period so the resume report excludes the pause
+		PerformanceMetrics::OnFrameWorkPaused(); // interrupted → no Throttle → drop the work period so the resume measurement excludes the pause
 
 	gsPostVsyncStart(); // MUST be after framelimit; doing so before causes funk with frame times!
 
