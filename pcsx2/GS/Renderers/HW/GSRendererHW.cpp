@@ -2727,11 +2727,17 @@ bool GSRendererHW::CanUseSwSpriteRender()
 	return true;
 }
 
-// Rounds every sprite edge up to the pixel boundary the GS itself would have rounded it
-// to, and slides the matching texture coordinate along the sprite's gradient by the same
-// amount. The covered pixel set is what the GS already draws, so at native resolution this
-// is a no-op in both position and sampling; only the upscaled rasterisation moves, and it
-// moves onto the native grid. Only called for sprites into an upscaled target.
+// The GS draws a sprite in whole pixels: an edge at x starts the coverage at ceil(x), so
+// the fraction below that boundary buys the sprite nothing. Upscaling multiplies the edge
+// and only then rasterises, so the fraction turns into whole device pixels and the sprite
+// stops at a column the GS counts as covered. Push the far edge out to that boundary and
+// slide its texture coordinate along the sprite's own gradient by the same distance, which
+// leaves the coordinate at every pixel the sprite already drew exactly where it was: only
+// the pixel the upscaled raster was dropping gets added. The near edge is deliberately left
+// alone -- rounding it too would move the sprite bodily by a device pixel.
+//
+// At native resolution ceil(x) is already where the coverage started, so this is a no-op in
+// both coverage and sampling; Draw only calls it for sprites into an upscaled target.
 void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 {
 	// STQ sprites interpolate through Q; leave those alone rather than guess a gradient.
@@ -2744,7 +2750,7 @@ void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 	const u32 count = m_vertex->next;
 	GSVertex* v = &m_vertex->buff[0];
 
-	// ceil(a / 16) * 16, for negative a as well: >> rounds towards -inf.
+	// ceil(a / 16) * 16, negative a included: >> rounds towards -inf.
 	const auto snap = [](int a) { return ((a + 15) >> 4) << 4; };
 
 	for (u32 i = 0; i + 1 < count; i += 2)
@@ -2753,43 +2759,33 @@ void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 		const int x1 = static_cast<int>(v[i + 1].XYZ.X) - ox;
 		const int y0 = static_cast<int>(v[i].XYZ.Y) - oy;
 		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
-		const int dx0 = snap(x0) - x0;
-		const int dx1 = snap(x1) - x1;
-		const int dy0 = snap(y0) - y0;
-		const int dy1 = snap(y1) - y1;
-		if ((dx0 | dx1 | dy0 | dy1) == 0)
+		const int dx = (x1 > x0) ? (snap(x1) - x1) : 0;
+		const int dy = (y1 > y0) ? (snap(y1) - y1) : 0;
+		if ((dx | dy) == 0)
 			continue;
 
+		// The slide has to be a whole step of the coordinate's own 1/16-texel grid. When it is
+		// not, writing it down means rounding, and rounding resamples the whole sprite to buy
+		// one edge pixel -- a bad trade, so leave that sprite alone.
+		int du = 0, dv = 0;
 		if (adjust_uv)
 		{
-			if (dx0 | dx1)
-			{
-				const int lx = x1 - x0;
-				if (lx != 0)
-				{
-					const float gu = static_cast<float>(static_cast<int>(v[i + 1].U) - static_cast<int>(v[i].U)) /
-					                 static_cast<float>(lx);
-					v[i].U = static_cast<u16>(std::lround(static_cast<float>(v[i].U) + gu * static_cast<float>(dx0)));
-					v[i + 1].U = static_cast<u16>(std::lround(static_cast<float>(v[i + 1].U) + gu * static_cast<float>(dx1)));
-				}
-			}
-			if (dy0 | dy1)
-			{
-				const int ly = y1 - y0;
-				if (ly != 0)
-				{
-					const float gv = static_cast<float>(static_cast<int>(v[i + 1].V) - static_cast<int>(v[i].V)) /
-					                 static_cast<float>(ly);
-					v[i].V = static_cast<u16>(std::lround(static_cast<float>(v[i].V) + gv * static_cast<float>(dy0)));
-					v[i + 1].V = static_cast<u16>(std::lround(static_cast<float>(v[i + 1].V) + gv * static_cast<float>(dy1)));
-				}
-			}
+			const int lx = x1 - x0;
+			const int ly = y1 - y0;
+			const int lu = static_cast<int>(v[i + 1].U) - static_cast<int>(v[i].U);
+			const int lv = static_cast<int>(v[i + 1].V) - static_cast<int>(v[i].V);
+			if (dx != 0 && (lx == 0 || (lu * dx) % lx != 0))
+				continue;
+			if (dy != 0 && (ly == 0 || (lv * dy) % ly != 0))
+				continue;
+			du = (lx != 0) ? ((lu * dx) / lx) : 0;
+			dv = (ly != 0) ? ((lv * dy) / ly) : 0;
 		}
 
-		v[i].XYZ.X = static_cast<u16>(static_cast<int>(v[i].XYZ.X) + dx0);
-		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + dx1);
-		v[i].XYZ.Y = static_cast<u16>(static_cast<int>(v[i].XYZ.Y) + dy0);
-		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + dy1);
+		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + dx);
+		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + dy);
+		v[i + 1].U = static_cast<u16>(static_cast<int>(v[i + 1].U) + du);
+		v[i + 1].V = static_cast<u16>(static_cast<int>(v[i + 1].V) + dv);
 	}
 }
 
@@ -5365,18 +5361,12 @@ void GSRendererHW::Draw()
 		const u32 count = m_vertex->next;
 		GSVertex* v = &m_vertex->buff[0];
 
-		// The GS rasterises a sprite in whole pixels: an edge at x covers pixels from
-		// ceil(x) up, so a sprite offset by a fraction of a pixel covers exactly the same
-		// pixels as one that is not. Upscaling multiplies the edge before rasterising, so
-		// that fraction turns into whole device pixels and two sprites the GS covers
-		// identically stop covering the same columns. NASCAR Thunder 2002 writes its alpha
-		// plane with a sprite at x=[-0.5,319.5) and then reads it back through DATE with a
-		// sprite at x=[0,320): identical at 1x, one device column apart at 2x, and that
-		// column is the bright line down the middle of the screen.
-		//
-		// So round each edge to the pixel the GS would have started it at, and move the
-		// texture coordinate by the same distance along the sprite's own gradient, which
-		// leaves every native sample point exactly where it was.
+		// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
+		// into a pixel covers exactly what one ending on the boundary covers. Upscaling
+		// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
+		// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
+		// straight back through DATE with one ending at x=320: identical at 1x, one device
+		// column apart at 2x, and that column is the bright line down the middle of the screen.
 		SnapSpriteEdgesToPixelGrid();
 
 		// Hack to avoid vertical black line in various games (ace combat/tekken)
