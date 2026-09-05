@@ -687,6 +687,7 @@ void recBranchCall(void (*func)())
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles > 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+	recEeNoteChargeSite();
 
 	armFlushCycleDelta();
 
@@ -796,9 +797,11 @@ static bool eeChargeFitsForm(u32 charge, EeChargeForm form)
 
 // Would this site's charge still be a single instruction at every selector the
 // governor could move to? The window is [GetFloor(), GetConfigured()] — at most
-// three values. Counting only: nothing is emitted differently, nothing is
-// recorded, nothing is patched.
-static void eeClassifyChargeForm(EeChargeForm form)
+// three values. Returns true when it would NOT, which is the flag the side
+// table carries and the transition pass acts on: such a site cannot be
+// repaired by rewriting its immediate, so the block holding it is invalidated
+// and recompiled instead.
+static bool eeClassifyChargeForm(EeChargeForm form)
 {
 	const s8 floor = EECycleRate::GetFloor();
 	const s8 top = EECycleRate::GetConfigured();
@@ -814,18 +817,198 @@ static void eeClassifyChargeForm(EeChargeForm form)
 			s_eeBlockHasFormChange = true;
 			s_eeFormChangeBlocks++;
 		}
-		return;
+		return true;
 	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// The charge-site side table
+//
+// One record per emitted charge, so a cycle-rate transition can rewrite the
+// immediates in place instead of resetting the recompiler. Records are held in
+// their own vectors rather than on BASEBLOCKEX, which is memcpy'd on grow,
+// memmove'd on insert and erased without destructors — a pointer field there
+// would need ownership handling on three paths that have none. A flat vector
+// is also the right layout for the pass, which walks in code-address order.
+//
+// Nothing prunes them. That is safe here in a way it was not for the link map
+// (see the liveness note in BaseblockEx-arm64.h): the link map grew by one
+// entry per recompile of every caller, i.e. without bound relative to the
+// code, while this one grows by exactly one record per site actually emitted
+// and is therefore bounded by arena occupancy. Patching a record whose block
+// has since been recompiled writes into orphaned code, which nothing executes.
+// ---------------------------------------------------------------------------
+
+// This site's charge leaves its single-instruction encoding form somewhere in
+// the governor's window, so its block cannot be repaired in place.
+static constexpr u8 kEeChargeUnpatchable = 1u << 0;
+
+struct EeChargeRecord
+{
+	u32 offset;        // from the base of the arena this record's vector covers
+	u32 raw;           // s_nBlockCycles as this site saw it, before the mask
+	u32 owner_startpc; // the block that emitted it, so a flagged one is findable
+	u8  form;          // EeChargeForm
+	u8  flags;
+};
+
+// Two vectors because the two arenas have different bases and are flushed as
+// separate ranges. Appended in emit order, which is increasing code address
+// within each arena.
+static std::vector<EeChargeRecord> s_eeChargeRecords;
+static std::vector<EeChargeRecord> s_eeColdChargeRecords;
+
+// scaleblockcycles_clear() knows the raw and the form but runs before the
+// emitter emits, so it cannot know the address. It parks what it has here and
+// recEeNoteChargeSite() picks it up one instruction later.
+static bool s_eeChargePending = false;
+static u32 s_eeChargePendingRaw = 0;
+static u32 s_eeChargePendingCharge = 0;
+static EeChargeForm s_eeChargePendingForm = EeChargeForm::AddImm12;
+static bool s_eeChargePendingUnpatchable = false;
+
+// Does the word at a charge site actually carry the form the emitter declared?
+// Checked at record time against what vixl really emitted, and again by the
+// patch pass before it writes.
+//
+//   ADD/ADDS (immediate), 64-bit:  sf=1 op=0 S=? 10001 sh imm12 Rn Rd
+//     0x91000000 (ADD) or 0xB1000000 (ADDS), bit 23 clear, Rn = Rd = RECCYCLE.
+//   MOVZ (32-bit):                 sf=0 opc=10 100101 hw imm16 Rd
+//     0x52800000 with hw = 0 and Rd = RWARG2.
+//
+// A charge that outgrew its immediate makes vixl acquire a scratch register
+// and emit a materialise-then-add, whose last instruction is the shifted-
+// REGISTER form of ADD (0x8B...) — so this test is what separates the two, and
+// it does so by reading the page rather than by trusting bookkeeping.
+static bool eeChargeSiteHasForm(u32 word, EeChargeForm form)
+{
+	switch (form)
+	{
+		case EeChargeForm::AddImm12:
+		{
+			const u32 fixed = word & 0xFF800000u;
+			if (fixed != 0x91000000u && fixed != 0xB1000000u)
+				return false;
+			return ((word & 0x1Fu) == RECCYCLE.GetCode()) &&
+			       (((word >> 5) & 0x1Fu) == RECCYCLE.GetCode());
+		}
+
+		case EeChargeForm::MovzImm16:
+			return ((word & 0xFF800000u) == 0x52800000u) && ((word & 0x00600000u) == 0) &&
+			       ((word & 0x1Fu) == RWARG2.GetCode());
+	}
+	return false;
+}
+
+// Rewrite only the immediate field, leaving every other bit as vixl emitted it
+// — the S bit that separates ADD from ADDS, the operand size, the registers.
+// Only meaningful when eeChargeFitsForm(charge, form) says the charge still
+// fits; the caller checks that first.
+static u32 eeEncodeChargeWord(u32 word, EeChargeForm form, u32 charge)
+{
+	switch (form)
+	{
+		case EeChargeForm::AddImm12:
+			// sh at bit 22, imm12 at 21..10. sh = 1 is the shifted-by-12 form
+			// vixl picks for a charge that is a multiple of 4096.
+			word &= ~0x007FFC00u;
+			return (charge <= 0xfffu) ? (word | (charge << 10))
+			                          : (word | 0x00400000u | ((charge >> 12) << 10));
+
+		case EeChargeForm::MovzImm16:
+			// hw at 22..21 (stays 0), imm16 at 20..5.
+			word &= ~0x007FFFE0u;
+			return word | (charge << 5);
+	}
+	return word;
 }
 
 u32 scaleblockcycles_clear(EeChargeForm form)
 {
 	s_eeChargeSites++;
+	pxAssertMsg(!s_eeChargePending,
+		"an EE cycle charge was computed and never recorded at a site");
+
 	// Before the impl: it masks s_nBlockCycles down to the retained remainder,
-	// and the classifier needs the raw this site actually saw.
-	eeClassifyChargeForm(form);
-	return scaleblockcycles_clear_impl();
+	// and both the classifier and the side table need the raw this site saw.
+	s_eeChargePendingRaw = s_nBlockCycles;
+	s_eeChargePendingForm = form;
+	s_eeChargePendingUnpatchable = eeClassifyChargeForm(form);
+	s_eeChargePendingCharge = scaleblockcycles_clear_impl();
+	s_eeChargePending = true;
+
+	// The scaler floors at 1, so every caller below emits its charge
+	// instruction — the `if (cycles != 0) ... else Cmp` arms are dead. The
+	// record protocol depends on that: a caller that emitted nothing would
+	// leave the charge unconsumed and trip the assertion above at the next
+	// site.
+	pxAssert(s_eeChargePendingCharge >= 1);
+	return s_eeChargePendingCharge;
 }
+
+void recEeNoteChargeSite()
+{
+	pxAssertMsg(s_eeChargePending, "an EE charge site was recorded with no charge behind it");
+	s_eeChargePending = false;
+
+	// The instruction just emitted. Taken from the cursor rather than from a
+	// pointer captured before the emit, because vixl may flush a literal pool
+	// on its way in — the last word written is the charge either way.
+	const u8* const site = armGetCurrentCodePointer() - 4;
+
+	// A charge at the block's own entry point can never be patched.
+	// Arm64BaseBlocks::Remove stamps a `B DispatcherReg` redirect stub over the
+	// first word of a removed block, so rewriting that word would overwrite the
+	// stub and send every stale link site into dead code.
+	//
+	// The design assumed this was impossible — the prologue was supposed to
+	// emit the manual-protection check and the pin reloads first. It is not: a
+	// block whose first guest instruction is a COP2 op needing a VU0 sync gets
+	// its charge Add before anything else has been emitted, on a page that is
+	// still write-protected so there is no manual-protection prologue at all.
+	// EeVu0Cop2GuardMask.MultiplyAccumulateFormsMatchTheInterpreter compiles
+	// exactly that. So it is a flag, not an assertion: the block is invalidated
+	// and recompiled instead of patched.
+	const bool at_block_entry =
+		(s_pCurBlockEx && reinterpret_cast<uptr>(site) == s_pCurBlockEx->fnptr);
+
+	const EeChargeForm form = s_eeChargePendingForm;
+	const u32 charge = s_eeChargePendingCharge;
+
+	u32 word = 0;
+	std::memcpy(&word, armGetWritableCodePtr(const_cast<u8*>(site)), sizeof(word));
+
+	const bool single = eeChargeSiteHasForm(word, form) &&
+	                    (eeEncodeChargeWord(word, form, charge) == word);
+	pxAssertMsg(!eeChargeFitsForm(charge, form) || single,
+		"an EE cycle-charge site did not emit the single instruction its form names");
+
+	u8 flags = 0;
+	if (s_eeChargePendingUnpatchable || !single || at_block_entry)
+		flags |= kEeChargeUnpatchable;
+
+	// Which arena. Everything at or above s_coldBase is the cold side-exit
+	// arena (the constant pool above it holds no charge sites).
+	const bool cold = (s_coldBase != nullptr && site >= s_coldBase);
+	const u8* const base = cold ? s_coldBase : SysMemory::GetEERec();
+	std::vector<EeChargeRecord>& table = cold ? s_eeColdChargeRecords : s_eeChargeRecords;
+
+	pxAssert(site >= base);
+	table.push_back(EeChargeRecord{
+		static_cast<u32>(site - base),
+		s_eeChargePendingRaw,
+		s_pCurBlockEx ? s_pCurBlockEx->startpc : 0,
+		static_cast<u8>(form),
+		flags});
+}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+u32 recEeGetChargeRecordCount()
+{
+	return static_cast<u32>(s_eeChargeRecords.size() + s_eeColdChargeRecords.size());
+}
+#endif
 
 // Charge sites emitted since the last reset, and blocks currently registered.
 // Between them they size everything a per-site repair pass would have to do at
@@ -1206,6 +1389,7 @@ static void emitCycleUpdateAndEventCheck()
 		armAsm->Adds(RECCYCLE, RECCYCLE, cycles);
 	else
 		armAsm->Cmp(RECCYCLE, 0);
+	recEeNoteChargeSite();
 	armEmitCondBranch(a64::ge, DispatcherEvent);
 }
 
@@ -1466,6 +1650,7 @@ static void SetBranchBackedge()
 		armAsm->Adds(RECCYCLE, RECCYCLE, cycles);
 	else
 		armAsm->Cmp(RECCYCLE, 0);
+	recEeNoteChargeSite();
 	armAsm->B(&spill, a64::ge);
 
 	// The resident back-edge. Registered on the block so recClear can repoint
@@ -1539,6 +1724,7 @@ void SetBranchImm(u32 imm)
 		const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 		if (cycles != 0)
 			armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+		recEeNoteChargeSite();
 		armAsm->Cmp(RECCYCLE, 0);
 		armAsm->Csel(RECCYCLE, RECCYCLE, a64::xzr, a64::gt);
 		armEmitJmp(DispatcherEvent);
@@ -1813,6 +1999,7 @@ static void recEmitSideExitTail(u32 imm)
 
 	armAsm->Mov(RWSCRATCH, imm);
 	armAsm->Mov(RWARG2, scaleblockcycles_clear(EeChargeForm::MovzImm16));
+	recEeNoteChargeSite();
 	armEmitCall(SuperblockExitStub);
 
 	// RET lands here: the linked B (same patch protocol as SetBranchImm).
@@ -3479,6 +3666,13 @@ static void recResetRaw()
 	s_eeFormChangeSites = 0;
 	s_eeFormChangeBlocks = 0;
 	s_eeBlockHasFormChange = false;
+	// Both arenas rewind here, so this is the one place a charge record can
+	// dangle. clear() keeps the capacity: a cache-full reset is followed by
+	// rebuilding the same working set, and re-growing the vectors from empty
+	// every time is work for nothing.
+	s_eeChargeRecords.clear();
+	s_eeColdChargeRecords.clear();
+	s_eeChargePending = false;
 	// The code cache is about to be rewound, so every fastmem backpatch record
 	// points at code that no longer exists. vtlb_AddLoadStoreInfo overwrites a
 	// colliding code_address, so a stale record cannot mispatch — but nothing
@@ -4643,6 +4837,7 @@ StartRecomp:
 				u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 				if (cycles != 0)
 					armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+				recEeNoteChargeSite();
 
 				a64::SingleEmissionCheckScope guard(armAsm);
 				u8* patch_site = armGetCurrentCodePointer();

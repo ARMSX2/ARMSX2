@@ -185,6 +185,7 @@ static void emitFlushBlockCycles()
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+	recEeNoteChargeSite();
 
 	armFlushCycleDelta();
 }
@@ -197,6 +198,7 @@ static void emitFlushBlockCyclesAbs(const a64::Register& absOut)
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+	recEeNoteChargeSite();
 
 	armAsm->Ldr(absOut, armCpuRegMem(&cpuRegs.nextEventCycle));
 	armAsm->Add(absOut, RECCYCLE, absOut);

@@ -309,6 +309,7 @@ static void recVCallmsImpl(void (*func)())
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+	recEeNoteChargeSite();
 
 	armFlushCycleDelta();
 	armFlushEEClobberedPins(); // lazy-dirty seam: pairs with the reload below

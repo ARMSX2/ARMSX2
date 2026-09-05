@@ -783,6 +783,30 @@ u32 recEeGetLiveBlockCount();
 u32 recEeGetFormChangeSiteCount();
 u32 recEeGetFormChangeBlockCount();
 
+// ---------------------------------------------------------------------------
+// The charge-site side table
+//
+// Every charge site is recorded at emit time so a cycle-rate transition can
+// rewrite the immediates in place instead of throwing the whole code cache
+// away. Each of the eleven emitters calls this immediately after its
+// Add/Adds/Mov, and the pairing with scaleblockcycles_clear() is asserted both
+// ways: a charge computed and not recorded, or a record with no charge behind
+// it, is a site that would silently keep charging the old rate.
+//
+// The site address is taken from the emit cursor rather than passed in. That
+// is deliberate: the recorded word is decoded against the form the emitter
+// declared, so a charge that outgrew its immediate and made vixl emit a
+// materialise-then-add is recognised by what is actually on the page, not by
+// bookkeeping that could disagree with it.
+void recEeNoteChargeSite();
+
+#ifdef PCSX2_RECOMPILER_TESTS
+// Records held right now, across both arenas. One per charge site by
+// construction, which is what a test pins it against — a drift between the two
+// means a site is emitting a charge the transition pass will never repair.
+u32 recEeGetChargeRecordCount();
+#endif
+
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).
 // interlock=true mirrors x86 COP2_Interlock (CFC2/CTC2/QMFC2/QMTC2 path);
 // interlock=false mirrors mVUSyncVU0 / mVUFinishVU0 gating used by LQC2/SQC2

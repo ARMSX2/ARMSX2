@@ -46,6 +46,10 @@ extern u32 recEeGetChargeSiteCount();
 extern u32 recEeGetFormChangeSiteCount();
 extern u32 recEeGetFormChangeBlockCount();
 
+// Side-table records held right now, across both code arenas. One per charge
+// site by construction — see recEeNoteChargeSite().
+extern u32 recEeGetChargeRecordCount();
+
 using namespace recompiler_tests;
 using namespace mips;
 
@@ -459,4 +463,59 @@ TEST(EeRecCycleRate, ADeepDivideBlockOutgrowsItsChargeEncodingTwoStepsDown)
 
 	EXPECT_GE(recEeGetFormChangeSiteCount(), 1u);
 	EXPECT_GE(recEeGetFormChangeBlockCount(), 1u);
+}
+
+// The side table the immediate-patching transition walks. Every charge site
+// emits exactly one record, and a site with no record is a site that would go
+// on charging the old rate after a transition claimed to have repaired
+// everything — which is the one failure mode the whole design is built to
+// exclude. The recompiler asserts the pairing in both directions at emit time;
+// this pins the totals from outside, where a missed emitter shows up as a
+// count that no longer matches.
+TEST(EeRecCycleRate, EveryChargeSiteLeavesExactlyOneRecord)
+{
+	ScopedCycleRate rate(0);
+
+	recCpu.Reset();
+	EXPECT_EQ(recEeGetChargeSiteCount(), 0u) << "the reset did not clear the site count";
+	EXPECT_EQ(recEeGetChargeRecordCount(), 0u) << "the reset did not clear the side table";
+
+	// A handful of different block shapes, so the totals cover more than one
+	// emitter: a long straight-line block, a short one (the <= 6 instruction
+	// tail is a different site), and a divide-heavy one.
+	{
+		EeRecTestHarness h;
+		h.SetGpr64(reg::a1, 0);
+		h.LoadProgram(LongBlock());
+		h.Run();
+	}
+	EXPECT_GT(recEeGetChargeSiteCount(), 0u) << "nothing was compiled; the rest proves nothing";
+	EXPECT_EQ(recEeGetChargeRecordCount(), recEeGetChargeSiteCount());
+
+	{
+		std::vector<u32> shortprog;
+		for (int i = 0; i < 4; i++)
+			shortprog.push_back(ADDIU(reg::a1, reg::a1, 1));
+		EeRecTestHarness h;
+		h.SetGpr64(reg::a1, 0);
+		h.LoadProgram(shortprog);
+		h.Run();
+	}
+	EXPECT_EQ(recEeGetChargeRecordCount(), recEeGetChargeSiteCount());
+
+	{
+		EeRecTestHarness h;
+		h.SetGpr64(reg::a1, 0x0001000200030004ull);
+		h.SetGpr64(reg::a2, 0x0000000500000007ull);
+		h.LoadProgram(DeepDivideBlock());
+		h.RunJitNoDiff();
+	}
+	EXPECT_EQ(recEeGetChargeRecordCount(), recEeGetChargeSiteCount());
+
+	// And the reset takes both back to zero — the records point into an arena
+	// that is about to rewind, so leaving them would be a table of addresses
+	// that no longer mean anything.
+	recCpu.Reset();
+	EXPECT_EQ(recEeGetChargeSiteCount(), 0u);
+	EXPECT_EQ(recEeGetChargeRecordCount(), 0u);
 }
