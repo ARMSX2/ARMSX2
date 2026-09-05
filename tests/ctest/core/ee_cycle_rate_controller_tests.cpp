@@ -12,8 +12,8 @@
 // produced it.
 //
 // The window is 500 ms of target time throughout, so the default two-second
-// warm-up and cooldown are four windows each and the ten-second ineffective hold is
-// twenty. The tests spell those out rather than computing them, because a policy
+// warm-up and cooldown are four windows each and the ten-second downshift inhibit
+// is twenty. The tests spell those out rather than computing them, because a policy
 // change that silently halves a dwell should fail here.
 
 #include "EECycleRateController.h"
@@ -37,7 +37,10 @@ namespace
 
 	constexpr int kWarmupWindows = 4;
 	constexpr int kCooldownWindows = 4;
-	constexpr int kHoldWindows = 20;
+	// The downshift inhibit an ineffective step starts. It drains through Observe
+	// and Cooldown alike, so the four cooldown windows after the undo are the first
+	// four of these twenty, not extra ones.
+	constexpr int kInhibitWindows = 20;
 
 	EECycleRateWindowSample MakeWindow(float p90, float late, float own, float cpu, float blocked)
 	{
@@ -340,7 +343,7 @@ TEST(EECycleRateControllerTimers, NothingTransitionsDuringCooldown)
 	EXPECT_EQ(c.GetEffective(), -1);
 }
 
-TEST(EECycleRateControllerEffectiveness, AnIneffectiveStepIsUndoneAndHeldOff)
+TEST(EECycleRateControllerEffectiveness, AnIneffectiveStepIsGivenBackAndInhibitsAnother)
 {
 	const auto e = Eligible();
 	EECycleRateController c;
@@ -350,23 +353,78 @@ TEST(EECycleRateControllerEffectiveness, AnIneffectiveStepIsUndoneAndHeldOff)
 	FeedQuiet(c, DeadbandWindow(), e, kCooldownWindows);
 
 	// p90 has not moved, so the step bought nothing: something other than the EE
-	// selector is the bottleneck.
+	// selector is the bottleneck. One step down is one step to give back, which
+	// from baseline - 1 lands on the baseline.
 	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
-	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::RestoreBaseline);
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepUp);
 	EXPECT_EQ(c.GetEffective(), 0);
-	EXPECT_EQ(c.GetState(), State::Hold);
+	EXPECT_EQ(c.GetState(), State::Cooldown);
 	EXPECT_EQ(c.GetSnapshot().ineffective_count, 1u);
+	EXPECT_DOUBLE_EQ(c.GetSnapshot().downshift_inhibit_seconds, 10.0);
 	c.OnApplied(0);
 
-	// No amount of overload gets another step during the hold.
-	FeedQuiet(c, OverloadWindow(1.20f), e, kHoldWindows - 1);
-	EXPECT_EQ(c.GetState(), State::Hold);
+	// The undo's own cooldown drains the inhibit rather than extending it, so the
+	// whole thing is twenty windows and not twenty-four.
+	FeedQuiet(c, OverloadWindow(1.20f), e, kCooldownWindows);
+	EXPECT_EQ(c.GetState(), State::Observe);
+	FeedQuiet(c, OverloadWindow(1.20f), e, kInhibitWindows - kCooldownWindows);
+	EXPECT_EQ(c.GetEffective(), 0);
+	EXPECT_EQ(c.GetSnapshot().overload_dwell, 0u);
+	EXPECT_DOUBLE_EQ(c.GetSnapshot().downshift_inhibit_seconds, 0.0);
+
+	// Once it is spent the governor is allowed to try again.
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepDown);
+	EXPECT_EQ(c.GetEffective(), -1);
+}
+
+TEST(EECycleRateControllerEffectiveness, AnIneffectiveSecondStepKeepsTheEffectiveFirstOne)
+{
+	const auto e = Eligible();
+	EECycleRateController c;
+	c.Reset(0);
+	WarmUp(c, e);
+
+	// Step one: 1.40 down to 1.20 clears the five percent margin, so it stands.
+	EXPECT_EQ(c.Update(OverloadWindow(1.40f), e), Decision::None);
+	EXPECT_EQ(c.Update(OverloadWindow(1.40f), e), Decision::StepDown);
+	c.OnApplied(-1);
+	FeedQuiet(c, DeadbandWindow(), e, kCooldownWindows);
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepDown);
+	EXPECT_EQ(c.GetEffective(), -2);
+	c.OnApplied(-2);
+	FeedQuiet(c, DeadbandWindow(), e, kCooldownWindows);
+
+	// Step two bought nothing. Only step two goes back: step one was judged on its
+	// own two windows and passed, and giving it back would throw away time we have
+	// already measured.
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
+	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepUp);
+	EXPECT_EQ(c.GetEffective(), -1);
+	EXPECT_EQ(c.GetSnapshot().ineffective_count, 1u);
+	c.OnApplied(-1);
+
+	// Eight inhibited windows of overload, and it stays where it is.
+	FeedQuiet(c, OverloadWindow(1.20f), e, kCooldownWindows);
+	FeedQuiet(c, OverloadWindow(1.20f), e, 4);
+	EXPECT_EQ(c.GetEffective(), -1);
+	EXPECT_EQ(c.GetSnapshot().overload_dwell, 0u);
+
+	// Headroom is not inhibited, so the way back to the baseline stays open.
+	FeedQuiet(c, HeadroomWindow(), e, 3);
+	EXPECT_EQ(c.Update(HeadroomWindow(), e), Decision::StepUp);
+	EXPECT_EQ(c.GetEffective(), 0);
+	EXPECT_GT(c.GetSnapshot().downshift_inhibit_seconds, 0.0);
+	c.OnApplied(0);
+
+	// That upshift's cooldown does not extend the inhibit either: eight more
+	// windows and the original ten seconds are spent.
+	FeedQuiet(c, OverloadWindow(1.20f), e, kCooldownWindows);
+	FeedQuiet(c, OverloadWindow(1.20f), e, 4);
+	EXPECT_DOUBLE_EQ(c.GetSnapshot().downshift_inhibit_seconds, 0.0);
 	EXPECT_EQ(c.GetEffective(), 0);
 
-	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
-	EXPECT_EQ(c.GetState(), State::Observe);
-
-	// Once it expires the governor is allowed to try again.
 	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
 	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepDown);
 	EXPECT_EQ(c.GetEffective(), -1);
@@ -572,6 +630,7 @@ TEST(EECycleRateControllerSnapshot, ReportsWhatTheTraceNeeds)
 	EXPECT_FLOAT_EQ(s.last_p90, 1.35f);
 	EXPECT_EQ(s.transitions, 0u);
 	EXPECT_EQ(s.ineffective_count, 0u);
+	EXPECT_DOUBLE_EQ(s.downshift_inhibit_seconds, 0.0);
 }
 
 TEST(EECycleRateControllerPolicy, ATestPolicyDrivesTheDwellAndTheFloor)

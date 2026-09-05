@@ -38,8 +38,8 @@ struct EECycleRateWindowSample
 	u32 frames = 0;
 
 	// Window length measured in target (deadline) time, not wall time. This is the
-	// only clock the controller has: warm-up, cooldown and hold are all measured by
-	// summing this across valid windows.
+	// only clock the controller has: warm-up, cooldown and the downshift inhibit are
+	// all measured by summing this across valid windows.
 	double target_seconds = 0.0;
 
 	// p90 across the window's frames of (active wall time / target frame time).
@@ -120,9 +120,11 @@ struct EECycleRatePolicy
 
 	// After a downshift's cooldown expires, the next effectiveness_windows valid
 	// windows have to show a mean p90 at or below the pre-downshift p90 scaled by
-	// (1 - effectiveness_margin). If they do not, the step bought nothing, the
-	// baseline is restored, and no downshift is attempted for ineffective_hold_seconds.
+	// (1 - effectiveness_margin). If they do not, that step bought nothing and it
+	// is given back - one step, not the whole underclock, because any earlier step
+	// was judged on its own evidence and passed.
 	//
+	// Giving it back also starts a downshift inhibit of ineffective_hold_seconds.
 	// This is the guard against walking to the floor when the bottleneck is
 	// somewhere the EE selector cannot reach.
 	float effectiveness_margin = 0.05f;
@@ -146,10 +148,6 @@ public:
 		Observe,
 		// Sitting out cooldown_seconds of target time after a transition.
 		Cooldown,
-		// Sitting out ineffective_hold_seconds after a downshift that bought
-		// nothing. Blocks downshifts only; there is nothing left to upshift from,
-		// because the ineffective step was already undone.
-		Hold,
 	};
 
 	// Diagnostics only. A copy, so a caller can publish it without holding a
@@ -161,9 +159,13 @@ public:
 		s8 effective;
 		u32 overload_dwell;
 		u32 headroom_dwell;
-		// Target-time accumulated in the current timed state (warm-up, cooldown or
-		// hold). Zero in Observe and Disabled.
+		// Target-time accumulated in the current timed state (warm-up or cooldown).
+		// Zero in Observe and Disabled.
 		double clock_seconds;
+		// Target-time still owed on the downshift inhibit. Not a state: it drains
+		// through Observe and Cooldown alike, so an upshift taken while it is
+		// running cannot shorten it.
+		double downshift_inhibit_seconds;
 		float last_p90;
 		u32 transitions;
 		u32 ineffective_count;
@@ -209,6 +211,7 @@ private:
 	void EnterWarmup();
 	void EnterObserve();
 	EECycleRateDecision GoToBaseline(State next_state);
+	EECycleRateDecision UndoIneffectiveStep();
 
 	EECycleRatePolicy m_policy;
 
@@ -227,6 +230,10 @@ private:
 	float m_pre_downshift_p90 = 0;
 	u32 m_effectiveness_seen = 0;
 	double m_effectiveness_p90_sum = 0.0;
+
+	// Target-time still owed before another downshift may be considered. Set by an
+	// ineffective verdict, drained by every usable window in any state.
+	double m_downshift_inhibit_seconds = 0.0;
 
 	float m_last_p90 = 0;
 	u32 m_transitions = 0;
