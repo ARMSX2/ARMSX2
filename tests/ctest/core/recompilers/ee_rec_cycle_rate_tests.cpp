@@ -27,10 +27,18 @@
 #include "Config.h"
 #include "EECycleRate.h"
 #include "R5900.h"
+#include "VU.h"
 #include "VUmicro.h"
+#include "vtlb.h"
+
+// The recompiler's own header, for EeChargeSite / EeChargeForm and the patch
+// pass. The scaler drivers below stay extern declarations because they are
+// test-only entry points that live in the .cpp.
+#include "arm64/iR5900-arm64.h"
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <vector>
 
 // Test-only scaler drivers (iR5900-arm64.cpp / Interpreter.cpp). Each sets the
@@ -40,15 +48,6 @@ extern u32 recEeScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder
 extern u32 intScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder);
 extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
 
-// Emit-time census of the EE recompiler's cycle-charge sites (iR5900-arm64.cpp).
-// All four clear on a full recompiler reset.
-extern u32 recEeGetChargeSiteCount();
-extern u32 recEeGetFormChangeSiteCount();
-extern u32 recEeGetFormChangeBlockCount();
-
-// Side-table records held right now, across both code arenas. One per charge
-// site by construction — see recEeNoteChargeSite().
-extern u32 recEeGetChargeRecordCount();
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -178,6 +177,387 @@ std::vector<u8> CaptureBlockBytes(int configured, int effective)
 	const u8* p = reinterpret_cast<const u8*>(fnptr);
 	return std::vector<u8>(p, p + host_size);
 }
+
+// ---------------------------------------------------------------------------
+// Patch-pass fixtures
+// ---------------------------------------------------------------------------
+
+// The patch pass only runs when the EE recompiler is the active provider, and
+// EeRecTestHarness::Run() leaves the global pointer back on the interpreter.
+bool RepatchAsRecCpu(int selector)
+{
+	R5900cpu* const saved = Cpu;
+	Cpu = &recCpu;
+	const bool ok = recEeRepatchCycleCharges(static_cast<s8>(selector));
+	Cpu = saved;
+	return ok;
+}
+
+// A deterministic starting state for a byte-comparison. The full recompiler
+// reset rewinds the emit pointer so the same program lands at the same host
+// address; the vtlb block-tracking reset puts the program page back to
+// ProtMode_None, so the manual-protection prologue is present or absent the
+// same way in every run rather than depending on how many earlier tests wrote
+// to the page. (Same recipe as the loop-residency and superblock tests.)
+void ResetRecAndPageProtection()
+{
+	recCpu.Reset();
+	mmap_ResetBlockTracking();
+}
+
+std::vector<u8> BlockBytesAt(u32 pc)
+{
+	uptr fnptr = 0, lut = 0;
+	u32 host_size = 0;
+	if (!recEeBlockHostInfo(pc, &fnptr, &host_size, &lut) || !fnptr || host_size == 0)
+		return {};
+	const u8* p = reinterpret_cast<const u8*>(fnptr);
+	return std::vector<u8>(p, p + host_size);
+}
+
+// The cold side-exit arena, in full. Superblock taken arms are outlined there
+// and carry the MOVZ charge site, which no block's own extent covers.
+std::vector<u8> ArenaBytes(bool cold)
+{
+	uptr base = 0;
+	u32 used = 0;
+	if (!recEeArenaExtent(cold, &base, &used) || used == 0)
+		return {};
+	const u8* p = reinterpret_cast<const u8*>(base);
+	return std::vector<u8>(p, p + used);
+}
+
+std::vector<u8> ColdArenaBytes() { return ArenaBytes(true); }
+
+// Both arenas, since a program can put charge sites in either.
+struct CodeImage
+{
+	std::vector<u8> block;
+	std::vector<u8> cold;
+	bool operator==(const CodeImage& o) const { return block == o.block && cold == o.cold; }
+};
+
+CodeImage CurrentImage()
+{
+	return CodeImage{BlockBytesAt(kProgramPc), ColdArenaBytes()};
+}
+
+using ProgramRunner = std::function<void(EeRecTestHarness&)>;
+
+// Compile the program from an empty code cache with both selectors at `rate`.
+CodeImage CompileAt(int rate, const ProgramRunner& run)
+{
+	EmuConfig.Speedhacks.EECycleRate = static_cast<s8>(rate);
+	EECycleRate::SyncToConfigured();
+	ResetRecAndPageProtection();
+	EeRecTestHarness h;
+	run(h);
+	return CurrentImage();
+}
+
+// Every charge immediate in a block, decoded out of the ADD/ADDS form. Address
+// independent, unlike the byte image, so it can compare two compiles of the
+// same program that landed at different host addresses.
+std::vector<u32> ChargeImmediatesIn(const std::vector<u8>& bytes)
+{
+	std::vector<u32> out;
+	for (size_t i = 0; i + 4 <= bytes.size(); i += 4)
+	{
+		u32 word = 0;
+		std::memcpy(&word, bytes.data() + i, sizeof(word));
+		if (!recEeChargeWordHasFormForTest(word, EeChargeForm::AddImm12))
+			continue;
+		const u32 imm12 = (word >> 10) & 0xfffu;
+		out.push_back((word & 0x00400000u) ? (imm12 << 12) : imm12);
+	}
+	return out;
+}
+
+// The claim the whole design rests on: patching an already-compiled block to a
+// new selector produces exactly the bytes a fresh compile at that selector
+// emits. Runs a same-rate control first, because a program whose emission is
+// not byte-stable would make the comparison meaningless either way.
+void ExpectPatchMatchesFreshCompile(int from, int to, const ProgramRunner& run, const char* what)
+{
+	const CodeImage control_a = CompileAt(from, run);
+	const CodeImage control_b = CompileAt(from, run);
+	ASSERT_FALSE(control_a.block.empty()) << what << ": nothing was compiled at " << from;
+	ASSERT_TRUE(control_a == control_b) << what << ": emission is not deterministic, so the rest proves nothing";
+
+	const CodeImage fresh = CompileAt(to, run);
+	ASSERT_FALSE(fresh.block.empty()) << what << ": nothing was compiled at " << to;
+
+	CompileAt(from, run);
+	ASSERT_TRUE(RepatchAsRecCpu(to)) << what << ": the patch pass refused (" << from << " -> " << to
+	                                 << "): " << EECycleRate::GetLastTransitionPath().reason;
+	const CodeImage patched = CurrentImage();
+
+	EXPECT_EQ(patched.block, fresh.block) << what << ": block bytes after patching " << from << " -> " << to;
+	EXPECT_EQ(patched.cold, fresh.cold) << what << ": cold arena bytes after patching " << from << " -> " << to;
+}
+
+// One emitter's coverage: reach it, prove we reached it, then hold the patched
+// bytes against a fresh compile.
+void ExpectEmitterCovered(const char* what, EeChargeSite site, const ProgramRunner& run)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+	CompileAt(0, run);
+	EXPECT_GT(recEeGetChargeSiteCountFor(site), 0u)
+		<< what << ": the program never reached this emitter, so the byte comparison is not coverage of it";
+	ExpectPatchMatchesFreshCompile(0, -1, run, what);
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// ---------------------------------------------------------------------------
+// Programs, one per charge emitter
+// ---------------------------------------------------------------------------
+
+// The common block tail (emitCycleUpdateAndEventCheck).
+void RunLongBlock(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::a1, 0);
+	h.LoadProgram(LongBlock());
+	h.Run();
+}
+
+// SL-1 resident self-loop: the back-edge tail carries its own charge.
+void RunResidentLoop(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::t0, 0);
+	h.SetGpr64(reg::t1, 7);
+	h.SetGpr64(reg::t2, 3);
+	h.LoadProgramNoTerm({
+		ADDU(reg::t0, reg::t0, reg::t2),
+		ADDIU(reg::t1, reg::t1, -1),
+		BNE(reg::t1, reg::zero, -3),
+		NOP,
+		ADDIU(reg::v0, reg::zero, 0x55),
+		J(RecompilerTestEnvironment::kParkingPc), NOP,
+	});
+	h.Run();
+}
+
+// SL-03 superblock: the forward branch's taken arm is outlined into the cold
+// arena and charges through the shared exit stub — the one MOVZ site.
+void RunSuperblockTakenExit(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::t0, 1); // taken
+	h.LoadProgramNoTerm({
+		BNE(reg::t0, reg::zero, 2),
+		NOP,
+		ADDIU(reg::t1, reg::zero, 5),
+		ADDIU(reg::t2, reg::zero, 7),
+		J(RecompilerTestEnvironment::kParkingPc), NOP,
+	});
+	h.Run();
+}
+
+// A block that ends without a branch, in two instructions: the jump at the top
+// compiles a block over the loop body first, so when the back-edge later
+// dispatches into the middle the scan runs into that already-compiled block and
+// stops. Two instructions is well inside the <= 6 short-tail path.
+void RunShortNonBranchTail(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::t0, 0);
+	h.SetGpr64(reg::t1, 0);
+	h.SetGpr64(reg::t2, 2);
+	h.LoadProgramNoTerm({
+		J(RecompilerTestEnvironment::kProgramPc + 0x10), NOP, // 0x00: over the landing pad
+		ADDIU(reg::t1, reg::t1, 1), NOP,                      // 0x08: landing pad, entered from below
+		ADDIU(reg::t2, reg::t2, -1),                          // 0x10:
+		BGTZ(reg::t2, -4),                                    // 0x14: back to 0x08
+		NOP,                                                  // 0x18: delay slot
+		J(RecompilerTestEnvironment::kParkingPc), NOP,
+	});
+	h.Run();
+}
+
+// MFC0 $9 (Count) — the absolute-cycle COP0 flush. The leading ADDIU is
+// load-bearing, and it has to read a register rather than materialise a
+// constant: `addiu t0, zero, 1` emits NOTHING, because constant propagation
+// records t0 as a compile-time constant, and then the charge Add is the
+// block's first instruction — which the recorder flags as unpatchable, because
+// a patch there would clobber the redirect stub Remove() writes.
+// AnUnpatchableBlockIsInvalidatedAndRecompilesAtTheNewRate covers that shape
+// deliberately, with Cop0EntryChargeTail().
+void RunCop0CountRead(EeRecTestHarness& h)
+{
+	h.EnableCop0();
+	h.SetGpr64(reg::t0, 1);
+	h.LoadProgram({
+		ADDIU(reg::t0, reg::t0, 1),
+		MFC0(reg::v0, 9),
+		ADDIU(reg::t1, reg::t1, 2),
+	});
+	// JIT only. COP0 Count is derived from cpuRegs.cycle, which the two engines
+	// advance on different granularities — the recompiler charges a block at a
+	// time, the interpreter an instruction at a time — so a Count read is a
+	// standing JIT-vs-interp divergence and not this test's subject.
+	h.RunJitNoDiff();
+}
+
+// MFC0 $25 (performance counters) — the delta-only COP0 flush, which goes
+// through the interpreter.
+void RunCop0PerfCounterRead(EeRecTestHarness& h)
+{
+	h.EnableCop0();
+	h.SetGpr64(reg::t0, 1);
+	h.LoadProgram({
+		ADDIU(reg::t0, reg::t0, 1),
+		MFPS(reg::v0),
+		ADDIU(reg::t1, reg::t1, 2),
+	});
+	h.Run();
+}
+
+// A VU0 microprogram that stops. The E bit is what ends it, and an interlocked
+// COP2 op after the kick waits for exactly that — without the E bit the wait
+// never returns. The leading NOP pairs keep VPU_STAT busy past the kick so the
+// sync seam takes the call path rather than the "already idle" skip.
+void SeedTerminatingVu0Program(EeRecTestHarness& h)
+{
+	h.EnableVu0Capture();
+	h.EnableCop1();
+	h.SeedVu0Vi(REG_VPU_STAT, 0);
+
+	u32 off = 0;
+	for (int i = 0; i < 32; i++, off += 8)
+		h.SeedVu0Microprogram(off, {vu::NopPair()});
+	h.SeedVu0Microprogram(off, {vu::EBitNopPair(), vu::NopPair()});
+}
+
+// VCALLMS: kicks a VU0 microprogram, and charges the block's cycles first.
+void RunVcallms(EeRecTestHarness& h)
+{
+	SeedTerminatingVu0Program(h);
+	h.LoadProgram({
+		ADDIU(reg::t0, reg::zero, 1),
+		ee::VCALLMS(0),
+		ADDIU(reg::t1, reg::zero, 2),
+	});
+	h.Run();
+}
+
+// A VU0 kick followed by an interlocked COP2 read, so the analysis marks the
+// read as needing a sync and the sync seam charges.
+void RunCop2InterlockedSync(EeRecTestHarness& h)
+{
+	SeedTerminatingVu0Program(h);
+	h.LoadProgram({
+		ee::VCALLMS(0),
+		ee::CFC2_I(reg::v0, 1),
+		ADDIU(reg::t0, reg::zero, 1),
+	});
+	h.Run();
+}
+
+// The same, non-interlocked.
+void RunCop2PlainSync(EeRecTestHarness& h)
+{
+	SeedTerminatingVu0Program(h);
+	h.LoadProgram({
+		ee::VCALLMS(0),
+		ee::CFC2(reg::v0, 1),
+		ADDIU(reg::t0, reg::zero, 1),
+	});
+	h.Run();
+}
+
+// A chain of sixteen small blocks, each ending in a jump to the next, followed
+// by a tail block. The chain exists to dilute: the pass refuses outright when
+// the unpatchable share of the live blocks is over its cap, so testing "one
+// block is invalidated and the rest are patched" needs a rest. Every chain
+// block does enough work to clear the 40-cycle no-scaling floor, so its charge
+// really does move with the selector and `sites patched` is a real number.
+constexpr int kChainBlocks = 16;
+constexpr u32 kChainBlockWords = 8; // 6 x ADDIU, J, delay slot
+constexpr u32 kTailBlockPc = RecompilerTestEnvironment::kProgramPc + kChainBlocks * kChainBlockWords * 4;
+
+std::vector<u32> ChainThen(const std::vector<u32>& tail)
+{
+	std::vector<u32> prog;
+	for (int k = 0; k < kChainBlocks; k++)
+	{
+		for (u32 i = 0; i < kChainBlockWords - 2; i++)
+			prog.push_back(ADDIU(reg::t0, reg::t0, 1));
+		prog.push_back(J(RecompilerTestEnvironment::kProgramPc + (k + 1) * kChainBlockWords * 4));
+		prog.push_back(NOP);
+	}
+	prog.insert(prog.end(), tail.begin(), tail.end());
+	return prog;
+}
+
+// Tail: parallel divides, deep enough that the charge outgrows ADD's imm12 two
+// steps below the configured rate but NOT at the configured rate itself — which
+// is what makes the emitted shape widen across the transition and gives the
+// test something to see. PDIVW costs 176 raw units (Cycles::MMI_Div), doubled
+// because CP0 Config bit 18 is clear under the harness, so 64 of them are
+// 22528 raw: 2816 at rate 0, inside imm12, and 4928 at rate -2, outside it.
+// (DeepDivideBlock above uses 128 and is over the line at BOTH ends, which is
+// all its own test needs.)
+std::vector<u32> DeepDivideTail()
+{
+	std::vector<u32> tail;
+	for (int i = 0; i < 64; i++)
+		tail.push_back(ee::PDIVW(reg::a1, reg::a2));
+	tail.push_back(J(RecompilerTestEnvironment::kParkingPc));
+	tail.push_back(NOP);
+	return tail;
+}
+
+// Tail: a COP0 Count read behind a constant materialisation, which emits no
+// code — so the Count read's charge lands on the block's entry point and the
+// block is unpatchable for that reason instead. Unlike the deep-divide tail,
+// its charge stays inside imm12 at every selector, so the recompiled block can
+// be checked against a fresh compile by value.
+std::vector<u32> Cop0EntryChargeTail()
+{
+	return {
+		ADDIU(reg::t1, reg::zero, 1), // const-propagated: emits nothing
+		MFC0(reg::v0, 9),             // so this charge is the block's first word
+		ADDIU(reg::t2, reg::t2, 2),
+		J(RecompilerTestEnvironment::kParkingPc),
+		NOP,
+	};
+}
+
+void RunChainThenDeepDivide(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::a1, 0x0001000200030004ull);
+	h.SetGpr64(reg::a2, 0x0000000500000007ull);
+	h.LoadProgramNoTerm(ChainThen(DeepDivideTail()));
+	// JIT only: this is a test about what the compiler emits, not about what
+	// PDIVW computes.
+	h.RunJitNoDiff();
+}
+
+void RunChainThenCop0EntryCharge(EeRecTestHarness& h)
+{
+	h.EnableCop0();
+	h.LoadProgramNoTerm(ChainThen(Cop0EntryChargeTail()));
+	// JIT only: COP0 Count is derived from cpuRegs.cycle, which the two engines
+	// advance on different granularities, so a Count read is a standing
+	// JIT-vs-interp divergence and not this test's subject.
+	h.RunJitNoDiff();
+}
+
+void RunDeepDivideAlone(EeRecTestHarness& h)
+{
+	h.SetGpr64(reg::a1, 0x0001000200030004ull);
+	h.SetGpr64(reg::a2, 0x0000000500000007ull);
+	h.LoadProgram(DeepDivideBlock());
+	h.RunJitNoDiff();
+}
+
+// A nop spin branching to itself, with the WaitLoop speedhack on, so the tail
+// takes the fast-forward shape instead of the ordinary event check.
+struct ScopedWaitLoop
+{
+	bool prev;
+	explicit ScopedWaitLoop(bool on) : prev(EmuConfig.Speedhacks.WaitLoop) { EmuConfig.Speedhacks.WaitLoop = on; }
+	~ScopedWaitLoop() { EmuConfig.Speedhacks.WaitLoop = prev; }
+};
 
 } // namespace
 
@@ -371,11 +751,20 @@ TEST(EeRecCycleRate, ApplyEffectiveHonoursTheBounds)
 	CpuVU0 = saved_vu0;
 }
 
-// A transition rebuilds the EE recompiler and microVU0 and nothing else. The
-// IOP recompiler, microVU1 and the VIF unpack dynarec bake no EE selector, and
-// resetting them would cost a rebuild for nothing — under MTVU, resetting VU1
-// would also reach across a thread.
-TEST(EeRecCycleRate, TransitionResetsOnlyEeAndVu0)
+// A transition rebuilds microVU0 and nothing else. This test used to demand
+// that the EE generation moved too; it now demands the opposite, and the
+// inversion IS the acceptance criterion for the patched path — an EE reset
+// here means the pass refused and the transition went back to costing an
+// 88 MiB LUT rewrite and a frame of re-JIT.
+//
+// microVU0's reset stays. mVUtestCycles scales its compile-time cycle count by
+// the selector and then gates the emit on the scaled value being 1, so the
+// emitted SHAPE changes with the selector and no immediate rewrite can add an
+// instruction that was never emitted.
+//
+// The IOP recompiler, microVU1 and the VIF unpack dynarec bake no EE selector
+// at all; under MTVU, resetting VU1 would also reach across a thread.
+TEST(EeRecCycleRate, TransitionPatchesTheEeAndResetsOnlyVu0)
 {
 	ScopedCycleRate rate(0);
 
@@ -384,11 +773,24 @@ TEST(EeRecCycleRate, TransitionResetsOnlyEeAndVu0)
 	Cpu = &recCpu;
 	CpuVU0 = &CpuMicroVU0;
 
+	// Something has to be compiled, or the pass has no sites to repair and the
+	// test would pass on an empty cache.
+	ResetRecAndPageProtection();
+	{
+		EeRecTestHarness h;
+		RunLongBlock(h);
+	}
+	Cpu = &recCpu; // Run() leaves it on the interpreter
+
 	const EECycleRate::ResetGenerations before = EECycleRate::GetResetGenerations();
 	ASSERT_TRUE(EECycleRate::ApplyEffective(-1, "test"));
 	const EECycleRate::ResetGenerations after = EECycleRate::GetResetGenerations();
 
-	EXPECT_GT(after.ee, before.ee);
+	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+	EXPECT_TRUE(path.patched) << "the pass refused: " << path.reason;
+	EXPECT_GT(path.sites, 0u) << "nothing was patched, so nothing was proved";
+
+	EXPECT_EQ(after.ee, before.ee) << "the EE recompiler was reset; the patch pass did not take";
 	EXPECT_GT(after.vu0, before.vu0);
 	EXPECT_EQ(after.iop, before.iop);
 	EXPECT_EQ(after.vu1, before.vu1);
@@ -518,4 +920,396 @@ TEST(EeRecCycleRate, EveryChargeSiteLeavesExactlyOneRecord)
 	recCpu.Reset();
 	EXPECT_EQ(recEeGetChargeSiteCount(), 0u);
 	EXPECT_EQ(recEeGetChargeRecordCount(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// The immediate-patching transition
+// ---------------------------------------------------------------------------
+
+// The claim the design rests on, stated as strictly as it can be: a block
+// compiled at one selector and then patched to another is byte-for-byte what a
+// fresh compile at the second selector emits. Not "charges the same" — the same
+// bytes, because anything else is a second code shape nobody is testing.
+//
+// It holds because the charge is a pure function of the raw block-cycle count
+// and the selector, and the remainder the scaler retains between sites in one
+// block is & 0x7 for every selector from -3 through +1. Only the immediate
+// moves.
+TEST(EeRecCycleRate, EmittedCodeAfterPatchingMatchesAFreshCompile)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	ExpectPatchMatchesFreshCompile(0, -1, RunLongBlock, "0 -> -1");
+	ExpectPatchMatchesFreshCompile(0, -2, RunLongBlock, "0 -> -2");
+
+	// The restore direction. Configured -1 rather than 0 only so the classifier
+	// sees a window containing both ends; the emitted bytes at a given
+	// effective selector do not depend on the configured one, which
+	// EmittedCodeFollowsTheEffectiveSelector already pins.
+	ExpectPatchMatchesFreshCompile(-1, 0, RunLongBlock, "-1 -> 0");
+	ExpectPatchMatchesFreshCompile(-1, -3, RunLongBlock, "-1 -> -3");
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// Two steps in a row land where one step would have. The recorded raw is what
+// each pass scales, and a pass never rewrites the record, so nothing
+// accumulates — but a design that stored the last charge instead of the raw
+// would drift here and nowhere else.
+TEST(EeRecCycleRate, PatchingTwiceLandsWherePatchingOnceWould)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	const CodeImage fresh_m1 = CompileAt(-1, RunLongBlock);
+	ASSERT_FALSE(fresh_m1.block.empty());
+
+	CompileAt(0, RunLongBlock);
+	ASSERT_TRUE(RepatchAsRecCpu(-2));
+	ASSERT_TRUE(RepatchAsRecCpu(-1));
+
+	EXPECT_EQ(CurrentImage().block, fresh_m1.block);
+	EXPECT_EQ(CurrentImage().cold, fresh_m1.cold);
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// Site coverage. The common block tail is what LongBlock exercises and what
+// every other test here has been proving; these are the other emitters, each
+// with a program that reaches it and a per-emitter counter that says so, so a
+// site that stops being reachable fails loudly instead of quietly dropping out
+// of the coverage. One test per emitter, so a hang or a failure names the site.
+TEST(EeRecCycleRate, ChargeSiteBlockTailSurvivesAPatch)
+{
+	ExpectEmitterCovered("block tail", EeChargeSite::BlockTail, RunLongBlock);
+}
+
+TEST(EeRecCycleRate, ChargeSiteLoopBackedgeSurvivesAPatch)
+{
+	ExpectEmitterCovered("resident self-loop back-edge", EeChargeSite::LoopBackedge, RunResidentLoop);
+}
+
+TEST(EeRecCycleRate, ChargeSiteSuperblockExitSurvivesAPatch)
+{
+	ExpectEmitterCovered("superblock taken side exit (MOVZ)", EeChargeSite::SuperblockExit,
+		RunSuperblockTakenExit);
+}
+
+TEST(EeRecCycleRate, ChargeSiteShortNonBranchTailSurvivesAPatch)
+{
+	ExpectEmitterCovered("short non-branch block tail", EeChargeSite::ShortBlockTail, RunShortNonBranchTail);
+}
+
+TEST(EeRecCycleRate, ChargeSiteCop0CountReadSurvivesAPatch)
+{
+	ExpectEmitterCovered("COP0 Count read", EeChargeSite::Cop0FlushCyclesAbs, RunCop0CountRead);
+}
+
+TEST(EeRecCycleRate, ChargeSiteCop0PerfCounterReadSurvivesAPatch)
+{
+	ExpectEmitterCovered("COP0 performance-counter read", EeChargeSite::Cop0FlushCycles,
+		RunCop0PerfCounterRead);
+}
+
+TEST(EeRecCycleRate, ChargeSiteVcallmsSurvivesAPatch)
+{
+	ExpectEmitterCovered("VCALLMS", EeChargeSite::Vcallms, RunVcallms);
+}
+
+TEST(EeRecCycleRate, ChargeSiteCop2InterlockedSyncSurvivesAPatch)
+{
+	ExpectEmitterCovered("COP2 interlocked sync", EeChargeSite::Cop2SyncInterlock, RunCop2InterlockedSync);
+}
+
+TEST(EeRecCycleRate, ChargeSiteCop2PlainSyncSurvivesAPatch)
+{
+	ExpectEmitterCovered("COP2 non-interlocked sync", EeChargeSite::Cop2SyncPlain, RunCop2PlainSync);
+}
+
+// The WaitLoop fast-forward tail, which only exists with the speedhack on.
+TEST(EeRecCycleRate, WaitLoopFastForwardTailSurvivesAPatch)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+	ScopedWaitLoop waitloop(true);
+
+	// A spin branching to its own startpc, so s_branchTo == startpc and the
+	// block qualifies as a wait loop. The branch is NOT taken at run time —
+	// t0 is nonzero — because a wait loop that IS taken never leaves: the
+	// fast-forward tail jumps to DispatcherEvent and comes straight back to
+	// the loop top, which is the whole point of the shape. What is being
+	// tested is what the compiler emitted for the taken arm, and that is
+	// emitted whether or not the arm runs.
+	const ProgramRunner run = [](EeRecTestHarness& h) {
+		h.SetGpr64(reg::t0, 1);
+		h.LoadProgramNoTerm({
+			BEQ(reg::t0, reg::zero, -1), // → its own startpc
+			NOP,                         // delay slot
+			ADDIU(reg::v0, reg::zero, 0x42),
+			J(RecompilerTestEnvironment::kParkingPc), NOP,
+		});
+		h.Run();
+	};
+
+	CompileAt(0, run);
+	EXPECT_GT(recEeGetChargeSiteCountFor(EeChargeSite::WaitLoopFastFwd), 0u)
+		<< "the WaitLoop fast-forward tail was not emitted; the comparison below does not cover it";
+	ExpectPatchMatchesFreshCompile(0, -1, run, "WaitLoop fast-forward tail");
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// The hand encoder against vixl, at the boundaries where the encoding changes
+// shape. The byte-identity tests above are the real proof; this one localises a
+// failure to the bit layout instead of to "some block came out different".
+TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
+{
+	alignas(4) static u8 buffer[64];
+
+	const auto vixl_word = [&](int form, u32 charge) -> u32 {
+		vixl::aarch64::MacroAssembler masm(buffer, sizeof(buffer));
+		switch (form)
+		{
+			case 0: masm.Add(RECCYCLE, RECCYCLE, charge); break;
+			case 1: masm.Adds(RECCYCLE, RECCYCLE, charge); break;
+			default: masm.Mov(RWARG2, charge); break;
+		}
+		masm.FinalizeCode();
+		EXPECT_EQ(masm.GetSizeOfCodeGenerated(), 4u)
+			<< "vixl needed more than one instruction for charge " << charge
+			<< "; the test case is outside the single-instruction forms";
+		u32 word = 0;
+		std::memcpy(&word, buffer, sizeof(word));
+		return word;
+	};
+
+	// IsImmAddSub: a 12-bit immediate, or a 12-bit one shifted left by 12 with
+	// the low bits clear. 1 and 0xfff are the plain form, 0x1000 and 0xfff000
+	// the shifted one, and 0xfff000 is the largest charge that encodes at all.
+	for (const u32 charge : {1u, 2u, 0xfffu, 0x1000u, 0x2000u, 0xfff000u})
+	{
+		for (int form = 0; form < 2; form++)
+		{
+			const u32 base = vixl_word(form, 1); // a valid word of this shape
+			const u32 want = vixl_word(form, charge);
+			EXPECT_TRUE(recEeChargeWordHasFormForTest(base, EeChargeForm::AddImm12))
+				<< "form " << form;
+			EXPECT_EQ(recEeEncodeChargeWordForTest(base, EeChargeForm::AddImm12, charge), want)
+				<< "form " << form << ", charge " << charge;
+		}
+	}
+
+	for (const u32 charge : {1u, 2u, 0xfffu, 0x1000u, 0x1234u, 0xffffu})
+	{
+		const u32 base = vixl_word(2, 1);
+		const u32 want = vixl_word(2, charge);
+		EXPECT_TRUE(recEeChargeWordHasFormForTest(base, EeChargeForm::MovzImm16));
+		EXPECT_EQ(recEeEncodeChargeWordForTest(base, EeChargeForm::MovzImm16, charge), want)
+			<< "MOVZ charge " << charge;
+	}
+
+	// And the decoder rejects the shapes a patch must never land on: the
+	// shifted-register ADD that a materialise-then-add ends with, and a MOVK.
+	{
+		vixl::aarch64::MacroAssembler masm(buffer, sizeof(buffer));
+		masm.add(RECCYCLE, RECCYCLE, vixl::aarch64::x9);
+		masm.FinalizeCode();
+		u32 word = 0;
+		std::memcpy(&word, buffer, sizeof(word));
+		EXPECT_FALSE(recEeChargeWordHasFormForTest(word, EeChargeForm::AddImm12))
+			<< "the register form of ADD passed the immediate-form decoder";
+	}
+	{
+		vixl::aarch64::MacroAssembler masm(buffer, sizeof(buffer));
+		masm.movk(RWARG2, 0x1234);
+		masm.FinalizeCode();
+		u32 word = 0;
+		std::memcpy(&word, buffer, sizeof(word));
+		EXPECT_FALSE(recEeChargeWordHasFormForTest(word, EeChargeForm::MovzImm16))
+			<< "MOVK passed the MOVZ decoder";
+	}
+}
+
+// An unpatchable block is thrown away rather than repaired, and comes back
+// charging at the new rate on its next dispatch. The block here is unpatchable
+// because its charge sits at the block's entry point: patching that word would
+// overwrite the redirect stub Arm64BaseBlocks::Remove stamps there and send
+// every stale link site into dead code.
+//
+// The check is on the charge immediates rather than on the bytes, and that is
+// forced: a recompiled block lands at a NEW host address and every PC-relative
+// field in it moves with the address, so its bytes cannot be held against a
+// fresh compile's. The immediate is the part the selector decides.
+TEST(EeRecCycleRate, AnUnpatchableBlockIsInvalidatedAndRecompilesAtTheNewRate)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+	R5900cpu* saved_cpu = Cpu;
+	BaseVUmicroCPU* saved_vu0 = CpuVU0;
+
+	CompileAt(-1, RunChainThenCop0EntryCharge);
+	const std::vector<u32> want = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
+	ASSERT_FALSE(want.empty()) << "the reference compile emitted no charge immediate";
+
+	CompileAt(0, RunChainThenCop0EntryCharge);
+	const std::vector<u32> at_rate_0 = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
+	ASSERT_NE(at_rate_0, want) << "the two selectors charge this block the same, so nothing below can fail";
+
+	uptr before_fnptr = 0, before_lut = 0;
+	u32 before_size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &before_fnptr, &before_size, &before_lut));
+
+	Cpu = &recCpu;
+	CpuVU0 = &CpuMicroVU0;
+	const EECycleRate::ResetGenerations gen_before = EECycleRate::GetResetGenerations();
+	ASSERT_TRUE(EECycleRate::ApplyEffective(-1, "test"));
+	const EECycleRate::ResetGenerations gen_after = EECycleRate::GetResetGenerations();
+	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+
+	EXPECT_TRUE(path.patched) << "the pass refused: " << path.reason;
+	EXPECT_EQ(path.blocks_invalidated, 1u) << "expected exactly the tail block to be thrown away";
+	EXPECT_GT(path.sites, 0u) << "the chain blocks should still have been patched";
+	EXPECT_EQ(gen_after.ee, gen_before.ee) << "the EE recompiler was reset";
+
+	// Its LUT entry is back at JITCompile, so the next dispatch recompiles
+	// rather than re-entering code built for the old rate.
+	{
+		uptr fnptr = 0, lut = 0;
+		u32 size = 0;
+		EXPECT_TRUE(recEeBlockHostInfo(kTailBlockPc, &fnptr, &size, &lut));
+		EXPECT_NE(lut, before_fnptr) << "the LUT still points at the block compiled for the old rate";
+	}
+
+	{
+		EeRecTestHarness h;
+		h.EnableCop0();
+		h.LoadProgramNoTerm(ChainThen(Cop0EntryChargeTail()));
+		// PreserveCache: only the invalidated block should be rebuilt.
+		h.RunJitNoDiff(EeRecTestHarness::RunMode::PreserveCache);
+	}
+
+	uptr after_fnptr = 0, after_lut = 0;
+	u32 after_size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &after_fnptr, &after_size, &after_lut));
+	EXPECT_NE(after_fnptr, before_fnptr) << "the block did not recompile";
+	EXPECT_EQ(ChargeImmediatesIn(BlockBytesAt(kTailBlockPc)), want)
+		<< "the recompiled block is not charging at the new rate";
+
+	Cpu = saved_cpu;
+	CpuVU0 = saved_vu0;
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// The other reason a block cannot be repaired: its charge outgrows ADD's
+// 12-bit immediate two steps down, so a fresh compile would have emitted a
+// materialise-then-add of two to five instructions where one sits now. The
+// block is thrown away, and the shape it comes back in is the wider one — the
+// host size a fresh compile at the new rate produces, not the one it had.
+TEST(EeRecCycleRate, ABlockWhoseChargeOutgrowsItsFormIsInvalidated)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+	R5900cpu* saved_cpu = Cpu;
+	BaseVUmicroCPU* saved_vu0 = CpuVU0;
+
+	CompileAt(-2, RunChainThenDeepDivide);
+	const std::vector<u32> want = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
+
+	CompileAt(0, RunChainThenDeepDivide);
+	ASSERT_GE(recEeGetFormChangeBlockCount(), 1u) << "the deep block was not classified as unpatchable";
+	const std::vector<u32> at_rate_0 = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
+	// The whole point of this block: its charge is a single ADD immediate at the
+	// configured rate and is not one two steps down, where vixl materialises it
+	// into a register instead. So the immediate the scan finds at rate 0 is gone
+	// from the -2 compile entirely.
+	ASSERT_NE(at_rate_0, want) << "the two selectors emit the same shape, so nothing below can fail";
+
+	uptr before_fnptr = 0, before_lut = 0;
+	u32 before_size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &before_fnptr, &before_size, &before_lut));
+
+	Cpu = &recCpu;
+	CpuVU0 = &CpuMicroVU0;
+	const EECycleRate::ResetGenerations gen_before = EECycleRate::GetResetGenerations();
+	ASSERT_TRUE(EECycleRate::ApplyEffective(-2, "test"));
+	const EECycleRate::ResetGenerations gen_after = EECycleRate::GetResetGenerations();
+	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+
+	EXPECT_TRUE(path.patched) << "the pass refused: " << path.reason;
+	EXPECT_EQ(path.blocks_invalidated, 1u);
+	EXPECT_GT(path.sites, 0u) << "the chain blocks should still have been patched";
+	EXPECT_EQ(gen_after.ee, gen_before.ee) << "the EE recompiler was reset";
+
+	{
+		EeRecTestHarness h;
+		h.SetGpr64(reg::a1, 0x0001000200030004ull);
+		h.SetGpr64(reg::a2, 0x0000000500000007ull);
+		h.LoadProgramNoTerm(ChainThen(DeepDivideTail()));
+		h.RunJitNoDiff(EeRecTestHarness::RunMode::PreserveCache);
+	}
+
+	uptr after_fnptr = 0, after_lut = 0;
+	u32 after_size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &after_fnptr, &after_size, &after_lut));
+	EXPECT_NE(after_fnptr, before_fnptr) << "the block did not recompile";
+	// Host SIZE is not usable as the comparison here: a block recompiled at a
+	// different arena address can need a far-call veneer where the reference
+	// compile needed none, which moves the size by more than the charge does.
+	EXPECT_EQ(ChargeImmediatesIn(BlockBytesAt(kTailBlockPc)), want)
+		<< "the block did not come back in the shape the new rate compiles to";
+
+	Cpu = saved_cpu;
+	CpuVU0 = saved_vu0;
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// Past the cap the pass refuses outright, and refusing means nothing was
+// touched — not "most of it was fine". A deep-divide program on its own has
+// almost no other blocks, so its single unpatchable block is well over the 10%
+// share and the pass has to hand the transition back to the reset.
+TEST(EeRecCycleRate, TooManyUnpatchableBlocksRefusesAndWritesNothing)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	CompileAt(0, RunDeepDivideAlone);
+	ASSERT_GE(recEeGetFormChangeBlockCount(), 1u) << "the deep block was not classified as unpatchable";
+
+	const std::vector<u8> hot_before = ArenaBytes(false);
+	const std::vector<u8> cold_before = ArenaBytes(true);
+	ASSERT_FALSE(hot_before.empty());
+
+	EXPECT_FALSE(RepatchAsRecCpu(-2)) << "the pass took a transition it should have refused";
+
+	EXPECT_EQ(ArenaBytes(false), hot_before) << "a refused pass wrote into the hot arena";
+	EXPECT_EQ(ArenaBytes(true), cold_before) << "a refused pass wrote into the cold arena";
+
+	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+	EXPECT_FALSE(path.patched);
+	EXPECT_EQ(path.sites, 0u);
+	EXPECT_EQ(path.blocks_invalidated, 0u);
+	EXPECT_GE(path.blocks_unpatchable, 1u);
+	EXPECT_STRNE(path.reason, "");
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// Configured +2 and +3 widen the remainder the scaler retains between sites in
+// one block, so the raw a later site in the same block saw is no longer the
+// same at every selector in the window and the recorded raws are wrong for all
+// but the one they were taken at. The pass refuses rather than getting it
+// subtly wrong.
+TEST(EeRecCycleRate, PatchingIsRefusedAboveConfiguredPlusOne)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	CompileAt(2, RunLongBlock);
+	EXPECT_FALSE(RepatchAsRecCpu(1)) << "the pass ran with the wide remainder mask in play";
+
+	CompileAt(1, RunLongBlock);
+	EXPECT_TRUE(RepatchAsRecCpu(0)) << "configured +1 is inside the narrow-remainder range and must patch";
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
 }

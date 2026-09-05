@@ -398,6 +398,33 @@ public:
 		blocks.erase(first, last + 1);
 	}
 
+	// Stamp the redirect stub over one block's entry (and repoint its resident
+	// back-edge) WITHOUT erasing it from the array. Same protocol as Remove()
+	// above and the same effect on execution: the next dispatch of this startpc
+	// goes through JITCompile once the caller resets the LUT entry, and any
+	// link site still branching straight into the old code lands on the stub
+	// and re-dispatches. New() already handles recompiling a startpc whose
+	// BASEBLOCKEX is still present — it reuses the entry and retargets fnptr —
+	// which is the state recClear leaves the in-progress block in too.
+	//
+	// It exists because erase() is a memmove of the array tail, i.e. O(live
+	// blocks) per removed block. A cycle-rate transition can invalidate
+	// thousands of blocks at once, and paying that per block is quadratic in
+	// the working set: at 60k live blocks it is seconds, which is worse than
+	// the reset the whole exercise is trying to avoid.
+	__fi void Invalidate(int idx)
+	{
+		if (!jitcompile)
+			return;
+
+		const uptr site = blocks[idx].fnptr;
+		PatchAtomic(site, EncodeB(site, StaleDispatchTarget()));
+
+		if (blocks[idx].backedge_site)
+			PatchAtomic(blocks[idx].backedge_site,
+				EncodeB(blocks[idx].backedge_site, blocks[idx].backedge_stub));
+	}
+
 	__fi void Reset()
 	{
 		blocks.clear();

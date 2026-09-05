@@ -798,13 +798,66 @@ u32 recEeGetFormChangeBlockCount();
 // declared, so a charge that outgrew its immediate and made vixl emit a
 // materialise-then-add is recognised by what is actually on the page, not by
 // bookkeeping that could disagree with it.
-void recEeNoteChargeSite();
+//
+// The site id is bookkeeping for the coverage tests. The eleven emitters are
+// otherwise indistinguishable once their records are in the table, and a
+// coverage test that cannot say which emitter it reached is not one.
+enum class EeChargeSite : u8
+{
+	BranchCall,         // recBranchCall — interpreter-fallback seam
+	BlockTail,          // emitCycleUpdateAndEventCheck — the common tail
+	LoopBackedge,       // SetBranchBackedge — SL-1 resident self-loop
+	WaitLoopFastFwd,    // SetBranchImm under Speedhacks.WaitLoop
+	SuperblockExit,     // recEmitSideExitTail — the MOVZ site
+	ShortBlockTail,     // recRecompile, non-branch block of <= 6 instructions
+	Cop0FlushCycles,    // emitFlushBlockCycles
+	Cop0FlushCyclesAbs, // emitFlushBlockCyclesAbs — MFC0 Count
+	Vcallms,            // recVCallmsImpl
+	Cop2SyncInterlock,  // cop2EmitConditionalSync, interlocked
+	Cop2SyncPlain,      // cop2EmitConditionalSync, non-interlocked
+	Count
+};
+
+void recEeNoteChargeSite(EeChargeSite which);
+
+// Bring every recorded charge site into agreement with `new_selector` by
+// rewriting the immediate already on the page, so a cycle-rate transition costs
+// a walk of the side table instead of an 88 MiB LUT rewrite, a 32 MiB memset
+// and the lazy re-JIT of the next frame's whole working set.
+//
+// Returns false when the pass did not run or could not complete, in which case
+// NOTHING was touched and the caller must fall back to the full reset. There is
+// no third outcome: a half-applied pass is blocks charging the old rate with
+// nobody tracking which ones, which is the failure this is designed against.
+//
+// Runs on the CPU thread, mid-execute, from EECycleRate::ApplyEffective. That
+// is safe because patching neither moves nor frees code and does not change an
+// instruction boundary — every live return address stays valid and lands on the
+// same instruction, now carrying a different immediate.
+bool recEeRepatchCycleCharges(s8 new_selector);
 
 #ifdef PCSX2_RECOMPILER_TESTS
 // Records held right now, across both arenas. One per charge site by
 // construction, which is what a test pins it against — a drift between the two
 // means a site is emitting a charge the transition pass will never repair.
 u32 recEeGetChargeRecordCount();
+
+// Records emitted by one specific emitter since the last reset. Cleared by the
+// reset with everything else.
+u32 recEeGetChargeSiteCountFor(EeChargeSite which);
+
+// One code arena's base and used extent. The cold side-exit arena carries the
+// superblock exit tail's MOVZ charge, outside every block's
+// [fnptr, fnptr + x86size), so a byte-identity test that reads only the hot
+// block cannot see it; the hot extent is what a test compares before and after
+// a refused pass to prove it wrote nothing at all.
+bool recEeArenaExtent(bool cold, uptr* base, u32* used);
+
+// The hand encoder the patch pass writes with, and the form decoder it checks
+// against, so a test can pin both against vixl at the encoding boundaries
+// rather than restating the bit layout a second time.
+u32 recEeEncodeChargeWordForTest(u32 word, EeChargeForm form, u32 charge);
+bool recEeChargeWordHasFormForTest(u32 word, EeChargeForm form);
 #endif
 
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).

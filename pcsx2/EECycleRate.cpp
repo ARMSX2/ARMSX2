@@ -10,6 +10,10 @@
 #include "VMManager.h"
 #include "VUmicro.h"
 
+#if defined(ARCH_ARM64)
+#include "arm64/iR5900-arm64.h" // recEeRepatchCycleCharges
+#endif
+
 #include "common/Assertions.h"
 #include "common/Console.h"
 #include "common/HostSys.h"
@@ -26,6 +30,7 @@ namespace
 
 	EECycleRate::ResetGenerations s_generations = {};
 	EECycleRate::TransitionCost s_last_cost = {};
+	EECycleRate::TransitionPath s_last_path = {};
 } // namespace
 
 s8 EECycleRate::GetEffective()
@@ -69,22 +74,55 @@ bool EECycleRate::ApplyEffective(s8 selector, const char* reason)
 	s_effective = selector;
 	s_transitions++;
 
-	// Order matters. recResetEE defers to the next safe execution boundary when
-	// the EE is mid-execute; mVUreset is immediate. Between the two, a live EE
-	// block that reaches VU0 does so through a C entry point, so it meets the
-	// fresh mVU0 rather than a half-torn-down one.
+	// The EE recompiler's dependence on the selector is eleven baked charge
+	// immediates, and those can be rewritten in place — no reset, no lazy
+	// re-JIT of the next frame's working set. The pass either brings every
+	// recorded site into agreement with the new selector or touches nothing and
+	// says so; the reset stays as the fallback for everything it refuses, and
+	// stays unconditionally on x86, which has no such pass.
+	s_last_path = TransitionPath{};
+#if defined(ARCH_ARM64)
+	const bool patched = recEeRepatchCycleCharges(selector);
+#else
+	const bool patched = false;
+	s_last_path.reason = "immediate patching is an AArch64 recompiler path";
+#endif
+
+	// Order matters when the reset is taken. recResetEE defers to the next safe
+	// execution boundary when the EE is mid-execute; mVUreset is immediate.
+	// Between the two, a live EE block that reaches VU0 does so through a C
+	// entry point, so it meets the fresh mVU0 rather than a half-torn-down one.
+	//
+	// microVU0's reset is NOT optional on the patched path. mVUtestCycles
+	// scales its compile-time cycle count by the selector and then gates the
+	// emit on the scaled value being 1, so the emitted SHAPE changes with the
+	// selector — patching cannot add an instruction that was never emitted.
 	const u64 t0 = GetCPUTicks();
-	Cpu->Reset();
+	if (!patched)
+		Cpu->Reset();
 	const u64 t1 = GetCPUTicks();
 	CpuVU0->Reset();
 	const u64 t2 = GetCPUTicks();
 	s_last_cost.cpu_reset = t1 - t0;
 	s_last_cost.vu0_reset = t2 - t1;
 
-	DevCon.WriteLn("EE cycle rate: effective %d -> %d (configured %d), reason '%s'",
+	DevCon.WriteLn("EE cycle rate: effective %d -> %d (configured %d), reason '%s'; EE %s",
 		static_cast<int>(old), static_cast<int>(selector), static_cast<int>(configured),
-		reason ? reason : "");
+		reason ? reason : "",
+		patched ? "patched in place" : "reset");
 	return true;
+}
+
+EECycleRate::TransitionPath EECycleRate::GetLastTransitionPath()
+{
+	return s_last_path;
+}
+
+void EECycleRate::NoteEePatchPass(const TransitionPath& path)
+{
+	s_last_path = path;
+	if (!s_last_path.reason)
+		s_last_path.reason = "";
 }
 
 EECycleRate::TransitionCost EECycleRate::GetLastTransitionCost()
