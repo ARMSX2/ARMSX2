@@ -330,17 +330,30 @@ private:
 		// whether the rebuild belongs to this transition (its generation stamp
 		// matches the post-transition EE generation) or to an earlier one.
 		const EECycleRate::TransitionCost cost = EECycleRate::GetLastTransitionCost();
+		const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
 		const double tick_ms = 1000.0 / static_cast<double>(GetTickFrequency());
 		const bool rebuild_is_ours = (cost.ee_rebuild_generation == after.ee) && (after.ee != before.ee);
 
+		// A request for the selector already in force returns before the path is
+		// recorded, so the struct still describes an EARLIER transition. Print
+		// nothing from it rather than reprinting stale numbers as if they
+		// belonged to this frame.
+		const std::string path_text = (old == selector)
+			? std::string("EE path unchanged (the selector was already there)")
+			: fmt::format("EE path {} ({}), patch pass {:.3f} ms, {} sites patched, "
+			              "{} blocks invalidated ({} unpatchable)",
+				  path.patched ? "PATCHED" : "RESET", path.reason,
+				  static_cast<double>(path.ticks) * tick_ms, path.sites, path.blocks_invalidated,
+				  path.blocks_unpatchable);
+
 		Console.WriteLn(fmt::format(
-			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); "
+			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); {}; "
 			"split Cpu->Reset() call {:.3f} ms, EE rebuild {:.3f} ms ({}), mVUreset(VU0) {:.3f} ms; "
-			"discarded {} live blocks / {} charge sites, of which {} sites in {} blocks change "
+			"working set {} live blocks / {} charge sites, of which {} sites in {} blocks change "
 			"encoding form across the window; "
 			"generations ee {}->{} vu0 {}->{} iop {}->{} vu1 {}->{} vif {}->{}",
 			m_pass, frame, static_cast<int>(old), static_cast<int>(selector),
-			ok ? "applied" : "REJECTED", apply_ms,
+			ok ? "applied" : "REJECTED", apply_ms, path_text,
 			static_cast<double>(cost.cpu_reset) * tick_ms,
 			static_cast<double>(cost.ee_rebuild) * tick_ms,
 			rebuild_is_ours ? "this transition" : "deferred, an earlier reset",
@@ -355,6 +368,19 @@ private:
 				m_pass, frame, static_cast<int>(selector));
 			s_ee_rate_failed = true;
 			return;
+		}
+
+		// The acceptance test for the immediate-patching path, stated as the
+		// inversion of the one above it: a transition that reports PATCHED must
+		// NOT have reset the EE recompiler. If the generation moved anyway, the
+		// pass did not actually replace the reset and every timing number from
+		// this run is measuring the old path under a new name.
+		if (old != selector && path.patched && after.ee != before.ee)
+		{
+			Console.ErrorFmt("EERATE[{}] frame {}: the transition reported PATCHED but the EE recompiler "
+			                 "generation still moved ({} -> {})",
+				m_pass, frame, before.ee, after.ee);
+			s_ee_rate_failed = true;
 		}
 
 		if (after.iop != before.iop || after.vu1 != before.vu1 || after.vif != before.vif)
