@@ -190,3 +190,42 @@ TEST(GSAlphaKnownBits, EveryWriteResultIsWellFormed)
 		}
 	}
 }
+
+TEST(GSAlphaKnownBits, FBABoundsTheRangeItStraddles)
+{
+	using GSAlphaKnownBits::AfterFBA;
+
+	// Below 128 the OR is a shift, so both endpoints move together.
+	EXPECT_EQ(AfterFBA(0x00, 0x40).lo, 0x80);
+	EXPECT_EQ(AfterFBA(0x00, 0x40).hi, 0xC0);
+
+	// At or above 128 the OR does nothing.
+	EXPECT_EQ(AfterFBA(0x90, 0xC0).lo, 0x90);
+	EXPECT_EQ(AfterFBA(0x90, 0xC0).hi, 0xC0);
+
+	// Straddling 128 is where ORing the endpoints stops being a bound: 0x00..0x80 maps to
+	// 0x80..0xFF, and 0x64..0xC8 maps to an inverted 0xE4..0xC8.
+	EXPECT_EQ(AfterFBA(0x00, 0x80).lo, 0x80);
+	EXPECT_EQ(AfterFBA(0x00, 0x80).hi, 0xFF);
+	EXPECT_EQ(AfterFBA(0x64, 0xC8).lo, 0x80);
+	EXPECT_EQ(AfterFBA(0x64, 0xC8).hi, 0xFF);
+
+	// The point of the bound: every value the draw can write is inside it, so no bit outside the
+	// ones that really are constant gets claimed.
+	for (int lo = 0; lo <= 0xFF; lo++)
+	{
+		for (int hi = lo; hi <= 0xFF; hi++)
+		{
+			const GSAlphaKnownBits::Range r = AfterFBA(static_cast<u8>(lo), static_cast<u8>(hi));
+			ASSERT_LE(r.lo, r.hi) << lo << ".." << hi;
+			const u8 constant = GSAlphaKnownBits::ConstantBits(r.lo, r.hi);
+			for (int a = lo; a <= hi; a++)
+			{
+				const u8 written = static_cast<u8>(a) | 0x80;
+				ASSERT_GE(written, r.lo) << lo << ".." << hi << " a " << a;
+				ASSERT_LE(written, r.hi) << lo << ".." << hi << " a " << a;
+				ASSERT_EQ(written & constant, r.lo & constant) << lo << ".." << hi << " a " << a;
+			}
+		}
+	}
+}

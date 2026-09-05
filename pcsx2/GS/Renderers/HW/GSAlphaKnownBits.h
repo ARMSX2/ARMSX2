@@ -62,6 +62,28 @@ namespace GSAlphaKnownBits
 		return (diff == 0) ? 0xFF : static_cast<u8>((0xFFu << std::bit_width(diff)) & 0xFFu);
 	}
 
+	/// An inclusive alpha range, as the pair's arithmetic wants it: lo <= hi, both bounds real
+	/// values the draw can write.
+	struct Range
+	{
+		u8 lo, hi;
+	};
+
+	/// The bounds of {a | 0x80 : a in [lo, hi]} -- what a draw writes once FBA has forced alpha
+	/// bit 7 on.
+	///
+	/// ORing 0x80 into the two endpoints is a bound only while the range does not straddle 128.
+	/// [0x00, 0x80] becomes 0x80..0xFF, not the 0x80..0x80 the endpoint OR produces, and
+	/// [0x64, 0xC8] comes out inverted at 0xE4..0xC8. Either one, handed to ConstantBits, claims
+	/// bits the draw does not hold. AA1 coverage is what makes a straddling range common: the
+	/// vertex trace widens to 0..128 for it.
+	inline constexpr Range AfterFBA(u8 lo, u8 hi)
+	{
+		if (lo < 128 && hi >= 128)
+			return {128, 255};
+		return {static_cast<u8>(lo | 0x80), static_cast<u8>(hi | 0x80)};
+	}
+
 	/// The pair after a draw wrote the alpha bits `written` (the ones the mask let through) with
 	/// a fragment alpha somewhere in [src_lo, src_hi].
 	///

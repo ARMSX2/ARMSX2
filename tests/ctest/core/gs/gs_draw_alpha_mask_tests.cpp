@@ -331,3 +331,24 @@ TEST(GSDrawAlphaMask, ASubstitutedDrawStillClaimsTheAlphaByte)
 	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x80, false, 0)));
 	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x7F, false, 0)));
 }
+
+TEST(GSDrawAlphaMask, ACoverageAlphaDrawNeverDrops)
+{
+	// AA1 on a device that supports it writes 128*cov into alpha, varying per edge pixel, and the
+	// vertex trace widens the draw's alpha range to 0..128 to say so. A target that holds 0x80
+	// everywhere and a mask holding the low seven bits is the shape the drop was built for, and
+	// on this draw the drop would write coverage into the seven bits the mask was protecting.
+	// Nothing in the range is constant, so no bit of the mask can be claimed identity.
+	const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(0x80);
+	EXPECT_EQ(DecideExact(target, 0x7F, 0, 128), ExactVerdict::Substitute);
+
+	// The same draw with FBA set. Bit 7 is forced on, so the written alpha is 0x80..0xFF -- still
+	// nothing constant below bit 7. ORing FBA's bit into the two endpoints instead would collapse
+	// the range to 0x80..0x80 and hand the drop a draw that does not write 0x80.
+	const GSAlphaKnownBits::Range fba = GSAlphaKnownBits::AfterFBA(0, 128);
+	EXPECT_EQ(DecideExact(target, 0x7F, fba.lo, fba.hi), ExactVerdict::Substitute);
+
+	// Not a blanket refusal: a genuinely constant source over the same target and mask still
+	// drops, which is what the rule exists for.
+	EXPECT_EQ(DecideExact(target, 0x7F, 0x80, 0x80), ExactVerdict::Drop);
+}

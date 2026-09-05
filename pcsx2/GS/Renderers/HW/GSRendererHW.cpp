@@ -6018,9 +6018,15 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 
 			// Beside the range, and out of the same two masks: the bits this draw writes take the
 			// source's constant bits, the bits the mask holds back keep what was known of them.
+			// The pair reads the source range through AfterFBA rather than the endpoint OR above:
+			// it turns endpoints into claimed bits, and the endpoint OR does not bound a range
+			// that straddles 128. The range itself keeps the OR, which is what every other reader
+			// of it has always had.
+			GSAlphaKnownBits::Range k_src{static_cast<u8>(GetAlphaMinMax().min), static_cast<u8>(GetAlphaMinMax().max)};
+			if (fba_value != 0)
+				k_src = GSAlphaKnownBits::AfterFBA(k_src.lo, k_src.hi);
 			rt_new_alpha_known = GSAlphaKnownBits::AfterWrite(rt_new_alpha_known,
-				static_cast<u8>(~fb_mask & alpha_mask), static_cast<u8>(s_alpha_min),
-				static_cast<u8>(s_alpha_max), full_cover);
+				static_cast<u8>(~fb_mask & alpha_mask), k_src.lo, k_src.hi, full_cover);
 			rt_new_alpha_reason = full_cover ? GSAlphaKnownBits::Reason::DrawFullCover : GSAlphaKnownBits::Reason::DrawPartialCover;
 			if (full_cover)
 				rt_new_alpha_via_union = covers_by_union;
@@ -6821,9 +6827,7 @@ void GSRendererHW::EmulateDither()
 // on a device with no framebuffer fetch, the render-target clone the barrier becomes. Such a
 // decision is held across the blend selection so that selection is made under the barrier the mask
 // would have required -- the blend road never moves because of the decision, which is what put
-// 2/255 of colour on xenosaga when it did
-// (`campaigns/gs-classic-tiler/phase3-a1b-known-bit-substitution/RESULT.md`, and A4 measured the
-// same coupling from the other side). Here the held decision is settled: if the blend needs no
+// 2/255 of colour on xenosaga when it did. Here the held decision is settled: if the blend needs no
 // barrier it stands, and if it needs one the barrier is there whatever the mask does, so the draw
 // goes back to the road it asked for -- same shader, same blend, same pixels as before the rule
 // existed.
@@ -6897,9 +6901,14 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 		GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].trbpp != 32 || rt->m_rt_alpha_scale)
 		return GSDrawLog::ExactAlphaDropIneligible;
 
-	// A shuffle does not write the alpha byte this mask names, and AA1 coverage replaces the
-	// fragment alpha with 128 behind GetAlphaMinMax's back.
-	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlphaFixedOne())
+	// A shuffle does not write the alpha byte this mask names. A coverage draw does not write
+	// the fragment alpha either: the shader replaces it with the edge coverage, either as the
+	// fixed 128 (fixed-one) or as 128*cov varying per pixel (device AA1). CalcAlphaMinMax
+	// already widens GetAlphaMinMax() to 0..128 for the varying case, so the drop below would
+	// refuse it on its own -- but only as long as nothing else narrows the pair again, and FBA
+	// ORing bit 7 into both endpoints of that range is exactly such a thing. Refuse every
+	// coverage draw here instead of relying on the arithmetic downstream.
+	if (m_texture_shuffle || m_channel_shuffle || IsCoverageAlpha())
 		return GSDrawLog::ExactAlphaDropIneligible;
 
 	// The target has to know every bit the mask holds back before either road below can be exact
@@ -6912,12 +6921,18 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	if ((rt->m_alpha_known.bits & masked) != masked)
 		return GSDrawLog::ExactAlphaDropTargetUnknown;
 
-	// The fragment alpha, with FBA folded in the way CalculateAlphaRange folds it. Read here, so
-	// before CorrectATEAlphaMinMax narrows the range to the values that pass the alpha test:
-	// pixels that fail the test can still write alpha, so the wider range is the honest one.
-	const int fba_value = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
-	const u8 src_lo = static_cast<u8>(GetAlphaMinMax().min | fba_value);
-	const u8 src_hi = static_cast<u8>(GetAlphaMinMax().max | fba_value);
+	// The fragment alpha, with FBA folded in. Read here, so before CorrectATEAlphaMinMax narrows
+	// the range to the values that pass the alpha test: pixels that fail the test can still write
+	// alpha, so the wider range is the honest one.
+	// FBA goes in through AfterFBA rather than an OR of the two endpoints: the decision below
+	// reads constant bits out of this range, and the endpoint OR does not bound a range that
+	// straddles 128.
+	const bool fba = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA != 0;
+	GSAlphaKnownBits::Range src{static_cast<u8>(GetAlphaMinMax().min), static_cast<u8>(GetAlphaMinMax().max)};
+	if (fba)
+		src = GSAlphaKnownBits::AfterFBA(src.lo, src.hi);
+	const u8 src_lo = src.lo;
+	const u8 src_hi = src.hi;
 
 	switch (GSDrawAlphaMask::DecideExact(rt->m_alpha_known, masked, src_lo, src_hi))
 	{
