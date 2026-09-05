@@ -313,3 +313,58 @@ TEST_F(GSClutTest, GetCLUTCSMReportsTheLoadsAddressingMode)
 	Load(t);
 	EXPECT_EQ(m_clut->GetCLUTCSM(), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// The GPU palette road's refusal predicate.
+// ---------------------------------------------------------------------------
+
+// GSClut::Read32 will only hand the texture cache a GPU-built palette where that palette
+// is the same one the expansion above produces. The two console rules the shader does not
+// implement -- the CSA OR and the CSM2 +128 origin -- both live in the eight-bit index
+// into a 32-bit palette, so that is the configuration the road is refused for, and only
+// there. This pins the predicate directly; if the shader ever learns either rule, this is
+// the test that has to change with it.
+TEST(GSClutGPUPaletteRoad, RefusedExactlyWhereTheShaderCannotReproduceTheExpansion)
+{
+	constexpr u32 kIdx8[] = {PSMT8, PSMT8H};
+	constexpr u32 kIdx4[] = {PSMT4, PSMT4HL, PSMT4HH};
+	// Bit 1 clear is a 32-bit palette, including the undocumented values.
+	constexpr u32 kPalette32[] = {PSMCT32, PSMCT24, 0x08, 0x09};
+	constexpr u32 kPalette16[] = {PSMCT16, PSMCT16S, 0x03, 0x0B};
+
+	for (u32 psm : kIdx8)
+	{
+		for (u32 cpsm : kPalette32)
+		{
+			// CSA 0 under CSM1 is the one point where OR and add agree and the strip
+			// starts at the origin.
+			EXPECT_TRUE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, 0, 0))
+				<< "psm " << psm << " cpsm " << cpsm;
+			EXPECT_FALSE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, 0, 1))
+				<< "psm " << psm << " cpsm " << cpsm;
+			for (u32 csa = 1; csa < 32; csa++)
+			{
+				EXPECT_FALSE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, csa, 0))
+					<< "psm " << psm << " cpsm " << cpsm << " csa " << csa;
+				EXPECT_FALSE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, csa, 1))
+					<< "psm " << psm << " cpsm " << cpsm << " csa " << csa;
+			}
+		}
+
+		// A 16-bit palette has neither rule: the CSA slots cancel and CSM2 admits it.
+		for (u32 cpsm : kPalette16)
+			for (u32 csa = 0; csa < 32; csa++)
+				for (u32 csm = 0; csm < 2; csm++)
+					EXPECT_TRUE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, csa, csm))
+						<< "psm " << psm << " cpsm " << cpsm << " csa " << csa << " csm " << csm;
+	}
+
+	// A four-bit index is exact at every CSA in either palette width: the load slot and
+	// the read slot are the same, so the memory read does not move.
+	for (u32 psm : kIdx4)
+		for (u32 cpsm : {kPalette32[0], kPalette32[2], kPalette16[0], kPalette16[2]})
+			for (u32 csa = 0; csa < 32; csa++)
+				for (u32 csm = 0; csm < 2; csm++)
+					EXPECT_TRUE(GSClut::GPUPaletteRoadIsExact(psm, cpsm, csa, csm))
+						<< "psm " << psm << " cpsm " << cpsm << " csa " << csa << " csm " << csm;
+}

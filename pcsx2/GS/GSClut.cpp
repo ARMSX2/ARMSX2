@@ -315,6 +315,38 @@ void GSClut::WriteCLUT_NULL(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT
 	GL_INS("[WARNING] CLUT write ignored (psm: %d, cpsm: %d)", TEX0.PSM, TEX0.CPSM);
 }
 
+// Whether the GPU palette road reproduces what the expansion in Read32 produces.
+//
+// That road does not read m_clut at all: it rebuilds the palette out of a render target
+// in a shader (ps_convert_clut_4 / _8), and the shader implements the CLUT addressing it
+// was written against -- CSA added to the entry index, and a CSM2 strip that starts at
+// (COU*16, COV). Two console-measured rules the expansion follows do not survive that,
+// and both are the same configuration: an eight-bit index into a 32-bit palette.
+//
+//   * CSA ORs into the group rather than adding to it -- group = (entry >> 4) | CSA.
+//     OR and add agree at CSA 0 and nowhere else that matters; the capture separates
+//     1,504 of 1,536 readings.
+//   * Under CSM2 that configuration reads its 128 source words starting 128 pixels past
+//     (COU*16, COV) and repeats every 128 entries. The shader starts at the origin.
+//
+// The shader could be taught both. It has not been, because neither rule has been shown
+// to matter to a title, and a colour that is wrong only under one renderer with one hack
+// enabled is the expensive kind of wrong to chase later. So refuse the road there and
+// let the texture cache take the expanded palette, which is the answer the software
+// renderer gives -- the two agree by construction rather than by review.
+bool GSClut::GPUPaletteRoadIsExact(u32 PSM, u32 CPSM, u32 CSA, u32 CSM)
+{
+	const bool wide_index = (PSM != PSMT4 && PSM != PSMT4HL && PSM != PSMT4HH);
+	const bool palette_is_32bit = (CPSM & 0x2) == 0;
+
+	if (!wide_index || !palette_is_32bit)
+		return true;
+
+	// CSA 0 is the one group where OR and add are the same answer; CSM1 is the one
+	// addressing mode without the shifted origin.
+	return CSA == 0 && CSM == 0;
+}
+
 void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 {
 	if (m_read.IsDirty(TEX0, TEXA))
@@ -372,7 +404,8 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 			}
 		}
 
-		if (GSConfig.UserHacks_GPUTargetCLUTMode != GSGPUTargetCLUTMode::Disabled)
+		if (GSConfig.UserHacks_GPUTargetCLUTMode != GSGPUTargetCLUTMode::Disabled &&
+			GPUPaletteRoadIsExact(TEX0.PSM, TEX0.CPSM, TEX0.CSA, TEX0.CSM))
 		{
 			const bool is_4bit = (TEX0.PSM == PSMT4 || TEX0.PSM == PSMT4HL || TEX0.PSM == PSMT4HH);
 
@@ -401,7 +434,10 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 			{
 				GSTexture* dst = is_4bit ? m_gpu_clut4 : m_gpu_clut8;
 				const u32 dst_size = is_4bit ? 16 : 256;
-				const u32 dOffset = (TEX0.CSA & ((TEX0.CPSM == PSMCT16 || TEX0.CPSM == PSMCT16S) ? 15u : 31u)) << 4;
+				// Entry width by bit 1 of CPSM, the same decode the expansion above
+				// uses, so the undocumented CPSM values land on the same side here
+				// as they do there.
+				const u32 dOffset = (TEX0.CSA & ((TEX0.CPSM & 0x2) ? 15u : 31u)) << 4;
 
 				if (src != m_current_gpu_clut && (src != m_last_gpu_clut || m_gpu_clut_last_offset != offset))
 					m_gpu_clut_dirty = true;
