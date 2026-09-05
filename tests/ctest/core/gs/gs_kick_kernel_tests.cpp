@@ -431,6 +431,15 @@ namespace
 			Transfer<0>(static_cast<const u8*>(mem), qwords);
 		}
 
+		// The same on PATH3. PATH1 discards a tag left unfinished at the end of a
+		// call (the XGKICK-without-EOP hackfix at the bottom of Transfer), so it is
+		// the one path on which a tag can never resume across calls; a split-packet
+		// test has to use one of the others.
+		void FeedPacketPath3(const void* mem, u32 qwords)
+		{
+			Transfer<2>(static_cast<const u8*>(mem), qwords);
+		}
+
 		using GSState::UnpublishLayoutHandlers;
 
 		// The routing predicate itself, so a test can assert which case it is
@@ -2257,6 +2266,65 @@ namespace
 		ExpectSameKickResult(*replay, *fused);
 	}
 } // namespace
+
+// A packet split mid-record, where the second chunk holds exactly the rest of
+// the tag.
+//
+// Transfer resumes such a tag through its per-descriptor loop, and that loop can
+// finish the tag: StepReg returns false when reg wraps on the last nloop, and it
+// leaves nloop at 0. The register count Transfer then computes for the arms
+// below it is nloop * nreg == 0, so whatever handler the tag's type names is
+// called with nothing to do -- which the fused handlers assert on, and which the
+// two `do { } while (--total > 0)` arms would answer by walking 2^32 records off
+// the end of the packet. So the resume has to be able to end the tag itself.
+//
+// Driven at every split point of every layout, and compared against the same
+// packet through the per-qword replay, so it pins the vertices too and not only
+// that nothing exploded.
+TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
+{
+	u32 seed = 9900;
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairRGBAQ};
+	for (const LayoutCase* lc : cases)
+	{
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+		{
+			if (!KickProbe::LayoutShipsForDyn(lc->layout, prim))
+				continue;
+
+			const u32 stride = static_cast<u32>(lc->descs.size());
+			const std::vector<VertexSpec> verts = MakeStream(6, AdcPattern::None, seed++);
+			const std::vector<GIFPackedReg> packet = BuildPacket(*lc, verts, 6, false);
+
+			for (u32 k = 1; k < stride; k++)
+			{
+				// Everything but the last k qwords of the tag, then those k. The
+				// split lands inside the last record, so the second call enters
+				// the resume loop and finishes the tag there.
+				const u32 first = static_cast<u32>(packet.size()) - k;
+				SCOPED_TRACE(::testing::Message()
+				             << lc->name << " prim=" << prim << " split=" << first);
+
+				const DrawBufferingGuard guard(false);
+				const AutoFlushGuard af_guard(GSHWAutoFlushLevel::Disabled);
+
+				auto run = [&](bool fuse) {
+					auto p = MakeProbe(KickSetup{}, prim, true);
+					SeedLatchedState(*p);
+					if (!fuse)
+						p->UnpublishLayoutHandlers();
+					p->FeedPacketPath3(packet.data(), first);
+					p->FeedPacketPath3(packet.data() + first, k);
+					return p;
+				};
+
+				auto replay = run(false);
+				auto fused = run(true);
+				ExpectSameKickResult(*replay, *fused);
+			}
+		}
+	}
+}
 
 TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 {

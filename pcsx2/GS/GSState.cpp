@@ -4932,6 +4932,20 @@ void GSState::Transfer(const u8* mem, u32 size)
 							mem += sizeof(GIFPackedReg);
 							size--;
 						} while (path.StepReg() && size > 0 && path.reg != 0);
+
+						// The resume can finish the tag: StepReg returns false exactly
+						// when reg wraps on the last loop, and then nloop is 0 and the
+						// tag is done here. Everything below computes nloop * nreg
+						// registers of work and would compute zero, which no arm reads
+						// as "nothing to do" -- the fused handlers index r[count - 1]
+						// and the two do-while arms walk 2^32 records off the end of
+						// the packet. So take the next tag instead.
+						//
+						// Only PATH2 and PATH3 get here. PATH1 discards an unfinished
+						// tag at the bottom of this function (the XGKICK-without-EOP
+						// hackfix), so a PATH1 tag never resumes across calls.
+						if (path.nloop == 0)
+							break;
 					}
 
 					// all data available? usually is
