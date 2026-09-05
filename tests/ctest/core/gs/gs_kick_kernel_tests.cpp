@@ -2302,8 +2302,7 @@ TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 				// split lands inside the last record, so the second call enters
 				// the resume loop and finishes the tag there.
 				const u32 first = static_cast<u32>(packet.size()) - k;
-				SCOPED_TRACE(::testing::Message()
-				             << lc->name << " prim=" << prim << " split=" << first);
+				SCOPED_TRACE(::testing::Message() << lc->name << " prim=" << prim << " split=" << first);
 
 				const DrawBufferingGuard guard(false);
 				const AutoFlushGuard af_guard(GSHWAutoFlushLevel::Disabled);

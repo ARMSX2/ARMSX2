@@ -486,10 +486,10 @@ namespace GSFeDecode
 			// happens to stop at -- which is a wrong answer, not a missing one.
 			// Stop the instrument at the first one and say so.
 			const bool wrote_header = std::fwrite(&header, sizeof(header), 1, s_state.file.get()) == 1;
-			const bool wrote_body = body_bytes == 0 ||
-									std::fwrite(canon + kCanonicalPrefixBytes, 1, body_bytes,
-										s_state.file.get()) == body_bytes;
-			if (!wrote_header || !wrote_body)
+			size_t wrote_body = body_bytes;
+			if (body_bytes != 0)
+				wrote_body = std::fwrite(canon + kCanonicalPrefixBytes, 1, body_bytes, s_state.file.get());
+			if (!wrote_header || wrote_body != body_bytes)
 			{
 				Console.Error(fmt::format("GSFeDecode: write failed at event {} ({}); recording "
 										  "disarmed and '{}' is incomplete",
