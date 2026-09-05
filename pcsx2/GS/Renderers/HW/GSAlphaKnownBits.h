@@ -21,27 +21,6 @@
 /// These rules live in a header of their own so they can be tested without a GS device.
 namespace GSAlphaKnownBits
 {
-	/// What last decided a target's pair. Census only -- nothing reads it to choose anything, and
-	/// it costs a byte per Target. It exists because "the target does not know these bits" is the
-	/// largest class the exact alpha rules refuse, and sizing any further work on that class means
-	/// knowing which event destroyed the knowledge rather than guessing.
-	enum class Reason : u8
-	{
-		NeverEstablished = 0, ///< the Target was constructed and nothing has claimed a bit since
-		Unchanged, ///< sentinel for an event that left the pair alone; never stored on a Target
-		CreateCleared, ///< the target was created with a clear, so every pixel held the clear alpha
-		Clear, ///< a draw was turned into a clear of the whole target
-		DrawFullCover, ///< a draw that reached every pixel of the valid rect
-		DrawPartialCover, ///< a draw that did not, so a written bit survives only where it agreed
-		ChannelShuffle, ///< alpha was rewritten from another channel; nothing describes the result
-		Upload, ///< local memory was written back over the target
-		Grow, ///< the valid rect grew, or the texture was reallocated larger
-		Inherit, ///< the contents came from another target
-		Move, ///< a rectangle was moved in, which is not a claim about the valid rect
-		Clobber, ///< the texture was replaced outright
-		HwHack, ///< a game-specific hack rewrote the target
-	};
-
 	struct Known
 	{
 		u8 bits = 0; ///< alpha bits every pixel in the target's valid rect is known to hold

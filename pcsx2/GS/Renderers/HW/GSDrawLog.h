@@ -127,18 +127,6 @@ namespace GSDrawLog
 		s16 rt_valid_z;
 		s16 rt_valid_w;
 
-		/// The target's erosion census as it stood before this draw: the rectangle of the first
-		/// draw since the last restore whose partial cover cost the pair bits, that draw's
-		/// serial, and how many such draws there have been. Census only -- nothing reads it to
-		/// decide anything. It is the cross-check on an offline region model, which reconstructs
-		/// the same chain from the draw rows and must agree with it.
-		s16 rt_erosion_x;
-		s16 rt_erosion_y;
-		s16 rt_erosion_z;
-		s16 rt_erosion_w;
-		u32 rt_erosion_draw;
-		u32 rt_erosion_count;
-
 		/// One primitive of a draw whose rectangle contains the target's valid rect but whose
 		/// gapless test refused it. Whether that draw really covers the target is not answerable
 		/// from a bounding box -- it is a question about the union of the primitives -- so each
@@ -162,13 +150,9 @@ namespace GSDrawLog
 		/// target's known alpha bits, which only exist while the draw is running.
 		u8 exact_alpha_drop;
 
-		/// What the render target's alpha known-bits pair held when that decision was taken, and
-		/// what last set it (GSAlphaKnownBits::Reason). Census: the largest class the exact rules
-		/// refuse is "the target does not know these bits", and this says which event is
-		/// responsible on that target rather than leaving it to be guessed.
+		/// What the render target's alpha known-bits pair held when that decision was taken.
 		u8 exact_alpha_known_bits;
 		u8 exact_alpha_known_value;
-		u8 exact_alpha_known_reason;
 
 		/// The two inputs the drop rule compares beside the pair: the alpha bits the mask holds
 		/// back, and the fragment alpha range as the rule reads it. The range is NOT
@@ -526,8 +510,7 @@ namespace GSDrawLog
 	/// Records which target the draw is about to write and how it touched its alpha, on the
 	/// open row. Read where CalculateAlphaRange already has all of it in hand.
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask,
-		const GSVector4i& draw_rect, const GSVector4i& valid_rect, const GSVector4i& erosion_rect,
-		u32 erosion_draw, u32 erosion_count);
+		const GSVector4i& draw_rect, const GSVector4i& valid_rect);
 
 	/// Records which blend-mix factor-in-alpha road the draw took, on the open row. See
 	/// BlendFactorAlpha.
@@ -543,7 +526,7 @@ namespace GSDrawLog
 
 	/// Records what the exact alpha-mask-drop rule decided, on the open row, together with the
 	/// target's known-bits pair and what last set it. See ExactAlphaDrop.
-	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason, u8 masked,
+	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 masked,
 		u8 src_lo, u8 src_hi);
 
 	/// Marks the open row as having actually assigned the target's new alpha range. A draw

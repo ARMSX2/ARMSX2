@@ -2945,7 +2945,6 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				// here depends on dirty rects and a possible format conversion.
 				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 				dst->m_alpha_known_via_union = false;
-				dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Inherit;
 				if (GSDrawLog::IsActive()) [[unlikely]]
 				{
 					GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventInherit, dst->m_id, dst_match->m_TEX0.TBP0,
@@ -3086,7 +3085,6 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_alpha_max = 0;
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		dst->m_alpha_known_via_union = false;
-		dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Clobber;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
 			GSDrawLog::NoteTargetEvent(GSDrawLog::TargetEventClobber, dst->m_id, dst->m_TEX0.TBP0, 0, 0,
@@ -3782,7 +3780,6 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_alpha_min = old_dst->m_alpha_min;
 							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 							dst->m_alpha_known_via_union = false;
-							dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Inherit;
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
 							if (GSDrawLog::IsActive()) [[unlikely]]
 							{
@@ -5777,7 +5774,6 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
 		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		dst->m_alpha_known_via_union = false;
-		dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::Move;
 		dst->m_alpha_range |= src->m_alpha_range;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
@@ -5904,7 +5900,6 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		tgt->m_alpha_max = 255;
 		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		tgt->m_alpha_known_via_union = false;
-		tgt->m_alpha_known_reason = GSAlphaKnownBits::Reason::ChannelShuffle;
 		tgt->m_alpha_range = true;
 		if (GSDrawLog::IsActive()) [[unlikely]]
 		{
@@ -7490,7 +7485,6 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 	{
 		t->m_alpha_known = GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min));
 		t->m_alpha_known_via_union = false;
-		t->m_alpha_known_reason = GSAlphaKnownBits::Reason::CreateCleared;
 	}
 
 	g_texture_cache->m_target_memory_usage += t->m_texture->GetMemUsage();
@@ -8453,7 +8447,6 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			m_alpha_known, alpha_minmax.first, alpha_minmax.second, full_alpha_upload);
 		if (full_alpha_upload)
 			m_alpha_known_via_union = false;
-		m_alpha_known_reason = GSAlphaKnownBits::Reason::Upload;
 
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;
 	}
@@ -8592,36 +8585,6 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #endif
 }
 
-void GSTextureCache::Target::NoteAlphaErosion(GSAlphaKnownBits::Known next,
-	GSAlphaKnownBits::Reason why, const GSVector4i& rect, u32 draw_serial)
-{
-	// The chain is only meaningful while the last thing to touch the pair was a partial-cover
-	// draw. Any other reason -- a clear, an upload, an inherit, a full-cover draw -- replaced it,
-	// so whatever chain was running ended there. Applying that on read is what keeps this out of
-	// the sixteen assignment sites.
-	if (m_alpha_known_reason != GSAlphaKnownBits::Reason::DrawPartialCover)
-	{
-		m_alpha_erosion_rect = GSVector4i::zero();
-		m_alpha_erosion_draw = 0;
-		m_alpha_erosion_count = 0;
-	}
-
-	if (why != GSAlphaKnownBits::Reason::DrawPartialCover)
-		return;
-
-	// An erosion is a bit the target knew and no longer will. A partial-cover draw that agrees
-	// with what was known costs nothing and does not start a chain.
-	if ((m_alpha_known.bits & ~next.bits) == 0)
-		return;
-
-	if (m_alpha_erosion_count == 0)
-	{
-		m_alpha_erosion_rect = rect;
-		m_alpha_erosion_draw = draw_serial;
-	}
-	m_alpha_erosion_count++;
-}
-
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
@@ -8658,7 +8621,6 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 	if (!m_valid.eq(old_valid))
 	{
 		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
-		m_alpha_known_reason = GSAlphaKnownBits::Reason::Grow;
 	}
 
 	if (GSDrawLog::IsActive() && !m_valid.eq(old_valid)) [[unlikely]]
@@ -8745,7 +8707,6 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 	if (clear)
 	{
 		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
-		m_alpha_known_reason = GSAlphaKnownBits::Reason::Grow;
 	}
 
 	UpdateTextureDebugName();

@@ -330,7 +330,6 @@ bool GSHwHack::GSC_DTGames(GSRendererHW& r, int& skip)
 			rt->m_alpha_max = 255;
 			rt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 			rt->m_alpha_known_via_union = false;
-			rt->m_alpha_known_reason = GSAlphaKnownBits::Reason::HwHack;
 			skip = 69;
 		}
 	}
@@ -435,7 +434,6 @@ bool GSHwHack::GSC_SandGrainGames(GSRendererHW& r, int& skip)
 			rt->m_alpha_max = 128;
 			rt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 			rt->m_alpha_known_via_union = false;
-			rt->m_alpha_known_reason = GSAlphaKnownBits::Reason::HwHack;
 			rt->m_rt_alpha_scale = false;
 			rt->ScaleRTAlpha();
 
@@ -803,7 +801,6 @@ bool GSHwHack::GSC_PolyphonyDigitalGames(GSRendererHW& r, int& skip)
 			dst->m_alpha_max = 255;
 			dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 			dst->m_alpha_known_via_union = false;
-			dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::HwHack;
 			dst->m_alpha_range = true;
 			dst->UpdateValidChannels(PSMCT32, fbmsk);
 			dst->UpdateValidity(GSVector4i::loadh(size));
@@ -1089,7 +1086,6 @@ bool GSHwHack::OI_RozenMaidenGebetGarden(GSRendererHW& r, GSTexture* rt, GSTextu
 				tmp_rt->m_alpha_min = 0;
 				tmp_rt->m_alpha_known = GSAlphaKnownBits::Known::All(0);
 				tmp_rt->m_alpha_known_via_union = false;
-				tmp_rt->m_alpha_known_reason = GSAlphaKnownBits::Reason::HwHack;
 				tmp_rt->m_alpha_range = false;
 			}
 
@@ -1437,7 +1433,6 @@ bool GSHwHack::MV_Ico(GSRendererHW& r)
 	dst->m_alpha_max = 255;
 	dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
 	dst->m_alpha_known_via_union = false;
-	dst->m_alpha_known_reason = GSAlphaKnownBits::Reason::HwHack;
 
 	GSHWDrawConfig& config = GSRendererHW::GetInstance()->BeginHLEHardwareDraw(
 		dst->GetTexture(), nullptr, dst->GetScale(), src->GetTexture(), src->GetScale(), draw_rc);

@@ -260,27 +260,6 @@ public:
 		/// through the campaign's byte-identity gate and is not re-litigated here.
 		bool m_alpha_known_via_union = false;
 
-		/// What last set m_alpha_known. Census only -- see GSAlphaKnownBits::Reason. Maintained at
-		/// every site that assigns the pair, so the ledger can say why a draw found the target
-		/// unable to answer for the bits its mask holds back.
-		GSAlphaKnownBits::Reason m_alpha_known_reason = GSAlphaKnownBits::Reason::NeverEstablished;
-
-		/// Census only: the erosion chain that took m_alpha_known apart. The rectangle and serial
-		/// of the first draw since the last restore whose partial cover cost the pair bits, and
-		/// how many such draws there have been. Nothing reads them to decide anything.
-		///
-		/// They exist because the largest class the exact FBMSK rules refuse is "the target does
-		/// not know these bits", and on the title that pays for it the whole class comes from one
-		/// partial-cover draw a frame. Whether a per-region tracker would have saved those draws
-		/// depends on where that draw was, which no other column says.
-		///
-		/// Live only while m_alpha_known_reason is DrawPartialCover: anything else replaced the
-		/// pair outright and the chain restarts. That invariant is applied on read, in
-		/// NoteAlphaErosion, so the sixteen sites that assign the pair need no bookkeeping.
-		GSVector4i m_alpha_erosion_rect{};
-		u32 m_alpha_erosion_draw = 0;
-		u32 m_alpha_erosion_count = 0;
-
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;
@@ -320,11 +299,6 @@ public:
 		/// Devbuild tripwire for m_alpha_known drifting away from m_alpha_min/max. Cheap, and a
 		/// no-op outside devbuilds.
 		void AssertAlphaKnownAgreesWithRange(const char* site) const;
-
-		/// Census only: folds one draw's effect on m_alpha_known into the erosion chain above.
-		/// Called just before the pair is assigned, with the pair the draw is about to store.
-		void NoteAlphaErosion(GSAlphaKnownBits::Known next, GSAlphaKnownBits::Reason why,
-			const GSVector4i& rect, u32 draw_serial);
 
 		void Update(bool cannot_scale = false);
 

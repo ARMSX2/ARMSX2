@@ -131,8 +131,7 @@ namespace GSDrawLog
 	}
 
 	void NoteRTAlpha(u32 target_id, u32 tbp0, u8 alpha_flags, u8 fbmask_a, u8 alpha_fmt_mask,
-		const GSVector4i& draw_rect, const GSVector4i& valid_rect, const GSVector4i& erosion_rect,
-		u32 erosion_draw, u32 erosion_count)
+		const GSVector4i& draw_rect, const GSVector4i& valid_rect)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -152,12 +151,6 @@ namespace GSDrawLog
 		rec.rt_valid_y = ClampCoord(valid_rect.y);
 		rec.rt_valid_z = ClampCoord(valid_rect.z);
 		rec.rt_valid_w = ClampCoord(valid_rect.w);
-		rec.rt_erosion_x = ClampCoord(erosion_rect.x);
-		rec.rt_erosion_y = ClampCoord(erosion_rect.y);
-		rec.rt_erosion_z = ClampCoord(erosion_rect.z);
-		rec.rt_erosion_w = ClampCoord(erosion_rect.w);
-		rec.rt_erosion_draw = erosion_draw;
-		rec.rt_erosion_count = erosion_count;
 	}
 
 	void NoteBlendFactorAlpha(u8 road)
@@ -176,7 +169,7 @@ namespace GSDrawLog
 		s_records[s_open_record].held_alpha_mask = outcome;
 	}
 
-	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 known_reason, u8 masked,
+	void NoteExactAlphaDrop(u8 decision, u8 known_bits, u8 known_value, u8 masked,
 		u8 src_lo, u8 src_hi)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -186,7 +179,6 @@ namespace GSDrawLog
 		rec.exact_alpha_drop = decision;
 		rec.exact_alpha_known_bits = known_bits;
 		rec.exact_alpha_known_value = known_value;
-		rec.exact_alpha_known_reason = known_reason;
 		rec.exact_alpha_masked = masked;
 		rec.exact_alpha_src_lo = src_lo;
 		rec.exact_alpha_src_hi = src_hi;
@@ -495,39 +487,6 @@ namespace GSDrawLog
 		}
 	}
 
-	static const char* GetAlphaKnownReasonName(u8 reason)
-	{
-		switch (static_cast<GSAlphaKnownBits::Reason>(reason))
-		{
-			case GSAlphaKnownBits::Reason::NeverEstablished:
-				return "NEVER";
-			case GSAlphaKnownBits::Reason::CreateCleared:
-				return "CREATE_CLEARED";
-			case GSAlphaKnownBits::Reason::Clear:
-				return "CLEAR";
-			case GSAlphaKnownBits::Reason::DrawFullCover:
-				return "DRAW_FULL";
-			case GSAlphaKnownBits::Reason::DrawPartialCover:
-				return "DRAW_PARTIAL";
-			case GSAlphaKnownBits::Reason::ChannelShuffle:
-				return "SHUFFLE";
-			case GSAlphaKnownBits::Reason::Upload:
-				return "UPLOAD";
-			case GSAlphaKnownBits::Reason::Grow:
-				return "GROW";
-			case GSAlphaKnownBits::Reason::Inherit:
-				return "INHERIT";
-			case GSAlphaKnownBits::Reason::Move:
-				return "MOVE";
-			case GSAlphaKnownBits::Reason::Clobber:
-				return "CLOBBER";
-			case GSAlphaKnownBits::Reason::HwHack:
-				return "HW_HACK";
-			default:
-				return "";
-		}
-	}
-
 	static const char* GetBlendFactorAlphaName(u8 road)
 	{
 		switch (road)
@@ -648,7 +607,7 @@ namespace GSDrawLog
 			"event,rt_id,rt_tbp0,rt_alpha_written,rt_alpha_shuffle,rt_alpha_full_cover,"
 			"rt_alpha_committed,rt_alpha_range_was_set,rt_covers_valid,rt_no_gaps,rt_tests_pass,"
 			"rt_fbmask_a,rt_alpha_fmt_mask,exact_alpha_drop,"
-			"rt_alpha_known_bits,rt_alpha_known_value,rt_alpha_known_why,blend_factor_alpha,"
+			"rt_alpha_known_bits,rt_alpha_known_value,blend_factor_alpha,"
 			"held_alpha_mask,"
 			"blend_key,blend_ps,"
 			"tfx_call,tfx_kind,tfx_pass,tfx_pass_end,tfx_pipe_hash,"
@@ -659,7 +618,6 @@ namespace GSDrawLog
 			"exact_masked,exact_src_lo,exact_src_hi,"
 			"rt_draw_x,rt_draw_y,rt_draw_w,rt_draw_h,"
 			"rt_valid_x,rt_valid_y,rt_valid_w,rt_valid_h,"
-			"rt_erosion_x,rt_erosion_y,rt_erosion_w,rt_erosion_h,rt_erosion_draw,rt_erosion_n,"
 			"spr_i,spr_x0,spr_y0,spr_x1,spr_y1\n");
 
 		for (const Record& r : s_records)
@@ -796,12 +754,11 @@ namespace GSDrawLog
 
 			if (r.exact_alpha_drop != ExactAlphaDropNotConsidered)
 			{
-				std::fprintf(fp.get(), "%02x,%02x,%s,", r.exact_alpha_known_bits, r.exact_alpha_known_value,
-					GetAlphaKnownReasonName(r.exact_alpha_known_reason));
+				std::fprintf(fp.get(), "%02x,%02x,", r.exact_alpha_known_bits, r.exact_alpha_known_value);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,");
+				std::fprintf(fp.get(), ",,");
 			}
 
 			std::fprintf(fp.get(), "%s,", GetBlendFactorAlphaName(r.blend_factor_alpha));
@@ -854,16 +811,14 @@ namespace GSDrawLog
 
 			if (r.flags2 & Flags2RTAlpha)
 			{
-				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,",
+				std::fprintf(fp.get(), "%d,%d,%d,%d,%d,%d,%d,%d,",
 					r.rt_draw_x, r.rt_draw_y, r.rt_draw_z - r.rt_draw_x, r.rt_draw_w - r.rt_draw_y,
 					r.rt_valid_x, r.rt_valid_y, r.rt_valid_z - r.rt_valid_x,
-					r.rt_valid_w - r.rt_valid_y, r.rt_erosion_x, r.rt_erosion_y,
-					r.rt_erosion_z - r.rt_erosion_x, r.rt_erosion_w - r.rt_erosion_y,
-					r.rt_erosion_draw, r.rt_erosion_count);
+					r.rt_valid_w - r.rt_valid_y);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,,,,");
+				std::fprintf(fp.get(), ",,,,,,,,");
 			}
 
 			// Raw coordinates, not a width and a height: the row is a pair of vertices in 1/16

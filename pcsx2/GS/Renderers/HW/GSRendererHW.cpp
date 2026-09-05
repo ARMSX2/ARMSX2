@@ -5930,15 +5930,12 @@ void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
 
 void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds,
 	DATEOptions& date_options, int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-	GSAlphaKnownBits::Known& rt_new_alpha_known, GSAlphaKnownBits::Reason& rt_new_alpha_reason,
-	bool& rt_new_alpha_via_union)
+	GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union)
 {
 	// Calculate alpha range for RT.
 	if (rt)
 	{
 		rt_new_alpha_known = rt->m_alpha_known;
-		// Provenance rides with the pair: a write that narrows what is known keeps it, a write
-		// that replaces the pair outright sets it from its own cover.
 		rt_new_alpha_via_union = rt->m_alpha_known_via_union;
 		GL_INS("HW: RT alpha was %s before draw", rt->m_rt_alpha_scale ? "scaled" : "NOT scaled");
 
@@ -6007,7 +6004,6 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 				k_src = GSAlphaKnownBits::AfterFBA(k_src.lo, k_src.hi);
 			rt_new_alpha_known = GSAlphaKnownBits::AfterWrite(rt_new_alpha_known,
 				static_cast<u8>(~fb_mask & alpha_mask), k_src.lo, k_src.hi, full_cover);
-			rt_new_alpha_reason = full_cover ? GSAlphaKnownBits::Reason::DrawFullCover : GSAlphaKnownBits::Reason::DrawPartialCover;
 			if (full_cover)
 				rt_new_alpha_via_union = covers_by_union;
 			rt_new_alpha_known.bits &= static_cast<u8>(alpha_mask);
@@ -6063,7 +6059,6 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			}
 			rt->m_alpha_range = true;
 			rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
-			rt_new_alpha_reason = GSAlphaKnownBits::Reason::ChannelShuffle;
 			rt_new_alpha_via_union = false;
 			log_alpha_flags |= GSDrawLog::RTAlphaShuffle;
 		}
@@ -6073,9 +6068,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// m_r and rt->m_valid, not the scaled draw area: these are the two rectangles the
 			// cover tests above compare, and a region model has to replay them in that space.
 			GSDrawLog::NoteRTAlpha(rt->m_id, rt->m_TEX0.TBP0, log_alpha_flags, static_cast<u8>(log_fb_mask),
-				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24), m_r,
-				rt->m_valid, rt->m_alpha_erosion_rect, rt->m_alpha_erosion_draw,
-				rt->m_alpha_erosion_count);
+				static_cast<u8>((GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24), m_r, rt->m_valid);
 
 			// The draws worth a per-primitive row: the rectangle contains the whole valid rect,
 			// so on the rectangle alone this is a full cover, and the gapless test refused it
@@ -6977,7 +6970,6 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 			const int log_fba = m_draw_env->CTXT[m_draw_env->PRIM.CTXT].FBA.FBA * 128;
 			GSDrawLog::NoteExactAlphaDrop(exact_drop, rt ? rt->m_alpha_known.bits : 0,
 				rt ? rt->m_alpha_known.value : 0,
-				static_cast<u8>(rt ? rt->m_alpha_known_reason : GSAlphaKnownBits::Reason::NeverEstablished),
 				static_cast<u8>((static_cast<u32>(fbmask) & 0xFF000000u) >> 24),
 				static_cast<u8>(GetAlphaMinMax().min | log_fba),
 				static_cast<u8>(GetAlphaMinMax().max | log_fba));
@@ -10309,11 +10301,9 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	int blend_alpha_min = 0, blend_alpha_max = 255;
 	int rt_new_alpha_min = 0, rt_new_alpha_max = 255;
 	GSAlphaKnownBits::Known rt_new_alpha_known;
-	// Unchanged means this draw did not touch the pair; the target keeps whatever last set it.
-	GSAlphaKnownBits::Reason rt_new_alpha_reason = GSAlphaKnownBits::Reason::Unchanged;
 	bool rt_new_alpha_via_union = false;
 	CalculateAlphaRange(rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max,
-		rt_new_alpha_known, rt_new_alpha_reason, rt_new_alpha_via_union);
+		rt_new_alpha_known, rt_new_alpha_via_union);
 
 	// DATE: selection of the algorithm.
 	EmulateDATESelectMethod(date_options, rt, blend_alpha_min, blend_alpha_max);
@@ -10407,11 +10397,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	{
 		rt->m_alpha_max = rt_new_alpha_max;
 		rt->m_alpha_min = rt_new_alpha_min;
-		rt->NoteAlphaErosion(rt_new_alpha_known, rt_new_alpha_reason, m_r, static_cast<u32>(s_n));
 		rt->m_alpha_known = rt_new_alpha_known;
 		rt->m_alpha_known_via_union = rt_new_alpha_via_union;
-		if (rt_new_alpha_reason != GSAlphaKnownBits::Reason::Unchanged)
-			rt->m_alpha_known_reason = rt_new_alpha_reason;
 		rt->AssertAlphaKnownAgreesWithRange("draw");
 
 		if (GSDrawLog::IsActive()) [[unlikely]]
@@ -11252,7 +11239,6 @@ bool GSRendererHW::TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Ta
 			rt->m_alpha_known_via_union = false;
 			rt->m_alpha_known = has_alpha ? GSAlphaKnownBits::Known::All(static_cast<u8>(rt->m_alpha_min)) :
 											GSAlphaKnownBits::Known::Nothing();
-			rt->m_alpha_known_reason = GSAlphaKnownBits::Reason::Clear;
 			rt->AssertAlphaKnownAgreesWithRange("TryTargetClear");
 
 			if (GSDrawLog::IsActive()) [[unlikely]]

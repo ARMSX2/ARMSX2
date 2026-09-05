@@ -256,8 +256,7 @@ private:
 
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
 		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-		GSAlphaKnownBits::Known& rt_new_alpha_known, GSAlphaKnownBits::Reason& rt_new_alpha_reason,
-		bool& rt_new_alpha_via_union);
+		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
 		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
