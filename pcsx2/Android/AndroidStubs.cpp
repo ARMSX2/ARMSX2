@@ -8,6 +8,13 @@
 #include "Input/InputManager.h"
 #include "CDVD/CDVDdiscReader.h"
 
+// The two below stand in for pcsx2-qt, so they are wanted only by the APK.
+// pcsx2-libretro/Main.cpp defines both itself, and the libretro core is
+// linked from these same sources - hence the guard, or the Android core
+// build ends on two duplicate symbols. Everything further down is frontend
+// independent and is compiled either way.
+#ifndef ARMSX2_LIBRETRO
+
 // g_host_hotkeys - normally defined in pcsx2-qt
 BEGIN_HOTKEY_LIST(g_host_hotkeys)
 END_HOTKEY_LIST()
@@ -16,6 +23,8 @@ END_HOTKEY_LIST()
 void Host::SetMouseLock(bool state)
 {
 }
+
+#endif
 
 // HTTPDownloader::Create is now provided by common/HTTPDownloaderAndroid.cpp,
 // which bridges to java.net.HttpURLConnection via JNI. The stub that

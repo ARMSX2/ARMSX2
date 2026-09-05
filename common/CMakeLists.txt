@@ -198,6 +198,7 @@ else()
 		Linux/LnxThreads.cpp
 		Linux/LnxMisc.cpp
 	)
+	# Empty on Android, where LnxMisc.cpp leaves the D-Bus path out entirely.
 	target_include_directories(common PRIVATE
 		${DBUS_INCLUDE_DIRS}
 	)
