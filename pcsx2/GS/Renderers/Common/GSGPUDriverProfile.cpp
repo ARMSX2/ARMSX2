@@ -454,10 +454,10 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 			Workaround(DriverWorkaround::ScalarizeVectorBitwiseAnd)},
 	// The slow-cached-readback story (Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY, ported as a
 	// blanket Mali rule) was MEASURED BACKWARDS on r44p1 / Mali-G615 / MT6897 2026-08-17: a
-	// crossing-cost probe (umbrella gpu-drivers CROSSING-COST-RESULT.md) allocating a genuinely
-	// non-coherent cached type and paying the explicit invalidate per slot — the exact kernel
-	// cost the workaround is about — still beats the coherent map ~12× per 512×448 readback
-	// (4,021 → 329 µs), because a sequential CPU pass over the uncached map runs at ~244 MB/s.
+	// crossing-cost probe allocating a genuinely non-coherent cached type and paying the
+	// explicit invalidate per slot — the exact kernel cost the workaround is about — still
+	// beats the coherent map ~12× per 512×448 readback (4,021 → 329 µs), because a sequential
+	// CPU pass over the uncached map runs at ~244 MB/s.
 	// That measurement does not prove Dolphin wrong on older parts, so the preference is
 	// NARROWED by driver version rather than deleted: exactly the [44.1, 44.2) revision the
 	// probe ran keeps cached readbacks; every other revision keeps the coherent preference it

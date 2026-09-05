@@ -4372,9 +4372,9 @@ bool GSDeviceVK::CheckFeatures()
 	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a D32S8 depth-stencil
 	// attachment + a discarding fragment shader, which is SetupDATE's stencil pre-pass quad once a
 	// stencil buffer exists (round 20260903-0135, A650 / turnip 26.1.2, 8 of 8 titles lost the
-	// device; decode in umbrella phase3-adreno-stencil-date/CRASHDEC.md, fix in Mesa a70d2af590d /
-	// MR !41858, first shipped in 26.2). Bounded to that driver by the vk-turnip-d32s8-early-z-
-	// late-z-hang rule rather than to the Adreno vendor ID, which is what this used to be.
+	// device; fixed in Mesa a70d2af590d / MR !41858, first shipped in 26.2). Bounded to that
+	// driver by the vk-turnip-d32s8-early-z-late-z-hang rule rather than to the Adreno vendor
+	// ID, which is what this used to be.
 	//
 	// Stencil off means depth is created as plain D32_SFLOAT and neither a stencil attachment nor
 	// the stencil DATE pre-pass is emitted; DATE falls back to PrimID tracking, then Full, then Off.
