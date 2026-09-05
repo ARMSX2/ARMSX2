@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "common/Pcsx2Defs.h"
+
 // An interpolated depth never quite reaches its plane on silicon.
 //
 // Measured on an SCPH-30001 with the gs-zgrad probe, which drives integer
