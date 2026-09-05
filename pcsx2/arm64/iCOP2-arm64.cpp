@@ -1681,7 +1681,7 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)())
 			cop2FlushForConditionalSync();
 
 			// Apply block cycles to RECCYCLE (the pinned cycle delta).
-			const u32 cycles = scaleblockcycles_clear();
+			const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 			if (cycles != 0)
 				armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 
@@ -1708,7 +1708,7 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)())
 	// SL-2 retain seam — see the interlock branch above.
 	cop2FlushForConditionalSync();
 
-	const u32 cycles = scaleblockcycles_clear();
+	const u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 

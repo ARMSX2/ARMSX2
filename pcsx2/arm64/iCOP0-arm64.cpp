@@ -192,7 +192,7 @@ void recDI()
 // the helper wrote (MTC0 Status/Compare reschedule nextEventCycle too).
 static void emitFlushBlockCycles()
 {
-	u32 cycles = scaleblockcycles_clear();
+	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 
@@ -204,7 +204,7 @@ static void emitFlushBlockCycles()
 // delta and no longer holds the absolute value).
 static void emitFlushBlockCyclesAbs(const a64::Register& absOut)
 {
-	u32 cycles = scaleblockcycles_clear();
+	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles != 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 
