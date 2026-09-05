@@ -2606,9 +2606,6 @@
     <ClInclude Include="no-jit-improvements.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="ps2\eeHwTraceLog.inl">
-      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
-    </ClInclude>
     <ClInclude Include="vu_capture.h">
       <Filter>Misc</Filter>
     </ClInclude>

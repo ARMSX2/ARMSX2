@@ -1014,7 +1014,6 @@
     </CustomBuildStep>
     <ClInclude Include="x86\BaseblockEx.h" />
     <ClInclude Include="ps2\BiosTools.h" />
-    <ClInclude Include="ps2\eeHwTraceLog.inl" />
     <ClInclude Include="MemoryTypes.h" />
     <ClInclude Include="MTGS.h" />
     <ClInclude Include="VU1Trace.h" />
