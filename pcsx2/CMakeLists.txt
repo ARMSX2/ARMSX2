@@ -777,6 +777,14 @@ if(USE_VULKAN)
 		target_link_libraries(PCSX2_FLAGS INTERFACE adrenotools)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_USE_ADRENOTOOLS)
 	endif()
+	# VKShaderCache.cpp calls shaderc directly on Android, where every other
+	# platform dlopens it, so the library has to be on the link line. The APK
+	# links its own vendored `shaderc` target and sets the switch below; the
+	# buildbot's core build has only what find_package(Shaderc) found, and
+	# stopped on twenty undefined shaderc_* symbols without this.
+	if(ANDROID AND NOT ARMSX2_USE_BUNDLED_SHADERC AND TARGET Shaderc::shaderc_shared)
+		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
+	endif()
 endif()
 
 set(pcsx2GSMetalShaders

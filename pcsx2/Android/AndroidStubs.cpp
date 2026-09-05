@@ -8,6 +8,9 @@
 #include "Input/InputManager.h"
 #include "CDVD/CDVDdiscReader.h"
 
+#include "common/FileSystem.h"
+#include "common/HostSys.h"
+
 // The two below stand in for pcsx2-qt, so they are wanted only by the APK.
 // pcsx2-libretro/Main.cpp defines both itself, and the libretro core is
 // linked from these same sources - hence the guard, or the Android core
@@ -21,6 +24,48 @@ END_HOTKEY_LIST()
 
 // Host::SetMouseLock - no mouse lock on Android
 void Host::SetMouseLock(bool state)
+{
+}
+
+#endif
+
+#ifdef ENABLE_LIBRETRO
+
+// The APK's JNI layer (platforms/android/.../native-lib.cpp) implements these,
+// and the libretro core is linked without it, so the Android core build ended
+// on five undefined symbols. Every one of them bridges to something the app
+// owns and the core does not have: the Storage Access Framework file it was
+// handed, the app's own directories, the Java vibrator, the notification
+// sound. The core reaches its files through the frontend's VFS instead, and
+// the frontend owns rumble and audio.
+
+int FileSystem::OpenFDFileContent(const char* filename)
+{
+	return -1;
+}
+
+bool FileSystem::CreateDirectoryViaJava(const char* path)
+{
+	return false;
+}
+
+bool FileSystem::CreateFileViaJava(const char* path)
+{
+	return false;
+}
+
+bool Common::PlaySoundAsync(const char* path)
+{
+	return false;
+}
+
+// Declared where it is called, in Input/InputManager.cpp.
+namespace Native
+{
+	void onPadRumble(int pad, int largeMotor, int smallMotor);
+}
+
+void Native::onPadRumble(int pad, int largeMotor, int smallMotor)
 {
 }
 
