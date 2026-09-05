@@ -297,6 +297,11 @@ constexpr u32 VSQI_L(u32 mask_xyzw, u32 fs, u32 it) { return BuildLowerT3(0x3D, 
 constexpr u32 VLQD_L(u32 mask_xyzw, u32 ft, u32 is) { return BuildLowerT3(0x3E, 0x0D, ft, is, mask_xyzw); }
 constexpr u32 VSQD_L(u32 mask_xyzw, u32 fs, u32 it) { return BuildLowerT3(0x3F, 0x0D, it, fs, mask_xyzw); }
 
+// ILWR / ISWR — the register-indirect forms of ILW / ISW, with no immediate.
+// T3_10 / T3_11 sub 0x0F; `is` addresses, `it` is loaded or stored.
+constexpr u32 VILWR_L(u32 mask_xyzw, u32 it, u32 is) { return BuildLowerT3(0x3E, 0x0F, it, is, mask_xyzw); }
+constexpr u32 VISWR_L(u32 mask_xyzw, u32 it, u32 is) { return BuildLowerT3(0x3F, 0x0F, it, is, mask_xyzw); }
+
 // EFU P-pipeline ops — VU1-only (EFU not present on VU0). All write to the
 // architectural P scalar, which `mVUendProgram` commits to VI[REG_P] at
 // E-bit. VWAITP stalls until the P-pipeline drains. Per VUops.cpp:1652-1805,
