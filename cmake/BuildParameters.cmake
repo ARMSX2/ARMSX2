@@ -24,34 +24,6 @@ option(PACKAGE_MODE "Use this option to ease packaging of PCSX2 (developer/distr
 set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git checkout")
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
-option(ENABLE_RIG "Build every binary a measurement can run -- the headless runners and the unit-test executables -- as part of the default target, instead of only when named explicitly." OFF)
-
-# ENABLE_RIG is one switch over the binaries an experiment runs.
-#
-# Each of them is EXCLUDE_FROM_ALL individually, which is the right default for
-# somebody building the emulator: they are developer tools and each one costs a
-# link of the whole core. The cost of that default lands somewhere else, though.
-# A plain `cmake --build` refreshes the emulator and leaves every one of these
-# sitting at whatever revision it was last asked for by name -- and a stale
-# measurement binary does not fail, it produces a well-formed number describing
-# code that is no longer in the tree. Naming them by hand works exactly until
-# the one time it is forgotten, and there is no signal when that happens.
-#
-# So ENABLE_RIG makes them ordinary members of the default target. It costs one
-# link each on a build that touched the core, and it removes the failure mode
-# rather than documenting it. These are plain (uncached) sets so that turning
-# ENABLE_RIG back off restores each individual option to its own value.
-if(ENABLE_RIG)
-	set(ENABLE_TESTS ON)
-	set(ENABLE_RECOMPILER_TEST_HOOKS ON)
-	set(ENABLE_GSRUNNER ON)
-	set(ENABLE_EERUNNER ON)
-	set(ENABLE_VURUNNER ON)
-	# Said out loud because these are plain sets, so CMakeCache.txt still shows
-	# each option at its own value while the build behaves as if it were ON.
-	# Reading the cache to find out what got built is otherwise misleading.
-	message(STATUS "ENABLE_RIG: forcing ENABLE_TESTS, ENABLE_RECOMPILER_TEST_HOOKS, ENABLE_GSRUNNER, ENABLE_EERUNNER, ENABLE_VURUNNER ON for this configure (CMakeCache.txt still shows their own values)")
-endif()
 
 #-------------------------------------------------------------------------------
 # Graphical option

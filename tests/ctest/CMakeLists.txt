@@ -16,15 +16,6 @@ macro(add_pcsx2_test target)
 	add_dependencies(unittests ${target})
 	add_test(NAME ${target} COMMAND ${target})
 
-	# A gate binary is a measurement binary: it answers a question about the
-	# tree, so it belongs to `rig` for the same reason the runners do. Kept
-	# separate from `unittests`, which RUNS ctest as a post-build step -- `rig`
-	# only has to build things.
-	if(TARGET rig)
-		add_dependencies(rig ${target})
-		set_property(GLOBAL APPEND PROPERTY ARMSX2_RIG_TARGETS ${target})
-	endif()
-
 	if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 		# For some reason, the stack refuses to grow with the latest MSVC updates.
 		# Just force the commit size to 1MB for now.

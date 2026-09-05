@@ -42,77 +42,6 @@ include(SearchForStuff)
 get_git_version_info()
 write_svnrev_h()
 
-# The resources a developer EDITS are symlinked into the runtime directory
-# rather than copied into it.
-#
-# pcsx2_copy_runtime_resources() stages bin/resources/ next to a built frontend
-# with a POST_BUILD copy_if_different over a configure-time glob. Two faults
-# compose there, and both are invisible:
-#
-#   - POST_BUILD only fires when the target RELINKS. Editing a .glsl or the
-#     GameDB compiles nothing, so the frontend does not relink, so the copy step
-#     never runs and the binary keeps executing the previously staged file. It
-#     builds, links and runs clean the whole time; the failure mode is a
-#     plausible wrong image, not an error. (And a shader that fails to compile
-#     does not fail the run either, so the output is no evidence the edit
-#     arrived.)
-#   - the glob is evaluated at CONFIGURE time, so a newly added file is not
-#     staged at all until somebody reconfigures.
-#
-# A symlink has neither fault: it cannot hold a previous revision and it cannot
-# miss a file. Only the files that get edited, though -- the staged directory
-# also carries things that are deliberately not the source tree's (docs/ comes
-# from bin/docs/), so linking the whole directory would break them.
-#
-# Gated on ENABLE_RIG, and not merely on the platform, because a link is only
-# correct for a build directory that stays put. Anything that copies build/bin
-# elsewhere -- the AppImage and tarball packaging, an rsync to a handheld, a
-# plain `scp -r` -- either carries the link and gets a dangling one on the far
-# side, or dereferences it, depending on the flags. A default Linux build must
-# therefore stage real copies exactly as upstream does; only a developer
-# measurement build, which is run in place, gets the links.
-if(ENABLE_RIG AND UNIX AND NOT APPLE)
-	set(_rig_links
-		"bin/resources/shaders"          "resources/shaders"
-		"bin/resources/GameIndex.yaml"   "resources/GameIndex.yaml")
-	# The mobile GameDB overlay lands FLAT under resources/ from a different
-	# source directory, and only when enabled -- linking it unconditionally
-	# would hand the loader an overlay on a desktop GPU, which is a behaviour
-	# change, not a staleness fix.
-	if(ENABLE_MOBILE_GAMEDB_OVERLAY)
-		list(APPEND _rig_links
-			"bin/resources-overlay/armsx2_overrides.yaml" "resources/armsx2_overrides.yaml")
-	endif()
-
-	file(MAKE_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources")
-	while(_rig_links)
-		list(POP_FRONT _rig_links _rig_from _rig_to)
-		set(_rig_dest "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_rig_to}")
-		if(EXISTS "${_rig_dest}" AND NOT IS_SYMLINK "${_rig_dest}")
-			file(REMOVE_RECURSE "${_rig_dest}")
-		endif()
-		file(CREATE_LINK "${CMAKE_SOURCE_DIR}/${_rig_from}" "${_rig_dest}" SYMBOLIC)
-	endwhile()
-	unset(_rig_from)
-	unset(_rig_to)
-	unset(_rig_dest)
-
-	# Recorded for tools/rig/doctor.sh, which checks each one is still a link
-	# into the source tree -- a build that predates this rule, or a stray copy,
-	# otherwise looks exactly like a working one.
-	file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/rig-links.txt"
-		CONTENT "resources/shaders\nresources/GameIndex.yaml\n")
-endif()
-
-# `rig` -- everything a measurement can run, as one target.
-#
-# Declared before the subdirectories so each can add itself. Its value is not
-# convenience: a build invocation that names targets by hand omits whichever one
-# was forgotten, silently and with no signal, and the binary left behind still
-# runs. Naming the set once, in the build system, is what makes "did I rebuild
-# everything this experiment touches" answerable rather than remembered.
-add_custom_target(rig)
-
 # make common
 add_subdirectory(common)
 
@@ -181,54 +110,6 @@ if(UNIX AND ENABLE_LIBRETRO)
 endif()
 
 #-------------------------------------------------------------------------------
-# Populate `rig`. The unit-test executables add themselves from add_pcsx2_test();
-# these are the frontends and headless runners, each guarded because which of
-# them exist depends on the configuration.
-foreach(_rig_target pcsx2-qt pcsx2-sdl pcsx2-gsrunner pcsx2-eerunner pcsx2-vurunner)
-	if(TARGET ${_rig_target})
-		add_dependencies(rig ${_rig_target})
-		set_property(GLOBAL APPEND PROPERTY ARMSX2_RIG_TARGETS ${_rig_target})
-	endif()
-endforeach()
-unset(_rig_target)
-
-# Write the membership out for tools/rig/doctor.sh.
-#
-# The doctor needs the CONCRETE targets, not the `rig` alias: a CMake custom
-# target carries no output, so it is always dirty and a dry run of it can never
-# report "nothing to do". Dry-running the executables themselves is what makes
-# freshness decidable. Generating the list here also means the doctor cannot
-# drift out of step with the build -- it never holds its own copy of the set.
-get_property(_rig_all GLOBAL PROPERTY ARMSX2_RIG_TARGETS)
-list(SORT _rig_all)
-set(_rig_lines "")
-foreach(_t IN LISTS _rig_all)
-	# Both columns are needed and neither can be derived from the other: ninja
-	# is driven by the target name, and the artifact to hash is the output file,
-	# which several targets rename (pcsx2-qt builds armsx2-qt).
-	string(APPEND _rig_lines "${_t}\t$<TARGET_FILE:${_t}>\n")
-endforeach()
-file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/rig-targets.txt" CONTENT "${_rig_lines}")
-unset(_rig_all)
-unset(_rig_lines)
-unset(_t)
-
-# `rig-check` -- prove the rig is the tree before measuring with it.
-#
-# The check that matters is the freshness one, and it is delegated to ninja's own
-# dependency graph rather than reasoned about from timestamps: a dry run either
-# has work to do or does not. That distinguishes "built" from "built from THIS
-# source", which no property of the binary alone can. See tools/rig/doctor.sh.
-if(UNIX AND NOT APPLE)
-	add_custom_target(rig-check
-		COMMAND "${CMAKE_SOURCE_DIR}/tools/rig/doctor.sh"
-			--source-dir "${CMAKE_SOURCE_DIR}"
-			--build-dir "${CMAKE_BINARY_DIR}"
-		COMMENT "Checking the measurement rig is current with the source tree"
-		USES_TERMINAL
-		VERBATIM)
-endif()
-
 if(NOT IS_SUPPORTED_COMPILER)
 	message(WARNING "
 *************** UNSUPPORTED CONFIGURATION ***************
