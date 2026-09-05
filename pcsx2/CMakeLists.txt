@@ -60,6 +60,7 @@ set(pcsx2Sources
 	Counters.cpp
 	Dmac.cpp
 	EECycleRate.cpp
+	EECycleRateController.cpp
 	GameDatabase.cpp
 	Elfheader.cpp
 	FW.cpp
@@ -156,6 +157,7 @@ set(pcsx2Headers
 	Counters.h
 	Dmac.h
 	EECycleRate.h
+	EECycleRateController.h
 	EeFpuFormat.h
 	EeFpuModel.h
 	GameDatabase.h

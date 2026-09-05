@@ -6,6 +6,7 @@ add_pcsx2_test(core_test
 	patch_tests.cpp
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
+	ee_cycle_rate_controller_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )
