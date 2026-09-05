@@ -6996,7 +6996,8 @@ bool GSDeviceVK::DoCAS(
 	// The sharpen reads the source from the COMPUTE stage, so it needs a compute-scoped transition:
 	// ShaderReadOnly orders the fragment stage on both sides, and the pass that rendered this source
 	// is a colour-attachment write the dispatch would not be waiting on. Same VkImage layout, so the
-	// descriptor written below is unaffected.
+	// descriptor written below is unaffected. DoFSR1 and DoSGSR have the identical shape and use
+	// the identical layout for the identical reason.
 	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadOnly);
 	dTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadWriteImage);
 
@@ -7078,8 +7079,10 @@ bool GSDeviceVK::DoFSR1Pass(
 	else
 	{
 		// EASU's input is the merged display texture, arriving from a colour-attachment write
-		// exactly as CAS's does.
-		sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+		// exactly as CAS's does, and read from the compute stage exactly as CAS's is. So the
+		// transition has to be compute-scoped: ShaderReadOnly puts the fragment stage on both
+		// sides of the barrier and orders this dispatch against nothing.
+		sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadOnly);
 	}
 
 	if (dTexVK->GetLayout() == GSTextureVK::Layout::ComputeReadWriteImage)
@@ -7148,9 +7151,10 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 	GSTextureVK* const dTexVK = static_cast<GSTextureVK*>(dTex);
 	VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
 
-	// Input arrives from a colour-attachment write, exactly as FSR1's EASU input does. There is
-	// no compute->compute case here because SGSR has no intermediate.
-	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+	// Input arrives from a colour-attachment write, exactly as FSR1's EASU input does, and the
+	// dispatch below reads it from the compute stage, so the transition has to be compute-scoped.
+	// There is no compute->compute case here because SGSR has no intermediate.
+	sTexVK->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ComputeReadOnly);
 
 	if (dTexVK->GetLayout() == GSTextureVK::Layout::ComputeReadWriteImage)
 	{
