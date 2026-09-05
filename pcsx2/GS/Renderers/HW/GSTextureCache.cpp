@@ -9498,13 +9498,11 @@ __fi static void BlockHashReset(BlockHashState& st)
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp)
 {
-	g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(GS_BLOCK_SIZE));
 	GSXXH3_64bits_update(&st, bp, GS_BLOCK_SIZE);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp, u32 size)
 {
-	g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(size));
 	GSXXH3_64bits_update(&st, bp, size);
 }
 
@@ -9549,12 +9547,17 @@ static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GST
 		// Hash the expanded texture.
 		u8* ptr = temp + (pitch * static_cast<u32>(rect.top - block_rect.top)) +
 		          static_cast<u32>(rect.left - block_rect.left);
+		// The census counts the level, not each row: this is the hot loop that feeds xxh3, and
+		// GSPerfMon::Put is a read-modify-write on a global.
 		if (pitch == row_size)
 		{
-			BlockHashAccumulate(hash_st, ptr, pitch * static_cast<u32>(th));
+			const u32 bytes = pitch * static_cast<u32>(th);
+			g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(bytes));
+			BlockHashAccumulate(hash_st, ptr, bytes);
 		}
 		else
 		{
+			g_perfmon.Put(GSPerfMon::BytesHashed, static_cast<double>(row_size) * static_cast<double>(th));
 			for (int y = 0; y < th; y++, ptr += pitch)
 				BlockHashAccumulate(hash_st, ptr, row_size);
 		}
@@ -9562,9 +9565,17 @@ static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GST
 	else
 	{
 		GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
+		const int left = block_rect.left >> off.blockShiftX();
+		const int top = block_rect.top >> off.blockShiftY();
 		const int right = block_rect.right >> off.blockShiftX();
 		const int bottom = block_rect.bottom >> off.blockShiftY();
 		const int xAdd = (1 << off.blockShiftX()) * (psm.bpp / 8);
+
+		// Same count the loop below would reach one block at a time, out of the rectangle it
+		// walks. See above.
+		g_perfmon.Put(GSPerfMon::BytesHashed,
+			static_cast<double>(std::max(right - left, 0)) * static_cast<double>(std::max(bottom - top, 0)) *
+				static_cast<double>(GS_BLOCK_SIZE));
 
 		for (; bn.blkY() < bottom; bn.nextBlockY())
 		{
