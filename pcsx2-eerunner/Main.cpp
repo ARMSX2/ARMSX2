@@ -279,6 +279,17 @@ private:
 	{
 		const EECycleRate::ResetGenerations before = EECycleRate::GetResetGenerations();
 		const s8 old = EECycleRate::GetEffective();
+
+		// Read before the transition, not after: the EE reset clears both, so
+		// afterwards they are zero and say nothing. This is the working set the
+		// transition is about to throw away.
+#if defined(ARCH_ARM64)
+		const u32 live_blocks = recEeGetLiveBlockCount();
+		const u32 charge_sites = recEeGetChargeSiteCount();
+#else
+		const u32 live_blocks = 0, charge_sites = 0;
+#endif
+
 		const auto t0 = std::chrono::steady_clock::now();
 		const bool ok = EECycleRate::ApplyEffective(selector, "eerunner --ee-rate-script");
 		const double apply_ms =
@@ -298,6 +309,7 @@ private:
 		Console.WriteLn(fmt::format(
 			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); "
 			"split Cpu->Reset() call {:.3f} ms, EE rebuild {:.3f} ms ({}), mVUreset(VU0) {:.3f} ms; "
+			"discarded {} live blocks / {} charge sites; "
 			"generations ee {}->{} vu0 {}->{} iop {}->{} vu1 {}->{} vif {}->{}",
 			m_pass, frame, static_cast<int>(old), static_cast<int>(selector),
 			ok ? "applied" : "REJECTED", apply_ms,
@@ -305,6 +317,7 @@ private:
 			static_cast<double>(cost.ee_rebuild) * tick_ms,
 			rebuild_is_ours ? "this transition" : "deferred, an earlier reset",
 			static_cast<double>(cost.vu0_reset) * tick_ms,
+			live_blocks, charge_sites,
 			before.ee, after.ee, before.vu0, after.vu0, before.iop, after.iop,
 			before.vu1, after.vu1, before.vif, after.vif));
 

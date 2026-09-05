@@ -726,7 +726,7 @@ static u32 scaleblockcycles_calculation()
 	return (scale_cycles < 1) ? 1 : scale_cycles;
 }
 
-u32 scaleblockcycles_clear()
+static u32 scaleblockcycles_clear_impl()
 {
 	const u32 scaled = scaleblockcycles_calculation();
 
@@ -741,6 +741,35 @@ u32 scaleblockcycles_clear()
 	return scaled;
 }
 
+// Charge sites emitted since the last reset.
+//
+// Counted here rather than at the eleven emitters because the count is the
+// same either way and this one cannot drift: every emitter reaches
+// scaleblockcycles_clear() exactly once per site, and the scaler floors its
+// answer at 1 (pinned by ee_rec_cycle_rate_tests' EXPECT_GE(charge, 1u)), so
+// no caller can consume a charge and then emit nothing. A twelfth site added
+// later is counted without anyone remembering to.
+static u32 s_eeChargeSites = 0;
+
+u32 scaleblockcycles_clear()
+{
+	s_eeChargeSites++;
+	return scaleblockcycles_clear_impl();
+}
+
+// Charge sites emitted since the last reset, and blocks currently registered.
+// Between them they size everything a per-site repair pass would have to do at
+// a cycle-rate transition.
+u32 recEeGetChargeSiteCount()
+{
+	return s_eeChargeSites;
+}
+
+u32 recEeGetLiveBlockCount()
+{
+	return recBlocks.size();
+}
+
 #ifdef PCSX2_RECOMPILER_TESTS
 // Test-only: drive the production block-cycle scaler with a synthetic raw
 // count so a characterization table can pin the seven selector formulas
@@ -750,7 +779,9 @@ u32 recEeScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder)
 {
 	const u32 saved = s_nBlockCycles;
 	s_nBlockCycles = raw_block_cycles;
-	const u32 charge = scaleblockcycles_clear();
+	// The impl, not the counting wrapper: a synthetic raw driven through the
+	// scaler emits nothing, so it is not a charge site.
+	const u32 charge = scaleblockcycles_clear_impl();
 	if (out_remainder)
 		*out_remainder = s_nBlockCycles;
 	s_nBlockCycles = saved;
@@ -3364,6 +3395,7 @@ static void recResetRaw()
 		memset(s_pInstCache, 0, sizeof(EEINST) * s_nInstCacheSize);
 
 	recBlocks.Reset();
+	s_eeChargeSites = 0;
 	// The code cache is about to be rewound, so every fastmem backpatch record
 	// points at code that no longer exists. vtlb_AddLoadStoreInfo overwrites a
 	// colliding code_address, so a stale record cannot mispatch — but nothing

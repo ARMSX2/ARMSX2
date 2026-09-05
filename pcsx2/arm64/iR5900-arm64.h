@@ -755,6 +755,12 @@ u32 scaleblockcycles_clear();
 // The most recent EE recompiler reset's own duration, in GetCPUTicks() units.
 u64 recEeGetLastResetTicks();
 
+// Cycle-charge sites emitted since the last reset, and blocks registered right
+// now. Both are cleared by the reset, so read them BEFORE a transition — after
+// it they are zero by construction.
+u32 recEeGetChargeSiteCount();
+u32 recEeGetLiveBlockCount();
+
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).
 // interlock=true mirrors x86 COP2_Interlock (CFC2/CTC2/QMFC2/QMTC2 path);
 // interlock=false mirrors mVUSyncVU0 / mVUFinishVU0 gating used by LQC2/SQC2
