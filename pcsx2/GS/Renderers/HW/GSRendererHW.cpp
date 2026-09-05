@@ -836,9 +836,18 @@ void GSRendererHW::DetectTextureShuffleSecondPass(GSTextureCache::Target* rt, GS
 			// Detects when the source texture is really a 16 bit texture instead of 32 bit being reinterpreted as 16 bit.
 			// Make sure it's opaque and not bilinear to reduce false positives.
 			const auto HasLowerOnes = [&](u32 x) { return x != 0 && (x & (x + 1)) == 0; };
+
+			// The FBMSK test is a weak "this is a channel copy" signal, and it only fits the Copy
+			// shuffle, whose first-pass detection already demands it. An Offset shuffle is identified
+			// by X and U differing by 8 pixels, which is the source being read one channel column
+			// group across from where it is written -- an ordinary textured draw does not do that by
+			// accident, so the mask shape adds nothing and only rejects real shuffles whose mask is
+			// not a run of low ones. Splashdown's water mask draw is one: FBMSK 0x38F8 writes the
+			// high byte of every 16 bit word, which is not a lower-ones mask.
+			const bool signature_is_column_offset = (m_texture_shuffle.type == TextureShuffleType::Offset);
 			if (m_cached_ctx.TEX0.TBP0 != m_cached_ctx.FRAME.Block() &&
 				rt && rt->m_32_bits_fmt == true && IsOpaque() && !m_vt.IsRealLinear() &&
-				HasLowerOnes(m_cached_ctx.FRAME.FBMSK))
+				(HasLowerOnes(m_cached_ctx.FRAME.FBMSK) || signature_is_column_offset))
 			{
 				GL_INS("HW: Texture shuffle detection (2): Passed (real 16 bit source).");
 				m_texture_shuffle.real_16_bit_source = true;
@@ -1064,6 +1073,18 @@ void GSRendererHW::ConvertSpriteTextureShuffleImpl(GSTextureCache::Target* rt, G
 		}
 
 		half_u = false;
+		half_v = false;
+	}
+	else if (m_texture_shuffle.real_16_bit_source && m_texture_shuffle.type == TextureShuffleType::Offset)
+	{
+		// A real 16 bit source is not a reinterpreted target, so it has no source-target TBW for the
+		// width test below to compare against -- that test reads tex->m_TEX0.TBW, which is the draw's
+		// own TEX0.TBW, so its second clause is false by construction and the branch always folds Y.
+		// An Offset shuffle is identified by the 8 pixel gap between X and U, which is a statement
+		// about how 16 bit pixels pack into 32 bit ones along X. Folding Y instead does not preserve
+		// that pairing, so fold X.
+		GL_INS("HW: Offset shuffle from a real 16 bit source: folding X.");
+		half_y = false;
 		half_v = false;
 	}
 	else if (m_cached_ctx.TEX0.TBP0 != m_cached_ctx.FRAME.Block())
