@@ -6,6 +6,7 @@
 #include "VMManager.h"
 #include "Elfheader.h"
 #include "Cache.h"
+#include "EECycleRate.h"
 #include "ee_divtrace.h"
 #include "no-jit-improvements.h"
 
@@ -43,7 +44,7 @@ void intChargeSkippedHandlerCycles(u32 raw_block_cycles)
 void intUpdateCPUCycles()
 {
 	const bool lowcycles = (cpuBlockCycles <= 40);
-	const s8 cyclerate = EmuConfig.Speedhacks.EECycleRate;
+	const s8 cyclerate = EECycleRate::GetEffective();
 	u32 scale_cycles = 0;
 
 	if (cyclerate == 0 || lowcycles || cyclerate < -99 || cyclerate > 3)
