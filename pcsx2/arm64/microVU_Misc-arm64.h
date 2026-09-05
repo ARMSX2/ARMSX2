@@ -272,6 +272,25 @@ __fi static a64::MemOperand mVUstateMem(int64_t off)
 	return a64::MemOperand(gprVUState, off);
 }
 
+// How far VU1's data memory sits past the VURegs gprVUState points at; VU.h
+// puts the two in one object for exactly this. VU0's is not in it.
+static constexpr int64_t kVU1MemFromState = offsetof(VuStateStore, vu1Mem) - sizeof(VURegs);
+
+// Where a VU load or store's address ended up: a base register and the
+// displacement the access itself has to carry.
+struct mVUmemRef
+{
+	a64::Register base;
+	int64_t disp;
+};
+
+// How far the unsigned-offset load/store forms reach, by operand width: imm12
+// scaled by the operand's own size. A site passes the reach of its narrowest
+// access, less the largest lane offset it adds on top.
+static constexpr int64_t kDispReachH = 4095 * 2;
+static constexpr int64_t kDispReachW = 4095 * 4;
+static constexpr int64_t kDispReachQ = 4095 * 16;
+
 // mVU shadow-flag base pointer (callee-saved). Pinned at mVUdispatcherAB
 // entry to `&mVU.macFlag[0]`. The `microVU` struct lays out
 // `statFlag[4]/macFlag[4]/clipFlag[4]/neonCTemp[4]/neonBackup[32][4]` as

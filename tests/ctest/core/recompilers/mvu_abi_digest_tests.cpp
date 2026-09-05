@@ -127,7 +127,11 @@ struct DigestSet
 	// VU0 -- where the thirteen ops are NOPs. 0 in a pin row = probe absent.
 	u64 signClampEfu;
 	u64 exactEfu;
-
+	// The load/store address path, on the VU whose data memory the recompiler
+	// reaches off the pinned register file. Every probe above is memory-free,
+	// which is why abi 4's constant-address fold moved no digest at all.
+	// 0 in a pin row = probe absent.
+	u64 vu1LoadStore;
 };
 
 struct AbiPin
@@ -295,6 +299,14 @@ constexpr AbiPin kPins[] = {
 	// here reaches a memory op, so all eighteen digests are bit-identical to
 	// abi 23; the bump evicts caches holding the truncating form.
 	{24, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5}},
+	// abi 25: VU1's data memory moved into the object that holds the register
+	// file, a fixed distance from the pointer the recompiler keeps pinned to
+	// it, so a VU1 access reaches memory off that pin and carries the distance
+	// in its own displacement instead of loading VURegs::Mem. The eighteen
+	// probes above are memory-free and stay bit-identical to abi 24; the bump
+	// evicts caches recorded with the pointer-load shape, and the new
+	// vu1LoadStore probe pins the address path from here on.
+	{25, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x4ce85fa74802244b}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -589,6 +601,18 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		"the EFU's models are a mode above this one");
 	actual.exactEfu = CompileAndDigestVu1Exact(efuProgram);
 
+	// The load/store address path. The two vi00 loads take the constant-address
+	// fold on either side of a halfword's displacement reach -- one folded
+	// whole, one back on the pointer -- and the rest address off a live VI.
+	actual.vu1LoadStore = CompileAndDigestVu1({
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf5, vi::vi0, 1000)),
+		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
+		LowerOnly(VILW_L(mask::z, vi::vi2, vi::vi1, 4)),
+		LowerOnly(VISWR_L(mask::xyzw, vi::vi2, vi::vi1)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf5)),
+	});
+
 	mVUPersist::SetRecordingEnabled(false);
 
 	ASSERT_NE(actual.straightLine, 0u);
@@ -608,6 +632,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.exactDivUnit, 0u);
 	ASSERT_NE(actual.signClampEfu, 0u);
 	ASSERT_NE(actual.exactEfu, 0u);
+	ASSERT_NE(actual.vu1LoadStore, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -650,7 +675,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.signClampDivUnit
 		<< ", 0x" << actual.exactDivUnit
 		<< ", 0x" << actual.signClampEfu
-		<< ", 0x" << actual.exactEfu << "}";
+		<< ", 0x" << actual.exactEfu
+		<< ", 0x" << actual.vu1LoadStore << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -741,15 +767,10 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 				<< explain("exactEfu", actual.exactEfu, pin->digests.exactEfu);
 		}
 	}
-	if (pin->digests.signClampDivUnit != 0) // probe added at abi 23; older rows unpinned
+	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{
-		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
-			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
-	}
-	if (pin->digests.signClampEfu != 0) // probe added at abi 24; older rows unpinned
-	{
-		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
-			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
+		EXPECT_EQ(actual.vu1LoadStore, pin->digests.vu1LoadStore)
+			<< explain("vu1LoadStore", actual.vu1LoadStore, pin->digests.vu1LoadStore);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }

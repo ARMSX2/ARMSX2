@@ -210,7 +210,25 @@ enum VUPipeState
 	VUPIPE_XGKICK
 };
 
-extern VURegs vuRegs[2];
+// VU1's data memory is kept here rather than in the memory reservation, a
+// compile-time-fixed distance from vuRegs: the arm64 recompiler pins a pointer
+// to the register file for the length of a dispatch, and that distance puts
+// the data memory in reach of the same pointer.
+//
+// VU0's memory stays in the reservation. It is block-mapped into the EE's
+// address space (memMapVUmicro) and fastmem remaps such a block by its offset
+// within that reservation (vtlb_GetMainMemoryOffsetFromPtr); outside it the
+// block still works, through the slow path. VU1's is handler-mapped, so it is
+// never on that path.
+struct alignas(16) VuStateStore
+{
+	VURegs regs[2];
+	alignas(16) u8 vu1Mem[0x4000]; // VU1_MEMSIZE, which VUmicro.h defines below us
+};
+
+extern VuStateStore vuState;
+
+static VURegs (&vuRegs)[2] = vuState.regs;
 
 // Obsolete(?)  -- I think I'd rather use vu0Regs/vu1Regs or actually have these explicit to any
 // CPP file that needs them only. --air

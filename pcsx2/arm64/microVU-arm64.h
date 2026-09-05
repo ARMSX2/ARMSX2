@@ -129,7 +129,10 @@
 //  24 — ILW and ILWR add their lane offset to the address at the width
 //       mVUaddrFix answered in, so VU0's window onto VU1's registers no
 //       longer loses the top half of its offset.
-static constexpr u32 kMvuCompilerAbiVersion = 24;
+//  25 — VU1's data memory is a fixed distance from gprVUState, so a VU1 load
+//       or store drops its VURegs::Mem load and carries the distance in its
+//       own displacement; a constant address off vi00 drops the whole chain.
+static constexpr u32 kMvuCompilerAbiVersion = 25;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

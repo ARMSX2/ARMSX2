@@ -4,14 +4,19 @@
 // Randomised differential sweep over the VU load/store address path.
 //
 // A VU memory access builds its address in three places: the constant-address
-// fold for a vi00 base, mVUaddrFix's mask and shift, and the VURegs::Mem load
-// the site adds the result to. Which arm of each runs turns on the opcode,
-// the base register, the immediate and the dest field together, and the
-// coverage until now is one program per shape.
+// fold for a vi00 base, mVUaddrFix's mask and shift, and the base
+// mVUmemAtIndex hands back. VU1's data memory sits a fixed distance from the
+// register file the recompiler keeps pinned, so part of the address rides in
+// the access's own displacement -- and each encoding scales its displacement
+// by its own width, so past a width's reach the fold declines and the pointer
+// load comes back. Which shape an op gets therefore turns on the address as
+// well as the opcode, and no single program sees more than a couple of them.
 //
 // So: random streams of the ten memory ops -- opcode x base VI x offset x dest
 // mask x register aliasing x seeded memory -- run through both engines, with
-// the whole of data memory in the diff.
+// the whole of data memory in the diff. The offset pool carries each width's
+// reach boundary alongside the random draws, since a fold that declines one
+// slot late is invisible everywhere else.
 
 #include "harness/VuTestHarness.h"
 
@@ -54,14 +59,25 @@ constexpr u32 kMasks[15] = {
 	mask::xyzw,
 };
 
+// Quadword offsets where a displacement fold changes hands. kVU1MemFromState
+// is 1680 and the unsigned-offset forms reach imm12 scaled by their operand,
+// so the last slot a halfword folds at is 406 and a word's -- counting the
+// 12-byte lane offset those sites add on top -- is 918. A quadword reaches the
+// end of memory, so SQ has no boundary to sit on. Both sides of each are
+// drawn.
+constexpr s16 kBoundaryOffsets[] = {0, 1, 405, 406, 407, 408, 917, 918, 919, 920, 1022, 1023};
+
 s16 DrawOffset(Rng& rng, bool vu1)
 {
 	if (!vu1)
 		return static_cast<s16>(rng.Below(0x100)); // stay clear of VU0's 0x400 window
 
-	if (rng.Below(4) == 0)
-		return static_cast<s16>(-static_cast<s32>(rng.Below(1024))); // wraps under the 0x3ff mask
-	return static_cast<s16>(rng.Below(1024));
+	switch (rng.Below(4))
+	{
+		case 0: return kBoundaryOffsets[rng.Below(std::size(kBoundaryOffsets))];
+		case 1: return static_cast<s16>(-static_cast<s32>(rng.Below(1024))); // wraps under the 0x3ff mask
+		default: return static_cast<s16>(rng.Below(1024));
+	}
 }
 
 // One memory op. `is` addresses; `it`/`ft` is the register moved.
@@ -180,7 +196,8 @@ TEST(VuMemAddressing, Vu0RandomStreams)
 }
 
 // Every quadword slot of VU1 memory, read and written through a vi00 base --
-// the constant-address fold's own axis, swept end to end rather than sampled.
+// the fold's own axis, swept end to end so the slot each width's reach gives
+// out at is in the run rather than left to a draw.
 TEST(VuMemAddressing, Vu1ConstantAddressWalksEveryQuadword)
 {
 	for (s16 base = 0; base < 1024; base += 32)
@@ -213,9 +230,11 @@ TEST(VuMemAddressing, Vu1ConstantAddressWalksEveryQuadword)
 // from its load destinations, and it diverges: the run ends with vi3 = 0x691
 // and vi7 = 0x5e0, indices whose bit 0x400 makes them VU0's window onto VU1's
 // register file rather than addresses in VU0's own memory, and vf18.w comes
-// back 0 from the recompiler against 0xde from the interpreter. Nobody has
-// traced it further than the two engines' GET_VU_MEM and mVUaddrFix
-// disagreeing somewhere inside that window.
+// back 0 from the recompiler against 0xde from the interpreter. It reproduces
+// unchanged on the recompiler that predates the addressing this file sweeps,
+// so it belongs to the window and not to that change; nobody has traced it
+// further than the two engines' GET_VU_MEM and mVUaddrFix disagreeing
+// somewhere inside it.
 TEST(VuMemAddressing, DISABLED_Vu0WindowIntoVu1Registers)
 {
 	Rng rng(0x0BADF00Dull + 336ull * 0x9E3779B97F4A7C15ull);

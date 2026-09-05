@@ -70,20 +70,20 @@ __fi void mVUloadReg(const a64::VRegister& reg, const a64::Register& base, int64
 // values in their natural lane while the writeback reads lane 0, silently
 // clobbering VU memory with whatever happened to be in the recycled
 // Q register's lane 0.
-__fi void mVUloadMem(const a64::VRegister& reg, const a64::Register& base, int xyzw)
+__fi void mVUloadMem(const a64::VRegister& reg, const a64::Register& base, int64_t off, int xyzw)
 {
-	int offset;
+	int lane;
 	switch (xyzw)
 	{
-		case 0x8: offset = 0;  break; // X — naturally lane 0
-		case 0x4: offset = 4;  break; // Y — into lane 0
-		case 0x2: offset = 8;  break; // Z — into lane 0
-		case 0x1: offset = 12; break; // W — into lane 0
+		case 0x8: lane = 0;  break; // X — naturally lane 0
+		case 0x4: lane = 4;  break; // Y — into lane 0
+		case 0x2: lane = 8;  break; // Z — into lane 0
+		case 0x1: lane = 12; break; // W — into lane 0
 		default:
-			armAsm->Ldr(reg, a64::MemOperand(base));
+			armAsm->Ldr(reg, a64::MemOperand(base, off));
 			return;
 	}
-	armAsm->Ldr(a64::VRegister(reg.GetCode(), 32), a64::MemOperand(base, offset));
+	armAsm->Ldr(a64::VRegister(reg.GetCode(), 32), a64::MemOperand(base, off + lane));
 }
 
 // Store VF register components to memory with xyzw mask.
@@ -373,17 +373,41 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 	}
 }
 
+// Turn a byte index into VU data memory, already in gprIdxq, into something a
+// load or store can address: on VU1 one Add off the pin, the distance riding
+// in the access's own offset field; on VU0 the pointer is still loaded.
+__fi mVUmemRef mVUmemAtIndex(mV, const a64::Register& gprIdxq)
+{
+	if (isVU1)
+	{
+		armAsm->Add(gprIdxq, gprVUState, gprIdxq);
+		return {gprIdxq, kVU1MemFromState};
+	}
+
+	armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+	armAsm->Add(gprIdxq, gprT2q, gprIdxq);
+	return {gprIdxq, 0};
+}
+
 // Constant-address fold for loadstores whose base VI is vi00 (always 0). With a
 // constant base the whole address is known at compile time, so the runtime
 // moveVIToGPR + imm-add + mVUaddrFix (mask/shift) + base-add chain collapses to
-// a single Mem-pointer load plus (at most) one immediate add. On a return of
-// true gprOutQ holds &VU.Mem[const], ready for the load/store; on false the
-// caller emits the normal runtime path. Mirrors x86 mVUoptimizeConstantAddr
+// a single Mem-pointer load plus (at most) one immediate add -- or, on VU1,
+// to nothing at all, the whole address being a displacement off the pin.
+// On a return of true `out` addresses &VU.Mem[const]; on false the caller
+// emits the normal runtime path. Mirrors x86 mVUoptimizeConstantAddr
 // (microVU_Misc.inl). The VU0 cross-VU-register window (addr & 0x400) and the
 // IbitHack runtime-reconstruct path are deliberately left to mVUaddrFix.
 // Ported 2026-06-23 from upstream 6018936dc (postdates the leak/4248; correct
 // and ABI-neutral, so adopted per the "newer-upstream-pattern" rule).
-__fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_, const a64::Register& gprOutQ)
+//
+// dispLimit is the largest displacement the caller's own accesses encode: an
+// unsigned-offset load or store scales its immediate by its own width, so what
+// a quadword reaches a halfword does not. Past it the pointer load comes back,
+// rather than let the assembler materialise the displacement into a scratch --
+// which costs the same and spends a register the emitter never budgeted.
+__fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_,
+	const a64::Register& gprOutQ, int64_t dispLimit, mVUmemRef& out)
 {
 	if (srcreg != 0 || EmuConfig.Gamefixes.IbitHack)
 		return false;
@@ -392,6 +416,12 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_, con
 	if (isVU1)
 	{
 		byteAddr = ((offset & 0x3ff) << 4) + offsetSS_;
+
+		if (kVU1MemFromState + byteAddr <= dispLimit)
+		{
+			out = {gprVUState, kVU1MemFromState + byteAddr};
+			return true;
+		}
 	}
 	else
 	{
@@ -403,5 +433,6 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_, con
 	armAsm->Ldr(gprOutQ, mVUstateMem(offsetof(VURegs, Mem)));
 	if (byteAddr != 0)
 		armAsm->Add(gprOutQ, gprOutQ, byteAddr);
+	out = {gprOutQ, 0};
 	return true;
 }
