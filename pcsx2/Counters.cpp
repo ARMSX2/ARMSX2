@@ -512,7 +512,7 @@ static __fi void VSyncStart(u64 sCycle)
 	if (!VMManager::Internal::IsExecutionInterrupted())
 		VMManager::Internal::Throttle(true);
 	else
-		PerformanceMetrics::AdpfPauseFrameWork(); // interrupted → no Throttle → drop the ADPF period so the resume report excludes the pause
+		PerformanceMetrics::OnFrameWorkPaused(); // interrupted → no Throttle → drop the work period so the resume measurement excludes the pause
 
 	if (!EmuConfig.GS.AdvancedFrameDisplay)
 	{
@@ -591,7 +591,7 @@ static __fi void VSyncEnd(u64 sCycle)
 	if (!VMManager::Internal::IsExecutionInterrupted())
 		VMManager::Internal::Throttle(false);
 	else
-		PerformanceMetrics::AdpfPauseFrameWork();
+		PerformanceMetrics::OnFrameWorkPaused();
 
 	if (EmuConfig.GS.AdvancedFrameDisplay)
 	{

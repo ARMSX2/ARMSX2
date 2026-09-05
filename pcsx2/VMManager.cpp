@@ -3045,23 +3045,24 @@ void VMManager::Internal::Throttle(bool vsync_start)
 {
 	if (s_target_speed == 0.0f || s_use_vsync_for_timing)
 	{
-		// Not frame-limiting this frame (unlimited / host-vsync pacing): invalidate the ADPF work
-		// period so no wall-time-with-wait duration is submitted.
-		PerformanceMetrics::AdpfPauseFrameWork();
+		// Not frame-limiting this frame (unlimited / host-vsync pacing): invalidate the frame-work
+		// period so no wall-time-with-wait duration is measured.
+		PerformanceMetrics::OnFrameWorkPaused();
 		return;
 	}
 
-	// ADPF: close the active-work segment that just ended (before the limiter sleep below), then
-	// re-open one AFTER the sleep. The frame's two segments are reported together at the vsync-end
-	// wait. The ScopedGuard fires on EVERY exit past here — including the missed-frame early
-	// return — so measurement survives the can't-hit-target case.
-	PerformanceMetrics::AdpfEndWorkSegment(!vsync_start);
-	ScopedGuard adpf_begin_next_work([]() { PerformanceMetrics::AdpfBeginFrameWork(); });
+	const u64 iEnd = GetCPUTicks(); // The current tick we actually stopped on.
+
+	// Close the active-work segment that just ended (before the limiter sleep below), then re-open
+	// one AFTER the sleep. A frame's work is the two segments, one per wait; `frame_end` marks the
+	// vsync-end wait that completes it. The ScopedGuard fires on EVERY exit past here — including
+	// the missed-frame early return — so measurement survives the can't-hit-target case.
+	PerformanceMetrics::OnFrameWorkSegmentComplete(iEnd, !vsync_start);
+	ScopedGuard begin_next_frame_work([]() { PerformanceMetrics::OnFrameWorkBegin(); });
 
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
 		(vsync_start ? (s_limiter_ticks_per_frame * 0.9) : s_limiter_ticks_per_frame); // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
-	const u64 iEnd = GetCPUTicks(); // The current tick we actually stopped on.
 	const s64 sDeltaTime = iEnd - uExpectedEnd; // The diff between when we stopped and when we expected to.
 
 	// If frame ran too long...

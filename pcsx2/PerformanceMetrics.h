@@ -86,18 +86,29 @@ namespace PerformanceMetrics
 	/// Close the ADPF session and forget registered threads (VM shutdown).
 	void AdpfShutdown();
 
-	/// ADPF work-period brackets, driven by the frame limiter (VMManager::Internal::Throttle).
-	/// The reported duration must be the active EE/GS/VU work per frame, EXCLUDING the deliberate
-	/// limiter sleep and present wait, per the PerformanceHintManager contract (reportActualWork
-	/// = the last workload cycle, not the frame interval). The limiter waits twice per frame, at
-	/// vsync start and at vsync end, so a frame's work is two segments. EndWorkSegment() closes the
-	/// segment that just ended (called at Throttle entry, before the sleep) and, at the frame's
-	/// last wait, reports both segments as one period; BeginFrameWork() opens the next segment
-	/// after the sleep; PauseFrameWork() invalidates the frame when we are not frame-limiting
-	/// (unlimited / host-vsync pacing / interrupted), so no bogus duration is reported.
-	void AdpfEndWorkSegment(bool frame_end);
-	void AdpfBeginFrameWork();
-	void AdpfPauseFrameWork();
+	/// The CPU thread's frame-work clock, driven by the frame limiter
+	/// (VMManager::Internal::Throttle). The period it measures is the frame's active EE/GS/VU
+	/// work, EXCLUDING the deliberate limiter sleep. The limiter waits twice per frame, at vsync
+	/// start and at vsync end, so a frame's work is two segments. OnFrameWorkSegmentComplete()
+	/// closes the segment that just ended (called at Throttle entry, before the sleep) and returns
+	/// its length in GetCPUTicks() units; OnFrameWorkBegin() opens the next segment after the
+	/// sleep; OnFrameWorkPaused() invalidates the frame when we are not frame-limiting
+	/// (unlimited / host-vsync pacing / execution interrupted), so no wall-time-with-wait
+	/// duration is measured. Zero back from OnFrameWorkSegmentComplete() means no segment was
+	/// open. `frame_end` marks the frame's last wait (vsync end).
+	///
+	/// Two consumers share this one timestamp: the Android ADPF hint, which sums the two
+	/// segments and reports them to PerformanceHintManager at the frame's last wait
+	/// (reportActualWork = the last workload cycle, not the frame interval), and the dynamic EE
+	/// cycle-rate sampler, which is the same measurement on every platform.
+	u64 OnFrameWorkSegmentComplete(u64 now_ticks, bool frame_end);
+	void OnFrameWorkBegin();
+	void OnFrameWorkPaused();
+
+	/// The CPU (EE) thread's own CPU time, in Threading::GetThreadTicksPerSecond() units.
+	/// Reads the same handle SetCPUThread() registered, so there is one handle rather than
+	/// one per consumer. Zero if no CPU thread is registered.
+	u64 GetCPUThreadCPUTime();
 
 	/// Sets the EE thread for CPU usage calculations.
 	void SetCPUThread(Threading::ThreadHandle thread);
