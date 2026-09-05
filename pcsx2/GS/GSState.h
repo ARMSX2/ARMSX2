@@ -186,12 +186,16 @@ private:
 
 protected:
 	// One qword of a tag through the per-descriptor handler table, which is the
-	// path Transfer takes for TYPE_UNKNOWN. It is here because the differential
-	// suite (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) replays a tag one
-	// qword at a time and compares that against the fused handler for the same
-	// layout -- that replay is the oracle every stage-3c layout is checked
-	// against, and the table it needs is private. Nothing in the emulator calls
-	// this.
+	// path Transfer takes for TYPE_UNKNOWN.
+	//
+	// Two callers. GIFPackedRegHandlerLayout uses it to walk a tag record by
+	// record while m_dirty_gs_regs is live, because the flush point the fused
+	// arm collapses into one call is only exact once the flag has cleared -- so
+	// this is a shipped path, not a test hook. And the differential suite
+	// (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) replays a whole tag a qword
+	// at a time and compares that against the fused handler for the same layout;
+	// that replay is the oracle every fused layout is checked against, and the
+	// handler table it needs is private.
 	void ReplayPackedQword(u32 reg, const GIFPackedReg* RESTRICT r)
 	{
 		(this->*m_fpGIFPackedRegHandlers[reg & 0xF])(r);
