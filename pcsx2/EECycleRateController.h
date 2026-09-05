@@ -98,6 +98,12 @@ enum class EECycleRateDecision : u8
 // numbers. Change them from captured traces, not from taste.
 struct EECycleRatePolicy
 {
+	// Target-time one window covers. The controller never reads this - it only ever sees
+	// the target_seconds the sampler reports per window - but it lives here so a trace, a
+	// test and the sampler all name the same number. 500 ms is 30 frames at 60 Hz and 25
+	// at 50 Hz: long enough to smooth frame noise, short enough not to hide a scene change.
+	double window_seconds = 0.5;
+
 	// Target-time to sit out after a lifecycle reset, covering boot, state load and
 	// JIT warm-up.
 	double warmup_seconds = 2.0;

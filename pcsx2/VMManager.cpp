@@ -11,6 +11,7 @@
 #include "DebugTools/SymbolImporter.h"
 #include "Elfheader.h"
 #include "EECycleRate.h"
+#include "EECycleRateSampler.h"
 #include "FW.h"
 #include "GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
@@ -326,6 +327,9 @@ void VMManager::SetState(VMState state)
 			PerformanceMetrics::Reset();
 			ResetFrameLimiter();
 		}
+
+		// The window in progress spans a stretch of wall time the guest was not running for.
+		EECycleRateSampler::OnLifecycleReset(paused ? "paused" : "resumed");
 
 		SPU2::SetOutputPaused(paused);
 		Achievements::OnVMPaused(paused);
@@ -1728,6 +1732,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
 	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnVMStart();
 	Internal::ClearCPUExecutionCaches();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	memBindConditionalHandlers();
@@ -1871,6 +1876,7 @@ void VMManager::Shutdown(bool save_resume_state)
 	s_state.store(VMState::Stopping, std::memory_order_release);
 
 	PerformanceMetrics::LogSessionSummary();
+	EECycleRateSampler::OnVMShutdown();
 
 	SetTimerResolutionIncreased(false);
 
@@ -2015,6 +2021,7 @@ void VMManager::Reset()
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
 	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnLifecycleReset("VM reset");
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 	SysMemory::Reset();
@@ -2135,6 +2142,10 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 	}
 
 	MemcardBusy::CheckSaveStateDependency();
+
+	// A state load replaces the guest wholesale, so every window of evidence about the one
+	// that was running describes a scene that is gone.
+	EECycleRateSampler::OnLifecycleReset("save-state load");
 	return true;
 }
 
@@ -2484,6 +2495,12 @@ void VMManager::UpdateTargetSpeed()
 		SPU2::OnTargetSpeedChanged();
 		ResetFrameLimiter();
 	}
+
+	// The deadline the governor measures against just moved, or stopped existing. Anything it
+	// inferred from the old one is a statement about a different machine - and if the limiter
+	// has gone unlimited or host-vsync paced, Throttle() will not close another window, so
+	// this is also the only chance to hand back a rate it had lowered.
+	EECycleRateSampler::OnLifecycleReset("the frame limiter changed");
 }
 
 bool VMManager::IsTargetSpeedAdjustedToHost()
@@ -2513,6 +2530,7 @@ void VMManager::Internal::Throttle()
 		// Not frame-limiting this frame (unlimited / host-vsync pacing): invalidate the frame-work
 		// period so no wall-time-with-wait duration is measured.
 		PerformanceMetrics::OnFrameWorkPaused();
+		EECycleRateSampler::OnFrameNotThrottled();
 		return;
 	}
 
@@ -2521,13 +2539,19 @@ void VMManager::Internal::Throttle()
 	// Close the active-work period that just ended (before the limiter sleep below), then re-open
 	// a new one AFTER the sleep. The ScopedGuard fires on EVERY exit past here — including the
 	// missed-frame early return — so measurement survives the can't-hit-target case.
-	PerformanceMetrics::OnFrameWorkComplete(iEnd);
+	const u64 active_ticks = PerformanceMetrics::OnFrameWorkComplete(iEnd);
 	ScopedGuard begin_next_frame_work([]() { PerformanceMetrics::OnFrameWorkBegin(); });
 
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
 		s_limiter_ticks_per_frame; // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
 	const s64 sDeltaTime = iEnd - uExpectedEnd; // The diff between when we stopped and when we expected to.
+
+	// The dynamic EE cycle-rate governor's frame boundary, before the sleep below, so its
+	// "active" is the frame's work and not the work plus the wait for the deadline. It also
+	// has to be before the missed-frame return: a frame that overran is the one the governor
+	// most needs to see.
+	EECycleRateSampler::OnFrameThrottled(active_ticks, static_cast<u64>(s_limiter_ticks_per_frame), sDeltaTime >= 0);
 
 	// If frame ran too long...
 	if (sDeltaTime >= s_limiter_ticks_per_frame)
@@ -2578,6 +2602,7 @@ void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
 		return;
 	}
 
+	EECycleRateSampler::OnLifecycleReset("frame advance");
 	s_frame_advance_count = num_frames;
 	SetState(VMState::Running);
 }
@@ -3273,6 +3298,7 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	// A settings apply resolves the configured selector afresh; the governor's
 	// transient choice does not survive it, and the caches are going anyway.
 	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnLifecycleReset("settings apply");
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 

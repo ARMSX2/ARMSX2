@@ -3,9 +3,13 @@
 
 #include "EECycleRateSampler.h"
 
+#include "EECycleRate.h"
+#include "PerformanceMetrics.h"
 #include "VMManager.h"
 
+#include "common/Console.h"
 #include "common/HostSys.h"
+#include "common/Threading.h"
 
 #include <algorithm>
 #include <atomic>
@@ -24,6 +28,95 @@ namespace
 	// can reach the accumulate.
 	u64 s_frame_gs_wait_ticks = 0;
 	u64 s_frame_vu1_wait_ticks = 0;
+
+	// --- window state, all CPU-thread owned --------------------------------------------
+
+	// Sampling at all. One predictable branch at the top of the per-frame entry point, so
+	// a build with the governor off pays a load and a not-taken branch per frame.
+	bool s_active = false;
+
+	// A VM exists and its CPU providers are built. Every lifecycle seam below can be
+	// reached before that - a settings apply runs from inside VMManager::Initialize(),
+	// before UpdateCPUImplementations() - and a rate transition would reset a recompiler
+	// that is not there yet.
+	bool s_vm_started = false;
+
+	EECycleRateController s_controller;
+
+	// The window in progress. Frames go in as they are measured; the arithmetic happens
+	// once, at close.
+	EECycleRateFrameSample s_frames[EECycleRateSampler::kMaxWindowFrames];
+	u32 s_frame_count = 0;
+	u64 s_window_target_ticks = 0;
+	bool s_window_invalid = false;
+	u64 s_window_cpu_time = 0;
+
+	// GetTickFrequency() and the window length in its units, resolved once at VM start
+	// rather than per frame.
+	u64 s_tick_frequency = 0;
+	u64 s_window_close_ticks = 0;
+
+	void StartWindow()
+	{
+		s_frame_count = 0;
+		s_window_target_ticks = 0;
+		s_window_invalid = false;
+		s_frame_gs_wait_ticks = 0;
+		s_frame_vu1_wait_ticks = 0;
+		s_window_cpu_time = PerformanceMetrics::GetCPUThreadCPUTime();
+	}
+
+	// Decides whether the sampler runs, from the eligibility answer for right now. Only
+	// the "was the governor asked for" half matters here: a suspension - turbo, a frame
+	// advance, hardcore mode - still has to produce windows, because the controller
+	// answers a suspension by asking for the baseline back.
+	void RefreshActivation(const EECycleRateEligibility& eligibility)
+	{
+		s_active = eligibility.enabled;
+		s_measuring_waits.store(s_active, std::memory_order_relaxed);
+	}
+
+	void CloseWindow()
+	{
+		EECycleRateSampler::WindowInputs in;
+		in.frames = s_frames;
+		in.frame_count = s_frame_count;
+		in.tick_frequency = s_tick_frequency;
+		in.cpu_time_delta = PerformanceMetrics::GetCPUThreadCPUTime() - s_window_cpu_time;
+		in.cpu_time_frequency = Threading::GetThreadTicksPerSecond();
+		in.invalidated = s_window_invalid;
+
+		const EECycleRateWindowSample sample = EECycleRateSampler::BuildWindowSample(in);
+		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility();
+		const EECycleRateDecision decision = s_controller.Update(sample, eligibility);
+
+		switch (decision)
+		{
+			case EECycleRateDecision::StepDown:
+				EECycleRate::ApplyEffective(s_controller.GetEffective(), "the host is missing the frame deadline");
+				break;
+
+			case EECycleRateDecision::StepUp:
+				EECycleRate::ApplyEffective(s_controller.GetEffective(), "there is deadline headroom again");
+				break;
+
+			case EECycleRateDecision::RestoreBaseline:
+				EECycleRate::ApplyEffective(EECycleRate::GetConfigured(), "the governor is no longer eligible");
+				break;
+
+			case EECycleRateDecision::None:
+				break;
+		}
+
+		// Correct the controller's belief from what actually happened. It updates that
+		// belief optimistically when it returns a decision, so a request the selector
+		// refused - out of bounds, or coalesced with a settings apply that landed in the
+		// same event test - would otherwise leave it acting on a rate we are not running.
+		s_controller.OnApplied(EECycleRate::GetEffective());
+
+		RefreshActivation(eligibility);
+		StartWindow();
+	}
 
 	// A ratio the caller can still use. Anything the arithmetic cannot produce a finite,
 	// non-negative number for comes back as a zero on an invalidated window, not as a NaN
@@ -127,4 +220,93 @@ void EECycleRateSampler::EndVU1Wait(u64 begin_ticks)
 	const u64 now = GetCPUTicks();
 	if (now > begin_ticks)
 		s_frame_vu1_wait_ticks += now - begin_ticks;
+}
+
+void EECycleRateSampler::OnVMStart()
+{
+	s_tick_frequency = GetTickFrequency();
+	s_window_close_ticks =
+		static_cast<u64>(s_controller.GetPolicy().window_seconds * static_cast<double>(s_tick_frequency));
+
+	s_vm_started = true;
+	OnLifecycleReset("VM start");
+}
+
+void EECycleRateSampler::OnVMShutdown()
+{
+	// Put the selector back before the recompilers go away, so the next VM starts from the
+	// configured value rather than inheriting a decision about a machine that is gone.
+	// SyncToConfigured() rather than ApplyEffective(): there is no generated code left to
+	// keep honest, and a cache reset on the way out is pure cost.
+	EECycleRate::SyncToConfigured();
+
+	s_vm_started = false;
+	s_active = false;
+	s_measuring_waits.store(false, std::memory_order_relaxed);
+	s_controller.Reset(EECycleRate::GetConfigured());
+	StartWindow();
+}
+
+void EECycleRateSampler::OnLifecycleReset(const char* reason)
+{
+	if (!s_vm_started)
+		return;
+
+	// Give the player's rate back first. This is also the path an eligibility loss takes
+	// when it stops Throttle() from sampling at all - the limiter going unlimited means no
+	// window ever closes, so the controller's own RestoreBaseline would never be asked for.
+	// ApplyEffective is a no-op, with no cache reset, when we are already at the baseline.
+	EECycleRate::ApplyEffective(EECycleRate::GetConfigured(), reason);
+
+	const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility();
+	RefreshActivation(eligibility);
+
+	s_controller.Reset(eligibility.baseline);
+	StartWindow();
+}
+
+void EECycleRateSampler::OnFrameThrottled(u64 active_ticks, u64 target_ticks, bool late)
+{
+	if (!s_active)
+		return;
+
+	// No work period was open - the frame before this one was not paced, or a pause landed
+	// in the middle of it. Its length is unknown, not zero, so the window it falls in is
+	// unmeasurable.
+	if (active_ticks == 0 || target_ticks == 0)
+	{
+		s_window_invalid = true;
+	}
+	else
+	{
+		// Always in range: the window closes the moment the count reaches the bound, so a
+		// frame never arrives with the array already full.
+		EECycleRateFrameSample& frame = s_frames[s_frame_count++];
+		frame.active_ticks = active_ticks;
+		frame.target_ticks = target_ticks;
+		frame.gs_wait_ticks = s_frame_gs_wait_ticks;
+		frame.vu1_wait_ticks = s_frame_vu1_wait_ticks;
+		frame.late = late;
+
+		s_window_target_ticks += target_ticks;
+	}
+
+	s_frame_gs_wait_ticks = 0;
+	s_frame_vu1_wait_ticks = 0;
+
+	// The array bound is the second close condition, not a drop condition: a limiter target
+	// short enough to fit more than kMaxWindowFrames into the window closes it early, and
+	// the sample still describes exactly the frames it counted.
+	if (s_window_target_ticks >= s_window_close_ticks || s_frame_count >= kMaxWindowFrames)
+		CloseWindow();
+}
+
+void EECycleRateSampler::OnFrameNotThrottled()
+{
+	if (!s_active)
+		return;
+
+	s_window_invalid = true;
+	s_frame_gs_wait_ticks = 0;
+	s_frame_vu1_wait_ticks = 0;
 }

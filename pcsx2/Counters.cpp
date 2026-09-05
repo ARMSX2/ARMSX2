@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "R3000A.h"
 #include "Counters.h"
+#include "EECycleRateSampler.h"
 #include "IopCounters.h"
 
 #include "GS.h"
@@ -504,9 +505,16 @@ static __fi void VSyncStart(u64 sCycle)
 
 	// Don't bother throttling if we're going to pause.
 	if (!VMManager::Internal::IsExecutionInterrupted())
+	{
 		VMManager::Internal::Throttle();
+	}
 	else
-		PerformanceMetrics::OnFrameWorkPaused(); // interrupted → no Throttle → drop the work period so the resume measurement excludes the pause
+	{
+		// Interrupted → no Throttle → drop the work period so the resume measurement excludes
+		// the pause, and mark the governor's window unmeasurable for the same reason.
+		PerformanceMetrics::OnFrameWorkPaused();
+		EECycleRateSampler::OnFrameNotThrottled();
+	}
 
 	gsPostVsyncStart(); // MUST be after framelimit; doing so before causes funk with frame times!
 

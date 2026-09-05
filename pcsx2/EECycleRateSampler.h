@@ -115,4 +115,37 @@ namespace EECycleRateSampler
 	// is a wait that was never opened and is ignored.
 	void EndGSWait(u64 begin_ticks);
 	void EndVU1Wait(u64 begin_ticks);
+
+	// --- lifecycle ------------------------------------------------------------------
+	//
+	// CPU thread only. Each of these either starts the evidence over or ends it; none of
+	// them is on a per-frame path.
+
+	// A VM is up and its settings and game database entry are resolved. Decides whether
+	// the sampler runs at all, resets the controller to the configured baseline, and says
+	// so once.
+	void OnVMStart();
+
+	// The VM is going away. Puts the effective selector back to the configured one, so the
+	// next VM cannot inherit a transient decision, and stops sampling.
+	void OnVMShutdown();
+
+	// Anything that makes the accumulated evidence a statement about a machine that no
+	// longer exists: VM reset, save-state load, settings apply, limiter-mode change,
+	// pause and resume, frame advance. Restores the configured selector - which is also
+	// how an eligibility loss that stops Throttle() from sampling at all still gets its
+	// baseline back - and starts the window and the controller over.
+	void OnLifecycleReset(const char* reason);
+
+	// --- frame boundary -------------------------------------------------------------
+
+	// One paced frame, from VMManager::Internal::Throttle() before the limiter sleeps.
+	// Costs a handful of loads and stores; the window arithmetic and the one thread
+	// CPU-time read happen at window close, twice a second.
+	void OnFrameThrottled(u64 active_ticks, u64 target_ticks, bool late);
+
+	// A frame Throttle() did not pace - the limiter is unlimited or host-vsync driven, or
+	// execution was interrupted. The window in progress is marked unmeasurable rather
+	// than having a sample invented for it.
+	void OnFrameNotThrottled();
 } // namespace EECycleRateSampler
