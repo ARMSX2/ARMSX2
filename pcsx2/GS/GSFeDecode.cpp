@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GSFeDecode.h"
@@ -18,7 +18,7 @@
 
 namespace GSFeDecode
 {
-	bool g_active = false;
+	std::atomic<bool> g_active{false};
 
 	namespace
 	{
@@ -218,7 +218,7 @@ namespace GSFeDecode
 
 		void Disarm()
 		{
-			g_active = false;
+			g_active.store(false, std::memory_order_relaxed);
 			s_state.mode = Mode::Off;
 			s_state.file.reset();
 		}
@@ -325,7 +325,7 @@ namespace GSFeDecode
 		s_state.frame_index = 0;
 		s_state.diverged = false;
 		s_state.report.clear();
-		g_active = true;
+		g_active.store(true, std::memory_order_relaxed);
 
 		Console.WriteLn(fmt::format("GSFeDecode: recording the front-end decode surface to {}", path));
 		return true;
@@ -380,7 +380,7 @@ namespace GSFeDecode
 		s_state.frame_index = 0;
 		s_state.diverged = false;
 		s_state.report.clear();
-		g_active = true;
+		g_active.store(true, std::memory_order_relaxed);
 
 		char build[sizeof(header.build) + 1] = {};
 		std::memcpy(build, header.build, sizeof(header.build));
@@ -481,8 +481,22 @@ namespace GSFeDecode
 			header.record_digest = record_digest;
 			header.stream_digest = stream_digest;
 
-			std::fwrite(&header, sizeof(header), 1, s_state.file.get());
-			std::fwrite(canon + kCanonicalPrefixBytes, 1, body_bytes, s_state.file.get());
+			// A short write means a truncated recording, and a truncated
+			// recording reads back as a divergence at whatever event the file
+			// happens to stop at -- which is a wrong answer, not a missing one.
+			// Stop the instrument at the first one and say so.
+			const bool wrote_header = std::fwrite(&header, sizeof(header), 1, s_state.file.get()) == 1;
+			const bool wrote_body = body_bytes == 0 ||
+									std::fwrite(canon + kCanonicalPrefixBytes, 1, body_bytes,
+										s_state.file.get()) == body_bytes;
+			if (!wrote_header || !wrote_body)
+			{
+				Console.Error(fmt::format("GSFeDecode: write failed at event {} ({}); recording "
+										  "disarmed and '{}' is incomplete",
+					s_state.event_index, TypeName(type), s_state.path));
+				Disarm();
+				return;
+			}
 
 			s_state.event_index++;
 			s_state.stream_digest = stream_digest;
