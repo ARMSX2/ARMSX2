@@ -477,16 +477,22 @@ void GSRendererSW::Draw()
 {
 	const GSDrawingContext* context = m_context;
 
-	// Unconditional close, so a draw that returns before it is queued still leaves a row
-	// rather than leaking its open row onto the next draw's.
+	// Closes on every exit path, so a draw that returns before it is queued still
+	// leaves a row rather than leaking its open row onto the next draw's. Carries the
+	// flag so it closes only a row this draw actually opened.
 	struct ScopedDrawLogRow
 	{
-		~ScopedDrawLogRow() { GSDrawLog::FinishDraw(); }
+		bool open;
+		~ScopedDrawLogRow()
+		{
+			if (open) [[unlikely]]
+				GSDrawLog::FinishDraw();
+		}
 	};
 	const bool log_draw = GSDrawLog::IsActive();
 	if (log_draw) [[unlikely]]
 		RecordDrawLogEntry();
-	const ScopedDrawLogRow drawlog_row;
+	const ScopedDrawLogRow drawlog_row{log_draw};
 
 	switch (m_vt.m_primclass)
 	{
