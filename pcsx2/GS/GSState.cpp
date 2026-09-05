@@ -2063,8 +2063,9 @@ __fi bool GSState::KickKernelApplies()
 }
 
 // Whether the two-pass kernel (GSVertexKickKernel.h) carries this prim type at
-// all. Fans, points and lines keep the per-vertex kick: the census puts fans
-// under 2,100 vertices a frame on any title and points and lines at zero.
+// all. Fans, points and lines keep the per-vertex kick: a prim census over the
+// dump corpus puts fans under 2,100 vertices a frame on any title and points
+// and lines at zero.
 template <u32 prim>
 static constexpr bool KickKernelCarriesPrim()
 {
@@ -2697,8 +2698,9 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 	//
 	// Neither is theoretical: collapsing the call moved the flush point on six
 	// of the corpus's 24 dumps -- spiderman3, stuntman, outrun-a, outrun-b,
-	// xenosaga and gow2 -- and the decode instrument caught all six. So while
-	// m_dirty_gs_regs is live the tag is replayed descriptor by descriptor
+	// xenosaga and gow2 -- and a byte-diff of the decoded vertex stream over
+	// the corpus caught all six. So while m_dirty_gs_regs is live the tag is
+	// replayed descriptor by descriptor
 	// through the piecemeal handlers, which IS that path; it stops as soon as
 	// the flag clears, which is normally the first record. When the flag is
 	// zero, CheckFlushes does nothing at all and where it is called from cannot

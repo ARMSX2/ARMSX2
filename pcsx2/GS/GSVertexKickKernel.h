@@ -503,7 +503,7 @@ namespace GSVertexKickKernel
 			// Move the vertex from its provisional slot to the live tail, so the
 			// buffer below tail is what the per-vertex kick would have left there
 			// -- including the slots a rejected strip vertex passes through, which
-			// nothing indexes but the front-end instrument records. The live tail
+			// nothing indexes, but which the per-vertex kick would have written. The live tail
 			// never runs ahead of the provisional cursor, so the destination is at
 			// or below the source and a later vertex's source is never written
 			// over; when they coincide (an unbroken run of accepts, or any chunk

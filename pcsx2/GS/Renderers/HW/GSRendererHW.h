@@ -224,8 +224,7 @@ private:
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
 	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
-	/// nothing -- and where nothing, why. Feeds the ledger column so a run can be audited for how
-	/// often each applies.
+	/// nothing -- and where nothing, why. The verdict drives the drop and the substitution below.
 	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
 	void ResolveHeldAlphaMask();
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once

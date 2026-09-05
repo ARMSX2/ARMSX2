@@ -358,7 +358,7 @@ struct FrameSample
 	u64 rss_kb;
 
 	/// Minor page faults since the previous sample (first sample reads as the whole run
-	/// so far, same convention as sync_wait_ns). Exists to tell a loop-count-sensitive
+	/// so far). Exists to tell a loop-count-sensitive
 	/// warm-up fault tax apart from real per-frame churn -- rss_kb alone can plateau
 	/// while faults are still high if pages are being re-faulted without growing RSS,
 	/// and can grow without a fault spike if the growth came from one large mmap.
@@ -755,8 +755,8 @@ void Host::BeginPresentFrame()
 
 			sample.rss_kb = ReadResidentSetKB();
 
-			// Same "first sample reads as the whole run so far" convention as the wait bill
-			// above: the pre-frame-0 warm-up burst (process start through the first present)
+			// First sample reads as the whole run so far: the pre-frame-0 warm-up burst
+			// (process start through the first present)
 			// is exactly the kind of thing this counter exists to catch, so frame 0 is not
 			// zeroed. A read failure comes back as 0 from ReadMinorFaultsCumulative, which a
 			// live process's monotonic count can never legitimately return to once it has
@@ -2306,8 +2306,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// Before Shutdown: the last rungs are still queued on the GS thread, and
 			// Finish drains them. After teardown there is no local memory to read.
 			GSLadder::Finish();
-			// Snapshot backend-specific stats before the GS device is destroyed. The wait bill rides
-			// the same snapshot so it also carries whatever was paid after the last present.
+			// Snapshot backend-specific stats before the GS device is destroyed.
 			if (g_gs_device)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
 			VMManager::Shutdown(false);

@@ -6742,7 +6742,8 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 
 		case GSDrawAlphaMask::ExactVerdict::Substitute:
 		default:
-			// Both halves substitute; the split is for the ledger, which sizes them separately.
+			// Both halves substitute; the two values are kept apart so a caller can still tell
+			// whether the source alpha was constant on the masked bits.
 			return ((GSAlphaKnownBits::ConstantBits(src_lo, src_hi) & masked) == masked) ?
 			           GSDrawAlphaMask::ExactAlphaDropSubstituteLoadBearing :
 			           GSDrawAlphaMask::ExactAlphaDropSubstituteVarying;
@@ -6885,8 +6886,8 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 
 		// Whether this drop's exactness rests on knowledge a sprite-union cover established. Such
 		// a drop is new here, so the barrier it removes is held over the blend selection below;
-		// a drop the target could already answer for is one the campaign has measured and is
-		// taken outright, exactly as before.
+		// a drop the target could already answer for is one that has been byte-identity-tested
+		// against the dump corpus and is taken outright, exactly as before.
 		const bool drop_via_union = (exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken) && rt && rt->m_alpha_known_via_union;
 
 		// Where the mask is not the identity but the target still knows every bit it holds back,
@@ -6906,8 +6907,8 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 			// decisions about what the draw asked for -- the target's tracked alpha, and whether it
 			// has to come out of RTA scaling -- read it back through RequestedAlphaFbMask() and see
 			// the mask as it stood here. Recorded only when the mask would have been emulated at
-			// all, so that at AccBlendLevel::Minimum, where it would not have been, the two arms
-			// still read the same zero.
+			// all, so that at AccBlendLevel::Minimum, where it would not have been, the
+			// requested mask still reads as zero with or without the drop.
 			if (enable_fbmask_emulation)
 				m_exact_alpha_drop_fbmask_a = static_cast<int>((static_cast<u32>(fbmask) >> 24) & 0xFF);
 

@@ -11,10 +11,6 @@
 #include <deque>
 #include <memory>
 
-/// Defined in GSDeviceVK.h, which includes this header -- so this is an opaque-enum-declaration
-/// (legal, and it makes the type complete) rather than an include the other way round. A stream
-/// buffer stores one so that when it blocks for room, the wait is charged to THIS buffer and not to
-/// the undifferentiated pile every stream ring used to share.
 class VKStreamBuffer
 {
 public:

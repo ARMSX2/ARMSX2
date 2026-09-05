@@ -10,7 +10,6 @@
 #include "common/Assertions.h"
 #include "common/Console.h"
 #include "common/BitUtils.h"
-#include "common/Timer.h"
 
 VkFramebuffer GSTextureVK::CreateNullFramebuffer(u32 w, u32 h)
 {

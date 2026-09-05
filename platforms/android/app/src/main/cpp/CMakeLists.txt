@@ -219,9 +219,9 @@ target_link_libraries(savers log GLESv2 m)
 
 add_subdirectory(3rdparty/adrenotools)
 
-# pcsx2-gsrunner as an on-demand NDK executable, for adb-shell replay and
-# scoring runs on Android devices. EXCLUDE_FROM_ALL keeps
-# every APK build unchanged; build it explicitly with --target pcsx2-gsrunner.
+# pcsx2-gsrunner as an on-demand NDK executable for adb-shell replay runs on Android
+# devices. EXCLUDE_FROM_ALL keeps every APK build unchanged; build it explicitly with
+# --target pcsx2-gsrunner.
 add_subdirectory("${ARMSX2_ROOT}/pcsx2-gsrunner" "${CMAKE_BINARY_DIR}/pcsx2-gsrunner" EXCLUDE_FROM_ALL)
 
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH

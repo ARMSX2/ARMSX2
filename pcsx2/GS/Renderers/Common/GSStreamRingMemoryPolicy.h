@@ -209,8 +209,7 @@ constexpr GSStreamRingMemoryDecision GSDecideStreamRingMemory(const GSStreamRing
 	return decision;
 }
 
-/// The road's name, for the device banner and for stats.json's run block. Short and stable: a
-/// round is audited by grepping for these.
+/// The road's name, for the device banner. Short and stable: the unit tests pin these strings.
 constexpr const char* GSStreamRingMemoryRoadName(GSStreamRingMemoryRoad road)
 {
 	switch (road)

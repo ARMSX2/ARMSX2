@@ -253,7 +253,7 @@ public:
 		/// the provenance, one that replaces or destroys it sets its own. The exact FBMSK-drop
 		/// rule reads it to decide whether the drop it is about to take is one this target could
 		/// answer for before the union test existed -- a drop that predates it has already been
-		/// through the campaign's byte-identity gate and is not re-litigated here.
+		/// byte-identity-tested against the dump corpus and is not re-litigated here.
 		bool m_alpha_known_via_union = false;
 
 		// Valid alpha means "we have rendered to the alpha channel of this target".
