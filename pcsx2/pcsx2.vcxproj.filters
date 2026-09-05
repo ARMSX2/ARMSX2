@@ -986,9 +986,6 @@
     <ClCompile Include="GS\GSDump.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
-    <ClCompile Include="GS\GSFeDecode.cpp">
-      <Filter>System\Ps2\GS</Filter>
-    </ClCompile>
     <ClCompile Include="GS\GSLocalMemory.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
@@ -1935,9 +1932,6 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSDump.h">
-      <Filter>System\Ps2\GS</Filter>
-    </ClInclude>
-    <ClInclude Include="GS\GSFeDecode.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSLocalMemory.h">

@@ -30,8 +30,8 @@
 //
 // Bytes of the vertex buffer at or past tail are deliberately NOT compared: the
 // kernel parks vertices there provisionally and nothing reads them. That is the
-// one place the two arms differ, and it is the reason the wider net over the dump
-// corpus (-fediff) exists.
+// one place the two arms differ, and it is why a byte-diff of the whole decode
+// surface over the dump corpus was needed beside these unit cases.
 
 #include <gtest/gtest.h>
 
@@ -550,10 +550,10 @@ namespace
 
 		EXPECT_TRUE(SameBytes("vertex buffer [0, tail)", a.m_vertex->buff, b.m_vertex->buff,
 			sizeof(GSVertex) * a.m_vertex->tail));
-		// The decode instrument's own surface is max(tail, next) vertices, which
-		// reaches one slot past tail whenever a flush left a partial prim there.
-		// That slot is where the front-end -fediff caught stage 3c's flush-point
-		// divergence, so it is compared here too.
+		// The decode surface is max(tail, next) vertices, which reaches one slot
+		// past tail whenever a flush left a partial prim there. That slot is where
+		// the corpus byte-diff caught stage 3c's flush-point divergence, so it is
+		// compared here too.
 		EXPECT_TRUE(SameBytes("vertex buffer [0, max(tail,next))", a.m_vertex->buff, b.m_vertex->buff,
 			sizeof(GSVertex) * std::max(a.m_vertex->tail, a.m_vertex->next)));
 		EXPECT_TRUE(SameBytes("index buffer [0, itail)", a.m_index->buff, b.m_index->buff,
