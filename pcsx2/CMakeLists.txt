@@ -1259,12 +1259,6 @@ if(ANDROID)
 	# emucore target in the Android entry CMakeLists, so only oboe is needed here.)
 	target_link_libraries(PCSX2_FLAGS INTERFACE
 		oboe)
-	if(ENABLE_LIBRETRO)
-		# AndroidStubs.cpp fills in what pcsx2-qt normally provides; the
-		# libretro frontend provides those two itself. See the guard there.
-		target_compile_definitions(PCSX2_FLAGS INTERFACE
-			ARMSX2_LIBRETRO=1)
-	endif()
 endif()
 
 if(ARMSX2_IOS)

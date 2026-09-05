@@ -13,7 +13,7 @@
 // linked from these same sources - hence the guard, or the Android core
 // build ends on two duplicate symbols. Everything further down is frontend
 // independent and is compiled either way.
-#ifndef ARMSX2_LIBRETRO
+#ifndef ENABLE_LIBRETRO
 
 // g_host_hotkeys - normally defined in pcsx2-qt
 BEGIN_HOTKEY_LIST(g_host_hotkeys)
