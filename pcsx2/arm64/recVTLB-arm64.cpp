@@ -368,11 +368,16 @@ static void recComputeAddr()
 	{
 		armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
 	}
+	else if (_Imm_ != 0)
+	{
+		// The base is read where it already lives, so the offset add doubles
+		// as the move into w9.
+		const a64::Register base = _eeGetGPRSourceReg(a64::w9, _Rs_);
+		armAsm->Add(a64::w9, base, _Imm_);
+	}
 	else
 	{
 		_eeMoveGPRtoR(a64::w9, _Rs_);
-		if (_Imm_ != 0)
-			armAsm->Add(a64::w9, a64::w9, _Imm_);
 	}
 }
 
