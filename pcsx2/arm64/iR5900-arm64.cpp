@@ -9,6 +9,7 @@
 #include <cfloat>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -1609,6 +1610,37 @@ a64::Label* recSuperblockAddSideExit(u32 branch_target, bool need_delay_slot)
 // patched toward the outlined exit body once the cold session has emitted it.
 static u8* s_sideExitIslands[kMaxContSites];
 
+// A conditional call-out outlined like a side exit: B.cond to a one-word island
+// after the tail, body in the cold arena at block end, B back to the site. The
+// body is emitted after the block, so it must not touch allocator state.
+struct ColdIsland
+{
+	std::unique_ptr<a64::Label> label;
+	u8* island;
+	u8* resume;
+	u8* cold;
+	std::function<void()> body;
+};
+static std::vector<ColdIsland> s_coldIslands;
+
+#ifdef PCSX2_RECOMPILER_TESTS
+static u32 s_coldIslandBodiesEmitted = 0;
+u32 recTestColdIslandBodiesEmitted()
+{
+	return s_coldIslandBodiesEmitted;
+}
+#endif
+
+void recEmitColdIslandBranch(a64::Condition cond, std::function<void()> body)
+{
+	ColdIsland x;
+	x.label = std::make_unique<a64::Label>();
+	x.body = std::move(body);
+	armAsm->B(x.label.get(), cond);
+	x.resume = armGetCurrentCodePointer();
+	s_coldIslands.push_back(std::move(x));
+}
+
 // Emit the per-exit islands after the block tail (still inside the hot
 // emission session — they are part of the block and count in x86size).
 // The mainline pc/size/recRAMCopy bookkeeping ran before this — pc is dead.
@@ -1621,6 +1653,13 @@ static void recEmitSideExitIslands()
 		a64::SingleEmissionCheckScope guard(armAsm);
 		s_sideExitIslands[k] = armGetCurrentCodePointer();
 		armAsm->b(int64_t{0}); // placeholder; patched to the cold exit body
+	}
+	for (ColdIsland& x : s_coldIslands)
+	{
+		armAsm->Bind(x.label.get());
+		a64::SingleEmissionCheckScope guard(armAsm);
+		x.island = armGetCurrentCodePointer();
+		armAsm->b(int64_t{0}); // placeholder; patched to the cold body
 	}
 }
 
@@ -1676,7 +1715,7 @@ static void recEmitColdSideExits()
 {
 	const int n = s_numSideExits;
 	s_numSideExits = 0;
-	if (n == 0)
+	if (n == 0 && s_coldIslands.empty())
 		return;
 
 	const u8* coldStart[kMaxContSites];
@@ -1697,6 +1736,16 @@ static void recEmitColdSideExits()
 		recEmitSideExitTail(x.branchTo);
 		x.label.reset();
 	}
+	for (ColdIsland& x : s_coldIslands)
+	{
+		x.cold = armGetCurrentCodePointer();
+		x.body();
+		armEmitJmp(x.resume);
+		x.label.reset();
+#ifdef PCSX2_RECOMPILER_TESTS
+		++s_coldIslandBodiesEmitted;
+#endif
+	}
 	pxAssert(armGetCurrentCodePointer() < SysMemory::GetEERecEnd());
 	s_coldPtr = armEndBlock();
 
@@ -1705,6 +1754,9 @@ static void recEmitColdSideExits()
 	// MTVU emit window in Legacy mode on its way out.
 	for (int k = 0; k < n; k++)
 		recPatchIslandB(s_sideExitIslands[k], coldStart[k]);
+	for (const ColdIsland& x : s_coldIslands)
+		recPatchIslandB(x.island, x.cold);
+	s_coldIslands.clear();
 
 	g_branch = 1;
 }
@@ -4258,6 +4310,7 @@ StartRecomp:
 		// SL-03: sweep side-exit residue the same way (recEmitPendingSideExits
 		// drains the list on every completed compile).
 		s_numSideExits = 0;
+		s_coldIslands.clear();
 
 		// SL-1 candidacy: a resident self-loop is a block whose terminal branch
 		// targets its own startpc. Wait-loop-FF blocks keep the fast-forward
