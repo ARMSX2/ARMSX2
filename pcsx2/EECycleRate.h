@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "EECycleRateController.h"
+
 #include "common/Pcsx2Types.h"
 
 // The EE cycle-rate selector has two values, not one.
@@ -82,4 +84,83 @@ namespace EECycleRate
 	void NoteIopReset();
 	void NoteVuReset(int vu_index);
 	void NoteVifReset();
+
+	// Everything the "may the governor act at all" answer depends on, in one struct.
+	//
+	// It is a struct rather than a pile of reads inside the resolver because the rules
+	// are the part worth testing and the VM is the part that makes testing them
+	// impossible: hardcore mode, the limiter, a GS dump replay and a frame-advance
+	// request are all global runtime state a unit test cannot stand up. Split this way
+	// the rules are a pure function over thirteen fields, and ReadEligibilityInputs()
+	// is the only piece that needs a running emulator.
+	struct EligibilityInputs
+	{
+		// --- who chose the rate, and whether the governor was asked for ---
+
+		// EmuConfig.Speedhacks.DynamicEECycleRate as finally resolved: the global
+		// value, overlaid by whatever the per-game file says.
+		bool dynamic_setting = false;
+
+		// The per-game file holds DynamicEECycleRate. Presence, not value: the whole
+		// point is that a key equal to the global value is still a decision.
+		bool pergame_claims_dynamic = false;
+
+		// The per-game file holds EECycleRate. Presence, not value, same reason.
+		bool pergame_claims_rate = false;
+
+		// The game database set EECycleRate for this game.
+		bool gamedb_set_rate = false;
+
+		// EmuConfig.Speedhacks.EECycleRate — the baseline, and the ceiling.
+		s8 configured = 0;
+
+		// --- conditions that suspend the governor whatever the setting says ---
+
+		// Hardcore mode forbids underclocking, which is the only thing the governor
+		// does. The settings clamp already forces the switch off; this is the second
+		// line, because the switch and the clamp are applied at different times.
+		bool hardcore = false;
+
+		// A nonzero cycle skip is a second timing knob acting on the same guest, and
+		// v1 does not try to classify the interaction.
+		u8 ee_cycle_skip = 0;
+
+		// Turbo, slow-motion and unlimited all move the deadline the governor measures
+		// against, so there is nothing to hold.
+		bool limiter_nominal = false;
+
+		// Host-vsync pacing: Throttle() returns before it measures or waits, so there
+		// is no window to sample.
+		bool paced_by_host_vsync = false;
+
+		bool gs_dump_replay = false;
+		bool frame_advancing = false;
+		bool vm_running = false;
+	};
+
+	// Why the resolver answered the way it did, for the log and for a test that wants
+	// to prove which rule fired rather than only that the answer was right.
+	struct EligibilityReasons
+	{
+		// Which precedence rule decided `enabled`.
+		const char* enabled = "";
+		// The first suspending condition found, or why there was none.
+		const char* eligible = "";
+	};
+
+	// The rules, as a pure function. See KTD7: precedence is per-game dynamic key
+	// first, then any fixed-rate claim (database or per-game), then the global switch.
+	// Never value comparison — equal values can come from different layers.
+	EECycleRateEligibility ResolveEligibility(const EligibilityInputs& in, EligibilityReasons* reasons = nullptr);
+
+	// Reads the live config and VM state. CPU thread only, and only valid once every
+	// settings and game-database mutation for this apply is complete.
+	EligibilityInputs ReadEligibilityInputs();
+
+	// ReadEligibilityInputs() + ResolveEligibility().
+	EECycleRateEligibility ResolveEligibility();
+
+	// Resolve and write one DevCon line saying what came out and why. Call once per
+	// settings apply; the governor itself resolves per window and does not log.
+	void LogResolvedEligibility();
 } // namespace EECycleRate
