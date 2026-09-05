@@ -90,7 +90,31 @@ namespace EECycleRate
 		u32 ee_rebuild_generation = 0;  // which EE reset ee_rebuild measured
 	};
 
+	// Which way the last transition that moved the selector actually went.
+	// The immediate-patching pass repairs the EE recompiler's baked charge
+	// immediates in place; when it cannot, the caller falls back to the reset
+	// this whole struct was written to measure.
+	struct TransitionPath
+	{
+		bool patched = false;       // true: the EE recompiler was NOT reset
+		const char* reason = "";    // what the pass did, or why it would not
+		u64 ticks = 0;              // duration of the patch pass itself
+		u32 sites = 0;              // charge immediates rewritten
+		u32 blocks_invalidated = 0; // blocks thrown away instead of patched
+		// Blocks the pass found unrepairable, whether or not it went ahead.
+		// Same as blocks_invalidated on a pass that ran; on a refused one it is
+		// the number that made it refuse, which is the only way to tell a cap
+		// refusal apart from every other reason without a debugger.
+		u32 blocks_unpatchable = 0;
+	};
+
 	TransitionCost GetLastTransitionCost();
+	TransitionPath GetLastTransitionPath();
+
+	// Published by the EE recompiler's patch pass at every exit, taken or not.
+	// Separate from the cost struct because it is the recompiler that knows the
+	// reason, and because a refused pass still has one worth reporting.
+	void NoteEePatchPass(const TransitionPath& path);
 
 	// Published by the EE recompiler's own reset with the duration it measured
 	// for itself. Separate from NoteEeReset() because the x86 recompiler bumps
