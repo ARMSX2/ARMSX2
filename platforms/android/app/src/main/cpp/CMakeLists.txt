@@ -35,6 +35,14 @@ set(ENABLE_QT_UI OFF CACHE BOOL "" FORCE)
 # core the buildbot makes - do not.
 set(ARMSX2_USE_ADRENOTOOLS ON CACHE BOOL "" FORCE)
 
+# Same for the Oboe audio backend: SearchForStuff below adds the vendored
+# 3rdparty/oboe, and this is the only build that has it.
+set(ARMSX2_USE_OBOE ON CACHE BOOL "" FORCE)
+# This build vendors shaderc (3rdparty/shaderc) and links the `shaderc` target
+# below; pcsx2/CMakeLists.txt leaves Shaderc::shaderc_shared alone when it sees
+# this, so the two do not both end up on the link line.
+set(ARMSX2_USE_BUNDLED_SHADERC ON CACHE BOOL "" FORCE)
+
 # The core's common/ and pcsx2/ CMakeLists guard on this sentinel (it is normally
 # set by the desktop top-level CMakeLists.txt, which the Android build bypasses).
 set(TOP_CMAKE_WAS_SOURCED TRUE)

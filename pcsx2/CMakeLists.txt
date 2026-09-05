@@ -792,6 +792,14 @@ if(USE_VULKAN)
 		target_link_libraries(PCSX2_FLAGS INTERFACE adrenotools)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_USE_ADRENOTOOLS)
 	endif()
+	# VKShaderCache.cpp calls shaderc directly on Android, where every other
+	# platform dlopens it, so the library has to be on the link line. The APK
+	# links its own vendored `shaderc` target and sets the switch below; the
+	# buildbot's core build has only what find_package(Shaderc) found, and
+	# stopped on twenty undefined shaderc_* symbols without this.
+	if(ANDROID AND NOT ARMSX2_USE_BUNDLED_SHADERC AND TARGET Shaderc::shaderc_shared)
+		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
+	endif()
 endif()
 
 set(pcsx2GSMetalShaders
@@ -1261,8 +1269,6 @@ if(ARCH_ARM64 OR ANDROID OR ARMSX2_IOS)
 endif()
 
 if(ANDROID)
-	list(APPEND pcsx2HostSources
-		Host/OboeAudioStream.cpp)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/OpenGL/GLContextEGL.cpp
 		GS/Renderers/OpenGL/GLContextEGLAndroid.cpp)
@@ -1274,12 +1280,20 @@ if(ANDROID)
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp)
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
-	# The `oboe` target (created in SearchForStuff.cmake) exports its `include/`
-	# dir as PUBLIC, so linking it into PCSX2_FLAGS propagates <oboe/Oboe.h> to
-	# the PCSX2 translation units. (android/log libs are already linked on the
-	# emucore target in the Android entry CMakeLists, so only oboe is needed here.)
-	target_link_libraries(PCSX2_FLAGS INTERFACE
-		oboe)
+	# Only the APK build has the library - its SearchForStuff adds the vendored
+	# 3rdparty/oboe - so this is behind a switch that build sets; the libretro
+	# core takes its audio from the frontend and stopped on <oboe/Oboe.h>. The
+	# `oboe` target exports its include/ dir as PUBLIC, so linking it into
+	# PCSX2_FLAGS propagates the header to the PCSX2 translation units.
+	# (android/log libs are already linked on the emucore target in the Android
+	# entry CMakeLists, so only oboe is needed here.)
+	if(ARMSX2_USE_OBOE)
+		list(APPEND pcsx2HostSources
+			Host/OboeAudioStream.cpp)
+		target_link_libraries(PCSX2_FLAGS INTERFACE
+			oboe)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_USE_OBOE)
+	endif()
 endif()
 
 if(ARMSX2_IOS)

@@ -7,10 +7,50 @@
 
 #include "CDVD/CDVDdiscReader.h"
 
+#include "common/FileSystem.h"
+#include "common/HostSys.h"
+#include "Input/AndroidNativeRumble.h"
+
 // g_host_hotkeys / Host::SetMouseLock moved to AndroidHostStubs.cpp: they are
 // FRONTEND definitions (emucore's JNI frontend has none; pcsx2-gsrunner has its
 // own), and keeping them in this member made every Android frontend that links
 // libpcsx2.a collide with them when this object was pulled for the disc stubs.
+
+#ifdef ENABLE_LIBRETRO
+
+// The APK's JNI layer (platforms/android/.../native-lib.cpp) implements these,
+// and the libretro core is linked without it, so the Android core build ended
+// on five undefined symbols. Every one of them bridges to something the app
+// owns and the core does not have: the Storage Access Framework file it was
+// handed, the app's own directories, the Java vibrator, the notification
+// sound. The core reaches its files through the frontend's VFS instead, and
+// the frontend owns rumble and audio.
+
+int FileSystem::OpenFDFileContent(const char* filename)
+{
+	return -1;
+}
+
+bool FileSystem::CreateDirectoryViaJava(const char* path)
+{
+	return false;
+}
+
+bool FileSystem::CreateFileViaJava(const char* path)
+{
+	return false;
+}
+
+bool Common::PlaySoundAsync(const char* path)
+{
+	return false;
+}
+
+void Native::onPadRumble(int pad, int largeMotor, int smallMotor)
+{
+}
+
+#endif
 
 // HTTPDownloader::Create is now provided by common/HTTPDownloaderAndroid.cpp,
 // which bridges to java.net.HttpURLConnection via JNI. The stub that
