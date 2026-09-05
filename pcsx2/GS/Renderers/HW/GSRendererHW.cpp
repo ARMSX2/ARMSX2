@@ -7711,6 +7711,25 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			sw_blending |= blend_requires_barrier || prefer_sw_blend;
 			// Enable sw blending for free blending (non recursive, accumulation).
 			sw_blending |= free_blend;
+			// A blend mix hands the destination factor to the fixed-function unit as 1 - As, and
+			// the PS2's As runs to 2.0 (255 is 1.99, 128 is 1.0). There is no hardware expression
+			// for that half of the range: the shader clamps its own C to 1.0 and the blend unit
+			// clamps a negative factor to 0 on a fixed-point attachment, so every pixel whose As
+			// is above 128 loses the destination term outright and the draw paints flat Cs. On
+			// Katamari's cousin that is the whole blended highlight band down the torso; on Brian
+			// Lara's pitch it is 27 levels of the grass. Full already refuses these draws, and a
+			// GPU with no dual-source unit refuses them at every level because it must software
+			// blend the equation anyway -- which is why Mali renders all six correctly and both
+			// dual-source GPUs do not. Refuse them here too: an approximation with no upper bound
+			// on its error is not a blending-accuracy trade, it is a wrong picture.
+			//
+			// Deliberately not gated on (no_prim_overlap || barriers_supported) the way
+			// blend_requires_barrier is: force_sw_blending takes the no-dual-source GPUs down this
+			// same road with no such gate, and that is the arm measured correct on all six. A GPU
+			// with neither a barrier nor an in-tile read gets one pre-draw destination snapshot for
+			// the whole draw, so overlapping primitives composite one draw stale -- which is still
+			// bounded, where dropping the destination term is not.
+			sw_blending |= blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
 			// Do not run BLEND MIX if sw blending is already present, it's less accurate.
 			blend_mix &= !sw_blending;
 			sw_blending |= blend_mix;
