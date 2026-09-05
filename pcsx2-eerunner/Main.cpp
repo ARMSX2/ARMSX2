@@ -73,6 +73,7 @@
 #include "pcsx2/Memory.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
+#include "pcsx2/EECycleRate.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/VUmicro.h"
 
@@ -169,6 +170,218 @@ static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u
 static u64 s_rec_fallback_fpu_mask[EERecFallback::kFpuIdCount / 64] = {~0ull, ~0ull}; // per-FPU-op filter
 static u64 s_rec_fallback_vu_mask[EERecFallback::kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull}; // per-VU-macro-op filter
 #endif
+
+// ---------------------------------------------------------------------------
+// --ee-rate-script / --ee-rate-hitch
+//
+// Drives EECycleRate::ApplyEffective from the runner's own (CPU) thread at
+// deterministic outer frame boundaries — between Execute() calls, never from
+// inside guest execution. That is the same seam the governor will use, so this
+// exercises the real transition path: store the effective selector, reset the
+// EE recompiler and microVU0, and nothing else.
+//
+// Two things it checks that nothing else can:
+//   * a transition must not reset the IOP recompiler, microVU1 or the VIF
+//     unpack dynarec. None of them bake the EE selector, and under MTVU a VU1
+//     reset reaches across a thread. The run fails if any of their generation
+//     counters moves.
+//   * how long the rebuild actually costs. --ee-rate-hitch N reports the median
+//     of the N frames before each transition and the wall time of the N frames
+//     after it, so the excess is measurable here and on the device.
+//
+// The script uses ABSOLUTE effective selectors and is bound by the same window
+// the governor is: [configured - 2, configured], floored at -3.
+// ---------------------------------------------------------------------------
+
+struct EeRateStep
+{
+	uint32_t frame;
+	s8       selector;
+};
+
+static std::vector<EeRateStep> s_ee_rate_script; // --ee-rate-script, sorted by frame
+static uint32_t s_ee_rate_hitch = 0;             // --ee-rate-hitch N (0 = no timing)
+static bool s_ee_rate_failed = false;            // a transition reset something it must not
+
+// Bounds-check the script against the configured baseline. Callable only once
+// the VM is up, since the baseline is settled by GameDB + settings.
+static bool ValidateEeRateScript()
+{
+	if (s_ee_rate_script.empty())
+		return true;
+
+	const s8 configured = EECycleRate::GetConfigured();
+	const s8 floor = EECycleRate::GetFloor();
+	bool ok = true;
+	for (const EeRateStep& step : s_ee_rate_script)
+	{
+		if (step.selector > configured || step.selector < floor)
+		{
+			Console.ErrorFmt("--ee-rate-script: frame {} asks for selector {}, outside the allowed [{}, {}] "
+			                 "for configured rate {}",
+				step.frame, static_cast<int>(step.selector), static_cast<int>(floor),
+				static_cast<int>(configured), static_cast<int>(configured));
+			ok = false;
+		}
+	}
+	if (ok)
+	{
+		Console.WriteLn(fmt::format("EERATE: script of {} step(s) accepted; configured {}, allowed [{}, {}]",
+			s_ee_rate_script.size(), static_cast<int>(configured), static_cast<int>(floor),
+			static_cast<int>(configured)));
+	}
+	return ok;
+}
+
+// Per-pass driver. One instance per Execute() loop, so --contmem's interpreter
+// and JIT passes each get the same script from the same starting selector.
+class EeRateDriver
+{
+public:
+	explicit EeRateDriver(std::string pass)
+		: m_pass(std::move(pass))
+	{
+	}
+
+	// Between Execute() calls, before the frame with this index runs.
+	void BeforeFrame(uint32_t frame)
+	{
+		for (const EeRateStep& step : s_ee_rate_script)
+		{
+			if (step.frame != frame)
+				continue;
+			Apply(frame, step.selector);
+		}
+	}
+
+	// After Execute() returned for this frame.
+	void AfterFrame(double ms)
+	{
+		if (s_ee_rate_hitch == 0)
+			return;
+
+		if (m_collecting > 0)
+		{
+			m_after.push_back(ms);
+			if (--m_collecting == 0)
+				ReportHitch();
+		}
+
+		m_recent.push_back(ms);
+		if (m_recent.size() > s_ee_rate_hitch)
+			m_recent.erase(m_recent.begin());
+	}
+
+private:
+	void Apply(uint32_t frame, s8 selector)
+	{
+		const EECycleRate::ResetGenerations before = EECycleRate::GetResetGenerations();
+		const s8 old = EECycleRate::GetEffective();
+		const auto t0 = std::chrono::steady_clock::now();
+		const bool ok = EECycleRate::ApplyEffective(selector, "eerunner --ee-rate-script");
+		const double apply_ms =
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+		const EECycleRate::ResetGenerations after = EECycleRate::GetResetGenerations();
+
+		Console.WriteLn(fmt::format(
+			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); generations ee {}->{} vu0 {}->{} "
+			"iop {}->{} vu1 {}->{} vif {}->{}",
+			m_pass, frame, static_cast<int>(old), static_cast<int>(selector),
+			ok ? "applied" : "REJECTED", apply_ms,
+			before.ee, after.ee, before.vu0, after.vu0, before.iop, after.iop,
+			before.vu1, after.vu1, before.vif, after.vif));
+
+		if (!ok)
+		{
+			Console.ErrorFmt("EERATE[{}] frame {}: ApplyEffective({}) refused — script out of bounds",
+				m_pass, frame, static_cast<int>(selector));
+			s_ee_rate_failed = true;
+			return;
+		}
+
+		if (after.iop != before.iop || after.vu1 != before.vu1 || after.vif != before.vif)
+		{
+			Console.ErrorFmt("EERATE[{}] frame {}: a rate transition reset a provider it must not "
+			                 "(iop {}->{}, vu1 {}->{}, vif {}->{})",
+				m_pass, frame, before.iop, after.iop, before.vu1, after.vu1, before.vif, after.vif);
+			s_ee_rate_failed = true;
+		}
+
+		if (s_ee_rate_hitch != 0 && old != selector)
+		{
+			m_median_before = Median(m_recent);
+			m_have_median = !m_recent.empty();
+			m_after.clear();
+			m_collecting = static_cast<int>(s_ee_rate_hitch);
+			m_hitch_frame = frame;
+			m_hitch_from = old;
+			m_hitch_to = selector;
+		}
+	}
+
+	static double Median(std::vector<double> v)
+	{
+		if (v.empty())
+			return 0.0;
+		std::sort(v.begin(), v.end());
+		const size_t n = v.size();
+		return (n & 1) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+	}
+
+	void ReportHitch()
+	{
+		if (!m_have_median)
+		{
+			Console.WriteLn(fmt::format("EERATE-HITCH[{}] frame {}: no preceding frames to take a median from",
+				m_pass, m_hitch_frame));
+			return;
+		}
+
+		double worst = 0.0;
+		size_t worst_idx = 0;
+		std::string cells;
+		for (size_t i = 0; i < m_after.size(); i++)
+		{
+			const double excess = m_after[i] - m_median_before;
+			if (excess > worst)
+			{
+				worst = excess;
+				worst_idx = i;
+			}
+			cells += fmt::format(" {:.2f}", m_after[i]);
+		}
+
+		Console.WriteLn(fmt::format(
+			"EERATE-HITCH[{}] frame {} ({} -> {}): median of preceding {} frames {:.2f} ms; "
+			"next {} frames (ms):{}",
+			m_pass, m_hitch_frame, static_cast<int>(m_hitch_from), static_cast<int>(m_hitch_to),
+			m_recent.size(), m_median_before, m_after.size(), cells));
+		Console.WriteLn(fmt::format(
+			"EERATE-HITCH[{}] frame {}: worst excess {:.2f} ms at +{} (first frame excess {:.2f} ms)",
+			m_pass, m_hitch_frame, worst, worst_idx,
+			m_after.empty() ? 0.0 : m_after[0] - m_median_before));
+	}
+
+	std::string         m_pass;
+	std::vector<double> m_recent;
+	std::vector<double> m_after;
+	int                 m_collecting = 0;
+	double              m_median_before = 0.0;
+	bool                m_have_median = false;
+	uint32_t            m_hitch_frame = 0;
+	s8                  m_hitch_from = 0;
+	s8                  m_hitch_to = 0;
+};
+
+// Wall time of one Execute() call, in milliseconds.
+struct EeRateFrameTimer
+{
+	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	double Elapsed() const
+	{
+		return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	}
+};
 
 bool EERunner::InitializeConfig()
 {
@@ -588,6 +801,16 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               (EE cycle/COP0 Count pair, rcnt bases, vsync phase, EE<->IOP skew, IOP counters,\n");
 	std::fprintf(stderr, "               CDVD RTC, GIF paths, VIF, DMA regs, MTVU) and exit. Diff two states with:\n");
 	std::fprintf(stderr, "               diff <(... --statereport --savestate A) <(... --statereport --savestate B)\n");
+	std::fprintf(stderr, "  --ee-rate-script <frame:selector,...>: apply ABSOLUTE effective EE cycle-rate selectors at\n");
+	std::fprintf(stderr, "               the listed outer frame boundaries, through the production ApplyEffective path\n");
+	std::fprintf(stderr, "               (store, then reset the EE recompiler and microVU0 only). Bounded by the same\n");
+	std::fprintf(stderr, "               window the governor uses: [configured-2, configured], floored at -3. Applied to\n");
+	std::fprintf(stderr, "               every pass of --contmem, so the interpreter and JIT trajectories are compared\n");
+	std::fprintf(stderr, "               under the same rate schedule. The run FAILS if a transition resets the IOP\n");
+	std::fprintf(stderr, "               recompiler, microVU1 or the VIF dynarec.\n");
+	std::fprintf(stderr, "  --ee-rate-hitch <N>: with --ee-rate-script, report the median wall time of the N frames\n");
+	std::fprintf(stderr, "               before each transition and the wall time of the N frames after it, so the\n");
+	std::fprintf(stderr, "               recompile hitch is a number rather than a guess.\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
@@ -889,6 +1112,55 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG_PARAM("--savestate"))
 			{
 				s_savestate_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--ee-rate-script"))
+			{
+				const std::string_view spec(argv[++i]);
+				size_t pos = 0;
+				bool bad = false;
+				while (pos <= spec.size() && !bad)
+				{
+					const size_t comma = spec.find(',', pos);
+					const std::string_view item = spec.substr(pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos);
+					if (!item.empty())
+					{
+						const size_t colon = item.find(':');
+						std::optional<u32> frame;
+						std::optional<s32> sel;
+						if (colon != std::string_view::npos)
+						{
+							frame = StringUtil::FromChars<u32>(item.substr(0, colon), 10);
+							sel = StringUtil::FromChars<s32>(item.substr(colon + 1), 10);
+						}
+						if (!frame.has_value() || !sel.has_value() || sel.value() < -3 || sel.value() > 3)
+						{
+							std::fprintf(stderr, "--ee-rate-script: bad entry '%.*s' (want <frame>:<selector>, selector -3..3)\n",
+								static_cast<int>(item.size()), item.data());
+							bad = true;
+							break;
+						}
+						s_ee_rate_script.push_back({frame.value(), static_cast<s8>(sel.value())});
+					}
+					if (comma == std::string_view::npos)
+						break;
+					pos = comma + 1;
+				}
+				if (bad)
+					return false;
+				std::sort(s_ee_rate_script.begin(), s_ee_rate_script.end(),
+					[](const EeRateStep& a, const EeRateStep& b) { return a.frame < b.frame; });
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--ee-rate-hitch"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					std::fprintf(stderr, "--ee-rate-hitch: want a positive frame count\n");
+					return false;
+				}
+				s_ee_rate_hitch = n.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--frames"))
@@ -2585,7 +2857,11 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 static int RunContinuousMemTrajectory()
 {
 	Error error;
+	if (!ValidateEeRateScript())
+		return EXIT_FAILURE;
+
 	const bool force_vu0_interp = s_vu0_interp;
+	int pass_no = 0;
 	auto runPass = [&](bool jit, std::vector<uint64_t>* cycles = nullptr) -> std::vector<uint64_t> {
 		std::vector<uint64_t> hashes;
 		if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
@@ -2600,10 +2876,17 @@ static int RunContinuousMemTrajectory()
 			VMManager::ApplySettings();
 		}
 		hashes.reserve(s_frames);
+		// Every pass gets the same rate script, so the interpreter and the JIT
+		// are compared under the same schedule rather than one of them silently
+		// running at the baseline.
+		EeRateDriver rate(fmt::format("contmem-{}{}", jit ? "jit" : "interp", ++pass_no));
 		for (uint32_t f = 0; f < s_frames && VMManager::GetState() != VMState::Shutdown; ++f)
 		{
+			const EeRateFrameTimer timer; // starts before the transition: the reset is part of the frame that pays it
+			rate.BeforeFrame(f);
 			VMManager::FrameAdvance(1);
 			VMManager::Execute();
+			rate.AfterFrame(timer.Elapsed());
 			hashes.push_back(ee_divtrace::HashMemory());
 			if (cycles)
 				cycles->push_back(static_cast<uint64_t>(cpuRegs.cycle));
@@ -2721,6 +3004,12 @@ static int RunContinuousMemTrajectory()
 		};
 		dump(false, "interp");
 		dump(true, "jit");
+	}
+	if (s_ee_rate_failed)
+	{
+		Console.Error("CONTMEM: FAILED — a scripted EE cycle-rate transition was refused or reset a "
+		              "provider it must not. See the EERATE lines above.");
+		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
 }
@@ -4104,6 +4393,9 @@ static void ReportThreadPerfCounters()
 static int RunLiveRun()
 {
 	Error error;
+	if (!ValidateEeRateScript())
+		return EXIT_FAILURE;
+
 	if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
 	{
 		Console.ErrorFmt("liverun: load failed: {}", error.GetDescription());
@@ -4227,10 +4519,15 @@ static int RunLiveRun()
 	bool watch_init = false;
 	int watch_stuck = 0;
 
+	EeRateDriver rate("liverun");
+
 	for (uint32_t f = 0; f < s_frames && VMManager::GetState() != VMState::Shutdown; ++f)
 	{
+		const EeRateFrameTimer frame_timer; // starts before the transition: the reset is part of the frame that pays it
+		rate.BeforeFrame(f);
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
+		rate.AfterFrame(frame_timer.Elapsed());
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
@@ -4364,6 +4661,12 @@ static int RunLiveRun()
 	Console.WriteLn(fmt::format(
 		"LIVERUN: completed {} frames with NO wedge — this config did not reproduce the hang.",
 		s_frames));
+	if (s_ee_rate_failed)
+	{
+		Console.Error("LIVERUN: FAILED — a scripted EE cycle-rate transition was refused or reset a "
+		              "provider it must not. See the EERATE lines above.");
+		return EXIT_FAILURE;
+	}
 	return EXIT_SUCCESS;
 }
 
