@@ -741,6 +741,23 @@ u32 scaleblockcycles_clear()
 	return scaled;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Test-only: drive the production block-cycle scaler with a synthetic raw
+// count so a characterization table can pin the seven selector formulas
+// without transcribing them into the test. Returns the charge; hands back the
+// remainder the scaler retains for the next block. Restores s_nBlockCycles.
+u32 recEeScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder)
+{
+	const u32 saved = s_nBlockCycles;
+	s_nBlockCycles = raw_block_cycles;
+	const u32 charge = scaleblockcycles_clear();
+	if (out_remainder)
+		*out_remainder = s_nBlockCycles;
+	s_nBlockCycles = saved;
+	return charge;
+}
+#endif
+
 void _eeFlushAllDirty()
 {
 	_flushConstRegs(false);

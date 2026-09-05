@@ -76,6 +76,26 @@ void intUpdateCPUCycles()
 	}
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Test-only counterpart of recEeScaleBlockCyclesForTest: the interpreter keeps
+// its own hand-written copy of the same seven formulas, so the characterization
+// table drives both and requires them to agree. Restores cpuBlockCycles and
+// cpuRegs.cycle.
+u32 intScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder)
+{
+	const u32 saved_block = cpuBlockCycles;
+	const u32 saved_cycle = cpuRegs.cycle;
+	cpuBlockCycles = raw_block_cycles;
+	intUpdateCPUCycles();
+	const u32 charge = cpuRegs.cycle - saved_cycle;
+	if (out_remainder)
+		*out_remainder = cpuBlockCycles;
+	cpuBlockCycles = saved_block;
+	cpuRegs.cycle = saved_cycle;
+	return charge;
+}
+#endif
+
 // These macros are used to assemble the repassembler functions
 
 void intBreakpoint(bool memcheck)

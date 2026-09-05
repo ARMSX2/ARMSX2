@@ -46,6 +46,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_branch_in_delay_tests.cpp
 	ee_rec_callret_tests.cpp
 	ee_rec_cop0_tests.cpp
+	ee_rec_cycle_rate_tests.cpp
 	ee_rec_fpu_tests.cpp
 	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
