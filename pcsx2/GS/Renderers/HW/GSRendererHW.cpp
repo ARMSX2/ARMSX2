@@ -7645,6 +7645,10 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	// We don't want to enable blend mix if we are doing a multi pass, it's useless.
 	blend_mix &= !(bmix1_multi_pass1 || bmix1_multi_pass2 || bmix3_multi_pass);
 
+	// The over-one blend-mix promotion (see the Basic case below), named here so the barrier
+	// strength it needs can be decided at emission time.
+	const bool blend_mix_alpha_over_one = blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
+
 	const bool one_barrier = m_conf.require_one_barrier || (m_held_alpha_mask.fbmask != 0) || blend_ad_alpha_masked;
 	// Condition 1: Require full sw blend for full barrier.
 	// Condition 2: One barrier is already enabled, prims don't overlap or is a channel shuffle so let's use sw blend instead.
@@ -7729,7 +7733,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			// with neither a barrier nor an in-tile read gets one pre-draw destination snapshot for
 			// the whole draw, so overlapping primitives composite one draw stale -- which is still
 			// bounded, where dropping the destination term is not.
-			sw_blending |= blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
+			sw_blending |= blend_mix_alpha_over_one;
 			// Do not run BLEND MIX if sw blending is already present, it's less accurate.
 			blend_mix &= !sw_blending;
 			sw_blending |= blend_mix;
@@ -8152,11 +8156,24 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			// Disable HW blending
 			m_conf.blend = {};
 
+			// A draw promoted only by the over-one rule needs a destination read, but how strong a
+			// one depends on whether its own primitives overlap. When they do not, one pre-draw
+			// snapshot is the exact destination for every primitive, so a single barrier suffices;
+			// only a self-overlapping promoted draw needs the per-primitive full barrier, because
+			// there a later primitive composites against an earlier one's output. Everything the
+			// full barrier gets right, this gets right; it just stops paying for it on the draws
+			// that do not need it. A draw whose overlap the cheap test cannot settle (PrimitiveOverlap
+			// returns UNKNOWN for any multi-triangle strip) is treated as overlapping and keeps the
+			// full barrier, so this only ever loosens a draw proven safe, never a doubtful one.
+			const bool promoted_by_over_one_only = blend_mix_alpha_over_one && !blend_requires_barrier &&
+			                                       !prefer_sw_blend && !free_blend && !force_sw_blending;
+			const bool promoted_safe = promoted_by_over_one_only && no_prim_overlap;
+
 			// No need to set a_masked bit for blend_ad_alpha_masked case
 			const bool blend_non_recursive_one_barrier = blend_non_recursive && blend_ad_alpha_masked;
 			if (blend_non_recursive_one_barrier)
 				m_conf.require_one_barrier |= true;
-			else if (features.feedback_loops())
+			else if (features.feedback_loops() && !promoted_safe)
 				m_conf.require_full_barrier |= !blend_non_recursive;
 			else
 				m_conf.require_one_barrier |= !blend_non_recursive;
