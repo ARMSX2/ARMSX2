@@ -42,27 +42,7 @@ const HostVFS::Ops* HostVFS::GetOps()
 	return s_installed ? &s_ops : nullptr;
 }
 
-namespace
-{
-	// The exact size of a file, which the host's stat() cannot give: its size
-	// argument is 32 bits wide, so a 4 GB DVD image comes back reporting a few
-	// megabytes of it. size() is the 64-bit one, and it wants an open handle.
-	s64 ExactSizeOf(const char* path)
-	{
-		if (!s_ops.size || !s_ops.open || !s_ops.close)
-			return -1;
-
-		void* handle = s_ops.open(path, VFS_ACCESS_READ, 0 /* RETRO_VFS_FILE_ACCESS_HINT_NONE */);
-		if (!handle)
-			return -1;
-
-		const s64 size = s_ops.size(handle);
-		s_ops.close(handle);
-		return (size < 0) ? -1 : size;
-	}
-} // namespace
-
-bool HostVFS::StatPath(const char* path, bool* is_directory, s64* size)
+bool HostVFS::StatPath(const char* path, bool* is_directory, s64* approx_size)
 {
 	if (!s_installed || !s_ops.stat)
 		return false;
@@ -75,10 +55,24 @@ bool HostVFS::StatPath(const char* path, bool* is_directory, s64* size)
 	const bool directory = (flags & STAT_IS_DIRECTORY) != 0;
 	if (is_directory)
 		*is_directory = directory;
-	// Deliberately not truncated_size - see ExactSizeOf() above.
-	if (size)
-		*size = directory ? 0 : ExactSizeOf(path);
+	// Wraps at 2 GB, and named so the caller has to notice. See the header.
+	if (approx_size)
+		*approx_size = directory ? 0 : static_cast<s64>(truncated_size);
 	return true;
+}
+
+s64 HostVFS::ExactSizeOfPath(const char* path)
+{
+	if (!s_installed || !s_ops.size || !s_ops.open || !s_ops.close)
+		return -1;
+
+	void* handle = s_ops.open(path, VFS_ACCESS_READ, 0 /* RETRO_VFS_FILE_ACCESS_HINT_NONE */);
+	if (!handle)
+		return -1;
+
+	const s64 size = s_ops.size(handle);
+	s_ops.close(handle);
+	return (size < 0) ? -1 : size;
 }
 
 namespace

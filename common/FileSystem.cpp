@@ -2294,12 +2294,30 @@ static u32 RecursiveFindFilesVFS(const char* OriginPath, const char* ParentPath,
 			if (!(Flags & FILESYSTEM_FIND_FILES))
 				continue;
 
-			// Only the size is worth a second call, and only for files that
-			// are going to be returned. A negative one means the host could
-			// not say exactly, and zero is the honest answer then.
-			s64 size = 0;
-			if (HostVFS::StatPath(full_path.c_str(), nullptr, &size) && size > 0)
-				outData.Size = static_cast<u64>(size);
+			// Existence and kind already came from the iterator, so size and
+			// timestamps are all that is left. One OS stat() answers both
+			// wherever the OS can see the path - which is everything but the
+			// content:// and network URIs the host is here for - and is the
+			// only way to get a timestamp at all, the host interface having
+			// none.
+			struct stat sysStatData;
+			if (stat(full_path.c_str(), &sysStatData) == 0)
+			{
+				outData.Size = static_cast<u64>(sysStatData.st_size);
+				outData.CreationTime = sysStatData.st_ctime;
+				outData.ModificationTime = sysStatData.st_mtime;
+			}
+			else
+			{
+				// Host-only. Its 32-bit size is taken as it comes rather than
+				// paying an open and close per entry for an exact one: nothing
+				// that reads a size out of a directory walk can meet a file
+				// that big. A caller that can asks StatFile() directly, which
+				// does pay for the exact answer.
+				s64 approx_size = 0;
+				if (HostVFS::StatPath(full_path.c_str(), nullptr, &approx_size) && approx_size > 0)
+					outData.Size = static_cast<u64>(approx_size);
+			}
 		}
 
 		if (hasWildCards)
@@ -2554,30 +2572,33 @@ bool FileSystem::StatFile(const char* path, FILESYSTEM_STAT_DATA* sd)
 	if (path[0] == '\0')
 		return false;
 
-	// The host's answer, where it has one. Its interface reports existence,
-	// directory-ness and size, but no timestamps, so those stay zero - callers
-	// that compare them (cache invalidation) see "unchanged", which is the
-	// harmless direction.
+	// The host decides whether the path exists, because it is the only one that
+	// can see a content:// or network URI. Everything else about it comes from
+	// the OS wherever the OS can see it: one stat() answers the exact size and
+	// both timestamps, where the host's interface has no timestamps at all and
+	// needs an open/close round trip for a 64-bit size.
 	if (HostVFS::IsInstalled())
 	{
 		bool is_directory = false;
-		s64 size = 0;
-		if (HostVFS::StatPath(path, &is_directory, &size))
+		if (HostVFS::StatPath(path, &is_directory))
 		{
-			if (size < 0)
+			sd->Attributes = is_directory ? FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY : 0;
+
+			struct stat sysStatData;
+			if (stat(path, &sysStatData) == 0)
 			{
-				// The host knows the path exists but cannot give an exact
-				// size. The OS still can, for any path it can see - which is
-				// everything except the content:// and network URIs the host
-				// is here for in the first place.
-				struct stat sysStatData;
-				size = (stat(path, &sysStatData) == 0) ? static_cast<s64>(sysStatData.st_size) : 0;
+				sd->CreationTime = sysStatData.st_ctime;
+				sd->ModificationTime = sysStatData.st_mtime;
+				sd->Size = is_directory ? 0 : static_cast<s64>(sysStatData.st_size);
+				return true;
 			}
 
+			// Host-only path. No timestamps exist for it anywhere, so callers
+			// that compare them (cache invalidation) see "unchanged", which is
+			// the harmless direction.
 			sd->CreationTime = 0;
 			sd->ModificationTime = 0;
-			sd->Attributes = is_directory ? FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY : 0;
-			sd->Size = is_directory ? 0 : size;
+			sd->Size = is_directory ? 0 : std::max<s64>(HostVFS::ExactSizeOfPath(path), 0);
 			return true;
 		}
 	}

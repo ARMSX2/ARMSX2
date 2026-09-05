@@ -82,12 +82,20 @@ namespace HostVFS
 	/// size(). False when this is not one of ours, or the host cannot say.
 	bool SizeOfCFile(std::FILE* fp, s64* size);
 
-	/// stat(), for the callers that only want the answers FileSystem asks for.
+	/// Existence, directory-ness, and the frontend's own size, in one call.
 	///
-	/// *size is the exact 64-bit size, which costs an open: the frontend's
-	/// stat() reports only 32 bits of it, and a PS2 DVD image does not fit in
-	/// those. It is set to -1 when the host cannot answer exactly, and the
-	/// caller should then ask the OS. Pass nullptr when the size is not wanted
-	/// - existence and directory-ness cost one call either way.
-	bool StatPath(const char* path, bool* is_directory, s64* size);
+	/// ⚠️ approx_size is 32 bits wide at the source, so it wraps for anything
+	/// 2 GB and over - a PS2 DVD image reports a few megabytes of itself. It is
+	/// good enough where the caller cannot meet a file that big (memory cards
+	/// are 8 MB, a BIOS 4) and free when it is, because it rides along with the
+	/// existence check. Anywhere a real size matters, use ExactSizeOfPath().
+	bool StatPath(const char* path, bool* is_directory, s64* approx_size = nullptr);
+
+	/// The exact 64-bit size of a path, or -1 if the host cannot say.
+	///
+	/// Costs an open/close round trip, because size() is the only 64-bit size
+	/// the interface has and it wants a handle. Ask the OS first where the OS
+	/// can see the path - one stat() there is cheaper and answers timestamps
+	/// too, which this interface has no way to report at all.
+	s64 ExactSizeOfPath(const char* path);
 } // namespace HostVFS
