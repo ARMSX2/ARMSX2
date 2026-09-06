@@ -800,6 +800,19 @@ if(USE_VULKAN)
 	if(ANDROID AND NOT ARMSX2_USE_BUNDLED_SHADERC AND TARGET Shaderc::shaderc_shared)
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 	endif()
+
+	# Off Android the shader compiler is dlopened, which means the core needs a
+	# shaderc on the machine it is run on - and on a machine without one the
+	# Vulkan renderer fails to build a pipeline and the frontend gets a black
+	# screen. Where the static archive was found, link it and call it directly:
+	# then the core carries its own. A shared library is deliberately not linked
+	# here, since a hard dependency would stop the core loading at all for
+	# someone who is happily using the OpenGL renderer.
+	if(ENABLE_LIBRETRO AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
+			AND SHADERC_LIBRARY MATCHES "shaderc_combined")
+		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_LINK_SHADERC)
+	endif()
 endif()
 
 set(pcsx2GSMetalShaders
@@ -1276,9 +1289,23 @@ if(ANDROID)
 		GS/Renderers/OpenGL/GLContextEGL.h
 		GS/Renderers/OpenGL/GLContextEGLAndroid.h)
 	list(APPEND pcsx2Sources
-		Android/AndroidHostStubs.cpp
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp)
+	# AndroidHostStubs.cpp defines g_host_hotkeys and Host::SetMouseLock, which
+	# pcsx2-libretro/Main.cpp defines for itself - it is the frontend here. The
+	# file's own comment expects archive semantics to leave the object out of a
+	# link that does not reference it, but the libretro build configures with
+	# DISABLE_ADVANCE_SIMD, which makes PCSX2 an OBJECT library (see the top of
+	# this file), and then every object goes into the core:
+	#
+	#   ld.lld: error: duplicate symbol: Host::SetMouseLock(bool)
+	#   ld.lld: error: duplicate symbol: g_host_hotkeys
+	#
+	# So it belongs to the frontends that have no definitions of their own.
+	if(NOT ENABLE_LIBRETRO)
+		list(APPEND pcsx2Sources
+			Android/AndroidHostStubs.cpp)
+	endif()
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
 	# Only the APK build has the library - its SearchForStuff adds the vendored
 	# 3rdparty/oboe - so this is behind a switch that build sets; the libretro
@@ -1343,6 +1370,100 @@ if(LTO_PCSX2_CORE)
 	fixup_file_properties(PCSX2_LTO)
 else()
 	target_sources(PCSX2 PRIVATE ${pcsx2LTOSources})
+endif()
+
+# Files from bin/resources, compiled in. The readers still prefer a copy in the
+# resources directory; this is what lets a build that has none - the libretro
+# core gets a system directory from the frontend and nothing is guaranteed to be
+# in it - create its device and load its game database instead of coming up as a
+# black screen with no fixes.
+option(ARMSX2_EMBED_RESOURCES
+	"Compile the GS shaders and the game database into the binary, so no resources directory is required at runtime"
+	${ENABLE_LIBRETRO})
+
+if(ARMSX2_EMBED_RESOURCES)
+	set(ARMSX2_RESOURCE_ROOT "${CMAKE_SOURCE_DIR}/bin/resources")
+	set(ARMSX2_EMBEDDED_RESOURCE_DIRS shaders/common shaders/opengl shaders/vulkan)
+	# GameIndex.yaml is 2.7 MB of YAML and worth every byte: without it no game
+	# gets its fixes, patches or memcard filters, and nothing says why.
+	set(ARMSX2_EMBEDDED_RESOURCE_FILES GameIndex.yaml)
+
+	foreach(dir IN LISTS ARMSX2_EMBEDDED_RESOURCE_DIRS)
+		file(GLOB found RELATIVE "${ARMSX2_RESOURCE_ROOT}" "${ARMSX2_RESOURCE_ROOT}/${dir}/*")
+		list(APPEND ARMSX2_EMBEDDED_RESOURCE_FILES ${found})
+	endforeach()
+	list(SORT ARMSX2_EMBEDDED_RESOURCE_FILES)
+
+	# patches.zip is not in the tree - the Qt, macOS and Windows workflows
+	# download it from the pcsx2_patches releases when they package. Fetch it
+	# here too, so a core built on its own still has the widescreen and
+	# no-interlacing patches its core options offer. Best effort: no network, no
+	# patches, rather than no build.
+	option(ARMSX2_EMBED_PATCHES "Fetch patches.zip and compile it in as well" ON)
+	set(ARMSX2_PATCHES_ZIP "" CACHE FILEPATH
+		"A patches.zip to embed instead of downloading one")
+	set(ARMSX2_PATCHES_ZIP_URL
+		"https://github.com/isztldav/pcsx2_patches/releases/latest/download/patches.zip"
+		CACHE STRING "Where to fetch patches.zip when none is given")
+
+	if(ARMSX2_EMBED_PATCHES)
+		if(ARMSX2_PATCHES_ZIP AND EXISTS "${ARMSX2_PATCHES_ZIP}")
+			set(_patches_zip "${ARMSX2_PATCHES_ZIP}")
+		else()
+			set(_patches_zip "${CMAKE_CURRENT_BINARY_DIR}/patches.zip")
+			if(NOT EXISTS "${_patches_zip}")
+				message(STATUS "Fetching patches.zip from ${ARMSX2_PATCHES_ZIP_URL}")
+				file(DOWNLOAD "${ARMSX2_PATCHES_ZIP_URL}" "${_patches_zip}"
+					STATUS _patches_status TIMEOUT 120 SHOW_PROGRESS)
+				list(GET _patches_status 0 _patches_result)
+				if(NOT _patches_result EQUAL 0)
+					list(GET _patches_status 1 _patches_error)
+					message(WARNING "patches.zip could not be fetched (${_patches_error}); "
+						"the core will have no built-in patches")
+					file(REMOVE "${_patches_zip}")
+					unset(_patches_zip)
+				endif()
+			endif()
+		endif()
+	endif()
+
+	if(DEFINED _patches_zip)
+		list(APPEND ARMSX2_EMBEDDED_RESOURCE_FILES "patches.zip=${_patches_zip}")
+	endif()
+
+	set(ARMSX2_EMBEDDED_RESOURCES_CPP "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedResources.cpp")
+	set(ARMSX2_EMBEDDED_RESOURCE_INPUTS "")
+	foreach(entry IN LISTS ARMSX2_EMBEDDED_RESOURCE_FILES)
+		if(entry MATCHES "^[^=]+=(.+)$")
+			list(APPEND ARMSX2_EMBEDDED_RESOURCE_INPUTS "${CMAKE_MATCH_1}")
+		else()
+			list(APPEND ARMSX2_EMBEDDED_RESOURCE_INPUTS "${ARMSX2_RESOURCE_ROOT}/${entry}")
+		endif()
+	endforeach()
+
+	# The names go through a file, not -D: a CMake list on a command line has to
+	# survive both the generator's quoting and CMake's own, and does not.
+	set(ARMSX2_EMBEDDED_RESOURCE_LIST_FILE "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedResources.list")
+	string(REPLACE ";" "\n" ARMSX2_EMBEDDED_RESOURCE_LIST_TEXT "${ARMSX2_EMBEDDED_RESOURCE_FILES}")
+	file(WRITE "${ARMSX2_EMBEDDED_RESOURCE_LIST_FILE}" "${ARMSX2_EMBEDDED_RESOURCE_LIST_TEXT}\n")
+
+	add_custom_command(
+		OUTPUT "${ARMSX2_EMBEDDED_RESOURCES_CPP}"
+		COMMAND ${CMAKE_COMMAND}
+			-DOUT=${ARMSX2_EMBEDDED_RESOURCES_CPP}
+			-DROOT=${ARMSX2_RESOURCE_ROOT}
+			-DLIST=${ARMSX2_EMBEDDED_RESOURCE_LIST_FILE}
+			-P "${CMAKE_SOURCE_DIR}/cmake/EmbedResources.cmake"
+		DEPENDS ${ARMSX2_EMBEDDED_RESOURCE_INPUTS}
+			"${ARMSX2_EMBEDDED_RESOURCE_LIST_FILE}"
+			"${CMAKE_SOURCE_DIR}/cmake/EmbedResources.cmake"
+		COMMENT "Embedding the resources"
+		VERBATIM)
+
+	target_sources(PCSX2 PRIVATE
+		"${ARMSX2_EMBEDDED_RESOURCES_CPP}"
+		EmbeddedResources.h)
+	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_EMBEDDED_RESOURCES)
 endif()
 
 # common Sources

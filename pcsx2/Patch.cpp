@@ -17,6 +17,9 @@
 #include "IopMem.h"
 #include "Memory.h"
 #include "Patch.h"
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+#include "EmbeddedResources.h"
+#endif
 #include "R5900.h"
 
 #include "IconsFontAwesome.h"
@@ -298,6 +301,31 @@ bool Patch::OpenPatchesZip()
 	zip_source_t* zs = zip_source_file_create(filename.c_str(), 0, 0, &ze);
 	if (zs && !(s_patches_zip = zip_open_from_source(zs, ZIP_RDONLY, &ze)))
 	{
+		// have to clean up source
+		Console.Error("Failed to open %s: %s", filename.c_str(), zip_error_strerror(&ze));
+		zip_source_free(zs);
+		zs = nullptr;
+
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+		// Nothing on disk, so use the copy compiled in. The buffer has to
+		// outlive the archive, hence the static: libzip reads from it lazily.
+		static const std::optional<std::string> s_embedded =
+			EmbeddedResources::Read(std::string(PATCHES_ZIP_NAME).c_str());
+		if (s_embedded.has_value())
+		{
+			zip_source_t* es = zip_source_buffer_create(s_embedded->data(), s_embedded->size(), 0, &ze);
+			if (es && !(s_patches_zip = zip_open_from_source(es, ZIP_RDONLY, &ze)))
+			{
+				Console.Error("Failed to open the built-in %s: %s",
+					std::string(PATCHES_ZIP_NAME).c_str(), zip_error_strerror(&ze));
+				zip_source_free(es);
+			}
+		}
+#endif
+	}
+
+	if (!s_patches_zip)
+	{
 		static bool warning_shown = false;
 		if (!warning_shown)
 		{
@@ -308,9 +336,6 @@ bool Patch::OpenPatchesZip()
 			warning_shown = true;
 		}
 
-		// have to clean up source
-		Console.Error("Failed to open %s: %s", filename.c_str(), zip_error_strerror(&ze));
-		zip_source_free(zs);
 		return false;
 	}
 
