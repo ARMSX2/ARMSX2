@@ -13,9 +13,18 @@ find_path(
 # folded in. It is what a cross build wants - a libretro core has to carry its
 # own copy, since there is no shaderc on an Android device to link against -
 # and it comes last so a system shared library still wins where there is one.
+# A libretro core is a file someone drops into a frontend on a machine we know
+# nothing about, so there the archive is what we want and it goes first; every
+# other build prefers the system's shared library, as before.
+if(ENABLE_LIBRETRO)
+    set(SHADERC_LIBRARY_NAMES shaderc_combined shaderc_shared.1 shaderc_shared)
+else()
+    set(SHADERC_LIBRARY_NAMES shaderc_shared.1 shaderc_shared shaderc_combined)
+endif()
+
 find_library(
     SHADERC_LIBRARY
-    NAMES shaderc_shared.1 shaderc_shared shaderc_combined
+    NAMES ${SHADERC_LIBRARY_NAMES}
     PATHS ${ADDITIONAL_LIBRARY_PATHS} ${SHADERC_PATH_LIB}
 )
 

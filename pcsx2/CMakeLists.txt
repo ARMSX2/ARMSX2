@@ -800,6 +800,19 @@ if(USE_VULKAN)
 	if(ANDROID AND NOT ARMSX2_USE_BUNDLED_SHADERC AND TARGET Shaderc::shaderc_shared)
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 	endif()
+
+	# Off Android the shader compiler is dlopened, which means the core needs a
+	# shaderc on the machine it is run on - and on a machine without one the
+	# Vulkan renderer fails to build a pipeline and the frontend gets a black
+	# screen. Where the static archive was found, link it and call it directly:
+	# then the core carries its own. A shared library is deliberately not linked
+	# here, since a hard dependency would stop the core loading at all for
+	# someone who is happily using the OpenGL renderer.
+	if(ENABLE_LIBRETRO AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
+			AND SHADERC_LIBRARY MATCHES "shaderc_combined")
+		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_LINK_SHADERC)
+	endif()
 endif()
 
 set(pcsx2GSMetalShaders
