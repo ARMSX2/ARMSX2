@@ -9,6 +9,7 @@ struct CPUTab: View {
     @Binding var mtvu: Bool
     @Binding var eeCycleRate: Int
     @Binding var globalEECycleRate: Int
+    @Binding var globalDynamicEECycleRate: Bool
     @Binding var eeCycleSkip: Int
     @Binding var globalEECycleSkip: Int
     @Binding var fastBoot: Int
@@ -25,6 +26,7 @@ struct CPUTab: View {
     let savesToRunningGame: Bool
     let settings: SettingsStore
     let eeCycleRateUseGlobalSentinel: Int
+    let eeCycleRateDynamicSentinel: Int
     let fastBootUseGlobalSentinel: Int
     let fastBootOff: Int
     let fastBootOn: Int
@@ -78,7 +80,8 @@ struct CPUTab: View {
 
             Section("Performance / Compatibility") {
                 Picker("EE Cycle Rate", selection: $eeCycleRate) {
-                    Text("Global Default (\(Self.formatEECycleRate(globalEECycleRate)))").tag(eeCycleRateUseGlobalSentinel)
+                    Text("Global Default (\(globalDynamicEECycleRate ? "Dynamic" : Self.formatEECycleRate(globalEECycleRate)))").tag(eeCycleRateUseGlobalSentinel)
+                    Text("Dynamic").tag(eeCycleRateDynamicSentinel)
                     ForEach(-3...3, id: \.self) { value in
                         Text(Self.formatEECycleRate(value)).tag(value)
                     }
@@ -90,7 +93,7 @@ struct CPUTab: View {
                 }
                 .disabled(!enabled || eeCycleRate == eeCycleRateUseGlobalSentinel)
 
-                Text(settings.localized("Can improve performance in heavy games, but may cause timing or compatibility issues. " + (savesToRunningGame ? "Takes effect when you save." : "Takes effect on next boot.")))
+                Text(settings.localized("Can improve performance in heavy games, but may cause timing or compatibility issues. Dynamic underclocks on its own when the device falls behind and never goes above 0; a game whose database entry sets a cycle rate keeps that fixed rate even on Dynamic. " + (savesToRunningGame ? "Takes effect when you save." : "Takes effect on next boot.")))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
