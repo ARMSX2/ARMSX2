@@ -189,6 +189,106 @@ TEST(EECycleRateEligibility, TheBaselineIsAlwaysTheConfiguredSelector)
 	}
 }
 
+// ------------------------------------------- the per-game files a writer produces
+
+// Opting a game in or out is a write to the per-game file, and what the governor does
+// afterwards depends on WHICH keys that write leaves behind. These tests feed the
+// resolver exactly the files the possible writes produce, plus the half-written file that
+// silently defeats an opt-in. There is no shared writer to test - the desktop settings,
+// the fullscreen UI, the mobile frontends and anything that opts a game in automatically
+// each write through their own settings layer - so this is the contract they all have to
+// satisfy, expressed in the only place every one of them can be checked against.
+
+TEST(EECycleRatePerGameKeys, AnOptInBesideAnExplicitRateTurnsTheGovernorOnForThatGame)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true; // the per-game key resolved to on
+	in.configured = 0;
+
+	ApplyClaims(in, GameFile()
+						.Set("EmuCore/Speedhacks", "EECycleRate", 0)
+						.Set("EmuCore/Speedhacks", "DynamicEECycleRate", true)
+						.Overrides());
+
+	Reasons why;
+	const EECycleRateEligibility e = EECycleRate::ResolveEligibility(in, &why);
+
+	EXPECT_TRUE(e.enabled);
+	EXPECT_STREQ(why.enabled, "the per-game key opts this game in");
+	EXPECT_EQ(e.baseline, 0);
+}
+
+TEST(EECycleRatePerGameKeys, AnOptOutBesideAnExplicitRateKeepsThatRateEvenWithTheGovernorOnGlobally)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = false; // the per-game key resolved to off, over a global true
+	in.configured = -1;
+
+	ApplyClaims(in, GameFile()
+						.Set("EmuCore/Speedhacks", "EECycleRate", -1)
+						.Set("EmuCore/Speedhacks", "DynamicEECycleRate", false)
+						.Overrides());
+
+	Reasons why;
+	const EECycleRateEligibility e = EECycleRate::ResolveEligibility(in, &why);
+
+	EXPECT_FALSE(e.enabled);
+	EXPECT_STREQ(why.enabled, "the per-game key opts this game out");
+	EXPECT_EQ(e.baseline, -1);
+}
+
+TEST(EECycleRatePerGameKeys, ANeitherKeyFileLeavesBothQuestionsToTheGlobalSettings)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true; // whatever the global control says
+
+	ApplyClaims(in, GameFile().Overrides());
+	ASSERT_FALSE(in.pergame_claims_rate);
+	ASSERT_FALSE(in.pergame_claims_dynamic);
+
+	Reasons why;
+	const EECycleRateEligibility e = EECycleRate::ResolveEligibility(in, &why);
+
+	EXPECT_TRUE(e.enabled);
+	EXPECT_STREQ(why.enabled, "on globally, and nothing claims this game's rate");
+}
+
+// The half-written file that defeats an opt-in. A writer that turns a game's governor on
+// by writing only the rate would leave a fixed-rate claim behind, and a fixed-rate claim
+// turns the governor off for that game - so the setting just written does nothing, for
+// that game only, with nothing visible to show it.
+TEST(EECycleRatePerGameKeys, WritingOnlyTheRateWouldSilentlyTurnTheGovernorOff)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true;
+	in.configured = 0;
+
+	ApplyClaims(in, GameFile().Set("EmuCore/Speedhacks", "EECycleRate", 0).Overrides());
+
+	Reasons why;
+	const EECycleRateEligibility e = EECycleRate::ResolveEligibility(in, &why);
+
+	EXPECT_FALSE(e.enabled) << "which is why an opt-in writes the governor key, and leaves the rate alone";
+	EXPECT_STREQ(why.enabled, "the per-game file sets this game's cycle rate");
+}
+
+// The opt-in that writes only the governor key. It works, and it is the shape a writer
+// that must not pin a rate uses: the baseline is whatever the rate resolves to without
+// this file, global setting included, and the governor's ceiling follows it.
+TEST(EECycleRatePerGameKeys, WritingOnlyTheGovernorKeyLeavesTheBaselineToTheResolvedRate)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true;
+	in.configured = 2; // the rate the file does not set, inherited from the layers below it
+
+	ApplyClaims(in, GameFile().Set("EmuCore/Speedhacks", "DynamicEECycleRate", true).Overrides());
+
+	const EECycleRateEligibility e = EECycleRate::ResolveEligibility(in);
+
+	EXPECT_TRUE(e.enabled);
+	EXPECT_EQ(e.baseline, 2) << "an overclock nobody picked for this game, and the governor's ceiling";
+}
+
 // ------------------------------------------------------------------- suspension
 
 TEST(EECycleRateEligibility, HardcoreModeSuspendsTheGovernor)
