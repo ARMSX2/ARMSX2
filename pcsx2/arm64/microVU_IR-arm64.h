@@ -48,6 +48,12 @@ static const int neonAllocTotal = 28;
 // dispatcher's x29/x30 Stp/Ldp), x30=lr, sp=stack.
 static const int gprAllocCount = 32; // Total GPR IDs (unusable ones are marked in the map)
 
+// Fold count for vu_merge_fold_tests, so a test cannot pass on a build
+// where the reversal never fires.
+#ifdef PCSX2_RECOMPILER_TESTS
+inline u32 g_mvuMergeFoldCount = 0;
+#endif
+
 //------------------------------------------------------------------
 // ARM64 microRegAlloc
 //------------------------------------------------------------------
@@ -820,6 +826,9 @@ public:
 				if (lane >= 0)
 				{
 					armAsm->Ins(reg.V4S(), lane, armQRegister(i).V4S(), lane);
+#ifdef PCSX2_RECOMPILER_TESTS
+					g_mvuMergeFoldCount++;
+#endif
 					clear.xyzw   = 0xF;
 					clear.count  = counter;
 					clear.isZero = mapI.isZero;
