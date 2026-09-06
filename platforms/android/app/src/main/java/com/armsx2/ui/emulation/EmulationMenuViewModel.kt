@@ -185,7 +185,9 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     // and quietly picked a different mode instead.
     fun setHardwareDownloadMode(value: Int) = updateSettings { it.copy(hardwareDownloadMode = value.coerceIn(0, 5)) }
 
-    fun setEeCycleRate(value: Int) = updateSettings { it.copy(eeCycleRate = value.coerceIn(-3, 3)) }
+    // Takes a picker position, not a rate: the lowest one selects the governor, and
+    // withEeCycleRateChoice writes both of the keys that go with it.
+    fun setEeCycleRate(value: Int) = updateSettings { it.withEeCycleRateChoice(value) }
 
     fun setEeCycleSkip(value: Int) = updateSettings { it.copy(eeCycleSkip = value.coerceIn(0, 3)) }
 

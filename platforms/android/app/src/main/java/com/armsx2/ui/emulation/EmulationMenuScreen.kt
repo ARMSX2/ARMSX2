@@ -1140,8 +1140,15 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     )
     HorizontalOptions(
         title = str("perf.eeCycleRate.label"),
-        options = (-3..3).map { it to if (it > 0) "+$it" else "$it" },
-        selected = settings.eeCycleRate,
+        // The lowest position is the governor, not a rate — see Settings.eeCycleRateChoice.
+        options = (com.armsx2.config.Settings.EE_CYCLE_RATE_DYNAMIC..3).map { rate ->
+            rate to when {
+                rate == com.armsx2.config.Settings.EE_CYCLE_RATE_DYNAMIC -> str("perf.eeCycleRate.dynamic")
+                rate > 0 -> "+$rate"
+                else -> "$rate"
+            }
+        },
+        selected = settings.eeCycleRateChoice,
         onSelect = viewModel::setEeCycleRate,
     )
     HorizontalOptions(

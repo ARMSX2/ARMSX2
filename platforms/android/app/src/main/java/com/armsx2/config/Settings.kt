@@ -67,6 +67,12 @@ data class Settings(
     // ---- EmuCore/Speedhacks ----
     /** EmuCore/Speedhacks/EECycleRate — −3..+3 (50%..300%). 0 = nominal. */
     val eeCycleRate: Int = 0,
+    /** EmuCore/Speedhacks/DynamicEECycleRate — let the governor lower the EE rate by
+     *  up to two steps below [eeCycleRate] while the device cannot hold the frame
+     *  deadline, and put it back when it can. It never goes above [eeCycleRate].
+     *  These two are ONE picker, so they are always written as a pair — see
+     *  [withEeCycleRateChoice]. */
+    val dynamicEeCycleRate: Boolean = false,
     /** EmuCore/Speedhacks/EECycleSkip — 0..3. 0 = no skip. */
     val eeCycleSkip: Int = 0,
     /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full / 4 Exact
@@ -796,10 +802,27 @@ data class Settings(
         else NativeApp.setSetting(section, key, type, value)
     }
 
+    /** Which position the EE cycle rate picker sits at. The governor wins over the
+     *  rate when it is on, because it is what decides the speed: the stored rate is
+     *  then only the baseline it starts from and never exceeds. */
+    val eeCycleRateChoice: Int
+        get() = if (dynamicEeCycleRate) EE_CYCLE_RATE_DYNAMIC else eeCycleRate.coerceIn(-3, 3)
+
+    /** One pick, both keys. The core reads an explicit per-game EECycleRate as a
+     *  fixed-rate claim and an explicit per-game DynamicEECycleRate as decisive, so a
+     *  file holding one without the other says something the player never picked.
+     *  Dynamic runs from the default baseline; a governor with a non-default baseline
+     *  is a real configuration but is INI-only, because it needs two numbers and this
+     *  is one picker. */
+    fun withEeCycleRateChoice(choice: Int): Settings =
+        if (choice == EE_CYCLE_RATE_DYNAMIC) copy(eeCycleRate = 0, dynamicEeCycleRate = true)
+        else copy(eeCycleRate = choice.coerceIn(-3, 3), dynamicEeCycleRate = false)
+
     /** Push every field into emucore via NativeApp.setSetting + commit. */
     fun applyTo() {
         // Speedhacks
         put("EmuCore/Speedhacks", "EECycleRate", "int", eeCycleRate.toString())
+        put("EmuCore/Speedhacks", "DynamicEECycleRate", "bool", dynamicEeCycleRate.toString())
         put("EmuCore/Speedhacks", "EECycleSkip", "int", eeCycleSkip.toString())
         // EE/FPU + VU clamping (recompiler accuracy). Each mode unpacks to the
         // PCSX2 bit flags below. Needs a recompiler reset (commitSettings /
@@ -1096,6 +1119,7 @@ data class Settings(
             upscaleFloat = floatAt("EmuCore/GS/upscale_multiplier") ?: this.upscaleFloat,
             // ---- EmuCore/Speedhacks ----
             eeCycleRate = intAt("EmuCore/Speedhacks/EECycleRate") ?: this.eeCycleRate,
+            dynamicEeCycleRate = boolAt("EmuCore/Speedhacks/DynamicEECycleRate") ?: this.dynamicEeCycleRate,
             eeCycleSkip = intAt("EmuCore/Speedhacks/EECycleSkip") ?: this.eeCycleSkip,
             eeClampMode = eeClamp,
             vuClampMode = vuClamp,
@@ -1401,10 +1425,20 @@ data class Settings(
         val forcedKeys: Set<String> = if (vu1ClampMode != global.vu1ClampMode)
             setOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
         else emptySet()
+        // Same rule for the EE cycle rate picker's two keys. Whichever of them differs
+        // from global, BOTH go in the file: the core treats an explicit rate as a
+        // fixed-rate claim and an explicit governor key as decisive, so writing half the
+        // pair leaves the other half inherited from a global setting that can change
+        // later, and the game silently changes behaviour when it does.
+        val forcedSpeedhackKeys: Set<String> =
+            if (eeCycleRate != global.eeCycleRate || dynamicEeCycleRate != global.dynamicEeCycleRate)
+                setOf("EECycleRate", "DynamicEECycleRate")
+            else emptySet()
         // Effective pass: stream only the keys that differ from the baseline.
         emitSink = { section, key, _, value ->
             if (baseline["$section$key"] != value ||
-                (section == "EmuCore/CPU/Recompiler" && key in forcedKeys))
+                (section == "EmuCore/CPU/Recompiler" && key in forcedKeys) ||
+                (section == "EmuCore/Speedhacks" && key in forcedSpeedhackKeys))
                 NativeApp.gameIniPut(section, key, value)
         }
         try {
@@ -1721,6 +1755,7 @@ data class Settings(
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("eeCycleRate", eeCycleRate)
+        put("dynamicEeCycleRate", dynamicEeCycleRate)
         put("eeCycleSkip", eeCycleSkip)
         put("eeClampMode", eeClampMode)
         put("vuClampMode", vuClampMode)
@@ -1970,6 +2005,12 @@ data class Settings(
         /** [upscaler] values, straight from the core's GSUpscaler. Named because 1 is Apple's
          *  MetalFX and never appears in this UI, so FSR1's value (2) does NOT line up with its
          *  position in any Android picker — writing the picker index would select MetalFX. */
+        /** The EE cycle rate picker's extra position, one step below the -3 floor.
+         *  It is not a rate the core understands: it selects the governor, which
+         *  runs from the default baseline. Kept out of the -3..3 range on purpose so
+         *  a stray write of it clamps to an underclock rather than to a valid rate. */
+        const val EE_CYCLE_RATE_DYNAMIC = -4
+
         const val UPSCALER_OFF = 0
         const val UPSCALER_FSR1 = 2
         const val UPSCALER_SGSR = 3
@@ -2005,6 +2046,7 @@ data class Settings(
             val def = Settings()
             return Settings(
                 eeCycleRate = json.optInt("eeCycleRate", def.eeCycleRate),
+                dynamicEeCycleRate = json.optBoolean("dynamicEeCycleRate", def.dynamicEeCycleRate),
                 eeCycleSkip = json.optInt("eeCycleSkip", def.eeCycleSkip),
                 eeClampMode = json.optInt("eeClampMode", def.eeClampMode),
                 vuClampMode = json.optInt("vuClampMode", def.vuClampMode),
@@ -2264,6 +2306,7 @@ data class Settings(
         fun diff(base: Settings, current: Settings): JSONObject {
             val j = JSONObject()
             if (current.eeCycleRate         != base.eeCycleRate)         j.put("eeCycleRate", current.eeCycleRate)
+            if (current.dynamicEeCycleRate  != base.dynamicEeCycleRate)  j.put("dynamicEeCycleRate", current.dynamicEeCycleRate)
             if (current.eeCycleSkip         != base.eeCycleSkip)         j.put("eeCycleSkip", current.eeCycleSkip)
             if (current.eeClampMode         != base.eeClampMode)         j.put("eeClampMode", current.eeClampMode)
             if (current.vuClampMode         != base.vuClampMode)         j.put("vuClampMode", current.vuClampMode)
@@ -2502,6 +2545,7 @@ data class Settings(
 
         fun merge(base: Settings, overrides: JSONObject): Settings = Settings(
             eeCycleRate = if (overrides.has("eeCycleRate")) overrides.getInt("eeCycleRate") else base.eeCycleRate,
+            dynamicEeCycleRate = if (overrides.has("dynamicEeCycleRate")) overrides.getBoolean("dynamicEeCycleRate") else base.dynamicEeCycleRate,
             eeCycleSkip = if (overrides.has("eeCycleSkip")) overrides.getInt("eeCycleSkip") else base.eeCycleSkip,
             eeClampMode = if (overrides.has("eeClampMode")) overrides.getInt("eeClampMode") else base.eeClampMode,
             vuClampMode = if (overrides.has("vuClampMode")) overrides.getInt("vuClampMode") else base.vuClampMode,
