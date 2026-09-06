@@ -917,9 +917,13 @@ static struct retro_core_option_v2_definition kOptionDefinitions[] = {
 		{{"disabled", nullptr}, {"enabled", nullptr}, {nullptr, nullptr}}, "disabled"},
 	{"armsx2_ee_cycle_rate", "EE Cycle Rate", "EE Cycle Rate",
 		"Underclocks or overclocks the emulated Emotion Engine. Below 100% speeds up emulation but can "
-		"cause stutter or breakage; above 100% can smooth out games with internal slowdown.",
+		"cause stutter or breakage; above 100% can smooth out games with internal slowdown. Dynamic "
+		"underclocks by up to two steps on its own while the host cannot keep up and never goes above "
+		"100%; a game whose database entry sets a cycle rate keeps that fixed rate instead. RetroArch "
+		"does not tell the core whether this option came from its global settings or a content "
+		"override, so Dynamic applies to whatever content is running.",
 		nullptr, "performance",
-		{{"50%", nullptr}, {"60%", nullptr}, {"75%", nullptr}, {"100%", "100% (default)"},
+		{{"Dynamic", nullptr}, {"50%", nullptr}, {"60%", nullptr}, {"75%", nullptr}, {"100%", "100% (default)"},
 			{"130%", nullptr}, {"180%", nullptr}, {"300%", nullptr}, {nullptr, nullptr}}, "100%"},
 	{"armsx2_ee_cycle_skip", "EE Cycle Skip", "EE Cycle Skip",
 		"Makes the emulated EE skip cycles. Helps games with obvious VU-driven slowdown; "
@@ -978,7 +982,7 @@ static struct retro_variable kCoreVariables[] = {
 	{"armsx2_anisotropic_filtering", "Anisotropic filtering; 0|2|4|8|16"},
 	{"armsx2_sw_threads", "Software renderer threads; 2|0|1|3|4"},
 	{"armsx2_show_fps", "Show FPS on screen; disabled|enabled"},
-	{"armsx2_ee_cycle_rate", "EE cycle rate; 100%|50%|60%|75%|130%|180%|300%"},
+	{"armsx2_ee_cycle_rate", "EE cycle rate; 100%|Dynamic|50%|60%|75%|130%|180%|300%"},
 	{"armsx2_ee_cycle_skip", "EE cycle skip; disabled|mild|moderate|maximum"},
 	{"armsx2_hw_download_mode", "Hardware download mode; Accurate|Disable Readbacks|Unsynchronized|Disabled"},
 	{"armsx2_mtvu", "MTVU (multi-threaded VU1); enabled|disabled"},
@@ -1168,14 +1172,27 @@ static void ApplyCoreOptions(bool startup)
 		var = {"armsx2_ee_cycle_rate", nullptr};
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 		{
+			// One option, two keys, always written together: the core reads an explicit
+			// cycle rate as a fixed-rate claim and the governor key as decisive, so
+			// leaving either one at whatever it last held makes the settings say
+			// something the player did not select.
 			static constexpr std::pair<const char*, int> kRates[] = {{"50%", -3}, {"60%", -2}, {"75%", -1},
 				{"100%", 0}, {"130%", 1}, {"180%", 2}, {"300%", 3}};
-			for (const auto& [name, value] : kRates)
+			if (!std::strcmp(var.value, "Dynamic"))
 			{
-				if (!std::strcmp(var.value, name))
+				s_base_settings->SetIntValue("EmuCore/Speedhacks", "EECycleRate", 0);
+				s_base_settings->SetBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", true);
+			}
+			else
+			{
+				for (const auto& [name, value] : kRates)
 				{
-					s_base_settings->SetIntValue("EmuCore/Speedhacks", "EECycleRate", value);
-					break;
+					if (!std::strcmp(var.value, name))
+					{
+						s_base_settings->SetIntValue("EmuCore/Speedhacks", "EECycleRate", value);
+						s_base_settings->SetBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", false);
+						break;
+					}
 				}
 			}
 		}
