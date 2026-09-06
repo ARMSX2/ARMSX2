@@ -776,6 +776,11 @@ void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 
 	if (feedback_write_1) // FIXME I'm not sure dRect[0] is always correct
 		StretchRect(dTex, full_r, sTex[2], dRect[0], ShaderConvert::YUV, filter);
+
+	// With both circuits off nothing was drawn, so the clear above is the whole frame and it is
+	// still only deferred. Everyone downstream binds the native texture, and none of them can
+	// commit a clear, so do it here while a pass can still be opened.
+	FlushClears(dTex);
 }}
 
 void GSDeviceMTL::DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb)
