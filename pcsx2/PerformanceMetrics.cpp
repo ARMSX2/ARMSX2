@@ -62,6 +62,18 @@ static u32 s_gs_privileged_register_writes_since_last_update = 0;
 
 static Threading::ThreadHandle s_cpu_thread_handle;
 static u64 s_last_cpu_time = 0;
+
+// The CPU thread's frame-work clock, in GetCPUTicks() units. It opens at the limiter's
+// post-sleep return and closes at the next Throttle() entry, so the interval it measures is
+// the frame's active work with the deliberate limiter sleep taken out. Zero means no period
+// is open, which is how a frame the limiter did not pace is refused rather than reported.
+//
+// It is CPU-thread-owned and deliberately in the GetCPUTicks() domain rather than
+// Common::Timer's: on AArch64 that is one mrs of the architected counter instead of a vDSO
+// call, it is the same clock the limiter's own target is expressed in, and Throttle() already
+// reads it once per frame - so both consumers, the Android ADPF hint and the dynamic EE
+// cycle-rate sampler, share a single timestamp per frame instead of taking one each.
+static u64 s_frame_work_start = 0;
 static u64 s_last_gs_time = 0;
 static u64 s_last_gs_back_time = 0;
 static u64 s_last_vu_time = 0;
@@ -131,7 +143,6 @@ static bool s_adpf_create_failed = false;
 static bool s_adpf_report_warned = false;
 static bool s_adpf_paused = false; // reporting suspended (unlimited/vsync/interrupted), edge-logged
 static int64_t s_adpf_target_ns = 0;
-static Common::Timer::Value s_adpf_work_start = 0; // start of the current active-work period (0 = none)
 
 // The frame deadline in ns: emulated refresh scaled by the limiter's target speed, so turbo /
 // slow-motion move the deadline correctly. Returns 0 when there is no finite deadline (Unlimited,
@@ -473,36 +484,38 @@ void PerformanceMetrics::AdpfShutdown()
 	}
 	s_adpf_tids.clear();
 	s_adpf_create_failed = false;
-	s_adpf_work_start = 0;
 #endif
+	s_frame_work_start = 0;
 }
 
-void PerformanceMetrics::AdpfOnFrameWorkComplete()
+u64 PerformanceMetrics::OnFrameWorkComplete(u64 now_ticks)
 {
-#if defined(__ANDROID__)
-	// Sampled at Throttle() entry — the instant the frame's active CPU work finished, before the
+	// Called at Throttle() entry — the instant the frame's active CPU work finished, before the
 	// limiter sleep — so (now - work_start) excludes the deliberate limiter sleep. It is NOT pure
 	// CPU compute: the EE can still block behind a full MTGS queue that is itself stalled on
-	// presentation, so some present-wait can leak in. Acceptable for a first experiment, and a far
-	// better approximation of ADPF's "last workload cycle" than the present interval.
-	const Common::Timer::Value now = Common::Timer::GetCurrentValue();
+	// presentation, so some present-wait leaks in. That is exactly why the cycle-rate sampler
+	// times the EE thread's GS and VU1 waits separately and subtracts them.
+	const u64 active_ticks = (s_frame_work_start != 0 && now_ticks > s_frame_work_start) ? (now_ticks - s_frame_work_start) : 0;
+
+#if defined(__ANDROID__)
 	std::lock_guard<std::mutex> lock(s_adpf_mutex);
 	if (!s_adpf_enabled)
-		return;
+		return active_ticks;
 	AdpfEnsureSession();
-	if (!s_adpf_session || s_adpf_work_start == 0)
-		return;
+	if (!s_adpf_session || active_ticks == 0)
+		return active_ticks;
 	const int64_t target = AdpfTargetNs();
 	if (target > 0 && target != s_adpf_target_ns)
 	{
 		s_adpf.updateTarget(s_adpf_session, target);
 		s_adpf_target_ns = target;
 	}
-	const int64_t work_ns = static_cast<int64_t>(Common::Timer::ConvertValueToSeconds(now - s_adpf_work_start) * 1.0e9);
+	const int64_t work_ns =
+		static_cast<int64_t>((static_cast<double>(active_ticks) * 1.0e9) / static_cast<double>(GetTickFrequency()));
 	// Drop absurd outliers (savestate load, renderer recreation, debugger stall): a period several
 	// times the deadline is not a real frame and would spam a spurious max-frequency demand.
 	if (work_ns <= 0 || (s_adpf_target_ns > 0 && work_ns > s_adpf_target_ns * 4))
-		return;
+		return active_ticks;
 	if (s_adpf_paused)
 	{
 		Console.WriteLn("ADPF: reporting resumed.");
@@ -515,33 +528,37 @@ void PerformanceMetrics::AdpfOnFrameWorkComplete()
 		Console.Warning("ADPF: reportActualWorkDuration returned %d — driver is ignoring the hint.", ret);
 	}
 #endif
+
+	return active_ticks;
 }
 
-void PerformanceMetrics::AdpfBeginFrameWork()
+void PerformanceMetrics::OnFrameWorkBegin()
 {
-#if defined(__ANDROID__)
 	// Opens a work period at the post-sleep instant (Throttle exit), so the deliberate limiter
-	// sleep is excluded from the next reported duration.
-	const Common::Timer::Value now = Common::Timer::GetCurrentValue();
-	std::lock_guard<std::mutex> lock(s_adpf_mutex);
-	s_adpf_work_start = now;
-#endif
+	// sleep is excluded from the next measured duration.
+	s_frame_work_start = GetCPUTicks();
 }
 
-void PerformanceMetrics::AdpfPauseFrameWork()
+void PerformanceMetrics::OnFrameWorkPaused()
 {
-#if defined(__ANDROID__)
 	// Not frame-limiting (unlimited / host-vsync / interrupted) — invalidate the period so no
-	// wall-time-with-wait duration is reported, and edge-log so a tester never sees "ACTIVE" while
-	// nothing is actually being submitted.
+	// wall-time-with-wait duration is measured.
+	s_frame_work_start = 0;
+
+#if defined(__ANDROID__)
+	// Edge-log, so a tester never sees "ACTIVE" while nothing is actually being submitted.
 	std::lock_guard<std::mutex> lock(s_adpf_mutex);
 	if (s_adpf_session && !s_adpf_paused)
 	{
 		Console.WriteLn("ADPF: reporting paused (unlimited / host-vsync / interrupted) — no durations submitted.");
 		s_adpf_paused = true;
 	}
-	s_adpf_work_start = 0;
 #endif
+}
+
+u64 PerformanceMetrics::GetCPUThreadCPUTime()
+{
+	return s_cpu_thread_handle.GetCPUTime();
 }
 
 void PerformanceMetrics::SetGSSWThreadCount(u32 count)

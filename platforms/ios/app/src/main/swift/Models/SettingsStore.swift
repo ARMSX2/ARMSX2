@@ -576,6 +576,39 @@ final class SettingsStore {
         section: "EmuCore/Speedhacks", key: "EECycleRate", default: 0,
         codec: .int)
     var eeCycleRate: Int = 0 { didSet { commit(_eeCycleRateConfig, eeCycleRate) } }
+    let _dynamicEeCycleRateConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "DynamicEECycleRate", default: false,
+        codec: .bool)
+    /// Lets the governor lower the EE rate by up to two steps below eeCycleRate while
+    /// the device cannot hold the frame deadline, and put it back when it can. Never
+    /// above eeCycleRate. Set it through eeCycleRateChoice, not directly.
+    var dynamicEeCycleRate: Bool = false { didSet { commit(_dynamicEeCycleRateConfig, dynamicEeCycleRate) } }
+
+    /// The EE cycle rate picker's extra position, one step below the -3 floor. It is
+    /// not a rate the core understands: it selects the governor, which runs from the
+    /// default baseline.
+    static let eeCycleRateDynamic = -4
+
+    /// One picker, two keys. The core reads an explicit per-game EECycleRate as a
+    /// fixed-rate claim and an explicit per-game DynamicEECycleRate as decisive, so
+    /// either one alone says something the player never picked — every pick writes
+    /// both. Dynamic wins on read-back because it is what decides the speed: the
+    /// stored rate under it is only the baseline it starts from and never exceeds.
+    ///
+    /// A governor with a non-default baseline is a real configuration, but it stays
+    /// INI-only: it needs two numbers and this is one picker.
+    var eeCycleRateChoice: Int {
+        get { dynamicEeCycleRate ? Self.eeCycleRateDynamic : min(max(eeCycleRate, -3), 3) }
+        set {
+            if newValue == Self.eeCycleRateDynamic {
+                eeCycleRate = 0
+                dynamicEeCycleRate = true
+            } else {
+                eeCycleRate = min(max(newValue, -3), 3)
+                dynamicEeCycleRate = false
+            }
+        }
+    }
     let _vu1InstantConfig = Setting<Bool>(
         section: "EmuCore/Speedhacks", key: "vu1Instant", default: true,
         codec: .bool)
@@ -1711,6 +1744,7 @@ final class SettingsStore {
         fastCDVD = _fastCDVDConfig.load()
         // Advanced Speedhacks
         eeCycleRate = _eeCycleRateConfig.load()
+        dynamicEeCycleRate = _dynamicEeCycleRateConfig.load()
         vu1Instant = _vu1InstantConfig.load()
         mtvu = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuThread", defaultValue: true)
         waitLoop = _waitLoopConfig.load()
@@ -2235,6 +2269,7 @@ final class SettingsStore {
         palFramerate = 50.0
         fastCDVD = false
         eeCycleRate = 0
+        dynamicEeCycleRate = false
         vu1Instant = true
         mtvu = true
         waitLoop = true

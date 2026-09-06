@@ -14,6 +14,7 @@
 #include "Common.h"
 #include "VMManager.h"
 #include "Config.h"
+#include "EECycleRate.h"
 
 #include "common/Assertions.h"
 #include "common/AlignedMalloc.h"
@@ -1165,6 +1166,7 @@ static void recReserve()
 void recResetIOP()
 {
 	Console.WriteLn(Color_Green, "iR3000A-ARM64 Recompiler reset.");
+	EECycleRate::NoteIopReset();
 
 	if (CHECK_EXTRAMEM != extraRam)
 	{

@@ -664,6 +664,13 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(
 		// Legacy note - speedhacks are setup in the GameDB as integer values, but
 		// are effectively booleans like the gamefixes
 		config.Speedhacks.Set(it.first, it.second);
+
+		// The database has just staked a compatibility claim on this game's EE timing.
+		// Record it: the resolved selector cannot say so afterwards, and the dynamic
+		// governor is only allowed to move a rate nobody claimed.
+		if (it.first == SpeedHack::EECycleRate)
+			config.GameDBSetEECycleRate = true;
+
 		if (!quiet)
 		{
 			Console.WriteLn("GameDB: Setting Speedhack '%s' to [mode=%d]",

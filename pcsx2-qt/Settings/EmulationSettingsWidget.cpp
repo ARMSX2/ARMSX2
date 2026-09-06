@@ -14,8 +14,23 @@
 static constexpr int MINIMUM_EE_CYCLE_RATE = -3;
 static constexpr int MAXIMUM_EE_CYCLE_RATE = 3;
 static constexpr int DEFAULT_EE_CYCLE_RATE = 0;
+static constexpr bool DEFAULT_DYNAMIC_EE_CYCLE_RATE = false;
 static constexpr int DEFAULT_EE_CYCLE_SKIP = 0;
 static constexpr u32 DEFAULT_FRAME_LATENCY = 2;
+
+// Which EE cycle rate row shows a given (governor, rate) pair. `dynamic_index` is where
+// the combo's own choices start: 0 for the global settings, 1 per-game, where row 0 is
+// "Use Global Setting". The governor gets the first of them because it is not a rate —
+// while it is on, the stored rate is only the baseline it starts from and never
+// exceeds, so showing that number instead would name a speed the emulator is not
+// necessarily running at.
+static int eeCycleRateIndex(bool dynamic_rate, int cycle_rate, int dynamic_index)
+{
+	if (dynamic_rate)
+		return dynamic_index;
+
+	return dynamic_index + 1 + (std::clamp(cycle_rate, MINIMUM_EE_CYCLE_RATE, MAXIMUM_EE_CYCLE_RATE) - MINIMUM_EE_CYCLE_RATE);
+}
 
 EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog, QWidget* parent)
 	: SettingsWidget(settings_dialog, parent)
@@ -64,11 +79,11 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 		EmulationSettingsWidget::onManuallySetRealTimeClockChanged();
 		EmulationSettingsWidget::onUseSystemLocaleFormatChanged();
 
-		m_ui.eeCycleRate->insertItem(0,
-			tr("Use Global Setting [%1]")
-				.arg(m_ui.eeCycleRate->itemText(
-					std::clamp(Host::GetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleRate", DEFAULT_EE_CYCLE_RATE) - MINIMUM_EE_CYCLE_RATE,
-						0, MAXIMUM_EE_CYCLE_RATE - MINIMUM_EE_CYCLE_RATE))));
+		// Row 0 does not exist yet, so the global row indexes straight into the choices.
+		const int global_index = eeCycleRateIndex(
+			Host::GetBaseBoolSettingValue("EmuCore/Speedhacks", "DynamicEECycleRate", DEFAULT_DYNAMIC_EE_CYCLE_RATE),
+			Host::GetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleRate", DEFAULT_EE_CYCLE_RATE), 0);
+		m_ui.eeCycleRate->insertItem(0, tr("Use Global Setting [%1]").arg(m_ui.eeCycleRate->itemText(global_index)));
 
 		// Disable cheats, use the cheats panel instead
 		m_ui.systemSettingsLayout->removeWidget(m_ui.cheats);
@@ -87,14 +102,38 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 
 	reflowCheckBoxes(m_ui.systemSettingsLayout);
 
+	// One control, two keys. The combo's first fixed position is the governor rather
+	// than a rate, so every pick has to write EECycleRate and DynamicEECycleRate
+	// together: the core reads an explicit per-game rate as a fixed-rate claim and an
+	// explicit per-game governor key as decisive, and a file holding one without the
+	// other says something the player never picked.
+	const int dynamic_index = static_cast<int>(dialog()->isPerGameSettings());
+	const std::optional<bool> dynamic_rate = dialog()->getBoolValue(
+		"EmuCore/Speedhacks", "DynamicEECycleRate", sif ? std::nullopt : std::optional<bool>(DEFAULT_DYNAMIC_EE_CYCLE_RATE));
 	const std::optional<int> cycle_rate =
 		dialog()->getIntValue("EmuCore/Speedhacks", "EECycleRate", sif ? std::nullopt : std::optional<int>(DEFAULT_EE_CYCLE_RATE));
-	m_ui.eeCycleRate->setCurrentIndex(cycle_rate.has_value() ? (std::clamp(cycle_rate.value(), MINIMUM_EE_CYCLE_RATE, MAXIMUM_EE_CYCLE_RATE) + (0 - MINIMUM_EE_CYCLE_RATE) + static_cast<int>(dialog()->isPerGameSettings())) : 0);
-	connect(m_ui.eeCycleRate, &QComboBox::currentIndexChanged, this, [&](int index) {
-		std::optional<int> value;
-		if (!dialog()->isPerGameSettings() || index > 0)
-			value = MINIMUM_EE_CYCLE_RATE + index - static_cast<int>(dialog()->isPerGameSettings());
-		dialog()->setIntSettingValue("EmuCore/Speedhacks", "EECycleRate", value);
+	m_ui.eeCycleRate->setCurrentIndex((dynamic_rate.has_value() || cycle_rate.has_value()) ?
+										  eeCycleRateIndex(dynamic_rate.value_or(DEFAULT_DYNAMIC_EE_CYCLE_RATE),
+											  cycle_rate.value_or(DEFAULT_EE_CYCLE_RATE), dynamic_index) :
+										  0);
+	connect(m_ui.eeCycleRate, &QComboBox::currentIndexChanged, this, [this](int index) {
+		const int base = static_cast<int>(dialog()->isPerGameSettings());
+
+		// Below `base` is the per-game "use global" row, which removes both keys.
+		std::optional<bool> dynamic_value;
+		std::optional<int> rate_value;
+		if (index >= base)
+		{
+			dynamic_value = (index == base);
+			// Dynamic runs from the default baseline. A governor with a non-default
+			// baseline is a real configuration, but it is INI-only on purpose — it
+			// needs two numbers and there is one control.
+			rate_value = dynamic_value.value() ? DEFAULT_EE_CYCLE_RATE : (MINIMUM_EE_CYCLE_RATE + index - base - 1);
+		}
+
+		SettingsWindow::ScopedBatchedWrite batch(dialog());
+		dialog()->setIntSettingValue("EmuCore/Speedhacks", "EECycleRate", rate_value);
+		dialog()->setBoolSettingValue("EmuCore/Speedhacks", "DynamicEECycleRate", dynamic_value);
 	});
 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.hostFilesystem, "EmuCore", "HostFs", false);
@@ -111,7 +150,11 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 
 	dialog()->registerWidgetHelp(m_ui.eeCycleRate, tr("EE Cycle Rate"), tr("100% (Normal Speed)"),
 		tr("Higher values may increase internal framerate in games, but will increase CPU requirements substantially. "
-		   "Lower values will reduce the CPU load allowing lightweight games to run full speed on weaker CPUs."));
+		   "Lower values will reduce the CPU load allowing lightweight games to run full speed on weaker CPUs.<br><br>"
+		   "<strong>Dynamic</strong> lowers the rate by up to two steps on its own while the host cannot keep up, and returns to "
+		   "100% when it can. It never raises the rate above 100%. A game whose database entry sets a cycle rate, or one with a "
+		   "per-game cycle rate of its own, keeps that fixed rate even when Dynamic is selected. The performance overlay shows "
+		   "the configured and effective rates."));
 	dialog()->registerWidgetHelp(m_ui.eeCycleSkipping, tr("EE Cycle Skipping"), tr("Disabled"),
 		tr("Makes the emulated Emotion Engine skip cycles. "
 		   //: SOTC = Shadow of the Colossus. A game's title, should not be translated unless an official translation exists.

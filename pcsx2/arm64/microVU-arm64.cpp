@@ -362,7 +362,14 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu1ExactMode     = EmuConfig.Cpu.Recompiler.vu1ExactMode     ? 1 : 0;
 
 	s.vuFlagHack      = EmuConfig.Speedhacks.vuFlagHack ? 1 : 0;
-	s.EECycleRate     = static_cast<s8>(EmuConfig.Speedhacks.EECycleRate);
+	// VU0 only. mVUtestCycles applies the EE nominal-rate adjustment for VU0
+	// alone, so VU1 generated code has never depended on this selector; baking
+	// it for both indices made every VU1 program identity churn on an EE
+	// speedhack change, and would make the dynamic governor evict the on-disk
+	// VU1 cache on every transition. Zero for VU1 is emission-identical to what
+	// VU1 emitted before, so no kMvuCompilerAbiVersion bump is needed; existing
+	// on-disk VU1 caches built at a nonzero rate evict once and rebuild.
+	s.EECycleRate     = (mVU.index == 0) ? static_cast<s8>(EECycleRate::GetEffective()) : 0;
 	s.EECycleSkip     = static_cast<u8>(EmuConfig.Speedhacks.EECycleSkip);
 	s.IbitHack        = EmuConfig.Gamefixes.IbitHack         ? 1 : 0;
 	s.VUSyncHack      = EmuConfig.Gamefixes.VUSyncHack       ? 1 : 0;
@@ -1049,6 +1056,8 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 // Resets Rec Data
 void mVUreset(microVU& mVU, bool resetReserve)
 {
+	EECycleRate::NoteVuReset(mVU.index);
+
 #ifdef mVUcacheTrace
 	mVUCacheTraceDump(mVU, "pre-reset");
 	++g_mVUCacheTrace[mVU.index & 1].reset_calls;

@@ -573,61 +573,41 @@ std::optional<std::string> SettingsWindow::getStringValue(
 void SettingsWindow::setBoolSettingValue(const char* section, const char* key, std::optional<bool> value)
 {
 	if (m_sif)
-	{
 		value.has_value() ? m_sif->SetBoolValue(section, key, value.value()) : m_sif->DeleteValue(section, key);
-		saveAndReloadGameSettings();
-	}
 	else
-	{
 		value.has_value() ? Host::SetBaseBoolSettingValue(section, key, value.value()) : Host::RemoveBaseSettingValue(section, key);
-		Host::CommitBaseSettingChanges();
-		g_emu_thread->applySettings();
-	}
+
+	notifySettingChanged();
 }
 
 void SettingsWindow::setIntSettingValue(const char* section, const char* key, std::optional<int> value)
 {
 	if (m_sif)
-	{
 		value.has_value() ? m_sif->SetIntValue(section, key, value.value()) : m_sif->DeleteValue(section, key);
-		saveAndReloadGameSettings();
-	}
 	else
-	{
 		value.has_value() ? Host::SetBaseIntSettingValue(section, key, value.value()) : Host::RemoveBaseSettingValue(section, key);
-		Host::CommitBaseSettingChanges();
-		g_emu_thread->applySettings();
-	}
+
+	notifySettingChanged();
 }
 
 void SettingsWindow::setFloatSettingValue(const char* section, const char* key, std::optional<float> value)
 {
 	if (m_sif)
-	{
 		value.has_value() ? m_sif->SetFloatValue(section, key, value.value()) : m_sif->DeleteValue(section, key);
-		saveAndReloadGameSettings();
-	}
 	else
-	{
 		value.has_value() ? Host::SetBaseFloatSettingValue(section, key, value.value()) : Host::RemoveBaseSettingValue(section, key);
-		Host::CommitBaseSettingChanges();
-		g_emu_thread->applySettings();
-	}
+
+	notifySettingChanged();
 }
 
 void SettingsWindow::setStringSettingValue(const char* section, const char* key, std::optional<const char*> value)
 {
 	if (m_sif)
-	{
 		value.has_value() ? m_sif->SetStringValue(section, key, value.value()) : m_sif->DeleteValue(section, key);
-		saveAndReloadGameSettings();
-	}
 	else
-	{
 		value.has_value() ? Host::SetBaseStringSettingValue(section, key, value.value()) : Host::RemoveBaseSettingValue(section, key);
-		Host::CommitBaseSettingChanges();
-		g_emu_thread->applySettings();
-	}
+
+	notifySettingChanged();
 }
 
 bool SettingsWindow::containsSettingValue(const char* section, const char* key) const
@@ -641,16 +621,50 @@ bool SettingsWindow::containsSettingValue(const char* section, const char* key) 
 void SettingsWindow::removeSettingValue(const char* section, const char* key)
 {
 	if (m_sif)
-	{
 		m_sif->DeleteValue(section, key);
+	else
+		Host::RemoveBaseSettingValue(section, key);
+
+	notifySettingChanged();
+}
+
+void SettingsWindow::notifySettingChanged()
+{
+	// Inside a ScopedBatchedWrite: remember that something changed and let the guard
+	// do this once, when every key of the control has been written.
+	if (m_batched_writes > 0)
+	{
+		m_batched_write_pending = true;
+		return;
+	}
+
+	if (m_sif)
+	{
 		saveAndReloadGameSettings();
 	}
 	else
 	{
-		Host::RemoveBaseSettingValue(section, key);
 		Host::CommitBaseSettingChanges();
 		g_emu_thread->applySettings();
 	}
+}
+
+SettingsWindow::ScopedBatchedWrite::ScopedBatchedWrite(SettingsWindow* dialog)
+	: m_dialog(dialog)
+{
+	m_dialog->m_batched_writes++;
+}
+
+SettingsWindow::ScopedBatchedWrite::~ScopedBatchedWrite()
+{
+	if (--m_dialog->m_batched_writes > 0)
+		return;
+
+	if (!m_dialog->m_batched_write_pending)
+		return;
+
+	m_dialog->m_batched_write_pending = false;
+	m_dialog->notifySettingChanged();
 }
 
 void SettingsWindow::saveAndReloadGameSettings()

@@ -503,9 +503,10 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 {
 	iPC = mVUstartPC;
 
-	if (isVU0 && EmuConfig.Speedhacks.EECycleRate != 0 && (!EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Speedhacks.EECycleRate < 0))
+	const s8 mVUeeCycleRate = EECycleRate::GetEffective();
+	if (isVU0 && mVUeeCycleRate != 0 && (!EmuConfig.Gamefixes.VUSyncHack || mVUeeCycleRate < 0))
 	{
-		switch (std::min(static_cast<int>(EmuConfig.Speedhacks.EECycleRate), static_cast<int>(mVUcycles)))
+		switch (std::min(static_cast<int>(mVUeeCycleRate), static_cast<int>(mVUcycles)))
 		{
 			case -3: mVUcycles *= 2.0f;       break;
 			case -2: mVUcycles *= 1.6666667f; break;

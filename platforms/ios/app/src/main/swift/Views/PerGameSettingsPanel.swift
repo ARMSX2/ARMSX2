@@ -64,6 +64,11 @@ struct PerGameSettingsPanel: View {
     private static let aspectUseGlobalSentinel = ""
     private static let trilinearUseGlobalSentinel = Int(Int32.min)
     private static let eeCycleRateUseGlobalSentinel = Int(Int32.min)
+    /// The picker's other non-rate position: the governor. Kept out of -3...3 so it
+    /// cannot be mistaken for a rate, and distinct from the "use global" sentinel so
+    /// "this game runs on the governor" and "this game says nothing" stay different
+    /// answers.
+    private static let eeCycleRateDynamicSentinel = Int(Int32.min) + 1
     private static let fastBootUseGlobalSentinel = -1
     private static let fastBootOff = 0
     private static let fastBootOn = 1
@@ -105,6 +110,7 @@ struct PerGameSettingsPanel: View {
     @State private var eeCoreType: Int
     @State private var mtvu: Bool
     @State private var globalEECycleRate: Int
+    @State private var globalDynamicEECycleRate: Bool
     @State private var eeCycleRate: Int
     @State private var globalEECycleSkip: Int
     @State private var eeCycleSkip: Int
@@ -244,7 +250,19 @@ struct PerGameSettingsPanel: View {
         _mtvu = State(initialValue: Self.boolValue(info["mtvu"], defaultValue: true))
         let inheritedEECycleRate = Self.clampedEECycleRate(Self.intValue(info["globalEECycleRate"], defaultValue: 0))
         _globalEECycleRate = State(initialValue: inheritedEECycleRate)
-        _eeCycleRate = State(initialValue: Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) ? Self.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel)
+        let inheritedDynamicEECycleRate = Self.boolValue(info["globalDynamicEECycleRate"], defaultValue: false)
+        _globalDynamicEECycleRate = State(initialValue: inheritedDynamicEECycleRate)
+        // The governor wins over the rate when the game claims it, because it is what
+        // decides the speed: the rate under it is only the baseline it starts from.
+        _eeCycleRate = State(initialValue: {
+            guard Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) else {
+                return Self.eeCycleRateUseGlobalSentinel
+            }
+            if Self.boolValue(info["dynamicEECycleRate"], defaultValue: inheritedDynamicEECycleRate) {
+                return Self.eeCycleRateDynamicSentinel
+            }
+            return Self.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate))
+        }())
         let inheritedEECycleSkip = SettingsStore.clampedCycleSkip(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)))
         _globalEECycleSkip = State(initialValue: inheritedEECycleSkip)
         let inheritedFastBoot = Self.boolValue(info["globalFastBoot"], defaultValue: false)
@@ -731,6 +749,7 @@ struct PerGameSettingsPanel: View {
             mtvu: $mtvu,
             eeCycleRate: $eeCycleRate,
             globalEECycleRate: $globalEECycleRate,
+            globalDynamicEECycleRate: $globalDynamicEECycleRate,
             eeCycleSkip: $eeCycleSkip,
             globalEECycleSkip: $globalEECycleSkip,
             fastBoot: $fastBoot,
@@ -746,6 +765,7 @@ struct PerGameSettingsPanel: View {
             savesToRunningGame: savesToRunningGame,
             settings: settings,
             eeCycleRateUseGlobalSentinel: Self.eeCycleRateUseGlobalSentinel,
+            eeCycleRateDynamicSentinel: Self.eeCycleRateDynamicSentinel,
             fastBootUseGlobalSentinel: Self.fastBootUseGlobalSentinel,
             fastBootOff: Self.fastBootOff,
             fastBootOn: Self.fastBootOn,
@@ -1113,7 +1133,8 @@ struct PerGameSettingsPanel: View {
                 eeCoreType: enabled ? Int32(eeCoreType) : 0,
                 mtvu: enabled && mtvu,
                 eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
-                eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
+                eeCycleRate: Int32(Self.eeCycleRateToWrite(eeCycleRate, inherited: globalEECycleRate)),
+                dynamicEECycleRate: eeCycleRate == Self.eeCycleRateDynamicSentinel,
                 fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
                 fastBoot: fastBoot == Self.fastBootOn,
                 enableCheats: enabled && enableCheats,
@@ -1150,7 +1171,8 @@ struct PerGameSettingsPanel: View {
                 eeCoreType: enabled ? Int32(eeCoreType) : 0,
                 mtvu: enabled && mtvu,
                 eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
-                eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
+                eeCycleRate: Int32(Self.eeCycleRateToWrite(eeCycleRate, inherited: globalEECycleRate)),
+                dynamicEECycleRate: eeCycleRate == Self.eeCycleRateDynamicSentinel,
                 fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
                 fastBoot: fastBoot == Self.fastBootOn,
                 enableCheats: enabled && enableCheats,
@@ -1485,6 +1507,17 @@ struct PerGameSettingsPanel: View {
 
     private static func clampedEECycleRate(_ value: Int) -> Int {
         min(max(value, -3), 3)
+    }
+
+    /// The rate half of what the bridge is handed. Dynamic runs from the default
+    /// baseline, and "use global" hands the inherited value across because the
+    /// override flag beside it is what actually decides whether either key is written.
+    private static func eeCycleRateToWrite(_ value: Int, inherited: Int) -> Int {
+        switch value {
+        case eeCycleRateDynamicSentinel: return 0
+        case eeCycleRateUseGlobalSentinel: return clampedEECycleRate(inherited)
+        default: return clampedEECycleRate(value)
+        }
     }
 
     private static func normalizedSkipDrawEnd(start: Int, end: Int, startOverride: Bool, endOverride: Bool) -> Int {

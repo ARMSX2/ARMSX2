@@ -891,6 +891,18 @@ bool TestGetLiveSentinel(u32 vu_index, XXH128_hash_t* out_sentinel)
 	return true;
 }
 
+bool TestBuildSentinelForIndex(u32 vu_index, XXH128_hash_t* out_sentinel)
+{
+	if (!out_sentinel)
+		return false;
+	microVU& mVU = (vu_index & 1) ? microVU1 : microVU0;
+	mVU.index = vu_index & 1;
+	mVU.optionsSentinelValid = false;
+	mVUbuildOptionsSentinel(mVU);
+	*out_sentinel = mVU.optionsSentinel;
+	return true;
+}
+
 void ResetForTest(u32 vu_index)
 {
 	State& s = g_state[vu_index & 1];

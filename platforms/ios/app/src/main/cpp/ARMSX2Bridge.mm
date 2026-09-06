@@ -1628,6 +1628,15 @@ static bool ARMSX2ShouldBlockRetroAchievementsHardcoreBoolSetting(const char* se
     if (!value || !ARMSX2RetroAchievementsHardcoreActive())
         return false;
 
+    // The governor's whole job is underclocking, which hardcore forbids for the same
+    // reason it forbids a negative EECycleRate two functions down: it makes the game
+    // easier. The core clamps it too, at settings-load time; this stops the INI ever
+    // holding the claim in the first place.
+    if (std::strcmp(section, "EmuCore/Speedhacks") == 0 && std::strcmp(key, "DynamicEECycleRate") == 0) {
+        ARMSX2LogRetroAchievementsHardcoreBlock("dynamic_ee_underclock");
+        return true;
+    }
+
     if (std::strcmp(section, "EmuCore") == 0) {
         if (std::strcmp(key, "EnableCheats") == 0) {
             ARMSX2LogRetroAchievementsHardcoreBlock("enable_cheats");
@@ -1692,6 +1701,8 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
         g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/Speedhacks", "EECycleRate", 0) : 0,
         -3,
         3);
+    const bool globalDynamicEECycleRate = g_p44_settings_interface ?
+        g_p44_settings_interface->GetBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", false) : false;
     const bool globalFastBoot = g_p44_settings_interface ?
         g_p44_settings_interface->GetBoolValue(
             "EmuCore", "EnableFastBoot",
@@ -1747,6 +1758,8 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
         @"globalEECycleRate": @(globalEECycleRate),
         @"eeCycleRate": @(globalEECycleRate),
         @"hasEECycleRateOverride": @NO,
+        @"globalDynamicEECycleRate": @(globalDynamicEECycleRate),
+        @"dynamicEECycleRate": @(globalDynamicEECycleRate),
         @"globalFastBoot": @(globalFastBoot),
         @"fastBoot": @(globalFastBoot),
         @"hasFastBootOverride": @NO,
@@ -1849,6 +1862,7 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         si.ContainsValue("EmuCore/CPU", "UseArm64Dynarec") ||
         si.ContainsValue("EmuCore/Speedhacks", "vuThread") ||
         si.ContainsValue("EmuCore/Speedhacks", "EECycleRate") ||
+        si.ContainsValue("EmuCore/Speedhacks", "DynamicEECycleRate") ||
         si.ContainsValue("EmuCore", "EnableFastBoot") ||
         si.ContainsValue("SPU2/Output", "StandardVolume") ||
         si.ContainsValue("SPU2/Output", "FastForwardVolume") ||
@@ -1906,8 +1920,12 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     result[@"enableGameDBHardwareFixes"] = @(!si.GetBoolValue("EmuCore/GS", "UserHacks", ![result[@"enableGameDBHardwareFixes"] boolValue]));
     result[@"eeCoreType"] = @(si.GetIntValue("EmuCore/CPU", "CoreType", [result[@"eeCoreType"] intValue]));
     result[@"mtvu"] = @(si.GetBoolValue("EmuCore/Speedhacks", "vuThread", [result[@"mtvu"] boolValue]));
-    result[@"hasEECycleRateOverride"] = @(si.ContainsValue("EmuCore/Speedhacks", "EECycleRate"));
+    // Either key present means the picker is overridden for this game: they are one
+    // control, and the writer below always puts both in the file.
+    result[@"hasEECycleRateOverride"] = @(si.ContainsValue("EmuCore/Speedhacks", "EECycleRate") ||
+                                          si.ContainsValue("EmuCore/Speedhacks", "DynamicEECycleRate"));
     result[@"eeCycleRate"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/Speedhacks", "EECycleRate", [result[@"eeCycleRate"] intValue]), -3, 3));
+    result[@"dynamicEECycleRate"] = @(si.GetBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", [result[@"dynamicEECycleRate"] boolValue]));
     result[@"hasFastBootOverride"] = @(si.ContainsValue("EmuCore", "EnableFastBoot"));
     result[@"fastBoot"] = @(si.GetBoolValue("EmuCore", "EnableFastBoot", [result[@"fastBoot"] boolValue]));
 
@@ -2068,6 +2086,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
                                                 BOOL mtvu,
                                                 BOOL eeCycleRateOverride,
                                                 int eeCycleRate,
+                                                BOOL dynamicEECycleRate,
                                                 BOOL fastBootOverride,
                                                 BOOL fastBoot,
                                                 BOOL enableCheats,
@@ -2215,15 +2234,23 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
             si.SetBoolValue("EmuCore/Speedhacks", "vuThread", mtvu);
         }
 
+        // One picker, two keys, written and deleted together. The core reads an
+        // explicit per-game EECycleRate as a fixed-rate claim and an explicit per-game
+        // DynamicEECycleRate as decisive, so a file holding one without the other says
+        // something the player never picked.
         if (eeCycleRateOverride) {
             int clampedEECycleRate = ARMSX2ClampInt(eeCycleRate, -3, 3);
-            if (ARMSX2RetroAchievementsHardcoreActive() && clampedEECycleRate < 0) {
+            bool governor = dynamicEECycleRate;
+            if (ARMSX2RetroAchievementsHardcoreActive() && (clampedEECycleRate < 0 || governor)) {
                 ARMSX2LogRetroAchievementsHardcoreBlock("per_game_ee_underclock");
-                clampedEECycleRate = 0;
+                clampedEECycleRate = std::max(clampedEECycleRate, 0);
+                governor = false;
             }
             si.SetIntValue("EmuCore/Speedhacks", "EECycleRate", clampedEECycleRate);
+            si.SetBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", governor);
         } else {
             si.DeleteValue("EmuCore/Speedhacks", "EECycleRate");
+            si.DeleteValue("EmuCore/Speedhacks", "DynamicEECycleRate");
         }
 
         if (fastBootOverride)
@@ -2259,6 +2286,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         si.DeleteValue("ARMSX2iOS/PerGame", "ManualMTVUVersion");
         si.DeleteValue("EmuCore/Speedhacks", "vuThread");
         si.DeleteValue("EmuCore/Speedhacks", "EECycleRate");
+        si.DeleteValue("EmuCore/Speedhacks", "DynamicEECycleRate");
         si.DeleteValue("EmuCore", "EnableFastBoot");
         si.DeleteValue("SPU2/Output", "StandardVolume");
         si.DeleteValue("SPU2/Output", "FastForwardVolume");
@@ -3577,6 +3605,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
                           mtvu:(BOOL)mtvu
            eeCycleRateOverride:(BOOL)eeCycleRateOverride
                    eeCycleRate:(int)eeCycleRate
+           dynamicEECycleRate:(BOOL)dynamicEECycleRate
                fastBootOverride:(BOOL)fastBootOverride
                        fastBoot:(BOOL)fastBoot
                   enableCheats:(BOOL)enableCheats
@@ -3598,7 +3627,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
                                         skipDrawStart, skipDrawEndOverride, skipDrawEnd,
                                         volumeOverride, volumePercent, eeCoreType, mtvu,
-                                        eeCycleRateOverride, eeCycleRate, fastBootOverride, fastBoot,
+                                        eeCycleRateOverride, eeCycleRate, dynamicEECycleRate,
+                                        fastBootOverride, fastBoot,
                                         enableCheats, enablePatches, enableGameFixes, enableGameDBHardwareFixes);
 }
 
@@ -3629,6 +3659,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
                                             mtvu:(BOOL)mtvu
                              eeCycleRateOverride:(BOOL)eeCycleRateOverride
                                      eeCycleRate:(int)eeCycleRate
+                             dynamicEECycleRate:(BOOL)dynamicEECycleRate
                                  fastBootOverride:(BOOL)fastBootOverride
                                          fastBoot:(BOOL)fastBoot
                                     enableCheats:(BOOL)enableCheats
@@ -3655,7 +3686,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
                                         skipDrawStart, skipDrawEndOverride, skipDrawEnd,
                                         volumeOverride, volumePercent, eeCoreType, mtvu,
-                                        eeCycleRateOverride, eeCycleRate, fastBootOverride, fastBoot,
+                                        eeCycleRateOverride, eeCycleRate, dynamicEECycleRate,
+                                        fastBootOverride, fastBoot,
                                         enableCheats, enablePatches, enableGameFixes, enableGameDBHardwareFixes);
 
     // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.

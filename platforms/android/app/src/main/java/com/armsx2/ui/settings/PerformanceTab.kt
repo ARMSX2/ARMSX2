@@ -64,7 +64,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // Speedhack profile presets. Equality against s.copy(...) means the
         // segment auto-reflects "Custom" once the user tweaks any speedhack below.
         run {
-            val safe = s.copy(eeCycleRate = 0, eeCycleSkip = 0, mtvu = true, vu1Instant = true,
+            val safe = s.copy(eeCycleRate = 0, dynamicEeCycleRate = false, eeCycleSkip = 0, mtvu = true, vu1Instant = true,
                 vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = false,
                 // Restore the GPU-quality levers the Fast/Low-End presets lower, so
                 // Optimal is a COMPLETE reset to recommended defaults — not just the
@@ -73,13 +73,13 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 accurateBlendingUnit = 1, hwMipmap = true, texturePreloading = 2, hwRov = false)
             // Fast = speed-first: EE cycle skip + fast CDVD, plus render-side wins
             // that are safe for most games (native resolution + Basic blending).
-            val fast = s.copy(eeCycleRate = 0, eeCycleSkip = 2, mtvu = true, vu1Instant = true,
+            val fast = s.copy(eeCycleRate = 0, dynamicEeCycleRate = false, eeCycleSkip = 2, mtvu = true, vu1Instant = true,
                 vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true,
                 upscaleFloat = 1.0f, accurateBlendingUnit = 1)
             // Low-End = every cheap GPU/CPU lever, MTVU gated on core count. Built
             // from the shared Settings.lowEndPreset so it matches the setup wizard.
             val lowEnd = Settings.lowEndPreset(
-                s.copy(eeCycleRate = 0, mtvu = true, vu1Instant = true,
+                s.copy(eeCycleRate = 0, dynamicEeCycleRate = false, mtvu = true, vu1Instant = true,
                     vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true),
                 mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
@@ -209,14 +209,20 @@ fun PerformanceTab(state: MutableState<Settings>) {
         )
         SettingsDivider()
         CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = true) {
+            // One position below the -3 floor is the governor rather than a rate; see
+            // Settings.withEeCycleRateChoice, which writes both of its keys together.
+            // Resolved here, not in the formatter: str() is @Composable and the
+            // formatter is a plain lambda.
+            val dynamicLabel = str("perf.eeCycleRate.dynamic")
             IntSliderRow(
                 label = str("perf.eeCycleRate.label"),
-                value = s.eeCycleRate,
-                min = -3,
+                value = s.eeCycleRateChoice,
+                min = Settings.EE_CYCLE_RATE_DYNAMIC,
                 max = 3,
                 description = str("perf.eeCycleRate.description"),
                 valueFormatter = { rate ->
                     when (rate) {
+                        Settings.EE_CYCLE_RATE_DYNAMIC -> dynamicLabel
                         -3 -> "50%"
                         -2 -> "60%"
                         -1 -> "75%"
@@ -227,7 +233,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                         else -> "$rate"
                     }
                 },
-                onChange = { apply(s.copy(eeCycleRate = it)) },
+                onChange = { apply(s.withEeCycleRateChoice(it)) },
             )
             SettingsDivider()
             IntSliderRow(

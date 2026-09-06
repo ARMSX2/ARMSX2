@@ -276,12 +276,13 @@ struct EmulatorSettingsView: View {
             }
 
             Section {
-                Picker(settings.localized("EE Cycle Rate"), selection: $settings.eeCycleRate) {
+                Picker(settings.localized("EE Cycle Rate"), selection: $settings.eeCycleRateChoice) {
+                    Text(settings.localized("Dynamic")).tag(SettingsStore.eeCycleRateDynamic)
                     ForEach(-3...3, id: \.self) { value in
                         Text(value > 0 ? "+\(value)" : "\(value)").tag(value)
                     }
                 }
-                Text(settings.localized("0 = Default. Negative = underclock (stable). Positive = overclock (fast but risky)."))
+                Text(settings.localized("0 = Default. Negative = underclock (stable). Positive = overclock (fast but risky). Dynamic underclocks on its own when the device falls behind and never goes above 0; a game whose database entry sets a cycle rate, or one with a per-game cycle rate of its own, keeps that fixed rate even on Dynamic. The performance overlay shows the configured and effective rates."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

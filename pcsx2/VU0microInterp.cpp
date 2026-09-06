@@ -3,6 +3,7 @@
 
 #include "Common.h"
 
+#include "EECycleRate.h"
 #include "VUmicro.h"
 #include "microVU_Divtrace.h"
 #include "vu_capture.h"
@@ -318,11 +319,12 @@ void InterpVU0::Execute(u32 cycles)
 	}
 	VU0.VI[REG_TPC].UL >>= 3;
 
-	if (EmuConfig.Speedhacks.EECycleRate != 0 && (!EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Speedhacks.EECycleRate < 0))
+	const s8 ee_cycle_rate = EECycleRate::GetEffective();
+	if (ee_cycle_rate != 0 && (!EmuConfig.Gamefixes.VUSyncHack || ee_cycle_rate < 0))
 	{
 		u64 cycle_change = VU0.cycle - startcycles;
 		VU0.cycle -= cycle_change;
-		switch (std::min(static_cast<int>(EmuConfig.Speedhacks.EECycleRate), static_cast<int>(cycle_change)))
+		switch (std::min(static_cast<int>(ee_cycle_rate), static_cast<int>(cycle_change)))
 		{
 			case -3: // 50%
 				cycle_change *= 2.0f;
