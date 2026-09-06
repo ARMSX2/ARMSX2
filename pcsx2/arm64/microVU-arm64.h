@@ -147,7 +147,10 @@
 //  30 — CLIP packs its six comparison results with one UZP1 and a weighted
 //       ADDV instead of moving each lane to a GPR, so the op loses nine
 //       instructions and mVUglob gains the weight vector they read.
-static constexpr u32 kMvuCompilerAbiVersion = 30;
+//  31 — block-start VF preloads are queued and emitted together, so a pair
+//       one VF apart loads with one Ldp and the VI preloads no longer sit
+//       between them.
+static constexpr u32 kMvuCompilerAbiVersion = 31;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

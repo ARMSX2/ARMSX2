@@ -143,6 +143,12 @@ struct DigestSet
 	// probe above carries a CLIP, so the whole of it could be rewritten without
 	// moving a digest. 0 in a pin row = probe absent.
 	u64 clipFlag;
+	// Four consecutively numbered VF reads, so mvuPreloadRegisters queues
+	// 1,2,3,4 and both pairs are adjacent in the state block. Every probe
+	// above preloads too, but a probe whose register numbers make no pair
+	// cannot tell a lost fold from a reordered queue. 0 in a pin row = probe
+	// absent.
+	u64 preloadPairs;
 };
 
 struct AbiPin
@@ -347,6 +353,11 @@ constexpr AbiPin kPins[] = {
 	// so it is the only digest that moves; the weight vector is appended past
 	// macWeights, which leaves every other [x25, #imm] where it was.
 	{30, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2, 0x32907d678adc7b1c}},
+	// abi 31: block-start VF preloads queued and emitted together. Every digest
+	// in the row moves, because every probe preloads both VI and VF and the VF
+	// loads now follow the VI ones instead of interleaving with them. The
+	// preloadPairs probe is new in this row.
+	{31, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -686,6 +697,19 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
 	});
 
+	// Queues vf1,vf2,vf3,vf4 in that order, so the preload walk hands the
+	// fold two adjacent pairs. Only vf1 and vf2 are seeded, so vf3 and vf4
+	// are each read alongside a seeded register rather than each other: a
+	// zero result would set MAC Z, and its sticky bit is one the forced
+	// flag hack leaves out of the recompiler's status but not the
+	// interpreter's, which fails the harness diff for reasons that have
+	// nothing to do with the emitted load.
+	actual.preloadPairs = CompileAndDigest({
+		UpperOnly(VADD_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf2)),
+		UpperOnly(VADD_U(mask::xyzw, vf::vf6, vf::vf3, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf7, vf::vf4, vf::vf1)),
+	});
+
 	mVUPersist::SetRecordingEnabled(false);
 
 	ASSERT_NE(actual.straightLine, 0u);
@@ -708,6 +732,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.vu1LoadStore, 0u);
 	ASSERT_NE(actual.vu1EbitMtvu, 0u);
 	ASSERT_NE(actual.clipFlag, 0u);
+	ASSERT_NE(actual.preloadPairs, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -757,7 +782,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.exactEfu
 		<< ", 0x" << actual.vu1LoadStore
 		<< ", 0x" << actual.vu1EbitMtvu
-		<< ", 0x" << actual.clipFlag << "}";
+		<< ", 0x" << actual.clipFlag
+		<< ", 0x" << actual.preloadPairs << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -857,6 +883,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.clipFlag, pin->digests.clipFlag)
 			<< explain("clipFlag", actual.clipFlag, pin->digests.clipFlag);
+	}
+	if (pin->digests.preloadPairs != 0) // probe added at abi 31; older rows unpinned
+	{
+		EXPECT_EQ(actual.preloadPairs, pin->digests.preloadPairs)
+			<< explain("preloadPairs", actual.preloadPairs, pin->digests.preloadPairs);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{

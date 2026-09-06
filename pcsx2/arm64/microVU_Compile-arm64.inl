@@ -589,11 +589,18 @@ static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
 	int free_regs = mVU.regAlloc->getFreeNeonCount();
 	int free_gprs = mVU.regAlloc->getFreeGPRCount();
 
-	auto preloadVF = [&mVU, &vfs_loaded, &free_regs](u8 reg)
+	// The VF preloads are queued rather than emitted here so the loop below
+	// can see two of them at once: VF[n] sits at 16n in the state block, so
+	// a pair one register apart is a single Ldp. A queue entry per VF is
+	// enough because vfs_loaded admits each at most once.
+	u8 vfQueue[32];
+	u32 vfQueued = 0;
+
+	auto preloadVF = [&vfs_loaded, &free_regs, &vfQueue, &vfQueued](u8 reg)
 	{
 		if (free_regs <= REQUIRED_FREE_NEON || reg == 0 || (vfs_loaded & (1u << reg)) != 0)
 			return;
-		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocReg(reg));
+		vfQueue[vfQueued++] = reg;
 		vfs_loaded |= (1u << reg);
 		free_regs--;
 	};
@@ -654,6 +661,27 @@ static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
 		// emit. Mirrors the flagInfo "clear each compile" fix in mVUinitFirstPass.
 		if (info->isEOB)
 			break;
+	}
+
+	// Emitting the queue after the walk also moves the VF loads past the VI
+	// ones the walk interleaves between them, which joins runs that were
+	// split. Neither order is load-bearing: every one of these is a read of
+	// block-entry state into a fresh slot, and the VI writebacks that can
+	// land among them touch VURegs::VI, not VF.
+	for (u32 i = 0; i < vfQueued; i++)
+	{
+		const int a = vfQueue[i];
+		if (i + 1 < vfQueued)
+		{
+			const int b = vfQueue[i + 1];
+			if (a - b == 1 || b - a == 1)
+			{
+				mVU.regAlloc->allocRegPair(a, b);
+				i++;
+				continue;
+			}
+		}
+		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocReg(a));
 	}
 
 	iPC = orig_pc;

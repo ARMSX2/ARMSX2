@@ -504,6 +504,49 @@ public:
 		return qmmX;
 	}
 
+	// Two read-only VF loads as one Ldp, for state-block slots 16 bytes
+	// apart. mvuPreloadRegisters is the only caller and the preconditions
+	// are its own: it preloads a register only when no slot already holds
+	// one, so both allocations reach the fresh-slot path allocReg takes
+	// after its cache search fails, and its four-free-slot gate means
+	// findFreeNeon returns an unoccupied slot, so neither writeBack stores
+	// anything between the two.
+	void allocRegPair(int vfLoadA, int vfLoadB)
+	{
+		counter++;
+		const int x = findFreeNeon(vfLoadA);
+		writeBackNeon(x);
+		neonMap[x].VFreg = vfLoadA;
+		neonMap[x].xyzw = 0;
+		neonMap[x].isZero = (vfLoadA == 0);
+		neonMap[x].count = counter;
+		neonMap[x].isNeeded = true; // hold the slot while the second is chosen
+
+		counter++;
+		const int y = findFreeNeon(vfLoadB);
+		pxAssertMsg(y != x, "microVU preload pair took one slot twice!");
+		writeBackNeon(y);
+		neonMap[y].VFreg = vfLoadB;
+		neonMap[y].xyzw = 0;
+		neonMap[y].isZero = (vfLoadB == 0);
+		neonMap[y].count = counter;
+
+		// Ldp's first register takes the lower address, so a descending pair
+		// loads into the two slots the other way round.
+		const int64_t offA = offsetof(VURegs, VF) + vfLoadA * sizeof(VECTOR);
+		const int64_t offB = offsetof(VURegs, VF) + vfLoadB * sizeof(VECTOR);
+		if (offA < offB)
+			armAsm->Ldp(armQRegister(x), armQRegister(y), mVUstateMem(offA));
+		else
+			armAsm->Ldp(armQRegister(y), armQRegister(x), mVUstateMem(offB));
+
+		// Both slots end cached and unheld — what clearNeeded leaves behind
+		// for a read-only slot, which is what the preloader does with the
+		// register allocReg hands it.
+		neonMap[x].isNeeded = false;
+		neonMap[y].isNeeded = false;
+	}
+
 	//------------------------------------------------------------------
 	// VI Register Allocation (ARM64 W registers)
 	//------------------------------------------------------------------
