@@ -238,8 +238,19 @@ void armPatchCodeWord(void* site, u32 instr)
 // both log2 of a count of 4-byte words. Take the smaller so one address list
 // covers both loops — a coarser line just gets its CMO issued more than once,
 // which is redundant, not wrong.
+//
+// Not on Darwin. XNU does not expose CTR_EL0 to EL0, so the read is an illegal
+// instruction there — recompiler_tests died on it in CI the first time the
+// pass ran on macOS. The Darwin flusher below never issues a CMO itself; it
+// hands sys_icache_invalidate ranges built from these lines, and any granule
+// that covers the patched word gives a correct range. 64 is the smallest line
+// any Apple core has shipped with, so the runs it builds are no coarser than
+// they need to be.
 static size_t armCodePatchGranule()
 {
+#ifdef __APPLE__
+	return 64;
+#else
 	static const size_t granule = []() -> size_t {
 		u64 ctr = 0;
 		__asm__ __volatile__("mrs %0, ctr_el0" : "=r"(ctr));
@@ -248,6 +259,7 @@ static size_t armCodePatchGranule()
 		return std::min(dline, iline);
 	}();
 	return granule;
+#endif
 }
 
 void ArmCodePatchFlusher::Note(const void* site)
