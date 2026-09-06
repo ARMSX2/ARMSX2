@@ -153,6 +153,19 @@ namespace Host
 	/// Compare strings in the locale of the current UI language from any thread.  Prefer the QtHost version if you can use it.
 	int LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs);
 
+#ifdef ENABLE_LIBRETRO
+	/// Hands a pad's motor intensities (0..1 each) to the frontend.
+	///
+	/// The libretro core turns the SDL input source off and takes pads from the
+	/// frontend instead, so InputManager binds no motors and has nothing of its
+	/// own to drive - see the comment at SetPadVibrationIntensity. The frontend
+	/// owns the physical pad, so it is the only thing that can rumble it.
+	///
+	/// Declared here rather than at the one call site so the definition in
+	/// pcsx2-libretro/Main.cpp cannot silently drift into a different overload.
+	void SetPadVibration(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity);
+#endif
+
 	namespace Internal
 	{
 		/// Retrieves the base settings layer. Must call with lock held.

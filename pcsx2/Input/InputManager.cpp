@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "Host.h"
 #include "ImGui/ImGuiManager.h"
 #include "Input/InputManager.h"
 #include "Input/InputSource.h"
@@ -1467,13 +1468,20 @@ void InputManager::SetUSBVibrationIntensity(u32 port, float large_or_single_moto
 	SetPadVibrationIntensity(Pad::NUM_CONTROLLER_PORTS + port, large_or_single_motor_intensity, small_motor_intensity);
 }
 
-#ifdef __ANDROID__
+// Three frontends bind no motors at all, so for each of them the loop at the bottom of
+// SetPadVibrationIntensity walks an empty s_pad_vibration_array and nothing ever rumbles.
+// Each hands intensity changes to whoever does own the pad instead. Two declare their
+// hook here; the libretro one is Host::SetPadVibration, declared in Host.h because it is
+// a frontend callback like the rest of that header.
+
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 // The Android pad is fed by the custom JNI input path, not an input source with motor
-// bindings, so s_pad_vibration_array is empty and the loop below never drives a vibrator
-// (this is why rumble did nothing after the mono migration). Forward intensity changes
-// straight to the gamepad's Android vibrator via onPadRumble (NativeApp routes them to
-// that player's controller, or the handheld's own haptic as a fallback). Deduped per pad
-// to match the Java one-shot model (RUMBLE_MS re-issued only on change, cancelled on 0).
+// bindings (this is why rumble did nothing after the mono migration). Forward intensity
+// changes straight to the gamepad's Android vibrator via onPadRumble (NativeApp routes
+// them to that player's controller, or the handheld's own haptic as a fallback). Deduped
+// per pad to match the Java one-shot model (RUMBLE_MS re-issued only on change, cancelled
+// on 0). NOT the libretro core, even on Android: it is linked without the JNI layer, so
+// there is no vibrator at this end of the call - it uses the frontend's interface below.
 #include "Input/AndroidNativeRumble.h"
 #endif
 
@@ -1490,7 +1498,7 @@ void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	ARMSX2_iOSUpdatePadVibration(pad_index, large_or_single_motor_intensity, small_motor_intensity);
 #endif
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	if (pad_index < Pad::NUM_CONTROLLER_PORTS)
 	{
 		static float s_android_last[Pad::NUM_CONTROLLER_PORTS][2] = {};
@@ -1504,6 +1512,14 @@ void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single
 				static_cast<int>(small_motor_intensity * 255.0f + 0.5f));
 		}
 	}
+#endif
+#ifdef ENABLE_LIBRETRO
+	// Pads only. The USB entry point above maps its ports past NUM_CONTROLLER_PORTS,
+	// and a libretro port number means a controller - there is nothing for a trance
+	// vibrator to be. (Its intensities are also raw 0..255, not the 0..1 everything
+	// else passes, which would come out of the scale below as a solid 65535.)
+	if (pad_index < Pad::NUM_CONTROLLER_PORTS)
+		Host::SetPadVibration(pad_index, large_or_single_motor_intensity, small_motor_intensity);
 #endif
 	for (PadVibrationBinding& pad : s_pad_vibration_array)
 	{
@@ -1559,6 +1575,13 @@ void InputManager::PauseVibration()
 	// rumbling when you opened the menu keeps rumbling behind it.
 	for (u32 pad_index = 0; pad_index < Pad::NUM_CONTROLLER_PORTS; pad_index++)
 		ARMSX2_iOSUpdatePadVibration(pad_index, 0.0f, 0.0f);
+#endif
+#ifdef ENABLE_LIBRETRO
+	// Same reason, and it matters more here: the frontend's rumble state is sticky -
+	// it holds whatever strength it was last given until something changes it - so a
+	// pad rumbling when the VM pauses would keep rumbling with nothing running.
+	for (u32 pad_index = 0; pad_index < Pad::NUM_CONTROLLER_PORTS; pad_index++)
+		Host::SetPadVibration(pad_index, 0.0f, 0.0f);
 #endif
 	for (PadVibrationBinding& binding : s_pad_vibration_array)
 	{
