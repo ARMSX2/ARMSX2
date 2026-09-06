@@ -169,7 +169,7 @@ struct EmulationOnlyGameView: View {
     }
 
     private var accessibleMetalSurface: some View {
-        MetalGameView()
+        PhoneGameSurface()
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Game display")
             .accessibilityAddTraits(.isImage)
@@ -352,7 +352,7 @@ struct GameScreenView: View {
                 if isLandscape {
                     // Landscape: full-screen layout so pad coordinates match the layout editor.
                     ZStack {
-                        MetalGameView()
+                        PhoneGameSurface()
                             .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Game display")
@@ -383,7 +383,7 @@ struct GameScreenView: View {
                         // The deck ignores the bottom inset, so it runs to the foot of the window.
                         let deckHeight = screen.height - geo.safeAreaInsets.top
                         let gameHeight = min(geo.size.width * 3 / 4, deckHeight * 0.6)
-                        MetalGameView()
+                        PhoneGameSurface()
                             .frame(height: gameHeight)
                             .clipped()
                             .onTapGesture { revealMenuButtonBriefly() }

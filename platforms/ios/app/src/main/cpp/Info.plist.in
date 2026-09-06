@@ -341,7 +341,7 @@
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
-        <false/>
+        <true/>
         <key>UISceneConfigurations</key>
         <dict>
             <key>UIWindowSceneSessionRoleApplication</key>
@@ -351,6 +351,15 @@
                     <string>Default Configuration</string>
                     <key>UISceneDelegateClassName</key>
                     <string>ARMSX2SceneDelegate</string>
+                </dict>
+            </array>
+            <key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>External Display</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>ARMSX2ExternalDisplaySceneDelegate</string>
                 </dict>
             </array>
         </dict>
