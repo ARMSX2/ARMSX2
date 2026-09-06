@@ -144,7 +144,10 @@
 //  29 — no emitted shape changes; the options sentinel now records
 //       THREAD_VU1, and the bump evicts the caches recorded while it could
 //       not tell an MTVU run from a run without it.
-static constexpr u32 kMvuCompilerAbiVersion = 29;
+//  30 — CLIP packs its six comparison results with one UZP1 and a weighted
+//       ADDV instead of moving each lane to a GPR, so the op loses nine
+//       instructions and mVUglob gains the weight vector they read.
+static constexpr u32 kMvuCompilerAbiVersion = 30;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

@@ -1177,27 +1177,20 @@ mVUop(mVU_CLIP)
 		// t1 lanes: [0]=+x>w, [1]=+y>w, [2]=+z>w
 		// Fs lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
 		// Required layout: bit0=+x>w, bit1=-x>w, bit2=+y>w, bit3=-y>w, bit4=+z>w, bit5=-z>w
+		//
+		// A comparison leaves its lane all ones or all zero, so its low
+		// halfword carries the answer whole: UZP1 on the halfword view packs
+		// all eight into one register and one weight apiece moves each to its
+		// bit. The weights are distinct powers of two, so the lane sum ADDV
+		// forms is the OR the layout wants.
+		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.clipWeights[0]));
+		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fs.V8H());
+		armAsm->And(t1.V16B(), t1.V16B(), RQSCRATCH3.V16B());
+		armAsm->Addv(t1.H(), t1.V8H());
+		armAsm->Umov(gprT2.W(), t1.V8H(), 0);
 
-		armAsm->Ushr(t1.V4S(), t1.V4S(), 31);
-		armAsm->Ushr(Fs.V4S(), Fs.V4S(), 31);
-
-		// Build clip result in gprT2
-		armAsm->Umov(gprT2.W(), t1.V4S(), 0); // +x > w → bit 0
-		armAsm->Umov(a64::w12, Fs.V4S(), 0);   // -x > w → bit 1
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 1));
-
-		armAsm->Umov(a64::w12, t1.V4S(), 1);   // +y > w → bit 2
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 2));
-		armAsm->Umov(a64::w12, Fs.V4S(), 1);   // -y > w → bit 3
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 3));
-
-		armAsm->Umov(a64::w12, t1.V4S(), 2);   // +z > w → bit 4
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 4));
-		armAsm->Umov(a64::w12, Fs.V4S(), 2);   // -z > w → bit 5
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 5));
-
-		// Combine with shifted previous clip flag
-		armAsm->And(gprT2.W(), gprT2.W(), 0x3f);
+		// Combine with shifted previous clip flag; the weighted sum cannot
+		// reach past bit 5, so it needs no mask of its own.
 		armAsm->And(gprT1.W(), gprT1.W(), 0xffffff);
 		armAsm->Orr(gprT1.W(), gprT1.W(), gprT2.W());
 

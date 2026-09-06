@@ -118,6 +118,10 @@ struct mVU_Globals
 	                         {0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff}};
 	// Also appended at the end — see mVU_MacWeights.
 	mVU_MacWeights macWeights = mVUmakeMacWeights();
+	// CLIP's six result bits, one weight per comparison lane in the order
+	// mVU_CLIP's UZP1 leaves them: the four +component lanes then the four
+	// -component ones, w weightless in both. Appended for the reason above.
+	u16 clipWeights[8] = {1, 4, 16, 0, 2, 8, 32, 0};
 #undef __four
 };
 
@@ -127,6 +131,8 @@ alignas(32) static constexpr struct mVU_Globals mVUglob;
 // a 16-byte boundary and never straddles a cache line.
 static_assert(offsetof(mVU_Globals, macWeights) % 16 == 0,
 	"mVUglob.macWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
+static_assert(offsetof(mVU_Globals, clipWeights) % 16 == 0,
+	"mVUglob.clipWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
 
 // mVUemitClampConsts takes both clamp bounds in one Ldp.
 static_assert(offsetof(mVU_Globals, maxvals) == offsetof(mVU_Globals, minvals) + 16,
