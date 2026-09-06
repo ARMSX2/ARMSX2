@@ -467,13 +467,13 @@ static void cop2ApplyDestMaskACC(const a64::VRegister& result)
 
 alignas(16) static const u32 s_cop2MaxFloat[4] = {0x7f7fffff, 0x7f7fffff, 0x7f7fffff, 0x7f7fffff};
 
-// VCLIP positive per-lane clip-bit weights ([+x@bit0, +y@bit2, +z@bit4]; lane w
-// unused). The negative weights ([-x@bit1, -y@bit3, -z@bit5]) are these << 1, so
-// only one constant is needed. After Cmgt the positive/negative masks are
-// weighted per lane and a horizontal Addv collapses them into the 6-bit field
-// (the +/- bits per axis are mutually exclusive and the lane contributions
-// occupy disjoint bit ranges, so the add never carries between bits).
-alignas(16) static const u32 s_cop2ClipWeightPos[4] = {0x01, 0x04, 0x10, 0x00};
+// VCLIP clip-bit weights, one per comparison, in the halfword order the UZP1
+// in recCOP2_VCLIP leaves them: the four +component comparisons ([+x@bit0,
+// +y@bit2, +z@bit4]) and then the four -component ones ([-x@bit1, -y@bit3,
+// -z@bit5]). The w lane is not a clip result, so its weight is zero in both
+// halves. The six weights are distinct powers of two, so the horizontal Addv
+// that collapses them is the OR the bit layout wants.
+alignas(16) static const u16 s_cop2ClipWeights[8] = {1, 4, 16, 0, 2, 8, 32, 0};
 
 // The COP2 emitters reach the constants above — plus the denormalized
 // status-flag scratch — through _cpuRegistersPack.cop2Rec with single
@@ -499,7 +499,7 @@ void cop2RecWritePackConstants()
 	for (int i = 0; i < 4; i++)
 		st.minFloat[i] = s_cop2MaxFloat[i] | 0x80000000u;
 	memcpy(st.destMasks, s_cop2DestMasks, sizeof(st.destMasks));
-	memcpy(st.clipWeightPos, s_cop2ClipWeightPos, sizeof(st.clipWeightPos));
+	memcpy(st.clipWeights, s_cop2ClipWeights, sizeof(st.clipWeights));
 	st.denormStatusFlag = 0;
 }
 
@@ -3293,18 +3293,16 @@ void recCOP2_VCLIP()
 	armAsm->Cmgt(posMask.V4S(), RQSCRATCH.V4S(), RQSCRATCH3.V4S());      // pos mask
 	armAsm->Cmgt(RQSCRATCH2.V4S(), RQSCRATCH2.V4S(), RQSCRATCH3.V4S());  // neg mask
 
-	// Weight each lane by its clip bit and fold to a 6-bit field. The negative
-	// weights are the positive ones << 1 ([1,4,16,0] -> [2,8,32,0]), so a single
-	// constant load plus a Shl covers both. +/- per axis are mutually exclusive
-	// and the weights are disjoint bits, so Add+Addv = OR (no carries).
+	// Weight each comparison by its clip bit and fold to a 6-bit field. A Cmgt
+	// leaves its lane all ones or all zero, so the low halfword of each carries
+	// the answer whole: UZP1 on the halfword view packs all eight comparisons
+	// into one register and one weight apiece moves each to its bit.
 	a64::VRegister weight = a64::VRegister(27, 128);
-	armAsm->Ldr(weight, armCpuRegMem(&_cpuRegistersPack.cop2Rec.clipWeightPos)); // [1,4,16,0]
+	armAsm->Ldr(weight, armCpuRegMem(&_cpuRegistersPack.cop2Rec.clipWeights));
+	armAsm->Uzp1(posMask.V8H(), posMask.V8H(), RQSCRATCH2.V8H()); // +xyzw then -xyzw
 	armAsm->And(posMask.V16B(), posMask.V16B(), weight.V16B());
-	armAsm->And(RQSCRATCH2.V16B(), RQSCRATCH2.V16B(), weight.V16B());
-	armAsm->Shl(RQSCRATCH2.V4S(), RQSCRATCH2.V4S(), 1);     // neg weights = pos << 1
-	armAsm->Add(posMask.V4S(), posMask.V4S(), RQSCRATCH2.V4S());
-	armAsm->Addv(posMask.S(), posMask.V4S());               // sum lanes → scalar
-	armAsm->Umov(a64::w2, posMask.V4S(), 0);                // 6-bit clip field
+	armAsm->Addv(posMask.H(), posMask.V8H());               // sum lanes → scalar
+	armAsm->Umov(a64::w2, posMask.V8H(), 0);                // 6-bit clip field
 
 	// Merge into clipflag and mask to 24 bits
 	armAsm->Orr(a64::w9, a64::w9, a64::w2);
