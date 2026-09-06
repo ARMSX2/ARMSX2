@@ -8387,7 +8387,11 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		}
 
 		// No need to sort here, it's all the one texture.
-		ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, m_texture->GetFormat(), bpp, bpp, 0xF, drects[0].filter);
+		// A colour target is always uploaded as RGBA8 whatever its PSM says (the 16-bit
+		// formats are expanded by ReadTexture above), and GetConvertShader asserts a
+		// 32-bit Color->Color pair; only the depth conversions select on the bpp.
+		const u32 convert_bpp = (m_type == RenderTarget) ? 32 : bpp;
+		ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, m_texture->GetFormat(), convert_bpp, convert_bpp, 0xF, drects[0].filter);
 
 		if (m_type == RenderTarget && m_rt_alpha_scale && shader.Shader() == ShaderConvert::COPY)
 		{
