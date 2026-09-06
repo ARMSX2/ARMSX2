@@ -211,6 +211,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
         CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = true) {
             // One position below the -3 floor is the governor rather than a rate; see
             // Settings.withEeCycleRateChoice, which writes both of its keys together.
+            // Resolved here, not in the formatter: str() is @Composable and the
+            // formatter is a plain lambda.
+            val dynamicLabel = str("perf.eeCycleRate.dynamic")
             IntSliderRow(
                 label = str("perf.eeCycleRate.label"),
                 value = s.eeCycleRateChoice,
@@ -219,7 +222,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.eeCycleRate.description"),
                 valueFormatter = { rate ->
                     when (rate) {
-                        Settings.EE_CYCLE_RATE_DYNAMIC -> str("perf.eeCycleRate.dynamic")
+                        Settings.EE_CYCLE_RATE_DYNAMIC -> dynamicLabel
                         -3 -> "50%"
                         -2 -> "60%"
                         -1 -> "75%"
