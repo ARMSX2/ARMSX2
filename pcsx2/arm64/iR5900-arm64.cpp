@@ -844,6 +844,15 @@ static bool eeClassifyChargeForm(EeChargeForm form)
 // the governor's window, so its block cannot be repaired in place.
 static constexpr u8 kEeChargeUnpatchable = 1u << 0;
 
+// This site IS the block's entry point. Patchable while the block is live — the
+// word there is the ADD/ADDS the record describes, and a patch only moves its
+// immediate. What the flag buys is telling an orphan apart from a
+// contradiction later: the only thing that ever overwrites a block's entry word
+// is Arm64BaseBlocks::Remove/Invalidate, which stamps a `B` redirect stub over
+// it. So an entry record whose word no longer decodes as its form is a record
+// whose block is gone, and the pass skips it instead of refusing.
+static constexpr u8 kEeChargeAtBlockEntry = 1u << 1;
+
 struct EeChargeRecord
 {
 	u32 offset;        // from the base of the arena this record's vector covers
@@ -974,19 +983,22 @@ void recEeNoteChargeSite(EeChargeSite which)
 	// on its way in — the last word written is the charge either way.
 	const u8* const site = armGetCurrentCodePointer() - 4;
 
-	// A charge at the block's own entry point can never be patched.
-	// Arm64BaseBlocks::Remove stamps a `B DispatcherReg` redirect stub over the
-	// first word of a removed block, so rewriting that word would overwrite the
-	// stub and send every stale link site into dead code.
+	// A charge CAN be a block's own entry point, which the design assumed was
+	// impossible — the prologue was supposed to emit the manual-protection
+	// check and the pin reloads first. Two ways in. A block whose first guest
+	// instruction is a COP2 op needing a VU0 sync emits its charge Add before
+	// anything else, on a page still write-protected so there is no
+	// manual-protection prologue at all
+	// (EeVu0Cop2GuardMask.MultiplyAccumulateFormsMatchTheInterpreter compiles
+	// exactly that). And constant propagation: `addiu t0, zero, 1` emits no code
+	// whatsoever, so anything behind one lands on the entry.
 	//
-	// The design assumed this was impossible — the prologue was supposed to
-	// emit the manual-protection check and the pin reloads first. It is not: a
-	// block whose first guest instruction is a COP2 op needing a VU0 sync gets
-	// its charge Add before anything else has been emitted, on a page that is
-	// still write-protected so there is no manual-protection prologue at all.
-	// EeVu0Cop2GuardMask.MultiplyAccumulateFormsMatchTheInterpreter compiles
-	// exactly that. So it is a flag, not an assertion: the block is invalidated
-	// and recompiled instead of patched.
+	// It is recorded, not refused. While the block is live the entry word is the
+	// ADD/ADDS this record describes, and patching it only moves the immediate,
+	// exactly like every other site. The flag is what lets the pass recognise
+	// the one case that IS different — the block has since been removed and the
+	// word is now a redirect stub — without mistaking it for the recompiler
+	// contradicting itself.
 	const bool at_block_entry =
 		(s_pCurBlockEx && reinterpret_cast<uptr>(site) == s_pCurBlockEx->fnptr);
 
@@ -1002,8 +1014,10 @@ void recEeNoteChargeSite(EeChargeSite which)
 		"an EE cycle-charge site did not emit the single instruction its form names");
 
 	u8 flags = 0;
-	if (s_eeChargePendingUnpatchable || !single || at_block_entry)
+	if (s_eeChargePendingUnpatchable || !single)
 		flags |= kEeChargeUnpatchable;
+	if (at_block_entry)
+		flags |= kEeChargeAtBlockEntry;
 
 	// Which arena. Everything at or above s_coldBase is the cold side-exit
 	// arena (the constant pool above it holds no charge sites).
@@ -3782,11 +3796,17 @@ static std::vector<u32> s_eeDoomedBlocks;
 
 // Walk one arena's records and work out what the pass would do, WITHOUT
 // touching a byte of code. Returns nullptr on success, or the reason the whole
-// pass has to be refused — a site whose word no longer holds the instruction it
-// was recorded as is the recompiler contradicting itself, and the only honest
-// answer to that is the reset.
+// pass has to be refused.
+//
+// A site whose word no longer holds the instruction it was recorded as means
+// one of two things, and the entry flag is what separates them. A block's entry
+// word is the one word anything else ever writes — Remove/Invalidate stamps a
+// redirect stub there — so an ENTRY record that stopped decoding is a record
+// whose block is gone, and its code is orphaned. Anything else is the
+// recompiler contradicting itself, and the only honest answer to that is the
+// reset.
 static const char* recEePlanArena(const std::vector<EeChargeRecord>& table, u8* base, s8 new_selector,
-	std::vector<EePatchWrite>& out)
+	std::vector<EePatchWrite>& out, u32* orphaned)
 {
 	out.clear();
 	out.reserve(table.size());
@@ -3805,7 +3825,16 @@ static const char* recEePlanArena(const std::vector<EeChargeRecord>& table, u8* 
 		u32 word = 0;
 		std::memcpy(&word, armGetWritableCodePtr(site), sizeof(word));
 		if (!eeChargeSiteHasForm(word, form))
+		{
+			if (r.flags & kEeChargeAtBlockEntry)
+			{
+				// The redirect stub, not a charge. Nothing executes this block
+				// any more, so there is nothing to repair.
+				(*orphaned)++;
+				continue;
+			}
 			return "a recorded charge site no longer holds its charge instruction";
+		}
 
 		// The production scaler, driven at the target selector. Not a second
 		// copy of the formula: it already exists twice by hand (recompiler and
@@ -3869,10 +3898,13 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 
 	// Decide everything first, act second.
 	s_eeDoomedBlocks.clear();
+	u32 orphaned_sites = 0;
 	const u32 saved_block_cycles = s_nBlockCycles;
-	const char* refused = recEePlanArena(s_eeChargeRecords, SysMemory::GetEERec(), new_selector, s_eePatchWritesHot);
+	const char* refused =
+		recEePlanArena(s_eeChargeRecords, SysMemory::GetEERec(), new_selector, s_eePatchWritesHot, &orphaned_sites);
 	if (!refused)
-		refused = recEePlanArena(s_eeColdChargeRecords, s_coldBase, new_selector, s_eePatchWritesCold);
+		refused =
+			recEePlanArena(s_eeColdChargeRecords, s_coldBase, new_selector, s_eePatchWritesCold, &orphaned_sites);
 	s_nBlockCycles = saved_block_cycles;
 	if (refused)
 		return refuse(refused);
@@ -3951,6 +3983,7 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	path.reason = "patched in place";
 	path.ticks = GetCPUTicks() - t0;
 	path.sites = patched_sites;
+	path.sites_orphaned = orphaned_sites;
 	path.blocks_invalidated = invalidated;
 	path.blocks_unpatchable = unpatchable_blocks;
 	EECycleRate::NoteEePatchPass(path);

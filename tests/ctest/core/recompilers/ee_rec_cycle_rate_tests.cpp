@@ -277,23 +277,33 @@ std::vector<u32> ChargeImmediatesIn(const std::vector<u8>& bytes)
 // new selector produces exactly the bytes a fresh compile at that selector
 // emits. Runs a same-rate control first, because a program whose emission is
 // not byte-stable would make the comparison meaningless either way.
-void ExpectPatchMatchesFreshCompile(int from, int to, const ProgramRunner& run, const char* what)
+void ExpectPatchMatchesFreshCompileAt(u32 pc, int from, int to, const ProgramRunner& run, const char* what)
 {
-	const CodeImage control_a = CompileAt(from, run);
-	const CodeImage control_b = CompileAt(from, run);
+	const auto image = [pc] { return CodeImage{BlockBytesAt(pc), ColdArenaBytes()}; };
+
+	CompileAt(from, run);
+	const CodeImage control_a = image();
+	CompileAt(from, run);
+	const CodeImage control_b = image();
 	ASSERT_FALSE(control_a.block.empty()) << what << ": nothing was compiled at " << from;
 	ASSERT_TRUE(control_a == control_b) << what << ": emission is not deterministic, so the rest proves nothing";
 
-	const CodeImage fresh = CompileAt(to, run);
+	CompileAt(to, run);
+	const CodeImage fresh = image();
 	ASSERT_FALSE(fresh.block.empty()) << what << ": nothing was compiled at " << to;
 
 	CompileAt(from, run);
 	ASSERT_TRUE(RepatchAsRecCpu(to)) << what << ": the patch pass refused (" << from << " -> " << to
 	                                 << "): " << EECycleRate::GetLastTransitionPath().reason;
-	const CodeImage patched = CurrentImage();
+	const CodeImage patched = image();
 
 	EXPECT_EQ(patched.block, fresh.block) << what << ": block bytes after patching " << from << " -> " << to;
 	EXPECT_EQ(patched.cold, fresh.cold) << what << ": cold arena bytes after patching " << from << " -> " << to;
+}
+
+void ExpectPatchMatchesFreshCompile(int from, int to, const ProgramRunner& run, const char* what)
+{
+	ExpectPatchMatchesFreshCompileAt(kProgramPc, from, to, run, what);
 }
 
 // One emitter's coverage: reach it, prove we reached it, then hold the patched
@@ -373,14 +383,12 @@ void RunShortNonBranchTail(EeRecTestHarness& h)
 	h.Run();
 }
 
-// MFC0 $9 (Count) — the absolute-cycle COP0 flush. The leading ADDIU is
-// load-bearing, and it has to read a register rather than materialise a
-// constant: `addiu t0, zero, 1` emits NOTHING, because constant propagation
-// records t0 as a compile-time constant, and then the charge Add is the
-// block's first instruction — which the recorder flags as unpatchable, because
-// a patch there would clobber the redirect stub Remove() writes.
-// AnUnpatchableBlockIsInvalidatedAndRecompilesAtTheNewRate covers that shape
-// deliberately, with Cop0EntryChargeTail().
+// MFC0 $9 (Count) — the absolute-cycle COP0 flush. The leading ADDIU reads a
+// register rather than materialising a constant on purpose: `addiu t0, zero, 1`
+// emits NOTHING, because constant propagation records t0 as a compile-time
+// constant, and the charge Add then lands on the block's entry point. That
+// shape is patchable too, and Cop0EntryChargeTail() is where it is tested;
+// this program is here for the ordinary mid-block one.
 void RunCop0CountRead(EeRecTestHarness& h)
 {
 	h.EnableCop0();
@@ -507,10 +515,10 @@ std::vector<u32> DeepDivideTail()
 }
 
 // Tail: a COP0 Count read behind a constant materialisation, which emits no
-// code — so the Count read's charge lands on the block's entry point and the
-// block is unpatchable for that reason instead. Unlike the deep-divide tail,
-// its charge stays inside imm12 at every selector, so the recompiled block can
-// be checked against a fresh compile by value.
+// code — so the Count read's charge lands on the block's entry point, the one
+// word Remove() ever overwrites. Its charge stays inside imm12 at every
+// selector, so the block is patched in place like any other while it is live,
+// and its records become orphans the moment it is removed.
 std::vector<u32> Cop0EntryChargeTail()
 {
 	return {
@@ -1131,81 +1139,89 @@ TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
 	}
 }
 
-// An unpatchable block is thrown away rather than repaired, and comes back
-// charging at the new rate on its next dispatch. The block here is unpatchable
-// because its charge sits at the block's entry point: patching that word would
-// overwrite the redirect stub Arm64BaseBlocks::Remove stamps there and send
-// every stale link site into dead code.
+// A charge sitting on a block's entry point is patched in place like any other.
+// The design said it could not be, on the grounds that Arm64BaseBlocks::Remove
+// stamps its redirect stub over exactly that word — but that only happens once
+// the block is dead, and while it is alive the word is the ADD the record
+// describes. The pass reads every word before it writes, so it can never land
+// on a stub.
 //
-// The check is on the charge immediates rather than on the bytes, and that is
-// forced: a recompiled block lands at a NEW host address and every PC-relative
-// field in it moves with the address, so its bytes cannot be held against a
-// fresh compile's. The immediate is the part the selector decides.
-TEST(EeRecCycleRate, AnUnpatchableBlockIsInvalidatedAndRecompilesAtTheNewRate)
+// The block here is the constant-propagation shape: `addiu t1, zero, 1` emits
+// no code whatsoever, so the COP0 Count read behind it puts the charge Add at
+// the block's first word.
+TEST(EeRecCycleRate, AChargeAtABlockEntryIsPatchedInPlace)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
-	R5900cpu* saved_cpu = Cpu;
-	BaseVUmicroCPU* saved_vu0 = CpuVU0;
-
-	CompileAt(-1, RunChainThenCop0EntryCharge);
-	const std::vector<u32> want = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
-	ASSERT_FALSE(want.empty()) << "the reference compile emitted no charge immediate";
 
 	CompileAt(0, RunChainThenCop0EntryCharge);
-	const std::vector<u32> at_rate_0 = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
-	ASSERT_NE(at_rate_0, want) << "the two selectors charge this block the same, so nothing below can fail";
+	ASSERT_GT(recEeGetChargeSiteCountFor(EeChargeSite::Cop0FlushCyclesAbs), 0u)
+		<< "the Count read was not compiled, so this program does not cover the entry case";
+	// Not a form change — the charge is tiny at every selector in the window.
+	ASSERT_EQ(recEeGetFormChangeBlockCount(), 0u);
 
-	uptr before_fnptr = 0, before_lut = 0;
-	u32 before_size = 0;
-	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &before_fnptr, &before_size, &before_lut));
+	ExpectPatchMatchesFreshCompileAt(kTailBlockPc, 0, -1, RunChainThenCop0EntryCharge,
+		"a charge on the block entry point");
 
-	Cpu = &recCpu;
-	CpuVU0 = &CpuMicroVU0;
-	const EECycleRate::ResetGenerations gen_before = EECycleRate::GetResetGenerations();
-	ASSERT_TRUE(EECycleRate::ApplyEffective(-1, "test"));
-	const EECycleRate::ResetGenerations gen_after = EECycleRate::GetResetGenerations();
 	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+	EXPECT_TRUE(path.patched);
+	EXPECT_EQ(path.blocks_invalidated, 0u) << "an entry charge is repairable; nothing should have been thrown away";
+	EXPECT_EQ(path.blocks_unpatchable, 0u);
+	EXPECT_EQ(path.sites_orphaned, 0u) << "every block is live, so no record can be orphaned";
 
-	EXPECT_TRUE(path.patched) << "the pass refused: " << path.reason;
-	EXPECT_EQ(path.blocks_invalidated, 1u) << "expected exactly the tail block to be thrown away";
-	EXPECT_GT(path.sites, 0u) << "the chain blocks should still have been patched";
-	EXPECT_EQ(gen_after.ee, gen_before.ee) << "the EE recompiler was reset";
-
-	// Its LUT entry is back at JITCompile, so the next dispatch recompiles
-	// rather than re-entering code built for the old rate.
-	{
-		uptr fnptr = 0, lut = 0;
-		u32 size = 0;
-		EXPECT_TRUE(recEeBlockHostInfo(kTailBlockPc, &fnptr, &size, &lut));
-		EXPECT_NE(lut, before_fnptr) << "the LUT still points at the block compiled for the old rate";
-	}
-
-	{
-		EeRecTestHarness h;
-		h.EnableCop0();
-		h.LoadProgramNoTerm(ChainThen(Cop0EntryChargeTail()));
-		// PreserveCache: only the invalidated block should be rebuilt.
-		h.RunJitNoDiff(EeRecTestHarness::RunMode::PreserveCache);
-	}
-
-	uptr after_fnptr = 0, after_lut = 0;
-	u32 after_size = 0;
-	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &after_fnptr, &after_size, &after_lut));
-	EXPECT_NE(after_fnptr, before_fnptr) << "the block did not recompile";
-	EXPECT_EQ(ChargeImmediatesIn(BlockBytesAt(kTailBlockPc)), want)
-		<< "the recompiled block is not charging at the new rate";
-
-	Cpu = saved_cpu;
-	CpuVU0 = saved_vu0;
 	EmuConfig.Speedhacks.EECycleRate = saved;
 	EECycleRate::SyncToConfigured();
 }
 
-// The other reason a block cannot be repaired: its charge outgrows ADD's
-// 12-bit immediate two steps down, so a fresh compile would have emitted a
-// materialise-then-add of two to five instructions where one sits now. The
-// block is thrown away, and the shape it comes back in is the wider one — the
-// host size a fresh compile at the new rate produces, not the one it had.
+// Once that block IS removed, its entry word is the redirect stub and its
+// records point at code nothing executes. The pass recognises that — it is the
+// one word anything but the pass ever writes — steps over the record, and
+// leaves the stub exactly as it found it. A pass that instead treated the
+// failed decode as the recompiler contradicting itself would refuse every
+// transition after the first SMC clear of a block shaped like this.
+TEST(EeRecCycleRate, AnOrphanedEntryChargeIsSteppedOverAndItsStubLeftAlone)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	CompileAt(0, RunChainThenCop0EntryCharge);
+
+	uptr entry = 0, lut = 0;
+	u32 size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kTailBlockPc, &entry, &size, &lut));
+
+	const auto word_at = [](uptr addr) {
+		u32 w = 0;
+		std::memcpy(&w, reinterpret_cast<const void*>(addr), sizeof(w));
+		return w;
+	};
+
+	const u32 charge_word = word_at(entry);
+	ASSERT_TRUE(recEeChargeWordHasFormForTest(charge_word, EeChargeForm::AddImm12))
+		<< "the block's first word is not the charge, so this test is not about what it says it is";
+
+	// Remove it the way the SMC path does — the same Remove() that stamps the
+	// redirect stub over the entry.
+	recCpu.Clear(kTailBlockPc, 8);
+	const u32 stub_word = word_at(entry);
+	ASSERT_NE(stub_word, charge_word) << "Clear() did not stamp a redirect stub over the entry";
+	ASSERT_FALSE(recEeChargeWordHasFormForTest(stub_word, EeChargeForm::AddImm12));
+
+	ASSERT_TRUE(RepatchAsRecCpu(-1)) << "the pass refused: " << EECycleRate::GetLastTransitionPath().reason;
+
+	const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
+	EXPECT_EQ(path.sites_orphaned, 1u) << "exactly the removed block's one entry record is orphaned";
+	EXPECT_EQ(path.blocks_invalidated, 0u);
+	EXPECT_GT(path.sites, 0u) << "the surviving chain blocks should still have been patched";
+	EXPECT_EQ(word_at(entry), stub_word) << "the pass wrote over the redirect stub";
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+}
+
+// The one reason a block cannot be repaired: its charge outgrows ADD's 12-bit
+// immediate two steps down, so a fresh compile would have emitted a
+// materialise-then-add of two to five instructions where one sits now. There
+// is no room on the page for that, so the block is thrown away and comes back
+// in the wider shape on its next dispatch.
 TEST(EeRecCycleRate, ABlockWhoseChargeOutgrowsItsFormIsInvalidated)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;

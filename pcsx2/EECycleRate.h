@@ -100,6 +100,12 @@ namespace EECycleRate
 		const char* reason = "";    // what the pass did, or why it would not
 		u64 ticks = 0;              // duration of the patch pass itself
 		u32 sites = 0;              // charge immediates rewritten
+		// Recorded sites the pass stepped over because their code is orphaned:
+		// the block was removed since, and the word the record points at is the
+		// redirect stub that removal wrote, not a charge. Only a site AT a
+		// block's entry can end up in this state, which is why it is recognised
+		// rather than treated as the recompiler contradicting itself.
+		u32 sites_orphaned = 0;
 		u32 blocks_invalidated = 0; // blocks thrown away instead of patched
 		// Blocks the pass found unrepairable, whether or not it went ahead.
 		// Same as blocks_invalidated on a pass that ran; on a refused one it is

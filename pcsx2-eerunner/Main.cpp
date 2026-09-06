@@ -340,11 +340,11 @@ private:
 		// belonged to this frame.
 		const std::string path_text = (old == selector)
 			? std::string("EE path unchanged (the selector was already there)")
-			: fmt::format("EE path {} ({}), patch pass {:.3f} ms, {} sites patched, "
+			: fmt::format("EE path {} ({}), patch pass {:.3f} ms, {} sites patched, {} orphaned, "
 			              "{} blocks invalidated ({} unpatchable)",
 				  path.patched ? "PATCHED" : "RESET", path.reason,
-				  static_cast<double>(path.ticks) * tick_ms, path.sites, path.blocks_invalidated,
-				  path.blocks_unpatchable);
+				  static_cast<double>(path.ticks) * tick_ms, path.sites, path.sites_orphaned,
+				  path.blocks_invalidated, path.blocks_unpatchable);
 
 		Console.WriteLn(fmt::format(
 			"EERATE[{}] frame {}: effective {} -> {} ({} in {:.3f} ms); {}; "
