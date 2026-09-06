@@ -153,7 +153,10 @@
 //  32 — a three-lane partial write keeps its own slot and takes the one lane
 //       it did not write from the other cached copy, one Ins in place of the
 //       two mVUmergeRegs emitted in the other direction.
-static constexpr u32 kMvuCompilerAbiVersion = 32;
+//  33 — the block-link flag queue reorder opens with whichever whole-vector
+//       shuffle gets the most lanes right rather than always a copy, and an
+//       identity reorder no longer loads and stores the queue unchanged.
+static constexpr u32 kMvuCompilerAbiVersion = 33;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

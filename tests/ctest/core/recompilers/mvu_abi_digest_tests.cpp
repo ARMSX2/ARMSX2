@@ -368,6 +368,10 @@ constexpr AbiPin kPins[] = {
 	// destination, so every digest in the row is the abi 31 value; the
 	// mergeFold probe is new and is the only one that reaches the merge.
 	{32, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
+	// abi 33: the flag queue reorder at a block link. indirectJump and
+	// condEvilBranch are the two probes that link blocks at all, and both
+	// move; every other digest in the row is the abi 32 value.
+	{33, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
