@@ -16,7 +16,9 @@
 // mask x register aliasing x seeded memory -- run through both engines, with
 // the whole of data memory in the diff. The offset pool carries each width's
 // reach boundary alongside the random draws, since a fold that declines one
-// slot late is invisible everywhere else.
+// slot late is invisible everywhere else. On VU0 an index with bit 0x400 set
+// addresses VU1's register file instead of VU0's memory, so that file is
+// seeded and swept too.
 
 #include "harness/VuTestHarness.h"
 
@@ -85,22 +87,15 @@ VuOp DrawOp(Rng& rng, bool vu1)
 {
 	const u32 m = kMasks[rng.Below(15)];
 	const s16 imm = DrawOffset(rng, vu1);
-	// VU0's address registers are drawn apart from the registers a load
-	// writes, so nothing a program reads out of data memory can come back as
-	// an address. An index with bit 0x400 set is not an address in VU0's
-	// memory at all -- it is the window onto VU1's register file, where the
-	// two engines already disagree (DISABLED_Vu0WindowIntoVu1Registers below)
-	// -- and a VI loaded from memory is the one way into it. VU1 has no such
-	// window, so it draws from the whole file and gets the aliasing with it.
-	const u32 baseHi = vu1 ? 15u : 8u;
 	// vi00 as the base is what the constant-address fold keys on, so draw it
 	// often rather than one time in sixteen.
-	const u32 is = (rng.Below(3) == 0) ? 0u : (1u + rng.Below(baseHi));
+	const u32 is = (rng.Below(3) == 0) ? 0u : (1u + rng.Below(15));
 	// Aliasing the address register with the destination is legal and is the
-	// case a post-increment form has to get right.
-	const u32 it = vu1
-		? ((rng.Below(4) == 0 && is != 0) ? is : (1u + rng.Below(15)))
-		: (9u + rng.Below(7));
+	// case a post-increment form has to get right. On VU0 it is also how a
+	// program reaches the window onto VU1's register file: an index with bit
+	// 0x400 set is not an address in VU0's memory, and a VI loaded out of
+	// data memory is the way one gets there.
+	const u32 it = (rng.Below(4) == 0 && is != 0) ? is : (1u + rng.Below(15));
 	const u32 ft = 1u + rng.Below(31);
 
 	// The four stepping forms are drawn off vi01-vi15 only. A vi00 base sends
@@ -108,7 +103,7 @@ VuOp DrawOp(Rng& rng, bool vu1)
 	// the top of micro memory, not slot 0 -- which is not the interpreter's,
 	// and that disagreement is older and wider than the addressing this
 	// sweeps.
-	const u32 step = (is != 0) ? is : (1u + rng.Below(baseHi));
+	const u32 step = (is != 0) ? is : (1u + rng.Below(15));
 
 	// ILW and ILWR are drawn single-lane. The dest field of a load into VI
 	// names one lane; with several set the recompiler reads the first and the
@@ -133,7 +128,7 @@ VuOp DrawOp(Rng& rng, bool vu1)
 
 // Every VF lane, every VI and every quadword of data memory carries a value
 // that names where it came from, so a diff points at the slot that moved.
-void SeedState(VuTestHarness& h, Rng& rng, bool vu1)
+void SeedState(VuTestHarness& h, Rng& rng, bool vu1, bool window = false)
 {
 	const u32 memBytes = vu1 ? VU1_MEMSIZE : VU0_MEMSIZE;
 	// The low halfword differs per lane as well as per quadword, so a load
@@ -147,21 +142,32 @@ void SeedState(VuTestHarness& h, Rng& rng, bool vu1)
 	for (u32 r = 1; r < 32; r++)
 		h.SetVfBits(r, 0x3F800000u + r, 0xBF800000u + r, rng.Next(), rng.Next() | 0x00800000u);
 
-	// Held below the quadword count so a pre-decrementing chain cannot walk a
-	// VU0 index under zero and into the cross-VU window this sweep leaves out.
 	const u32 slots = vu1 ? 0x3FFu : 0xFFu;
 	for (u32 r = 1; r < 16; r++)
-		h.SetVi(r, 0x20 + rng.Below(slots - 0x40));
+		h.SetVi(r, window ? (0x400 + rng.Below(0x40)) : (0x20 + rng.Below(slots - 0x40)));
+
+	// VU0 addresses VU1's register file as 64 quadwords of its own memory, so
+	// on VU0 that file is part of the state under test and has to carry
+	// values of its own -- zeroes on both sides would let a window access
+	// that reads the wrong quadword pass.
+	if (!vu1)
+	{
+		for (u32 r = 0; r < 32; r++)
+			for (u32 l = 0; l < 4; l++)
+				vuRegs[1].VF[r].UL[l] = 0xE0000000u | (r << 8) | (l << 4) | 3u;
+		for (u32 r = 0; r < 32; r++)
+			vuRegs[1].VI[r].UL = 0xF000u | (r << 4) | 5u;
+	}
 }
 
-void RunSweep(int vuIndex, u64 seed, int programs, int opsPerProgram)
+void RunSweep(int vuIndex, u64 seed, int programs, int opsPerProgram, bool window = false)
 {
 	const bool vu1 = (vuIndex != 0);
 	for (int p = 0; p < programs; p++)
 	{
 		Rng rng(seed + static_cast<u64>(p) * 0x9E3779B97F4A7C15ull);
 		VuTestHarness h(vuIndex);
-		SeedState(h, rng, vu1);
+		SeedState(h, rng, vu1, window);
 
 		std::vector<VuOp> prog;
 		for (int i = 0; i < opsPerProgram; i++)
@@ -195,6 +201,15 @@ TEST(VuMemAddressing, Vu0RandomStreams)
 	RunSweep(0, 0x0BADF00Dull, 400, 8);
 }
 
+// The same streams with VU0's address registers started inside the window, so
+// the ops that reach VU1's register file are most of the run. Left to an
+// unbiased seed they are a handful of accesses that drift in through a loaded
+// VI, which is how the window came up at all but is not coverage of it.
+TEST(VuMemAddressing, Vu0WindowRandomStreams)
+{
+	RunSweep(0, 0x77D0'0000ull, 400, 8, /*window=*/true);
+}
+
 // Every quadword slot of VU1 memory, read and written through a vi00 base --
 // the fold's own axis, swept end to end so the slot each width's reach gives
 // out at is in the run rather than left to a draw.
@@ -226,16 +241,14 @@ TEST(VuMemAddressing, Vu1ConstantAddressWalksEveryQuadword)
 	}
 }
 
-// The sweep drew this on VU0 before its address registers were held apart
-// from its load destinations, and it diverges: the run ends with vi3 = 0x691
-// and vi7 = 0x5e0, indices whose bit 0x400 makes them VU0's window onto VU1's
-// register file rather than addresses in VU0's own memory, and vf18.w comes
-// back 0 from the recompiler against 0xde from the interpreter. It reproduces
-// unchanged on the recompiler that predates the addressing this file sweeps,
-// so it belongs to the window and not to that change; nobody has traced it
-// further than the two engines' GET_VU_MEM and mVUaddrFix disagreeing
-// somewhere inside it.
-TEST(VuMemAddressing, DISABLED_Vu0WindowIntoVu1Registers)
+// The program the sweep drew that showed the window is state under test. It
+// ends with vi3 = 0x691 and vi7 = 0x5e0, indices whose bit 0x400 addresses
+// VU1's register file rather than VU0's memory, and its ISWR writes there --
+// one quadword below where its LQD reads. Without the window in the snapshot
+// the first engine's write is still standing when the second engine runs, and
+// vf18.w comes back 0 against 0xde, the low halfword of the vi9 that was
+// stored.
+TEST(VuMemAddressing, Vu0WindowIntoVu1Registers)
 {
 	Rng rng(0x0BADF00Dull + 336ull * 0x9E3779B97F4A7C15ull);
 	VuTestHarness h(0);

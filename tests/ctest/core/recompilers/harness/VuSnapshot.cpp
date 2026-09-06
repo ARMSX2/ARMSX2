@@ -27,6 +27,14 @@ void CopyToVuMem(VURegs& vu, u32 addr, size_t count, const u8* src)
 		vu.Mem[(addr + static_cast<u32>(i)) & mask] = src[i];
 }
 
+// The 64 quadwords VU0 sees through the window, and the adjacency both engines
+// resolve it by: the interpreter indexes off `vuRegs[1].VF` and microVU bakes
+// a `(u128*)VU1.VF - (u128*)VU0.Mem` delta, so VI has to follow VF at 16 bytes
+// a register for either to land on VI0 at quadword 32.
+constexpr size_t kVu1WindowBytes = 64 * 16;
+static_assert(sizeof(REG_VI) == 16);
+static_assert(offsetof(VURegs, VI) == offsetof(VURegs, VF) + 32 * sizeof(VECTOR));
+
 } // namespace
 
 VuSnapshot VuSnapshot::Capture(int index, const std::vector<VuMemWindow>& windows_to_capture)
@@ -34,6 +42,11 @@ VuSnapshot VuSnapshot::Capture(int index, const std::vector<VuMemWindow>& window
 	VuSnapshot s;
 	s.index = index;
 	std::memcpy(&s.regs, &vuRegs[index], sizeof(VURegs));
+	if (index == 0)
+	{
+		s.vu1_window.resize(kVu1WindowBytes);
+		std::memcpy(s.vu1_window.data(), &vuRegs[1].VF[0], kVu1WindowBytes);
+	}
 
 	s.mem_windows.reserve(windows_to_capture.size());
 	for (const auto& w : windows_to_capture)
@@ -55,6 +68,9 @@ void VuSnapshot::Restore() const
 
 	for (const auto& w : mem_windows)
 		CopyToVuMem(vuRegs[index], w.addr, w.bytes.size(), w.bytes.data());
+
+	if (!vu1_window.empty())
+		std::memcpy(&vuRegs[1].VF[0], vu1_window.data(), vu1_window.size());
 }
 
 void VuSnapshot::ZeroGlobals(int index)
@@ -188,6 +204,32 @@ void DiffMemWindows(std::vector<std::string>& diffs,
 	}
 }
 
+// Names a differing quadword of the window the way the program that reached it
+// would: the first 32 are VU1's VF, the rest its VI.
+void DiffVu1Window(std::vector<std::string>& diffs, const std::vector<u8>& a, const std::vector<u8>& b)
+{
+	if (a.size() != b.size())
+		return;
+	for (size_t q = 0; q * 16 < a.size(); ++q)
+	{
+		for (size_t l = 0; l < 4; ++l)
+		{
+			u32 av, bv;
+			std::memcpy(&av, a.data() + q * 16 + l * 4, 4);
+			std::memcpy(&bv, b.data() + q * 16 + l * 4, 4);
+			if (av == bv)
+				continue;
+			std::ostringstream ss;
+			if (q < 32)
+				ss << "vu1.vf" << q << "." << "xyzw"[l];
+			else
+				ss << "vu1.vi" << (q - 32) << ".ul" << l;
+			ss << ": JIT=0x" << std::hex << av << " INTERP=0x" << bv;
+			diffs.push_back(ss.str());
+		}
+	}
+}
+
 } // namespace
 
 std::vector<std::string> DiffVu(const VuSnapshot& a, const VuSnapshot& b, VuDiffMode mode,
@@ -206,6 +248,7 @@ std::vector<std::string> DiffVu(const VuSnapshot& a, const VuSnapshot& b, VuDiff
 	if (a.index == 1 && mode != VuDiffMode::XgkickPacketEquivalent)
 		DiffXgkick(diffs, a.regs, b.regs);
 	DiffMemWindows(diffs, a.mem_windows, b.mem_windows);
+	DiffVu1Window(diffs, a.vu1_window, b.vu1_window);
 
 	return diffs;
 }
