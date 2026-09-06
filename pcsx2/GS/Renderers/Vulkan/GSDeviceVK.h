@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
@@ -54,6 +55,7 @@ public:
 		/// alternative is recreating the device when frame generation is switched on.
 		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
 		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
+		bool vk_ext_device_fault : 1;
 	};
 
 	// Global state accessors
@@ -66,6 +68,11 @@ public:
 	__fi u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
+
+	/// Which memory the six stream rings are allocated from, decided once in CheckFeatures from the
+	/// device's memory-type table and the driver database. VKStreamBuffer::Create reads it; nothing
+	/// else should, and nothing may change it after the rings exist.
+	__fi const GSStreamRingMemoryDecision& GetStreamRingMemory() const { return m_stream_ring_memory; }
 
 	// The interaction between raster order attachment access and fbfetch is unclear.
 	__fi bool UseFeedbackLoopLayout() const
@@ -147,8 +154,9 @@ public:
 	/// Allocates a descriptor set from the pool reserved for the current frame.
 	VkDescriptorSet AllocatePersistentDescriptorSet(VkDescriptorSetLayout set_layout);
 
-	/// Allocates a descriptor set from the current frame's per-frame pool (push descriptor fallback).
-	/// Returns VK_NULL_HANDLE on pool exhaustion after flushing the command buffer.
+	/// Allocates a descriptor set from the current frame's pool chain, growing the chain if every
+	/// existing link is full. Returns VK_NULL_HANDLE only when the device cannot give us another
+	/// pool, or when the layout is one no pool of this shape can serve.
 	VkDescriptorSet AllocateDescriptorSetFromFramePool(VkDescriptorSetLayout set_layout);
 
 	/// Frees a descriptor set allocated from the global pool.
@@ -247,6 +255,8 @@ private:
 	bool CreateAllocator();
 	bool CreateCommandBuffers();
 	bool CreateGlobalDescriptorPool();
+	/// One link of a frame's descriptor-pool chain. See AllocateDescriptorSetFromFramePool.
+	VkDescriptorPool CreateFrameDescriptorPool();
 
 	VkRenderPass CreateCachedRenderPass(RenderPassCacheKey key);
 
@@ -254,6 +264,10 @@ private:
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
 	void WaitForCommandBufferCompletion(u32 index);
+
+	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
+	/// structured fault records (addresses, kinds, vendor codes) before the exit.
+	void ReportDeviceFault();
 
 	bool InitSpinResources();
 	void DestroySpinResources();
@@ -276,9 +290,20 @@ private:
 		// [0] - Init (upload) command buffer, [1] - draw command buffer
 		VkCommandPool command_pool = VK_NULL_HANDLE;
 		std::array<VkCommandBuffer, 2> command_buffers{VK_NULL_HANDLE, VK_NULL_HANDLE};
-		// Per-frame texture descriptor pool, reset wholesale each time the frame is reused.
-		// Only created/used on the non-push-descriptor path (Mali workaround).
-		VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+		// Per-frame descriptor pools, reset wholesale each time the frame is reused. A CHAIN, not
+		// one pool: allocation walks it and appends another link when the current one is full, so
+		// the frame's capacity is whatever the frame turns out to need. See
+		// AllocateDescriptorSetFromFramePool. Created lazily, so a device that never allocates
+		// from it -- every device on the push-descriptor path, i.e. everything but Mali -- never
+		// has one.
+		std::vector<VkDescriptorPool> descriptor_pools;
+		// Which link allocations are coming from, and how many sets it has served since it was
+		// reset. The count decides when the link is full -- drivers are not reliable about saying
+		// so -- and it also separates "full" from "no link of this shape can ever serve that
+		// layout": a request an EMPTY link refuses is unservable, and growing for it would append
+		// pools forever.
+		u32 descriptor_pool_cursor = 0;
+		u32 descriptor_pool_cursor_sets = 0;
 		VkFence fence = VK_NULL_HANDLE;
 		u64 fence_counter = 0;
 		s32 spin_id = -1;
@@ -310,9 +335,15 @@ private:
 
 	VkDescriptorPool m_global_descriptor_pool = VK_NULL_HANDLE;
 
+	// A layout an EMPTY frame descriptor pool refused: the pool shape reserves no descriptors of
+	// some type it declares, so growing the chain for it would never help. Warned once.
+	bool m_frame_pool_layout_refused_warned = false;
+
 	// Set false for Mali (vendorID 0x13B5) in CreateDevice: its driver crashes inside
 	// vkCmdPushDescriptorSetKHR, so texture binding falls back to per-frame descriptor sets.
 	bool m_use_push_descriptors = true;
+
+	GSStreamRingMemoryDecision m_stream_ring_memory;
 
 	// MediaTek-SoC detection now lives in the base GSDevice (SetMediaTekSoC/IsMediaTekSoC),
 	// so both backends and GS.cpp's Android GameDB overrides can read it.
@@ -616,6 +647,11 @@ private:
 	bool CheckFeatures();
 	bool CreateNullTexture();
 	bool CreateBuffers();
+
+	/// Cleans every stream ring's outstanding writes out of the CPU's caches. Called from
+	/// SubmitCommandBuffer immediately before vkQueueSubmit, which is the last point before the
+	/// GPU can read any of them, and the only point that needs it.
+	void FlushStreamRingWrites();
 	bool CreatePipelineLayouts();
 	bool CreateRenderPasses();
 
@@ -795,6 +831,8 @@ public:
 	// When Bind() is next called, the pass will be restarted.
 	// Calling this function is allowed even if a pass has not begun.
 	bool InRenderPass();
+	/// The frame's tile load-and-store bill, one pass at a time (GSPerfMon::RenderPassAreaPixels).
+	void CountRenderPassArea(const GSVector4i& rect);
 	void BeginRenderPass(VkRenderPass rp, const GSVector4i& rect);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color);

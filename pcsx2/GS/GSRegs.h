@@ -69,6 +69,14 @@ enum GIF_REG_COMPLEX
 {
 	GIF_REG_STQRGBAXYZF2 = 0x00,
 	GIF_REG_STQRGBAXYZ2 = 0x01,
+	// The layouts stage 3c added. The order matches GIFPath's TYPE_ enumeration
+	// from TYPE_STQRGBAXYZF2 onward, so Transfer indexes the handler table with
+	// (type - TYPE_STQRGBAXYZF2); GIFPath static_asserts that.
+	GIF_REG_NOPSTQRGBAXYZF2 = 0x02,
+	GIF_REG_STQXYZ2 = 0x03,
+	GIF_REG_UVXYZ2 = 0x04,
+	GIF_REG_RGBAQXYZ2 = 0x05,
+	GIF_REG_COMPLEX_COUNT = 0x06,
 };
 
 enum GIF_A_D_REG
@@ -531,6 +539,7 @@ REG_END2
 	__forceinline bool IsOpaque() const { return ((A == B || (C == 2 && FIX == 0)) && D == 0) || (A == 0 && B == D && C == 2 && FIX == 0x80); }
 	__forceinline bool IsOpaque(int amin, int amax) const { return ((A == B || amax == 0) && D == 0) || (A == 0 && B == D && amin == 0x80 && amax == 0x80); }
 	__forceinline bool IsCd() const { return (A == B) && (D == 1); }
+	__forceinline bool IsAdditive() const { return (A == 0 && B == 2 && (C != 2 || FIX != 0) && D == 1); }
 
 	// output will be Cd, Cs is discarded
 	__forceinline bool IsCdOutput() const { return (C == 2 && D != 1 && FIX == 0x00); }
@@ -1101,6 +1110,29 @@ REG128_SET(GIFPackedReg)
 	GIFPackedNOP    NOP;
 REG_SET_END
 
+// Where a fused packed layout's descriptors sit inside one record, in qwords.
+// The two contiguous {ST, RGBAQ, XYZ} layouts never read it -- their stride and
+// offsets are compile-time 3 / 0 / 1 / 2 -- so SetTag only fills it in for the
+// NOP-padded and the two-register layouts.
+struct GIFPackedLayout
+{
+	u32 stride;
+	u32 off_a;    // ST for a triple; the pair's non-position descriptor otherwise
+	u32 off_rgba; // triple only
+	u32 off_xyz;
+};
+
+// A NOP descriptor dispatches GIFPackedRegHandlerNOP, which is empty, so a NOP
+// qword's only effect on the stream is to advance the pointer: deleting it from
+// the parse and stepping by the full nreg is the same state transition. Same for
+// a layout that simply omits a register -- the vertex takes that field from the
+// value the previous write latched, which is what the per-qword path leaves in
+// m_v.
+//
+// Deliberately out of line: it runs once per tag, only for a tag that carries a
+// NOP, and SetTag is force-inlined into Transfer.
+__noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& type, GIFPackedLayout& layout);
+
 struct alignas(32) GIFPath
 {
 	GIFTag tag;
@@ -1109,14 +1141,31 @@ struct alignas(32) GIFPath
 	u32 reg;
 	u32 type;
 	GSVector4i regs;
+	GIFPackedLayout layout;
 
 	enum
 	{
 		TYPE_UNKNOWN,
 		TYPE_ADONLY,
 		TYPE_STQRGBAXYZF2,
-		TYPE_STQRGBAXYZ2
+		TYPE_STQRGBAXYZ2,
+		// Stage 3c. Everything from TYPE_STQRGBAXYZF2 on is a fused layout with
+		// a handler in GSState::m_fpGIFPackedRegHandlersC, indexed by
+		// (type - TYPE_STQRGBAXYZF2); a null entry there means the layout is
+		// recognised but not fused for this prim, and Transfer replays the
+		// descriptors one qword at a time exactly as TYPE_UNKNOWN does.
+		TYPE_NOPSTQRGBAXYZF2,
+		TYPE_STQXYZ2,
+		TYPE_UVXYZ2,
+		TYPE_RGBAQXYZ2,
 	};
+
+	static_assert(TYPE_STQRGBAXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_STQRGBAXYZF2);
+	static_assert(TYPE_STQRGBAXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_STQRGBAXYZ2);
+	static_assert(TYPE_NOPSTQRGBAXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_NOPSTQRGBAXYZF2);
+	static_assert(TYPE_STQXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_STQXYZ2);
+	static_assert(TYPE_UVXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_UVXYZ2);
+	static_assert(TYPE_RGBAQXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_RGBAQXYZ2);
 
 	__forceinline void SetTag(const void* mem)
 	{
@@ -1156,6 +1205,19 @@ struct alignas(32) GIFPath
 					case 1:
 						break;
 					case 2:
+						// {STQ, XYZ2}, {UV, XYZ2} and {RGBAQ, XYZ2}. A layout
+						// that omits a register is not a partial vertex: the
+						// vertex takes that field from the value the previous
+						// write latched, which is exactly what the per-qword
+						// path leaves behind in m_v.
+						if (regs.U32[0] == 0x00000502)
+							type = TYPE_STQXYZ2;
+						else if (regs.U32[0] == 0x00000503)
+							type = TYPE_UVXYZ2;
+						else if (regs.U32[0] == 0x00000501)
+							type = TYPE_RGBAQXYZ2;
+						if (type != TYPE_UNKNOWN)
+							layout = {2, 0, 0, 1};
 						break;
 					case 3:
 						// many games, TODO: formats mixed with NOPs (xeno2: 040f010f02, 04010f020f, mgs3: 04010f0f02, 0401020f0f, 04010f020f)
@@ -1167,6 +1229,26 @@ struct alignas(32) GIFPath
 						// TODO: common types with UV instead
 						break;
 					case 4:
+						// The pair repeated twice -- spiderman3's entire sprite
+						// stream. A repeat of {a, 5} IS the qword stream
+						// {a, 5, a, 5}, so halving nreg and doubling nloop
+						// presents the same register sequence and the same
+						// total to every consumer, including the resume and
+						// insufficient-data loops that step path.reg over it.
+						// That is the claim the nreg 9 and nreg 12 cases below
+						// already rest on.
+						if (regs.U32[0] == 0x05020502)
+							type = TYPE_STQXYZ2;
+						else if (regs.U32[0] == 0x05030503)
+							type = TYPE_UVXYZ2;
+						else if (regs.U32[0] == 0x05010501)
+							type = TYPE_RGBAQXYZ2;
+						if (type != TYPE_UNKNOWN)
+						{
+							nreg = 2;
+							nloop *= 2;
+							layout = {2, 0, 0, 1};
+						}
 						break;
 					case 5:
 						break;
@@ -1208,6 +1290,17 @@ struct alignas(32) GIFPath
 						break;
 					default:
 						ASSUME(0);
+				}
+
+				// The NOP-padded shapes the case 3 comment above has named as a
+				// TODO since forever, and the two-register layouts that arrive
+				// with a NOP in them (stuntman's 3:f,1,5). Only a tag that
+				// actually carries a NOP pays for the classifier, and it is out
+				// of line because SetTag is inlined into Transfer.
+				if (type == TYPE_UNKNOWN && nreg <= 6 &&
+					(regs.eq8(GSVector4i(0x0f0f0f0f)).mask() & ((1u << nreg) - 1)) != 0)
+				{
+					GIFClassifyPaddedLayout(regs, nreg, type, layout);
 				}
 			}
 		}

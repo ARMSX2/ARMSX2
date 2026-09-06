@@ -128,6 +128,17 @@ enum class DriverBug : u8
 	BrokenExtendedDynamicState,
 	BrokenPrimitiveTopologyDynamicState,
 	BrokenGraphicsPipelineLibrary,
+	/// The driver advertises an in-tile destination read (Vulkan rasterization-order attachment
+	/// access) and returns zero or stale colour from it -- black or intermittently missing
+	/// textures rather than a crash. Distinct from BrokenSubpassFeedback, which is about the
+	/// in-pass self-read losing whole draws or the device.
+	BrokenRoaaDestinationRead,
+	/// The driver ignores the blend constant: a factor of CONST_COLOR / INV_CONST_COLOR is applied
+	/// as if the constant were zero, so the term it scales survives at full strength or vanishes
+	/// entirely. Conditional -- the same driver applies the same factor correctly on most content,
+	/// and the trigger is run history rather than anything the draw carries -- so it cannot be
+	/// probed for at start-up and there is no emission order that avoids it.
+	BrokenBlendConstant,
 	Count,
 };
 
@@ -156,6 +167,35 @@ enum class DriverWorkaround : u8
 	RewriteUniformIndexing,
 	ForceFifoPresent,
 	AlignSwapchainWidthTo32,
+	/// Report no stencil buffer, so depth targets are created as plain D32_SFLOAT and neither a
+	/// stencil attachment nor the stencil DATE pre-pass is ever emitted. For drivers that hang on
+	/// a depth-stencil attachment rather than merely rendering it wrong; DATE falls back to
+	/// primitive-ID tracking, then Full, then Off.
+	DisableStencilBuffer,
+	/// Steer the Auto renderer to Vulkan on this part. Declared by a rule on the OPENGL side,
+	/// because the Auto decision asks the database through the GL strings the app probes at
+	/// startup -- there is no Vulkan device yet when it is made.
+	///
+	/// The odd one out in this enum: it answers "which of the device's two roads is the better
+	/// one", not "what do we do about a defect". It lives here anyway because the Auto decision
+	/// already reads a workaround bit (UseRenderTargetCopyForFeedback: a driver whose GL cannot
+	/// read the target in tile memory is better served by Vulkan), so this is the same mechanism
+	/// with a different reason rather than a second one. Nothing in either backend consumes it;
+	/// GSUtil::AndroidAutoPrefersVulkan is its only reader.
+	PreferVulkanRenderer,
+	/// Allocate the Vulkan stream rings from a HOST_CACHED memory type instead of the
+	/// write-combined one VMA otherwise picks. For GPUs whose host-visible write-combined memory
+	/// makes CPU writes into a ring more expensive than cached stores plus whatever cache
+	/// maintenance the type needs. Which cached type the rings then get is the memory table's
+	/// business, not this bit's: coherent if the device has such a type, otherwise non-coherent,
+	/// paying the per-region clean VKStreamBuffer::CommitMemory already issues.
+	///
+	/// The second preference in this enum rather than a defect: nothing renders differently either
+	/// way, and the flush it may turn on is the one the Vulkan spec requires of any non-coherent
+	/// mapping. Without this bit the rings stay write-combined however cached-friendly the memory
+	/// table looks, including on a device with a cached COHERENT type -- that road was measured on
+	/// the SD865 and lost. See GSStreamRingMemoryPolicy.h.
+	PreferCachedStreamRingMemory,
 	Count,
 };
 
@@ -185,6 +225,11 @@ struct MobileDriverContext
 	std::string_view driver_name;
 	std::string_view driver_info;
 	std::string_view api_version_string;
+	/// Platform identity from outside the graphics API -- the SoC and board strings. The resolver
+	/// reads these itself where the platform offers them (Android system properties, the Linux
+	/// device tree); a caller that already knows them, or a test pinning a specific device without
+	/// one, supplies them here and they are folded into the same hint string the rules match on.
+	std::string_view platform_hints;
 };
 
 struct MobileDriverProfile
@@ -266,4 +311,17 @@ public:
 	/// simply leaves GpuProfileSelection::driver in its conservative-fallback state.
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name, const MobileDriverContext& driver_context);
+
+	static constexpr u64 BugMask(DriverBug bug) { return u64{1} << static_cast<u8>(bug); }
+
+	/// Bugs to report as present whatever the database says, OR'd into every resolved profile.
+	///
+	/// This is how a test harness reaches a workaround road on a machine whose driver does not
+	/// have the defect -- the driver-bug database is keyed on device identity, so on the dev box
+	/// the rerouted path is simply unreachable and untestable otherwise. It exists for the
+	/// gsrunner and is set once before the VM starts; nothing in the emulator calls it, and it
+	/// deliberately is not a setting, because a user has no way to know which bugs their driver
+	/// actually has.
+	static void SetForcedBugs(u64 mask);
+	static u64 GetForcedBugs();
 };

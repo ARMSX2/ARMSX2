@@ -4,6 +4,7 @@
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "Memory.h"
 
@@ -210,6 +211,73 @@ typedef GSVector4  VectorF;
 #define LOCAL_STEP local.d4
 #endif
 
+// The GS does not divide the texture coordinate by Q. It multiplies by a
+// RECIPROCAL that is truncated to about thirteen fractional bits, so a
+// perspective coordinate is systematically a little short of the true quotient.
+//
+// Measured on an SCPH-30001 rather than assumed. Each of 12,288 readings bounds
+// the hardware's own reciprocal from both sides: 1,592 of them force it strictly
+// BELOW the true value, not one forces it above, and the largest forced shortfall
+// is 1.22e-4 relative -- which is 2^-13 to three decimal places.
+//
+// Truncating a float32 mantissa to its top thirteen bits is exactly that grid.
+// float32 carries 23 explicit mantissa bits, so clearing the low ten leaves
+// thirteen and rounds toward zero, which is the side silicon is never on the
+// wrong side of. Computing an exact quotient -- what we did before -- is being
+// MORE correct than the hardware, and it differs from the console on 22.07% of
+// ordinary perspective readings for that reason alone.
+__forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
+{
+	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
+}
+
+// The texture function multiplies the eight-bit vertex colour the GS STORES, not
+// the wider value its interpolator carries. Ours is fixed point with seven
+// fractional bits, and feeding all fifteen to the multiply is wrong by up to one
+// unit wherever the colour has a fraction -- which is everywhere on a gouraud
+// gradient, and invisible to a flat-shaded corpus.
+//
+// Measured on an SCPH-30001 with no model of either interpolator: the same colour
+// read back through four different multipliers brackets the value the hardware
+// holds, and that bracket excludes the product of the stored byte on 0 of 24,576
+// readings, where our own arms exclude it on about one reading in five.
+//
+// Drop the fraction for the multiply only. The DDA keeps it, or the gradient
+// stops stepping; the byte goes back on the seven-bit grid so modulate16<1> still
+// lines up.
+__forceinline static VectorI GSStoredVertexColor(const VectorI& c)
+{
+	return c.srl16<7>().sll16<7>();
+}
+
+#if _M_SSE < 0x501
+/// One attribute channel's alternating per-vector step for a split block walk,
+/// as the four entries local.dw wants for a span starting `i` lanes into its
+/// vector: (s=i, phase 0), (s=i, phase 1), (s=4+i, phase 0), (s=4+i, phase 1).
+///
+/// Writing L, H and M for the truncated gradient at this vector's lanes, at the
+/// half after it and at the half before it, and Q for the whole block step, the
+/// walk visits L, H, Q+L, Q+H ... from the low half and L, Q+M, Q+L, 2Q+M ...
+/// from the high half. Both alternate, and each pair sums to Q -- which is the
+/// invariant to check if these ever look wrong.
+static __ri void GSBlockWalkSteps(const GSVector4& d, int i, GSVector4i out[4])
+{
+	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
+	static const GSVector4* next = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_next);
+	static const GSVector4* prev = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_prev);
+
+	const GSVector4i q = GSVector4i(d * *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8));
+	const GSVector4i l = GSVector4i(d * shift[1 + i]);
+	const GSVector4i h = GSVector4i(d * next[i]);
+	const GSVector4i m = GSVector4i(d * prev[i]);
+
+	out[0] = h - l;
+	out[1] = q - h + l;
+	out[2] = q + m - l;
+	out[3] = l - m;
+}
+#endif
+
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
 	const GSScanlineGlobalData& global = GlobalFromLocal(local);
@@ -222,13 +290,29 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	constexpr int vlen = sizeof(VectorF) / sizeof(float);
 
+	// Truncated attributes step one hardware BLOCK at a time, not one host
+	// vector -- see GSBlockWalk.h. Here that only widens the step: the block is
+	// eight pixels wide on every draw, which is two vectors, and the scanline
+	// walks the alternating pair in local.dw.
+	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(vlen);
+
 #if _M_SSE >= 0x501
 	auto load_shift = [](int i) { return GSVector8::load<false>(&g_const_256b.m_shift[8 - i]); };
 	const GSVector4 step_shift = GSVector4::broadcast32(&g_const_256b.m_shift[0]);
+	// One vector IS one block here, so the coordinate's step and the block step
+	// are the same number.
+	const GSVector4 coord_step_shift = step_shift;
 #else
 	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
 	auto load_shift = [](int i) { return shift[1 + i]; };
-	const GSVector4 step_shift = shift[0];
+	const GSVector4 step_shift = block_split
+		? *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8)
+		: shift[0];
+	// The texture coordinate steps one VECTOR, not one block -- GSBlockWalk.h says
+	// why, and the pin is TheCoordinateStepStaysOneVector. Taking the block step
+	// here would advance the coordinate eight pixels every four and sample the
+	// texture twice as fast as the draw walks.
+	const GSVector4 coord_step_shift = shift[0];
 #endif
 
 	GSVector4 tstep = dscan.t * step_shift;
@@ -253,6 +337,20 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 				{
 					local.d[i].f = VectorI(df * load_shift(i)).xxzzlh();
 				}
+
+#if _M_SSE < 0x501
+				if (block_split)
+				{
+					for (int i = 0; i < vlen; i++)
+					{
+						GSVector4i st[4];
+						GSBlockWalkSteps(df, i, st);
+
+						for (int p = 0; p < 4; p++)
+							local.dw[(p & 2) * 2 + i][p & 1].f = st[p].xxzzlh();
+					}
+				}
+#endif
 			}
 
 			if (has_z && !sel.zequal)
@@ -291,13 +389,48 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	if (has_t)
 	{
+		// The coordinate a triangle samples at trails the exact plane, by less than
+		// a sixteenth of a texel, in the direction the walk is going. Console-
+		// measured (gs-shade, SCPH-30001): where the exact coordinate lands ON a
+		// sixteenth and the walk is forward, silicon reports the sixteenth BELOW it
+		// -- 3,840 of 3,840 readings on a gradient of four sixteenths per pixel,
+		// and never the other way. Where the walk is backward the same lag puts
+		// silicon just above the boundary, which floors where we already do, and
+		// that section is identical to the console on every reading. A still
+		// coordinate is exact in both, which is what makes the lag attributable to
+		// the step rather than the seed.
+		//
+		// A sprite's coordinate is exact on silicon (gs-interp, 3,072 of 3,072,
+		// negative gradients included) and exact in ours, so sprites take nothing.
+		// Lines and points were not measured; they ride the triangle rule because
+		// it is the same walk, and a point has no gradient to lag anyway.
+		//
+		// Where the lag comes from in the hardware's walk is unfitted; one unit of
+		// our own 16.16 coordinate is the smallest bias that reproduces every
+		// reading, and it can only move a pixel that lands exactly on a boundary.
+		if (sel.prim != GS_SPRITE_CLASS)
+		{
+			local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
+			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
+		}
+
+		// The colour and fog steps above take the block; this one does not. The
+		// coordinate keeps a per-vector step whatever the block width is, which is
+		// the same footing depth is on a few lines up.
+		const GSVector4 coord_tstep = dscan.t * coord_step_shift;
+
 		if (sel.fst)
 		{
-			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(tstep));
+			// Truncating the step and accumulating it is the hardware's own shape,
+			// not an approximation of an exact plane. On a gradient that is a power
+			// of two per pixel the truncation is identity and this walk is exact,
+			// which is every sprite gradient in every capture we own; what silicon
+			// does on a sprite at a NON-binary gradient has never been measured.
+			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(coord_tstep));
 		}
 		else
 		{
-			LOCAL_STEP.stq = tstep;
+			LOCAL_STEP.stq = coord_tstep;
 		}
 
 		VectorF dt(dscan.t);
@@ -377,6 +510,29 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 				local.d[i].ga = g.upl16(a);
 			}
+
+#if _M_SSE < 0x501
+			if (block_split)
+			{
+				for (int i = 0; i < vlen; i++)
+				{
+					GSVector4i sr[4], sb[4], sg[4], sa[4];
+
+					GSBlockWalkSteps(dr, i, sr);
+					GSBlockWalkSteps(db, i, sb);
+					GSBlockWalkSteps(dg, i, sg);
+					GSBlockWalkSteps(da, i, sa);
+
+					for (int p = 0; p < 4; p++)
+					{
+						GSScanlineLocalData::blockstep& w = local.dw[(p & 2) * 2 + i][p & 1];
+
+						w.rb = (sr[p] & mask16).pu32().upl16((sb[p] & mask16).pu32());
+						w.ga = (sg[p] & mask16).pu32().upl16((sa[p] & mask16).pu32());
+					}
+				}
+			}
+#endif
 		}
 		else
 		{
@@ -477,7 +633,9 @@ __ri static bool TestAlpha(T& test, T& fm, T& zm, const T& ga, const GSScanlineG
 
 		case AFAIL_RGB_ONLY:
 			zm |= t;
-			fm |= t & T::xff000000(); // fpsm 16 bit => & 0xffff8000?
+			// Only reachable with a 32-bit frame: GetAFAIL degrades RGB_ONLY to
+			// FB_ONLY on every other format (console-measured, gs-test capture).
+			fm |= t & T::xff000000();
 			break;
 
 		default:
@@ -533,6 +691,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 	// Init
 
 	int skip, steps;
+
+#if _M_SSE < 0x501
+	// Where this span starts inside its eight-pixel block decides which of the
+	// two alternating steps it begins on, so it has to be read off the true left
+	// edge before the vector alignment rounds it down.
+	const bool block_split = GSBlockWalkIsSplit(vlen);
+	const GSScanlineLocalData::blockstep* const dw = local.dw[left & 7];
+	int dwphase = 0;
+#endif
 
 	if (!sel.notest)
 	{
@@ -757,13 +924,22 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				{
 					if (!sel.fst)
 					{
-						u = VectorI(s / q);
-						v = VectorI(t / q);
+						const VectorF r = GSPerspectiveRecip(q);
+
+						u = VectorI(s * r);
+						v = VectorI(t * r);
 					}
 					else
 					{
 						u = VectorI::cast(s);
 						v = VectorI::cast(t);
+					}
+
+					// The DDA's lag, taken before the level shift divides it away.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
 					}
 
 					if (!sel.lcm)
@@ -1087,6 +1263,14 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.lcm)
 							lodf = global.lod.f;
 
+						// The console blends two mip levels on a FOUR-BIT weight, so a
+						// trilinear blend has sixteen steps. Measured directly: across one
+						// level boundary silicon returns exactly 32 distinct values over two
+						// level pairs 36 apart, which is 36/16 per step. Blending on the full
+						// 16-bit fraction gives about 250 and is visibly finer than hardware.
+						// Truncate to the top four bits before the fraction becomes a weight.
+						lodf = lodf.srl16<12>().sll16<12>();
+
 						lodf = lodf.srl16<1>();
 
 						rb = rb.lerp16<0>(rb2, lodf);
@@ -1095,21 +1279,59 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else
 				{
+					// Per-pixel MMAG/MMIN choice. lod > 0 is exactly Q < the crossing
+					// constant, so one compare names the pixels on the minifying side;
+					// ltfx_ge flips which side takes the linear filter. All-ones means
+					// "this pixel filters linearly".
+					VectorI lin;
+
+					if (sel.ltfx)
+					{
+						lin = VectorI::cast(q < global.ltfx_q);
+
+						if (sel.ltfx_ge)
+							lin = ~lin;
+					}
+
 					if (!sel.fst)
 					{
-						u = VectorI(s / q);
-						v = VectorI(t / q);
+						const VectorF r = GSPerspectiveRecip(q);
+
+						u = VectorI(s * r);
+						v = VectorI(t * r);
 
 						if (sel.ltf)
 						{
-							u -= 0x8000;
-							v -= 0x8000;
+							// The two filters do not sample the same point: nearest reads
+							// at the coordinate, linear straddles the pair half a texel
+							// back. So the bias is taken only where linear wins.
+							if (sel.ltfx)
+							{
+								const VectorI half = VectorI(0x8000) & lin;
+
+								u -= half;
+								v -= half;
+							}
+							else
+							{
+								u -= 0x8000;
+								v -= 0x8000;
+							}
 						}
 					}
 					else
 					{
 						u = VectorI::cast(s);
 						v = VectorI::cast(t);
+					}
+
+					// The DDA's lag. Zero on any axis that is not walking forward,
+					// so this only moves a coordinate that lands exactly on a
+					// sixteenth.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
 					}
 
 					if (sel.ltf)
@@ -1119,6 +1341,18 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.prim != GS_SPRITE_CLASS)
 						{
 							vf = v.xxzzlh().srl16<12>();
+						}
+
+						// A zero weight turns the four-tap blend back into the nearest
+						// tap, so the nearest side needs no separate path.
+						if (sel.ltfx)
+						{
+							const VectorI lin16 = lin.xxzzlh();
+
+							uf &= lin16;
+
+							if (sel.prim != GS_SPRITE_CLASS)
+								vf &= lin16;
 						}
 					}
 
@@ -1222,7 +1456,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						ga = ga.modulate16<1>(gaf).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).clamp8();
 						if (!sel.tcc)
 							ga = ga.mix16(gaf.srl16<7>());
 						break;
@@ -1285,15 +1519,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						rb = rb.modulate16<1>(rbf).clamp8();
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).clamp8();
 						break;
 					case TFX_DECAL:
 						break;
 					case TFX_HIGHLIGHT:
 					case TFX_HIGHLIGHT2:
 						af = gaf.yywwlh().srl16<7>();
-						rb = rb.modulate16<1>(rbf).add16(af).clamp8();
-						ga = ga.modulate16<1>(gaf).add16(af).clamp8().mix16(ga);
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).add16(af).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).add16(af).clamp8().mix16(ga);
 						break;
 					case TFX_NONE:
 						rb = sel.iip ? rbf.srl16<7>() : rbf;
@@ -1599,7 +1833,19 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 			if (sel.fwrite)
 			{
-				if (sel.fpsm == 2 && sel.dthe)
+				// Dither is not a 16-bit-only feature. Silicon adds DM[y & 3][x & 3]
+				// to the eight-bit colour on a 32-bit and on a 24-bit destination
+				// as well, with the same matrix and the same indexing -- 4080 of
+				// 4096 pixels move on each (gs-dither, SCPH-30001, 2026-08-11).
+				// The 16-bit gate was ours, not the hardware's.
+				//
+				// fmt 3 is not a frame-buffer format and the capture did not sweep
+				// one. The add lands before the colour clamp, which is where it
+				// already sat and where the capture puts it (1024/1024 against the
+				// alternative order), and after the blend (6144/6144).
+				//
+				// Mirrored in both scanline code generators; the three must agree.
+				if (sel.dthe && sel.fpsm != 3)
 				{
 					int y = (top & 3) << 1;
 
@@ -1724,7 +1970,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 #if _M_SSE >= 0x501
 				f = f.add16(GSVector8i::broadcast16(&local.d8.p.f));
 #else
-				f = f.add16(local.d4.f);
+				f = f.add16(block_split ? dw[dwphase].f : local.d4.f);
 #endif
 			}
 		}
@@ -1761,13 +2007,27 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 			{
 #if _M_SSE >= 0x501
 				GSVector8i c = GSVector8i::broadcast64(&local.d8.c);
-#else
-				GSVector4i c = local.d4.c;
-#endif
 				rbf = rbf.add16(c.xxxx()).max_i16(VectorI::zero());
 				gaf = gaf.add16(c.yyyy()).max_i16(VectorI::zero());
+#else
+				if (block_split)
+				{
+					rbf = rbf.add16(dw[dwphase].rb).max_i16(VectorI::zero());
+					gaf = gaf.add16(dw[dwphase].ga).max_i16(VectorI::zero());
+				}
+				else
+				{
+					GSVector4i c = local.d4.c;
+					rbf = rbf.add16(c.xxxx()).max_i16(VectorI::zero());
+					gaf = gaf.add16(c.yyyy()).max_i16(VectorI::zero());
+				}
+#endif
 			}
 		}
+
+#if _M_SSE < 0x501
+		dwphase ^= 1;
+#endif
 
 		if (!sel.notest)
 		{

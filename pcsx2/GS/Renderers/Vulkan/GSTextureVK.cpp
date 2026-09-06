@@ -48,6 +48,7 @@ static VkImageLayout GetVkImageLayout(GSTextureVK::Layout layout)
 		VK_IMAGE_LAYOUT_GENERAL, // FeedbackLoop
 		VK_IMAGE_LAYOUT_GENERAL, // ReadWriteImage
 		VK_IMAGE_LAYOUT_GENERAL, // ComputeReadWriteImage
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, // ComputeReadOnly
 		VK_IMAGE_LAYOUT_GENERAL, // General
 	}};
 	return (layout == GSTextureVK::Layout::FeedbackLoop && GSDeviceVK::GetInstance()->UseFeedbackLoopLayout()) ?
@@ -715,6 +716,14 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 			srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 			break;
 
+		case Layout::ComputeReadOnly:
+			// The read has to be ordered before whatever writes the image next, and a read in the
+			// compute stage is not in the fragment stage's scope. Getting this wrong is a WAR that
+			// hands the dispatch pixels from after the point it was supposed to sample.
+			barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			break;
+
 		case Layout::General:
 		default:
 			srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -788,6 +797,11 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 			dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 			break;
 
+		case Layout::ComputeReadOnly:
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			break;
+
 		case Layout::General:
 		default:
 			dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -827,11 +841,32 @@ VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool
 	if (!rp)
 		return VK_NULL_HANDLE;
 
+	// A framebuffer may not be larger than any attachment it carries. Sizing it from the colour
+	// target alone is right only while the depth target is at least as big -- which is what
+	// Classic's pairings happen to guarantee, and what the Tile pass planner does not: it pairs a
+	// 512x448 colour with a 256x256 depth. Turnip stores these dimensions verbatim, never compares
+	// them to an attachment, scissors the hardware to the framebuffer, and hands the depth buffer
+	// only a base address and a pitch -- so nothing bounds the writes and they leave the image. It
+	// hangs an Adreno 650 two to five passes later, on whatever the stray write reaches first.
+	u32 fb_width = static_cast<u32>(m_size.x);
+	u32 fb_height = static_cast<u32>(m_size.y);
+	if (depth_texture)
+	{
+		fb_width = std::min(fb_width, static_cast<u32>(depth_texture->m_size.x));
+		fb_height = std::min(fb_height, static_cast<u32>(depth_texture->m_size.y));
+		if (fb_width != static_cast<u32>(m_size.x) || fb_height != static_cast<u32>(m_size.y))
+		{
+			Console.Warning("VK: framebuffer %dx%d clamped to %ux%u by a smaller depth attachment; "
+							"output outside the clamp is dropped.",
+				m_size.x, m_size.y, fb_width, fb_height);
+		}
+	}
+
 	Vulkan::FramebufferBuilder fbb;
 	fbb.AddAttachment(m_view);
 	if (depth_texture)
 		fbb.AddAttachment(depth_texture->m_view);
-	fbb.SetSize(m_size.x, m_size.y, 1);
+	fbb.SetSize(fb_width, fb_height, 1);
 	fbb.SetRenderPass(rp);
 
 	VkFramebuffer fb = fbb.Create(GSDeviceVK::GetInstance()->GetDevice());
@@ -868,13 +903,22 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 	aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
 	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	// Cached host memory is normally the fastest to read back from on the CPU. On the ARM Mali
-	// Vulkan driver, however, cached readbacks are much slower than coherent memory: mapping a
-	// cached readback buffer spends most of its time inside the kernel cache-invalidation routine
-	// (__pi___inval_cache_range), pegging a CPU core. Prefer coherent memory on Mali so texture
-	// readbacks (GT4, Tales, any hardware-download game) skip that invalidation cost. Every other
-	// vendor keeps the cached preference. (Ports Dolphin BUG_SLOW_CACHED_READBACK_MEMORY.)
-	aci.preferredFlags = GSDeviceVK::GetInstance()->IsDeviceMali() ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-															   : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	// Vulkan driver, cached readbacks were reported much slower than coherent memory (the kernel
+	// cache-invalidation routine pegging a core — Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY),
+	// so Mali preferred coherent. Measured backwards on r44p1 / Mali-G615 2026-08-17: the CPU's
+	// sequential pass over a coherent (uncached) map runs at ~244 MB/s and is ~75% of every
+	// readback crossing, while the cached type — explicit invalidate included — wins ~12×. The
+	// preference is therefore version-gated through the driver profile
+	// (vk-arm-slow-cached-readback-*, GSGPUDriverProfile.cpp): exactly the measured revision
+	// takes cached, every other Mali keeps coherent, and non-Mali vendors are untouched here
+	// even where their profile declares the workaround (the Qualcomm PROPRIETARY blob declares
+	// it and this site never consulted it; consuming it there is a behavior change on hardware
+	// nobody here runs, deliberately not taken in the same commit as a Mali fix).
+	const bool prefer_coherent = GSDeviceVK::GetInstance()->IsDeviceMali() &&
+								 GSDeviceVK::GetInstance()->GetMobileDriverProfile().UsesWorkaround(
+									 DriverWorkaround::PreferCoherentReadback);
+	aci.preferredFlags = prefer_coherent ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+										 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
 	VmaAllocationInfo ai = {};
 	VmaAllocation allocation;
@@ -907,10 +951,11 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	pxAssert(src_level < static_cast<u32>(vkTex->GetMipmapLevels()));
 	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width,
 		GSDeviceVK::GetInstance()->GetBufferCopyRowPitchAlignment());
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
+	const u32 copy_region_size = GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows);
 
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
 	GSDeviceVK::GetInstance()->EndRenderPass();
@@ -937,7 +982,9 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	// do the copy
 	vkCmdCopyImageToBuffer(cmdbuf, vkTex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &image_copy);
 
-	// flush gpu cache
+	// Flush the GPU cache over the region the copy above actually wrote -- every row of it. A
+	// barrier sized at one row leaves the rest of the transfer available to the host by no barrier
+	// at all.
 	const VkBufferMemoryBarrier buffer_info = {
 		VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, // VkStructureType    sType
 		nullptr, // const void*        pNext
@@ -946,8 +993,8 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 		VK_QUEUE_FAMILY_IGNORED, // uint32_t           srcQueueFamilyIndex
 		VK_QUEUE_FAMILY_IGNORED, // uint32_t           dstQueueFamilyIndex
 		m_buffer, // VkBuffer           buffer
-		0, // VkDeviceSize       offset
-		copy_size // VkDeviceSize       size
+		copy_offset, // VkDeviceSize       offset
+		copy_region_size // VkDeviceSize       size
 	};
 	vkCmdPipelineBarrier(
 		cmdbuf, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &buffer_info, 0, nullptr);
@@ -965,9 +1012,12 @@ bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
 	// Always mapped, but we might need to invalidate the cache.
 	if (m_needs_cache_invalidate)
 	{
-		u32 copy_offset, copy_size, copy_rows;
-		GetTransferSize(read_rc, &copy_offset, &copy_size, &copy_rows);
-		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset, copy_size);
+		u32 copy_offset, copy_row_bytes, copy_rows;
+		GetTransferSize(read_rc, &copy_offset, &copy_row_bytes, &copy_rows);
+		// Every row the caller is about to read, not just the first: this is the invalidate the
+		// non-coherent readback profile is built on, and one row of it is 1/height of the map.
+		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset,
+			GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows));
 		m_needs_cache_invalidate = false;
 	}
 

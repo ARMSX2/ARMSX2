@@ -42,13 +42,22 @@ public:
 
 	static GSRendererType GetPreferredRenderer();
 
-#if defined(__ANDROID__)
 	/// Whether Auto should resolve to Vulkan on this device, decided from the GL strings the app
 	/// probes at startup. Pure apart from the driver database it consults; the app pushes the
 	/// answer into g_gs_android_prefer_vk before the GS starts.
-	static bool AndroidAutoPrefersVulkan(
-		std::string_view gl_vendor, std::string_view gl_renderer, std::string_view gl_version);
-#endif
+	///
+	/// Only Android calls it, but it is NOT compiled behind __ANDROID__: everything it does is
+	/// portable, and gating it put the one decision nobody can observe in the field beyond the
+	/// reach of a desktop test. `platform_hints` is for those tests -- it names the SoC the way
+	/// the platform would, so a device can be pinned without running on it. Android leaves it
+	/// empty; the resolver reads the system properties itself there.
+	static bool AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_view gl_renderer,
+		std::string_view gl_version, std::string_view platform_hints = std::string_view());
+
+	/// Why the last AndroidAutoPrefersVulkan answered the way it did, in words, for the log line
+	/// in GetPreferredRenderer. The decision happens at app startup, before the log file exists,
+	/// so the reason has to survive until there is somewhere to print it.
+	static const char* AndroidAutoRendererReason();
 
 	static constexpr GS_PRIM_CLASS GetPrimClass(u32 prim)
 	{

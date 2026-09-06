@@ -16,4 +16,14 @@
 // is BELOW our 110 — taking their value would hand every user a stale blob for a source they no
 // longer have. Our counter has been ahead of theirs since 109 and cannot be resynced by adopting
 // their numbers; always bump past our own last value.
-static constexpr u32 SHADER_CACHE_VERSION = 111; // 108 was upstream PR 14688; their 109 = our 111
+// 112: PS_QUANTIZE_COLOR. Every TFX shader gains the define and the colour-clamp block's guard
+// gains a term, so the source text of every TFX permutation changed.
+// 113: PS_SUBSTITUTE_ALPHA. Every TFX shader gains the define, two constant-buffer pad words
+// become named fields, and the colour-clamp block's guard gains another term.
+// 114: PS_AF_IN_SRC1. The Vulkan TFX shader gains the define and a block that overrides
+// alpha_blend with the fixed AFIX value, so its source text changed after 113 was set.
+// 115: upstream PR 14897, the depth conversion shaders floor the bilinear result.
+// 116: upstream PR 14824, the PrimID DATE init shaders take PRIMID_MIN/MAX defines.
+// 117: upstream PR 14743, ps_fbmask reads the destination alpha in the RTA-scaled domain and
+// ROV channel masking goes through FBMASK.
+static constexpr u32 SHADER_CACHE_VERSION = 117; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

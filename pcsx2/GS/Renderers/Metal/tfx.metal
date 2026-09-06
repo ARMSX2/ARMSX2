@@ -45,6 +45,8 @@ constant bool PS_SHUFFLE_ACROSS     [[function_constant(GSMTLConstantIndex_PS_SH
 constant bool PS_READ16_SRC         [[function_constant(GSMTLConstantIndex_PS_READ16_SRC)]];
 constant bool PS_WRITE_RG           [[function_constant(GSMTLConstantIndex_PS_WRITE_RG)]];
 constant bool PS_FBMASK             [[function_constant(GSMTLConstantIndex_PS_FBMASK)]];
+constant bool PS_QUANTIZE_COLOR     [[function_constant(GSMTLConstantIndex_PS_QUANTIZE_COLOR)]];
+constant bool PS_SUBSTITUTE_ALPHA   [[function_constant(GSMTLConstantIndex_PS_SUBSTITUTE_ALPHA)]];
 constant uint PS_BLEND_A            [[function_constant(GSMTLConstantIndex_PS_BLEND_A)]];
 constant uint PS_BLEND_B            [[function_constant(GSMTLConstantIndex_PS_BLEND_B)]];
 constant uint PS_BLEND_C            [[function_constant(GSMTLConstantIndex_PS_BLEND_C)]];
@@ -1300,12 +1302,39 @@ struct PSMain
 		return C;
 	}
 
+	// The masked-write road turns the colour into integers before merging the destination in, and
+	// it does that on all four channels, not only the masked ones. So a draw carrying an FBMSK
+	// writes a truncated colour where the same draw without one leaves it fractional and lets the
+	// output stage round to nearest. PS_QUANTIZE_COLOR runs the same step for a draw whose mask was
+	// dropped as a no-op, so losing the mask does not also change the rounding. One definition, so
+	// the two roads cannot drift apart.
+	uint4 quantize_color(float4 C)
+	{
+		return uint4(int4(C));
+	}
+
+	// PS_SUBSTITUTE_ALPHA: the alpha framebuffer mask this draw carried held back bits the render
+	// target is known to hold at a fixed value on every pixel, so the merge's answer on those bits
+	// is that value whatever the shader computed. Writing it directly is the same byte the masked
+	// road would have produced, out of one AND and one OR against constants, with no destination
+	// read.
 	void ps_fbmask(thread float4& C)
 	{
 		if (PS_FBMASK)
 		{
-			float multi = PS_COLCLIP_HW ? 65535.0 : 255.5;
-			C = float4((uint4(int4(C)) & (cb.fbmask ^ 0xff)) | (uint4(current_color * float4(multi, multi, multi, 255)) & cb.fbmask));
+			float multi_rgb = PS_COLCLIP_HW ? 65535.0 : 255.5;
+			float multi_a = PS_RTA_CORRECTION ? 128.0 : 255.0;
+			float4 RT = current_color;
+			RT.rgb = RT.rgb * multi_rgb;
+			RT.a = round(RT.a * multi_a);
+			C = float4((quantize_color(C) & (cb.fbmask ^ 0xff)) | (uint4(RT) & cb.fbmask));
+		}
+		else if (PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA)
+		{
+			uint4 Cq = quantize_color(C);
+			if (PS_SUBSTITUTE_ALPHA)
+				Cq.a = (Cq.a & cb.substitute_alpha_keep) | cb.substitute_alpha_value;
+			C = float4(Cq);
 		}
 	}
 
@@ -1338,7 +1367,7 @@ struct PSMain
 	{
 		// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 		// so we need to limit the color depth on dithered items
-		if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK)
+		if (SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA)
 		{
 			if (PS_DST_FMT == FMT_16 && PS_BLEND_MIX == 0 && PS_ROUND_INV)
 				C.rgb += 7.f; // Need to round up, not down since the shader will invert
@@ -1769,7 +1798,7 @@ fragment MainPSOut ps_main(
 			main.current_depth = ds_tex.read(coord).x;
 	}
 
-	if (NEEDS_RT || (PS_ROV_COLOR && any(cb.fbmask == 0xff)))
+	if (NEEDS_RT)
 	{
 		if (PS_ROV_COLOR)
 		{
@@ -1797,8 +1826,6 @@ fragment MainPSOut ps_main(
 		ds_rov.write(out.depth, coord);
 	if (PS_ROV_COLOR && !main.color_discarded)
 	{
-		if (!PS_FBMASK)
-			out.c0 = select(out.c0, main.current_color, cb.fbmask == 0xff);
 		if (ROV_NEEDS_R32)
 			rt_u32.write(pack_float_to_unorm4x8(out.c0), coord);
 		else

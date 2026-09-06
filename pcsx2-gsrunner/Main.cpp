@@ -1,18 +1,31 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <deque>
 #include <functional>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <thread>
+#include <type_traits>
+#include <utility>
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
+#endif
+
+#ifdef __linux__
+// For reading /proc/self/statm (resident set size) on the per-frame path.
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #include "fmt/format.h"
@@ -21,12 +34,14 @@
 #include "common/CocoaTools.h"
 #include "common/Console.h"
 #include "common/CrashHandler.h"
+#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 #include "common/ProgressCallback.h"
 #include "common/SettingsWrapper.h"
 #include "common/StringUtil.h"
+#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "pcsx2/PrecompiledHeader.h"
@@ -35,6 +50,7 @@
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
+#include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GSDumpReplayer.h"
@@ -50,9 +66,47 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/VMManager.h"
 
+#include "GSLadder.h"
+#include "GSReplayPayload.h"
+#include "GSRunnerAffinity.h"
 #include "RenderDocCapture.h"
 
 #include "svnrev.h"
+
+#ifdef __ANDROID__
+// The core expects the frontend to provide these JNI bridges (native-lib.cpp
+// does in the APK). A bare NDK executable has no JVM: the Java-backed paths
+// (scoped-storage fallbacks, content:// fds, Java sound, pad rumble) cannot
+// trigger under adb shell on plain filesystem paths, so they stub to failure.
+//
+// The declaring headers are included rather than the signatures re-typed, so a
+// signature that drifts is a compile error here instead of an unresolved
+// external on the one platform nobody builds this for by default.
+#include "common/HostSys.h"
+#include "pcsx2/Input/AndroidNativeRumble.h"
+
+namespace Common
+{
+	bool PlaySoundAsync(const char* path) { return false; }
+}
+namespace FileSystem
+{
+	int OpenFDFileContent(const char* filename) { return -1; }
+	bool CreateDirectoryViaJava(const char* path) { return false; }
+	bool CreateFileViaJava(const char* path) { return false; }
+}
+namespace Native
+{
+	void onPadRumble(int pad, int largeMotor, int smallMotor) {}
+}
+
+// Android renderer-Auto steering (GSUtil.cpp; the APK sets it from the
+// GL_RENDERER string). This frontend is headless: the SW renderer's host
+// present device must come up without a window system, which Vulkan
+// surfaceless does and an EGL context under adb shell does not.
+extern bool g_gs_android_prefer_vk;
+static const bool s_android_prefer_vk_init = []() { g_gs_android_prefer_vk = true; return true; }();
+#endif
 
 // Down here because X11 has a lot of defines that can conflict
 #if defined(__linux__) && defined(X11_API)
@@ -87,6 +141,41 @@ static s32 s_loop_count = 1;
 static std::optional<bool> s_use_window;
 static bool s_no_console = false;
 
+// -gspin. The CPU set the GS thread was asked to run on, exactly as it was typed, and
+// the set it turned out to be on once the pin was applied. Both travel to the stats
+// JSON because a measurement of GS-thread CPU time is only comparable between runs if
+// the thread sat on the same kind of core in both, and on a big.LITTLE device the
+// scheduler decides that, not the run. Empty request means the flag was not given.
+static std::string s_gs_pin_request;
+static u64 s_gs_pin_mask = 0;
+static std::string s_gs_pin_effective("none");
+static const char* s_gs_pin_source = "none";
+
+// The CPU set this process started with, captured before anything has pinned anything.
+// It is the reference that tells "nobody narrowed this thread" apart from "something
+// did": a read-back on its own cannot say which, and both answers are one comma list.
+// Captured rather than derived from the online CPU count because Android runs the app
+// inside a cpuset, where the inherited set is already narrower than the machine.
+static u64 s_baseline_cpu_mask = 0;
+
+#if defined(__ANDROID__)
+// VMManager's compiled-in thread-placement mode. It is an app-facing knob -- only the
+// Android app's JNI bridge writes it -- and its default has moved before now, which the
+// headless runner then inherited without saying so anywhere. A measurement binary must
+// not carry app policy silently, so the runner overrides it with a default of its own
+// and records what it used.
+extern int g_android_affinity_mode;
+#endif
+
+// -affinity. The thread-placement mode this run asked VMManager for, and where that
+// number came from. The runner's own default is 0 (unpinned) on every platform that has
+// the mode at all, whatever the app's default happens to be that month, because an
+// unpinned run is the one whose numbers are comparable against every other unpinned run.
+// s_affinity_mode is -1 where the platform compiles no affinity path, and the source is
+// then "unsupported" -- there is no mode in effect to report.
+static int s_affinity_mode = 0;
+static const char* s_affinity_source = "runner-default";
+
 // -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
 static std::string s_renderdoc_path;
 static u32 s_renderdoc_start_frame = 1;
@@ -95,29 +184,116 @@ static u32 s_renderdoc_frame_count = 1;
 // Owned by the GS thread.
 static u32 s_dump_frame_number = 0;
 static u32 s_loop_number = s_loop_count;
+
+// Frames in one pass over the dump. Latched while the replayer is alive, because the
+// stats JSON is written after VMManager::Shutdown() has already released the dump file.
+// Zero when the run was not a dump replay.
+static u32 s_dump_frames_per_loop = 0;
 static double s_last_internal_draws = 0;
 static double s_last_draws = 0;
 static double s_last_render_passes = 0;
+// Summed renderArea of those same passes, in pixels: on a tiler, the frame's tile load-and-store
+// bill. The pair is the point -- a pass count alone cannot separate a title that broke its frame
+// into hundreds of small passes from one that broke it into hundreds of full-surface ones.
+static double s_last_render_pass_area_pixels = 0;
 static double s_last_barriers = 0;
 static double s_last_copies = 0;
 static double s_last_uploads = 0;
 static double s_last_readbacks = 0;
+static double s_last_gpu_blocking_waits = 0;
 static double s_last_depth_copies_rov = 0;
 static double s_last_draws_rov = 0;
 static double s_last_barriers_rov = 0;
 static u64 s_total_internal_draws = 0;
 static u64 s_total_draws = 0;
 static u64 s_total_render_passes = 0;
+static u64 s_total_render_pass_area_pixels = 0;
 static u64 s_total_barriers = 0;
 static u64 s_total_copies = 0;
 static u64 s_total_uploads = 0;
 static u64 s_total_readbacks = 0;
+static u64 s_total_gpu_blocking_waits = 0;
 static u64 s_total_copies_rov = 0;
 static u64 s_total_draws_rov = 0;
 static u64 s_total_barriers_rov = 0;
 static u32 s_total_frames = 0;
 static u32 s_total_drawn_frames = 0;
 static std::vector<std::string> s_extended_stats_snapshot;
+
+// Process resident set size in kB, or 0 where the platform has no procfs to ask.
+//
+// /proc/self/statm's second field is the resident page count, so the figure is pages
+// times the page size -- which is not always 4 kB (this dev box runs 16 kB pages), so
+// it is asked for rather than assumed. The descriptor is opened once and re-read with
+// pread because this lands on the GS thread's per-frame path; one pread is a couple of
+// microseconds against a frame measured in milliseconds.
+static u64 ReadResidentSetKB()
+{
+#if defined(__linux__)
+	static const long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+	static const int fd = open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
+	if (fd < 0 || page_kb <= 0)
+		return 0;
+
+	char buf[128];
+	const ssize_t len = pread(fd, buf, sizeof(buf) - 1, 0);
+	if (len <= 0)
+		return 0;
+	buf[len] = '\0';
+
+	// "<total> <resident> <shared> ..." -- step over the first field.
+	const char* resident = std::strchr(buf, ' ');
+	if (!resident)
+		return 0;
+
+	return std::strtoull(resident + 1, nullptr, 10) * static_cast<u64>(page_kb);
+#else
+	return 0;
+#endif
+}
+
+// Process minor page fault count, cumulative since process start, or 0 where the platform has
+// no procfs to ask. /proc/[pid]/stat field 10 (minflt, see `man proc`) -- comm (field 2) is
+// parenthesized and can itself contain spaces or parens, so the safe parse skips to the LAST
+// ')' before splitting the remaining space-separated fields, same as every other /proc/[pid]/stat
+// reader has to.
+//
+// ⚠️ Deliberately NOT /proc/self: that symlink resolves per CALLING THREAD, not per process, and
+// the kernel only aggregates minflt across the whole thread group when the directory numerically
+// names the group leader -- /proc/self/stat opened from any other thread (this runs on the GS
+// thread, not main) reads back that one thread's own count, which sits near zero while every
+// other thread's faults, and the RSS growth they cause, go uncounted. getpid() always returns the
+// thread-group id regardless of which thread calls it, so the path is built from that instead of
+// trusted to the symlink.
+static u64 ReadMinorFaultsCumulative()
+{
+#if defined(__linux__)
+	static const std::string path = "/proc/" + std::to_string(getpid()) + "/stat";
+	static const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+
+	char buf[512];
+	const ssize_t len = pread(fd, buf, sizeof(buf) - 1, 0);
+	if (len <= 0)
+		return 0;
+	buf[len] = '\0';
+
+	const char* rparen = std::strrchr(buf, ')');
+	if (!rparen)
+		return 0;
+
+	// From field 3 (state) onward: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt --
+	// skip the first seven to land on minflt (field 10).
+	unsigned long long minflt = 0;
+	if (std::sscanf(rparen + 1, "%*s %*d %*d %*d %*d %*d %*u %llu", &minflt) != 1)
+		return 0;
+
+	return static_cast<u64>(minflt);
+#else
+	return 0;
+#endif
+}
 
 // Per-frame statistics series. Run-aggregate min/avg/max cannot locate a spike, so
 // every presented frame is recorded and written out as JSON at the end of the run.
@@ -126,17 +302,44 @@ static std::vector<std::string> s_extended_stats_snapshot;
 struct FrameSample
 {
 	u32 frame;
+	/// The same frame's index WITHIN the dump. `frame` is monotonic across the whole
+	/// run, so under -loop N it says nothing about where in the dump a sample sits;
+	/// this one resets on every wrap, which is what separates the cold first loop from
+	/// steady state.
+	///
+	/// It is the replayer's counter as published to the GS thread -- the identical
+	/// value, read at the identical instant, that names the presented-frame PNG, so a
+	/// sample and a frame dump join on it exactly. That publication rides the CPU
+	/// thread's message pump, so at a loop boundary the reset can arrive one present
+	/// late: cut the series where this DECREASES, not where it equals zero.
+	u32 frame_in_dump;
 	bool idle;
 	float frame_ms;
 	float gpu_ms;
+
+	/// CPU time the GS thread itself burned producing this frame, in milliseconds.
+	///
+	/// This is the numerator of the ladder's absolute per-draw CPU budget, and it is
+	/// deliberately not frame_ms: frame_ms is wall clock, so it carries the frame
+	/// limiter, the GPU's pace and every other thread's contention, none of which the
+	/// renderer's per-draw cost can be held responsible for. Thread CPU time carries
+	/// only what this thread executed.
+	float gs_cpu_ms;
+
 	u64 prims;
 	u64 draws; // PS2-level (GSPerfMon::Draw)
 	u64 draw_calls;
 	u64 render_passes;
+	u64 render_pass_area_pixels;
 	u64 barriers;
 	u64 copies;
 	u64 uploads;
 	u64 readbacks;
+	/// Times the GS thread blocked on the GPU out of turn (readback submit-and-wait, explicit
+	/// sync). One per frame serializes the whole pipeline, so the number to read is whether it
+	/// is zero, not whether it fell.
+	u64 gpu_blocking_waits;
+
 	u64 copies_rov;
 	u64 draw_calls_rov;
 	u64 barriers_rov;
@@ -146,6 +349,20 @@ struct FrameSample
 	u64 tc_target_miss;
 	u64 hash_cache_hit;
 	u64 hash_cache_miss;
+	u64 pipeline_switches;
+
+	/// Process resident set size in kB at the end of this frame. Per frame rather than
+	/// once at the end because the shape is the finding: a run that leaks and a run that
+	/// merely started big have the same closing figure and different curves, and a
+	/// 50-loop run is exactly where that difference shows up.
+	u64 rss_kb;
+
+	/// Minor page faults since the previous sample (first sample reads as the whole run
+	/// so far). Exists to tell a loop-count-sensitive
+	/// warm-up fault tax apart from real per-frame churn -- rss_kb alone can plateau
+	/// while faults are still high if pages are being re-faulted without growing RSS,
+	/// and can grow without a fault spike if the growth came from one large mmap.
+	u64 minflt_delta;
 };
 // Work posted from other threads (the PINE server) to run on the CPU thread.
 static std::mutex s_cpu_thread_tasks_mutex;
@@ -158,6 +375,9 @@ static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
 static u64 s_frame_timer_last = 0;
+static u64 s_gs_cpu_time_last = 0;
+static u64 s_minflt_last = 0;
+static bool s_saw_gs_back_thread_in_stats = false;
 static double s_last_prims = 0;
 static double s_last_tc_source_hit = 0;
 static double s_last_tc_source_miss = 0;
@@ -165,6 +385,9 @@ static double s_last_tc_target_hit = 0;
 static double s_last_tc_target_miss = 0;
 static double s_last_hash_cache_hit = 0;
 static double s_last_hash_cache_miss = 0;
+static double s_last_pipeline_switches = 0;
+static u64 s_total_pipeline_switches = 0;
+
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -175,6 +398,13 @@ static u64 s_total_hash_cache_miss = 0;
 
 static bool s_perf_enable = false;
 static bool s_force_vsync = false;
+
+// Console replay payload emission. This runs and exits before any VM or GS device is
+// created -- the dump is a replay script rather than a recording, so turning one into
+// something a PlayStation 2 can execute is close to a file transform.
+static bool s_emit_payload = false;
+static GSReplayPayload::Options s_payload_opts;
+static GSLadder::Options s_ladder_opts;
 static float s_perf_updates = 0.0f;
 static float s_perf_sum_fps = 0.0f;
 static float s_perf_sum_internal_fps = 0.0f;
@@ -190,17 +420,98 @@ static bool s_perf_saw_gs_back_thread = false;
 static float s_perf_sum_gpu_time = 0.0f;
 static float s_perf_sum_gpu_usage = 0.0f;
 
+// Failures that happen before the log is usable are reported through here.
+//
+// Two things hide them otherwise. The file log only opens during VM startup, which is
+// after argument parsing and after InitializeConfig, so nothing written before then ever
+// reaches an emulog. And the measurement harnesses run with PCSX2_NOCONSOLE set, which
+// puts the console sink at LOGLEVEL_NONE (see InitializeConsole), so Console.Error
+// reaches nothing either. A run that died in either place left an empty emulog, an empty
+// terminal and exit code 1 -- which is exactly what a crash looks like from outside. That
+// is how a staged binary older than the flag its caller had just learned cost a device
+// round: it rejected the argument and said nothing.
+//
+// stderr is written unconditionally. PCSX2_NOCONSOLE asks for a quiet log, not for a
+// fatal error to be swallowed.
+template <typename... T>
+static void EarlyError(fmt::format_string<T...> format, T&&... args)
+{
+	const std::string message = fmt::format(format, std::forward<T>(args)...);
+	std::fprintf(stderr, "pcsx2-gsrunner: %s\n", message.c_str());
+	std::fflush(stderr);
+
+	// Only when the console sink is off, otherwise the terminal gets the same line twice.
+	// This is for the file and host sinks, on the chance one is already open.
+	if (!Log::IsConsoleOutputEnabled())
+		Console.Error(message);
+}
+
+// The same, plus the pointer to -help. Everything ParseCommandLineArgs rejects uses this,
+// so a caller holding a wrong command line is told both what is wrong and where the list
+// of accepted arguments is.
+template <typename... T>
+static void ArgError(fmt::format_string<T...> format, T&&... args)
+{
+	EarlyError(format, std::forward<T>(args)...);
+	std::fprintf(stderr, "pcsx2-gsrunner: run with -help for the arguments this build accepts.\n");
+	std::fflush(stderr);
+}
+
+// Parses a numeric flag argument, rejecting anything that is not entirely a number.
+// These were FromChars<>(...).value_or(<default>), which silently substituted the default
+// for a typo: '-loop tow' looped forever and '-swthreads x' ran with none, both without a
+// word, and both looking from outside like the run that was asked for.
+template <typename T>
+static std::optional<T> ParseNumericArg(const char* flag, const std::string_view text)
+{
+	const std::string_view trimmed = StringUtil::StripWhitespace(text);
+	std::string_view rest;
+	std::optional<T> value;
+	if constexpr (std::is_integral_v<T>)
+		value = StringUtil::FromChars<T>(trimmed, 10, &rest);
+	else
+		value = StringUtil::FromChars<T>(trimmed, &rest);
+
+	if (!value.has_value() || !rest.empty())
+	{
+		ArgError("{}: '{}' is not a number.", flag, text);
+		return std::nullopt;
+	}
+
+	return value;
+}
+
 bool GSRunner::InitializeConfig()
 {
 	EmuFolders::SetAppRoot();
-	if (!EmuFolders::SetResourcesDirectory() || !EmuFolders::SetDataDirectory(nullptr))
+	if (!EmuFolders::SetResourcesDirectory())
+	{
+		EarlyError("resources directory '{}' is missing (looked for it under the application root '{}'). "
+				   "A staged tree copied without dereferencing symlinks lands here.",
+			EmuFolders::Resources, EmuFolders::AppRoot);
 		return false;
+	}
+
+	Error data_error;
+	if (!EmuFolders::SetDataDirectory(&data_error))
+	{
+		EarlyError("could not create the data directory '{}' or its inis subdirectory: {}", EmuFolders::DataRoot,
+			data_error.GetDescription());
+		return false;
+	}
 
 	CrashHandler::SetWriteDirectory(EmuFolders::DataRoot);
 
-	const char* error;
+	const char* error = nullptr;
 	if (!VMManager::PerformEarlyHardwareChecks(&error))
+	{
+		// Those messages are written for a dialog box and carry embedded newlines. Flatten
+		// them, so the reason is one line a harness log can be grepped for.
+		std::string text(error ? error : "no reason given");
+		std::replace(text.begin(), text.end(), '\n', ' ');
+		EarlyError("early hardware check failed: {}", text);
 		return false;
+	}
 
 	{
 		const std::string roboto_path =
@@ -208,7 +519,7 @@ bool GSRunner::InitializeConfig()
 		const auto roboto_data = FileSystem::MapBinaryFileForRead(roboto_path.c_str());
 		if (roboto_data.empty())
 		{
-			Console.ErrorFmt("Failed to load font file '{}'.", roboto_path);
+			EarlyError("could not read the font '{}' (resources directory '{}').", roboto_path, EmuFolders::Resources);
 			return false;
 		}
 
@@ -368,7 +679,6 @@ void Host::BeginPresentFrame()
 		}
 
 		const u32 last_draws = s_total_internal_draws;
-		const u32 last_uploads = s_total_uploads;
 
 		// Returns this frame's delta as well as accumulating it, so the per-frame
 		// series and the run totals stay derived from one source.
@@ -383,14 +693,19 @@ void Host::BeginPresentFrame()
 
 		FrameSample sample = {};
 		sample.frame = s_total_frames;
+		sample.frame_in_dump = s_dump_frame_number;
 		sample.prims = update_stat(GSPerfMon::Prim, s_total_prims, s_last_prims);
 		sample.draws = update_stat(GSPerfMon::Draw, s_total_internal_draws, s_last_internal_draws);
 		sample.draw_calls = update_stat(GSPerfMon::DrawCalls, s_total_draws, s_last_draws);
 		sample.render_passes = update_stat(GSPerfMon::RenderPasses, s_total_render_passes, s_last_render_passes);
+		sample.render_pass_area_pixels = update_stat(
+			GSPerfMon::RenderPassAreaPixels, s_total_render_pass_area_pixels, s_last_render_pass_area_pixels);
 		sample.barriers = update_stat(GSPerfMon::Barriers, s_total_barriers, s_last_barriers);
 		sample.copies = update_stat(GSPerfMon::TextureCopies, s_total_copies, s_last_copies);
 		sample.uploads = update_stat(GSPerfMon::TextureUploads, s_total_uploads, s_last_uploads);
 		sample.readbacks = update_stat(GSPerfMon::Readbacks, s_total_readbacks, s_last_readbacks);
+		sample.gpu_blocking_waits =
+			update_stat(GSPerfMon::GpuBlockingWaits, s_total_gpu_blocking_waits, s_last_gpu_blocking_waits);
 		sample.copies_rov = update_stat(GSPerfMon::TextureCopiesROV, s_total_copies_rov, s_last_depth_copies_rov);
 		sample.draw_calls_rov = update_stat(GSPerfMon::DrawCallsROV, s_total_draws_rov, s_last_draws_rov);
 		sample.barriers_rov = update_stat(GSPerfMon::BarriersROV, s_total_barriers_rov, s_last_barriers_rov);
@@ -400,8 +715,15 @@ void Host::BeginPresentFrame()
 		sample.tc_target_miss = update_stat(GSPerfMon::TCTargetMiss, s_total_tc_target_miss, s_last_tc_target_miss);
 		sample.hash_cache_hit = update_stat(GSPerfMon::HashCacheHit, s_total_hash_cache_hit, s_last_hash_cache_hit);
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
+		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
 
-		const bool idle_frame = s_total_frames && (last_draws == s_total_internal_draws && last_uploads == s_total_uploads);
+		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
+		// frame with only texture uploads as drawn; under Tile every present-only frame
+		// carries one upload (the floor's framebuffer reaching the display texture), so
+		// that definition made half of a Tile run's frames "drawn" and put ~1 ms
+		// present-only frames into the same percentile as 18 ms drawn ones -- Tile's p50
+		// read as 1.0 ms while its drawn frames were 18. Draws are the honest test.
+		const bool idle_frame = s_total_frames && (last_draws == s_total_internal_draws);
 
 		if (!idle_frame)
 			s_total_drawn_frames++;
@@ -418,6 +740,41 @@ void Host::BeginPresentFrame()
 			                      0.0f;
 			s_frame_timer_last = now;
 			sample.gpu_ms = PerformanceMetrics::GetLastGPUTime();
+
+			// Thread CPU time, sampled here on the GS thread itself, so the frame's
+			// delta is what this thread executed between two presents. Under a
+			// GSBackThreadMode above Off the back thread carries part of the work and
+			// is not sampled here; the run summary says so, because a per-draw figure
+			// taken from half the work would read as a win.
+			const u64 gs_cpu_now = MTGS::GetThreadHandle().GetCPUTime();
+			sample.gs_cpu_ms = (s_gs_cpu_time_last && gs_cpu_now > s_gs_cpu_time_last) ?
+			                       static_cast<float>(static_cast<double>(gs_cpu_now - s_gs_cpu_time_last) * 1000.0 /
+			                                          static_cast<double>(Threading::GetThreadTicksPerSecond())) :
+			                       0.0f;
+			s_gs_cpu_time_last = gs_cpu_now;
+
+			sample.rss_kb = ReadResidentSetKB();
+
+			// First sample reads as the whole run so far: the pre-frame-0 warm-up burst
+			// (process start through the first present)
+			// is exactly the kind of thing this counter exists to catch, so frame 0 is not
+			// zeroed. A read failure comes back as 0 from ReadMinorFaultsCumulative, which a
+			// live process's monotonic count can never legitimately return to once it has
+			// already advanced past zero -- treated as a dropped sample rather than recorded
+			// as a fabricated delta, and s_minflt_last is left alone so the next successful
+			// read still deltas against the last known-good value.
+			const u64 minflt_now = ReadMinorFaultsCumulative();
+			if (minflt_now == 0 && s_minflt_last != 0)
+			{
+				sample.minflt_delta = 0;
+			}
+			else
+			{
+				sample.minflt_delta = minflt_now - s_minflt_last;
+				s_minflt_last = minflt_now;
+			}
+
+			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
 		}
 
@@ -616,6 +973,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -help: Displays this information and exits.\n");
 	std::fprintf(stderr, "  -version: Displays version information and exits.\n");
 	std::fprintf(stderr, "  -dumpdir <dir>: Frame dump directory (will be dumped as filename_frameN.png).\n");
+	std::fprintf(stderr, "  -dumpdirhw <dir>: Directory for the hardware renderer's -dump output. Defaults to -dumpdir.\n");
+	std::fprintf(stderr, "  -dumpdirsw <dir>: Directory for the software renderer's -dump output. Defaults to -dumpdir.\n");
 	std::fprintf(stderr, "  -dump [rt|tex|z|f|a|i|tr|ds|fs|hw]: Enabling dumping of render target, texture, z buffer, frame, "
 		"alphas, and info (context, vertices, list of transfers), transfers images, draw stats, frame stats, HW config, respectively, per draw. Generates lots of data.\n");
 	std::fprintf(stderr, "  -dumprange N[,L,B]: Start dumping from draw N (base 0), stops after L draws, and only "
@@ -635,13 +994,48 @@ static void PrintCommandLineHelp(const char* progname)
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
+	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
+	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
+						 "conversion, disable depth support, disable partial invalidation, disable safe features, texture "
+						 "inside render target, preload frame with GS data, respectively.\n");
+	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
+						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <mode>: GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined). Defaults to 0.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
 	std::fprintf(stderr, "  -noshadercache: Disables the shader cache (useful for parallel runs).\n");
+	std::fprintf(stderr, "  -debugdevice: Enable the graphics API debug device (Vulkan validation layers / GL debug output). "
+						 "Slow; for diagnosing API misuse, not for measurement.\n");
 	std::fprintf(stderr, "  -perf: Enable frame timing performance stats.\n");
 	std::fprintf(stderr, "  -drawlog <path.csv>: Record a per-draw ledger (PS2 register state + backend draw config).\n");
+	std::fprintf(stderr, "  -gspin <cpu[,cpu...]>: Pin the GS thread to these CPUs, e.g. '-gspin 4' or '-gspin 0,1,2,3'. "
+						 "On a big.LITTLE device an unpinned GS thread migrates between core types mid-run, which moves "
+						 "its CPU time without anything in the renderer changing. The pin is read back afterwards and "
+						 "both the request and the result are written to -stats-json; a pin that did not take warns and "
+						 "the run continues.\n");
+	std::fprintf(stderr, "  -affinity <0-7>: Thread-placement mode handed to VMManager before the VM boots. "
+						 "0 = unpinned (every emu thread gets every processor), 1-6 = explicit per-core placements by "
+						 "EE/VU/GS priority, 7 = Performance Cores (confine the emu threads to the big tier). The "
+						 "runner defaults to 0 regardless of what the app build defaults to, because an app policy "
+						 "inherited silently makes two rounds incomparable without either of them saying so. Written "
+						 "to -stats-json as affinity_mode / affinity_source, alongside inherited_cpu_mask, the CPU set "
+						 "this process started with. No effect on platforms with no affinity path (a notice is "
+						 "logged).\n");
+	std::fprintf(stderr, "  -emit-payload <path>: Transform the dump into a console replay payload and exit. Needs no VM, "
+						 "no GS device and no window -- the dump already carries the freeze and the packet stream.\n");
+	std::fprintf(stderr, "  -payload-frames <count>: Stop the emitted payload after this many dump frames. 0 (the default) "
+						 "means all of them. Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -payload-readback bp,bw,psm,w,h | bp,bw,psm,x,y,w,h: The region every payload checkpoint reads "
+						 "back. Left alone it comes from the freeze's context-0 FRAME, which is wrong for a dump that "
+						 "renders somewhere other than where it displays. Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -payload-ladder <n>: Emit a payload checkpoint every n draws as well as at frame boundaries. "
+						 "Only used with -emit-payload.\n");
+	std::fprintf(stderr, "  -ladder bp,bw,psm,x,y,w,h: Read back this window at every rung of a host-side ladder run, the "
+						 "arm the console payload is compared against. Keep the window small: a rung is only useful if "
+						 "hundreds of them fit.\n");
+	std::fprintf(stderr, "  -ladder-every <n>: Take a ladder rung every n draws. Only used if -ladder is used.\n");
+	std::fprintf(stderr, "  -ladder-out <path>: Where to write the ladder rungs. Only used if -ladder is used.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -653,6 +1047,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -no-dual-source: Report no dual-source blend unit, the way every Mali Vulkan blob does. "
 						 "Makes GSRendererHW take the SRC1 substitution and SW-blend fallbacks, so a Mali-only blending "
 						 "bug reproduces on a desktop GPU.\n");
+	std::fprintf(stderr, "  -broken-blend-constant: Report the driver as ignoring the Vulkan blend constant, the way Mesa "
+						 "Turnip does on some draws. GSRendererHW then sends a fixed (AFIX) blend factor through the "
+						 "second fragment output instead of vkCmdSetBlendConstants, so that road can be A/B'd on a "
+						 "machine whose driver is fine.\n");
 	std::fprintf(stderr, "  -no-vs-expand: Disable vertex-shader point/line/sprite expansion (storage-buffer path). "
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
@@ -673,16 +1071,66 @@ void GSRunner::InitializeConsole()
 		Log::SetConsoleOutputLevel(LOGLEVEL_DEBUG);
 }
 
+// Renders a CPU-affinity mask as the comma list the stats JSON carries: 4, or 0,1,2,3.
+static std::string FormatCpuMask(u64 mask)
+{
+	std::string out;
+	for (u32 i = 0; i < 64; i++)
+	{
+		if (!(mask & (static_cast<u64>(1) << i)))
+			continue;
+		if (!out.empty())
+			out.push_back(',');
+		out += std::to_string(i);
+	}
+	return out;
+}
+
+// Parses the -gspin argument, a comma-separated list of CPU indices, into an affinity
+// mask. Rejects anything that is not a number, but tolerates an index this mask cannot
+// express (>= 64) by dropping it -- whether the CPU exists is the kernel's answer to
+// give at pin time, not something to guess at parse time.
+static bool ParseCpuList(const std::string_view list, u64* mask)
+{
+	*mask = 0;
+	size_t pos = 0;
+	while (pos <= list.size())
+	{
+		const size_t comma = list.find(',', pos);
+		const std::string_view tok =
+			StringUtil::StripWhitespace(list.substr(pos, (comma == std::string_view::npos) ? std::string_view::npos : (comma - pos)));
+		if (tok.empty())
+			return false;
+
+		const std::optional<u32> cpu = StringUtil::FromChars<u32>(tok);
+		if (!cpu.has_value())
+			return false;
+		if (cpu.value() < 64)
+			*mask |= (static_cast<u64>(1) << cpu.value());
+
+		if (comma == std::string_view::npos)
+			break;
+		pos = comma + 1;
+	}
+	return true;
+}
+
 bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params)
 {
 	std::string dumpdir; // Save from argument -dumpdir for creating sub-directories
 	bool no_more_args = false;
 	for (int i = 1; i < argc; i++)
 	{
+		// A flag that takes a parameter but was given none used to fail its CHECK_ARG_PARAM
+		// test, fall through the whole chain, and come out of the unknown-argument branch at
+		// the bottom -- reported as an unknown flag, which sends the reader hunting a typo
+		// that is not there. The name is recorded here instead, and a branch just above that
+		// one says what is actually wrong.
+		const char* missing_param = nullptr;
 		if (!no_more_args)
 		{
 #define CHECK_ARG(str) !std::strcmp(argv[i], str)
-#define CHECK_ARG_PARAM(str) (!std::strcmp(argv[i], str) && ((i + 1) < argc))
+#define CHECK_ARG_PARAM(str) (!std::strcmp(argv[i], str) && (((i + 1) < argc) ? true : ((missing_param = (str)), false)))
 
 			if (CHECK_ARG("-help"))
 			{
@@ -699,13 +1147,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				dumpdir = s_output_prefix = StringUtil::StripWhitespace(argv[++i]);
 				if (s_output_prefix.empty())
 				{
-					Console.Error("Invalid dump directory specified.");
+					ArgError("-dumpdir: the directory name is empty.");
 					return false;
 				}
 
 				if (!FileSystem::DirectoryExists(s_output_prefix.c_str()) && !FileSystem::CreateDirectoryPath(s_output_prefix.c_str(), false))
 				{
-					Console.Error("Failed to create output directory");
+					ArgError("-dumpdir: could not create the output directory '{}'.", s_output_prefix);
 					return false;
 				}
 
@@ -749,15 +1197,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				int by = 1;
 				if (split.size() > 0)
 				{
-					start = StringUtil::FromChars<int>(split[0]).value_or(0);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[0]);
+					if (!v.has_value())
+						return false;
+					start = v.value();
 				}
 				if (split.size() > 1)
 				{
-					num = StringUtil::FromChars<int>(split[1]).value_or(-1);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[1]);
+					if (!v.has_value())
+						return false;
+					num = v.value();
 				}
 				if (split.size() > 2)
 				{
-					by = std::max(1, StringUtil::FromChars<int>(split[2]).value_or(1));
+					const std::optional<int> v = ParseNumericArg<int>("-dumprange", split[2]);
+					if (!v.has_value())
+						return false;
+					by = std::max(1, v.value());
 				}
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveDrawStart", start);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveDrawCount", num);
@@ -774,15 +1231,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				int by = 1;
 				if (split.size() > 0)
 				{
-					start = StringUtil::FromChars<int>(split[0]).value_or(0);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[0]);
+					if (!v.has_value())
+						return false;
+					start = v.value();
 				}
 				if (split.size() > 1)
 				{
-					num = StringUtil::FromChars<int>(split[1]).value_or(-1);
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[1]);
+					if (!v.has_value())
+						return false;
+					num = v.value();
 				}
 				if (split.size() > 2)
 				{
-					by = std::max(1, StringUtil::FromChars<int>(split[2]).value_or(1));
+					const std::optional<int> v = ParseNumericArg<int>("-dumprangef", split[2]);
+					if (!v.has_value())
+						return false;
+					by = std::max(1, v.value());
 				}
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameStart", start);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameCount", num);
@@ -794,7 +1260,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_renderdoc_path = StringUtil::StripWhitespace(argv[++i]);
 				if (s_renderdoc_path.empty())
 				{
-					Console.Error("Invalid RenderDoc capture path specified.");
+					ArgError("-renderdoc: the capture path is empty.");
 					return false;
 				}
 				continue;
@@ -805,9 +1271,19 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				std::vector<std::string_view> split = StringUtil::SplitString(str, ',');
 				if (split.size() > 0)
-					s_renderdoc_start_frame = StringUtil::FromChars<u32>(split[0]).value_or(1);
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-renderdoc-frame", split[0]);
+					if (!v.has_value())
+						return false;
+					s_renderdoc_start_frame = v.value();
+				}
 				if (split.size() > 1)
-					s_renderdoc_frame_count = std::max(1u, StringUtil::FromChars<u32>(split[1]).value_or(1));
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-renderdoc-frame", split[1]);
+					if (!v.has_value())
+						return false;
+					s_renderdoc_frame_count = std::max(1u, v.value());
+				}
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-dumpdirhw"))
@@ -822,7 +1298,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-loop"))
 			{
-				s_loop_count = StringUtil::FromChars<s32>(argv[++i]).value_or(0);
+				// A typo here used to become 0, which is the spelling of "loop forever".
+				const std::optional<s32> count = ParseNumericArg<s32>("-loop", argv[++i]);
+				if (!count.has_value())
+					return false;
+				s_loop_count = count.value();
 				Console.WriteLn("Looping dump playback %d times.", s_loop_count);
 				continue;
 			}
@@ -855,7 +1335,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					type = GSRendererType::SW;
 				else
 				{
-					Console.Error("Unknown renderer '%s'", rname);
+					ArgError("-renderer: unknown renderer '{}'.", rname);
 					return false;
 				}
 
@@ -865,10 +1345,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-backthread"))
 			{
-				const int mode = StringUtil::FromChars<int>(argv[++i]).value_or(-1);
+				const char* mode_arg = argv[++i];
+				const std::optional<int> parsed = ParseNumericArg<int>("-backthread", mode_arg);
+				if (!parsed.has_value())
+					return false;
+				const int mode = parsed.value();
 				if (mode < 0 || mode > 3)
 				{
-					Console.Error("Invalid GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined)");
+					ArgError("-backthread: mode '{}' is out of range (0=off, 1=inline-records, 2=lockstep, "
+							 "3=pipelined).",
+						mode_arg);
 					return false;
 				}
 
@@ -878,15 +1364,23 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-swthreads"))
 			{
-				const int swthreads = StringUtil::FromChars<int>(argv[++i]).value_or(0);
+				const std::optional<int> parsed = ParseNumericArg<int>("-swthreads", argv[++i]);
+				if (!parsed.has_value())
+					return false;
+				const int swthreads = parsed.value();
 				if (swthreads < 0)
 				{
-					Console.WriteLn("Invalid number of software threads");
+					ArgError("-swthreads: {} is negative.", swthreads);
 					return false;
 				}
 				
 				Console.WriteLn(fmt::format("Setting number of software threads to {}", swthreads));
-				s_settings_interface.SetIntValue("EmuCore/GS", "SWExtraThreads", swthreads);
+				// The INI key is "extrathreads"; SWExtraThreads is the C++ member it loads
+				// into (Pcsx2Config.cpp, SettingsWrapBitfieldEx). Writing the member name
+				// wrote a key nothing reads, so this flag silently did nothing -- and it
+				// is a flag used to CONTROL for software-rasterizer threading, so it
+				// reported success while leaving the variable it claimed to pin unchanged.
+				s_settings_interface.SetIntValue("EmuCore/GS", "extrathreads", swthreads);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-renderhacks"))
@@ -917,7 +1411,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				std::string path = std::string(StringUtil::StripWhitespace(argv[++i]));
 				if (!FileSystem::FileExists(path.c_str()))
 				{
-					Console.ErrorFmt("INI file {} does not exit.", path);
+					ArgError("-ini: no such file '{}'.", path);
 					return false;
 				}
 
@@ -925,7 +1419,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				if (!si_ini.Load())
 				{
-					Console.ErrorFmt("Unable to load INI settings from {}.", path);
+					ArgError("-ini: could not load settings from '{}'.", path);
 					return false;
 				}
 
@@ -936,10 +1430,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-upscale"))
 			{
-				const float upscale = StringUtil::FromChars<float>(argv[++i]).value_or(0.0f);
+				const std::optional<float> parsed = ParseNumericArg<float>("-upscale", argv[++i]);
+				if (!parsed.has_value())
+					return false;
+				const float upscale = parsed.value();
 				if (upscale < 0.5f)
 				{
-					Console.WriteLn("Invalid upscale multiplier");
+					ArgError("-upscale: multiplier {} is below the minimum of 0.5.", upscale);
 					return false;
 				}
 
@@ -992,6 +1489,33 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				Console.WriteLn(fmt::format("Recording per-draw ledger to {}", s_drawlog_path));
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("-gspin"))
+			{
+				const std::string cpus(StringUtil::StripWhitespace(argv[++i]));
+				if (!ParseCpuList(cpus, &s_gs_pin_mask))
+				{
+					ArgError("-gspin: '{}' is not a CPU list (expected e.g. 4 or 0,1,2,3).", cpus);
+					return false;
+				}
+				s_gs_pin_request = cpus;
+				Console.WriteLn(fmt::format("Pinning the GS thread to CPU(s) {}", s_gs_pin_request));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-affinity"))
+			{
+				const char* mode_arg = argv[++i];
+				const std::optional<int> mode = GSRunnerAffinity::ParseMode(mode_arg);
+				if (!mode.has_value())
+				{
+					ArgError("-affinity: invalid mode '{}' -- expected an integer {}-{} (0 unpinned, 1-6 explicit "
+							 "per-core placements, 7 Performance Cores).",
+						mode_arg, GSRunnerAffinity::MODE_MIN, GSRunnerAffinity::MODE_MAX);
+					return false;
+				}
+				s_affinity_mode = mode.value();
+				s_affinity_source = "flag";
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("-stats-json"))
 			{
 				s_stats_json_path = argv[++i];
@@ -1007,7 +1531,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string_view::size_type slash = arg.rfind('/', eq);
 				if (eq == std::string_view::npos || slash == std::string_view::npos || slash == 0)
 				{
-					Console.Error(fmt::format("Malformed -set '{}', expected <Section/Key>=<value>", arg));
+					ArgError("-set: malformed override '{}', expected <Section/Key>=<value>.", arg);
 					return false;
 				}
 
@@ -1016,7 +1540,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string value(arg.substr(eq + 1));
 				if (key.empty())
 				{
-					Console.Error(fmt::format("Malformed -set '{}', empty key", arg));
+					ArgError("-set: malformed override '{}', the key is empty.", arg);
 					return false;
 				}
 
@@ -1044,6 +1568,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableDualSourceBlend", true);
 				continue;
 			}
+			else if (CHECK_ARG("-broken-blend-constant"))
+			{
+				Console.WriteLn("Pretending the driver ignores the blend constant (pretend to be Turnip)");
+				// Not a setting: the driver-bug database is keyed on device identity, and this
+				// forces one of its bits on for a device that does not have it. Read when the
+				// device resolves its profile, which happens after argument parsing.
+				GpuProfileDetector::SetForcedBugs(GpuProfileDetector::GetForcedBugs() |
+												  GpuProfileDetector::BugMask(DriverBug::BrokenBlendConstant));
+				continue;
+			}
 			else if (CHECK_ARG("-no-vs-expand"))
 			{
 				Console.WriteLn("Disabling vertex-shader point/line/sprite expansion");
@@ -1058,14 +1592,127 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))
 			{
-				const std::optional<int> level = StringUtil::FromChars<int>(argv[++i]);
-				if (!level.has_value() || level.value() < 0 || level.value() > 5)
+				const char* level_arg = argv[++i];
+				const std::optional<int> level = ParseNumericArg<int>("-accblend", level_arg);
+				if (!level.has_value())
+					return false;
+				if (level.value() < 0 || level.value() > 5)
 				{
-					Console.Error("Invalid -accblend level (expected 0=Minimum .. 5=Maximum)");
+					ArgError("-accblend: level '{}' is out of range (expected 0=Minimum .. 5=Maximum).", level_arg);
 					return false;
 				}
 				Console.WriteLn(fmt::format("Forcing accurate blending unit = {}", level.value()));
 				s_settings_interface.SetIntValue("EmuCore/GS", "accurate_blending_unit", level.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-emit-payload"))
+			{
+				s_payload_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_payload_opts.output_path.empty())
+				{
+					ArgError("-emit-payload: the output path is empty.");
+					return false;
+				}
+				s_emit_payload = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-frames"))
+			{
+				const std::optional<u32> frames = ParseNumericArg<u32>("-payload-frames", argv[++i]);
+				if (!frames.has_value())
+					return false;
+				s_payload_opts.frame_limit = frames.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-readback"))
+			{
+				// bp,bw,psm,w,h -- the region every checkpoint reads back. Left alone it
+				// comes from the freeze's context-0 FRAME, which is right for most dumps
+				// and wrong for any that render somewhere other than where they display.
+				// Five fields is the whole target; seven adds an origin and is the same
+				// shape as -ladder, so a window can be copied between the two arms
+				// verbatim rather than re-typed in a different order.
+				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
+				if (parts.size() != 5 && parts.size() != 7)
+				{
+					ArgError("-payload-readback: got {} fields, wants bp,bw,psm,w,h or bp,bw,psm,x,y,w,h.",
+						parts.size());
+					return false;
+				}
+				std::vector<u32> rb;
+				rb.reserve(parts.size());
+				for (const std::string_view& part : parts)
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-payload-readback", part);
+					if (!v.has_value())
+						return false;
+					rb.push_back(v.value());
+				}
+				s_payload_opts.rb_bp = rb[0];
+				s_payload_opts.rb_bw = rb[1];
+				s_payload_opts.rb_psm = rb[2];
+				if (rb.size() == 7)
+				{
+					s_payload_opts.rb_x = rb[3];
+					s_payload_opts.rb_y = rb[4];
+				}
+				s_payload_opts.rb_w = rb[rb.size() - 2];
+				s_payload_opts.rb_h = rb[rb.size() - 1];
+				s_payload_opts.rb_explicit = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-ladder"))
+			{
+				const std::optional<u32> every = ParseNumericArg<u32>("-payload-ladder", argv[++i]);
+				if (!every.has_value())
+					return false;
+				s_payload_opts.ladder_every = every.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder"))
+			{
+				// bp,bw,psm,x,y,w,h -- the window read back at every rung. Small on
+				// purpose: a rung is only useful if hundreds of them fit, and the
+				// console's buffer is the binding constraint on both arms.
+				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
+				if (parts.size() != 7)
+				{
+					ArgError("-ladder: got {} fields, wants bp,bw,psm,x,y,w,h.", parts.size());
+					return false;
+				}
+				u32 rung[7] = {};
+				for (size_t p = 0; p < parts.size(); p++)
+				{
+					const std::optional<u32> v = ParseNumericArg<u32>("-ladder", parts[p]);
+					if (!v.has_value())
+						return false;
+					rung[p] = v.value();
+				}
+				s_ladder_opts.bp = rung[0];
+				s_ladder_opts.bw = rung[1];
+				s_ladder_opts.psm = rung[2];
+				s_ladder_opts.x = rung[3];
+				s_ladder_opts.y = rung[4];
+				s_ladder_opts.w = rung[5];
+				s_ladder_opts.h = rung[6];
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder-every"))
+			{
+				const std::optional<u32> every = ParseNumericArg<u32>("-ladder-every", argv[++i]);
+				if (!every.has_value())
+					return false;
+				s_ladder_opts.every = every.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder-out"))
+			{
+				s_ladder_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_ladder_opts.output_path.empty())
+				{
+					ArgError("-ladder-out: the output path is empty.");
+					return false;
+				}
 				continue;
 			}
 			else if (CHECK_ARG("-debugdevice"))
@@ -1079,9 +1726,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				no_more_args = true;
 				continue;
 			}
+			else if (missing_param)
+			{
+				ArgError("{}: needs a parameter, and it was the last argument on the command line.", missing_param);
+				return false;
+			}
 			else if (argv[i][0] == '-')
 			{
-				Console.Error("Unknown parameter: '%s'", argv[i]);
+				ArgError("unknown argument '{}'.", argv[i]);
 				return false;
 			}
 
@@ -1096,13 +1748,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 	if (params.filename.empty())
 	{
-		Console.Error("No dump filename provided.");
+		ArgError("no GS dump filename was given.");
 		return false;
 	}
 
 	if (!VMManager::IsGSDumpFileName(params.filename))
 	{
-		Console.Error("Provided filename is not a GS dump.");
+		ArgError("'{}' is not a GS dump (expected .gs, .gs.xz or .gs.zst).", params.filename);
+		return false;
+	}
+
+	// Half a ladder is not a smaller ladder, it is a run that produces no file
+	// and exits 0. A harness diffing two arms then finds one output missing and
+	// has to work backwards to a flag it did not pass.
+	const bool ladder_rect = (s_ladder_opts.w != 0 && s_ladder_opts.h != 0);
+	if (ladder_rect != !s_ladder_opts.output_path.empty())
+	{
+		ArgError("-ladder and -ladder-out go together; got only {}.",
+			ladder_rect ? "-ladder" : "-ladder-out");
 		return false;
 	}
 
@@ -1214,6 +1877,47 @@ static void WriteStatsJson(const std::string& path)
 	}
 	std::sort(frame_times.begin(), frame_times.end());
 
+	// The absolute per-draw CPU budget: GS-thread CPU per PS2 draw, over drawn frames.
+	// Summed before dividing rather than averaged per frame, so a frame with three
+	// draws does not weigh the same as one with a thousand. Two denominators because
+	// they answer different questions -- per PS2 draw is the number a renderer is held
+	// to (both variants see the same draws), per draw call is what the backend was
+	// actually asked to submit. The first frame's sample is zero by construction and
+	// is skipped with the idle ones.
+	double gs_cpu_ms_total = 0.0;
+	u64 gs_cpu_draws = 0, gs_cpu_draw_calls = 0;
+	std::vector<float> gs_cpu_per_draw_us;
+	gs_cpu_per_draw_us.reserve(s_frame_samples.size());
+	for (const FrameSample& s : s_frame_samples)
+	{
+		if (s.idle || s.gs_cpu_ms <= 0.0f || s.draws == 0)
+			continue;
+		gs_cpu_ms_total += s.gs_cpu_ms;
+		gs_cpu_draws += s.draws;
+		gs_cpu_draw_calls += s.draw_calls;
+		gs_cpu_per_draw_us.push_back(static_cast<float>(s.gs_cpu_ms * 1000.0 / static_cast<double>(s.draws)));
+	}
+	std::sort(gs_cpu_per_draw_us.begin(), gs_cpu_per_draw_us.end());
+
+	const double gs_cpu_us_per_draw = gs_cpu_draws ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws)) : 0.0;
+	const double gs_cpu_us_per_draw_call = gs_cpu_draw_calls ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draw_calls)) : 0.0;
+
+	// Resident set size across the run. first-to-last is the leak test; max is there
+	// because a transient peak sits between the two endpoints and neither one sees it.
+	// The baseline is the first frame that actually drew -- the frames before it are
+	// still paging in shaders and textures, so they would understate the starting point
+	// and turn ordinary warm-up into a reported leak.
+	u64 rss_kb_first = 0, rss_kb_last = 0, rss_kb_max = 0;
+	for (const FrameSample& s : s_frame_samples)
+	{
+		if (s.rss_kb == 0)
+			continue;
+		if (rss_kb_first == 0 && !s.idle)
+			rss_kb_first = s.rss_kb;
+		rss_kb_last = s.rss_kb;
+		rss_kb_max = std::max(rss_kb_max, s.rss_kb);
+	}
+
 	u32 worst_frame = 0;
 	float worst_ms = 0.0f;
 	for (const FrameSample& s : s_frame_samples)
@@ -1245,9 +1949,17 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"device_name\": \"%s\",\n    \"driver_info\": \"%s\",\n",
 		json_escape(s_device_name).c_str(), json_escape(s_driver_info).c_str());
 	std::fprintf(fp.get(), "    \"frames\": %u,\n    \"drawn_frames\": %u,\n", s_total_frames, s_total_drawn_frames);
+	// What the run was asked to replay, so a reader can cut the frame series into loops.
+	// loop_count is the -loop value verbatim (1 when the flag was absent, 0 meaning
+	// "until stopped"); frames_per_loop is the dump's own frame count. Without the pair,
+	// the first loop -- shader compiles, cold caches, first upload of every texture --
+	// sits in the same percentile as steady state and there is no way to take it out.
+	std::fprintf(fp.get(), "    \"loop_count\": %d,\n    \"frames_per_loop\": %u,\n",
+		s_loop_count, s_dump_frames_per_loop);
 	std::fprintf(fp.get(), "    \"prims\": %" PRIu64 ",\n    \"draws\": %" PRIu64 ",\n    \"draw_calls\": %" PRIu64 ",\n",
 		s_total_prims, s_total_internal_draws, s_total_draws);
 	std::fprintf(fp.get(), "    \"render_passes\": %" PRIu64 ",\n    \"barriers\": %" PRIu64 ",\n", s_total_render_passes, s_total_barriers);
+	std::fprintf(fp.get(), "    \"render_pass_area_pixels\": %" PRIu64 ",\n", s_total_render_pass_area_pixels);
 	std::fprintf(fp.get(), "    \"copies\": %" PRIu64 ",\n    \"uploads\": %" PRIu64 ",\n    \"readbacks\": %" PRIu64 ",\n",
 		s_total_copies, s_total_uploads, s_total_readbacks);
 	std::fprintf(fp.get(), "    \"copies_rov\": %" PRIu64 ",\n    \"draw_calls_rov\": %" PRIu64 ",\n    \"barriers_rov\": %" PRIu64 ",\n",
@@ -1258,6 +1970,29 @@ static void WriteStatsJson(const std::string& path)
 		s_total_tc_target_hit, s_total_tc_target_miss);
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
+	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
+	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
+	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
+		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
+	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
+		Percentile(gs_cpu_per_draw_us, 0.50), Percentile(gs_cpu_per_draw_us, 0.95));
+	std::fprintf(fp.get(), "    \"gs_cpu_partial\": %s,\n", s_saw_gs_back_thread_in_stats ? "true" : "false");
+	// Where the GS thread was asked to sit, where it actually sat, and who put it there.
+	// requested is "none" when the flag was absent; effective is always the read-back, and
+	// is "unsupported" only when the platform cannot be asked.
+	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
+		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
+	std::fprintf(fp.get(), "    \"gs_pin_source\": \"%s\",\n", s_gs_pin_source);
+	// The thread-placement mode VMManager ran under, who chose it, and the CPU set this
+	// process inherited before anything narrowed it. affinity_mode is -1 with source
+	// "unsupported" on a build with no affinity path. inherited_cpu_mask is a hex mask
+	// because that is how taskset's argument is written, and it is 0x0 where the platform
+	// does not answer the question at all.
+	std::fprintf(fp.get(), "    \"affinity_mode\": %d,\n    \"affinity_source\": \"%s\",\n", s_affinity_mode,
+		s_affinity_source);
+	std::fprintf(fp.get(), "    \"inherited_cpu_mask\": \"0x%" PRIx64 "\",\n", s_baseline_cpu_mask);
+	std::fprintf(fp.get(), "    \"rss_kb_first\": %" PRIu64 ",\n    \"rss_kb_last\": %" PRIu64 ",\n    \"rss_kb_max\": %" PRIu64 ",\n",
+		rss_kb_first, rss_kb_last, rss_kb_max);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
@@ -1267,22 +2002,27 @@ static void WriteStatsJson(const std::string& path)
 	{
 		const FrameSample& s = s_frame_samples[i];
 		std::fprintf(fp.get(),
-			"    {\"frame\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,"
+			"    {\"frame\":%u,\"frame_in_dump\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
 			"\"prims\":%" PRIu64 ",\"draws\":%" PRIu64 ",\"draw_calls\":%" PRIu64 ","
-			"\"render_passes\":%" PRIu64 ",\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
+			"\"render_passes\":%" PRIu64 ",\"render_pass_area_pixels\":%" PRIu64 ","
+			"\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
 			"\"uploads\":%" PRIu64 ",\"readbacks\":%" PRIu64 ","
 			"\"copies_rov\":%" PRIu64 ",\"draw_calls_rov\":%" PRIu64 ",\"barriers_rov\":%" PRIu64 ","
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
-			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 "}%s\n",
-			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms,
+			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
+			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
+			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 "}%s\n",
+			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
-			s.render_passes, s.barriers, s.copies,
+			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
 			s.uploads, s.readbacks,
 			s.copies_rov, s.draw_calls_rov, s.barriers_rov,
 			s.tc_source_hit, s.tc_source_miss,
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
+			s.pipeline_switches, s.gpu_blocking_waits,
+			s.rss_kb, s.minflt_delta,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
@@ -1298,10 +2038,21 @@ void GSRunner::DumpStats()
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws: {} (avg {})", s_total_internal_draws, static_cast<u64>(std::ceil(s_total_internal_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draw Calls: {} (avg {})", s_total_draws, static_cast<u64>(std::ceil(s_total_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", s_total_render_passes, static_cast<u64>(std::ceil(s_total_render_passes / static_cast<double>(s_total_drawn_frames)))));
+	// The same passes weighed rather than counted: megapixels of renderArea a drawn frame loads and
+	// stores, which is what a pass costs on a tiler.
+	Console.WriteLn(fmt::format("@HWSTAT@ Render Pass Area Mpx: {:.2f} (avg {:.2f}/frame)",
+		s_total_render_pass_area_pixels / 1e6,
+		s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
+	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Readbacks: {} (avg {})", s_total_readbacks, static_cast<u64>(std::ceil(s_total_readbacks / static_cast<double>(s_total_drawn_frames)))));
+	// Not a duplicate of Readbacks: that counts copies that reach the device, this counts the times
+	// the GS thread BLOCKED for one. Zero is the target; any nonzero value costs the frame
+	// min(cpu, gpu) whatever the magnitude.
+	Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {:.2f}/frame)", s_total_gpu_blocking_waits,
+		s_total_gpu_blocking_waits / static_cast<double>(s_total_drawn_frames)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers (ROV): {} (avg {})", s_total_barriers_rov, static_cast<u64>(std::ceil(s_total_barriers_rov / static_cast<double>(s_total_drawn_frames)))));
@@ -1345,6 +2096,25 @@ void GSRunner::DumpStats()
 
 		Console.WriteLn(fmt::format("@HWSTAT@ Frame Time p50/p95/p99: {:.3f} / {:.3f} / {:.3f} ms",
 			Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99)));
+
+		// The absolute per-draw CPU line (same arithmetic as the JSON summary). A ratio
+		// to Classic can only say "not worse"; this says how much a draw costs.
+		double gs_cpu_ms_total = 0.0;
+		u64 gs_cpu_draws = 0;
+		for (const FrameSample& s : s_frame_samples)
+		{
+			if (s.idle || s.gs_cpu_ms <= 0.0f || s.draws == 0)
+				continue;
+			gs_cpu_ms_total += s.gs_cpu_ms;
+			gs_cpu_draws += s.draws;
+		}
+		if (gs_cpu_draws)
+		{
+			Console.WriteLn(fmt::format("@HWSTAT@ GS Thread CPU per draw: {:.3f} us ({:.3f} ms over {} draws{})",
+				gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws), gs_cpu_ms_total, gs_cpu_draws,
+				s_saw_gs_back_thread_in_stats ? ", front thread only" : ""));
+		}
+
 	}
 	for (const std::string& line : s_extended_stats_snapshot)
 		Console.WriteLn(fmt::format("@HWSTAT@ {}", line));
@@ -1362,6 +2132,128 @@ void GSRunner::DumpStats()
 #define main real_main
 #endif
 
+// Hands VMManager the thread-placement mode this run is to use, and says so.
+//
+// This has to run before VMManager::Initialize: SetEmuThreadAffinities is called from
+// inside it, so a mode written afterwards would not reach the first placement, and on a
+// big.LITTLE device the first placement is the one the whole run happens under.
+//
+// The runner overrides the compiled-in default rather than accepting it. That default is
+// the Android app's policy, pushed from the app's settings before the VM boots, and a
+// headless measurement binary has no app to push anything -- so it silently keeps
+// whatever the last app-side change left behind. That is not hypothetical: 07bf25a171
+// moved the default from 0 to 7, and on the RG477V an ac3 dump's frame p95 went 14.2 ->
+// 17.2 ms with GS-thread CPU time flat, which took a four-arm bisect to attribute
+// because no artifact of either round named the mode it ran under. Hence 0 here and the
+// three keys in the stats JSON.
+static void ApplyAffinityMode()
+{
+#if defined(__ANDROID__)
+	g_android_affinity_mode = s_affinity_mode;
+#else
+	// No affinity path compiled in on this platform, so there is no mode to be in. Say so
+	// once if the flag was given, and record -1 rather than a number that did nothing.
+	if (std::strcmp(s_affinity_source, "flag") == 0)
+	{
+		std::fprintf(stderr,
+			"pcsx2-gsrunner: -affinity %d: this build has no thread-placement path, so the flag does nothing.\n",
+			s_affinity_mode);
+	}
+	s_affinity_mode = -1;
+	s_affinity_source = "unsupported";
+#endif
+}
+
+// Pins the GS thread where -gspin asked, if it asked, and then reads back where the
+// thread actually ended up -- always, flag or no flag.
+//
+// The read-back is unconditional because a request is not a result and, more to the
+// point, because the run with no flag is not an unpinned run. VMManager pins the GS
+// thread itself during Initialize whenever EmuCore/EnableThreadPinning is on, which it
+// is by default, so on a big.LITTLE device a core has already been chosen by the time
+// anything here runs. That choice decides what the run's GS-thread CPU time means, so
+// it belongs in the record whether we made it or not.
+//
+// gs_pin_source names who did it, because the same comma list means different things:
+//   flag       -- the read-back is exactly what -gspin asked for
+//   vmmanager  -- something narrowed the thread and it was not us (in practice
+//                 VMManager's own pinning, including when -gspin asked and missed)
+//   none       -- the read-back is the set the process started with, so nothing pinned
+//                 anything, or the platform cannot be asked at all
+//
+// A pin that did not take warns once on stderr and the run continues. The harness reads
+// the JSON, and a run whose thread went elsewhere is still a valid run -- just not a
+// placement-controlled one, which is exactly what these three keys let it work out.
+static void ApplyGSThreadPin()
+{
+	// Reported here rather than where the mode is applied, so the run's whole thread
+	// placement -- the mode VMManager was given, where that number came from, and the CPU
+	// set the process was handed before anything narrowed it -- reads as one block next to
+	// the GS pin line below. The suite runs the runner under taskset, so the inherited mask
+	// is the thing mode 0 is measured against: mode 0 hands every emu thread an empty mask,
+	// which means every processor, so it widens past whatever taskset asked for.
+	Console.WriteLn(fmt::format("Affinity mode {} (source: {}), inherited CPU mask 0x{:x}", s_affinity_mode,
+		s_affinity_source, s_baseline_cpu_mask));
+
+	const Threading::ThreadHandle& gs_thread = MTGS::GetThreadHandle();
+	if (!gs_thread)
+	{
+		s_gs_pin_effective = "unsupported";
+		s_gs_pin_source = "none";
+		if (!s_gs_pin_request.empty())
+			std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: there is no GS thread to pin.\n", s_gs_pin_request.c_str());
+		return;
+	}
+
+	// A zero mask means "every processor" to SetAffinity, so a request naming only CPUs
+	// the mask cannot express must not be passed through: that would un-pin the thread
+	// while reporting that a pin was asked for.
+	if (!s_gs_pin_request.empty() && s_gs_pin_mask != 0)
+		gs_thread.SetAffinity(s_gs_pin_mask);
+
+	const u64 effective = gs_thread.GetAffinity();
+	if (effective == 0)
+	{
+		// No per-thread affinity introspection on this platform (Darwin and Windows both
+		// return 0 here, and Darwin cannot pin at all), so there is nothing to report but
+		// that the platform does not answer the question.
+		s_gs_pin_effective = "unsupported";
+		s_gs_pin_source = "none";
+		if (!s_gs_pin_request.empty())
+		{
+			std::fprintf(stderr, "pcsx2-gsrunner: -gspin %s: this platform does not support pinning a thread.\n",
+				s_gs_pin_request.c_str());
+		}
+		return;
+	}
+
+	s_gs_pin_effective = FormatCpuMask(effective);
+
+	const bool took = (!s_gs_pin_request.empty() && effective == s_gs_pin_mask);
+	if (took)
+		s_gs_pin_source = "flag";
+	else if (s_baseline_cpu_mask != 0 && effective == s_baseline_cpu_mask)
+		s_gs_pin_source = "none";
+	else
+		s_gs_pin_source = "vmmanager";
+
+	if (took)
+	{
+		Console.WriteLn(fmt::format("GS thread pinned to CPU(s) {}", s_gs_pin_effective));
+	}
+	else if (!s_gs_pin_request.empty())
+	{
+		std::fprintf(stderr,
+			"pcsx2-gsrunner: -gspin %s did not take -- the GS thread may run on %s. The run continues, but its "
+			"GS-thread CPU time is not placement-controlled.\n",
+			s_gs_pin_request.c_str(), s_gs_pin_effective.c_str());
+	}
+	else
+	{
+		Console.WriteLn(fmt::format("GS thread runs on CPU(s) {} (pinned by: {})", s_gs_pin_effective, s_gs_pin_source));
+	}
+}
+
 static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 {
 	ret->store(EXIT_FAILURE);
@@ -1374,9 +2266,33 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 		if (VMManager::Initialize(*params) == VMBootResult::StartupSuccess)
 		{
+			// The GS thread exists from here on, and this is the last quiet moment before
+			// frames start, so the pin lands before the first one is timed.
+			//
+			// It also has to land AFTER VMManager::Initialize, not before: with
+			// EmuCore/EnableThreadPinning on -- which it is by default -- Initialize pins
+			// the GS thread itself, to whichever processor its frequency sort ranked next.
+			// Moving this call any earlier means that pin quietly overwrites -gspin, and
+			// the only visible symptom would be that the flag stops doing anything.
+			ApplyGSThreadPin();
+
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);
-			VMManager::SetState(VMState::Running);
+			// Read here, not in WriteStatsJson: by the time that runs, VMManager::Shutdown()
+			// has released the dump file and the answer would always be zero.
+			s_dump_frames_per_loop = GSDumpReplayer::GetDumpFrameCount();
+			// Armed before the first packet, so rung zero is the state the freeze left
+			// and every later rung is named by the packet it follows.
+			//
+			// A refusal is a failed run, not a note in the log: the alternative is a
+			// replay that completes, writes no ladder file, and exits 0, which reads
+			// downstream as "this arm produced nothing to compare" rather than as a
+			// misconfigured command line.
+			const bool ladder_ok = GSLadder::Begin(s_ladder_opts);
+			// Left un-Running when the ladder refused, so the execute loop below is
+			// never entered and teardown runs on a VM that did nothing.
+			if (ladder_ok)
+				VMManager::SetState(VMState::Running);
 			// gsrunner is diagnostic-by-design; always collect extended stats so DumpStats has data.
 			if (g_gs_device)
 				g_gs_device->EnableExtendedStats(true);
@@ -1387,12 +2303,15 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			}
 			while (VMManager::GetState() == VMState::Running)
 				VMManager::Execute();
+			// Before Shutdown: the last rungs are still queued on the GS thread, and
+			// Finish drains them. After teardown there is no local memory to read.
+			GSLadder::Finish();
 			// Snapshot backend-specific stats before the GS device is destroyed.
 			if (g_gs_device)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
 			VMManager::Shutdown(false);
 			GSRunner::DumpStats();
-			ret->store(EXIT_SUCCESS);
+			ret->store(ladder_ok ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 
@@ -1411,6 +2330,10 @@ int main(int argc, char* argv[])
 	CrashHandler::Install();
 	GSRunner::InitializeConsole();
 
+	// Before the VM, and so before either VMManager's thread pinning or -gspin, which is
+	// the only moment this reads as the untouched inherited set.
+	s_baseline_cpu_mask = Threading::ThreadHandle::GetForCallingThread().GetAffinity();
+
 	// Clean SIGINT/SIGTERM → VM stop, so DumpStats() still fires on ^C or SIGTERM during -loop 0.
 	// Defer the actual stop to the CPU thread (see s_signal_stop_requested).
 	std::signal(SIGINT, [](int) { s_signal_stop_requested.store(true); });
@@ -1418,13 +2341,26 @@ int main(int argc, char* argv[])
 
 	if (!GSRunner::InitializeConfig())
 	{
-		Console.Error("Failed to initialize config.");
+		// Each failing step in there names itself and the path it was looking at. This line
+		// is the backstop, so a future early return that forgets to say anything still
+		// leaves something on the terminal rather than an exit code on its own.
+		EarlyError("startup configuration failed, cannot continue.");
 		return EXIT_FAILURE;
 	}
 
 	VMBootParameters params;
 	if (!GSRunner::ParseCommandLineArgs(argc, argv, params))
 		return EXIT_FAILURE;
+
+	// Before the CPU thread is started, and so before VMManager::Initialize calls
+	// SetEmuThreadAffinities for the first time.
+	ApplyAffinityMode();
+
+	// Emitting a console replay payload needs no VM, no GS device and no window: the
+	// dump already carries the freeze and the packet stream, so this is a transform on
+	// the file. Do it here and leave, before anything expensive is stood up.
+	if (s_emit_payload)
+		return GSReplayPayload::Emit(params.filename, s_payload_opts) ? EXIT_SUCCESS : EXIT_FAILURE;
 
 	// Must happen before the GS device is created on the CPU thread: RenderDoc
 	// installs its graphics-API hooks when its library loads, so a standalone run
@@ -1439,7 +2375,7 @@ int main(int argc, char* argv[])
 
 	if (s_use_window.value_or(true) && !GSRunner::CreatePlatformWindow())
 	{
-		Console.Error("Failed to create window.");
+		EarlyError("could not create the host window. A headless device run wants -surfaceless.");
 		return EXIT_FAILURE;
 	}
 

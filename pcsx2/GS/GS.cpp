@@ -64,6 +64,7 @@
 Pcsx2Config::GSOptions GSConfig;
 
 static GSRendererType GSCurrentRenderer;
+static bool GSCurrentPresenterOffsetsRead;
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -74,6 +75,14 @@ bool GSIsHardwareRenderer()
 {
 	// Null gets flagged as hw.
 	return (GSCurrentRenderer != GSRendererType::SW);
+}
+
+bool GSPresenterOffsetsFramebufferRead()
+{
+	// Resolved per renderer instance in OpenGSRenderer rather than derived from the renderer
+	// type here, because it is a property of the output path. Today it equals "is the software
+	// renderer".
+	return GSCurrentPresenterOffsetsRead;
 }
 
 std::string GetDefaultAdapter()
@@ -258,6 +267,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	// Must be done first, initialization routines in GSState use GSIsHardwareRenderer().
 	GSCurrentRenderer = renderer;
 
+	// The software renderer's GetOutput() offsets the read itself; everything else reads the
+	// whole framebuffer and leaves the offset to the presenter. Set before any renderer is
+	// constructed, for the reason above.
+	GSCurrentPresenterOffsetsRead = (renderer == GSRendererType::SW);
+
 	GSVertexSW::InitStatic();
 
 	if (renderer == GSRendererType::Null)
@@ -266,6 +280,12 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	}
 	else if (renderer != GSRendererType::SW)
 	{
+		// Verify-by-effect for measurement harnesses: a scorer should not trust the command
+		// line about which renderer a run used. It can read this line out of the emulog and
+		// refuse a run whose identity does not match what it asked for; without it a
+		// misconfigured run scores as whatever actually ran, under the name that was asked for.
+		Console.WriteLn("GS: Classic renderer active (renderer=%s)",
+			Pcsx2Config::GSOptions::GetRendererName(renderer));
 		GSClampUpscaleMultiplier(GSConfig);
 		g_gs_renderer = std::make_unique<GSRendererHW>();
 	}

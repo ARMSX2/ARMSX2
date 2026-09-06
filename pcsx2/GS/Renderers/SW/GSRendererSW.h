@@ -79,10 +79,8 @@ protected:
 
 	bool GetScanlineGlobalData(SharedData* data);
 
-	template <u32 primclass>
-	void RewriteVerticesIfSTOverflow();
-
 	bool IsCoverageAlphaSupported() override;
+	GSHWAutoFlushLevel GetAutoFlushLevel() const override;
 public:
 	GSRendererSW(int threads);
 	~GSRendererSW() override;

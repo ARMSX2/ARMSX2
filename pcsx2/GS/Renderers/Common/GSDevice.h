@@ -6,6 +6,7 @@
 #include "common/HashCombine.h"
 #include "common/WindowInfo.h"
 #include "GS/GS.h"
+#include "GS/GSRegs.h" // GetAlphaTestPS speaks in ATST_* register values
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
 #include "GS/Renderers/Common/GSShaderEnums.h"
@@ -378,6 +379,13 @@ public:
 		return ShaderEntryPoint(Shader());
 	}
 
+	constexpr ShaderConvertSelector SetShader(ShaderConvert shader = ShaderConvert::COPY)
+	{
+		ShaderConvertSelector tmp = *this;
+		tmp.fields.shader = static_cast<u32>(shader);
+		return tmp;
+	}
+
 	constexpr ShaderConvertSelector SetMask(u8 mask = 0xf) const
 	{
 		ShaderConvertSelector tmp = *this;
@@ -449,7 +457,7 @@ public:
 };
 
 static inline ShaderConvertSelector GetConvertShader(GSTexture::Format src, GSTexture::Format dst,
-	u32 src_bpp = 32, u32 dst_bpp = 32, u8 mask = 0xf)
+	u32 src_bpp = 32, u32 dst_bpp = 32, u8 mask = 0xf, Filter linear = Nearest)
 {
 	ShaderConvert shader = static_cast<ShaderConvert>(-1);
 	switch (src)
@@ -534,7 +542,7 @@ static inline ShaderConvertSelector GetConvertShader(GSTexture::Format src, GSTe
 			break;
 	}
 
-	return ShaderConvertSelector(shader, mask, dst == GSTexture::Format::DepthStencil);
+	return ShaderConvertSelector(shader, mask, dst == GSTexture::Format::DepthStencil, linear);
 }
 
 static inline ShaderConvertSelector GetConvertShader(const GSTexture* src, const GSTexture* dst, u32 src_bpp, u32 dst_bpp, u8 mask = 0xf)
@@ -747,6 +755,21 @@ struct alignas(16) GSHWDrawConfig
 				u32 shuffle_across : 1;
 				u32 write_rg : 1;
 				u32 fbmask   : 1;
+				// Quantize the colour to integers on all four channels, the way the fbmask road
+				// does on its way to merging the destination. Set on its own by a draw whose
+				// framebuffer mask was dropped as a no-op, so the drop keeps the rounding the mask
+				// used to impose without also keeping the destination read, the barrier or the
+				// render-target clone. Deliberately absent from IsFeedbackLoopRT(): this reads
+				// nothing.
+				u32 quantize_color : 1;
+				// Write the render target's known alpha bits into the alpha byte instead of
+				// reading the target to merge them. Set on a draw whose alpha framebuffer mask
+				// was proved to hold back bits the tracker knows for every pixel: the shader
+				// produces the masked write's own answer out of SubstituteAlphaKeep and
+				// SubstituteAlphaValue, so the mask, the destination read, the barrier and the
+				// render-target clone all go. Deliberately absent from IsFeedbackLoopRT(): this
+				// reads nothing either.
+				u32 substitute_alpha : 1;
 
 				// Blend and Colclip
 				u32 blend_a        : 2;
@@ -766,6 +789,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 no_color       : 1; // disables color output entirely (depth only)
 				u32 no_color1      : 1; // disables second color output (when unnecessary)
 				u32 blend_factor_in_alpha : 1; // writes the blend factor to the first output's alpha instead of the second output (no dual-source blend)
+				u32 af_in_src1     : 1; // writes the fixed blend factor (AFIX/128) to the second output, for a driver that ignores the blend constant
 
 				// Others ways to fetch the texture
 				u32 channel : 3;
@@ -862,6 +886,10 @@ struct alignas(16) GSHWDrawConfig
 
 			// no point having fbmask, since we're not writing. DATE has to stay.
 			fbmask = 0;
+
+			// nor quantizing a colour that never reaches a target, nor substituting its alpha.
+			quantize_color = 0;
+			substitute_alpha = 0;
 
 			// disable both outputs.
 			no_color = no_color1 = 1;
@@ -1129,9 +1157,15 @@ struct alignas(16) GSHWDrawConfig
 
 		GSVector4 ScaleFactor;
 		float LineCovScale;
+		/// PS_SUBSTITUTE_ALPHA: the alpha byte becomes (a & SubstituteAlphaKeep) |
+		/// SubstituteAlphaValue, which is the masked write's own (a & ~M) | (known & M) with the
+		/// negation done here. Keep is a full 32-bit word so an alpha above 255 survives it the
+		/// way the masked road's own AND leaves it alone. Not folded into FbMask: ConfigureROV
+		/// overwrites that whole vector with a channel mask on any draw whose shader is not
+		/// merging one, which a substituting draw's is not.
+		u32 SubstituteAlphaKeep;
+		u32 SubstituteAlphaValue;
 		float _pad0;
-		float _pad1;
-		float _pad2;
 
 		__fi PSConstantBuffer()
 		{
@@ -1332,6 +1366,60 @@ struct alignas(16) GSHWDrawConfig
 		return blend.enable || blend_multi_pass.enable || ps.IsSWBlending();
 	}
 
+	/// Maps a PS2 alpha test onto the four comparisons the shader implements.
+	///
+	/// The GS compares eight-bit integers, so the four missing comparisons come from
+	/// nudging AREF by half a step: LESS is LEQUAL against a reference a hair below,
+	/// GREATER is GEQUAL against one a hair below the next integer. The nudge is two
+	/// ULP at the top of the range, so it can never land between two representable
+	/// alphas. invert_test asks for the complement instead, which is what a second
+	/// pass over the failing fragments needs.
+	///
+	/// It lives here, beside the PS_ATST enum it produces, rather than as a private of
+	/// GSRendererHW, so a second hardware draw path reaches one definition instead of
+	/// copying it -- a drift between two copies would be a silent one-level difference
+	/// exactly at the test boundary, the hardest kind of divergence to notice.
+	static void GetAlphaTestPS(u32 atst, u8 aref, bool invert_test, PS_ATST& ps_atst_out, float& aref_out)
+	{
+		static constexpr u32 inverted_atst[] = {
+			ATST_ALWAYS, ATST_NEVER, ATST_GEQUAL, ATST_GREATER, ATST_NOTEQUAL, ATST_LESS, ATST_LEQUAL, ATST_EQUAL};
+
+		constexpr float small_val = 0x100p-23f;
+
+		switch (invert_test ? inverted_atst[atst & 7] : atst)
+		{
+			case ATST_LESS:
+				aref_out = static_cast<float>(aref) - small_val;
+				ps_atst_out = PS_ATST::LEQUAL;
+				break;
+			case ATST_LEQUAL:
+				aref_out = static_cast<float>(aref) - small_val + 1.0f;
+				ps_atst_out = PS_ATST::LEQUAL;
+				break;
+			case ATST_GEQUAL:
+				aref_out = static_cast<float>(aref) - small_val;
+				ps_atst_out = PS_ATST::GEQUAL;
+				break;
+			case ATST_GREATER:
+				aref_out = static_cast<float>(aref) - small_val + 1.0f;
+				ps_atst_out = PS_ATST::GEQUAL;
+				break;
+			case ATST_EQUAL:
+				aref_out = static_cast<float>(aref);
+				ps_atst_out = PS_ATST::EQUAL;
+				break;
+			case ATST_NOTEQUAL:
+				aref_out = static_cast<float>(aref);
+				ps_atst_out = PS_ATST::NOTEQUAL;
+				break;
+			case ATST_NEVER:
+			case ATST_ALWAYS:
+			default:
+				ps_atst_out = PS_ATST::NONE;
+				break;
+		}
+	}
+
 	// Dumping
 	static void DumpConfig(const std::string& path, const GSHWDrawConfig& conf,
 		bool ps = true, bool vs = true, bool bs = true, bool dss = true, bool ss = true, bool asp = true, bool bmp = true,
@@ -1408,6 +1496,7 @@ public:
 		bool bptc_textures        : 1; ///< Supports BC6/7 texture compression.
 		bool astc_textures        : 1; ///< Can create and sample every standard 2D ASTC LDR UNORM format used by the replacement loader.
 		bool framebuffer_fetch    : 1; ///< Can sample from the framebuffer without texture barriers.
+		bool feedback_loop_layout : 1; ///< The backend reaches an attachment it also writes through the attachment-feedback-loop image layout and an ordinary sampler, rather than through an in-tile read. Vulkan-only, and mutually exclusive with `framebuffer_fetch` there.
 		bool framebuffer_fetch_orders_overlap : 1; ///< Framebuffer fetch also orders overlapping primitives *within* a single draw, so a full barrier is redundant. Vulkan's rasterization-order attachment access, Metal's programmable blending and GL's ARM_shader_framebuffer_fetch all guarantee this by spec; GL's EXT_shader_framebuffer_fetch does not deliver it in practice.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
 		bool cas_sharpening       : 1; ///< Supports sufficient functionality for contrast adaptive sharpening.
@@ -1421,6 +1510,7 @@ public:
 		bool sgsr                 : 1; ///< Supports Qualcomm Snapdragon Game Super Resolution 1 (one compute pass).
 		bool dual_source_blend    : 1; ///< Supports a second fragment output (SRC1) as a hardware blend factor.
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
+		bool broken_blend_constant : 1; ///< Driver applies a CONST_COLOR / INV_CONST_COLOR blend factor as if the constant were zero. A fixed (AFIX) factor rides the second fragment output instead -- see GSBlendConstantPolicy.h.
 		FeatureSupport()
 		{
 			memset(this, 0, sizeof(*this));

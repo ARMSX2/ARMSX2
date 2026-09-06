@@ -110,9 +110,9 @@ layout(std140, binding = 0) uniform cb21
 	float _pad1_cb1;
 
 	float LineCovScale;
+	uint SubstituteAlphaKeep;
+	uint SubstituteAlphaValue;
 	float _pad2_cb1;
-	float _pad3_cb1;
-	float _pad4_cb1;
 };
 
 in SHADER
@@ -970,16 +970,37 @@ vec4 ps_color()
 	return C;
 }
 
+// The masked-write road turns the colour into integers before merging the destination in, and it
+// does that on all four channels, not only the masked ones. So a draw carrying an FBMSK writes a
+// truncated colour where the same draw without one leaves it fractional and lets the output stage
+// round to nearest. PS_QUANTIZE_COLOR runs the same step for a draw whose mask was dropped as a
+// no-op, so losing the mask does not also change the rounding. One definition, so the two roads
+// cannot drift apart.
+uvec4 quantize_color(vec4 C)
+{
+	return uvec4(C);
+}
+
+// PS_SUBSTITUTE_ALPHA: the alpha framebuffer mask this draw carried held back bits the render
+// target is known to hold at a fixed value on every pixel, so the merge's answer on those bits is
+// that value whatever the shader computed. Writing it directly is the same byte the masked road
+// would have produced, out of one AND and one OR against constants, with no destination read.
 void ps_fbmask(inout vec4 C)
 {
 	// FIXME do I need special case for 16 bits
 #if PS_FBMASK
-	#if PS_COLCLIP_HW == 1
-		vec4 RT = trunc(sample_from_rt() * 65535.0f);
-	#else
-		vec4 RT = trunc(sample_from_rt() * 255.0f + 0.1f);
+	float multi_rgb = PS_COLCLIP_HW != 0 ? 65535.0f : 255.0f;
+	float multi_a = PS_RTA_CORRECTION != 0 ? 128.0f : 255.0f;
+	vec4 RT = sample_from_rt();
+	RT.rgb = trunc(RT.rgb * multi_rgb + 0.1f);
+	RT.a = round(RT.a * multi_a);
+	C = vec4(gpu_bitwise_and(quantize_color(C), gpu_bitwise_not(FbMask)) | gpu_bitwise_and(uvec4(RT), FbMask));
+#elif PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA
+	uvec4 Cq = quantize_color(C);
+	#if PS_SUBSTITUTE_ALPHA
+		Cq.a = (Cq.a & SubstituteAlphaKeep) | SubstituteAlphaValue;
 	#endif
-	C = vec4(gpu_bitwise_and(uvec4(C), gpu_bitwise_not(FbMask)) | gpu_bitwise_and(uvec4(RT), FbMask));
+	C = vec4(Cq);
 #endif
 }
 
@@ -1017,7 +1038,7 @@ void ps_color_clamp_wrap(inout vec3 C)
 {
 	// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 	// so we need to limit the color depth on dithered items
-#if SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK
+#if SW_BLEND || (PS_DITHER > 0 && PS_DITHER < 3) || PS_FBMASK || PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA
 
 #if PS_DST_FMT == FMT_16 && PS_BLEND_MIX == 0 && PS_ROUND_INV
 	C += 7.0f; // Need to round up, not down since the shader will invert

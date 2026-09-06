@@ -2508,6 +2508,8 @@ SCAJ-20190:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCAJ-20191:
   name: "Super Robot Taisen OG - Original Generations Gaiden [Limited Edition]"
   region: "NTSC-Unk"
@@ -2730,6 +2732,8 @@ SCAJ-30011:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCCS-40001:
   name: "捉猴啦 2"
   name-sort: "Zhuo Hou La 2"
@@ -4641,6 +4645,8 @@ SCED-54680:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCED-54682:
   name: "UPS2 Speciale Platinum 2007"
   region: "PAL-M5"
@@ -4710,6 +4716,7 @@ SCES-50000:
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
+    rewriteLargeST: 1 # Fix reflections on cars.
 SCES-50001:
   name: "Tekken Tag Tournament"
   region: "PAL-M5"
@@ -6405,6 +6412,8 @@ SCES-54206:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCES-54219:
   name: "Buzz! Junior - Jungle Party"
   region: "PAL-M7"
@@ -8306,6 +8315,8 @@ SCKA-30006:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCKA-30007:
   name: "God of War 2 [PlayStation 2 BigHit Series]" # No listed Korean name on ReDump
   region: "NTSC-K"
@@ -8316,6 +8327,8 @@ SCKA-30007:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCKA-80003:
   name: "라쳇 & 클랭크: 공구전사 리로디드 [Public Beta]" # Undumped on ReDump as of 2025-08-28
   name-sort: "Ratchet & Clank - Gonggu Jeonsa Reloaded [Public Beta]"
@@ -12517,6 +12530,8 @@ SCUS-97481:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCUS-97482:
   name: "God of War II - The Colossus Battle [Demo]"
   region: "NTSC-U"
@@ -12527,6 +12542,8 @@ SCUS-97482:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SCUS-97483:
   name: "Gran Turismo 4 MX-5 Edition [Demo]"
   region: "NTSC-U"
@@ -12973,6 +12990,7 @@ SCUS-97584:
     autoFlush: 2
     preloadFrameData: 1
     nativeScaling: 2 # Fixes post-processing.
+    halfPixelOffset: 4 # Aligns post bloom.
 SCUS-97589:
   name: "NBA '08 featuring The Life Vol.3"
   region: "NTSC-U"
@@ -21972,6 +21990,7 @@ SLES-52940:
   region: "PAL-M3"
   gsHWFixes:
     halfPixelOffset: 5 # Fixes double image and aligns glow effects.
+    nativeScaling: 2 # Fixes depth blur.
 SLES-52941:
   name: "Gungrave - Overdose"
   region: "PAL-M3"
@@ -35394,6 +35413,7 @@ SLPM-60109:
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
+    rewriteLargeST: 1 # Fix reflections on cars.
 SLPM-60112:
   name: "フレースヴェルグ [体験版]"
   name-sort: "ふれーすヴぇるぐ [たいけんばん]"
@@ -37147,6 +37167,8 @@ SLPM-61161:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-61162:
   name: "ドラゴンボールZ スパーキング！ メテオ [体験版]"
   name-sort: "どらごんぼーるZ すぱーきんぐ めてお [たいけんばん]"
@@ -45885,6 +45907,7 @@ SLPM-65791:
   region: "NTSC-J"
   gsHWFixes:
     halfPixelOffset: 5 # Fixes double image and aligns glow effects.
+    nativeScaling: 2 # Fixes depth blur.
 SLPM-65793:
   name: "SSX3 [EA BEST HITS]"
   name-sort: "SSX3 [EA BEST HITS]"
@@ -53458,6 +53481,8 @@ SLPM-67013:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-67014:
   name: "戦国無双2 猛将伝"
   name-sort: "せんごくむそう2 もうしょうでん"
@@ -53480,6 +53505,8 @@ SLPM-67017:
     alignSprite: 1 # Fixes water vertical lines.
     autoFlush: 1 # Fixes sun occlusion.
     nativeScaling: 1 # Fixes light blooms.
+    recommendedBlendingLevel: 3 # Full-screen haze is blended by destination alpha; hardware applies half of it below High.
+    recommendedHWAA1: 1 # HUD digits and menu prompts lose their edge rows without AA1.
 SLPM-67502:
   name: "Devil May Cry" # No listed Korean name on ReDump
   region: "NTSC-K"
@@ -54812,6 +54839,7 @@ SLPS-20001:
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
+    rewriteLargeST: 1 # Fix reflections on cars.
 SLPS-20002:
   name: "撞球 ビリヤードマスター2"
   name-sort: "どうきゅう びりやーどますたー2"
@@ -63505,6 +63533,7 @@ SLPS-71502:
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
+    rewriteLargeST: 1 # Fix reflections on cars.
 SLPS-72501:
   name: "ファイナルファンタジーⅩ [MEGA HITS!]"
   name-sort: "ふぁいなるふぁんたじー10 [MEGA HITS!]"
@@ -64508,6 +64537,7 @@ SLUS-20002:
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
+    rewriteLargeST: 1 # Fix reflections on cars.
 SLUS-20003:
   name: "Portal Runner"
   region: "NTSC-U"
@@ -69438,6 +69468,7 @@ SLUS-20969:
   compat: 5
   gsHWFixes:
     halfPixelOffset: 5 # Fixes double image and aligns glow effects.
+    nativeScaling: 2 # Fixes depth blur.
 SLUS-20970:
   name: "Rumble Roses"
   region: "NTSC-U"
@@ -75980,6 +76011,7 @@ SLUS-29132:
   region: "NTSC-U"
   gsHWFixes:
     halfPixelOffset: 5 # Fixes double image and aligns glow effects.
+    nativeScaling: 2 # Fixes depth blur.
 SLUS-29133:
   name: "Namco Transmission Demo Disc Vol.2"
   region: "NTSC-U"
@@ -76783,6 +76815,7 @@ TLES-52940:
   region: "PAL-E"
   gsHWFixes:
     halfPixelOffset: 5 # Fixes double image and aligns glow effects.
+    nativeScaling: 2 # Fixes depth blur.
 TLES-53544:
   name: "Pro Evolution Soccer 5 Beta Trial Code"
   region: "PAL-E"

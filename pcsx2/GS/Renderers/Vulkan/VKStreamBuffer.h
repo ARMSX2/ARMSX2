@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "GS/Renderers/Common/GSStreamRingFlushRange.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 
 #include "vk_mem_alloc.h"
@@ -30,11 +31,23 @@ public:
 	__fi u32 GetCurrentSpace() const { return m_current_space; }
 	__fi u32 GetCurrentOffset() const { return m_current_offset; }
 
-	bool Create(VkBufferUsageFlags usage, u32 size);
+	/// `name` labels this ring in the message logged if it cannot be allocated on the road the
+	/// stream-ring memory policy chose.
+	bool Create(VkBufferUsageFlags usage, u32 size, const char* name);
 	void Destroy(bool defer);
 
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
 	void CommitMemory(u32 final_num_bytes);
+
+	/// Cleans everything committed since the last call out of the CPU's caches, on a ring whose
+	/// memory type is not coherent. A no-op on every other ring, and on a non-coherent ring that
+	/// has not been written since the last flush.
+	///
+	/// Must be called on every ring before the queue submission that reads it, which is the only
+	/// point the GPU can see any of it: command recording does not execute anything, so a draw
+	/// recorded into the command buffer being built reads nothing until that buffer is submitted.
+	/// GSDeviceVK::SubmitCommandBuffer does it for all six, immediately before vkQueueSubmit.
+	void FlushPendingWrites();
 
 private:
 	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);
@@ -55,4 +68,12 @@ private:
 
 	// List of fences and the corresponding positions in the buffer
 	std::deque<std::pair<u64, u32>> m_tracked_fences;
+
+	/// Whether the memory type this ring landed on lacks HOST_COHERENT, in which case its writes
+	/// need a real cache clean before the GPU reads them. False on every coherent ring, and then
+	/// nothing below it is ever touched.
+	bool m_non_coherent = false;
+
+	/// What has been committed since the last flush, at most one range plus one more for a wrap.
+	GSStreamRingFlushRanges m_pending_flush;
 };

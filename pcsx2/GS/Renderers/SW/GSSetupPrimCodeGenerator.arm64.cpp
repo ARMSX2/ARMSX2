@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 
 #include "common/StringUtil.h"
@@ -31,6 +32,9 @@ static const auto& _dscan = x2;
 static const auto& _locals = x3;
 static const auto& _scratchaddr = x7;
 static const auto& _vscratch = v31;
+static const auto& _block_mul = v17;
+static const auto& _block_qx = v18;
+static const auto& _block_qy = v19;
 
 static constexpr const GSScanlineConstantData128B& g_const = g_const_128b;
 
@@ -48,6 +52,8 @@ GSSetupPrimCodeGenerator::GSSetupPrimCodeGenerator(u64 key, void* code, size_t m
 	m_en.f = m_sel.fb && m_sel.fge ? 1 : 0;
 	m_en.t = m_sel.fb && m_sel.tfx != TFX_NONE ? 1 : 0;
 	m_en.c = m_sel.fb && !(m_sel.tfx == TFX_DECAL && m_sel.tcc) ? 1 : 0;
+
+	m_block_split = GSBlockWalkIsSplit(4);
 }
 
 void GSSetupPrimCodeGenerator::Generate()
@@ -59,6 +65,17 @@ void GSSetupPrimCodeGenerator::Generate()
 		for (int i = 0; i < (m_sel.notest ? 2 : 5); i++)
 		{
 			armAsm->Ldr(VRegister(3 + i, kFormat16B), MemOperand(x4, i * sizeof(g_const.m_shift[0])));
+		}
+
+		if (m_block_split)
+		{
+			// v17 is the whole-block step multiplier; x5/x6 address the lane
+			// offsets of the half after this vector and the half before it,
+			// which is everything the alternating step is built from.
+			armAsm->Ldr(_block_mul, MemOperand(x4,
+				offsetof(GSScanlineConstantData128B, m_block8) - offsetof(GSScanlineConstantData128B, m_shift)));
+			armAsm->Mov(x5, reinterpret_cast<intptr_t>(g_const.m_shift_next));
+			armAsm->Mov(x6, reinterpret_cast<intptr_t>(g_const.m_shift_prev));
 		}
 	}
 
@@ -73,6 +90,64 @@ void GSSetupPrimCodeGenerator::Generate()
 	armAsm->FinalizeCode();
 
 	Perf::any.RegisterKey(GetCode(), GetSize(), "GSSetupPrim_", m_sel.key);
+}
+
+void GSSetupPrimCodeGenerator::BlockWalkStore(int i, const VRegister& dx, const VRegister& dy,
+	const VRegister& qx, const VRegister& qy, size_t field)
+{
+	// Writing l, h and m for the truncated gradient at this vector's lanes, at
+	// the half after it and at the half before it, the two steps a span gets are
+	// A = h - l when it starts in the low half and C = q + m - l when it starts
+	// in the high half. Each one's partner is q minus it, because a whole block
+	// is one q however it is split. GSBlockWalk.h has the derivation.
+	static const VRegister& ax = v20;
+	static const VRegister& cx = v21;
+	static const VRegister& ay = v22;
+	static const VRegister& cy = v23;
+	static const VRegister& lo = v24;
+	static const VRegister& tmp = v25;
+
+	for (int ch = 0; ch < 2; ch++)
+	{
+		const VRegister& d = ch ? dy : dx;
+		const VRegister& q = ch ? qy : qx;
+		const VRegister& a = ch ? ay : ax;
+		const VRegister& c = ch ? cy : cx;
+
+		armAsm->Fmul(lo.V4S(), d.V4S(), VRegister(4 + i, kFormat4S));
+		armAsm->Fcvtzs(lo.V4S(), lo.V4S());
+
+		armAsm->Ldr(tmp, MemOperand(x5, i * 16));
+		armAsm->Fmul(tmp.V4S(), d.V4S(), tmp.V4S());
+		armAsm->Fcvtzs(tmp.V4S(), tmp.V4S());
+		armAsm->Sub(a.V4S(), tmp.V4S(), lo.V4S());
+
+		armAsm->Ldr(tmp, MemOperand(x6, i * 16));
+		armAsm->Fmul(tmp.V4S(), d.V4S(), tmp.V4S());
+		armAsm->Fcvtzs(tmp.V4S(), tmp.V4S());
+		armAsm->Add(tmp.V4S(), tmp.V4S(), q.V4S());
+		armAsm->Sub(c.V4S(), tmp.V4S(), lo.V4S());
+	}
+
+	for (int p = 0; p < 4; p++)
+	{
+		const VRegister& sx = (p & 2) ? cx : ax;
+		const VRegister& sy = (p & 2) ? cy : ay;
+
+		if (p & 1)
+		{
+			armAsm->Sub(lo.V4S(), qx.V4S(), sx.V4S());
+			armAsm->Sub(tmp.V4S(), qy.V4S(), sy.V4S());
+			armAsm->Trn1(lo.V8H(), lo.V8H(), tmp.V8H());
+		}
+		else
+		{
+			armAsm->Trn1(lo.V8H(), sx.V8H(), sy.V8H());
+		}
+
+		armAsm->Str(lo, MemOperand(_locals,
+			OFFSETOF(GSScanlineLocalData, dw[(p & 2) * 2 + i][p & 1]) + field));
+	}
 }
 
 void GSSetupPrimCodeGenerator::Depth()
@@ -90,9 +165,9 @@ void GSSetupPrimCodeGenerator::Depth()
 			armAsm->Add(_scratchaddr, _dscan, offsetof(GSVertexSW, t.w));
 			armAsm->Ld1r(v1.V4S(), MemOperand(_scratchaddr));
 
-			// m_local.d4.f = GSVector4i(df * 4.0f).xxzzlh();
+			// m_local.d4.f = GSVector4i(df * block).xxzzlh();
 
-			armAsm->Fmul(v2.V4S(), v1.V4S(), v3.V4S());
+			armAsm->Fmul(v2.V4S(), v1.V4S(), m_block_split ? _block_mul.V4S() : v3.V4S());
 			armAsm->Fcvtzs(v2.V4S(), v2.V4S());
 			armAsm->Trn1(v2.V8H(), v2.V8H(), v2.V8H());
 
@@ -107,6 +182,15 @@ void GSSetupPrimCodeGenerator::Depth()
 				armAsm->Trn1(v2.V8H(), v2.V8H(), v2.V8H());
 
 				armAsm->Str(v2.V4S(), _local(d[i].f));
+			}
+
+			if (m_block_split)
+			{
+				armAsm->Fmul(_block_qx.V4S(), v1.V4S(), _block_mul.V4S());
+				armAsm->Fcvtzs(_block_qx.V4S(), _block_qx.V4S());
+
+				for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
+					BlockWalkStore(i, v1, v1, _block_qx, _block_qx, offsetof(GSScanlineLocalData::blockstep, f));
 			}
 		}
 
@@ -177,9 +261,40 @@ void GSSetupPrimCodeGenerator::Texture()
 	armAsm->Ldr(v0, MemOperand(_dscan, offsetof(GSVertexSW, t)));
 	armAsm->Fmul(v1.V4S(), v0.V4S(), v3.V4S());
 
+	// The coordinate a triangle samples at trails the exact plane in the direction
+	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
+	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.
+	//
+	// A float compare against zero leaves all-ones -- integer -1 -- in the lanes
+	// that walk forward, so negating it gives the one unit the scanline subtracts
+	// and leaves the still and backward axes at zero.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 0);
+		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
+		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+		armAsm->Str(_vscratch, _local(tclag.u));
+
+		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 1);
+		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
+		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+		armAsm->Str(_vscratch, _local(tclag.v));
+	}
+
+	// The multiply above is by m_shift[0], four pixels -- one VECTOR, deliberately
+	// not one block. Colour and fog take the eight-wide block through the m_block8
+	// machinery; the coordinate does not, for the reason GSBlockWalk.h gives, and
+	// the pin is TheCoordinateStepStaysOneVector. Taking the block step here would
+	// advance the coordinate eight pixels every four.
+
 	if (m_sel.fst)
 	{
 		// m_local.d4.stq = GSVector4i(t * 4.0f);
+		//
+		// Truncating the step and accumulating it is the hardware's shape rather
+		// than a lossy stand-in for an exact plane. It is identity on a gradient
+		// that is a power of two per pixel, which is every sprite gradient any
+		// capture we own draws.
 		armAsm->Fcvtzs(v1.V4S(), v1.V4S());
 		armAsm->Str(v1, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
 	}
@@ -244,7 +359,7 @@ void GSSetupPrimCodeGenerator::Color()
 
 		// GSVector4i tmp = GSVector4i(dscan.c * step_shift).xzyw();
 		// local.d4.c = tmp.uzp1_16(tmp); // Not currently in GSVector since that's mainly targeting x86 for now
-		armAsm->Fmul(v2.V4S(), v16.V4S(), v3.V4S());
+		armAsm->Fmul(v2.V4S(), v16.V4S(), m_block_split ? _block_mul.V4S() : v3.V4S());
 		armAsm->Fcvtzs(v2.V4S(), v2.V4S());
 		armAsm->Rev64(_vscratch.V4S(), v2.V4S());
 		armAsm->Uzp1(v2.V4S(), v2.V4S(), _vscratch.V4S());
@@ -274,6 +389,17 @@ void GSSetupPrimCodeGenerator::Color()
 			armAsm->Str(v2, _local(d[i].rb));
 		}
 
+		if (m_block_split)
+		{
+			armAsm->Fmul(_block_qx.V4S(), v0.V4S(), _block_mul.V4S());
+			armAsm->Fcvtzs(_block_qx.V4S(), _block_qx.V4S());
+			armAsm->Fmul(_block_qy.V4S(), v1.V4S(), _block_mul.V4S());
+			armAsm->Fcvtzs(_block_qy.V4S(), _block_qy.V4S());
+
+			for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
+				BlockWalkStore(i, v0, v1, _block_qx, _block_qy, offsetof(GSScanlineLocalData::blockstep, rb));
+		}
+
 		// GSVector4 c = dscan.c;
 
 		// GSVector4 dg = c.yyyy();
@@ -298,6 +424,17 @@ void GSSetupPrimCodeGenerator::Color()
 
 			armAsm->Trn1(v2.V8H(), v2.V8H(), v3.V8H());
 			armAsm->Str(v2, _local(d[i].ga));
+		}
+
+		if (m_block_split)
+		{
+			armAsm->Fmul(_block_qx.V4S(), v0.V4S(), _block_mul.V4S());
+			armAsm->Fcvtzs(_block_qx.V4S(), _block_qx.V4S());
+			armAsm->Fmul(_block_qy.V4S(), v1.V4S(), _block_mul.V4S());
+			armAsm->Fcvtzs(_block_qy.V4S(), _block_qy.V4S());
+
+			for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
+				BlockWalkStore(i, v0, v1, _block_qx, _block_qy, offsetof(GSScanlineLocalData::blockstep, ga));
 		}
 	}
 	else

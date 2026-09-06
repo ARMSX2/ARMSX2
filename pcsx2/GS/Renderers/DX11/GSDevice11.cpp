@@ -249,6 +249,8 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 		ShaderMacro sm_ps;
 		sm_ps.AddMacro("PIXEL_SHADER", 1);
+		sm_ps.AddMacro("PRIMID_MAX", GSShader::PRIMID_MAX);
+		sm_ps.AddMacro("PRIMID_MIN", GSShader::PRIMID_MIN);
 		sm_ps.AddMacro("HAS_BILN", static_cast<int>(shader.Biln()));
 		sm_ps.AddMacro("HAS_STENCIL_OUTPUT", static_cast<int>(shader.StencilOutput()));
 		sm_ps.AddMacro("HAS_INTEGER_OUTPUT", static_cast<int>(shader.IntegerOutputBpp() != 0));
@@ -582,6 +584,8 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		const std::string entry_point_macro = WrapEntryPointMacro(entry_point);
 		ShaderMacro sm_ps;
 		sm_ps.AddMacro("PIXEL_SHADER", 1);
+		sm_ps.AddMacro("PRIMID_MAX", GSShader::PRIMID_MAX);
+		sm_ps.AddMacro("PRIMID_MIN", GSShader::PRIMID_MIN);
 		sm_ps.AddMacro(entry_point_macro.c_str(), 1);
 		m_date.primid_init_ps[i] = m_shader_cache.GetPixelShader(m_dev.get(), *convert_hlsl, sm_ps.GetPtr(), entry_point.c_str());
 		if (!m_date.primid_init_ps[i])
@@ -1098,12 +1102,34 @@ GSDevice::PresentResult GSDevice11::DoBeginPresent(bool frame_skip)
 	m_state.rtv = m_swap_chain_rtv.get();
 	m_state.rtv->AddRef();
 	m_state.current_rt = nullptr;
+
+	if (m_state.dsv_as_rtv)
+	{
+		m_state.dsv_as_rtv->Release();
+		m_state.dsv_as_rtv = nullptr;
+	}
+	m_state.current_ds_as_rt = nullptr;
+
 	if (m_state.dsv)
 	{
 		m_state.dsv->Release();
 		m_state.dsv = nullptr;
 	}
 	m_state.current_ds = nullptr;
+
+	if (m_state.rt_uav)
+	{
+		m_state.rt_uav->Release();
+		m_state.rt_uav = nullptr;
+	}
+	m_state.current_rt_uav = nullptr;
+
+	if (m_state.ds_uav)
+	{
+		m_state.ds_uav->Release();
+		m_state.ds_uav = nullptr;
+	}
+	m_state.current_ds_uav = nullptr;
 
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 
@@ -2017,6 +2043,15 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 
 	if (i == m_ps.end())
 	{
+		// af_in_src1 reroutes a fixed (AFIX) blend factor through the second fragment output, for a
+		// driver whose blend constant is broken. Only the Vulkan shader implements it, and only
+		// GSDeviceVK raises features.broken_blend_constant, so nothing reaches this today. If a
+		// driver-database entry ever does, the blend state moves to SRC1 factors while this shader
+		// keeps writing As, which is wrong colour and nothing else would say so.
+		if (sel.af_in_src1)
+			Console.Error("PS_AF_IN_SRC1 is not implemented in this backend's shader.");
+		pxAssert(!sel.af_in_src1);
+
 		ShaderMacro sm;
 
 		sm.AddMacro("PIXEL_SHADER", 1);
@@ -2040,6 +2075,8 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_A_MASKED", sel.a_masked);
 		sm.AddMacro("PS_FBA", sel.fba);
 		sm.AddMacro("PS_FBMASK", sel.fbmask);
+		sm.AddMacro("PS_QUANTIZE_COLOR", sel.quantize_color);
+		sm.AddMacro("PS_SUBSTITUTE_ALPHA", sel.substitute_alpha);
 		sm.AddMacro("PS_LTF", sel.ltf);
 		sm.AddMacro("PS_TCOFFSETHACK", sel.tcoffsethack);
 		sm.AddMacro("PS_POINT_SAMPLER", sel.point_sampler);
@@ -2931,7 +2968,7 @@ void GSDevice11::OMSetRenderTargets(GSTexture* rt, GSTexture* ds_as_rt, GSTextur
 			m_state.dsv_as_rtv->Release();
 		if (dsv_as_rtv)
 			dsv_as_rtv->AddRef();
-		m_state.rtv = dsv_as_rtv;
+		m_state.dsv_as_rtv = dsv_as_rtv;
 		m_state.current_ds_as_rt = ds_as_rt;
 	}
 	if (m_state.dsv != dsv)
@@ -2989,6 +3026,7 @@ void GSDevice11::OMSetRenderTargets(GSTexture* rt, GSTexture* ds_as_rt, GSTextur
 	{
 		const GSVector2i size =
 			rt ? rt->GetSize() :
+			ds_as_rt ? ds_as_rt->GetSize() :
 			ds ? ds->GetSize() :
 			(rt_uav_tex && rt_uav_tex != m_null_texture) ? rt_uav_tex->GetSize() :
 			ds_uav_tex->GetSize();

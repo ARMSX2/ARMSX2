@@ -2148,6 +2148,8 @@ static void DumpPSSelector(DrawConfigWriter& out, const GSHWDrawConfig::PSSelect
 	out.WriteLn("shuffle_across: {}", ps.shuffle_across);
 	out.WriteLn("write_rg: {}", ps.write_rg);
 	out.WriteLn("fbmask: {}", ps.fbmask);
+	out.WriteLn("quantize_color: {}", ps.quantize_color);
+	out.WriteLn("substitute_alpha: {}", ps.substitute_alpha);
 	out.WriteLn("blend: ({} - {}) * {} + {}", GetPSBlendABDName(ps.blend_a), GetPSBlendABDName(ps.blend_b), GetPSBlendCName(ps.blend_c), GetPSBlendABDName(ps.blend_d));
 	out.WriteLn("fixed_one_a: {}", ps.fixed_one_a);
 	out.WriteLn("blend_hw: {} ({})", GetHWBlendTypeName(static_cast<HWBlendType>(ps.blend_hw), ps.blend_mix), ps.blend_hw);
@@ -2162,6 +2164,7 @@ static void DumpPSSelector(DrawConfigWriter& out, const GSHWDrawConfig::PSSelect
 	out.WriteLn("no_color: {}", ps.no_color);
 	out.WriteLn("no_color1: {}", ps.no_color1);
 	out.WriteLn("blend_factor_in_alpha: {}", ps.blend_factor_in_alpha);
+	out.WriteLn("af_in_src1: {}", ps.af_in_src1);
 	out.WriteLn("channel: {} ({})", GetPSChannelName(static_cast<ChannelFetch>(ps.channel)), ps.channel);
 	out.WriteLn("dither: {} ({})", GetPSDitherName(ps.dither), ps.dither);
 	out.WriteLn("dither_adjust: {}", ps.dither_adjust);

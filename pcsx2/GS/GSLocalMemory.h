@@ -109,6 +109,11 @@ public:
 	u32 bp()  const { return m_bp; }
 	u32 bw()  const { return m_bwPg << (m_pageShiftX - 6); }
 	u32 psm() const { return m_psm; }
+	/// Width in pixels of one row of pages. The GS does not clamp at it: a pixel
+	/// at or beyond this x is the pixel one page row DOWN at x minus this, sharing
+	/// its bytes exactly (measured, gs-mem). Anything that assumes distinct
+	/// coordinates mean distinct memory has to test against this first.
+	int pageRowWidth() const { return m_bwPg << m_pageShiftX; }
 	int blockShiftX() const { return m_blockShiftX; }
 	int blockShiftY() const { return m_blockShiftY; }
 
@@ -1116,6 +1121,10 @@ public:
 	{
 		m_readImageX(*this, tx, ty, dst, len, BITBLTBUF, TRXPOS, TRXREG);
 	}
+
+	// The local-to-local transfer engine (TRXDIR=2): moves RRW x RRH pixels from the
+	// source rectangle to the destination rectangle inside this local memory.
+	void Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& TRXPOS, const GIFRegTRXREG& TRXREG);
 
 	void ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
 

@@ -1,0 +1,368 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+// Pins the requested-versus-emulated alpha mask rule (GS/Renderers/HW/GSDrawAlphaMask.h).
+//
+// The exact alpha drop clears the alpha byte of FBMSK, which is right for the shader and the
+// barrier and wrong for anything asking what the draw asked for. Getting that backwards is not a
+// hypothetical: reading the RTA de-correction decision off the cleared flag left a target alpha
+// scaled where it used to de-correlate, and moved 41% of the pixels in two of Beyond Good and
+// Evil's frames by a unit or two of colour.
+//
+// So the cases that matter are the two ends: with nothing dropped the rule has to reproduce the
+// live config pair exactly, and with something dropped it has to hand back the byte the drop took
+// rather than the zero the config now holds.
+//
+// Rides gs_vertex_tests -- the rule is header-only constexpr, so it needs no extra linkage.
+
+#include "GS/Renderers/HW/GSDrawAlphaMask.h"
+
+#include <gtest/gtest.h>
+
+using namespace GSDrawAlphaMask;
+
+TEST(GSDrawAlphaMask, NothingDroppedReproducesTheLiveConfig)
+{
+	// This is the expression the call sites used before the rule existed, and every draw that
+	// drops nothing -- which is nearly all of them -- still has to take exactly this road.
+	for (u32 a = 0; a <= 0xFF; a++)
+	{
+		EXPECT_EQ(AsRequested(NothingDropped, true, a), a) << "alpha mask " << a;
+		EXPECT_EQ(AsRequested(NothingDropped, false, a), 0u) << "alpha mask " << a;
+	}
+}
+
+TEST(GSDrawAlphaMask, ADroppedByteSurvivesTheClearedFlag)
+{
+	// After the drop the config pair says "no mask at all". The draw still asked for one.
+	EXPECT_EQ(AsRequested(0x80, false, 0), 0x80u);
+	EXPECT_EQ(AsRequested(0x01, false, 0), 0x01u);
+
+	// And it wins over a config that has since been filled in with something else.
+	EXPECT_EQ(AsRequested(0x80, true, 0x0F), 0x80u);
+}
+
+TEST(GSDrawAlphaMask, ADroppedZeroIsStillADroppedValue)
+{
+	// NothingDropped is -1, not 0, so a recorded zero has to stay distinguishable from "no record".
+	// The drop rule never records a zero -- it refuses a mask that holds nothing back -- but the
+	// sentinel is what makes that a property of the caller rather than of the encoding.
+	EXPECT_EQ(AsRequested(0, true, 0x80), 0u);
+	EXPECT_EQ(AsRequested(NothingDropped, true, 0x80), 0x80u);
+}
+
+TEST(GSDrawAlphaMask, PartialIsNeitherEnd)
+{
+	EXPECT_FALSE(IsPartial(0x00));
+	EXPECT_FALSE(IsPartial(0xFF));
+
+	EXPECT_TRUE(IsPartial(0x80));
+	EXPECT_TRUE(IsPartial(0x01));
+	EXPECT_TRUE(IsPartial(0x7F));
+	EXPECT_TRUE(IsPartial(0xFE));
+}
+
+TEST(GSDrawAlphaMask, PartialAgreesWithTheExpressionItReplaced)
+{
+	// partial_fbmask in DetermineAlphaScaling was `ps.fbmask && FbMask.a != 0xFF && FbMask.a != 0`.
+	for (u32 a = 0; a <= 0xFF; a++)
+	{
+		for (bool masks : {false, true})
+		{
+			const bool before = masks && a != 0xFF && a != 0;
+			EXPECT_EQ(IsPartial(AsRequested(NothingDropped, masks, a)), before)
+				<< "alpha mask " << a << " masks " << masks;
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, ADroppedPartialMaskStillReadsAsPartial)
+{
+	// The whole point: the drop only ever takes a partially masked alpha byte, so every draw it
+	// acts on must still answer "yes, partial" afterwards.
+	EXPECT_TRUE(IsPartial(AsRequested(0x80, false, 0)));
+	EXPECT_TRUE(IsPartial(AsRequested(0x01, false, 0)));
+}
+
+// The other half of the same distinction: what the SHADER has to do once the drop has taken the
+// mask away. Dropping the mask takes the draw off the masked-write road, and that road quantizes
+// the colour to integers on all four channels before it merges the destination in. Leaving that
+// behind moved 41% of the pixels in two of Beyond Good and Evil's frames up by a unit or two of
+// colour -- signed one way, because what was lost was a downward truncation.
+
+TEST(GSDrawAlphaMask, ADropToNothingHasToQuantizeOnItsOwn)
+{
+	// The shape the exact alpha drop produces: the draw asked for an alpha-only mask (nibble 0x8)
+	// and ends up with no mask at all.
+	EXPECT_TRUE(NeedsColorQuantize(0x8, 0x0));
+}
+
+TEST(GSDrawAlphaMask, ADrawThatDroppedNothingQuantizesOnlyWhenItAlreadyDid)
+{
+	// Every draw that drops nothing passes the same nibble twice, and none of them may acquire the
+	// bit: with a mask it is already on the road, without one it never was.
+	for (u32 nibble = 0; nibble <= 0xF; nibble++)
+		EXPECT_FALSE(NeedsColorQuantize(nibble, nibble)) << "nibble " << nibble;
+}
+
+TEST(GSDrawAlphaMask, ADropThatLeavesAnotherChannelMaskedStaysOnTheRoad)
+{
+	// The road is per-draw, not per-channel. As long as one channel is still masked the shader
+	// runs it, and quantizing again would be the same work twice.
+	EXPECT_FALSE(NeedsColorQuantize(0xC, 0x4));
+	EXPECT_FALSE(NeedsColorQuantize(0xF, 0x7));
+}
+
+TEST(GSDrawAlphaMask, TheBitIsExactlyLeavingTheRoad)
+{
+	// Stated over every pair, so the rule is the definition rather than a set of examples.
+	for (u32 requested = 0; requested <= 0xF; requested++)
+	{
+		for (u32 emulated = 0; emulated <= 0xF; emulated++)
+		{
+			const bool was_on_the_road = requested != 0;
+			const bool is_on_the_road = emulated != 0;
+			EXPECT_EQ(NeedsColorQuantize(requested, emulated), was_on_the_road && !is_on_the_road)
+				<< "requested " << requested << " emulated " << emulated;
+		}
+	}
+}
+
+// The third rule: who owns the primary colour output's alpha byte. On a GPU with no dual-source
+// blend unit the blend-mix factor substitution hands the blend unit its factor through that byte,
+// which is only sound when nothing else is keeping it. Its own guard asked ps.fbmask -- true until
+// the exact alpha drop started clearing that flag on a draw that is still writing a particular
+// alpha byte on purpose.
+
+TEST(GSDrawAlphaMask, AnUnmaskedDrawLeavesItsAlphaByteFree)
+{
+	// The road's whole population: no mask anywhere, nothing asked for. It must stay open, or the
+	// Mali blend-mix substitution stops working for the draws it was built for.
+	EXPECT_FALSE(AlphaOutputIsSpokenFor(false, 0));
+}
+
+TEST(GSDrawAlphaMask, AShaderMaskClaimsTheAlphaByte)
+{
+	// The pre-existing half of the guard, restated: any channel still masked in the shader.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(true, 0));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(true, 0x80));
+}
+
+TEST(GSDrawAlphaMask, ADroppedDrawStillClaimsTheAlphaByte)
+{
+	// The hole. The shader carries no mask -- the drop cleared it -- and the byte it writes is
+	// exactly the one the mask was protecting. Before this rule the factor road saw an unmasked
+	// draw and took the byte.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x80));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x7F));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, 0x01));
+}
+
+TEST(GSDrawAlphaMask, TheClaimIsExactlyTheTwoMasksTogether)
+{
+	// Stated over every pair, and tied to AsRequested so the two rules cannot drift: a draw that
+	// dropped nothing is spoken for on exactly the old condition, and one that dropped something is
+	// always spoken for.
+	for (u32 alpha_mask = 0; alpha_mask <= 0xFF; alpha_mask++)
+	{
+		for (int shader_masks = 0; shader_masks <= 1; shader_masks++)
+		{
+			const bool masks = shader_masks != 0;
+			// A draw that dropped nothing is spoken for exactly when the shader still masks
+			// something, which is the guard the road always had.
+			EXPECT_EQ(AlphaOutputIsSpokenFor(masks, AsRequested(NothingDropped, masks, alpha_mask)), masks)
+				<< "undropped, mask " << alpha_mask;
+		}
+
+		if (alpha_mask == 0)
+			continue;
+
+		EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(static_cast<int>(alpha_mask), false, 0)))
+			<< "dropped " << alpha_mask;
+	}
+}
+
+TEST(GSDrawAlphaMask, AHeldDropStandsOnlyWhenTheBlendNeedsNoBarrier)
+{
+	// The drop's whole value is the barrier it removes. A blend that needs one for its own
+	// reasons has it either way, so the drop buys nothing and the draw goes back to its mask.
+	EXPECT_TRUE(DropStandsAfterBlend(false));
+	EXPECT_FALSE(DropStandsAfterBlend(true));
+}
+
+TEST(GSDrawAlphaMask, AnUnknownTargetGetsNeitherRoad)
+{
+	// The one thing both roads need is that the target can answer for every bit the mask holds
+	// back. Nothing else about the draw can make up for it.
+	EXPECT_EQ(DecideExact({0x00, 0x00}, 0x80, 0x00, 0x00), ExactVerdict::TargetUnknown);
+	EXPECT_EQ(DecideExact({0x7F, 0x00}, 0x80, 0x80, 0x80), ExactVerdict::TargetUnknown);
+	// Known on some of the masked bits is not known on the mask.
+	EXPECT_EQ(DecideExact({0x80, 0x80}, 0xC0, 0x80, 0x80), ExactVerdict::TargetUnknown);
+}
+
+TEST(GSDrawAlphaMask, AnUnknownTargetIgnoresTheSourceRange)
+{
+	// GSRendererHW::DecideExactAlphaMaskDrop checks the target's known bits before it calls
+	// GetAlphaMinMax() at all -- a cheap precondition ahead of a vertex-colour/TFX-modulation
+	// scan, and on an indexed texture a CLUT-table read. That is only a safe reordering because
+	// the verdict below never looks at src_lo/src_hi once the target does not cover the mask, so
+	// this pins the property the caller's early-out relies on: sweep the source range over every
+	// value it can take and the verdict does not move off TargetUnknown.
+	const GSAlphaKnownBits::Known uncovered = {0x00, 0x00}; // knows nothing
+	for (u32 lo = 0; lo <= 0xFF; lo += 17)
+	{
+		for (u32 hi = lo; hi <= 0xFF; hi += 17)
+		{
+			EXPECT_EQ(DecideExact(uncovered, 0x80, static_cast<u8>(lo), static_cast<u8>(hi)),
+				ExactVerdict::TargetUnknown)
+				<< "src " << lo << ".." << hi;
+		}
+	}
+
+	// Same with a target that knows some, but not all, of the masked bits.
+	const GSAlphaKnownBits::Known partially_covered = {0x80, 0x80}; // knows only bit 7
+	for (u32 lo = 0; lo <= 0xFF; lo += 17)
+	{
+		for (u32 hi = lo; hi <= 0xFF; hi += 17)
+		{
+			EXPECT_EQ(DecideExact(partially_covered, 0xC0, static_cast<u8>(lo), static_cast<u8>(hi)),
+				ExactVerdict::TargetUnknown)
+				<< "src " << lo << ".." << hi;
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, ACoveredTargetAlwaysGetsOneOfTheTwoRoads)
+{
+	// Over every (known value, mask, source range) the preconditions admit: once the target knows
+	// the masked bits, the draw is either a drop or a substitution. There is no third answer, and
+	// it is the drop exactly when masking the write off was the identity.
+	for (u32 value = 0; value <= 0xFF; value += 5)
+	{
+		const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(static_cast<u8>(value));
+		for (u32 masked = 1; masked <= 0xFE; masked += 3)
+		{
+			for (u32 lo = 0; lo <= 0xFF; lo += 17)
+			{
+				for (u32 hi = lo; hi <= 0xFF; hi += 17)
+				{
+					const ExactVerdict v = DecideExact(target, static_cast<u8>(masked),
+						static_cast<u8>(lo), static_cast<u8>(hi));
+					const bool identity = GSAlphaKnownBits::MaskIsIdentity(target,
+						static_cast<u8>(masked), static_cast<u8>(lo), static_cast<u8>(hi));
+					EXPECT_EQ(v, identity ? ExactVerdict::Drop : ExactVerdict::Substitute)
+						<< "value " << value << " masked " << masked << " src " << lo << ".." << hi;
+				}
+			}
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, TheSourceIsIrrelevantToTheSubstitution)
+{
+	// What the drop refused for -- a source that varies on the masked bits, or one that is
+	// constant there and disagrees with the target -- the substitution does not care about, since
+	// the bits the source holds there never reach the framebuffer.
+	const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(0x00);
+	EXPECT_EQ(DecideExact(target, 0x80, 0x80, 0x80), ExactVerdict::Substitute); // constant, different
+	EXPECT_EQ(DecideExact(target, 0x80, 0x00, 0xFF), ExactVerdict::Substitute); // straddles the bit
+	EXPECT_EQ(DecideExact(target, 0x80, 0x00, 0x00), ExactVerdict::Drop); // agrees: the drop wins
+}
+
+TEST(GSDrawAlphaMask, TheSubstitutionConstantsReproduceTheMaskedMerge)
+{
+	// (a & keep) | value has to be (a & ~M) | (known & M) on every alpha the shader can hand it,
+	// including one above 255 -- the masked road's own AND leaves those alone and so must this.
+	for (u32 masked = 1; masked <= 0xFE; masked++)
+	{
+		for (u32 known = 0; known <= 0xFF; known += 5)
+		{
+			const Substitution sub = SubstitutionFor(static_cast<u8>(masked), static_cast<u8>(known));
+			EXPECT_EQ(sub.value & masked, sub.value) << "masked " << masked;
+			for (u32 a = 0; a <= 0x1FF; a += 7)
+			{
+				const u32 substituted = (a & sub.keep) | sub.value;
+				const u32 merged = (a & ~masked) | (known & masked);
+				EXPECT_EQ(substituted, merged) << "masked " << masked << " known " << known << " a " << a;
+			}
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, AHeldSubstitutionStandsOnlyWhenTheBlendNeedsNoBarrier)
+{
+	// Same reason as the drop: the substitution's whole value is the barrier it removes, and a
+	// blend that needs one for its own reasons has it either way.
+	EXPECT_TRUE(SubstitutionStandsAfterBlend(false, false));
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(true, false));
+}
+
+TEST(GSDrawAlphaMask, AHeldSubstitutionIsRefusedOnColclipHardware)
+{
+	// Colclip hardware makes the masked-write road read the destination at the 65535 scale on all
+	// four channels, so the byte it merges is not the tracked one -- writing the tracked one is a
+	// different answer. Refused whether or not the blend would have allowed it.
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(false, true));
+	EXPECT_FALSE(SubstitutionStandsAfterBlend(true, true));
+}
+
+TEST(GSDrawAlphaMask, TheSubstitutionNeverStandsWhereTheDropWouldNot)
+{
+	// The two settle rules stated together over both polarities of both inputs: the substitution
+	// asks for everything the drop asks for and one thing more, so it can only ever be the
+	// stricter of the two.
+	for (int barrier = 0; barrier <= 1; barrier++)
+	{
+		for (int colclip_hw = 0; colclip_hw <= 1; colclip_hw++)
+		{
+			const bool drop = DropStandsAfterBlend(barrier != 0);
+			const bool subst = SubstitutionStandsAfterBlend(barrier != 0, colclip_hw != 0);
+			EXPECT_TRUE(drop || !subst) << "barrier " << barrier << " colclip_hw " << colclip_hw;
+			EXPECT_EQ(subst, drop && colclip_hw == 0) << "barrier " << barrier << " colclip_hw " << colclip_hw;
+		}
+	}
+}
+
+TEST(GSDrawAlphaMask, ASubstitutedDrawStillClaimsTheAlphaByte)
+{
+	// A substituting draw carries no shader mask and writes a particular alpha byte, which is
+	// exactly the shape the blend-mix factor road used to mistake for a free byte. It reads the
+	// mask the draw asked for through the same route a dropped draw does.
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x80, false, 0)));
+	EXPECT_TRUE(AlphaOutputIsSpokenFor(false, AsRequested(0x7F, false, 0)));
+}
+
+TEST(GSDrawAlphaMask, ACoverageAlphaDrawNeverDrops)
+{
+	// AA1 on a device that supports it writes 128*cov into alpha, varying per edge pixel, and the
+	// vertex trace widens the draw's alpha range to 0..128 to say so. A target that holds 0x80
+	// everywhere and a mask holding the low seven bits is the shape the drop was built for, and
+	// on this draw the drop would write coverage into the seven bits the mask was protecting.
+	// Nothing in the range is constant, so no bit of the mask can be claimed identity.
+	const GSAlphaKnownBits::Known target = GSAlphaKnownBits::Known::All(0x80);
+	EXPECT_EQ(DecideExact(target, 0x7F, 0, 128), ExactVerdict::Substitute);
+
+	// The same draw with FBA set. Bit 7 is forced on, so the written alpha is 0x80..0xFF -- still
+	// nothing constant below bit 7. ORing FBA's bit into the two endpoints instead would collapse
+	// the range to 0x80..0x80 and hand the drop a draw that does not write 0x80.
+	const GSAlphaKnownBits::Range fba = GSAlphaKnownBits::AfterFBA(0, 128);
+	EXPECT_EQ(DecideExact(target, 0x7F, fba.lo, fba.hi), ExactVerdict::Substitute);
+
+	// Not a blanket refusal: a genuinely constant source over the same target and mask still
+	// drops, which is what the rule exists for.
+	EXPECT_EQ(DecideExact(target, 0x7F, 0x80, 0x80), ExactVerdict::Drop);
+}
+
+TEST(GSDrawAlphaMask, AHeldMaskCountsAsItsOwnBarrier)
+{
+	// Every road chosen while the decision is held -- the blend, the alpha test -- reads the
+	// barrier through here, so all four of them see the same answer and cannot drift apart. The
+	// held mask counts as a barrier because its own barrier is deferred, not gone: if the road
+	// chosen needs one, ResolveHeldAlphaMask brings the mask and the barrier back together.
+	EXPECT_TRUE(OneBarrierWithHeldMask(false, true));
+	EXPECT_TRUE(OneBarrierWithHeldMask(true, false));
+	EXPECT_TRUE(OneBarrierWithHeldMask(true, true));
+
+	// Nothing held and no barrier of its own is the only draw that gets the barrier-free road.
+	EXPECT_FALSE(OneBarrierWithHeldMask(false, false));
+}

@@ -7,6 +7,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/GSVertexKick.h"
+#include "GS/GSVertexKickKernel.h"
 #include "GS/GSBackQueue.h"
 #include "GS/GSDrawingContext.h"
 #include "GS/GSDrawingEnvironment.h"
@@ -93,8 +94,6 @@ private:
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZF2[8] = {};
 	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerSTQRGBAXYZ2[8] = {};
 
-	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
-	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
 	void GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r, u32 size);
 
 	template<int i> void ApplyTEX0(GIFRegTEX0& TEX0);
@@ -186,6 +185,34 @@ private:
 	bool EnsureAsyncReadbackMemory();
 
 protected:
+	// One qword of a tag through the per-descriptor handler table, which is the
+	// path Transfer takes for TYPE_UNKNOWN.
+	//
+	// Two callers. GIFPackedRegHandlerLayout uses it to walk a tag record by
+	// record while m_dirty_gs_regs is live, because the flush point the fused
+	// arm collapses into one call is only exact once the flag has cleared -- so
+	// this is a shipped path, not a test hook. And the differential suite
+	// (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) replays a whole tag a qword
+	// at a time and compares that against the fused handler for the same layout;
+	// that replay is the oracle every fused layout is checked against, and the
+	// handler table it needs is private.
+	void ReplayPackedQword(u32 reg, const GIFPackedReg* RESTRICT r)
+	{
+		(this->*m_fpGIFPackedRegHandlers[reg & 0xF])(r);
+	}
+
+	// Unpublishes the stage-3c fused handlers, so Transfer replays their tags a
+	// qword at a time -- which is what the binary before the stage does. The
+	// differential suite drives one GIF packet through Transfer twice, once with
+	// them and once without, and that is the only way to compare SetTag, the
+	// dispatch and the handler as one thing. Nothing in the emulator calls this
+	// either; UpdateVertexKick publishes them again on the next prim change.
+	void UnpublishLayoutHandlers()
+	{
+		for (GIFPackedRegHandlerC& e : m_fpGIFPackedRegHandlersLayoutC)
+			e = nullptr;
+	}
+
 	// Executor-owned HOST->LOCAL write cursor (advanced by wi() across transfer
 	// slices; mirrored back into m_tr.x/y inline for savestate coherence).
 	int m_exec_tr_x = 0;
@@ -345,6 +372,93 @@ protected:
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
 
+	// The two fused packed-vertex handlers and the two batch shapes behind them.
+	// They sit here rather than with the other GIF handlers because the
+	// differential suite (tests/ctest/core/gs/gs_kick_kernel_tests.cpp) drives both
+	// batch shapes through a GSState-derived probe and compares the results.
+	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size);
+	template<u32 prim, bool auto_flush> void GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32 size);
+	// The layouts stage 3c added, all through one handler: they differ only in
+	// where the record's descriptors sit and which of them it omits, and that is
+	// a template parameter of the parse.
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+	void GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
+	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
+	template<u32 prim> bool KickKernelApplies();
+	// Which (prim, layout) pairs stage 3c instantiates a fused handler for.
+	//
+	// NOT every pair that could exist. A pair costs its handler, its staged loop,
+	// its per-vertex batch and -- if it takes the kernel -- RunChunk, the driver and
+	// the seam kick, which is about 17 KB of .text each with VertexKick inlined into
+	// three of them. Instantiating all twelve cost 256 KB, and the two titles that
+	// paid for it on the SD865 run none of them.
+	//
+	// So the set is the one the corpus asks for, counted over all 24 dumps under
+	// both renderers. Four pairs carry 54,716 of the 55,316 fused-layout handler
+	// calls the corpus makes; the two it leaves out are gow2's triangle-strip
+	// {ST, XYZ2} (592 calls) and dirge's triangle-list {RGBAQ, XYZ2} (8), which
+	// together are 1.1% and are not worth 10 KB of footprint on the titles that
+	// never run them. Everything not below keeps a null in the table, and
+	// Transfer replays the tag a qword at a time -- which is exact, and is what
+	// the tag got before SetTag learned to name it.
+	template <u32 prim, GSVertexKernels::PackedLayout layout>
+	static constexpr bool LayoutHandlerExists()
+	{
+		if constexpr (prim == GS_TRIANGLESTRIP)
+		{
+			// outrun-a/-b and mgs3's NOP-padded triple, 13,900 handler calls
+			// across the corpus; spiderman3's and stuntman's {RGBAQ, XYZ2},
+			// 13,560.
+			return layout == GSVertexKernels::PackedLayout::NopTripleXYZF2 ||
+				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2;
+		}
+		else if constexpr (prim == GS_SPRITE)
+		{
+			// spiderman3's whole sprite stream: {ST, XYZ2} 25,368 calls and
+			// {UV, XYZ2} 1,796.
+			return layout == GSVertexKernels::PackedLayout::PairSTQXYZ2 ||
+				   layout == GSVertexKernels::PackedLayout::PairUVXYZ2;
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	// And which of those enter the two-pass kernel, which is the expensive half:
+	// RunChunk, its driver and its seam kick are about 9 KB of .text a pair.
+	//
+	// Sprites never enter it -- they are auto_flush = true at both GameDB levels
+	// and under the software renderer, so they stay on the staged loop, and
+	// 27,164 sprite handler calls across the corpus produced ZERO kernel entries.
+	// Both triangle-strip pairs enter it -- the NOP-padded triple 12,214 times
+	// and {RGBAQ, XYZ2} 11,600 -- and that is all of it.
+	template <u32 prim, GSVertexKernels::PackedLayout layout>
+	static constexpr bool LayoutUsesKernel()
+	{
+		return prim == GS_TRIANGLESTRIP && LayoutHandlerExists<prim, layout>();
+	}
+
+	// The fused handler for a (prim, layout) pair, or null when the corpus shows
+	// no traffic for it. A null entry makes Transfer replay the tag a qword at a
+	// time, which is exact.
+	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+	static constexpr GIFPackedRegHandlerC LayoutHandlerOrNull();
+	// The latched Q a tag with an ST descriptor leaves behind, with the two
+	// fix-ups GIFPackedRegHandlerSTQ applies.
+	void StoreLatchedQ(const GIFPackedReg* RESTRICT stq);
+
+	// Which arm the two fused handlers take. Nothing in the emulator writes this:
+	// it is not a settings key and not an env gate, it exists so the differential
+	// suite can drive one register run through both arms and compare every byte
+	// the kick leaves behind.
+	static bool s_fused_kick_use_kernel;
+
+
 	// following functions need m_vt to be initialized
 
 	GSVertexTrace m_vt;
@@ -377,6 +491,14 @@ protected:
 	bool IsCoverageAlpha();
 	bool IsCoverageAlphaFixedOne();
 	virtual bool IsCoverageAlphaSupported();
+	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
+	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
+	// floor under a hardware GSCurrentRenderer, and the two flush shapes produce different
+	// pixels on self-texturing draws. ⚠️ ResetHandlers runs from the GSState constructor,
+	// where this virtual resolves to the base — an override is inert until the derived
+	// constructor calls ResetHandlers() again (GSRendererSW does). A future front parser
+	// (GSFrontState) fronting a SW-engine renderer needs the same override.
+	virtual GSHWAutoFlushLevel GetAutoFlushLevel() const;
 	// GV7-1d-ii: back-half of the split front's kick-time coverage-alpha query
 	// (HW only): cached-ctx/alpha-minmax from this object's last executed draw,
 	// the caller's live ALPHA passed in.
@@ -472,6 +594,12 @@ public:
 	int m_backed_up_ctx = 0;
 	std::vector<GSUploadQueue> m_draw_transfers;
 	NoGapsType m_primitive_covers_without_gaps;
+	/// Whether the union of this draw's sprites covers m_r, under both of the pixel conventions
+	/// the tree rasterises with. Deliberately NOT folded into m_primitive_covers_without_gaps:
+	/// widening that value tells the render-target-alpha-scale sites the draw overwrites the whole
+	/// target and moves pixels on titles that have nothing to do with this rule. One reader only,
+	/// GSRendererHW::CalculateAlphaRange.
+	bool m_primitive_union_covers_rect = false;
 	GSVector4i m_r = {};
 	GSVector4i m_r_no_scissor = {};
 
@@ -608,7 +736,7 @@ public:
 
 	virtual void Move();
 
-	// GV-7 front/back seam (SEAM-AUDIT.md): the front builds a self-contained
+	// The front/back seam: the front builds a self-contained
 	// record, the Exec*Record executor consumes it — inline today, on the back
 	// thread once GV7-1 lands. The executor owns the HOST->LOCAL write cursor
 	// across transfer slices.
@@ -774,12 +902,58 @@ public:
 		float bbox_scale = 1.0f, u32* max_size = nullptr);
 	PRIM_OVERLAP PrimitiveOverlap(bool save_drawlist = false);
 	bool SpriteDrawWithoutGaps();
+	bool SpriteUnionCoversDrawRect();
 	void CalculatePrimitiveCoversWithoutGaps();
 	GIFRegTEX0 GetTex0Layer(u32 lod);
+	template <u32 primclass>
+	void RewriteVerticesIfLargeSTImpl(const GSVector4& large_val, bool check_clamp_mode);
+	void RewriteVerticesIfLargeST(const GSVector4& large_val, bool check_clamp_mode);
+
+	// Side table for the two-pass kernel: the window position and the cull
+	// metadata of every vertex in a chunk, as two parallel arrays (see
+	// GSVertexKickKernel::Buffers). Members rather than kernel locals so pass
+	// one's stores and pass two's loads reach them off a register base instead of
+	// the frame.
+	//
+	// The stage-3c layouts' fused handlers, indexed by
+	// (GIFPath::type - GIFPath::TYPE_NOPSTQRGBAXYZF2). A null entry means the
+	// layout is recognised but nothing fuses it for the live prim, and Transfer
+	// replays its descriptors one qword at a time -- which is exact, and is what
+	// keeps four layouts from having to be instantiated for the prims that never
+	// carry them.
+	//
+	// A SECOND ARRAY rather than four more entries in m_fpGIFPackedRegHandlersC,
+	// for exactly the reason the comment below gives: growing that array moves
+	// every member declared after it, and those are the ones the whole front end
+	// reads on every vertex. Measured -- four extra entries there shifted the
+	// object offsets the fused handlers use by 0x40 and changed 1,600
+	// instructions across them, buying nothing.
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlersLayoutC[GIF_REG_COMPLEX_COUNT - 2] = {};
+	// The same, per prim, as SetPrimHandlers built them; UpdateVertexKick
+	// publishes the live prim's column into the table above.
+	GIFPackedRegHandlerC m_fpGIFPackedRegHandlerLayout[GIF_REG_COMPLEX_COUNT - 2][8] = {};
+
+	// The live tag's descriptor offsets, copied out of the GIFPath by Transfer
+	// just before it calls one of those. The handler signature is fixed by the
+	// table it is called through, and the two contiguous triple layouts never read
+	// this, so it costs one 16-byte copy per NOP-padded or two-register tag and
+	// nothing at all on the shipped path.
+	GIFPackedLayout m_packed_layout = {3, 0, 1, 2};
+
+	// LAST IN THE CLASS ON PURPOSE, and it must stay last. This is 2 KB of scratch
+	// that only the kernel touches. Declared anywhere else it pushes every member
+	// after it 2 KB further from `this`, which moves hot fields the rest of the
+	// front end reads -- for no benefit to anything, since nothing but the kernel
+	// reads these. Declared in the middle of the class it cost the autoflush
+	// handler, which never runs the kernel, measurable time on both the M2 and the
+	// SD865.
+	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
+	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
+
 };
 
-// GV7-1d-ii: the front parser object of the two-object pipelined split
-// (SEAM-AUDIT.md §7). Owns all parse state (env, vertex kick, draw buffering,
+// The front parser object of the two-object pipelined split. Owns all parse
+// state (env, vertex kick, draw buffering,
 // transfer staging, CLUT decision) and emits records into the back renderer's
 // channel; the back object executes them on the back thread, installing record
 // state into its own members. The front never draws, and reaches the

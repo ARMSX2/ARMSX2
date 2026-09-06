@@ -1482,7 +1482,7 @@ void InputManager::SetUSBVibrationIntensity(u32 port, float large_or_single_moto
 // per pad to match the Java one-shot model (RUMBLE_MS re-issued only on change, cancelled
 // on 0). NOT the libretro core, even on Android: it is linked without the JNI layer, so
 // there is no vibrator at this end of the call - it uses the frontend's interface below.
-namespace Native { void onPadRumble(int pad, int largeMotor, int smallMotor); }
+#include "Input/AndroidNativeRumble.h"
 #endif
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE

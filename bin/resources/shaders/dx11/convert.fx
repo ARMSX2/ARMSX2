@@ -334,7 +334,7 @@ OUTPUT_TYPE ps_convert_depth32_depth24(PS_INPUT input) : OUTPUT_SV
 	float depthTR = CONVERT_FN(Texture.Load(int3(coords.zy, 0))); \
 	float depthBL = CONVERT_FN(Texture.Load(int3(coords.xw, 0))); \
 	float depthBR = CONVERT_FN(Texture.Load(int3(coords.zw, 0))); \
-	return lerp(lerp(depthTL, depthTR, mix_vals.x), lerp(depthBL, depthBR, mix_vals.x), mix_vals.y);
+	return floor(lerp(lerp(depthTL, depthTR, mix_vals.x), lerp(depthBL, depthBR, mix_vals.x), mix_vals.y) * exp2(32.0f)) * exp2(-32.0f); 
 
 #if defined(__ps_convert_rgba8_depth32__)
 OUTPUT_TYPE ps_convert_rgba8_depth32(PS_INPUT input) : OUTPUT_SV
@@ -650,9 +650,9 @@ float ps_primid_image_init_0(PS_INPUT input) : SV_Target
 {
 	float c;
 	if ((127.5f / 255.0f) < sample_c(input.t).a) // < 0x80 pass (== 0x80 should not pass)
-		c = float(-1);
+		c = float(PRIMID_MIN);
 	else
-		c = float(0x7FFFFFFF);
+		c = float(PRIMID_MAX);
 	return c;
 }
 #endif
@@ -662,9 +662,9 @@ float ps_primid_image_init_1(PS_INPUT input) : SV_Target
 {
 	float c;
 	if (sample_c(input.t).a < (127.5f / 255.0f)) // >= 0x80 pass
-		c = float(-1);
+		c = float(PRIMID_MIN);
 	else
-		c = float(0x7FFFFFFF);
+		c = float(PRIMID_MAX);
 	return c;
 }
 #endif
@@ -674,9 +674,9 @@ float ps_primid_image_init_2(PS_INPUT input) : SV_Target
 {
 	float c;
 	if ((254.5f / 255.0f) < sample_c(input.t).a) // < 0x80 pass (== 0x80 should not pass)
-		c = float(-1);
+		c = float(PRIMID_MIN);
 	else
-		c = float(0x7FFFFFFF);
+		c = float(PRIMID_MAX);
 	return c;
 }
 #endif
@@ -686,9 +686,9 @@ float ps_primid_image_init_3(PS_INPUT input) : SV_Target
 {
 	float c;
 	if (sample_c(input.t).a < (254.5f / 255.0f)) // >= 0x80 pass
-		c = float(-1);
+		c = float(PRIMID_MIN);
 	else
-		c = float(0x7FFFFFFF);
+		c = float(PRIMID_MAX);
 	return c;
 }
 #endif

@@ -3,6 +3,7 @@
 
 #include "GSRendererHW.h"
 
+#include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 
@@ -17,6 +18,16 @@ public:
 	}
 };
 
+// The scanline setup itself, which reads nothing a GSRenderer does not have. It lives here rather
+// than in a file of its own because this is already the translation unit that may name
+// GSSingleRasterizer -- it is compiled once per ISA, and the rasterizer's declaration is scoped to
+// exactly that.
+class CURRENT_ISA::GSSwPrimRenderFunctions
+{
+public:
+	static bool Run(GSRenderer& renderer, GSSwPrimRenderState& sw, const GSVector4i& bbox);
+};
+
 MULTI_ISA_UNSHARED_IMPL;
 
 void CURRENT_ISA::GSRendererHWPopulateFunctions(GSRendererHW& renderer)
@@ -24,11 +35,55 @@ void CURRENT_ISA::GSRendererHWPopulateFunctions(GSRendererHW& renderer)
 	GSRendererHWFunctions::Populate(renderer);
 }
 
+bool CURRENT_ISA::GSSwPrimRenderRun(GSRenderer& renderer, GSSwPrimRenderState& sw, const GSVector4i& bbox)
+{
+	return GSSwPrimRenderFunctions::Run(renderer, sw, bbox);
+}
+
 // since there's no overlapping draws, we can just keep this intact
 static GSVector4i s_dimx_storage[8];
 static GIFRegDIMX s_last_dimx;
 
 bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, bool add_ee_transfer)
+{
+	const GSVector4i bbox = GSSwPrimRenderBBox(hw.m_vt, hw.m_context->scissor.in);
+	if (!GSSwPrimRenderFunctions::Run(hw, hw.m_sw_prim, bbox))
+		return false;
+
+	if (invalidate_tc)
+	{
+		const GSDrawingContext* context = hw.m_context;
+		GSOffset frame_offs = context->offset.fb;
+
+		if (GSLocalMemory::m_psm[context->FRAME.PSM].trbpp == 32 && context->FRAME.FBMSK)
+		{
+			if (context->FRAME.FBMSK == 0xFF000000)
+				frame_offs = GSRendererHW::GetInstance()->m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMCT24);
+			else if (context->FRAME.FBMSK == 0x00FFFFFF)
+				frame_offs = GSRendererHW::GetInstance()->m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMT8H);
+		}
+
+		g_texture_cache->InvalidateVideoMem(frame_offs, bbox);
+	}
+
+	// Jak does sw prim render, then draws to the same target, and it needs to be uploaded.
+	if (add_ee_transfer)
+	{
+		GSRendererHW::GSUploadQueue uq;
+		uq.transfer_type = GSRendererHW::GetInstance()->EEGS_TransferType::EE_to_GS;
+		uq.blit.U64 = 0;
+		uq.blit.DBP = hw.m_cached_ctx.FRAME.Block();
+		uq.blit.DBW = hw.m_cached_ctx.FRAME.FBW;
+		uq.blit.DPSM = hw.m_cached_ctx.FRAME.PSM;
+		uq.draw = hw.s_n;
+		uq.rect = bbox;
+		hw.m_draw_transfers.push_back(uq);
+	}
+
+	return true;
+}
+
+bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const GSVector4i& bbox)
 {
 	GSVertexTrace& vt = hw.m_vt;
 	const GIFRegPRIM* PRIM = hw.PRIM;
@@ -39,11 +94,11 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 	GSRasterizerData data;
 	GSScanlineGlobalData& gd = data.global;
 
-	hw.m_sw_vertex_buffer.resize(((hw.m_vertex->next + 1) & ~1));
+	sw.vertex_buffer.resize(((hw.m_vertex->next + 1) & ~1));
 
 	data.primclass = vt.m_primclass;
 	data.buff = nullptr;
-	data.vertex = hw.m_sw_vertex_buffer.data();
+	data.vertex = sw.vertex_buffer.data();
 	data.vertex_count = hw.m_vertex->next;
 	data.index = hw.m_index->buff;
 	data.index_count = hw.m_index->tail;
@@ -55,20 +110,7 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 	const u32 q_div = !hw.IsMipMapActive() && ((vt.m_eq.q && vt.m_min.t.z != 1.0f) || (!vt.m_eq.q && vt.m_primclass == GS_SPRITE_CLASS));
 	GSVertexSW::s_cvb[vt.m_primclass][PRIM->TME][PRIM->FST][q_div](context, data.vertex, hw.m_vertex->buff, hw.m_vertex->next);
 
-	GSVector4i scissor = context->scissor.in;
-	GSVector4i bbox = GSVector4i(vt.m_min.p.floor().xyxy(vt.m_max.p.ceil())).rintersect(scissor);
-
-	// Points and lines may have zero area bbox (single line: 0, 0 - 256, 0)
-
-	if (vt.m_primclass == GS_POINT_CLASS || vt.m_primclass == GS_LINE_CLASS)
-	{
-		if (bbox.x == bbox.z)
-			bbox.z++;
-		if (bbox.y == bbox.w)
-			bbox.w++;
-	}
-
-	data.scissor = scissor;
+	data.scissor = context->scissor.in;
 	data.bbox = bbox;
 	data.frame = g_perfmon.GetFrame();
 
@@ -190,15 +232,15 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 
 			const GSVector4i r = hw.GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage;
 
-			if (!hw.m_sw_texture[0])
-				hw.m_sw_texture[0] = std::make_unique<GSTextureCacheSW::Texture>(0, TEX0, env.TEXA);
+			if (!sw.texture[0])
+				sw.texture[0] = std::make_unique<GSTextureCacheSW::Texture>(0, TEX0, env.TEXA);
 			else
-				hw.m_sw_texture[0]->Reset(0, TEX0, env.TEXA);
+				sw.texture[0]->Reset(0, TEX0, env.TEXA);
 
-			hw.m_sw_texture[0]->Update(r);
-			gd.tex[0] = hw.m_sw_texture[0]->m_buff;
+			sw.texture[0]->Update(r);
+			gd.tex[0] = sw.texture[0]->m_buff;
 
-			gd.sel.tw = hw.m_sw_texture[0]->m_tw - 3;
+			gd.sel.tw = sw.texture[0]->m_tw - 3;
 
 			if (mipmap)
 			{
@@ -284,14 +326,14 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 					vt.m_min.t *= 0.5f;
 					vt.m_max.t *= 0.5f;
 
-					if (!hw.m_sw_texture[i])
-						hw.m_sw_texture[i] = std::make_unique<GSTextureCacheSW::Texture>(gd.sel.tw + 3, MIP_TEX0, env.TEXA);
+					if (!sw.texture[i])
+						sw.texture[i] = std::make_unique<GSTextureCacheSW::Texture>(gd.sel.tw + 3, MIP_TEX0, env.TEXA);
 					else
-						hw.m_sw_texture[i]->Reset(gd.sel.tw + 3, MIP_TEX0, env.TEXA);
+						sw.texture[i]->Reset(gd.sel.tw + 3, MIP_TEX0, env.TEXA);
 
 					GSVector4i r = hw.GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage;
-					hw.m_sw_texture[i]->Update(r);
-					gd.tex[i] = hw.m_sw_texture[i]->m_buff;
+					sw.texture[i]->Update(r);
+					gd.tex[i] = sw.texture[i]->m_buff;
 				}
 
 				vt.m_min.t = tmin;
@@ -539,27 +581,10 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 		}
 	}
 
-	if (!hw.m_sw_rasterizer)
-		hw.m_sw_rasterizer = std::make_unique<GSSingleRasterizer>();
+	if (!sw.rasterizer)
+		sw.rasterizer = std::make_unique<GSSingleRasterizer>();
 
-	static_cast<GSSingleRasterizer*>(hw.m_sw_rasterizer.get())->Draw(data);
-
-	if (invalidate_tc)
-		g_texture_cache->InvalidateVideoMem(context->offset.fb, bbox);
-
-	// Jak does sw prim render, then draws to the same target, and it needs to be uploaded.
-	if (add_ee_transfer)
-	{
-		GSRendererHW::GSUploadQueue uq;
-		uq.transfer_type = GSRendererHW::GetInstance()->EEGS_TransferType::EE_to_GS;
-		uq.blit.U64 = 0;
-		uq.blit.DBP = hw.m_cached_ctx.FRAME.Block();
-		uq.blit.DBW = hw.m_cached_ctx.FRAME.FBW;
-		uq.blit.DPSM = hw.m_cached_ctx.FRAME.PSM;
-		uq.draw = hw.s_n;
-		uq.rect = bbox;
-		hw.m_draw_transfers.push_back(uq);
-	}
+	static_cast<GSSingleRasterizer*>(sw.rasterizer.get())->Draw(data);
 
 	return true;
 }

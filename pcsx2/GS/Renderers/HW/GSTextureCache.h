@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
+#include "GS/Renderers/HW/GSAlphaKnownBits.h"
 
 #include <array>
 #include <deque>
@@ -240,6 +241,21 @@ public:
 		int m_alpha_min = 0;
 		bool m_alpha_range = false;
 
+		/// Which alpha bits every pixel in m_valid is known to hold, and what they hold. A strict
+		/// refinement of m_alpha_min/max, maintained beside it at the same sites: the range cannot
+		/// carry a bit through a partial alpha mask and this can. Nothing reads it but the exact
+		/// FBMSK-drop rule -- the range stays authoritative for DATE, alpha scaling and source
+		/// seeding. See GSAlphaKnownBits.h.
+		GSAlphaKnownBits::Known m_alpha_known;
+
+		/// Whether what m_alpha_known currently holds rests on a sprite-union cover
+		/// (GSState::m_primitive_union_covers_rect). Sticky: a write that narrows the pair keeps
+		/// the provenance, one that replaces or destroys it sets its own. The exact FBMSK-drop
+		/// rule reads it to decide whether the drop it is about to take is one this target could
+		/// answer for before the union test existed -- a drop that predates it has already been
+		/// byte-identity-tested against the dump corpus and is not re-litigated here.
+		bool m_alpha_known_via_union = false;
+
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;
@@ -275,6 +291,10 @@ public:
 
 		void ScaleRTAlpha();
 		void UnscaleRTAlpha();
+
+		/// Devbuild tripwire for m_alpha_known drifting away from m_alpha_min/max. Cheap, and a
+		/// no-op outside devbuilds.
+		void AssertAlphaKnownAgreesWithRange(const char* site) const;
 
 		void Update(bool cannot_scale = false);
 
@@ -446,6 +466,13 @@ protected:
 	FastList<TargetHeightElem> m_target_heights;
 	u64 m_target_memory_usage = 0;
 
+	/// True from a renderer reset until a display lookup first finds a target to present. While
+	/// it holds, nothing the hardware renderer has drawn has reached the screen yet, so a display
+	/// that finds no target and no upload to build one from has to come from local memory.
+	/// Deliberately a display-path fact rather than a draw counter -- this costs nothing per draw.
+	/// Raised by NoteColdStart(), cleared by LookupDisplayTarget.
+	bool m_no_display_hit_since_purge = false;
+
 	int m_expected_src_bp = -1;
 	int m_remembered_src_bp = -1;
 	int m_expected_dst_bp = -1;
@@ -550,6 +577,14 @@ public:
 	/// Drops every queued asynchronous download (mode change, target flush, reset).
 	void DiscardPendingDownloads();
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
+
+	/// Says the renderer has just been reset: the targets are gone and local memory may have been
+	/// replaced under them (savestate or GS-dump load), so until a display finds a target to
+	/// present, local memory holds the only copy of the picture. A mid-game purge -- a settings
+	/// change, a device loss -- does not get this: local memory is untouched there and under the
+	/// hardware renderer it is usually stale, so preloading a frame target from it would show a
+	/// stale frame instead of nothing.
+	void NoteColdStart() { m_no_display_hit_since_purge = true; }
 	void ReadbackAll();
 	static void AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
 	void ResizeTarget(Target* t, GSVector4i rect, u32 tbp, u32 psm, u32 tbw);

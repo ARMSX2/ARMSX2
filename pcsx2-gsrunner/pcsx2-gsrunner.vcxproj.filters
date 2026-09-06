@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <ClCompile Include="GSLadder.cpp" />
+    <ClCompile Include="GSReplayPayload.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="RenderDocCapture.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GSLadder.h" />
+    <ClInclude Include="GSReplayPayload.h" />
+    <ClInclude Include="GSRunnerAffinity.h" />
+    <ClInclude Include="RenderDocCapture.h" />
   </ItemGroup>
 </Project>

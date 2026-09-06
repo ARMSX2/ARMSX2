@@ -116,6 +116,10 @@ public:
 	void ClearDrawInvalidity();
 	u32 GetCLUTCBP();
 	u32 GetCLUTCPSM();
+	/// The CSM of the LOAD that filled the CLUT RAM, which is not always the CSM the draw reading
+	/// it names: Read32's four-bit 32-bit path un-swizzles exactly when a CSM1 read follows a CSM0
+	/// load. A consumer keying on the expanded content needs it for that reason alone.
+	u32 GetCLUTCSM();
 	void SetNextCLUTTEX0(u64 CBP);
 	bool CanLoadCLUT(const GIFRegTEX0& TEX0, const bool update_CBP = false);
 	bool WriteTest(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
@@ -123,8 +127,13 @@ public:
 	// and the palette load from local memory (back-executable).
 	void WriteDecision(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
-	//void Read(const GIFRegTEX0& TEX0);
 	void Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
+
+	/// Whether the GPU palette road (UserHacks_GPUTargetCLUTMode) reproduces the CPU
+	/// expansion for this palette configuration; Read32 refuses it when it does not, so
+	/// the hardware and software renderers cannot disagree on colour. Static and pure so
+	/// the pin can drive it without a device -- see GSClut.cpp for what the two rules are.
+	static bool GPUPaletteRoadIsExact(u32 PSM, u32 CPSM, u32 CSA, u32 CSM);
 	void GetAlphaMinMax32(int& amin, int& amax);
 
 	u32 operator[](size_t i) const { return m_buff32[i]; }

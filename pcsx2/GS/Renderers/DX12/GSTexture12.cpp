@@ -1221,10 +1221,10 @@ void GSDownloadTexture12::DoCopyFromTexture(
 	pxAssert(src_level < static_cast<u32>(tex12->GetMipmapLevels()));
 	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
 
-	u32 copy_offset, copy_size, copy_rows;
+	u32 copy_offset, copy_row_bytes, copy_rows;
 	m_current_pitch = GetTransferPitch(
 		use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+	GetTransferSize(drc, &copy_offset, &copy_row_bytes, &copy_rows);
 
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
 	GSDevice12::GetInstance()->EndRenderPass();
@@ -1276,10 +1276,14 @@ bool GSDownloadTexture12::Map(const GSVector4i& read_rc)
 	if (!m_current_pitch)
 		return false;
 
-	u32 copy_offset, copy_size, copy_rows;
-	GetTransferSize(read_rc, &copy_offset, &copy_size, &copy_rows);
+	u32 copy_offset, copy_row_bytes, copy_rows;
+	GetTransferSize(read_rc, &copy_offset, &copy_row_bytes, &copy_rows);
 
-	const D3D12_RANGE read_range{copy_offset, copy_offset + copy_size};
+	// The range the CPU is about to read is every row of the transfer, not the first one: the
+	// same one-row/whole-region confusion the Vulkan readback carried, and D3D12_RANGE is the
+	// same kind of declaration -- what the driver may have to make visible before the map.
+	const D3D12_RANGE read_range{
+		copy_offset, copy_offset + GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows)};
 	const HRESULT hr = m_buffer->Map(0, &read_range, reinterpret_cast<void**>(const_cast<u8**>(&m_map_pointer)));
 	if (FAILED(hr))
 	{

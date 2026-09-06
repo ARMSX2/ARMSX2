@@ -119,6 +119,14 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
 
 GSRendererType GSGetCurrentRenderer();
 bool GSIsHardwareRenderer();
+
+/// Whether this renderer's GetOutput() reads the framebuffer at the display's own offset,
+/// block-aligning as it goes, rather than reading the whole buffer and leaving the offset
+/// for the presenter. Today this is exactly "is the software renderer", but it is a property
+/// of the output path rather than of the renderer kind, and it is resolved per renderer
+/// instance so it stays that way. Ask this — never GSIsHardwareRenderer() — when the
+/// question is about presentation geometry.
+bool GSPresenterOffsetsFramebufferRead();
 std::string GetDefaultAdapter();
 bool GSWantsExclusiveFullscreen();
 std::optional<float> GSGetHostRefreshRate();

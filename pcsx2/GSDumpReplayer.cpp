@@ -46,6 +46,8 @@ static bool s_needs_state_loaded = false;
 static u64 s_frame_ticks = 0;
 static u64 s_next_frame_time = 0;
 static bool s_is_dump_runner = false;
+static GSDumpReplayer::PacketHook s_packet_hook = nullptr;
+static GSDumpReplayer::InitialStateHook s_initial_state_hook = nullptr;
 
 R5900cpu GSDumpReplayerCpu = {
 	GSDumpReplayerCpuReserve,
@@ -183,6 +185,31 @@ u32 GSDumpReplayer::GetFrameNumber()
 	return s_dump_frame_number;
 }
 
+u32 GSDumpReplayer::GetDumpFrameCount()
+{
+	// Counted from the packet list rather than tracked as the replay runs: a caller
+	// wants this before the first loop has finished, and the packets are already in
+	// memory. Dumps are tens of thousands of packets, so the walk is trivial and is
+	// not worth caching.
+	if (!s_dump_file)
+		return 0;
+
+	u32 frames = 0;
+	for (const GSDumpFile::GSData& packet : s_dump_file->GetPackets())
+		frames += (packet.id == GSDumpTypes::GSType::VSync) ? 1 : 0;
+	return frames;
+}
+
+void GSDumpReplayer::SetPacketHook(PacketHook hook)
+{
+	s_packet_hook = hook;
+}
+
+void GSDumpReplayer::SetInitialStateHook(InitialStateHook hook)
+{
+	s_initial_state_hook = hook;
+}
+
 void GSDumpReplayerCpuReserve()
 {
 }
@@ -262,8 +289,11 @@ void GSDumpReplayerCpuStep()
 	{
 		GSDumpReplayerLoadInitialState();
 		s_needs_state_loaded = false;
+		if (s_initial_state_hook)
+			s_initial_state_hook();
 	}
 
+	const u32 this_packet = s_current_packet;
 	const GSDumpFile::GSData& packet = s_dump_file->GetPackets()[s_current_packet];
 	s_current_packet = (s_current_packet + 1) % static_cast<u32>(s_dump_file->GetPackets().size());
 	if (s_current_packet == 0)
@@ -291,10 +321,15 @@ void GSDumpReplayerCpuStep()
 						Console.Error("GSDumpReplayer: Path1Old transfer exceeds 16KB buffer. Skipping transfer");
 						break;
 					}
-					std::unique_ptr<u8[]> data(new u8[16384]);
-					const size_t addr = 16384 - packet.length;
-					std::memcpy(data.get(), packet.data + addr, packet.length);
-					GSDumpReplayerSendPacketToMTGS(GIF_PATH_1, data.get(), packet.length);
+					// The dump stores exactly packet.length bytes for this packet, so
+					// the transfer is packet.data[0, length). This used to read from
+					// packet.data + (16384 - length): that offset is the VU1 address the
+					// bytes came FROM on the console, not an offset into the packet, so
+					// the read walked into the following packets' bytes and, for a short
+					// packet at the end of a dump, past the end of the buffer entirely.
+					// The staging copy that offset needed went with it -- the send path
+					// copies into the GIF path's own ring anyway.
+					GSDumpReplayerSendPacketToMTGS(GIF_PATH_1, packet.data, packet.length);
 				}
 				break;
 
@@ -343,6 +378,9 @@ void GSDumpReplayerCpuStep()
 		}
 		break;
 	}
+
+	if (s_packet_hook)
+		s_packet_hook(this_packet, packet.id == GSDumpTypes::GSType::VSync);
 }
 
 void GSDumpReplayerCpuExecute()

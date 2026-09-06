@@ -3,6 +3,10 @@
 
 #pragma once
 
+// The framebuffer-fetch decisions -- OpenGL's and Vulkan's -- as pure functions.
+//
+// The OpenGL one first, then DecideVulkanFramebufferFetch at the bottom of the file.
+//
 // The OpenGL framebuffer-fetch decision, as one pure function.
 //
 // It used to be made imperatively in three places roughly a hundred lines apart in
@@ -211,3 +215,145 @@ static_assert(DecideGLFramebufferFetch(true, true, true, false, false, true).ena
 static_assert(DecideGLFramebufferFetch(true, true, true, false, false, true).backend ==
 			  GSFramebufferFetchBackend::ARM);
 static_assert(DecideGLFramebufferFetch(false, true, true, false, false, true).demote_mali_to_powervr);
+
+// ---------------------------------------------------------------------------------------------
+// The Vulkan spelling: rasterization-order attachment access, read in tile memory through
+// subpassLoad. Same question as above, different facts, and it was made inline in
+// GSDeviceVK::CheckFeatures across four expressions that had to be read together to see what the
+// answer was.
+//
+// The shape is a DENY list, not an allow list, and that is deliberate -- see the long note at the
+// call site. Every device advertising the extension gets the fast path unless something is known
+// to be wrong with its read. Three things are:
+//
+//   * Samsung Xclipse, which has no working ROAA fetch at all;
+//   * the Adreno 8xx proprietary blob, which returns stale reads above Basic blending;
+//   * the parts the driver-bug database marks BrokenRoaaDestinationRead (MediaTek Mali,
+//     Mali-G57), which return zero or stale destination colour.
+//
+// Only the third is liftable, and only on Mali. EmuCore/GS/ForceMaliFramebufferFetch exists so a
+// user whose MediaTek driver has since been fixed can A/B their own device; the first two are
+// hardware facts, not perf trades, so no setting reaches them.
+struct GSVulkanFramebufferFetchInputs
+{
+	/// VK_EXT_rasterization_order_attachment_access is present. Without it there is no in-tile
+	/// destination read to have, whatever anything else says.
+	bool roaa_available = false;
+
+	/// EmuCore/GS/DisableFramebufferFetch -- the user's way back to the copy path, from any state
+	/// this function can produce.
+	bool user_disabled = false;
+
+	bool is_mali = false;
+	bool is_adreno = false;
+
+	/// Samsung Xclipse (Exynos, AMD RDNA2). No working ROAA fetch; a hard gate.
+	bool is_xclipse = false;
+
+	/// Adreno 8xx on the Qualcomm proprietary blob, which returns stale ROAA reads above Basic
+	/// blending (invisible floors, alpha cutouts). Never reproduced on 6xx/7xx or on Turnip, so it
+	/// is this one combination and not the vendor.
+	bool is_adreno8xx_proprietary = false;
+
+	/// DriverBug::BrokenRoaaDestinationRead from the driver-bug database.
+	bool broken_destination_read = false;
+
+	/// EmuCore/GS/ForceMaliFramebufferFetch, as the user set it -- NOT pre-filtered by vendor.
+	/// Handing it over raw is what lets this function report that it was ignored.
+	bool force_mali_fetch_key = false;
+
+	/// EmuCore/GS/EnableAdrenoFramebufferFetch. False only where the desktop default holds; the
+	/// Android build ships it true, which is what makes the vendor terms below a deny list rather
+	/// than an allow list.
+	bool adreno_fetch_key = false;
+};
+
+struct GSVulkanFramebufferFetchDecision
+{
+	bool enabled = false;
+
+	/// The user set the Mali force key on a GPU that is not Mali, so it did nothing. Reported so
+	/// the caller can say so once in the log rather than leaving the user to infer it from a
+	/// banner that did not change.
+	bool force_key_ignored = false;
+};
+
+// The force key is MALI-ONLY, and this is the whole reason the decision is a function.
+//
+// It was written as a Mali escape hatch and named for one, but it sat in a term that any vendor
+// could reach: on an Adreno device whose database entry denies the destination read, setting it
+// lifted that deny too and put an Adreno part on the in-tile road that ARMSX2 #442 established it
+// cannot take. Nothing in the key's name, its Android settings row or its documentation says that.
+// So the key is gated here, once, instead of being trusted at each site that reads it.
+//
+// Gating it does not weaken it where it was meant to work: on Mali it still lifts the
+// BrokenRoaaDestinationRead deny exactly as before, which is what a MediaTek user with a fixed
+// driver needs it for. DisableFramebufferFetch remains the way back for everyone.
+constexpr GSVulkanFramebufferFetchDecision DecideVulkanFramebufferFetch(
+	const GSVulkanFramebufferFetchInputs& in)
+{
+	GSVulkanFramebufferFetchDecision decision;
+	decision.force_key_ignored = in.force_mali_fetch_key && !in.is_mali;
+
+	const bool force_applies = in.force_mali_fetch_key && in.is_mali;
+	const bool denied_destination_read = in.broken_destination_read && !force_applies;
+
+	const bool vendor_allows =
+		!denied_destination_read && !in.is_xclipse && !in.is_adreno8xx_proprietary &&
+		(in.is_mali || in.is_adreno || in.adreno_fetch_key);
+
+	decision.enabled = vendor_allows && in.roaa_available && !in.user_disabled;
+	return decision;
+}
+
+// The RG 477V at its default settings, once its SoC is exempt from the deny rules: Mali, the
+// extension present, no force key, and the in-tile read is on.
+static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .is_mali = true}).enabled);
+// The same part while the database still denies it, and with the key lifting that deny.
+static_assert(!DecideVulkanFramebufferFetch(
+	{.roaa_available = true, .is_mali = true, .broken_destination_read = true})
+				  .enabled);
+static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .is_mali = true,
+	.broken_destination_read = true, .force_mali_fetch_key = true})
+				  .enabled);
+
+// The gate itself: an Adreno part cannot be forced onto the in-tile road by the Mali key, and the
+// caller is told the key did nothing.
+static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true, .is_adreno = true,
+	.broken_destination_read = true, .force_mali_fetch_key = true})
+				   .enabled);
+static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .is_adreno = true,
+	.broken_destination_read = true, .force_mali_fetch_key = true})
+				  .force_key_ignored);
+// An Adreno part the database does not deny keeps the fetch it already had -- the gate removes an
+// override, not the vendor's default.
+static_assert(DecideVulkanFramebufferFetch(
+	{.roaa_available = true, .is_adreno = true, .force_mali_fetch_key = true})
+				  .enabled);
+// And on Mali the key is not "ignored", whether or not there was anything to lift.
+static_assert(!DecideVulkanFramebufferFetch(
+	{.roaa_available = true, .is_mali = true, .force_mali_fetch_key = true})
+				   .force_key_ignored);
+
+// The hardware gates outrank the key on the vendors that have no working read at all.
+static_assert(!DecideVulkanFramebufferFetch(
+	{.roaa_available = true, .is_xclipse = true, .force_mali_fetch_key = true})
+				   .enabled);
+static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true, .is_adreno = true,
+	.is_adreno8xx_proprietary = true, .force_mali_fetch_key = true})
+				   .enabled);
+
+// No extension, and the user's setting: both outrank everything, on every vendor.
+static_assert(!DecideVulkanFramebufferFetch({.is_mali = true}).enabled);
+static_assert(!DecideVulkanFramebufferFetch(
+	{.roaa_available = true, .is_mali = true, .user_disabled = true})
+				   .enabled);
+static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true, .is_mali = true,
+	.user_disabled = true, .force_mali_fetch_key = true})
+				   .enabled);
+
+// The deny list is not an allow list: a vendor nobody named still gets the fast path where the
+// Android build's Adreno key is on, which is the shape that keeps PowerVR and friends off the
+// per-primitive barrier path.
+static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .adreno_fetch_key = true}).enabled);
+static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true}).enabled);

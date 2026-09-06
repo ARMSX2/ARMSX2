@@ -1753,6 +1753,11 @@ GSTextureCache::Source* GSTextureCache::LookupSource(const bool is_color, const 
 					if (found_t && (bw != t->m_TEX0.TBW || t->m_TEX0.PSM != psm))
 						match = false;
 
+					// Situations where font has been uploaded to the alpha channel and they use a different buffer width, this can't currently be translated correctly.
+					const GSLocalMemory::psm_t req_psm = GSLocalMemory::m_psm[psm];
+					if (!possible_shuffle && req_psm.trbpp <= 8 && req_psm.bpp == 32 && t->m_TEX0.TBW != bw && static_cast<int>(bw * 64) != t->m_valid.z && r.w > req_psm.pgs.y)
+						match = false;
+
 					// Different swizzle, different width, and dirty, so probably not what we want.
 					//	DevCon.Warning("Expected %x Got %x shuffle %d draw %d", psm, t_psm, possible_shuffle, GSRendererHW::GetInstance()->s_n);
 					if (match)
@@ -2937,6 +2942,10 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 				dst_match->m_dirty = {};
 				dst->m_alpha_max = dst_match->m_alpha_max;
 				dst->m_alpha_min = dst_match->m_alpha_min;
+				// The range is inherited; the per-bit knowledge is not, because what actually lands
+				// here depends on dirty rects and a possible format conversion.
+				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+				dst->m_alpha_known_via_union = false;
 
 				// Don't bother copying the old target in if the whole thing is dirty.
 				if (dst->m_dirty.empty() || (~dst->m_dirty.GetDirtyChannels() & GSUtil::GetChannelMask(TEX0.PSM)) != 0 ||
@@ -3069,6 +3078,8 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_texture = tex;
 		dst->m_alpha_min = 0;
 		dst->m_alpha_max = 0;
+		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		dst->m_alpha_known_via_union = false;
 	}
 	else if ((used || type == GSTextureCache::DepthStencil) && (std::abs(static_cast<s16>(GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp - GSLocalMemory::m_psm[TEX0.PSM].bpp)) == 16))
 	{
@@ -3757,6 +3768,8 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_valid_alpha_high = old_dst->m_valid_alpha_high;
 							dst->m_alpha_max = old_dst->m_alpha_max;
 							dst->m_alpha_min = old_dst->m_alpha_min;
+							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+							dst->m_alpha_known_via_union = false;
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, copy_rect, 0, 0);
@@ -4103,11 +4116,20 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 	}
 	
 	if (dst)
+	{
+		// Something the renderer drew is on screen from here on, so the cold-start rule below
+		// is done: a later display that finds nothing means the game has not produced that
+		// buffer yet, not that the picture is sitting in local memory.
+		if (!is_feedback)
+			m_no_display_hit_since_purge = false;
+
 		return dst;
+	}
 
 	// Didn't find a target, check if the frame was uploaded.
 
 	bool can_create = is_feedback;
+	bool refused_by_transfer = false;
 	bool exact_match = false;
 	u32 exact_match_psm = 0;
 	GSVector2i new_size = size;
@@ -4142,6 +4164,7 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 				if (iter->transfer_type == GSRendererHW::GetInstance()->EEGS_TransferType::Clear && iter->draw == last_draw)
 				{
 					can_create = false;
+					refused_by_transfer = true;
 					break;
 				}
 
@@ -4179,6 +4202,19 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 				++iter;
 		}
 	}
+
+	// Nothing above found a target or an upload to build one from. Normally that means the game
+	// has not produced this frame yet and there is nothing to show. Before the first display hit
+	// since a renderer reset it means the opposite: the reset came with local memory being
+	// replaced wholesale (savestate or GS-dump load), and nothing the renderer has drawn has reached the
+	// screen yet, so the buffer the CRTC is pointing at was filled before the snapshot and lives
+	// only in local memory. Only a frame target preloaded from it can present it. Double-buffered
+	// games hit this on the first pass over a dump: the buffer shown at the first vsync was drawn
+	// before the capture started, while the draws that have run since went to the other buffer.
+	// A transfer that just cleared the area is left alone -- that is a decision about this frame,
+	// not an absence of one.
+	if (!can_create && !refused_by_transfer && !is_feedback && m_no_display_hit_since_purge)
+		can_create = true;
 
 	if (can_create)
 	{
@@ -5719,6 +5755,9 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 			dst->m_valid_alpha_high |= src->m_valid_alpha_high;
 		dst->m_alpha_max = src->m_alpha_max;
 		dst->m_alpha_min = src->m_alpha_min;
+		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
+		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		dst->m_alpha_known_via_union = false;
 		dst->m_alpha_range |= src->m_alpha_range;
 	}
 
@@ -5838,6 +5877,8 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		// Because we don't know the new alpha value which came from green, just go full paranoid.
 		tgt->m_alpha_min = 0;
 		tgt->m_alpha_max = 255;
+		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		tgt->m_alpha_known_via_union = false;
 		tgt->m_alpha_range = true;
 	}
 
@@ -7412,6 +7453,14 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 
 	Target* t = new Target(TEX0, type, GSVector2i(w, h), scale, texture);
 
+	// FetchSurface cleared the whole surface, so every alpha bit holds the value the constructor
+	// recorded as the range. Without the clear the contents are whatever the pool handed back.
+	if (clear && type == RenderTarget)
+	{
+		t->m_alpha_known = GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min));
+		t->m_alpha_known_via_union = false;
+	}
+
 	g_texture_cache->m_target_memory_usage += t->m_texture->GetMemUsage();
 
 	g_texture_cache->m_dst[type].push_front(t);
@@ -7458,6 +7507,9 @@ GSTexture* GSTextureCache::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVec
 		else if (GSConfig.UserHacks_GPUTargetCLUTMode == GSGPUTargetCLUTMode::InsideTarget &&
 				 t->m_TEX0.TBP0 < CBP && t->m_end_block >= CBP)
 		{
+			// If it's more than one group of 4 blocks, it's probably going to fail, horribly.
+			if ((size.x > GSLocalMemory::m_psm[CPSM].bs.x || size.y > GSLocalMemory::m_psm[CPSM].bs.y) && (CBP & 0x3) != (t->m_TEX0.TBP0 & 0x3))
+				continue;
 			// Somewhere within this target, can we find it?
 			const GSVector4i rc(0, 0, size.x, size.y);
 			SurfaceOffset so = ComputeSurfaceOffset(CBP, std::max<u32>(CBW, 0), CPSM, rc, t);
@@ -7470,7 +7522,7 @@ GSTexture* GSTextureCache::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVec
 		}
 		else
 		{
-			// Not inside this target, skip.
+			// Not inside this target or not aligned, skip.
 			continue;
 		}
 
@@ -8239,14 +8291,17 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 	// Bilinear filtering this is probably not a good thing, at least in native, but upscaling Nearest can be gross and messy.
 	// It's needed for depth, though.. filtering depth doesn't make much sense, but SMT3 needs it..
 	const bool upscaled = (m_scale != 1.0f);
+	const bool is_depth = m_type == DepthStencil;
 	const bool override_linear = (upscaled && GSConfig.UserHacks_BilinearHack == GSBilinearDirtyMode::ForceBilinear);
-	const bool linear = (m_type == RenderTarget && upscaled && GSConfig.UserHacks_BilinearHack != GSBilinearDirtyMode::ForceNearest);
+	const bool linear = (upscaled && ((!is_depth && GSConfig.UserHacks_BilinearHack != GSBilinearDirtyMode::ForceNearest) || is_depth));
 
 	GSDevice::MultiStretchRect* drects = static_cast<GSDevice::MultiStretchRect*>(
 		alloca(sizeof(GSDevice::MultiStretchRect) * static_cast<u32>(m_dirty.size())));
 	u32 ndrects = 0;
 
-	const GSOffset off(g_gs_renderer->m_mem.GetOffset(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM));
+	// There are cases where the alpha gets populated with font data, and the target has previously been PSMCT32 (or will be) so we need to make sure it gets filled in.
+	const u32 psm = (m_TEX0.PSM == PSMCT24) ? PSMCT32 : m_TEX0.PSM;
+	const GSOffset off(g_gs_renderer->m_mem.GetOffset(m_TEX0.TBP0, m_TEX0.TBW, psm));
 	const u32 bpp = GSLocalMemory::m_psm[m_TEX0.PSM].bpp;
 
 	std::pair<u8, u8> alpha_minmax = {255, 0};
@@ -8269,7 +8324,7 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		const GSVector4i t_r(read_r - t_offset);
 		if (mapped)
 		{
-			if ((m_TEX0.PSM & 0xf) != PSMCT24 && m_dirty[i].rgba.c.a && bpp >= 16)
+			if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) && m_dirty[i].rgba.c.a && bpp >= 16)
 			{
 				// TODO: Only read once in 32bit and copy to the mapped texture. Bit out of scope of this PR and not a huge impact.
 				const int pitch = VectorAlign(read_r.width() * sizeof(u32));
@@ -8288,7 +8343,7 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			const int pitch = VectorAlign(read_r.width() * sizeof(u32));
 			g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
 
-			if ((m_TEX0.PSM & 0xf) != PSMCT24 && m_dirty[i].rgba.c.a && bpp >= 16)
+			if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) &&m_dirty[i].rgba.c.a && bpp >= 16)
 			{
 				std::pair<u8, u8> new_alpha_minmax = GSGetRGBA8AlphaMinMax(s_unswizzle_buffer, read_r.width(), read_r.height(), pitch);
 				alpha_minmax.first = std::min(alpha_minmax.first, new_alpha_minmax.first);
@@ -8302,7 +8357,7 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		drect.src = t;
 		drect.src_rect = GSVector4(update_r - t_offset) / t_sizef;
 		drect.dst_rect = GSVector4(update_r) * GSVector4(m_scale);
-		drect.filter = BilnIf(linear && (m_dirty[i].req_linear || override_linear));
+		drect.filter = BilnIf(linear && (is_depth || m_dirty[i].req_linear || override_linear));
 
 		// Copy the new GS memory content into the destination texture.
 		if (m_type == RenderTarget)
@@ -8331,19 +8386,25 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 				m_rt_alpha_scale = true;
 		}
 
-		const bool linear = upscaled && GSConfig.UserHacks_BilinearHack != GSBilinearDirtyMode::ForceNearest;
-
 		// No need to sort here, it's all the one texture.
-		const ShaderConvertSelector shader = (m_type == RenderTarget) ?
-			(m_rt_alpha_scale ? ShaderConvert::RTA_CORRECTION : ShaderConvert::COPY) :
-			GetConvertShader(GSTexture::Format::Color, m_texture->GetFormat(), bpp, bpp, linear);
+		// A colour target is always uploaded as RGBA8 whatever its PSM says (the 16-bit
+		// formats are expanded by ReadTexture above), and GetConvertShader asserts a
+		// 32-bit Color->Color pair; only the depth conversions select on the bpp.
+		const u32 convert_bpp = (m_type == RenderTarget) ? 32 : bpp;
+		ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, m_texture->GetFormat(), convert_bpp, convert_bpp, 0xF, drects[0].filter);
+
+		if (m_type == RenderTarget && m_rt_alpha_scale && shader.Shader() == ShaderConvert::COPY)
+		{
+			shader = shader.SetShader(ShaderConvert::RTA_CORRECTION);
+		}
 
 		g_gs_device->DrawMultiStretchRects(drects, ndrects, m_texture, shader);
 	}
 
+	const bool full_alpha_upload = transferring_alpha && bpp >= 16 && m_dirty.size() == 1 && total_rect.eq(m_valid);
 	if (transferring_alpha && bpp >= 16)
 	{
-		if (m_dirty.size() != 1 || !total_rect.eq(m_valid))
+		if (!full_alpha_upload)
 		{
 			m_alpha_min = std::min(static_cast<int>(alpha_minmax.first), m_alpha_min);
 			m_alpha_max = std::max(static_cast<int>(alpha_minmax.second), m_alpha_max);
@@ -8354,8 +8415,14 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			m_alpha_max = alpha_minmax.second;
 		}
 
+		m_alpha_known = GSAlphaKnownBits::AfterUpload(
+			m_alpha_known, alpha_minmax.first, alpha_minmax.second, full_alpha_upload);
+		if (full_alpha_upload)
+			m_alpha_known_via_union = false;
+
 		m_alpha_range |= alpha_minmax.first != alpha_minmax.second;
 	}
+
 	g_gs_device->Recycle(t);
 
 	if (m_type == DepthStencil && g_texture_cache->GetTemporaryZ() != nullptr)
@@ -8467,6 +8534,20 @@ void GSTextureCache::Target::UpdateDrawn(const GSVector4i& rect, bool can_update
 	}
 }
 
+void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) const
+{
+#ifdef PCSX2_DEVBUILD
+	if (!GSAlphaKnownBits::RangeAdmits(m_alpha_min, m_alpha_max, m_alpha_known))
+	{
+		Console.Error("TC: target 0x%x alpha known bits %02x=%02x contradict range %d-%d at %s", m_TEX0.TBP0,
+			m_alpha_known.bits, m_alpha_known.value, m_alpha_min, m_alpha_max, site);
+		pxFailRel("alpha known bits contradict the alpha range");
+	}
+#else
+	(void)site;
+#endif
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
@@ -8483,6 +8564,8 @@ void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 
 void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_resize)
 {
+	const GSVector4i old_valid = m_valid;
+
 	if (m_valid.eq(GSVector4i::zero()))
 	{
 		m_valid = rect;
@@ -8495,6 +8578,14 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 
 		m_end_block = GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid);
 	}
+
+	// Growth matters to any claim of the form "every pixel of this target holds X": the
+	// pixels the rect just gained have had nothing written to them.
+	if (!m_valid.eq(old_valid))
+	{
+		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
+	}
+
 	// GL_CACHE("TC: UpdateValidity (0x%x->0x%x) from R:%d,%d Valid: %d,%d", m_TEX0.TBP0, m_end_block, rect.z, rect.w, m_valid.z, m_valid.w);
 }
 
@@ -8569,6 +8660,12 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 
 	m_texture = tex;
 	m_unscaled_size = new_unscaled_size;
+
+	// The pixels a larger allocation gained are the zero it was cleared to.
+	if (clear)
+	{
+		m_alpha_known = GSAlphaKnownBits::AfterGrow(m_alpha_known);
+	}
 
 	UpdateTextureDebugName();
 

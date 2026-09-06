@@ -66,6 +66,7 @@ private:
 
 	void modulate16(const vixl::aarch64::VRegister& d, const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& f, u8 shift);
 	void modulate16(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& f, u8 shift);
+	void storedVertexColor(const vixl::aarch64::VRegister& d, const vixl::aarch64::VRegister& c);
 	void lerp16(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& b, const vixl::aarch64::VRegister& f, u8 shift);
 	void lerp16_4(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& b, const vixl::aarch64::VRegister& f);
 	void mix16(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& b, const vixl::aarch64::VRegister& temp);
@@ -78,6 +79,10 @@ private:
 	vixl::aarch64::MacroAssembler m_emitter;
 
 	GSScanlineSelector m_sel;
+
+	/// The draw's block is wider than our vector, so the per-vector step is a
+	/// two-entry cycle in m_local.dw instead of a constant. See GSBlockWalk.h.
+	bool m_block_split;
 
 	vixl::aarch64::Label m_step_label;
 

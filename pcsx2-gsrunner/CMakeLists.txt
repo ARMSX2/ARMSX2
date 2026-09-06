@@ -7,6 +7,11 @@ else()
 endif()
 
 target_sources(pcsx2-gsrunner PRIVATE
+	GSLadder.cpp
+	GSLadder.h
+	GSReplayPayload.cpp
+	GSReplayPayload.h
+	GSRunnerAffinity.h
 	Main.cpp
 	RenderDocCapture.cpp
 	RenderDocCapture.h
@@ -14,6 +19,13 @@ target_sources(pcsx2-gsrunner PRIVATE
 
 if(UNIX)
 	target_link_libraries(pcsx2-gsrunner PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
+if(ANDROID)
+	# The core leaves android/log/shaderc to the final link (emucore does the
+	# same in the Android entry CMakeLists); a bare NDK executable has to say so
+	# itself. shaderc is direct-linked on Android where desktop dlopens it.
+	target_link_libraries(pcsx2-gsrunner PRIVATE android log shaderc)
 endif()
 
 target_include_directories(pcsx2-gsrunner PRIVATE

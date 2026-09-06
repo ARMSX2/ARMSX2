@@ -3,6 +3,7 @@
 
 #include "GS/GSState.h"
 #include "GS/GSDump.h"
+#include "GS/GSSpriteCover.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -23,9 +24,24 @@
 #include <thread>
 
 
-static __fi bool IsAutoFlushEnabled()
+GSHWAutoFlushLevel GSState::GetAutoFlushLevel() const
 {
-	return GSIsHardwareRenderer() ? (GSConfig.UserHacks_AutoFlush != GSHWAutoFlushLevel::Disabled) : GSConfig.AutoFlushSW;
+	// Default follows the process renderer type, matching the historical global gate; the SW
+	// renderer overrides with the SW rule.
+	//
+	// The override is the point of making this virtual, and it is a deliberate behaviour
+	// change: the old gate asked GSIsHardwareRenderer(), which is a property of the process,
+	// so a hardware renderer running the SW engine as its fallback floor took the hardware
+	// key and the floor stopped matching the renderer above it on self-texturing draws.
+	// The level has to follow the engine that consumes the draws.
+	//
+	// The SW override never returns SpritesOnly, so a software run with the hardware key at
+	// SpritesOnly now arms the full auto-flush handlers where it used to arm the narrowed
+	// ones. That costs the staged vertex on non-sprite prims and nothing else:
+	// IsAutoFlushDraw still early-outs on those prims, so the draws are the same.
+	return GSIsHardwareRenderer() ?
+			   GSConfig.UserHacks_AutoFlush :
+			   (GSConfig.AutoFlushSW ? GSHWAutoFlushLevel::Enabled : GSHWAutoFlushLevel::Disabled);
 }
 
 constexpr int GSState::GetSaveStateSize(int version)
@@ -374,8 +390,10 @@ void GSState::SetPrimHandlers()
 	// disjoint. That is -4.7% of GS-thread time in a title spending 8% of it in this one
 	// handler, and 581 GameDB entries ship autoFlush: 1.
 	//
-	// Mirrors IsAutoFlushDraw's early-out exactly, which keys on the level alone and
-	// not on the renderer, so the software path narrows in step with it.
+	// Mirrors IsAutoFlushDraw's early-out, which reads GSConfig.UserHacks_AutoFlush
+	// directly. On a hardware renderer the two are the same level. On the software
+	// engine GetAutoFlushLevel never reports SpritesOnly, so the narrowing is simply
+	// not taken there -- more staging work, same draws.
 	constexpr bool non_sprite_af = auto_flush && !sprites_only;
 
 #define SetHandlerXYZ(P, auto_flush) \
@@ -390,6 +408,18 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerSTQRGBAXYZF2[P] = &GSState::GIFPackedRegHandlerSTQRGBAXYZF2<P, auto_flush>; \
 	m_fpGIFPackedRegHandlerSTQRGBAXYZ2[P] = &GSState::GIFPackedRegHandlerSTQRGBAXYZ2<P, auto_flush>;
 
+// The stage-3c layouts, for the three prims the kernel carries. Everything else
+// keeps a null here and goes through Transfer's per-qword replay.
+#define SetHandlerLayout(P, auto_flush) \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_STQXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairSTQXYZ2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZ2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>();
+
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
 	SetHandlerXYZ(GS_LINESTRIP, non_sprite_af);
@@ -399,7 +429,12 @@ void GSState::SetPrimHandlers()
 	SetHandlerXYZ(GS_SPRITE, auto_flush);
 	SetHandlerXYZ(GS_INVALID, non_sprite_af);
 
+	SetHandlerLayout(GS_TRIANGLELIST, non_sprite_af);
+	SetHandlerLayout(GS_TRIANGLESTRIP, non_sprite_af);
+	SetHandlerLayout(GS_SPRITE, auto_flush);
+
 #undef SetHandlerXYZ
+#undef SetHandlerLayout
 }
 
 static constexpr u32 NumIndicesForPrim(u32 prim)
@@ -1105,10 +1140,58 @@ bool GSState::CanBufferNewDraw()
 	return true;
 }
 
+// Snapshot the environment the current draw buffer was built with. Called once per
+// draw from the vertex kick, so its cost is a per-draw memcpy on every title.
+//
+// With draw buffering ON the whole environment is copied, because the buffer list is
+// live and CanBufferNewDraw/PushBuffer walk it.
+//
+// With it OFF only buffer 0 exists -- CanBufferNewDraw returns at its first line and
+// PushBuffer never runs, so m_used_buffers_idx stays 1 -- and only part of the
+// snapshot is ever read back:
+//   FlushBuffers            the env head, both contexts' register blocks, and the
+//                           backed-up context's scissor and offset (it restores
+//                           exactly those into m_prev_env);
+//   GIFRegHandlerTEX0,      the m_used_buffers_idx loops, all of which read PRIM and
+//   CheckWriteOverlap,      register-block members only.
+//   CheckCLUTValidity
+// Nothing reads the transfer registers at the tail of the env head, and nothing reads
+// the INACTIVE context's derived scissor or offset. So copy 480 bytes instead of 768
+// and leave the rest of the snapshot stale -- it is unreachable on this path.
 void GSState::SetDrawBufferEnv()
 {
-	memcpy(&m_env_buffers[m_current_buffer_idx].m_env, &m_env, sizeof(GSDrawingEnvironment));
-	m_env_buffers[m_current_buffer_idx].m_backed_up_ctx = m_backed_up_ctx;
+	GSDrawBufferEnv& buf = m_env_buffers[m_current_buffer_idx];
+
+	if (GSConfig.UserHacks_DrawBuffering)
+	{
+		memcpy(&buf.m_env, &m_env, sizeof(GSDrawingEnvironment));
+	}
+	else
+	{
+		// The 88 and the 96 are the same literals FlushBuffers restores with, and
+		// they are only the register prefixes while the transfer registers stay at
+		// the tail of the environment and scissor still follows a context's
+		// registers. Both are pinned by GsDrawEnvSnapshot.SnapshotLayoutConstants
+		// (offsetof on these types is not standard-layout-clean, so the pin lives in
+		// the test rather than in a static_assert here).
+		//
+		// The reader indexes the derived state by the backed-up context, and the kick
+		// sets that from PRIM.CTXT immediately before calling us.
+		const int ctx = m_env.PRIM.CTXT;
+		pxAssert(m_backed_up_ctx == ctx);
+
+		std::memcpy(&buf.m_env, &m_env, 88);
+		std::memcpy(&buf.m_env.CTXT[0], &m_env.CTXT[0], 96);
+		std::memcpy(&buf.m_env.CTXT[1], &m_env.CTXT[1], 96);
+		// Assigned rather than memcpy'd: both are small and trivially copyable, so
+		// this emits loads and stores in place instead of a libc call on a per-draw
+		// path. That is the whole instruction-count difference -- the shape that
+		// leaves a call here saves half as much.
+		buf.m_env.CTXT[ctx].scissor = m_env.CTXT[ctx].scissor;
+		buf.m_env.CTXT[ctx].offset = m_env.CTXT[ctx].offset;
+	}
+
+	buf.m_backed_up_ctx = m_backed_up_ctx;
 }
 
 void GSState::SetDrawBuffDirty()
@@ -1133,9 +1216,10 @@ void GSState::ResetHandlers()
 	m_fpGIFPackedRegHandlers[GIF_REG_A_D] = &GSState::GIFPackedRegHandlerA_D;
 	m_fpGIFPackedRegHandlers[GIF_REG_NOP] = &GSState::GIFPackedRegHandlerNOP;
 
-	if (IsAutoFlushEnabled())
+	const GSHWAutoFlushLevel autoflush_level = GetAutoFlushLevel();
+	if (autoflush_level != GSHWAutoFlushLevel::Disabled)
 	{
-		if (GSConfig.UserHacks_AutoFlush == GSHWAutoFlushLevel::SpritesOnly)
+		if (autoflush_level == GSHWAutoFlushLevel::SpritesOnly)
 			SetPrimHandlers<true, true>();
 		else
 			SetPrimHandlers<true, false>();
@@ -1804,6 +1888,63 @@ __inline void GSState::CheckFlushes()
 	}
 }
 
+// Deleting the NOPs from a tag's descriptor list, and recognising what is left.
+// Declared in GSRegs.h beside GIFPath; defined here because it is out of line and
+// SetTag is force-inlined into Transfer.
+//
+// Exactness: GIF_REG_NOP dispatches GIFPackedRegHandlerNOP, which is empty, so a
+// NOP qword's only effect on the stream is to advance the pointer. Parsing the
+// remaining descriptors at their own offsets and stepping by the full nreg is the
+// same state transition, qword for qword.
+__noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& type, GIFPackedLayout& layout)
+{
+	u32 pos[3] = {};
+	u8 desc[3] = {};
+	u32 n = 0;
+
+	for (u32 i = 0; i < nreg; i++)
+	{
+		const u8 d = regs.U8[i];
+		if (d == GIF_REG_NOP)
+			continue;
+		if (n == 3)
+			return false;
+		desc[n] = d;
+		pos[n] = i;
+		n++;
+	}
+
+	// {ST, RGBAQ, XYZF2} with NOPs between: most of outrun-b's and mgs3's traffic.
+	if (n == 3)
+	{
+		if (desc[0] == GIF_REG_STQ && desc[1] == GIF_REG_RGBA && desc[2] == GIF_REG_XYZF2)
+		{
+			type = GIFPath::TYPE_NOPSTQRGBAXYZF2;
+			layout = {nreg, pos[0], pos[1], pos[2]};
+			return true;
+		}
+		return false;
+	}
+
+	// The two-register layouts, NOP-padded. XYZF2 twins are deliberately not
+	// recognised: no corpus title carries one, and every recognised type costs an
+	// instantiation of the kernel, the staged loop and the per-vertex batch.
+	if (n == 2 && desc[1] == GIF_REG_XYZ2)
+	{
+		switch (desc[0])
+		{
+			case GIF_REG_STQ: type = GIFPath::TYPE_STQXYZ2; break;
+			case GIF_REG_UV: type = GIFPath::TYPE_UVXYZ2; break;
+			case GIF_REG_RGBA: type = GIFPath::TYPE_RGBAQXYZ2; break;
+			default: return false;
+		}
+		layout = {nreg, pos[0], 0, pos[1]};
+		return true;
+	}
+
+	return false;
+}
+
 void GSState::GIFPackedRegHandlerNull(const GIFPackedReg* RESTRICT r)
 {
 }
@@ -1908,6 +2049,410 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r)
 {
 }
 
+bool GSState::s_fused_kick_use_kernel = true;
+
+// The kernel decides every prim with the scalar-outcode cull (GSVertexKick.h),
+// which is exact only for the shapes VertexKickDirect also takes it for: triangle
+// and sprite classes at native res with no AA1 coverage expansion. Everything else
+// keeps the per-vertex path, which still has the legacy NEON CullTest behind it.
+template <u32 prim>
+__fi bool GSState::KickKernelApplies()
+{
+	const bool aa1_expand = PRIM->AA1 && IsCoverageAlphaSupported();
+	return m_nativeres && !aa1_expand;
+}
+
+// Whether the two-pass kernel (GSVertexKickKernel.h) carries this prim type at
+// all. Fans, points and lines keep the per-vertex kick: a prim census over the
+// dump corpus puts fans under 2,100 vertices a frame on any title and points
+// and lines at zero.
+template <u32 prim>
+static constexpr bool KickKernelCarriesPrim()
+{
+	return prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLELIST || prim == GS_SPRITE;
+}
+
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+constexpr GSState::GIFPackedRegHandlerC GSState::LayoutHandlerOrNull()
+{
+	if constexpr (LayoutHandlerExists<prim, layout>())
+		return &GSState::GIFPackedRegHandlerLayout<prim, layout, auto_flush>;
+	else
+		return nullptr;
+}
+
+// Whether the auto_flush instantiation of this prim's fused handler routes its
+// chunks between the kernel and the staged loop (stage 3b), or stays on the
+// staged loop outright. Sprites stay: IsAutoFlushDraw's EarlyDetectShuffle reads
+// the incoming vertex out of m_v for the sprite class, so the predicate is
+// per-prim state there and not invariant across a chunk. For the triangle
+// classes EarlyDetectShuffle is a constant false and the predicate is invariant.
+template <u32 prim>
+static constexpr bool KickRoutesAutoFlush()
+{
+	return KickKernelCarriesPrim<prim>() && prim != GS_SPRITE;
+}
+
+// Parse one packed vertex and kick it through the per-vertex path, cursor loaded
+// and stored around the single kick. This is the seam: whenever the kernel cannot
+// carry a vertex -- the draw-buffering overlap check, the first window-full vertex
+// of a draw (which takes the environment snapshot), a vertex whose accept would
+// cross MaxVerticesForPrim -- the handler runs exactly the code that ran before,
+// in the order it ran, and the kernel re-enters afterwards holding nothing.
+template <u32 prim, GSVertexKernels::PackedLayout layout>
+__noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp)
+{
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
+	GSVector4i m0, m1;
+	if constexpr (GSVertexKernels::LayoutIsContiguousTriple(layout))
+	{
+		if constexpr (xyzf2)
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+		else
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+	}
+	else
+	{
+		// A carrying layout takes its carry from m_v here rather than from the
+		// caller's hoisted copy. This is the seam: the vertex before it may have
+		// flushed, and what m_v holds now is what the per-qword path would be
+		// parsing against.
+		u64 uvf;
+		std::memcpy(&uvf, &m_v.UV, sizeof(uvf));
+		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvf, carry, m0, m1);
+	}
+	ApplyDepthClampMode(depth_clamp, m1.U32[1]);
+
+	// This vertex may be the batch's last, and m_v carries the last parsed vertex
+	// out of a batch. The kernel arm writes m_v from its own parse, so the seam
+	// writes it too rather than the handler re-parsing the final record after the
+	// loop; every path that can kick the last vertex now leaves m_v behind it.
+	// The overlap check inside VertexKickDirect writes the same two vectors again
+	// on its own rare path.
+	m_v.m[0] = m0;
+	m_v.m[1] = m1;
+
+	VertexKickCursor c;
+	c.Load(*this);
+	if constexpr (xyzf2)
+		VertexKickDirect<prim, false>(rv[off_xyz].XYZF2.Skip(), rv[off_xyz].XYZF2.X, rv[off_xyz].XYZF2.Y, m0, m1, c);
+	else
+		VertexKickDirect<prim, false>(rv[off_xyz].XYZ2.Skip(), rv[off_xyz].XYZ2.X, rv[off_xyz].XYZ2.Y, m0, m1, c);
+	c.Store();
+}
+
+// The staged single kick, and a run of them. HandleAutoFlush reads the incoming
+// vertex out of m_v, so the auto_flush instantiations cannot use the direct kick:
+// they write m_v first and go through VertexKick. This is the arm the routing
+// falls back to -- the code that ran before stage 3b, in the order it ran -- and
+// it is what a chunk whose IsAutoFlushDraw is true runs, unchanged.
+template <u32 prim, GSVertexKernels::PackedLayout layout>
+__fi void GSState::KickPackedOneStaged(const GIFPackedReg* RESTRICT rv)
+{
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
+	GSVector4i m0, m1;
+	if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
+	{
+		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, m_v.UV, m0, m1);
+	}
+	else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
+	{
+		u64 uvfog;
+		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+	}
+	else
+	{
+		u64 uvfog;
+		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
+	}
+
+	m_v.m[0] = m0;
+	m_v.m[1] = m1;
+
+	if constexpr (xyzf2)
+		VertexKick<prim, true>(rv[off_xyz].XYZF2.Skip());
+	else
+		VertexKick<prim, true>(rv[off_xyz].XYZ2.Skip());
+}
+
+template <u32 prim, GSVertexKernels::PackedLayout layout>
+__noinline void GSState::KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count)
+{
+	// Walks `r` rather than indexing r + i * stride, which is what the handler's
+	// own loop did before this arm was lifted out of it. Indexing costs an add and
+	// a reload of the base per vertex on a path that must be instruction for
+	// instruction what it was.
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
+	const GIFPackedReg* RESTRICT end = r + count * stride;
+	while (r < end)
+	{
+		KickPackedOneStaged<prim, layout>(r);
+		r += stride;
+	}
+}
+
+// The per-vertex direct batch: parsed vertices go straight to the buffer with the
+// values still in registers, m_v is written once at batch exit, and the buffer
+// cursor lives in locals across the batch. This is the shape the two-pass kernel
+// replaced; it stays as the fallback for everything the kernel does not carry,
+// and as the reference the differential suite compares against.
+template <u32 prim, GSVertexKernels::PackedLayout layout>
+void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
+{
+	constexpr bool xyzf2 = GSVertexKernels::LayoutIsXYZF2(layout);
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
+	const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(m_packed_layout);
+
+	u64 uvfog;
+	std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog)); // packed XYZ2/XYZF2 write neither UV nor FOG
+	const GSLimit24BitDepth depth_clamp = GetDepthClampMode(); // batch-invariant
+
+	// The fields a carrying layout omits are batch-invariant by construction:
+	// nothing in the tag writes them, and a flush inside the batch does not touch
+	// m_v or the latched Q either. m_v itself is only written at batch exit, so
+	// this is the same value every vertex would read.
+	GSVector4i carry = GSVector4i::zero();
+	if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+		carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+
+	VertexKickCursor c;
+	c.Load(*this);
+
+	GSVector4i m0, m1;
+	for (u32 i = 0; i < count; i++)
+	{
+		const GIFPackedReg* RESTRICT rv = r + i * stride;
+
+		if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+		else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+		else
+			GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
+		ApplyDepthClampMode(depth_clamp, m1.U32[1]);
+
+		if constexpr (xyzf2)
+			VertexKickDirect<prim, false>(rv[off_xyz].XYZF2.Skip(), rv[off_xyz].XYZF2.X, rv[off_xyz].XYZF2.Y, m0, m1, c);
+		else
+			VertexKickDirect<prim, false>(rv[off_xyz].XYZ2.Skip(), rv[off_xyz].XYZ2.X, rv[off_xyz].XYZ2.Y, m0, m1, c);
+	}
+
+	c.Store();
+	m_v.m[0] = m0;
+	m_v.m[1] = m1;
+}
+
+// The two-pass batch. The handler owns every seam; the kernel owns the runs
+// between them. See GSVertexKickKernel.h for what each pass does and why the
+// result is byte-identical to the loop above.
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
+{
+	constexpr u32 n = NumIndicesForPrim(prim);
+	constexpr u32 max_vertices = MaxVerticesForPrim(prim);
+	const u32 stride = GSVertexKernels::LayoutStride<layout>(m_packed_layout);
+
+	u64 uvfog;
+	std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+	const GSLimit24BitDepth depth_clamp = GetDepthClampMode();
+
+	// uvfog and the depth-clamp mode are hoisted once, as the per-vertex batch
+	// hoists them: neither can change inside a batch, and the per-vertex path does
+	// not re-read them either.
+	//
+	// EVERYTHING ELSE IS RE-READ BEFORE EVERY KERNEL ENTRY. The per-vertex kick
+	// reads m_xyof, the cull bounds, m_scissor_invalid and PRIM's shading bits out
+	// of memory on every vertex, and a legacy kick in the loop below can flush --
+	// restoring a buffered environment, switching context, moving the scissor. A
+	// kernel holding a copy from before that seam would decide the rest of the run
+	// against an environment that no longer exists.
+	GSVertexKickKernel::Invariants inv;
+	inv.uvfog = uvfog;
+	// The two clamp masks are read only by the depth-clamp instantiation of pass
+	// one, so on the default path (no title in the corpus enables the hack) they
+	// are two dead stores a call.
+	inv.clamp_enabled = (depth_clamp != GSLimit24BitDepth::Disabled);
+	if (inv.clamp_enabled)
+		GSVertexKickKernel::MakeDepthClampMasks(depth_clamp, inv.clamp_keep, inv.clamp_shifted);
+	// m_v is written by whichever path kicks the batch's last vertex: the kernel
+	// from its own parse, the seam from KickPackedOneLegacy's.
+	inv.last_out = &m_v;
+	if constexpr (!GSVertexKernels::LayoutIsContiguousTriple(layout))
+		inv.off = m_packed_layout;
+
+	// The per-draw environment snapshot fires at every window-full vertex while the
+	// index buffer is empty -- 44.6 times per draw on stuntman, all of them writing
+	// identical bytes, because nothing inside one handler call can change m_env.
+	// So it is taken once per call, by the legacy kick of the vertex that first
+	// completes a window; any later legacy kick may have flushed and restored a
+	// different environment, so it clears the flag again.
+	bool snapshot_done = false;
+
+	u32 k = 0;
+	while (k < count)
+	{
+		const bool overlap_active = m_recent_buffer_switch && GSConfig.UserHacks_DrawBuffering;
+		const bool snapshot_pending = !snapshot_done && (m_index->tail == 0);
+		// Re-checked across the seam like the rest: a flush can restore an
+		// environment whose PRIM has AA1 set, and the kernel's scalar-outcode cull
+		// is only exact while the per-vertex kick would have taken it too.
+		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>();
+
+		// The autoflush arm's first escape. A run the kernel's cull does not
+		// cover -- an invalid scissor, or an environment a flush moved to one the
+		// scalar-outcode decision is not exact for -- goes to the staged loop
+		// whole rather than one vertex at a time through the seam, because the
+		// staged loop IS the path that ran before and it costs what it always
+		// cost. It also means the predicate below is not evaluated on a run that
+		// could not have entered the kernel anyway.
+		if constexpr (auto_flush)
+		{
+			if (!cull_ok)
+			{
+				const u32 run = std::min<u32>(count - k, GSVertexKickKernel::kChunkVertices);
+				KickPackedStagedRun<prim, layout>(r + k * stride, run);
+				k += run;
+				snapshot_done = false;
+				continue;
+			}
+		}
+
+		if (overlap_active || snapshot_pending || !cull_ok)
+		{
+			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
+			if constexpr (auto_flush)
+			{
+				// One staged kick, through the out-of-line run: inlining the kick
+				// at the driver's three seam sites puts the whole of
+				// VertexKickDirect into the function that holds the kernel loops,
+				// which is the register-allocation collision that cost the
+				// autoflush arm measurable time on both the M2 and the SD865.
+				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
+			}
+			else
+			{
+				KickPackedOneLegacy<prim, layout>(r + k * stride, uvfog, depth_clamp);
+			}
+			k++;
+			snapshot_done = (!overlap_active && snapshot_pending && fills);
+			continue;
+		}
+
+		u32 chunk = std::min<u32>(count - k, GSVertexKickKernel::kChunkVertices);
+
+		// Stop short of the vertex whose accept would reach MaxVerticesForPrim, so
+		// the Flush(VERTEXCOUNT) it triggers happens inside a legacy kick. The live
+		// tail grows by at most one per vertex, so this bound is exact.
+		if constexpr (max_vertices != 0)
+		{
+			const u32 tail = m_vertex->tail;
+			const u32 room = (max_vertices > (tail + 1)) ? (max_vertices - 1 - tail) : 0;
+			chunk = std::min(chunk, room);
+		}
+
+		if (chunk == 0)
+		{
+			if constexpr (auto_flush)
+			{
+				// One staged kick, through the out-of-line run: inlining the kick
+				// at the driver's three seam sites puts the whole of
+				// VertexKickDirect into the function that holds the kernel loops,
+				// which is the register-allocation collision that cost the
+				// autoflush arm measurable time on both the M2 and the SD865.
+				KickPackedStagedRun<prim, layout>(r + k * stride, 1);
+			}
+			else
+			{
+				KickPackedOneLegacy<prim, layout>(r + k * stride, uvfog, depth_clamp);
+			}
+			k++;
+			snapshot_done = false;
+			continue;
+		}
+
+		// The routing decision, once per chunk (stage 3b).
+		//
+		// HandleAutoFlush performs no store and no flush when IsAutoFlushDraw is
+		// false: every Flush(AUTOFLUSH) it can reach is inside that predicate's
+		// body, the predicate writes only its own tex_layer out parameter, and
+		// the parity gate above it returns before either. So for a run of
+		// vertices whose predicate is false, the auto_flush kick and the direct
+		// kick leave identical state, and the run can take the kernel.
+		//
+		// The predicate is invariant across a chunk for the triangle classes: it
+		// reads PRIM, the config level and the context's TEX0/TEX1/FRAME/ZBUF/
+		// TEST/CLAMP, none of which a chunk can change (a chunk contains no
+		// register write and the kernel's preconditions forbid a flush inside
+		// it), and its one per-prim input, EarlyDetectShuffle, is a constant
+		// false for anything that is not a sprite. Sprites therefore never reach
+		// here -- the handler keeps them on the staged loop.
+		//
+		// Evaluated here rather than before the seam tests so that a call whose
+		// vertices all go through seams pays for it once, not once a vertex.
+		if constexpr (auto_flush)
+		{
+			int tex_layer = 0;
+			if (IsAutoFlushDraw(prim, tex_layer))
+			{
+				KickPackedStagedRun<prim, layout>(r + k * stride, chunk);
+				k += chunk;
+				// A staged kick can flush, which restores an environment and can
+				// move the snapshot condition; re-take it at the next window fill.
+				snapshot_done = false;
+				continue;
+			}
+		}
+
+		// Reserve room for the whole chunk plus a prim's worth of slack, so no
+		// store inside the kernel can land past maxcount and no growth is needed.
+		// Growth timing is not observable -- nothing reads the buffer between here
+		// and the flush that consumes it.
+		while ((m_vertex->tail + chunk + 3) > m_vertex->maxcount)
+			GrowVertexBuffer();
+
+		// Re-read across the seam: see the comment on inv above.
+		inv.xyof = m_xyof;
+		inv.bounds = m_cull_bounds_band;
+		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
+		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
+		// A carrying layout's carry is re-read here for the same reason the cull
+		// bounds are: a seam kick can flush, and after a flush what the rest of
+		// the run parses against is whatever m_v and the latched Q hold now. The
+		// contiguous layouts read neither, and their invariant build is unchanged.
+		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+		{
+			std::memcpy(&inv.uvfog, &m_v.UV, sizeof(inv.uvfog));
+			inv.carry_m0 = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
+		}
+
+		// No cursor marshalling: the kernel reads and writes the buffer members
+		// itself. What comes back is the chunk's accumulated draw rect, which is
+		// not a buffer member, folded here under one scissor clamp exactly as
+		// VertexKickCursor::Store does it.
+		u32 acc_state = GSVertexKickKernel::kAccEmpty;
+		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
+			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state);
+
+		if (acc_state != GSVertexKickKernel::kAccEmpty)
+		{
+			const GSVector4i merged = (acc_state == GSVertexKickKernel::kAccReplace) ?
+										  acc_rect :
+										  temp_draw_rect.runion(acc_rect);
+			temp_draw_rect = merged.rintersect(m_context->scissor.in);
+		}
+
+		k += chunk;
+	}
+}
+
 template <u32 prim, bool auto_flush>
 void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u32 size)
 {
@@ -1915,12 +2460,21 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 
 	CheckFlushes();
 
-	const GIFPackedReg* RESTRICT r_end = r + size;
-
-	if constexpr (auto_flush)
+	// The autoflush arm returns from inside, and walks `r` itself rather than a
+	// second cursor. That is not style: keeping the original `r` and `size` live
+	// past the loop -- which is what a shared `m_q = r[size - 3]` tail below does
+	// -- adds two long-lived values to a loop body that already uses every
+	// callee-saved register, and clang answers by spilling both and reloading them
+	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
+	// +0.19 ms a frame for it, and the SD865 +0.62. This arm never touches the
+	// kernel, so it must cost exactly what it cost before.
+	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
 		// HandleAutoFlush reads the incoming vertex out of m_v, so the autoflush
-		// instantiations keep the staged-m_v path.
+		// instantiations keep the staged-m_v path. Sprites and the prim types the
+		// kernel does not carry keep this loop verbatim: stage 3b routes only the
+		// triangle classes, and this arm must cost exactly what it cost before.
+		const GIFPackedReg* RESTRICT r_end = r + size;
 		while (r < r_end)
 		{
 			GSVector4i m0, m1;
@@ -1933,36 +2487,63 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 
 			r += 3;
 		}
+
+		m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+		return;
+	}
+
+	// A routed instantiation whose call is too short for the kernel, or whose
+	// environment the kernel's cull does not cover, runs the same loop, with its
+	// own `r` walk and its own m_q tail. Written out a second time rather than
+	// called: this is the arm the +0.19/+0.62 ms measurement above was about, and
+	// it has to cost what it cost before, which means the handler must not keep
+	// the original `r` and `size` live across it.
+	if constexpr (auto_flush)
+	{
+		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
+			!KickKernelApplies<prim>())
+		{
+			const GIFPackedReg* RESTRICT r_end = r + size;
+			while (r < r_end)
+			{
+				GSVector4i m0, m1;
+				GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m0, m1);
+
+				m_v.m[0] = m0;
+				m_v.m[1] = m1;
+
+				VertexKick<prim, auto_flush>(r[2].XYZF2.Skip());
+
+				r += 3;
+			}
+
+			m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+			return;
+		}
+	}
+
+	const u32 count = size / 3;
+
+	if constexpr (KickKernelCarriesPrim<prim>())
+	{
+		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
+			KickKernelApplies<prim>())
+			KickPackedBatchKernel<prim, GSVertexKernels::PackedLayout::TripleXYZF2, auto_flush>(r, count);
+		else if constexpr (auto_flush)
+			KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
+		else
+			KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
+	}
+	else if constexpr (auto_flush)
+	{
+		KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 	}
 	else
 	{
-		// Direct path: parsed vertices go straight to the buffer with the values
-		// still in registers; m_v is written once at batch exit so piecemeal
-		// handlers and the next tag see identical state. The buffer cursor lives
-		// in registers across the batch the same way.
-		const u32 uv = m_v.UV; // loop-invariant: packed XYZF2 never writes UV
-		const GSLimit24BitDepth depth_clamp = GetDepthClampMode(); // batch-invariant
-
-		VertexKickCursor c;
-		c.Load(*this);
-
-		GSVector4i m0, m1;
-		while (r < r_end)
-		{
-			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, uv, m0, m1);
-			ApplyDepthClampMode(depth_clamp, m1.U32[1]);
-
-			VertexKickDirect<prim, auto_flush>(r[2].XYZF2.Skip(), r[2].XYZF2.X, r[2].XYZF2.Y, m0, m1, c);
-
-			r += 3;
-		}
-
-		c.Store();
-		m_v.m[0] = m0;
-		m_v.m[1] = m1;
+		KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZF2>(r, count);
 	}
 
-	m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+	m_q = r[size - 3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
 }
 
 template <u32 prim, bool auto_flush>
@@ -1972,11 +2553,19 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 
 	CheckFlushes();
 
-	const GIFPackedReg* RESTRICT r_end = r + size;
-
-	if constexpr (auto_flush)
+	// The autoflush arm returns from inside, and walks `r` itself rather than a
+	// second cursor. That is not style: keeping the original `r` and `size` live
+	// past the loop -- which is what a shared `m_q = r[size - 3]` tail below does
+	// -- adds two long-lived values to a loop body that already uses every
+	// callee-saved register, and clang answers by spilling both and reloading them
+	// per call. Measured on the M2: xenosaga, 97.9% fused and autoflush, paid
+	// +0.19 ms a frame for it, and the SD865 +0.62. This arm never touches the
+	// kernel, so it must cost exactly what it cost before.
+	if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
 	{
-		// See GIFPackedRegHandlerSTQRGBAXYZF2: autoflush keeps the staged-m_v path.
+		// See GIFPackedRegHandlerSTQRGBAXYZF2: sprites and the uncarried prims
+		// keep this loop verbatim.
+		const GIFPackedReg* RESTRICT r_end = r + size;
 		while (r < r_end)
 		{
 			u64 uvfog;
@@ -1992,39 +2581,215 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 
 			r += 3;
 		}
+
+		m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+		return;
+	}
+
+	// A routed instantiation whose call is too short for the kernel, or whose
+	// environment the kernel's cull does not cover, runs the same loop, with its
+	// own `r` walk and its own m_q tail. Written out a second time rather than
+	// called: this is the arm the +0.19/+0.62 ms measurement above was about, and
+	// it has to cost what it cost before, which means the handler must not keep
+	// the original `r` and `size` live across it.
+	if constexpr (auto_flush)
+	{
+		if (size < 3 * GSVertexKickKernel::kMinKernelVertices || !s_fused_kick_use_kernel ||
+			!KickKernelApplies<prim>())
+		{
+			const GIFPackedReg* RESTRICT r_end = r + size;
+			while (r < r_end)
+			{
+				u64 uvfog;
+				std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
+
+				GSVector4i m0, m1;
+				GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
+
+				m_v.m[0] = m0;
+				m_v.m[1] = m1;
+
+				VertexKick<prim, auto_flush>(r[2].XYZ2.Skip());
+
+				r += 3;
+			}
+
+			m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+			return;
+		}
+	}
+
+	const u32 count = size / 3;
+
+	if constexpr (KickKernelCarriesPrim<prim>())
+	{
+		if (s_fused_kick_use_kernel && count >= GSVertexKickKernel::kMinKernelVertices &&
+			KickKernelApplies<prim>())
+			KickPackedBatchKernel<prim, GSVertexKernels::PackedLayout::TripleXYZ2, auto_flush>(r, count);
+		else if constexpr (auto_flush)
+			KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
+		else
+			KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
+	}
+	else if constexpr (auto_flush)
+	{
+		KickPackedStagedRun<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 	}
 	else
 	{
-		// Loop-invariant: packed XYZ2 writes neither UV nor FOG, and the parse
-		// copies both through unchanged.
-		u64 uvfog;
-		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
-		const GSLimit24BitDepth depth_clamp = GetDepthClampMode(); // batch-invariant
-
-		VertexKickCursor c;
-		c.Load(*this);
-
-		GSVector4i m0, m1;
-		while (r < r_end)
-		{
-			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
-			ApplyDepthClampMode(depth_clamp, m1.U32[1]);
-
-			VertexKickDirect<prim, auto_flush>(r[2].XYZ2.Skip(), r[2].XYZ2.X, r[2].XYZ2.Y, m0, m1, c);
-
-			r += 3;
-		}
-
-		c.Store();
-		m_v.m[0] = m0;
-		m_v.m[1] = m1;
+		KickPackedBatchLegacy<prim, GSVertexKernels::PackedLayout::TripleXYZ2>(r, count);
 	}
 
-	m_q = r[-3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
+	m_q = r[size - 3].STQ.Q; // remember the last one, STQ outputs this to the temp Q each time
 }
 
 void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r, u32 size)
 {
+}
+
+// The latched Q a tag carrying an ST descriptor leaves behind.
+// GIFPackedRegHandlerSTQ applies two fix-ups on the way -- an integer +0.0
+// becomes FLT_MIN, so a negative zero passes through, and a NaN becomes
+// GSVector4::m_max -- and the next RGBAQ write copies the result into the
+// vertex. So the per-qword path's m_q is the fixed-up value, and a fused handler
+// that wants to be exact against it has to leave the same one behind.
+void GSState::StoreLatchedQ(const GIFPackedReg* RESTRICT stq)
+{
+	GSVector4i q = GSVector4i::loadl(&stq->U64[1]);
+	q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+	q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	GSVector4::store(&m_q, GSVector4::cast(q));
+}
+
+// The layouts stage 3c added: the NOP-padded {ST, RGBAQ, XYZF2} triple, and the
+// three two-register layouts. One handler covers all four, because everything
+// that differs between them is inside the parse and the parse is a template
+// parameter.
+//
+// Instantiated only for the three prim types the kernel carries. Every other
+// prim leaves a null in the handler table and Transfer replays the tag's
+// descriptors one qword at a time, which is exact by construction and is what
+// keeps four layouts from costing eight prims' worth of kernel, staged loop and
+// per-vertex batch each.
+template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
+void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size)
+{
+	static_assert(!GSVertexKernels::LayoutIsContiguousTriple(layout),
+		"the two shipped triples keep their own handlers");
+	static_assert(LayoutHandlerExists<prim, layout>(),
+		"a layout handler is only instantiated for a pair the corpus has traffic for");
+
+	const u32 stride = m_packed_layout.stride;
+	pxAssert(size > 0 && (size % stride) == 0);
+	const u32 count = size / stride;
+
+	// The per-qword path this replaces does not check for a flush once per tag,
+	// and collapsing it into one call at the top of the handler is exact only
+	// while m_dirty_gs_regs is zero. Two things go wrong when it is not:
+	//
+	//  * GIFPackedRegHandlerXYZ2 makes the call CONDITIONAL -- !ADC || the prim
+	//    class changed || XYOFFSET is dirty -- and evaluates it per vertex, so
+	//    the flush can land in the middle of the tag rather than before it.
+	//  * it makes the call AFTER that vertex's own colour is already in m_v, and
+	//    the draw-buffering decision CheckFlushes reaches (CanBufferNewDraw)
+	//    READS m_v.RGBAQ.A. Called at the top of the handler it sees the
+	//    previous tag's alpha and can buffer a draw the per-qword path would
+	//    have flushed.
+	//
+	// Neither is theoretical: collapsing the call moved the flush point on six
+	// of the corpus's 24 dumps -- spiderman3, stuntman, outrun-a, outrun-b,
+	// xenosaga and gow2 -- and a byte-diff of the decoded vertex stream over
+	// the corpus caught all six. So while m_dirty_gs_regs is live the tag is
+	// replayed descriptor by descriptor
+	// through the piecemeal handlers, which IS that path; it stops as soon as
+	// the flag clears, which is normally the first record. When the flag is
+	// zero, CheckFlushes does nothing at all and where it is called from cannot
+	// matter, which is why the fused arm is exact then.
+	//
+	// The two shipped fused triples get away with the collapsed call because the
+	// tags they fuse were already fused before them: there is nothing for them
+	// to diverge from.
+	u32 done = 0;
+	if (m_dirty_gs_regs)
+	{
+		constexpr u32 reg_a = (layout == GSVertexKernels::PackedLayout::PairUVXYZ2) ?
+								  GIF_REG_UV :
+								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2) ? GIF_REG_RGBA :
+																							  GIF_REG_STQ);
+		constexpr u32 reg_xyz = GSVertexKernels::LayoutIsXYZF2(layout) ? GIF_REG_XYZF2 : GIF_REG_XYZ2;
+		const u32 off_a = m_packed_layout.off_a;
+		const u32 off_rgba = m_packed_layout.off_rgba;
+		const u32 off_xyz = m_packed_layout.off_xyz;
+
+		while (done < count && m_dirty_gs_regs)
+		{
+			const GIFPackedReg* RESTRICT rv = r + done * stride;
+			ReplayPackedQword(reg_a, rv + off_a);
+			if constexpr (GSVertexKernels::LayoutIsTriple(layout))
+				ReplayPackedQword(GIF_REG_RGBA, rv + off_rgba);
+			ReplayPackedQword(reg_xyz, rv + off_xyz);
+			done++;
+		}
+	}
+	else
+	{
+		CheckFlushes();
+	}
+
+	if constexpr (layout == GSVertexKernels::PackedLayout::PairUVXYZ2)
+	{
+		// UserHacks_ForceEvenSpritePosition swaps GIFPackedRegHandlerUV for a
+		// version whose only extra effect is this sticky flag. Nothing inside one
+		// handler call can clear it -- only a UV write through the A+D path does,
+		// and a packed vertex tag contains none -- so setting it once per call is
+		// exactly what the per-qword path leaves behind.
+		if (GSConfig.UserHacks_ForceEvenSpritePosition)
+			m_isPackedUV_HackFlag = true;
+	}
+
+	if (done < count)
+	{
+		const GIFPackedReg* RESTRICT rest = r + done * stride;
+		const u32 n = count - done;
+
+		if constexpr (auto_flush && !KickRoutesAutoFlush<prim>())
+		{
+			// Sprites, at either autoflush level: HandleAutoFlush reads the
+			// incoming vertex out of m_v and its EarlyDetectShuffle is per-prim
+			// state, so the run stays on the staged loop. It still loses the
+			// per-qword dispatch and the two indirect handler calls a vertex,
+			// which is what stage 3c option (a) is.
+			KickPackedStagedRun<prim, layout>(rest, n);
+		}
+		else
+		{
+			// The kernel only for the pairs the corpus enters it on. For the
+			// rest `kicked` is a compile-time false and this folds away to the
+			// per-vertex loop stage 3c found them on, which is what they run
+			// today anyway -- sprites never reach the kernel at all.
+			bool kicked = false;
+			if constexpr (LayoutUsesKernel<prim, layout>())
+			{
+				if (s_fused_kick_use_kernel && n >= GSVertexKickKernel::kMinKernelVertices &&
+					KickKernelApplies<prim>())
+				{
+					KickPackedBatchKernel<prim, layout, auto_flush>(rest, n);
+					kicked = true;
+				}
+			}
+
+			if (!kicked)
+			{
+				if constexpr (auto_flush)
+					KickPackedStagedRun<prim, layout>(rest, n);
+				else
+					KickPackedBatchLegacy<prim, layout>(rest, n);
+			}
+		}
+	}
+
+	if constexpr (GSVertexKernels::LayoutLatchesQ(layout))
+		StoreLatchedQ(&r[(count - 1) * stride + m_packed_layout.off_a]);
 }
 
 void GSState::GIFRegHandlerNull(const GIFReg* RESTRICT r)
@@ -3880,45 +4645,6 @@ void GSState::Move()
 
 	InvalidateLocalMem(m_env.BITBLTBUF, GSVector4i(sx, sy, sx + w, sy + h));
 	InvalidateVideoMem(m_env.BITBLTBUF, GSVector4i(dx, dy, dx + w, dy + h));
-	const bool overlaps = m_env.BITBLTBUF.SBP == m_env.BITBLTBUF.DBP;
-	const bool intersect = overlaps && !(GSVector4i(sx, sy, sx + w, sy + h).rintersect(GSVector4i(dx, dy, dx + w, dy + h)).rempty());
-
-	int xinc = 1;
-	int yinc = 1;
-
-	if (m_env.TRXPOS.DIRX)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sx < dx)
-		{
-			sx += w - 1;
-			dx += w - 1;
-			xinc = -1;
-		}
-	}
-	if (m_env.TRXPOS.DIRY)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sy < dy)
-		{
-			sy += h - 1;
-			dy += h - 1;
-			yinc = -1;
-		}
-	}
-
-	const GSLocalMemory::psm_t& spsm = GSLocalMemory::m_psm[m_env.BITBLTBUF.SPSM];
-	const GSLocalMemory::psm_t& dpsm = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM];
-
-	// TODO: unroll inner loops (width has special size requirement, must be multiples of 1 << n, depending on the format)
-
-	const int sbp = m_env.BITBLTBUF.SBP;
-	const int sbw = m_env.BITBLTBUF.SBW;
-	const int dbp = m_env.BITBLTBUF.DBP;
-	const int dbw = m_env.BITBLTBUF.DBW;
-	const GSOffset spo = m_mem.GetOffset(sbp, sbw, m_env.BITBLTBUF.SPSM);
-	const GSOffset dpo = m_mem.GetOffset(dbp, dbw, m_env.BITBLTBUF.DPSM);
-
 	GSVector4i r;
 	r.left = m_env.TRXPOS.DSAX;
 	r.top = m_env.TRXPOS.DSAY;
@@ -3942,147 +4668,15 @@ void GSState::Move()
 		m_draw_transfers.push_back(new_transfer);
 	}
 
-	auto copy = [this, sbp, dbp, sx, sy, dx, dy, w, h, yinc, xinc, intersect](const GSOffset& dpo, const GSOffset& spo, auto&& pxCopyFn)
-	{
-		int _sy = sy, _dy = dy; // Faster with local copied variables, compiler optimizations are dumb
-		if (xinc > 0)
-		{
-			const int page_width = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM].pgs.x;
-			const int page_height = GSLocalMemory::m_psm[m_env.BITBLTBUF.DPSM].pgs.y;
-			const int xpage = sx & ~(page_width - 1);
-			const int ypage = _sy & ~(page_height - 1);
-			// Copying from itself to itself (rotating textures) used in Gitaroo Man stage 8
-			// What probably happens is because the copy is buffered, the source stays just ahead of the destination.
-			// No need to do all this if the copy source/destination don't intersect, however.
-			if (intersect && sbp == dbp && (((_sy < _dy) && ((ypage + page_height) > _dy)) || ((sx < dx) && ((xpage + page_width) > dx))))
-			{
-				int starty = (yinc > 0) ? 0 : h-1;
-				int endy = (yinc > 0) ? h : -1;
-				int y_inc = yinc;
-
-				if (((_sy < _dy) && ((ypage + page_height) > _dy)) && yinc > 0)
-				{
-					_sy += h-1;
-					_dy += h-1;
-					starty = h-1;
-					endy = -1;
-					y_inc = -y_inc;
-				}
-
-				for (int y = starty; y != endy; y+= y_inc, _sy += y_inc, _dy += y_inc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					if (((sx < dx) && ((xpage + page_width) > dx)))
-					{
-						for (int x = w - 1; x >= 0; x--)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-					else
-					{
-						for (int x = 0; x < w; x++)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-				}
-			}
-			else
-			{
-				for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					for (int x = 0; x < w; x++)
-					{
-						pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-					}
-				}
-			}
-		}
-		else
-		{
-			for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-			{
-				GSOffset::PAHelper s = spo.paMulti(0, _sy);
-				GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-				for (int x = 0; x < w; x++)
-				{
-					pxCopyFn(d.value((dx - x) & 2047), s.value((sx - x) & 2047));
-				}
-			}
-		}
-	};
-
-	// Parameterized on the destination memory so the local->local move can be replayed
-	// verbatim into the asynchronous-readback shadow below.
-	const auto move_in_memory = [&](GSLocalMemory& local_mem)
-	{
-		if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
-		{
-			if (spsm.trbpp == 32)
-			{
-				u32* vm = local_mem.vm32();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = vm[soff];
-				});
-			}
-			else if (spsm.trbpp == 24)
-			{
-				u32* vm = local_mem.vm32();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
-				});
-			}
-			else // if (spsm.trbpp == 16)
-			{
-				u16* vm = local_mem.vm16();
-				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
-				{
-					vm[doff] = vm[soff];
-				});
-			}
-		}
-		else if (m_env.BITBLTBUF.SPSM == PSMT8 && m_env.BITBLTBUF.DPSM == PSMT8)
-		{
-			u8* vm = local_mem.m_vm8;
-			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
-			{
-				vm[doff] = vm[soff];
-			});
-		}
-		else if (m_env.BITBLTBUF.SPSM == PSMT4 && m_env.BITBLTBUF.DPSM == PSMT4)
-		{
-			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [&local_mem](u32 doff, u32 soff)
-			{
-				local_mem.WritePixel4(doff, local_mem.ReadPixel4(soff));
-			});
-		}
-		else
-		{
-			copy(dpo, spo, [&local_mem, &dpsm, &spsm](u32 doff, u32 soff)
-			{
-				(local_mem.*dpsm.wpa)(doff, (local_mem.*spsm.rpa)(soff));
-			});
-		}
-	};
-
-	move_in_memory(m_mem);
+	m_mem.Move(m_env.BITBLTBUF, m_env.TRXPOS, m_env.TRXREG);
 
 	// Same reasoning as the EE upload path: the move is authoritative for its destination
 	// pages, so replay it and bump their generations to fence off older in-flight downloads.
 	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && m_async_readback_mem)
 	{
 		const std::lock_guard lock(m_async_readback_mutex);
-		move_in_memory(*m_async_readback_mem);
-		MarkAsyncReadbackPagesWritten(dpo, r);
+		m_async_readback_mem->Move(m_env.BITBLTBUF, m_env.TRXPOS, m_env.TRXREG);
+		MarkAsyncReadbackPagesWritten(m_mem.GetOffset(m_env.BITBLTBUF.DBP, m_env.BITBLTBUF.DBW, m_env.BITBLTBUF.DPSM), r);
 	}
 
 	m_env.TRXDIR.XDIR = 3;
@@ -4316,6 +4910,20 @@ void GSState::Transfer(const u8* mem, u32 size)
 							mem += sizeof(GIFPackedReg);
 							size--;
 						} while (path.StepReg() && size > 0 && path.reg != 0);
+
+						// The resume can finish the tag: StepReg returns false exactly
+						// when reg wraps on the last loop, and then nloop is 0 and the
+						// tag is done here. Everything below computes nloop * nreg
+						// registers of work and would compute zero, which no arm reads
+						// as "nothing to do" -- the fused handlers index r[count - 1]
+						// and the two do-while arms walk 2^32 records off the end of
+						// the packet. So take the next tag instead.
+						//
+						// Only PATH2 and PATH3 get here. PATH1 discards an unfinished
+						// tag at the bottom of this function (the XGKICK-without-EOP
+						// hackfix), so a PATH1 tag never resumes across calls.
+						if (path.nloop == 0)
+							break;
 					}
 
 					// all data available? usually is
@@ -4326,9 +4934,70 @@ void GSState::Transfer(const u8* mem, u32 size)
 					{
 						size -= total;
 
-						switch (path.type)
+						// EVERY ARM BELOW LOADS ITS HANDLER AT A CONSTANT
+						// INDEX. That is not style. Indexing this table by
+						// (path.type - TYPE_STQRGBAXYZF2) -- one line, and the
+						// obvious way to write it once there are six types --
+						// makes the array base a live value, and clang answers
+						// by keeping it in the frame and reloading it: measured
+						// on the M2 at +5 instructions and one stack access on
+						// EVERY packed tag, which is 16,427 a frame on xenosaga
+						// and 12,205 on rcuya-effects.
+						// Both titles regressed about 3% on the SD865 for it,
+						// and neither runs a single stage-3c layout.
+						//
+						// So the two types that carry essentially all of every
+						// title's traffic keep the shape they had before stage
+						// 3c: one compare, and the handler pointer loaded at an
+						// immediate offset from `this`. The stage-3c layouts sit
+						// behind a `type >= TYPE_NOPSTQRGBAXYZF2` test the
+						// common path never takes.
+						if (path.type == GIFPath::TYPE_STQRGBAXYZF2) // majority of the vertices are formatted like this
 						{
-							case GIFPath::TYPE_UNKNOWN:
+							(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2])((GIFPackedReg*)mem, total);
+
+							mem += total * sizeof(GIFPackedReg);
+						}
+						else if (path.type == GIFPath::TYPE_STQRGBAXYZ2)
+						{
+							(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2])((GIFPackedReg*)mem, total);
+
+							mem += total * sizeof(GIFPackedReg);
+						}
+						else if (path.type == GIFPath::TYPE_ADONLY) // very common
+						{
+							do
+							{
+								(this->*m_fpGIFRegHandlers[((GIFPackedReg*)mem)->A_D.ADDR & 0x7F])(&((GIFPackedReg*)mem)->r);
+
+								mem += sizeof(GIFPackedReg);
+							} while (--total > 0);
+						}
+						else
+						{
+							// Cold: TYPE_UNKNOWN, and the stage-3c layouts. A
+							// null entry means SetTag recognised the layout but
+							// nothing fuses it for this prim, and the per-qword
+							// replay below is exact for it -- it is what the tag
+							// got before SetTag learned to name it.
+							GIFPackedRegHandlerC fused = nullptr;
+							if (path.type >= GIFPath::TYPE_NOPSTQRGBAXYZF2)
+							{
+								fused = m_fpGIFPackedRegHandlersLayoutC[path.type - GIFPath::TYPE_NOPSTQRGBAXYZF2];
+								// Where the record's descriptors sit. The handler
+								// signature is fixed by the table it is called
+								// through, and only these layouts read it.
+								if (fused)
+									m_packed_layout = path.layout;
+							}
+
+							if (fused)
+							{
+								(this->*fused)((GIFPackedReg*)mem, total);
+
+								mem += total * sizeof(GIFPackedReg);
+							}
+							else
 							{
 								u32 reg = 0;
 
@@ -4341,30 +5010,6 @@ void GSState::Transfer(const u8* mem, u32 size)
 									reg = reg & ((int)(reg - path.nreg) >> 31); // resets reg back to 0 when it becomes equal to path.nreg
 								} while (--total > 0);
 							}
-							break;
-							case GIFPath::TYPE_ADONLY: // very common
-								do
-								{
-									(this->*m_fpGIFRegHandlers[((GIFPackedReg*)mem)->A_D.ADDR & 0x7F])(&((GIFPackedReg*)mem)->r);
-
-									mem += sizeof(GIFPackedReg);
-								} while (--total > 0);
-
-								break;
-							case GIFPath::TYPE_STQRGBAXYZF2: // majority of the vertices are formatted like this
-								(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2])((GIFPackedReg*)mem, total);
-
-								mem += total * sizeof(GIFPackedReg);
-
-								break;
-							case GIFPath::TYPE_STQRGBAXYZ2:
-								(this->*m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2])((GIFPackedReg*)mem, total);
-
-								mem += total * sizeof(GIFPackedReg);
-
-								break;
-							default:
-								ASSUME(0);
 						}
 
 						path.nloop = 0;
@@ -4829,6 +5474,9 @@ void GSState::UpdateVertexKick()
 
 	m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZF2] = m_fpGIFPackedRegHandlerSTQRGBAXYZF2[prim];
 	m_fpGIFPackedRegHandlersC[GIF_REG_STQRGBAXYZ2] = m_fpGIFPackedRegHandlerSTQRGBAXYZ2[prim];
+
+	for (u32 i = 0; i < GIF_REG_COMPLEX_COUNT - 2; i++)
+		m_fpGIFPackedRegHandlersLayoutC[i] = m_fpGIFPackedRegHandlerLayout[i][prim];
 }
 
 void GSState::GrowVertexBuffer()
@@ -5924,9 +6572,59 @@ bool GSState::SpriteDrawWithoutGaps()
 	return false;
 }
 
+// The union of this draw's sprites against its own rect, at pixel precision. SpriteDrawWithoutGaps()
+// above asks whether the sprites tile; this asks whether every pixel of m_r is written by at least
+// one of them, which is a different question and the one the alpha tracker is actually asking. Two
+// coincident screen-sized sprites tile nothing and cover everything.
+//
+// The tree turns a vertex into a pixel two different ways -- the hardware renderer rounds to
+// nearest (floor(v + 0.5), the `+8 >> 4` below) and the software rasteriser takes the ceiling --
+// and they differ by half a pixel on a sprite that is not integer-aligned. A cover claim is only
+// worth having if it holds in both, so the sweep runs twice and both have to say yes.
+bool GSState::SpriteUnionCoversDrawRect()
+{
+	const u32 count = m_vertex->next / 2;
+	if (count < 2 || count > GSSpriteCover::MaxSprites)
+		return false;
+
+	const int off_x = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int off_y = static_cast<int>(m_context->XYOFFSET.OFY);
+	const GSVertex* v = &m_vertex->buff[0];
+
+	// floor(v + 0.5) then ceil(v), as the two conventions.
+	static constexpr int kRoundingBias[2] = {8, 15};
+	for (const int bias : kRoundingBias)
+	{
+		GSVector4i rects[GSSpriteCover::MaxSprites];
+		u32 n = 0;
+		for (u32 i = 0; i < count; i++)
+		{
+			int x0 = static_cast<int>(v[i * 2].XYZ.X) - off_x;
+			int x1 = static_cast<int>(v[i * 2 + 1].XYZ.X) - off_x;
+			int y0 = static_cast<int>(v[i * 2].XYZ.Y) - off_y;
+			int y1 = static_cast<int>(v[i * 2 + 1].XYZ.Y) - off_y;
+			if (x0 > x1)
+				std::swap(x0, x1);
+			if (y0 > y1)
+				std::swap(y0, y1);
+
+			const GSVector4i sprite((x0 + bias) >> 4, (y0 + bias) >> 4, (x1 + bias) >> 4, (y1 + bias) >> 4);
+			const GSVector4i r = sprite.rintersect(m_r);
+			if (!r.rempty())
+				rects[n++] = r;
+		}
+
+		if (!GSSpriteCover::UnionCoversRect(rects, n, m_r))
+			return false;
+	}
+
+	return true;
+}
+
 void GSState::CalculatePrimitiveCoversWithoutGaps()
 {
 	m_primitive_covers_without_gaps = FullCover;
+	m_primitive_union_covers_rect = false;
 
 	// Draw shouldn't be offset.
 	if (((m_r.eq32(GSVector4i::zero())).mask() & 0xff) != 0xff)
@@ -5953,6 +6651,10 @@ void GSState::CalculatePrimitiveCoversWithoutGaps()
 		return;
 
 	m_primitive_covers_without_gaps = SpriteDrawWithoutGaps() ? (m_primitive_covers_without_gaps == GapsFound ? SpriteNoGaps : m_primitive_covers_without_gaps) : GapsFound;
+
+	// Asked only where the tiling test refused, and answered onto a flag of its own.
+	if (m_primitive_covers_without_gaps == GapsFound)
+		m_primitive_union_covers_rect = SpriteUnionCoversDrawRect();
 }
 
 __forceinline bool GSState::EarlyDetectShuffle(u32 prim)
@@ -8060,6 +8762,159 @@ GIFRegTEX0 GSState::GetTex0Layer(u32 lod)
 	return TEX0;
 }
 
+// Fix large ST coorindates that may cause graphical glitches.
+template <u32 primclass>
+void GSState::RewriteVerticesIfLargeSTImpl(const GSVector4& large_val, bool check_clamp_mode)
+{
+	// Need to be texture mapping with ST and not have so many vertices that rewritten indices will overflow.
+	if (PRIM->TME && PRIM->FST == 0)
+	{
+		const float tw = static_cast<float>(1 << m_context->TEX0.TW);
+		const float th = static_cast<float>(1 << m_context->TEX0.TH);
+		const GSVector4 tsize = GSVector4(tw, th, 1.0f, 1.0f);
+
+		// Only rewrite big/small S or T when the clamping mode is CLAMP or REGION_CLAMP (if requested).
+		const GIFRegCLAMP& clamp = m_context->CLAMP;
+		const GSVector4 clamp_mask =
+			check_clamp_mode ?
+				GSVector4::cast(GSVector4i(
+					(clamp.WMS == CLAMP_CLAMP || clamp.WMS == CLAMP_REGION_CLAMP) ? 0xFFFFFFFF : 0,
+					(clamp.WMT == CLAMP_CLAMP || clamp.WMT == CLAMP_REGION_CLAMP) ? 0xFFFFFFFF : 0,
+					0,
+					0)) :
+				GSVector4::cast(GSVector4i::cxpr(0xFFFFFFFF));
+
+		const GSVector4 tex_bbox = m_vt.m_min.t.xyxy(m_vt.m_max.t) / tsize.xyxy();
+		const bool large_st = ((tex_bbox.abs() >= large_val) & clamp_mask).mask() || m_vt.nan.value;
+
+		if (large_st)
+		{
+			GL_PUSH("Large ST detected, rewriting vertices.");
+			if (m_index->tail > UINT16_MAX)
+			{
+				GL_INS("Too many vertices to rewrite safely, exiting.");
+				DevCon.Warning("Large ST detected but too many vertices to rewrite safely.");
+				return;
+			}
+
+			constexpr int n = GSUtil::GetClassVertexCount(primclass);
+
+			// Make sure the copy buffer is large enough.
+			while (m_vertex->maxcount < m_index->tail)
+				GrowVertexBuffer();
+
+			GSVertex* RESTRICT vertex = m_vertex->buff;
+			GSVertex* RESTRICT vertex_copy = m_vertex->buff_copy;
+			u16* RESTRICT index = m_index->buff;
+			const int count = static_cast<int>(m_index->tail);
+
+			for (int i = 0; i < count; i += n)
+			{
+				GSVector4 stcq[n];
+
+				// Load STQ for this primitive.
+				for (int j = 0; j < n; j++)
+					stcq[j] = GSVector4::cast(GSVector4i(vertex[index[i + j]].m[0]));
+
+				// Perform Q division and see which values need to be rewritten.
+				GSVector4 uv[n];
+				GSVector4 small{}, big{}, nan{};
+				for (int j = 0; j < n; j++)
+				{
+					// For sprites always use Q of second vertex.
+					const GSVector4 q = primclass == GS_SPRITE_CLASS ? stcq[1].wwww() : stcq[j].wwww();
+					uv[j] = (stcq[j] / q).xyzw(GSVector4::zero());
+					small |= (uv[j] <= -large_val);
+					big |= (uv[j] >= large_val);
+					nan |= (uv[j] != uv[j]);
+				}
+
+				// Get the new values for fields that will be rewritten.
+				// The follows rules are used:
+				// 1. If there are small values but not big or nans, make all vertices small.
+				// 2. If there are big values but not small or nans, make all vertices big.
+				// 3. If there are both big and small values, or nans, make all vertices zero.
+				GSVector4 uv_new = GSVector4::zero();
+				uv_new = uv_new.blend32(-large_val, small);
+				uv_new = uv_new.blend32(large_val, big);
+				uv_new = uv_new.blend32(GSVector4::zero(), (small & big) | nan);
+
+				const GSVector4 rewrite = (((small | big) & clamp_mask) | nan).xyxy(GSVector4::zero());
+
+				// If both S and T are rewritten, no point in keeping Q. Just set it to 1.0f;
+				if ((rewrite.mask() & 3) == 3)
+				{
+					for (int j = 0; j < n; j++)
+						stcq[j] = stcq[j].template insert32<0, 3>(GSVector4::m_one);
+				}
+
+				// Rewrite the fields that require it and write to the copy buffer.
+				for (int j = 0; j < n; j++)
+				{
+					// For sprites always use Q of second vertex.
+					const GSVector4 q = (primclass == GS_SPRITE_CLASS) ? stcq[1].wwww() : stcq[j].wwww();
+					stcq[j] = stcq[j].blend32(uv_new * q, rewrite);
+
+					vertex_copy[i + j].m[0] = GSVector4i::cast(stcq[j]);
+					vertex_copy[i + j].m[1] = vertex[index[i + j]].m[1];
+					index[i + j] = i + j;
+				}
+			}
+
+			// Swap the buffers and fix the counts.
+			std::swap(m_vertex->buff, m_vertex->buff_copy);
+			m_vertex->head = m_vertex->next = m_vertex->tail = m_index->tail;
+
+			// Recalculate ST min/max/eq in the vertex trace.
+			GSVector4 tmin = GSVector4::cxpr(FLT_MAX);
+			GSVector4 tmax = GSVector4::cxpr(-FLT_MAX);
+			for (int i = 0; i < count; i += n)
+			{
+				for (int j = 0; j < n; j++)
+				{
+					GSVector4 stcq = GSVector4::cast(GSVector4i(m_vertex->buff[i + j].m[0]));
+					const float q = (primclass == GS_SPRITE_CLASS) ? m_vertex->buff[i + 1].RGBAQ.Q : stcq.w;
+					stcq = (stcq / q).xyzw(stcq);
+
+					tmin = tmin.min(stcq);
+					tmax = tmax.max(stcq);
+				}
+			}
+			m_vt.m_min.t = tmin.xyww() * tsize;
+			m_vt.m_max.t = tmax.xyww() * tsize;
+			m_vt.m_eq.stq = (m_vt.m_min.t == m_vt.m_max.t).mask();
+
+			// Dump vertices if needed.
+			if (GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()) && GSConfig.SaveInfo)
+			{
+				DumpVertices(GetDrawDumpPath("%05d_vertices_st_rewrite.txt", s_n));
+			}
+		}
+	}
+}
+
+void GSState::RewriteVerticesIfLargeST(const GSVector4& large_val, bool check_clamp_mode)
+{
+	switch (m_vt.m_primclass)
+	{
+		case GS_POINT_CLASS:
+			RewriteVerticesIfLargeSTImpl<GS_POINT_CLASS>(large_val, check_clamp_mode);
+			break;
+		case GS_LINE_CLASS:
+			RewriteVerticesIfLargeSTImpl<GS_LINE_CLASS>(large_val, check_clamp_mode);
+			break;
+		case GS_SPRITE_CLASS:
+			RewriteVerticesIfLargeSTImpl<GS_SPRITE_CLASS>(large_val, check_clamp_mode);
+			break;
+		case GS_TRIANGLE_CLASS:
+			RewriteVerticesIfLargeSTImpl<GS_TRIANGLE_CLASS>(large_val, check_clamp_mode);
+			break;
+		default:
+			pxFail("Invalid primclass"); // Impossible
+			break;
+	}
+}
+
 // GSTransferBuffer
 
 GSState::GSTransferBuffer::GSTransferBuffer()
@@ -8234,7 +9089,12 @@ GSVector2i GSState::GSPCRTCRegs::GetResolution()
 
 	if (!GSConfig.PCRTCOffsets)
 	{
-		if (PCRTCDisplays[0].enabled && PCRTCDisplays[1].enabled)
+		if (!PCRTCDisplays[0].enabled && !PCRTCDisplays[1].enabled)
+		{
+			const int shift = is_full_height ? 1 : 0;
+			resolution = {offsets.x, offsets.y << shift};
+		}
+		else if (PCRTCDisplays[0].enabled && PCRTCDisplays[1].enabled)
 		{
 			const GSVector4i combined_size = PCRTCDisplays[0].displayRect.runion(PCRTCDisplays[1].displayRect);
 			resolution = { combined_size.width(), combined_size.height() };
@@ -8298,14 +9158,14 @@ GSVector2i GSState::GSPCRTCRegs::GetFramebufferSize(int display)
 		if (combined_rect.z >= 2048)
 		{
 			const int high_x = (PCRTCDisplays[0].framebufferRect.x > PCRTCDisplays[1].framebufferRect.x) ? PCRTCDisplays[0].framebufferRect.x : PCRTCDisplays[1].framebufferRect.x;
-			combined_rect.z -= GSIsHardwareRenderer() ? 2048 : high_x;
+			combined_rect.z -= GSPresenterOffsetsFramebufferRead() ? high_x : 2048;
 			combined_rect.x = 0;
 		}
 
 		if (combined_rect.w >= 2048)
 		{
 			const int high_y = (PCRTCDisplays[0].framebufferRect.y > PCRTCDisplays[1].framebufferRect.y) ? PCRTCDisplays[0].framebufferRect.y : PCRTCDisplays[1].framebufferRect.y;
-			combined_rect.w -= GSIsHardwareRenderer() ? 2048 : high_y;
+			combined_rect.w -= GSPresenterOffsetsFramebufferRead() ? high_y : 2048;
 			combined_rect.y = 0;
 		}
 
@@ -8318,8 +9178,8 @@ GSVector2i GSState::GSPCRTCRegs::GetFramebufferSize(int display)
 			offset = (offset - 1) / 2;
 		}
 
-		// Hardware mode needs a wider framebuffer as it can't offset the read.
-		if (GSIsHardwareRenderer())
+		// A presenter that can't offset the read needs a wider framebuffer to cover the offset.
+		if (!GSPresenterOffsetsFramebufferRead())
 		{
 			combined_rect.z += std::max(PCRTCDisplays[0].framebufferOffsets.x, PCRTCDisplays[1].framebufferOffsets.x);
 			combined_rect.w += std::max(PCRTCDisplays[0].framebufferOffsets.y, PCRTCDisplays[1].framebufferOffsets.y);
@@ -8518,8 +9378,8 @@ void GSState::GSPCRTCRegs::RemoveFramebufferOffset(int display)
 {
 	if (display >= 0)
 	{
-		// Hardware needs nothing but handling for wrapped framebuffers.
-		if (GSIsHardwareRenderer())
+		// A whole-framebuffer read needs nothing but handling for wrapped framebuffers.
+		if (!GSPresenterOffsetsFramebufferRead())
 		{
 			if (PCRTCDisplays[display].framebufferRect.z >= 2048)
 			{
@@ -8554,8 +9414,8 @@ void GSState::GSPCRTCRegs::RemoveFramebufferOffset(int display)
 	{
 		// Software Mode Note:
 		// This code is to read the framebuffer nicely block aligned in software, then leave the remaining offset in to the block.
-		// In hardware mode this doesn't happen, it reads the whole framebuffer, so we need to keep the offset.
-		if (!GSIsHardwareRenderer())
+		// A whole-framebuffer presenter doesn't do this, it reads everything, so we need to keep the offset.
+		if (GSPresenterOffsetsFramebufferRead())
 		{
 			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[PCRTCDisplays[1].PSM];
 

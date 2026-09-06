@@ -2900,6 +2900,8 @@ bool GSDevice12::CompileConvertPipelines()
 
 		ShaderMacro sm;
 		sm.AddMacro("PIXEL_SHADER", 1);
+		sm.AddMacro("PRIMID_MAX", GSShader::PRIMID_MAX);
+		sm.AddMacro("PRIMID_MIN", GSShader::PRIMID_MIN);
 		sm.AddMacro("HAS_BILN", static_cast<int>(shader.Biln()));
 		sm.AddMacro("HAS_STENCIL_OUTPUT", static_cast<int>(shader.StencilOutput()));
 		sm.AddMacro("HAS_INTEGER_OUTPUT", static_cast<int>(shader.IntegerOutputBpp() != 0));
@@ -2953,6 +2955,8 @@ bool GSDevice12::CompileConvertPipelines()
 
 		ShaderMacro sm;
 		sm.AddMacro("PIXEL_SHADER", "1");
+		sm.AddMacro("PRIMID_MAX", GSShader::PRIMID_MAX);
+		sm.AddMacro("PRIMID_MIN", GSShader::PRIMID_MIN);
 		sm.AddMacro(entry_point_macro.c_str(), "1");
 
 		ComPtr<ID3DBlob> ps(m_shader_cache.GetPixelShader(*source, sm.GetPtr(), entry_point.c_str()));
@@ -3254,6 +3258,15 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	if (it != m_tfx_pixel_shaders.end())
 		return it->second.get();
 
+	// af_in_src1 reroutes a fixed (AFIX) blend factor through the second fragment output, for a
+	// driver whose blend constant is broken. Only the Vulkan shader implements it, and only
+	// GSDeviceVK raises features.broken_blend_constant, so nothing reaches this today. If a
+	// driver-database entry ever does, the blend state moves to SRC1 factors while this shader
+	// keeps writing As, which is wrong colour and nothing else would say so.
+	if (sel.af_in_src1)
+		Console.Error("PS_AF_IN_SRC1 is not implemented in this backend's shader.");
+	pxAssert(!sel.af_in_src1);
+
 	ShaderMacro sm;
 	sm.AddMacro("PIXEL_SHADER", 1);
 	sm.AddMacro("PS_HAS_CONSERVATIVE_DEPTH", 1);
@@ -3276,6 +3289,8 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	sm.AddMacro("PS_A_MASKED", sel.a_masked);
 	sm.AddMacro("PS_FBA", sel.fba);
 	sm.AddMacro("PS_FBMASK", sel.fbmask);
+	sm.AddMacro("PS_QUANTIZE_COLOR", sel.quantize_color);
+	sm.AddMacro("PS_SUBSTITUTE_ALPHA", sel.substitute_alpha);
 	sm.AddMacro("PS_LTF", sel.ltf);
 	sm.AddMacro("PS_TCOFFSETHACK", sel.tcoffsethack);
 	sm.AddMacro("PS_POINT_SAMPLER", sel.point_sampler);

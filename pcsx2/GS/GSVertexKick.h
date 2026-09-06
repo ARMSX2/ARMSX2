@@ -68,44 +68,73 @@ namespace GSVertexKernels
 	// pack chain alone). Out-of-range TBL indices read as zero, which provides the
 	// 24-bit Z and 8-bit F masks for free. Bit-identical to the legacy kernels —
 	// pinned by gs_vertex_tests.
-	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
+	//
+	// The TBL patterns and the Q fix-up constant are lifted into a struct a caller
+	// can hoist out of a batch loop. As function-local statics inside a
+	// force-inlined parse, clang materializes them in the caller's frame and
+	// reloads all three every iteration (measured: `ldur q0, [x29,#-112]` and two
+	// siblings in the fused handler's loop). A batch loop passes them in once.
+	struct PackedParseConsts
 	{
-		// m0 = {S, T, RGBA, Q}: S/T = r0 bytes 0-7, RGBA = r1 bytes 0/4/8/12, Q = r0 bytes 8-11.
+		uint8x16_t pat_m0;   // {S, T, RGBA, Q}, shared by both layouts
+		uint8x16_t pat_m1;   // XYZF2: {X|Y<<16, Z, -, F}
+		uint8x16_t pat_xyz;  // XYZ2:  {X|Y<<16, Z32} into the low half
+		uint32x4_t q_fixup;  // Q == +0.0 rewrites to FLT_MIN
+	};
+
+	__forceinline_odr PackedParseConsts MakePackedParseConsts()
+	{
 		alignas(16) static constexpr u8 pat_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
-		// m1 = {X|Y<<16, Z, UV, F}: X/Y = r2 bytes 0-1/4-5, Z = (r2>>4) bytes 8-10, F = (r2>>4) byte 12.
 		alignas(16) static constexpr u8 pat_m1[16] = {0, 1, 4, 5, 24, 25, 26, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 28, 0xFF, 0xFF, 0xFF};
-		// Q == +0.0 (integer compare) rewrites to FLT_MIN; other lanes OR with 0.
+		alignas(16) static constexpr u8 pat_xyz[16] = {0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 		alignas(16) static constexpr u32 q_fixup[4] = {0, 0, 0, 0x00800000};
 
+		PackedParseConsts k;
+		k.pat_m0 = vld1q_u8(pat_m0);
+		k.pat_m1 = vld1q_u8(pat_m1);
+		k.pat_xyz = vld1q_u8(pat_xyz);
+		k.q_fixup = vld1q_u32(q_fixup);
+		return k;
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
+	{
 		const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(r + 0)), vld1q_u8(reinterpret_cast<const u8*>(r + 1))};
-		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, vld1q_u8(pat_m0)));
-		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), vld1q_u32(q_fixup)));
+		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
+		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
 
 		const uint8x16_t xyzf = vld1q_u8(reinterpret_cast<const u8*>(r + 2));
 		const uint8x16x2_t xyzf_pair = {xyzf, vreinterpretq_u8_u32(vshrq_n_u32(vreinterpretq_u32_u8(xyzf), 4))};
-		uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, vld1q_u8(pat_m1)));
+		uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, k.pat_m1));
 		v1 = vsetq_lane_u32(uv, v1, 2);
 
 		m0 = GSVector4i(vreinterpretq_s32_u32(v0));
 		m1 = GSVector4i(vreinterpretq_s32_u32(v1));
 	}
 
-	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
+	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
 	{
-		alignas(16) static constexpr u8 pat_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
-		// m1 low half = {X|Y<<16, Z32} straight out of r2; high half = {UV, FOG} verbatim.
-		alignas(16) static constexpr u8 pat_xyz[16] = {0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-		alignas(16) static constexpr u32 q_fixup[4] = {0, 0, 0, 0x00800000};
-
 		const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(r + 0)), vld1q_u8(reinterpret_cast<const u8*>(r + 1))};
-		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, vld1q_u8(pat_m0)));
-		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), vld1q_u32(q_fixup)));
+		uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
+		v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
 
-		const uint8x16_t xyz = vqtbl1q_u8(vld1q_u8(reinterpret_cast<const u8*>(r + 2)), vld1q_u8(pat_xyz));
+		const uint8x16_t xyz = vqtbl1q_u8(vld1q_u8(reinterpret_cast<const u8*>(r + 2)), k.pat_xyz);
 		const uint64x2_t v1 = vsetq_lane_u64(uvfog, vreinterpretq_u64_u8(xyz), 1);
 
 		m0 = GSVector4i(vreinterpretq_s32_u32(v0));
 		m1 = GSVector4i(vreinterpretq_s32_u64(v1));
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
+	{
+		ParsePackedSTQRGBAXYZF2_Neon(r, uv, MakePackedParseConsts(), m0, m1);
+	}
+
+	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
+	{
+		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, MakePackedParseConsts(), m0, m1);
 	}
 #endif // ARCH_ARM64
 
@@ -126,6 +155,299 @@ namespace GSVertexKernels
 		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, m0, m1);
 #else
 		ParsePackedSTQRGBAXYZ2(r, uvfog, m0, m1);
+#endif
+	}
+
+	// ------------------------------------------------------------------------
+	// The packed layouts the fused handlers carry (stage 3c).
+	//
+	// Every one of them is the same vertex build from the same three sources --
+	// {S, T}, the colour, and the position -- differing only in where those
+	// sources sit in the record and in which of them the tag omits. An omitted
+	// source is not a partial vertex: the field keeps the value the previous
+	// write latched, which is what the per-qword path leaves in m_v, so the
+	// parse takes it from a carried vector instead of from the stream.
+	//
+	// The two contiguous triples are the shipped layouts and their stride and
+	// offsets are compile-time, so their code is what it was; the rest read a
+	// GIFPackedLayout the tag classified once.
+	// ------------------------------------------------------------------------
+	enum class PackedLayout : u32
+	{
+		TripleXYZF2,    // {ST, RGBAQ, XYZF2}, contiguous
+		TripleXYZ2,     // {ST, RGBAQ, XYZ2}, contiguous
+		NopTripleXYZF2, // the same three with NOP descriptors between them
+		PairSTQXYZ2,    // {ST, XYZ2}: colour and Q carried
+		PairUVXYZ2,     // {UV, XYZ2}: ST, colour and Q carried
+		PairRGBAQXYZ2,  // {RGBAQ, XYZ2}: ST carried, Q from the latch
+	};
+
+	constexpr bool LayoutIsXYZF2(PackedLayout l)
+	{
+		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::NopTripleXYZF2;
+	}
+	constexpr bool LayoutIsContiguousTriple(PackedLayout l)
+	{
+		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::TripleXYZ2;
+	}
+	constexpr bool LayoutIsTriple(PackedLayout l)
+	{
+		return LayoutIsContiguousTriple(l) || l == PackedLayout::NopTripleXYZF2;
+	}
+	// Whether the record carries an ST descriptor, and therefore whether the tag
+	// moves the latched Q that the next RGBAQ write will read.
+	constexpr bool LayoutLatchesQ(PackedLayout l)
+	{
+		return LayoutIsTriple(l) || l == PackedLayout::PairSTQXYZ2;
+	}
+	// Whether the parse needs the carried m[0].
+	constexpr bool LayoutCarriesM0(PackedLayout l) { return !LayoutIsTriple(l); }
+
+	template <PackedLayout L>
+	__forceinline_odr u32 LayoutStride(const GIFPackedLayout& o)
+	{
+		if constexpr (LayoutIsContiguousTriple(L))
+			return 3;
+		else
+			return o.stride;
+	}
+	template <PackedLayout L>
+	__forceinline_odr u32 LayoutOffA(const GIFPackedLayout& o)
+	{
+		if constexpr (LayoutIsContiguousTriple(L))
+			return 0;
+		else
+			return o.off_a;
+	}
+	template <PackedLayout L>
+	__forceinline_odr u32 LayoutOffRgba(const GIFPackedLayout& o)
+	{
+		if constexpr (LayoutIsContiguousTriple(L))
+			return 1;
+		else
+			return o.off_rgba;
+	}
+	template <PackedLayout L>
+	__forceinline_odr u32 LayoutOffXyz(const GIFPackedLayout& o)
+	{
+		if constexpr (LayoutIsContiguousTriple(L))
+			return 2;
+		else
+			return o.off_xyz;
+	}
+
+	// The carried m[0] a pair layout parses against.
+	//
+	//   PairSTQ / PairUV  m_v.m[0] as it stands: lanes 2 and 3 are the colour and
+	//                     the vertex's own Q, neither of which such a tag writes.
+	//   PairRGBAQ         m_v.m[0] with LANE 2 SET TO THE LATCHED Q. That is not
+	//                     cosmetic: GIFPackedRegHandlerRGBA writes RGBAQ.Q = m_q,
+	//                     and putting m_q there lets the parse reuse the shipped
+	//                     {S, T, RGBA, Q} table pattern, whose last lane comes
+	//                     from the carry's lane 2.
+	__forceinline_odr GSVector4i MakeLayoutCarry(PackedLayout l, const GSVector4i& v_m0, float q)
+	{
+		GSVector4i c = v_m0;
+		if (l == PackedLayout::PairRGBAQXYZ2)
+			std::memcpy(&c.U32[2], &q, sizeof(q));
+		return c;
+	}
+
+	// {UV, FOG} for one record: the carried pair, with the UV half replaced by the
+	// record's own when the layout carries a UV descriptor. Same masking and pack
+	// as GIFPackedRegHandlerUV.
+	template <PackedLayout L>
+	__forceinline_odr u64 LayoutUVFog(const GIFPackedReg* RESTRICT rv, u32 off_a, u64 uvfog)
+	{
+		if constexpr (L == PackedLayout::PairUVXYZ2)
+		{
+			u64 w;
+			std::memcpy(&w, &rv[off_a], sizeof(w));
+			return (uvfog & 0xFFFFFFFF00000000ull) | (w & 0x3fffull) | ((w >> 16) & 0x3fff0000ull);
+		}
+		else
+		{
+			(void)rv;
+			(void)off_a;
+			return uvfog;
+		}
+	}
+
+	// One record, portable. `carry` is MakeLayoutCarry's result; `uvfog` the
+	// carried {UV, FOG}.
+	template <PackedLayout L>
+	__forceinline_odr void ParsePackedRecord(const GIFPackedReg* RESTRICT rv, const GIFPackedLayout& off,
+		u64 uvfog, const GSVector4i& carry, GSVector4i& m0, GSVector4i& m1)
+	{
+		if constexpr (LayoutIsContiguousTriple(L))
+		{
+			if constexpr (L == PackedLayout::TripleXYZF2)
+				ParsePackedSTQRGBAXYZF2(rv, static_cast<u32>(uvfog), m0, m1);
+			else
+				ParsePackedSTQRGBAXYZ2(rv, uvfog, m0, m1);
+			return;
+		}
+		else
+		{
+			const u32 off_a = LayoutOffA<L>(off);
+			const u32 off_xyz = LayoutOffXyz<L>(off);
+
+			if constexpr (LayoutIsTriple(L))
+			{
+				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branch above");
+
+				const GSVector4i st = GSVector4i::loadl(&rv[off_a].U64[0]);
+				GSVector4i q = GSVector4i::loadl(&rv[off_a].U64[1]);
+				const GSVector4i rgba =
+					(GSVector4i::load<false>(&rv[LayoutOffRgba<L>(off)]) & GSVector4i::x000000ff()).ps32().pu16();
+				q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+				// GIFPackedRegHandlerSTQ applies a second fix-up, NaN to FLT_MAX,
+				// and the next RGBAQ write copies the fixed-up latch into the
+				// vertex. So the per-qword path this layout replaces puts the
+				// replaced value in the vertex, and so must we. (The two
+				// contiguous triples above skip it; that divergence is inherited
+				// from upstream and is pinned as it stands.)
+				q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+				m0 = st.upl64(rgba.upl32(q));
+			}
+			else
+			{
+				GSVector4i v = carry;
+				if constexpr (L == PackedLayout::PairSTQXYZ2)
+				{
+					v.U64[0] = rv[off_a].U64[0];
+				}
+				else if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+				{
+					const GSVector4i mask = GSVector4i::load(0x0c080400);
+					const GSVector4i rgba = GSVector4i::load<false>(&rv[off_a]).shuffle8(mask);
+					v.U32[3] = carry.U32[2]; // the latch, where the carry parks it
+					v.U32[2] = static_cast<u32>(GSVector4i::store(rgba));
+				}
+				m0 = v;
+			}
+
+			const GSVector4i xy = GSVector4i::loadl(&rv[off_xyz].U64[0]);
+			if constexpr (LayoutIsXYZF2(L))
+			{
+				GSVector4i zf = GSVector4i::loadl(&rv[off_xyz].U64[1]);
+				const GSVector4i xyuv =
+					xy.upl16(xy.srl<4>()).upl32(GSVector4i::load(static_cast<int>(uvfog)));
+				zf = zf.srl32<4>() & GSVector4i::x00ffffff().upl32(GSVector4i::x000000ff());
+				m1 = xyuv.upl32(zf);
+			}
+			else
+			{
+				const u64 uvf = LayoutUVFog<L>(rv, off_a, uvfog);
+				const GSVector4i z = GSVector4i::loadl(&rv[off_xyz].U64[1]);
+				const GSVector4i xyz = xy.upl16(xy.srl<4>()).upl32(z);
+				m1 = xyz.upl64(GSVector4i::loadl(&uvf));
+			}
+		}
+	}
+
+#ifdef ARCH_ARM64
+	// The same, with the table patterns hoisted -- what pass one and the batch
+	// loops call. Byte-identical to the portable build above; gs_vertex_tests and
+	// the differential suite pin both against the per-qword handlers.
+	template <PackedLayout L>
+	__forceinline_odr void ParsePackedRecord_Neon(const GIFPackedReg* RESTRICT rv, const GIFPackedLayout& off,
+		u64 uvfog, const GSVector4i& carry, const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
+	{
+		if constexpr (L == PackedLayout::TripleXYZF2)
+		{
+			ParsePackedSTQRGBAXYZF2_Neon(rv, static_cast<u32>(uvfog), k, m0, m1);
+		}
+		else if constexpr (L == PackedLayout::TripleXYZ2)
+		{
+			ParsePackedSTQRGBAXYZ2_Neon(rv, uvfog, k, m0, m1);
+		}
+		else
+		{
+			const u32 off_a = LayoutOffA<L>(off);
+			const u32 off_xyz = LayoutOffXyz<L>(off);
+
+			// m[0].
+			if constexpr (LayoutIsTriple(L))
+			{
+				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branches above");
+
+				const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(rv + off_a)),
+					vld1q_u8(reinterpret_cast<const u8*>(rv + LayoutOffRgba<L>(off)))};
+				uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, k.pat_m0));
+				v0 = vorrq_u32(v0, vandq_u32(vceqzq_u32(v0), k.q_fixup));
+
+				// The second STQ fix-up: a NaN Q becomes FLT_MAX. pat_m0 puts Q in
+				// lane 3, so the compare's other three lanes -- S, T and the packed
+				// colour, any of which can carry a NaN bit pattern -- are masked
+				// out. FCMEQ is false for a NaN operand, so BIC of the lane mask
+				// with it leaves ones only in a lane 3 that is NaN, and BSL takes
+				// FLT_MAX there and the parsed bits everywhere else.
+				// See the portable branch above for why this layout needs it and
+				// the contiguous triples do not.
+				const float32x4_t f = vreinterpretq_f32_u32(v0);
+				const uint32x4_t q_lane = vsetq_lane_u32(0xFFFFFFFFu, vdupq_n_u32(0), 3);
+				const uint32x4_t q_is_nan = vbicq_u32(q_lane, vceqq_f32(f, f));
+				v0 = vbslq_u32(q_is_nan, vreinterpretq_u32_f32(vdupq_n_f32(FLT_MAX)), v0);
+
+				m0 = GSVector4i(vreinterpretq_s32_u32(v0));
+			}
+			else if constexpr (L == PackedLayout::PairSTQXYZ2)
+			{
+				// {S, T} over the carry's colour and Q: one load and one insert.
+				u64 st;
+				std::memcpy(&st, &rv[off_a], sizeof(st));
+				m0 = GSVector4i(vreinterpretq_s32_u64(
+					vsetq_lane_u64(st, vreinterpretq_u64_s32(carry.v4s), 0)));
+			}
+			else if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+			{
+				// pat_m0 is {S, T} from the first vector, the colour packed out of
+				// the second's four low bytes, and the first's lane 2 last -- which
+				// is where MakeLayoutCarry parks the latched Q. So the shipped
+				// pattern builds this layout's vertex unchanged, with no fix-up:
+				// the carried Q has already had one applied by whoever latched it.
+				const uint8x16x2_t carry_rgba = {vreinterpretq_u8_s32(carry.v4s),
+					vld1q_u8(reinterpret_cast<const u8*>(rv + off_a))};
+				m0 = GSVector4i(vreinterpretq_s32_u8(vqtbl2q_u8(carry_rgba, k.pat_m0)));
+			}
+			else
+			{
+				static_assert(L == PackedLayout::PairUVXYZ2);
+				m0 = carry;
+			}
+
+			// m[1].
+			if constexpr (LayoutIsXYZF2(L))
+			{
+				const uint8x16_t xyzf = vld1q_u8(reinterpret_cast<const u8*>(rv + off_xyz));
+				const uint8x16x2_t xyzf_pair = {
+					xyzf, vreinterpretq_u8_u32(vshrq_n_u32(vreinterpretq_u32_u8(xyzf), 4))};
+				uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, k.pat_m1));
+				v1 = vsetq_lane_u32(static_cast<u32>(uvfog), v1, 2);
+				m1 = GSVector4i(vreinterpretq_s32_u32(v1));
+			}
+			else
+			{
+				const uint8x16_t xyz =
+					vqtbl1q_u8(vld1q_u8(reinterpret_cast<const u8*>(rv + off_xyz)), k.pat_xyz);
+				const uint64x2_t v1 =
+					vsetq_lane_u64(LayoutUVFog<L>(rv, off_a, uvfog), vreinterpretq_u64_u8(xyz), 1);
+				m1 = GSVector4i(vreinterpretq_s32_u64(v1));
+			}
+		}
+	}
+#endif // ARCH_ARM64
+
+	// The dispatcher the per-vertex paths call.
+	template <PackedLayout L>
+	__forceinline_odr void ParsePackedRecord_Fast(const GIFPackedReg* RESTRICT rv, const GIFPackedLayout& off,
+		u64 uvfog, const GSVector4i& carry, GSVector4i& m0, GSVector4i& m1)
+	{
+#ifdef ARCH_ARM64
+		ParsePackedRecord_Neon<L>(rv, off, uvfog, carry, MakePackedParseConsts(), m0, m1);
+#else
+		ParsePackedRecord<L>(rv, off, uvfog, carry, m0, m1);
 #endif
 	}
 

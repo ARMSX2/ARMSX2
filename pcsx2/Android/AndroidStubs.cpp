@@ -5,29 +5,15 @@
 
 #include "PrecompiledHeader.h"
 
-#include "Input/InputManager.h"
 #include "CDVD/CDVDdiscReader.h"
 
 #include "common/FileSystem.h"
 #include "common/HostSys.h"
 
-// The two below stand in for pcsx2-qt, so they are wanted only by the APK.
-// pcsx2-libretro/Main.cpp defines both itself, and the libretro core is
-// linked from these same sources - hence the guard, or the Android core
-// build ends on two duplicate symbols. Everything further down is frontend
-// independent and is compiled either way.
-#ifndef ENABLE_LIBRETRO
-
-// g_host_hotkeys - normally defined in pcsx2-qt
-BEGIN_HOTKEY_LIST(g_host_hotkeys)
-END_HOTKEY_LIST()
-
-// Host::SetMouseLock - no mouse lock on Android
-void Host::SetMouseLock(bool state)
-{
-}
-
-#endif
+// g_host_hotkeys / Host::SetMouseLock moved to AndroidHostStubs.cpp: they are
+// FRONTEND definitions (emucore's JNI frontend has none; pcsx2-gsrunner has its
+// own), and keeping them in this member made every Android frontend that links
+// libpcsx2.a collide with them when this object was pulled for the disc stubs.
 
 #ifdef ENABLE_LIBRETRO
 

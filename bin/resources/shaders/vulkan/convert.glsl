@@ -291,7 +291,7 @@ void ps_convert_depth32_depth24()
 	float depthTR = CONVERT_FN(texelFetch(samp0, coords.zy, 0)); \
 	float depthBL = CONVERT_FN(texelFetch(samp0, coords.xw, 0)); \
 	float depthBR = CONVERT_FN(texelFetch(samp0, coords.zw, 0)); \
-	OUTPUT = mix(mix(depthTL, depthTR, mix_vals.x), mix(depthBL, depthBR, mix_vals.x), mix_vals.y);
+	OUTPUT = floor(mix(mix(depthTL, depthTR, mix_vals.x), mix(depthBL, depthBR, mix_vals.x), mix_vals.y) * exp2(32.0f)) * exp2(-32.0f);
 
 #ifdef ps_convert_rgba8_depth32
 void ps_convert_rgba8_depth32()
@@ -628,23 +628,23 @@ void ps_yuv()
 
 void main()
 {
-	o_col0 = vec4(0x7FFFFFFF);
+	o_col0 = vec4(PRIMID_MAX);
 
 	#ifdef ps_primid_image_init_0
 		if((127.5f / 255.0f) < sample_c(v_tex).a) // < 0x80 pass (== 0x80 should not pass)
-			o_col0 = vec4(-1);
+			o_col0 = vec4(PRIMID_MIN);
 	#endif
 	#ifdef ps_primid_image_init_1
 		if(sample_c(v_tex).a < (127.5f / 255.0f)) // >= 0x80 pass
-			o_col0 = vec4(-1);
+			o_col0 = vec4(PRIMID_MIN);
 	#endif
 	#ifdef ps_primid_image_init_2
 		if((254.5f / 255.0f) < sample_c(v_tex).a) // < 0x80 pass (== 0x80 should not pass)
-			o_col0 = vec4(-1);
+			o_col0 = vec4(PRIMID_MIN);
 	#endif
 	#ifdef ps_primid_image_init_3
 		if(sample_c(v_tex).a < (254.5f / 255.0f)) // >= 0x80 pass
-			o_col0 = vec4(-1);
+			o_col0 = vec4(PRIMID_MIN);
 	#endif
 }
 #endif

@@ -63,6 +63,7 @@ namespace GameDatabaseSchema
 		NativePaletteDraw,
 		EstimateTextureRegion,
 		DrawBuffering,
+		RewriteLargeST,
 		PCRTCOffsets,
 		PCRTCOverscan,
 		CoalesceRenderPasses,

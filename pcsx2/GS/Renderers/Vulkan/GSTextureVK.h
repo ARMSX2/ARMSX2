@@ -27,6 +27,12 @@ public:
 		FeedbackLoop,
 		ReadWriteImage,
 		ComputeReadWriteImage,
+		// SHADER_READ_ONLY_OPTIMAL, same as ShaderReadOnly -- what differs is the STAGE the read
+		// happens in. ShaderReadOnly scopes its barriers to the fragment stage, so an image a
+		// COMPUTE shader samples through it is ordered against nothing: neither is the write that
+		// filled it made visible to the dispatch, nor is the dispatch's read ordered before whatever
+		// overwrites the image next. Anything a compute shader samples uses this instead.
+		ComputeReadOnly,
 		General,
 		Count
 	};

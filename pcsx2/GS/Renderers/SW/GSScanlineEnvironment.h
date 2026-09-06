@@ -57,6 +57,14 @@ union GSScanlineSelector
 		// TODO: 1D texture flag? could save 2 texture reads and 4 lerps with bilinear, and also the texture coordinate clamp/wrap code in one direction
 		u32 zequal : 1; // 56
 		u32 breakpoint : 1; // Insert a trap to stop the program, helpful to stop debugger on a program
+
+		// The GS chooses between MMAG and MMIN PER PIXEL, from that pixel's own level
+		// of detail -- the filter can change part way along a single primitive, and on
+		// silicon it does. These two say "this primitive straddles the crossing, so
+		// decide per pixel": ltfx runs the bilinear path with the weight forced to zero
+		// wherever the nearest filter wins, and ltfx_ge picks which side that is.
+		u32 ltfx    : 1;
+		u32 ltfx_ge : 1;
 	};
 
 	struct
@@ -87,9 +95,19 @@ union GSScanlineSelector
 	operator u32() const { return lo; }
 	operator u64() const { return key; }
 
+	/// Whether the rasterizer can serve this draw as a bulk rectangle fill instead of
+	/// running the per-pixel scanline. Every condition listed here is one the fill
+	/// cannot reproduce, so each has to stay out of the fast path.
+	///
+	/// Dither belongs in that list and was missing from it: the fill writes one constant
+	/// colour, while the dither matrix is added per pixel in WriteFrame. A dithered flat
+	/// sprite therefore lost its dither entirely -- and games fill 16-bit targets with
+	/// flat sprites constantly. Measured against silicon (gs-dither, SCPH-30001): the
+	/// same grid drawn as sprites and as triangles is identical to the pixel on console,
+	/// where ours differed on 1116 of 4096.
 	bool IsSolidRect() const
 	{
-		return prim == GS_SPRITE_CLASS && iip == 0 && tfx == TFX_NONE && abe == 0 && ztst <= 1 && atst <= 1 && date == 0 && fge == 0;
+		return prim == GS_SPRITE_CLASS && iip == 0 && tfx == TFX_NONE && abe == 0 && ztst <= 1 && atst <= 1 && date == 0 && fge == 0 && dthe == 0;
 	}
 
 	std::string to_string() const
@@ -144,6 +162,7 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	GSVector8 mxl;
 	GSVector8 k; // TEX1.K * 0x10000
 	GSVector8 l; // TEX1.L * -0x10000
+	GSVector8 ltfx_q; // the Q at which the level crosses zero; sel.ltfx
 	struct { GSVector8i i, f; } lod; // lcm == 1
 
 #else
@@ -153,6 +172,7 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	GSVector4 mxl;
 	GSVector4 k; // TEX1.K * 0x10000
 	GSVector4 l; // TEX1.L * -0x10000
+	GSVector4 ltfx_q; // the Q at which the level crosses zero; sel.ltfx
 	struct { GSVector4i i, f; } lod; // lcm == 1
 
 #endif
@@ -186,6 +206,9 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 	struct step { GSVector4 stq; struct { u32 rb, ga; } c; struct { u64 z; u32 f; } p; } d8;
 	struct { u32 z, f; } p;
 	struct { GSVector8i rb, ga; } c;
+	// One unit of the 16.16 texture coordinate on each axis that walks forward,
+	// zero on an axis that is still or walking back. See GSDrawScanline.cpp.
+	struct { GSVector8i u, v; } tclag;
 
 	// these should be stored on stack as normal local variables (no free regs to use, esp cannot be saved to anywhere, and we need an aligned stack)
 
@@ -212,8 +235,17 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 
 	struct skip { GSVector4 z, s, t, q; GSVector4i rb, ga, f, _pad; } d[4];
 	struct step { GSVector4 z, stq; GSVector4i c, f; } d4;
+	// Every draw walks an eight-pixel block, which is two vectors here, so its
+	// per-vector step alternates -- see GSBlockWalk.h. Indexed by the span's
+	// position inside its block (x0 & 7) and then by phase; the two phases of a
+	// pair sum to the whole block step, and the walk starts at phase 0 and
+	// toggles.
+	struct blockstep { GSVector4i rb, ga, f, _pad; } dw[8][2];
 	struct { GSVector4i rb, ga; } c;
 	struct { GSVector4i z, f; } p;
+	// One unit of the 16.16 texture coordinate on each axis that walks forward,
+	// zero on an axis that is still or walking back. See GSDrawScanline.cpp.
+	struct { GSVector4i u, v; } tclag;
 
 	// these should be stored on stack as normal local variables (no free regs to use, esp cannot be saved to anywhere, and we need an aligned stack)
 
@@ -268,6 +300,10 @@ struct alignas(64) GSScanlineConstantData256B
 		8.0f, -7.0f, -6.0f, -5.0f, -4.0f, -3.0f, -2.0f, -1.0f,
 		0.0f,  1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,  7.0f,
 	};
+	// Eight lanes and an eight-pixel block are the same span (GSBlockWalk.h), so
+	// this build needs no split and no second lane-offset table. The pair that
+	// used to sit here described a four-wide textured block, which the console
+	// has since refused.
 
 	constexpr GSScanlineConstantData256B()
 	{
@@ -297,6 +333,23 @@ struct alignas(64) GSScanlineConstantData128B
 		{ -1.0f , 0.0f  , 1.0f  , 2.0f},
 		{ -2.0f , -1.0f , 0.0f  , 1.0f},
 		{ -3.0f , -2.0f , -1.0f , 0.0f},
+	};
+	// A draw walks an EIGHT-pixel block (GSBlockWalk.h), which is two vectors
+	// here. Building the alternating step needs the lane offsets of the half
+	// after this one and of the half before it, as well as m_shift's own, plus
+	// the whole block step.
+	alignas(16) float m_block8[4] = {8.0f, 8.0f, 8.0f, 8.0f};
+	alignas(16) float m_shift_next[4][4] = { // 4 + lane - skip
+		{ 4.0f  , 5.0f  , 6.0f  , 7.0f},
+		{ 3.0f  , 4.0f  , 5.0f  , 6.0f},
+		{ 2.0f  , 3.0f  , 4.0f  , 5.0f},
+		{ 1.0f  , 2.0f  , 3.0f  , 4.0f},
+	};
+	alignas(16) float m_shift_prev[4][4] = { // lane - 4 - skip
+		{ -4.0f , -3.0f , -2.0f , -1.0f},
+		{ -5.0f , -4.0f , -3.0f , -2.0f},
+		{ -6.0f , -5.0f , -4.0f , -3.0f},
+		{ -7.0f , -6.0f , -5.0f , -4.0f},
 	};
 	alignas(16) float m_log2_coef[4][4] = {};
 

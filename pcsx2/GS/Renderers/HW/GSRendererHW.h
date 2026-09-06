@@ -4,8 +4,10 @@
 #pragma once
 
 #include "GSTextureCache.h"
+#include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSRenderer.h"
+#include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/GSState.h"
 #include "GS/MultiISA.h"
@@ -209,6 +211,8 @@ private:
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
 
+	void SnapSpriteEdgesToPixelGrid();
+
 	template <bool linear>
 	void RoundSpriteOffset();
 
@@ -218,6 +222,18 @@ private:
 	void HandleFlatShadedVertices();
 	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
+	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
+	/// nothing -- and where nothing, why. The verdict drives the drop and the substitution below.
+	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
+	void ResolveHeldAlphaMask();
+	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
+	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
+	u32 RequestedAlphaFbMask() const
+	{
+		return GSDrawAlphaMask::AsRequested(m_exact_alpha_drop_fbmask_a, m_conf.ps.fbmask != 0,
+			static_cast<u32>(m_conf.cb_ps.FbMask.a));
+	}
 	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
 	void EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options, GSTextureCache::Target* rt,
 		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);
@@ -233,13 +249,13 @@ private:
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);
 	void EmulateAA1();
-	static void GetAlphaTestConfigPS(const u32 atst, const u8 aref, const bool invert_test, PS_ATST& ps_atst_out, float& aref_out);
 	void EmulateAlphaTest(DATEOptions& date_options);
 	void EmulateAlphaTestSecondPass();
 	void ConfigureDepthFeedback(bool rov_depth = false);
 
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
-		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max);
+		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
+		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
 		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
@@ -294,6 +310,9 @@ private:
 	bool IsRTWritten();
 	bool IsRTWrittenLive(const GIFRegALPHA& ALPHA) override;
 	bool IsDepthAlwaysPassing();
+	/// The case IsDepthAlwaysPassing() cannot reach: the depth buffer still holds the value it was
+	/// cleared to in every pixel, so a GREATER or GEQUAL test against it is answerable.
+	bool AllDepthTestsPassOnClearedTarget(const GSTextureCache::Target* ds);
 	bool IsUsingCsInBlend();
 	bool IsUsingAsInBlend();
 
@@ -345,10 +364,28 @@ private:
 	GSHWDrawConfig m_conf = {};
 	HWCachedCtx m_cached_ctx;
 
+	// The alpha byte of FBMSK that the exact alpha drop cleared out of this draw, or
+	// GSDrawAlphaMask::NothingDropped. Reset per draw by ResetStates().
+	int m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
+
+	// An exact alpha-mask decision held over the blend selection. While fbmask is non-zero the
+	// shader has no mask but the blend decisions read the barrier that mask would have required,
+	// so the blend road cannot move because of the decision. ResolveHeldAlphaMask() settles it.
+	// Reset per draw by ResetStates().
+	struct HeldAlphaMask
+	{
+		u32 fbmask = 0; ///< FBMSK as the draw asked for it; zero means nothing is held
+		u32 ps_fbmask = 0; ///< the shader's four-channel nibble for that mask
+		bool substitute = false; ///< what is held is the substitution, not the drop
+		/// The two constants a standing substitution hands the shader. Applied in
+		/// ResolveHeldAlphaMask() rather than at the framebuffer-mask site, so a substitution
+		/// that gets put back leaves the constant buffer exactly as it found it.
+		GSDrawAlphaMask::Substitution substitution;
+	};
+	HeldAlphaMask m_held_alpha_mask;
+
 	// software sprite renderer state
-	std::vector<GSVertexSW> m_sw_vertex_buffer;
-	std::unique_ptr<GSTextureCacheSW::Texture> m_sw_texture[7 + 1];
-	std::unique_ptr<GSVirtualAlignedClass<32>> m_sw_rasterizer;
+	GSSwPrimRenderState m_sw_prim;
 
 public:
 	GSRendererHW();

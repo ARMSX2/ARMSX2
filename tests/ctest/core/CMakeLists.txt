@@ -6,8 +6,16 @@ add_pcsx2_test(core_test
 	patch_tests.cpp
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
+	gsrunner_affinity_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
+)
+
+# gsrunner_affinity_tests.cpp includes the runner's own -affinity parse header; the flag
+# decides which cores a measurement round runs on, so it is worth a test even though the
+# runner itself has no test binary.
+target_include_directories(core_test PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../pcsx2-gsrunner
 )
 
 if(ARCH_ARM64)
