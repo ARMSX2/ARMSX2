@@ -747,6 +747,12 @@ public:
 	// Clear / Flush
 	//------------------------------------------------------------------
 
+	// Lane holding the one component a three-lane write left alone, indexed by
+	// the mask of components not written (X=8 is lane 0). -1 for every mask
+	// that leaves more or fewer than one component behind.
+	static constexpr int kMergeLane[16] = {
+		-1, 3, 2, -1, 1, -1, -1, -1, 0, -1, -1, -1, -1, -1, -1, -1};
+
 	// Mark a NEON slot as no-longer-needed after the op that allocated it is
 	// done. Matches x86 clearNeeded: when the cleared
 	// slot was written to (xyzw != 0), we must either merge the partial
@@ -779,7 +785,7 @@ public:
 		}
 
 		// Modified VFreg: handle merge / invalidate of other cached copies.
-		int mergeState = 0; // 0: full-write, invalidate others
+		int mergeState = 0; // 0: this slot holds the whole register, invalidate others
 		                    // 1: partial-write, haven't merged yet
 		                    // 2: partial-write, merged into another slot
 		if (clear.xyzw < 0xF)
@@ -795,6 +801,33 @@ public:
 
 			if (mergeState == 1)
 			{
+				// Both directions read the other copy's natural lanes, which a
+				// partial write does not leave behind — allocReg's single-lane
+				// path puts the value in lane 0. A partial slot never gets past
+				// its own clearNeeded, so reaching one here would mean two live
+				// partial writes to the same register.
+				pxAssertMsg(mapI.xyzw == 0 || mapI.xyzw == 0xF,
+					"microVU merge found a partially-written cached copy!");
+
+				// A three-lane write goes the other way round: take the one
+				// lane we did not write from the other copy, one Ins where
+				// mVUmergeRegs needs two, and our slot is the whole register.
+				// It is the other copy that gets dropped, and no microVU
+				// emitter allocates a NEON register after a clearNeeded, so a
+				// copy still marked needed cannot be taken from its holder.
+				const int missing = (~clear.xyzw) & 0xF;
+				const int lane = kMergeLane[missing];
+				if (lane >= 0)
+				{
+					armAsm->Ins(reg.V4S(), lane, armQRegister(i).V4S(), lane);
+					clear.xyzw   = 0xF;
+					clear.count  = counter;
+					clear.isZero = mapI.isZero;
+					clearNeon(i);
+					mergeState = 0; // holding the whole register is the full-write state
+					continue;
+				}
+
 				// First other cached copy found — merge our partial write
 				// into it. The merged reg now holds the complete state, so
 				// mark it as fully valid (xyzw=0xF). We'll invalidate our

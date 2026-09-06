@@ -149,6 +149,11 @@ struct DigestSet
 	// cannot tell a lost fold from a reordered queue. 0 in a pin row = probe
 	// absent.
 	u64 preloadPairs;
+	// Two masked writes whose destinations are also preloaded, so each one
+	// reaches clearNeeded with a second cached copy of its own register in
+	// front of it. Every probe above writes whole registers, so none of them
+	// reaches the merge at all. 0 in a pin row = probe absent.
+	u64 mergeFold;
 };
 
 struct AbiPin
@@ -358,6 +363,11 @@ constexpr AbiPin kPins[] = {
 	// loads now follow the VI ones instead of interleaving with them. The
 	// preloadPairs probe is new in this row.
 	{31, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb}},
+	// abi 32: a three-component write keeps its own slot and takes the fourth
+	// component from the other cached copy. No probe above writes a masked
+	// destination, so every digest in the row is the abi 31 value; the
+	// mergeFold probe is new and is the only one that reaches the merge.
+	{32, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -710,6 +720,16 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf7, vf::vf4, vf::vf1)),
 	});
 
+	// Two three-component writes with different masks, so which lane the
+	// reversal reads is in the shape twice. Both destinations are written
+	// partially, which is what makes mvuPreloadRegisters load them, and the
+	// preloaded copy is the one the merge folds against. vf1 and vf2 are the
+	// seeded pair and no component of either difference is zero.
+	actual.mergeFold = CompileAndDigest({
+		UpperOnly(VSUB_U(mask::x | mask::y | mask::z, vf::vf5, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::x | mask::z | mask::w, vf::vf6, vf::vf2, vf::vf1)),
+	});
+
 	mVUPersist::SetRecordingEnabled(false);
 
 	ASSERT_NE(actual.straightLine, 0u);
@@ -733,6 +753,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.vu1EbitMtvu, 0u);
 	ASSERT_NE(actual.clipFlag, 0u);
 	ASSERT_NE(actual.preloadPairs, 0u);
+	ASSERT_NE(actual.mergeFold, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -783,7 +804,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.vu1LoadStore
 		<< ", 0x" << actual.vu1EbitMtvu
 		<< ", 0x" << actual.clipFlag
-		<< ", 0x" << actual.preloadPairs << "}";
+		<< ", 0x" << actual.preloadPairs
+		<< ", 0x" << actual.mergeFold << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -888,6 +910,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.preloadPairs, pin->digests.preloadPairs)
 			<< explain("preloadPairs", actual.preloadPairs, pin->digests.preloadPairs);
+	}
+	if (pin->digests.mergeFold != 0) // probe added at abi 32; older rows unpinned
+	{
+		EXPECT_EQ(actual.mergeFold, pin->digests.mergeFold)
+			<< explain("mergeFold", actual.mergeFold, pin->digests.mergeFold);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{

@@ -150,7 +150,10 @@
 //  31 — block-start VF preloads are queued and emitted together, so a pair
 //       one VF apart loads with one Ldp and the VI preloads no longer sit
 //       between them.
-static constexpr u32 kMvuCompilerAbiVersion = 31;
+//  32 — a three-lane partial write keeps its own slot and takes the one lane
+//       it did not write from the other cached copy, one Ins in place of the
+//       two mVUmergeRegs emitted in the other direction.
+static constexpr u32 kMvuCompilerAbiVersion = 32;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
