@@ -326,13 +326,20 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		// disabled run. This field reclaims a zeroed reserved byte, so the
 		// recording-OFF sentinel is bit-identical to the pre-recording one.
 		u8  progCacheRecording;
+		// THREAD_VU1, not Speedhacks.vuThread, which is only half of it: the
+		// emitters pick a program end's interrupt raise, a D-bit check's FBRST
+		// address and VU0's VU1-register sync off the composite.
+		u8  threadVU1;
+		// XgKickHack, which swaps a VI store for a whole cycle-by-cycle
+		// XGKICK sync at each kick and at every program end.
+		u8  xgKickHack;
 		// Reserved tail so adding a future option byte doesn't shift downstream
 		// fields. Reclaim bytes with 0 == "feature off / old behavior" so the
 		// off-state sentinel stays bit-identical (no wholesale eviction for
 		// users who never enable the feature); a reclaimed byte whose zero
 		// state is NOT emission-identical needs a kMvuCompilerAbiVersion bump
 		// in the same commit.
-		u8  reserved[11];
+		u8  reserved[9];
 	};
 	static_assert(sizeof(Snapshot) == 64, "options sentinel layout drifted — bump kMvuCompilerAbiVersion");
 
@@ -375,6 +382,8 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu1Fpcr = EmuConfig.Cpu.VU1FPCR.bitmask;
 
 	s.progCacheRecording = mVUPersist::IsRecordingEnabled() ? 1 : 0;
+	s.threadVU1          = THREAD_VU1 ? 1 : 0;
+	s.xgKickHack         = EmuConfig.Gamefixes.XgKickHack ? 1 : 0;
 
 	mVU.optionsSentinel      = XXH3_128bits(&s, sizeof(s));
 	mVU.optionsSentinelValid = true;
@@ -2189,6 +2198,17 @@ bool mVUTestProbe_NeonPoolUsable(int hostreg, bool cop2mode)
 const u8* mVUTestProbe_WaitMTVUStub(int index)
 {
 	return (index ? microVU1 : microVU0).waitMTVU;
+}
+
+// The options sentinel the on-disk program cache keys its entries on, rebuilt
+// from the config as it stands now. Tests flip one setting and read it back to
+// see whether that setting reaches the key.
+void mVUTestProbe_OptionsSentinel(int index, u64& lo, u64& hi)
+{
+	microVU& mVU = index ? microVU1 : microVU0;
+	mVUbuildOptionsSentinel(mVU);
+	lo = mVU.optionsSentinel.low64;
+	hi = mVU.optionsSentinel.high64;
 }
 
 int mVUTestProbe_ModelStubCount()
