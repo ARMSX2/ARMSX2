@@ -496,6 +496,7 @@ namespace FullscreenUI
 		bool enabled = true, float height = ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT, std::pair<ImFont*, float> font = g_large_font,
 		std::pair<ImFont*, float> summary_font = g_medium_font);
 	void DrawClampingModeSetting(SettingsInterface* bsi, const char* title, const char* summary, int vunum);
+	void DrawEECycleRateSetting(SettingsInterface* bsi, const char* title, const char* summary);
 	void PopulateGraphicsAdapterList();
 	void PopulateGameListDirectoryCache(SettingsInterface* si);
 	void PopulatePatchesAndCheatsList(const std::string_view serial, u32 crc);

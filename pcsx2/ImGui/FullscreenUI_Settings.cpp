@@ -2546,15 +2546,6 @@ void FullscreenUI::DrawEmulationSettingsPage()
 		5.00f,
 		10.00f,
 	};
-	static constexpr const char* ee_cycle_rate_settings[] = {
-		FSUI_NSTR("50% Speed"),
-		FSUI_NSTR("60% Speed"),
-		FSUI_NSTR("75% Speed"),
-		FSUI_NSTR("100% Speed (Default)"),
-		FSUI_NSTR("130% Speed"),
-		FSUI_NSTR("180% Speed"),
-		FSUI_NSTR("300% Speed"),
-	};
 	static constexpr const char* ee_cycle_skip_settings[] = {
 		FSUI_NSTR("Normal (Default)"),
 		FSUI_NSTR("Mild Underclock"),
@@ -2596,8 +2587,10 @@ void FullscreenUI::DrawEmulationSettingsPage()
 
 	MenuHeading(FSUI_CSTR("System Settings"));
 
-	DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_GAUGE_HIGH, "EE Cycle Rate"), FSUI_CSTR("Underclocks or overclocks the emulated Emotion Engine CPU."),
-		"EmuCore/Speedhacks", "EECycleRate", 0, ee_cycle_rate_settings, std::size(ee_cycle_rate_settings), true, -3);
+	DrawEECycleRateSetting(bsi, FSUI_ICONSTR(ICON_FA_GAUGE_HIGH, "EE Cycle Rate"),
+		FSUI_CSTR("Underclocks or overclocks the emulated Emotion Engine CPU. Dynamic lowers the rate on its own while the host cannot keep up, "
+				  "and never raises it above 100%. A game whose database entry sets a cycle rate, or one with a per-game cycle rate of its own, "
+				  "keeps that fixed rate even when Dynamic is selected. The performance overlay shows the configured and effective rates."));
 	DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_ARROW_TREND_DOWN, "EE Cycle Skipping"),
 		FSUI_CSTR("Makes the emulated Emotion Engine skip cycles. Helps a small subset of games like SOTC. Most of the time it's harmful to performance."), "EmuCore/Speedhacks", "EECycleSkip", 0,
 		ee_cycle_skip_settings, std::size(ee_cycle_skip_settings), true);
@@ -2671,6 +2664,86 @@ void FullscreenUI::DrawEmulationSettingsPage()
 		GetEffectiveBoolSetting(bsi, "EmuCore/GS", "VsyncEnable", false) && GetEffectiveBoolSetting(bsi, "EmuCore/GS", "SyncToHostRefreshRate", false));
 
 	EndMenuButtons();
+}
+
+void FullscreenUI::DrawEECycleRateSetting(SettingsInterface* bsi, const char* title, const char* summary)
+{
+	// One control, two keys, for the same reason the clamping mode above is one
+	// control over four: the pair only means anything written together. The core
+	// reads an explicit per-game EECycleRate as a fixed-rate claim and an explicit
+	// per-game DynamicEECycleRate as decisive, so a file holding one without the
+	// other says something the player never picked.
+	static constexpr const char* ee_cycle_rate_settings[] = {
+		FSUI_NSTR("Use Global Setting"),
+		FSUI_NSTR("Dynamic (Automatic Underclock)"),
+		FSUI_NSTR("50% Speed"),
+		FSUI_NSTR("60% Speed"),
+		FSUI_NSTR("75% Speed"),
+		FSUI_NSTR("100% Speed (Default)"),
+		FSUI_NSTR("130% Speed"),
+		FSUI_NSTR("180% Speed"),
+		FSUI_NSTR("300% Speed"),
+	};
+
+	// Where the fixed rates start, and what the first of them means.
+	static constexpr int FIRST_RATE_CHOICE = 2;
+	static constexpr int MINIMUM_EE_CYCLE_RATE = -3;
+	static constexpr int MAXIMUM_EE_CYCLE_RATE = 3;
+
+	const bool game_settings = IsEditingGameSettings(bsi);
+	const std::optional<bool> dynamic_rate = bsi->GetOptionalBoolValue(
+		"EmuCore/Speedhacks", "DynamicEECycleRate", game_settings ? std::nullopt : std::optional<bool>(false));
+	const std::optional<int> cycle_rate =
+		bsi->GetOptionalIntValue("EmuCore/Speedhacks", "EECycleRate", game_settings ? std::nullopt : std::optional<int>(0));
+
+	// Dynamic wins over the rate when both are set, because the governor does: the
+	// rate underneath it is the baseline it starts from, not the speed it is running.
+	int index;
+	if (!dynamic_rate.has_value() && !cycle_rate.has_value())
+		index = 0;
+	else if (dynamic_rate.value_or(false))
+		index = 1;
+	else
+		index = FIRST_RATE_CHOICE + (std::clamp(cycle_rate.value_or(0), MINIMUM_EE_CYCLE_RATE, MAXIMUM_EE_CYCLE_RATE) - MINIMUM_EE_CYCLE_RATE);
+
+	// Global settings have no "use global" row, so their dialog starts one in.
+	const int first_choice = game_settings ? 0 : 1;
+	const int option_count = static_cast<int>(std::size(ee_cycle_rate_settings));
+
+	if (MenuButtonWithValue(title, summary, Host::TranslateToCString(TR_CONTEXT, ee_cycle_rate_settings[index])))
+	{
+		ImGuiFullscreen::ChoiceDialogOptions cd_options;
+		cd_options.reserve(option_count - first_choice);
+		for (int i = first_choice; i < option_count; i++)
+			cd_options.emplace_back(Host::TranslateToString(TR_CONTEXT, ee_cycle_rate_settings[i]), (i == index));
+		OpenChoiceDialog(title, false, std::move(cd_options),
+			[game_settings, first_choice](s32 index, const std::string& title, bool checked) {
+				if (index >= 0)
+				{
+					auto lock = Host::GetSettingsLock();
+
+					const int choice = index + first_choice;
+
+					std::optional<bool> dynamic_rate;
+					std::optional<int> cycle_rate;
+					if (choice > 0)
+					{
+						dynamic_rate = (choice == 1);
+						// Dynamic runs from the default baseline. A governor with a
+						// non-default baseline is INI-only on purpose: it needs two
+						// numbers and there is one control.
+						cycle_rate = dynamic_rate.value() ? 0 : (MINIMUM_EE_CYCLE_RATE + choice - FIRST_RATE_CHOICE);
+					}
+
+					SettingsInterface* bsi = GetEditingSettingsInterface(game_settings);
+					bsi->SetOptionalIntValue("EmuCore/Speedhacks", "EECycleRate", cycle_rate);
+					bsi->SetOptionalBoolValue("EmuCore/Speedhacks", "DynamicEECycleRate", dynamic_rate);
+					SetSettingsChanged(bsi);
+				}
+
+				CloseChoiceDialog();
+			});
+	}
 }
 
 void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* title, const char* summary, int vunum)
