@@ -128,6 +128,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_persist_roundtrip_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
+	mvu_ebit_exit_tests.cpp
 	mvu_model_stub_tests.cpp
 	model_call_contract_tests.cpp
 	mvu_ibit_hack_tests.cpp
