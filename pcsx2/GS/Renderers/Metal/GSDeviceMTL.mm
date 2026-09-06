@@ -2139,6 +2139,9 @@ void GSDeviceMTL::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture
 	else
 	{
 		// !dTex → Use current draw encoder
+		// This pass is already open, so a clear still pending on the source can no longer be
+		// committed here. Whoever produced sTex owes us the flush.
+		pxAssertMsg(sTex->GetState() != GSTexture::State::Cleared, "Presented texture still has a pending clear");
 		[m_current_render.encoder setRenderPipelineState:pipe];
 		[m_current_render.encoder setFragmentSamplerState:m_sampler_hw[filter == Biln ? SamplerSelector::Linear().key : SamplerSelector::Point().key] atIndex:0];
 		[m_current_render.encoder setFragmentTexture:static_cast<GSTextureMTL*>(sTex)->GetTexture() atIndex:0];
