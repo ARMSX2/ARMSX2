@@ -213,7 +213,7 @@ static const char branchSTR[16][8] = {
 #define isVU0       (mVU.index == 0)
 #define getIndex    (isVU1 ? 1 : 0)
 #define getVUmem(x) (((isVU1) ? (x & 0x3ff) : ((x >= 0x400) ? (x & 0x43f) : (x & 0xff))) * 16)
-#define offsetSS    ((_X) ? (0) : ((_Y) ? (4) : ((_Z) ? 8 : 12)))
+#define offsetSS    ((s32)VuIlwLaneOffset(mVU.code))
 #define offsetReg   ((_X) ? (0) : ((_Y) ? (1) : ((_Z) ? 2 :  3)))
 
 //------------------------------------------------------------------

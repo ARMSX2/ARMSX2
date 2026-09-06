@@ -1308,10 +1308,7 @@ static __ri void _vuILW(VURegs* VU)
 	u16 addr = ((imm + VU->VI[_Is_].SS[0]) * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
 
-	if (_X) VU->VI[_It_].US[0] = ptr[0];
-	if (_Y) VU->VI[_It_].US[0] = ptr[2];
-	if (_Z) VU->VI[_It_].US[0] = ptr[4];
-	if (_W) VU->VI[_It_].US[0] = ptr[6];
+	VU->VI[_It_].US[0] = ptr[VuIlwLaneOffset(VU->code) >> 1];
 }
 
 static __fi void _vuISW(VURegs* VU)
@@ -1333,10 +1330,7 @@ static __ri void _vuILWR(VURegs* VU)
 	u32 addr = (VU->VI[_Is_].US[0] * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
 
-	if (_X) VU->VI[_It_].US[0] = ptr[0];
-	if (_Y) VU->VI[_It_].US[0] = ptr[2];
-	if (_Z) VU->VI[_It_].US[0] = ptr[4];
-	if (_W) VU->VI[_It_].US[0] = ptr[6];
+	VU->VI[_It_].US[0] = ptr[VuIlwLaneOffset(VU->code) >> 1];
 }
 
 static __ri void _vuISWR(VURegs* VU)

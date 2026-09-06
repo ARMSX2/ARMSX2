@@ -135,7 +135,10 @@
 //  26 — LQD and SQD off a vi00 base take the same pre-decrement as every
 //       other base, so on VU1 they lose the fixed address the else-clause
 //       answered and gain the step and mVUaddrFix.
-static constexpr u32 kMvuCompilerAbiVersion = 26;
+//  27 — ILW and ILWR read the lane their dest field's two-bit code names
+//       rather than the first bit set in it, so every multi-lane field but
+//       xy, xz, yzw and xyzw carries a different offset.
+static constexpr u32 kMvuCompilerAbiVersion = 27;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

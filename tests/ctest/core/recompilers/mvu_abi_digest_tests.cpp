@@ -312,6 +312,11 @@ constexpr AbiPin kPins[] = {
 	// 25; vu1LoadStore gains the LQD that pins the shape, and the bump evicts
 	// caches recorded while a vi00 base answered a fixed address.
 	{26, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x76e983749424f6a7}},
+	// abi 27: ILW and ILWR read the lane their dest field's two-bit code names.
+	// The eighteen memory-free probes stay bit-identical to abi 26;
+	// vu1LoadStore's ILW moves to a field the two rules disagree about, and
+	// the bump evicts caches recorded with the first-bit-set offset.
+	{27, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -608,13 +613,15 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 
 	// The load/store address path. The two vi00 loads take the constant-address
 	// fold on either side of a halfword's displacement reach -- one folded
-	// whole, one back on the pointer -- and the rest address off a live VI.
+	// whole, one back on the pointer -- the LQD steps off vi00, and the rest
+	// address off a live VI. The ILW's dest field is one the lane code and the
+	// first-bit-set rule disagree about, so its offset is pinned as well.
 	actual.vu1LoadStore = CompileAndDigestVu1({
 		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
 		LowerOnly(VLQ_L(mask::xyzw, vf::vf5, vi::vi0, 1000)),
 		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
 		LowerOnly(VLQD_L(mask::xyzw, vf::vf7, vi::vi0)),
-		LowerOnly(VILW_L(mask::z, vi::vi2, vi::vi1, 4)),
+		LowerOnly(VILW_L(mask::y | mask::z, vi::vi2, vi::vi1, 4)),
 		LowerOnly(VISWR_L(mask::xyzw, vi::vi2, vi::vi1)),
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf5)),
 	});

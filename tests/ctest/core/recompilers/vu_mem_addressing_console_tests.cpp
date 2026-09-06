@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// What the console answers for the corner of the VU load/store address path
-// both engines had been guessing at: a stepping form whose base register is
-// vi00.
+// What the console answers for the two corners of the VU load/store address
+// path that both engines had been guessing at: the dest field of a load into
+// VI, and a stepping form whose base register is vi00.
 //
 // Captured on a real PS2 over ps2link, one microprogram per case: the VU0
 // cases read their answer back through CFC2 / SQC2 and the VU1 cases store it
@@ -66,7 +66,89 @@ std::vector<u32> ChangedQuads(const VuSnapshot& s, bool vu1)
 	return out;
 }
 
+// Every dest field, low bit first, so the index is the field itself: bit 3 x,
+// bit 2 y, bit 1 z, bit 0 w.
+u32 FieldBits(u32 field)
+{
+	return ((field & 8) ? mask::x : 0) | ((field & 4) ? mask::y : 0)
+	     | ((field & 2) ? mask::z : 0) | ((field & 1) ? mask::w : 0);
+}
+
+// Byte offset into the quadword that ILW and ILWR read, per dest field. y
+// drives bit 0 of a two-bit lane code and z drives bit 1; x drives neither and
+// w is not wired to it, so w and an empty field both read lane w, and yz reads
+// lane w as well.
+constexpr u32 kIlwLaneByte[16] = {
+	/* ---- */ 12, /* ---w */ 12, /* --z- */ 8, /* --zw */ 8,
+	/* -y-- */  4, /* -y-w */  4, /* -yz- */ 12, /* -yzw */ 12,
+	/* x--- */  0, /* x--w */  0, /* x-z- */ 8, /* x-zw */ 8,
+	/* xy-- */  4, /* xy-w */  4, /* xyz- */ 12, /* xyzw */ 12,
+};
+
 } // namespace
+
+// vi1 starts at a marker no lane of quadword 1 can produce, so a field that
+// wrote nothing would be distinguishable from one that read lane x.
+TEST(VuMemAddressingConsole, IlwDestFieldNamesOneLane)
+{
+	for (int vu = 0; vu <= 1; vu++)
+	{
+		for (u32 field = 0; field < 16; field++)
+		{
+			VuTestHarness h(vu);
+			SeedMem(h, vu != 0);
+			h.SetVi(vi::vi1, 0x7777);
+			h.SetVi(vi::vi2, 1);
+			h.LoadProgram({
+				VuOp{VILW_L(FieldBits(field), vi::vi1, vi::vi0, 1), VNOP_U()},
+				VuOp{VILWR_L(FieldBits(field), vi::vi3, vi::vi2), VNOP_U()},
+				EBitNopPair(),
+			});
+			h.Run();
+
+			const u32 want = Seed(1, kIlwLaneByte[field] / 4) & 0xffffu;
+			EXPECT_EQ(h.JitSnapshot().regs.VI[vi::vi1].UL & 0xffffu, want)
+				<< "vu" << vu << " jit ILW field " << field;
+			EXPECT_EQ(h.InterpSnapshot().regs.VI[vi::vi1].UL & 0xffffu, want)
+				<< "vu" << vu << " interp ILW field " << field;
+			EXPECT_EQ(h.JitSnapshot().regs.VI[vi::vi3].UL & 0xffffu, want)
+				<< "vu" << vu << " jit ILWR field " << field;
+			EXPECT_EQ(h.InterpSnapshot().regs.VI[vi::vi3].UL & 0xffffu, want)
+				<< "vu" << vu << " interp ILWR field " << field;
+			if (::testing::Test::HasFailure())
+				return;
+		}
+	}
+}
+
+// A store's dest field is a set of lanes and not a code: every set lane takes
+// the register's low halfword and the upper halfword of that word is cleared.
+TEST(VuMemAddressingConsole, IswDestFieldWritesEveryLane)
+{
+	VuTestHarness h(0);
+	SeedMem(h, false);
+	h.SetVi(vi::vi1, 0x1234);
+	std::vector<VuOp> prog;
+	for (u32 field = 1; field < 16; field++)
+		prog.push_back(VuOp{VISW_L(FieldBits(field), vi::vi1, vi::vi0, static_cast<s16>(field)), VNOP_U()});
+	prog.push_back(EBitNopPair());
+	h.LoadProgram(prog);
+	h.Run();
+
+	for (u32 field = 1; field < 16; field++)
+	{
+		for (u32 lane = 0; lane < 4; lane++)
+		{
+			// Lane 0 is the x bit, which is bit 3 of the field.
+			const bool set = (field & (8u >> lane)) != 0;
+			const u32 want = set ? 0x1234u : Seed(field, lane);
+			EXPECT_EQ(MemWord(h.JitSnapshot(), field * 16 + lane * 4), want)
+				<< "jit ISW field " << field << " lane " << lane;
+			EXPECT_EQ(MemWord(h.InterpSnapshot(), field * 16 + lane * 4), want)
+				<< "interp ISW field " << field << " lane " << lane;
+		}
+	}
+}
 
 // The step reaches the address whatever the base register is. VI0 being
 // hardwired suppresses the write-back, not the decrement, so LQD and SQD off

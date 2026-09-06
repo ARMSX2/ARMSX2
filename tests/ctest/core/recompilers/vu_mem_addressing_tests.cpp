@@ -98,12 +98,6 @@ VuOp DrawOp(Rng& rng, bool vu1)
 	const u32 it = (rng.Below(4) == 0 && is != 0) ? is : (1u + rng.Below(15));
 	const u32 ft = 1u + rng.Below(31);
 
-	// ILW and ILWR are drawn single-lane. The dest field of a load into VI
-	// names one lane; with several set the recompiler reads the first and the
-	// interpreter the last, and which of those a console answers is a
-	// different question from where the data memory is.
-	const u32 lane = kMasks[rng.Below(4)];
-
 	switch (rng.Below(10))
 	{
 		case 0:  return VuOp{VLQ_L(m, ft, is, imm), VNOP_U()};
@@ -112,9 +106,9 @@ VuOp DrawOp(Rng& rng, bool vu1)
 		case 3:  return VuOp{VSQI_L(m, ft, is), VNOP_U()};
 		case 4:  return VuOp{VLQD_L(m, ft, is), VNOP_U()};
 		case 5:  return VuOp{VSQD_L(m, ft, is), VNOP_U()};
-		case 6:  return VuOp{VILW_L(lane, it, is, imm), VNOP_U()};
+		case 6:  return VuOp{VILW_L(m, it, is, imm), VNOP_U()};
 		case 7:  return VuOp{VISW_L(m, it, is, imm), VNOP_U()};
-		case 8:  return VuOp{VILWR_L(lane, it, is), VNOP_U()};
+		case 8:  return VuOp{VILWR_L(m, it, is), VNOP_U()};
 		default: return VuOp{VISWR_L(m, it, is), VNOP_U()};
 	}
 }

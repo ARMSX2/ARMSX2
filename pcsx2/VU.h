@@ -199,6 +199,21 @@ struct alignas(16) VURegs
 	}
 };
 
+// Which lane of a quadword an ILW or ILWR reads.
+//
+// The dest field of a load into VI does not name a set of lanes the way a
+// store's does. It drives a two-bit lane code: y drives bit 0, z drives bit 1,
+// x drives neither, and w is not wired to it at all -- so w and an empty field
+// both leave the code at 3 and read the w lane, and any field with x, y or z
+// in it reads lane (z << 1) | y whatever else is set alongside.
+static constexpr u32 VuIlwLaneOffset(u32 code)
+{
+	const u32 x = (code >> 24) & 1;
+	const u32 y = (code >> 23) & 1;
+	const u32 z = (code >> 22) & 1;
+	return (x | y | z) ? ((z << 3) | (y << 2)) : 12;
+}
+
 enum VUPipeState
 {
 	VUPIPE_NONE = 0,
