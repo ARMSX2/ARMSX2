@@ -1229,12 +1229,16 @@ static __ri void _vuLQ(VURegs* VU)
 static __ri void _vuLQD(VURegs* VU)
 {
 	_vuBackupVI(VU, _Is_);
+	// The step reaches the address whatever the base register is; VI0 being
+	// hardwired suppresses the write-back, not the decrement, so a vi00 base
+	// addresses the quadword below zero the way vi01 holding zero does.
+	const u16 stepped = (u16)(VU->VI[_Is_].US[0] - 1);
 	if (_Is_ != 0)
-		VU->VI[_Is_].US[0]--;
+		VU->VI[_Is_].US[0] = stepped;
 	if (_Ft_ == 0)
 		return;
 
-	u32 addr = (VU->VI[_Is_].US[0] * 16);
+	u32 addr = (stepped * 16);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (_X) VU->VF[_Ft_].UL[0] = ptr[0];
 	if (_Y) VU->VF[_Ft_].UL[1] = ptr[1];
@@ -1272,9 +1276,10 @@ static __ri void _vuSQ(VURegs* VU)
 static __ri void _vuSQD(VURegs* VU)
 {
 	_vuBackupVI(VU, _It_);
+	const u16 stepped = (u16)(VU->VI[_It_].US[0] - 1);
 	if (_Ft_ != 0)
-		VU->VI[_It_].US[0]--;
-	u32 addr = (VU->VI[_It_].US[0] * 16);
+		VU->VI[_It_].US[0] = stepped;
+	u32 addr = (stepped * 16);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (_X) ptr[0] = VU->VF[_Fs_].UL[0];
 	if (_Y) ptr[1] = VU->VF[_Fs_].UL[1];

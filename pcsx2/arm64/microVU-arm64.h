@@ -132,7 +132,10 @@
 //  25 — VU1's data memory is a fixed distance from gprVUState, so a VU1 load
 //       or store drops its VURegs::Mem load and carries the distance in its
 //       own displacement; a constant address off vi00 drops the whole chain.
-static constexpr u32 kMvuCompilerAbiVersion = 25;
+//  26 — LQD and SQD off a vi00 base take the same pre-decrement as every
+//       other base, so on VU1 they lose the fixed address the else-clause
+//       answered and gain the step and mVUaddrFix.
+static constexpr u32 kMvuCompilerAbiVersion = 26;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

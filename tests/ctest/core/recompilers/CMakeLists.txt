@@ -94,6 +94,7 @@ add_pcsx2_test(recompiler_tests
 	vu_ss_clamp_lane_tests.cpp
 	vu_clamp_consts_residency_tests.cpp
 	vu_mem_addressing_tests.cpp
+	vu_mem_addressing_console_tests.cpp
 	vu_broadcast_lane_tests.cpp
 	vu_minmax_order_tests.cpp
 	vu_pq_boundary_tests.cpp

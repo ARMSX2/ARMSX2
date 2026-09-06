@@ -1833,20 +1833,15 @@ mVUop(mVU_LQD)
 	pass1 { mVUanalyzeLQ(mVU, _Ft_, _Is_, true); }
 	pass2
 	{
-		if (_Is_ || isVU0)
-		{
-			// Pre-decrement VI[Is]
-			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
-			armAsm->Sub(regS.W(), regS.W(), 1);
-			armAsm->Sxth(gprT1.W(), regS.W());
-			mVU.regAlloc->clearNeeded(regS);
-			mVUaddrFix(mVU, gprT1);
-		}
-		else
-		{
-			// _Is_ == 0 and !isVU0: use fixed address (end of micro mem - 8)
-			armAsm->Mov(gprT1.W(), 0xffff & (mVU.microMemSize - 8));
-		}
+		// A vi00 base is not a special case: the step reaches the address on
+		// either VU, and the allocator answers a write to VI0 with a zeroed
+		// register it never writes back, so the decrement lands where it has
+		// to and VI0 stays hardwired.
+		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
+		armAsm->Sub(regS.W(), regS.W(), 1);
+		armAsm->Sxth(gprT1.W(), regS.W());
+		mVU.regAlloc->clearNeeded(regS);
+		mVUaddrFix(mVU, gprT1);
 
 		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
 
@@ -1953,19 +1948,11 @@ mVUop(mVU_SQD)
 	pass1 { mVUanalyzeSQ(mVU, _Fs_, _It_, true); }
 	pass2
 	{
-		if (_It_ || isVU0)
-		{
-			// Pre-decrement VI[It]
-			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
-			armAsm->Sub(regT.W(), regT.W(), 1);
-			armAsm->Uxth(gprT1.W(), regT.W());
-			mVU.regAlloc->clearNeeded(regT);
-			mVUaddrFix(mVU, gprT1);
-		}
-		else
-		{
-			armAsm->Mov(gprT1.W(), 0xffff & (mVU.microMemSize - 8));
-		}
+		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
+		armAsm->Sub(regT.W(), regT.W(), 1);
+		armAsm->Uxth(gprT1.W(), regT.W());
+		mVU.regAlloc->clearNeeded(regT);
+		mVUaddrFix(mVU, gprT1);
 
 		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
 

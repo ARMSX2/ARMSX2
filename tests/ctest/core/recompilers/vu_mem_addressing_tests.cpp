@@ -98,13 +98,6 @@ VuOp DrawOp(Rng& rng, bool vu1)
 	const u32 it = (rng.Below(4) == 0 && is != 0) ? is : (1u + rng.Below(15));
 	const u32 ft = 1u + rng.Below(31);
 
-	// The four stepping forms are drawn off vi01-vi15 only. A vi00 base sends
-	// them down an arm that answers the address the x86 recompiler answers --
-	// the top of micro memory, not slot 0 -- which is not the interpreter's,
-	// and that disagreement is older and wider than the addressing this
-	// sweeps.
-	const u32 step = (is != 0) ? is : (1u + rng.Below(15));
-
 	// ILW and ILWR are drawn single-lane. The dest field of a load into VI
 	// names one lane; with several set the recompiler reads the first and the
 	// interpreter the last, and which of those a console answers is a
@@ -115,10 +108,10 @@ VuOp DrawOp(Rng& rng, bool vu1)
 	{
 		case 0:  return VuOp{VLQ_L(m, ft, is, imm), VNOP_U()};
 		case 1:  return VuOp{VSQ_L(m, ft, is, imm), VNOP_U()};
-		case 2:  return VuOp{VLQI_L(m, ft, step), VNOP_U()};
-		case 3:  return VuOp{VSQI_L(m, ft, step), VNOP_U()};
-		case 4:  return VuOp{VLQD_L(m, ft, step), VNOP_U()};
-		case 5:  return VuOp{VSQD_L(m, ft, step), VNOP_U()};
+		case 2:  return VuOp{VLQI_L(m, ft, is), VNOP_U()};
+		case 3:  return VuOp{VSQI_L(m, ft, is), VNOP_U()};
+		case 4:  return VuOp{VLQD_L(m, ft, is), VNOP_U()};
+		case 5:  return VuOp{VSQD_L(m, ft, is), VNOP_U()};
 		case 6:  return VuOp{VILW_L(lane, it, is, imm), VNOP_U()};
 		case 7:  return VuOp{VISW_L(m, it, is, imm), VNOP_U()};
 		case 8:  return VuOp{VILWR_L(lane, it, is), VNOP_U()};

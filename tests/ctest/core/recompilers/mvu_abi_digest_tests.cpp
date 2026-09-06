@@ -307,6 +307,11 @@ constexpr AbiPin kPins[] = {
 	// evicts caches recorded with the pointer-load shape, and the new
 	// vu1LoadStore probe pins the address path from here on.
 	{25, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x4ce85fa74802244b}},
+	// abi 26: LQD and SQD off a vi00 base take the pre-decrement every other
+	// base takes. The eighteen memory-free probes stay bit-identical to abi
+	// 25; vu1LoadStore gains the LQD that pins the shape, and the bump evicts
+	// caches recorded while a vi00 base answered a fixed address.
+	{26, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x76e983749424f6a7}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -608,6 +613,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
 		LowerOnly(VLQ_L(mask::xyzw, vf::vf5, vi::vi0, 1000)),
 		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
+		LowerOnly(VLQD_L(mask::xyzw, vf::vf7, vi::vi0)),
 		LowerOnly(VILW_L(mask::z, vi::vi2, vi::vi1, 4)),
 		LowerOnly(VISWR_L(mask::xyzw, vi::vi2, vi::vi1)),
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf5)),
