@@ -69,6 +69,11 @@
        <widget class="QComboBox" name="eeCycleRate">
         <item>
          <property name="text">
+          <string>Dynamic (Automatic Underclock)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
           <string>50% (Underclock)</string>
          </property>
         </item>

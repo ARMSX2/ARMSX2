@@ -102,6 +102,23 @@ public:
 	void removeSettingValue(const char* section, const char* key);
 	void saveAndReloadGameSettings();
 
+	// Writes several keys as one settings change. The setters above apply on every
+	// call, so a control that owns more than one key otherwise makes the core resolve
+	// — and throw the CPU code caches away for — a half-written state nobody picked.
+	// Hold one of these across the writes and the apply happens once, at scope exit.
+	class ScopedBatchedWrite
+	{
+	public:
+		explicit ScopedBatchedWrite(SettingsWindow* dialog);
+		~ScopedBatchedWrite();
+
+		ScopedBatchedWrite(const ScopedBatchedWrite&) = delete;
+		ScopedBatchedWrite& operator=(const ScopedBatchedWrite&) = delete;
+
+	private:
+		SettingsWindow* m_dialog;
+	};
+
 Q_SIGNALS:
 	void discSerialChanged();
 
@@ -128,7 +145,14 @@ private:
 
 	void reopen(const QString& message);
 
+	// Save/apply whatever the setters just wrote, or defer it if a ScopedBatchedWrite
+	// is open.
+	void notifySettingChanged();
+
 	std::unique_ptr<INISettingsInterface> m_sif;
+
+	u32 m_batched_writes = 0;
+	bool m_batched_write_pending = false;
 
 	Ui::SettingsWindow m_ui;
 
