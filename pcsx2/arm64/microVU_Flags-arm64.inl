@@ -438,10 +438,19 @@ static __fi void mVUshuffleFlagQueue(const a64::MemOperand& mem, const int* bFla
 {
 	// An identity reorder would store back the bytes it just loaded.
 	if (bFlag[0] == 0 && bFlag[1] == 1 && bFlag[2] == 2 && bFlag[3] == 3)
+	{
+#ifdef PCSX2_RECOMPILER_TESTS
+		g_mvuFlagQueueIdentities++;
+#endif
 		return;
+	}
 	armAsm->Ldr(vec, mem);
-	armEmitLaneGather32(tmp, vec, bFlag);
+	[[maybe_unused]] const int emitted = armEmitLaneGather32(tmp, vec, bFlag);
 	armAsm->Str(tmp, mem);
+#ifdef PCSX2_RECOMPILER_TESTS
+	g_mvuFlagQueueReorders++;
+	g_mvuFlagQueueWorst = std::max(g_mvuFlagQueueWorst, static_cast<u32>(emitted));
+#endif
 }
 
 // Recompiles code for proper flags on block linkings (equivalent to x86's mVUsetupFlags).

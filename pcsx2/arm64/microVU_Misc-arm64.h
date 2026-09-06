@@ -331,6 +331,15 @@ __fi static a64::MemOperand mVUneonBackupMem(int neonReg)
 	return a64::MemOperand(gprMVUFlag, 48 + neonReg * 16);
 }
 
+// Flag-queue reorder accounting for vu_flag_queue_reorder_tests: how many
+// reorders mVUshuffleFlagQueue skipped as identities, how many it emitted, and
+// the most instructions any one of them took.
+#ifdef PCSX2_RECOMPILER_TESTS
+inline u32 g_mvuFlagQueueIdentities = 0;
+inline u32 g_mvuFlagQueueReorders = 0;
+inline u32 g_mvuFlagQueueWorst = 0;
+#endif
+
 // mVUglob constants base pointer (callee-saved). Pinned at mVUdispatcherAB
 // entry to `&mVUglob`. The mVU_Globals struct (~512 bytes of compile-time
 // float constants — clamp limits, FTOI/ITOF scale factors, Taylor-series

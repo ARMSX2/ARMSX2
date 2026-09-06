@@ -95,6 +95,7 @@ add_pcsx2_test(recompiler_tests
 	vu_clip_flag_tests.cpp
 	vu_clamp_consts_residency_tests.cpp
 	vu_merge_fold_tests.cpp
+	vu_flag_queue_reorder_tests.cpp
 	vu_preload_pair_tests.cpp
 	vu_mem_addressing_tests.cpp
 	vu_mem_addressing_console_tests.cpp
