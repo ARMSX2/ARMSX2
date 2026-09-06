@@ -14,6 +14,10 @@
 //    pin/slot/quad alias collisions are dense rather than diluted over 28 regs.
 //  - All GPRs are seeded with random FULL 128-bit values so upper-half
 //    staleness (NEON-quad channel) is visible in the post-state diff.
+//  - Two roaming load/store bases: k0/k1 are seeded once and never written, so
+//    a base read out of any home is trivially current and the address path's
+//    own residency never gets exercised. One pinned and one unpinned reg are
+//    re-established from k0 by a scalar and a quad writer instead.
 //  - The op mix concentrates on the cross-domain traffic: MMI quad writers and
 //    readers, LQ/SQ, unaligned LDL/LDR/SDL/SDR and LWL/LWR/SWL/SWR
 //    (read-modify-write dests), scalar 32/64-bit ALU, const producers
@@ -52,6 +56,15 @@ constexpr u32 kDestPool[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 constexpr u32 kDestPoolN = sizeof(kDestPool) / sizeof(kDestPool[0]);
 constexpr u32 kFocusN = 8;
 
+// Roaming-base candidates, drawn from kDestPool: the pinned list is the guest
+// half of kEEPinTable minus $ra and $k0, the plain list is every pool member
+// with no pin mirror.
+constexpr u32 kPinnedBasePool[] = {1, 2, 3, 4, 5, 16, 29};
+constexpr u32 kPlainBasePool[] = {6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18,
+                                  19, 20, 21, 22, 23, 24, 25, 28, 30};
+constexpr u32 kPinnedBaseN = sizeof(kPinnedBasePool) / sizeof(kPinnedBasePool[0]);
+constexpr u32 kPlainBaseN = sizeof(kPlainBasePool) / sizeof(kPlainBasePool[0]);
+
 struct Lcg
 {
 	u64 s;
@@ -69,13 +82,29 @@ struct Focus
 	u32 src(Lcg& r) const { return (r.range(8) == 0) ? r.range(31) : pick(r); }
 };
 
-Focus makeFocus(Lcg& r)
+// The two program-written load/store bases. Only emitBaseInit and the
+// re-homing op below write them, so the value stays a window address while the
+// residency follows the program.
+struct Bases
+{
+	u32 pinned, plain;
+	bool has(u32 g) const { return g == pinned || g == plain; }
+};
+
+Bases makeBases(Lcg& r)
+{
+	return Bases{kPinnedBasePool[r.range(kPinnedBaseN)], kPlainBasePool[r.range(kPlainBaseN)]};
+}
+
+Focus makeFocus(Lcg& r, const Bases& bs)
 {
 	Focus f{};
 	for (u32 i = 0; i < kFocusN; ++i)
 	{
 	pick_again:
 		const u32 cand = kDestPool[r.range(kDestPoolN)];
+		if (bs.has(cand))
+			goto pick_again;
 		for (u32 j = 0; j < i; ++j)
 			if (f.regs[j] == cand)
 				goto pick_again;
@@ -84,7 +113,25 @@ Focus makeFocus(Lcg& r)
 	return f;
 }
 
-u32 baseReg(Lcg& r) { return (r.next() & 1) ? reg::k0 : reg::k1; }
+// ORI writes the scalar home, PCPYLD the 128-bit one; both land kData in UD[0].
+u32 baseInit(u32 g, bool quad) { return quad ? e::PCPYLD(g, reg::k0, reg::k0) : ORI(g, reg::k0, 0); }
+
+void emitBaseInit(std::vector<u32>& prog, const Bases& bs)
+{
+	prog.push_back(baseInit(bs.pinned, false));
+	prog.push_back(baseInit(bs.plain, true));
+}
+
+u32 baseReg(Lcg& r, const Bases& bs)
+{
+	switch (r.range(4))
+	{
+		case 0: return bs.pinned;
+		case 1: return bs.plain;
+		case 2: return reg::k0;
+		default: return reg::k1;
+	}
+}
 
 // EEFUZZ_COUNT scales every test's seed count and EEFUZZ_START offsets the
 // seed range (soak runs shard [start, start+count) across fresh processes —
@@ -126,11 +173,11 @@ s16 memOff(Lcg& r, u32 access, u32 align)
 }
 
 // One random non-control-flow EE instruction over the focus set.
-u32 genOp(Lcg& r, const Focus& f)
+u32 genOp(Lcg& r, const Focus& f, const Bases& bs)
 {
 	const u32 d = f.pick(r), a = f.src(r), b = f.src(r);
 	const s16 imm = fuzzImm(r);
-	switch (r.range(73))
+	switch (r.range(74))
 	{
 		// ---- scalar 32-bit ALU ----
 		case 0: return ADDU(d, a, b);
@@ -189,39 +236,39 @@ u32 genOp(Lcg& r, const Focus& f)
 		case 48: return e::PSLLH(d, a, r.range(16));
 		case 49: return e::PCPYH(d, a);
 		// ---- memory: aligned loads/stores ----
-		case 50: return LW(d, memOff(r, 4, 4), baseReg(r));
-		case 51: return (r.next() & 1) ? LBU(d, memOff(r, 1, 1), baseReg(r))
-		                               : LH(d, memOff(r, 2, 2), baseReg(r));
-		case 52: return e::LD(d, memOff(r, 8, 8), baseReg(r));
-		case 53: return e::LQ(d, memOff(r, 16, 16), baseReg(r));
-		case 54: return (r.next() & 1) ? SW(a, memOff(r, 4, 4), baseReg(r))
-		                               : SB(a, memOff(r, 1, 1), baseReg(r));
-		case 55: return (r.next() & 1) ? e::SD(a, memOff(r, 8, 8), baseReg(r))
-		                               : e::SQ(a, memOff(r, 16, 16), baseReg(r));
+		case 50: return LW(d, memOff(r, 4, 4), baseReg(r, bs));
+		case 51: return (r.next() & 1) ? LBU(d, memOff(r, 1, 1), baseReg(r, bs))
+		                               : LH(d, memOff(r, 2, 2), baseReg(r, bs));
+		case 52: return e::LD(d, memOff(r, 8, 8), baseReg(r, bs));
+		case 53: return e::LQ(d, memOff(r, 16, 16), baseReg(r, bs));
+		case 54: return (r.next() & 1) ? SW(a, memOff(r, 4, 4), baseReg(r, bs))
+		                               : SB(a, memOff(r, 1, 1), baseReg(r, bs));
+		case 55: return (r.next() & 1) ? e::SD(a, memOff(r, 8, 8), baseReg(r, bs))
+		                               : e::SQ(a, memOff(r, 16, 16), baseReg(r, bs));
 		// ---- unaligned families (read-modify-write dests; LDL/SDL fusion) ----
 		case 56:
 			switch (r.range(4))
 			{
-				case 0: return LWL(d, memOff(r, 4, 1), baseReg(r));
-				case 1: return LWR(d, memOff(r, 4, 1), baseReg(r));
-				case 2: return e::LDL(d, memOff(r, 8, 1), baseReg(r));
-				default: return e::LDR(d, memOff(r, 8, 1), baseReg(r));
+				case 0: return LWL(d, memOff(r, 4, 1), baseReg(r, bs));
+				case 1: return LWR(d, memOff(r, 4, 1), baseReg(r, bs));
+				case 2: return e::LDL(d, memOff(r, 8, 1), baseReg(r, bs));
+				default: return e::LDR(d, memOff(r, 8, 1), baseReg(r, bs));
 			}
 		case 57:
 			switch (r.range(4))
 			{
-				case 0: return SWL(a, memOff(r, 4, 1), baseReg(r));
-				case 1: return SWR(a, memOff(r, 4, 1), baseReg(r));
-				case 2: return e::SDL(a, memOff(r, 8, 1), baseReg(r));
-				default: return e::SDR(a, memOff(r, 8, 1), baseReg(r));
+				case 0: return SWL(a, memOff(r, 4, 1), baseReg(r, bs));
+				case 1: return SWR(a, memOff(r, 4, 1), baseReg(r, bs));
+				case 2: return e::SDL(a, memOff(r, 8, 1), baseReg(r, bs));
+				default: return e::SDR(a, memOff(r, 8, 1), baseReg(r, bs));
 			}
 		// ---- sign/zero-extension loads (upper-half staleness class) ----
 		case 58:
 			switch (r.range(3))
 			{
-				case 0: return LB(d, memOff(r, 1, 1), baseReg(r));
-				case 1: return LHU(d, memOff(r, 2, 2), baseReg(r));
-				default: return e::LWU(d, memOff(r, 4, 4), baseReg(r));
+				case 0: return LB(d, memOff(r, 1, 1), baseReg(r, bs));
+				case 1: return LHU(d, memOff(r, 2, 2), baseReg(r, bs));
+				default: return e::LWU(d, memOff(r, 4, 4), baseReg(r, bs));
 			}
 		// ---- remaining shift shapes ----
 		case 59:
@@ -308,6 +355,8 @@ u32 genOp(Lcg& r, const Focus& f)
 				default: return e::PEXCW(d, a);
 			}
 		case 70: return (r.next() & 1) ? e::PEXT5(d, a) : e::PPAC5(d, a);
+		// ---- re-home a load/store base (leaves its value alone) ----
+		case 73: return baseInit((r.next() & 1) ? bs.pinned : bs.plain, (r.next() & 1) != 0);
 		case 71: return (r.next() & 1) ? e::PNOR(d, a, b) : e::PXOR(d, a, b);
 		default:
 			return e::PSRLH(d, a, r.range(16));
@@ -353,15 +402,18 @@ TEST(EeFuzz, StraightLineResidencyMix)
 		if (std::getenv("EEFUZZ_TRACE"))
 			std::fprintf(stderr, "EEFUZZ seed=%u\n", seed);
 		Lcg r{seed * 0x9E3779B97F4A7C15ull + 0xDEADBEEFull};
-		const Focus f = makeFocus(r);
+		const Bases bs = makeBases(r);
+		const Focus f = makeFocus(r, bs);
 		EeRecTestHarness h;
 		SeedState(h, r);
 
 		std::vector<u32> prog;
+		emitBaseInit(prog, bs);
+		const size_t body = prog.size(); // EEFUZZ_KEEP indexes from here
 		for (u32 i = 0; i < 120; ++i)
-			prog.push_back(genOp(r, f));
-		for (u32 i = 0; i < prog.size(); ++i)
-			if (i < keep_lo || i > keep_hi)
+			prog.push_back(genOp(r, f, bs));
+		for (size_t i = body; i < prog.size(); ++i)
+			if (i - body < keep_lo || i - body > keep_hi)
 				prog[i] = NOP;
 
 		h.LoadProgram(prog);
@@ -389,11 +441,13 @@ TEST(EeFuzz, ForwardBranchResidencyMix)
 		if (std::getenv("EEFUZZ_TRACE"))
 			std::fprintf(stderr, "EEFUZZ seed=%u\n", seed);
 		Lcg r{seed * 0xC2B2AE3D27D4EB4Full + 0x12345u};
-		const Focus f = makeFocus(r);
+		const Bases bs = makeBases(r);
+		const Focus f = makeFocus(r, bs);
 		EeRecTestHarness h;
 		SeedState(h, r);
 
 		std::vector<u32> prog;
+		emitBaseInit(prog, bs);
 		while (prog.size() < 110)
 		{
 			if (r.range(5) == 0)
@@ -413,13 +467,13 @@ TEST(EeFuzz, ForwardBranchResidencyMix)
 					case 4: prog.push_back(BLEZ(s1, off)); break;
 					default: prog.push_back(BGTZ(s1, off)); break;
 				}
-				prog.push_back(genOp(r, f)); // delay slot
+				prog.push_back(genOp(r, f, bs)); // delay slot
 				for (u32 k = 0; k < skip; ++k)
-					prog.push_back(genOp(r, f)); // skipped-if-taken body
+					prog.push_back(genOp(r, f, bs)); // skipped-if-taken body
 			}
 			else
 			{
-				prog.push_back(genOp(r, f));
+				prog.push_back(genOp(r, f, bs));
 			}
 		}
 
@@ -447,17 +501,19 @@ TEST(EeFuzz, BackwardLoopResidencyMix)
 		if (std::getenv("EEFUZZ_TRACE"))
 			std::fprintf(stderr, "EEFUZZ seed=%u\n", seed);
 		Lcg r{seed * 0xA24BAED4963EE407ull + 0xB5EFull};
-		const Focus f = makeFocus(r);
+		const Bases bs = makeBases(r);
+		const Focus f = makeFocus(r, bs);
 		// Counter: any pool reg not in the focus set (so genOp never writes it).
 		u32 ctr;
 		do
 			ctr = kDestPool[r.range(kDestPoolN)];
-		while ([&] { for (u32 x : f.regs) if (x == ctr) return true; return false; }());
+		while (bs.has(ctr) || [&] { for (u32 x : f.regs) if (x == ctr) return true; return false; }());
 
 		EeRecTestHarness h;
 		SeedState(h, r);
 
 		std::vector<u32> prog;
+		emitBaseInit(prog, bs);
 		const u32 nLoops = 1 + r.range(3);
 		for (u32 l = 0; l < nLoops; ++l)
 		{
@@ -466,16 +522,16 @@ TEST(EeFuzz, BackwardLoopResidencyMix)
 			const u32 bodyLen = 4 + r.range(16);
 			const size_t loopStart = prog.size();
 			for (u32 i = 0; i < bodyLen; ++i)
-				prog.push_back(genOp(r, f));
+				prog.push_back(genOp(r, f, bs));
 			prog.push_back(ADDIU(ctr, ctr, -1));
 			// Branch back to loopStart; offset is relative to the delay slot.
 			const s16 off = static_cast<s16>(
 				static_cast<s32>(loopStart) - static_cast<s32>(prog.size() + 1));
 			prog.push_back(BNE(ctr, reg::zero, off));
-			prog.push_back(genOp(r, f)); // delay slot (runs every iteration)
+			prog.push_back(genOp(r, f, bs)); // delay slot (runs every iteration)
 		}
 		for (u32 i = 0; i < 8; ++i)
-			prog.push_back(genOp(r, f)); // post-loop consume traffic
+			prog.push_back(genOp(r, f, bs)); // post-loop consume traffic
 
 		h.LoadProgram(prog);
 		h.Run();
@@ -512,17 +568,19 @@ TEST(EeFuzz, DelaySlotTargetLoopMix)
 		if (std::getenv("EEFUZZ_TRACE"))
 			std::fprintf(stderr, "EEFUZZ seed=%u\n", seed);
 		Lcg r{seed * 0xD6E8FEB86659FD93ull + 0x5EEDull};
-		const Focus f = makeFocus(r);
+		const Bases bs = makeBases(r);
+		const Focus f = makeFocus(r, bs);
 		// Counter: any pool reg not in the focus set (so genOp never writes it).
 		u32 ctr;
 		do
 			ctr = kDestPool[r.range(kDestPoolN)];
-		while ([&] { for (u32 x : f.regs) if (x == ctr) return true; return false; }());
+		while (bs.has(ctr) || [&] { for (u32 x : f.regs) if (x == ctr) return true; return false; }());
 
 		EeRecTestHarness h;
 		SeedState(h, r);
 
 		std::vector<u32> prog;
+		emitBaseInit(prog, bs);
 		const u32 nLoops = 1 + r.range(3);
 		for (u32 l = 0; l < nLoops; ++l)
 		{
@@ -547,12 +605,12 @@ TEST(EeFuzz, DelaySlotTargetLoopMix)
 				prog.push_back(BLEZ(ctr, exit_off));
 			prog.push_back(ADDIU(ctr, ctr, -1)); // ds — the backward target
 			for (u32 i = 0; i < bodyLen; ++i)
-				prog.push_back(genOp(r, f));
+				prog.push_back(genOp(r, f, bs));
 			prog.push_back(BGTZ(ctr, static_cast<s16>(-(static_cast<s32>(bodyLen) + 2))));
-			prog.push_back(genOp(r, f)); // bgtz ds (runs every iteration)
+			prog.push_back(genOp(r, f, bs)); // bgtz ds (runs every iteration)
 		}
 		for (u32 i = 0; i < 8; ++i)
-			prog.push_back(genOp(r, f)); // post-loop consume traffic
+			prog.push_back(genOp(r, f, bs)); // post-loop consume traffic
 
 		h.LoadProgram(prog);
 		h.Run();
@@ -602,12 +660,14 @@ TEST(EeFuzz, CalleeSavedNeonBudget)
 	for (u32 seed = start; seed < start + count; ++seed)
 	{
 		Lcg r{seed * 0x9E3779B97F4A7C15ull + 0xDEADBEEFull};
-		const Focus f = makeFocus(r);
+		const Bases bs = makeBases(r);
+		const Focus f = makeFocus(r, bs);
 		EeRecTestHarness h;
 		SeedState(h, r);
 		std::vector<u32> prog;
+		emitBaseInit(prog, bs);
 		for (u32 i = 0; i < 120; ++i)
-			prog.push_back(genOp(r, f));
+			prog.push_back(genOp(r, f, bs));
 		h.LoadProgram(prog);
 		h.Run();
 	}
