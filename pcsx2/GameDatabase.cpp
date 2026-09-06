@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GameDatabase.h"
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+#include "EmbeddedResources.h"
+#endif
 #include "GS/GS.h"
 #include "Host.h"
 #include "IconsFontAwesome.h"
@@ -1227,7 +1230,15 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 void GameDatabase::loadFile(const std::string& path, const std::string& name, bool is_override)
 {
-	const std::optional<std::string> buffer = FileSystem::ReadFileToString(path.c_str());
+	std::optional<std::string> buffer = FileSystem::ReadFileToString(path.c_str());
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+	// Same deal as the shaders: a core is handed a system directory and there is
+	// no telling what is in it. Without the database every game runs without its
+	// fixes and patches, which is not a failure anyone would connect back to a
+	// missing file, so carry a copy.
+	if (!buffer.has_value() && !is_override)
+		buffer = EmbeddedResources::Read(name.c_str());
+#endif
 	if (!buffer.has_value())
 	{
 		// Override file is optional — silent skip when not shipped.
