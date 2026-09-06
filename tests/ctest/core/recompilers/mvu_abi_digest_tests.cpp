@@ -138,6 +138,11 @@ struct DigestSet
 	// the exit an MTVU end takes is in none of the digests above.
 	// 0 in a pin row = probe absent.
 	u64 vu1EbitMtvu;
+	// CLIP, the one upper op that produces a GPR flag word rather than a vector
+	// result. Its comparison-to-bits gather is emitted nowhere else, and no
+	// probe above carries a CLIP, so the whole of it could be rewritten without
+	// moving a digest. 0 in a pin row = probe absent.
+	u64 clipFlag;
 };
 
 struct AbiPin
@@ -333,8 +338,9 @@ constexpr AbiPin kPins[] = {
 	// abi 29: no emitted shape changes -- the options sentinel gained
 	// THREAD_VU1, and the bump evicts the caches recorded while it could not
 	// tell an MTVU run from a run without it. All twenty probes are
-	// bit-identical to abi 28.
-	{29, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2}},
+	// bit-identical to abi 28. The clipFlag probe is new in this row; a probe
+	// changes no emitted code, so it needs no bump of its own.
+	{29, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2, 0x6054df75e702ca90}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -664,6 +670,16 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf5)),
 	});
 
+	// Two CLIPs, so the second one's shift of the first one's result is in the
+	// shape too. Operands the other way round from every probe above: vf2's
+	// components against vf1's w, which is the small one, so the comparisons
+	// come out mixed rather than all false.
+	actual.clipFlag = CompileAndDigest({
+		UpperOnly(VCLIP_U(vf::vf2, vf::vf1)),
+		UpperOnly(VCLIP_U(vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+	});
+
 	mVUPersist::SetRecordingEnabled(false);
 
 	ASSERT_NE(actual.straightLine, 0u);
@@ -685,6 +701,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.exactEfu, 0u);
 	ASSERT_NE(actual.vu1LoadStore, 0u);
 	ASSERT_NE(actual.vu1EbitMtvu, 0u);
+	ASSERT_NE(actual.clipFlag, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -733,7 +750,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.signClampEfu
 		<< ", 0x" << actual.exactEfu
 		<< ", 0x" << actual.vu1LoadStore
-		<< ", 0x" << actual.vu1EbitMtvu << "}";
+		<< ", 0x" << actual.vu1EbitMtvu
+		<< ", 0x" << actual.clipFlag << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -828,6 +846,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu)
 			<< explain("vu1EbitMtvu", actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu);
+	}
+	if (pin->digests.clipFlag != 0) // probe added at abi 29; older rows unpinned
+	{
+		EXPECT_EQ(actual.clipFlag, pin->digests.clipFlag)
+			<< explain("clipFlag", actual.clipFlag, pin->digests.clipFlag);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{
