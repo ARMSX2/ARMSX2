@@ -557,6 +557,10 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 // Execute VU Instruction (Upper + Lower)
 //------------------------------------------------------------------
 
+#ifdef PCSX2_RECOMPILER_TESTS
+u32 g_mvuPreloadPairCount = 0;
+#endif
+
 // Pre-populate NEON/GPR caches with VF/VI registers the next few ops will
 // read. Ported from pcsx2/x86/microVU_Compile.inl:603-690. Runs once at
 // the start of pass 2; iterates forward through mVUinfo until caches are
@@ -677,6 +681,9 @@ static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
 			if (a - b == 1 || b - a == 1)
 			{
 				mVU.regAlloc->allocRegPair(a, b);
+#ifdef PCSX2_RECOMPILER_TESTS
+				g_mvuPreloadPairCount++;
+#endif
 				i++;
 				continue;
 			}
