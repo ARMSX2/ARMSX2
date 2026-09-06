@@ -362,24 +362,29 @@ static void vtlbFastmemWrite128(int addr_wreg, int src_qreg)
 // Does NOT flush — reads from wherever the value currently lives
 // (const propagation, ARM64 GPR, NEON register, or cpuRegs memory).
 // For const Rs, the full address is computed at compile time.
-static void recComputeAddr()
+// Must run before any iFlushCall: the flush frees the slot the fold reads from.
+// `imm` is the instruction's own offset except in the unaligned pair-fusion
+// paths, which address off their partner's.
+static void recComputeAddr(s32 imm)
 {
 	if (GPR_IS_CONST1(_Rs_))
 	{
-		armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
+		armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + imm);
 	}
-	else if (_Imm_ != 0)
+	else if (imm != 0)
 	{
 		// The base is read where it already lives, so the offset add doubles
 		// as the move into w9.
 		const a64::Register base = _eeGetGPRSourceReg(a64::w9, _Rs_);
-		armAsm->Add(a64::w9, base, _Imm_);
+		armAsm->Add(a64::w9, base, imm);
 	}
 	else
 	{
 		_eeMoveGPRtoR(a64::w9, _Rs_);
 	}
 }
+
+static void recComputeAddr() { recComputeAddr(_Imm_); }
 
 // Prepare store value in w10/x10.
 // Does NOT flush — reads from wherever the value currently lives.
@@ -597,9 +602,7 @@ static void recLoad(u32 bits, bool sign)
 			}
 			else
 			{
-				_eeMoveGPRtoR(a64::w9, _Rs_);
-				if (_Imm_ != 0)
-					armAsm->Add(a64::w9, a64::w9, _Imm_);
+				recComputeAddr();
 			}
 		}
 	}
@@ -624,10 +627,10 @@ static void recLoad(u32 bits, bool sign)
 	}
 	else
 	{
-		_eeMoveGPRtoR(a64::w9, _Rs_);
+		// The pin arm above forms the address after the flush; an unpinned base
+		// has to be read before it, while its slot is still allocated.
+		recComputeAddr();
 		iFlushCall(FLUSH_VTLB);
-		if (_Imm_ != 0)
-			armAsm->Add(a64::w9, a64::w9, _Imm_);
 	}
 
 	if (useFastmem)
@@ -786,9 +789,7 @@ static void recStore(u32 bits)
 			}
 			else
 			{
-				_eeMoveGPRtoR(a64::w9, _Rs_);
-				if (_Imm_ != 0)
-					armAsm->Add(a64::w9, a64::w9, _Imm_);
+				recComputeAddr();
 			}
 		}
 
@@ -836,10 +837,10 @@ static void recStore(u32 bits)
 	}
 	else
 	{
-		_eeMoveGPRtoR(a64::w9, _Rs_);
+		// The pin arm above forms the address after the flush; an unpinned base
+		// has to be read before it, while its slot is still allocated.
+		recComputeAddr();
 		iFlushCall(FLUSH_VTLB);
-		if (_Imm_ != 0)
-			armAsm->Add(a64::w9, a64::w9, _Imm_);
 	}
 
 	vtlbSoftmemWrite(addr_reg, value_reg, bits);
@@ -1013,9 +1014,7 @@ void recSQ()
 
 	// Rs address read must hit its resident slot: FLUSH_CONSTANT_REGS does NOT
 	// free the callee-saved x28 pool slot, so a raw memory load could go stale.
-	_eeMoveGPRtoR(a64::w9, _Rs_);
-	if (_Imm_ != 0)
-		armAsm->Add(a64::w9, a64::w9, _Imm_);
+	recComputeAddr();
 	armAsm->And(a64::w9, a64::w9, (u32)~0xF);
 
 	vtlbSoftmemWrite128(9);
@@ -1161,11 +1160,9 @@ static void recUnalignedWord(bool is_lwl)
 {
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
-	// Compute Rs+imm in w9. Mirrors recLoad: load Rs first, then flush, then add imm.
-	_eeMoveGPRtoR(a64::w9, _Rs_);
+	// Rs+imm into w9. Mirrors recLoad: form the address first, then flush.
+	recComputeAddr();
 	iFlushCall(FLUSH_VTLB);
-	if (_Imm_ != 0)
-		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
 	// shift8 is computed before the read and consumed after it, so it must survive
 	// vtlb's slow-path C call (fastmem backpatch thunk OR softmem slow path) —
@@ -1265,10 +1262,8 @@ static void recUnalignedStoreWord(bool is_swl)
 {
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
-	_eeMoveGPRtoR(a64::w9, _Rs_);
+	recComputeAddr();
 	iFlushCall(FLUSH_VTLB);
-	if (_Imm_ != 0)
-		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
 	// EE-SRA 3 Arm B: the full effective address is the ONLY value that must
 	// survive the read's slow-path C call (it re-addresses the write-back), so it
@@ -1382,10 +1377,8 @@ static void recUnalignedLoadDouble(bool is_ldl)
 			// reads the stale copy — observed as alternating-pair zeros in the
 			// MultiRegUnalignedDwordCopyBlock test. READ|WRITE forces a coherent
 			// residence; the redundant old-value load is free vs the bug.
-			_eeMoveGPRtoR(a64::w9, _Rs_);
+			recComputeAddr(ldrImm);
 			iFlushCall(FLUSH_VTLB);
-			if (ldrImm != 0)
-				armAsm->Add(a64::w9, a64::w9, ldrImm);
 			// memTemp only parks the loaded value AFTER the read, so it never
 			// crosses a call — a plain (needed-protected) temp keeps the fused
 			// path off the callee-saved pool entirely (EE-SRA 3 Arm B).
@@ -1404,10 +1397,8 @@ static void recUnalignedLoadDouble(bool is_ldl)
 
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
-	_eeMoveGPRtoR(a64::w9, _Rs_);
+	recComputeAddr();
 	iFlushCall(FLUSH_VTLB);
-	if (_Imm_ != 0)
-		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
 	// s = addr & 7 is computed before the read and consumed after it, so it must
 	// survive the read's slow-path C call — the sole callee-saved temp. memTemp
@@ -1520,10 +1511,8 @@ static void recUnalignedStoreDouble(bool is_sdl)
 			// w9; Rt goes through valTemp into x0 (the fastmem write value reg),
 			// exactly like the non-fused store's whole-Rt (special) path.
 			// _eeMoveGPRtoR handles Rt==0 (store $zero).
-			_eeMoveGPRtoR(a64::w9, _Rs_);
+			recComputeAddr(sdrImm);
 			iFlushCall(FLUSH_VTLB);
-			if (sdrImm != 0)
-				armAsm->Add(a64::w9, a64::w9, sdrImm);
 			// Neither temp crosses a call (both are consumed into w9/x0 before the
 			// fastmem write), so plain needed-protected temps suffice — the fused
 			// store path uses no callee-saved reg at all (EE-SRA 3 Arm B).
@@ -1548,10 +1537,8 @@ static void recUnalignedStoreDouble(bool is_sdl)
 
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
-	_eeMoveGPRtoR(a64::w9, _Rs_);
+	recComputeAddr();
 	iFlushCall(FLUSH_VTLB);
-	if (_Imm_ != 0)
-		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
 	// EE-SRA 3 Arm B: only the full effective address must survive the read's
 	// slow-path C call (it re-addresses the write-back), so it is the sole
