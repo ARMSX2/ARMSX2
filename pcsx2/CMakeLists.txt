@@ -1276,9 +1276,23 @@ if(ANDROID)
 		GS/Renderers/OpenGL/GLContextEGL.h
 		GS/Renderers/OpenGL/GLContextEGLAndroid.h)
 	list(APPEND pcsx2Sources
-		Android/AndroidHostStubs.cpp
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp)
+	# AndroidHostStubs.cpp defines g_host_hotkeys and Host::SetMouseLock, which
+	# pcsx2-libretro/Main.cpp defines for itself - it is the frontend here. The
+	# file's own comment expects archive semantics to leave the object out of a
+	# link that does not reference it, but the libretro build configures with
+	# DISABLE_ADVANCE_SIMD, which makes PCSX2 an OBJECT library (see the top of
+	# this file), and then every object goes into the core:
+	#
+	#   ld.lld: error: duplicate symbol: Host::SetMouseLock(bool)
+	#   ld.lld: error: duplicate symbol: g_host_hotkeys
+	#
+	# So it belongs to the frontends that have no definitions of their own.
+	if(NOT ENABLE_LIBRETRO)
+		list(APPEND pcsx2Sources
+			Android/AndroidHostStubs.cpp)
+	endif()
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
 	# Only the APK build has the library - its SearchForStuff adds the vendored
 	# 3rdparty/oboe - so this is behind a switch that build sets; the libretro
