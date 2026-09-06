@@ -48,7 +48,10 @@ namespace mVUPersist
 		kStubCopyPLStateResume,
 		// mVUModelStubCount ids follow, one per model stub.
 		kStubModelBase,
-		kStubCount = kStubModelBase + mVUModelStubCount,
+		// Past the model stubs, so adding one here does not renumber the ids
+		// already recorded against them.
+		kStubExitFunctEBit = kStubModelBase + mVUModelStubCount,
+		kStubCount,
 	};
 
 	struct PersistFixup
@@ -283,8 +286,9 @@ namespace mVUPersist
 			case kStubEndFlagsB:    return mVU.endProgramFlagsB;
 			case kStubResumeXG:     return mVU.resumePtrXG;
 			case kStubCopyPLStateResume: return mVU.copyPLStateResume;
+			case kStubExitFunctEBit: return mVU.exitFunctEBit;
 			default:
-				if (id >= kStubModelBase && id < kStubCount)
+				if (id >= kStubModelBase && id < kStubExitFunctEBit)
 					return mVU.modelStubs[id - kStubModelBase];
 				return nullptr;
 		}

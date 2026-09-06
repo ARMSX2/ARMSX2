@@ -138,7 +138,10 @@
 //  27 — ILW and ILWR read the lane their dest field's two-bit code names
 //       rather than the first bit set in it, so every multi-lane field but
 //       xy, xz, yzw and xyzw carries a different offset.
-static constexpr u32 kMvuCompilerAbiVersion = 27;
+//  28 — a VU1 program ending on the E bit under MTVU branches to an exit
+//       entry that raises the interrupt, so each of those ends loses the
+//       four instructions an absolute call to mVUEBit took.
+static constexpr u32 kMvuCompilerAbiVersion = 28;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -606,6 +609,8 @@ struct microVU
 	// joins startFunct's post-lookup tail with x0 as the block to enter.
 	u8* startFunctResume;
 	u8* exitFunct;
+	// VU1 only: exitFunct with the E-bit interrupt raise in front of it.
+	u8* exitFunctEBit;
 	u8* startFunctXG;
 	u8* exitFunctXG;
 	u8* waitMTVU;

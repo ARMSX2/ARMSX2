@@ -634,6 +634,16 @@ static void mVUdispatcherAB(mV)
 	armAsm->Cbz(a64::x0, &exitLabel);
 	armAsm->Br(a64::x0);
 
+	// A VU1 program that ends on the E bit raises the MTVU interrupt and then
+	// leaves, so the raise sits here rather than at each end: the branch such
+	// an end already emitted to reach exitFunct carries it, in place of an
+	// absolute call. Nothing falls in -- the dispatch above ends in a Br.
+	if (isVU1)
+	{
+		mVU.exitFunctEBit = armGetCurrentCodePointer();
+		armEmitCall((void*)mVUEBit);
+	}
+
 	// === Exit path === (blocks jump here when done)
 	armAsm->Bind(&exitLabel);
 	mVU.exitFunct = armGetCurrentCodePointer();

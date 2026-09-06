@@ -41,6 +41,7 @@
 #include "EeFpuModel.h"
 #include "VU.h"
 #include "VUmicro.h"
+#include "MTVU.h"
 #include "Config.h"
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
@@ -132,6 +133,11 @@ struct DigestSet
 	// which is why abi 4's constant-address fold moved no digest at all.
 	// 0 in a pin row = probe absent.
 	u64 vu1LoadStore;
+	// A program end under MTVU, the setting every probe above compiles with off
+	// -- and off is the setting under which a VU1 end raises no interrupt, so
+	// the exit an MTVU end takes is in none of the digests above.
+	// 0 in a pin row = probe absent.
+	u64 vu1EbitMtvu;
 };
 
 struct AbiPin
@@ -317,6 +323,13 @@ constexpr AbiPin kPins[] = {
 	// vu1LoadStore's ILW moves to a field the two rules disagree about, and
 	// the bump evicts caches recorded with the first-bit-set offset.
 	{27, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e}},
+	// abi 28: a VU1 program ending on the E bit under MTVU branches to an exit
+	// entry that raises the interrupt instead of calling mVUEBit and then
+	// branching to the plain exit. The nineteen probes above compile with MTVU
+	// off, where no raise was emitted either way, and stay bit-identical to abi
+	// 27; the bump evicts caches recorded with the call, and the new
+	// vu1EbitMtvu probe pins the MTVU end from here on.
+	{28, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -372,6 +385,22 @@ u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs,
 	RecompilerTestEnvironment::ResetVuBlockCache(1);
 
 	EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;
+	return digest;
+}
+
+// Same contract again, with MTVU on -- what decides how a program ending on the
+// E bit leaves. The interrupt word is restored around it because the compiled
+// code raises the E-bit flag in it as the harness runs.
+u64 CompileAndDigestVu1Mtvu(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedThread = EmuConfig.Speedhacks.vuThread;
+	const u32 savedInterrupts = vu1Thread.mtvuInterrupts.load(std::memory_order_relaxed);
+	EmuConfig.Speedhacks.vuThread = true;
+
+	const u64 digest = CompileAndDigestVu1(pairs);
+
+	EmuConfig.Speedhacks.vuThread = savedThread;
+	vu1Thread.mtvuInterrupts.store(savedInterrupts, std::memory_order_relaxed);
 	return digest;
 }
 
@@ -586,13 +615,17 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
 	// the shape the ABI-15 E-bit lookahead forcing touches. Every other probe
 	// here is VU0, so without this one a VU1-only emitter change moves no digest.
-	actual.vu1BranchToEbit = CompileAndDigestVu1({
+	// The same program compiles twice, the second time under MTVU, which is what
+	// decides the exit those two ends take.
+	const std::initializer_list<vu::VuOp> vu1EbitProgram = {
 		LowerOnly(VIBNE_L(vi::vi1, vi::vi0, 3)),
 		UpperOnly(VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf2)),
 		UpperOnly(bits::E | VSUB_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf2)),
 		NopPair(),
 		UpperOnly(bits::E | VMUL_U(mask::xyzw, vf::vf6, vf::vf1, vf::vf2)),
-	});
+	};
+	actual.vu1BranchToEbit = CompileAndDigestVu1(vu1EbitProgram);
+	actual.vu1EbitMtvu = CompileAndDigestVu1Mtvu(vu1EbitProgram);
 
 	// The EFU under the same two modes, on the only VU that has one. A scalar
 	// form, a four-lane form and a two-lane form, so a change to how the
@@ -646,6 +679,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.signClampEfu, 0u);
 	ASSERT_NE(actual.exactEfu, 0u);
 	ASSERT_NE(actual.vu1LoadStore, 0u);
+	ASSERT_NE(actual.vu1EbitMtvu, 0u);
+	// MTVU is the only thing between the two, and it has to reach the emitter:
+	// equal digests mean the same exit was emitted either way and the probe
+	// above pins nothing.
+	ASSERT_NE(actual.vu1EbitMtvu, actual.vu1BranchToEbit);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -689,7 +727,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.exactDivUnit
 		<< ", 0x" << actual.signClampEfu
 		<< ", 0x" << actual.exactEfu
-		<< ", 0x" << actual.vu1LoadStore << "}";
+		<< ", 0x" << actual.vu1LoadStore
+		<< ", 0x" << actual.vu1EbitMtvu << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -779,6 +818,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 			EXPECT_EQ(actual.exactEfu, pin->digests.exactEfu)
 				<< explain("exactEfu", actual.exactEfu, pin->digests.exactEfu);
 		}
+	}
+	if (pin->digests.vu1EbitMtvu != 0) // probe added at abi 28; older rows unpinned
+	{
+		EXPECT_EQ(actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu)
+			<< explain("vu1EbitMtvu", actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{
