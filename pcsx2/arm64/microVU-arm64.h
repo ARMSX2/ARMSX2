@@ -161,7 +161,10 @@
 //  35 — the sign-preserving clamp's two bounds sit next to each other in
 //       mVUglob, so the row it selects arrives in one Ldp rather than a load
 //       in front of each min.
-static constexpr u32 kMvuCompilerAbiVersion = 35;
+//  36 — an FMAC body takes the clone-write fold for every operand it clamps
+//       before it emits any of the clamps, so the second and third operand's
+//       copies fold as well as the first's.
+static constexpr u32 kMvuCompilerAbiVersion = 36;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

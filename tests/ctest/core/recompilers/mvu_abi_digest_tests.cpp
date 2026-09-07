@@ -389,6 +389,13 @@ constexpr AbiPin kPins[] = {
 	// mVUclamp2's integer path at all; clampESS is a mode below it and holds
 	// the abi 34 value, as does every digest above signClampMulAdd.
 	{35, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0xa826c26b402d511f, 0xbed63e7a97c66fe9, 0x7138104cc75f1f14, 0xc924075bd9ae8ce3, 0x65f71dc1b0e950ea, 0x547b51b54e2f65d5, 0xf0fdbefe96fe37bf, 0x9a85250029e6d52e, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
+	// abi 36: operand clamps take their folds up front. Sixteen digests move,
+	// which is every probe that clamps two operands together: at the default
+	// clamp mode the FMAC body does that, and from vuClampMode 2 up the body's
+	// own calls are switched off and the arithmetic step does it instead, so
+	// the two halves of the change land on disjoint probes. Every other digest
+	// in the row is the abi 35 value.
+	{36, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

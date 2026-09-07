@@ -60,6 +60,11 @@ inline u32 g_mvuMergeFoldCount = 0;
 
 class microRegAlloc
 {
+public:
+	// How many clone-write copies in a row the fold can reach back over. Four
+	// is one more than the widest operand list any FMAC body clamps.
+	static constexpr int kCloneRunMax = 4;
+
 protected:
 	std::array<microMapNEON, neonAllocTotal> neonMap;
 	std::array<microMapGPR, gprAllocCount>   gprMap;
@@ -68,16 +73,25 @@ protected:
 	int neonWatermark; // see getNeonWatermark()
 	int index; // VU0 or VU1
 
-	// The clone-write copy allocReg emitted last, while it is still the final
-	// word in the buffer: dst holds nothing but a copy of src, so an emitter
-	// that reads dst and writes dst can read src instead and the copy goes
-	// away. takeCloneSource() is the consumer; see mVUclamp1/mVUclamp2.
-	struct
+	// The run of clone-write copies allocReg emitted at the end of the buffer,
+	// while they are still its final words: dst holds nothing but a copy of
+	// src, so an emitter that reads dst and writes dst can read src instead and
+	// the copy goes away. takeCloneSource() is the consumer; see
+	// mVUclampOperands.
+	//
+	// A body that clamps two operands makes two of these back to back, so the
+	// run is a stack: only the last is foldable, and folding it rewinds to the
+	// end of the one below, which is then foldable in turn. Anything else
+	// emitted in between ends the run, because rewinding over it would take
+	// that instruction with it.
+	struct CloneNote
 	{
-		int dst = -1;
-		int src = -1;
-		ptrdiff_t end = -1;
-	} clone;
+		int dst;
+		int src;
+		ptrdiff_t end;
+	};
+	CloneNote clones[kCloneRunMax];
+	int cloneCount = 0;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -313,7 +327,7 @@ public:
 		}
 		counter = 0;
 		neonWatermark = 0;
-		clone.dst = -1;
+		cloneCount = 0;
 	}
 
 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
@@ -332,33 +346,38 @@ public:
 	// filled in.
 	__fi void noteClone(int dst, int src)
 	{
-		clone.dst = dst;
-		clone.src = src;
-		clone.end = armAsm->GetCursorOffset();
+		const ptrdiff_t end = armAsm->GetCursorOffset();
+		if (cloneCount == kCloneRunMax || cloneCount == 0
+			|| clones[cloneCount - 1].end != end - 4)
+			cloneCount = 0;
+		clones[cloneCount++] = {dst, src, end};
 	}
 
 	// The register `dst` was copied from, or -1 when there is no such copy to
 	// fold. On a hit the copy is dropped from the buffer, and the caller owes
-	// dst a write that reads the returned register in its place. A copy is
-	// only foldable while it is the last word emitted: that is what says
-	// nothing has read dst, and that no label was bound over it.
+	// dst a write that reads the returned register in its place. Only the top
+	// of the run is foldable, and only while it is the last word emitted: that
+	// is what says nothing has read dst, and that no label was bound over it.
 	int takeCloneSource(int dst)
 	{
-		if (clone.dst != dst || clone.end != armAsm->GetCursorOffset() || clone.end < 4)
+		if (cloneCount == 0)
+			return -1;
+		const CloneNote& top = clones[cloneCount - 1];
+		if (top.dst != dst || top.end != armAsm->GetCursorOffset() || top.end < 4)
 			return -1;
 
 		// MOV Vd.16B, Vn.16B is ORR Vd.16B, Vn.16B, Vn.16B.
-		const u32 expect = 0x4EA01C00u | (clone.src << 16) | (clone.src << 5) | clone.dst;
-		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(clone.end - 4);
+		const u32 expect = 0x4EA01C00u | (top.src << 16) | (top.src << 5) | top.dst;
+		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(top.end - 4);
 		if (*word != expect)
 		{
 			pxFailRel("mVU clone fold: unexpected word");
 			return -1;
 		}
 
-		armAsm->GetBuffer()->Rewind(clone.end - 4);
-		clone.dst = -1;
-		return clone.src;
+		armAsm->GetBuffer()->Rewind(top.end - 4);
+		cloneCount--;
+		return top.src;
 	}
 
 	// Emit the NEON equivalent of x86's PSHUF.D(dst, src, imm) used in the

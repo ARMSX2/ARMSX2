@@ -23,14 +23,35 @@ static void mVUemitClampConsts(microVU& mVU)
 #endif
 }
 
+// Whether mVUclamp2 takes its own sign-preserving path rather than falling
+// through to mVUclamp1, and whether mVUclamp1 emits at all. mVUclampFoldable
+// reads both, and has to decide exactly as they do.
+static __fi bool mVUclamp2Signs(microVU& mVU, bool bClampE)
+{
+	return (!clampE && CHECK_VU_SIGN_OVERFLOW(mVU.index))
+	       || (clampE && bClampE && CHECK_VU_SIGN_OVERFLOW(mVU.index));
+}
+
+static __fi bool mVUclamp1Emits(microVU& mVU, bool bClampE)
+{
+	return (!clampE && CHECK_VU_OVERFLOW(mVU.index)) || (clampE && bClampE);
+}
+
+// `cloned` on the two clamps below: the register a clone-write copy in front of
+// the clamp was copied from, so the clamp reads it and the copy goes away.
+// mVUcloneTakeHere asks the clamp to look for one itself, which is right
+// wherever the clamp is the first thing emitted after the copy.
+static constexpr int mVUcloneTakeHere = -2;
+
 // Result clamping: clamp to [minFloat, maxFloat].
 // Uses FMINNM/FMAXNM (number-preserving) so NaN inputs clamp to ±maxfloat,
 // matching x86 SSE MINPS/MAXPS NaN-eating semantics. Plain FMIN/FMAX are
 // IEEE-strict and propagate NaN — using them here lets NaN flow through
 // matrix-multiply chains and corrupts vertex output.
-void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& regT1, int xyzw, bool bClampE = false)
+void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& regT1, int xyzw,
+	bool bClampE = false, int cloned = mVUcloneTakeHere)
 {
-	if (((!clampE && CHECK_VU_OVERFLOW(mVU.index)) || (clampE && bClampE)) && mVU.regAlloc->checkVFClamp(reg.GetCode()))
+	if (mVUclamp1Emits(mVU, bClampE) && mVU.regAlloc->checkVFClamp(reg.GetCode()))
 	{
 		// Macro mode is not on that contract -- there the two registers are the
 		// EE's, established lazily by its own first clamp site. None of the
@@ -57,6 +78,7 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 				// the second bound's result reaches `reg`, so returning the first
 				// one there and reading it back is a round trip through a lane
 				// nothing else can see.
+				pxAssert(cloned < 0);
 				const a64::VRegister t(RQSCRATCH3.GetCode(), 32);
 				armAsm->Fminnm(t, a64::VRegister(reg.GetCode(), 32), a64::VRegister(qmmClampMax.GetCode(), 32));
 				armAsm->Fmaxnm(t, t, a64::VRegister(qmmClampMin.GetCode(), 32));
@@ -67,7 +89,8 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 			{
 				// Fminnm rewrites every lane of reg, so a clone-write copy
 				// standing in front of it is dead weight: read the original.
-				const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
+				if (cloned == mVUcloneTakeHere)
+					cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 				const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
 				armAsm->Fminnm(reg.V4S(), src.V4S(), qmmClampMax.V4S());
 				armAsm->Fmaxnm(reg.V4S(), reg.V4S(), qmmClampMin.V4S());
@@ -79,9 +102,10 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 
 // Operand clamping with sign preservation.
 // Uses integer SMIN/UMIN to preserve NaN sign bit.
-void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& regT1in, int xyzw, bool bClampE = false)
+void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& regT1in, int xyzw,
+	bool bClampE = false, int cloned = mVUcloneTakeHere)
 {
-	if (((!clampE && CHECK_VU_SIGN_OVERFLOW(mVU.index)) || (clampE && bClampE && CHECK_VU_SIGN_OVERFLOW(mVU.index))) && mVU.regAlloc->checkVFClamp(reg.GetCode()))
+	if (mVUclamp2Signs(mVU, bClampE) && mVU.regAlloc->checkVFClamp(reg.GetCode()))
 	{
 		// Integer min/max to preserve NaN sign
 		// SMIN.4S clamps the signed integer representation
@@ -101,7 +125,8 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 		// 1-3 pass through the sentinel bounds -- so a clone-write copy in
 		// front of it is foldable either way (mVUclamp1's single-lane case,
 		// which really does leave lanes 1-3 alone, is not).
-		const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
+		if (cloned == mVUcloneTakeHere)
+			cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 		const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
 		// The row's two bounds are adjacent, so they arrive in one Ldp. Both
 		// scratches die two instructions later, which is inside every caller's
@@ -115,7 +140,61 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 	}
 	else
 	{
-		mVUclamp1(mVU, reg, regT1in, xyzw, bClampE);
+		mVUclamp1(mVU, reg, regT1in, xyzw, bClampE, cloned);
+	}
+}
+
+// Whether a clamp of `reg` would fold the clone-write copy in front of it. It
+// can only do that when what it emits rewrites every lane: mVUclamp1's
+// single-lane case leaves lanes 1-3 alone, so the copy still has to fill them
+// in, and a clamp the mode switches off emits nothing to fold into.
+static __fi bool mVUclampFoldable(microVU& mVU, const a64::VRegister& reg, int xyzw, bool bClampE)
+{
+	if (!mVU.regAlloc->checkVFClamp(reg.GetCode()))
+		return false;
+	if (mVUclamp2Signs(mVU, bClampE))
+		return true;
+	return mVUclamp1Emits(mVU, bClampE)
+	       && !(xyzw == 1 || xyzw == 2 || xyzw == 4 || xyzw == 8);
+}
+
+// Clamp a set of operands together. `regs` is the order allocReg handed the
+// registers out, which is the order their clone-write copies sit in the
+// buffer; an invalid entry is an operand the caller does not clamp, and a
+// register named twice is clamped once, at its last mention.
+//
+// A copy is foldable only while it is the last word emitted, so every fold is
+// taken before any clamp is emitted, newest first: the first clamp's own
+// instructions would bury the copy standing in front of the second. The clamps
+// then emit oldest first, which is the order that leaves each folded source
+// standing -- allocReg remaps a clone-write destination as it writes it, so no
+// later operand can be holding one as its own cached copy.
+static void mVUclampOperands(microVU& mVU, std::initializer_list<a64::VRegister> regs, int xyzw,
+	bool bClampE = false)
+{
+	const a64::VRegister* r = regs.begin();
+	const int n = static_cast<int>(regs.size());
+	pxAssert(n <= microRegAlloc::kCloneRunMax);
+
+	bool live[microRegAlloc::kCloneRunMax];
+	for (int i = 0; i < n; i++)
+	{
+		live[i] = r[i].IsValid();
+		for (int j = i + 1; live[i] && j < n; j++)
+			live[i] = !(r[j].IsValid() && r[j].Is(r[i]));
+	}
+
+	int cloned[microRegAlloc::kCloneRunMax];
+	for (int i = n - 1; i >= 0; i--)
+	{
+		cloned[i] = (live[i] && mVUclampFoldable(mVU, r[i], xyzw, bClampE))
+			? mVU.regAlloc->takeCloneSource(r[i].GetCode())
+			: -1;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		if (live[i])
+			mVUclamp2(mVU, r[i], a64::NoVReg, xyzw, bClampE, cloned[i]);
 	}
 }
 

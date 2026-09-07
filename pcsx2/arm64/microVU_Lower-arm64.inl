@@ -366,8 +366,7 @@ mVUop(mVU_RSQRT)
 // NEON equivalent of SSE_DIVSS (scalar divide with clamping)
 static __fi void NEON_DIVSS(mV, const a64::VRegister& to, const a64::VRegister& from)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	mVUclampStepOperands(mVU, to, from, 0, 0x8);
 	armAsm->Fdiv(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()),
 		a64::SRegister(from.GetCode()));
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
