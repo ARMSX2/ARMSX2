@@ -7,7 +7,6 @@ import kr.co.iefriends.pcsx2.NativeApp
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
@@ -17,7 +16,14 @@ import java.util.zip.ZipFile
  * Deliberately a plain foreground download rather than upstream's WorkManager service. That service
  * buys pause/resume across a reboot, at the cost of a WorkManager dependency, kotlinx-serialization,
  * three manifest permissions, a notification channel and an on-disk task store. The streaming
- * download and zip handling here follow [ShaderRepo], which already does this shape correctly.
+ * download and archive handling here follow [ShaderRepo], which already does this shape correctly.
+ *
+ * Two archive formats arrive here. Schema-1 GitHub packs are ZIP and extract through
+ * [ZipFile]; B2 schema-2 packs are tar+zstd and stream through [ZstdInputStream] +
+ * [TarTextureExtractor] — the compressed bytes are verified end to end first, so extraction never
+ * sees data the catalog did not describe. Path policy and collision keys are shared with both
+ * branches via [TextureArchivePath]; the format branch exists only after whole-archive
+ * verification.
  *
  * Sizes here are unlike anything else the app downloads — the largest pack in the catalog is 1.5 GB,
  * where a controller skin is a few hundred KB. That drives three things the skin path never needed:
@@ -41,7 +47,9 @@ object TexturePackInstaller {
 
     /**
      * Blocking; call from a background dispatcher. [isCancelled] is polled throughout so the user
-     * can abandon a multi-gigabyte transfer.
+     * can abandon a multi-gigabyte transfer. Cancellation is honored only through extraction: once
+     * the commit begins it runs to completion (or synchronous rollback), and the caller disables
+     * its Cancel control when [Progress.Installing] is reported.
      */
     fun install(
         context: Context,
@@ -50,6 +58,10 @@ object TexturePackInstaller {
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
     ): Outcome {
+        if (NativeApp.hasNoNativeBinary) {
+            return Outcome(false, "The emulator core is not available on this device")
+        }
+
         val root = File(MainActivityRuntime.assetCopyRoot(context))
         // Staging must share a filesystem with the destination, or the commit below turns from a
         // rename into a multi-gigabyte copy.
@@ -58,13 +70,20 @@ object TexturePackInstaller {
         staging.mkdirs()
 
         try {
-            val needed = pack.sizeBytes * 2 + FREE_SPACE_SLACK
+            // ZIP extraction roughly doubles the archive; tar+zstd is streamed, so peak use is the
+            // archive plus its exact decompressed size, both of which the catalog declares.
+            val needed = when (pack.format) {
+                TextureCatalog.ArchiveFormat.TAR_ZSTD ->
+                    pack.sizeBytes + pack.decompressedSizeBytes + FREE_SPACE_SLACK
+                TextureCatalog.ArchiveFormat.ZIP ->
+                    pack.sizeBytes * 2 + FREE_SPACE_SLACK
+            }
             val free = runCatching { root.usableSpace }.getOrDefault(0L)
             if (free in 1 until needed) {
                 return Outcome(false, "Needs ~${needed / 1024 / 1024} MB free, ${free / 1024 / 1024} MB available")
             }
 
-            val archive = File(staging, "pack.zip")
+            val archive = File(staging, "pack.download")
             val digest = MessageDigest.getInstance("SHA-256")
 
             // A single-file pack is one part, so there is one loop rather than two code paths.
@@ -118,9 +137,19 @@ object TexturePackInstaller {
 
             val extracted = File(staging, "out")
             extracted.mkdirs()
-            val count = extract(archive, extracted, onProgress, isCancelled)
-            if (count <= 0) {
-                return if (isCancelled()) Outcome(false, null) else Outcome(false, "Archive contained no textures")
+            val count = when (pack.format) {
+                TextureCatalog.ArchiveFormat.TAR_ZSTD ->
+                    extractTarZstd(archive, extracted, pack, onProgress, isCancelled)
+                TextureCatalog.ArchiveFormat.ZIP ->
+                    extractZip(archive, extracted, onProgress, isCancelled)
+            }
+            when (count) {
+                is ExtractionResult.Cancelled -> return Outcome(false, null)
+                is ExtractionResult.Failure -> return Outcome(false, count.reason)
+                is ExtractionResult.Done ->
+                    if (count.textures <= 0) {
+                        return Outcome(false, "Archive contained no textures")
+                    }
             }
             archive.delete()
 
@@ -130,7 +159,16 @@ object TexturePackInstaller {
                 return Outcome(false, "Could not write to the textures folder")
             }
 
-            TexturePackInstallState.record(pack.id, serial.uppercase(), pack.version, pack.name)
+            TexturePackInstallState.record(
+                packId = pack.id,
+                serial = serial.uppercase(),
+                version = pack.version,
+                name = pack.name,
+                format = pack.format.wireName,
+                schema = if (pack.format == TextureCatalog.ArchiveFormat.TAR_ZSTD) 2 else 1,
+                archiveRevision = pack.archiveRevision,
+                sha256 = pack.sha256,
+            )
             return Outcome(true)
         } catch (e: Exception) {
             Log.w(TAG, "install failed: ${e.message}")
@@ -138,6 +176,12 @@ object TexturePackInstaller {
         } finally {
             staging.deleteRecursively()
         }
+    }
+
+    private sealed interface ExtractionResult {
+        data class Done(val textures: Int) : ExtractionResult
+        data object Cancelled : ExtractionResult
+        data class Failure(val reason: String) : ExtractionResult
     }
 
     // ---- download -----------------------------------------------------------------------------
@@ -161,19 +205,17 @@ object TexturePackInstaller {
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
     ): Long {
-        var conn: HttpURLConnection? = null
+        // Manual HTTPS-only redirects (via TextureCatalog.RedirectingHttps): automatic following
+        // would happily traverse an http:// hop on the way to the archive.
+        val conn = TextureCatalog.RedirectingHttps.open(
+            url, connectTimeoutMs = 20_000, readTimeoutMs = 30_000, tag = TAG,
+        ) {
+            requestMethod = "GET"
+            setRequestProperty("User-Agent", userAgent())
+            // Keep Content-Length honest so the progress bar means something.
+            setRequestProperty("Accept-Encoding", "identity")
+        } ?: return -1L
         try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 20_000
-                // Per-read rather than whole-transfer: a gigabyte on a slow link is legitimately
-                // long, but a stalled socket still fails fast.
-                readTimeout = 30_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", userAgent())
-                // Keep Content-Length honest so the progress bar means something.
-                setRequestProperty("Accept-Encoding", "identity")
-            }
             if (conn.responseCode != HttpURLConnection.HTTP_OK) {
                 Log.w(TAG, "download $url -> ${conn.responseCode}")
                 return -1L
@@ -204,39 +246,48 @@ object TexturePackInstaller {
             Log.w(TAG, "download $url failed: ${e.message}")
             return -1L
         } finally {
-            conn?.disconnect()
+            conn.disconnect()
         }
     }
 
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02X".format(it) }
 
-    // ---- extract ------------------------------------------------------------------------------
+    // ---- extract: zip -------------------------------------------------------------------------
 
     /** Returns the number of texture files written, or 0 on failure. */
-    private fun extract(
+    private fun extractZip(
         archive: File,
         dest: File,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Int {
+    ): ExtractionResult {
         return runCatching {
             ZipFile(archive).use { zf ->
                 val entries = zf.entries().toList()
-                    .filterNot { it.isDirectory || isJunkEntry(it.name) }
-                    .filter { isTextureFile(it.name) }
+                    .filterNot { it.isDirectory || TextureArchivePath.isJunkEntry(it.name) }
+                    .filter { TextureArchivePath.isTextureFile(it.name) }
                 val total = entries.size
                 var done = 0
                 val destCanonical = dest.canonicalPath + File.separator
+                val seen = HashSet<String>()
                 for (entry in entries) {
-                    if (isCancelled()) return 0
-                    val rel = replacementRelativePath(entry.name) ?: continue
+                    if (isCancelled()) return ExtractionResult.Cancelled
+                    val rel = TextureArchivePath.replacementRelativePath(entry.name) ?: continue
                     val out = File(dest, rel)
                     // Zip-slip: a crafted "../" entry would otherwise write anywhere the app can
                     // reach. Fail the whole install rather than skip — a pack containing one is not
                     // a pack we should be half-installing.
                     if (!out.canonicalPath.startsWith(destCanonical)) {
                         Log.w(TAG, "zip-slip entry rejected: ${entry.name}")
-                        return 0
+                        return ExtractionResult.Failure("Archive contained an unsafe path")
+                    }
+                    // Same collision rule the tar branch enforces: two entries that normalize to
+                    // one destination (case, Unicode, or wrapper differences) must not silently
+                    // last-write-wins over each other.
+                    val key = TextureArchivePath.collisionKey(rel)
+                    if (!seen.add(key)) {
+                        Log.w(TAG, "duplicate destination rejected: $rel")
+                        return ExtractionResult.Failure("Archive contains duplicate textures ($rel)")
                     }
                     out.parentFile?.mkdirs()
                     zf.getInputStream(entry).use { input ->
@@ -245,51 +296,45 @@ object TexturePackInstaller {
                     done++
                     if (done % 32 == 0 || done == total) onProgress(Progress.Extracting(done, total))
                 }
-                done
+                ExtractionResult.Done(done)
             }
         }.getOrElse {
             Log.w(TAG, "extract failed: ${it.message}")
-            0
+            ExtractionResult.Failure("Archive could not be read: ${it.message ?: "unknown error"}")
         }
     }
 
-    /**
-     * Strips whatever wrapper the archive uses so files land directly in `replacements/`.
-     *
-     * Packs are published three ways: rooted at the textures themselves, wrapped in `<SERIAL>/`,
-     * and wrapped in `<SERIAL>/replacements/`. GitHub's own zips add a `name-<40 hex>/` root on top.
-     * Take everything after the last `replacements/` segment, else after a `<SERIAL>/` segment,
-     * else drop a single GitHub-style root.
-     */
-    private fun replacementRelativePath(name: String): String? {
-        val norm = name.replace('\\', '/').trimStart('/')
-        if (norm.isEmpty()) return null
-        val parts = norm.split('/').filter { it.isNotEmpty() && it != "." }
-        if (parts.isEmpty()) return null
+    // ---- extract: tar+zstd --------------------------------------------------------------------
 
-        val repIdx = parts.indexOfLast { it.equals("replacements", ignoreCase = true) }
-        if (repIdx >= 0 && repIdx < parts.size - 1) return parts.drop(repIdx + 1).joinToString("/")
-
-        val serialIdx = parts.indexOfLast { Regex("^[A-Za-z]{4}-?[0-9]{5}$").matches(it) }
-        if (serialIdx >= 0 && serialIdx < parts.size - 1) return parts.drop(serialIdx + 1).joinToString("/")
-
-        if (parts.size > 1 && Regex("^.+-[0-9a-f]{40}$").matches(parts[0])) {
-            return parts.drop(1).joinToString("/")
+    private fun extractTarZstd(
+        archive: File,
+        dest: File,
+        pack: TextureCatalog.Pack,
+        onProgress: (Progress) -> Unit,
+        isCancelled: () -> Boolean,
+    ): ExtractionResult {
+        archive.inputStream().use { raw ->
+            // The native layer caps output at the catalog's declared decompressed size; the tar
+            // extractor additionally requires the stream to land on it exactly.
+            ZstdInputStream(raw, pack.decompressedSizeBytes).use { zstd ->
+                val extractor = TarTextureExtractor(
+                    dest = dest,
+                    expectedDecompressedBytes = pack.decompressedSizeBytes,
+                    expectedTextureCount = pack.fileCount,
+                    onProgress = { done, total -> onProgress(Progress.Extracting(done, total)) },
+                    isCancelled = isCancelled,
+                    raw = zstd,
+                )
+                return when (val outcome = extractor.extract()) {
+                    is TarTextureExtractor.Outcome.Success -> ExtractionResult.Done(outcome.textureCount)
+                    is TarTextureExtractor.Outcome.Cancelled -> ExtractionResult.Cancelled
+                    is TarTextureExtractor.Outcome.Failure -> {
+                        Log.w(TAG, "tar extraction failed: ${outcome.reason}")
+                        ExtractionResult.Failure(outcome.reason)
+                    }
+                }
+            }
         }
-        return parts.joinToString("/")
-    }
-
-    /** The core only loads PNG, DDS, raw ASTC, and ASTC KTX; everything else is pack metadata. */
-    internal fun isTextureFile(name: String): Boolean {
-        val lower = name.lowercase()
-        return lower.endsWith(".png") || lower.endsWith(".dds") ||
-            lower.endsWith(".astc") || lower.endsWith(".ktx")
-    }
-
-    private fun isJunkEntry(name: String): Boolean {
-        val lower = name.lowercase()
-        return lower.startsWith("__macosx/") || lower.contains("/__macosx/") ||
-            lower.endsWith("/.ds_store") || lower == ".ds_store" || lower.endsWith("/thumbs.db")
     }
 
     // ---- commit -------------------------------------------------------------------------------

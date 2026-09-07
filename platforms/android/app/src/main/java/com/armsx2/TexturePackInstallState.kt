@@ -14,7 +14,51 @@ import java.io.File
 object TexturePackInstallState {
     private const val FILE = "texture-packs.json"
 
-    data class Installed(val packId: String, val serial: String, val version: String, val name: String)
+    /**
+     * One installed pack. [schema]/[format]/[archiveRevision]/[sha256] are absent from state
+     * written before the B2 catalog existed; their defaults describe exactly that legacy ZIP
+     * install, so old records load unchanged and are only rewritten when a real install happens.
+     */
+    data class Installed(
+        val packId: String,
+        val serial: String,
+        val version: String,
+        val name: String,
+        val schema: Int = 1,
+        val format: String = "zip",
+        val archiveRevision: Long = 0L,
+        val sha256: String = "",
+    ) {
+        val isB2TarZstd: Boolean get() = schema >= 2 && format == "tar+zstd"
+    }
+
+    /** What the catalog row offers relative to what is installed. */
+    enum class InstallAction { INSTALL, UPDATE, INSTALLED, CONFLICT }
+
+    /**
+     * Pure update-eligibility rule shared by the UI and tests.
+     *
+     * B2 tar+zstd archives are the upgrade target: a legacy ZIP install always updates to B2.
+     * Within B2 state, [TextureCatalog.Pack.archiveRevision] is monotonic — a greater revision
+     * updates, a lower one is suppressed (a lagging CDN must not walk a device backwards), and an
+     * equal revision with a different digest is a conflict rather than a silent reinstall.
+     * A schema-1 ZIP fallback can never downgrade B2 state, whatever its version string says.
+     */
+    fun actionFor(installed: Installed?, pack: TextureCatalog.Pack): InstallAction {
+        if (installed == null) return InstallAction.INSTALL
+        return when {
+            pack.format == TextureCatalog.ArchiveFormat.TAR_ZSTD -> when {
+                !installed.isB2TarZstd -> InstallAction.UPDATE
+                pack.archiveRevision > installed.archiveRevision -> InstallAction.UPDATE
+                pack.archiveRevision < installed.archiveRevision -> InstallAction.INSTALLED
+                pack.sha256.equals(installed.sha256, ignoreCase = true) -> InstallAction.INSTALLED
+                else -> InstallAction.CONFLICT
+            }
+            installed.isB2TarZstd -> InstallAction.INSTALLED
+            installed.version == pack.version -> InstallAction.INSTALLED
+            else -> InstallAction.UPDATE
+        }
+    }
 
     /** Bumped on every change so Compose re-reads. */
     val revision = androidx.compose.runtime.mutableStateOf(0)
@@ -76,17 +120,36 @@ object TexturePackInstallState {
                 serial = o.optString("serial"),
                 version = o.optString("version"),
                 name = o.optString("name"),
+                schema = o.optInt("schema", 1),
+                format = o.optString("format", "zip"),
+                archiveRevision = o.optLong("archiveRevision", 0L),
+                sha256 = o.optString("sha256"),
             )
         }
         return out
     }
 
-    fun record(packId: String, serial: String, version: String, name: String) {
+    /** [format]/[schema]/[archiveRevision]/[sha256] describe the archive that was installed, not
+     *  the catalog entry that described it, so update eligibility survives a catalog outage. */
+    fun record(
+        packId: String,
+        serial: String,
+        version: String,
+        name: String,
+        format: String = "zip",
+        schema: Int = 1,
+        archiveRevision: Long = 0L,
+        sha256: String = "",
+    ) {
         val root = read()
         root.put(packId, JSONObject().apply {
             put("serial", serial)
             put("version", version)
             put("name", name)
+            put("format", format)
+            put("schema", schema)
+            put("archiveRevision", archiveRevision)
+            put("sha256", sha256)
         })
         write(root)
     }
