@@ -111,12 +111,22 @@ namespace GSLadder
 
 			// Ask for the download a game's own readback would trigger. A no-op under
 			// the software renderer, where local memory is already the result.
+			//
+			// ⚠️ Everything below addresses through `rc`, the rectangle THIS rung was
+			// asked for, and not through `s_opts`, the cadence rectangle. They are the
+			// same for a cadence rung and for a vsync rung, and they are different for
+			// every named rung whose region is not the cadence's -- which is what
+			// `-ladder-at` exists to take. Reading through the cadence base there
+			// silently returned a rung-sized window of the WRONG region under the
+			// named rung's descriptor: right shape, right tag, right packet, wrong
+			// memory. Measured on Stuntman, where a rung over 0x2d60 returned the
+			// frame buffer's words at (0,0) and nothing in the file said so.
 			GIFRegBITBLTBUF bb = {};
-			bb.SBP = s_opts.bp;
-			bb.SBW = s_opts.bw;
-			bb.SPSM = s_opts.psm;
-			r->InvalidateLocalMem(bb, GSVector4i(static_cast<int>(s_opts.x), static_cast<int>(s_opts.y),
-										 static_cast<int>(s_opts.x + w), static_cast<int>(s_opts.y + h)));
+			bb.SBP = rc.bp;
+			bb.SBW = rc.bw;
+			bb.SPSM = rc.psm;
+			r->InvalidateLocalMem(bb, GSVector4i(static_cast<int>(rc.x), static_cast<int>(rc.y),
+										 static_cast<int>(rc.x + w), static_cast<int>(rc.y + h)));
 
 			const u32* vm = r->m_mem.vm32();
 			s_pixels.resize(d.offset + d.bytes);
@@ -129,8 +139,8 @@ namespace GSLadder
 			{
 				for (u32 col = 0; col < w; col++)
 				{
-					const u32 addr = GSLocalMemory::PixelAddress32(static_cast<int>(s_opts.x + col),
-						static_cast<int>(s_opts.y + row), s_opts.bp, s_opts.bw);
+					const u32 addr = GSLocalMemory::PixelAddress32(static_cast<int>(rc.x + col),
+						static_cast<int>(rc.y + row), rc.bp, rc.bw);
 					dst[row * w + col] = vm[addr];
 				}
 			}
