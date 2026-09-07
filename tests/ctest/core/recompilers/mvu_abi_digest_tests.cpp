@@ -154,6 +154,12 @@ struct DigestSet
 	// front of it. Every probe above writes whole registers, so none of them
 	// reaches the merge at all. 0 in a pin row = probe absent.
 	u64 mergeFold;
+	// The single-lane dest program at vuClampMode:2, the mode where the
+	// result clamp answers a single-lane dest with its own sequence. The two
+	// probes that carry that sequence today are DIV and RSQRT; the FMACs with
+	// a single-lane dest above compile at modes 3 and 4, where the
+	// sign-preserving clamp takes them instead. 0 in a pin row = probe absent.
+	u64 clampESS;
 };
 
 struct AbiPin
@@ -377,7 +383,7 @@ constexpr AbiPin kPins[] = {
 	// single-lane case: the FMACs with a single-lane dest field compile at
 	// modes 3 and 4, where the sign-preserving clamp takes their operands
 	// instead. Every other digest in the row is the abi 33 value.
-	{34, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0xef2d5c2fc47b5fbc, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
+	{34, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0xef2d5c2fc47b5fbc, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -636,6 +642,9 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	actual.signClampSS = CompileAndDigestSignClamp(ssProgram);
 	actual.exactMulAdd = CompileAndDigestExact(mulAddProgram);
 	actual.exactSS = CompileAndDigestExact(ssProgram);
+	// The same single-lane program one mode down, where the result clamp is
+	// the one mVUclamp1 emits rather than the sign-preserving integer pair.
+	actual.clampESS = CompileAndDigestClampE(ssProgram);
 
 	// The divUnit program under the same mode. Its three ops keep the host
 	// divide everywhere below it, so the arm that calls the model is emitted
@@ -764,6 +773,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.clipFlag, 0u);
 	ASSERT_NE(actual.preloadPairs, 0u);
 	ASSERT_NE(actual.mergeFold, 0u);
+	ASSERT_NE(actual.clampESS, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -815,7 +825,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.vu1EbitMtvu
 		<< ", 0x" << actual.clipFlag
 		<< ", 0x" << actual.preloadPairs
-		<< ", 0x" << actual.mergeFold << "}";
+		<< ", 0x" << actual.mergeFold
+		<< ", 0x" << actual.clampESS << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -925,6 +936,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.mergeFold, pin->digests.mergeFold)
 			<< explain("mergeFold", actual.mergeFold, pin->digests.mergeFold);
+	}
+	if (pin->digests.clampESS != 0) // probe added at abi 34; older rows unpinned
+	{
+		EXPECT_EQ(actual.clampESS, pin->digests.clampESS)
+			<< explain("clampESS", actual.clampESS, pin->digests.clampESS);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{
