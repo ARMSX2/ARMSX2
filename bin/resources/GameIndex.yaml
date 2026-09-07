@@ -12284,6 +12284,40 @@ SCUS-97429:
   compat: 5
   speedHacks:
     instantVU1: 0 # Fixes misaligned effects such as exhausts during boosting.
+  patches:
+    3091E6FB:
+      content: |-
+        author=bmdhacks
+        // Softlock on "Saving Data" after writing a profile. Also upstream PCSX2 #6935.
+        //
+        // The save itself succeeds. The auto-save process notifies the lobby menu manager,
+        // which only advances if none of its children are busy -- and base-menu answers
+        // "busy" unconditionally while it is animating. The success path records nothing, so
+        // a success landing in that window is dropped, and the auto-save process has already
+        // exited. Only the failure path sets the retry byte at +0x180, which is why ejecting
+        // the memory card is the known workaround: it forces a failure.
+        //
+        // Store the destination state's type-slot offset in that byte instead of a flag
+        // (0x298 success, 0x21C card-status) and dispatch on it from the state's existing
+        // per-frame retry, so a success arriving mid-animation is applied once the menus
+        // settle. A real card failure still goes where it always did.
+        //
+        // The lobby code lives in a DGO loaded from disc, so the writes are gated on the
+        // original words being resident. The first gate tests a halfword the patch itself
+        // changes, so the block applies once per load and is then inert.
+        patch=1,EE,D1326454,extended,0C000007
+        patch=1,EE,D1326464,extended,0B000298
+        patch=1,EE,D1326466,extended,0A009C63
+        patch=1,EE,21326454,extended,12E30013
+        patch=1,EE,21326458,extended,24020298
+        patch=1,EE,213264A0,extended,2402021C
+        patch=1,EE,213264F8,extended,2402021C
+        patch=1,EE,21326630,extended,10800011
+        patch=1,EE,2132665C,extended,8EF90773
+        patch=1,EE,21326660,extended,9EC40180
+        patch=1,EE,21326668,extended,0064182D
+        patch=1,EE,2132666C,extended,9C630000
+        patch=1,EE,21326674,extended,AEC3004C
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     roundSprite: 1 # Fix lines in the sky.
