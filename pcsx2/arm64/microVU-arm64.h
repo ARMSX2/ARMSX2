@@ -164,7 +164,10 @@
 //  36 — an FMAC body takes the clone-write fold for every operand it clamps
 //       before it emits any of the clamps, so the second and third operand's
 //       copies fold as well as the first's.
-static constexpr u32 kMvuCompilerAbiVersion = 36;
+//  37 — the accumulator copy a two-step FMAC makes for its own accumulate is
+//       offered to that fold too, which takes it wherever the step's clamp
+//       rewrites every lane of it.
+static constexpr u32 kMvuCompilerAbiVersion = 37;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

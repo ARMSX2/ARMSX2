@@ -160,6 +160,14 @@ struct DigestSet
 	// a single-lane dest above compile at modes 3 and 4, where the
 	// sign-preserving clamp takes them instead. 0 in a pin row = probe absent.
 	u64 clampESS;
+	// MADDA with a dest field that is neither one lane nor all four, and MADDA
+	// with one lane: the two shapes whose accumulate runs on a scratch copy of
+	// ACC. Every MADD and MSUB above writes all four lanes, which is the third
+	// branch. Compiled at vuClampMode 2, where only the wider of the two folds
+	// its copy into the clamp, and again at 3, where both do.
+	// 0 in a pin row = probe absent.
+	u64 clampEPartialAcc;
+	u64 signClampPartialAcc;
 };
 
 struct AbiPin
@@ -396,6 +404,12 @@ constexpr AbiPin kPins[] = {
 	// the two halves of the change land on disjoint probes. Every other digest
 	// in the row is the abi 35 value.
 	{36, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c}},
+	// abi 37: the accumulate's own copy of ACC joins the fold. No digest above
+	// moves -- every MADD and MSUB in the table writes all four lanes, which is
+	// the branch that accumulates into ACC itself and makes no copy -- so the
+	// two probes for the other branches are added here, and the rest of the row
+	// is the abi 36 value.
+	{37, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c, 0x4b3ab298c551a643, 0xa7196c456f0fe346}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -658,6 +672,13 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	// the one mVUclamp1 emits rather than the sign-preserving integer pair.
 	actual.clampESS = CompileAndDigestClampE(ssProgram);
 
+	const std::initializer_list<vu::VuOp> partialAccProgram = {
+		UpperOnly(VMADDA_U(mask::x | mask::y, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VMADDA_U(mask::z, vf::vf1, vf::vf2)),
+	};
+	actual.clampEPartialAcc = CompileAndDigestClampE(partialAccProgram);
+	actual.signClampPartialAcc = CompileAndDigestSignClamp(partialAccProgram);
+
 	// The divUnit program under the same mode. Its three ops keep the host
 	// divide everywhere below it, so the arm that calls the model is emitted
 	// only here.
@@ -786,6 +807,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.preloadPairs, 0u);
 	ASSERT_NE(actual.mergeFold, 0u);
 	ASSERT_NE(actual.clampESS, 0u);
+	ASSERT_NE(actual.clampEPartialAcc, 0u);
+	ASSERT_NE(actual.signClampPartialAcc, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -838,7 +861,9 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.clipFlag
 		<< ", 0x" << actual.preloadPairs
 		<< ", 0x" << actual.mergeFold
-		<< ", 0x" << actual.clampESS << "}";
+		<< ", 0x" << actual.clampESS
+		<< ", 0x" << actual.clampEPartialAcc
+		<< ", 0x" << actual.signClampPartialAcc << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -953,6 +978,13 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.clampESS, pin->digests.clampESS)
 			<< explain("clampESS", actual.clampESS, pin->digests.clampESS);
+	}
+	if (pin->digests.clampEPartialAcc != 0) // probes added at abi 37; older rows unpinned
+	{
+		EXPECT_EQ(actual.clampEPartialAcc, pin->digests.clampEPartialAcc)
+			<< explain("clampEPartialAcc", actual.clampEPartialAcc, pin->digests.clampEPartialAcc);
+		EXPECT_EQ(actual.signClampPartialAcc, pin->digests.signClampPartialAcc)
+			<< explain("signClampPartialAcc", actual.signClampPartialAcc, pin->digests.signClampPartialAcc);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{

@@ -765,6 +765,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 				// mirroring the load+Ins pattern mVU_FMACa uses for its ACC.
 				const a64::VRegister& accSS = mVU.regAlloc->allocReg();
 				armAsm->Mov(accSS.V16B(), ACC.V16B());
+				mVU.regAlloc->noteClone(accSS.GetCode(), ACC.GetCode());
 				NEON_SS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
 				armAsm->Ins(ACC.V4S(), 0, accSS.V4S(), 0);
 				mVU.regAlloc->clearNeeded(accSS);
@@ -781,6 +782,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		{
 			const a64::VRegister& tempACC = mVU.regAlloc->allocReg();
 			armAsm->Mov(tempACC.V16B(), ACC.V16B());
+			mVU.regAlloc->noteClone(tempACC.GetCode(), ACC.GetCode());
 			NEON_PS[opType](mVU, tempACC, Fs, prodClamped ? preClampFrom : 0);
 			mVUmergeRegs(ACC, tempACC, _X_Y_Z_W);
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
