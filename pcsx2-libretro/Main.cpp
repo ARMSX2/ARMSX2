@@ -1584,6 +1584,18 @@ RETRO_API void retro_set_input_state(retro_input_state_t cb)
 RETRO_API void retro_init(void)
 {
 	Log::SetConsoleOutputLevel(LOGLEVEL_INFO);
+	// Send warnings and errors to the frontend too: that is the only log an end
+	// user has. Without this, an emulator-side failure - a shader the GS could
+	// not read, a BIOS it did not like - reaches the console sink only, which
+	// is a terminal nobody has open, or logcat on Android. The RetroArch log
+	// then shows the symptom with no cause: "MTGS::WaitForOpen failed".
+	Log::SetHostOutputLevel(LOGLEVEL_WARNING, [](LOGLEVEL level, ConsoleColors, std::string_view message) {
+		if (!log_cb)
+			return;
+
+		log_cb(level <= LOGLEVEL_ERROR ? RETRO_LOG_ERROR : RETRO_LOG_WARN, "%.*s\n",
+			static_cast<int>(message.size()), message.data());
+	});
 	LibretroCore::s_frame_buffer.assign(
 		LibretroCore::kFrameWidth * LibretroCore::kFrameHeight, 0);
 }

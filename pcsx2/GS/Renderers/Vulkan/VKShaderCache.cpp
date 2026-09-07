@@ -100,9 +100,11 @@ static void FillPipelineCacheHeader(VK_PIPELINE_CACHE_HEADER* header)
 	std::memcpy(header->uuid, GSDeviceVK::GetInstance()->GetDeviceProperties().pipelineCacheUUID, VK_UUID_SIZE);
 }
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(ARMSX2_LINK_SHADERC)
 
-// Android: shaderc is statically linked, call functions directly.
+// shaderc is linked in - Android always, and any build that found the static
+// archive (the libretro core, which cannot rely on the host having one) - so
+// call the functions directly instead of going looking for a library.
 namespace dyn_shaderc
 {
 	static bool Open();
@@ -153,7 +155,7 @@ void dyn_shaderc::Close()
 	}
 }
 
-#else // !__ANDROID__
+#else // dlopen the system's shaderc
 
 #define SHADERC_FUNCTIONS(X) \
 	X(shaderc_compiler_initialize) \
@@ -255,7 +257,7 @@ void dyn_shaderc::Close()
 #undef SHADERC_FUNCTIONS
 #undef SHADERC_INIT_FUNCTIONS
 
-#endif // !__ANDROID__
+#endif // __ANDROID__ || ARMSX2_LINK_SHADERC
 
 static void DumpBadShader(std::string_view code, std::string_view errors)
 {

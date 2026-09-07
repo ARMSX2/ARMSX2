@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/Common/GSDevice.h"
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+#include "EmbeddedResources.h"
+#endif
 #include "GS/Renderers/Common/GSPassScheduler.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
@@ -421,7 +424,19 @@ GSVector4i GSDevice::ProcessCopyArea(const GSVector4i& rtsize, const GSVector4i&
 
 std::optional<std::string> GSDevice::ReadShaderSource(const char* filename)
 {
-	return FileSystem::ReadFileToString(Path::Combine(EmuFolders::Resources, filename).c_str());
+	std::optional<std::string> source =
+		FileSystem::ReadFileToString(Path::Combine(EmuFolders::Resources, filename).c_str());
+
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+	// The resources directory wins, so a user can still edit a shader in place;
+	// the built-in copy is what makes a build that has no resources directory
+	// at all - the libretro core, typically - come up instead of failing to
+	// create the device and leaving the frontend with a black screen.
+	if (!source.has_value())
+		source = EmbeddedResources::Read(filename);
+#endif
+
+	return source;
 }
 
 int GSDevice::GetMipmapLevelsForSize(int width, int height)
