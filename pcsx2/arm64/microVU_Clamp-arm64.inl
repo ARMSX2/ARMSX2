@@ -52,11 +52,14 @@ void mVUclamp1(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 				// vuClampMode:2 SPS / trembling geometry. Compute the clamped
 				// scalar in RQSCRATCH3 and INS it back into lane 0 only, mirroring
 				// the x86 mVUclamp1 SS path.
-				armAsm->Fminnm(a64::VRegister(RQSCRATCH3.GetCode(), 32), a64::VRegister(reg.GetCode(), 32),
-				               a64::VRegister(qmmClampMax.GetCode(), 32));
-				armAsm->Ins(reg.V4S(), 0, RQSCRATCH3.V4S(), 0);
-				armAsm->Fmaxnm(a64::VRegister(RQSCRATCH3.GetCode(), 32), a64::VRegister(reg.GetCode(), 32),
-				               a64::VRegister(qmmClampMin.GetCode(), 32));
+				//
+				// Both bounds land on the scratch before the one writeback: only
+				// the second bound's result reaches `reg`, so returning the first
+				// one there and reading it back is a round trip through a lane
+				// nothing else can see.
+				const a64::VRegister t(RQSCRATCH3.GetCode(), 32);
+				armAsm->Fminnm(t, a64::VRegister(reg.GetCode(), 32), a64::VRegister(qmmClampMax.GetCode(), 32));
+				armAsm->Fmaxnm(t, t, a64::VRegister(qmmClampMin.GetCode(), 32));
 				armAsm->Ins(reg.V4S(), 0, RQSCRATCH3.V4S(), 0);
 				break;
 			}
