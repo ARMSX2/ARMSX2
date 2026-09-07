@@ -490,6 +490,9 @@ namespace GSReplayPayload
 		std::vector<u8> stream;
 		u32 records = 0;
 		u32 checkpoints = 0;
+		std::vector<bool> at_deferred(opts.at.size(), false);
+		u32 ats_moved = 0;
+		u64 at_bytes = 0;
 		u32 frames = 0;
 		u32 drawn_frames = 0;
 		u64 gif_since_vsync = 0;
@@ -819,6 +822,43 @@ namespace GSReplayPayload
 				records++;
 			}
 
+			// Checkpoints placed after one named packet, each reading its own region.
+			// Same boundary rule as a ladder rung: only where the GIF has closed every
+			// path it opened, deferred to the next such boundary otherwise, and named
+			// by the packet it actually follows so the arms join on a real index. A
+			// deferred one keeps its identity, because the question is "what did this
+			// draw leave behind" and moving it to the next quiescent boundary is the
+			// only honest way to read that.
+			for (size_t ai = 0; ai < opts.at.size(); ai++)
+			{
+				const bool due = (this_packet == opts.at[ai].packet);
+				if (due && !quiescent)
+				{
+					at_deferred[ai] = true;
+					ats_moved++;
+					continue;
+				}
+				if (!(due || at_deferred[ai]) || !quiescent ||
+					packet.id == GSDumpTypes::GSType::VSync)
+					continue;
+
+				at_deferred[ai] = false;
+				Checkpoint ck = {};
+				ck.bp = opts.at[ai].bp;
+				ck.bw = opts.at[ai].bw;
+				ck.psm = opts.at[ai].psm;
+				ck.x = opts.at[ai].x;
+				ck.y = opts.at[ai].y;
+				ck.w = opts.at[ai].w;
+				ck.h = opts.at[ai].h;
+				ck.tag = 0x20000u + static_cast<u32>(ai); // named checkpoints above the rungs
+				PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, this_packet);
+				PushPadded(stream, &ck, sizeof(ck));
+				checkpoints++;
+				records++;
+				at_bytes += opts.at[ai].w * opts.at[ai].h * 4u;
+			}
+
 			if (opts.frame_limit != 0 && frames >= opts.frame_limit)
 				break;
 		}
@@ -876,6 +916,13 @@ namespace GSReplayPayload
 			opts.output_path.c_str(), frames, drawn_frames, records, checkpoints,
 			static_cast<unsigned long long>(gif_bytes >> 20),
 			static_cast<unsigned long long>(total >> 20));
+
+		if (!opts.at.empty())
+		{
+			RP_LOG("  %zu named checkpoints, %llu bytes of readback between them"
+				   "%s\n", opts.at.size(), static_cast<unsigned long long>(at_bytes),
+				ats_moved ? " (some deferred to the next quiescent boundary)" : "");
+		}
 		RP_LOG("environment restore: %zu register writes.\n",
 			(environment.size() / 16) - 1);
 		if (rungs_moved)

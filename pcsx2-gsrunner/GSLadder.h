@@ -6,6 +6,7 @@
 #include "common/Pcsx2Defs.h"
 
 #include <string>
+#include <vector>
 
 /// Reads a rectangle of GS memory back at chosen points *inside* a dump's stream, and
 /// writes it in the same file format the console replayer produces.
@@ -55,6 +56,17 @@ namespace GSLadder
 
 		/// Read after every Nth packet. Zero reads only at vsync.
 		u32 every = 0;
+
+		/// Rungs placed after one named packet, each reading its own region. The
+		/// console payload's `-payload-at` writes the matching half, and both count
+		/// the same dump packets, so a rung here and a checkpoint there compare word
+		/// for word without either side interpreting the other's numbering.
+		struct At
+		{
+			u32 packet;
+			u32 bp, bw, psm, x, y, w, h;
+		};
+		std::vector<At> at;
 	};
 
 	/// Arms the ladder. Must be called before the dump starts running.
