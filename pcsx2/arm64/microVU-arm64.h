@@ -158,7 +158,10 @@
 //       identity reorder no longer loads and stores the queue unchanged.
 //  34 — the single-lane result clamp chains both bounds through the scratch
 //       and writes lane 0 once, dropping the writeback between them.
-static constexpr u32 kMvuCompilerAbiVersion = 34;
+//  35 — the sign-preserving clamp's two bounds sit next to each other in
+//       mVUglob, so the row it selects arrives in one Ldp rather than a load
+//       in front of each min.
+static constexpr u32 kMvuCompilerAbiVersion = 35;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

@@ -384,6 +384,11 @@ constexpr AbiPin kPins[] = {
 	// modes 3 and 4, where the sign-preserving clamp takes their operands
 	// instead. Every other digest in the row is the abi 33 value.
 	{34, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0xef2d5c2fc47b5fbc, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
+	// abi 35: the sign-preserving clamp's paired bounds. The eight probes that
+	// compile at vuClampMode 3 and 4 move, which is every one that reaches
+	// mVUclamp2's integer path at all; clampESS is a mode below it and holds
+	// the abi 34 value, as does every digest above signClampMulAdd.
+	{35, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0xa826c26b402d511f, 0xbed63e7a97c66fe9, 0x7138104cc75f1f14, 0xc924075bd9ae8ce3, 0x65f71dc1b0e950ea, 0x547b51b54e2f65d5, 0xf0fdbefe96fe37bf, 0x9a85250029e6d52e, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

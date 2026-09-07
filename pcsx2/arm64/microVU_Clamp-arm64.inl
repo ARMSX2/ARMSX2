@@ -103,10 +103,14 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 		// which really does leave lanes 1-3 alone, is not).
 		const int cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 		const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
-		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signMaxvals[row][0]));
+		// The row's two bounds are adjacent, so they arrive in one Ldp. Both
+		// scratches die two instructions later, which is inside every caller's
+		// own use of them: the U/O models hold their predicates in allocator
+		// temps, and the guard mask and the multiply's deficit take the trio
+		// after the clamps rather than across them.
+		armAsm->Ldp(RQSCRATCH3, RQSCRATCH, mVUglobMem(&mVUglob.signBounds[row][0][0]));
 		armAsm->Smin(reg.V4S(), src.V4S(), RQSCRATCH3.V4S());
-		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signMinvals[row][0]));
-		armAsm->Umin(reg.V4S(), reg.V4S(), RQSCRATCH3.V4S());
+		armAsm->Umin(reg.V4S(), reg.V4S(), RQSCRATCH.V4S());
 		return;
 	}
 	else

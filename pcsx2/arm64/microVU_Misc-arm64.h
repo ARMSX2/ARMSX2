@@ -110,12 +110,13 @@ struct mVU_Globals
 	// (x86/microVU_Clamp.inl): row 0 = single-lane (SS) — real bound in lane
 	// 0, sentinel no-op bounds (INT_MAX for SMIN, UINT_MAX for UMIN) in
 	// lanes 1-3 so anything parked there survives; row 1 = all-lane (PS).
-	// Appended at the end of the struct so existing [x25, #imm] offsets in
-	// emitted code keep their values.
-	u32 signMaxvals[2][4] = {{0x7f7fffff, 0x7fffffff, 0x7fffffff, 0x7fffffff},
-	                         {0x7f7fffff, 0x7f7fffff, 0x7f7fffff, 0x7f7fffff}};
-	u32 signMinvals[2][4] = {{0xff7fffff, 0xffffffff, 0xffffffff, 0xffffffff},
-	                         {0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff}};
+	// A row's max comes first and its min second, which is the order and the
+	// adjacency mVUclamp2's Ldp wants. Appended at the end of the struct so
+	// existing [x25, #imm] offsets in emitted code keep their values.
+	u32 signBounds[2][2][4] = {{{0x7f7fffff, 0x7fffffff, 0x7fffffff, 0x7fffffff},
+	                            {0xff7fffff, 0xffffffff, 0xffffffff, 0xffffffff}},
+	                           {{0x7f7fffff, 0x7f7fffff, 0x7f7fffff, 0x7f7fffff},
+	                            {0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff}}};
 	// Also appended at the end — see mVU_MacWeights.
 	mVU_MacWeights macWeights = mVUmakeMacWeights();
 	// CLIP's six result bits, one weight per comparison lane in the order
@@ -137,6 +138,10 @@ static_assert(offsetof(mVU_Globals, clipWeights) % 16 == 0,
 // mVUemitClampConsts takes both clamp bounds in one Ldp.
 static_assert(offsetof(mVU_Globals, maxvals) == offsetof(mVU_Globals, minvals) + 16,
 	"mVUglob.maxvals must follow minvals for the clamp-bound Ldp");
+
+// So does mVUclamp2, off whichever row it selects.
+static_assert(offsetof(mVU_Globals, signBounds) % 32 == 0,
+	"mVUglob.signBounds rows must be 32-byte aligned for Ldp q [x25, #imm]");
 
 // Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
 // single-scalar path, which always keeps lane 0 alone in forward bit order.
