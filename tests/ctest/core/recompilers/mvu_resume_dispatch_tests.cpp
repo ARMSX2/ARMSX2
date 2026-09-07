@@ -5,7 +5,7 @@
 //
 // ~98% of VU0 dispatches under the run-ahead sync model are *resumes*: a
 // cycle-budget break at a block's mVUtestCycles saves that block's own
-// pState/TPC (copyPLStateResume) and the next Execute re-enters the very
+// pState/TPC (mVU.cycleBreak) and the next Execute re-enters the very
 // block that broke. The dispatch fast path exploits that structural
 // invariant: the break parks the block's hostEntry in mVU.resumeEntry,
 // Execute consumes it once and enters startFunctResume, skipping

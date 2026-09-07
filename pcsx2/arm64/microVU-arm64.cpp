@@ -932,42 +932,19 @@ static void mVUGenerateCopyPipelineState(mV)
 {
 	// x0 = source pointer to microRegInfo (96 bytes)
 	// Copy 96 bytes (6 x 16-byte loads) to mVU.prog.lpState
-	const auto emitCopy = [&mVU]() {
-		const a64::Register src = a64::x0;
-
-		armMoveAddressToReg(a64::x1, &mVU.prog.lpState);
-
-		// 96 bytes = 6 x LDR/STR Q or 3 x LDP/STP Q
-		armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(src, 0));
-		armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(src, 32));
-		armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(src, 64));
-
-		armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x1, 0));
-		armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x1, 32));
-		armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x1, 64));
-	};
+	const a64::Register src = a64::x0;
 
 	mVU.copyPLState = armStartBlock();
-	emitCopy();
-	armAsm->Ret();
-	armEndBlock();
+	armMoveAddressToReg(a64::x1, &mVU.prog.lpState);
 
-	// Resume-arming variant (VE-07), called ONLY from mVUtestCycles'
-	// budget-break exit. There x0 is &pBlock->pState of the block that
-	// failed its cycle test — i.e. the microBlock itself (pState sits at
-	// offset 0) — and that block is exactly what the next dispatch's
-	// lookup would re-resolve (the copy just made lpState == its pState,
-	// TPC gets its PC). Park its hostEntry so Execute can skip the lookup.
-	// Reaches resumeEntry via the x24 pin: testCycles only exists in
-	// micro-mode blocks, where gprMVUFlag is live. Clobbers x1/x2/q0-q5
-	// (x2 is free at the call site: block entry, before any emission).
-	static_assert(offsetof(microBlock, pState) == 0,
-		"copyPLStateResume derives the microBlock from &pState");
+	// 96 bytes = 6 x LDR/STR Q or 3 x LDP/STP Q
+	armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(src, 0));
+	armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(src, 32));
+	armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(src, 64));
 
-	mVU.copyPLStateResume = armStartBlock();
-	emitCopy();
-	armAsm->Ldr(a64::x2, a64::MemOperand(a64::x0, offsetof(microBlock, hostEntry)));
-	armAsm->Str(a64::x2, mVUfieldMem(mVU, &mVU.resumeEntry));
+	armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x1, 0));
+	armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x1, 32));
+	armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x1, 64));
 	armAsm->Ret();
 	armEndBlock();
 }
@@ -1062,6 +1039,67 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 		emitSFLAGc();
 		armAsm->Ret();
 	}
+	armEndBlock();
+}
+
+// The invariant tail of mVUtestCycles' budget-break exit. Every block carried
+// its own copy of these -- 22 instructions in a VU1 block, 18 in a VU0 one --
+// on a path taken only when the block's first cycle test fails. What varies
+// from block to block stays at the call site, in the four registers below, so
+// the emitter keeps picking the flag instances the way mVUendProgram does.
+//
+//   x0  = &pBlock->pState (== the microBlock)
+//   w1  = the block's start PC
+//   w9  = the MAC flag value to finalise    (mVUallocMFLAGa)
+//   w10 = the CLIP flag value to finalise   (mVUallocCFLAGa)
+//   w11 = the status value endProgramFlagsA denormalises (getFlagReg)
+//
+// Entered by B and left through mVUexitEBit, so it may clobber anything the
+// exit path may. It must not touch w9/w10/w11 before storing them.
+static void mVUGenerateCycleBreak(mV)
+{
+	mVU.cycleBreak = armStartBlock();
+
+	// The state this block entered with becomes lpState, and its hostEntry is
+	// parked so the next dispatch re-enters here without a lookup: the copy
+	// just made lpState == this block's pState and TPC below gets its PC, so
+	// a lookup could only resolve back to this block (VE-07).
+	static_assert(offsetof(microBlock, pState) == 0,
+		"the cycle break derives the microBlock from &pState");
+	armMoveAddressToReg(a64::x2, &mVU.prog.lpState);
+	armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(a64::x0, 0));
+	armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(a64::x0, 32));
+	armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(a64::x0, 64));
+	armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x2, 0));
+	armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x2, 32));
+	armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x2, 64));
+	armAsm->Ldr(a64::x3, a64::MemOperand(a64::x0, offsetof(microBlock, hostEntry)));
+	armAsm->Str(a64::x3, mVUfieldMem(mVU, &mVU.resumeEntry));
+
+	// mVUendProgram's P/Q save at qInst == pInst == 0, which is what isEbit
+	// 0 gives every block: Ext-4 then Ext-12 leaves qmmPQ as it was.
+	armAsm->Str(a64::SRegister(qmmPQ.GetCode()),
+		mVUstateMem(offsetof(VURegs, VI) + REG_Q * sizeof(REG_VI)));
+	armAsm->Ext(qmmPQ.V16B(), qmmPQ.V16B(), qmmPQ.V16B(), 4);
+	armAsm->Str(a64::SRegister(qmmPQ.GetCode()), mVUstateMem(offsetof(VURegs, pending_q)));
+	armAsm->Ext(qmmPQ.V16B(), qmmPQ.V16B(), qmmPQ.V16B(), 12);
+	if (isVU1)
+	{
+		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_P * sizeof(REG_VI));
+		armAsm->St1(qmmPQ.V4S(), 2, a64::MemOperand(a64::x8));
+		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, pending_p));
+		armAsm->St1(qmmPQ.V4S(), 3, a64::MemOperand(a64::x8));
+	}
+
+	armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_MAC_FLAG * sizeof(REG_VI)));
+	armAsm->Str(gprT2, mVUstateMem(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI)));
+	armEmitCall(mVU.endProgramFlagsA);
+
+	// Save TPC. endProgramFlagsA leaves w1 alone.
+	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
+	armAsm->Str(a64::w1, a64::MemOperand(a64::x8));
+
+	armEmitJmp(mVUexitEBit(mVU));
 	armEndBlock();
 }
 
@@ -1164,6 +1202,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	mVUGenerateWaitMTVU(mVU);
 	mVUGenerateCopyPipelineState(mVU);
 	mVUGenerateEndProgramFlagsHelper(mVU);
+	mVUGenerateCycleBreak(mVU);
 	mVUGenerateModelStubs(mVU);
 
 	mVU.regs().nextBlockCycles = 0;
@@ -2038,7 +2077,7 @@ void recMicroVU0::Execute(u32 cycles)
 	VU0.VI[REG_TPC].UL <<= 3;
 
 	// Resume fast path (VE-07): a preceding cycle-budget break parked the
-	// breaking block's hostEntry (copyPLStateResume); re-enter it directly,
+	// breaking block's hostEntry (mVU.cycleBreak); re-enter it directly,
 	// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
 	// T/D/M-bit) leaves the slot empty and takes the full path. Recording
 	// gets the full path so observed.record keeps seeing resume TPCs.

@@ -222,7 +222,7 @@ constexpr AbiPin kPins[] = {
 	// straight-line probes are bit-identical to abi 9.
 	{10, {0xb35dd0237372d734, 0xb6dfab5c9a56d900, 0xc9abe2f224fb5710, 0xbdfce8a7ecebe6a6, 0x1fe80e2917de1c2d}},
 	// abi 11: resume-aware dispatch (VE-07). mVUtestCycles' budget-break
-	// exit BLs copyPLStateResume — a new stub id in the fixup stream. The
+	// exit B's mVU.cycleBreak — a new stub id in the fixup stream. The
 	// instruction count and shape of every block are unchanged, but every
 	// block carries a testCycles, so every probe's fixup structure (and
 	// therefore digest) moves.
@@ -410,6 +410,11 @@ constexpr AbiPin kPins[] = {
 	// two probes for the other branches are added here, and the rest of the row
 	// is the abi 36 value.
 	{37, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c, 0x4b3ab298c551a643, 0xa7196c456f0fe346}},
+
+	// abi 38: the cycle-budget break moves into a shared stub. Every digest
+	// moves — mVUtestCycles runs at the top of every block, so every probe
+	// carries the arm.
+	{38, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0x2179f3c725e74523, 0x28d99b6d7e13c0c8, 0x0f96630605ddf7d5, 0x008451d3443b1898, 0x6635ce78819a2162, 0x3ad5ab94e92fe23a, 0x631b8efb8b3cb5e5, 0xa19f8472ae85bb94, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x1b2a82838a2443b2}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

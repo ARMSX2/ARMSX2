@@ -45,7 +45,7 @@ namespace mVUPersist
 		kStubEndFlagsA,
 		kStubEndFlagsB,
 		kStubResumeXG,
-		kStubCopyPLStateResume,
+		kStubCycleBreak,
 		// mVUModelStubCount ids follow, one per model stub.
 		kStubModelBase,
 		// Past the model stubs, so adding one here does not renumber the ids
@@ -285,7 +285,7 @@ namespace mVUPersist
 			case kStubEndFlagsA:    return mVU.endProgramFlagsA;
 			case kStubEndFlagsB:    return mVU.endProgramFlagsB;
 			case kStubResumeXG:     return mVU.resumePtrXG;
-			case kStubCopyPLStateResume: return mVU.copyPLStateResume;
+			case kStubCycleBreak:   return mVU.cycleBreak;
 			case kStubExitFunctEBit: return mVU.exitFunctEBit;
 			default:
 				if (id >= kStubModelBase && id < kStubExitFunctEBit)

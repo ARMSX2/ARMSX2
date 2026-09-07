@@ -493,12 +493,12 @@ static void mVUemitSpinFF(mV, const mVUSpinLoop& spin)
 // Cycle Test (emits code to check remaining cycles)
 //------------------------------------------------------------------
 
-// Test remaining cycles; if insufficient, save block state via copyPLState +
-// mVUendProgram(0) and exit to the dispatcher. Otherwise deduct cycles and
-// continue into the block. Ported from x86 microVU_Compile.inl:449.
-// The copyPLState + mVUendProgram(0) on early-exit is required so that
-// a cycle-timeout block has its pipeline state saved; without it, the block
-// manager would see stale pState on re-entry and create a new variant.
+// Test remaining cycles; if insufficient, hand the block to mVU.cycleBreak,
+// which saves its state and exits to the dispatcher. Otherwise deduct cycles
+// and continue into the block. Ported from x86 microVU_Compile.inl:449.
+// Saving the pipeline state on the early exit is required so that a
+// cycle-timeout block has one; without it, the block manager would see stale
+// pState on re-entry and create a new variant.
 static void mVUtestCycles(mV, microFlagCycles& mFC)
 {
 	iPC = mVUstartPC;
@@ -527,19 +527,31 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 	a64::Label skip;
 	armAsm->B(&skip, a64::pl); // pl = N clear = non-negative
 
-	// Early exit path: save pipeline state then exit via mVUendProgram(0).
-	// The resume variant additionally parks this block's hostEntry in
-	// mVU.resumeEntry — a budget break resumes at this very block (the
-	// state saved here IS this block's entry state), so the next dispatch
-	// can skip mVUlookupProg (VE-07).
-	armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
-	armEmitCall(mVU.copyPLStateResume);
+	// Early exit path: mVU.cycleBreak saves the pipeline state and exits.
+	// It parks this block's hostEntry in mVU.resumeEntry — a budget break
+	// resumes at this very block, the state saved there being this block's
+	// entry state — so the next dispatch can skip mVUlookupProg (VE-07).
+	//
+	// What the stub cannot know stays here: the block pointer, the resume
+	// PC, and the three flag operands, still picked by the getLastFlagInst
+	// mVUendProgram's own exits use. mVUendProgram's compile-time work
+	// comes with them — its mVUregs backup and restore bracket nothing at
+	// isEbit 0, but the condition carry and the register flush do. Flushing
+	// in front of the jump rather than behind the state copy also keeps a
+	// live q0-q5 out of the stub's way, which the call ahead of it never did.
+	mVUclearBranchCondCarry(mVU);
+	mVU.regAlloc->flushAll();
 	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
 	{
 		armAsm->Mov(a64::w9, mVUcycles);
 		armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, nextBlockCycles)));
 	}
-	mVUendProgram(mVU, &mFC, 0);
+	armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
+	mVUallocMFLAGa(mVU, gprT1, getLastFlagInst(mVUpBlock->pState, mFC.xMac, 1, 0));
+	mVUallocCFLAGa(mVU, gprT2, getLastFlagInst(mVUpBlock->pState, mFC.xClip, 2, 0));
+	armAsm->Mov(gprT3, getFlagReg(getLastFlagInst(mVUpBlock->pState, mFC.xStatus, 0, 0)));
+	armAsm->Mov(a64::w1, xPC);
+	armEmitJmp(mVU.cycleBreak);
 
 	armAsm->Bind(&skip);
 
