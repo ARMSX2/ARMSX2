@@ -110,7 +110,7 @@ struct EmulationOnlyGameView: View {
     @ViewBuilder
     var body: some View {
         if appState.emulationOnlyPresentation == .minimal {
-            MetalGameView()
+            PhoneGameSurface()
                 .ignoresSafeArea()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Game display")

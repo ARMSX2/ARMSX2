@@ -1329,7 +1329,7 @@ static void ARMSX2StartJITKeepalive()
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
 
 #if ARMSX2_HAS_SWIFTUI
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window = [[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene] autorelease];
     self.window.backgroundColor = UIColor.blackColor;
     self.window.rootViewController = [SwiftUIHost createExternalDisplayController];
     [self.window makeKeyAndVisible];

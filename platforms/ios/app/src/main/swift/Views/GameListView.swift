@@ -1485,7 +1485,6 @@ struct GameListView: View {
             }
         }
         .buttonStyle(.plain)
-        .focusable()
         .foregroundStyle(.primary)
         .contextMenu {
             gameContextMenu(for: game)
@@ -1560,7 +1559,6 @@ struct GameListView: View {
             .glassSurface(clear: true, cornerRadius: 18)
         }
         .buttonStyle(.plain)
-        .focusable()
         .contextMenu {
             gameContextMenu(for: game)
         } preview: {
@@ -1621,7 +1619,6 @@ struct GameListView: View {
             .glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
         }
         .buttonStyle(.plain)
-        .focusable()
         .contextMenu {
             gameContextMenu(for: game)
         } preview: {

@@ -43,6 +43,7 @@ struct PhoneGameSurface: View {
 /// The noninteractive AirPlay/external-display scene
 struct ExternalGameDisplayView: View {
     @State private var appState = AppState.shared
+    @State private var settings = SettingsStore.shared
 
     var body: some View {
         ZStack {
@@ -50,7 +51,7 @@ struct ExternalGameDisplayView: View {
             if case .playing = appState.currentScreen {
                 MetalGameView()
             } else {
-                Text("Please select a game")
+                Text(settings.localized("Please select a game"))
                     .font(.title2)
                     .foregroundStyle(.white.opacity(0.75))
             }
