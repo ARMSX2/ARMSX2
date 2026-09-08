@@ -31,6 +31,8 @@ object TextureCatalog {
     )
 
     private const val SCHEMA_VERSION = 1
+    /** Highest catalog schema this build understands; above this, fields are unknown — refuse. */
+    private const val MAX_SCHEMA_VERSION = 2
     private const val MAX_CATALOG_BYTES = 8L * 1024 * 1024
     private const val CACHE_TTL_MS = 6L * 60 * 60 * 1000
     private const val CACHE_FILE = "textures-v1.json"
@@ -38,6 +40,23 @@ object TextureCatalog {
     /** Upper bound on a single archive. Guards against a malformed entry proposing a download that
      *  could never fit; the real free-space check happens in [TexturePackInstaller]. */
     private const val MAX_ARCHIVE_BYTES = 4L * 1024 * 1024 * 1024
+
+    /** Upper bound on the decompressed tar stream a tar+zstd entry may declare. Matches the
+     *  extractor's consumer cap in the installer plan; a bigger claim is malformed, not large. */
+    private const val MAX_TAR_STREAM_BYTES = 16L * 1024 * 1024 * 1024
+
+    /** Archive container of a pack. Schema 1 entries are ZIP (absent or explicit); schema 2
+     *  entries must declare [TAR_ZSTD]. Anything else drops the entry — a format we do not know
+     *  must not be silently downloaded as if it were one we do. */
+    enum class ArchiveFormat(val wireName: String) {
+        ZIP("zip"),
+        TAR_ZSTD("tar+zstd");
+
+        companion object {
+            fun fromWire(raw: String?): ArchiveFormat? =
+                raw?.trim()?.let { w -> entries.firstOrNull { it.wireName.equals(w, ignoreCase = true) } }
+        }
+    }
 
     /**
      * One piece of a split archive. A GitHub release asset caps at 2 GB, so the larger packs cannot
@@ -71,6 +90,11 @@ object TextureCatalog {
         val fileCount: Int,
         /** Empty for a single-file pack, in which case [downloadUrl] is the archive. */
         val parts: List<Part> = emptyList(),
+        val format: ArchiveFormat = ArchiveFormat.ZIP,
+        /** Producer-controlled monotonic revision; 0 for schema-1 ZIP packs, which have none. */
+        val archiveRevision: Long = 0L,
+        /** Exact decompressed tar-stream length for tar+zstd; 0 for ZIP, which needs no cap. */
+        val decompressedSizeBytes: Long = 0L,
     ) {
         fun matchesSerial(serial: String?): Boolean =
             !serial.isNullOrBlank() && serials.any { it.equals(serial, ignoreCase = true) }
@@ -112,13 +136,15 @@ object TextureCatalog {
 
     // ---- parsing ------------------------------------------------------------------------------
 
-    private fun parse(body: String?): List<Pack>? {
+    internal fun parse(body: String?): List<Pack>? {
         if (body.isNullOrBlank()) return null
         return runCatching {
             val root = JSONObject(body)
-            // A schema bump means fields we do not understand; refuse rather than guess.
-            if (root.optInt("schemaVersion", -1) != SCHEMA_VERSION) {
-                Log.w(TAG, "catalog schemaVersion=${root.opt("schemaVersion")} != $SCHEMA_VERSION")
+            // A schema bump means fields we do not understand; refuse rather than guess. Refusing
+            // at the SOURCE level (not per entry) lets mirror/cache fallback kick in untouched.
+            val schema = root.optInt("schemaVersion", -1)
+            if (schema !in SCHEMA_VERSION..MAX_SCHEMA_VERSION) {
+                Log.w(TAG, "catalog schemaVersion=${root.opt("schemaVersion")} not in $SCHEMA_VERSION..$MAX_SCHEMA_VERSION")
                 return null
             }
             val entries = root.optJSONArray("entries") ?: return null
@@ -126,17 +152,48 @@ object TextureCatalog {
             val seen = HashSet<String>()
             for (i in 0 until entries.length()) {
                 // One malformed entry must not cost the user the whole catalogue.
-                val pack = runCatching { parsePack(entries.optJSONObject(i)) }.getOrNull() ?: continue
+                val pack = runCatching { parsePack(entries.optJSONObject(i), schema) }.getOrNull() ?: continue
                 if (seen.add(pack.id)) out.add(pack)
             }
-            out
+            // A catalog where nothing parsed is not an empty-but-valid catalog: treating it as
+            // success would cache the emptiness and hide every mirror behind it. Reject the source
+            // so the next mirror, and finally the cache, get their turn.
+            out.ifEmpty { null }
         }.getOrNull()
     }
 
-    private fun parsePack(o: JSONObject?): Pack? {
+    private fun parsePack(o: JSONObject?, schema: Int): Pack? {
         if (o == null) return null
         val id = o.optString("id").trim().ifEmpty { return null }
         val name = o.optString("name").trim().ifEmpty { return null }
+
+        // Format rules per schema. Schema 1: absent or explicit "zip"; anything else (including
+        // tar+zstd, which schema-1 readers cannot extract) drops the entry. Schema 2: tar+zstd is
+        // required, with the metadata that makes updates monotonic and the download bounded.
+        val format: ArchiveFormat
+        val archiveRevision: Long
+        val decompressedSizeBytes: Long
+        when (schema) {
+            1 -> {
+                val wire = o.optString("format").trim().ifEmpty { "zip" }
+                val f = ArchiveFormat.fromWire(wire) ?: return null
+                if (f != ArchiveFormat.ZIP) return null
+                format = f
+                archiveRevision = 0L
+                decompressedSizeBytes = 0L
+            }
+            else -> {
+                val f = ArchiveFormat.fromWire(o.optString("format")) ?: return null
+                if (f != ArchiveFormat.TAR_ZSTD) return null
+                val rev = o.optLong("archiveRevision", 0L)
+                if (rev <= 0L) return null
+                val dsize = o.optLong("decompressedSizeBytes", 0L)
+                if (dsize <= 0L || dsize > MAX_TAR_STREAM_BYTES) return null
+                format = f
+                archiveRevision = rev
+                decompressedSizeBytes = dsize
+            }
+        }
 
         val serials = strings(o, "serials").mapNotNull(::normaliseSerial)
         if (serials.isEmpty()) return null
@@ -195,6 +252,9 @@ object TextureCatalog {
             sha256 = sha256,
             fileCount = fileCount,
             parts = parts,
+            format = format,
+            archiveRevision = archiveRevision,
+            decompressedSizeBytes = decompressedSizeBytes,
         )
     }
 
@@ -248,17 +308,74 @@ object TextureCatalog {
 
     // ---- http ---------------------------------------------------------------------------------
 
-    private fun get(url: String): String? {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", userAgent())
-                setRequestProperty("Accept", "application/json")
+    /**
+     * Manual HTTPS-only redirect handling shared with the installer. HttpURLConnection's automatic
+     * redirect following would happily traverse an http:// hop as long as the FINAL url was https,
+     * which defeats the transport boundary the catalog's digests sit behind. Every resolved
+     * [Location] must itself be https, at most [MAX_REDIRECT_HOPS] of them, or the fetch fails.
+     */
+    internal object RedirectingHttps {
+        private const val MAX_REDIRECT_HOPS = 5
+        private val REDIRECT_CODES = setOf(
+            HttpURLConnection.HTTP_MOVED_PERM, HttpURLConnection.HTTP_MOVED_TEMP,
+            HttpURLConnection.HTTP_SEE_OTHER, 307, 308,
+        )
+
+        /** Opens [url] and returns a connection whose response is NOT a redirect, or null.
+         *  The caller owns the returned connection (check [HttpURLConnection.responseCode],
+         *  read, disconnect). */
+        fun open(
+            url: String,
+            connectTimeoutMs: Int,
+            readTimeoutMs: Int,
+            tag: String,
+            configure: HttpURLConnection.() -> Unit,
+        ): HttpURLConnection? {
+            var current = url
+            for (hop in 0..MAX_REDIRECT_HOPS) {
+                var conn: HttpURLConnection? = null
+                try {
+                    conn = (URL(current).openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = connectTimeoutMs
+                        readTimeout = readTimeoutMs
+                        configure()
+                    }
+                    val code = conn.responseCode
+                    if (code !in REDIRECT_CODES) return conn
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    conn = null
+                    if (location.isNullOrBlank()) {
+                        Log.w(tag, "redirect from $current has no Location")
+                        return null
+                    }
+                    val next = URL(URL(current), location).toString()
+                    if (!next.startsWith("https://", ignoreCase = true)) {
+                        Log.w(tag, "redirect hop not https: $next")
+                        return null
+                    }
+                    current = next
+                } catch (e: Exception) {
+                    Log.w(tag, "fetch $current failed: ${e.message}")
+                    conn?.disconnect()
+                    return null
+                }
             }
+            Log.w(tag, "redirect chain exceeded $MAX_REDIRECT_HOPS hops from $url")
+            return null
+        }
+    }
+
+    private fun get(url: String): String? {
+        val conn = RedirectingHttps.open(
+            url, connectTimeoutMs = 15_000, readTimeoutMs = 20_000, tag = TAG,
+        ) {
+            requestMethod = "GET"
+            setRequestProperty("User-Agent", userAgent())
+            setRequestProperty("Accept", "application/json")
+        } ?: return null
+        return try {
             if (conn.responseCode != HttpURLConnection.HTTP_OK) {
                 Log.w(TAG, "catalog $url -> ${conn.responseCode}")
                 return null
@@ -283,7 +400,7 @@ object TextureCatalog {
             Log.w(TAG, "catalog $url failed: ${e.message}")
             null
         } finally {
-            conn?.disconnect()
+            conn.disconnect()
         }
     }
 

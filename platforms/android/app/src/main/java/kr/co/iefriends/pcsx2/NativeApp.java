@@ -167,6 +167,34 @@ public class NativeApp {
 	public static native int reloadPatches();
 	public static native boolean reloadTextureReplacements();
 
+	// ---- texture-pack tar+zstd streaming decoder ----------------------------------------------
+	// Strict single-frame zstd decoder used by the texture-pack installer (plan
+	// 2026-09-06-0905). Handles are opaque and thread-confined: create, drive, close on ONE
+	// thread, always through a try/finally. Any error poisons the handle; a poisoned handle
+	// rejects further decode calls and must still be closed exactly once.
+
+	/**
+	 * Creates a decoder whose cumulative decompressed output is capped at [maxOutputBytes]
+	 * (positive, at most 16 GiB). The zstd window is capped at 2^27 bytes before initialization.
+	 * Returns an opaque handle, or 0 on failure (never throws).
+	 */
+	public static native long zstdDecoderCreate(long maxOutputBytes);
+
+	/**
+	 * Streams one bounded step (at most 256 KiB of input consumed and output produced).
+	 *
+	 * [status] must be long[3]: 0 = input consumed, 1 = output produced, 2 = 1 once the frame
+	 * has completed (from then on the decoder rejects further calls). Input not consumed stays
+	 * buffered natively; feed more with subsequent calls. Returns the produced byte count, or -1
+	 * after poisoning (truncation, corruption, dictionary-required, oversized window, trailing
+	 * bytes, output-cap breach). Never throws.
+	 */
+	public static native int zstdDecoderDecode(long handle, byte[] in, int inOff, int inLen,
+		byte[] out, int outOff, int outLen, long[] status);
+
+	/** Frees the decoder. Safe to call with 0; must be called exactly once per created handle. */
+	public static native void zstdDecoderDestroy(long handle);
+
 	/**
 	 * Set which named patches/cheats are enabled (the [Patches]/[Cheats]
 	 * "Enable" list PCSX2 actually applies). Pass ALL of the game's entry names

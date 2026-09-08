@@ -125,6 +125,14 @@ android {
         }
     }
 
+    testOptions {
+        unitTests {
+            // Let android.util.Log and friends no-op in JVM unit tests instead of throwing; the
+            // catalog tests exercise warning paths (schema rejection) that log.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         jniLibs {
             // The Discord .aar ships this .so AND the private dir supplies an identical copy for CMake
@@ -413,6 +421,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
 
     testImplementation(libs.junit)
+    // Real org.json for JVM unit tests: the mockable android.jar stubs throw "not mocked", and
+    // this artifact wins the classpath ordering, so catalog parsing tests exercise real behavior.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     debugImplementation(libs.androidx.compose.ui.tooling)

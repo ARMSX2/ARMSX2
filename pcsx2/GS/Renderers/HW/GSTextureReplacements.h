@@ -57,6 +57,9 @@ namespace GSTextureReplacements
 	using ReplacementTextureLoader = bool (*)(const std::string& filename, GSTextureReplacements::ReplacementTexture* tex, bool only_base_image);
 	ReplacementTextureLoader GetLoader(const std::string_view filename);
 
+	/// Load a validated KTX1 ASTC chain. Device capability is checked by the registered loader.
+	bool LoadKTXTexture(const std::string& filename, ReplacementTexture* tex, u32 max_texture_size);
+
 	/// Saves an image buffer to a PNG file (for dumping).
 	bool SavePNGImage(const std::string& filename, u32 width, u32 height, const u8* buffer, u32 pitch);
 } // namespace GSTextureReplacements

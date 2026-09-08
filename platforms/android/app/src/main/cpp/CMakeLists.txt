@@ -327,6 +327,7 @@ target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	shaderc
 	vixl
 	adrenotools
+	Zstd::Zstd
 	android
 	log
 )

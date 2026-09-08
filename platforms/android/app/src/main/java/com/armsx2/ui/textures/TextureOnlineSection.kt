@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.armsx2.TextureCatalog
 import com.armsx2.TexturePackInstallState
+import com.armsx2.TexturePackInstallState.InstallAction
 import com.armsx2.TexturePackInstaller
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
@@ -84,6 +85,9 @@ fun TextureOnlineSection(
     var progressText by remember { mutableStateOf("") }
     var progressFraction by remember { mutableStateOf(0f) }
     var cancelRequested by remember { mutableStateOf(false) }
+    // True once the installer reports Installing: the commit (directory swap + state write) is a
+    // short synchronous transaction, and cancelling mid-way is not meaningful — Cancel is hidden.
+    var commitStarted by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
     // The catalog is 113 packs and growing, so it folds away once someone has what they came for.
     // Saveable, so it survives rotation and does not spring back open.
@@ -220,6 +224,7 @@ fun TextureOnlineSection(
                     val startInstall: (TextureCatalog.Pack, String) -> Unit = { pack, targetSerial ->
                         busyPackId = pack.id
                         cancelRequested = false
+                        commitStarted = false
                         status = ""
                         progressFraction = 0f
                         progressText = I18n.get("textures.online.starting")
@@ -244,8 +249,10 @@ fun TextureOnlineSection(
                                                     .replace("%1s", p.done.toString())
                                                     .replace("%2s", p.total.toString())
                                             }
-                                            TexturePackInstaller.Progress.Installing ->
+                                            TexturePackInstaller.Progress.Installing -> {
+                                                commitStarted = true
                                                 progressText = I18n.get("textures.online.installing")
+                                            }
                                         }
                                     },
                                     isCancelled = { cancelRequested },
@@ -284,7 +291,8 @@ fun TextureOnlineSection(
                             // Install target is the pack's own serial, so this works with no game
                             // running and cannot drop a pack into the wrong game's folder.
                             onGet = { startInstall(pack, pack.serials.first()) },
-                            onCancel = { cancelRequested = true })
+                            onCancel = { cancelRequested = true },
+                            canCancel = !commitStarted)
                     }
 
                     if (others.isNotEmpty()) {
@@ -300,7 +308,8 @@ fun TextureOnlineSection(
                             PackRow(pack, installed[pack.id], busyPackId, progressText,
                                 progressFraction, uriHandler::openUri,
                                 onGet = { startInstall(pack, pack.serials.first()) },
-                                onCancel = { cancelRequested = true })
+                                onCancel = { cancelRequested = true },
+                                canCancel = !commitStarted)
                         }
                         val remaining = others.size - shown.size
                         if (remaining > 0) {
@@ -353,10 +362,13 @@ private fun PackRow(
     openUrl: (String) -> Unit,
     onGet: () -> Unit,
     onCancel: () -> Unit,
+    canCancel: Boolean,
 ) {
     val busy = busyPackId == pack.id
     val anyBusy = busyPackId != null
-    val upToDate = installed != null && installed.version == pack.version
+    // One shared eligibility rule (revision-aware for B2 tar+zstd, version-based for legacy ZIP).
+    val action = TexturePackInstallState.actionFor(installed, pack)
+    val upToDate = action == InstallAction.INSTALLED
 
     Surface(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -389,13 +401,16 @@ private fun PackRow(
                     val cancel = onCancel
                     TextButton(
                         onClick = cancel,
+                        enabled = canCancel,
                         modifier = Modifier.controllerFocusable("tex.cancel.${pack.id}", onConfirm = cancel),
                     ) { Text(str("action.cancel")) }
                 } else {
-                    val label = when {
-                        upToDate -> str("textures.online.installed")
-                        installed != null -> str("textures.online.update")
-                        else -> str("textures.online.get")
+                    val label = when (action) {
+                        InstallAction.INSTALLED -> str("textures.online.installed")
+                        // CONFLICT (equal revision, different digest) still offers Update: the fix
+                        // for a mismatched archive is to install the good one over it.
+                        InstallAction.CONFLICT, InstallAction.UPDATE -> str("textures.online.update")
+                        InstallAction.INSTALL -> str("textures.online.get")
                     }
                     Button(
                         onClick = onGet,

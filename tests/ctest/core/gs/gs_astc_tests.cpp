@@ -205,6 +205,9 @@ TEST(GSAstcLoaders, ExtensionMatchIsExactAndCaseInsensitive)
 	EXPECT_EQ(GSTextureReplacements::GetLoader("texture.ddsx"), nullptr);
 	EXPECT_NE(GSTextureReplacements::GetLoader("texture.png"), nullptr);
 	EXPECT_NE(GSTextureReplacements::GetLoader("texture.dds"), nullptr);
+	EXPECT_NE(GSTextureReplacements::GetLoader("texture.ktx"), nullptr);
+	EXPECT_NE(GSTextureReplacements::GetLoader("TEXTURE.KTX"), nullptr);
+	EXPECT_EQ(GSTextureReplacements::GetLoader("texture.ktx2"), nullptr);
 	EXPECT_EQ(GSTextureReplacements::GetLoader("texture.txt"), nullptr);
 	EXPECT_EQ(GSTextureReplacements::GetLoader("no_extension"), nullptr);
 }

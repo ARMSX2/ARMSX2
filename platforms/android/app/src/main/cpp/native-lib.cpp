@@ -5395,3 +5395,140 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setShaderChainParams(
 
     GSDevice::SetShaderChainParams(std::move(preset), std::move(params));
 }
+
+// ---- texture-pack tar+zstd streaming decoder ------------------------------------------------
+//
+// Strict single-frame zstd streaming for the texture-pack installer (plan
+// 2026-09-06-0905). Contract: exactly one standard frame with window log <= 27, no
+// dictionaries, cumulative output capped, at most 256 KiB consumed and produced per call,
+// poisoning on every error path. Handles are opaque jlongs; nothing here receives paths or
+// retains Java buffers across calls.
+
+#include <zstd.h>
+
+namespace
+{
+struct JniZstdDecoder
+{
+	ZSTD_DCtx* ctx = nullptr;
+	u64 produced_total = 0;
+	u64 max_output_bytes = 0;
+	bool frame_done = false;
+	bool poisoned = false;
+};
+
+constexpr size_t kZstdChunkBytes = 256 * 1024;
+constexpr u64 kZstdMaxOutputCap = 16ull << 30; // 16 GiB application maximum
+constexpr int kZstdMaxWindowLog = 27;
+
+JniZstdDecoder* AsDecoder(jlong handle)
+{
+	return reinterpret_cast<JniZstdDecoder*>(static_cast<intptr_t>(handle));
+}
+} // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_zstdDecoderCreate(JNIEnv*, jclass, jlong max_output_bytes)
+{
+	if (max_output_bytes <= 0 || static_cast<u64>(max_output_bytes) > kZstdMaxOutputCap)
+		return 0;
+
+	JniZstdDecoder* d = new (std::nothrow) JniZstdDecoder();
+	if (!d)
+		return 0;
+	d->ctx = ZSTD_createDCtx();
+	d->max_output_bytes = static_cast<u64>(max_output_bytes);
+	if (!d->ctx ||
+		ZSTD_DCtx_setParameter(d->ctx, ZSTD_d_windowLogMax, kZstdMaxWindowLog) != 0)
+	{
+		if (d->ctx)
+			ZSTD_freeDCtx(d->ctx);
+		delete d;
+		return 0;
+	}
+	return static_cast<jlong>(reinterpret_cast<intptr_t>(d));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_zstdDecoderDestroy(JNIEnv*, jclass, jlong handle)
+{
+	JniZstdDecoder* d = AsDecoder(handle);
+	if (!d)
+		return;
+	if (d->ctx)
+		ZSTD_freeDCtx(d->ctx);
+	delete d;
+}
+
+// Streams one bounded step. Returns produced bytes (>= 0), or -1 after poisoning. status is
+// long[3]: consumed input, produced output, and 1 once the frame has completed.
+extern "C" JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_zstdDecoderDecode(
+	JNIEnv* env, jclass, jlong handle, jbyteArray in, jint in_off, jint in_len,
+	jbyteArray out, jint out_off, jint out_len, jlongArray status)
+{
+	JniZstdDecoder* d = AsDecoder(handle);
+	if (!d)
+		return -1;
+
+	const auto fail = [&](const char* why) -> jint {
+		if (!d->poisoned)
+		{
+			d->poisoned = true;
+			Console.WriteLnFmt("zstd texture decoder poisoned: {}", why);
+		}
+		return -1;
+	};
+
+	if (d->poisoned)
+		return -1;
+	if (d->frame_done)
+		return fail("decode after frame completion");
+	if (!in || !out || !status)
+		return fail("null array");
+	const jsize in_size = env->GetArrayLength(in);
+	const jsize out_size = env->GetArrayLength(out);
+	if (in_off < 0 || in_len < 0 || in_off > in_size || in_len > in_size - in_off)
+		return fail("input window");
+	if (out_off < 0 || out_len < 0 || out_off > out_size || out_len > out_size - out_off)
+		return fail("output window");
+	if (env->GetArrayLength(status) < 3)
+		return fail("status array too small");
+	if (in_len == 0 && out_len == 0)
+		return fail("no room to make progress");
+
+	const size_t in_bytes = std::min<size_t>(static_cast<size_t>(in_len), kZstdChunkBytes);
+	const size_t out_bytes = std::min<size_t>(static_cast<size_t>(out_len), kZstdChunkBytes);
+
+	// Thread-local so repeated calls do not churn allocations; decode is confined to one thread.
+	thread_local std::vector<jbyte> in_buf, out_buf;
+	in_buf.resize(in_bytes);
+	out_buf.resize(out_bytes);
+	if (in_bytes > 0)
+		env->GetByteArrayRegion(in, in_off, static_cast<jsize>(in_bytes), in_buf.data());
+
+	ZSTD_inBuffer zi{in_buf.data(), in_bytes, 0};
+	ZSTD_outBuffer zo{out_buf.data(), out_bytes, 0};
+	const size_t ret = ZSTD_decompressStream(d->ctx, &zo, &zi);
+	if (ZSTD_isError(ret))
+		return fail(ZSTD_getErrorName(ret));
+
+	d->produced_total += zo.pos;
+	if (d->produced_total > d->max_output_bytes)
+		return fail("decompressed output exceeds declared limit");
+
+	const bool frame_done = (ret == 0);
+	if (frame_done)
+	{
+		if (zi.pos < zi.size)
+			return fail("trailing compressed bytes after frame");
+		d->frame_done = true;
+	}
+
+	const jlong status_values[3] = {
+		static_cast<jlong>(zi.pos), static_cast<jlong>(zo.pos), frame_done ? 1 : 0};
+	env->SetLongArrayRegion(status, 0, 3, status_values);
+	if (zo.pos > 0)
+		env->SetByteArrayRegion(out, out_off, static_cast<jsize>(zo.pos), out_buf.data());
+	return static_cast<jint>(zo.pos);
+}

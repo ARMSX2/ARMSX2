@@ -45,6 +45,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sprite_edge_snap_tests.cpp
 	gs_sw_texture_dirty_tests.cpp
 	gs_blend_constant_policy_tests.cpp
+	gs_ktx_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
