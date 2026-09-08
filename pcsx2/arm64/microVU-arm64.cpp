@@ -1075,6 +1075,7 @@ static void mVUGenerateCycleBreak(mV)
 	armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x2, 64));
 	armAsm->Ldr(a64::x3, a64::MemOperand(a64::x0, offsetof(microBlock, hostEntry)));
 	armAsm->Str(a64::x3, mVUfieldMem(mVU, &mVU.resumeEntry));
+	armAsm->Str(a64::x0, mVUfieldMem(mVU, &mVU.resumeBlock));
 
 	// mVUendProgram's P/Q save at qInst == pInst == 0, which is what isEbit
 	// 0 gives every block: Ext-4 then Ext-12 leaves qmmPQ as it was.
@@ -1211,6 +1212,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	// mVUreset can run at dispatcher exit (mVUcleanUp's cache-exhaustion
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
+	mVU.resumeBlock = nullptr;
 	mVU.branchCondCarryGpr = -1;
 	mVU.profiler.Reset(mVU.index);
 
@@ -2068,25 +2070,120 @@ void recMicroVU0::SetStartPC(u32 startPC)
 	VU0.start_pc = startPC;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	bool g_spinBounceEnabled = true;
+	u64 g_spinBounces[2] = {};
+
+	void SetSpinBounceEnabled(bool enabled) { g_spinBounceEnabled = enabled; }
+	u64 GetSpinBounceCount(int vu_index) { return g_spinBounces[vu_index & 1]; }
+
+	// Writes a memo into the IR block the next compile is copied from — a
+	// memo that would bounce every dispatch — so a test can see whether a
+	// freshly installed block inherits one.
+	void PoisonIrBlockSpinMemo(int vu_index)
+	{
+		microVU& mVU = vu_index ? microVU1 : microVU0;
+		mVU.prog.IRinfo.block.spinState = mVUspinYes;
+		mVU.prog.IRinfo.block.spinExitOnEq = 0;
+		mVU.prog.IRinfo.block.spinViA = 0;
+		mVU.prog.IRinfo.block.spinViB = 0;
+	}
+} // namespace mvu_test_hooks
+#endif
+
+// A VU0 spin bounce, without entering the recompiler.
+//
+// mVUemitSpinFF zeroes the cycle budget at the head of a recognized spin
+// block while the spin holds, so the block breaks in front of its first
+// instruction and writes back exactly what the previous break wrote: the
+// same pState into lpState, the same hostEntry into resumeEntry, the same
+// flag instances, the same Q, the same TPC. Only the cycle counters move,
+// and reaching them costs the dispatch, the entry marshalling, the head,
+// the break stub and the exit stub.
+//
+// The parked resume is what makes the question answerable from here: the
+// break parks the block alongside its entry, and mVUclear disarms both on any
+// micro-memory write, so the block's encoding is still the one the compiler
+// read. The detector runs once per block and its answer is memoized there,
+// rather than re-derived, which would put a guest micro-memory read on every
+// bounce.
+//
+// Left to the recompiler under the VU sync gamefixes: their break site also
+// stores the block's own cycle count into nextBlockCycles, which the
+// encoding does not carry.
+static bool mVUspinBounce(microVU& mVU, u32 cycles)
+{
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (!mvu_test_hooks::g_spinBounceEnabled)
+		return false;
+#endif
+	microBlock* const blk = mVU.resumeBlock;
+	if (!mVU.resumeEntry || !blk || mVUPersist::IsRecordingEnabled())
+		return false;
+	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
+		return false;
+
+	if (blk->spinState == mVUspinUnknown)
+	{
+		const mVUSpinLoop spin = mVUdetectSpinLoop(mVU, mVU.regs().VI[REG_TPC].UL << 3);
+		blk->spinExitOnEq = spin.exitOnEq;
+		blk->spinViA = static_cast<u8>(spin.viA);
+		blk->spinViB = static_cast<u8>(spin.viB);
+		blk->spinState = spin.found ? mVUspinYes : mVUspinNo;
+	}
+	if (blk->spinState != mVUspinYes)
+		return false;
+
+	const u32 a = mVU.regs().VI[blk->spinViA].US[0];
+	const u32 b = blk->spinViB ? mVU.regs().VI[blk->spinViB].US[0] : 0u;
+	if (blk->spinExitOnEq ? (a == b) : (a != b))
+		return false; // the loop's exit condition holds — run it for real
+
+	// What the break's exit stub banks. The zeroed budget makes the whole
+	// grant the consumed count, which is what the EE skip is scaled from.
+	// mVU.cycles/totalCycles are not carried: both dispatch entries set them
+	// before anything reads them.
+	mVU.regs().cycle += cycles;
+
+	if (const u32 skip = EmuConfig.Speedhacks.EECycleSkip)
+	{
+		const u32 passed = (cycles < 3000u ? cycles : 3000u) * skip;
+		cpuRegs.cycle += passed;
+		VU0.cycle += passed;
+	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	mvu_test_hooks::g_spinBounces[mVU.index]++;
+#endif
+	return true;
+}
+
 void recMicroVU0::Execute(u32 cycles)
 {
 	VU0.flags &= ~VUFLAG_MFLAGSET;
 
 	if (!(VU0.VI[REG_VPU_STAT].UL & 1))
 		return;
-	VU0.VI[REG_TPC].UL <<= 3;
 
-	// Resume fast path (VE-07): a preceding cycle-budget break parked the
-	// breaking block's hostEntry (mVU.cycleBreak); re-enter it directly,
-	// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
-	// T/D/M-bit) leaves the slot empty and takes the full path. Recording
-	// gets the full path so observed.record keeps seeing resume TPCs.
-	void* const resume = std::exchange(microVU0.resumeEntry, nullptr);
-	if (resume && !mVUPersist::IsRecordingEnabled())
-		((mVUrecCallResume)microVU0.startFunctResume)(resume, cycles);
-	else
-		((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
-	VU0.VI[REG_TPC].UL >>= 3;
+	if (!mVUspinBounce(microVU0, cycles))
+	{
+		VU0.VI[REG_TPC].UL <<= 3;
+
+		// Resume fast path (VE-07): a preceding cycle-budget break parked the
+		// breaking block's hostEntry (mVU.cycleBreak); re-enter it directly,
+		// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
+		// T/D/M-bit) leaves the slot empty and takes the full path. Recording
+		// gets the full path so observed.record keeps seeing resume TPCs.
+		void* const resume = std::exchange(microVU0.resumeEntry, nullptr);
+		if (resume && !mVUPersist::IsRecordingEnabled())
+			((mVUrecCallResume)microVU0.startFunctResume)(resume, cycles);
+		else
+			((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
+		VU0.VI[REG_TPC].UL >>= 3;
+	}
+
 	if (microVU0.regs().flags & 0x4)
 	{
 		microVU0.regs().flags &= ~0x4;

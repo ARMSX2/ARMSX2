@@ -264,6 +264,18 @@ struct microJumpCache
 	void* hostEntry;
 };
 
+// mVUdetectSpinLoop's answer for a block, memoized in microBlock::spinState.
+// Asked for the first time by mVUspinBounce, on the block a cycle-budget
+// break parked. A block's encoding cannot change under it — a micro-memory
+// write invalidates the block along with the answer — so the memo is as
+// durable as the compiled code.
+enum microBlockSpin : u8
+{
+	mVUspinUnknown = 0,
+	mVUspinNo,
+	mVUspinYes,
+};
+
 struct alignas(16) microBlock
 {
 	microRegInfo    pState;
@@ -271,7 +283,12 @@ struct alignas(16) microBlock
 	u8*             x86ptrStart; // Code entry point (name kept for struct compatibility)
 	void*           hostEntry;   // see microJumpCache::hostEntry
 	microJumpCache* jumpCache;
+	u8              spinState;   // microBlockSpin
+	u8              spinExitOnEq;
+	u8              spinViA;
+	u8              spinViB;
 };
+static_assert(sizeof(microBlock) == 224, "the spin memo rides microBlock's tail padding");
 
 struct microTempRegInfo
 {
@@ -582,6 +599,10 @@ struct microVU
 	// kick selects a new quick slot), mVUclear (any micro-mem write, same
 	// contract as the lpState zero), mVUreset (pointer would dangle).
 	void* resumeEntry;
+	// The block resumeEntry came out of, parked by the same break, so the
+	// dispatch can reach its spin memo without a lookup. Valid exactly while
+	// resumeEntry is.
+	microBlock* resumeBlock;
 
 	u32 index;
 	u32 cop2;
@@ -825,6 +846,10 @@ public:
 			}
 
 			std::memcpy(&newBlock->block, pBlock, sizeof(microBlock));
+			// A block gets its spin memo from mVUspinBounce, never from
+			// whatever the caller's microBlock was holding: the allocation
+			// can be a freed block's, and the IR copy carries no answer.
+			newBlock->block.spinState = mVUspinUnknown;
 			thisBlock = &newBlock->block;
 
 			quickLookup.push_back({&newBlock->block, pBlock->pState.quick64[0]});
