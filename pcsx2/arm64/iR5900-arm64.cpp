@@ -1052,8 +1052,8 @@ void armAssertRawGPRPtrCoherent(const void* field)
 // call site's BL, so a matching guest JR-$ra can RET to it and the hardware
 // return-address stack — pushed by that BL — predicts the transfer.
 //
-// Ring instead of FEX's guard-page stack: eeCallRetOff wraps via a masked
-// And, so over/underflow simply cycles the ring — no bounds checks, no
+// Ring instead of FEX's guard-page stack: eeCallRetOff is 16 bits wide and
+// the ring is 64KB, so over/underflow simply cycles it — no bounds checks, no
 // SIGSEGV recentering (our PageFaultHandler interface exposes no ucontext),
 // and net push/pop imbalance (interpreter-path calls, exceptions, thread
 // switches) degrades to compare-misses that re-sync within one call depth.
@@ -1067,8 +1067,9 @@ void armAssertRawGPRPtrCoherent(const void* field)
 namespace
 {
 	constexpr u32 kEECallRetRingBytes = 0x10000; // 4096 x 16-byte frames
-	constexpr u64 kEECallRetOffMask = kEECallRetRingBytes - 16;
 	constexpr u64 kEECallRetSentinelRA = 1;
+	static_assert(kEECallRetRingBytes == (1u << 16),
+		"the emitted push and pop wrap the offset in its own 16 bits");
 
 	alignas(16) u8 s_eeCallRetRing[kEECallRetRingBytes];
 
@@ -1099,11 +1100,10 @@ namespace
 		armAsm->Mov(RXSCRATCH, return_pc);
 		armAsm->Adr(RSCRATCHADDR, landing);
 		armAsm->Ldr(a64::x9, armCpuRegMem(&_cpuRegistersPack.eeCallRetBase));
-		armAsm->Ldr(a64::x10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
-		armAsm->Sub(a64::x10, a64::x10, 16);
-		armAsm->And(a64::x10, a64::x10, kEECallRetOffMask);
-		armAsm->Str(a64::x10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
-		armAsm->Add(a64::x9, a64::x9, a64::x10);
+		armAsm->Ldrh(a64::w10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
+		armAsm->Sub(a64::w10, a64::w10, 16);
+		armAsm->Strh(a64::w10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
+		armAsm->Add(a64::x9, a64::x9, a64::Operand(a64::w10, a64::UXTH));
 		armAsm->Stp(RXSCRATCH, RSCRATCHADDR, a64::MemOperand(a64::x9));
 	}
 } // namespace
@@ -1279,12 +1279,13 @@ void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
 		// dispatcher) leaves the ring balanced. Frame regs survive the event
 		// check below: it is flags-only (Adds/Cmp + b.ge).
 		armAsm->Ldr(a64::x9, armCpuRegMem(&_cpuRegistersPack.eeCallRetBase));
-		armAsm->Ldr(a64::x10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
+		// The Ldrh zero-extends, so this reads the frame at the offset as it
+		// stands; only the incremented value below has to be narrowed again.
+		armAsm->Ldrh(a64::w10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
 		armAsm->Add(a64::x9, a64::x9, a64::x10);
 		armAsm->Ldp(RXSCRATCH, RSCRATCHADDR, a64::MemOperand(a64::x9));
-		armAsm->Add(a64::x10, a64::x10, 16);
-		armAsm->And(a64::x10, a64::x10, kEECallRetOffMask);
-		armAsm->Str(a64::x10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
+		armAsm->Add(a64::w10, a64::w10, 16);
+		armAsm->Strh(a64::w10, armCpuRegMem(&_cpuRegistersPack.eeCallRetOff));
 
 		emitCycleUpdateAndEventCheck();
 

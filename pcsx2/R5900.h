@@ -303,10 +303,11 @@ struct cpuRegistersPack
 	// fields with single [RSTATE, #imm] accesses. Prediction-only state: NOT
 	// savestate-serialized (Freeze(cpuRegs) covers cpuRegisters alone) and
 	// reset by recResetRaw. eeCallRetOff is a byte offset into the ring,
-	// 16-aligned, wrapped by the emitted And; u64 so JIT stores stay whole-
-	// register. x86 builds carry the 16 bytes and never touch them.
+	// 16-aligned; the ring is exactly 64KB, so the field's own width is the
+	// wrap and the emitted code needs no mask. x86 builds carry the bytes and
+	// never touch them.
 	alignas(16) u64 eeCallRetBase;
-	u64 eeCallRetOff;
+	u16 eeCallRetOff;
 
 	// COP2 macro-mode constants/scratch — in the pack for the same reason as
 	// the call-ret fields: one [RSTATE, #imm] instruction per access from
