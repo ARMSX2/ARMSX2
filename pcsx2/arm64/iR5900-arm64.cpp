@@ -192,6 +192,49 @@ static const void* DispatchBlockDiscard = nullptr;
 static const void* DispatchPageReset = nullptr;
 static const void* UnmappedRecLUTPage = nullptr;
 
+// B.cond and CBZ reach ±1MB. The dispatchers are generated at the base of a
+// code cache tens of megabytes deep, so past its first megabyte the event
+// check at every block exit and the delay-slot exception bracket both fell
+// back to an inverted condition branching over a B: an instruction more, and
+// a taken branch on the path the condition does not take. A veneer pair in
+// front of a block restores the short form for the megabyte that follows it,
+// and starts out as the dispatchers themselves. Both emit sites re-measure
+// the distance, so a block wider than the reach left over, and the cold arena
+// above the hot one, still get the long form.
+static const u8* s_condVeneerEvent = nullptr;
+static const u8* s_condVeneerReg = nullptr;
+
+#ifdef PCSX2_RECOMPILER_TESTS
+// A test cache never grows past the first megabyte, so a test reaches the
+// veneers by forcing them: every block then emits a pair and every event
+// check and bracket hops through one whatever the distance. A forced run
+// that counts no hops tested the direct form twice.
+static bool s_condVeneerForced = false;
+static u32 s_condVeneerHops = 0;
+void recEeForceCondVeneers(bool on)
+{
+	s_condVeneerForced = on;
+}
+u32 recEeCondVeneerHops()
+{
+	return s_condVeneerHops;
+}
+// The dispatchers, so a test can follow a block's conditional exits into the
+// veneer and read what it branches to. Nothing the harness observes separates
+// the two: DispatcherEvent falls through into DispatcherReg, and the parking
+// lot leaves through an unconditional jump to DispatcherEvent whatever a
+// block's own event check did.
+void recEeDispatcherAddrs(const void** dispatcher_event, const void** dispatcher_reg)
+{
+	*dispatcher_event = DispatcherEvent;
+	*dispatcher_reg = DispatcherReg;
+}
+#define COUNT_VENEER_HOP() (void)(s_condVeneerHops++)
+#else
+static constexpr bool s_condVeneerForced = false;
+#define COUNT_VENEER_HOP() ((void)0)
+#endif
+
 #if FPU_GUARD_MASK_STUB
 // Shared FPU add/sub guard-bit masking stub. Emitted once per dispatcher
 // generation, re-set on cache reset. See iFPU-arm64.cpp.
@@ -1065,6 +1108,84 @@ namespace
 	}
 } // namespace
 
+// Reach a veneer keeps in hand for the block emitted after it: B.cond's ±1MB
+// less twice the 64KB of overhang armSetAsmPtr grants a compile.
+static constexpr s64 kCondVeneerReach = (1 << 20) - 2 * _64kb;
+
+static bool condBranchReaches(const void* target)
+{
+	const s64 d = static_cast<s64>(reinterpret_cast<intptr_t>(target) -
+								   reinterpret_cast<intptr_t>(armGetCurrentCodePointer()));
+	return a64::Instruction::IsValidImmPCOffset(a64::CondBranchType, d >> 2);
+}
+
+static s64 condBranchOffset(const void* target)
+{
+	return static_cast<s64>(reinterpret_cast<intptr_t>(target) -
+							reinterpret_cast<intptr_t>(armGetCurrentCodePointer())) >> 2;
+}
+
+// A dispatcher exit taken on a condition, hopping through `veneer` when the
+// dispatcher is out of imm19 reach and it is not.
+static void emitDispatcherCondBranch(a64::Condition cond, const void* target, const u8* veneer)
+{
+	if ((s_condVeneerForced || !condBranchReaches(target)) && veneer && condBranchReaches(veneer))
+	{
+		target = veneer;
+		COUNT_VENEER_HOP();
+	}
+	if (condBranchReaches(target))
+	{
+		a64::SingleEmissionCheckScope guard(armAsm);
+		armAsm->b(condBranchOffset(target), cond);
+		return;
+	}
+	armEmitCondBranch(cond, target);
+}
+
+// The CBZ form. armEmitCbnz tests the other way, so its fallback is the shape
+// this replaces rather than one to call.
+static void emitDispatcherCbz(const a64::Register& reg, const void* target, const u8* veneer)
+{
+	if ((s_condVeneerForced || !condBranchReaches(target)) && veneer && condBranchReaches(veneer))
+	{
+		target = veneer;
+		COUNT_VENEER_HOP();
+	}
+	if (condBranchReaches(target))
+	{
+		a64::SingleEmissionCheckScope guard(armAsm);
+		armAsm->cbz(reg, condBranchOffset(target));
+		return;
+	}
+	a64::Label taken;
+	armAsm->Cbnz(reg, &taken);
+	armEmitJmp(target);
+	armAsm->Bind(&taken);
+}
+
+// Emitted in front of a block, where nothing can fall into it: the entry
+// pointer the block manager links against is taken after this returns.
+static void emitCondVeneers()
+{
+	const u8* here = armGetCurrentCodePointer();
+	if (!s_condVeneerForced && s_condVeneerEvent && (here - s_condVeneerEvent) < kCondVeneerReach)
+		return;
+
+	s_condVeneerEvent = here;
+	armEmitJmp(DispatcherEvent);
+	s_condVeneerReg = armGetCurrentCodePointer();
+	armEmitJmp(DispatcherReg);
+
+	// armStartBlock aligned the entry to 16 bytes and the veneers displace it;
+	// pad the alignment back rather than leave block entries straddling.
+	while ((reinterpret_cast<uintptr_t>(armGetCurrentCodePointer()) & 15) != 0)
+	{
+		a64::SingleEmissionCheckScope guard(armAsm);
+		armAsm->nop();
+	}
+}
+
 // Block-tail cycle update + event check under the delta representation:
 // fold the pending block cycles into RECCYCLE with a flag-setting add, then
 // branch to DispatcherEvent when the delta is non-negative (an event is
@@ -1079,7 +1200,7 @@ static void emitCycleUpdateAndEventCheck()
 		armAsm->Adds(RECCYCLE, RECCYCLE, cycles);
 	else
 		armAsm->Cmp(RECCYCLE, 0);
-	armEmitCondBranch(a64::ge, DispatcherEvent);
+	emitDispatcherCondBranch(a64::ge, DispatcherEvent, s_condVeneerEvent);
 }
 
 void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
@@ -2560,11 +2681,8 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			// dispatcher on the vector PC before the enclosing branch's
 			// static dispatch can clobber it. Cycle undercount on this
 			// exceptional path is accepted. (AX-05)
-			a64::Label noException;
 			armAsm->Ldr(RWSCRATCH, armCpuRegMem(&cpuRegs.branch));
-			armAsm->Cbnz(RWSCRATCH, &noException);
-			armEmitJmp(DispatcherReg);
-			armAsm->Bind(&noException);
+			emitDispatcherCbz(RWSCRATCH, DispatcherReg, s_condVeneerReg);
 			armAsm->Str(a64::wzr, armCpuRegMem(&cpuRegs.branch));
 		}
 
@@ -3272,6 +3390,11 @@ static void recResetRaw()
 	armEmitCondBranch(a64::ge, DispatcherEvent);
 	armAsm->Ret();
 
+	// Until a block passes out of their reach, the dispatchers are their own
+	// veneers.
+	s_condVeneerEvent = static_cast<const u8*>(DispatcherEvent);
+	s_condVeneerReg = static_cast<const u8*>(DispatcherReg);
+
 	const u8* dispEnd = armGetCurrentCodePointer();
 	recPtr = armEndBlock();
 
@@ -3779,6 +3902,7 @@ static void recRecompile(const u32 startpc)
 
 	armSetAsmPtr(recPtr, recPtrEnd - recPtr + _64kb, &s_eeConstantPool);
 	armStartBlock();
+	emitCondVeneers();
 
 	s_pCurBlock = GETBLOCK(startpc);
 	pxAssert(s_pCurBlock->GetFnptr() == (uptr)JITCompile || s_pCurBlock->GetFnptr() == (uptr)UnmappedRecLUTPage);
