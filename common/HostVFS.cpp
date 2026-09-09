@@ -4,8 +4,9 @@
 #include "common/HostVFS.h"
 #include "common/Console.h"
 
+#include <atomic>
 #include <cstring>
-#include <mutex>
+#include <thread>
 #include <vector>
 
 // The libretro VFS access flags, kept here rather than pulled from libretro.h:
@@ -119,43 +120,65 @@ namespace
 	// and that is the only thing this maps. A handful of entries at most, and
 	// only touched on open and close.
 	//
-	// Never destroyed, on purpose. One of these streams can be closed while the
-	// library is being torn down - a disc reader taken apart at unload does
-	// exactly that - and by then a plain static would already be gone. Locking
-	// a destroyed std::mutex is not a no-op, it is an abort:
+	// Plain storage with a spin lock, rather than a std::vector behind a
+	// std::mutex: one of these streams is closed while the library is being
+	// torn down - a disc reader taken apart at unload does exactly that - and a
+	// std::mutex that has already been destroyed by then does not ignore the
+	// lock, it aborts:
 	//
 	//   FORTIFY: pthread_mutex_lock called on a destroyed mutex
 	//
-	// which is where the Android core died on close content. Leaking the
-	// registry costs a few dozen bytes for the life of the process.
-	struct StreamRegistry
+	// which is where the Android core died on close content. Nothing here has a
+	// destructor to run or an allocation to free, so a late close finds it
+	// exactly as it was.
+	constexpr size_t kMaxStreams = 64;
+
+	struct StreamEntry
 	{
-		std::mutex lock;
-		std::vector<std::pair<std::FILE*, void*>> streams;
+		std::FILE* fp;
+		void* handle;
 	};
 
-	StreamRegistry& Streams()
-	{
-		static StreamRegistry* registry = new StreamRegistry();
-		return *registry;
-	}
+	std::atomic_flag s_streams_lock = ATOMIC_FLAG_INIT;
+	StreamEntry s_streams[kMaxStreams]{};
 
+	class StreamsLock
+	{
+	public:
+		StreamsLock()
+		{
+			while (s_streams_lock.test_and_set(std::memory_order_acquire))
+				std::this_thread::yield();
+		}
+		~StreamsLock() { s_streams_lock.clear(std::memory_order_release); }
+	};
+
+	// A stream that does not fit is simply not remembered: the only thing the
+	// table is for is SizeOfCFile(), which answers "no" and lets the caller
+	// fall back. Sixty-four is far more than the handful ever open at once.
 	void RememberStream(std::FILE* fp, void* handle)
 	{
-		StreamRegistry& registry = Streams();
-		std::unique_lock lock(registry.lock);
-		registry.streams.emplace_back(fp, handle);
+		StreamsLock lock;
+		for (StreamEntry& entry : s_streams)
+		{
+			if (!entry.fp)
+			{
+				entry.fp = fp;
+				entry.handle = handle;
+				return;
+			}
+		}
 	}
 
 	void ForgetStream(void* handle)
 	{
-		StreamRegistry& registry = Streams();
-		std::unique_lock lock(registry.lock);
-		for (auto it = registry.streams.begin(); it != registry.streams.end(); ++it)
+		StreamsLock lock;
+		for (StreamEntry& entry : s_streams)
 		{
-			if (it->second == handle)
+			if (entry.fp && entry.handle == handle)
 			{
-				registry.streams.erase(it);
+				entry.fp = nullptr;
+				entry.handle = nullptr;
 				return;
 			}
 		}
@@ -304,13 +327,12 @@ bool HostVFS::SizeOfCFile(std::FILE* fp, s64* size)
 
 	void* handle = nullptr;
 	{
-		StreamRegistry& registry = Streams();
-		std::unique_lock lock(registry.lock);
-		for (const auto& [stream, stream_handle] : registry.streams)
+		StreamsLock lock;
+		for (const StreamEntry& entry : s_streams)
 		{
-			if (stream == fp)
+			if (entry.fp == fp)
 			{
-				handle = stream_handle;
+				handle = entry.handle;
 				break;
 			}
 		}
