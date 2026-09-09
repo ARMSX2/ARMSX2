@@ -118,23 +118,44 @@ namespace
 	// a std::FILE* have to ask the host about the handle behind it instead,
 	// and that is the only thing this maps. A handful of entries at most, and
 	// only touched on open and close.
-	std::mutex s_streams_lock;
-	std::vector<std::pair<std::FILE*, void*>> s_streams;
+	//
+	// Never destroyed, on purpose. One of these streams can be closed while the
+	// library is being torn down - a disc reader taken apart at unload does
+	// exactly that - and by then a plain static would already be gone. Locking
+	// a destroyed std::mutex is not a no-op, it is an abort:
+	//
+	//   FORTIFY: pthread_mutex_lock called on a destroyed mutex
+	//
+	// which is where the Android core died on close content. Leaking the
+	// registry costs a few dozen bytes for the life of the process.
+	struct StreamRegistry
+	{
+		std::mutex lock;
+		std::vector<std::pair<std::FILE*, void*>> streams;
+	};
+
+	StreamRegistry& Streams()
+	{
+		static StreamRegistry* registry = new StreamRegistry();
+		return *registry;
+	}
 
 	void RememberStream(std::FILE* fp, void* handle)
 	{
-		std::unique_lock lock(s_streams_lock);
-		s_streams.emplace_back(fp, handle);
+		StreamRegistry& registry = Streams();
+		std::unique_lock lock(registry.lock);
+		registry.streams.emplace_back(fp, handle);
 	}
 
 	void ForgetStream(void* handle)
 	{
-		std::unique_lock lock(s_streams_lock);
-		for (auto it = s_streams.begin(); it != s_streams.end(); ++it)
+		StreamRegistry& registry = Streams();
+		std::unique_lock lock(registry.lock);
+		for (auto it = registry.streams.begin(); it != registry.streams.end(); ++it)
 		{
 			if (it->second == handle)
 			{
-				s_streams.erase(it);
+				registry.streams.erase(it);
 				return;
 			}
 		}
@@ -283,8 +304,9 @@ bool HostVFS::SizeOfCFile(std::FILE* fp, s64* size)
 
 	void* handle = nullptr;
 	{
-		std::unique_lock lock(s_streams_lock);
-		for (const auto& [stream, stream_handle] : s_streams)
+		StreamRegistry& registry = Streams();
+		std::unique_lock lock(registry.lock);
+		for (const auto& [stream, stream_handle] : registry.streams)
 		{
 			if (stream == fp)
 			{
