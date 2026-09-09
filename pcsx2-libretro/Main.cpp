@@ -710,11 +710,15 @@ void LibretroCore::CPUThreadMain(VMBootParameters initial_params)
 					VMBootParameters bp = std::move(pending_boot.value());
 					pending_boot.reset();
 					std::fprintf(stderr, "[libretro] CPU thread: VMManager::Initialize...\n");
-					const VMBootResult br = VMManager::Initialize(bp);
+					// With the error in hand the log says which file could not be
+					// opened; without it a failed boot is a bare result code.
+					Error boot_error;
+					const VMBootResult br = VMManager::Initialize(bp, &boot_error);
 					std::fprintf(stderr, "[libretro] CPU thread: Initialize -> %d\n", (int)br);
 					if (br != VMBootResult::StartupSuccess)
 					{
-						Console.ErrorFmt("VMManager::Initialize failed (result {}).", static_cast<int>(br));
+						Console.ErrorFmt("VMManager::Initialize failed (result {}): {}",
+							static_cast<int>(br), boot_error.GetDescription());
 						s_shutdown_requested.store(true, std::memory_order_release);
 						break;
 					}
@@ -843,6 +847,26 @@ static void RegisterDiskControl(void)
 	environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, (void*)&cb);
 }
 
+// Join a playlist entry to the directory the playlist came from.
+//
+// Not Path::Combine(): it collapses repeated separators, which turns the "//"
+// of a frontend URI - "saf://content:..." on Android - into a single slash and
+// leaves a path nothing can open. Nor is Path::IsAbsolute() any help there,
+// since such a path does not start with a separator. Anything with a scheme is
+// therefore joined by hand, and everything else keeps the old behaviour.
+static std::string JoinPlaylistEntry(const std::string& base, const std::string& entry)
+{
+	const std::string::size_type scheme = base.find("://");
+	if (scheme == std::string::npos || scheme == 0)
+		return Path::Combine(base, entry);
+
+	std::string ret = base;
+	if (!ret.empty() && ret.back() != '/')
+		ret.push_back('/');
+	ret.append(entry);
+	return ret;
+}
+
 // Parse an .m3u playlist into s_disk_images; returns the first disc path.
 static std::string LoadM3UPlaylist(const std::string& m3u_path)
 {
@@ -859,7 +883,7 @@ static std::string LoadM3UPlaylist(const std::string& m3u_path)
 		if (line.empty() || line[0] == '#')
 			continue;
 		if (!Path::IsAbsolute(line))
-			line = Path::Combine(base, line);
+			line = JoinPlaylistEntry(base, line);
 		s_disk_images.push_back(std::move(line));
 	}
 
