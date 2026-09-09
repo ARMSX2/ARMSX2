@@ -58,6 +58,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -549,6 +550,182 @@ TEST(VifUnpackMask, FullyProtectedBlockWritesNothing)
 	ASSERT_EQ(untouched.size(), dyn.mem.size());
 	EXPECT_EQ(0, std::memcmp(untouched.data(), dyn.mem.data(), untouched.size()))
 		<< "a fully write-protected unpack must leave VU memory alone";
+}
+
+// ---------------------------------------------------------------------------
+// The shape of a straight copy.
+//
+// An unmasked V4-32 unpack with no mode is `ldr q; str q` per row and nothing
+// else, so adjacent rows go out as `ldp q; stp q`. The differential cases above
+// cannot see the difference — a pair that names the wrong register or the wrong
+// offset would move the same bytes to the same place or fail there, and these
+// counts say which of the two happened. They also pin the cases that must NOT
+// pair: a skip leaves a gap between destinations, a fill repeats a source, and
+// a masked or mode-carrying unpack has a lane merge between the load and the
+// store.
+
+constexpr u32 kLdpQ = 0xAD400000u; // ldp q,q,[Rn,#imm7*16]
+constexpr u32 kStpQ = 0xAD000000u; // stp q,q,[Rn,#imm7*16]
+constexpr u32 kLdrQ = 0x3DC00000u; // ldr q,[Rn,#imm12*16]
+constexpr u32 kStrQ = 0x3D800000u; // str q,[Rn,#imm12*16]
+constexpr u32 kAddX = 0x91000000u; // add Xd,Xn,#imm12
+constexpr u32 kRet  = 0xD65F03C0u;
+
+bool IsPairForm(u32 w) { return (w & 0xFFC00000u) == kLdpQ || (w & 0xFFC00000u) == kStpQ; }
+
+// The signed quadword-scaled offset a pair form carries, in bytes.
+s32 PairOffset(u32 w)
+{
+	const s32 imm7 = static_cast<s32>((w >> 15) & 0x7F);
+	return ((imm7 & 0x40) ? imm7 - 128 : imm7) * 16;
+}
+
+struct RoutineShape
+{
+	std::vector<u32> words;
+	u32 ldp = 0, stp = 0, ldr = 0, str = 0, add = 0, ret = 0;
+};
+
+// Compiles `c` into a freshly reset VIF recompiler and reads back the routine.
+// dVifCompile writes at nVif[idx].recWritePtr and leaves it just past the code;
+// armStartBlock aligns the entry to 16 bytes first, which is the only thing
+// between the two pointers besides the routine.
+RoutineShape CompileAndDecode(const UnpackCase& c, const std::vector<u8>& data)
+{
+	FillVuMemPattern(c.idx);
+	SeedVifState(c);
+	resetNewVif(c.idx);
+
+	const uptr before = reinterpret_cast<uptr>(nVif[c.idx].recWritePtr);
+	if (c.idx)
+		dVifUnpack<1>(data.data(), ComputeIsFill(c));
+	else
+		dVifUnpack<0>(data.data(), ComputeIsFill(c));
+	const uptr after = reinterpret_cast<uptr>(nVif[c.idx].recWritePtr);
+
+	RoutineShape s;
+	const uptr start = (before + 15) & ~static_cast<uptr>(15);
+	EXPECT_GT(after, start) << "nothing was compiled";
+	if (after <= start)
+		return s;
+
+	s.words.resize((after - start) / 4);
+	std::memcpy(s.words.data(), reinterpret_cast<const void*>(start), s.words.size() * 4);
+
+	for (u32 w : s.words)
+	{
+		if ((w & 0xFFC00000u) == kLdpQ) s.ldp++;
+		else if ((w & 0xFFC00000u) == kStpQ) s.stp++;
+		else if ((w & 0xFFC00000u) == kLdrQ) s.ldr++;
+		else if ((w & 0xFFC00000u) == kStrQ) s.str++;
+		else if ((w & 0xFF800000u) == kAddX) s.add++;
+		else if (w == kRet) s.ret++;
+	}
+	return s;
+}
+
+RoutineShape CompileAndDecode(const UnpackCase& c)
+{
+	return CompileAndDecode(c, MakeSourceData(static_cast<size_t>(c.num) * nVifT[c.fmt]));
+}
+
+TEST(VifUnpackCopyShape, AdjacentRowsPairUp)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	const RoutineShape s = CompileAndDecode({"pair8", 1, V4_32, false, 0, 8, 1, 1, 0, 0, 0x000, 0});
+
+	EXPECT_EQ(4u, s.ldp);
+	EXPECT_EQ(4u, s.stp);
+	EXPECT_EQ(0u, s.ldr) << "a contiguous row was left on the single form";
+	EXPECT_EQ(0u, s.str);
+	EXPECT_EQ(1u, s.ret);
+	EXPECT_EQ(9u, s.words.size()) << "the routine carries something besides the copy";
+}
+
+TEST(VifUnpackCopyShape, AnOddRowCountLeavesTheLastOneSingle)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	const RoutineShape s = CompileAndDecode({"pair5", 1, V4_32, false, 0, 5, 1, 1, 0, 0, 0x000, 0});
+
+	EXPECT_EQ(2u, s.ldp);
+	EXPECT_EQ(2u, s.stp);
+	EXPECT_EQ(1u, s.ldr);
+	EXPECT_EQ(1u, s.str);
+	EXPECT_EQ(7u, s.words.size());
+}
+
+TEST(VifUnpackCopyShape, ASkipLeavesEveryRowSingle)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	// cl=2, wl=1: one written row per write block, the next 16 bytes skipped.
+	// No two destinations are adjacent, so nothing may pair.
+	const RoutineShape s = CompileAndDecode({"skip", 1, V4_32, false, 0, 4, 2, 1, 0, 0, 0x000, 0});
+
+	EXPECT_EQ(0u, s.ldp) << "rows either side of a skip were paired";
+	EXPECT_EQ(0u, s.stp);
+	EXPECT_EQ(4u, s.ldr);
+	EXPECT_EQ(4u, s.str);
+}
+
+TEST(VifUnpackCopyShape, AFillPairsOnlyWhereTheSourceAlsoSteps)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	// cl=2, wl=4: two rows read new data, two repeat the last source quadword.
+	// Rows (dst,src) are (0,0) (16,16) (32,32) (48,32) (64,32) (80,48) (96,64)
+	// (112,64) — only two adjacent pairs step by 16 in both.
+	const RoutineShape s = CompileAndDecode({"fill", 1, V4_32, false, 0, 8, 2, 4, 0, 0, 0x000, 0});
+
+	EXPECT_EQ(2u, s.ldp);
+	EXPECT_EQ(2u, s.stp);
+	EXPECT_EQ(4u, s.ldr) << "a repeated source was folded into a pair";
+	EXPECT_EQ(4u, s.str);
+}
+
+TEST(VifUnpackCopyShape, TheBaseStepsWhenTheOffsetLeavesThePairFormsReach)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	// 256 rows span 4096 bytes, four times the ±1008 a pair form reaches.
+	const RoutineShape s = CompileAndDecode({"long", 1, V4_32, false, 0, 256, 1, 1, 0, 0, 0x000, 0});
+
+	EXPECT_EQ(128u, s.ldp);
+	EXPECT_EQ(128u, s.stp);
+	EXPECT_EQ(0u, s.ldr);
+	EXPECT_EQ(0u, s.str);
+	EXPECT_EQ(6u, s.add) << "each base is stepped three times over 4096 bytes";
+
+	for (size_t i = 0; i < s.words.size(); i++)
+	{
+		if (!IsPairForm(s.words[i]))
+			continue;
+		EXPECT_LE(std::abs(PairOffset(s.words[i])), 1008)
+			<< "pair form at word " << i << " carries an offset the encoding cannot hold";
+	}
+}
+
+TEST(VifUnpackCopyShape, AMaskOrAModeKeepsTheSingleForm)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	// A masked unpack merges lanes between the load and the store, and a mode
+	// adds the row register to them; neither is a copy.
+	const RoutineShape masked = CompileAndDecode({"masked", 1, V4_32, true, 0, 8, 1, 1, 0, 0xE4B11B4Eu, 0x000, 0});
+	EXPECT_EQ(0u, masked.ldp);
+	EXPECT_EQ(0u, masked.stp);
+
+	const RoutineShape mode1 = CompileAndDecode({"mode1", 1, V4_32, false, 0, 8, 1, 1, 1, 0, 0x000, 0});
+	EXPECT_EQ(0u, mode1.ldp);
+	EXPECT_EQ(0u, mode1.stp);
 }
 
 } // namespace
