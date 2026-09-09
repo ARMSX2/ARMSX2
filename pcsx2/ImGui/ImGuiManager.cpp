@@ -498,6 +498,29 @@ void ImGuiManager::SetKeyMap()
 	}
 }
 
+// A font resource that is not on disk is not fatal: the atlas is built from whatever
+// was found, and AddImGuiFonts() falls back to ImGui's built-in font if that leaves it
+// with nothing. Hosts that do not deploy the full resources directory — the libretro
+// core is loaded from RetroArch's cores directory, with no resources next to it — would
+// otherwise abort in Initialize() before the GS device ever comes up.
+static bool LoadOptionalFontResource(std::vector<u8>& dest, const char* filename)
+{
+	if (!dest.empty())
+		return true;
+
+	const std::string path(EmuFolders::GetOverridableResourcePath(
+		fmt::format("fonts" FS_OSPATH_SEPARATOR_STR "{}", filename)));
+	std::optional<std::vector<u8>> font_data = FileSystem::ReadBinaryFile(path.c_str());
+	if (!font_data.has_value())
+	{
+		Console.WarningFmt("Font resource '{}' is missing, continuing without it.", filename);
+		return false;
+	}
+
+	dest = std::move(font_data.value());
+	return true;
+}
+
 bool ImGuiManager::LoadFontData()
 {
 	// Android: SetFonts() is never called (no Qt/language layer), so s_font_info stays
@@ -506,19 +529,14 @@ bool ImGuiManager::LoadFontData()
 	// Android port.
 	if (s_font_info.empty())
 	{
-		if (s_standard_font_data.empty())
+		if (LoadOptionalFontResource(s_standard_font_data, "Roboto-Regular.ttf"))
 		{
-			std::optional<std::vector<u8>> font_data = FileSystem::ReadBinaryFile(
-				EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "Roboto-Regular.ttf").c_str());
-			if (!font_data.has_value())
-				return false;
-			s_standard_font_data = std::move(font_data.value());
+			FontInfo info;
+			info.data = std::span<const u8>(s_standard_font_data.data(), s_standard_font_data.size());
+			info.face_name = nullptr;
+			info.is_emoji_font = false;
+			s_font_info.push_back(info);
 		}
-		FontInfo info;
-		info.data = std::span<const u8>(s_standard_font_data.data(), s_standard_font_data.size());
-		info.face_name = nullptr;
-		info.is_emoji_font = false;
-		s_font_info.push_back(info);
 	}
 
 	const std::string custom_font_path(StringUtil::StripWhitespace(GSConfig.OsdFontPath));
@@ -541,35 +559,9 @@ bool ImGuiManager::LoadFontData()
 		}
 	}
 
-	if (s_fixed_font_data.empty())
-	{
-		std::optional<std::vector<u8>> font_data = FileSystem::ReadBinaryFile(
-			EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "RobotoMono-Medium.ttf").c_str());
-		if (!font_data.has_value())
-			return false;
-
-		s_fixed_font_data = std::move(font_data.value());
-	}
-
-	if (s_icon_fa_font_data.empty())
-	{
-		std::optional<std::vector<u8>> font_data =
-			FileSystem::ReadBinaryFile(EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "fa-solid-900.ttf").c_str());
-		if (!font_data.has_value())
-			return false;
-
-		s_icon_fa_font_data = std::move(font_data.value());
-	}
-
-	if (s_icon_pf_font_data.empty())
-	{
-		std::optional<std::vector<u8>> font_data =
-			FileSystem::ReadBinaryFile(EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "promptfont.otf").c_str());
-		if (!font_data.has_value())
-			return false;
-
-		s_icon_pf_font_data = std::move(font_data.value());
-	}
+	LoadOptionalFontResource(s_fixed_font_data, "RobotoMono-Medium.ttf");
+	LoadOptionalFontResource(s_icon_fa_font_data, "fa-solid-900.ttf");
+	LoadOptionalFontResource(s_icon_pf_font_data, "promptfont.otf");
 
 	return true;
 }
@@ -690,6 +682,9 @@ ImFont* ImGuiManager::AddTextFont()
 
 ImFont* ImGuiManager::AddFixedFont()
 {
+	if (s_fixed_font_data.empty())
+		return s_standard_font;
+
 	ImFontConfig cfg;
 	cfg.LineHeight = FONT_LINE_HEIGHT;
 	cfg.FontDataOwnedByAtlas = false;
@@ -712,6 +707,9 @@ ImFont* ImGuiManager::AddOsdFont()
 		Console.ErrorFmt("Failed to add custom OSD font to ImGui atlas");
 	}
 
+	if (s_fixed_font_data.empty())
+		return s_standard_font;
+
 	return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(
 		s_fixed_font_data.data(), static_cast<int>(s_fixed_font_data.size()), FONT_BASE_SIZE, &cfg, nullptr);
 }
@@ -719,6 +717,7 @@ ImFont* ImGuiManager::AddOsdFont()
 bool ImGuiManager::AddIconFonts()
 {
 	// Load FontAwesome after to avoid aliased codepoints overriding promptfont
+	if (!s_icon_pf_font_data.empty())
 	{
 		// Exclude emojis
 		static constexpr ImWchar range_exclude_emojis[] = {0x10000, 0x1ffff, 0x0, 0x0};
@@ -738,6 +737,7 @@ bool ImGuiManager::AddIconFonts()
 		}
 	}
 
+	if (!s_icon_fa_font_data.empty())
 	{
 		// Exclude any characters outside the BMP PUA plane
 		static constexpr ImWchar range_exclude_non_bmp[] = {0x1, 0xdfff, 0xf900, 0x10ffff, 0x0, 0x0};
