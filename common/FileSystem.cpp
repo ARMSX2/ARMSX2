@@ -1148,6 +1148,17 @@ std::FILE* FileSystem::OpenSharedCFile(const char* filename, const char* mode, F
 	Error::SetErrno(error, errno);
 	return nullptr;
 #else
+	// The host's file system first, exactly as in OpenCFile(). The disc readers
+	// open the image through this variant, so without it a path that only the
+	// frontend can resolve fails at "Opening CDVD" while the same game on local
+	// storage boots. The share mode is not lost by going through the host: the
+	// POSIX path below has never honoured it either.
+	if (HostVFS::IsInstalled())
+	{
+		if (std::FILE* vfp = HostVFS::OpenAsCFile(filename, mode))
+			return vfp;
+	}
+
 	#if defined(__ANDROID__)
 	// content:// URIs (Storage Access Framework) must route through the JNI
 	// ContentResolver bridge — std::fopen can't open them. ChdFileReader opens

@@ -4,8 +4,9 @@
 #include "common/HostVFS.h"
 #include "common/Console.h"
 
+#include <atomic>
 #include <cstring>
-#include <mutex>
+#include <thread>
 #include <vector>
 
 // The libretro VFS access flags, kept here rather than pulled from libretro.h:
@@ -118,23 +119,66 @@ namespace
 	// a std::FILE* have to ask the host about the handle behind it instead,
 	// and that is the only thing this maps. A handful of entries at most, and
 	// only touched on open and close.
-	std::mutex s_streams_lock;
-	std::vector<std::pair<std::FILE*, void*>> s_streams;
+	//
+	// Plain storage with a spin lock, rather than a std::vector behind a
+	// std::mutex: one of these streams is closed while the library is being
+	// torn down - a disc reader taken apart at unload does exactly that - and a
+	// std::mutex that has already been destroyed by then does not ignore the
+	// lock, it aborts:
+	//
+	//   FORTIFY: pthread_mutex_lock called on a destroyed mutex
+	//
+	// which is where the Android core died on close content. Nothing here has a
+	// destructor to run or an allocation to free, so a late close finds it
+	// exactly as it was.
+	constexpr size_t kMaxStreams = 64;
 
+	struct StreamEntry
+	{
+		std::FILE* fp;
+		void* handle;
+	};
+
+	std::atomic_flag s_streams_lock = ATOMIC_FLAG_INIT;
+	StreamEntry s_streams[kMaxStreams]{};
+
+	class StreamsLock
+	{
+	public:
+		StreamsLock()
+		{
+			while (s_streams_lock.test_and_set(std::memory_order_acquire))
+				std::this_thread::yield();
+		}
+		~StreamsLock() { s_streams_lock.clear(std::memory_order_release); }
+	};
+
+	// A stream that does not fit is simply not remembered: the only thing the
+	// table is for is SizeOfCFile(), which answers "no" and lets the caller
+	// fall back. Sixty-four is far more than the handful ever open at once.
 	void RememberStream(std::FILE* fp, void* handle)
 	{
-		std::unique_lock lock(s_streams_lock);
-		s_streams.emplace_back(fp, handle);
+		StreamsLock lock;
+		for (StreamEntry& entry : s_streams)
+		{
+			if (!entry.fp)
+			{
+				entry.fp = fp;
+				entry.handle = handle;
+				return;
+			}
+		}
 	}
 
 	void ForgetStream(void* handle)
 	{
-		std::unique_lock lock(s_streams_lock);
-		for (auto it = s_streams.begin(); it != s_streams.end(); ++it)
+		StreamsLock lock;
+		for (StreamEntry& entry : s_streams)
 		{
-			if (it->second == handle)
+			if (entry.fp && entry.handle == handle)
 			{
-				s_streams.erase(it);
+				entry.fp = nullptr;
+				entry.handle = nullptr;
 				return;
 			}
 		}
@@ -283,12 +327,12 @@ bool HostVFS::SizeOfCFile(std::FILE* fp, s64* size)
 
 	void* handle = nullptr;
 	{
-		std::unique_lock lock(s_streams_lock);
-		for (const auto& [stream, stream_handle] : s_streams)
+		StreamsLock lock;
+		for (const StreamEntry& entry : s_streams)
 		{
-			if (stream == fp)
+			if (entry.fp == fp)
 			{
-				handle = stream_handle;
+				handle = entry.handle;
 				break;
 			}
 		}
