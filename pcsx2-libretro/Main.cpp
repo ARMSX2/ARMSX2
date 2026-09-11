@@ -1918,6 +1918,14 @@ RETRO_API void retro_run(void)
 
 	if (LibretroCore::s_hw_render_vulkan)
 	{
+		// A frontend reads the picture size from this callback on every frame,
+		// duplicates included, and RetroArch computes its integer scaling from
+		// that number rather than from the geometry the core announces. So a
+		// duplicate must not report a different size than the frame it repeats:
+		// the size the last real frame went out at is carried here for it.
+		static u32 last_frame_width = LibretroCore::kFrameWidth;
+		static u32 last_frame_height = LibretroCore::kFrameHeight;
+
 		// M2: consume the newest GS frame (if any) and hand it to the
 		// frontend. The retro_vulkan_image storage must outlive this call --
 		// the frontend keeps the pointer for cached-frame replays.
@@ -1954,11 +1962,13 @@ RETRO_API void retro_run(void)
 					VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
 				{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
 			vulkan->set_image(vulkan->handle, &vkimage, 0, nullptr, vulkan->queue_index);
+			last_frame_width = frame.width;
+			last_frame_height = frame.height;
 			video_cb(RETRO_HW_FRAME_BUFFER_VALID, frame.width, frame.height, 0);
 		}
 		else
 		{
-			video_cb(nullptr, LibretroCore::kFrameWidth, LibretroCore::kFrameHeight, 0);
+			video_cb(nullptr, last_frame_width, last_frame_height, 0);
 		}
 	}
 	else if (LibretroCore::s_hw_render_gl)
