@@ -395,8 +395,46 @@ object ControllerMappings {
     // at all -- Xbox Series X/S over Bluetooth, some DualSense BT modes (#646). Built-in
     // handheld pads are unaffected either way: they are not external, so #241 still buzzes.
     private const val KEY_RUMBLE_FALLBACK = "pad.rumble.fallbackExternal"
+    /**
+     * Whether buzzing THIS device is the right default when the pad exposes no motor.
+     *
+     * On a phone it is not: #433 was a handset in a stand or a pocket buzzing while the user
+     * held a controller, and InputDevice.isExternal() is what tells those apart. On a gaming
+     * HANDHELD it always is -- the device and the thing in your hands are the same object, so
+     * a pad with no motor should fall through to the handheld's own vibrator (#241).
+     *
+     * The problem is that isExternal() cannot be trusted to make that call. The Odin 3's
+     * BUILT-IN controller enumerates as "Xbox Wireless Controller", on /sys/devices/virtual,
+     * with no Bluetooth address and on the USB bus -- and still sets EXTERNAL. So the #433
+     * guard suppressed the only vibrator the device has and the handheld went silent.
+     *
+     * Rather than try to out-guess isExternal(), key the DEFAULT on whether this is a handheld
+     * at all. A false positive here is harmless: on a real handheld, buzzing the device is the
+     * correct behaviour whatever the pad claims. A false positive on a PHONE would reintroduce
+     * #433, so the list is manufacturers who only ship handhelds -- never a model glob that a
+     * phone could match.
+     *
+     * Only a DEFAULT. An explicit choice in the Pad tab is stored and always wins.
+     */
+    private fun handheldWithBuiltInPad(): Boolean {
+        val vendor = (android.os.Build.MANUFACTURER ?: "").lowercase()
+        val brand = (android.os.Build.BRAND ?: "").lowercase()
+        val model = (android.os.Build.MODEL ?: "").lowercase()
+
+        // Short vendor tokens are matched EXACTLY -- "ayn" as a substring would also match a
+        // manufacturer like "dayna", and a false positive on a phone reintroduces #433.
+        if (vendor == "ayn" || vendor == "gpd" || brand == "ayn" || brand == "gpd")
+            return true
+
+        // Distinctive enough to match anywhere in vendor, brand or model. Model matters
+        // because these handhelds often report the SoC vendor as the brand: the Odin 3 says
+        // brand=qti, and the Retroid Pocket 6 carries its identity only in the model string.
+        val handheldNames = listOf("retroid", "ayaneo", "anbernic", "odin")
+        return handheldNames.any { vendor.contains(it) || brand.contains(it) || model.contains(it) }
+    }
+
     fun rumbleFallbackExternal(): Boolean =
-        MainActivityRuntime.prefs.getBoolean(KEY_RUMBLE_FALLBACK, false)
+        MainActivityRuntime.prefs.getBoolean(KEY_RUMBLE_FALLBACK, handheldWithBuiltInPad())
     fun setRumbleFallbackExternal(on: Boolean) {
         MainActivityRuntime.prefs.edit { putBoolean(KEY_RUMBLE_FALLBACK, on) }
         kr.co.iefriends.pcsx2.NativeApp.sRumbleFallbackExternal = on
