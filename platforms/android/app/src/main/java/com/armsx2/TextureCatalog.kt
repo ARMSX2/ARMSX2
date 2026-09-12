@@ -22,9 +22,12 @@ import java.net.URL
 object TextureCatalog {
     private const val TAG = "TextureCatalog"
 
-    /** Mirrors, tried in order. Same three upstream uses: the raw host is fastest, the second is a
+    /** Sources, tried in order. The B2 bucket is ours and serves the converted ASTC KTX packs
+     *  (schema 2, tar+zstd); the sashkinbro mirrors stay as fallback and still serve the original
+     *  schema-1 ZIP packs when B2 is unreachable. The raw host is fastest, the second is a
      *  different GitHub edge, and jsDelivr survives GitHub being blocked on some networks. */
     private val CATALOG_URLS = listOf(
+        "https://f005.backblazeb2.com/file/armsx2-textures/textures.json",
         "https://raw.githubusercontent.com/sashkinbro/EmuCoreX-Textures/main/textures.json",
         "https://github.com/sashkinbro/EmuCoreX-Textures/raw/main/textures.json",
         "https://cdn.jsdelivr.net/gh/sashkinbro/EmuCoreX-Textures@main/textures.json",
