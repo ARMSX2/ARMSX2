@@ -5,8 +5,8 @@
 # — the GitHub Actions workflows under .github/workflows/ are the project's
 # own CI.
 #
-# The buildbot containers ship no Clang and none of the pinned third-party
-# libraries, so before_script installs clang-17 from apt.llvm.org and reuses
+# The buildbot containers carry Clang but none of the pinned third-party
+# libraries, so before_script reuses
 # .github/workflows/scripts/linux/build-dependencies-runner.sh to build the
 # same dependency set the GitHub nightly uses (shaderc, SDL3, zstd, lz4, ...).
 
@@ -30,11 +30,11 @@
     # happens to have. Android is neither - it takes
     # ARMSX2_ANDROID_HOST_PAGE_SIZE, set in .core-defs-android below.
     CORE_ARGS: >-
-      -DCMAKE_C_COMPILER=clang-17
-      -DCMAKE_CXX_COMPILER=clang++-17
-      -DCMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld-17
-      -DCMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld-17
-      -DCMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld-17
+      -DCMAKE_C_COMPILER=clang
+      -DCMAKE_CXX_COMPILER=clang++
+      -DCMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld
+      -DCMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld
+      -DCMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld
       -DCMAKE_PREFIX_PATH=$CI_PROJECT_DIR/.deps
       -DENABLE_LIBRETRO=ON
       -DENABLE_QT_UI=OFF
@@ -61,15 +61,28 @@
     - >-
       apt-get -y install
       build-essential ca-certificates cmake curl git ninja-build nasm pkg-config
-      wget gnupg lsb-release software-properties-common
+      wget
       zlib1g-dev libaio-dev libasound2-dev libcurl4-openssl-dev
       libdbus-1-dev libdrm-dev libegl-dev libevdev-dev libfontconfig1-dev
       libgbm-dev libgudev-1.0-dev libinput-dev libjpeg-dev libopengl-dev
       libpcap-dev libpulse-dev libssl-dev libudev-dev
-    - wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-    - chmod +x /tmp/llvm.sh
-    - /tmp/llvm.sh 17
-    - apt-get -y install lld-17
+    # The image carries Clang, so use that one rather than fetching another
+    # from apt.llvm.org. Which version it carries is the image's business:
+    # bind the unversioned names to the newest one present and let CORE_ARGS
+    # stay version-free, so a later bump of the image needs nothing here.
+    - |
+      if ! command -v clang++ >/dev/null 2>&1; then
+        v=$(ls /usr/bin/clang++-* 2>/dev/null | sed 's#.*clang++-##' | sort -V | tail -1)
+        if [ -z "$v" ]; then echo "no clang in this image, and this recipe no longer installs one"; exit 1; fi
+        ln -sf "/usr/bin/clang-$v" /usr/bin/clang
+        ln -sf "/usr/bin/clang++-$v" /usr/bin/clang++
+      fi
+      if ! command -v ld.lld >/dev/null 2>&1; then
+        v=$(ls /usr/bin/ld.lld-* 2>/dev/null | sed 's#.*ld.lld-##' | sort -V | tail -1)
+        if [ -z "$v" ]; then echo "no lld in this image"; exit 1; fi
+        ln -sf "/usr/bin/ld.lld-$v" /usr/bin/ld.lld
+      fi
+      clang++ --version
     - ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
 
 # macOS has no buildbot image to apt-install from: the runner is a shared Mac
@@ -89,8 +102,8 @@
     MACOSX_DEPLOYMENT_TARGET: "11.0"
     CC: clang
     CXX: clang++
-    # Replaces the Linux CORE_ARGS from .core-defs wholesale: the clang-17/lld-17
-    # flags there name apt packages that exist only in the Linux image.
+    # Replaces the Linux CORE_ARGS from .core-defs wholesale: the clang/lld
+    # flags there name binaries that exist only in the Linux image.
     CORE_ARGS: >-
       -DCMAKE_PREFIX_PATH=$CI_PROJECT_DIR/.deps
       -DENABLE_LIBRETRO=ON
@@ -209,7 +222,6 @@ libretro-build-linux-aarch64:
   extends:
     - .libretro-linux-cmake-aarch64
     - .core-defs-linux
-  image: ubuntu:22.04
 
 # macOS arm64 (Apple Silicon).
 libretro-build-osx-arm64:
