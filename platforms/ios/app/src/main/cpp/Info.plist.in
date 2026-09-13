@@ -350,7 +350,16 @@
                     <key>UISceneConfigurationName</key>
                     <string>Default Configuration</string>
                     <key>UISceneDelegateClassName</key>
-                    <string>ARMSX2SceneDelegate</string>
+                    <string>PCSX2SceneDelegate</string>
+                </dict>
+            </array>
+            <key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>External Display</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>ARMSX2ExternalDisplaySceneDelegate</string>
                 </dict>
             </array>
         </dict>

@@ -62,6 +62,7 @@ final class AppState: @unchecked Sendable {
     var gameplayLaunchTransition: GameplayLaunchTransition?
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
+    var externalDisplayConnected = false
     var isEmulationOnlyMode: Bool = false
     var emulationOnlyPresentation = EmulationOnlyPresentation.minimal
     private(set) var emulationOnlyStartupReady: Bool = false

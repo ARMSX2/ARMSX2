@@ -105,6 +105,18 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         return hostingController
     }
 
+    @MainActor
+    @objc public static func createExternalDisplayController() -> UIViewController {
+        let hostingController = UIHostingController(rootView: ExternalGameDisplayView())
+        hostingController.view.backgroundColor = .black
+        return hostingController
+    }
+
+    @MainActor
+    @objc public static func setExternalDisplayConnected(_ connected: Bool) {
+        AppState.shared.externalDisplayConnected = connected
+    }
+
     // Device haptic fallback for game rumble. Called from ARMSX2Bridge on the
     // main queue when no rumble-capable controller is connected.
     @MainActor
