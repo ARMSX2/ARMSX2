@@ -42,7 +42,7 @@ class AirPlayTests(unittest.TestCase):
         self.assertIn('settings.localized("Please select a game")', metal_view)
 
         self.assertIn("isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive", app_delegate)
-        self.assertIn('external ? @"External Display" : @"Default Configuration"', app_delegate)
+        self.assertIn('configurationWithName:(external ? @"External Display" : @"Default Configuration")', app_delegate)
         self.assertIn("sessionRole:connectingSceneSession.role", app_delegate)
 
         self.assertIn(
