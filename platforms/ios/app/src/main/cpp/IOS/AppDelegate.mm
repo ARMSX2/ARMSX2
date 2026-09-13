@@ -158,7 +158,7 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 
 - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
     const BOOL external = [connectingSceneSession.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
-    return [[UISceneConfiguration alloc] initWithName:(external ? @"External Display" : @"Default Configuration")
+    return [UISceneConfiguration configurationWithName:(external ? @"External Display" : @"Default Configuration")
         sessionRole:connectingSceneSession.role];
 }
 
