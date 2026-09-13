@@ -8,9 +8,10 @@ BRIDGE = ROOT / "platforms/ios/app/src/main/cpp/ARMSX2Bridge.mm"
 GRAPHICS_VIEW = ROOT / "platforms/ios/app/src/main/swift/Views/Settings/GraphicsSettingsView.swift"
 STORE = ROOT / "platforms/ios/app/src/main/swift/Models/SettingsStore.swift"
 STORE_GRAPHICS = ROOT / "platforms/ios/app/src/main/swift/Models/SettingsStore+Graphics.swift"
+OVERRIDES = ROOT / "pcsx2/PerGameOverrides.cpp"
 
 HACK_TABLE = re.compile(r'\{"([\w_]+)", GSUserHackOverride::\w+')
-PINNED_KEYS = re.compile(r'\{"([\w_]+)", GSUserHackOverride::\w+\},')
+PINNED_KEYS = re.compile(r'\{"([\w_]+)", GSHWFixId::\w+, GSUserHackOverride::(?!MaxCount)\w+\}')
 
 
 class HackClaimPlumbing(unittest.TestCase):
@@ -19,14 +20,14 @@ class HackClaimPlumbing(unittest.TestCase):
         self.view = GRAPHICS_VIEW.read_text()
         self.store = STORE.read_text()
         self.store_graphics = STORE_GRAPHICS.read_text()
+        self.overrides = OVERRIDES.read_text()
 
     def table_keys(self):
         block = self.bridge.split("s_graphics_hacks = {{", 1)[1].split("}};", 1)[0]
         return HACK_TABLE.findall(block)
 
     def pinned_hack_keys(self):
-        block = self.bridge.split("s_pinned_hack_keys[] = {", 1)[1].split("};", 1)[0]
-        return PINNED_KEYS.findall(block)
+        return PINNED_KEYS.findall(self.overrides)
 
     def bool_hack_keys(self):
         block = self.store_graphics.split(
@@ -49,8 +50,8 @@ class HackClaimPlumbing(unittest.TestCase):
         self.assertIn("setGraphicsHackPinned(key, pinned: true)", funnel)
 
     def test_every_reported_hack_is_a_pinned_key(self):
-        """The writer derives per-game claims from s_pinned_hack_keys, so a reported
-        hack missing there loses its per-game claim on save."""
+        """The writer derives per-game claims from s_gs_keys, so a reported hack
+        missing there, or mapped to MaxCount, loses its per-game claim on save."""
         pinned = set(self.pinned_hack_keys())
         for key in self.table_keys():
             with self.subTest(key=key):
