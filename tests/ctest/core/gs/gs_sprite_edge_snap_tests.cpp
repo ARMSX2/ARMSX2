@@ -9,6 +9,12 @@
 // takes one decision off the FIRST sprite of a batch -- "is its far X half a pixel short" -- and
 // then adds half a pixel to every sprite in the batch.
 //
+// Neither may move a far edge that the next sprite in the batch starts on, because both would then
+// be drawing the neighbour's first device column twice. The fix answers that with its
+// `hole_in_vertex` question; the snap answers it per sprite with DropAbuttingAxes, pinned at the
+// bottom of this file on the batch shape that found it -- Need for Speed Underground's bloom
+// downsample, sixteen abutting strips with a bright line at all fifteen seams from 1.76x up.
+//
 // Running the snap first breaks the fix, and the two-sprite batch below is the case that shows it:
 // the first sprite's texel ratio is inexact so the snap leaves it alone, the second's is exact so
 // the snap moves it, and the fix then adds half a pixel to a far edge that is already whole. The
@@ -20,6 +26,8 @@
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 using namespace GSSpriteEdgeSnap;
 
@@ -38,6 +46,27 @@ namespace
 	bool FixApplies(const Sprite* v, u32 sprites)
 	{
 		return AlignSpriteXApplies(v[0].x1, v[0].u1, true, sprites * 2, v[0].x1, (sprites >= 2) ? v[1].x0 : 0);
+	}
+
+	// The snap as the renderer's batch walk applies it: each sprite's own arithmetic, then the
+	// near corners of the sprites either side of it (GSRendererHW::SnapSpriteEdgesToPixelGrid).
+	// Where a sprite starts comes off the lower of its two corners, because a vertex pair is not
+	// stored in a fixed order.
+	NearCorner Start(const Sprite& s) { return {std::min(s.x0, s.x1), std::min(s.y0, s.y1), true}; }
+
+	Delta SnapInBatch(const Sprite* v, u32 sprites, u32 i)
+	{
+		const NearCorner prev = (i >= 1) ? Start(v[i - 1]) : NearCorner{};
+		const NearCorner next = (i + 1 < sprites) ? Start(v[i + 1]) : NearCorner{};
+		return DropAbuttingAxes(Snap(v[i]), v[i].x1, v[i].y1, prev, next);
+	}
+
+	// One strip of Need for Speed Underground's bloom downsample: 16 pixels wide starting half a
+	// pixel early, 32 texels of the screen behind it, tiled so each strip starts where the last
+	// one ended.
+	constexpr Sprite Strip(int k)
+	{
+		return Sprite{16 * 16 * k - 8, 0, 16 * 16 * (k + 1) - 8, 16 * 224, 16 * 32 * k, 0, 16 * 32 * (k + 1), 16 * 224};
 	}
 } // namespace
 
@@ -121,4 +150,95 @@ TEST(GSSpriteEdgeSnap, ASingleSpriteBatchCountsAsAHole)
 {
 	// count < 4 short-circuits the second-sprite comparison, so a lone sprite is always a hole.
 	EXPECT_TRUE(AlignSpriteXApplies(16 * 32 + 8, 16 * 65, true, 2, 16 * 32 + 8, 0));
+}
+
+TEST(GSSpriteEdgeSnap, AStripKeepsTheEdgeItsNeighbourStartsOn)
+{
+	// Sixteen strips, each ending exactly where the next begins. On its own every one of them
+	// snaps -- the far edge is half a pixel short and 32 texels over 16 pixels makes the slide a
+	// whole texel -- and doing it hands each neighbour's first device column a second draw.
+	Sprite v[16];
+	for (int k = 0; k < 16; k++)
+		v[k] = Strip(k);
+
+	ASSERT_EQ(v[0].x1, v[1].x0);
+	ASSERT_EQ(Snap(v[0]).dx, 8);
+	ASSERT_EQ(Snap(v[0]).du, 16);
+
+	// Fifteen of them have a neighbour on their far edge and stay put.
+	for (u32 i = 0; i < 15; i++)
+		EXPECT_TRUE(SnapInBatch(v, 16, i).IsZero()) << "strip " << i;
+
+	// The sixteenth ends the batch with nothing beyond it, so it still gets its edge back and the
+	// strip as a whole ends where it should.
+	const Delta last = SnapInBatch(v, 16, 15);
+	EXPECT_EQ(last.dx, 8);
+	EXPECT_EQ(last.du, 16);
+}
+
+TEST(GSSpriteEdgeSnap, AStripEmittedBackwardsIsStillRecognised)
+{
+	// Nothing says a batch runs left to right, so the sprite before is asked as well as the one
+	// after. Same sixteen strips, reversed.
+	Sprite v[16];
+	for (int k = 0; k < 16; k++)
+		v[k] = Strip(15 - k);
+
+	for (u32 i = 1; i < 16; i++)
+		EXPECT_TRUE(SnapInBatch(v, 16, i).IsZero()) << "strip " << i;
+
+	// The rightmost strip is now first, and it is the one with nothing past its far edge.
+	EXPECT_EQ(SnapInBatch(v, 16, 0).dx, 8);
+}
+
+TEST(GSSpriteEdgeSnap, ANeighbourThatDoesNotTouchChangesNothing)
+{
+	// Two strips with a pixel of daylight between them. Neither far edge is anybody's start, so
+	// both keep the snap -- this is the case the guard must not swallow, and it is the shape of
+	// the NASCAR seam the snap was written for.
+	Sprite v[2] = {Strip(0), Strip(1)};
+	v[1].x0 += 16; // the whole sprite, so its texel ratio stays exact and only the gap is new
+	v[1].x1 += 16;
+
+	EXPECT_EQ(SnapInBatch(v, 2, 0).dx, 8);
+	EXPECT_EQ(SnapInBatch(v, 2, 1).dx, 8);
+}
+
+TEST(GSSpriteEdgeSnap, AnAbuttingAxisDoesNotSilenceTheOther)
+{
+	// Rows rather than columns: the sprites meet in Y and are staggered in X, so the Y snap goes
+	// and the X snap stays.
+	Sprite v[2] = {
+		{0, 0, 16 * 32 + 8, 16 * 16 + 8, 0, 0, 16 * 65, 16 * 33},
+		{16 * 40, 16 * 16 + 8, 16 * 72 + 8, 16 * 32 + 8, 0, 0, 16 * 65, 16 * 33},
+	};
+
+	const Delta lone = Snap(v[0]);
+	ASSERT_EQ(lone.dx, 8);
+	ASSERT_EQ(lone.dy, 8);
+
+	const Delta d = SnapInBatch(v, 2, 0);
+	EXPECT_EQ(d.dx, 8);
+	EXPECT_EQ(d.du, 16);
+	EXPECT_EQ(d.dy, 0);
+	EXPECT_EQ(d.dv, 0);
+}
+
+TEST(GSSpriteEdgeSnap, ALoneSpriteHasNoNeighbourToDeferTo)
+{
+	// The single-sprite batch, which is what NASCAR Thunder's alpha-plane draw is: no neighbours,
+	// so the guard is inert and the fix that motivated the snap still fires.
+	const Sprite v[1] = {Strip(0)};
+	EXPECT_EQ(SnapInBatch(v, 1, 0).dx, 8);
+}
+
+TEST(GSSpriteEdgeSnap, ANeighbourStoredBackToFrontStillCounts)
+{
+	// A sprite's two vertices come in whichever order the game sent them, so where a neighbour
+	// starts is the lower of its corners and not simply the first one.
+	Sprite v[2] = {Strip(0), Strip(1)};
+	std::swap(v[1].x0, v[1].x1);
+	std::swap(v[1].u0, v[1].u1);
+
+	EXPECT_TRUE(SnapInBatch(v, 2, 0).IsZero());
 }

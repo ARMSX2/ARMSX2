@@ -2743,12 +2743,27 @@ void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 	const u32 count = m_vertex->next;
 	GSVertex* v = &m_vertex->buff[0];
 
+	// Where a sprite starts, taken off both its corners because the two are not stored in a fixed
+	// order. Only the sprites either side are ever asked: a batch that tiles emits its sprites in
+	// order, and reaching past them would cost a scan of the whole batch on every draw.
+	const auto near_corner = [&](u32 j) {
+		return GSSpriteEdgeSnap::NearCorner{
+			std::min(static_cast<int>(v[j].XYZ.X), static_cast<int>(v[j + 1].XYZ.X)) - ox,
+			std::min(static_cast<int>(v[j].XYZ.Y), static_cast<int>(v[j + 1].XYZ.Y)) - oy, true};
+	};
+
 	for (u32 i = 0; i + 1 < count; i += 2)
 	{
-		const GSSpriteEdgeSnap::Delta d = GSSpriteEdgeSnap::FarEdge(static_cast<int>(v[i].XYZ.X) - ox,
-			static_cast<int>(v[i].XYZ.Y) - oy, static_cast<int>(v[i + 1].XYZ.X) - ox,
-			static_cast<int>(v[i + 1].XYZ.Y) - oy, static_cast<int>(v[i].U), static_cast<int>(v[i].V),
-			static_cast<int>(v[i + 1].U), static_cast<int>(v[i + 1].V), adjust_uv);
+		const GSSpriteEdgeSnap::NearCorner prev = (i >= 2) ? near_corner(i - 2) : GSSpriteEdgeSnap::NearCorner{};
+		const GSSpriteEdgeSnap::NearCorner next = (i + 3 < count) ? near_corner(i + 2) : GSSpriteEdgeSnap::NearCorner{};
+
+		const int x1 = static_cast<int>(v[i + 1].XYZ.X) - ox;
+		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
+		const GSSpriteEdgeSnap::Delta d = GSSpriteEdgeSnap::DropAbuttingAxes(
+			GSSpriteEdgeSnap::FarEdge(static_cast<int>(v[i].XYZ.X) - ox, static_cast<int>(v[i].XYZ.Y) - oy, x1, y1,
+				static_cast<int>(v[i].U), static_cast<int>(v[i].V), static_cast<int>(v[i + 1].U),
+				static_cast<int>(v[i + 1].V), adjust_uv),
+			x1, y1, prev, next);
 		if (d.IsZero())
 			continue;
 

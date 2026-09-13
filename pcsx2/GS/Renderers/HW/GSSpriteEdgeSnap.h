@@ -14,6 +14,9 @@
 /// slide comes out whole, the AlignSpriteX game fix takes every sprite in a batch whose first
 /// sprite is half a pixel short -- so a sprite must never get both.
 ///
+/// Both also have to keep off a far edge the next sprite in the batch starts on, which the fix
+/// does with its `hole_in_vertex` question and the snap with DropAbuttingAxes.
+///
 /// The rules live in a header of their own so the order they run in can be tested without a GS
 /// device: the fix's one decision is read off the first sprite's coordinates, so a snap that ran
 /// first would answer it from coordinates it had already moved.
@@ -61,6 +64,47 @@ namespace GSSpriteEdgeSnap
 			return {};
 
 		return {dx, dy, (lx != 0) ? ((lu * dx) / lx) : 0, (ly != 0) ? ((lv * dy) / ly) : 0};
+	}
+
+	/// One sprite's near corner, as the batch walk hands it to the abutment test below. `present`
+	/// is false at the two ends of the batch, where there is no neighbour to compare against.
+	struct NearCorner
+	{
+		int x = 0;
+		int y = 0;
+		bool present = false;
+	};
+
+	/// Cancels the snap on an axis where a neighbouring sprite starts exactly on this sprite's far
+	/// edge.
+	///
+	/// The snap recovers a device pixel the GS gives the sprite at native and upscaling takes
+	/// away. A far edge a neighbour starts on is not such a pixel: ceil() sends both coordinates
+	/// to the same pixel, so at native it is the neighbour that draws it and this sprite loses
+	/// nothing. Pushing the edge out there does not recover a pixel, it draws the neighbour's
+	/// first device column a second time -- and a batch that blends turns every one of those
+	/// columns into a bright line. Need for Speed Underground cuts its bloom downsample into
+	/// sixteen abutting strips and showed all fifteen seams from 1.76x upwards.
+	///
+	/// The AlignSpriteX fix refuses a whole batch that tiles for the same reason; this asks the
+	/// question per sprite, so the sprite at the end of a strip still gets its edge back.
+	///
+	/// The other axis is not consulted, so a neighbour sitting on the coordinate without sharing a
+	/// single row with the sprite costs it the snap too. That direction is the safe one: it is a
+	/// return to what the renderer did before the snap existed.
+	inline constexpr Delta DropAbuttingAxes(Delta d, int x1, int y1, NearCorner prev, NearCorner next)
+	{
+		if ((prev.present && prev.x == x1) || (next.present && next.x == x1))
+		{
+			d.dx = 0;
+			d.du = 0;
+		}
+		if ((prev.present && prev.y == y1) || (next.present && next.y == y1))
+		{
+			d.dy = 0;
+			d.dv = 0;
+		}
+		return d;
 	}
 
 	/// Whether the AlignSpriteX game fix (UserHacks_AlignSpriteX, ace combat / tekken) fires on
