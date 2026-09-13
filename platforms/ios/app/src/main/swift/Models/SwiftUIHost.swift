@@ -127,3 +127,10 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         )
     }
 }
+
+extension UIApplication {
+    /// The app's own scene; an AirPlay scene can enumerate first and has a key window too.
+    var appWindowScene: UIWindowScene? {
+        connectedScenes.first { $0.session.role == .windowApplication } as? UIWindowScene
+    }
+}

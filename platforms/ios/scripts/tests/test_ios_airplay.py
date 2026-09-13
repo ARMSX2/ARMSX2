@@ -50,6 +50,19 @@ class AirPlayTests(unittest.TestCase):
             scene_delegate.split("@implementation ARMSX2ExternalDisplaySceneDelegate", 1)[1],
         )
 
+    def test_scene_lookups_never_land_on_the_tv(self):
+        swift = IOS / "swift"
+        walkers = [
+            path.relative_to(swift).as_posix()
+            for path in sorted(swift.rglob("*.swift"))
+            if "connectedScenes" in path.read_text()
+        ]
+        self.assertEqual(walkers, ["Models/SwiftUIHost.swift"])
+        self.assertIn(
+            "connectedScenes.first { $0.session.role == .windowApplication }",
+            (swift / "Models/SwiftUIHost.swift").read_text(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
