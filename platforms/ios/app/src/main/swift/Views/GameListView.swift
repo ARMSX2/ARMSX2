@@ -2122,10 +2122,7 @@ struct GameListView: View {
 
     @MainActor
     private func activeMenuWindow() -> UIWindow? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: { $0.isKeyWindow })
+        UIApplication.shared.appWindowScene?.windows.first(where: { $0.isKeyWindow })
     }
 
     private func isValidGameplayLaunchFrame(_ frame: CGRect) -> Bool {

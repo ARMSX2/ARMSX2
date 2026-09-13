@@ -207,8 +207,7 @@ struct SkinManifestRuntimeLayout {
     /// this only biases the preferred screen class.
     @MainActor
     static func currentScreenClass() -> SkinScreenClass {
-        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        let insets = scene?.windows.first?.safeAreaInsets ?? .zero
+        let insets = UIApplication.shared.appWindowScene?.windows.first?.safeAreaInsets ?? .zero
         let hasSafeArea = insets.top > 0 || insets.bottom > 0 || insets.left > 0 || insets.right > 0
         return hasSafeArea ? .edgeToEdge : .standard
     }

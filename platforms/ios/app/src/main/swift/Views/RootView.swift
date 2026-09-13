@@ -1471,13 +1471,8 @@ private enum KeyWindowSafeArea {
 
     @MainActor
     private static func keyWindowInsets() -> UIEdgeInsets {
-        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
-            guard scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive else { continue }
-            if let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first {
-                return window.safeAreaInsets
-            }
-        }
-        return .zero
+        let windows = UIApplication.shared.appWindowScene?.windows ?? []
+        return (windows.first(where: { $0.isKeyWindow }) ?? windows.first)?.safeAreaInsets ?? .zero
     }
 }
 

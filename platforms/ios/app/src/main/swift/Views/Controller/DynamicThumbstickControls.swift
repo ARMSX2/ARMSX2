@@ -667,10 +667,7 @@ final class VirtualPadGyroscopeController {
     }
 
     private var interfaceOrientation: UIInterfaceOrientation {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })?
-            .interfaceOrientation ?? .landscapeRight
+        UIApplication.shared.appWindowScene?.interfaceOrientation ?? .landscapeRight
     }
 
     private static func screenRate(x: Double, y: Double, orientation: UIInterfaceOrientation) -> DynamicThumbstickVector {

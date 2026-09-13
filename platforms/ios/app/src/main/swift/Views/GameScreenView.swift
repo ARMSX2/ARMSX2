@@ -275,10 +275,7 @@ struct GameScreenView: View {
     private static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
 
     private var displaySafeAreaInsets: UIEdgeInsets {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first?.windows
-            .first?.safeAreaInsets ?? .zero
+        UIApplication.shared.appWindowScene?.windows.first?.safeAreaInsets ?? .zero
     }
 
     @ViewBuilder
