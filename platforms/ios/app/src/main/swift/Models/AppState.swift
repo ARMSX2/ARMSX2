@@ -59,6 +59,7 @@ final class AppState: @unchecked Sendable {
     var runningGameName: String? = nil
     var bootDisclaimerMessage: String?
     var pendingJITGameBoot: PendingJITGameBoot?
+    var pendingRestartGame: String?
     var gameplayLaunchTransition: GameplayLaunchTransition?
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
@@ -137,6 +138,11 @@ final class AppState: @unchecked Sendable {
         isoName: String,
         launchTransition: GameplayLaunchTransition? = nil
     ) -> Bool {
+        // Booting under a live VM rewrites its settings and breaks its disc reads.
+        if runningGameName != nil {
+            pendingRestartGame = isoName
+            return false
+        }
         guard requireBootableBIOS() else { return false }
         guard ARMSX2Bridge.isJITAvailable() else {
             pendingJITGameBoot = PendingJITGameBoot(
