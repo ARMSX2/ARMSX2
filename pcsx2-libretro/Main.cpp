@@ -1728,17 +1728,46 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	if (want_gl)
 	{
 		s_gl_hw_render = {};
-#if defined(__ANDROID__)
-		// The only context type an Android frontend can give us.
-		s_gl_hw_render.context_type = RETRO_HW_CONTEXT_OPENGLES3;
-		s_gl_hw_render.version_major = 3;
-		s_gl_hw_render.version_minor = 2;
+		// The version handed to SET_HW_RENDER is what the frontend asks the
+		// driver for, not a floor it may exceed - RetroArch passes it straight
+		// through to the context creation call. Asking for the minimum gets
+		// exactly the minimum, and everything above it is then missing: on a
+		// core profile a driver is not even required to advertise the
+		// extensions that were promoted into core, so the capability checks
+		// come back empty as well. That is a blank screen with no error worth
+		// the name.
+		//
+		// So ask high and step down. The first one the frontend accepts is the
+		// one we get.
+		struct GLRequest
+		{
+			unsigned type;
+			unsigned major;
+			unsigned minor;
+		};
+#if defined(__ANDROID__) || defined(USE_GLES)
+		// RETRO_HW_CONTEXT_OPENGLES3 is ES 3.0 by definition and ignores the
+		// minor entirely - libretro.h says so in as many words. ES 3.1 and
+		// above have to go through RETRO_HW_CONTEXT_OPENGLES_VERSION, and
+		// GSDeviceOGL wants 3.1 for compute and 3.2 for geometry shaders, so
+		// asking the old way could only ever produce a 3.0 context that cannot
+		// run the renderer.
+		static constexpr GLRequest kRequests[] = {
+			{RETRO_HW_CONTEXT_OPENGLES_VERSION, 3, 2},
+			{RETRO_HW_CONTEXT_OPENGLES_VERSION, 3, 1},
+			{RETRO_HW_CONTEXT_OPENGLES3, 3, 0},
+		};
 #else
-		// GSDeviceOGL needs 3.3 at the very least, and uses 4.3/4.5 paths when
-		// the driver has them.
-		s_gl_hw_render.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
-		s_gl_hw_render.version_major = 3;
-		s_gl_hw_render.version_minor = 3;
+		// GSDeviceOGL needs 3.3 at the very least and uses the 4.3 and 4.5
+		// paths when the driver has them - which it only can if the context is
+		// one of those in the first place.
+		static constexpr GLRequest kRequests[] = {
+			{RETRO_HW_CONTEXT_OPENGL_CORE, 4, 6},
+			{RETRO_HW_CONTEXT_OPENGL_CORE, 4, 5},
+			{RETRO_HW_CONTEXT_OPENGL_CORE, 4, 4},
+			{RETRO_HW_CONTEXT_OPENGL_CORE, 4, 3},
+			{RETRO_HW_CONTEXT_OPENGL_CORE, 3, 3},
+		};
 #endif
 		s_gl_hw_render.context_reset = OnGLContextReset;
 		s_gl_hw_render.context_destroy = OnGLContextDestroy;
@@ -1754,7 +1783,23 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 		if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT, &shared_context))
 			log_cb(RETRO_LOG_WARN, "Frontend has no shared GL context; the GS thread may not be able to draw.\n");
 
-		if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &s_gl_hw_render))
+		bool accepted = false;
+		for (const GLRequest& request : kRequests)
+		{
+			s_gl_hw_render.context_type = static_cast<retro_hw_context_type>(request.type);
+			s_gl_hw_render.version_major = request.major;
+			s_gl_hw_render.version_minor = request.minor;
+			if (environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &s_gl_hw_render))
+			{
+				log_cb(RETRO_LOG_INFO, "Asked the frontend for a %s %u.%u context.\n",
+					request.type == RETRO_HW_CONTEXT_OPENGL_CORE ? "GL core" : "GLES",
+					request.major, request.minor);
+				accepted = true;
+				break;
+			}
+		}
+
+		if (!accepted)
 		{
 			log_cb(RETRO_LOG_ERROR, "Frontend refused a GL context; falling back to Null GS.\n");
 			LibretroCore::s_hw_render_gl = false;
