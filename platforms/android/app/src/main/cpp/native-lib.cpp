@@ -1484,15 +1484,57 @@ public:
                 m_audio_pause_suppressed = true;
                 SPU2::SetOutputPauseSuppressed(true);
             }
-            VMManager::SetPaused(true);
+            // Queue the pause onto the CPU thread instead of flipping it here.
+            // SetState(Paused) calls MTGS::WaitGS() -- and vu1Thread.WaitVU()
+            // when MTVU is on -- and both land in WorkSema::WaitForEmpty(),
+            // which supports exactly one waiter ("Multiple threads attempted to
+            // wait for empty (not currently supported)"). The EE issues its own
+            // MTGS waits continuously while emulating, so pausing from this JNI
+            // thread races it. A Debug build aborts on the assert; a Release
+            // build silently leaves the semaphore with two waiters and the EE
+            // blocks inside WaitForEmpty forever -- it never reaches a safe
+            // point, the park below times out as cpu_thread_not_parked, no state
+            // file is written, and the resumes the UI queues meanwhile never
+            // drain, so the game stays paused until the process is killed.
+            // Reproduced on both builds; turning MTVU off only removes one of
+            // the two semaphores and makes it rarer, not absent. The UI pause
+            // path (pauseVM) has always queued it this way -- only this
+            // savestate path did it inline.
+            Host::RunOnCPUThread([]() {
+                if (VMManager::HasValidVM() && VMManager::GetState() == VMState::Running)
+                    VMManager::SetPaused(true);
+            });
             if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
                 Cpu->ExitExecution();
         }
-        // A healthy VM exits Execute() within a frame of the state flip;
-        // allow a generous 3s before declaring failure.
-        for (int i = 0; i < 3000 && !s_execute_exit.load(std::memory_order_acquire); ++i)
+        // A healthy VM exits Execute() and applies the queued pause within a
+        // frame; allow a generous 3s before declaring failure.
+        //
+        // Because the pause is queued, leaving Execute() is not sufficient on
+        // its own — ParkedNow() also requires the state to have flipped, so a
+        // state op can never start while the pause is still in the queue.
+        //
+        // Keep nudging the EE out, rate-limited, exactly like the stop path
+        // does: one ExitExecution() can land in the window where runVMThread
+        // has cleared s_execute_exit but has not re-entered Execute() yet, and
+        // then nothing would ask it to leave again before the timeout.
+        for (int i = 0; i < 3000 && !ParkedNow(); ++i)
+        {
+            if ((i % 16) == 0 && !s_execute_exit.load(std::memory_order_acquire) && Cpu)
+            {
+                // Logged only for the retries, not the initial kick above, so a
+                // normal park stays silent and any line here means the CPU
+                // thread had to be nudged again to reach its message pump.
+                if (i > 0)
+                    Console.WriteLn("@@ANDROID_PARK_RENUDGE@@ waited_ms=%d", i);
+                Cpu->ExitExecution();
+            }
             usleep(1000);
-        m_parked = s_execute_exit.load(std::memory_order_acquire) || m_was_paused;
+        }
+        m_parked = ParkedNow() || m_was_paused;
+        Console.WriteLn("@@ANDROID_PARK@@ parked=%d state=%d execute_exit=%d",
+            m_parked ? 1 : 0, static_cast<int>(VMManager::GetState()),
+            s_execute_exit.load(std::memory_order_acquire) ? 1 : 0);
     }
     ~ScopedVMPause() {
         if (m_was_running && !s_stop_requested.load(std::memory_order_acquire))
@@ -1506,6 +1548,15 @@ public:
     bool parked() const { return m_parked; }
 
 private:
+    // Parked == the CPU thread is outside Cpu->Execute() AND the queued pause
+    // has been applied. Checking only s_execute_exit would let a state op start
+    // while the pause was still sitting in the CPU thread's queue.
+    static bool ParkedNow()
+    {
+        return s_execute_exit.load(std::memory_order_acquire) &&
+               VMManager::GetState() == VMState::Paused;
+    }
+
     bool m_was_running = false;
     bool m_was_paused = false;
     bool m_parked = false;
