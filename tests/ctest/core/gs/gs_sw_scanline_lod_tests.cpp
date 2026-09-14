@@ -580,6 +580,54 @@ TEST(SwScanlineLodFraction, TheConstantFractionBroadcastFillsEveryLane)
 		EXPECT_EQ(f.U16[i], 0x1234) << "lane " << i;
 }
 
+// TEX1.K arrives SIGNED -- `s32 K : 12` -- so reading it needs the 1:7:4 scale and
+// nothing else. The draw dumper used to sign-extend it a second time, which turns
+// every negative K into a number an order of magnitude too large: the -30 that
+// Spider-Man 3's draw 16033 sets (-2 levels, so its mip chain runs) printed as
+// -258, and a -258 reads as a chain that can never leave level 0. That misreading
+// cost a round's premise, which is why the conversion is a named function with a
+// test rather than an expression at the format string.
+TEST(Tex1KDecode, TheFieldIsAlreadySignedAndScalesByASixteenth)
+{
+	GIFRegTEX1 t = {};
+
+	t.K = -32;
+	EXPECT_EQ(t.K, -32);
+	EXPECT_FLOAT_EQ(t.KLevels(), -2.0f);
+
+	t.K = -30;
+	EXPECT_FLOAT_EQ(t.KLevels(), -1.875f);
+
+	// The two ends of the twelve-bit field, and zero.
+	t.K = 2047;
+	EXPECT_FLOAT_EQ(t.KLevels(), 127.9375f);
+	t.K = -2048;
+	EXPECT_FLOAT_EQ(t.KLevels(), -128.0f);
+	t.K = 0;
+	EXPECT_FLOAT_EQ(t.KLevels(), 0.0f);
+
+	// What the second sign-extension did, stated so a revert fails here. -32 is the
+	// value the misread was found on, and -258 is what the context file printed.
+	t.K = -32;
+	const float doubled = static_cast<float>((static_cast<int>(t.K) ^ 0x800) - 0x800) / 16.0f;
+	EXPECT_NE(doubled, t.KLevels());
+	EXPECT_FLOAT_EQ(doubled, -258.0f);
+}
+
+// The renderer's own use of the field: `TEX1.K << 12` puts K into the 16.16 the LOD
+// walk carries, folding the sixteenth in (1/16 * 65536 = 4096). A doubly
+// sign-extended K would land 137 levels away from where the walk needs it.
+TEST(Tex1KDecode, TheRendererCarriesKAsSixteenPointSixteen)
+{
+	GIFRegTEX1 t = {};
+	t.K = -32;
+
+	const int k = static_cast<int>(t.K) << 12;
+
+	EXPECT_EQ(k, -131072);
+	EXPECT_FLOAT_EQ(static_cast<float>(k) / 65536.0f, t.KLevels());
+}
+
 } // namespace
 
 #endif // ARCH_ARM64
