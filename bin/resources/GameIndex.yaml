@@ -2037,8 +2037,7 @@ SCAJ-20125:
   name: "Tekken 5"
   region: "NTSC-Unk"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -2050,8 +2049,7 @@ SCAJ-20126:
   name: "Tekken 5"
   region: "NTSC-Unk"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -2579,8 +2577,7 @@ SCAJ-20199:
   name: "Tekken 5 [PlayStation2 the Best]"
   region: "NTSC-Unk"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -4292,8 +4289,7 @@ SCED-53538:
   name: "Tekken 5 [Demo]"
   region: "PAL-M5"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -5989,8 +5985,7 @@ SCES-53202:
   region: "PAL-M5"
   compat: 5
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -7586,8 +7581,7 @@ SCKA-20049:
   name-en: "Tekken 5"
   region: "NTSC-K"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -7870,8 +7864,7 @@ SCKA-20081:
   name-en: "Tekken 5 [PlayStation 2 BigHit Series]"
   region: "NTSC-K"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -10970,8 +10963,8 @@ SCPS-56016:
     autoFlush: 1 # Corrects shadows (Currently still broken even with this).
     getSkipCount: "GSC_DTGames"
 SCPS-72001:
-  name: "GRAN TURISMO 3 A-spec [MEGA HITS!]"
-  name-sort: "ぐらんつーりすも 3 A-spec [MEGA HITS!]"
+  name: "GRAN TURISMO3 A-spec [MEGA HITS!]"
+  name-sort: "ぐらんつーりすも3 A-spec [MEGA HITS!]"
   name-en: "Gran Turismo 3 - A-Spec [MEGA HITS!]"
   region: "NTSC-J"
   gsHWFixes: *gran-turismo-3-gs-fixes
@@ -14778,13 +14771,9 @@ SLES-50120:
   name: "Rumble Racing"
   region: "PAL-M3"
   compat: 5
-  gsHWFixes:
-    minimumBlendingLevel: 3 # Fixes car shadows.
 SLES-50121:
   name: "Rumble Racing"
   region: "PAL-Unk"
-  gsHWFixes:
-    minimumBlendingLevel: 3 # Fixes car shadows.
 SLES-50126:
   name: "Quake III - Revolution"
   region: "PAL-M3"
@@ -20917,6 +20906,9 @@ SLES-52584:
 SLES-52585:
   name: "Burnout 3 - Takedown"
   region: "PAL-F-G-I"
+  memcardFilters: # Used for storage of network information on the memory card.
+    - "SLES-52585"
+    - "PSCD-20001"
   clampModes:
     vuClampMode: 3 # Fixes buggy lighting in the garage.
   gsHWFixes:
@@ -23788,7 +23780,7 @@ SLES-53524:
   name: "Mortal Kombat - Shaolin Monks"
   region: "PAL-M5"
   clampModes:
-    eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
+    eeClampMode: 3 # Fixes stretched menu text: panel sizes come from divides that only mode 3 rounds like the console.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes effect alignment.
     autoFlush: 2 # Fixes bloom intensity
@@ -23796,7 +23788,7 @@ SLES-53525:
   name: "Mortal Kombat - Shaolin Monks"
   region: "PAL-G"
   clampModes:
-    eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
+    eeClampMode: 3 # Fixes stretched menu text: panel sizes come from divides that only mode 3 rounds like the console.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes effect alignment.
     autoFlush: 2 # Fixes bloom intensity
@@ -32236,6 +32228,9 @@ SLKA-25206:
   name: "번아웃3 테이크다운"
   name-en: "Burnout 3 - Takedown"
   region: "NTSC-K"
+  memcardFilters: # Used for storage of network information on the memory card.
+    - "SLKA-25206"
+    - "PSCD-30001"
   clampModes:
     vuClampMode: 3 # Fixes buggy lighting in the garage.
   gsHWFixes:
@@ -41509,7 +41504,7 @@ SLPM-65029:
   name-en: "Anime Eikaiwa - Tondemo Nezumi Daikatsuyaku"
   region: "NTSC-J"
 SLPM-65030:
-  name: "決戦&決戦II スーパーバリューセット [決戦ディスク]"
+  name: "決戦&決戦2 スーパーバリューセット [決戦ディスク]"
   name-sort: "けっせん&けっせん2 すーぱーばりゅーせっと [けっせんでぃすく]"
   name-en: "Kesse & Kessen2 Super Value Set [Kessen Disc]"
   region: "NTSC-J"
@@ -45477,6 +45472,9 @@ SLPM-65719:
   name-sort: "ばーんあうと3 ていくだうん"
   name-en: "Burnout 3 - Takedown"
   region: "NTSC-J"
+  memcardFilters: # Used for storage of network information on the memory card.
+    - "SLPM-65719"
+    - "PSCD-00004"
   clampModes:
     vuClampMode: 3 # Fixes buggy lighting in the garage.
   gsHWFixes:
@@ -58286,7 +58284,7 @@ SLPS-25138:
   region: "NTSC-J"
 SLPS-25139:
   name: "Baldur's Gate - DARK ALLIANCE - [限定版]"
-  name-sort: "ばるだーずげーと だーくあらいあんす 1[げんていばん]"
+  name-sort: "ばるだーずげーと だーくあらいあんす [げんていばん]"
   name-en: "Baldur's Gate - Dark Alliance [Limited Edition]"
   region: "NTSC-J"
   compat: 5
@@ -58297,7 +58295,7 @@ SLPS-25139:
     gpuPaletteConversion: 1 # Reduces hashcache size and improves performance.
 SLPS-25140:
   name: "Baldur's Gate - DARK ALLIANCE - [通常版]"
-  name-sort: "ばるだーずげーと だーくあらいあんす 1[つうじょうばん]"
+  name-sort: "ばるだーずげーと だーくあらいあんす [つうじょうばん]"
   name-en: "Baldur's Gate - Dark Alliance [Standard Edition]"
   region: "NTSC-J"
   gsHWFixes:
@@ -59163,7 +59161,7 @@ SLPS-25290:
     halfPixelOffset: 5 # Fixes alignment of shuffles and post-processing.
 SLPS-25291:
   name: "Baldur's Gate - DARK ALLIANCE - [PCCW Japan The BEST]"
-  name-sort: "ばるだーずげーと だーくあらいあんす 1[PCCW Japan The BEST]"
+  name-sort: "ばるだーずげーと だーくあらいあんす [PCCW Japan The BEST]"
   name-en: "Baldur's Gate - Dark Alliance [PCCW The Best]"
   region: "NTSC-J"
   compat: 5
@@ -60565,8 +60563,7 @@ SLPS-25510:
   region: "NTSC-J"
   compat: 5
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -60668,7 +60665,6 @@ SLPS-25529:
   gsHWFixes:
     halfPixelOffset: 4 # Aligns DoF effects.
     nativeScaling: 2 # Fixes post effects.
-    getSkipCount: "GSC_UltramanFightingEvolution"
 SLPS-25530:
   name: "餓狼伝 Breakblow"
   name-sort: "がろうでん Breakblow"
@@ -62406,7 +62402,6 @@ SLPS-25800:
   gsHWFixes:
     halfPixelOffset: 4 # Aligns DoF effects.
     nativeScaling: 2 # Fixes post effects.
-    getSkipCount: "GSC_UltramanFightingEvolution"
 SLPS-25801:
   name: "今日からマ王！ 眞マ国の休日"
   name-sort: "きょうからまおう しんまこくのきゅうじつ"
@@ -63903,8 +63898,7 @@ SLPS-73223:
   name-en: "Tekken 5 [PlayStation2 the Best]"
   region: "NTSC-J"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -65233,9 +65227,6 @@ SLUS-20173:
 SLUS-20174:
   name: "Rumble Racing"
   region: "NTSC-U"
-  compat: 5
-  gsHWFixes:
-    minimumBlendingLevel: 3 # Fixes car shadows.
 SLUS-20175:
   name: "Mobile Suit Gundam - Journey to Jaburo"
   region: "NTSC-U"
@@ -69725,8 +69716,6 @@ SLUS-21005:
   compat: 5
   gsHWFixes:
     autoFlush: 1 # Fixes effects.
-    cpuSpriteRenderBW: 2 # Fixes ghosting/trailing on hardware renderers (with autoFlush).
-    cpuSpriteRenderLevel: 2 # Needed for above.
     roundSprite: 1 # Fixes upscaling artifacts.
     halfPixelOffset: 5 # Fixes post bloom positioning.
     nativeScaling: 4 # Fixes lighting effects due to upscaling.
@@ -70051,7 +70040,7 @@ SLUS-21050:
   compat: 5
   memcardFilters: # Used for storage of network information on the memory card.
     - "SLUS-21050"
-    - "PSCD-10088"
+    - "PSCD10088"
   clampModes:
     vuClampMode: 3 # Fixes buggy lighting in the garage.
   gsHWFixes:
@@ -70106,8 +70095,7 @@ SLUS-21059:
   region: "NTSC-U"
   compat: 5
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -70259,7 +70247,7 @@ SLUS-21087:
   region: "NTSC-U"
   compat: 5
   clampModes:
-    eeClampMode: 3 # Full EE clamp — fixes geometry/effects.
+    eeClampMode: 3 # Fixes stretched menu text: panel sizes come from divides that only mode 3 rounds like the console.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes effect alignment.
     autoFlush: 2 # Fixes bloom intensity
@@ -70682,8 +70670,7 @@ SLUS-21160:
   name: "Tekken 5 [Demo]"
   region: "NTSC-U"
   clampModes:
-    eeClampMode: 3 # Fixes camera and stops constant coin noises on Pirates Cove.
-    vu1ClampMode: 2 # Fixes broken effects.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 4 # Align post.
@@ -73367,8 +73354,6 @@ SLUS-21588:
   name: "Avatar - The Last Airbender - The Burning Earth"
   region: "NTSC-U"
   compat: 5
-  gsHWFixes:
-    minimumBlendingLevel: 3 # Fixes missing lighting and skin color.
 SLUS-21589:
   name: "Pinball Hall of Fame - The Williams Collection"
   region: "NTSC-U"
@@ -74646,8 +74631,6 @@ SLUS-21804:
   name: "Avatar - The Last Airbender - Into the Inferno"
   region: "NTSC-U"
   compat: 5
-  gsHWFixes:
-    minimumBlendingLevel: 3 # Fixes missing lighting and skin color.
 SLUS-21805:
   name: "Hasbro Family Game Night"
   region: "NTSC-U"
