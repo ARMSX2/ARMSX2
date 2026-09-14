@@ -240,7 +240,9 @@ private extension Dictionary where Key == String, Value == Any {
     @objc @discardableResult
     static func handle(_ url: URL) -> Bool {
         Task { @MainActor in
-            _ = ARMSX2DeepLinkHandler.handle(url)
+            if !ARMSX2DeepLinkHandler.handle(url) {
+                FileImportHandler.shared.handleURL(url)
+            }
         }
         return true
     }
