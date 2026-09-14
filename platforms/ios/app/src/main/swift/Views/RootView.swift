@@ -163,6 +163,25 @@ struct RootView: View {
             Text(fileImporter.lastImportMessage ?? "")
         }
         .alert(
+            settings.localized("Restart VM?"),
+            isPresented: Binding(
+                get: { appState.pendingRestartGame != nil },
+                set: { if !$0 { appState.pendingRestartGame = nil } }
+            )
+        ) {
+            Button(settings.localized("Cancel"), role: .cancel) {
+                appState.pendingRestartGame = nil
+            }
+            Button(settings.localized("Restart"), role: .destructive) {
+                if let game = appState.pendingRestartGame {
+                    appState.shutdownAndBoot(isoName: game)
+                }
+                appState.pendingRestartGame = nil
+            }
+        } message: {
+            Text("\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(((appState.pendingRestartGame ?? "") as NSString).lastPathComponent)?")
+        }
+        .alert(
             settings.localized("BIOS"),
             isPresented: Binding(
                 get: { appState.bootDisclaimerMessage != nil },

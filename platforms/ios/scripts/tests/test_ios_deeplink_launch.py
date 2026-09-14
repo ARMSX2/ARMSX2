@@ -20,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 HANDLER = ROOT / "platforms/ios/app/src/main/swift/Models/ARMSX2DeepLinkHandler.swift"
 GAME_LIST = ROOT / "platforms/ios/app/src/main/swift/Views/GameListView.swift"
+APP_STATE = ROOT / "platforms/ios/app/src/main/swift/Models/AppState.swift"
+ROOT_VIEW = ROOT / "platforms/ios/app/src/main/swift/Views/RootView.swift"
 INFO = ROOT / "platforms/ios/app/src/main/cpp/Info.plist.in"
 
 LAUNCH_VERBS = ("launch", "boot", "play")
@@ -132,6 +134,24 @@ class DeepLinkLaunch(unittest.TestCase):
             '"armsx2://', menu,
             "the game list builds a launch link by hand, which can drift from what the "
             "handler accepts")
+
+    def test_a_link_asks_before_replacing_a_running_game(self):
+        """Booting under a live VM rewrites its settings and breaks its disc reads, so bootGame
+        hands a running game to the Restart VM prompt instead of booting over it."""
+        state = APP_STATE.read_text(encoding="utf-8")
+        start = state.find("    func bootGame(")
+        self.assertGreaterEqual(start, 0, "bootGame disappeared")
+        boot = state[start:state.find("\n    }\n", start)]
+        guard = boot.find("runningGameName != nil")
+        self.assertGreaterEqual(guard, 0, "bootGame no longer checks for a running game")
+        self.assertLess(
+            guard, boot.find("performBootGame("),
+            "bootGame can reach performBootGame before it checks for a running game, so a link "
+            "opened mid-game boots over it and every disc read after that fails")
+        self.assertIn("pendingRestartGame = isoName", boot, "a running game no longer raises the prompt")
+        self.assertIn(
+            "shutdownAndBoot(isoName:", ROOT_VIEW.read_text(encoding="utf-8"),
+            "the Restart VM prompt no longer restarts into the linked game")
 
     def test_the_accepted_schemes_and_the_registered_ones_are_the_same_set(self):
         """Both directions. A scheme in code but not in the plist is the quiet one: iOS never
