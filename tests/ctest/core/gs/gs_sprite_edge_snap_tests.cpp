@@ -246,29 +246,38 @@ TEST(GSSpriteEdgeSnap, ANeighbourStoredBackToFrontStillCounts)
 TEST(GSSpriteEdgeSnap, TheNativePushTakesASpriteThatIsOffTheGridAsAWhole)
 {
 	// The copy the push was written for: -0.5 .. 511.5, both edges half a pixel off.
-	EXPECT_TRUE(NativeSpritePushApplies(8, 8));
-	// Any shared fraction of a half or more, which the push scales its distance by.
-	EXPECT_TRUE(NativeSpritePushApplies(12, 12));
+	EXPECT_TRUE(NativeSpritePushApplies(8, 8, true));
+	EXPECT_TRUE(NativeSpritePushApplies(12, 12, true));
 }
 
 TEST(GSSpriteEdgeSnap, TheNativePushLeavesASpriteThatStartsOnAWholePixel)
 {
 	// Dirge of Cerberus's item text: 31.0 .. 41.9375, a far edge kept just short of the next
 	// pixel. Moving it by a sixteenth moves every texel one device pixel right at 2x.
-	EXPECT_FALSE(NativeSpritePushApplies(0, 15));
+	EXPECT_FALSE(NativeSpritePushApplies(0, 15, true));
 	// 0.0 .. 511.5 covers the same pixels as 0.0 .. 512.0 at native; there is nothing to move.
-	EXPECT_FALSE(NativeSpritePushApplies(0, 8));
+	EXPECT_FALSE(NativeSpritePushApplies(0, 8, true));
 }
 
-TEST(GSSpriteEdgeSnap, TheNativePushDoesNotCareWhichVertexComesFirst)
+TEST(GSSpriteEdgeSnap, TheNativePushKeepsFreelyPlacedSprites)
 {
-	EXPECT_EQ(NativeSpritePushApplies(15, 0), NativeSpritePushApplies(0, 15));
-	EXPECT_EQ(NativeSpritePushApplies(8, 0), NativeSpritePushApplies(0, 8));
-	EXPECT_EQ(NativeSpritePushApplies(8, 8), NativeSpritePushApplies(8, 8));
+	// Metal Gear Solid 3's HUD text, 362.3125 .. 443.0 wide with its two edges on different
+	// fractions: not on the grid, so it keeps the move it always had.
+	EXPECT_TRUE(NativeSpritePushApplies(5, 13, true));
+	EXPECT_TRUE(NativeSpritePushApplies(7, 14, true));
+}
+
+TEST(GSSpriteEdgeSnap, TheNativePushOnlyExemptsTheNearEdge)
+{
+	// A whole-pixel coordinate on the far vertex exempts nothing: a sprite sent far-first with
+	// its near edge three quarters into a pixel is still pushed.
+	EXPECT_TRUE(NativeSpritePushApplies(0, 12, false));
+	// Refused only because the second vertex carries no half fraction, as before the exemption.
+	EXPECT_FALSE(NativeSpritePushApplies(12, 0, false));
 }
 
 TEST(GSSpriteEdgeSnap, TheNativePushIgnoresFractionsUnderAHalf)
 {
-	EXPECT_FALSE(NativeSpritePushApplies(0, 0));
-	EXPECT_FALSE(NativeSpritePushApplies(4, 4));
+	EXPECT_FALSE(NativeSpritePushApplies(0, 0, true));
+	EXPECT_FALSE(NativeSpritePushApplies(4, 4, true));
 }

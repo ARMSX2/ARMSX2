@@ -130,17 +130,19 @@ namespace GSSpriteEdgeSnap
 	/// the first sprite. The move is (16 - fraction) sixteenths of a pixel, so it lands an edge
 	/// sitting half a pixel or more off the grid on the next whole pixel.
 	///
-	/// The move is for a sprite the game placed off the grid as a whole, both edges carrying the
-	/// same fraction -- the usual -0.5 .. 511.5 copy. A sprite that starts on a whole pixel and
-	/// only ends part way into one (31.0 .. 41.9375 keeps the last pixel out) is already on the
-	/// grid: at native it covers the same pixels as 31.0 .. 42.0. Moving it anyway shifts every
-	/// texel of it by one device pixel at 2x, which is what put Dirge of Cerberus's item text a
-	/// device pixel to the right.
+	/// A sprite whose near edge sits on a whole pixel is exempt. One that starts on a whole pixel
+	/// and only ends part way into the next (31.0 .. 41.9375 keeps the last pixel out) is already
+	/// on the grid: at native it covers the same pixels as 31.0 .. 42.0. Moving it anyway shifts
+	/// every texel of it by one device pixel at 2x, which is what put Dirge of Cerberus's item
+	/// text a device pixel to the right. Every other sprite keeps the move, including scaled and
+	/// freely placed ones whose two edges carry different fractions.
 	///
-	/// `frac0` and `frac1` are the 1/16 fractions of the sprite's two vertices on this axis,
-	/// relative to XYOFFSET, in either order.
-	inline constexpr bool NativeSpritePushApplies(int frac0, int frac1)
+	/// `frac0` and `frac1` are the 1/16 fractions of the sprite's first and second vertex on this
+	/// axis, relative to XYOFFSET; `first_is_near` says the first vertex is the lower coordinate.
+	inline constexpr bool NativeSpritePushApplies(int frac0, int frac1, bool first_is_near)
 	{
-		return (frac1 & 8) != 0 && frac0 == frac1;
+		if (first_is_near && frac0 == 0)
+			return false;
+		return (frac1 & 8) != 0;
 	}
 } // namespace GSSpriteEdgeSnap
