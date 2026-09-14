@@ -2597,6 +2597,9 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSLineWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
