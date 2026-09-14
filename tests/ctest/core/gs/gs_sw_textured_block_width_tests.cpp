@@ -30,6 +30,7 @@
 #ifdef ARCH_ARM64
 
 #include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
@@ -41,6 +42,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 
 #ifndef _WIN32
@@ -77,23 +79,88 @@ struct Reading
 	GSScanlineLocalData::blockstep dw[8][2];
 };
 
-// The rule, stated once and independently of either transcription of it. The value
-// at a pixel is the truncated seed, plus one truncated whole-block step for every
-// block boundary between it and the seed's block, plus the truncated gradient at
-// its own column inside the block measured from the seed's column. Nothing in it
-// mentions the host's vector.
-int BlockWalkModel(float c0, float dc, int x0, int x, int w)
+// The block phase these tests drive the walk at, where nothing sweeps it.
+constexpr int kPhase = 3;
+
+// This suite draws textured, so its block is four pixels wide -- GSBlockWalk.h.
+constexpr int kWidth = 4;
+
+// The walk the scanline rides. The rasterizer derives one per primitive from the
+// geometry (GSColourWalk.h) and hands it over in GSScanlineLocalData::cwalk; these
+// tests drive the scanline directly, so they build one from the gradient and a
+// chosen block phase and hand it over the same way.
+void MakeWalk(GSScanlineLocalData& local, const GSVertexSW& dscan, int phase)
 {
-	const int xb0 = x0 & ~(w - 1);
-	const int s = x0 - xb0;
-	const int m = (x - xb0) % w;
-	const int b = (x - xb0) / w;
+	// This suite's selector is MODULATE, so its block is FOUR pixels wide.
+	constexpr int kWidth = 4;
+
+	GSColourWalk& w = local.cwalk;
+
+	w = {};
+	w.d = 1;
+	w.top_anchor = 1;
+	w.S = phase;
+	w.A = phase + 2;
+	w.live = 1;
+
+	GSColourWalkGradientInit(w.c, GSColourWalkTruncUnit(dscan.c), GSVector4::zero(),
+		GSVector4::zero(), GSVector4::zero(), kWidth, w.S, w.d);
+	GSColourWalkGradientInit(w.f, GSColourWalkTruncUnit(dscan.t.wwww()), GSVector4::zero(),
+		GSVector4::zero(), GSVector4::zero(), kWidth, w.S, w.d);
+}
+
+// The rule, stated once and independently of either transcription of it.
+//
+// A draw interpolates a w-pixel block at a time, and the blocks are pinned to
+// absolute screen x. Inside a block the value ramps by gc, the gradient truncated
+// to a multiple of eight colour units, and makes the rest up in one jump of
+// dw = w*(g - gc) at the block boundary; w of those ramps and one jump is exactly
+// w*g. So a pixel's value is the truncated seed, plus the ramp out to it, plus
+// the jumps of every block boundary between it and the seed's block.
+//
+// At w = 4 that jump is half a colour unit, which the scanline's whole-unit lanes
+// cannot hold, so what it actually carries is the jump ACCUMULATED and then
+// truncated -- floor(dw*b) for the block index b, whose increments alternate
+// between floor(dw) and ceil(dw) and whose pairs sum to 2*dw exactly. This models
+// that, because that is what the renderer can do; GSColourWalk.h says what the
+// remaining half unit costs against the console.
+//
+// w is a parameter so that the separation control below can ask what the OTHER
+// width would have said; every measurement here is at four, because these draws
+// are textured.
+int WalkModel(float c0, float dc, int phase, int x0, int x, int w = kWidth)
+{
+	const float fw = static_cast<float>(w);
+	const float g = std::trunc(dc * kColorScale * 8.0f) * 0.125f;
+	// The ramp's grid is eight colour units at either width -- only the block
+	// period and the jump that closes it move with w.
+	const float gc = std::trunc(g * 0.125f) * 8.0f;
+	const float dw = (g - gc) * fw;
+
+	// How many whole blocks a pixel sits from the grid origin the harness set,
+	// floor-divided. The origin is the walk's S, not S reduced into one block:
+	// the truncation below anchors on the block's parity, so a constant offset of
+	// one block is not a constant at all.
+	const auto blk = [phase, w](int q) {
+		const int n = q - phase;
+		return (n >= 0) ? (n / w) : -((-n + w - 1) / w);
+	};
+	// FLOOR, not truncation toward zero: a block index behind the grid's origin is
+	// negative, and toward zero the alternation breaks at the sign change.
+	const auto jump = [dw](int b) { return static_cast<int>(std::floor(dw * static_cast<float>(b))); };
 
 	const int seed = static_cast<int>(c0 * kColorScale);
-	const int block = static_cast<int>(dc * kColorScale * static_cast<float>(w));
-	const int lane = static_cast<int>(dc * kColorScale * static_cast<float>(m - s));
 
-	return (seed + b * block + lane) >> 7;
+	return (seed + static_cast<int>(gc) * (x - x0) + jump(blk(x)) - jump(blk(x0))) >> 7;
+}
+
+/// What EIGHT pixels advance by, in the packed table's low 16 bits -- two blocks
+/// at this suite's width, and what the two phases of a step pair have to sum to
+/// however the vectors divide them.
+u32 BlockStep(float dc)
+{
+	const float g = std::trunc(dc * kColorScale * 8.0f) * 0.125f;
+	return static_cast<u32>(static_cast<int>(g * 8.0f)) & 0xffff;
 }
 
 class SwTexturedBlockWidthTest : public ::testing::Test
@@ -240,7 +307,7 @@ protected:
 	}
 
 	static void Run(GSScanlineSelector sel, SetupPrimPtr setup, DrawScanlinePtr draw,
-		const Span& span, const GSVector4& dt, int left, int pixels, Reading& out)
+		const Span& span, const GSVector4& dt, int left, int pixels, Reading& out, int phase)
 	{
 		u32* vm32 = s_mem->vm32();
 		for (int x = 0; x < kRowPixels; x++)
@@ -276,6 +343,13 @@ protected:
 
 		setup(vertex, index, dscan, local);
 
+		// The colour tables are no longer the setup's to build: the rasterizer
+		// builds them from the primitive's walk right after calling it
+		// (GSColourWalk.h). These tests drive the scanline directly, so they hand
+		// over a walk of their own and build the tables the same way.
+		MakeWalk(local, dscan, phase);
+		isa_native::GSDrawScanline::SetupColourWalkTables(local);
+
 		out.d4c = local.d4.c;
 		out.d4stq = local.d4.stq;
 		std::memcpy(out.dw, local.dw, sizeof(out.dw));
@@ -289,7 +363,7 @@ protected:
 			out.px[x] = vm32[PixelAddr(x, 0)];
 	}
 
-	static bool RunJit(bool notest, const Span& span, const GSVector4& dt, int left, int pixels, Reading& out)
+	static bool RunJit(bool notest, const Span& span, const GSVector4& dt, int left, int pixels, Reading& out, int phase = kPhase)
 	{
 		const int slot = notest ? 1 : 0;
 		if (!s_setup[slot])
@@ -302,15 +376,15 @@ protected:
 		if (!s_setup[slot] || !s_draw[slot])
 			return false;
 
-		Run(s_sel[slot], s_setup[slot], s_draw[slot], span, dt, left, pixels, out);
+		Run(s_sel[slot], s_setup[slot], s_draw[slot], span, dt, left, pixels, out, phase);
 		return true;
 	}
 
-	static void RunCpp(bool notest, const Span& span, const GSVector4& dt, int left, int pixels, Reading& out)
+	static void RunCpp(bool notest, const Span& span, const GSVector4& dt, int left, int pixels, Reading& out, int phase = kPhase)
 	{
 		Run(MakeSelector(notest), &isa_native::GSDrawScanline::CSetupPrim,
 			static_cast<DrawScanlinePtr>(&isa_native::GSDrawScanline::CDrawScanline),
-			span, dt, left, pixels, out);
+			span, dt, left, pixels, out, phase);
 	}
 
 	static GSScanlineSelector s_sel[2];
@@ -341,7 +415,9 @@ constexpr Span kAgreeingSpan = {40.0f, 90.0f, 60.0f, 120.0f, 1.0f, -2.0f, 3.0f, 
 
 // The separation, checked before anything is scored against it: a test that cannot
 // tell four from eight proves nothing when it passes. This is a property of the
-// model alone, so it holds whatever the renderer does.
+// model alone, so it holds whatever the renderer does. gs-walk2 makes the same
+// check on the console: 1,888 of its 21,408 textured RGB readings per set
+// separate the two widths, and they pick four.
 TEST_F(SwTexturedBlockWidthTest, TheSeparatingSpanReallySeparatesFourFromEight)
 {
 	int differing = 0;
@@ -350,8 +426,8 @@ TEST_F(SwTexturedBlockWidthTest, TheSeparatingSpanReallySeparatesFourFromEight)
 	{
 		for (int x = left; x < 40; x++)
 		{
-			if (BlockWalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, left, x, 4)
-				!= BlockWalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, left, x, 8))
+			if (WalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, kPhase, left, x, 4)
+				!= WalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, kPhase, left, x, 8))
 			{
 				differing++;
 			}
@@ -361,27 +437,32 @@ TEST_F(SwTexturedBlockWidthTest, TheSeparatingSpanReallySeparatesFourFromEight)
 	EXPECT_GT(differing, 0) << "the separating span does not separate the two widths";
 }
 
-// The rule. A textured draw's block is eight pixels wide, and on this host that is
-// two vectors of the alternating pair.
-TEST_F(SwTexturedBlockWidthTest, ATexturedGouraudSpanWalksInEightPixelBlocks)
+// The rule. A textured draw's block is FOUR pixels wide -- one vector on this
+// host, so its alternating pair comes out a pair of equal steps.
+TEST_F(SwTexturedBlockWidthTest, ATexturedGouraudSpanWalksInFourPixelBlocks)
 {
-	for (int left = 0; left < 8; left++)
+	// Every phase, because the coarse ramp's one jump sits at the phase and a
+	// single phase would hide where it lands.
+	for (int phase = 0; phase < 8; phase++)
 	{
-		Reading jit;
-		ASSERT_TRUE(RunJit(false, kSeparatingSpan, GSVector4::zero(), left, 40 - left, jit));
-
-		for (int x = left; x < 40; x++)
+		for (int left = 0; left < 8; left++)
 		{
-			SCOPED_TRACE(testing::Message() << "left " << left << " pixel " << x);
+			Reading jit;
+			ASSERT_TRUE(RunJit(false, kSeparatingSpan, GSVector4::zero(), left, 40 - left, jit, phase));
 
-			EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff),
-				BlockWalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, left, x, 8)) << "red";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff),
-				BlockWalkModel(kSeparatingSpan.g0, kSeparatingSpan.dg, left, x, 8)) << "green";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff),
-				BlockWalkModel(kSeparatingSpan.b0, kSeparatingSpan.db, left, x, 8)) << "blue";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff),
-				BlockWalkModel(kSeparatingSpan.a0, kSeparatingSpan.da, left, x, 8)) << "alpha";
+			for (int x = left; x < 40; x++)
+			{
+				SCOPED_TRACE(testing::Message() << "phase " << phase << " left " << left << " pixel " << x);
+
+				EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff),
+					WalkModel(kSeparatingSpan.r0, kSeparatingSpan.dr, phase, left, x)) << "red";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff),
+					WalkModel(kSeparatingSpan.g0, kSeparatingSpan.dg, phase, left, x)) << "green";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff),
+					WalkModel(kSeparatingSpan.b0, kSeparatingSpan.db, phase, left, x)) << "blue";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff),
+					WalkModel(kSeparatingSpan.a0, kSeparatingSpan.da, phase, left, x)) << "alpha";
+			}
 		}
 	}
 }
@@ -400,17 +481,17 @@ TEST_F(SwTexturedBlockWidthTest, AGradientOnTheGridIsTheSameWalkAtEitherWidth)
 		{
 			SCOPED_TRACE(testing::Message() << "left " << left << " pixel " << x);
 
-			ASSERT_EQ(BlockWalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, left, x, 4),
-				BlockWalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, left, x, 8));
+			ASSERT_EQ(WalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, kPhase, left, x, 4),
+				WalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, kPhase, left, x, 8));
 
 			EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff),
-				BlockWalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, left, x, 8)) << "red";
+				WalkModel(kAgreeingSpan.r0, kAgreeingSpan.dr, kPhase, left, x)) << "red";
 			EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff),
-				BlockWalkModel(kAgreeingSpan.g0, kAgreeingSpan.dg, left, x, 8)) << "green";
+				WalkModel(kAgreeingSpan.g0, kAgreeingSpan.dg, kPhase, left, x)) << "green";
 			EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff),
-				BlockWalkModel(kAgreeingSpan.b0, kAgreeingSpan.db, left, x, 8)) << "blue";
+				WalkModel(kAgreeingSpan.b0, kAgreeingSpan.db, kPhase, left, x)) << "blue";
 			EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff),
-				BlockWalkModel(kAgreeingSpan.a0, kAgreeingSpan.da, left, x, 8)) << "alpha";
+				WalkModel(kAgreeingSpan.a0, kAgreeingSpan.da, kPhase, left, x)) << "alpha";
 		}
 	}
 }
@@ -440,10 +521,10 @@ TEST_F(SwTexturedBlockWidthTest, TheTwoPhasesOfATexturedStepSumToTheBlockStep)
 
 				SCOPED_TRACE(testing::Message() << "dr " << dr << " s " << s << " lane " << lane);
 
-				EXPECT_EQ((rb0 + rb1) & 0xffff, jit.d4c.U32[0] & 0xffff) << "red";
-				EXPECT_EQ(((rb0 >> 16) + (rb1 >> 16)) & 0xffff, (jit.d4c.U32[0] >> 16) & 0xffff) << "blue";
-				EXPECT_EQ((ga0 + ga1) & 0xffff, jit.d4c.U32[1] & 0xffff) << "green";
-				EXPECT_EQ(((ga0 >> 16) + (ga1 >> 16)) & 0xffff, (jit.d4c.U32[1] >> 16) & 0xffff) << "alpha";
+				EXPECT_EQ((rb0 + rb1) & 0xffff, BlockStep(span.dr)) << "red";
+				EXPECT_EQ(((rb0 >> 16) + (rb1 >> 16)) & 0xffff, BlockStep(span.db)) << "blue";
+				EXPECT_EQ((ga0 + ga1) & 0xffff, BlockStep(span.dg)) << "green";
+				EXPECT_EQ(((ga0 >> 16) + (ga1 >> 16)) & 0xffff, BlockStep(span.da)) << "alpha";
 			}
 		}
 	}

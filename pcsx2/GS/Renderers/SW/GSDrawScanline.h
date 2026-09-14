@@ -46,6 +46,12 @@ public:
 	/// Draw pre-calculations, computed per-thread.
 	static void BeginDraw(const GSRasterizerData& data, GSScanlineLocalData& local);
 
+	/// The scanline's colour and fog tables, built from local.cwalk -- the walk
+	/// the setup decided for this primitive (GSColourWalk.h). Neither CSetupPrim
+	/// nor the generated SetupPrim builds them any more, so the rasterizer calls
+	/// this right after every one of them.
+	static void SetupColourWalkTables(GSScanlineLocalData& local);
+
 	/// Not currently jitted.
 	static void DrawRect(const GSVector4i& r, const GSVertexSW& v, GSScanlineLocalData& local);
 

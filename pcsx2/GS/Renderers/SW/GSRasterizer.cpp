@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDepthWalk.h"
 #include "GS/GSExtra.h"
@@ -371,7 +372,7 @@ void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u
 			{
 				if (IsOneOfMyScanlines(p.y))
 				{
-					m_setup_prim(vertex, index, GSVertexSW::zero(), m_local);
+					SetupPrim(vertex, index, GSVertexSW::zero(), false);
 
 					DrawScanline(1, p.x, p.y, v);
 				}
@@ -392,7 +393,7 @@ void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u
 			{
 				if (IsOneOfMyScanlines(p.y))
 				{
-					m_setup_prim(vertex, tmp_index, GSVertexSW::zero(), m_local);
+					SetupPrim(vertex, tmp_index, GSVertexSW::zero(), false);
 
 					DrawScanline(1, p.x, p.y, v);
 				}
@@ -771,7 +772,7 @@ void GSRasterizer::DrawLine(const GSVertexSW* vertex, const u16* index)
 
 	DrawEdgeLine(v0, v1, dv, HasEdge());
 
-	Flush(vertex, index, GSVertexSW::zero(), HasEdge());
+	Flush(vertex, index, GSVertexSW::zero(), false, HasEdge());
 
 	return;
 }
@@ -906,9 +907,12 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	}
 
 	// GSVertexSW2 is GSVertexSW with t and c fused into one vector at the same
-	// offsets, so the walk setup reads both through the scalar view.
+	// offsets, so the walk setup reads both through the scalar view. The block is
+	// eight pixels wide only when texturing, fog and AA1 are all off -- GSBlockWalk.h.
 	GSSetupColourWalk(vertex[i[0]], vertex[i[1]], vertex[i[2]],
 		reinterpret_cast<const GSVertexSW&>(dscan), reinterpret_cast<const GSVertexSW&>(dedge),
+		GSBlockWalkWidth(m_local.gd->sel.tfx != TFX_NONE, m_local.gd->sel.fge != 0,
+			m_local.gd->sel.aa1 != 0),
 		m_local.cwalk);
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], dscan.p.F64[1], dedge.p.F64[1]);
@@ -960,7 +964,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		}
 	}
 
-	Flush(vertex, index, (GSVertexSW&)dscan);
+	Flush(vertex, index, (GSVertexSW&)dscan, true);
 
 	if (HasEdge())
 	{
@@ -998,7 +1002,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		DrawEdgeTriangle((GSVertexSW&)v0, (GSVertexSW&)v2, (GSVertexSW&)dv1, f2, f0, tl1);
 		DrawEdgeTriangle((GSVertexSW&)v1, (GSVertexSW&)v2, (GSVertexSW&)dv2, f0, f1, tl2);
 
-		Flush(vertex, index, GSVertexSW::zero(), true);
+		Flush(vertex, index, GSVertexSW::zero(), false, true);
 	}
 }
 
@@ -1089,7 +1093,7 @@ struct GSTriangleSetup
 };
 
 __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
-	GSTriangleSetup& out, GSColourWalk& cwalk)
+	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1202,7 +1206,7 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	// One anchor, one walk direction and one block grid for the whole primitive,
 	// both sections included. GSColourWalk.h carries the rules and what decided
 	// each of them.
-	GSSetupColourWalk(v0, v1, v2, out.dscan, dedge, cwalk);
+	GSSetupColourWalk(v0, v1, v2, out.dscan, dedge, block_width, cwalk);
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], out.dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(out.dscan.p);
@@ -1279,8 +1283,15 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 {
 	m_primcount++;
 
+	// The block is eight pixels wide only when texturing, fog and AA1 are all off,
+	// and four if any one of them is on -- GSBlockWalk.h. Everything else about the
+	// walk is the same at either width, and fog rides the same DDA as colour so it
+	// takes the same width.
+	const GSScanlineSelector sel = m_local.gd->sel;
+	const int block_width = GSBlockWalkWidth(sel.tfx != TFX_NONE, sel.fge != 0, sel.aa1 != 0);
+
 	GSTriangleSetup s;
-	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk))
+	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)
@@ -1289,7 +1300,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			s.ledge[n]);
 	}
 
-	Flush(vertex, index, s.dscan);
+	Flush(vertex, index, s.dscan, true);
 
 	if (HasEdge())
 	{
@@ -1338,7 +1349,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		DrawEdgeTriangle(v0, v2, dv1, f2, f0, tl1);
 		DrawEdgeTriangle(v1, v2, dv2, f0, f1, tl2);
 
-		Flush(vertex, index, GSVertexSW::zero(), true);
+		Flush(vertex, index, GSVertexSW::zero(), false, true);
 	}
 }
 
@@ -1485,7 +1496,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
-	m_setup_prim(vertex, index, dscan, m_local);
+	SetupPrim(vertex, index, dscan, false);
 
 	while (1)
 	{
@@ -1706,7 +1717,16 @@ void GSRasterizer::AddScanline(GSVertexSW* e, int pixels, int left, int top, con
 	AddScanlineInfo(e, pixels, left, top);
 }
 
-void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool edge /* = false */)
+void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live)
+{
+	m_local.cwalk.live = cwalk_live ? 1 : 0;
+
+	m_setup_prim(vertex, index, dscan, m_local);
+
+	GSDrawScanline::SetupColourWalkTables(m_local);
+}
+
+void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live, bool edge /* = false */)
 {
 	// TODO: on win64 this could be the place where xmm6-15 are preserved (not by each DrawScanline)
 
@@ -1714,7 +1734,7 @@ void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVer
 
 	if (count > 0)
 	{
-		m_setup_prim(vertex, index, dscan, m_local);
+		SetupPrim(vertex, index, dscan, cwalk_live);
 
 		const GSVertexSW* RESTRICT e = m_edge.buff;
 		const GSVertexSW* RESTRICT ee = e + count;

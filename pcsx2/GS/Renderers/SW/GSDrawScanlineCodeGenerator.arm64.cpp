@@ -217,13 +217,11 @@ void GSDrawScanlineCodeGenerator::Generate()
 
 void GSDrawScanlineCodeGenerator::Init()
 {
-	if (m_block_split)
-	{
-		// Which half of its eight-pixel block this span starts in decides which
-		// of the two alternating steps it begins on, so it is read off the true
-		// left edge before the vector alignment rounds that down.
-		armAsm->And(w9, _left, 7);
-	}
+	// Where this span starts inside its eight-pixel BLOCK indexes the colour and
+	// fog lane tables, and on a four-lane host it also decides which of the two
+	// alternating steps the walk begins on. Read off the true left edge, before
+	// the vector alignment rounds it down. See GSColourWalk.h.
+	armAsm->And(w9, _left, 7);
 
 	if (!m_sel.notest)
 	{
@@ -274,26 +272,29 @@ void GSDrawScanlineCodeGenerator::Init()
 	armAsm->Lsl(w8, w6, 1); // *2
 	armAsm->Add(x8, _scratchaddr, x8);
 
+	// x26 = &m_local.d[left & 7]. The colour and fog inits below read their lane
+	// offsets from there, and at the end of Init it is moved on to
+	// &m_local.dw[left & 7][0], where Step walks the alternating pair -- x27 is
+	// the signed hop to the other phase, so stepping is one add and one negate
+	// and needs no assumption about how the local data happens to be aligned.
+	//
+	// The shift is the row stride of BOTH tables, hard-coded. Pin all three: a
+	// fifth GSVector4i in skip or in blockstep, or a third phase, would silently
+	// index the wrong row.
+	static_assert(sizeof(GSScanlineLocalData::skip) == 128);
+	static_assert(sizeof(GSScanlineLocalData::blockstep) == 64);
+	static_assert(sizeof(GSScanlineLocalData::dw[0]) == 128);
+	static_assert(offsetof(GSScanlineLocalData, d) == 0);
+	armAsm->Add(_block_ptr, _locals, Operand(x9, LSL, 7));
+
 	if (m_block_split)
-	{
-		// x26 = &m_local.dw[left & 7][0], x27 = the signed hop to the other phase.
-		// Stepping is then one add and one negate, which needs no assumption
-		// about how the local data happens to be aligned.
-		//
-		// The shift below is the row stride of dw, hard-coded. Pin both halves of
-		// it: a fifth GSVector4i in blockstep, or a third phase, would silently
-		// index the wrong row.
-		static_assert(sizeof(GSScanlineLocalData::blockstep) == 64);
-		static_assert(sizeof(GSScanlineLocalData::dw[0]) == 128);
-		armAsm->Add(_block_ptr, _locals, Operand(x9, LSL, 7));
-		armAsm->Add(_block_ptr, _block_ptr, OFFSETOF(GSScanlineLocalData, dw));
 		armAsm->Mov(_block_hop, sizeof(GSScanlineLocalData::blockstep));
-	}
 
-	if ((m_sel.prim != GS_SPRITE_CLASS && ((m_sel.fwrite && m_sel.fge) || m_sel.zb)) || (m_sel.fb && (m_sel.edge || m_sel.tfx != TFX_NONE || m_sel.iip)))
+	// w1 = &m_local.d[skip], for the lanes still indexed by the span's position
+	// inside the VECTOR: depth and the texture coordinate. Colour and fog take
+	// _block_ptr instead.
+	if ((m_sel.prim != GS_SPRITE_CLASS && m_sel.zb) || (m_sel.fb && m_sel.tfx != TFX_NONE))
 	{
-		// w1 = &m_local.d[skip]
-
 		armAsm->Lsl(w1, w1, 3); // *8
 		armAsm->Add(x1, x1, _locals);
 		static_assert(offsetof(GSScanlineLocalData, d) == 0);
@@ -307,10 +308,11 @@ void GSDrawScanlineCodeGenerator::Init()
 
 			if (m_sel.fwrite && m_sel.fge)
 			{
-				// f = GSVector4i(v.t).zzzzh().zzzz().add16(m_local.d[skip].f);
+				// f = GSVector4i(v.t).zzzzh().zzzz().add16(m_local.d[left & 7].f);
 				armAsm->Ldr(_temp_f.S(), MemOperand(_v, offsetof(GSVertexSW, t.w)));
-				armAsm->Ldr(_vscratch, MemOperand(x1, offsetof(GSScanlineLocalData::skip, f)));
-				armAsm->Ldr(_d4_f, _local(d4.f));
+				armAsm->Ldr(_vscratch, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::skip, f)));
+				if (!m_block_split)
+					armAsm->Ldr(_d4_f, _local(d4.f));
 
 				armAsm->Fcvtzs(_temp_f.S(), _temp_f.S());
 				armAsm->Dup(_temp_f.V8H(), _temp_f.V8H(), 0);
@@ -444,8 +446,8 @@ void GSDrawScanlineCodeGenerator::Init()
 				// GSVector4i vc = GSVector4i(v.c);
 
 				armAsm->Ldr(v6, MemOperand(_v, offsetof(GSVertexSW, c)));
-				armAsm->Ldr(v1, MemOperand(x1, offsetof(GSScanlineLocalData::skip, rb)));
-				armAsm->Ldr(_vscratch, MemOperand(x1, offsetof(GSScanlineLocalData::skip, ga)));
+				armAsm->Ldr(v1, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::skip, rb)));
+				armAsm->Ldr(_vscratch, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::skip, ga)));
 				armAsm->Fcvtzs(v6.V4S(), v6.V4S());
 
 				// vc = vc.upl16(vc.zwxy());
@@ -462,7 +464,8 @@ void GSDrawScanlineCodeGenerator::Init()
 				armAsm->Add(_temp_rb.V8H(), _temp_rb.V8H(), v1.V8H());
 				armAsm->Add(_temp_ga.V8H(), _temp_ga.V8H(), _vscratch.V8H());
 
-				armAsm->Ldr(_d4_c, _local(d4.c));
+				if (!m_block_split)
+					armAsm->Ldr(_d4_c, _local(d4.c));
 			}
 			else
 			{
@@ -498,6 +501,11 @@ void GSDrawScanlineCodeGenerator::Init()
 	// in GSDrawScanline.cpp's WriteFrame. fmt 3 is not a frame-buffer format.
 	if (m_sel.dthe && m_sel.fpsm != 3)
 		armAsm->Ldr(_global_dimx, _global(dimx));
+
+	// Every lane-offset load is done; hand the cursor over to Step, which walks
+	// the alternating pair. dw has the same row stride as d, so this is one add.
+	if (m_block_split)
+		armAsm->Add(_block_ptr, _block_ptr, OFFSETOF(GSScanlineLocalData, dw));
 }
 
 void GSDrawScanlineCodeGenerator::Step()
@@ -1552,7 +1560,7 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 
 			if (!m_sel.tcc)
 			{
-				armAsm->Ushr(v4.V8H(), _temp_ga.V8H(), 7);
+				walkColorByte(v4, _temp_ga);
 
 				mix16(v6, v4, v3);
 			}
@@ -1567,7 +1575,7 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 			{
 				// GSVector4i ga = iip ? gaf : m_local.c.ga;
 
-				armAsm->Ushr(v4.V8H(), _temp_ga.V8H(), 7);
+				walkColorByte(v4, _temp_ga);
 				mix16(v6, v4, v3);
 			}
 
@@ -1578,7 +1586,7 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 			// GSVector4i ga = iip ? gaf : m_local.c.ga;
 
 			// gat = gat.mix16(!tcc ? ga.srl16(7) : gat.addus8(ga.srl16(7)));
-			armAsm->Ushr(v4.V8H(), _temp_ga.V8H(), 7);
+			walkColorByte(v4, _temp_ga);
 
 			if (m_sel.tcc)
 				armAsm->Uqadd(v4.V16B(), v4.V16B(), v6.V16B());
@@ -1594,7 +1602,7 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 			if (!m_sel.tcc)
 			{
 				// GSVector4i ga = iip ? gaf : m_local.c.ga;
-				armAsm->Ushr(v4.V8H(), _temp_ga.V8H(), 7);
+				walkColorByte(v4, _temp_ga);
 
 				mix16(v6, v4, v3);
 			}
@@ -1606,7 +1614,7 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 			// gat = iip ? ga.srl16(7) : ga;
 
 			if (m_sel.iip)
-				armAsm->Ushr(v6.V8H(), _temp_ga.V8H(), 7);
+				walkColorByte(v6, _temp_ga);
 			else
 				armAsm->Mov(v6, _temp_ga);
 
@@ -1794,7 +1802,7 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 			// rbt = iip ? rb.srl16(7) : rb;
 
 			if (m_sel.iip)
-				armAsm->Ushr(v5.V8H(), _temp_rb.V8H(), 7);
+				walkColorByte(v5, _temp_rb);
 			else
 				armAsm->Mov(v5, _temp_rb);
 
@@ -1809,16 +1817,25 @@ void GSDrawScanlineCodeGenerator::Fog()
 		return;
 	}
 
-	// rb = m_local.gd->frb.lerp16<0>(rb, f);
-	// ga = m_local.gd->fga.lerp16<0>(ga, f).mix16(ga);
+	// rb = m_local.gd->frb.lerp16<0>(rb, floor(f));
+	// ga = m_local.gd->fga.lerp16<0>(ga, floor(f)).mix16(ga);
+	//
+	// The blend receives an INTEGER F -- see the C++ twin in GSDrawScanline.cpp
+	// for the console reading and for why lerp16<0> is already the 256 - F floor
+	// rule. storedVertexColor is that truncation and the pack's own saturation in
+	// one: fog rides the colour DDA, so a fog lane the walk has carried below zero
+	// saturates to 0 exactly as a colour lane does. It goes to a scratch because
+	// _temp_f is the walk's own accumulator and Step carries it on with its
+	// fraction intact.
+	storedVertexColor(_vscratch3, _temp_f);
 
 	armAsm->Dup(_vscratch.V4S(), _global_frb);
 	armAsm->Dup(_vscratch2.V4S(), _global_fga);
 	armAsm->Mov(v1, v6);
 
-	lerp16(v5, _vscratch, _temp_f, 0);
+	lerp16(v5, _vscratch, _vscratch3, 0);
 
-	lerp16(v6, _vscratch2, _temp_f, 0);
+	lerp16(v6, _vscratch2, _vscratch3, 0);
 	mix16(v6, v1, v0);
 }
 
@@ -2523,13 +2540,28 @@ void GSDrawScanlineCodeGenerator::modulate16(const VRegister& d, const VRegister
 	}
 }
 
+// The walk's carried colour, as the byte the GS stores. SQSHRUN is the exact
+// instruction for it: signed shift right by seven, then UNSIGNED saturating
+// narrow -- so a lane the walk has carried below zero saturates to 0 instead of
+// becoming 511 through a logical shift, and UXTL puts the eight lanes back at
+// sixteen bits for the arithmetic that follows. The unsigned saturation at the
+// top is free rather than a change: 32767 >> 7 is already 255.
+//
+// The walk itself is untouched. Clamping what it CARRIES was measured and the
+// console refused it -- see the C++ twin in GSDrawScanline.cpp.
+void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegister& c)
+{
+	armAsm->Sqshrun(d.V8B(), c.V8H(), 7);
+	armAsm->Uxtl(d.V8H(), d.V8B());
+}
+
 // The eight-bit colour the GS stores, put back on the seven-fraction grid the
 // modulate expects. The texture function multiplies the stored byte, never the
 // wider value the DDA carries -- console-measured, and the same rule
 // GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
-	armAsm->Ushr(d.V8H(), c.V8H(), 7);
+	walkColorByte(d, c);
 	armAsm->Shl(d.V8H(), d.V8H(), 7);
 }
 

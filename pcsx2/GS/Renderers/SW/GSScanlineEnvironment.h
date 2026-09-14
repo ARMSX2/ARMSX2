@@ -234,11 +234,15 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 
 #else
 
-	struct skip { GSVector4 z, s, t, q; GSVector4i rb, ga, f, _pad; } d[4];
+	// Eight entries, not four. z, s, t and q are indexed by the span's position
+	// inside the VECTOR (left & 3) and only use the first four; colour and fog
+	// are indexed by its position inside the eight-pixel BLOCK (left & 7) and use
+	// all eight. See GSColourWalk.h.
+	struct skip { GSVector4 z, s, t, q; GSVector4i rb, ga, f, _pad; } d[8];
 	struct step { GSVector4 z, stq; GSVector4i c, f; } d4;
 	// Every draw walks an eight-pixel block, which is two vectors here, so its
-	// per-vector step alternates -- see GSBlockWalk.h. Indexed by the span's
-	// position inside its block (x0 & 7) and then by phase; the two phases of a
+	// per-vector step alternates -- see GSColourWalk.h. Indexed by the span's
+	// position inside its block (left & 7) and then by phase; the two phases of a
 	// pair sum to the whole block step, and the walk starts at phase 0 and
 	// toggles.
 	struct blockstep { GSVector4i rb, ga, f, _pad; } dw[8][2];
@@ -341,23 +345,9 @@ struct alignas(64) GSScanlineConstantData128B
 		{ -2.0f , -1.0f , 0.0f  , 1.0f},
 		{ -3.0f , -2.0f , -1.0f , 0.0f},
 	};
-	// A draw walks an EIGHT-pixel block (GSBlockWalk.h), which is two vectors
-	// here. Building the alternating step needs the lane offsets of the half
-	// after this one and of the half before it, as well as m_shift's own, plus
-	// the whole block step.
-	alignas(16) float m_block8[4] = {8.0f, 8.0f, 8.0f, 8.0f};
-	alignas(16) float m_shift_next[4][4] = { // 4 + lane - skip
-		{ 4.0f  , 5.0f  , 6.0f  , 7.0f},
-		{ 3.0f  , 4.0f  , 5.0f  , 6.0f},
-		{ 2.0f  , 3.0f  , 4.0f  , 5.0f},
-		{ 1.0f  , 2.0f  , 3.0f  , 4.0f},
-	};
-	alignas(16) float m_shift_prev[4][4] = { // lane - 4 - skip
-		{ -4.0f , -3.0f , -2.0f , -1.0f},
-		{ -5.0f , -4.0f , -3.0f , -2.0f},
-		{ -6.0f , -5.0f , -4.0f , -3.0f},
-		{ -7.0f , -6.0f , -5.0f , -4.0f},
-	};
+	// The colour and fog block steps are not built from constants any more: they
+	// are integers computed once per primitive from GSColourWalk, so the three
+	// lane tables and the broadcast eight that used to live here are gone.
 	alignas(16) float m_log2_coef[4][4] = {};
 
 	constexpr GSScanlineConstantData128B()
