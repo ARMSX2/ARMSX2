@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/SW/GSRendererSW.h"
+#include "GS/Renderers/SW/GSCoordinateLag.h"
+#include "GS/Renderers/SW/GSVertexQDivide.h"
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
@@ -349,7 +351,8 @@ void GSRendererSW::Draw()
 	// skip per pixel division if q is constant.
 	// Optimize the division by 1 with a nop. It also means that GS_SPRITE_CLASS must be processed when !m_vt.m_eq.q.
 	// If you have both GS_SPRITE_CLASS && m_vt.m_eq.q, it will depends on the first part of the 'OR'
-	u32 q_div = !IsMipMapActive() && ((m_vt.m_eq.q && m_vt.m_min.t.z != 1.0f) || (!m_vt.m_eq.q && m_vt.m_primclass == GS_SPRITE_CLASS));
+	const u32 q_div = GSUseVertexQDivide(m_vt.m_primclass, IsMipMapActive(),
+		m_vt.m_eq.q != 0, m_vt.m_min.t.z) ? 1u : 0u;
 
 	GSVertexSW::s_cvb[m_vt.m_primclass][PRIM->TME][PRIM->FST][q_div](m_context, sd->vertex, m_vertex->buff, m_vertex->next);
 
@@ -1078,7 +1081,8 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 
 			GIFRegTEX0 TEX0 = m_context->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mipmap);
 
-			GSVector4i r = GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage;
+			GSVector4i r = GSCoverageWithCoordinateLag(
+				GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass);
 
 			GSTextureCacheSW::Texture* t = m_tc->Lookup(TEX0, env.TEXA);
 
@@ -1188,7 +1192,8 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 						return false;
 					}
 
-					GSVector4i r = GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage;
+					GSVector4i r = GSCoverageWithCoordinateLag(
+						GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass);
 
 					data->SetSource(t, r, i);
 				}
@@ -1198,10 +1203,15 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			}
 			else
 			{
-				// skip per pixel division if q is constant. Sprite uses flat
-				// q, so it's always constant by primitive.
-				// Note: the 'q' division was done in GSRendererSW::ConvertVertexBuffer
-				gd.sel.fst |= (m_vt.m_eq.q || primclass == GS_SPRITE_CLASS);
+				// Tell the scanline the coordinate is affine only where the vertex
+				// conversion actually divided it -- the two must agree, and they were
+				// decided by different predicates. A constant-Q triangle keeps its Q
+				// and takes the console's reciprocal per pixel: silicon does not
+				// divide, it multiplies by a reciprocal truncated to fourteen
+				// fractional bits, and dividing at the vertex computes the exact
+				// quotient instead. See GSVertexQDivide.h for the measurement.
+				gd.sel.fst |= (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
+					m_vt.m_min.t.z) || GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z));
 
 				// The console chooses MMAG versus MMIN per pixel, from that pixel's own
 				// level. When this primitive straddles the crossing and the two filters

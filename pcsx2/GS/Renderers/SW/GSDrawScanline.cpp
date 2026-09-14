@@ -215,20 +215,44 @@ typedef GSVector4  VectorF;
 // RECIPROCAL that is truncated to about thirteen fractional bits, so a
 // perspective coordinate is systematically a little short of the true quotient.
 //
-// Measured on an SCPH-30001 rather than assumed. Each of 12,288 readings bounds
-// the hardware's own reciprocal from both sides: 1,592 of them force it strictly
-// BELOW the true value, not one forces it above, and the largest forced shortfall
-// is 1.22e-4 relative -- which is 2^-13 to three decimal places.
+// Measured on real hardware rather than assumed. Every reading bounds the
+// hardware's own reciprocal from both sides, and the ones that bind all force it
+// strictly BELOW the true value; not one forces it above. So the grid truncates,
+// and computing an exact quotient -- what we did before the grid landed -- is
+// being MORE correct than the hardware, and differs from the console on about a
+// fifth of ordinary perspective readings for that reason alone.
 //
-// Truncating a float32 mantissa to its top thirteen bits is exactly that grid.
-// float32 carries 23 explicit mantissa bits, so clearing the low ten leaves
-// thirteen and rounds toward zero, which is the side silicon is never on the
-// wrong side of. Computing an exact quotient -- what we did before -- is being
-// MORE correct than the hardware, and it differs from the console on 22.07% of
-// ordinary perspective readings for that reason alone.
+// The WIDTH of the grid took a second pass to get right. Thirteen mantissa bits
+// fits the bound above, but it is not what the console keeps. A band walking a
+// constant quotient of 8193/16384 across 512 pixels -- a texel boundary plus a
+// sliver -- reads the same 512 sixteenths on the console, and a thirteen-bit grid
+// trails far enough at the end of each reciprocal plateau to drop a quarter of
+// them a sixteenth low. Fourteen bits clears all 512, and so does anything wider:
+// 14 is the narrowest grid the measurements permit, not a fitted value, and
+// nothing we hold separates it from wider.
+//
+// float32 carries 23 explicit mantissa bits, so clearing the low nine leaves
+// fourteen and rounds toward zero, which is the side silicon is never on the
+// wrong side of.
+//
+// ⚠️ THIS IS AN APPROXIMATION, and knowing which part is approximate matters if
+// you are the one who improves it. The truncation and its width are measured.
+// The SHAPE is not: this evaluates a plane and divides, and the console walks
+// the coordinate instead. Geometry that visits the identical set of Q values at
+// four different per-pixel steps must read the same level at all four if the
+// result is a function of Q -- every plane-with-a-reciprocal candidate does, and
+// the console does not. A second construction with nothing in common says the
+// same: pin the exact coordinate at every rung of a step ladder and the console's
+// hit rate still halves as the Q step doubles.
+//
+// So the right shape is a fixed-point walk of S and Q, and nobody has fitted it
+// yet -- the two-grid families that have been swept are refuted by the same
+// baseline movement that refutes the plane. Until that lands, this is the best
+// approximation measured: it improved every capture and every console frame it
+// was scored on, which is the only claim being made for it.
 __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 {
-	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
+	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffe00));
 }
 
 // The texture function multiplies the eight-bit vertex colour the GS STORES, not

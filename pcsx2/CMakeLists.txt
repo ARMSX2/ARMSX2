@@ -618,6 +618,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSVertexHW.h
 	GS/Renderers/SW/GSBlockWalk.h
 	GS/Renderers/SW/GSColourWalk.h
+	GS/Renderers/SW/GSCoordinateLag.h
 	GS/Renderers/SW/GSDepthWalk.h
 	GS/Renderers/SW/GSDrawScanlineCodeGenerator.all.h
 	GS/Renderers/SW/GSDrawScanline.h
@@ -625,6 +626,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSRasterizer.h
 	GS/Renderers/SW/GSRendererSW.h
 	GS/Renderers/SW/GSScanlineEnvironment.h
+	GS/Renderers/SW/GSVertexQDivide.h
 	GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h
 	GS/Renderers/SW/GSSwTextureDirty.h
 	GS/Renderers/SW/GSTextureCacheSW.h

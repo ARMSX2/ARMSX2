@@ -777,14 +777,15 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	if (!m_sel.fst)
 	{
-		// Silicon multiplies by a reciprocal truncated to thirteen fractional
-		// bits, it does not divide. Clearing the low ten bits of the float32
+		// Silicon multiplies by a reciprocal truncated to fourteen mantissa
+		// bits, it does not divide. Clearing the low nine bits of the float32
 		// mantissa is that grid; two BICs rather than a shift pair so the sign
-		// survives a negative Q. See GSDrawScanline.cpp for the measurement.
+		// survives a negative Q. See GSDrawScanline.cpp for the measurement and
+		// for why the width is fourteen rather than thirteen.
 		armAsm->Fmov(v0.V4S(), 1.0f);
 		armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
 		armAsm->Bic(v0.V4S(), 0xff, 0);
-		armAsm->Bic(v0.V4S(), 0x03, 8);
+		armAsm->Bic(v0.V4S(), 0x01, 8);
 
 		armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
 		armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
@@ -1142,7 +1143,7 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Fmov(local2.V4S(), 1.0f);
 		armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
 		armAsm->Bic(local2.V4S(), 0xff, 0);
-		armAsm->Bic(local2.V4S(), 0x03, 8);
+		armAsm->Bic(local2.V4S(), 0x01, 8);
 
 		armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
 		armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());
