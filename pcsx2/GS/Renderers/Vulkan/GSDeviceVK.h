@@ -345,9 +345,6 @@ private:
 
 	GSStreamRingMemoryDecision m_stream_ring_memory;
 
-	// MediaTek-SoC detection now lives in the base GSDevice (SetMediaTekSoC/IsMediaTekSoC),
-	// so both backends and GS.cpp's Android GameDB overrides can read it.
-
 	VkQueue m_graphics_queue = VK_NULL_HANDLE;
 	VkQueue m_present_queue = VK_NULL_HANDLE;
 	u32 m_graphics_queue_family_index = 0;

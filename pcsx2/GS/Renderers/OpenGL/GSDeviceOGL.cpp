@@ -865,7 +865,6 @@ bool GSDeviceOGL::CheckFeatures()
 	SetMobileGPUIdentity(profile_selection.gpu);
 	SetMobileGSTuning(profile_selection.gs_tuning);
 	SetMobileDriverProfile(profile_selection.driver);
-	SetMediaTekSoC(profile_selection.is_mediatek_soc);
 	Console.WriteLn("GL: GPU profile override='%s' resolved='%s' driver='%s' version=%u.%u.%u.%u "
 					"rules=%u bugs=%016llx workarounds=%016llx.",
 		GpuProfileDetector::OverrideToConfigString(profile_selection.override_mode),

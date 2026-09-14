@@ -3732,20 +3732,12 @@ bool GSDeviceVK::CheckFeatures()
 		driver_context);
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
-	// MediaTek (Dimensity/Helio) Mali Vulkan stacks return zero/stale destination color
-	// through ROAA (black / missing textures) across GPU generations, so detect the SoC
-	// here and disable fbfetch below. Ported from sashkinbro/EmuCoreX. Detection reads the
-	// ro.soc.* props already folded into the profile hints (no new JNI needed).
-	//
 	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
-	// (MediaTek SoC, GPU identity, GS tuning) but never the runtime profile itself, so
+	// (GPU identity, GS tuning) but never the runtime profile itself, so
 	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
-	// lifetime. Consequence: ApplyAndroidGameDBOverrides()'s `IsMaliGPUProfile() && IsMediaTekSoC()`
-	// gate could never pass, so the Tekken 5 duplicated-framebuffer fix was dead on the renderer we
-	// default to on Android, and the profile printed in VK logs was whatever the default happened
-	// to be rather than the detected GPU.
+	// lifetime, and the profile printed in VK logs was whatever the default happened to be
+	// rather than the detected GPU.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
-	SetMediaTekSoC(mobile_profile.is_mediatek_soc);
 	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
 		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
 	// Per-vendor GS tuning (pool sizes/ages + constrained) — drives GSDevice pool sizing above.

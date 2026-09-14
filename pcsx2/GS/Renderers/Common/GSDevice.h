@@ -1562,8 +1562,7 @@ protected:
 	// SetRuntimeGPUProfile (Vulkan, Metal, DX12 — none of them did) silently identified as Adreno,
 	// and so did desktop OpenGL on anything not-Mali. That made IsAdrenoGPUProfile() fire
 	// Adreno-only workarounds on Apple Silicon, and made IsMaliGPUProfile() permanently false under
-	// Vulkan — which quietly disabled the Tekken 5 MediaTek-Mali GameDB fix on our default renderer.
-	// Unknown means "no vendor quirks", which is the only safe thing to assume before detection.
+	// Vulkan. Unknown means "no vendor quirks", which is the only safe thing to assume before detection.
 	RuntimeGpuProfile m_runtime_gpu_profile = RuntimeGpuProfile::Unknown;
 	// Per-vendor mobile GPU identity + GS tuning (pool sizes / ages / constrained), resolved from the
 	// GPU-profile system (sashkinbro/EmuCoreX). Drives texture/target pool sizing on Android below.
@@ -1575,10 +1574,6 @@ protected:
 	// miscompiles shaders (see GSGPUDriverProfile.cpp). Empty/conservative until a backend
 	// resolves it, so a device with no matching rule behaves exactly as it did before.
 	MobileDriverProfile m_mobile_driver_profile;
-	// Android: true when the SoC is MediaTek (Dimensity/Helio). Hoisted from GSDeviceVK
-	// so both backends + GS.cpp Android GameDB overrides can read it. Set during device
-	// open from the resolved GPU profile.
-	bool m_is_mediatek_soc = false;
 
 	struct
 	{
@@ -1828,8 +1823,6 @@ public:
 	}
 	__fi bool IsConstrainedMobileGPUProfile() const { return m_mobile_gs_tuning.constrained; }
 	__fi RuntimeGpuProfile GetRuntimeGPUProfile() const { return m_runtime_gpu_profile; }
-	__fi void SetMediaTekSoC(bool v) { m_is_mediatek_soc = v; }
-	__fi bool IsMediaTekSoC() const { return m_is_mediatek_soc; }
 	__fi bool IsMaliGPUProfile() const { return (m_runtime_gpu_profile == RuntimeGpuProfile::Mali); }
 	__fi bool IsAdrenoGPUProfile() const { return (m_runtime_gpu_profile == RuntimeGpuProfile::Adreno); }
 	__fi bool IsPowerVRGPUProfile() const { return (m_runtime_gpu_profile == RuntimeGpuProfile::PowerVR); }

@@ -225,32 +225,6 @@ static void GSClampUpscaleMultiplier(Pcsx2Config::GSOptions& config)
 	config.UpscaleMultiplier = static_cast<float>(max_upscale_multiplier);
 }
 
-#ifdef __ANDROID__
-// Some MediaTek Mali drivers render duplicated horizontal framebuffer regions in Tekken 5
-// when the GameDB's Native half-pixel-offset mode (value 4) is active. Force the offset Off
-// there — and ONLY there — preserving Native for every other GPU and game and respecting a
-// user's manual hacks. Ported from sashkinbro/EmuCoreX. Reachable only while the Tekken 5
-// GameDB entries keep halfPixelOffset: Native.
-static bool IsTekken5Serial(const std::string_view serial)
-{
-	static constexpr std::array<std::string_view, 11> k_tekken5_serials = {
-		"SCAJ-20125", "SCAJ-20126", "SCAJ-20199", "SCED-53538", "SCES-53202",
-		"SCKA-20049", "SCKA-20081", "SLPS-25510", "SLPS-73223", "SLUS-21059", "SLUS-21160"};
-	return std::find(k_tekken5_serials.begin(), k_tekken5_serials.end(), serial) != k_tekken5_serials.end();
-}
-
-static void ApplyAndroidGameDBOverrides()
-{
-	if (!g_gs_device || !g_gs_device->IsMaliGPUProfile() || !g_gs_device->IsMediaTekSoC() ||
-		GSConfig.ManualUserHacks || GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::Native)
-		return;
-	if (!IsTekken5Serial(VMManager::GetDiscSerial()))
-		return;
-	GSConfig.UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
-	Console.WriteLn("Android: Tekken 5 on MediaTek Mali — forcing HalfPixelOffset Off (duplicated-framebuffer fix).");
-}
-#endif
-
 // GV7-1d-ii: the front parser object of the two-object split (GSState.h).
 // Non-null only when GSBackThreadMode::Pipelined engaged; all GIF-parse entry
 // points below route to it, while draw/present/TC stay on g_gs_renderer.
@@ -453,9 +427,6 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 
 	if (recreate_renderer)
 	{
-#ifdef __ANDROID__
-		ApplyAndroidGameDBOverrides();
-#endif
 		if (!OpenGSRenderer(new_renderer, basemem))
 		{
 			Console.Error("(GSreopen) Failed to create new renderer");
@@ -483,9 +454,6 @@ bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* b
 	bool res = OpenGSDevice(renderer, true, false, vsync_mode, allow_present_throttle);
 	if (res)
 	{
-#ifdef __ANDROID__
-		ApplyAndroidGameDBOverrides();
-#endif
 		res = OpenGSRenderer(renderer, basemem);
 		if (!res)
 			CloseGSDevice(true);
