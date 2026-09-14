@@ -1722,8 +1722,6 @@ void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const G
 	m_local.cwalk.live = cwalk_live ? 1 : 0;
 
 	m_setup_prim(vertex, index, dscan, m_local);
-
-	GSDrawScanline::SetupColourWalkTables(m_local);
 }
 
 void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live, bool edge /* = false */)
@@ -1780,6 +1778,12 @@ void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW&
 	//m_pixels.total += ((left + pixels + (PIXELS_PER_LOOP - 1)) & ~(PIXELS_PER_LOOP - 1)) - left;
 
 	pxAssert(m_pixels.actual <= m_pixels.total);
+
+	// The colour walk's lane and step tables follow the ROW, not the primitive:
+	// their jumps are floored with the row's own fractional part in them, which is
+	// what makes the walk one floor at every pixel. GSDrawScanline.cpp has the
+	// derivation.
+	GSDrawScanline::SetupColourWalkTables(m_local, top);
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
 }

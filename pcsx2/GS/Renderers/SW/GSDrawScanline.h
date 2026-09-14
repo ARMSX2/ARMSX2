@@ -50,7 +50,7 @@ public:
 	/// the setup decided for this primitive (GSColourWalk.h). Neither CSetupPrim
 	/// nor the generated SetupPrim builds them any more, so the rasterizer calls
 	/// this right after every one of them.
-	static void SetupColourWalkTables(GSScanlineLocalData& local);
+	static void SetupColourWalkTables(GSScanlineLocalData& local, int y);
 
 	/// Not currently jitted.
 	static void DrawRect(const GSVector4i& r, const GSVertexSW& v, GSScanlineLocalData& local);

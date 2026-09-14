@@ -296,7 +296,7 @@ __forceinline static VectorI GSStoredVertexColor(const VectorI& c)
 	return GSWalkColorByte(c).sll16<7>();
 }
 
-void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local)
+void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 {
 	// The scanline's colour and fog tables, built from the primitive's own walk.
 	//
@@ -357,13 +357,41 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local)
 		return;
 	}
 
+	// ⚠️ Built per ROW, not per primitive, and that is the point.
+	//
+	// The walk is ONE floor at every pixel. Writing the value as its whole terms
+	// plus a fraction -- gc and gyc are multiples of EIGHT units so their terms
+	// are whole, P sits on the 1/8 grid as P_int + p, and dw*j is D_int + h with
+	// h zero or a half -- gives
+	//
+	//     V(x) = [whole terms] + floor(p + h(x))
+	//
+	// and a seed floored once at the span's first pixel carries floor(p + h(left))
+	// everywhere instead. The difference is inert where dw is whole, which is
+	// every eight-wide block, and measurable at four.
+	//
+	// So the jumps below are floored WITH the row's own fraction in them, which
+	// makes the table's offsets the closed form's differences exactly. p is a
+	// property of the row pair, so the table follows the row; the alternative --
+	// a parity table gated by one bit per row -- keeps the per-primitive build but
+	// costs the scanline an extra masked add per vector, and this costs it
+	// nothing.
+	const int yf = w.top_anchor ? (y & ~1) : (y | 1);
+	const GSVector4 rowc = w.c.pa + GSColourWalkTruncUnit(w.c.gy * GSVector4(static_cast<float>(yf) - w.yr));
+	const GSVector4 rowf = w.f.pa + GSColourWalkTruncUnit(w.f.gy * GSVector4(static_cast<float>(yf) - w.yr));
+	const GSVector4 cfrac = rowc - rowc.floor();
+	const GSVector4 ffrac = rowf - rowf.floor();
+
 	const VectorF gcv(w.c.gc);
 	const VectorF dwv(w.c.dw);
+	const VectorF pfv(cfrac);
 
 	const VectorF gcr = gcv.xxxx(), gcg = gcv.yyyy(), gcb = gcv.zzzz(), gca = gcv.wwww();
 	const VectorF dwr = dwv.xxxx(), dwg = dwv.yyyy(), dwb = dwv.zzzz(), dwa = dwv.wwww();
+	const VectorF pfr = pfv.xxxx(), pfg = pfv.yyyy(), pfb = pfv.zzzz(), pfa = pfv.wwww();
 	const VectorF fgc(VectorF(w.f.gc).xxxx());
 	const VectorF fdw(VectorF(w.f.dw).xxxx());
+	const VectorF fpf(VectorF(ffrac).xxxx());
 
 	alignas(32) float kbuf[8];
 	alignas(32) float hibuf[8];
@@ -392,8 +420,8 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local)
 	// breaks exactly at the sign change -- floor(dw*-1) and trunc(dw*-1) differ,
 	// and the walk gains a unit crossing zero.
 	const auto entry = [](const VectorF& gc, const VectorF& dw, const VectorF& kv,
-						   const VectorF& hi, const VectorF& lo) {
-		return VectorI(gc * kv) + (VectorI((dw * hi).floor()) - VectorI((dw * lo).floor()));
+						   const VectorF& hi, const VectorF& lo, const VectorF& pf) {
+		return VectorI(gc * kv) + (VectorI((dw * hi + pf).floor()) - VectorI((dw * lo + pf).floor()));
 	};
 
 	// The colour lane and the fog lane can be walking different block widths, so
@@ -432,14 +460,14 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local)
 		const VectorF hi = VectorF::template load<true>(hibuf);
 		const VectorF lo = VectorF::template load<true>(lobuf);
 
-		local.d[s].rb = pack(entry(gcr, dwr, kv, hi, lo), entry(gcb, dwb, kv, hi, lo));
-		local.d[s].ga = pack(entry(gcg, dwg, kv, hi, lo), entry(gca, dwa, kv, hi, lo));
+		local.d[s].rb = pack(entry(gcr, dwr, kv, hi, lo, pfr), entry(gcb, dwb, kv, hi, lo, pfb));
+		local.d[s].ga = pack(entry(gcg, dwg, kv, hi, lo, pfg), entry(gca, dwa, kv, hi, lo, pfa));
 
 		blocks(w.f, base, s, vlen);
 		const VectorF fhi = VectorF::template load<true>(hibuf);
 		const VectorF flo = VectorF::template load<true>(lobuf);
 
-		local.d[s].f = entry(fgc, fdw, kv, fhi, flo).xxzzlh();
+		local.d[s].f = entry(fgc, fdw, kv, fhi, flo, fpf).xxzzlh();
 	}
 
 #if _M_SSE >= 0x501
@@ -483,16 +511,16 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local)
 		const GSVector4 hi = GSVector4::load<true>(hibuf);
 		const GSVector4 lo = GSVector4::load<true>(lobuf);
 
-		const GSVector4i sr = entry(gcr, dwr, kv, hi, lo);
-		const GSVector4i sg = entry(gcg, dwg, kv, hi, lo);
-		const GSVector4i sb = entry(gcb, dwb, kv, hi, lo);
-		const GSVector4i sa = entry(gca, dwa, kv, hi, lo);
+		const GSVector4i sr = entry(gcr, dwr, kv, hi, lo, pfr);
+		const GSVector4i sg = entry(gcg, dwg, kv, hi, lo, pfg);
+		const GSVector4i sb = entry(gcb, dwb, kv, hi, lo, pfb);
+		const GSVector4i sa = entry(gca, dwa, kv, hi, lo, pfa);
 
 		steps(w.f, base);
 		const GSVector4 fhi = GSVector4::load<true>(hibuf);
 		const GSVector4 flo = GSVector4::load<true>(lobuf);
 
-		const GSVector4i sf = entry(fgc, fdw, kv, fhi, flo);
+		const GSVector4i sf = entry(fgc, fdw, kv, fhi, flo, fpf);
 
 		local.dw[s][0].rb = pack(sr, sb);
 		local.dw[s][0].ga = pack(sg, sa);

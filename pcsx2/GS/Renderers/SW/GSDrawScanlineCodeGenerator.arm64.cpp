@@ -1779,8 +1779,17 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 			storedVertexColor(_vscratch, _temp_ga);
 			modulate16(v6, _vscratch, 1);
 
-			armAsm->Trn2(v2.V8H(), _temp_ga.V8H(), _temp_ga.V8H());
-			armAsm->Ushr(v2.V8H(), v2.V8H(), 7);
+			// ⚠️ af is the walked alpha as the byte the GS STORES, so the negative
+			// the walk is allowed to carry has to be clamped to zero BEFORE the
+			// shift -- which is what GSWalkColorByte does and what `walkColorByte`
+			// emits. A plain logical shift turns a negative into a value up to 511,
+			// HIGHLIGHT then ADDS it to the colour, and the clamp below drives every
+			// channel to 255. One such pixel was the first word in a whole frame on
+			// which this road and the C++ reference disagreed, and thousands of
+			// later draws inherited it through the texture they sampled from it.
+			// The console's own rule is in GSWalkColorByte's comment.
+			armAsm->Trn2(_vscratch.V8H(), _temp_ga.V8H(), _temp_ga.V8H());
+			walkColorByte(v2, _vscratch);
 			armAsm->Add(v6.V8H(), v6.V8H(), v2.V8H());
 
 			clamp16(v6, v0);
@@ -1939,7 +1948,15 @@ void GSDrawScanlineCodeGenerator::WriteMask()
 	}
 	else if (m_sel.zwrite)
 	{
-		armAsm->Cmeq(v1.V4S(), v1.V4S(), v4.V4S());
+		// ⚠️ Both halves narrow from the register the compare WROTE. This branch
+		// used to compare into v1 and then narrow from _vscratch, which the compare
+		// never touched, so a depth-only draw took its write mask from whatever the
+		// scanline had left there -- deterministic per selector, and arbitrary. It
+		// fires only where the frame is not written and the depth is, which is why
+		// nothing but a depth-only draw ever saw it, and it is what split this road
+		// from the C++ reference on several game dumps and from the console on a
+		// depth-write capture.
+		armAsm->Cmeq(_vscratch.V4S(), v1.V4S(), v4.V4S());
 		armAsm->Sqxtn(v1.V4H(), _vscratch.V4S());
 		armAsm->Sqxtn2(v1.V8H(), _vscratch.V4S());
 	}
@@ -2570,6 +2587,10 @@ void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegis
 	armAsm->Uxtl(d.V8H(), d.V8B());
 }
 
+// The eight-bit colour the GS stores, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, never the
+// wider value the DDA carries -- console-measured, and the same rule
+// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
 	walkColorByte(d, c);
@@ -2585,10 +2606,6 @@ void GSDrawScanlineCodeGenerator::lerp16(const VRegister& a, const VRegister& b,
 
 void GSDrawScanlineCodeGenerator::lerp16_4(const VRegister& a, const VRegister& b, const VRegister& f)
 {
-// The eight-bit colour the GS stores, put back on the seven-fraction grid the
-// modulate expects. The texture function multiplies the stored byte, never the
-// wider value the DDA carries -- console-measured, and the same rule
-// GSStoredVertexColor implements in GSDrawScanline.cpp.
 	armAsm->Sub(a.V8H(), a.V8H(), b.V8H());
 	armAsm->Mul(a.V8H(), a.V8H(), f.V8H());
 	armAsm->Sshr(a.V8H(), a.V8H(), 4);

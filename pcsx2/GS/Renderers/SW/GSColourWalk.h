@@ -206,8 +206,12 @@ __forceinline static void GSSetupColourWalk(const GSVertexSW& v0, const GSVertex
 	out.xr = r->p.x;
 	out.yr = r->p.y;
 
+	// ⚠️ The left-walking origin is (ceil(xR) - 1) | 1, NOT floor(xR) | 1. The two
+	// agree for every anchor whose x has a fraction and differ by two pixels for
+	// one that does not, which is measured and is the whole of what an anchor
+	// sweep separates.
 	out.S = (out.d > 0) ? (static_cast<int>(std::ceil(out.xr)) & ~1)
-	                    : (static_cast<int>(std::floor(out.xr)) | 1);
+	                    : ((static_cast<int>(std::ceil(out.xr)) - 1) | 1);
 	out.A = out.S + 2 * out.d;
 
 	const GSVector4 ax = GSVector4(static_cast<float>(out.A) - out.xr);
@@ -220,6 +224,15 @@ __forceinline static void GSSetupColourWalk(const GSVertexSW& v0, const GSVertex
 
 /// The value at (x, y), floored to the colour unit so that the scanline's own
 /// float-to-int conversion cannot disagree with it on a negative fraction.
+///
+/// ⚠️ This is the walk at EVERY pixel, not only at a span's first. The gradient's
+/// ramp and the block jump go into ONE floor here, and
+/// GSDrawScanline::SetupColourWalkTables builds the lane and step tables so that
+/// adding them to this reproduces the same single floor at every other pixel --
+/// which is why those tables follow the ROW rather than the primitive. A seed
+/// floored once with the jump added separately afterwards is a different
+/// function wherever dw is not whole, which is every four-wide block, and the
+/// console refuses it.
 __forceinline static GSVector4 GSColourWalkRowSeed(const GSColourWalk& w, const GSColourWalkGradient& a, int x, int y)
 {
 	const int yf = w.top_anchor ? (y & ~1) : (y | 1);

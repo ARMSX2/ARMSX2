@@ -48,6 +48,7 @@ namespace
 	{
 		bool setup_ran = false;
 		bool tables_seen = false;
+		int tables_top = 0;
 		GSVertexSW dscan;
 		GSColourWalk cwalk{};
 		GSScanlineLocalData local{};
@@ -73,6 +74,7 @@ namespace
 		if (!g_rec.tables_seen)
 		{
 			g_rec.local = local;
+			g_rec.tables_top = top;
 			g_rec.tables_seen = true;
 		}
 
@@ -496,13 +498,37 @@ namespace
 	// plus the block jump accumulated to its block, floored -- which is what a
 	// whole-unit lane can carry, and at a four-pixel block the jump is half a unit
 	// so the flooring is what makes successive blocks alternate.
-	int OffW(float gc, float g, int S, int d, int bw, int i)
+	int OffW(float gc, float g, int S, int d, int bw, int i, float pf)
 	{
 		const float dw = (g - gc) * static_cast<float>(bw);
 		const int b = d * ((d * (i - S)) >> ((bw == 8) ? 3 : 2));
 
+		// ⚠️ The jump is floored WITH the row's own fractional part in it, which is
+		// what makes the walk one floor at every pixel rather than a floored seed
+		// plus a separately floored jump (gs-cwalk's landing). It is inert wherever
+		// dw is whole -- every eight-wide block -- and decisive at four.
 		return static_cast<int>(gc) * i
-		       + static_cast<int>(std::floor(dw * static_cast<float>(b)));
+		       + static_cast<int>(std::floor(dw * static_cast<float>(b) + pf));
+	}
+
+	/// The fractional part of the row's plane constant, per channel: what OffW's
+	/// jump is floored with.
+	float RowFrac(const Plane& p, int ch, const Anchor& a, int y)
+	{
+		const int yf = a.top_anchor ? (y & ~1) : (y | 1);
+		const float P = a.ar + Tz8(p.g[ch] * (static_cast<float>(a.A) - a.xr))
+		                + Tz8(p.gy[ch] * (static_cast<float>(yf) - a.yr));
+
+		return P - std::floor(P);
+	}
+
+	float RowFracFog(const Plane& p, const Anchor& a, int y)
+	{
+		const int yf = a.top_anchor ? (y & ~1) : (y | 1);
+		const float P = a.fr + Tz8(p.fg * (static_cast<float>(a.A) - a.xr))
+		                + Tz8(p.fgy * (static_cast<float>(yf) - a.yr));
+
+		return P - std::floor(P);
 	}
 
 	/// `bw` is the colour lane's block width and `fbw` the fog lane's. They differ
@@ -513,6 +539,13 @@ namespace
 		const GSScanlineLocalData& local = rec.local;
 		ASSERT_TRUE(rec.tables_seen) << what << ": no span was drawn, so no table was read";
 
+		// The tables follow the row, so the oracle needs the row they were read at.
+		const float pf0 = RowFrac(p, 0, a, rec.tables_top);
+		const float pf1 = RowFrac(p, 1, a, rec.tables_top);
+		const float pf2 = RowFrac(p, 2, a, rec.tables_top);
+		const float pf3 = RowFrac(p, 3, a, rec.tables_top);
+		const float pff = RowFracFog(p, a, rec.tables_top);
+
 		for (int s = 0; s < 8; s++)
 		{
 			const int base = s & ~(kLanes - 1);
@@ -522,15 +555,15 @@ namespace
 				const int i = base + l;
 
 				const int want_r = static_cast<s16>(
-					OffW(p.gc[0], p.g[0], a.S, a.d, bw, i) - OffW(p.gc[0], p.g[0], a.S, a.d, bw, s));
+					OffW(p.gc[0], p.g[0], a.S, a.d, bw, i, pf0) - OffW(p.gc[0], p.g[0], a.S, a.d, bw, s, pf0));
 				const int want_b = static_cast<s16>(
-					OffW(p.gc[2], p.g[2], a.S, a.d, bw, i) - OffW(p.gc[2], p.g[2], a.S, a.d, bw, s));
+					OffW(p.gc[2], p.g[2], a.S, a.d, bw, i, pf2) - OffW(p.gc[2], p.g[2], a.S, a.d, bw, s, pf2));
 				const int want_g = static_cast<s16>(
-					OffW(p.gc[1], p.g[1], a.S, a.d, bw, i) - OffW(p.gc[1], p.g[1], a.S, a.d, bw, s));
+					OffW(p.gc[1], p.g[1], a.S, a.d, bw, i, pf1) - OffW(p.gc[1], p.g[1], a.S, a.d, bw, s, pf1));
 				const int want_a = static_cast<s16>(
-					OffW(p.gc[3], p.g[3], a.S, a.d, bw, i) - OffW(p.gc[3], p.g[3], a.S, a.d, bw, s));
+					OffW(p.gc[3], p.g[3], a.S, a.d, bw, i, pf3) - OffW(p.gc[3], p.g[3], a.S, a.d, bw, s, pf3));
 				const int want_f = static_cast<s16>(
-					OffW(p.fgc, p.fg, a.S, a.d, fbw, i) - OffW(p.fgc, p.fg, a.S, a.d, fbw, s));
+					OffW(p.fgc, p.fg, a.S, a.d, fbw, i, pff) - OffW(p.fgc, p.fg, a.S, a.d, fbw, s, pff));
 
 				EXPECT_EQ(Lane16(local.d[s].rb, 2 * l), want_r) << what << " d[" << s << "] lane " << l << " red";
 				EXPECT_EQ(Lane16(local.d[s].rb, 2 * l + 1), want_b) << what << " d[" << s << "] lane " << l << " blue";
@@ -662,8 +695,10 @@ TEST(SwColourWalk, ATexturedTriangleWalksFourPixelBlocks)
 	int separated = 0;
 	for (int i = 0; i < 8; i++)
 	{
-		if (OffW(p.gc[0], p.g[0], kFlatBottom.S, kFlatBottom.d, 4, i)
-			!= OffW(p.gc[0], p.g[0], kFlatBottom.S, kFlatBottom.d, 8, i))
+		const float pf = RowFrac(p, 0, kFlatBottom, rec.tables_top);
+
+		if (OffW(p.gc[0], p.g[0], kFlatBottom.S, kFlatBottom.d, 4, i, pf)
+			!= OffW(p.gc[0], p.g[0], kFlatBottom.S, kFlatBottom.d, 8, i, pf))
 		{
 			separated++;
 		}
