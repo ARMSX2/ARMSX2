@@ -170,6 +170,14 @@ class DeepLinkLaunch(unittest.TestCase):
             "RootView has an onOpenURL again. It never runs under the UIKit scene lifecycle, "
             "so whatever it handles is silently lost")
 
+    def test_the_launch_link_page_names_what_the_handler_accepts(self):
+        """Frontend authors read platforms/ios/docs/launch-links.md, not this handler."""
+        page = (ROOT / "platforms/ios/docs/launch-links.md").read_text(encoding="utf-8")
+        for word in SCHEMES + LAUNCH_VERBS + tuple(key.strip('"') for key in GAME_KEYS):
+            self.assertIn(
+                "`%s`" % word, page,
+                "launch-links.md no longer names `%s`, which the handler accepts" % word)
+
     def test_the_accepted_schemes_and_the_registered_ones_are_the_same_set(self):
         """Both directions. A scheme in code but not in the plist is the quiet one: iOS never
         routes the URL, so the handler that would accept it is never reached and nothing
