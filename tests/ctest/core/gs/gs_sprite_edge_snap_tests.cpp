@@ -242,3 +242,33 @@ TEST(GSSpriteEdgeSnap, ANeighbourStoredBackToFrontStillCounts)
 
 	EXPECT_TRUE(SnapInBatch(v, 2, 0).IsZero());
 }
+
+TEST(GSSpriteEdgeSnap, TheNativePushTakesASpriteThatIsOffTheGridAsAWhole)
+{
+	// The copy the push was written for: -0.5 .. 511.5, both edges half a pixel off.
+	EXPECT_TRUE(NativeSpritePushApplies(8, 8));
+	// Any shared fraction of a half or more, which the push scales its distance by.
+	EXPECT_TRUE(NativeSpritePushApplies(12, 12));
+}
+
+TEST(GSSpriteEdgeSnap, TheNativePushLeavesASpriteThatStartsOnAWholePixel)
+{
+	// Dirge of Cerberus's item text: 31.0 .. 41.9375, a far edge kept just short of the next
+	// pixel. Moving it by a sixteenth moves every texel one device pixel right at 2x.
+	EXPECT_FALSE(NativeSpritePushApplies(0, 15));
+	// 0.0 .. 511.5 covers the same pixels as 0.0 .. 512.0 at native; there is nothing to move.
+	EXPECT_FALSE(NativeSpritePushApplies(0, 8));
+}
+
+TEST(GSSpriteEdgeSnap, TheNativePushDoesNotCareWhichVertexComesFirst)
+{
+	EXPECT_EQ(NativeSpritePushApplies(15, 0), NativeSpritePushApplies(0, 15));
+	EXPECT_EQ(NativeSpritePushApplies(8, 0), NativeSpritePushApplies(0, 8));
+	EXPECT_EQ(NativeSpritePushApplies(8, 8), NativeSpritePushApplies(8, 8));
+}
+
+TEST(GSSpriteEdgeSnap, TheNativePushIgnoresFractionsUnderAHalf)
+{
+	EXPECT_FALSE(NativeSpritePushApplies(0, 0));
+	EXPECT_FALSE(NativeSpritePushApplies(4, 4));
+}

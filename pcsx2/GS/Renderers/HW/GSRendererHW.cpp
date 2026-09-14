@@ -6825,12 +6825,14 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 			if (m_vt.m_primclass == GS_SPRITE_CLASS && rtscale > 1.0f && (m_process_texture && PRIM->FST))
 			{
 				const GSVertex* v = &m_vertex->buff[0];
+				const int x0_frac = ((v[0].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
+				const int y0_frac = ((v[0].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
 				const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
 				const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
-				if (x1_frac & 8)
+				if (GSSpriteEdgeSnap::NativeSpritePushApplies(x0_frac, x1_frac))
 					ox2 *= 1.0f + ((static_cast<float>(16 - x1_frac) / 8.0f) * rtscale);
 
-				if (y1_frac & 8)
+				if (GSSpriteEdgeSnap::NativeSpritePushApplies(y0_frac, y1_frac))
 					oy2 *= 1.0f + ((static_cast<float>(16 - y1_frac) / 8.0f) * rtscale);
 			}
 		}

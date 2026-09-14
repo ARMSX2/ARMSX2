@@ -20,6 +20,9 @@
 /// The rules live in a header of their own so the order they run in can be tested without a GS
 /// device: the fix's one decision is read off the first sprite's coordinates, so a snap that ran
 /// first would answer it from coordinates it had already moved.
+///
+/// The header also holds the test the Align to Native with Texture Offset half-pixel mode uses to
+/// decide whether to move a whole sprite batch onto the grid, since it reads the same fractions.
 namespace GSSpriteEdgeSnap
 {
 	/// How far one sprite's far corner has to move, in the sprite's own 1/16 units.
@@ -120,5 +123,24 @@ namespace GSSpriteEdgeSnap
 		const bool unaligned_texture = ((far_u & 0xF) == 0) && fst;
 		const bool hole_in_vertex = (count < 4) || (x1 != x2);
 		return hole_in_vertex && unaligned_position && (unaligned_texture || !fst);
+	}
+
+	/// Whether halfPixelOffset mode 5 (Align to Native with Texture Offset) moves a textured FST
+	/// sprite batch towards the pixel grid on one axis. Like the rest of that mode it is decided on
+	/// the first sprite. The move is (16 - fraction) sixteenths of a pixel, so it lands an edge
+	/// sitting half a pixel or more off the grid on the next whole pixel.
+	///
+	/// The move is for a sprite the game placed off the grid as a whole, both edges carrying the
+	/// same fraction -- the usual -0.5 .. 511.5 copy. A sprite that starts on a whole pixel and
+	/// only ends part way into one (31.0 .. 41.9375 keeps the last pixel out) is already on the
+	/// grid: at native it covers the same pixels as 31.0 .. 42.0. Moving it anyway shifts every
+	/// texel of it by one device pixel at 2x, which is what put Dirge of Cerberus's item text a
+	/// device pixel to the right.
+	///
+	/// `frac0` and `frac1` are the 1/16 fractions of the sprite's two vertices on this axis,
+	/// relative to XYOFFSET, in either order.
+	inline constexpr bool NativeSpritePushApplies(int frac0, int frac1)
+	{
+		return (frac1 & 8) != 0 && frac0 == frac1;
 	}
 } // namespace GSSpriteEdgeSnap
