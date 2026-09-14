@@ -1055,7 +1055,6 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			gd.sel.tfx = context->TEX0.TFX;
 			gd.sel.tcc = context->TEX0.TCC;
 			gd.sel.fst = PRIM->FST;
-
 			gd.sel.ltf = m_vt.IsLinear();
 
 			if (GSLocalMemory::m_psm[context->TEX0.PSM].pal > 0)

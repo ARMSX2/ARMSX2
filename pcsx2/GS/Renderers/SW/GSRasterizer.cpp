@@ -8,6 +8,7 @@
 #include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDepthWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/GSExtra.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
@@ -1439,6 +1440,11 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	GSVector4i r(v[0].p.xyxy(v[1].p).ceil());
 
+	// The sprite's OWN extent, before the scissor takes any of it away: the ramp
+	// term keys on the extent the primitive was drawn with, not on what survives
+	// clipping. GSCoordinateWalk.h.
+	const GSVector4i extent = r;
+
 	r = r.rintersect(m_scissor);
 
 	if (r.rempty())
@@ -1496,13 +1502,65 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
+	// A UV-route sprite's ascending ramp runs one sixteenth of a texel low on any
+	// axis whose own extent is not a power of two, from that axis's SECOND pixel,
+	// and never recovers. Measured on real hardware; GSCoordinateWalk.h carries
+	// the rule, including why the first pixel is exempt.
+	const float ramp_u = m_local.gd->sel.fst ? GSSpriteRampBias(dt.x, extent.width()) : 0.0f;
+	const float ramp_v = m_local.gd->sel.fst ? GSSpriteRampBias(dt.y, extent.height()) : 0.0f;
+
 	SetupPrim(vertex, index, dscan, false);
 
 	while (1)
 	{
 		if (IsOneOfMyScanlines(r.top))
 		{
-			DrawScanline(r.width(), r.left, r.top, scan);
+			GSVertexSW row = scan;
+
+			// The sprite's OWN first row is the exempt one, so a sprite whose top
+			// the scissor took keeps the term on every row it draws.
+			if (ramp_v != 0.0f && r.top != extent.y)
+				row.t -= GSVector4(0.0f, ramp_v, 0.0f, 0.0f);
+
+			if (ramp_u == 0.0f)
+			{
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else if (r.left != extent.x)
+			{
+				// The sprite's own first column is outside the scissor, so every
+				// pixel this row draws is past it.
+				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else if (m_local.gd->sel.notest)
+			{
+				// ⚠️ A scanline compiled with no coverage test reads its frame and
+				// depth addresses off a per-column table indexed by `left >> 2`, so
+				// it requires a vector-aligned left -- which is exactly what
+				// GetScanlineGlobalData checks before it sets the bit. A span
+				// starting one pixel in would address the wrong column group, so the
+				// split is not available here and the term goes in the seed, which
+				// leaves this sprite's first COLUMN a sixteenth low where the
+				// console has it exact. Dropping the alignment check instead trips
+				// that assert on real game draws, so this is the one place the
+				// cheaper form survives.
+				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else
+			{
+				// The first column exactly, then the rest with the term in the
+				// seed -- one extra span per row rather than a test per pixel.
+				DrawScanline(1, r.left, r.top, row);
+
+				if (r.width() > 1)
+				{
+					row.t += dscan.t;
+					row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+					DrawScanline(r.width() - 1, r.left + 1, r.top, row);
+				}
+			}
 		}
 
 		if (++r.top >= r.bottom)

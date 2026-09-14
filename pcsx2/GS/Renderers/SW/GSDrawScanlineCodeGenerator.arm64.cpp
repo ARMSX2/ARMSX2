@@ -2587,10 +2587,6 @@ void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegis
 	armAsm->Uxtl(d.V8H(), d.V8B());
 }
 
-// The eight-bit colour the GS stores, put back on the seven-fraction grid the
-// modulate expects. The texture function multiplies the stored byte, never the
-// wider value the DDA carries -- console-measured, and the same rule
-// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
 	walkColorByte(d, c);
@@ -2621,6 +2617,10 @@ void GSDrawScanlineCodeGenerator::mix16(const VRegister& a, const VRegister& b, 
 	armAsm->Bsl(a.V16B(), b.V16B(), temp.V16B());
 }
 
+// The eight-bit colour the GS stores, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, never the
+// wider value the DDA carries -- console-measured, and the same rule
+// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::clamp16(const VRegister& a, const VRegister& temp)
 {
 	armAsm->Sqxtun(a.V8B(), a.V8H());
