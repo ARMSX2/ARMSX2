@@ -84,6 +84,10 @@ int SampledAddress(int u0, int du, int v0, int dv, int lane, bool sprite)
 	int u = (u0 & kGrid) + lane * su;
 	int v = (v0 & kGrid) + lane * sv;
 
+	// The exemption this suite's geometry cannot reach: a triangle whose twice-area
+	// is a power of two takes no trail on either axis (GSCoordinateWalk.h). Every
+	// case here hands setup three vertices at the origin, so twice the area is
+	// zero, which is not a power of two -- these spans all trail.
 	if (!sprite)
 	{
 		if (su > 0)
@@ -91,6 +95,14 @@ int SampledAddress(int u0, int du, int v0, int dv, int lane, bool sprite)
 		if (sv > 0)
 			v -= 1;
 	}
+
+	// The sixteenth-of-a-texel index truncates toward zero rather than flooring
+	// (GSDrawScanline.cpp), so a negative coordinate takes a sixteenth less one
+	// before the shift below floors it. This sweep is the only case in the suite
+	// that reaches a negative coordinate at all -- a descending walk from a seed
+	// of zero -- and it is the scalar mirror of the vector form the renderer uses.
+	u += (u >> 31) & 0xfff;
+	v += (v >> 31) & 0xfff;
 
 	// 16x16, repeating on both axes; the texture names its own address.
 	return (((v >> 16) & 15) * 16) + ((u >> 16) & 15);
@@ -335,6 +347,12 @@ GSLocalMemory* SwScanlineTcLagTest::s_mem = nullptr;
 // The defect, at its trigger: a forward walk whose exact coordinate lands on a
 // texel boundary at every pixel. Before the fix these sampled texels 4,5,6,7; the
 // console samples the one below each.
+//
+// gs-tclag2 drew exactly this shape on silicon -- one texel per pixel, NEAREST,
+// CLAMP, the STQ plane at Q = 1 -- and it TRAILS, on 5,456 of 5,456 landing
+// columns. Round 62 briefly had this reading the other way, from a rule fitted to
+// Jak 3's palette blit; gs-tclag3 found the property that blit actually has (its
+// twice-area is a power of two) and this geometry does not.
 TEST_F(SwScanlineTcLagTest, AForwardWalkOnABoundarySamplesTheTexelBelow)
 {
 	int got[4];

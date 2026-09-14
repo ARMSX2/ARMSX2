@@ -4,6 +4,7 @@
 #pragma once
 
 #include "common/Pcsx2Defs.h"
+#include "GS/GSVector.h"
 
 #include <cmath>
 
@@ -38,6 +39,97 @@
 static constexpr int GS_UV_FRACTIONAL_BITS = 15;
 static constexpr int GS_UV_GRID_SHIFT = 16 - GS_UV_FRACTIONAL_BITS;
 static constexpr s32 GS_UV_GRID_MASK = ~((1 << GS_UV_GRID_SHIFT) - 1);
+
+// THE FORMED COORDINATE SATURATES INTO A SIGNED 12.4 FIELD.
+//
+// A coordinate at or above 2,047.9375 texels samples texel 2,047 -- at weight 15
+// under the linear filter -- and one at or below -2,048 samples texel -2,048. It
+// saturates, it does not wrap.
+//
+// The clamp is on the FORMED SIXTEENTH: after the truncation to sixteenths and
+// after the linear filter's half-texel step, and before the tap pair is split out
+// and the wrap or clamp addressing runs. Clamping earlier would read weight 7 at
+// the top of the field where the console reads 15. The two axes saturate
+// independently.
+//
+// The UV register cannot reach the field (it is 10.4, so it tops out at 1,023.9375
+// texels), so the rule is unobservable on that route by construction rather than
+// excluded from it, and nothing here is gated on the route.
+//
+// ⚠️ The clamp point is bracketed, not pinned: nothing we measured ramps across
+// 2,047.9375, so where exactly it bites is known only to within that gap. Nothing
+// drives it under mipmapping either -- the mip levels take the field at the same
+// point in their own copy of the chain because that is the same place, not because
+// a reading says so.
+//
+// Below the sixteenth there is nothing either half of the split reads, so the
+// saturation may drop those bits and does.
+static constexpr s32 GS_COORD_SIXTEENTH_MIN = -0x8000; // -2048.0 texels
+static constexpr s32 GS_COORD_SIXTEENTH_MAX = 0x7FFF;  // +2047.9375 texels
+static constexpr int GS_COORD_SIXTEENTH_SHIFT = 12;
+
+// A TRIANGLE WHOSE SETUP INVERTS EXACTLY DOES NOT TRAIL THE PLANE.
+//
+// The scanline's coordinate trails the exact plane by one 16.16 unit on each axis
+// a triangle walks forward (GSCoordinateLag.h), which moves the sample one texel
+// down wherever the exact coordinate lands on a texel boundary. A descending or
+// still walk never trails, and sprites take nothing.
+//
+// The exemption is a property of the triangle, not of its step: an axis is exact
+// when twice the triangle's area, in 12.4 units squared, is a power of two --
+// which is exactly when the setup's divide by that area is exact. Measured over
+// twenty-two one-variable arms, against which the primitive class, the vertices'
+// sub-pixel placement, the texture size, the extent, the wrap mode, the filter,
+// the route, XYOFFSET, the blend, the texture function and the scissor are each
+// refuted.
+//
+// ⚠ The mechanism behind it is not measured. A reciprocal of a power of two is
+// exact where every other one is truncated, so the likely story is that the trail
+// IS that truncation and vanishes when there is nothing to truncate -- but that is
+// a story, and what is implemented is the fitted rule.
+//
+// ⚠ Nothing separates "the setup inverts exactly" from "the setup inverts exactly
+// AND the step is simple": no measurement we hold draws a non-unit step at a
+// power-of-two area.
+
+/// Twice the triangle's signed area, in 12.4 units squared, exactly.
+///
+/// The position lanes carry the 12.4 word divided by sixteen (GSRendererSW's
+/// `s_pos_scale`), so multiplying by sixteen recovers the word the GIF sent. The
+/// product needs sixty-four bits: a screen coordinate is sixteen bits of 12.4, so
+/// an edge is seventeen and the cross of two of them is thirty-four.
+///
+/// The ARM64 setup generator computes the identical integer from the identical
+/// words -- one FCVTZS at four fractional bits, then the cross in NEON -- so the
+/// two roads cannot disagree about it, and neither forms it in floating point.
+__forceinline static s64 GSTriangleTwiceArea(const GSVector4& p0, const GSVector4& p1, const GSVector4& p2)
+{
+	const s64 x0 = static_cast<s64>(p0.x * 16.0f);
+	const s64 y0 = static_cast<s64>(p0.y * 16.0f);
+	const s64 x1 = static_cast<s64>(p1.x * 16.0f);
+	const s64 y1 = static_cast<s64>(p1.y * 16.0f);
+	const s64 x2 = static_cast<s64>(p2.x * 16.0f);
+	const s64 y2 = static_cast<s64>(p2.y * 16.0f);
+
+	return (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+}
+
+/// Whether the setup's divide by twice the area is exact -- that is, whether twice
+/// the area is a power of two. A degenerate triangle is not: zero has no bit set.
+__forceinline static bool GSSetupInvertsExactly(s64 twice_area)
+{
+	const u64 a = static_cast<u64>(twice_area < 0 ? -twice_area : twice_area);
+
+	return a != 0 && (a & (a - 1)) == 0;
+}
+
+/// Whether an axis whose walk carries `step` (16.16 texels per pixel) trails the
+/// exact plane. Forward walks trail; still and backward ones do not, and neither
+/// does any axis of a triangle whose setup inverts exactly.
+__forceinline static bool GSCoordinateStepTrails(s32 step, bool inverts_exactly)
+{
+	return step > 0 && !inverts_exactly;
+}
 
 /// One affine-route coordinate, floored onto the console's accumulator grid.
 /// Floor, not truncate-toward-zero: a fixed-point register drops the bits below

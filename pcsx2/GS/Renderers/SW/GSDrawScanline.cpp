@@ -214,6 +214,61 @@ typedef GSVector4  VectorF;
 #define LOCAL_STEP local.d4
 #endif
 
+// The sixteenth-of-a-texel index that the sampler splits into a texel and a
+// filter weight is formed by TRUNCATING the coordinate toward zero. An
+// arithmetic shift floors instead, which is the same function on a non-negative
+// coordinate and one sixteenth lower on a negative one.
+//
+// Measured on real hardware rather than assumed, with a texture that names the
+// console's own reading -- red alternating by V parity and green by U parity, so
+// a bilinear blend returns the weight itself while blue and alpha name the texel
+// pair. One stored word therefore fixes the texel and the weight outright, with
+// no model of either renderer's walk in between. Every arm whose U stays positive
+// reads our own coordinate; the two whose U is negative read one sixteenth higher,
+// and applying the same displacement WITHOUT the sign test destroys the positive
+// arms. The sign is the whole rule rather than a detail of it.
+//
+// Both halves of the split read bit 12 and up -- the texel index is the
+// arithmetic shift by sixteen, the weight is bits 12 to 15 -- so adding a
+// sixteenth less one to a negative coordinate turns the floor that follows into
+// the truncation, and can disturb nothing else.
+//
+// Two things here are the model written down rather than measured. V: every arm
+// held V positive, so V is covered because both axes go through this one
+// expression, which is a fact about our code and not about silicon. And the ORDER
+// against the linear half-texel bias -- the two readings differ only for a
+// coordinate inside the first half texel, which nothing drew. The truncation is
+// taken BEFORE the bias: the console forms its sixteenth on the coordinate, and
+// the half-texel straddle is our own sampler's step onto the tap pair, not part
+// of that coordinate. The DDA's lag goes the other way and is taken BEFORE the
+// truncation, because the lag IS the console's own walk trailing the exact plane;
+// nothing measured separates the lag's two orders.
+static __forceinline VectorI GSTruncateCoordinate(const VectorI& c)
+{
+	return c + c.sra32<31>().srl32<20>();
+}
+
+// The formed coordinate lives in a SIGNED 12.4 FIELD and saturates into it, so a
+// coordinate at or above 2,047.9375 texels samples texel 2,047 and one at or below
+// -2,048 samples texel -2,048. Measured on real hardware; GSCoordinateWalk.h
+// carries the reading, the families it refutes, and what it does not pin.
+//
+// Written as the field it is: the sixteenth, saturated to sixteen signed bits, put
+// back. The bits below the sixteenth go with it, which nothing downstream reads --
+// the texel is bits 16 and up and the weight bits 12 to 15. The ARM64 generator
+// emits this same shape, one Sqxtn, so the two roads cannot drift apart on it.
+//
+// It sits after the truncation to sixteenths and after the linear filter's
+// half-texel step, because the console's reading is the field's top value and not
+// half a texel below it, and before the tap pair and the wrap addressing.
+static __forceinline VectorI GSSaturateCoordinate(const VectorI& c)
+{
+	return c.sra32<GS_COORD_SIXTEENTH_SHIFT>()
+	    .max_i32(VectorI(GS_COORD_SIXTEENTH_MIN))
+	    .min_i32(VectorI(GS_COORD_SIXTEENTH_MAX))
+	    .sll32<GS_COORD_SIXTEENTH_SHIFT>();
+}
+
 // The GS does not divide the texture coordinate by Q. It multiplies by a
 // RECIPROCAL that is truncated to about thirteen fractional bits, so a
 // perspective coordinate is systematically a little short of the true quotient.
@@ -633,6 +688,14 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 		// The colour and fog steps above take the block; this one does not. The
 		// coordinate keeps a per-vector step whatever the block width is, which is
 		// the same footing depth is on a few lines up.
+		// Twice the triangle's area, in 12.4 squared: a power of two means the
+		// setup's divide by it is exact, and such a triangle trails on no axis.
+		// Lines and points have no area to ask about and keep the lag they always
+		// had -- nothing measured draws one.
+		const bool inverts_exactly = sel.prim == GS_TRIANGLE_CLASS
+		    && GSSetupInvertsExactly(GSTriangleTwiceArea(
+		           vertex[index[0]].p, vertex[index[1]].p, vertex[index[2]].p));
+
 		if (sel.uvwalk)
 		{
 			// The console's texel accumulator is seed + n * floor(step) on a 12.15
@@ -645,8 +708,8 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 			if (sel.prim != GS_SPRITE_CLASS)
 			{
-				local.tclag.u = VectorI(du > 0 ? 1 : 0);
-				local.tclag.v = VectorI(dv > 0 ? 1 : 0);
+				local.tclag.u = VectorI(GSCoordinateStepTrails(du, inverts_exactly) ? 1 : 0);
+				local.tclag.v = VectorI(GSCoordinateStepTrails(dv, inverts_exactly) ? 1 : 0);
 			}
 
 			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(du * vlen, dv * vlen, 0, 0));
@@ -671,8 +734,11 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 		{
 			if (sel.prim != GS_SPRITE_CLASS)
 			{
-				local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
-				local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
+				// A constant-Q triangle's own ST plane and a live divide take the
+				// same rule: a live divide at a power-of-two area does not trail
+				// either, so the exemption is the setup's and not the road's.
+				local.tclag.u = VectorI(GSCoordinateStepTrails(dscan.t.x > 0.0f ? 1 : 0, inverts_exactly) ? 1 : 0);
+				local.tclag.v = VectorI(GSCoordinateStepTrails(dscan.t.y > 0.0f ? 1 : 0, inverts_exactly) ? 1 : 0);
 			}
 
 			const GSVector4 coord_tstep = dscan.t * coord_step_shift;
@@ -975,7 +1041,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else if (sel.ltf)
 				{
-					vf = v.xxzzlh().srl16<12>();
+					vf = GSSaturateCoordinate(GSTruncateCoordinate(v)).xxzzlh().srl16<12>();
 				}
 
 				s = VectorF::cast(u);
@@ -1244,11 +1310,20 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						maxuv = local.temp.uv_minmax[1];
 					}
 
+					u = GSTruncateCoordinate(u);
+					v = GSTruncateCoordinate(v);
+
 					if (sel.ltf)
 					{
 						u -= 0x8000;
 						v -= 0x8000;
+					}
 
+					u = GSSaturateCoordinate(u);
+					v = GSSaturateCoordinate(v);
+
+					if (sel.ltf)
+					{
 						uf = u.xxzzlh().srl16<12>();
 						vf = v.xxzzlh().srl16<12>();
 					}
@@ -1365,11 +1440,20 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						minuv = minuv.srl16<1>();
 						maxuv = maxuv.srl16<1>();
 
+						u = GSTruncateCoordinate(u);
+						v = GSTruncateCoordinate(v);
+
 						if (sel.ltf)
 						{
 							u -= 0x8000;
 							v -= 0x8000;
+						}
 
+						u = GSSaturateCoordinate(u);
+						v = GSSaturateCoordinate(v);
+
+						if (sel.ltf)
+						{
 							uf = u.xxzzlh().srl16<12>();
 							vf = v.xxzzlh().srl16<12>();
 						}
@@ -1513,25 +1597,6 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 						u = VectorI(s * r);
 						v = VectorI(t * r);
-
-						if (sel.ltf)
-						{
-							// The two filters do not sample the same point: nearest reads
-							// at the coordinate, linear straddles the pair half a texel
-							// back. So the bias is taken only where linear wins.
-							if (sel.ltfx)
-							{
-								const VectorI half = VectorI(0x8000) & lin;
-
-								u -= half;
-								v -= half;
-							}
-							else
-							{
-								u -= 0x8000;
-								v -= 0x8000;
-							}
-						}
 					}
 					else
 					{
@@ -1541,12 +1606,43 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					// The DDA's lag. Zero on any axis that is not walking forward,
 					// so this only moves a coordinate that lands exactly on a
-					// sixteenth.
+					// sixteenth. It is the console's own walk trailing the plane, so
+					// it is part of the coordinate the truncation below acts on.
 					if (sel.prim != GS_SPRITE_CLASS)
 					{
 						u -= local.tclag.u;
 						v -= local.tclag.v;
 					}
+
+					u = GSTruncateCoordinate(u);
+					v = GSTruncateCoordinate(v);
+
+					if (!sel.fst && sel.ltf)
+					{
+						// The two filters do not sample the same point: nearest reads
+						// at the coordinate, linear straddles the pair half a texel
+						// back. So the bias is taken only where linear wins.
+						//
+						// It is exactly eight sixteenths, so it moves the texel index
+						// and never the weight, and it is our own step onto the tap
+						// pair rather than part of the console's coordinate -- which
+						// is why it comes after the truncation and not before it.
+						if (sel.ltfx)
+						{
+							const VectorI half = VectorI(0x8000) & lin;
+
+							u -= half;
+							v -= half;
+						}
+						else
+						{
+							u -= 0x8000;
+							v -= 0x8000;
+						}
+					}
+
+					u = GSSaturateCoordinate(u);
+					v = GSSaturateCoordinate(v);
 
 					if (sel.ltf)
 					{

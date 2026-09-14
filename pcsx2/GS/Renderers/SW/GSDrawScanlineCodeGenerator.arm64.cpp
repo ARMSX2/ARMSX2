@@ -420,7 +420,24 @@ void GSDrawScanlineCodeGenerator::Init()
 				{
 					if (m_sel.ltf)
 					{
-						armAsm->Trn1(_temp_vf.V8H(), _temp_t.V8H(), _temp_t.V8H());
+						// vf = GSTruncateCoordinate(v).xxzzlh().srl16(12);
+						//
+						// The sixteenth index truncates toward zero, so a negative
+						// coordinate takes a sixteenth less one first -- see
+						// GSDrawScanline.cpp for the measurement. A sprite's V never
+						// steps, so the weight is taken once here while the loop
+						// re-forms the index from t, and both have to read the same
+						// sixteenth: the bias goes to the weight's own register and t
+						// keeps the raw coordinate.
+						armAsm->Sshr(_temp_vf.V4S(), _temp_t.V4S(), 31);
+						armAsm->Ushr(_temp_vf.V4S(), _temp_vf.V4S(), 20);
+						armAsm->Add(_temp_vf.V4S(), _temp_t.V4S(), _temp_vf.V4S());
+
+						// The weight and the index have to read the same 12.4 field,
+						// and the loop saturates the index it re-forms from t.
+						SaturateCoordinate(_temp_vf, _vscratch);
+
+						armAsm->Trn1(_temp_vf.V8H(), _temp_vf.V8H(), _temp_vf.V8H());
 						armAsm->Ushr(_temp_vf.V8H(), _temp_vf.V8H(), 12);
 					}
 				}
@@ -769,6 +786,22 @@ void GSDrawScanlineCodeGenerator::TestZ(const VRegister& temp1, const VRegister&
 	}
 }
 
+// The formed coordinate saturates into a signed 12.4 field; GSCoordinateWalk.h
+// carries the reading. Written as the field it is: take the
+// sixteenth, saturate it to sixteen signed bits, put it back. The bits below the
+// sixteenth go with it, and nothing downstream reads them -- the texel is bits 16
+// and up, the weight bits 12 to 15.
+//
+// SQXTN is the saturation, so there is no constant to materialise and the C++
+// reference's min/max form computes the same function.
+void GSDrawScanlineCodeGenerator::SaturateCoordinate(const VRegister& c, const VRegister& scratch)
+{
+	armAsm->Sshr(scratch.V4S(), c.V4S(), GS_COORD_SIXTEENTH_SHIFT);
+	armAsm->Sqxtn(scratch.V4H(), scratch.V4S());
+	armAsm->Sxtl(scratch.V4S(), scratch.V4H());
+	armAsm->Shl(c.V4S(), scratch.V4S(), GS_COORD_SIXTEENTH_SHIFT);
+}
+
 void GSDrawScanlineCodeGenerator::SampleTexture()
 {
 	if (!m_sel.fb || m_sel.tfx == TFX_NONE)
@@ -813,25 +846,6 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 		armAsm->Fcvtzs(v2.V4S(), v2.V4S());
 		armAsm->Fcvtzs(v3.V4S(), v3.V4S());
-
-		if (m_sel.ltf)
-		{
-			// u -= 0x8000;
-			// v -= 0x8000;
-
-			armAsm->Movi(v1.V4S(), 0x8000);
-
-			// The two filters do not sample the same point, so the half-texel bias
-			// belongs only to the pixels that actually filter linearly.
-			if (m_sel.ltfx)
-			{
-				emit_ltfx_mask(v0);
-				armAsm->And(v1.V16B(), v1.V16B(), v0.V16B());
-			}
-
-			armAsm->Sub(v2.V4S(), v2.V4S(), v1.V4S());
-			armAsm->Sub(v3.V4S(), v3.V4S(), v1.V4S());
-		}
 	}
 
 	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
@@ -848,6 +862,48 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		ureg = v2;
 		vreg = v3;
 	}
+
+	// GSTruncateCoordinate: the sixteenth index truncates toward zero, so a
+	// negative coordinate takes a sixteenth less one before the shifts below floor
+	// it into a texel and a weight. See GSDrawScanline.cpp for the measurement.
+	// The result goes to the scratch pair the packing consumes anyway, so this
+	// costs no register even where ureg is still the live FST accumulator.
+	armAsm->Sshr(v0.V4S(), ureg.V4S(), 31);
+	armAsm->Sshr(v1.V4S(), vreg.V4S(), 31);
+	armAsm->Ushr(v0.V4S(), v0.V4S(), 20);
+	armAsm->Ushr(v1.V4S(), v1.V4S(), 20);
+	armAsm->Add(v2.V4S(), ureg.V4S(), v0.V4S());
+	armAsm->Add(v3.V4S(), vreg.V4S(), v1.V4S());
+	ureg = v2;
+	vreg = v3;
+
+	if (!m_sel.fst && m_sel.ltf)
+	{
+		// u -= 0x8000;
+		// v -= 0x8000;
+		//
+		// Exactly eight sixteenths, so it moves the texel index and never the
+		// weight, and it is our own step onto the tap pair rather than part of the
+		// console's coordinate -- which is why it comes after the truncation. The
+		// two filters do not sample the same point, so it belongs only to the
+		// pixels that actually filter linearly.
+		armAsm->Movi(v1.V4S(), 0x8000);
+
+		if (m_sel.ltfx)
+		{
+			emit_ltfx_mask(v0);
+			armAsm->And(v1.V16B(), v1.V16B(), v0.V16B());
+		}
+
+		armAsm->Sub(ureg.V4S(), ureg.V4S(), v1.V4S());
+		armAsm->Sub(vreg.V4S(), vreg.V4S(), v1.V4S());
+	}
+
+	// The 12.4 field, taken on the finished coordinate: after the half-texel step,
+	// because the console's reading at the top of the field is weight 15 and not
+	// the 7 that clamping first would leave, and before the tap pair below.
+	SaturateCoordinate(ureg, v0);
+	SaturateCoordinate(vreg, v0);
 
 	if (m_sel.ltf)
 	{
@@ -1304,15 +1360,33 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Ldr(v6, _local(temp.uv_minmax[1]));
 	}
 
+	// GSTruncateCoordinate, as in SampleTexture above. Into the scratch pair, so
+	// uv0/uv1 keep this level's own coordinate for the level above it.
+	armAsm->Sshr(v0.V4S(), uv0.V4S(), 31);
+	armAsm->Sshr(v1.V4S(), uv1.V4S(), 31);
+	armAsm->Ushr(v0.V4S(), v0.V4S(), 20);
+	armAsm->Ushr(v1.V4S(), v1.V4S(), 20);
+	armAsm->Add(v2.V4S(), uv0.V4S(), v0.V4S());
+	armAsm->Add(v3.V4S(), uv1.V4S(), v1.V4S());
+
 	if (m_sel.ltf)
 	{
 		// u -= 0x8000;
 		// v -= 0x8000;
 
 		armAsm->Movi(v4.V4S(), 0x8000);
-		armAsm->Sub(v2.V4S(), uv0.V4S(), v4.V4S());
-		armAsm->Sub(v3.V4S(), uv1.V4S(), v4.V4S());
+		armAsm->Sub(v2.V4S(), v2.V4S(), v4.V4S());
+		armAsm->Sub(v3.V4S(), v3.V4S(), v4.V4S());
+	}
 
+	// The 12.4 field, as in SampleTexture above. No arm drives it under
+	// mipmapping; this level takes it at the same point in its own copy of
+	// the chain.
+	SaturateCoordinate(v2, v0);
+	SaturateCoordinate(v3, v0);
+
+	if (m_sel.ltf)
+	{
 		// GSVector4i uf = u.xxzzlh().srl16(1);
 
 		armAsm->Trn1(uf.V8H(), v2.V8H(), v2.V8H());
@@ -1326,8 +1400,8 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 	// GSVector4i uv0 = u.sra32(16).ps32(v.sra32(16));
 
-	armAsm->Sshr(v2.V4S(), m_sel.ltf ? v2.V4S() : uv0.V4S(), 16);
-	armAsm->Sshr(v3.V4S(), m_sel.ltf ? v3.V4S() : uv1.V4S(), 16);
+	armAsm->Sshr(v2.V4S(), v2.V4S(), 16);
+	armAsm->Sshr(v3.V4S(), v3.V4S(), 16);
 	armAsm->Sqxtn(v2.V4H(), v2.V4S());
 	armAsm->Sqxtn2(v2.V8H(), v3.V4S());
 
@@ -1366,6 +1440,15 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Ushr(v5.V8H(), v5.V8H(), 1);
 		armAsm->Ushr(v6.V8H(), v6.V8H(), 1);
 
+		// GSTruncateCoordinate, as above.
+
+		armAsm->Sshr(v0.V4S(), v2.V4S(), 31);
+		armAsm->Sshr(v1.V4S(), v3.V4S(), 31);
+		armAsm->Ushr(v0.V4S(), v0.V4S(), 20);
+		armAsm->Ushr(v1.V4S(), v1.V4S(), 20);
+		armAsm->Add(v2.V4S(), v2.V4S(), v0.V4S());
+		armAsm->Add(v3.V4S(), v3.V4S(), v1.V4S());
+
 		if (m_sel.ltf)
 		{
 			// u -= 0x8000;
@@ -1374,7 +1457,16 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 			armAsm->Movi(v4.V4S(), 0x8000);
 			armAsm->Sub(v2.V4S(), v2.V4S(), v4.V4S());
 			armAsm->Sub(v3.V4S(), v3.V4S(), v4.V4S());
+		}
 
+		// The 12.4 field, as in SampleTexture above. No arm drives it under
+		// mipmapping; this level takes it at the same point in its own copy of
+		// the chain.
+		SaturateCoordinate(v2, v0);
+		SaturateCoordinate(v3, v0);
+
+		if (m_sel.ltf)
+		{
 			// GSVector4i uf = u.xxzzlh().srl16(1);
 
 			armAsm->Trn1(uf.V8H(), v2.V8H(), v2.V8H());
@@ -2587,6 +2679,10 @@ void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegis
 	armAsm->Uxtl(d.V8H(), d.V8B());
 }
 
+// The eight-bit colour the GS stores, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, never the
+// wider value the DDA carries -- console-measured, and the same rule
+// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
 	walkColorByte(d, c);
@@ -2617,10 +2713,6 @@ void GSDrawScanlineCodeGenerator::mix16(const VRegister& a, const VRegister& b, 
 	armAsm->Bsl(a.V16B(), b.V16B(), temp.V16B());
 }
 
-// The eight-bit colour the GS stores, put back on the seven-fraction grid the
-// modulate expects. The texture function multiplies the stored byte, never the
-// wider value the DDA carries -- console-measured, and the same rule
-// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::clamp16(const VRegister& a, const VRegister& temp)
 {
 	armAsm->Sqxtun(a.V8B(), a.V8H());

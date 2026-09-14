@@ -23,6 +23,7 @@ private:
 	void Step();
 	void TestZ(const vixl::aarch64::VRegister& temp1, const vixl::aarch64::VRegister& temp2);
 	void SampleTexture();
+	void SaturateCoordinate(const vixl::aarch64::VRegister& c, const vixl::aarch64::VRegister& scratch);
 	void SampleTexture_TexelReadHelper(int mip_offset);
 	void Wrap(const vixl::aarch64::VRegister& uv0);
 	void Wrap(const vixl::aarch64::VRegister& uv0, const vixl::aarch64::VRegister& uv1);

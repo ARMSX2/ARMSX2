@@ -155,6 +155,58 @@ void GSSetupPrimCodeGenerator::Texture()
 		return;
 	}
 
+	// Twice the triangle's area, in 12.4 units squared, as an exact integer, and
+	// from it the mask the lag is gated on: all-ones where the trail is taken, zero
+	// where the setup inverts exactly. GSCoordinateWalk.h carries the reading.
+	//
+	// The words are the vertices' own: the position lane is the 12.4 word over
+	// sixteen, so FCVTZS at four fractional bits recovers it, and the cross runs in
+	// integers from there. Nothing here is formed in floating point, and the C++
+	// reference forms the identical integer the identical way.
+	//
+	// Lines and points have no area to ask about and keep the lag they always had.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		if (m_sel.prim == GS_TRIANGLE_CLASS)
+		{
+			const VRegister vp[3] = {d0, d1, d2};
+
+			for (int k = 0; k < 3; k++)
+			{
+				armAsm->Ldrh(w4, MemOperand(_index, sizeof(u16) * k));
+				armAsm->Lsl(w4, w4, 6); // * sizeof(GSVertexSW)
+				armAsm->Add(x4, _vertex, x4);
+				armAsm->Ldr(vp[k], MemOperand(x4, offsetof(GSVertexSW, p)));
+				armAsm->Fcvtzs(vp[k].V2S(), vp[k].V2S(), 4);
+			}
+
+			// d1 = p1 - p0, d2 = p2 - p0, then the cross as (d1.x*d2.y, d1.y*d2.x)
+			// and the difference of the pair.
+			armAsm->Sub(v1.V2S(), v1.V2S(), v0.V2S());
+			armAsm->Sub(v2.V2S(), v2.V2S(), v0.V2S());
+			armAsm->Rev64(v2.V2S(), v2.V2S());
+			armAsm->Smull(v0.V2D(), v1.V2S(), v2.V2S());
+			armAsm->Ext(v1.V16B(), v0.V16B(), v0.V16B(), 8);
+			armAsm->Sub(v0.V2D(), v0.V2D(), v1.V2D());
+			armAsm->Abs(v0.V2D(), v0.V2D());
+			armAsm->Fmov(x4, d0);
+
+			// A power of two clears every bit below its own, and zero is not one.
+			armAsm->Sub(x5, x4, 1);
+			armAsm->Tst(x4, x5);
+			armAsm->Cset(w5, eq);
+			armAsm->Cmp(x4, 0);
+			armAsm->Cset(w6, ne);
+			armAsm->And(w5, w5, w6);
+			armAsm->Cmp(w5, 0);
+			armAsm->Csetm(w6, eq);
+		}
+		else
+		{
+			armAsm->Mov(w6, -1);
+		}
+	}
+
 	// GSVector4 t = dscan.t;
 
 	armAsm->Ldr(v0, MemOperand(_dscan, offsetof(GSVertexSW, t)));
@@ -169,6 +221,7 @@ void GSSetupPrimCodeGenerator::Texture()
 	// walk actually takes, which on the affine route is the FLOORED one: a
 	// gradient below a grid unit per pixel walks nowhere, and a still coordinate
 	// does not trail.
+	//
 
 	if (m_sel.uvwalk)
 	{
@@ -188,15 +241,18 @@ void GSSetupPrimCodeGenerator::Texture()
 
 		if (m_sel.prim != GS_SPRITE_CLASS)
 		{
-			armAsm->Dup(_vscratch.V4S(), v1.V4S(), 0);
-			armAsm->Cmgt(_vscratch.V4S(), _vscratch.V4S(), 0);
-			armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
-			armAsm->Str(_vscratch, _local(tclag.u));
+			// v0 held dscan.t and is spent: the step lives in v1 from here on, and
+			// w6 carries the area gate from the top of this function.
+			armAsm->Dup(v0.V4S(), w6);
 
-			armAsm->Dup(_vscratch.V4S(), v1.V4S(), 1);
-			armAsm->Cmgt(_vscratch.V4S(), _vscratch.V4S(), 0);
-			armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
-			armAsm->Str(_vscratch, _local(tclag.v));
+			for (int j = 0; j < 2; j++)
+			{
+				armAsm->Dup(_vscratch.V4S(), v1.V4S(), j);
+				armAsm->Cmgt(_vscratch.V4S(), _vscratch.V4S(), 0);
+				armAsm->And(_vscratch.V16B(), _vscratch.V16B(), v0.V16B());
+				armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+				armAsm->Str(_vscratch, j == 0 ? _local(tclag.u) : _local(tclag.v));
+			}
 		}
 
 		// m_local.d4.stq = step * 4;
@@ -232,15 +288,20 @@ void GSSetupPrimCodeGenerator::Texture()
 
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
-		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 0);
-		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
-		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
-		armAsm->Str(_vscratch, _local(tclag.u));
+		// A constant-Q triangle's own ST plane and a live divide take the same
+		// rule: a live divide at a power-of-two area does not trail either. v0
+		// keeps dscan.t for the step below; v1 carries the area gate from the top
+		// of this function.
+		armAsm->Dup(v1.V4S(), w6);
 
-		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 1);
-		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
-		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
-		armAsm->Str(_vscratch, _local(tclag.v));
+		for (int j = 0; j < 2; j++)
+		{
+			armAsm->Dup(_vscratch.V4S(), v0.V4S(), j);
+			armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
+			armAsm->And(_vscratch.V16B(), _vscratch.V16B(), v1.V16B());
+			armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+			armAsm->Str(_vscratch, j == 0 ? _local(tclag.u) : _local(tclag.v));
+		}
 	}
 
 	// The multiply is by m_shift[0], four pixels -- one VECTOR, deliberately not

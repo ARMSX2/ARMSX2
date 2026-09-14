@@ -1082,8 +1082,10 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 
 			GIFRegTEX0 TEX0 = m_context->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mipmap);
 
-			GSVector4i r = GSCoverageWithCoordinateLag(
-				GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass);
+			GSVector4i r = GSCoverageWithCoordinateField(
+				GSCoverageWithCoordinateLag(
+					GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass),
+				m_vt.m_min.t, m_vt.m_max.t, TEX0);
 
 			GSTextureCacheSW::Texture* t = m_tc->Lookup(TEX0, env.TEXA);
 
