@@ -83,7 +83,7 @@ enum ARMSX2DeepLinkHandler {
 
     private static func exportLibrary(from url: URL) {
         guard let callback = queryValue(["callback", "callback_url", "return", "return_url", "x-success"], in: url) else {
-            showMessage("LudiHub library export requested, but no callback URL was provided.")
+            showMessage("Library export requested, but no callback URL was provided.")
             NSLog("[ARMSX2 iOS DeepLink] library export missing callback url=%@", url.absoluteString)
             return
         }
@@ -93,7 +93,7 @@ enum ARMSX2DeepLinkHandler {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             let encoded = base64URLEncoded(data)
             guard let callbackURL = callbackURL(base: callback, payload: encoded) else {
-                showMessage("LudiHub callback URL was invalid.")
+                showMessage("The library callback URL was invalid.")
                 NSLog("[ARMSX2 iOS DeepLink] invalid callback=%@", callback)
                 return
             }
@@ -103,40 +103,36 @@ enum ARMSX2DeepLinkHandler {
                 NSLog("[ARMSX2 iOS DeepLink] callback open result=%d callback=%@", didOpen ? 1 : 0, callbackURL.absoluteString)
                 if !didOpen {
                     Task { @MainActor in
-                        showMessage("LudiHub callback could not be opened.")
+                        showMessage("The library callback could not be opened.")
                     }
                 }
             }
         } catch {
-            showMessage("LudiHub library export failed: \(error.localizedDescription)")
+            showMessage("Library export failed: \(error.localizedDescription)")
             NSLog("[ARMSX2 iOS DeepLink] library export failed: %@", error.localizedDescription)
         }
     }
 
     private static func libraryPayload() -> [String: Any] {
-        let isoDir = URL(fileURLWithPath: ARMSX2Bridge.isoDirectory())
-        let docsDir = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory())
-        let gameNames = ARMSX2Bridge.availableISOs()
-            .filter { !$0.lowercased().hasSuffix(".elf") }
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let games: [[String: Any]] = listedGames()
+            .filter { !$0.name.lowercased().hasSuffix(".elf") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { game in
+                let metadata = ARMSX2Bridge.gameMetadata(forISO: game.bootName)
+                let title = metadata["title"] ?? metadata["fileTitle"] ?? URL(fileURLWithPath: game.name).deletingPathExtension().lastPathComponent
+                let fileURL = URL(fileURLWithPath: game.path)
 
-        let games: [[String: Any]] = gameNames.map { isoName in
-            let metadata = ARMSX2Bridge.gameMetadata(forISO: isoName)
-            let title = metadata["title"] ?? metadata["fileTitle"] ?? URL(fileURLWithPath: isoName).deletingPathExtension().lastPathComponent
-            let isoURL = resolvedISOURL(isoName: isoName, isoDir: isoDir, docsDir: docsDir)
-            let fileSize = fileSize(at: isoURL)
-
-            return [
-                "title": title,
-                "fileName": isoName,
-                "serial": metadata["serial"] ?? "",
-                "region": metadata["region"] ?? "",
-                "crc": metadata["crc"] ?? "",
-                "fileSize": fileSize,
-                "fileType": isoURL.pathExtension.uppercased(),
-                "launchURL": launchURL(forISO: isoName)
-            ]
-        }
+                return [
+                    "title": title,
+                    "fileName": game.name,
+                    "serial": metadata["serial"] ?? "",
+                    "region": metadata["region"] ?? "",
+                    "crc": metadata["crc"] ?? "",
+                    "fileSize": fileSize(at: fileURL),
+                    "fileType": fileURL.pathExtension.uppercased(),
+                    "launchURL": launchURL(forISO: game.name)
+                ]
+            }
 
         return [
             "schema": "com.armsx2.library.v1",
@@ -148,12 +144,17 @@ enum ARMSX2DeepLinkHandler {
         ]
     }
 
-    private static func resolvedISOURL(isoName: String, isoDir: URL, docsDir: URL) -> URL {
-        let isoURL = isoDir.appendingPathComponent(isoName)
-        if FileManager.default.fileExists(atPath: isoURL.path) {
-            return isoURL
+    private static func listedGames() -> [(name: String, bootName: String, path: String)] {
+        var seen = Set<String>()
+        return ARMSX2Bridge.availableISOEntries().compactMap { entry in
+            // First entry per name wins: the iso folder, then Documents, then external folders.
+            guard let name = entry["name"] as? String, let path = entry["path"] as? String,
+                  seen.insert(name).inserted else {
+                return nil
+            }
+            let external = (entry["external"] as? NSNumber)?.boolValue == true
+            return (name: name, bootName: external ? path : name, path: path)
         }
-        return docsDir.appendingPathComponent(isoName)
     }
 
     private static func fileSize(at url: URL) -> Int64 {
@@ -181,14 +182,7 @@ enum ARMSX2DeepLinkHandler {
     }
 
     private static func bootName(forListedName name: String) -> String? {
-        if ARMSX2Bridge.availableISOs().contains(name) {
-            return name
-        }
-        // When two external folders hold the same filename, the first one boots.
-        guard let entry = ARMSX2Bridge.availableISOEntries().first(where: { $0["name"] as? String == name }) else {
-            return nil
-        }
-        return (entry["external"] as? NSNumber)?.boolValue == true ? entry["path"] as? String : name
+        listedGames().first { $0.name == name }?.bootName
     }
 
     private static func callbackURL(base: String, payload: String) -> URL? {
