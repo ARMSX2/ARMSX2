@@ -107,23 +107,27 @@ class DeepLinkLaunch(unittest.TestCase):
         self.assertFalse(
             missing, "percentEncoded still lets %s through unescaped" % " ".join(sorted(missing)))
 
-    def test_a_game_from_an_external_folder_boots_from_its_path(self):
-        """availableISOs only knows games stored inside the app. A game from an external folder
-        is listed by its filename but boots by path, the way tapping it in the library does."""
+    def test_links_and_the_export_read_one_game_list(self):
+        """listedGames covers external folders. A game from one is listed by its filename but
+        boots by path, the way tapping it in the library does, and the export has to list it or
+        frontends never learn its link."""
         launch = body(self.source, "launchGame")
         self.assertIsNotNone(launch, "launchGame disappeared")
         self.assertIn("bootName(forListedName:", launch, "launchGame no longer resolves the name")
 
-        lookup = body(self.source, "bootName")
-        self.assertIsNotNone(lookup, "bootName disappeared")
-        local = lookup.find("availableISOs()")
-        listed = lookup.find("availableISOEntries()")
-        self.assertGreaterEqual(local, 0, "launch links stopped checking the app's own games")
-        self.assertGreater(
-            listed, local,
-            "launch links no longer fall back to the full library after the app's own games, "
-            "so a link copied from an external folder's game says it cannot be found")
-        self.assertIn('"path"', lookup, "a game from an external folder no longer boots by path")
+        listed = body(self.source, "listedGames")
+        self.assertIsNotNone(listed, "listedGames disappeared")
+        self.assertIn(
+            "availableISOEntries()", listed,
+            "the game list no longer reads the entries, so games in external folders drop out")
+        self.assertRegex(
+            listed, r"external\s*\?\s*path\s*:\s*name",
+            "a game from an external folder no longer boots by its path")
+        for reader in ("bootName", "libraryPayload"):
+            self.assertIn(
+                "listedGames()", body(self.source, reader) or "",
+                "%s no longer reads listedGames, so links and the export can disagree about which "
+                "games exist" % reader)
 
     def test_the_game_menu_copies_the_handlers_link(self):
         menu = GAME_LIST.read_text(encoding="utf-8")
