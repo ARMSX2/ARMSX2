@@ -205,6 +205,14 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	s32 lodshift;
 	s32 lodmxl;
 
+	// The primitive-grain rule's one per-draw input, per axis: TEX0's log2 width and
+	// height plus two, which is where the grain stops shrinking (GSCoordinateWalk.h).
+	// ZERO on every draw that does not take the rule, which is everything but an
+	// affine STQ triangle inside the front end's own texel-rounding gate -- the real
+	// value is never zero (it is at least two), so an all-zero or freshly built
+	// global reads as "no rule" rather than as some grain nobody chose.
+	s32 coord_grain_floor[2] = {};
+
 #ifdef ARCH_ARM64
 	// Mini version of constant data for ARM64, we don't need all of it
 	alignas(16) u32 const_test_128b[8][4] = {

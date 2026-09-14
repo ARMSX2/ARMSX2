@@ -803,6 +803,33 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	// plane is evaluated from. See the scalar twin below for what measured it.
 	GSVertexSW2 ledge;
 
+	// Stages 1 and 2 of the primitive-grain rule, mirroring the scalar twin below
+	// lane for lane -- GSCoordinateWalk.h. Per primitive rather than per draw,
+	// because the grain comes from the largest of THESE three exponents and a strip
+	// shares its vertices between triangles that do not share a grain.
+	GSVertexSW grained[3];
+	static constexpr u16 grained_index[3] = {0, 1, 2};
+	GSCoordinateGrain grain;
+	const bool takes_grain = (m_local.gd->coord_grain_floor[0] != 0);
+
+	if (takes_grain)
+	{
+		const float half = m_local.gd->sel.ltf ? 32768.0f : 0.0f;
+
+		grained[0] = vertex[index[0]];
+		grained[1] = vertex[index[1]];
+		grained[2] = vertex[index[2]];
+
+		grain = GSCoordinateGrainOfPrimitive(grained[0].t, grained[1].t, grained[2].t,
+			m_local.gd->coord_grain_floor, half);
+
+		for (int j = 0; j < 3; j++)
+			grained[j].t = GSCoordinateOnGrain(grained[j].t, grain, half);
+
+		vertex = grained;
+		index = grained_index;
+	}
+
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
 
@@ -905,6 +932,17 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 
 		dscan.tc = dscan.tc.blend32<0xf8>(trunc_s);
 		dedge.tc = dedge.tc.blend32<0xf8>(trunc_e);
+	}
+
+	// Stage 3, as the scalar twin does it: the gradient the truncated vertices give,
+	// pushed down onto a grid a thousandth of the grain. Lanes 0 and 1 of tc are s
+	// and t; q and fog ride through.
+	if (takes_grain)
+	{
+		const GSVector4 stq = GSCoordinateGradientOnGrain(dscan.tc.extract<0>(), grain,
+			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+
+		dscan.tc = GSVector8(stq, dscan.tc.extract<1>());
 	}
 
 	// GSVertexSW2 is GSVertexSW with t and c fused into one vector at the same
@@ -1094,7 +1132,7 @@ struct GSTriangleSetup
 };
 
 __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
-	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width)
+	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1204,6 +1242,17 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 		dedge.t = dedge.t.blend32<8>(GSColourWalkTruncUnit(dedge.t));
 	}
 
+	// Stage 3: the gradient the truncated vertices give, pushed down onto a grid a
+	// thousandth of the primitive's grain -- strictly where twice the area is not a
+	// power of two, plain floor where it is. It goes on the gradient where it is
+	// formed, so the scanline seed the rasterizer computes below and both SetupPrim
+	// backends read one number rather than each re-deriving the rule.
+	if (grain)
+	{
+		out.dscan.t = GSCoordinateGradientOnGrain(out.dscan.t, *grain,
+			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+	}
+
 	// One anchor, one walk direction and one block grid for the whole primitive,
 	// both sections included. GSColourWalk.h carries the rules and what decided
 	// each of them.
@@ -1291,8 +1340,39 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	const GSScanlineSelector sel = m_local.gd->sel;
 	const int block_width = GSBlockWalkWidth(sel.tfx != TFX_NONE, sel.fge != 0, sel.aa1 != 0);
 
+	// Stages 1 and 2 of the primitive-grain rule, on the three vertices this
+	// primitive owns rather than on the draw's vertex buffer, because the grain comes
+	// from the largest of THESE three exponents and a strip shares its vertices
+	// between triangles that do not share a grain. GSCoordinateWalk.h carries the
+	// measurement, the identity with the front end's own truncation, and the limits.
+	GSVertexSW grained[3];
+	static constexpr u16 grained_index[3] = {0, 1, 2};
+	GSCoordinateGrain grain;
+	const bool takes_grain = (m_local.gd->coord_grain_floor[0] != 0);
+
+	if (takes_grain)
+	{
+		// The linear filter's half texel is already off the vertex here; the rule keys
+		// on the coordinate, so it goes back on for the truncation and comes off after.
+		const float half = sel.ltf ? 32768.0f : 0.0f;
+
+		grained[0] = vertex[index[0]];
+		grained[1] = vertex[index[1]];
+		grained[2] = vertex[index[2]];
+
+		grain = GSCoordinateGrainOfPrimitive(grained[0].t, grained[1].t, grained[2].t,
+			m_local.gd->coord_grain_floor, half);
+
+		for (int j = 0; j < 3; j++)
+			grained[j].t = GSCoordinateOnGrain(grained[j].t, grain, half);
+
+		vertex = grained;
+		index = grained_index;
+	}
+
 	GSTriangleSetup s;
-	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width))
+	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width,
+			takes_grain ? &grain : nullptr))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)

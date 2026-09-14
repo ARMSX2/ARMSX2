@@ -967,6 +967,9 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 
 	gd.sel.key = 0;
 
+	gd.coord_grain_floor[0] = 0;
+	gd.coord_grain_floor[1] = 0;
+
 	gd.sel.fpsm = 3;
 	gd.sel.zpsm = 3;
 	gd.sel.atst = ATST_ALWAYS;
@@ -1221,6 +1224,25 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				// quotient instead. See GSVertexQDivide.h for the measurement.
 				gd.sel.fst |= (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
 					m_vt.m_min.t.z) || GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z));
+
+				// An affine STQ triangle's coordinate is held to ONE grain for the whole
+				// primitive, not one per vertex, and its gradient sits on a grid a
+				// thousandth of that grain. GSCoordinateWalk.h carries the measurement
+				// and the rest of the rule; the rasterizer needs only where the grain
+				// stops shrinking, which is TEX0's own size.
+				//
+				// The gate is the front end's own texel rounding -- a sprite or a
+				// constant-Z draw, STQ, textured -- narrowed to the triangles that then
+				// take the affine route. Staying inside it is what makes the widening an
+				// identity: those vertices are already truncated on the finer grid, so
+				// truncating them again onto the primitive's lands where the front end
+				// would have landed had its own rule been the primitive's.
+				if (primclass == GS_TRIANGLE_CLASS && !PRIM->FST && m_vt.m_eq.z
+					&& GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z))
+				{
+					gd.coord_grain_floor[0] = static_cast<s32>(context->TEX0.TW) + 2;
+					gd.coord_grain_floor[1] = static_cast<s32>(context->TEX0.TH) + 2;
+				}
 
 				// The console chooses MMAG versus MMIN per pixel, from that pixel's own
 				// level. When this primitive straddles the crossing and the two filters
