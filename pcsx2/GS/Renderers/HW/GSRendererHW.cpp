@@ -6040,6 +6040,18 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					GL_INS("HW: Lines drawn as pixel runs.");
 					m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 					m_conf.indices_per_prim = 6;
+
+					// The rectangle corners are pixel boundaries, so they take exactly half a device
+					// pixel of offset, the amount that puts a boundary between two device pixels.
+					// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
+					// and the mod_xy hack scales the half pixel up. Both correct geometry a game
+					// places on pixel centres, and applied here they move every rectangle, a device
+					// pixel right and down at 2x under Align to Native. sx/sy are GS units (1/16
+					// pixel) to NDC, so half a device pixel is 8 * sx / target_scale; at native
+					// resolution this is the value DetermineVSConfig already chose.
+					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - 8.0f * sx / target_scale + 1.0f, oy * sy - 8.0f * sy / target_scale + 1.0f);
 				}
 				else if (unscale_pt_ln)
 				{
