@@ -5,6 +5,7 @@
 
 #include "GS/GSLocalMemory.h"
 #include "GS/GSVector.h"
+#include "GS/Renderers/SW/GSColourWalk.h"
 
 #include <cstdio>
 #include <string>
@@ -271,6 +272,12 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 #endif
 
 	//
+
+	/// What the setup decided about this primitive's colour interpolator: the
+	/// gradients on the walk's own grids, the anchor and the block grid. It lives
+	/// here rather than in the rasterizer's own state so that a test's setup_prim
+	/// hook, which is handed the local data, can read the decision.
+	GSColourWalk cwalk;
 
 	const GSScanlineGlobalData* gd;
 };

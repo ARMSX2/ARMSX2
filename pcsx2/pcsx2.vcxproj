@@ -824,6 +824,7 @@
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
+    <ClInclude Include="GS\Renderers\SW\GSColourWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">

@@ -2024,6 +2024,9 @@
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSColourWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
