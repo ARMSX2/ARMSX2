@@ -152,11 +152,6 @@ struct RootView: View {
             GameLibraryRuntimeResources.releaseForGameplay()
             PatchStore.shared.releasePresentationResources()
         }
-        .onOpenURL { url in
-            if !ARMSX2DeepLinkHandler.handle(url) {
-                fileImporter.handleURL(url)
-            }
-        }
         .alert(settings.localized("File Import"), isPresented: $fileImporter.showImportAlert) {
             Button(settings.localized("OK")) {}
         } message: {

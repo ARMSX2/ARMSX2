@@ -153,6 +153,19 @@ class DeepLinkLaunch(unittest.TestCase):
             "shutdownAndBoot(isoName:", ROOT_VIEW.read_text(encoding="utf-8"),
             "the Restart VM prompt no longer restarts into the linked game")
 
+    def test_files_opened_in_the_app_fall_back_to_the_importer(self):
+        """The app runs on UIKit scenes, so SwiftUI's onOpenURL never fires. Every URL arrives
+        through DeepLinkBridge, which has to pass anything that is not a link to the importer."""
+        bridge = self.source[self.source.find("class DeepLinkBridge"):]
+        self.assertIn(
+            "FileImportHandler.shared.handleURL(url)", bridge,
+            "DeepLinkBridge drops URLs that are not armsx2 links, so files opened in the app "
+            "from Files or the share sheet are never imported")
+        self.assertNotIn(
+            ".onOpenURL", ROOT_VIEW.read_text(encoding="utf-8"),
+            "RootView has an onOpenURL again. It never runs under the UIKit scene lifecycle, "
+            "so whatever it handles is silently lost")
+
     def test_the_accepted_schemes_and_the_registered_ones_are_the_same_set(self):
         """Both directions. A scheme in code but not in the plist is the quiet one: iOS never
         routes the URL, so the handler that would accept it is never reached and nothing
