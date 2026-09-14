@@ -1054,6 +1054,7 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			gd.sel.tfx = context->TEX0.TFX;
 			gd.sel.tcc = context->TEX0.TCC;
 			gd.sel.fst = PRIM->FST;
+
 			gd.sel.ltf = m_vt.IsLinear();
 
 			if (GSLocalMemory::m_psm[context->TEX0.PSM].pal > 0)
@@ -1329,6 +1330,29 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			gd.t.max = gd.t.max.xxxxlh();
 			gd.t.mask = gd.t.mask.xxzz();
 			gd.t.invmask = ~gd.t.mask;
+
+			// Which coordinates walk in the console's 12.15 truncating accumulator,
+			// and it is not the same set as `fst`. That bit says only that the
+			// scanline reads a 16.16 integer, and by here it has grown to cover
+			// three different coordinates. Hardware splits them:
+			//
+			//   * the UV register, and a SPRITE whose ST the vertex conversion
+			//     resolved, both take the accumulator;
+			//   * a constant-Q TRIANGLE's ST plane refuses it and keeps its own
+			//     exact plane.
+			//
+			// ⚠️ It is a SUBSET of fst, and has to be read from the final value:
+			// a mipmapped STQ sprite never reaches the widening above, so it walks
+			// the perspective route, and telling setup to write it an integer step
+			// and no Q step corrupts thousands of words of a game frame.
+			//
+			// ARM64 only, for the reason ltfx carries above: the x86 setup
+			// generator does not implement the walk, and leaving the bit set there
+			// would make an x86 JIT disagree with its own C++ fallback. An x86
+			// software build keeps the wide accumulator on every road.
+#ifdef ARCH_ARM64
+			gd.sel.uvwalk = gd.sel.fst && (PRIM->FST || primclass == GS_SPRITE_CLASS);
+#endif
 		}
 
 		if (PRIM->FGE)

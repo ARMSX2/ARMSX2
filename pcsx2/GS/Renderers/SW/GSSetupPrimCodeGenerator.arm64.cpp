@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 
 #include "common/StringUtil.h"
@@ -157,15 +158,78 @@ void GSSetupPrimCodeGenerator::Texture()
 	// GSVector4 t = dscan.t;
 
 	armAsm->Ldr(v0, MemOperand(_dscan, offsetof(GSVertexSW, t)));
-	armAsm->Fmul(v1.V4S(), v0.V4S(), v3.V4S());
 
 	// The coordinate a triangle samples at trails the exact plane in the direction
 	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
 	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.
 	//
-	// A float compare against zero leaves all-ones -- integer -1 -- in the lanes
-	// that walk forward, so negating it gives the one unit the scanline subtracts
-	// and leaves the still and backward axes at zero.
+	// A compare against zero leaves all-ones -- integer -1 -- in the lanes that
+	// walk forward, so negating it gives the one unit the scanline subtracts and
+	// leaves the still and backward axes at zero. The compare is on the step the
+	// walk actually takes, which on the affine route is the FLOORED one: a
+	// gradient below a grid unit per pixel walks nowhere, and a still coordinate
+	// does not trail.
+
+	if (m_sel.uvwalk)
+	{
+		// The console's texel accumulator is seed + n * floor(step) on a 12.15
+		// grid -- GSCoordinateWalk.h. So the per-pixel step is floored ONCE,
+		// here, and every lane and vector offset below is an integer multiple of
+		// it. Truncating each product instead is floor(n * step), a different
+		// sequence, and it is the one that disagrees with the console.
+		//
+		// FCVTMS rounds toward minus infinity, which is what dropping the bits
+		// below a fixed-point register does; the BIC puts the result on the
+		// eleven-bits-below-the-sixteenth grid the width fit pinned.
+
+		// GSVector4i step = GSVector4i(t.floor()) & GS_UV_GRID_MASK;
+		armAsm->Fcvtms(v1.V4S(), v0.V4S());
+		armAsm->Bic(v1.V4S(), (1 << GS_UV_GRID_SHIFT) - 1, 0);
+
+		if (m_sel.prim != GS_SPRITE_CLASS)
+		{
+			armAsm->Dup(_vscratch.V4S(), v1.V4S(), 0);
+			armAsm->Cmgt(_vscratch.V4S(), _vscratch.V4S(), 0);
+			armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+			armAsm->Str(_vscratch, _local(tclag.u));
+
+			armAsm->Dup(_vscratch.V4S(), v1.V4S(), 1);
+			armAsm->Cmgt(_vscratch.V4S(), _vscratch.V4S(), 0);
+			armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+			armAsm->Str(_vscratch, _local(tclag.v));
+		}
+
+		// m_local.d4.stq = step * 4;
+		armAsm->Shl(v2.V4S(), v1.V4S(), 2);
+		armAsm->Str(v2, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
+
+		armAsm->Mov(_scratchaddr, reinterpret_cast<intptr_t>(g_const.m_lane));
+
+		for (int j = 0; j < 2; j++)
+		{
+			// GSVector4i ds = step.xxxx();
+			// GSVector4i dt = step.yyyy();
+
+			armAsm->Dup(v2.V4S(), v1.V4S(), j);
+
+			for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
+			{
+				// m_local.d[i].s/t = ds/dt * m_lane[i];
+
+				armAsm->Ldr(_vscratch, MemOperand(_scratchaddr, i * sizeof(g_const.m_lane[0])));
+				armAsm->Mul(v0.V4S(), v2.V4S(), _vscratch.V4S());
+
+				switch (j)
+				{
+					case 0: armAsm->Str(v0, _local(d[i].s)); break;
+					case 1: armAsm->Str(v0, _local(d[i].t)); break;
+				}
+			}
+		}
+
+		return;
+	}
+
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 0);
@@ -179,29 +243,24 @@ void GSSetupPrimCodeGenerator::Texture()
 		armAsm->Str(_vscratch, _local(tclag.v));
 	}
 
-	// The multiply above is by m_shift[0], four pixels -- one VECTOR, deliberately
-	// not one block. Colour and fog take the eight-wide block, in the tables
+	// The multiply is by m_shift[0], four pixels -- one VECTOR, deliberately not
+	// one block. Colour and fog take the eight-wide block, in the tables
 	// GSDrawScanline::SetupColourWalkTables builds; the coordinate does not, for
 	// the reason GSBlockWalk.h gives, and the pin is
 	// TheCoordinateStepStaysOneVector. Taking the block step here would advance
 	// the coordinate eight pixels every four.
 
+	// A constant-Q triangle's ST plane arrives as a 16.16 integer too and the
+	// scanline reads it the same way, but it does not take the accumulator's grid
+	// -- the console refuses it there. So this road keeps the float step it had.
+	//
+	// m_local.d4.stq = GSVector4i(t * 4.0f) or t * 4.0f;
+	armAsm->Fmul(v1.V4S(), v0.V4S(), v3.V4S());
+
 	if (m_sel.fst)
-	{
-		// m_local.d4.stq = GSVector4i(t * 4.0f);
-		//
-		// Truncating the step and accumulating it is the hardware's shape rather
-		// than a lossy stand-in for an exact plane. It is identity on a gradient
-		// that is a power of two per pixel, which is every sprite gradient any
-		// capture we own draws.
 		armAsm->Fcvtzs(v1.V4S(), v1.V4S());
-		armAsm->Str(v1, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
-	}
-	else
-	{
-		// m_local.d4.stq = t * 4.0f;
-		armAsm->Str(v1, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
-	}
+
+	armAsm->Str(v1, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
 
 	for (int j = 0, k = m_sel.fst ? 2 : 3; j < k; j++)
 	{
@@ -213,32 +272,18 @@ void GSSetupPrimCodeGenerator::Texture()
 
 		for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
 		{
-			// GSVector4 v = ds/dt * m_shift[i];
+			// m_local.d[i].s/t/q = ds/dt/dq * m_shift[i];
 
 			armAsm->Fmul(v2.V4S(), v1.V4S(), VRegister(4 + i, 128, 4));
 
 			if (m_sel.fst)
-			{
-				// m_local.d[i].s/t = GSVector4i(v);
-
 				armAsm->Fcvtzs(v2.V4S(), v2.V4S());
 
-				switch (j)
-				{
-					case 0: armAsm->Str(v2, _local(d[i].s)); break;
-					case 1: armAsm->Str(v2, _local(d[i].t)); break;
-				}
-			}
-			else
+			switch (j)
 			{
-				// m_local.d[i].s/t/q = v;
-
-				switch (j)
-				{
-					case 0: armAsm->Str(v2, _local(d[i].s)); break;
-					case 1: armAsm->Str(v2, _local(d[i].t)); break;
-					case 2: armAsm->Str(v2, _local(d[i].q)); break;
-				}
+				case 0: armAsm->Str(v2, _local(d[i].s)); break;
+				case 1: armAsm->Str(v2, _local(d[i].t)); break;
+				case 2: armAsm->Str(v2, _local(d[i].q)); break;
 			}
 		}
 	}

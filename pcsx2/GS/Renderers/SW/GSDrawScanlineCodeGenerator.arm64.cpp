@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 #include "GS/GSState.h"
@@ -379,9 +380,22 @@ void GSDrawScanlineCodeGenerator::Init()
 		{
 			if (m_sel.fst)
 			{
-				// GSVector4i vti(vt);
+				// GSVector4i vti = GSVector4i(vt.floor()) & GS_UV_GRID_MASK;
+				//
+				// A span that walks the accumulator seeds on its 12.15 grid,
+				// floored below the exact plane -- GSCoordinateWalk.h. FCVTMS is
+				// the floor; the BIC is the grid. A triangle's own ST plane keeps
+				// the truncating conversion it always had.
 
-				armAsm->Fcvtzs(v6.V4S(), v4.V4S());
+				if (m_sel.uvwalk)
+				{
+					armAsm->Fcvtms(v6.V4S(), v4.V4S());
+					armAsm->Bic(v6.V4S(), (1 << GS_UV_GRID_SHIFT) - 1, 0);
+				}
+				else
+				{
+					armAsm->Fcvtzs(v6.V4S(), v4.V4S());
+				}
 
 				// s = vti.xxxx() + m_local.d[skip].s;
 				// t = vti.yyyy(); if (!sprite) t += m_local.d[skip].t;
@@ -2530,15 +2544,28 @@ void GSDrawScanlineCodeGenerator::modulate16(const VRegister& a, const VRegister
 
 void GSDrawScanlineCodeGenerator::modulate16(const VRegister& d, const VRegister& a, const VRegister& f, u8 shift)
 {
-	if (shift)
-	{
-		armAsm->Shl(d.V8H(), a.V8H(), shift);
-		armAsm->Sqdmulh(d.V8H(), d.V8H(), f.V8H());
-	}
-	else
-	{
-		armAsm->Sqdmulh(a.V8H(), d.V8H(), f.V8H());
-	}
+	// GSVector4i::modulate16<shift>(f) is `sll16<shift + 1>().mul16hs(f)`: the shift
+	// happens in SIXTEEN-BIT lanes and WRAPS, and only then does the widening
+	// multiply take the product's high half.
+	//
+	// SQDMULH after a shift of `shift` is the same function on every lane the
+	// shipped selectors reach -- it folds the last doubling into the 32-bit product
+	// -- and a DIFFERENT one as soon as a lane reaches 8192, where the reference
+	// wraps `a << (shift + 1)` and this did not. It also saturates where the
+	// reference does not. No capture separates the two: MODULATE multiplies a texel
+	// in 0..255, and the blend's operands are differences of bytes, so nothing we
+	// own drives a lane anywhere near the magnitude. The reference's shape is the
+	// one x86 ships and the one the C++ fallback runs on this host, so the three
+	// roads agree here rather than two of them agreeing and the third being
+	// unreachable-but-different.
+	//
+	// The shift is by shift + 1 so the sixteen-bit wrap happens where the reference
+	// has it; halving afterwards is exact, because a value shifted left by at least
+	// one bit is even, and SQDMULH's own doubling then puts it back. Three
+	// instructions, no extra register, and the same word on every lane.
+	armAsm->Shl(d.V8H(), a.V8H(), shift + 1);
+	armAsm->Sshr(d.V8H(), d.V8H(), 1);
+	armAsm->Sqdmulh(d.V8H(), d.V8H(), f.V8H());
 }
 
 // The walk's carried colour, as the byte the GS stores. SQSHRUN is the exact

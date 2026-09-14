@@ -5,6 +5,7 @@
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
 #include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "Memory.h"
 
@@ -174,6 +175,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data, bool allow_compile)
 	sel.tfx = global.sel.tfx;
 	sel.tcc = global.sel.tcc;
 	sel.fst = global.sel.fst;
+	sel.uvwalk = global.sel.uvwalk;
 	sel.fge = global.sel.fge;
 	sel.prim = global.sel.prim;
 	sel.fb = global.sel.fb;
@@ -591,63 +593,100 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 		// Where the lag comes from in the hardware's walk is unfitted; one unit of
 		// our own 16.16 coordinate is the smallest bias that reproduces every
 		// reading, and it can only move a pixel that lands exactly on a boundary.
-		if (sel.prim != GS_SPRITE_CLASS)
-		{
-			local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
-			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
-		}
+		//
+		// ⚠️ The axis has to be tested on the step the walk actually takes, not on
+		// the exact plane's. On the affine route that step is floored onto the
+		// accumulator's grid, so a gradient below one grid unit per pixel walks
+		// NOWHERE -- and a still coordinate does not trail, by this rule's own
+		// evidence. Reading the sign off the plane instead moves a still
+		// coordinate a sixteenth backwards.
 
 		// The colour and fog steps above take the block; this one does not. The
 		// coordinate keeps a per-vector step whatever the block width is, which is
 		// the same footing depth is on a few lines up.
-		const GSVector4 coord_tstep = dscan.t * coord_step_shift;
-
-		if (sel.fst)
+		if (sel.uvwalk)
 		{
-			// Truncating the step and accumulating it is the hardware's own shape,
-			// not an approximation of an exact plane. On a gradient that is a power
-			// of two per pixel the truncation is identity and this walk is exact,
-			// which is every sprite gradient in every capture we own; what silicon
-			// does on a sprite at a NON-binary gradient has never been measured.
-			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(coord_tstep));
-		}
-		else
-		{
-			LOCAL_STEP.stq = coord_tstep;
-		}
+			// The console's texel accumulator is seed + n * floor(step) on a 12.15
+			// grid -- GSCoordinateWalk.h -- so the per-pixel step is floored ONCE
+			// and every lane and vector offset is a multiple of it. Truncating the
+			// product instead (floor(n * step)) is a different sequence and is
+			// what our arm did, and it is the one that disagrees with the console.
+			const s32 du = GSAffineCoordinateOnGrid(dscan.t.x);
+			const s32 dv = GSAffineCoordinateOnGrid(dscan.t.y);
 
-		VectorF dt(dscan.t);
-
-		for (int j = 0, k = sel.fst ? 2 : 3; j < k; j++)
-		{
-			VectorF dstq;
-
-			switch (j)
+			if (sel.prim != GS_SPRITE_CLASS)
 			{
-				case 0: dstq = dt.xxxx(); break;
-				case 1: dstq = dt.yyyy(); break;
-				case 2: dstq = dt.zzzz(); break;
+				local.tclag.u = VectorI(du > 0 ? 1 : 0);
+				local.tclag.v = VectorI(dv > 0 ? 1 : 0);
 			}
+
+			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(du * vlen, dv * vlen, 0, 0));
 
 			for (int i = 0; i < vlen; i++)
 			{
-				VectorF v = dstq * load_shift(i);
+				alignas(sizeof(VectorI)) s32 lu[vlen], lv[vlen];
 
-				if (sel.fst)
+				for (int l = 0; l < vlen; l++)
 				{
-					switch (j)
-					{
-						case 0: local.d[i].s = VectorF::cast(VectorI(v)); break;
-						case 1: local.d[i].t = VectorF::cast(VectorI(v)); break;
-					}
+					// Lane l covers the pixel l - i away from the span's anchor,
+					// the same offsets g_const's m_shift / m_lane tables carry.
+					lu[l] = du * (l - i);
+					lv[l] = dv * (l - i);
 				}
-				else
+
+				local.d[i].s = VectorF::cast(VectorI::template load<true>(lu));
+				local.d[i].t = VectorF::cast(VectorI::template load<true>(lv));
+			}
+		}
+		else
+		{
+			if (sel.prim != GS_SPRITE_CLASS)
+			{
+				local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
+				local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
+			}
+
+			const GSVector4 coord_tstep = dscan.t * coord_step_shift;
+
+			// A constant-Q TRIANGLE's ST plane arrives here as a 16.16 integer
+			// too, and the scanline reads it the same way -- but it does not take
+			// the accumulator's grid. That was measured both ways: flooring such a
+			// plane's step onto the grid loses words that were exact without it.
+			LOCAL_STEP.stq = sel.fst ? GSVector4::cast(GSVector4i(coord_tstep)) : coord_tstep;
+
+			const VectorF dt(dscan.t);
+
+			for (int j = 0, k = sel.fst ? 2 : 3; j < k; j++)
+			{
+				VectorF dstq;
+
+				switch (j)
 				{
-					switch (j)
+					case 0: dstq = dt.xxxx(); break;
+					case 1: dstq = dt.yyyy(); break;
+					case 2: dstq = dt.zzzz(); break;
+				}
+
+				for (int i = 0; i < vlen; i++)
+				{
+					const VectorF v = dstq * load_shift(i);
+
+					if (sel.fst)
 					{
-						case 0: local.d[i].s = v; break;
-						case 1: local.d[i].t = v; break;
-						case 2: local.d[i].q = v; break;
+						switch (j)
+						{
+							case 0: local.d[i].s = VectorF::cast(VectorI(v)); break;
+							case 1: local.d[i].t = VectorF::cast(VectorI(v)); break;
+						}
+					}
+					else
+					{
+						switch (j)
+						{
+							case 0: local.d[i].s = v; break;
+							case 1: local.d[i].t = v; break;
+							case 2: local.d[i].q = v; break;
+						}
 					}
 				}
 			}
@@ -891,7 +930,12 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 		{
 			if (sel.fst)
 			{
-				VectorI vt = VectorI::broadcast128(GSVector4i(scan.t));
+				// A span that walks the accumulator seeds on its grid, floored
+				// below the exact plane (GSCoordinateWalk.h); a triangle's own ST
+				// plane keeps the conversion it always had.
+				VectorI vt = VectorI::broadcast128(sel.uvwalk
+						? (GSVector4i(scan.t.floor()) & GSVector4i(GS_UV_GRID_MASK))
+						: GSVector4i(scan.t));
 
 				VectorI u = vt.xxxx() + VectorI::cast(local.d[skip].s);
 				VectorI v = vt.yyyy();

@@ -66,6 +66,15 @@ union GSScanlineSelector
 		// wherever the nearest filter wins, and ltfx_ge picks which side that is.
 		u32 ltfx    : 1;
 		u32 ltfx_ge : 1;
+
+		// This coordinate walks in the console's 12.15 truncating accumulator.
+		// `fst` says only that the scanline bit-casts a 16.16 integer, and three
+		// different coordinates arrive on that road: the 12.4 UV register, a
+		// sprite's ST after the vertex conversion resolves its q(n)/q(n+1) rule,
+		// and a constant-Q triangle's ST plane that needed no divide. The first
+		// two take the accumulator and the third does not -- measured, both ways.
+		// See GSCoordinateWalk.h.
+		u32 uvwalk : 1;
 	};
 
 	struct
@@ -344,6 +353,17 @@ struct alignas(64) GSScanlineConstantData128B
 		{ -1.0f , 0.0f  , 1.0f  , 2.0f},
 		{ -2.0f , -1.0f , 0.0f  , 1.0f},
 		{ -3.0f , -2.0f , -1.0f , 0.0f},
+	};
+	// The same lane offsets as m_shift[1..4], as integers. The affine texture
+	// coordinate multiplies its own floored per-pixel step by these rather than
+	// truncating a float product, because the console's accumulator is
+	// seed + n * floor(step) and n * floor(step) is not floor(n * step).
+	// See GSCoordinateWalk.h.
+	alignas(16) s32 m_lane[4][4] = {
+		{  0,  1,  2,  3},
+		{ -1,  0,  1,  2},
+		{ -2, -1,  0,  1},
+		{ -3, -2, -1,  0},
 	};
 	// The colour and fog block steps are not built from constants any more: they
 	// are integers computed once per primitive from GSColourWalk, so the three

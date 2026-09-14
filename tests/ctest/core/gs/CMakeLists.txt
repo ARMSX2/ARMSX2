@@ -31,6 +31,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_astc_tests.cpp
 	gs_sw_scanline_date_tests.cpp
 	gs_sw_scanline_dither_tests.cpp
+	gs_sw_modulate16_tests.cpp
 	gs_sw_scanline_texfunc_tests.cpp
 	gs_sw_coverage_lag_tests.cpp
 	gs_sw_vertex_qdivide_tests.cpp

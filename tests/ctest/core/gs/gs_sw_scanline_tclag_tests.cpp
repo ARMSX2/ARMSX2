@@ -62,19 +62,33 @@ using SetupPrimPtr = void (*)(const GSVertexSW* vertex, const u16* index, const 
 // One texel, in the 16.16 the coordinate is carried in.
 constexpr int kTexel = 0x10000;
 
-// The rule this suite exists to pin, written once. A coordinate is sampled where
-// the exact plane puts it, less one unit on each axis whose walk goes forward --
-// which can only change the texel when the exact coordinate lands on a boundary.
+// The affine accumulator's grid: fifteen fractional bits of a texel, so every
+// value on it is even in our 16.16. See GSCoordinateWalk.h.
+constexpr int kGrid = ~1;
+
+// The rule this suite exists to pin, written once.
+//
+// The affine coordinate walks on the console's 12.15 grid (GSCoordinateWalk.h):
+// the seed and the per-pixel step are floored onto it, and a lane sits at
+// seed + n * step -- NOT at the exact plane's value. On top of that a triangle
+// trails by one unit on each axis whose walk goes forward, which can only change
+// the texel when the coordinate lands on a boundary.
+//
+// The forward test is on the WALKED step, so a gradient below one grid unit per
+// pixel is still and takes no lag.
 int SampledAddress(int u0, int du, int v0, int dv, int lane, bool sprite)
 {
-	int u = u0 + lane * du;
-	int v = v0 + lane * dv;
+	const int su = du & kGrid;
+	const int sv = dv & kGrid;
+
+	int u = (u0 & kGrid) + lane * su;
+	int v = (v0 & kGrid) + lane * sv;
 
 	if (!sprite)
 	{
-		if (du > 0)
+		if (su > 0)
 			u -= 1;
-		if (dv > 0)
+		if (sv > 0)
 			v -= 1;
 	}
 
@@ -158,6 +172,7 @@ protected:
 		sel.tfx = full.tfx;
 		sel.tcc = full.tcc;
 		sel.fst = full.fst;
+		sel.uvwalk = full.uvwalk;
 		sel.fge = full.fge;
 		sel.prim = full.prim;
 		sel.fb = full.fb;
@@ -182,7 +197,7 @@ protected:
 	// DECAL out of a nearest-filtered 16x16 texture into PSMCT32: the stored pixel
 	// is the texel, and the texel is its own address, so every pixel reports the
 	// coordinate the scanline sampled at.
-	static GSScanlineSelector MakeSelector(u32 prim)
+	static GSScanlineSelector MakeSelector(u32 prim, bool uvwalk)
 	{
 		GSScanlineSelector sel;
 		sel.key = 0;
@@ -192,6 +207,7 @@ protected:
 		sel.tfx = TFX_DECAL;
 		sel.tcc = 1;
 		sel.fst = 1;
+		sel.uvwalk = uvwalk ? 1 : 0;
 		sel.ltf = 0;
 		sel.tlu = 0;
 		sel.tw = 1; // 1 << (tw + 3) == 16 texels wide
@@ -281,36 +297,37 @@ protected:
 
 	// Compiled once per primitive class: the generators are deterministic, and a
 	// pair per test would outrun the code buffer.
-	static bool Walk(u32 prim, int u0, int du, int v0, int dv, int out[4])
+	static bool Walk(u32 prim, int u0, int du, int v0, int dv, int out[4], bool uvwalk = true)
 	{
-		const bool sprite = (prim == GS_SPRITE_CLASS);
-		if (!s_setup[sprite])
+		const int sprite = (prim == GS_SPRITE_CLASS) ? 1 : 0;
+		const int uv = uvwalk ? 1 : 0;
+		if (!s_setup[sprite][uv])
 		{
-			const GSScanlineSelector sel = MakeSelector(prim);
-			s_sel[sprite] = sel;
-			s_setup[sprite] = CompileSetup(sel);
-			s_draw[sprite] = CompileScanline(sel);
+			const GSScanlineSelector sel = MakeSelector(prim, uvwalk);
+			s_sel[sprite][uv] = sel;
+			s_setup[sprite][uv] = CompileSetup(sel);
+			s_draw[sprite][uv] = CompileScanline(sel);
 		}
 
-		if (!s_setup[sprite] || !s_draw[sprite])
+		if (!s_setup[sprite][uv] || !s_draw[sprite][uv])
 			return false;
 
-		RunWalk(s_sel[sprite], s_setup[sprite], s_draw[sprite], u0, du, v0, dv, out);
+		RunWalk(s_sel[sprite][uv], s_setup[sprite][uv], s_draw[sprite][uv], u0, du, v0, dv, out);
 		return true;
 	}
 
-	static GSScanlineSelector s_sel[2];
-	static SetupPrimPtr s_setup[2];
-	static DrawScanlinePtr s_draw[2];
+	static GSScanlineSelector s_sel[2][2];
+	static SetupPrimPtr s_setup[2][2];
+	static DrawScanlinePtr s_draw[2][2];
 
 	static u8* s_code;
 	static size_t s_code_used;
 	static GSLocalMemory* s_mem;
 };
 
-GSScanlineSelector SwScanlineTcLagTest::s_sel[2] = {};
-SetupPrimPtr SwScanlineTcLagTest::s_setup[2] = {nullptr, nullptr};
-DrawScanlinePtr SwScanlineTcLagTest::s_draw[2] = {nullptr, nullptr};
+GSScanlineSelector SwScanlineTcLagTest::s_sel[2][2] = {};
+SetupPrimPtr SwScanlineTcLagTest::s_setup[2][2] = {};
+DrawScanlinePtr SwScanlineTcLagTest::s_draw[2][2] = {};
 u8* SwScanlineTcLagTest::s_code = nullptr;
 size_t SwScanlineTcLagTest::s_code_used = 0;
 GSLocalMemory* SwScanlineTcLagTest::s_mem = nullptr;
@@ -411,6 +428,55 @@ TEST_F(SwScanlineTcLagTest, ASpriteTakesNoLag)
 	EXPECT_EQ(got[1], 5);
 	EXPECT_EQ(got[2], 6);
 	EXPECT_EQ(got[3], 7);
+}
+
+// The affine step is floored ONCE onto the accumulator's grid and then
+// accumulated, which is not the same sequence as truncating each product.
+//
+// Step three units: it floors to two, so lane three sits at 0x2FFFE and stays
+// inside texel two. Truncating the product instead puts lane three at 0x30001,
+// one texel further on -- which is what our arm did before the width fit.
+TEST_F(SwScanlineTcLagTest, TheAffineStepIsFlooredOnceThenAccumulated)
+{
+	int got[4];
+	ASSERT_TRUE(Walk(GS_SPRITE_CLASS, 0x2FFF8, 3, 3 * kTexel, 0, got));
+
+	EXPECT_EQ(got[0], 3 * 16 + 2);
+	EXPECT_EQ(got[1], 3 * 16 + 2);
+	EXPECT_EQ(got[2], 3 * 16 + 2);
+	EXPECT_EQ(got[3], 3 * 16 + 2);
+}
+
+// A constant-Q triangle's own ST plane arrives on the same road -- the scanline
+// bit-casts a 16.16 integer for it too -- and it does NOT take the accumulator's
+// grid. gs-grad's tc-snap is that shape and refuses it: two of its cases go from
+// zero to 200 differing console words when the step is floored on. So the same
+// walk with uvwalk clear keeps the step whole, and lane three, one unit of lag
+// included, lands on the boundary into texel three instead of short of it.
+TEST_F(SwScanlineTcLagTest, ATrianglePlaneKeepsTheWholeStep)
+{
+	int got[4];
+	ASSERT_TRUE(Walk(GS_TRIANGLE_CLASS, 0x2FFF8, 3, 3 * kTexel, 0, got, false));
+
+	EXPECT_EQ(got[0], 3 * 16 + 2);
+	EXPECT_EQ(got[1], 3 * 16 + 2);
+	EXPECT_EQ(got[2], 3 * 16 + 2);
+	EXPECT_EQ(got[3], 3 * 16 + 3);
+}
+
+// And the lag follows the walked step, not the plane's. A gradient of one unit
+// per pixel floors to zero, so the coordinate is STILL -- and a still coordinate
+// does not trail, which is the gs-shade reading the lag was built from. Testing
+// the plane's sign instead pulls this whole span down to texel three.
+TEST_F(SwScanlineTcLagTest, AStepBelowTheGridWalksNowhereAndTakesNoLag)
+{
+	int got[4];
+	ASSERT_TRUE(Walk(GS_TRIANGLE_CLASS, 4 * kTexel, 1, 0, 0, got));
+
+	EXPECT_EQ(got[0], 4);
+	EXPECT_EQ(got[1], 4);
+	EXPECT_EQ(got[2], 4);
+	EXPECT_EQ(got[3], 4);
 }
 
 // The rule over a spread of walks, so the cases above are a sample of it rather
