@@ -29,6 +29,10 @@ enum ARMSX2DeepLinkHandler {
         return true
     }
 
+    static func launchURL(forISO isoName: String) -> String {
+        "armsx2://launch?game=\(percentEncoded(isoName))"
+    }
+
     private static func routeComponents(for url: URL) -> Set<String> {
         var components: [String] = []
         if let host = url.host, !host.isEmpty {
@@ -121,7 +125,6 @@ enum ARMSX2DeepLinkHandler {
             let title = metadata["title"] ?? metadata["fileTitle"] ?? URL(fileURLWithPath: isoName).deletingPathExtension().lastPathComponent
             let isoURL = resolvedISOURL(isoName: isoName, isoDir: isoDir, docsDir: docsDir)
             let fileSize = fileSize(at: isoURL)
-            let launchURL = "armsx2://launch?game=\(percentEncoded(isoName))"
 
             return [
                 "title": title,
@@ -131,7 +134,7 @@ enum ARMSX2DeepLinkHandler {
                 "crc": metadata["crc"] ?? "",
                 "fileSize": fileSize,
                 "fileType": isoURL.pathExtension.uppercased(),
-                "launchURL": launchURL
+                "launchURL": launchURL(forISO: isoName)
             ]
         }
 
@@ -167,15 +170,25 @@ enum ARMSX2DeepLinkHandler {
             return
         }
 
-        let available = Set(ARMSX2Bridge.availableISOs())
-        guard available.contains(game) else {
+        guard let bootName = bootName(forListedName: game) else {
             showMessage("ARMSX2 could not find \(game).")
-            NSLog("[ARMSX2 iOS DeepLink] launch missing local game=%@", game)
+            NSLog("[ARMSX2 iOS DeepLink] launch missing game=%@", game)
             return
         }
 
-        NSLog("[ARMSX2 iOS DeepLink] launching game=%@", game)
-        AppState.shared.bootGame(isoName: game)
+        NSLog("[ARMSX2 iOS DeepLink] launching game=%@ boot=%@", game, bootName)
+        AppState.shared.bootGame(isoName: bootName)
+    }
+
+    private static func bootName(forListedName name: String) -> String? {
+        if ARMSX2Bridge.availableISOs().contains(name) {
+            return name
+        }
+        // When two external folders hold the same filename, the first one boots.
+        guard let entry = ARMSX2Bridge.availableISOEntries().first(where: { $0["name"] as? String == name }) else {
+            return nil
+        }
+        return (entry["external"] as? NSNumber)?.boolValue == true ? entry["path"] as? String : name
     }
 
     private static func callbackURL(base: String, payload: String) -> URL? {
@@ -207,7 +220,9 @@ enum ARMSX2DeepLinkHandler {
     }
 
     private static func percentEncoded(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private static func showMessage(_ message: String) {

@@ -7,9 +7,10 @@ percent-encodes to `100%25.iso`, the first decode gives `100%.iso`, and the seco
 followed by `.i`, which is not hex, so `removingPercentEncoding` returns nil and the whole
 guard fails. The player is then told the link is missing a filename it plainly carries.
 
-The rest of this file pins the format the app publishes for itself. `libraryPayload` hands
-every game a `launchURL` that other frontends store and replay later, so the verbs and the
-parameter names are a contract with software this repository does not control.
+The rest of this file pins the format the app publishes for itself. `libraryPayload` and the
+game menu's Copy Launch Link hand out a `launchURL` that other frontends store and replay
+later, so the verbs and the parameter names are a contract with software this repository
+does not control.
 """
 
 import re
@@ -18,11 +19,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 HANDLER = ROOT / "platforms/ios/app/src/main/swift/Models/ARMSX2DeepLinkHandler.swift"
+GAME_LIST = ROOT / "platforms/ios/app/src/main/swift/Views/GameListView.swift"
 INFO = ROOT / "platforms/ios/app/src/main/cpp/Info.plist.in"
 
 LAUNCH_VERBS = ("launch", "boot", "play")
 GAME_KEYS = ('"game"', '"iso"', '"file"', '"name"')
 SCHEMES = ("armsx2", "armsx2-ios", "armsx2ios")
+QUERY_SEPARATORS = set("&=+")
 
 
 def body(source, name):
@@ -60,11 +63,17 @@ class DeepLinkLaunch(unittest.TestCase):
             "was added, and the double-decode bug is back one level down.")
 
     def test_the_published_launch_url_matches_what_the_handler_accepts(self):
-        """libraryPayload hands this string to other apps, which replay it much later."""
-        published = re.search(r'let launchURL = "([^"]+)"', self.source)
-        self.assertIsNotNone(published, "libraryPayload no longer publishes a launchURL")
-        template = published.group(1)
-        self.assertTrue(template.startswith("armsx2://"), "published launchURL is not armsx2://")
+        """libraryPayload and the game menu hand this string to other apps, which replay it
+        much later."""
+        templates = re.findall(r'"(armsx2://[^"]*)"', self.source)
+        self.assertEqual(
+            len(templates), 1,
+            "launch links are built in more than one place, so the copied link and the "
+            "exported one can drift apart")
+        self.assertIn(
+            '"launchURL": launchURL(forISO:', self.source,
+            "libraryPayload no longer publishes the shared launchURL")
+        template = templates[0]
         verb = template.split("://", 1)[1].split("?", 1)[0].strip("/").lower()
         self.assertIn(
             verb, LAUNCH_VERBS,
@@ -78,9 +87,51 @@ class DeepLinkLaunch(unittest.TestCase):
 
     def test_the_published_launch_url_percent_encodes_the_name(self):
         self.assertRegex(
-            self.source, r'let launchURL = "[^"]*\\\(percentEncoded\(',
+            self.source, r'"armsx2://[^"]*\\\(percentEncoded\(',
             "the published launchURL interpolates the filename raw, so a name with a space "
             "or an ampersand produces a link that cannot be parsed back")
+
+    def test_the_encoding_escapes_the_query_separators(self):
+        """urlQueryAllowed leaves & = and + alone, so Ratchet & Clank.iso would come back as
+        game=Ratchet with the rest of the name read as a second parameter."""
+        encoder = body(self.source, "percentEncoded")
+        self.assertIsNotNone(encoder, "percentEncoded disappeared")
+        removed = re.search(r'remove\(charactersIn: "([^"]*)"\)', encoder)
+        self.assertIsNotNone(
+            removed,
+            "percentEncoded uses urlQueryAllowed as it comes, which lets & = and + through, "
+            "so a name holding one is cut short when the link is read back")
+        missing = QUERY_SEPARATORS - set(removed.group(1))
+        self.assertFalse(
+            missing, "percentEncoded still lets %s through unescaped" % " ".join(sorted(missing)))
+
+    def test_a_game_from_an_external_folder_boots_from_its_path(self):
+        """availableISOs only knows games stored inside the app. A game from an external folder
+        is listed by its filename but boots by path, the way tapping it in the library does."""
+        launch = body(self.source, "launchGame")
+        self.assertIsNotNone(launch, "launchGame disappeared")
+        self.assertIn("bootName(forListedName:", launch, "launchGame no longer resolves the name")
+
+        lookup = body(self.source, "bootName")
+        self.assertIsNotNone(lookup, "bootName disappeared")
+        local = lookup.find("availableISOs()")
+        listed = lookup.find("availableISOEntries()")
+        self.assertGreaterEqual(local, 0, "launch links stopped checking the app's own games")
+        self.assertGreater(
+            listed, local,
+            "launch links no longer fall back to the full library after the app's own games, "
+            "so a link copied from an external folder's game says it cannot be found")
+        self.assertIn('"path"', lookup, "a game from an external folder no longer boots by path")
+
+    def test_the_game_menu_copies_the_handlers_link(self):
+        menu = GAME_LIST.read_text(encoding="utf-8")
+        self.assertIn(
+            "ARMSX2DeepLinkHandler.launchURL(forISO:", menu,
+            "Copy Launch Link no longer asks the handler for the link")
+        self.assertNotIn(
+            '"armsx2://', menu,
+            "the game list builds a launch link by hand, which can drift from what the "
+            "handler accepts")
 
     def test_the_accepted_schemes_and_the_registered_ones_are_the_same_set(self):
         """Both directions. A scheme in code but not in the plist is the quiet one: iOS never

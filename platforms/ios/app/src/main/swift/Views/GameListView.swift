@@ -1867,6 +1867,12 @@ struct GameListView: View {
             Label(settings.localized("Covers"), systemImage: "photo.stack")
         }
 
+        Button {
+            copyLaunchLink(game)
+        } label: {
+            Label(settings.localized("Copy Launch Link"), systemImage: "doc.on.doc")
+        }
+
         Divider()
 
         Menu {
@@ -2569,6 +2575,15 @@ struct GameListView: View {
 
         GameLibrarySnapshot.shared.update(games)
         UISelectionFeedbackGenerator().selectionChanged()
+	}
+
+	private func copyLaunchLink(_ game: ISOEntry) {
+		let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
+		UIPasteboard.general.string = link
+		presentMenuPanel("copy_launch_link") {
+			gameActionTitle = "Launch Link Copied"
+			gameActionMessage = link
+		}
 	}
 
 	private func clearGameCache(_ game: ISOEntry) {
