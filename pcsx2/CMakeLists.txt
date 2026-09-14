@@ -621,6 +621,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSCoordinateLag.h
 	GS/Renderers/SW/GSCoordinateWalk.h
 	GS/Renderers/SW/GSDepthWalk.h
+	GS/Renderers/SW/GSLevelOfDetail.h
 	GS/Renderers/SW/GSDrawScanlineCodeGenerator.all.h
 	GS/Renderers/SW/GSDrawScanline.h
 	GS/Renderers/SW/GSNewCodeGenerator.h

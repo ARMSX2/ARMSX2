@@ -60,9 +60,15 @@ static const auto& _global_dimx = x19;
 static const auto& _local_aref = w20;
 static const auto& _global_frb = w21;
 static const auto& _global_fga = w22;
-static const auto& _global_l = w23;
-static const auto& _global_k = w24;
+// The level-of-detail table's three per-draw scalars and its base. The names used
+// to be the float log2's l/k/mxl; the level is integer arithmetic on a measured
+// table now (GSLevelOfDetail.h), so they carry 4 + TEX1.L, TEX1.K in sixteenths
+// and the same ceiling as an integer. x28 is saved by the prologue and was
+// otherwise unused.
+static const auto& _global_lodshift = w23;
+static const auto& _global_lodk = w24;
 static const auto& _global_mxl = w25;
+static const auto& _global_lodtab = x28;
 
 // The alternating block step's cursor. Callee-saved on purpose: x5-x9 all carry
 // live values inside the loop body, which is why the first attempt at this --
@@ -90,7 +96,6 @@ static const auto& _global_tmin = v15;
 static const auto& _global_tmax = v14;
 static const auto& _global_tmask = v13;
 static const auto& _const_movemskw_mask = v12;
-static const auto& _const_log2_coef = v11;
 static const auto& _temp_f = v10;
 static const auto& _d4_f = v9;
 
@@ -505,10 +510,10 @@ void GSDrawScanlineCodeGenerator::Init()
 
 	if (m_sel.mmin && !m_sel.lcm)
 	{
-		armAsm->Ldr(_const_log2_coef, _global(const_log2_coef));
-		armAsm->Ldr(_global_l, _global(l));
-		armAsm->Ldr(_global_k, _global(k));
-		armAsm->Ldr(_global_mxl, _global(mxl));
+		armAsm->Ldr(_global_lodshift, _global(lodshift));
+		armAsm->Ldr(_global_lodk, _global(lodk));
+		armAsm->Ldr(_global_mxl, _global(lodmxl));
+		armAsm->Ldr(_global_lodtab, _global(lodtab));
 	}
 
 	// Every colour destination is dithered, not just 16-bit ones -- see the note
@@ -1181,76 +1186,58 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		uv1 = local1;
 	}
 
-	// TODO: if the fractional part is not needed in round-off mode then there is a faster integer log2 (just take the exp) (but can we round it?)
-
 	if (!m_sel.lcm)
 	{
-		// lod = -log2(Q) * (1 << L) + K
+		// LOD16 = K + (-e) * 2^(4+L) - T[L][idx], in sixteenths of a level.
+		//
+		// The console's logarithm is a 128-entry table on the top seven fractional
+		// bits of Q's own mantissa -- GSLevelOfDetail.h carries the measurement and
+		// the tables. This replaces a four-term polynomial log2, and a better
+		// polynomial would not have closed the gap: ours was already within 0.0023
+		// of a level. What was wrong was the shape, not the precision.
 
+		// -e = 127 - ((q >> 23) & 0xff)
+		armAsm->Ushr(v0.V4S(), _temp_q.V4S(), 23);
+		armAsm->Movi(v1.V4S(), 0xff);
+		armAsm->And(v0.V16B(), v0.V16B(), v1.V16B());
 		armAsm->Movi(v1.V4S(), 127);
-		armAsm->Shl(v0.V4S(), _temp_q.V4S(), 1);
-		armAsm->Ushr(v0.V4S(), v0.V4S(), 24);
+		armAsm->Sub(v0.V4S(), v1.V4S(), v0.V4S());
+
+		// (-e) << (4 + L), then + K
+		armAsm->Dup(v1.V4S(), _global_lodshift);
+		armAsm->Sshl(v0.V4S(), v0.V4S(), v1.V4S());
+		armAsm->Dup(v1.V4S(), _global_lodk);
+		armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
+
+		// - T[idx], idx = (q >> 16) & 0x7f. One extract-add-load triple per lane,
+		// the same shape ReadTexelImpl uses, which is why the table is held as
+		// words.
+		armAsm->Ushr(v4.V4S(), _temp_q.V4S(), 16);
+		armAsm->Movi(v1.V4S(), 0x7f);
+		armAsm->And(v4.V16B(), v4.V16B(), v1.V16B());
+
+		for (int i = 0; i < 4; i++)
+		{
+			armAsm->Mov(_scratchaddr.W(), v4.V4S(), i);
+			armAsm->Add(_scratchaddr, _global_lodtab, Operand(_scratchaddr, UXTW, 2));
+
+			if (i == 0)
+				armAsm->Ldr(v1.S(), MemOperand(_scratchaddr));
+			else
+				armAsm->Ld1(v1.V4S(), i, MemOperand(_scratchaddr));
+		}
+
 		armAsm->Sub(v0.V4S(), v0.V4S(), v1.V4S());
-		armAsm->Scvtf(v0.V4S(), v0.V4S());
 
-		// v0 = (float)(exp(q) - 127)
-
-		armAsm->Shl(v4.V4S(), _temp_q.V4S(), 9);
-		armAsm->Ushr(v4.V4S(), v4.V4S(), 9);
-
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 3);
-		armAsm->Orr(v4.V16B(), v4.V16B(), v1.V16B()); // m_log2_coef_128b[3]
-
-		// v4 = mant(q) | 1.0f
-		// v4 = log2(Q) = ((((c0 * v4) + c1) * v4) + c2) * (v4 - 1.0f) + v0
-
-#if 0
-		// non-fma
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 0);
-		armAsm->Fmul(v5.V4S(), v4.V4S(), v1.V4S());
-
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 1);
-		armAsm->Fadd(v5.V4S(), v5.V4S(), v1.V4S());
-
-		armAsm->Fmul(v5.V4S(), v5.V4S(), v4.V4S());
-
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 3);
-		armAsm->Fsub(v4.V4S(), v4.V4S(), v1.V4S());
-			
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 2);
-		armAsm->Fadd(v5.V4S(), v5.V4S(), v1.V4S());
-
-		armAsm->Fmul(v4.V4S(), v4.V4S(), v5.V4S());
-		armAsm->Fadd(v4.V4S(), v4.V4S(), v0.V4S());
-
-		armAsm->Dup(v0.V4S(), _global_l);
-		armAsm->Dup(v1.V4S(), _global_k);
-
-		armAsm->Fmul(v4.V4S(), v4.V4S(), v0.V4S());
-		armAsm->Fadd(v4.V4S(), v4.V4S(), v1.V4S());
-#else
-		// fma
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 0); // v1 = c0
-		armAsm->Dup(local2.V4S(), _const_log2_coef.V4S(), 1); // local2 = c1
-		armAsm->Fmla(local2.V4S(), v4.V4S(), v1.V4S()); // local2 = c0 * v4 + c1
-		armAsm->Dup(v1.V4S(), _const_log2_coef.V4S(), 2); // v1 = c2
-		armAsm->Fmla(v1.V4S(), local2.V4S(), v4.V4S()); // v1 = ((c0 * v4 + c1) * v4) + c2
-		armAsm->Dup(local2.V4S(), _const_log2_coef.V4S(), 3); // local2 = c3
-		armAsm->Fsub(v4.V4S(), v4.V4S(), local2.V4S()); // v4 -= 1.0f
-		armAsm->Fmla(v0.V4S(), v4.V4S(), v1.V4S()); // v0 = (v4 - 1.0f) * (((c0 * v4 + c1) * v4) + c2) + v0
-
-		armAsm->Dup(v1.V4S(), _global_l); // v1 = llll
-		armAsm->Dup(v4.V4S(), _global_k); // v4 = kkkk
-		armAsm->Fmla(v4.V4S(), v0.V4S(), v1.V4S()); // v4 = k + v0 * l
-#endif
-
-		// v4 = (-log2(Q) * (1 << L) + K) * 0x10000
-
+		// Sixteenths -> the 16.16 the rest of this path speaks, then the ceiling.
+		// The round-off `+ 0x8000` below is then the console's (LOD16 + 8) >> 4
+		// with ties up, and the trilinear weight the sampler takes from the top
+		// four bits of the fraction is LOD16 & 15.
+		armAsm->Shl(v4.V4S(), v0.V4S(), 12);
 		armAsm->Dup(v0.V4S(), _global_mxl);
-		armAsm->Movi(v1.V4S(), 0);
-		armAsm->Fminnm(v4.V4S(), v4.V4S(), v0.V4S());
-		armAsm->Fmaxnm(v4.V4S(), v4.V4S(), v1.V4S());
-		armAsm->Fcvtzs(v4.V4S(), v4.V4S());
+		armAsm->Smin(v4.V4S(), v4.V4S(), v0.V4S());
+		armAsm->Movi(v0.V4S(), 0);
+		armAsm->Smax(v4.V4S(), v4.V4S(), v0.V4S());
 
 		if (m_sel.mmin == 1) // round-off mode
 		{
@@ -2583,10 +2570,6 @@ void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegis
 	armAsm->Uxtl(d.V8H(), d.V8B());
 }
 
-// The eight-bit colour the GS stores, put back on the seven-fraction grid the
-// modulate expects. The texture function multiplies the stored byte, never the
-// wider value the DDA carries -- console-measured, and the same rule
-// GSStoredVertexColor implements in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
 	walkColorByte(d, c);
@@ -2602,6 +2585,10 @@ void GSDrawScanlineCodeGenerator::lerp16(const VRegister& a, const VRegister& b,
 
 void GSDrawScanlineCodeGenerator::lerp16_4(const VRegister& a, const VRegister& b, const VRegister& f)
 {
+// The eight-bit colour the GS stores, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, never the
+// wider value the DDA carries -- console-measured, and the same rule
+// GSStoredVertexColor implements in GSDrawScanline.cpp.
 	armAsm->Sub(a.V8H(), a.V8H(), b.V8H());
 	armAsm->Mul(a.V8H(), a.V8H(), f.V8H());
 	armAsm->Sshr(a.V8H(), a.V8H(), 4);

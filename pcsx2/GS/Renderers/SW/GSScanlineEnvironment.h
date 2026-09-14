@@ -152,7 +152,16 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	// - row and column pointers are allocated once and never change or freed, thier address can be used directly
 
 	void* vm;
-	const void* tex[7];
+	// Seven mip levels, and an eighth slot that repeats the last one.
+	//
+	// At a level of detail at or above MXL the console returns level MXL with
+	// weight ZERO, so the trilinear blend's second tap is the same level as its
+	// first and the blend is inert. The scanline reads that second tap as
+	// `tex[lodi + 1]` unconditionally, so the cheapest way to say it -- and the
+	// one the TODO here asked for -- is a duplicate pointer rather than a clamp
+	// on the hot path. Before this the ceiling was MXL - 1 at weight 15, which
+	// reads a level early and a full weight where the console reads neither.
+	const void* tex[8];
 	u32* clut;
 	GSVector4i* dimx;
 
@@ -187,6 +196,15 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 
 #endif
 
+	// The console's logarithm, as a table -- see GSLevelOfDetail.h. `lodtab` is
+	// the row for this draw's TEX1.L, `lodk` is TEX1.K in sixteenths of a level,
+	// `lodshift` is 4 + TEX1.L, and `lodmxl` is the same ceiling `mxl` carries,
+	// kept as an integer because the level is now integer arithmetic throughout.
+	const s32* lodtab;
+	s32 lodk;
+	s32 lodshift;
+	s32 lodmxl;
+
 #ifdef ARCH_ARM64
 	// Mini version of constant data for ARM64, we don't need all of it
 	alignas(16) u32 const_test_128b[8][4] = {
@@ -200,11 +218,6 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 		{0x00000000, 0x00000000, 0x00000000, 0x00000000},
 	};
 	alignas(16) u16 const_movemaskw_mask[8] = {0x3, 0xc, 0x30, 0xc0, 0x300, 0xc00, 0x3000, 0xc000};
-	alignas(16) float const_log2_coef[4] = {
-		0.204446009836232697516f,
-		-1.04913055217340124191f,
-		2.28330284476918490682f,
-		1.0f};
 #endif
 };
 

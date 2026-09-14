@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/SW/GSDrawScanline.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
 #include "GS/Renderers/SW/GSBlockWalk.h"
@@ -1114,9 +1115,24 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					if (!sel.lcm)
 					{
-						VectorF tmp = q.log2(3) * global.l + global.k; // (-log2(Q) * (1 << L) + K) * 0x10000
+						// The console's logarithm is a 128-entry table read on Q's
+						// own mantissa, not a curve -- GSLevelOfDetail.h carries the
+						// measurement, the four tables and the one entry that steps
+						// backwards on hardware. The level comes out in SIXTEENTHS of a level,
+						// so it shifts up by twelve to reach the 16.16 the rest of
+						// this path already speaks: the round-off `+ 0x8000` below
+						// is then exactly the console's `(LOD16 + 8) >> 4`, ties up,
+						// and the trilinear weight the sampler takes from the top
+						// four bits of the fraction is exactly `LOD16 & 15`.
+						VectorI lod;
 
-						VectorI lod = VectorI(tmp.sat(VectorF::zero(), global.mxl), false);
+						for (int i = 0; i < vlen; i++)
+						{
+							const s32 lod16 = GSLevelOfDetail16(q.F32[i], global.lodtab,
+								global.lodk, global.lodshift);
+
+							lod.I32[i] = std::min(std::max(lod16 << 12, 0), global.lodmxl);
+						}
 
 						if (sel.mmin == 1) // round-off mode
 						{

@@ -828,6 +828,7 @@
     <ClInclude Include="GS\Renderers\SW\GSCoordinateLag.h" />
     <ClInclude Include="GS\Renderers\SW\GSCoordinateWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h" />
+    <ClInclude Include="GS\Renderers\SW\GSLevelOfDetail.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexQDivide.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">

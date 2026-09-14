@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/SW/GSRendererSW.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
 #include "GS/Renderers/SW/GSCoordinateLag.h"
 #include "GS/Renderers/SW/GSVertexQDivide.h"
 #include "GS/GSGL.h"
@@ -1130,11 +1131,6 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.sel.mmin = 1; // tri-linear is meaningless
 				}
 
-				if (gd.sel.mmin == 2)
-				{
-					mxl--; // don't sample beyond the last level (TODO: add a dummy level instead?)
-				}
-
 				if (gd.sel.fst)
 				{
 					pxAssert(gd.sel.lcm == 1);
@@ -1166,6 +1162,17 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.mxl = GSVector4((float)mxl);
 					gd.l = GSVector4((float)(-(0x10000 << context->TEX1.L)));
 					gd.k = GSVector4((float)k);
+
+					// The level of detail is a table read on Q's mantissa, not a
+					// curve: GSLevelOfDetail.h carries the measurement and the
+					// tables. TEX1.K is already in sixteenths of a level, which is
+					// what the table's own units are, so it goes across unscaled --
+					// `k` above is the same field shifted into 16.16 for the float
+					// path the scanline no longer takes.
+					gd.lodtab = GSLevelOfDetailTable[context->TEX1.L];
+					gd.lodk = context->TEX1.K;
+					gd.lodshift = 4 + context->TEX1.L;
+					gd.lodmxl = mxl;
 				}
 
 				GIFRegCLAMP MIP_CLAMP = context->CLAMP;
@@ -1633,11 +1640,14 @@ void GSRendererSW::SharedData::SetSource(GSTextureCacheSW::Texture* t, const GSV
 
 void GSRendererSW::SharedData::UpdateSource()
 {
+	size_t levels = 0;
+
 	for (size_t i = 0; m_tex[i].t; i++)
 	{
 		if (m_tex[i].t->Update(m_tex[i].r))
 		{
 			global.tex[i] = m_tex[i].t->m_buff;
+			levels = i + 1;
 		}
 		else
 		{
@@ -1646,6 +1656,13 @@ void GSRendererSW::SharedData::UpdateSource()
 			global.sel.tfx = TFX_NONE;
 		}
 	}
+
+	// The dummy level the trilinear ceiling reads: see GSScanlineEnvironment.h.
+	// A level of detail at or above MXL is MXL at weight zero on the console, so
+	// the second tap has to be a legal pointer to the SAME level rather than one
+	// past the end.
+	if (levels != 0)
+		global.tex[levels] = global.tex[levels - 1];
 
 	if (GSConfig.SaveTexture && GSConfig.ShouldDump(g_gs_renderer->s_n, g_perfmon.GetFrame()))
 	{
