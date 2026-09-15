@@ -5760,7 +5760,8 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		}
 		else if (src->m_type != dst->m_type)
 		{
-			g_gs_device->StretchRectAuto(src->m_texture, src_rect, dst->m_texture, scaled_src_rect,
+			const GSVector4 dst_rect = GSVector4(scaled_dx, scaled_dy, (scaled_dx + scaled_w), (scaled_dy + scaled_h));
+			g_gs_device->StretchRectAuto(src->m_texture, src_rect, dst->m_texture, dst_rect,
 				Nearest, dpsm_s.trbpp == 16 ? 16 : 32, dpsm_s.trbpp);
 		}
 		else if (src->m_texture->IsDepthLike())
