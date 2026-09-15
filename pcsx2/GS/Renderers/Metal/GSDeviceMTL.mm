@@ -2736,10 +2736,13 @@ void GSDeviceMTL::DoRenderHW(GSHWDrawConfig& config)
 	// Submit accumulated work at an existing pass boundary when recent frames
 	// needed synchronous readbacks. This lets GPU execution overlap CPU recording.
 	// Bound outstanding submissions to avoid excessive command-buffer queueing.
-	constexpr u32 readback_submit_threshold = 64;
+	// The current (unsubmitted) buffer contributes one to this difference.
+	const u64 pending_draws = m_current_draw - m_last_finished_draw.load(std::memory_order_acquire);
+	// Get work to an idle GPU sooner, while retaining larger batches once it is busy.
+	const u32 readback_submit_threshold = (pending_draws <= 1) ? 32 : 64;
 	if (m_last_readback_frame != ~0u && (m_frame - m_last_readback_frame) <= 3 &&
 		!m_current_render.encoder && m_encoders_in_current_cmdbuf >= readback_submit_threshold &&
-		(m_current_draw - m_last_finished_draw.load(std::memory_order_acquire)) <= 2)
+		pending_draws <= 4)
 	{
 		FlushEncoders();
 	}
