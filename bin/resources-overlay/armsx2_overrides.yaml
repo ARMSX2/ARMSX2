@@ -231,3 +231,346 @@ SLUS-21672:
     nativeScaling: 1 # Fixes post-processing smoothness and position.
     textureInsideRT: 1 # Crowd textures.
     getSkipCount: "GSC_GuitarHero"
+
+# Hot Shots Golf Fore! / Everybody's Golf 4 / Minna no Golf 4, all 14 serials -- No Readbacks.
+# Source: the NTSC-U serials came from the pre-transplant Android GameDB ("the per-frame GS
+# downloads aren't used visually but stall the GS thread"); the other regions from PR #421
+# (XDarkFallenX), landed in jpolo1224's 069f8a44f3 on 2026-07-25.
+# Symptom: the game runs slowly at the default readback mode.
+# Verified: bmdhacks, 2026-09-14, Hot Shots Golf Fore! on a Retroid Pocket Nova (Snapdragon 8
+# Gen 2, Adreno 740, PurpleVK Turnip), Vulkan at 2x, gamedb-test-apk f1b11ab692 release build:
+# slow without this, fine with it.
+# gsHWFixes replaces upstream's block, so upstream's keys are restated beside it.
+SCUS-97401:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCUS-97515:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCUS-97427:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCUS-97430:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+# Everybody's Golf 4 -- see the note above.
+SCES-52582:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+TCES-52582:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+# Minna no Golf 4 -- see the note above.
+SCAJ-20059:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCAJ-20094:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCAJ-20194:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCPS-15059:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCPS-19301:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCPS-19319:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCKA-20057:
+  gsHWFixes:
+    accurateAlphaTest: 1
+    hwDownloadMode: 2
+SCKA-20105:
+  gsHWFixes:
+    hwDownloadMode: 2
+
+# Black, Mortal Kombat: Shaolin Monks, Driv3r, God Hand, Jak 3 and Downhill Domination --
+# Unsynchronized readbacks (3).
+# Source: XForYouX's 5445399db1, cf8dafdcde and 651be5b46f, and jpolo1224's adeab9c430, all
+# 2026-07-19, before the JIT merge. The commits say "No Readback", but the value they set is 3,
+# which is Unsynchronized.
+# Symptom claimed: "Fixes Sun Effect" (Driv3r, God Hand, Downhill Domination) and "Fixes Some
+# Effect" (Black, Shaolin Monks, Jak 3). Neither says what the effect is.
+# Verified: NOT on the current build. Removed on 2026-09-13 with the other pre-merge entries,
+# then restored on 2026-09-14 at bmdhacks' request, after Hot Shots Golf Fore! showed readbacks
+# can cost real speed. Re-test before relying on it. Jak 3 was checked playable without it.
+# gsHWFixes replaces upstream's block, so upstream's keys are restated beside it.
+SLUS-21376:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+SLES-53886:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+SLES-54030:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+SLAJ-25078:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+SLPM-66354:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+SLKA-25372:
+  gsHWFixes:
+    recommendedBlendingLevel: 4
+    autoFlush: 2
+    roundSprite: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BlackAndBurnoutSky"
+    beforeDraw: "OI_BurnoutGames"
+    hwDownloadMode: 3
+# Mortal Kombat: Shaolin Monks -- see the note above.
+SLUS-21087:
+  gsHWFixes:
+    halfPixelOffset: 5
+    autoFlush: 2
+    hwDownloadMode: 3
+SLES-53524:
+  gsHWFixes:
+    halfPixelOffset: 5
+    autoFlush: 2
+    hwDownloadMode: 3
+SLES-53525:
+  gsHWFixes:
+    halfPixelOffset: 5
+    autoFlush: 2
+    hwDownloadMode: 3
+# Driv3r -- see the note above.
+SLUS-20587:
+  gsHWFixes:
+    minimumBlendingLevel: 2
+    autoFlush: 1
+    halfPixelOffset: 5
+    textureInsideRT: 1
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    nativePaletteDraw: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLES-50876:
+  gsHWFixes:
+    minimumBlendingLevel: 2
+    autoFlush: 1
+    halfPixelOffset: 5
+    textureInsideRT: 1
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    nativePaletteDraw: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLES-52153:
+  gsHWFixes:
+    minimumBlendingLevel: 2
+    autoFlush: 1
+    halfPixelOffset: 5
+    textureInsideRT: 1
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    nativePaletteDraw: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLPM-65741:
+  gsHWFixes:
+    minimumBlendingLevel: 2
+    autoFlush: 1
+    halfPixelOffset: 5
+    textureInsideRT: 1
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    nativePaletteDraw: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLKA-25196:
+  gsHWFixes:
+    minimumBlendingLevel: 2
+    autoFlush: 1
+    halfPixelOffset: 5
+    textureInsideRT: 1
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    nativePaletteDraw: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+# God Hand -- see the note above.
+SLUS-21503:
+  gsHWFixes:
+    halfPixelOffset: 2
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLES-54490:
+  gsHWFixes:
+    halfPixelOffset: 2
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLPM-66550:
+  gsHWFixes:
+    halfPixelOffset: 2
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLPM-74241:
+  gsHWFixes:
+    halfPixelOffset: 2
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCKA-20090:
+  gsHWFixes:
+    halfPixelOffset: 2
+    nativeScaling: 2
+    hwDownloadMode: 3
+# Jak 3 -- see the note above.
+SCUS-97330:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCUS-97516:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCES-52460:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCKA-20040:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCUS-97412:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+SCED-52952:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    cpuSpriteRenderBW: 4
+    cpuSpriteRenderLevel: 2
+    autoFlush: 2
+    halfPixelOffset: 5
+    nativeScaling: 2
+    hwDownloadMode: 3
+# Downhill Domination -- see the note above.
+SCUS-97177:
+  gsHWFixes:
+    autoFlush: 2
+    minimumBlendingLevel: 2
+    hwDownloadMode: 3
+SLES-52202:
+  gsHWFixes:
+    autoFlush: 2
+    minimumBlendingLevel: 2
+    hwDownloadMode: 3
+SCUS-97329:
+  gsHWFixes:
+    autoFlush: 2
+    minimumBlendingLevel: 2
+    hwDownloadMode: 3
+SLED-52325:
+  gsHWFixes:
+    autoFlush: 2
+    minimumBlendingLevel: 2
+    hwDownloadMode: 3
+
+# Delta Force: Black Hawk Down -- Unsynchronized readbacks (3).
+# Source: PR #401 (XDarkFallenX), landed in jpolo1224's 8e23439b26 on 2026-07-24. No symptom was
+# stated.
+# Verified: NOT on the current build. Restored 2026-09-14 at bmdhacks' request; see the note on
+# Hot Shots Golf Fore!.
+# gsHWFixes replaces upstream's block, so upstream's keys are restated beside it.
+SLUS-21124:
+  gsHWFixes:
+    autoFlush: 1
+    halfPixelOffset: 4
+    textureInsideRT: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+SLES-53299:
+  gsHWFixes:
+    autoFlush: 1
+    halfPixelOffset: 4
+    textureInsideRT: 1
+    nativeScaling: 2
+    hwDownloadMode: 3
+
+# Rumble Racing -- readbacks Disabled (4).
+# Source: XForYouX's 6cdb8fd90c, 2026-07-24. Symptom claimed: "Fixes Sun Effect".
+# Verified: NOT on the current build. Restored 2026-09-14 at bmdhacks' request; see the note on
+# Hot Shots Golf Fore!. Upstream sets no gsHWFixes for this game.
+SLUS-20174:
+  gsHWFixes:
+    hwDownloadMode: 4
+SLES-50120:
+  gsHWFixes:
+    hwDownloadMode: 4
+SLES-50121:
+  gsHWFixes:
+    hwDownloadMode: 4
