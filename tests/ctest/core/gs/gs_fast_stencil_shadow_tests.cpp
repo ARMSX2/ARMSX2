@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Pins the fast stencil shadow road (GS/Renderers/Common/GSFastStencilShadow.h): which devices
-// take it.
+// take it, which draws take it, and which engine leaves the counter unsplit.
 //
 // The device rule has no setting behind it, so these cases are the whole contract. It is on for
 // Vulkan with texture barriers off and dual-source blending, and off when any one of the three is
@@ -12,10 +12,16 @@
 //
 // Rides gs_vertex_tests.
 
+#include "GS/GS.h"
+#include "GS/GSState.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 
 #include <gtest/gtest.h>
+
+#include <cstring>
+#include <memory>
+#include <vector>
 
 namespace
 {
@@ -206,4 +212,245 @@ TEST(GSFastStencilShadow, VerticesQualifyOnlyWhenSamplingTheirOwnPixel)
 	EXPECT_FALSE(GSFastStencilShadow::VerticesQualify(127, 130, p0, p1, p0 + one_x, p1));
 	EXPECT_FALSE(GSFastStencilShadow::VerticesQualify(127, 130, p0, p1, p0, p1 - one_y));
 	EXPECT_FALSE(GSFastStencilShadow::VerticesQualify(127, 130, p0, p1, p0 - one_x, p1 - one_x));
+}
+
+// Which engine leaves the counter unsplit.
+//
+// Auto-flush splits a self-texturing draw in GSState, before any renderer sees it. The hardware
+// renderer's blend unit orders the counter's triangles inside one draw, so on that engine the split
+// only costs draws. The software renderer takes one texture snapshot per draw, and the split is what
+// makes each face read the one before it, so on that engine it must stay. Both engines reach the same
+// predicate, and the auto-flush keys do not say which engine is asking. So the exemption is keyed on
+// the engine, and these cases sweep both keys and expect the engine alone to decide.
+//
+// Driven through the real GIF parse road: PACKED {STQ, RGBA, XYZ2} records in one packet through
+// Transfer, and the draw count out. SpritesOnly is left out of the sweeps: at that level no triangle
+// reaches the split on any engine, before this exemption is consulted.
+
+namespace
+{
+	struct Vertex
+	{
+		int x, y; // pixels
+		u32 alpha;
+	};
+
+	void EncodeVertex(GIFPackedReg* r, const Vertex& v)
+	{
+		std::memset(r, 0, sizeof(GIFPackedReg) * 3);
+
+		// S and T track X and Y over a 512x512 window with Q = 1, so every vertex reads the pixel under it.
+		r[0].STQ.S = static_cast<float>(v.x) / 512.0f;
+		r[0].STQ.T = static_cast<float>(v.y) / 512.0f;
+		r[0].STQ.Q = 1.0f;
+
+		r[1].RGBA.R = 128;
+		r[1].RGBA.G = 128;
+		r[1].RGBA.B = 128;
+		r[1].RGBA.A = static_cast<u8>(v.alpha);
+
+		r[2].XYZ2.X = static_cast<u16>(v.x << 4); // 12.4
+		r[2].XYZ2.Y = static_cast<u16>(v.y << 4);
+	}
+
+	GIFTag MakeTag(u32 vertices)
+	{
+		GIFTag t = {};
+		t.NLOOP = vertices;
+		t.NREG = 3;
+		t.FLG = GIF_FLG_PACKED;
+		t.REGS = (u64(GIF_REG_STQ) << 0) | (u64(GIF_REG_RGBA) << 4) | (u64(GIF_REG_XYZ2) << 8);
+		return t;
+	}
+
+	// GSConfig is a global; restore what was there.
+	class AutoFlushKeys
+	{
+	public:
+		AutoFlushKeys(GSHWAutoFlushLevel hardware, bool software)
+			: m_hardware(GSConfig.UserHacks_AutoFlush)
+			, m_software(GSConfig.AutoFlushSW)
+		{
+			GSConfig.UserHacks_AutoFlush = hardware;
+			GSConfig.AutoFlushSW = software;
+		}
+		~AutoFlushKeys()
+		{
+			GSConfig.UserHacks_AutoFlush = m_hardware;
+			GSConfig.AutoFlushSW = m_software;
+		}
+
+	private:
+		GSHWAutoFlushLevel m_hardware;
+		bool m_software;
+	};
+
+	using EnvChange = void (*)(GSDrawingEnvironment&);
+
+	class CounterProbe final : public GSState
+	{
+	public:
+		CounterProbe()
+			: m_regs_storage(std::make_unique<GSPrivRegSet>())
+		{
+			// A flush walks the privileged registers looking for the display buffer; nothing
+			// constructs them for a bare GSState.
+			std::memset(m_regs_storage.get(), 0, sizeof(GSPrivRegSet));
+			m_regs = m_regs_storage.get();
+		}
+
+		void Draw() override { m_draws++; }
+
+		// The engine asks for the split on every primitive.
+		GSHWAutoFlushLevel GetAutoFlushLevel() const override { return GSHWAutoFlushLevel::Enabled; }
+
+		// The base asserts "not implemented"; the kick reaches it for AA1 prims.
+		bool IsCoverageAlphaSupported() override { return true; }
+
+		// Stands in for the engine: GSRendererHW's constructor sets this from its device, and the
+		// software renderer never does.
+		void SetUnsplitEngine(bool unsplit) { m_unsplit_stencil_counter = unsplit; }
+
+		u32 m_draws = 0;
+
+		// The counter at Jak 3's frame size: flat triangles into a 512x416 PSMCT32 frame, textured
+		// nearest from its own pages, modulating with alpha, writing alpha only, never writing depth.
+		void Configure(u32 prim, EnvChange change)
+		{
+			GSDrawingContext& ctx = m_env.CTXT[0];
+
+			ctx.FRAME.FBP = 0;
+			ctx.FRAME.FBW = 8;
+			ctx.FRAME.PSM = PSMCT32;
+			ctx.FRAME.FBMSK = 0x00FFFFFF;
+			ctx.ZBUF.ZBP = 0x100;
+			ctx.ZBUF.PSM = PSMZ24;
+			ctx.ZBUF.ZMSK = 1;
+			ctx.TEX0.TBP0 = 0;
+			ctx.TEX0.TBW = 8;
+			ctx.TEX0.PSM = PSMCT32;
+			ctx.TEX0.TW = 9;
+			ctx.TEX0.TH = 9;
+			ctx.TEX0.TCC = 1;
+			ctx.TEX0.TFX = TFX_MODULATE;
+			ctx.TEX1.MXL = 0;
+			ctx.TEX1.MMAG = 0;
+			ctx.TEX1.MMIN = 0;
+			ctx.TEX1.LCM = 0;
+			ctx.TEST.ATE = 1;
+			ctx.TEST.ATST = ATST_ALWAYS;
+			ctx.FBA.FBA = 0;
+			ctx.CLAMP.WMS = CLAMP_REPEAT;
+			ctx.CLAMP.WMT = CLAMP_REPEAT;
+			ctx.SCISSOR.SCAX0 = 0;
+			ctx.SCISSOR.SCAY0 = 0;
+			ctx.SCISSOR.SCAX1 = 511;
+			ctx.SCISSOR.SCAY1 = 415;
+			ctx.XYOFFSET.OFX = 0;
+			ctx.XYOFFSET.OFY = 0;
+
+			m_env.PRIM.CTXT = 0;
+			m_env.PRIM.PRIM = prim;
+			m_env.PRIM.IIP = 0;
+			m_env.PRIM.TME = 1;
+			m_env.PRIM.FST = 0;
+			m_env.PRIM.FGE = 0;
+			m_env.PRIM.AA1 = 0;
+
+			if (change)
+				change(m_env);
+
+			ctx.UpdateScissor();
+			m_nativeres = true;
+			temp_draw_rect = GSVector4i::zero();
+			UpdateContext();
+			ResetHandlers();
+			UpdateVertexKick();
+		}
+
+		void Feed(const std::vector<Vertex>& verts)
+		{
+			std::vector<GIFPackedReg> packet(1 + verts.size() * 3);
+			const GIFTag tag = MakeTag(static_cast<u32>(verts.size()));
+			std::memcpy(&packet[0], &tag, sizeof(GIFTag));
+			for (size_t i = 0; i < verts.size(); i++)
+				EncodeVertex(&packet[1 + i * 3], verts[i]);
+
+			Transfer<0>(reinterpret_cast<const u8*>(packet.data()), static_cast<u32>(packet.size()));
+		}
+
+		// Draws the batch that is still open, the way a state change would.
+		void FinishDraw() { Flush(GSFlushReason::CONTEXTCHANGE); }
+
+	private:
+		std::unique_ptr<GSPrivRegSet> m_regs_storage;
+	};
+
+	// A shadow volume in miniature: a fan whose rim walks the frame in wide steps, so later triangles
+	// draw over earlier ones, as a closed volume's far faces land on its near faces' pixels. Faces
+	// alternate between the counter's two steps.
+	std::vector<Vertex> OverlappingFan()
+	{
+		std::vector<Vertex> v;
+		v.push_back({256, 208, 130});
+		const int rim[6][2] = {{496, 208}, {62, 323}, {330, 23}, {330, 393}, {62, 93}, {496, 208}};
+		for (const auto& p : rim)
+			v.push_back({p[0], p[1], (v.size() & 1) ? 130u : 127u});
+		return v;
+	}
+
+	u32 DrawsFor(bool unsplit_engine, GSHWAutoFlushLevel hardware_key, bool software_key, EnvChange change = nullptr)
+	{
+		const AutoFlushKeys keys(hardware_key, software_key);
+		auto p = std::make_unique<CounterProbe>();
+		p->SetUnsplitEngine(unsplit_engine);
+		p->Configure(GS_TRIANGLEFAN, change);
+		p->Feed(OverlappingFan());
+		p->FinishDraw();
+		return p->m_draws;
+	}
+
+	constexpr GSHWAutoFlushLevel kSplittingKeys[] = {GSHWAutoFlushLevel::Disabled, GSHWAutoFlushLevel::Enabled};
+} // namespace
+
+TEST(GSFastStencilShadow, HardwareEngineDrawsTheCounterUnsplit)
+{
+	EXPECT_EQ(DrawsFor(true, GSHWAutoFlushLevel::Enabled, true), 1u);
+}
+
+// The same volume on the software engine is split, however either key is set.
+TEST(GSFastStencilShadow, SoftwareEngineSplitsTheCounterWhateverTheKeys)
+{
+	for (GSHWAutoFlushLevel hardware_key : kSplittingKeys)
+	{
+		for (bool software_key : {false, true})
+		{
+			EXPECT_GT(DrawsFor(false, hardware_key, software_key), 1u)
+				<< "hardware key " << static_cast<int>(hardware_key) << " software key " << software_key;
+		}
+	}
+}
+
+// Nor can the keys take the exemption away from the hardware engine.
+TEST(GSFastStencilShadow, HardwareEngineExemptionIgnoresTheKeys)
+{
+	for (GSHWAutoFlushLevel hardware_key : kSplittingKeys)
+	{
+		for (bool software_key : {false, true})
+		{
+			EXPECT_EQ(DrawsFor(true, hardware_key, software_key), 1u)
+				<< "hardware key " << static_cast<int>(hardware_key) << " software key " << software_key;
+		}
+	}
+}
+
+// A self-texturing draw that is not the counter still splits on the hardware engine.
+TEST(GSFastStencilShadow, HardwareEngineSplitsOtherSelfTexturingDraws)
+{
+	EXPECT_GT(DrawsFor(true, GSHWAutoFlushLevel::Enabled, true, [](GSDrawingEnvironment& env) { env.PRIM.IIP = 1; }), 1u)
+		<< "gouraud";
+	EXPECT_GT(DrawsFor(true, GSHWAutoFlushLevel::Enabled, true,
+				  [](GSDrawingEnvironment& env) { env.CTXT[0].FRAME.FBMSK = 0; }),
+		1u)
+		<< "colour written";
 }

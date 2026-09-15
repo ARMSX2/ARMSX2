@@ -3,6 +3,7 @@
 
 #include "GS/GSState.h"
 #include "GS/GSDump.h"
+#include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/GSSpriteCover.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -239,6 +240,8 @@ GSFrontState::GSFrontState(GSState* back)
 	m_mem_target = back;
 	back->m_split_back = true;
 	back->m_parse_target = this;
+	// The front splits draws for the back's engine, so it leaves unsplit what that engine does.
+	m_unsplit_stencil_counter = back->m_unsplit_stencil_counter;
 }
 
 GSFrontState::~GSFrontState()
@@ -2389,8 +2392,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// kick leave identical state, and the run can take the kernel.
 		//
 		// The predicate is invariant across a chunk for the triangle classes: it
-		// reads PRIM, the config level and the context's TEX0/TEX1/FRAME/ZBUF/
-		// TEST/CLAMP, none of which a chunk can change (a chunk contains no
+		// reads PRIM, the config level, the engine's m_unsplit_stencil_counter and
+		// the context's TEX0/TEX1/FRAME/ZBUF/TEST/CLAMP/FBA, none of which a chunk
+		// can change (a chunk contains no
 		// register write and the kernel's preconditions forbid a flush inside
 		// it), and its one per-prim input, EarlyDetectShuffle, is a constant
 		// false for anything that is not a sprite. Sprites therefore never reach
@@ -7111,6 +7115,19 @@ __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 	// Not using the same channels.
 	if (!(GSUtil::GetChannelMask(m_context->TEX0.PSM) & GSUtil::GetChannelMask(m_context->FRAME.PSM, m_context->FRAME.FBMSK | ~(GSLocalMemory::m_psm[m_context->FRAME.PSM].fmsk))))
 		return false;
+
+	// The alpha stencil counter, on an engine that draws it through the blend unit
+	// (GSFastStencilShadow.h). The blend applies overlapping triangles in order inside one draw, so a
+	// split buys nothing and costs a draw per triangle or two. The renderer checks what the registers
+	// cannot, vertex alpha 127..130 and every vertex sampling its own pixel; a draw that fails that
+	// takes the render-target read unsplit, so its triangles share one snapshot. No title we have
+	// captured sends one. Registers and a member only, so the answer holds for a whole kick chunk.
+	if (m_unsplit_stencil_counter && (prim == GS_TRIANGLELIST || prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLEFAN) &&
+		GSFastStencilShadow::IsCounterShape(*PRIM, m_context->TEX0, m_context->TEX1, m_context->TEST, m_context->FRAME,
+			m_context->ZBUF, m_context->FBA))
+	{
+		return false;
+	}
 
 	// Try to detect shuffles, because these will not autoflush, they by design clash.
 	if (EarlyDetectShuffle(prim))

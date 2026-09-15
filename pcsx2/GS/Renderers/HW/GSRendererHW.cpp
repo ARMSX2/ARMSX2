@@ -40,6 +40,12 @@ GSRendererHW::GSRendererHW()
 	memset(static_cast<void*>(&m_conf), 0, sizeof(m_conf));
 
 	ResetStates();
+
+	// Engine identity for GSState::IsAutoFlushDraw: this renderer draws the alpha stencil counter
+	// through the blend unit when its device can. Read once. A device recreated under a live renderer
+	// is the same GPU after a loss, and every setting that changes device features recreates the
+	// renderer as well.
+	m_unsplit_stencil_counter = g_gs_device->Features().fast_stencil_shadow;
 }
 
 void GSRendererHW::SetTCOffset()

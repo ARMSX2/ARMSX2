@@ -581,6 +581,11 @@ public:
 	bool m_nativeres = false;
 	bool m_mipmap = false;
 	bool m_texflush_flag = false;
+	// This engine draws the alpha stencil counter through the blend unit, so IsAutoFlushDraw leaves the
+	// counter unsplit (GSFastStencilShadow.h). Engine identity, never a config key: only GSRendererHW's
+	// constructor sets it, from its device's fast_stencil_shadow bit, and the software engine keeps
+	// splitting at whatever level its own key gives. A member because the predicate runs per primitive.
+	bool m_unsplit_stencil_counter = false;
 	bool m_isPackedUV_HackFlag = false;
 	bool m_channel_shuffle = false;
 	bool m_using_temp_z = false;
