@@ -56,9 +56,7 @@ final class ShaderPresetLibrary {
             .appendingPathComponent(rootFolderName, isDirectory: true)
     }
 
-    // Saved presets sit INSIDE the scanned root on purpose, so one becomes selectable with no
-    // extra plumbing. They are left out of installedPacks() just as deliberately: a pack row
-    // carries a Delete button, and this is the one folder here a user cannot re-download.
+    // Saved presets sit inside the scanned root, so each one is selectable with no extra plumbing.
     static var savedPresetRoot: URL? {
         userRoot?.appendingPathComponent(savedPresetFolderName, isDirectory: true)
     }
@@ -177,11 +175,17 @@ final class ShaderPresetLibrary {
         listing(at: folder.url)
     }
 
-    static func installedPacks() -> [ShaderPresetFolder] {
-        guard let user = userRoot else { return [] }
-        return sorted(children(of: user).directories
-            .filter { $0.lastPathComponent != savedPresetFolderName }
-            .compactMap { folder(at: $0) })
+    /// A pack row can be a promoted inner folder, so its name, not its URL, finds what to delete.
+    static func deletableURL(for folder: ShaderPresetFolder) -> URL? {
+        guard folder.name != savedPresetFolderName, let root = userRoot?.standardizedFileURL else { return nil }
+        let pack = root.appendingPathComponent(folder.name, isDirectory: true)
+        let path = folder.url.standardizedFileURL.path
+        return path == pack.path || path.hasPrefix(pack.path + "/") ? pack : nil
+    }
+
+    static func deletableURL(for preset: ShaderPresetFile) -> URL? {
+        let parent = preset.url.deletingLastPathComponent().standardizedFileURL.path
+        return parent == savedPresetRoot?.standardizedFileURL.path ? preset.url : nil
     }
 
     private func listing(at directory: URL) -> ShaderPresetListing {

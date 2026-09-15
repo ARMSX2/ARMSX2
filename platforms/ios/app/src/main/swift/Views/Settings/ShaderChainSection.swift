@@ -52,7 +52,9 @@ struct ShaderChainSection: View {
                 }
             }
             .tint(.primary)
-            .sheet(item: $browseRequest) { _ in
+            .sheet(item: $browseRequest, onDismiss: {
+                if !presetRef.isEmpty, ShaderPresetLibrary.resolve(presetRef) == nil { presetRef = "" }
+            }) { _ in
                 NavigationStack {
                     ShaderPresetBrowserView(
                         title: localized("Shader Presets"),

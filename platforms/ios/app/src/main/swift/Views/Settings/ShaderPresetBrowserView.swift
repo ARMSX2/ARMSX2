@@ -19,6 +19,7 @@ struct ShaderPresetBrowserView: View {
     @State private var listing = ShaderPresetListing.empty
     @State private var scanned = false
     @State private var searchText = ""
+    @State private var pendingDelete: (name: String, url: URL)?
 
     var body: some View {
         List {
@@ -34,6 +35,9 @@ struct ShaderPresetBrowserView: View {
                 } label: {
                     Label(child.name, systemImage: "folder")
                 }
+                .swipeActions(edge: .trailing) {
+                    deleteAction(child.name, folder == nil ? ShaderPresetLibrary.deletableURL(for: child) : nil)
+                }
             }
 
             ForEach(presets) { preset in
@@ -43,6 +47,9 @@ struct ShaderPresetBrowserView: View {
                     presetRow(preset)
                 }
                 .buttonStyle(.plain)
+                .swipeActions(edge: .trailing) {
+                    deleteAction(preset.name, ShaderPresetLibrary.deletableURL(for: preset))
+                }
             }
 
             if scanned && folders.isEmpty && presets.isEmpty {
@@ -58,6 +65,18 @@ struct ShaderPresetBrowserView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: localized("Search this folder")
         )
+        .confirmationDialog(
+            String(format: localized("Delete %@?"), pendingDelete?.name ?? ""),
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(localized("Delete"), role: .destructive) { deletePending() }
+            Button(localized("Cancel"), role: .cancel) { pendingDelete = nil }
+        } message: {
+            if pendingDelete?.url.hasDirectoryPath == true {
+                Text(localized("Presets saved from it stop working."))
+            }
+        }
         // Rescanned on every appearance: packs land in Documents through the Files app
         // while ARMSX2 is running, so a tree held across presentations goes stale.
         .onAppear { Task { await rescan() } }
@@ -90,6 +109,26 @@ struct ShaderPresetBrowserView: View {
             }
         }
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func deleteAction(_ name: String, _ url: URL?) -> some View {
+        if let url {
+            Button(role: .destructive) {
+                pendingDelete = (name, url)
+            } label: {
+                Label(localized("Delete"), systemImage: "trash")
+            }
+        }
+    }
+
+    private func deletePending() {
+        guard let url = pendingDelete?.url else { return }
+        pendingDelete = nil
+        Task {
+            _ = await Task.detached { try? FileManager.default.removeItem(at: url) }.value
+            await rescan()
+        }
     }
 
     private func rescan() async {
