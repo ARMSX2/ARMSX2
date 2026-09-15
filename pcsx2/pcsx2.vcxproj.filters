@@ -2024,10 +2024,25 @@
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSColourWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSCoordinateLag.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSCoordinateWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSLevelOfDetail.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSVertexQDivide.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">

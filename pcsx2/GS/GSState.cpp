@@ -390,10 +390,10 @@ void GSState::SetPrimHandlers()
 	// disjoint. That is -4.7% of GS-thread time in a title spending 8% of it in this one
 	// handler, and 581 GameDB entries ship autoFlush: 1.
 	//
-	// Mirrors IsAutoFlushDraw's early-out, which reads GSConfig.UserHacks_AutoFlush
-	// directly. On a hardware renderer the two are the same level. On the software
-	// engine GetAutoFlushLevel never reports SpritesOnly, so the narrowing is simply
-	// not taken there -- more staging work, same draws.
+	// Mirrors IsAutoFlushDraw's early-out, which reads the same m_autoflush_level this
+	// arming was decided from. On the software engine GetAutoFlushLevel never reports
+	// SpritesOnly, so the narrowing is simply not taken there -- more staging work, and
+	// every self-texturing draw split, not only the sprites.
 	constexpr bool non_sprite_af = auto_flush && !sprites_only;
 
 #define SetHandlerXYZ(P, auto_flush) \
@@ -1217,6 +1217,7 @@ void GSState::ResetHandlers()
 	m_fpGIFPackedRegHandlers[GIF_REG_NOP] = &GSState::GIFPackedRegHandlerNOP;
 
 	const GSHWAutoFlushLevel autoflush_level = GetAutoFlushLevel();
+	m_autoflush_level = autoflush_level;
 	if (autoflush_level != GSHWAutoFlushLevel::Disabled)
 	{
 		if (autoflush_level == GSHWAutoFlushLevel::SpritesOnly)
@@ -7098,7 +7099,13 @@ void GSState::GetQuadRasterizedPoints(GSVector4& xy, bool keep_order)
 
 __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 {
-	if (!PRIM->TME || (GSConfig.UserHacks_AutoFlush == GSHWAutoFlushLevel::SpritesOnly && prim != GS_SPRITE))
+	// The engine's level, not the hardware key. A software run whose GameDB entry asks
+	// for SpritesOnly used to refuse the split for every non-sprite primitive here, while
+	// ResetHandlers had already armed the full handlers from the SW rule -- so Jak 3's
+	// shadow volume, one triangle fan texturing from the frame buffer it writes, called
+	// this 5,973 times in a frame and was refused every time. The console re-reads the
+	// buffer per primitive on that draw; see GetAutoFlushLevel.
+	if (!PRIM->TME || (m_autoflush_level == GSHWAutoFlushLevel::SpritesOnly && prim != GS_SPRITE))
 		return false;
 
 	// Not using the same channels.

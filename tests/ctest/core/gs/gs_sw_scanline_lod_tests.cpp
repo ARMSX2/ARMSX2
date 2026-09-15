@@ -28,6 +28,7 @@
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/GSState.h"
@@ -35,6 +36,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 
 #ifndef _WIN32
@@ -578,6 +580,155 @@ TEST(SwScanlineLodFraction, TheConstantFractionBroadcastFillsEveryLane)
 
 	for (int i = 0; i < 8; i++)
 		EXPECT_EQ(f.U16[i], 0x1234) << "lane " << i;
+}
+
+// TEX1.K arrives SIGNED -- `s32 K : 12` -- so reading it needs the 1:7:4 scale and
+// nothing else. The draw dumper used to sign-extend it a second time, which turns
+// every negative K into a number an order of magnitude too large: the -30 that
+// Spider-Man 3's draw 16033 sets (-2 levels, so its mip chain runs) printed as
+// -258, and a -258 reads as a chain that can never leave level 0. That misreading
+// cost a round's premise, which is why the conversion is a named function with a
+// test rather than an expression at the format string.
+TEST(Tex1KDecode, TheFieldIsAlreadySignedAndScalesByASixteenth)
+{
+	GIFRegTEX1 t = {};
+
+	t.K = -32;
+	EXPECT_EQ(t.K, -32);
+	EXPECT_FLOAT_EQ(t.KLevels(), -2.0f);
+
+	t.K = -30;
+	EXPECT_FLOAT_EQ(t.KLevels(), -1.875f);
+
+	// The two ends of the twelve-bit field, and zero.
+	t.K = 2047;
+	EXPECT_FLOAT_EQ(t.KLevels(), 127.9375f);
+	t.K = -2048;
+	EXPECT_FLOAT_EQ(t.KLevels(), -128.0f);
+	t.K = 0;
+	EXPECT_FLOAT_EQ(t.KLevels(), 0.0f);
+
+	// What the second sign-extension did, stated so a revert fails here. -32 is the
+	// value the misread was found on, and -258 is what the context file printed.
+	t.K = -32;
+	const float doubled = static_cast<float>((static_cast<int>(t.K) ^ 0x800) - 0x800) / 16.0f;
+	EXPECT_NE(doubled, t.KLevels());
+	EXPECT_FLOAT_EQ(doubled, -258.0f);
+}
+
+// The renderer's own use of the field: `TEX1.K << 12` puts K into the 16.16 the LOD
+// walk carries, folding the sixteenth in (1/16 * 65536 = 4096). A doubly
+// sign-extended K would land 137 levels away from where the walk needs it.
+TEST(Tex1KDecode, TheRendererCarriesKAsSixteenPointSixteen)
+{
+	GIFRegTEX1 t = {};
+	t.K = -32;
+
+	const int k = static_cast<int>(t.K) << 12;
+
+	EXPECT_EQ(k, -131072);
+	EXPECT_FLOAT_EQ(static_cast<float>(k) / 65536.0f, t.KLevels());
+}
+
+// The console's logarithm is a table, and the table has a shape the capture pinned
+// exactly. These tests are on the table itself rather than on a scanline, because
+// a wrong entry is a wrong level everywhere and the scanline suites would only
+// show it where their own cases happen to land.
+TEST(LevelOfDetailTable, TheThirdRowIsTheTrueLogarithmRounded)
+{
+	for (int i = 0; i < GS_LOD_TABLE_SIZE; i++)
+	{
+		const double exact = std::log2(1.0 + i / 128.0) * 128.0;
+
+		EXPECT_EQ(GSLevelOfDetailTable[3][i], static_cast<s32>(std::lround(exact))) << "index " << i;
+	}
+}
+
+TEST(LevelOfDetailTable, TheSecondRowIsTheThirdHalvedUpwards)
+{
+	for (int i = 0; i < GS_LOD_TABLE_SIZE; i++)
+	{
+		const s32 t3 = GSLevelOfDetailTable[3][i];
+
+		EXPECT_EQ(GSLevelOfDetailTable[2][i], (t3 + 1) / 2) << "index " << i;
+	}
+}
+
+// ⚠️ Index 115 -- mantissa 1.8984375 -- steps BACKWARDS in the two shallow rows,
+// in both byte-identical console runs and at sixteen independent K values. It is
+// reproduced on purpose: a level can fall and rise again inside one Q ramp, and a
+// monotone table would be a smoothing of the hardware, not a fix to it.
+TEST(LevelOfDetailTable, TheBrokenEntryIsReproduced)
+{
+	EXPECT_EQ(GSLevelOfDetailTable[0][114], 15);
+	EXPECT_EQ(GSLevelOfDetailTable[0][115], 14);
+	EXPECT_EQ(GSLevelOfDetailTable[0][116], 15);
+
+	EXPECT_EQ(GSLevelOfDetailTable[1][114], 30);
+	EXPECT_EQ(GSLevelOfDetailTable[1][115], 29);
+	EXPECT_EQ(GSLevelOfDetailTable[1][116], 30);
+
+	// And only there, and only in those two rows.
+	for (int l = 0; l < 4; l++)
+	{
+		for (int i = 1; i < GS_LOD_TABLE_SIZE; i++)
+		{
+			if (l < 2 && i == 115)
+				continue;
+
+			EXPECT_GE(GSLevelOfDetailTable[l][i], GSLevelOfDetailTable[l][i - 1])
+				<< "row " << l << " index " << i;
+		}
+	}
+}
+
+// The index is the top seven fractional bits of Q's MANTISSA, and the exponent
+// enters only through the shift -- which is what makes the table repeat per octave
+// exactly. gs-lod separated the two: a table on 1/Q's mantissa would step at
+// values that are not dyadic in Q, and every measured step lands on a multiple of
+// 1/128 of Q's.
+TEST(LevelOfDetailTable, TheIndexIsQsMantissaAndTheTableRepeatsPerOctave)
+{
+	for (int i = 0; i < GS_LOD_TABLE_SIZE; i++)
+	{
+		const float m = 1.0f + static_cast<float>(i) / 128.0f;
+
+		u32 bits;
+		std::memcpy(&bits, &m, sizeof(bits));
+		EXPECT_EQ(GSLevelOfDetailIndex(bits), static_cast<u32>(i)) << "index " << i;
+		EXPECT_EQ(GSLevelOfDetailExponent(bits), 0) << "index " << i;
+
+		// The same mantissa two octaves down: same index, exponent lower by two, so
+		// the level of detail is exactly 2 * 2^(4+L) of a level deeper.
+		const float q = m / 4.0f;
+		const s32 a = GSLevelOfDetail16(m, GSLevelOfDetailTable[1], 0, 5);
+		const s32 b = GSLevelOfDetail16(q, GSLevelOfDetailTable[1], 0, 5);
+
+		EXPECT_EQ(b - a, 2 * 32) << "index " << i;
+	}
+}
+
+// TEX1.K is already in sixteenths of a level, so it enters the sum unscaled, and
+// the round-off mode is (LOD16 + 8) >> 4 with ties going UP -- measured at K = -8,
+// +8, +24, +40, +56 and +72.
+TEST(LevelOfDetailTable, KIsSixteenthsAndATieRoundsUp)
+{
+	// Mantissa 1.0, exponent 0: the table returns 0, so LOD16 is K exactly.
+	const float one = 1.0f;
+
+	for (const s32 k : {-8, 8, 24, 40, 56, 72})
+	{
+		const s32 lod16 = GSLevelOfDetail16(one, GSLevelOfDetailTable[0], k, 4);
+		EXPECT_EQ(lod16, k);
+
+		// What the scanline then does, on the 16.16 it carries the level in.
+		const s32 rounded = ((lod16 << 12) + 0x8000) >> 16;
+		EXPECT_EQ(rounded, (k + 8) >> 4) << "K = " << k;
+	}
+
+	// A tie takes the higher level, not the nearer even one.
+	EXPECT_EQ((8 + 8) >> 4, 1);
+	EXPECT_EQ((24 + 8) >> 4, 2);
 }
 
 } // namespace

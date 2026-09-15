@@ -91,9 +91,13 @@ GSVertexSW SetupOfTriangle(float height)
 	vertex[2].c = GSVector4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	// t is (s, t, q, f) on a triangle. The coordinate runs 48 texels -- 768
-	// sixteenths -- across the baseline; the fog coefficient runs 0 to 255.
+	// sixteenths -- across the baseline; the fog coefficient runs 0 to 255, on
+	// the same 1/128 grid colour rides (GSRendererSW builds it as byte << 7), so
+	// that its gradient is the size the interpolator actually sees. A fog value
+	// of a bare 255 is a 128th of a real one and its gradient falls below the
+	// resolution of the gradient itself.
 	vertex[0].t = GSVector4(0.0f, 136.0f, 1.0f, 0.0f);
-	vertex[1].t = GSVector4(768.0f, 136.0f, 1.0f, 255.0f);
+	vertex[1].t = GSVector4(768.0f, 136.0f, 1.0f, 255.0f * 128.0f);
 	vertex[2].t = GSVector4(0.0f, 136.0f, 1.0f, 0.0f);
 
 	// Depth rides the double lane, formed from the plane rather than from the

@@ -224,7 +224,7 @@ void GSDrawingContext::Dump(const std::string& filename)
 		"    MTBA: %u\n"
 		"    L: %u\n"
 		"    K: %.4f\n\n",
-		TEX1.LCM, GSUtil::GetLCMName(TEX1.LCM), TEX1.MXL, TEX1.MMAG, GSUtil::GetMMAGName(TEX1.MMAG), TEX1.MMIN, GSUtil::GetMMINName(TEX1.MMIN), TEX1.MTBA, TEX1.L, static_cast<float>((static_cast<int>(TEX1.K) ^ 0x800) - 0x800) / 16.0f);
+		TEX1.LCM, GSUtil::GetLCMName(TEX1.LCM), TEX1.MXL, TEX1.MMAG, GSUtil::GetMMAGName(TEX1.MMAG), TEX1.MMIN, GSUtil::GetMMINName(TEX1.MMIN), TEX1.MTBA, TEX1.L, TEX1.KLevels());
 
 	fprintf(fp,
 		"CLAMP:\n"

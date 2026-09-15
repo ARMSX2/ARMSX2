@@ -34,6 +34,7 @@
 
 #ifdef ARCH_ARM64
 
+#include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
@@ -45,6 +46,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 
 #ifndef _WIN32
@@ -88,6 +90,65 @@ struct Reading
 	// dead either way, so comparing them would be comparing scratch.
 	int live_offsets;
 };
+
+// The block phase these tests drive the walk at, where nothing sweeps it.
+constexpr int kPhase = 5;
+
+// The walk the scanline rides. The rasterizer derives one per primitive from the
+// geometry (GSColourWalk.h) and hands it over in GSScanlineLocalData::cwalk; these
+// tests drive the scanline directly, so they build one from the gradient and a
+// chosen block phase and hand it over the same way.
+void MakeWalk(GSScanlineLocalData& local, const GSVertexSW& dscan, int phase)
+{
+	// This suite's selector is TFX_NONE, so its block is eight pixels wide.
+	constexpr int kWidth = 8;
+
+	GSColourWalk& w = local.cwalk;
+
+	w = {};
+	w.d = 1;
+	w.top_anchor = 1;
+	w.S = phase;
+	w.A = phase + 2;
+	w.live = 1;
+
+	GSColourWalkGradientInit(w.c, GSColourWalkTruncUnit(dscan.c), GSVector4::zero(),
+		GSVector4::zero(), GSVector4::zero(), kWidth, w.S, w.d);
+	GSColourWalkGradientInit(w.f, GSColourWalkTruncUnit(dscan.t.wwww()), GSVector4::zero(),
+		GSVector4::zero(), GSVector4::zero(), kWidth, w.S, w.d);
+}
+
+// The rule itself, and not merely that two transcriptions of it agree -- which is
+// the failure this project keeps meeting, both arms wrong together.
+//
+// A draw interpolates an eight-pixel block at a time, and the blocks are pinned to
+// absolute screen x. Inside a block the value ramps by gc, the gradient truncated
+// to a multiple of eight colour units, and makes the rest up in one jump of d8 at
+// the block's phase; a whole block is 8g however the ramp and the jump split it.
+// So a pixel's value is the truncated seed, plus one 8g for every block boundary
+// between it and the seed's block, plus the difference between the two pixels'
+// offsets inside their own blocks. Nothing in it mentions the host's vector, which
+// is the whole point.
+int WalkModel(float c0, float dc, int phase, int x0, int x)
+{
+	const float g = std::trunc(dc * kColorScale * 8.0f) * 0.125f;
+	const int gc = static_cast<int>(std::trunc(g * 0.125f) * 8.0f);
+	const int d8 = static_cast<int>((g - static_cast<float>(gc)) * 8.0f);
+
+	const auto off = [gc, d8, phase](int i) { return i * gc + ((i >= phase) ? d8 : 0); };
+
+	const int b = ((x & ~7) - (x0 & ~7)) / 8;
+	const int seed = static_cast<int>(c0 * kColorScale);
+
+	return (seed + b * static_cast<int>(g * 8.0f) + off(x & 7) - off(x0 & 7)) >> 7;
+}
+
+/// One whole block's step for a channel, in the packed table's low 16 bits.
+u32 BlockStep(float dc)
+{
+	const float g = std::trunc(dc * kColorScale * 8.0f) * 0.125f;
+	return static_cast<u32>(static_cast<int>(g * 8.0f)) & 0xffff;
+}
 
 class SwScanlineCPathTest : public ::testing::Test
 {
@@ -232,7 +293,7 @@ protected:
 	// Runs one span through one pair of functions. `left` chooses the lane the span
 	// starts on, which is what selects between the four per-lane offset vectors.
 	static void Run(GSScanlineSelector sel, SetupPrimPtr setup, DrawScanlinePtr draw,
-		const Span& span, int left, int pixels, Reading& out)
+		const Span& span, int left, int pixels, Reading& out, int phase)
 	{
 		u32* vm32 = s_mem->vm32();
 		for (int x = 0; x < kRowPixels; x++)
@@ -260,6 +321,16 @@ protected:
 
 		setup(vertex, index, dscan, local);
 
+		// The colour tables are no longer the setup's to build: the rasterizer
+		// builds them from the primitive's walk right after calling it
+		// (GSColourWalk.h). These tests drive the scanline directly, so they hand
+		// over a walk of their own and build the tables the same way.
+		MakeWalk(local, dscan, phase);
+		// The tables follow the ROW now -- their jumps are floored with the row's
+		// own fraction in them, which is what makes the walk one floor per pixel
+		// (gs-cwalk). Row 0 is what this suite's walk is written against.
+		isa_native::GSDrawScanline::SetupColourWalkTables(local, 0);
+
 		for (int i = 0; i < 4; i++)
 		{
 			out.d_rb[i] = local.d[i].rb;
@@ -281,7 +352,7 @@ protected:
 
 	// Compiled once per selector variant: the generators are deterministic, and a
 	// pair per test would outrun the code buffer.
-	static bool RunJit(bool notest, const Span& span, int left, int pixels, Reading& out)
+	static bool RunJit(bool notest, const Span& span, int left, int pixels, Reading& out, int phase = kPhase)
 	{
 		const int slot = notest ? 1 : 0;
 		if (!s_setup[slot])
@@ -294,15 +365,15 @@ protected:
 		if (!s_setup[slot] || !s_draw[slot])
 			return false;
 
-		Run(s_sel[slot], s_setup[slot], s_draw[slot], span, left, pixels, out);
+		Run(s_sel[slot], s_setup[slot], s_draw[slot], span, left, pixels, out, phase);
 		return true;
 	}
 
-	static void RunCpp(bool notest, const Span& span, int left, int pixels, Reading& out)
+	static void RunCpp(bool notest, const Span& span, int left, int pixels, Reading& out, int phase = kPhase)
 	{
 		Run(MakeSelector(notest), &isa_native::GSDrawScanline::CSetupPrim,
 			static_cast<DrawScanlinePtr>(&isa_native::GSDrawScanline::CDrawScanline),
-			span, left, pixels, out);
+			span, left, pixels, out, phase);
 	}
 
 	// Compares the two, naming the lane and the field, so a failure says where the
@@ -495,51 +566,88 @@ TEST_F(SwScanlineCPathTest, EveryBlockStartMatchesAcrossManyVectors)
 	}
 }
 
-// The rule itself, and not merely that two transcriptions of it agree -- which is
-// the failure this project keeps meeting, both arms wrong together.
-//
-// An untextured draw interpolates an eight-pixel block at a time. The value at a
-// pixel is the truncated seed, plus one truncated whole-block step for every block
-// boundary between it and the seed's block, plus the truncated gradient at its own
-// column inside the block measured from the seed's column. Nothing in it mentions
-// the host's vector, which is the whole point.
-static int BlockWalkModel(float c0, float dc, int x0, int x)
-{
-	constexpr int W = 8;
-
-	const int xb0 = x0 & ~(W - 1);
-	const int s = x0 - xb0;
-	const int m = (x - xb0) % W;
-	const int b = (x - xb0) / W;
-
-	const int seed = static_cast<int>(c0 * kColorScale);
-	const int block = static_cast<int>(dc * kColorScale * W);
-	const int lane = static_cast<int>(dc * kColorScale * static_cast<float>(m - s));
-
-	return (seed + b * block + lane) >> 7;
-}
-
 TEST_F(SwScanlineCPathTest, TheGouraudWalkStepsInEightPixelBlocks)
 {
 	// Gradients deliberately off any binade, so a block step is not accidentally
 	// eight lane steps and the truncation actually has something to lose.
 	const Span span = {40.0f, 90.0f, 60.0f, 120.0f, 1.3f, -0.7f, 2.1f, 0.55f};
 
-	for (int left = 0; left < 8; left++)
+	// Every phase, because the coarse ramp's one jump sits at the phase and a
+	// single phase would hide where it lands.
+	for (int phase = 0; phase < 8; phase++)
 	{
-		Reading jit;
-		ASSERT_TRUE(RunJit(false, span, left, 40 - left, jit));
-
-		for (int x = left; x < 40; x++)
+		for (int left = 0; left < 8; left++)
 		{
-			SCOPED_TRACE(testing::Message() << "left " << left << " pixel " << x);
+			Reading jit;
+			ASSERT_TRUE(RunJit(false, span, left, 40 - left, jit, phase));
 
-			EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff), BlockWalkModel(span.r0, span.dr, left, x)) << "red";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff), BlockWalkModel(span.g0, span.dg, left, x)) << "green";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff), BlockWalkModel(span.b0, span.db, left, x)) << "blue";
-			EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff), BlockWalkModel(span.a0, span.da, left, x)) << "alpha";
+			for (int x = left; x < 40; x++)
+			{
+				SCOPED_TRACE(testing::Message() << "phase " << phase << " left " << left << " pixel " << x);
+
+				EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff), WalkModel(span.r0, span.dr, phase, left, x)) << "red";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff), WalkModel(span.g0, span.dg, phase, left, x)) << "green";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff), WalkModel(span.b0, span.db, phase, left, x)) << "blue";
+				EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff), WalkModel(span.a0, span.da, phase, left, x)) << "alpha";
+			}
 		}
 	}
+}
+
+// A walk that dips below zero stores BLACK, not white.
+//
+// The scanline carries the colour as signed 16-bit 8.7 fixed point and the walk
+// is allowed to go negative -- clamping what it CARRIES was measured against five
+// console frames and refused, costing 2,046 words on Gran Turismo 4 and doubling
+// Stuntman's worst delta. The saturation belongs at the PACK, where the lane
+// becomes the stored byte, and that is the one place it was missing: a plain
+// logical shift turns -128 (minus one level) into 511, which saturates to 255.
+//
+// Console-measured, indirectly and decisively. Xenosaga's frame 3 had 75 pixels
+// where an untextured gouraud TRIANGLESTRIP accumulated additively (Cs + Cd,
+// COLCLAMP on) drove a channel from a mid value straight to 255, against a console
+// holding the destination unchanged there -- Cs = 0 on silicon. With the pack
+// saturating, all 75 go to the console's side and the frame's worst delta falls
+// from 245 to 42, which is the pre-lane reference's own worst.
+//
+// The subject starts one level up and descends a level a pixel, so the first
+// vector's later lanes sit one and two levels BELOW zero -- two gradients' worth
+// of the block's fine-pixel offset past the seed. Those pixels must read 0. The
+// step's own max-with-zero cannot cover them: it runs between vectors, and these
+// are all in the first.
+TEST_F(SwScanlineCPathTest, AWalkBelowZeroStoresBlack)
+{
+	const Span span = {1.0f, 2.0f, 1.0f, 3.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+
+	Reading jit, cpp;
+	ASSERT_TRUE(RunJit(true, span, 0, 4, jit));
+	RunCpp(true, span, 0, 4, cpp);
+
+	// Lane l holds seed - l levels, so red is 1, 0, -1, -2 and green 2, 1, 0, -1.
+	const int want_r[4] = {1, 0, 0, 0};
+	const int want_g[4] = {2, 1, 0, 0};
+	const int want_b[4] = {1, 0, 0, 0};
+	const int want_a[4] = {3, 2, 1, 0};
+
+	for (int x = 0; x < 4; x++)
+	{
+		SCOPED_TRACE(testing::Message() << "pixel " << x);
+
+		EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff), want_r[x]) << "red";
+		EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff), want_g[x]) << "green";
+		EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff), want_b[x]) << "blue";
+		EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff), want_a[x]) << "alpha";
+
+		// The C++ scanline is the whole renderer wherever there is no code memory
+		// to compile into, so it saturates the same way or it is a bug nobody
+		// would see in a shipping build.
+		EXPECT_EQ(cpp.px[x], jit.px[x]);
+	}
+
+	// And the case can fail: without the saturation the negative lanes read back
+	// through a logical shift as 511 and 383, which saturate to white.
+	EXPECT_NE(want_r[2], 255);
+	EXPECT_NE(want_r[3], 255);
 }
 
 // The invariant behind the alternating pair: however a block is split across two
@@ -568,10 +676,10 @@ TEST_F(SwScanlineCPathTest, TheTwoPhasesOfAStepSumToTheBlockStep)
 
 				SCOPED_TRACE(testing::Message() << "dr " << dr << " s " << s << " lane " << lane);
 
-				EXPECT_EQ((rb0 + rb1) & 0xffff, jit.d4c.U32[0] & 0xffff) << "red";
-				EXPECT_EQ(((rb0 >> 16) + (rb1 >> 16)) & 0xffff, (jit.d4c.U32[0] >> 16) & 0xffff) << "blue";
-				EXPECT_EQ((ga0 + ga1) & 0xffff, jit.d4c.U32[1] & 0xffff) << "green";
-				EXPECT_EQ(((ga0 >> 16) + (ga1 >> 16)) & 0xffff, (jit.d4c.U32[1] >> 16) & 0xffff) << "alpha";
+				EXPECT_EQ((rb0 + rb1) & 0xffff, BlockStep(span.dr)) << "red";
+				EXPECT_EQ(((rb0 >> 16) + (rb1 >> 16)) & 0xffff, BlockStep(span.db)) << "blue";
+				EXPECT_EQ((ga0 + ga1) & 0xffff, BlockStep(span.dg)) << "green";
+				EXPECT_EQ(((ga0 >> 16) + (ga1 >> 16)) & 0xffff, BlockStep(span.da)) << "alpha";
 			}
 		}
 	}

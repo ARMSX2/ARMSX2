@@ -862,6 +862,13 @@ REG64_(GIFReg, TEX1)
 REG_END2
 	bool IsMinLinear() const { return (MMIN == 1) || (MMIN & 4); }
 	bool IsMagLinear() const { return MMAG; }
+
+	/// K in levels. The field is DECLARED SIGNED, so it arrives sign-extended and
+	/// needs nothing but the 1:7:4 scale. Code that sign-extends it a second time
+	/// (`(K ^ 0x800) - 0x800`) turns -32 into -4128 and reads -2 levels as -258,
+	/// which is how a draw with a live mip chain can be read as having an inert
+	/// one.
+	float KLevels() const { return static_cast<float>(K) / 16.0f; }
 REG_END2
 
 REG64_(GIFReg, TEX2)

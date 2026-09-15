@@ -23,6 +23,7 @@ private:
 	void Step();
 	void TestZ(const vixl::aarch64::VRegister& temp1, const vixl::aarch64::VRegister& temp2);
 	void SampleTexture();
+	void SaturateCoordinate(const vixl::aarch64::VRegister& c, const vixl::aarch64::VRegister& scratch);
 	void SampleTexture_TexelReadHelper(int mip_offset);
 	void Wrap(const vixl::aarch64::VRegister& uv0);
 	void Wrap(const vixl::aarch64::VRegister& uv0, const vixl::aarch64::VRegister& uv1);
@@ -66,6 +67,7 @@ private:
 
 	void modulate16(const vixl::aarch64::VRegister& d, const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& f, u8 shift);
 	void modulate16(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& f, u8 shift);
+	void walkColorByte(const vixl::aarch64::VRegister& d, const vixl::aarch64::VRegister& c);
 	void storedVertexColor(const vixl::aarch64::VRegister& d, const vixl::aarch64::VRegister& c);
 	void lerp16(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& b, const vixl::aarch64::VRegister& f, u8 shift);
 	void lerp16_4(const vixl::aarch64::VRegister& a, const vixl::aarch64::VRegister& b, const vixl::aarch64::VRegister& f);

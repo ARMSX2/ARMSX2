@@ -5,7 +5,10 @@
 
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDepthWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/GSExtra.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
@@ -370,7 +373,7 @@ void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u
 			{
 				if (IsOneOfMyScanlines(p.y))
 				{
-					m_setup_prim(vertex, index, GSVertexSW::zero(), m_local);
+					SetupPrim(vertex, index, GSVertexSW::zero(), false);
 
 					DrawScanline(1, p.x, p.y, v);
 				}
@@ -391,7 +394,7 @@ void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u
 			{
 				if (IsOneOfMyScanlines(p.y))
 				{
-					m_setup_prim(vertex, tmp_index, GSVertexSW::zero(), m_local);
+					SetupPrim(vertex, tmp_index, GSVertexSW::zero(), false);
 
 					DrawScanline(1, p.x, p.y, v);
 				}
@@ -770,7 +773,7 @@ void GSRasterizer::DrawLine(const GSVertexSW* vertex, const u16* index)
 
 	DrawEdgeLine(v0, v1, dv, HasEdge());
 
-	Flush(vertex, index, GSVertexSW::zero(), HasEdge());
+	Flush(vertex, index, GSVertexSW::zero(), false, HasEdge());
 
 	return;
 }
@@ -796,6 +799,36 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	GSVertexSW2 edge;
 	GSVertexSW2 dedge;
 	GSVertexSW2 dscan;
+	// The section's LEFT edge's top vertex, which is the point the attribute
+	// plane is evaluated from. See the scalar twin below for what measured it.
+	GSVertexSW2 ledge;
+
+	// Stages 1 and 2 of the primitive-grain rule, mirroring the scalar twin below
+	// lane for lane -- GSCoordinateWalk.h. Per primitive rather than per draw,
+	// because the grain comes from the largest of THESE three exponents and a strip
+	// shares its vertices between triangles that do not share a grain.
+	GSVertexSW grained[3];
+	static constexpr u16 grained_index[3] = {0, 1, 2};
+	GSCoordinateGrain grain;
+	const bool takes_grain = (m_local.gd->coord_grain_floor[0] != 0);
+
+	if (takes_grain)
+	{
+		const float half = m_local.gd->sel.ltf ? 32768.0f : 0.0f;
+
+		grained[0] = vertex[index[0]];
+		grained[1] = vertex[index[1]];
+		grained[2] = vertex[index[2]];
+
+		grain = GSCoordinateGrainOfPrimitive(grained[0].t, grained[1].t, grained[2].t,
+			m_local.gd->coord_grain_floor, half);
+
+		for (int j = 0; j < 3; j++)
+			grained[j].t = GSCoordinateOnGrain(grained[j].t, grain, half);
+
+		vertex = grained;
+		index = grained_index;
+	}
 
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -887,7 +920,39 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 
 		dscan.tc = dscan.tc.blend32<0xf8>(scan_r);
 		dedge.tc = dedge.tc.blend32<0xf8>(edge_r);
+
+		// And then again, to the eighth of a colour unit silicon actually walks --
+		// see GSColourWalk.h. Lanes 3 to 7 are fog and the four colour channels;
+		// s, t and q keep the exact quotient, so the truncated halves are blended
+		// back the same way the reciprocal's were.
+		const GSVector8 trunc_s(GSColourWalkTruncUnit(dscan.tc.extract<0>()),
+			GSColourWalkTruncUnit(dscan.tc.extract<1>()));
+		const GSVector8 trunc_e(GSColourWalkTruncUnit(dedge.tc.extract<0>()),
+			GSColourWalkTruncUnit(dedge.tc.extract<1>()));
+
+		dscan.tc = dscan.tc.blend32<0xf8>(trunc_s);
+		dedge.tc = dedge.tc.blend32<0xf8>(trunc_e);
 	}
+
+	// Stage 3, as the scalar twin does it: the gradient the truncated vertices give,
+	// pushed down onto a grid a thousandth of the grain. Lanes 0 and 1 of tc are s
+	// and t; q and fog ride through.
+	if (takes_grain)
+	{
+		const GSVector4 stq = GSCoordinateGradientOnGrain(dscan.tc.extract<0>(), grain,
+			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+
+		dscan.tc = GSVector8(stq, dscan.tc.extract<1>());
+	}
+
+	// GSVertexSW2 is GSVertexSW with t and c fused into one vector at the same
+	// offsets, so the walk setup reads both through the scalar view. The block is
+	// eight pixels wide only when texturing, fog and AA1 are all off -- GSBlockWalk.h.
+	GSSetupColourWalk(vertex[i[0]], vertex[i[1]], vertex[i[2]],
+		reinterpret_cast<const GSVertexSW&>(dscan), reinterpret_cast<const GSVertexSW&>(dedge),
+		GSBlockWalkWidth(m_local.gd->sel.tfx != TFX_NONE, m_local.gd->sel.fge != 0,
+			m_local.gd->sel.aa1 != 0),
+		m_local.cwalk);
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(dscan.p);
@@ -901,7 +966,9 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = vertex[i[m2]].p.x;
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.w, prim_top, edge, dedge, dscan, vertex[i[1 - m2]].p);
+			ledge = _v[i[1 - m2]];
+
+			DrawTriangleSection(tb.x, tb.w, prim_top, edge, dedge, dscan, vertex[i[1 - m2]].p, ledge);
 		}
 	}
 	else
@@ -913,7 +980,10 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = edge.p.x;
 			dedge.p = ddx[m2].xyzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.z, prim_top, edge, dedge, dscan, v0.p);
+			// Both edges leave v0, so the left one's top vertex is v0 as well.
+			ledge = v0;
+
+			DrawTriangleSection(tb.x, tb.z, prim_top, edge, dedge, dscan, v0.p, ledge);
 		}
 
 		if (tb.y < tb.w)
@@ -923,11 +993,17 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p = (v0.p.xxxx() + ddx[m2] * dv0.p.yyyy()).xyzw(edge.p);
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.y, tb.w, prim_top, edge, dedge, dscan, v1.p);
+			// m2 == 0: the left edge is v1->v2 and v1 is its top vertex, which is
+			// where the anchor already sat. m2 == 1: v1 is the RIGHT-hand vertex
+			// and the left edge is the long v0->v2 one -- the case that was wrong
+			// while the seed came from v1.
+			ledge = m2 ? v0 : v1;
+
+			DrawTriangleSection(tb.y, tb.w, prim_top, edge, dedge, dscan, v1.p, ledge);
 		}
 	}
 
-	Flush(vertex, index, (GSVertexSW&)dscan);
+	Flush(vertex, index, (GSVertexSW&)dscan, true);
 
 	if (HasEdge())
 	{
@@ -965,11 +1041,11 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		DrawEdgeTriangle((GSVertexSW&)v0, (GSVertexSW&)v2, (GSVertexSW&)dv1, f2, f0, tl1);
 		DrawEdgeTriangle((GSVertexSW&)v1, (GSVertexSW&)v2, (GSVertexSW&)dv2, f0, f1, tl2);
 
-		Flush(vertex, index, GSVertexSW::zero(), true);
+		Flush(vertex, index, GSVertexSW::zero(), false, true);
 	}
 }
 
-void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW2& RESTRICT edge, const GSVertexSW2& RESTRICT dedge, const GSVertexSW2& RESTRICT dscan, const GSVector4& RESTRICT p0)
+void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW2& RESTRICT edge, const GSVertexSW2& RESTRICT dedge, const GSVertexSW2& RESTRICT dscan, const GSVector4& RESTRICT p0, const GSVertexSW2& RESTRICT ledge)
 {
 	pxAssert(top < bottom);
 	pxAssert(edge.p.x <= edge.p.y);
@@ -1000,11 +1076,22 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 		if (pixels > 0)
 		{
 			float prestep = l.x - p0.x;
-			GSVector8 prestepv(prestep);
+
+			// s, t and q keep the plane evaluated from the LEFT EDGE's top vertex.
+			GSVector8 ldyv(static_cast<float>(top) - ledge.p.y);
+			GSVector8 lprestepv(l.x - ledge.p.x);
+
+			// Colour and fog come off the primitive's own walk instead -- see the
+			// scalar twin below, and GSColourWalk.h for what measured it. The
+			// blend takes lane 3 (fog) and lanes 4-7 (colour) and leaves s, t, q.
+			const GSColourWalk& cwalk = m_local.cwalk;
+			const GSVector8 seed(GSColourWalkRowSeed(cwalk, cwalk.f, left, top),
+				GSColourWalkRowSeed(cwalk, cwalk.c, left, top));
 
 			reinterpret_cast<GSVertexSW2*>(e)->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
 			                                             - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
-			reinterpret_cast<GSVertexSW2*>(e)->tc = edge.tc + dedge.tc * dyv + dscan.tc * prestepv;
+			reinterpret_cast<GSVertexSW2*>(e)->tc =
+				(ledge.tc + dedge.tc * ldyv + dscan.tc * lprestepv).blend32<0xf8>(seed);
 
 			AddScanlineInfo(e++, pixels, left, top);
 		}
@@ -1033,6 +1120,9 @@ struct GSTriangleSetup
 	GSVertexSW dedge[2];
 	GSVertexSW dscan;
 	GSVector4 p0[2];
+	// The section's LEFT edge's TOP VERTEX, which is the point the attribute
+	// plane is evaluated from.
+	GSVertexSW ledge[2];
 	int top[2];
 	int bottom[2];
 	int nsections;
@@ -1041,7 +1131,8 @@ struct GSTriangleSetup
 	GSVector4 cross; // the (negated, broadcast) cross product, for the edge-AA orientation
 };
 
-__noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y, GSTriangleSetup& out)
+__noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
+	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1141,7 +1232,31 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 		// blend32<8> keeps x, y, z -- s, t and q -- and takes only w, the fog.
 		out.dscan.t = out.dscan.t.blend32<8>(scan_t);
 		dedge.t = dedge.t.blend32<8>(edge_t);
+
+		// The truncated reciprocal's product is not yet the gradient silicon
+		// walks: it is truncated again, toward zero, to an eighth of a colour
+		// unit. GSColourWalk.h carries the console measurement behind that.
+		out.dscan.c = GSColourWalkTruncUnit(out.dscan.c);
+		dedge.c = GSColourWalkTruncUnit(dedge.c);
+		out.dscan.t = out.dscan.t.blend32<8>(GSColourWalkTruncUnit(out.dscan.t));
+		dedge.t = dedge.t.blend32<8>(GSColourWalkTruncUnit(dedge.t));
 	}
+
+	// Stage 3: the gradient the truncated vertices give, pushed down onto a grid a
+	// thousandth of the primitive's grain -- strictly where twice the area is not a
+	// power of two, plain floor where it is. It goes on the gradient where it is
+	// formed, so the scanline seed the rasterizer computes below and both SetupPrim
+	// backends read one number rather than each re-deriving the rule.
+	if (grain)
+	{
+		out.dscan.t = GSCoordinateGradientOnGrain(out.dscan.t, *grain,
+			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+	}
+
+	// One anchor, one walk direction and one block grid for the whole primitive,
+	// both sections included. GSColourWalk.h carries the rules and what decided
+	// each of them.
+	GSSetupColourWalk(v0, v1, v2, out.dscan, dedge, block_width, cwalk);
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], out.dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(out.dscan.p);
@@ -1161,6 +1276,7 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 			out.dedge[0].p = ddx[!m2 << 1].yzzw(dedge.p);
 
 			out.p0[0] = vertex[i[1 - m2]].p;
+			out.ledge[0] = vertex[i[1 - m2]];
 			out.top[0] = tb.x;
 			out.bottom[0] = tb.w;
 			out.nsections = 1;
@@ -1180,6 +1296,8 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 			out.dedge[n].p = ddx[m2].xyzw(dedge.p);
 
 			out.p0[n] = v0.p;
+			// Both edges leave v0, so the left one's top vertex is v0 as well.
+			out.ledge[n] = v0;
 			out.top[n] = tb.x;
 			out.bottom[n] = tb.z;
 			out.nsections = n + 1;
@@ -1197,6 +1315,11 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 			out.dedge[n].p = ddx[!m2 << 1].yzzw(dedge.p);
 
 			out.p0[n] = v1.p;
+			// m2 == 0: the left edge is v1->v2 and v1 is its top vertex, which is
+			// where the anchor already sat. m2 == 1: v1 is the RIGHT-hand vertex
+			// and the left edge is the long v0->v2 one -- the case that was wrong
+			// while the seed came from v1.
+			out.ledge[n] = m2 ? v0 : v1;
 			out.top[n] = tb.y;
 			out.bottom[n] = tb.w;
 			out.nsections = n + 1;
@@ -1210,14 +1333,55 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 {
 	m_primcount++;
 
+	// The block is eight pixels wide only when texturing, fog and AA1 are all off,
+	// and four if any one of them is on -- GSBlockWalk.h. Everything else about the
+	// walk is the same at either width, and fog rides the same DDA as colour so it
+	// takes the same width.
+	const GSScanlineSelector sel = m_local.gd->sel;
+	const int block_width = GSBlockWalkWidth(sel.tfx != TFX_NONE, sel.fge != 0, sel.aa1 != 0);
+
+	// Stages 1 and 2 of the primitive-grain rule, on the three vertices this
+	// primitive owns rather than on the draw's vertex buffer, because the grain comes
+	// from the largest of THESE three exponents and a strip shares its vertices
+	// between triangles that do not share a grain. GSCoordinateWalk.h carries the
+	// measurement, the identity with the front end's own truncation, and the limits.
+	GSVertexSW grained[3];
+	static constexpr u16 grained_index[3] = {0, 1, 2};
+	GSCoordinateGrain grain;
+	const bool takes_grain = (m_local.gd->coord_grain_floor[0] != 0);
+
+	if (takes_grain)
+	{
+		// The linear filter's half texel is already off the vertex here; the rule keys
+		// on the coordinate, so it goes back on for the truncation and comes off after.
+		const float half = sel.ltf ? 32768.0f : 0.0f;
+
+		grained[0] = vertex[index[0]];
+		grained[1] = vertex[index[1]];
+		grained[2] = vertex[index[2]];
+
+		grain = GSCoordinateGrainOfPrimitive(grained[0].t, grained[1].t, grained[2].t,
+			m_local.gd->coord_grain_floor, half);
+
+		for (int j = 0; j < 3; j++)
+			grained[j].t = GSCoordinateOnGrain(grained[j].t, grain, half);
+
+		vertex = grained;
+		index = grained_index;
+	}
+
 	GSTriangleSetup s;
-	if (!SetupTriangle(vertex, index, m_fscissor_y, s))
+	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width,
+			takes_grain ? &grain : nullptr))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)
-		DrawTriangleSection(s.top[n], s.bottom[n], s.top_prim, s.edge[n], s.dedge[n], s.dscan, s.p0[n]);
+	{
+		DrawTriangleSection(s.top[n], s.bottom[n], s.top_prim, s.edge[n], s.dedge[n], s.dscan, s.p0[n],
+			s.ledge[n]);
+	}
 
-	Flush(vertex, index, s.dscan);
+	Flush(vertex, index, s.dscan, true);
 
 	if (HasEdge())
 	{
@@ -1266,11 +1430,11 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		DrawEdgeTriangle(v0, v2, dv1, f2, f0, tl1);
 		DrawEdgeTriangle(v1, v2, dv2, f0, f1, tl2);
 
-		Flush(vertex, index, GSVertexSW::zero(), true);
+		Flush(vertex, index, GSVertexSW::zero(), false, true);
 	}
 }
 
-void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW& RESTRICT edge, const GSVertexSW& RESTRICT dedge, const GSVertexSW& RESTRICT dscan, const GSVector4& RESTRICT p0)
+void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW& RESTRICT edge, const GSVertexSW& RESTRICT dedge, const GSVertexSW& RESTRICT dscan, const GSVector4& RESTRICT p0, const GSVertexSW& RESTRICT ledge)
 {
 	pxAssert(top < bottom);
 	pxAssert(edge.p.x <= edge.p.y);
@@ -1301,10 +1465,24 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 		{
 			const float prestep = l.x - p0.x;
 
+			// s, t and q keep the plane evaluated from the LEFT EDGE's TOP
+			// VERTEX, which is where the console puts them. Their gradients are
+			// the exact quotient, so the point the plane is evaluated from is
+			// unobservable on them anyway.
+			const float ldy = static_cast<float>(top) - ledge.p.y;
+			const float lprestep = l.x - ledge.p.x;
+
+			// Colour and fog do NOT come from the left edge. They come from the
+			// primitive's own anchor, walked out to this pixel on the block grid
+			// -- GSColourWalk.h has the model. blend32<8> keeps s, t and q and
+			// takes only w, the fog.
+			const GSColourWalk& cwalk = m_local.cwalk;
+
 			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
 			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
-			e->t = edge.t + dedge.t * dy + dscan.t * prestep;
-			e->c = edge.c + dedge.c * dy + dscan.c * prestep;
+			e->t = (ledge.t + dedge.t * ldy + dscan.t * lprestep)
+			           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+			e->c = GSColourWalkRowSeed(cwalk, cwalk.c, left, top);
 
 			AddScanlineInfo(e++, pixels, left, top);
 		}
@@ -1341,6 +1519,11 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 	v[1].t = v0.t.blend32(v1.t, mask);
 
 	GSVector4i r(v[0].p.xyxy(v[1].p).ceil());
+
+	// The sprite's OWN extent, before the scissor takes any of it away: the ramp
+	// term keys on the extent the primitive was drawn with, not on what survives
+	// clipping. GSCoordinateWalk.h.
+	const GSVector4i extent = r;
 
 	r = r.rintersect(m_scissor);
 
@@ -1399,13 +1582,65 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
-	m_setup_prim(vertex, index, dscan, m_local);
+	// A UV-route sprite's ascending ramp runs one sixteenth of a texel low on any
+	// axis whose own extent is not a power of two, from that axis's SECOND pixel,
+	// and never recovers. Measured on real hardware; GSCoordinateWalk.h carries
+	// the rule, including why the first pixel is exempt.
+	const float ramp_u = m_local.gd->sel.fst ? GSSpriteRampBias(dt.x, extent.width()) : 0.0f;
+	const float ramp_v = m_local.gd->sel.fst ? GSSpriteRampBias(dt.y, extent.height()) : 0.0f;
+
+	SetupPrim(vertex, index, dscan, false);
 
 	while (1)
 	{
 		if (IsOneOfMyScanlines(r.top))
 		{
-			DrawScanline(r.width(), r.left, r.top, scan);
+			GSVertexSW row = scan;
+
+			// The sprite's OWN first row is the exempt one, so a sprite whose top
+			// the scissor took keeps the term on every row it draws.
+			if (ramp_v != 0.0f && r.top != extent.y)
+				row.t -= GSVector4(0.0f, ramp_v, 0.0f, 0.0f);
+
+			if (ramp_u == 0.0f)
+			{
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else if (r.left != extent.x)
+			{
+				// The sprite's own first column is outside the scissor, so every
+				// pixel this row draws is past it.
+				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else if (m_local.gd->sel.notest)
+			{
+				// ⚠️ A scanline compiled with no coverage test reads its frame and
+				// depth addresses off a per-column table indexed by `left >> 2`, so
+				// it requires a vector-aligned left -- which is exactly what
+				// GetScanlineGlobalData checks before it sets the bit. A span
+				// starting one pixel in would address the wrong column group, so the
+				// split is not available here and the term goes in the seed, which
+				// leaves this sprite's first COLUMN a sixteenth low where the
+				// console has it exact. Dropping the alignment check instead trips
+				// that assert on real game draws, so this is the one place the
+				// cheaper form survives.
+				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				DrawScanline(r.width(), r.left, r.top, row);
+			}
+			else
+			{
+				// The first column exactly, then the rest with the term in the
+				// seed -- one extra span per row rather than a test per pixel.
+				DrawScanline(1, r.left, r.top, row);
+
+				if (r.width() > 1)
+				{
+					row.t += dscan.t;
+					row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+					DrawScanline(r.width() - 1, r.left + 1, r.top, row);
+				}
+			}
 		}
 
 		if (++r.top >= r.bottom)
@@ -1620,7 +1855,14 @@ void GSRasterizer::AddScanline(GSVertexSW* e, int pixels, int left, int top, con
 	AddScanlineInfo(e, pixels, left, top);
 }
 
-void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool edge /* = false */)
+void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live)
+{
+	m_local.cwalk.live = cwalk_live ? 1 : 0;
+
+	m_setup_prim(vertex, index, dscan, m_local);
+}
+
+void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live, bool edge /* = false */)
 {
 	// TODO: on win64 this could be the place where xmm6-15 are preserved (not by each DrawScanline)
 
@@ -1628,7 +1870,7 @@ void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVer
 
 	if (count > 0)
 	{
-		m_setup_prim(vertex, index, dscan, m_local);
+		SetupPrim(vertex, index, dscan, cwalk_live);
 
 		const GSVertexSW* RESTRICT e = m_edge.buff;
 		const GSVertexSW* RESTRICT ee = e + count;
@@ -1674,6 +1916,12 @@ void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW&
 	//m_pixels.total += ((left + pixels + (PIXELS_PER_LOOP - 1)) & ~(PIXELS_PER_LOOP - 1)) - left;
 
 	pxAssert(m_pixels.actual <= m_pixels.total);
+
+	// The colour walk's lane and step tables follow the ROW, not the primitive:
+	// their jumps are floored with the row's own fractional part in them, which is
+	// what makes the walk one floor at every pixel. GSDrawScanline.cpp has the
+	// derivation.
+	GSDrawScanline::SetupColourWalkTables(m_local, top);
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
 }

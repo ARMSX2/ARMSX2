@@ -587,6 +587,12 @@ public:
 	bool m_temp_z_full_copy = false;
 	bool m_in_target_draw = false;
 	bool m_channel_shuffle_finish = false;
+	// What GetAutoFlushLevel() answered when ResetHandlers last armed the parse
+	// handlers. Read by IsAutoFlushDraw, so the predicate and the handler table are
+	// decided by one value at one moment; reading the virtual per primitive would be
+	// a call on the vertex path, and reading GSConfig would put the two back out of
+	// step. Lands in the padding after the bool run above, so no member moves.
+	GSHWAutoFlushLevel m_autoflush_level = GSHWAutoFlushLevel::Disabled;
 
 	u32 m_target_offset = 0;
 	u8 m_scanmask_used = 0;

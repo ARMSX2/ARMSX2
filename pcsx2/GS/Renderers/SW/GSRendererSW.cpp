@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/SW/GSRendererSW.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
+#include "GS/Renderers/SW/GSCoordinateLag.h"
+#include "GS/Renderers/SW/GSVertexQDivide.h"
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
@@ -349,7 +352,8 @@ void GSRendererSW::Draw()
 	// skip per pixel division if q is constant.
 	// Optimize the division by 1 with a nop. It also means that GS_SPRITE_CLASS must be processed when !m_vt.m_eq.q.
 	// If you have both GS_SPRITE_CLASS && m_vt.m_eq.q, it will depends on the first part of the 'OR'
-	u32 q_div = !IsMipMapActive() && ((m_vt.m_eq.q && m_vt.m_min.t.z != 1.0f) || (!m_vt.m_eq.q && m_vt.m_primclass == GS_SPRITE_CLASS));
+	const u32 q_div = GSUseVertexQDivide(m_vt.m_primclass, IsMipMapActive(),
+		m_vt.m_eq.q != 0, m_vt.m_min.t.z) ? 1u : 0u;
 
 	GSVertexSW::s_cvb[m_vt.m_primclass][PRIM->TME][PRIM->FST][q_div](m_context, sd->vertex, m_vertex->buff, m_vertex->next);
 
@@ -963,6 +967,9 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 
 	gd.sel.key = 0;
 
+	gd.coord_grain_floor[0] = 0;
+	gd.coord_grain_floor[1] = 0;
+
 	gd.sel.fpsm = 3;
 	gd.sel.zpsm = 3;
 	gd.sel.atst = ATST_ALWAYS;
@@ -1078,7 +1085,10 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 
 			GIFRegTEX0 TEX0 = m_context->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mipmap);
 
-			GSVector4i r = GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage;
+			GSVector4i r = GSCoverageWithCoordinateField(
+				GSCoverageWithCoordinateLag(
+					GetTextureMinMax(TEX0, context->CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass),
+				m_vt.m_min.t, m_vt.m_max.t, TEX0);
 
 			GSTextureCacheSW::Texture* t = m_tc->Lookup(TEX0, env.TEXA);
 
@@ -1125,11 +1135,6 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.sel.mmin = 1; // tri-linear is meaningless
 				}
 
-				if (gd.sel.mmin == 2)
-				{
-					mxl--; // don't sample beyond the last level (TODO: add a dummy level instead?)
-				}
-
 				if (gd.sel.fst)
 				{
 					pxAssert(gd.sel.lcm == 1);
@@ -1161,6 +1166,17 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.mxl = GSVector4((float)mxl);
 					gd.l = GSVector4((float)(-(0x10000 << context->TEX1.L)));
 					gd.k = GSVector4((float)k);
+
+					// The level of detail is a table read on Q's mantissa, not a
+					// curve: GSLevelOfDetail.h carries the measurement and the
+					// tables. TEX1.K is already in sixteenths of a level, which is
+					// what the table's own units are, so it goes across unscaled --
+					// `k` above is the same field shifted into 16.16 for the float
+					// path the scanline no longer takes.
+					gd.lodtab = GSLevelOfDetailTable[context->TEX1.L];
+					gd.lodk = context->TEX1.K;
+					gd.lodshift = 4 + context->TEX1.L;
+					gd.lodmxl = mxl;
 				}
 
 				GIFRegCLAMP MIP_CLAMP = context->CLAMP;
@@ -1188,7 +1204,8 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 						return false;
 					}
 
-					GSVector4i r = GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage;
+					GSVector4i r = GSCoverageWithCoordinateLag(
+						GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage, m_vt.m_primclass);
 
 					data->SetSource(t, r, i);
 				}
@@ -1198,10 +1215,34 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			}
 			else
 			{
-				// skip per pixel division if q is constant. Sprite uses flat
-				// q, so it's always constant by primitive.
-				// Note: the 'q' division was done in GSRendererSW::ConvertVertexBuffer
-				gd.sel.fst |= (m_vt.m_eq.q || primclass == GS_SPRITE_CLASS);
+				// Tell the scanline the coordinate is affine only where the vertex
+				// conversion actually divided it -- the two must agree, and they were
+				// decided by different predicates. A constant-Q triangle keeps its Q
+				// and takes the console's reciprocal per pixel: silicon does not
+				// divide, it multiplies by a reciprocal truncated to fourteen
+				// fractional bits, and dividing at the vertex computes the exact
+				// quotient instead. See GSVertexQDivide.h for the measurement.
+				gd.sel.fst |= (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
+					m_vt.m_min.t.z) || GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z));
+
+				// An affine STQ triangle's coordinate is held to ONE grain for the whole
+				// primitive, not one per vertex, and its gradient sits on a grid a
+				// thousandth of that grain. GSCoordinateWalk.h carries the measurement
+				// and the rest of the rule; the rasterizer needs only where the grain
+				// stops shrinking, which is TEX0's own size.
+				//
+				// The gate is the front end's own texel rounding -- a sprite or a
+				// constant-Z draw, STQ, textured -- narrowed to the triangles that then
+				// take the affine route. Staying inside it is what makes the widening an
+				// identity: those vertices are already truncated on the finer grid, so
+				// truncating them again onto the primitive's lands where the front end
+				// would have landed had its own rule been the primitive's.
+				if (primclass == GS_TRIANGLE_CLASS && !PRIM->FST && m_vt.m_eq.z
+					&& GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z))
+				{
+					gd.coord_grain_floor[0] = static_cast<s32>(context->TEX0.TW) + 2;
+					gd.coord_grain_floor[1] = static_cast<s32>(context->TEX0.TH) + 2;
+				}
 
 				// The console chooses MMAG versus MMIN per pixel, from that pixel's own
 				// level. When this primitive straddles the crossing and the two filters
@@ -1319,6 +1360,29 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			gd.t.max = gd.t.max.xxxxlh();
 			gd.t.mask = gd.t.mask.xxzz();
 			gd.t.invmask = ~gd.t.mask;
+
+			// Which coordinates walk in the console's 12.15 truncating accumulator,
+			// and it is not the same set as `fst`. That bit says only that the
+			// scanline reads a 16.16 integer, and by here it has grown to cover
+			// three different coordinates. Hardware splits them:
+			//
+			//   * the UV register, and a SPRITE whose ST the vertex conversion
+			//     resolved, both take the accumulator;
+			//   * a constant-Q TRIANGLE's ST plane refuses it and keeps its own
+			//     exact plane.
+			//
+			// ⚠️ It is a SUBSET of fst, and has to be read from the final value:
+			// a mipmapped STQ sprite never reaches the widening above, so it walks
+			// the perspective route, and telling setup to write it an integer step
+			// and no Q step corrupts thousands of words of a game frame.
+			//
+			// ARM64 only, for the reason ltfx carries above: the x86 setup
+			// generator does not implement the walk, and leaving the bit set there
+			// would make an x86 JIT disagree with its own C++ fallback. An x86
+			// software build keeps the wide accumulator on every road.
+#ifdef ARCH_ARM64
+			gd.sel.uvwalk = gd.sel.fst && (PRIM->FST || primclass == GS_SPRITE_CLASS);
+#endif
 		}
 
 		if (PRIM->FGE)
@@ -1599,11 +1663,14 @@ void GSRendererSW::SharedData::SetSource(GSTextureCacheSW::Texture* t, const GSV
 
 void GSRendererSW::SharedData::UpdateSource()
 {
+	size_t levels = 0;
+
 	for (size_t i = 0; m_tex[i].t; i++)
 	{
 		if (m_tex[i].t->Update(m_tex[i].r))
 		{
 			global.tex[i] = m_tex[i].t->m_buff;
+			levels = i + 1;
 		}
 		else
 		{
@@ -1612,6 +1679,13 @@ void GSRendererSW::SharedData::UpdateSource()
 			global.sel.tfx = TFX_NONE;
 		}
 	}
+
+	// The dummy level the trilinear ceiling reads: see GSScanlineEnvironment.h.
+	// A level of detail at or above MXL is MXL at weight zero on the console, so
+	// the second tap has to be a legal pointer to the SAME level rather than one
+	// past the end.
+	if (levels != 0)
+		global.tex[levels] = global.tex[levels - 1];
 
 	if (GSConfig.SaveTexture && GSConfig.ShouldDump(g_gs_renderer->s_n, g_perfmon.GetFrame()))
 	{

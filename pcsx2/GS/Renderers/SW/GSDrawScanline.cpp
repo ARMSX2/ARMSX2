@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/SW/GSDrawScanline.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
 #include "GS/Renderers/SW/GSBlockWalk.h"
+#include "GS/Renderers/SW/GSCoordinateWalk.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "Memory.h"
 
@@ -174,6 +176,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data, bool allow_compile)
 	sel.tfx = global.sel.tfx;
 	sel.tcc = global.sel.tcc;
 	sel.fst = global.sel.fst;
+	sel.uvwalk = global.sel.uvwalk;
 	sel.fge = global.sel.fge;
 	sel.prim = global.sel.prim;
 	sel.fb = global.sel.fb;
@@ -211,24 +214,103 @@ typedef GSVector4  VectorF;
 #define LOCAL_STEP local.d4
 #endif
 
+// The sixteenth-of-a-texel index that the sampler splits into a texel and a
+// filter weight is formed by TRUNCATING the coordinate toward zero. An
+// arithmetic shift floors instead, which is the same function on a non-negative
+// coordinate and one sixteenth lower on a negative one.
+//
+// Measured on real hardware rather than assumed, with a texture that names the
+// console's own reading -- red alternating by V parity and green by U parity, so
+// a bilinear blend returns the weight itself while blue and alpha name the texel
+// pair. One stored word therefore fixes the texel and the weight outright, with
+// no model of either renderer's walk in between. Every arm whose U stays positive
+// reads our own coordinate; the two whose U is negative read one sixteenth higher,
+// and applying the same displacement WITHOUT the sign test destroys the positive
+// arms. The sign is the whole rule rather than a detail of it.
+//
+// Both halves of the split read bit 12 and up -- the texel index is the
+// arithmetic shift by sixteen, the weight is bits 12 to 15 -- so adding a
+// sixteenth less one to a negative coordinate turns the floor that follows into
+// the truncation, and can disturb nothing else.
+//
+// Two things here are the model written down rather than measured. V: every arm
+// held V positive, so V is covered because both axes go through this one
+// expression, which is a fact about our code and not about silicon. And the ORDER
+// against the linear half-texel bias -- the two readings differ only for a
+// coordinate inside the first half texel, which nothing drew. The truncation is
+// taken BEFORE the bias: the console forms its sixteenth on the coordinate, and
+// the half-texel straddle is our own sampler's step onto the tap pair, not part
+// of that coordinate. The DDA's lag goes the other way and is taken BEFORE the
+// truncation, because the lag IS the console's own walk trailing the exact plane;
+// nothing measured separates the lag's two orders.
+static __forceinline VectorI GSTruncateCoordinate(const VectorI& c)
+{
+	return c + c.sra32<31>().srl32<20>();
+}
+
+// The formed coordinate lives in a SIGNED 12.4 FIELD and saturates into it, so a
+// coordinate at or above 2,047.9375 texels samples texel 2,047 and one at or below
+// -2,048 samples texel -2,048. Measured on real hardware; GSCoordinateWalk.h
+// carries the reading, the families it refutes, and what it does not pin.
+//
+// Written as the field it is: the sixteenth, saturated to sixteen signed bits, put
+// back. The bits below the sixteenth go with it, which nothing downstream reads --
+// the texel is bits 16 and up and the weight bits 12 to 15. The ARM64 generator
+// emits this same shape, one Sqxtn, so the two roads cannot drift apart on it.
+//
+// It sits after the truncation to sixteenths and after the linear filter's
+// half-texel step, because the console's reading is the field's top value and not
+// half a texel below it, and before the tap pair and the wrap addressing.
+static __forceinline VectorI GSSaturateCoordinate(const VectorI& c)
+{
+	return c.sra32<GS_COORD_SIXTEENTH_SHIFT>()
+	    .max_i32(VectorI(GS_COORD_SIXTEENTH_MIN))
+	    .min_i32(VectorI(GS_COORD_SIXTEENTH_MAX))
+	    .sll32<GS_COORD_SIXTEENTH_SHIFT>();
+}
+
 // The GS does not divide the texture coordinate by Q. It multiplies by a
 // RECIPROCAL that is truncated to about thirteen fractional bits, so a
 // perspective coordinate is systematically a little short of the true quotient.
 //
-// Measured on an SCPH-30001 rather than assumed. Each of 12,288 readings bounds
-// the hardware's own reciprocal from both sides: 1,592 of them force it strictly
-// BELOW the true value, not one forces it above, and the largest forced shortfall
-// is 1.22e-4 relative -- which is 2^-13 to three decimal places.
+// Measured on real hardware rather than assumed. Every reading bounds the
+// hardware's own reciprocal from both sides, and the ones that bind all force it
+// strictly BELOW the true value; not one forces it above. So the grid truncates,
+// and computing an exact quotient -- what we did before the grid landed -- is
+// being MORE correct than the hardware, and differs from the console on about a
+// fifth of ordinary perspective readings for that reason alone.
 //
-// Truncating a float32 mantissa to its top thirteen bits is exactly that grid.
-// float32 carries 23 explicit mantissa bits, so clearing the low ten leaves
-// thirteen and rounds toward zero, which is the side silicon is never on the
-// wrong side of. Computing an exact quotient -- what we did before -- is being
-// MORE correct than the hardware, and it differs from the console on 22.07% of
-// ordinary perspective readings for that reason alone.
+// The WIDTH of the grid took a second pass to get right. Thirteen mantissa bits
+// fits the bound above, but it is not what the console keeps. A band walking a
+// constant quotient of 8193/16384 across 512 pixels -- a texel boundary plus a
+// sliver -- reads the same 512 sixteenths on the console, and a thirteen-bit grid
+// trails far enough at the end of each reciprocal plateau to drop a quarter of
+// them a sixteenth low. Fourteen bits clears all 512, and so does anything wider:
+// 14 is the narrowest grid the measurements permit, not a fitted value, and
+// nothing we hold separates it from wider.
+//
+// float32 carries 23 explicit mantissa bits, so clearing the low nine leaves
+// fourteen and rounds toward zero, which is the side silicon is never on the
+// wrong side of.
+//
+// ⚠️ THIS IS AN APPROXIMATION, and knowing which part is approximate matters if
+// you are the one who improves it. The truncation and its width are measured.
+// The SHAPE is not: this evaluates a plane and divides, and the console walks
+// the coordinate instead. Geometry that visits the identical set of Q values at
+// four different per-pixel steps must read the same level at all four if the
+// result is a function of Q -- every plane-with-a-reciprocal candidate does, and
+// the console does not. A second construction with nothing in common says the
+// same: pin the exact coordinate at every rung of a step ladder and the console's
+// hit rate still halves as the Q step doubles.
+//
+// So the right shape is a fixed-point walk of S and Q, and nobody has fitted it
+// yet -- the two-grid families that have been swept are refuted by the same
+// baseline movement that refutes the plane. Until that lands, this is the best
+// approximation measured: it improved every capture and every console frame it
+// was scored on, which is the only claim being made for it.
 __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 {
-	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
+	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffe00));
 }
 
 // The texture function multiplies the eight-bit vertex colour the GS STORES, not
@@ -237,7 +319,7 @@ __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 // unit wherever the colour has a fraction -- which is everywhere on a gouraud
 // gradient, and invisible to a flat-shaded corpus.
 //
-// Measured on an SCPH-30001 with no model of either interpolator: the same colour
+// Measured on real hardware with no model of either interpolator: the same colour
 // read back through four different multipliers brackets the value the hardware
 // holds, and that bracket excludes the product of the stored byte on 0 of 24,576
 // readings, where our own arms exclude it on about one reading in five.
@@ -245,38 +327,265 @@ __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 // Drop the fraction for the multiply only. The DDA keeps it, or the gradient
 // stops stepping; the byte goes back on the seven-bit grid so modulate16<1> still
 // lines up.
+/// The walk's carried colour, as the byte the GS stores.
+///
+/// The lane is signed 16-bit 8.7 fixed point and the walk is allowed to carry a
+/// negative value -- clamping what it CARRIES was tried and the console refused
+/// it. What the console does not tolerate is a negative reaching the STORE: a
+/// plain logical shift turns -1 into 511, which saturates to white, and a frame
+/// with an additively accumulated untextured gouraud strip in it shows dozens of
+/// channels driven to exactly 255 against a console that leaves the destination
+/// unchanged.
+///
+/// So the saturation goes here, at the pack, and the walk is untouched. The
+/// max-with-zero is exact rather than merely safe: it and a plain shift differ
+/// only on negative inputs, where the answer the model asks for is 0, and the top
+/// needs no clamp because 32767 >> 7 is already 255.
+__forceinline static VectorI GSWalkColorByte(const VectorI& c)
+{
+	return c.max_i16(VectorI::zero()).srl16<7>();
+}
+
 __forceinline static VectorI GSStoredVertexColor(const VectorI& c)
 {
-	return c.srl16<7>().sll16<7>();
+	return GSWalkColorByte(c).sll16<7>();
 }
 
-#if _M_SSE < 0x501
-/// One attribute channel's alternating per-vector step for a split block walk,
-/// as the four entries local.dw wants for a span starting `i` lanes into its
-/// vector: (s=i, phase 0), (s=i, phase 1), (s=4+i, phase 0), (s=4+i, phase 1).
-///
-/// Writing L, H and M for the truncated gradient at this vector's lanes, at the
-/// half after it and at the half before it, and Q for the whole block step, the
-/// walk visits L, H, Q+L, Q+H ... from the low half and L, Q+M, Q+L, 2Q+M ...
-/// from the high half. Both alternate, and each pair sums to Q -- which is the
-/// invariant to check if these ever look wrong.
-static __ri void GSBlockWalkSteps(const GSVector4& d, int i, GSVector4i out[4])
+void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 {
-	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
-	static const GSVector4* next = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_next);
-	static const GSVector4* prev = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_prev);
+	// The scanline's colour and fog tables, built from the primitive's own walk.
+	//
+	// GSColourWalk.h: measured from an absolute base that is a multiple of eight,
+	// lane i sits off[i] = i*gc + dw*floor((i - phase) / W) from it, and eight
+	// pixels advance by 8g whether that is one block or two. A span seeded at
+	// `left` starts s = left & 7 lanes in, so the lane-init entry for s holds
+	// off[(s & ~(vlen-1)) + l] - off[s] in lane l, and
+	//
+	//     off[i] - off[s] = gc*(i - s) + dw*(floor((i - phase)/W) - floor((s - phase)/W))
+	//
+	// which is a broadcast gradient times a lane vector -- the same shape the
+	// shift tables had, with the block index in place of the vector offset. The
+	// floor division is an arithmetic shift because W is a power of two, and at
+	// W = 4 the whole table repeats with period four, so the eight entries serve
+	// a four-wide block as well as an eight-wide one.
+	//
+	// The packing is unchanged: r and b interleaved as the two halves of each
+	// 32-bit lane, g and a likewise, fog replicated in both halves. The mask has
+	// already put every lane in 0..65535, so the unsigned pack is the identity
+	// and a descending gradient keeps its negative offset; the signed pack would
+	// turn everything from 32768 up into garbage the whole scanline carries.
+	constexpr int vlen = sizeof(VectorF) / sizeof(float);
+	constexpr VectorI mask16 = VectorI::cxpr(0xFFFF);
 
-	const GSVector4i q = GSVector4i(d * *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8));
-	const GSVector4i l = GSVector4i(d * shift[1 + i]);
-	const GSVector4i h = GSVector4i(d * next[i]);
-	const GSVector4i m = GSVector4i(d * prev[i]);
+	const GSColourWalk& w = local.cwalk;
 
-	out[0] = h - l;
-	out[1] = q - h + l;
-	out[2] = q + m - l;
-	out[3] = l - m;
-}
+	if (!w.live)
+	{
+		// Lines, points, sprites and the AA1 edge pass have no walk of their own,
+		// and their dscan is zero anyway.
+		for (int s = 0; s < 8; s++)
+		{
+			local.d[s].rb = VectorI::zero();
+			local.d[s].ga = VectorI::zero();
+			local.d[s].f = VectorI::zero();
+		}
+
+#if _M_SSE >= 0x501
+		local.d8.c.rb = 0;
+		local.d8.c.ga = 0;
+		local.d8.p.f = 0;
+#else
+		local.d4.c = GSVector4i::zero();
+		local.d4.f = GSVector4i::zero();
+
+		for (int s = 0; s < 8; s++)
+		{
+			for (int ph = 0; ph < 2; ph++)
+			{
+				local.dw[s][ph].rb = GSVector4i::zero();
+				local.dw[s][ph].ga = GSVector4i::zero();
+				local.dw[s][ph].f = GSVector4i::zero();
+			}
+		}
 #endif
+
+		return;
+	}
+
+	// ⚠️ Built per ROW, not per primitive, and that is the point.
+	//
+	// The walk is ONE floor at every pixel. Writing the value as its whole terms
+	// plus a fraction -- gc and gyc are multiples of EIGHT units so their terms
+	// are whole, P sits on the 1/8 grid as P_int + p, and dw*j is D_int + h with
+	// h zero or a half -- gives
+	//
+	//     V(x) = [whole terms] + floor(p + h(x))
+	//
+	// and a seed floored once at the span's first pixel carries floor(p + h(left))
+	// everywhere instead. The difference is inert where dw is whole, which is
+	// every eight-wide block, and measurable at four.
+	//
+	// So the jumps below are floored WITH the row's own fraction in them, which
+	// makes the table's offsets the closed form's differences exactly. p is a
+	// property of the row pair, so the table follows the row; the alternative --
+	// a parity table gated by one bit per row -- keeps the per-primitive build but
+	// costs the scanline an extra masked add per vector, and this costs it
+	// nothing.
+	const int yf = w.top_anchor ? (y & ~1) : (y | 1);
+	const GSVector4 rowc = w.c.pa + GSColourWalkTruncUnit(w.c.gy * GSVector4(static_cast<float>(yf) - w.yr));
+	const GSVector4 rowf = w.f.pa + GSColourWalkTruncUnit(w.f.gy * GSVector4(static_cast<float>(yf) - w.yr));
+	const GSVector4 cfrac = rowc - rowc.floor();
+	const GSVector4 ffrac = rowf - rowf.floor();
+
+	const VectorF gcv(w.c.gc);
+	const VectorF dwv(w.c.dw);
+	const VectorF pfv(cfrac);
+
+	const VectorF gcr = gcv.xxxx(), gcg = gcv.yyyy(), gcb = gcv.zzzz(), gca = gcv.wwww();
+	const VectorF dwr = dwv.xxxx(), dwg = dwv.yyyy(), dwb = dwv.zzzz(), dwa = dwv.wwww();
+	const VectorF pfr = pfv.xxxx(), pfg = pfv.yyyy(), pfb = pfv.zzzz(), pfa = pfv.wwww();
+	const VectorF fgc(VectorF(w.f.gc).xxxx());
+	const VectorF fdw(VectorF(w.f.dw).xxxx());
+	const VectorF fpf(VectorF(ffrac).xxxx());
+
+	alignas(32) float kbuf[8];
+	alignas(32) float hibuf[8];
+	alignas(32) float lobuf[8];
+
+	// How many whole blocks pixel p sits from the anchor's grid origin, signed
+	// along the walk -- the same expression the row seed uses for its own jump
+	// term, so that the seed and these tables cannot anchor the truncation on
+	// opposite parities. The shift is a floor for a negative numerator too, which
+	// is what a pixel behind the origin gives.
+	const auto blk = [&w](const GSColourWalkGradient& a, int p) {
+		return w.d * ((w.d * (p - w.S)) >> a.wshift);
+	};
+
+	// One channel's table entry: the ramp, plus the accumulated jump at the far end
+	// minus the accumulated jump at the near end. The two jumps are rounded
+	// SEPARATELY and then subtracted, because floor(dw*b) is what a whole-unit lane
+	// can carry at block b: at W = 4 the jump dw is half a unit, and the successive
+	// differences of floor(dw*b) alternate between floor(dw) and ceil(dw) exactly
+	// as the value does, and any two of them a block apart sum to 2*dw. Rounding
+	// the DIFFERENCE instead would give floor(dw) every time and lose half a unit
+	// per block for the length of the span.
+	//
+	// FLOOR, not the conversion's own truncation toward zero. A block index is
+	// negative for a pixel behind the grid's origin, and toward zero the alternation
+	// breaks exactly at the sign change -- floor(dw*-1) and trunc(dw*-1) differ,
+	// and the walk gains a unit crossing zero.
+	const auto entry = [](const VectorF& gc, const VectorF& dw, const VectorF& kv,
+						   const VectorF& hi, const VectorF& lo, const VectorF& pf) {
+		return VectorI(gc * kv) + (VectorI((dw * hi + pf).floor()) - VectorI((dw * lo + pf).floor()));
+	};
+
+	// The colour lane and the fog lane can be walking different block widths, so
+	// each one's block indices are built from its own.
+	const auto blocks = [&](const GSColourWalkGradient& a, int base, int s, int lanes) {
+		const float sblk = static_cast<float>(blk(a, s));
+		for (int l = 0; l < lanes; l++)
+		{
+			hibuf[l] = static_cast<float>(blk(a, base + l));
+			lobuf[l] = sblk;
+		}
+	};
+	const auto steps = [&](const GSColourWalkGradient& a, int base) {
+		for (int l = 0; l < 4; l++)
+		{
+			hibuf[l] = static_cast<float>(blk(a, base + 4 + l));
+			lobuf[l] = static_cast<float>(blk(a, base + l));
+		}
+	};
+	const auto pack = [&mask16](const VectorI& x, const VectorI& y) {
+		return (x & mask16).pu32().upl16((y & mask16).pu32());
+	};
+
+	// The lane-init tables: lane l of entry s holds the walk's offset from the
+	// span's first pixel to the pixel l lanes into the vector s starts in.
+	for (int s = 0; s < 8; s++)
+	{
+		const int base = s & ~(vlen - 1);
+
+		for (int l = 0; l < vlen; l++)
+			kbuf[l] = static_cast<float>(base + l - s);
+
+		const VectorF kv = VectorF::template load<true>(kbuf);
+
+		blocks(w.c, base, s, vlen);
+		const VectorF hi = VectorF::template load<true>(hibuf);
+		const VectorF lo = VectorF::template load<true>(lobuf);
+
+		local.d[s].rb = pack(entry(gcr, dwr, kv, hi, lo, pfr), entry(gcb, dwb, kv, hi, lo, pfb));
+		local.d[s].ga = pack(entry(gcg, dwg, kv, hi, lo, pfg), entry(gca, dwa, kv, hi, lo, pfa));
+
+		blocks(w.f, base, s, vlen);
+		const VectorF fhi = VectorF::template load<true>(hibuf);
+		const VectorF flo = VectorF::template load<true>(lobuf);
+
+		local.d[s].f = entry(fgc, fdw, kv, fhi, flo, fpf).xxzzlh();
+	}
+
+#if _M_SSE >= 0x501
+	// One vector is eight pixels here, so the per-vector step is the whole 8g --
+	// one block or two, and either way an exact whole number of units.
+	GSVector4i::storel(&local.d8.c, (GSVector4i(w.c.g8) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32());
+	local.d8.p.f = GSVector4i(w.f.g8).extract32<3>();
+#else
+	// 4g, for the four-lane x86 SSE4 path, whose generators still step one vector
+	// without a block. ARM64 and the C++ reference take the alternating pair below.
+	local.d4.c = (GSVector4i(w.c.g * GSVector4::cxpr(4.0f)) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32();
+	local.d4.f = GSVector4i(w.f.g * GSVector4::cxpr(4.0f)).zzzzh().wwww();
+
+	// The per-vector step, per starting position: the step out of the vector s
+	// starts in is off[base+4+l] - off[base+l] lane by lane, and the one after it
+	// is what is left of the eight-pixel step, because eight pixels advance by 8g
+	// however the vectors divide them.
+	//
+	// It has to be computed per s rather than once and chosen by which half of the
+	// eight s falls in. That shortcut is right at W = 8, where the pair is the two
+	// halves of one block, and wrong at W = 4, where the blocks are aligned to the
+	// PHASE and not to the vector: with a phase of 1, x = 2 and x = 4 sit in the
+	// same block and must take the same first step, and picking by s < 4 gives
+	// them opposite ones.
+	//
+	// The partner is derived in WHOLE UNITS, so the pair sums to 8g by
+	// construction and cannot drift however the halves round.
+	const GSVector4i g8c = GSVector4i(w.c.g8);
+	const GSVector4i g8f = GSVector4i(w.f.g8).xxxx();
+
+	for (int s = 0; s < 8; s++)
+	{
+		const int base = s & ~(vlen - 1);
+
+		for (int l = 0; l < 4; l++)
+			kbuf[l] = 4.0f;
+
+		const GSVector4 kv = GSVector4::load<true>(kbuf);
+
+		steps(w.c, base);
+		const GSVector4 hi = GSVector4::load<true>(hibuf);
+		const GSVector4 lo = GSVector4::load<true>(lobuf);
+
+		const GSVector4i sr = entry(gcr, dwr, kv, hi, lo, pfr);
+		const GSVector4i sg = entry(gcg, dwg, kv, hi, lo, pfg);
+		const GSVector4i sb = entry(gcb, dwb, kv, hi, lo, pfb);
+		const GSVector4i sa = entry(gca, dwa, kv, hi, lo, pfa);
+
+		steps(w.f, base);
+		const GSVector4 fhi = GSVector4::load<true>(hibuf);
+		const GSVector4 flo = GSVector4::load<true>(lobuf);
+
+		const GSVector4i sf = entry(fgc, fdw, kv, fhi, flo, fpf);
+
+		local.dw[s][0].rb = pack(sr, sb);
+		local.dw[s][0].ga = pack(sg, sa);
+		local.dw[s][0].f = sf.xxzzlh();
+		local.dw[s][1].rb = pack(g8c.xxxx() - sr, g8c.zzzz() - sb);
+		local.dw[s][1].ga = pack(g8c.yyyy() - sg, g8c.wwww() - sa);
+		local.dw[s][1].f = (g8f - sf).xxzzlh();
+	}
+#endif
+}
 
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
@@ -290,24 +599,18 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	constexpr int vlen = sizeof(VectorF) / sizeof(float);
 
-	// Truncated attributes step one hardware BLOCK at a time, not one host
-	// vector -- see GSBlockWalk.h. Here that only widens the step: the block is
-	// eight pixels wide on every draw, which is two vectors, and the scanline
-	// walks the alternating pair in local.dw.
-	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(vlen);
-
+	// Colour and fog no longer come from here at all: SetupColourWalkTables above
+	// builds their lane tables and their steps from the primitive's own walk, and
+	// the rasterizer calls it right after this. What is left is depth, the
+	// texture coordinate and the flat-colour constants.
 #if _M_SSE >= 0x501
 	auto load_shift = [](int i) { return GSVector8::load<false>(&g_const_256b.m_shift[8 - i]); };
-	const GSVector4 step_shift = GSVector4::broadcast32(&g_const_256b.m_shift[0]);
 	// One vector IS one block here, so the coordinate's step and the block step
 	// are the same number.
-	const GSVector4 coord_step_shift = step_shift;
+	const GSVector4 coord_step_shift = GSVector4::broadcast32(&g_const_256b.m_shift[0]);
 #else
 	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
 	auto load_shift = [](int i) { return shift[1 + i]; };
-	const GSVector4 step_shift = block_split
-		? *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8)
-		: shift[0];
 	// The texture coordinate steps one VECTOR, not one block -- GSBlockWalk.h says
 	// why, and the pin is TheCoordinateStepStaysOneVector. Taking the block step
 	// here would advance the coordinate eight pixels every four and sample the
@@ -315,44 +618,10 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 	const GSVector4 coord_step_shift = shift[0];
 #endif
 
-	GSVector4 tstep = dscan.t * step_shift;
-
 	if (has_z || has_f)
 	{
 		if (sel.prim != GS_SPRITE_CLASS)
 		{
-			if (has_f)
-			{
-#if _M_SSE >= 0x501
-				local.d8.p.f = GSVector4i(tstep).extract32<3>();
-
-				GSVector8 df = GSVector8::broadcast32(&dscan.t.w);
-#else
-				GSVector4 df = dscan.t.wwww();
-
-				local.d4.f = GSVector4i(tstep).zzzzh().wwww();
-#endif
-
-				for (int i = 0; i < vlen; i++)
-				{
-					local.d[i].f = VectorI(df * load_shift(i)).xxzzlh();
-				}
-
-#if _M_SSE < 0x501
-				if (block_split)
-				{
-					for (int i = 0; i < vlen; i++)
-					{
-						GSVector4i st[4];
-						GSBlockWalkSteps(df, i, st);
-
-						for (int p = 0; p < 4; p++)
-							local.dw[(p & 2) * 2 + i][p & 1].f = st[p].xxzzlh();
-					}
-				}
-#endif
-			}
-
 			if (has_z && !sel.zequal)
 			{
 				const VectorF dzf(static_cast<float>(dscan.p.F64[1]));
@@ -408,63 +677,111 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 		// Where the lag comes from in the hardware's walk is unfitted; one unit of
 		// our own 16.16 coordinate is the smallest bias that reproduces every
 		// reading, and it can only move a pixel that lands exactly on a boundary.
-		if (sel.prim != GS_SPRITE_CLASS)
-		{
-			local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
-			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
-		}
+		//
+		// ⚠️ The axis has to be tested on the step the walk actually takes, not on
+		// the exact plane's. On the affine route that step is floored onto the
+		// accumulator's grid, so a gradient below one grid unit per pixel walks
+		// NOWHERE -- and a still coordinate does not trail, by this rule's own
+		// evidence. Reading the sign off the plane instead moves a still
+		// coordinate a sixteenth backwards.
 
 		// The colour and fog steps above take the block; this one does not. The
 		// coordinate keeps a per-vector step whatever the block width is, which is
 		// the same footing depth is on a few lines up.
-		const GSVector4 coord_tstep = dscan.t * coord_step_shift;
+		// Twice the triangle's area, in 12.4 squared: a power of two means the
+		// setup's divide by it is exact, and such a triangle trails on no axis.
+		// Lines and points have no area to ask about and keep the lag they always
+		// had -- nothing measured draws one.
+		const bool inverts_exactly = sel.prim == GS_TRIANGLE_CLASS
+		    && GSSetupInvertsExactly(GSTriangleTwiceArea(
+		           vertex[index[0]].p, vertex[index[1]].p, vertex[index[2]].p));
 
-		if (sel.fst)
+		if (sel.uvwalk)
 		{
-			// Truncating the step and accumulating it is the hardware's own shape,
-			// not an approximation of an exact plane. On a gradient that is a power
-			// of two per pixel the truncation is identity and this walk is exact,
-			// which is every sprite gradient in every capture we own; what silicon
-			// does on a sprite at a NON-binary gradient has never been measured.
-			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(coord_tstep));
-		}
-		else
-		{
-			LOCAL_STEP.stq = coord_tstep;
-		}
+			// The console's texel accumulator is seed + n * floor(step) on a 12.15
+			// grid -- GSCoordinateWalk.h -- so the per-pixel step is floored ONCE
+			// and every lane and vector offset is a multiple of it. Truncating the
+			// product instead (floor(n * step)) is a different sequence and is
+			// what our arm did, and it is the one that disagrees with the console.
+			const s32 du = GSAffineCoordinateOnGrid(dscan.t.x);
+			const s32 dv = GSAffineCoordinateOnGrid(dscan.t.y);
 
-		VectorF dt(dscan.t);
-
-		for (int j = 0, k = sel.fst ? 2 : 3; j < k; j++)
-		{
-			VectorF dstq;
-
-			switch (j)
+			if (sel.prim != GS_SPRITE_CLASS)
 			{
-				case 0: dstq = dt.xxxx(); break;
-				case 1: dstq = dt.yyyy(); break;
-				case 2: dstq = dt.zzzz(); break;
+				local.tclag.u = VectorI(GSCoordinateStepTrails(du, inverts_exactly) ? 1 : 0);
+				local.tclag.v = VectorI(GSCoordinateStepTrails(dv, inverts_exactly) ? 1 : 0);
 			}
+
+			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(du * vlen, dv * vlen, 0, 0));
 
 			for (int i = 0; i < vlen; i++)
 			{
-				VectorF v = dstq * load_shift(i);
+				alignas(sizeof(VectorI)) s32 lu[vlen], lv[vlen];
 
-				if (sel.fst)
+				for (int l = 0; l < vlen; l++)
 				{
-					switch (j)
-					{
-						case 0: local.d[i].s = VectorF::cast(VectorI(v)); break;
-						case 1: local.d[i].t = VectorF::cast(VectorI(v)); break;
-					}
+					// Lane l covers the pixel l - i away from the span's anchor,
+					// the same offsets g_const's m_shift / m_lane tables carry.
+					lu[l] = du * (l - i);
+					lv[l] = dv * (l - i);
 				}
-				else
+
+				local.d[i].s = VectorF::cast(VectorI::template load<true>(lu));
+				local.d[i].t = VectorF::cast(VectorI::template load<true>(lv));
+			}
+		}
+		else
+		{
+			if (sel.prim != GS_SPRITE_CLASS)
+			{
+				// A constant-Q triangle's own ST plane and a live divide take the
+				// same rule: a live divide at a power-of-two area does not trail
+				// either, so the exemption is the setup's and not the road's.
+				local.tclag.u = VectorI(GSCoordinateStepTrails(dscan.t.x > 0.0f ? 1 : 0, inverts_exactly) ? 1 : 0);
+				local.tclag.v = VectorI(GSCoordinateStepTrails(dscan.t.y > 0.0f ? 1 : 0, inverts_exactly) ? 1 : 0);
+			}
+
+			const GSVector4 coord_tstep = dscan.t * coord_step_shift;
+
+			// A constant-Q TRIANGLE's ST plane arrives here as a 16.16 integer
+			// too, and the scanline reads it the same way -- but it does not take
+			// the accumulator's grid. That was measured both ways: flooring such a
+			// plane's step onto the grid loses words that were exact without it.
+			LOCAL_STEP.stq = sel.fst ? GSVector4::cast(GSVector4i(coord_tstep)) : coord_tstep;
+
+			const VectorF dt(dscan.t);
+
+			for (int j = 0, k = sel.fst ? 2 : 3; j < k; j++)
+			{
+				VectorF dstq;
+
+				switch (j)
 				{
-					switch (j)
+					case 0: dstq = dt.xxxx(); break;
+					case 1: dstq = dt.yyyy(); break;
+					case 2: dstq = dt.zzzz(); break;
+				}
+
+				for (int i = 0; i < vlen; i++)
+				{
+					const VectorF v = dstq * load_shift(i);
+
+					if (sel.fst)
 					{
-						case 0: local.d[i].s = v; break;
-						case 1: local.d[i].t = v; break;
-						case 2: local.d[i].q = v; break;
+						switch (j)
+						{
+							case 0: local.d[i].s = VectorF::cast(VectorI(v)); break;
+							case 1: local.d[i].t = VectorF::cast(VectorI(v)); break;
+						}
+					}
+					else
+					{
+						switch (j)
+						{
+							case 0: local.d[i].s = v; break;
+							case 1: local.d[i].t = v; break;
+							case 2: local.d[i].q = v; break;
+						}
 					}
 				}
 			}
@@ -473,68 +790,7 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	if (has_c)
 	{
-		if (sel.iip)
-		{
-			constexpr VectorI mask16 = VectorI::cxpr(0xFFFF);
-#if _M_SSE >= 0x501
-			GSVector4i::storel(&local.d8.c, (GSVector4i(dscan.c * step_shift) & GSVector4i::cast(mask16)).xzyw().pu32());
-#else
-			local.d4.c = (GSVector4i(dscan.c * step_shift) & mask16).xzyw().pu32();
-#endif
-			VectorF dc(dscan.c);
-
-			VectorF dr = dc.xxxx();
-			VectorF db = dc.zzzz();
-
-			// The pack has to be the unsigned-saturating one, as it is in both
-			// generators and in the step above. The mask has already put every lane
-			// in 0..65535, so an unsigned pack is the identity and a descending
-			// gradient keeps its negative offset; the signed pack saturates
-			// everything from 32768 up to 32767, which turns every lane of a
-			// descending gradient into garbage the whole scanline carries.
-			for (int i = 0; i < vlen; i++)
-			{
-				VectorI r = (VectorI(dr * load_shift(i)) & mask16).pu32();
-				VectorI b = (VectorI(db * load_shift(i)) & mask16).pu32();
-
-				local.d[i].rb = r.upl16(b);
-			}
-
-			VectorF dg = dc.yyyy();
-			VectorF da = dc.wwww();
-
-			for (int i = 0; i < vlen; i++)
-			{
-				VectorI g = (VectorI(dg * load_shift(i)) & mask16).pu32();
-				VectorI a = (VectorI(da * load_shift(i)) & mask16).pu32();
-
-				local.d[i].ga = g.upl16(a);
-			}
-
-#if _M_SSE < 0x501
-			if (block_split)
-			{
-				for (int i = 0; i < vlen; i++)
-				{
-					GSVector4i sr[4], sb[4], sg[4], sa[4];
-
-					GSBlockWalkSteps(dr, i, sr);
-					GSBlockWalkSteps(db, i, sb);
-					GSBlockWalkSteps(dg, i, sg);
-					GSBlockWalkSteps(da, i, sa);
-
-					for (int p = 0; p < 4; p++)
-					{
-						GSScanlineLocalData::blockstep& w = local.dw[(p & 2) * 2 + i][p & 1];
-
-						w.rb = (sr[p] & mask16).pu32().upl16((sb[p] & mask16).pu32());
-						w.ga = (sg[p] & mask16).pu32().upl16((sa[p] & mask16).pu32());
-					}
-				}
-			}
-#endif
-		}
-		else
+		if (!sel.iip)
 		{
 			int last = 0;
 
@@ -692,12 +948,16 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 	int skip, steps;
 
+	// Where this span starts inside its eight-pixel BLOCK -- not inside its
+	// vector -- is what indexes the colour and fog lane tables, and on a
+	// four-lane host it also decides which of the two alternating steps the walk
+	// begins on. Read off the true left edge, before the vector alignment rounds
+	// it down. See GSColourWalk.h.
+	const int cskip = left & 7;
+
 #if _M_SSE < 0x501
-	// Where this span starts inside its eight-pixel block decides which of the
-	// two alternating steps it begins on, so it has to be read off the true left
-	// edge before the vector alignment rounds it down.
 	const bool block_split = GSBlockWalkIsSplit(vlen);
-	const GSScanlineLocalData::blockstep* const dw = local.dw[left & 7];
+	const GSScanlineLocalData::blockstep* const dw = local.dw[cskip];
 	int dwphase = 0;
 #endif
 
@@ -728,9 +988,9 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 		if (sel.fwrite && sel.fge)
 		{
 #if _M_SSE >= 0x501
-			f = GSVector8i::broadcast16(GSVector4i(scan.t).srl<12>()).add16(local.d[skip].f);
+			f = GSVector8i::broadcast16(GSVector4i(scan.t).srl<12>()).add16(local.d[cskip].f);
 #else
-			f = GSVector4i(scan.t).zzzzh().zzzz().add16(local.d[skip].f);
+			f = GSVector4i(scan.t).zzzzh().zzzz().add16(local.d[cskip].f);
 #endif
 		}
 
@@ -765,7 +1025,12 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 		{
 			if (sel.fst)
 			{
-				VectorI vt = VectorI::broadcast128(GSVector4i(scan.t));
+				// A span that walks the accumulator seeds on its grid, floored
+				// below the exact plane (GSCoordinateWalk.h); a triangle's own ST
+				// plane keeps the conversion it always had.
+				VectorI vt = VectorI::broadcast128(sel.uvwalk
+						? (GSVector4i(scan.t.floor()) & GSVector4i(GS_UV_GRID_MASK))
+						: GSVector4i(scan.t));
 
 				VectorI u = vt.xxxx() + VectorI::cast(local.d[skip].s);
 				VectorI v = vt.yyyy();
@@ -776,7 +1041,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else if (sel.ltf)
 				{
-					vf = v.xxzzlh().srl16<12>();
+					vf = GSSaturateCoordinate(GSTruncateCoordinate(v)).xxzzlh().srl16<12>();
 				}
 
 				s = VectorF::cast(u);
@@ -805,11 +1070,11 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				c = c.upl16(c.zwxy());
 
 #if _M_SSE >= 0x501
-				rbf = GSVector8i::broadcast32(&c.x).add16(local.d[skip].rb);
-				gaf = GSVector8i::broadcast32(&c.z).add16(local.d[skip].ga);
+				rbf = GSVector8i::broadcast32(&c.x).add16(local.d[cskip].rb);
+				gaf = GSVector8i::broadcast32(&c.z).add16(local.d[cskip].ga);
 #else
-				rbf = c.xxxx().add16(local.d[skip].rb);
-				gaf = c.zzzz().add16(local.d[skip].ga);
+				rbf = c.xxxx().add16(local.d[cskip].rb);
+				gaf = c.zzzz().add16(local.d[cskip].ga);
 #endif
 			}
 			else
@@ -944,9 +1209,24 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					if (!sel.lcm)
 					{
-						VectorF tmp = q.log2(3) * global.l + global.k; // (-log2(Q) * (1 << L) + K) * 0x10000
+						// The console's logarithm is a 128-entry table read on Q's
+						// own mantissa, not a curve -- GSLevelOfDetail.h carries the
+						// measurement, the four tables and the one entry that steps
+						// backwards on hardware. The level comes out in SIXTEENTHS of a level,
+						// so it shifts up by twelve to reach the 16.16 the rest of
+						// this path already speaks: the round-off `+ 0x8000` below
+						// is then exactly the console's `(LOD16 + 8) >> 4`, ties up,
+						// and the trilinear weight the sampler takes from the top
+						// four bits of the fraction is exactly `LOD16 & 15`.
+						VectorI lod;
 
-						VectorI lod = VectorI(tmp.sat(VectorF::zero(), global.mxl), false);
+						for (int i = 0; i < vlen; i++)
+						{
+							const s32 lod16 = GSLevelOfDetail16(q.F32[i], global.lodtab,
+								global.lodk, global.lodshift);
+
+							lod.I32[i] = std::min(std::max(lod16 << 12, 0), global.lodmxl);
+						}
 
 						if (sel.mmin == 1) // round-off mode
 						{
@@ -1030,11 +1310,20 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						maxuv = local.temp.uv_minmax[1];
 					}
 
+					u = GSTruncateCoordinate(u);
+					v = GSTruncateCoordinate(v);
+
 					if (sel.ltf)
 					{
 						u -= 0x8000;
 						v -= 0x8000;
+					}
 
+					u = GSSaturateCoordinate(u);
+					v = GSSaturateCoordinate(v);
+
+					if (sel.ltf)
+					{
 						uf = u.xxzzlh().srl16<12>();
 						vf = v.xxzzlh().srl16<12>();
 					}
@@ -1151,11 +1440,20 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						minuv = minuv.srl16<1>();
 						maxuv = maxuv.srl16<1>();
 
+						u = GSTruncateCoordinate(u);
+						v = GSTruncateCoordinate(v);
+
 						if (sel.ltf)
 						{
 							u -= 0x8000;
 							v -= 0x8000;
+						}
 
+						u = GSSaturateCoordinate(u);
+						v = GSSaturateCoordinate(v);
+
+						if (sel.ltf)
+						{
 							uf = u.xxzzlh().srl16<12>();
 							vf = v.xxzzlh().srl16<12>();
 						}
@@ -1299,25 +1597,6 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 						u = VectorI(s * r);
 						v = VectorI(t * r);
-
-						if (sel.ltf)
-						{
-							// The two filters do not sample the same point: nearest reads
-							// at the coordinate, linear straddles the pair half a texel
-							// back. So the bias is taken only where linear wins.
-							if (sel.ltfx)
-							{
-								const VectorI half = VectorI(0x8000) & lin;
-
-								u -= half;
-								v -= half;
-							}
-							else
-							{
-								u -= 0x8000;
-								v -= 0x8000;
-							}
-						}
 					}
 					else
 					{
@@ -1327,12 +1606,43 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					// The DDA's lag. Zero on any axis that is not walking forward,
 					// so this only moves a coordinate that lands exactly on a
-					// sixteenth.
+					// sixteenth. It is the console's own walk trailing the plane, so
+					// it is part of the coordinate the truncation below acts on.
 					if (sel.prim != GS_SPRITE_CLASS)
 					{
 						u -= local.tclag.u;
 						v -= local.tclag.v;
 					}
+
+					u = GSTruncateCoordinate(u);
+					v = GSTruncateCoordinate(v);
+
+					if (!sel.fst && sel.ltf)
+					{
+						// The two filters do not sample the same point: nearest reads
+						// at the coordinate, linear straddles the pair half a texel
+						// back. So the bias is taken only where linear wins.
+						//
+						// It is exactly eight sixteenths, so it moves the texel index
+						// and never the weight, and it is our own step onto the tap
+						// pair rather than part of the console's coordinate -- which
+						// is why it comes after the truncation and not before it.
+						if (sel.ltfx)
+						{
+							const VectorI half = VectorI(0x8000) & lin;
+
+							u -= half;
+							v -= half;
+						}
+						else
+						{
+							u -= 0x8000;
+							v -= 0x8000;
+						}
+					}
+
+					u = GSSaturateCoordinate(u);
+					v = GSSaturateCoordinate(v);
 
 					if (sel.ltf)
 					{
@@ -1458,21 +1768,21 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 					case TFX_MODULATE:
 						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).clamp8();
 						if (!sel.tcc)
-							ga = ga.mix16(gaf.srl16<7>());
+							ga = ga.mix16(GSWalkColorByte(gaf));
 						break;
 					case TFX_DECAL:
 						if (!sel.tcc)
-							ga = ga.mix16(gaf.srl16<7>());
+							ga = ga.mix16(GSWalkColorByte(gaf));
 						break;
 					case TFX_HIGHLIGHT:
-						ga = ga.mix16(!sel.tcc ? gaf.srl16<7>() : ga.addus8(gaf.srl16<7>()));
+						ga = ga.mix16(!sel.tcc ? GSWalkColorByte(gaf) : ga.addus8(GSWalkColorByte(gaf)));
 						break;
 					case TFX_HIGHLIGHT2:
 						if (!sel.tcc)
-							ga = ga.mix16(gaf.srl16<7>());
+							ga = ga.mix16(GSWalkColorByte(gaf));
 						break;
 					case TFX_NONE:
-						ga = sel.iip ? gaf.srl16<7>() : gaf;
+						ga = sel.iip ? GSWalkColorByte(gaf) : gaf;
 						break;
 				}
 
@@ -1525,18 +1835,38 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						break;
 					case TFX_HIGHLIGHT:
 					case TFX_HIGHLIGHT2:
-						af = gaf.yywwlh().srl16<7>();
+						af = GSWalkColorByte(gaf.yywwlh());
 						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).add16(af).clamp8();
 						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).add16(af).clamp8().mix16(ga);
 						break;
 					case TFX_NONE:
-						rb = sel.iip ? rbf.srl16<7>() : rbf;
+						rb = sel.iip ? GSWalkColorByte(rbf) : rbf;
 						break;
 				}
 			}
 
 			// Fog
-
+			//
+			//     stored = Cf + floor((Cv - Cf) * F / 256)
+			//
+			// which is (F*Cv + (256 - F)*Cf) >> 8 -- the fog colour's weight is
+			// 256 - F, NOT 255 - F, and the multiply floors. Measured on real
+			// hardware over a flat ladder of every F value in four channels; the
+			// documented 255 - F rule misses almost every fill. The two agree
+			// exactly wherever the fog colour is zero, which is why it went unseen
+			// for so long: separating them needs a non-zero, per-channel FOGCOL.
+			//
+			// lerp16<0> is already that rule: modulate16<0> is (a << 1) * f taken
+			// from the high half of the signed 32-bit product, an arithmetic shift
+			// and so a floor, and adding it to Cf makes the 256 - F weight. What
+			// this needed was the OTHER half of the same measurement.
+			//
+			// THE BLEND RECEIVES AN INTEGER F. The fog lane walks in the colour
+			// unit, 1/128 of a level, so the value carries a fraction; silicon
+			// truncates it to eight bits before the multiply. The truncating form
+			// is exact on every fog reading we hold and the fractional one is
+			// nowhere near, so this is not a tie -- the low seven bits have to go
+			// before the multiply, not after.
 			if (sel.fwrite && sel.fge)
 			{
 #if _M_SSE >= 0x501
@@ -1550,6 +1880,13 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				GSVector4i frb = global.frb;
 				GSVector4i fga = global.fga;
 #endif
+
+				// floor(F), put back on the walk's own scale so that modulate16's
+				// >> 15 lands on the >> 8 the rule asks for -- and through the same
+				// pack the colour lanes go through, so a fog value the walk has
+				// carried below zero saturates to 0 rather than reading back as a
+				// large positive. Fog rides the colour DDA; it saturates like one.
+				fog = GSStoredVertexColor(fog);
 
 				rb = frb.lerp16<0>(rb, fog);
 				ga = fga.lerp16<0>(ga, fog).mix16(ga);

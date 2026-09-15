@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GSRendererHW.h"
+#include "GS/Renderers/SW/GSLevelOfDetail.h"
 
 #include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
@@ -275,11 +276,6 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 					gd.sel.mmin = 1; // tri-linear is meaningless
 				}
 
-				if (gd.sel.mmin == 2)
-				{
-					mxl--; // don't sample beyond the last level (TODO: add a dummy level instead?)
-				}
-
 				if (gd.sel.fst)
 				{
 					pxAssert(gd.sel.lcm == 1);
@@ -307,12 +303,24 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 					gd.mxl = GSVector4((float)mxl);
 					gd.l = GSVector4((float)(-(0x10000 << context->TEX1.L)));
 					gd.k = GSVector4((float)k);
+
+					// The level of detail is a table read on Q's mantissa; see
+					// GSLevelOfDetail.h. This path builds the same global data the
+					// software renderer does and runs the same scanline, so it sets
+					// the same four fields -- a scanline reading an unset `lodtab`
+					// would be following a wild pointer per pixel.
+					gd.lodtab = GSLevelOfDetailTable[context->TEX1.L];
+					gd.lodk = context->TEX1.K;
+					gd.lodshift = 4 + context->TEX1.L;
+					gd.lodmxl = mxl;
 				}
 
 				GIFRegCLAMP MIP_CLAMP = context->CLAMP;
 
 				GSVector4 tmin = vt.m_min.t;
 				GSVector4 tmax = vt.m_max.t;
+
+				size_t levels = 1;
 
 				for (int i = 1, j = std::min<int>((int)context->TEX1.MXL, 6); i <= j; i++)
 				{
@@ -334,7 +342,12 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 					GSVector4i r = hw.GetTextureMinMax(MIP_TEX0, MIP_CLAMP, gd.sel.ltf, true).coverage;
 					sw.texture[i]->Update(r);
 					gd.tex[i] = sw.texture[i]->m_buff;
+					levels = i + 1;
 				}
+
+				// The dummy level the trilinear ceiling reads; see the software
+				// renderer's UpdateSource and GSScanlineEnvironment.h.
+				gd.tex[levels] = gd.tex[levels - 1];
 
 				vt.m_min.t = tmin;
 				vt.m_max.t = tmax;
