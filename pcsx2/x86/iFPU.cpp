@@ -133,7 +133,7 @@ void recCTC1()
 
 	if (GPR_IS_CONST1(_Rt_))
 	{
-		xMOV(ptr32[&fpuRegs.fprc[_Fs_]], g_cpuConstRegs[_Rt_].UL[0]);
+		xMOV(ptr32[&fpuRegs.fprc[_Fs_]], g_cpuConstRegs[_Rt_].UD[0]);
 	}
 	else
 	{
@@ -151,7 +151,7 @@ void recCTC1()
 		{
 			_deleteGPRtoXMMreg(_Rt_, 1);
 
-			xMOV(eax, ptr[&cpuRegs.GPR.r[_Rt_].UL[0]]);
+			xMOV(eax, ptr[&cpuRegs.GPR.r[_Rt_].UD[0]]);
 			xMOV(ptr[&fpuRegs.fprc[_Fs_]], eax);
 		}
 	}
@@ -201,7 +201,7 @@ void recMFC1()
 	else
 	{
 		// mem -> gpr
-		xMOVSX(xRegister64(regt), ptr32[&fpuRegs.fpr[_Fs_].UL]);
+		xMOVSX(xRegister64(regt), ptr32[&fpuRegs.fpr[_Fs_].UD]);
 	}
 }
 
@@ -220,7 +220,7 @@ void recMTC1()
 		if (xmmreg >= 0)
 		{
 			// common case: mtc1 zero, fnn
-			if (g_cpuConstRegs[_Rt_].UL[0] == 0)
+			if (g_cpuConstRegs[_Rt_].UD[0] == 0)
 			{
 				xPXOR(xRegisterSSE(xmmreg), xRegisterSSE(xmmreg));
 			}
@@ -234,7 +234,7 @@ void recMTC1()
 		else
 		{
 			pxAssert(!_hasXMMreg(XMMTYPE_FPREG, _Fs_));
-			xMOV(ptr32[&fpuRegs.fpr[_Fs_].UL], g_cpuConstRegs[_Rt_].UL[0]);
+			xMOV(ptr32[&fpuRegs.fpr[_Fs_].UD], g_cpuConstRegs[_Rt_].UD[0]);
 		}
 	}
 	else
@@ -254,7 +254,7 @@ void recMTC1()
 				if (xmmreg2 >= 0)
 					xMOVSS(xRegisterSSE(xmmreg2), xRegisterSSE(xmmgpr));
 				else
-					xMOVSS(ptr[&fpuRegs.fpr[_Fs_].UL], xRegisterSSE(xmmgpr));
+					xMOVSS(ptr[&fpuRegs.fpr[_Fs_].UD], xRegisterSSE(xmmgpr));
 			}
 		}
 		else
@@ -269,7 +269,7 @@ void recMTC1()
 			}
 			else
 			{
-				xMOV(ptr32[&fpuRegs.fpr[_Fs_].UL], xRegister32(regt));
+				xMOV(ptr32[&fpuRegs.fpr[_Fs_].UD], xRegister32(regt));
 			}
 		}
 	}

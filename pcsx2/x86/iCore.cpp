@@ -254,7 +254,7 @@ int _allocFPtoXMMreg(int fpreg, int mode)
 
 		if (!(xmmregs[i].mode & MODE_READ) && (mode & MODE_READ))
 		{
-			xMOVSSZX(xRegisterSSE(i), ptr[&fpuRegs.fpr[fpreg].f]);
+			xMOVSSZX(xRegisterSSE(i), ptr[&fpuRegs.fpr[fpreg].d]);
 			xmmregs[i].mode |= MODE_READ;
 		}
 
@@ -276,7 +276,7 @@ int _allocFPtoXMMreg(int fpreg, int mode)
 	xmmregs[xmmreg].counter = g_xmmAllocCounter++;
 
 	if (mode & MODE_READ)
-		xMOVSSZX(xRegisterSSE(xmmreg), ptr[&fpuRegs.fpr[fpreg].f]);
+		xMOVSSZX(xRegisterSSE(xmmreg), ptr[&fpuRegs.fpr[fpreg].d]);
 
 	return xmmreg;
 }
@@ -412,7 +412,7 @@ int _allocFPACCtoXMMreg(int mode)
 
 		if (!(xmmregs[i].mode & MODE_READ) && (mode & MODE_READ))
 		{
-			xMOVSSZX(xRegisterSSE(i), ptr[&fpuRegs.ACC.f]);
+			xMOVSSZX(xRegisterSSE(i), ptr[&fpuRegs.ACC.d]);
 			xmmregs[i].mode |= MODE_READ;
 		}
 
@@ -435,7 +435,7 @@ int _allocFPACCtoXMMreg(int mode)
 
 	if (mode & MODE_READ)
 	{
-		xMOVSSZX(xRegisterSSE(xmmreg), ptr[&fpuRegs.ACC.f]);
+		xMOVSSZX(xRegisterSSE(xmmreg), ptr[&fpuRegs.ACC.d]);
 	}
 
 	return xmmreg;
@@ -708,7 +708,7 @@ void _deleteFPtoXMMreg(int reg, int flush)
 				case DELETE_REG_FLUSH:
 					if (xmmregs[i].mode & MODE_WRITE)
 					{
-						xMOVSS(ptr[&fpuRegs.fpr[reg].UL], xRegisterSSE(i));
+						xMOVSS(ptr[&fpuRegs.fpr[reg].UD], xRegisterSSE(i));
 						// get rid of MODE_WRITE since don't want to flush again
 						xmmregs[i].mode &= ~MODE_WRITE;
 						xmmregs[i].mode |= MODE_READ;
@@ -748,7 +748,7 @@ void _writebackXMMreg(int xmmreg)
 			break;
 
 		case XMMTYPE_FPACC:
-			xMOVSS(ptr[&fpuRegs.ACC.f], xRegisterSSE(xmmreg));
+			xMOVSS(ptr[&fpuRegs.ACC.d], xRegisterSSE(xmmreg));
 			break;
 
 		default:
