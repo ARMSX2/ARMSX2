@@ -147,9 +147,9 @@ struct GraphicsSettingsView: View {
                 Button(role: .destructive) {
                     showShaderCacheClearConfirm = true
                 } label: {
-                    Label(settings.localized("Clear Shader Cache"), systemImage: "square.slash")
+                    Label(settings.localized("Clear Emulator Cache"), systemImage: "square.slash")
                 }
-                Text(settings.localized("Removes cached GS/Metal shader and pipeline artifacts so they rebuild from scratch. Use this if visuals glitch after a settings change. Effects apply on the next frame or restart."))
+                Text(settings.localized("Deletes downloaded achievement images and other files the emulator can rebuild."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -201,6 +201,11 @@ struct GraphicsSettingsView: View {
 
                 Toggle("FXAA", isOn: $settings.fxaa)
                 Text(settings.localized("Fast anti-aliasing. Smooths edges but may blur textures slightly."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                intPicker("TV/CRT Shader", selection: $settings.tvShader, shared: SettingsOptions.tvShader)
+                Text(settings.localized("Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -410,7 +415,6 @@ struct GraphicsSettingsView: View {
                 hackNote("UserHacks_CPUSpriteRenderLevel", shown: settings.cpuSpriteRenderLevel)
                 intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, shared: SettingsOptions.maxAnisotropy)
                 intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, shared: SettingsOptions.hardwareDownloadMode)
-                intPicker("TV/CRT Shader", selection: $settings.tvShader, shared: SettingsOptions.tvShader)
 
                 ForEach(SettingsStore.gsBoolHackOptions) { option in
                     Toggle(settings.localized(option.label), isOn: Binding(
@@ -498,7 +502,7 @@ struct GraphicsSettingsView: View {
             settings.refreshGraphicsHackStatus()
         }
         .confirmationDialog(
-            settings.localized("Clear Shader Cache?"),
+            settings.localized("Clear Emulator Cache?"),
             isPresented: $showShaderCacheClearConfirm,
             titleVisibility: .visible
         ) {
@@ -507,26 +511,23 @@ struct GraphicsSettingsView: View {
             }
             Button(settings.localized("Cancel"), role: .cancel) {}
         } message: {
-            Text(settings.localized("This removes cached shader and GS artifacts. The renderer may briefly stutter as they rebuild."))
+            Text(settings.localized("Achievement images download again the next time they are shown."))
         }
-        .alert(settings.localized("Shader Cache"), isPresented: $showShaderCacheResult) {
+        .alert(settings.localized("Emulator Cache"), isPresented: $showShaderCacheResult) {
             Button(settings.localized("OK")) {}
         } message: {
             Text(settings.localized(shaderCacheResult ?? ""))
         }
     }
 
-    /// Clears the GS/Metal shader and pipeline cache. The Metal renderer builds
-    /// shaders in memory from the compiled metallib, so there is no dedicated
-    /// on-disk shader directory; the GS-generated cache under the app's cache
-    /// directory holds the rebuildable artifacts this targets.
+    /// Empties Documents/cache: achievement images, plus the VU program cache when that is turned on.
     private func clearShaderCache() {
         let docsPath = ARMSX2Bridge.documentsDirectory()
         let cacheURL = URL(fileURLWithPath: (docsPath as NSString).appendingPathComponent("cache"), isDirectory: true)
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: cacheURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            shaderCacheResult = "Shader cache is already empty."
+            shaderCacheResult = "The emulator cache is already empty."
             showShaderCacheResult = true
             return
         }
@@ -534,9 +535,9 @@ struct GraphicsSettingsView: View {
             for child in try fileManager.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil) {
                 try? fileManager.removeItem(at: child)
             }
-            shaderCacheResult = "Shader cache cleared."
+            shaderCacheResult = "Emulator cache cleared."
         } catch {
-            shaderCacheResult = "Could not fully clear the cache: \(error.localizedDescription)"
+            shaderCacheResult = "The emulator cache couldn't be read, so nothing was deleted."
         }
         showShaderCacheResult = true
     }

@@ -28,8 +28,8 @@ enum SettingsOptions {
     ]
 
     static let tvShader: [(id: Int, title: String)] = [
-        (0, "Off"), (1, "Scanline"), (2, "Diagonal"), (3, "Tri"),
-        (4, "Wave"), (5, "Lottes"), (6, "4xRGSS"), (7, "NxAGSS")
+        (0, "Off"), (1, "Scanline Filter"), (2, "Diagonal Filter"), (3, "Triangular Filter"),
+        (4, "Wave Filter"), (5, "Lottes CRT"), (6, "4xRGSS"), (7, "NxAGSS")
     ]
 
     // Catalyst does not ship these, and both screens have to hide them together or the per-game
