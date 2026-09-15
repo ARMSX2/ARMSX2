@@ -3027,7 +3027,11 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		if (!tex)
 			return nullptr;
 
-		if (rescaler.m_scale == 1.0f && type == RenderTarget)
+		// Can't box filter a fractional scale: the shader steps the source by an integer number of
+		// texels per output pixel, so a truncated factor reads the wrong texel and, below 1x,
+		// truncates to a zero-wide box. Stretch those, the same way the draw's downscale-source
+		// copy does.
+		if (rescaler.m_scale == 1.0f && type == RenderTarget && std::floor(dst->GetScale()) == dst->GetScale())
 		{
 			// When using native HPO, the top-left column/row of pixels are often not drawn. Clamp these away to avoid sampling black,
 			// causing bleeding into the edges of the downsampled texture.
@@ -6721,10 +6725,13 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 
 						const GSVector4 dRect = GSVector4(GSVector4i::loadh(dst->m_unscaled_size));
 
-						if (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off)
+						// Same rule as the other two downsample sites: the box filter only has a whole
+						// number of source texels per output pixel at an integer scale, so a fractional
+						// one goes through the stretch below instead.
+						if (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off && std::floor(dst->GetScale()) == dst->GetScale())
 						{
 							const u32 downsample_factor = static_cast<u32>(dst->GetScale());
-							
+
 							g_gs_device->FilteredDownsampleTexture(dst->m_texture, tmpTex, downsample_factor, GSVector2i(0, 0), dRect);
 						}
 						else
