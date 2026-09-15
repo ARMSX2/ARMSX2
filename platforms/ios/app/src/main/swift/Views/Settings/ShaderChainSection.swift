@@ -67,7 +67,7 @@ struct ShaderChainSection: View {
             // Outside the gate on purpose: with the chain off there is nothing to pick yet,
             // and a first run would otherwise have to guess that the toggle comes first.
             NavigationLink {
-                ShaderCatalogBrowserView(localized: localized)
+                ShaderCatalogBrowserView(localized: localized, onSelect: select)
             } label: {
                 Label(localized("Download Shaders"), systemImage: "arrow.down.circle")
             }
@@ -211,6 +211,11 @@ struct ShaderChainSection: View {
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func select(_ token: String) {
+        enabled = true
+        presetRef = token
     }
 
     private var presetName: String {
