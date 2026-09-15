@@ -44,9 +44,10 @@
 // VKEntryPoints.inl loses PFN_vkCreateMetalSurfaceEXT / the Xlib and Wayland
 // entry points with it. VKLoader.h is the header that sets all five platform
 // macros (and cleans up the Xlib ones afterwards), so it has to come first.
+#ifdef ENABLE_VULKAN
 #include "pcsx2/GS/Renderers/Vulkan/VKLoader.h"
-
 #include "libretro_vulkan.h"
+#endif
 
 #include "fmt/format.h"
 
@@ -68,8 +69,10 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/GS.h"
+#ifdef ENABLE_VULKAN
 #include "pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "pcsx2/GS/Renderers/Vulkan/VKLibretro.h"
+#endif
 #ifdef ENABLE_OPENGL
 #include "pcsx2/GS/Renderers/OpenGL/GLContextLibretro.h"
 #endif
@@ -1332,7 +1335,7 @@ static void ApplyCoreOptions(bool startup)
 // the VKLibretro wraps, which capture the resulting VkDevice for the context
 // reply below.
 //////////////////////////////////////////////////////////////////////////
-
+#ifdef ENABLE_VULKAN
 static const VkApplicationInfo* GetVulkanApplicationInfo(void)
 {
 	static VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1381,6 +1384,7 @@ static bool CreateVulkanDevice(retro_vulkan_context* context, VkInstance instanc
 	context->presentation_queue_family_index = context->queue_family_index;
 	return true;
 }
+#endif
 
 // The GL half of the same story. The frontend owns the context; the core only
 // needs its two callbacks - one to resolve entry points, one to ask which FBO
@@ -1440,16 +1444,22 @@ static void OnContextReset(void)
 		log_cb(RETRO_LOG_ERROR, "Failed to get Vulkan HW render interface.\n");
 		return;
 	}
+#ifdef ENABLE_VULKAN
 	VKLibretro::SetHWRenderInterface(iface);
 	VKLibretro::SetPacing(true);
+#endif
 	LibretroCore::s_context_ready.store(true, std::memory_order_release);
 }
 
 static void OnContextDestroy(void)
 {
+#ifdef ENABLE_VULKAN
 	VKLibretro::AbortPacing();
+#endif
 	LibretroCore::s_context_ready.store(false, std::memory_order_release);
+#ifdef ENABLE_VULKAN
 	VKLibretro::SetHWRenderInterface(nullptr);
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1645,8 +1655,10 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info)
 	std::memset(info, 0, sizeof(*info));
 	info->geometry.base_width = LibretroCore::kFrameWidth;
 	info->geometry.base_height = LibretroCore::kFrameHeight;
+#ifdef ENABLE_VULKAN
 	info->geometry.max_width = VKLibretro::kMaxCanvasWidth;
 	info->geometry.max_height = VKLibretro::kMaxCanvasHeight;
+#endif
 	info->geometry.aspect_ratio = 4.0f / 3.0f;
 	info->timing.fps = 59.94;
 	info->timing.sample_rate = 48000.0;
@@ -1764,6 +1776,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 		}
 	}
 #endif // ENABLE_OPENGL
+#ifdef ENABLE_VULKAN
 	// Vulkan HW render. The negotiation interface must be registered inside
 	// retro_load_game; the frontend invokes it while creating its Vulkan
 	// context, after this returns.
@@ -1806,6 +1819,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 			VKLibretro::Active = true;
 		}
 	}
+#endif
 
 	SysMemory::ReserveMemory();
 
@@ -1831,6 +1845,7 @@ RETRO_API void retro_unload_game(void)
 	// The frontend replays the last set_image indefinitely (menu background,
 	// duped frames) — retract it and wait for the GPU before the VM teardown
 	// below destroys the textures it points at.
+#ifdef ENABLE_VULKAN
 	if (auto* vulkan = static_cast<retro_hw_render_interface_vulkan*>(VKLibretro::GetHWRenderInterface()))
 	{
 		vulkan->set_image(vulkan->handle, nullptr, 0, nullptr, vulkan->queue_index);
@@ -1838,6 +1853,7 @@ RETRO_API void retro_unload_game(void)
 	}
 
 	VKLibretro::AbortPacing(); // GS thread may be parked in PublishFrame
+#endif
 	s_shutdown_requested.store(true, std::memory_order_release);
 	if (VMManager::HasValidVM())
 		VMManager::SetState(VMState::Stopping);
@@ -1851,8 +1867,10 @@ RETRO_API void retro_unload_game(void)
 	s_disk_images.clear();
 	s_disk_index = 0;
 	s_disk_ejected = false;
+#ifdef ENABLE_VULKAN
 	VKLibretro::Shutdown();
 	VKLibretro::Active = false;
+#endif
 	LibretroCore::s_context_ready.store(false, std::memory_order_release);
 	LibretroCore::s_cpu_thread_initialized.store(false, std::memory_order_release);
 }
@@ -1916,6 +1934,7 @@ RETRO_API void retro_run(void)
 		}
 	}
 
+#ifdef ENABLE_VULKAN
 	if (LibretroCore::s_hw_render_vulkan)
 	{
 		// A frontend reads the picture size from this callback on every frame,
@@ -1971,7 +1990,9 @@ RETRO_API void retro_run(void)
 			video_cb(nullptr, last_frame_width, last_frame_height, 0);
 		}
 	}
-	else if (LibretroCore::s_hw_render_gl)
+	else
+#endif
+	if (LibretroCore::s_hw_render_gl)
 	{
 		// GL needs no frame handover of its own: GSDeviceOGL has already drawn
 		// into the FBO the frontend named through get_current_framebuffer, so
@@ -2046,7 +2067,9 @@ RETRO_API bool retro_serialize(void* data, size_t size)
 	// Pacing must be off while retro_run isn't being called, or the GS
 	// thread stays parked in PublishFrame and the state freeze (which needs
 	// the GS thread to respond) deadlocks.
+#ifdef ENABLE_VULKAN
 	VKLibretro::SetPacing(false);
+#endif
 
 	std::vector<u8> buffer;
 	bool ok = false;
@@ -2065,8 +2088,10 @@ RETRO_API bool retro_serialize(void* data, size_t size)
 			Console.ErrorFmt("retro_serialize: ZipToBuffer failed: {}", error.GetDescription());
 	}, true);
 
+#ifdef ENABLE_VULKAN
 	if (LibretroCore::s_context_ready.load(std::memory_order_acquire))
 		VKLibretro::SetPacing(true);
+#endif
 
 	if (!ok || sizeof(u64) + buffer.size() > size)
 	{
@@ -2094,7 +2119,9 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
 	if (zip_size == 0 || zip_size > size - sizeof(u64))
 		return false;
 
+#ifdef ENABLE_VULKAN
 	VKLibretro::SetPacing(false);
+#endif
 
 	bool ok = false;
 	const u8* zip_data = static_cast<const u8*>(data) + sizeof(u64);
@@ -2107,8 +2134,10 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
 			Console.ErrorFmt("retro_unserialize failed: {}", error.GetDescription());
 	}, true);
 
+#ifdef ENABLE_VULKAN
 	if (LibretroCore::s_context_ready.load(std::memory_order_acquire))
 		VKLibretro::SetPacing(true);
+#endif
 
 	return ok;
 }
