@@ -24,8 +24,9 @@ layout(location = 0) out vec4 o_col0;
 layout(push_constant) uniform cb0
 {
 	vec4 ZrH;
-	// x: device rows per native line, y: its reciprocal, z: native lines in the destination.
-	// A native line is a whole field row; at 1x it is one device row and every use below is a no-op.
+	// x: device rows per native line (the scale S), y: native lines in the destination.
+	// Native line k owns device rows [ceil(kS), ceil((k+1)S)), so the line owning integer row r is
+	// floor(r / S). At 1x that is the row itself and every use below is a no-op.
 	vec4 NativeLine;
 };
 
@@ -38,10 +39,12 @@ void ps_main0()
 {
 	const int idx   = int(ZrH.x);          // buffer index passed from CPU
 	const int field = idx & 1;             // current field
-	// A field is every other NATIVE line, so the device row has to be reduced to its line before
-	// the parity test. Testing the row keeps one device row of every line and drops the rest,
-	// which thins the picture instead of deinterlacing it.
-	const int vpos  = int(gl_FragCoord.y * NativeLine.y); // native line of this device row
+	// A field is every other NATIVE line, so the device row has to be reduced to the line that
+	// owns it before the parity test. Testing the row keeps one device row of every line and drops
+	// the rest, which thins the picture instead of deinterlacing it. Floor the row before dividing:
+	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
+	// above the one that owns them.
+	const int vpos  = int(floor(gl_FragCoord.y) / NativeLine.x); // native line owning this row
 
 	if ((vpos & 1) == field)
 		o_col0 = textureLod(samp0, v_tex, 0);
@@ -92,9 +95,9 @@ void ps_main3()
 	const int  idx    = int(ZrH.x);                               // buffer index passed from CPU
 	const int  bank   = idx >> 1;                                 // current bank
 	const int  field  = idx & 1;                                  // current field
-	const int  vres   = int(NativeLine.z) >> 1;                   // source height in native lines
+	const int  vres   = int(NativeLine.y) >> 1;                   // source height in native lines
 	const int  lofs   = ((((vres + 1) >> 1) << 1) - vres) & bank; // line alignment offset for bank 1
-	const int  vpos   = int(gl_FragCoord.y * NativeLine.y) + lofs; // native line of this device row
+	const int  vpos   = int(floor(gl_FragCoord.y) / NativeLine.x) + lofs; // native line owning this row
 
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
@@ -116,7 +119,7 @@ void ps_main4()
 	const int   idx          = int(ZrH.x);                         // buffer index passed from CPU
 	const int   bank         = idx >> 1;                           // current bank
 	const int   field        = idx & 1;                            // current field
-	const int   vpos         = int(gl_FragCoord.y * NativeLine.y); // native line of this device row
+	const int   vpos         = int(floor(gl_FragCoord.y) / NativeLine.x); // native line owning this row
 	const float sensitivity  = ZrH.w;                              // passed from CPU, higher values mean more likely to use weave
 	const vec3  motion_thr   = vec3(1.0, 1.0, 1.0) * sensitivity;  //
 	const vec2  bofs         = vec2(0.0f, 0.5f);                   // position of the bank 1 relative to source texture size

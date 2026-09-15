@@ -1301,7 +1301,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 
 		const InterlaceConstantBuffer cb = {
 			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY),
-			GSVector4(scale, 1.0f / scale, native_lines, 0.0f)
+			GSVector4(scale, native_lines, 0.0f, 0.0f)
 		};
 
 		GL_PUSH("DoInterlace %dx%d Shader:%d Filter:%d", ds_i.x, ds_i.y, static_cast<int>(shader), filter);

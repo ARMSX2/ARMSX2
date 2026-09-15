@@ -1272,8 +1272,14 @@ void ps_main()
 
 #if PS_SCANMSK & 2
 	// fail depth test on prohibited lines. SCANMSK masks NATIVE scanlines, so reduce the device row
-	// to its native line before the parity test, the same way the dither path above does.
-	if ((int(gl_FragCoord.y * RcpScaleFactor) & 1) == (PS_SCANMSK & 1))
+	// to the line that owns it -- floor(row / S) -- before the parity test. Two traps, both silent:
+	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
+	// above their owner; and a multiply by RcpScaleFactor can land a hair under an integer where
+	// row / S is exactly integral. ScaledScaleFactor is S/16, the fixed-point convention the
+	// texture path uses, and scaling it by 16 is exact, so this recovers S and divides.
+	// (The dither path above still multiplies by RcpScaleFactor and has the same exposure.)
+	float scanmsk_scale = ScaledScaleFactor * 16.0f;
+	if ((int(floor(gl_FragCoord.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 		discard;
 #endif
 

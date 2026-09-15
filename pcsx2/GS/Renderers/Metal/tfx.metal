@@ -1547,9 +1547,15 @@ struct PSMain
 
 		if (PS_SCANMSK & 2)
 		{
-			// SCANMSK masks NATIVE scanlines, so reduce the device row to its native line before the
-			// parity test, the same way the dither path above does.
-			if ((uint(in.p.y * cb.scale_factor.y) & 1) == (PS_SCANMSK & 1))
+			// SCANMSK masks NATIVE scanlines, so reduce the device row to the line that owns it --
+			// floor(row / S) -- before the parity test. Two traps, both silent: in.p.y is row + 0.5,
+			// and at a fractional scale that half puts some rows in the line above their owner; and
+			// a multiply by the reciprocal can land a hair under an integer where row / S is exactly
+			// integral. scale_factor.x is S/16, the fixed-point convention the texture path uses,
+			// and scaling it by 16 is exact, so this recovers S and divides.
+			// (The dither path above still multiplies by scale_factor.y and has the same exposure.)
+			float scanmsk_scale = cb.scale_factor.x * 16.f;
+			if ((uint(floor(in.p.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 				discard();
 		}
 

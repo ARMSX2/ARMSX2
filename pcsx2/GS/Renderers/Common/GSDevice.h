@@ -636,10 +636,13 @@ static_assert(sizeof(MergeConstantBuffer) == 32, "MergeConstantBuffer is correct
 struct alignas(16) InterlaceConstantBuffer
 {
 	GSVector4 ZrH; // (buffer index, 1 / ds.y, ds.y, MAD sensitivity)
-	// At scale S one native line is S device rows. Which field a row belongs to is a property of
-	// the native line, so every shader that tests field parity divides its device row by the scale
-	// first, and the blend and MAD passes step by a native line rather than by a device row.
-	// (device rows per native line, its reciprocal, native lines in ds.y, unused)
+	// At scale S one native line is S device rows, and native line k owns device rows
+	// [ceil(kS), ceil((k+1)S)), so the line owning integer row r is floor(r / S). Which field a row
+	// belongs to is a property of that line, so every shader that tests field parity reduces its
+	// device row to the line first, and the blend and MAD passes step by a native line rather than
+	// by a device row. The reciprocal is deliberately NOT carried: r * (1/S) can land a hair under
+	// an integer where r / S is exactly integral, which puts the row in the line below.
+	// (device rows per native line, native lines in ds.y, unused, unused)
 	GSVector4 NativeLine;
 };
 static_assert(sizeof(InterlaceConstantBuffer) == 32, "InterlaceConstantBuffer is correct size");

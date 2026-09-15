@@ -12,10 +12,12 @@ fragment float4 ps_interlace0(ConvertShaderData data [[stage_in]], ConvertPSRes 
 {
 	const int idx   = int(uniform.ZrH.x); // buffer index passed from CPU
 	const int field = idx & 1;            // current field
-	// A field is every other NATIVE line, so the device row has to be reduced to its line before
-	// the parity test. Testing the row keeps one device row of every line and drops the rest,
-	// which thins the picture instead of deinterlacing it.
-	const int vpos  = int(data.p.y * uniform.native_line.y); // native line of this device row
+	// A field is every other NATIVE line, so the device row has to be reduced to the line that
+	// owns it before the parity test. Testing the row keeps one device row of every line and drops
+	// the rest, which thins the picture instead of deinterlacing it. Floor the row before dividing:
+	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
+	// above the one that owns them.
+	const int vpos  = int(floor(data.p.y) / uniform.native_line.x); // native line owning this row
 
 	if ((vpos & 1) == field)
 		return res.sample_level(data.t, 0);
@@ -63,9 +65,9 @@ fragment float4 ps_interlace3(ConvertShaderData data [[stage_in]], ConvertPSRes 
 	const int    idx      = int(uniform.ZrH.x);                       // buffer index passed from CPU
 	const int    bank     = idx >> 1;                                 // current bank
 	const int    field    = idx & 1;                                  // current field
-	const int    vres     = int(uniform.native_line.z) >> 1;          // source height in native lines
+	const int    vres     = int(uniform.native_line.y) >> 1;          // source height in native lines
 	const int    lofs     = ((((vres + 1) >> 1) << 1) - vres) & bank; // line alignment offset for bank 1
-	const int    vpos     = int(data.p.y * uniform.native_line.y) + lofs; // native line of this device row
+	const int    vpos     = int(floor(data.p.y) / uniform.native_line.x) + lofs; // native line owning this row
 
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
@@ -84,7 +86,7 @@ fragment float4 ps_interlace4(ConvertShaderData data [[stage_in]], ConvertPSRes 
 {
 	const int    idx         = int(uniform.ZrH.x);                   // buffer index passed from CPU
 	const int    field       = idx & 1;                              // current field
-	const int    vpos        = int(data.p.y * uniform.native_line.y); // native line of this device row
+	const int    vpos        = int(floor(data.p.y) / uniform.native_line.x); // native line owning this row
 	const float  sensitivity = uniform.ZrH.w;                        // passed from CPU, higher values mean more likely to use weave
 	const float3 motion_thr  = float3(1.0, 1.0, 1.0) * sensitivity;  //
 	const float2 bofs        = float2(0.0f, 0.5f);                   // position of the bank 1 relative to source texture size
