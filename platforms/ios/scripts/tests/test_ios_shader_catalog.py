@@ -182,6 +182,24 @@ class BrowserReachability(unittest.TestCase):
             "the in-game panel mounts the shared section outside a NavigationStack, so every "
             "NavigationLink in it -- Preset and Download Shaders both -- is dead on tap")
 
+    def test_a_downloaded_preset_can_be_picked_from_its_row(self):
+        """Use on a downloaded row picks its preset instead of stopping at Installed."""
+        section = source(self.SECTION)
+        browser = source(BROWSER)
+        self.assertRegex(section, r"ShaderCatalogBrowserView\([^)]*onSelect:",
+                         "the section opens the download list without onSelect, so Use selects "
+                         "nothing")
+        self.assertRegex(section, r"enabled = true\s+presetRef = token",
+                         "select sets the preset before switching shaders on. If the store drops "
+                         "that token as unresolvable, shaders are left on with no preset")
+        self.assertLess(at(browser, "installer.presetToken(for: entry)", "the Use row"),
+                        at(browser, "onSelect(token)", "the Use action"),
+                        "the Use action runs before the row has found the installed preset")
+        self.assertIn('firstIndex(of: "/")', source(INSTALLER),
+                      "presetToken only looks for <pack>/<id>.slangp, but the extractor drops a "
+                      "top folder every file shares, so crt/crt-geom lands at "
+                      "<pack>/crt-geom.slangp")
+
 
 if __name__ == "__main__":
     unittest.main()

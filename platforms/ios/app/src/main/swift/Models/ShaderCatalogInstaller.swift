@@ -48,8 +48,8 @@ struct ShaderCatalogMarker: Codable {
 final class ShaderCatalogInstaller: ObservableObject {
     @Published private(set) var installing: Set<String> = []
     @Published var errors: [String: String] = [:]
-    /// Catalogue ids with a marker on disk, so a row knows itself installed across relaunches.
-    @Published private(set) var installed: Set<String> = []
+    /// Catalogue id to the folder its marker is in, so a row knows itself installed across relaunches.
+    @Published private(set) var installed: [String: String] = [:]
 
     static let stagingPrefix = "shader-download-"
     private static let maxDownloadBytes = 32 * 1024 * 1024
@@ -61,7 +61,19 @@ final class ShaderCatalogInstaller: ObservableObject {
     }
 
     func refreshInstalled() {
-        installed = Set(Self.markers().keys)
+        installed = Self.markers()
+    }
+
+    func presetToken(for entry: ShaderCatalogEntry) -> String? {
+        guard let folder = installed[entry.id], SkinAssetPath.isSafeRelative(entry.id),
+              let pack = ShaderPresetLibrary.userRoot?.appendingPathComponent(folder, isDirectory: true)
+        else { return nil }
+        let path = entry.id + "." + ShaderPresetLibrary.presetExtension
+        // The extractor drops a top folder every file shares, so crt/crt-geom lands as crt-geom.slangp.
+        let stripped = path.firstIndex(of: "/").map { String(path[path.index(after: $0)...]) }
+        return [path, stripped].compactMap { $0 }
+            .compactMap { ShaderPresetLibrary.token(for: pack.appendingPathComponent($0)) }
+            .first { ShaderPresetLibrary.resolve($0) != nil }
     }
 
     func install(_ entry: ShaderCatalogEntry, pin: String) async {
