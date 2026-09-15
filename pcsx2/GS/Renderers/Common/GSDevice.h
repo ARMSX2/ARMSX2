@@ -635,9 +635,14 @@ static_assert(sizeof(MergeConstantBuffer) == 32, "MergeConstantBuffer is correct
 
 struct alignas(16) InterlaceConstantBuffer
 {
-	GSVector4 ZrH; // data passed to the shader
+	GSVector4 ZrH; // (buffer index, 1 / ds.y, ds.y, MAD sensitivity)
+	// At scale S one native line is S device rows. Which field a row belongs to is a property of
+	// the native line, so every shader that tests field parity divides its device row by the scale
+	// first, and the blend and MAD passes step by a native line rather than by a device row.
+	// (device rows per native line, its reciprocal, native lines in ds.y, unused)
+	GSVector4 NativeLine;
 };
-static_assert(sizeof(InterlaceConstantBuffer) == 16, "InterlaceConstantBuffer is correct size");
+static_assert(sizeof(InterlaceConstantBuffer) == 32, "InterlaceConstantBuffer is correct size");
 
 enum HWBlendFlags
 {
@@ -2114,7 +2119,8 @@ public:
 
 	void ClearCurrent();
 	void Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c);
-	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset);
+	/// `scale` is how many device rows of the merge target one native line occupies.
+	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float scale);
 	void FXAA();
 	void ShadeBoost();
 	/// Runs the configured RetroArch (.slangp) shader chain over m_current, after

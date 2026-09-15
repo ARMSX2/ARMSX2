@@ -1804,8 +1804,9 @@ void main()
 #endif
 
 #if PS_SCANMSK & 2
-	// fail depth test on prohibited lines
-	if ((int(gl_FragCoord.y) & 1) == (PS_SCANMSK & 1))
+	// fail depth test on prohibited lines. SCANMSK masks NATIVE scanlines, so reduce the device row
+	// to its native line before the parity test, the same way the dither path above does.
+	if ((int(gl_FragCoord.y * RcpScaleFactor) & 1) == (PS_SCANMSK & 1))
 		DISCARD;
 #endif
 #if PS_DATE >= 5

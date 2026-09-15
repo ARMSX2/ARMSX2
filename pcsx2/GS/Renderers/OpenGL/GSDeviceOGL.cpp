@@ -599,6 +599,7 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 				return false;
 			m_interlace.ps[i].SetFormattedName("Merge pipe %zu", i);
 			m_interlace.ps[i].RegisterUniform("ZrH");
+			m_interlace.ps[i].RegisterUniform("NativeLine");
 		}
 	}
 
@@ -2829,6 +2830,7 @@ void GSDeviceOGL::DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture
 
 	m_interlace.ps[static_cast<int>(shader)].Bind();
 	m_interlace.ps[static_cast<int>(shader)].Uniform4fv(0, cb.ZrH.F32);
+	m_interlace.ps[static_cast<int>(shader)].Uniform4fv(1, cb.NativeLine.F32);
 
 	DoStretchRect(sTex, sRect, dTex, dRect, m_interlace.ps[static_cast<int>(shader)], filter);
 }

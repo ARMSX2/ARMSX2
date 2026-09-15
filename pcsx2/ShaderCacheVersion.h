@@ -26,4 +26,6 @@
 // 116: upstream PR 14824, the PrimID DATE init shaders take PRIMID_MIN/MAX defines.
 // 117: upstream PR 14743, ps_fbmask reads the destination alpha in the RTA-scaled domain and
 // ROV channel masking goes through FBMASK.
-static constexpr u32 SHADER_CACHE_VERSION = 117; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 118: the four deinterlace shaders and the TFX scan-mask test reduce a device row to its native
+// line before testing field parity, so interlace.* gains a constant-buffer field and tfx.* changes.
+static constexpr u32 SHADER_CACHE_VERSION = 118; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

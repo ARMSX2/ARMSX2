@@ -1547,7 +1547,9 @@ struct PSMain
 
 		if (PS_SCANMSK & 2)
 		{
-			if ((uint(in.p.y) & 1) == (PS_SCANMSK & 1))
+			// SCANMSK masks NATIVE scanlines, so reduce the device row to its native line before the
+			// parity test, the same way the dither path above does.
+			if ((uint(in.p.y * cb.scale_factor.y) & 1) == (PS_SCANMSK & 1))
 				discard();
 		}
 

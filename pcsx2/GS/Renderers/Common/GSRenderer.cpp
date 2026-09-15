@@ -289,7 +289,13 @@ bool GSRenderer::Merge(int field)
 	{
 		const float offset = is_bob ? (tex[1] ? tex_scale[1] : tex_scale[0]) : 0.0f;
 
-		g_gs_device->Interlace(fs, field ^ field2, mode, offset);
+		// How many device rows of the merge target one native line occupies. Same quantity, picked
+		// the same way, as the FFMD offset above: the merge wrote each circuit at tex_scale times
+		// its native display rect, so that is the size of a line in the picture the deinterlacer
+		// reads. The shaders need it because field parity belongs to the native line, not the row.
+		const float line_scale = tex[1] ? tex_scale[1] : tex_scale[0];
+
+		g_gs_device->Interlace(fs, field ^ field2, mode, offset, line_scale);
 	}
 
 	// Adaptive deinterlacing consumes prior fields. A skipped interlaced frame must update that

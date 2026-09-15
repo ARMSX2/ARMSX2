@@ -47,6 +47,7 @@ struct GSMTLPresentPSUniform
 struct GSMTLInterlacePSUniform
 {
 	vector_float4 ZrH;
+	vector_float4 native_line;
 };
 
 struct GSMTLCASPSUniform
