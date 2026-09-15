@@ -31,7 +31,7 @@ enum ShaderPresetFailure: Equatable, Sendable {
 
     init(_ error: Error, preset: URL) {
         let quoted = error.localizedDescription.components(separatedBy: "\"")
-        let path = quoted.count > 2 && quoted[1].contains("/") ? quoted[1] : preset.path
+        let path = quoted.count > 2 && quoted[1].hasPrefix("/") ? quoted[1] : preset.path
         let base = "/" + ShaderPresetLibrary.basePackFolderName + "/"
         // librashader keeps ../ in the quoted path, and on a device it starts with /private/var.
         let bare = path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path
@@ -149,6 +149,9 @@ final class ShaderParams: ObservableObject {
         switch result {
         case .success(let decoded):
             params = decoded
+            if let failure = ARMSX2Bridge.shaderChainError(forPreset: url.path) {
+                loadFailure = ShaderPresetFailure(failure, preset: url)
+            }
         case .failure(let error):
             loadFailure = ShaderPresetFailure(error, preset: url)
         }

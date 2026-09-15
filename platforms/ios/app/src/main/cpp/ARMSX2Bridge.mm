@@ -4426,6 +4426,15 @@ static void ARMSX2ShaderPresetFailure(libra_error_t err, NSError** error)
     GSDevice::RetryShaderChain();
 }
 
++ (nullable NSError *)shaderChainErrorForPreset:(nonnull NSString *)path {
+    std::string message;
+    const char* utf8 = path.UTF8String;
+    if (!utf8 || !GSDevice::GetShaderChainError(utf8, &message))
+        return nil;
+    return [NSError errorWithDomain:@"librashader" code:0
+                           userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:message.c_str()] ?: @""}];
+}
+
 #pragma mark - Frame-time history
 
 // Returns the 150-sample PerformanceMetrics frame-time history (read-only).

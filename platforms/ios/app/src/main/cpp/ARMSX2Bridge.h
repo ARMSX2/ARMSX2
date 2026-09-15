@@ -287,6 +287,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Lets the renderer load a preset that failed before once more, on its next frame.
 + (void)retryShaderChain;
 
+// librashader's message when the last chain built for path failed, or nil.
++ (nullable NSError *)shaderChainErrorForPreset:(nonnull NSString *)path NS_SWIFT_NAME(shaderChainError(forPreset:));
+
 // Per-game INI access — reads/writes the per-game INI file
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
 // patch-enable-list helpers. "For current game" write/delete variants live-apply.
