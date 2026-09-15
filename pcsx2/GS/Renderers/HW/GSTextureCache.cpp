@@ -3311,10 +3311,17 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 			}
 
 			// And invalidate the target, we're drawing over it so we don't care what's there.
-			// We can't do this when upscaling, because of the vertex offset, the top/left rows often aren't drawn.
+			// We can't do this when upscaling: the vertex offset can leave device rows/columns of
+			// the target undrawn even though the draw covers every native pixel, so an invalidate
+			// leaves the merge sampling whatever the texture pool last left in that allocation.
+			// Native (mode 4) is the mode that misses the most: its offset is half a NATIVE pixel,
+			// a whole device pixel at 2x, so device row 0 and column 0 are never covered. Clear for
+			// every mode except NativeWTexOffset (mode 5), whose offset is half a DEVICE pixel, so
+			// row 0 and column 0 are always drawn and the clear would cost those titles for nothing.
+			// If a mode-5 hole is ever measured, this is the line that changes.
 			GL_INS("TC: Invalidating%s target %s[%x] because it's completely overwritten.", to_string(type),
-				(rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset >= GSHalfPixelOffset::Native) ? "[clearing] " : "", dst->m_TEX0.TBP0);
-			if (rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset < GSHalfPixelOffset::Native)
+				(rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset) ? "[clearing] " : "", dst->m_TEX0.TBP0);
+			if (rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset)
 			{
 				if (dst->m_type == RenderTarget)
 					g_gs_device->ClearRenderTarget(dst->m_texture, 0);
