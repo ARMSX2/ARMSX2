@@ -3747,6 +3747,13 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 					if (preserve_target && old_dst->m_scale == dst->m_scale && dst->m_type == old_dst->m_type && !new_valid.rcontains(old_dst->m_drawn_since_read))
 					{
 						// Clamp the copy inside the source and destination.
+						// Left truncating on purpose, unlike the other native-to-device conversions in this
+						// file: copy_rect is scaled here but then used in BOTH spaces below - as a device rect
+						// for the CopyRect, and as an unscaled rect against m_dirty, m_valid and
+						// AddDirtyRectTarget, which are all native. The two only agree at 1x. Rounding it one
+						// way or the other does not settle which space it is in, so changing it here would
+						// move the native uses for no stated reason. The unit mismatch is the finding; fix
+						// that first, then this line follows from whichever space survives.
 						const GSVector4i copy_rect = GSVector4i(GSVector4((new_valid + GSVector4i(0, new_valid.w).xyxy()).rintersect(old_dst->m_drawn_since_read).rintersect(GSVector4i(0, 0, dst->m_unscaled_size.x, new_valid.w + dst->m_unscaled_size.y))) * dst->m_scale);
 						// Copy over the double buffer data, in case we need it.
 						// Clear the dirty first
@@ -3819,14 +3826,14 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 					}
 
 					const int dst_offset_width = (page_diff % new_buffer_width) * GSLocalMemory::m_psm[old_dst->m_TEX0.PSM].pgs.x;
-					const int dst_offset_scaled_width = dst_offset_width * dst->m_scale;
-					const int dst_offset_scaled_height = dst_offset_height * dst->m_scale;
+					const int dst_offset_scaled_width = ScaleNativeToDevice(dst_offset_width, dst->m_scale);
+					const int dst_offset_scaled_height = ScaleNativeToDevice(dst_offset_height, dst->m_scale);
 					const GSVector4i dst_rect_scale = GSVector4i(old_dst->m_valid.x, dst_offset_height, old_dst->m_valid.z, texture_height);
 
 					if (((!hw_clear && (preserve_target || preload)) || dst_rect_scale.rintersect(draw_rect).rempty()) && dst->GetScale() == old_dst->GetScale())
 					{
 						int copy_width = ((old_dst->m_texture->GetWidth()) > (dst->m_texture->GetWidth()) ? (dst->m_texture->GetWidth()) : old_dst->m_texture->GetWidth()) - dst_offset_scaled_width;
-						int copy_height = (texture_height - dst_offset_height) * old_dst->m_scale;
+						int copy_height = ScaleNativeToDevice(texture_height - dst_offset_height, old_dst->m_scale);
 
 						GL_INS("TC: RT double buffer copy from FBP 0x%x, %dx%d => %d,%d", old_dst->m_TEX0.TBP0, copy_width, copy_height, 0, dst_offset_scaled_height);
 
@@ -3853,10 +3860,15 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 						}
 						else
 						{
-							if ((copy_width + dst_offset_scaled_width) > (dst->m_unscaled_size.x * dst->m_scale) || (copy_height + dst_offset_scaled_height) > (dst->m_unscaled_size.y * dst->m_scale))
+							// The bound being protected is the destination texture, which was allocated at
+							// ceil(unscaled * scale) per axis. Recomputing it with a truncating multiply put the
+							// clamp a pixel inside the real texture at a fractional scale.
+							const int dst_scaled_width = ScaleNativeToDevice(dst->m_unscaled_size.x, dst->m_scale);
+							const int dst_scaled_height = ScaleNativeToDevice(dst->m_unscaled_size.y, dst->m_scale);
+							if ((copy_width + dst_offset_scaled_width) > dst_scaled_width || (copy_height + dst_offset_scaled_height) > dst_scaled_height)
 							{
-								copy_width = std::min(copy_width, static_cast<int>((dst->m_unscaled_size.x * dst->m_scale) - dst_offset_scaled_width));
-								copy_height = std::min(copy_height, static_cast<int>((dst->m_unscaled_size.y * dst->m_scale) - dst_offset_scaled_height));
+								copy_width = std::min(copy_width, dst_scaled_width - dst_offset_scaled_width);
+								copy_height = std::min(copy_height, dst_scaled_height - dst_offset_scaled_height);
 							}
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, GSVector4i(0, 0, copy_width, copy_height), dst_offset_scaled_width, dst_offset_scaled_height);
@@ -3956,7 +3968,9 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 								delete_target = false;
 								if (GSTexture* tex = g_gs_device->CreateCompatible(old_dst->m_texture, true))
 								{
-									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_adjust * old_dst->m_scale, old_dst->m_texture->GetWidth(), old_dst->m_texture->GetHeight()), 0, 0);
+									// Same shape as the preload copy above: the rows from native row height_adjust
+									// down survive, and that row starts at device row ceil(height_adjust * scale).
+									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, ScaleNativeToDevice(height_adjust, old_dst->m_scale), old_dst->m_texture->GetWidth(), old_dst->m_texture->GetHeight()), 0, 0);
 									if (src && src->m_target && src->m_from_target == old_dst)
 									{
 										src->m_from_target = old_dst;
@@ -4274,7 +4288,9 @@ void GSTextureCache::Target::ScaleRTAlpha()
 		if (m_alpha_max > 0)
 		{
 			const GSVector2i rtsize(m_texture->GetSize());
-			const GSVector4i valid_rect = GSVector4i(GSVector4(m_valid) * GSVector4(m_scale));
+			// Ceil, like every other native-to-device rect in the cache: truncating the far edge left
+			// the last device column and row of the valid area un-corrected at a fractional scale.
+			const GSVector4i valid_rect = GSVector4i((GSVector4(m_valid) * GSVector4(m_scale)).ceil());
 			GL_PUSH("TC: ScaleRTAlpha(valid=(%dx%d %d,%d=>%d,%d))", m_valid.width(), m_valid.height(), m_valid.x, m_valid.y, m_valid.z, m_valid.w);
 
 			if (GSTexture* temp_rt = g_gs_device->CreateCompatible(m_texture, rtsize, !GSVector4i::loadh(rtsize).eq(valid_rect)))
@@ -4299,7 +4315,8 @@ void GSTextureCache::Target::UnscaleRTAlpha()
 		if (m_alpha_max > 0)
 		{
 			const GSVector2i rtsize(m_texture->GetSize());
-			const GSVector4i valid_rect = GSVector4i(GSVector4(m_valid) * GSVector4(m_scale));
+			// Ceil, for the same reason as ScaleRTAlpha above.
+			const GSVector4i valid_rect = GSVector4i((GSVector4(m_valid) * GSVector4(m_scale)).ceil());
 			GL_PUSH("TC: UnscaleRTAlpha(valid=(%dx%d %d,%d=>%d,%d))", valid_rect.width(), valid_rect.height(), valid_rect.x, valid_rect.y, valid_rect.z, valid_rect.w);
 
 			if (GSTexture* temp_rt = g_gs_device->CreateCompatible(m_texture, rtsize, !GSVector4i::loadh(rtsize).eq(valid_rect)))
@@ -6348,10 +6365,13 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 	if (dst && (x_offset != 0 || y_offset != 0) && (TEX0.PSM != PSMT8 || channel_shuffle))
 	{
 		const float scale = dst->m_scale;
-		const int x = static_cast<int>(scale * x_offset);
-		const int y = static_cast<int>(scale * y_offset);
-		const int w = static_cast<int>(std::ceil(scale * tw));
-		const int h = static_cast<int>(std::ceil(scale * th));
+		// The offset names the first device pixel its native pixel owns, the same rule the extents
+		// below already use. Truncating the offset while ceiling the extent read the copy one device
+		// column and row early, out of the previous native pixel.
+		const int x = ScaleNativeToDevice(x_offset, scale);
+		const int y = ScaleNativeToDevice(y_offset, scale);
+		const int w = ScaleNativeToDevice(tw, scale);
+		const int h = ScaleNativeToDevice(th, scale);
 
 		const GSVector4i read_rect = GSVector4i(x_offset, y_offset, x_offset + tw, y_offset + th);
 		// Do this first as we could be adding in alpha from an upgraded 24bit target. if the rect intersects a dirty area.
@@ -6945,8 +6965,10 @@ GSTextureCache::Source* GSTextureCache::CreateMergedSource(GIFRegTEX0 TEX0, GIFR
 	const GSLocalMemory::psm_t& psm_s = GSLocalMemory::m_psm[TEX0.PSM];
 	const int tex_width = (std::max<int>(64 * TEX0.TBW, region.GetMaxX()) + (psm_s.bs.x - 1)) & ~(psm_s.bs.x - 1);
 	const int tex_height = ((region.HasY() ? region.GetHeight() : (1 << TEX0.TH)) + (psm_s.bs.y - 1)) & ~(psm_s.bs.y - 1);
-	const int scaled_width = static_cast<int>(static_cast<float>(tex_width) * scale);
-	const int scaled_height = static_cast<int>(static_cast<float>(tex_height) * scale);
+	// Ceil: the page copies queued below land at rect * scale in this texture, so a truncated
+	// allocation would be smaller than what gets written into it.
+	const int scaled_width = ScaleNativeToDevice(tex_width, scale);
+	const int scaled_height = ScaleNativeToDevice(tex_height, scale);
 
 	// Compute new end block based on size.
 	const u32 end_block = GSLocalMemory::m_psm[TEX0.PSM].info.bn(tex_width - 1, tex_height - 1, TEX0.TBP0, TEX0.TBW);
