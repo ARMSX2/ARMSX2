@@ -36,7 +36,7 @@ struct ShaderPresetSaveSheet: View {
                     TextField(localized("Preset name"), text: $name)
                         .autocorrectionDisabled()
                 } footer: {
-                    Text(localized("Saved into My Presets, where it is selectable like any other preset. It points at the base pack by path, so removing or moving that pack breaks it, and Reset on the saved preset returns to the values you saved rather than to the base's own."))
+                    Text(localized("It appears in My Presets. It stops working if you delete or move the shader it came from."))
                 }
             }
             .navigationTitle(localized("Save Preset"))

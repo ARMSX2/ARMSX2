@@ -3,13 +3,6 @@
 
 import SwiftUI
 
-private struct ShaderBrowserContents: Sendable {
-    let listing: ShaderPresetListing
-    let passes: [String: Int]
-
-    static let empty = ShaderBrowserContents(listing: .empty, passes: [:])
-}
-
 struct ShaderPresetBrowserView: View {
     let title: String
     let folder: ShaderPresetFolder?
@@ -18,7 +11,7 @@ struct ShaderPresetBrowserView: View {
     let onSelect: @MainActor (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var contents = ShaderBrowserContents.empty
+    @State private var listing = ShaderPresetListing.empty
     @State private var scanned = false
     @State private var searchText = ""
 
@@ -67,13 +60,13 @@ struct ShaderPresetBrowserView: View {
     }
 
     private var folders: [ShaderPresetFolder] {
-        guard !searchText.isEmpty else { return contents.listing.folders }
-        return contents.listing.folders.filter { $0.name.localizedStandardContains(searchText) }
+        guard !searchText.isEmpty else { return listing.folders }
+        return listing.folders.filter { $0.name.localizedStandardContains(searchText) }
     }
 
     private var presets: [ShaderPresetFile] {
-        guard !searchText.isEmpty else { return contents.listing.presets }
-        return contents.listing.presets.filter { $0.name.localizedStandardContains(searchText) }
+        guard !searchText.isEmpty else { return listing.presets }
+        return listing.presets.filter { $0.name.localizedStandardContains(searchText) }
     }
 
     private var emptyMessage: String {
@@ -86,16 +79,7 @@ struct ShaderPresetBrowserView: View {
     @ViewBuilder
     private func presetRow(_ preset: ShaderPresetFile) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(preset.name)
-                // Reported and nothing else. A pass count does not predict what a preset
-                // costs, so it never orders, groups, filters or badges a row.
-                if let passes = contents.passes[preset.token] {
-                    Text(passLabel(passes))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(preset.name)
             Spacer()
             if preset.token == selectedToken {
                 Image(systemName: "checkmark").foregroundStyle(.tint)
@@ -104,22 +88,12 @@ struct ShaderPresetBrowserView: View {
         .contentShape(Rectangle())
     }
 
-    private func passLabel(_ count: Int) -> String {
-        count == 1 ? localized("1 pass") : "\(count) " + localized("passes")
-    }
-
     private func rescan() async {
         let target = folder
-        let scan = await Task.detached(priority: .userInitiated) { () -> ShaderBrowserContents in
+        listing = await Task.detached(priority: .userInitiated) { () -> ShaderPresetListing in
             let library = ShaderPresetLibrary()
-            let listing = target.map { library.listing(at: $0) } ?? library.scan()
-            var passes: [String: Int] = [:]
-            for preset in listing.presets {
-                passes[preset.token] = library.passCount(for: preset.url)
-            }
-            return ShaderBrowserContents(listing: listing, passes: passes)
+            return target.map { library.listing(at: $0) } ?? library.scan()
         }.value
-        contents = scan
         scanned = true
     }
 }
