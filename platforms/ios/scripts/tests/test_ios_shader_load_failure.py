@@ -50,6 +50,22 @@ class ShaderPresetLoadFailure(unittest.TestCase):
         self.assertLess(failure, download,
                         "the reason sits below Download Shaders, away from the Preset row")
 
+    def test_an_older_parse_cannot_land_on_a_newer_preset(self):
+        load = block(read(PARAMS), "func load(token newToken: String)")
+        cleared = at(load, "params = []", "clearing the previous preset's rows")
+        parse = at(load, "Task.detached", "the parse")
+        check = at(load, "guard current == generation else { return }", "the generation check")
+        push = at(load, "pushEffective()", "the push")
+        self.assertLess(cleared, parse, "the previous preset's rows stay listed while the next one is read")
+        self.assertLess(parse, check, "the generation check runs before the parse, so it misses a newer load")
+        self.assertLess(check, push, "a parse that a newer load overtook still pushes its values")
+
+    def test_an_unresolvable_preset_stops_loading(self):
+        load = block(read(PARAMS), "func load(token newToken: String)")
+        unresolved = block(load, "guard let url = ShaderPresetLibrary.resolve(newToken) else")
+        self.assertIn("isLoading = false", unresolved,
+                      "a token that names no file leaves Reading parameters on screen")
+
     def test_a_path_that_leaves_the_shader_roots_asks_for_a_reinstall(self):
         init = block(read(PARAMS), "init(_ error: Error, preset: URL)")
         self.assertIn('path.hasPrefix("/private/")', init,
