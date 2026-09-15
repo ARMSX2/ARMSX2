@@ -233,7 +233,7 @@ final class ShaderParams: ObservableObject {
     }
 
     /// Relative while the base sits in the same Documents root, so the pair survives the
-    /// container UUID moving. A bundled base gets a path instead, which a reinstall breaks.
+    /// container UUID moving. A bundled base gets a path, which launch re-roots after a reinstall.
     private static func reference(to base: URL) -> String {
         let target = base.standardizedFileURL
         guard let root = ShaderPresetLibrary.userRoot?.standardizedFileURL,
