@@ -112,9 +112,9 @@ struct CPUTab: View {
                     .foregroundStyle(.secondary)
 
                 Picker("Fast Boot", selection: $fastBoot) {
-                    Text("Global Default (\(globalFastBoot ? "On" : "Off"))").tag(fastBootUseGlobalSentinel)
-                    Text("On").tag(fastBootOn)
-                    Text("Off").tag(fastBootOff)
+                    Text(String(format: settings.localized("Global Default (%@)"), settings.localized(globalFastBoot ? "On" : "Off"))).tag(fastBootUseGlobalSentinel)
+                    Text(settings.localized("On")).tag(fastBootOn)
+                    Text(settings.localized("Off")).tag(fastBootOff)
                 }
                 .disabled(!enabled)
 
