@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """A dispatch_once cache in an MRC file must own what it stores.
 
-ARMSX2Bridge.mm is compiled without -fobjc-arc, so a convenience constructor
-assigned to a static inside dispatch_once is autoreleased: the first call reads a
-live object, the pool drains, and every later call reads freed memory. It shipped
-twice — the shader-pack accept-list and the skin-package one — and reached a device
-as two different crashes from one site, a SIGSEGV and an unrecognized selector on
-whatever reused the memory.
+ARMSX2Bridge.mm is compiled without -fobjc-arc, so a convenience constructor assigned to a
+static inside dispatch_once is autoreleased and the static dangles once the pool drains.
 """
 
 import re
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
-BRIDGE = ROOT / "platforms/ios/app/src/main/cpp/ARMSX2Bridge.mm"
+from ios_source import CPP
+
+BRIDGE = CPP / "ARMSX2Bridge.mm"
 
 # +1 already, or explicitly retained. Anything else a class returns is autoreleased.
 OWNING = re.compile(r"\[\[\s*\w+\s+(alloc|new)\b|\bretain\s*\]")
@@ -37,12 +33,9 @@ def once_blocks(text):
 
 
 class OnceCachedGlobals(unittest.TestCase):
-    def test_bridge_exists(self):
-        self.assertTrue(BRIDGE.is_file(), f"missing {BRIDGE}")
-
     def test_bridge_is_still_mrc(self):
-        """If the target ever gains ARC this guard is obsolete rather than wrong."""
-        cmake = (ROOT / "platforms/ios/app/src/main/cpp/CMakeLists.txt").read_text()
+        """The once-block check below assumes the target is built without ARC."""
+        cmake = (CPP / "CMakeLists.txt").read_text()
         self.assertNotIn("fobjc-arc", cmake)
         self.assertNotIn("OBJC_ARC", cmake)
 
