@@ -28,8 +28,14 @@ struct PerGameShaderSection: View {
                         Spacer()
                         Text(presetName)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
                 }
+                .tint(.primary)
                 .disabled(!enabled)
 
                 if !presetRef.isEmpty {

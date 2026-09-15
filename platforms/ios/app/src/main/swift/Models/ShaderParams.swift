@@ -93,7 +93,6 @@ final class ShaderParams: ObservableObject {
     @Published private(set) var params: [ShaderParam] = []
     @Published private(set) var overrides: [String: Float] = [:]
     @Published private(set) var isLoading = false
-    @Published private(set) var savedName: String?
     @Published private(set) var errorText: String?
 
     nonisolated static let section = "EmuCore/GS"
@@ -106,7 +105,6 @@ final class ShaderParams: ObservableObject {
 
     func load(token newToken: String) async {
         token = newToken
-        savedName = nil
         errorText = nil
         guard let url = ShaderPresetLibrary.resolve(newToken) else {
             params = []
@@ -143,22 +141,25 @@ final class ShaderParams: ObservableObject {
         pushEffective()
     }
 
-    func save(as name: String) async {
-        savedName = nil
+    func save(as name: String) async -> String? {
         errorText = nil
         let safe = Self.safeName(name)
         guard !safe.isEmpty, let base = ShaderPresetLibrary.resolve(token) else {
             errorText = ShaderParamsError.noName.errorDescription
-            return
+            return nil
         }
         let text = Self.presetText(base: base, params: params, overrides: overrides)
         do {
             let url = try await Task.detached(priority: .userInitiated) {
                 try Self.write(text, named: safe, base: base)
             }.value
-            savedName = url.deletingPathExtension().lastPathComponent
+            guard let saved = ShaderPresetLibrary.token(for: url) else { return nil }
+            var store = Self.stored()
+            if store.removeValue(forKey: saved) != nil { Self.storeOverrides(store) }
+            return saved
         } catch {
             errorText = error.localizedDescription
+            return nil
         }
     }
 
@@ -194,9 +195,13 @@ final class ShaderParams: ObservableObject {
         guard !token.isEmpty else { return }
         var store = Self.stored()
         store[token] = overrides.isEmpty ? nil : overrides
+        Self.storeOverrides(store)
+    }
+
+    private static func storeOverrides(_ store: [String: [String: Float]]) {
         guard let data = try? JSONEncoder().encode(store),
               let json = String(data: data, encoding: .utf8) else { return }
-        ARMSX2Bridge.setINIString(Self.section, key: Self.key, value: json)
+        ARMSX2Bridge.setINIString(section, key: key, value: json)
     }
 
     private nonisolated static func stored() -> [String: [String: Float]] {

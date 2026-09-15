@@ -20,6 +20,7 @@ struct ShaderChainSection: View {
     @StateObject private var importer = ShaderPackImporter()
     @StateObject private var params = ShaderParams()
     @State private var pickerSource: ShaderPackPickerSource?
+    @State private var browseRequest: ShaderPresetBrowserRequest?
     @State private var saveRequest: ShaderPresetSaveRequest?
 
     private var settings: SettingsStore { SettingsStore.shared }
@@ -35,14 +36,8 @@ struct ShaderChainSection: View {
 
     private var chainSection: some View {
         Section {
-            NavigationLink {
-                ShaderPresetBrowserView(
-                    title: localized("Shader Presets"),
-                    folder: nil,
-                    selectedToken: presetRef,
-                    localized: localized,
-                    onSelect: select
-                )
+            Button {
+                browseRequest = ShaderPresetBrowserRequest()
             } label: {
                 HStack {
                     Text(localized("Preset"))
@@ -51,10 +46,25 @@ struct ShaderChainSection: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
             }
-            .sheet(item: $pickerSource) { source in
-                picker(for: source)
+            .tint(.primary)
+            .sheet(item: $browseRequest) { _ in
+                NavigationStack {
+                    ShaderPresetBrowserView(
+                        title: localized("Shader Presets"),
+                        folder: nil,
+                        selectedToken: presetRef,
+                        localized: localized,
+                        onSelect: { token in
+                            select(token)
+                            browseRequest = nil
+                        }
+                    )
+                }
             }
             .task(id: presetRef) {
                 await params.load(token: presetRef)
@@ -85,6 +95,9 @@ struct ShaderChainSection: View {
                 Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
             }
             .disabled(importer.isBusy)
+            .sheet(item: $pickerSource) { source in
+                picker(for: source)
+            }
 
             if importer.isBusy {
                 ProgressView(localized("Installing..."))
@@ -136,7 +149,7 @@ struct ShaderChainSection: View {
                 // change and the name field would lose the keyboard on each keystroke.
                 .sheet(item: $saveRequest) { request in
                     ShaderPresetSaveSheet(request: request, localized: localized) { name in
-                        Task { await params.save(as: name) }
+                        Task { if let token = await params.save(as: name) { select(token) } }
                     }
                 }
             }
@@ -147,12 +160,6 @@ struct ShaderChainSection: View {
                 } label: {
                     Text(localized("Reset All Parameters"))
                 }
-            }
-
-            if let saved = params.savedName {
-                Text(localized("Saved") + " " + saved)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             if let failure = params.errorText {

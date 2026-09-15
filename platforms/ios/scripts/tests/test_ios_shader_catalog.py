@@ -200,6 +200,21 @@ class BrowserReachability(unittest.TestCase):
                       "top folder every file shares, so crt/crt-geom lands at "
                       "<pack>/crt-geom.slangp")
 
+    def test_a_preset_picked_in_any_folder_closes_the_browser(self):
+        """A dismiss taken from an outer folder is ignored once an inner folder is pushed on top."""
+        self.assertRegex(
+            source(self.SECTION), r"select\(token\)\s+browseRequest = nil",
+            "the Shaders section no longer closes the preset sheet on a pick, so picking inside a "
+            "folder leaves the browser open")
+        self.assertRegex(
+            source(SWIFT / "Views/PerGameSettingsPanel.swift"),
+            r"perGameShaderPresetRef = token\s+shaderPresetRequest = nil",
+            "the per-game panel no longer closes its preset sheet on a pick")
+        self.assertNotIn(
+            "dismiss()", source(SWIFT / "Views/Settings/ShaderPresetBrowserView.swift"),
+            "the preset browser dismisses itself again; from an inner folder that does nothing, "
+            "so the host has to close the sheet")
+
 
 if __name__ == "__main__":
     unittest.main()
