@@ -15,13 +15,10 @@ struct ShaderCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
     let category: String
-    let passes: Int
-    let closureBytes: Int
     let zip: ShaderCatalogArchive
 
     enum CodingKeys: String, CodingKey {
-        case id, name, category, passes, zip
-        case closureBytes = "closure_bytes"
+        case id, name, category, zip
     }
 }
 
@@ -41,13 +38,11 @@ enum ShaderCatalogError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unreachable:
-            return "Can't reach the shader catalogue. Check your connection and pull down to try again."
-        case .serverError(let code):
-            return "The shader catalogue server answered with \(code). Pull down to try again."
-        case .malformed:
-            return "The shader catalogue downloaded fine but can't be read. The file itself is broken, so this needs fixing where it is published rather than here."
-        case .unsupportedSchema(let schema):
-            return "This catalogue is published in format \(schema), which this build does not read. Update ARMSX2."
+            return "Can't reach the shader list. Check your connection and pull down to try again."
+        case .serverError:
+            return "The shader list isn't available right now. Pull down to try again later."
+        case .malformed, .unsupportedSchema:
+            return "The shader list couldn't be read. Update ARMSX2 or try again later."
         }
     }
 }
@@ -57,7 +52,6 @@ enum ShaderCatalogError: LocalizedError {
 @MainActor
 final class ShaderCatalog: ObservableObject {
     static let schema = 1
-    /// The repository has to exist before this feature works. Nothing is published there yet.
     nonisolated static let defaultBase = "https://raw.githubusercontent.com/J1coding/ARMSX2-Shaders/main"
     nonisolated static let overrideSection = "EmuCore/GS"
     nonisolated static let overrideKey = "ShaderCatalogueBase"

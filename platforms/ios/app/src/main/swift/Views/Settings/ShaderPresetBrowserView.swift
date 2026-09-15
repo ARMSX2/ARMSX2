@@ -96,7 +96,7 @@ struct ShaderPresetBrowserView: View {
         if !searchText.isEmpty {
             return localized("Nothing here matches that search.")
         }
-        return localized("No presets here yet. Shader packs belong in Documents/shaders, or arrive through Install Shader Pack.")
+        return localized("Nothing saved yet. Presets you save under Parameters show up here.")
     }
 
     @ViewBuilder
