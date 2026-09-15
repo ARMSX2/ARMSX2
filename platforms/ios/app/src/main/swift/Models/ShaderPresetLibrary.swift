@@ -60,6 +60,12 @@ enum ShaderPresetLibrary {
         userRoot?.appendingPathComponent(savedPresetFolderName, isDirectory: true)
     }
 
+    static let basePackFolderName = "shaders_slang"
+
+    static var basePackRoot: URL? {
+        userRoot?.appendingPathComponent(basePackFolderName, isDirectory: true)
+    }
+
     @discardableResult
     static func prepareUserRoots() -> URL? {
         guard let root = userRoot, let saved = savedPresetRoot else { return nil }

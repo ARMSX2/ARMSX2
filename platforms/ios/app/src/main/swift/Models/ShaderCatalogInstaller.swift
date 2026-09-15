@@ -66,7 +66,7 @@ final class ShaderCatalogInstaller: ObservableObject {
               let pack = ShaderPresetLibrary.userRoot?.appendingPathComponent(folder, isDirectory: true)
         else { return nil }
         let path = entry.id + "." + ShaderPresetLibrary.presetExtension
-        // The extractor drops a top folder every file shares, so crt/crt-geom lands as crt-geom.slangp.
+        // A zip with .slang files loses the top folder they share, so crt/crt-geom lands as crt-geom.slangp.
         let stripped = path.firstIndex(of: "/").map { String(path[path.index(after: $0)...]) }
         return [path, stripped].compactMap { $0 }
             .compactMap { ShaderPresetLibrary.token(for: pack.appendingPathComponent($0)) }
@@ -97,26 +97,8 @@ final class ShaderCatalogInstaller: ObservableObject {
             throw ShaderCatalogInstallError.unusableLink
         }
 
-        let staged = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString).zip")
-        let temporary: URL
-        let response: URLResponse
-        do {
-            (temporary, response) = try await URLSession.shared.download(from: source)
-        } catch {
-            throw ShaderCatalogInstallError.unreachable
-        }
-        // URLSession hands over a temp file the caller owns. If the move below throws it is
-        // still ours and nothing else will remove it; after a successful move it is gone and
-        // this is a no-op.
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        try? FileManager.default.removeItem(at: staged)
-        try FileManager.default.moveItem(at: temporary, to: staged)
+        let staged = try await Self.stage(source)
         defer { try? FileManager.default.removeItem(at: staged) }
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw ShaderCatalogInstallError.serverRefused(http.statusCode)
-        }
-        try Task.checkCancellation()
 
         let received = Int(((try? FileManager.default.attributesOfItem(atPath: staged.path))?[.size]
             as? NSNumber)?.int64Value ?? 0)
@@ -185,6 +167,32 @@ final class ShaderCatalogInstaller: ObservableObject {
         for url in contents where url.lastPathComponent.hasPrefix(stagingPrefix) {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    static func stage(_ source: URL) async throws -> URL {
+        let staged = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(stagingPrefix)\(UUID().uuidString).zip")
+        let temporary: URL
+        let response: URLResponse
+        do {
+            (temporary, response) = try await URLSession.shared.download(from: source)
+        } catch {
+            throw ShaderCatalogInstallError.unreachable
+        }
+        // The temp file stays ours until the move succeeds, so this removes it if the move throws.
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try? FileManager.default.removeItem(at: staged)
+        try FileManager.default.moveItem(at: temporary, to: staged)
+        do {
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                throw ShaderCatalogInstallError.serverRefused(http.statusCode)
+            }
+            try Task.checkCancellation()
+        } catch {
+            try? FileManager.default.removeItem(at: staged)
+            throw error
+        }
+        return staged
     }
 
     private nonisolated static func sha256(of url: URL) throws -> String {

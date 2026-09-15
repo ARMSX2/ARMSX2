@@ -57,6 +57,18 @@ class ShaderPackExtractorPolicy(unittest.TestCase):
         self.assertLess(compare, write,
                         "an entry is written before its parent is checked for escaping")
 
+    def test_a_pack_without_stages_keeps_its_top_folder(self):
+        """A zip with no .slang files keeps its top folder."""
+        self.assertRegex(
+            self.code, r"hasStages \? ARMSX2CommonArchiveRoot\(names\) : nil",
+            "the common root is stripped from every zip, so ../../../shaders_slang in a "
+            "presets-only pack points outside shaders/")
+        self.assertRegex(
+            self.code,
+            r'hasStages = hasStages \|\| \[entryName\.pathExtension\.lowercaseString '
+            r'isEqualToString:@"slang"\]',
+            "hasStages is no longer set from a .slang entry")
+
     def test_the_declaration_is_exposed_to_swift(self):
         self.assertIn(
             SHADER_EXTRACTOR, self.header,
