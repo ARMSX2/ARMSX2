@@ -157,6 +157,23 @@ class ShaderPresetPathTests(unittest.TestCase):
             "the GS device reads last install's absolute path first, and the user's shader "
             "silently stops working after an update.")
 
+    def test_saved_presets_follow_the_bundle_after_an_install(self):
+        """A preset saved from a built-in one names it by absolute path, and installs move the bundle."""
+        repair = function_containing(self.library, "func repairSavedReferences")
+        self.assertIsNotNone(
+            repair, "ShaderPresetLibrary has no repairSavedReferences(), so a preset saved from "
+                    "a built-in shader stops loading after the next update")
+        self.assertIn(
+            "token(forLegacyPath:", repair,
+            "repairSavedReferences() no longer re-roots through token(forLegacyPath:), so the "
+            "saved reference keeps naming last install's bundle and librashader refuses the file")
+        init = function_containing(self.store, "suppressINIWrites = true")
+        self.assertIsNotNone(init, "cannot find SettingsStore.init; update this test")
+        self.assertIn(
+            "ShaderPresetLibrary.repairSavedReferences()", init,
+            "init no longer repairs saved presets. The GS device opens a saved preset on the "
+            "first frame, so one saved from a built-in shader fails after every update.")
+
 
 if __name__ == "__main__":
     unittest.main()

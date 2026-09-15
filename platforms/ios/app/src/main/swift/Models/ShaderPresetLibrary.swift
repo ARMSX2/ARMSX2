@@ -105,6 +105,24 @@ final class ShaderPresetLibrary {
             .first { resolve($0) != nil }
     }
 
+    /// A preset saved from a built-in one names it by absolute path, which every install moves.
+    static func repairSavedReferences() {
+        let head = "#reference \""
+        guard let saved = savedPresetRoot, let files = try? FileManager.default.contentsOfDirectory(
+            at: saved, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        for url in files where url.pathExtension.lowercased() == presetExtension {
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  let end = text.firstIndex(of: "\n") else { continue }
+            let line = text[..<end]
+            guard line.hasPrefix(head + "/"), line.hasSuffix("\"") else { continue }
+            let old = String(line.dropFirst(head.count).dropLast())
+            guard !FileManager.default.fileExists(atPath: old),
+                  let token = token(forLegacyPath: old), let base = resolve(token) else { continue }
+            try? (head + base.path + "\"" + String(text[end...]))
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     private static func markedRoots() -> [(marker: String, root: URL)] {
         [(bundleMarker, bundleRoot), (userMarker, userRoot)].compactMap { marker, root in
             root.map { (marker, $0) }

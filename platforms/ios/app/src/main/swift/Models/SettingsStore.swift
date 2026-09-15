@@ -1660,7 +1660,8 @@ final class SettingsStore {
         Self.migrateFramePacingOptimalDefaultV1()
         // Same deal: the phone rumble slider changed meaning without changing key.
         Self.migratePhoneRumbleStrengthRescaleV1()
-        // Same deal again, and this one runs every launch: the container moved.
+        // Same deal again, and these run every launch: the container moved.
+        ShaderPresetLibrary.repairSavedReferences()
         Self.migrateShaderChainSelectionV1()
 
         // CPU
