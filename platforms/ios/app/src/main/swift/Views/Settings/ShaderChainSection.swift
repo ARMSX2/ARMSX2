@@ -227,6 +227,7 @@ struct ShaderChainSection: View {
     private func getBasePack() {
         Task {
             await importer.installBasePack()
+            ARMSX2Bridge.retryShaderChain()
             await params.load(token: presetRef)
         }
     }

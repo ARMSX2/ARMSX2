@@ -445,6 +445,7 @@ struct PerGameSettingsPanel: View {
                     onSelect: { token in
                         perGameShaderPresetRef = token
                         shaderPresetRequest = nil
+                        ARMSX2Bridge.retryShaderChain()
                     }
                 )
             }

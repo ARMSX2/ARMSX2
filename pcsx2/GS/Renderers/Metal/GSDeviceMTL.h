@@ -423,15 +423,13 @@ public:
 	void DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float params[4]) override;
 	bool DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex) override;
 
-	/// librashader filter chain state. The handle is void* rather than
-	/// libra_mtl_filter_chain_t so this header needs nothing librashader generates — that
-	/// only exists when the Rust toolchain built the lib, and its Metal declarations are
-	/// __OBJC__-guarded, so a plain C++ translation unit could not include them at all.
-	/// The chain is rebuilt only when the preset path changes: creating it compiles the
-	/// whole slang chain, while the per-frame call is just command recording.
+	/// librashader filter chain state. The handle is void* so plain C++ can include this header,
+	/// since librashader's Metal declarations only compile as Objective-C. Creating a chain
+	/// compiles every pass, so it is rebuilt only for a new preset path or after a retry.
 	void* m_shader_chain = nullptr;
 	std::string m_shader_chain_preset;
 	bool m_shader_chain_failed = false;
+	u64 m_shader_chain_retry = 0;
 	size_t m_shader_frame_count = 0;
 	u64 m_shader_param_generation = 0;
 	void DestroyShaderChain();

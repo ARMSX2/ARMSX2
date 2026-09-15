@@ -38,6 +38,7 @@ namespace
 	std::string s_shader_param_preset;
 	std::vector<std::pair<std::string, float>> s_shader_params;
 	std::atomic<u64> s_shader_param_generation{0};
+	std::atomic<u64> s_shader_chain_retry{0};
 } // namespace
 
 void GSDevice::SetShaderChainParams(std::string preset, std::vector<std::pair<std::string, float>> params)
@@ -56,6 +57,16 @@ void GSDevice::SetShaderChainParams(std::string preset, std::vector<std::pair<st
 u64 GSDevice::GetShaderChainParamGeneration()
 {
 	return s_shader_param_generation.load(std::memory_order_acquire);
+}
+
+void GSDevice::RetryShaderChain()
+{
+	s_shader_chain_retry.fetch_add(1, std::memory_order_release);
+}
+
+u64 GSDevice::GetShaderChainRetry()
+{
+	return s_shader_chain_retry.load(std::memory_order_acquire);
 }
 
 bool GSDevice::GetShaderChainParams(const std::string& preset, std::vector<std::pair<std::string, float>>* out)
