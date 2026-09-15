@@ -23,6 +23,28 @@ enum ShaderParamsError: LocalizedError {
     }
 }
 
+/// What stops a preset loading, read off the path librashader quotes in its error.
+enum ShaderPresetFailure: Equatable, Sendable {
+    case needsBasePack
+    case needsReimport
+    case missing(String)
+
+    init(_ error: Error, preset: URL) {
+        let quoted = error.localizedDescription.components(separatedBy: "\"")
+        let path = quoted.count > 2 && quoted[1].contains("/") ? quoted[1] : preset.path
+        let base = "/" + ShaderPresetLibrary.basePackFolderName + "/"
+        // librashader keeps ../ in the quoted path, and on a device it starts with /private/var.
+        let bare = path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path
+        if path.contains("/../"),
+           [path, bare].allSatisfy({ ShaderPresetLibrary.token(for: URL(fileURLWithPath: $0).standardized) == nil }) {
+            self = .needsReimport
+        } else {
+            self = path.contains(base) && !ShaderPresetLibrary.hasBasePack
+                ? .needsBasePack : .missing((path as NSString).lastPathComponent)
+        }
+    }
+}
+
 /// One tweakable value a `.slangp` declares. Its numbers can be missing, non-finite, inverted
 /// or zero-step, so each one is checked before use.
 struct ShaderParam: Identifiable, Hashable, Sendable {
@@ -96,6 +118,7 @@ final class ShaderParams: ObservableObject {
     @Published private(set) var overrides: [String: Float] = [:]
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
+    @Published private(set) var loadFailure: ShaderPresetFailure?
 
     nonisolated static let section = "EmuCore/GS"
     nonisolated static let key = "ShaderChainParams"
@@ -108,6 +131,7 @@ final class ShaderParams: ObservableObject {
     func load(token newToken: String) async {
         token = newToken
         errorText = nil
+        loadFailure = nil
         guard let url = ShaderPresetLibrary.resolve(newToken) else {
             params = []
             overrides = [:]
@@ -115,7 +139,12 @@ final class ShaderParams: ObservableObject {
         }
         overrides = Self.stored()[newToken] ?? [:]
         isLoading = true
-        params = await Task.detached(priority: .userInitiated) { Self.read(at: url) }.value
+        do {
+            params = try await Task.detached(priority: .userInitiated) { try Self.read(at: url) }.value
+        } catch {
+            params = []
+            loadFailure = ShaderPresetFailure(error, preset: url)
+        }
         isLoading = false
         pushEffective()
     }
@@ -214,9 +243,9 @@ final class ShaderParams: ObservableObject {
         return decoded
     }
 
-    private nonisolated static func read(at url: URL) -> [ShaderParam] {
-        guard let json = ARMSX2Bridge.shaderPresetParameters(atPath: url.path),
-              let data = json.data(using: .utf8),
+    private nonisolated static func read(at url: URL) throws -> [ShaderParam] {
+        let json = try ARMSX2Bridge.shaderPresetParameters(atPath: url.path)
+        guard let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([ShaderParam].self, from: data) else {
             return []
         }
