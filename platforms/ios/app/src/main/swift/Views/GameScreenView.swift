@@ -1927,10 +1927,12 @@ private struct SpeedControlPanel: View {
 private struct ShaderControlPanel: View {
     @Bindable var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss
+    @State private var ownShader = false
 
     var body: some View {
         NavigationStack {
             Form {
+                if ownShader { Section { Text(settings.localized(Self.ownShaderNote)).foregroundStyle(.orange) } }
                 ShaderChainSection(
                     enabled: $settings.shaderChainEnabled,
                     presetRef: $settings.shaderChainPresetRef,
@@ -1939,6 +1941,7 @@ private struct ShaderControlPanel: View {
             }
             .navigationTitle(settings.localized("Shaders"))
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { ownShader = PerGameShaderSelection.loadedChain(useCurrent: true, iso: "") != -1 }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(settings.localized("Done")) {
@@ -1948,6 +1951,8 @@ private struct ShaderControlPanel: View {
             }
         }
     }
+
+    static let ownShaderNote = "This game has its own shader setting, so Preset and the Shaders switch here don't change it. Change it under This Game > Per-Game Settings > Graphics."
 }
 
 // MARK: - Save State Slot Row
