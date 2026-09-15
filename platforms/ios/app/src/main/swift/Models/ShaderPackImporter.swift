@@ -10,9 +10,9 @@ enum ShaderPackImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noUserRoot:
-            return "The Documents shader folder could not be opened."
+            return "Your shader folder couldn't be opened."
         case .notAShaderPack:
-            return "That contained no shader presets, so nothing was installed."
+            return "No shader presets were found in it, so nothing was installed."
         }
     }
 }

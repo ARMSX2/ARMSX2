@@ -5,17 +5,20 @@ import Foundation
 
 enum ShaderParamsError: LocalizedError {
     case noName
+    case missingBase
     case noSavedRoot
     case wouldOverwriteBase
 
     var errorDescription: String? {
         switch self {
         case .noName:
-            return "That name has nothing in it that can become a filename."
+            return "Use letters or numbers in the name."
+        case .missingBase:
+            return "The preset these values came from is gone, so nothing was saved."
         case .noSavedRoot:
-            return "The Documents shader folder could not be opened."
+            return "Your shader folder couldn't be opened."
         case .wouldOverwriteBase:
-            return "That is the preset this one is built from. Give it a different name."
+            return "That name belongs to the preset you're changing. Pick another name."
         }
     }
 }
@@ -31,6 +34,7 @@ struct ShaderParam: Identifiable, Hashable, Sendable {
     let step: Float
 
     var id: String { name }
+    var label: String { description.isEmpty ? name : description }
 
     /// Whether the author left any room to move, and the only thing inferred about a
     /// parameter's role. Do not "improve" this by reading the name or the description: stock
@@ -144,8 +148,12 @@ final class ShaderParams: ObservableObject {
     func save(as name: String) async -> String? {
         errorText = nil
         let safe = Self.safeName(name)
-        guard !safe.isEmpty, let base = ShaderPresetLibrary.resolve(token) else {
+        guard !safe.isEmpty else {
             errorText = ShaderParamsError.noName.errorDescription
+            return nil
+        }
+        guard let base = ShaderPresetLibrary.resolve(token) else {
+            errorText = ShaderParamsError.missingBase.errorDescription
             return nil
         }
         let text = Self.presetText(base: base, params: params, overrides: overrides)

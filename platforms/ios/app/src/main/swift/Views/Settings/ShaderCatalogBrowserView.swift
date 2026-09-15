@@ -33,7 +33,7 @@ struct ShaderCatalogBrowserView: View {
 
             if let error = catalog.lastError {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(error)
+                    Text(localized(error))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button(localized("Retry")) { Task { await catalog.load(force: true) } }
@@ -96,7 +96,7 @@ struct ShaderCatalogBrowserView: View {
                 Text(Int64(entry.zip.bytes).formatted(.byteCount(style: .file)))
                     .font(.caption).foregroundStyle(.secondary)
                 if let failure = installer.errors[entry.id] {
-                    Text(failure).font(.caption2).foregroundStyle(.orange)
+                    Text(localized(failure)).font(.caption2).foregroundStyle(.orange)
                 }
             }
 

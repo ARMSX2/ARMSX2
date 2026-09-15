@@ -8,6 +8,7 @@ enum ShaderCatalogInstallError: LocalizedError {
     case tooLarge(Int)
     case statedNoBytes
     case unusableLink
+    case unreachable
     case sizeMismatch(expected: Int, received: Int)
     case hashMismatch(expected: String)
     case serverRefused(Int)
@@ -15,18 +16,14 @@ enum ShaderCatalogInstallError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .tooLarge(let bytes):
-            return "The catalogue states this preset is \(bytes) bytes, which is past what this build will download. Nothing was fetched."
-        case .statedNoBytes:
-            return "The catalogue states this preset is empty, so nothing was fetched."
-        case .unusableLink:
-            return "This preset's catalogue path is not usable, so nothing was fetched."
-        case .sizeMismatch(let expected, let received):
-            return "The download is \(received) bytes and the catalogue states \(expected). Nothing was installed."
-        case .hashMismatch(let expected):
-            return "The download does not match its SHA-256 of \(expected). Nothing was installed."
-        case .serverRefused(let code):
-            return "The catalogue server answered with \(code) for this preset. Nothing was installed."
+        case .tooLarge, .statedNoBytes, .unusableLink:
+            return "This shader can't be downloaded."
+        case .unreachable:
+            return "Can't reach the shader server. Check your connection and try again."
+        case .sizeMismatch, .hashMismatch:
+            return "The download was damaged, so nothing was installed. Try again."
+        case .serverRefused:
+            return "The shader server didn't send this shader. Try again later."
         case .importFailed(let reason):
             return reason
         }
@@ -103,7 +100,13 @@ final class ShaderCatalogInstaller: ObservableObject {
 
         let staged = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString).zip")
-        let (temporary, response) = try await URLSession.shared.download(from: source)
+        let temporary: URL
+        let response: URLResponse
+        do {
+            (temporary, response) = try await URLSession.shared.download(from: source)
+        } catch {
+            throw ShaderCatalogInstallError.unreachable
+        }
         // URLSession hands over a temp file the caller owns. If the move below throws it is
         // still ours and nothing else will remove it; after a successful move it is gone and
         // this is a no-op.

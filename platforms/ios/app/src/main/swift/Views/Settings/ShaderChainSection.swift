@@ -106,13 +106,13 @@ struct ShaderChainSection: View {
             }
 
             if let installed = importer.installedName {
-                Text(localized("Installed") + " " + installed)
+                Text(String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             ForEach(importer.errors.sorted { $0.key < $1.key }, id: \.key) { entry in
-                Text(entry.value)
+                Text(localized(entry.value))
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -165,7 +165,7 @@ struct ShaderChainSection: View {
             }
 
             if let failure = params.errorText {
-                Text(failure)
+                Text(localized(failure))
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -179,36 +179,28 @@ struct ShaderChainSection: View {
     @ViewBuilder
     private func parameterRow(_ param: ShaderParam) -> some View {
         if param.isAdjustable {
-            VStack(alignment: .leading, spacing: 4) {
-                // setValue is the clamp that reaches the store: NaN lands on the author's initial.
-                NumberRow(
-                    param.name,
-                    value: Binding(
-                        get: { params.value(for: param) },
-                        set: { params.setValue($0, for: param) }
-                    ),
-                    in: param.minimum...param.maximum,
-                    format: NumberFormat.plain.decimals(param.decimals),
-                    step: Double(param.increment),
-                    detents: NumberRow.stops(in: Double(param.minimum)...Double(param.maximum),
-                                             step: Double(param.increment)),
-                    accessory: NumberRowAccessory(
-                        systemImage: "arrow.counterclockwise",
-                        label: "Reset %@",
-                        isVisible: params.overrides[param.name] != nil,
-                        action: { params.reset(param) }
-                    ),
-                    settings: settings
-                )
-
-                if !param.description.isEmpty, param.description != param.name {
-                    Text(param.description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            // setValue is the clamp that reaches the store: NaN lands on the author's initial.
+            NumberRow(
+                param.label,
+                value: Binding(
+                    get: { params.value(for: param) },
+                    set: { params.setValue($0, for: param) }
+                ),
+                in: param.minimum...param.maximum,
+                format: NumberFormat.plain.decimals(param.decimals),
+                step: Double(param.increment),
+                detents: NumberRow.stops(in: Double(param.minimum)...Double(param.maximum),
+                                         step: Double(param.increment)),
+                accessory: NumberRowAccessory(
+                    systemImage: "arrow.counterclockwise",
+                    label: "Reset %@",
+                    isVisible: params.overrides[param.name] != nil,
+                    action: { params.reset(param) }
+                ),
+                settings: settings
+            )
         } else {
-            Text(param.name)
+            Text(param.label)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
