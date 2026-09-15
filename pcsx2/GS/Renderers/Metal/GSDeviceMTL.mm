@@ -872,12 +872,17 @@ bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 #else
 	// Latch it, or a preset that fails to compile runs a full slang compile every frame
 	if (m_shader_chain_failed && m_shader_chain_preset == GSConfig.ShaderChainPreset)
-		return false;
+	{
+		if (m_shader_chain_retry == GetShaderChainRetry())
+			return false;
+		DestroyShaderChain();
+	}
 
 	if (!m_shader_chain || m_shader_chain_preset != GSConfig.ShaderChainPreset)
 	{
 		DestroyShaderChain();
 		m_shader_chain_preset = GSConfig.ShaderChainPreset;
+		m_shader_chain_retry = GetShaderChainRetry();
 
 		libra_shader_preset_t preset = nullptr;
 		if (libra_error_t err = libra_preset_create(m_shader_chain_preset.c_str(), &preset))

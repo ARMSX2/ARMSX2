@@ -54,6 +54,7 @@ enum PerGameShaderSelection {
         }
         setString(keys.presetRef, presetRef, useCurrent: useCurrent, iso: iso)
         setString(keys.presetPath, url.path, useCurrent: useCurrent, iso: iso)
+        ARMSX2Bridge.retryShaderChain()
     }
 
     static func clear(useCurrent: Bool, iso: String) {

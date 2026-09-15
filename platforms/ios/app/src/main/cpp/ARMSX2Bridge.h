@@ -284,6 +284,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Queues parameter values for the chain built from preset; the GS thread applies them before its next frame.
 + (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset NS_SWIFT_NAME(setShaderChainParameters(_:forPreset:));
 
+// Lets the renderer load a preset that failed before once more, on its next frame.
++ (void)retryShaderChain;
+
 // Per-game INI access — reads/writes the per-game INI file
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
 // patch-enable-list helpers. "For current game" write/delete variants live-apply.

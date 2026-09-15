@@ -300,9 +300,8 @@ final class SettingsStore {
         requestGraphicsApply()
     }
 
-    /// Keeps core's absolute ShaderChainPreset in step with the token, and sends the saved
-    /// parameter values for it. A token that no longer names a file clears the selection
-    /// instead of leaving core pointed at a missing preset.
+    /// Writes core's absolute ShaderChainPreset for the token, pushes its saved parameters and
+    /// retries it if it failed before. A token that names no file clears the selection.
     private func applyShaderChainSelection() {
         guard !shaderChainPresetRef.isEmpty else {
             ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
@@ -315,6 +314,7 @@ final class SettingsStore {
         }
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
         ShaderParams.pushStored(token: shaderChainPresetRef)
+        ARMSX2Bridge.retryShaderChain()
     }
 
     /// Re-roots the selection in this launch's container before the GS device reads the config.
@@ -734,7 +734,10 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "ShaderChainEnabled", default: false,
         suppressible: false,
         codec: .bool)
-    var shaderChainEnabled: Bool = false { didSet { commit(_shaderChainEnabledConfig, shaderChainEnabled) } }
+    var shaderChainEnabled: Bool = false { didSet {
+        commit(_shaderChainEnabledConfig, shaderChainEnabled)
+        ARMSX2Bridge.retryShaderChain()
+    }}
     // Stored as a ShaderPresetLibrary token, since the container path changes on every install;
     // applyShaderChainSelection writes the absolute ShaderChainPreset that core reads.
     let _shaderChainPresetRefConfig = Setting<String>(

@@ -1685,6 +1685,9 @@ protected:
 	/// all. Takes the lock, so call it only once the generation says something changed.
 	static bool GetShaderChainParams(const std::string& preset, std::vector<std::pair<std::string, float>>* out);
 
+	/// Bumped by RetryShaderChain; a backend that latched a failed preset tries it again once it moves.
+	static u64 GetShaderChainRetry();
+
 	/// Resolves CAS shader includes for the specified source.
 	static bool GetCASShaderSource(std::string* source);
 
@@ -1785,6 +1788,9 @@ public:
 	/// moved on to preset B, which would otherwise silently apply A's values to B's
 	/// same-named parameters.
 	static void SetShaderChainParams(std::string preset, std::vector<std::pair<std::string, float>> params);
+
+	/// Asks the backend to try a preset that failed to load once more.
+	static void RetryShaderChain();
 
 	/// Parses the configured fullscreen mode into its components (width * height @ refresh Hz)
 	static bool GetRequestedExclusiveFullscreenMode(u32* width, u32* height, float* refresh_rate);

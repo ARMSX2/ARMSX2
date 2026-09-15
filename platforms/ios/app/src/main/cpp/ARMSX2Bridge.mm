@@ -4422,6 +4422,10 @@ static void ARMSX2ShaderPresetFailure(libra_error_t err, NSError** error)
     GSDevice::SetShaderChainParams(path ? std::string(path) : std::string(), std::move(values));
 }
 
++ (void)retryShaderChain {
+    GSDevice::RetryShaderChain();
+}
+
 #pragma mark - Frame-time history
 
 // Returns the 150-sample PerformanceMetrics frame-time history (read-only).
