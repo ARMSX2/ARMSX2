@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Fail the build if the RetroAchievements client identity did not reach the binary.
 #
-# A reordered step, a stale build directory or a wrong path each produce a working IPA that
-# reports itself as stock PCSX2. Nothing on the client says so, and the first sign is a
-# player losing a hardcore unlock. Matching the exact version rather than the name also
-# catches a build that compiled an older header.
+# A reordered step, stale build directory or wrong path still produces a working IPA that
+# identifies as stock PCSX2. Matching the exact version also catches an older header.
 
 set -euo pipefail
 
@@ -27,11 +25,9 @@ if [[ -z "$VERSION" ]]; then
 	exit 0
 fi
 
-# The trailing space comes from Host.cpp's format string and is load bearing: a stale 1.2.3
-# is a prefix of a current 1.2.345, so an unanchored match passes the build this exists to
-# catch. grep drains the stream instead of using -q, which exits on the first match and
-# SIGPIPEs strings, leaving pipefail to read a hit as a failed pipeline. Output is discarded
-# so the version never reaches the log.
+# Host.cpp puts a space after the version, which anchors the match so 1.2.3 can't pass for
+# 1.2.345. grep reads the whole stream instead of -q, which would SIGPIPE strings under
+# pipefail. Output is discarded to keep the version out of the log.
 if strings -a "$BINARY" | grep -F "ARMSX2-iOS/v$VERSION " >/dev/null; then
 	echo "$BINARY carries the RetroAchievements client identity"
 	exit 0

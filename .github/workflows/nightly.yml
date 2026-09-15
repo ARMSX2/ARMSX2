@@ -299,11 +299,9 @@ jobs:
       - name: Install Rust iOS target
         run: rustup target add aarch64-apple-ios
 
-      # RetroAchievements grants hardcore on the client name and version in the HTTP user
-      # agent, and pcsx2/Host.cpp reads that version from a gitignored header. Without this
-      # step the nightly identifies as stock PCSX2 and every unlock is softcore. Add the
-      # repo secret IOS_RA_UA_VERSION (the bare version, no leading v) to turn it on; the
-      # script warns and continues when it is absent.
+      # RetroAchievements grants hardcore by the client name and version in the user agent,
+      # which pcsx2/Host.cpp reads from a gitignored header. Set the IOS_RA_UA_VERSION secret
+      # (bare version, no leading v) to enable it; without it the build stays softcore.
       - name: Embed the RetroAchievements client identity
         env:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
@@ -312,8 +310,7 @@ jobs:
       - name: Build unsigned IPA
         run: ./platforms/ios/scripts/build-ios-ipa.sh
 
-      # Nothing on the client reports a rejected agent, so a nightly that lost the identity
-      # looks healthy until a player loses an unlock. Fail here instead.
+      # The client doesn't report a rejected agent, so fail when the identity is missing.
       - name: Verify the client identity reached the binary
         env:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}

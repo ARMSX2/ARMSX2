@@ -17,7 +17,7 @@ enum ShaderPackImportError: LocalizedError {
     }
 }
 
-/// Installs a shader pack under a free name in the user root, then reports what happened.
+/// Installs a shader pack into the user root under a free folder name.
 @MainActor
 final class ShaderPackImporter: ObservableObject {
     @Published private(set) var installing: Set<String> = []
@@ -26,12 +26,8 @@ final class ShaderPackImporter: ObservableObject {
 
     var isBusy: Bool { !installing.isEmpty }
 
-    /// `named` overrides the archive's own name, for a caller whose staging file is a UUID.
-    ///
-    /// The name is returned as well as published. `installedName` is one property on a shared
-    /// importer, so two installs running at once overwrite each other's answer and a caller can
-    /// act on the wrong folder. The published copy stays for the settings row that reports the
-    /// last install; anything acting on a specific call reads the return value.
+    /// `named` replaces the archive's own name, for a staging file named by UUID. Callers use the
+    /// returned folder name, since concurrent installs overwrite `installedName`.
     @discardableResult
     func install(archiveAt source: URL, named: String? = nil) async -> String? {
         await install(source, named: named, writing: Self.extract)
@@ -53,8 +49,7 @@ final class ShaderPackImporter: ObservableObject {
         installedName = nil
         var landed: String?
         do {
-            // A full RetroArch pack is thousands of files, so this blocks for long enough
-            // to stall the settings screen if it runs on the main actor.
+            // A full RetroArch pack is thousands of files, too slow for the main actor.
             landed = try await Task.detached(priority: .userInitiated) {
                 try Self.perform(source, named, writing)
             }.value
@@ -85,8 +80,7 @@ final class ShaderPackImporter: ObservableObject {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
-        // A pack folder with nothing selectable in it stays in the browser forever as a
-        // dead end, so a refusal the user can read beats keeping what they handed over.
+        // A folder with no presets would sit in the browser with nothing to pick, so it is refused.
         guard presetCount(under: destination) > 0 else {
             try? FileManager.default.removeItem(at: destination)
             throw ShaderPackImportError.notAShaderPack
@@ -109,8 +103,7 @@ final class ShaderPackImporter: ObservableObject {
         }
     }
 
-    /// Copied as it stands, because a .slangp names its stages by relative path and the
-    /// tree is therefore part of the pack rather than an arrangement of it.
+    /// Copied as is, because a .slangp names its stages by relative path.
     private nonisolated static func copyTree(_ source: URL, _ destination: URL) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }

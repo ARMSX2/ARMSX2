@@ -49,7 +49,7 @@ struct PerGameSettingsPanel: View {
         }
     }
 
-    /// A compile-time fact, cached here so the Graphics tab never has to name the bridge.
+    /// Whether this build has librashader, read once for the Graphics tab.
     private static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
 
     private static let useGlobalSentinel = -1
@@ -1300,7 +1300,7 @@ struct PerGameSettingsPanel: View {
         } else {
             Self.clearPerGameValue("EmuCore/GS", "dithering_ps2", useCurrent: useCurrent, iso: iso)
         }
-        // All three shader keys go through the one type that knows what each state means.
+        // PerGameShaderSelection writes or clears all three shader keys together.
         if enabled && perGameShaderChain != -1 {
             PerGameShaderSelection.write(chain: perGameShaderChain, presetRef: perGameShaderPresetRef, useCurrent: useCurrent, iso: iso)
         } else {

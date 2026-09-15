@@ -26,8 +26,7 @@
 	#define ARMSX2_HAS_METALFX 0
 #endif
 
-// Only the preset API is used here, to read a preset's parameters. That is runtime-agnostic,
-// so a plain include suffices — no LIBRA_RUNTIME_* opt-in of the kind GSDeviceMTL.mm needs.
+// Only the runtime-independent preset API is used here, so no LIBRA_RUNTIME_* define is needed.
 #ifdef ARMSX2_HAS_LIBRASHADER
 #include "librashader.h"
 #endif
@@ -2586,8 +2585,7 @@ static BOOL ARMSX2IsShaderPackImportName(NSString* name)
     static NSSet<NSString*>* allowed;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // This file is MRC, so a convenience constructor here dies with the pool and every
-        // later call reads freed memory
+        // This file is MRC, so the set is allocated rather than autoreleased.
         allowed = [[NSSet alloc] initWithArray:@[@"slangp", @"slang", @"glslp", @"glsl", @"cgp",
                                                  @"cg", @"inc", @"h", @"params", @"png", @"jpg",
                                                  @"jpeg", @"tga", @"bmp", @"txt", @"md"]];
@@ -2841,9 +2839,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             continue;
 
         NSString *entryName = [NSString stringWithUTF8String:stat.name];
-        // Every file in a mac-built zip has a "._" sibling, and they were eating
-        // the entry budget one-for-one with the real art. Skips dotfiles in
-        // general, which a skin has no business shipping anyway.
+        // Skips __MACOSX and dotfiles, whose "._" siblings would otherwise use up the entry budget.
         if ([entryName containsString:@"__MACOSX"] || [entryName.lastPathComponent hasPrefix:@"."])
             continue;
         if (entryName.length == 0 || [entryName hasSuffix:@"/"] || !ARMSX2IsControllerSkinImportName(entryName, allowedJSONNames))
@@ -2874,8 +2870,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
 + (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL toDirectory:(nonnull NSURL *)destinationDirectory error:(NSError * _Nullable * _Nullable)error
 {
-    // Sized for the stock RetroArch pack, which is thousands of text stages and a few
-    // lookup images; the controller-skin caps of 64 and 512 would truncate it in silence.
+    // Sized for the stock RetroArch pack of thousands of stages; the skin caps would truncate it.
     static const zip_uint64_t kMaxShaderPackEntryBytes = 8 * 1024 * 1024;
     static const zip_uint64_t kMaxShaderPackTotalBytes = 512 * 1024 * 1024;
     static const zip_int64_t kMaxShaderPackEntries = 32768;
@@ -2926,9 +2921,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         NSString *entryName = [NSString stringWithUTF8String:stat.name];
         if (entryName.length == 0 || [entryName hasSuffix:@"/"])
             continue;
-        // Junk is dropped here rather than during extraction because the common-root test
-        // below asks whether EVERY entry shares a root: one surviving __MACOSX/ makes the
-        // answer no, the strip is skipped, and the pack lands one directory too deep.
+        // Junk is dropped before the common-root check, or one __MACOSX/ entry would keep the top
+        // folder from being stripped.
         if (ARMSX2IsArchiveJunkName(entryName))
             continue;
 
@@ -2989,9 +2983,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             [createdDirectories addObject:parentURL];
         }
 
-        // Flattening is what makes the skin extractor safe by construction, and preserving
-        // the tree gives that up, so containment is proven canonically and on a component
-        // boundary: <dest>-evil shares a string prefix with <dest> and is not inside it.
+        // The tree is kept, so containment is checked on the resolved path at a component
+        // boundary: <dest>-evil shares a prefix with <dest> but is outside it.
         char parentBuffer[PATH_MAX] = {};
         NSString *resolvedParent = realpath(parentURL.path.fileSystemRepresentation, parentBuffer) ?
             [manager stringWithFileSystemRepresentation:parentBuffer length:strlen(parentBuffer)] : nil;
@@ -3017,8 +3010,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         }
 
         NSURL *destinationURL = [parentURL URLByAppendingPathComponent:relativeComponents.lastObject isDirectory:NO];
-        // Per entry, because the bytes are autoreleased and a hand-imported RetroArch pack is
-        // thousands of entries: without this the whole extract stays resident up to the cap.
+        // Per entry, so autoreleased bytes from thousands of entries don't pile up until the end.
         bool written = false;
         @autoreleasepool {
             NSData *bytes = [NSData dataWithBytes:data->data() length:data->size()];
@@ -4303,11 +4295,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
  #endif
  }
 
-// Whether librashader was compiled into this build at all. Read off the define rather
-// than probed: a build can carry the bundled presets and no librashader, so a preset
-// file on disk says nothing, and a failed apply says it far too late. Swift cannot see
-// a C++ define, so this is the only way the settings UI learns to leave the shader
-// section out entirely.
+// Whether librashader was compiled in, read from the define because Swift can't see it.
 + (BOOL)isShaderChainSupported {
 #ifdef ARMSX2_HAS_LIBRASHADER
 	return YES;
@@ -4318,9 +4306,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
 #pragma mark - Shader chain parameters
 
-// Loads and frees ITS OWN preset handle, because creating a filter chain consumes the preset
-// outright — reusing the renderer's would leave nothing to enumerate. Reading a preset is pure
-// file parsing, so this needs no Metal device and no running VM.
+// Uses its own preset handle, since creating a chain consumes the renderer's. Parsing needs no
+// Metal device and no running VM.
 + (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path {
 #ifndef ARMSX2_HAS_LIBRASHADER
     return nil;
@@ -4368,8 +4355,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         return out;
     };
 
-    // A shader author's range can be non-finite, and "%g" would spell that "nan" or "inf",
-    // which is not valid JSON and would cost the whole list rather than the one number.
+    // Non-finite values become null, since "%g" would print nan or inf and break the JSON.
     const auto number = [](float value) {
         if (!std::isfinite(value))
             return std::string("null");
@@ -4393,8 +4379,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     }
     json += ']';
 
-    // free_runtime_params takes the list BY VALUE, and the preset is still ours to free —
-    // unlike chain creation, reading the parameters does not consume it.
+    // free_runtime_params takes the list by value, and reading parameters doesn't consume the preset.
     libra_preset_free_runtime_params(params);
     libra_preset_free(&preset);
 
@@ -4402,9 +4387,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 #endif
 }
 
-// Deliberately NOT behind ARMSX2_HAS_LIBRASHADER: the store is plain values and its consumer
-// is already stubbed out in a build without librashader, so guarding here would only add a
-// second way for the feature to vanish silently.
+// Not behind ARMSX2_HAS_LIBRASHADER: the store holds plain values, and its reader is compiled
+// out without librashader.
 + (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset {
     std::vector<std::pair<std::string, float>> values;
     values.reserve(params.count);

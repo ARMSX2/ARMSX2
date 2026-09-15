@@ -3,12 +3,12 @@
 
 import Foundation
 
-/// Silence gets the global chain, `ShaderChainEnabled = false` gets no chain, and a token that no
-/// longer names a file gets no chain either — never the global preset, which is not what was picked.
+/// No keys use the global chain. `ShaderChainEnabled = false`, or a token that names no file, uses
+/// no chain, never the global preset.
 enum PerGameShaderSelection {
     static let section = "EmuCore/GS"
 
-    /// Written and cleared together: the token is the identity, the absolute is its cache.
+    /// Written and cleared together: the token names the preset, the path caches it for core.
     static let keys = (
         enabled: "ShaderChainEnabled",
         presetRef: "ShaderChainPresetRef",
@@ -30,7 +30,7 @@ enum PerGameShaderSelection {
         setString(keys.presetPath, url.path, useCurrent: false, iso: isoName)
     }
 
-    /// -1 use global, 0 off, 1 on -- the sentinel every other per-game control uses.
+    /// -1 use global, 0 off, 1 on, the sentinel every other per-game control uses.
     static func loadedChain(useCurrent: Bool, iso: String) -> Int {
         guard has(keys.enabled, useCurrent: useCurrent, iso: iso) else { return -1 }
         return bool(keys.enabled, useCurrent: useCurrent, iso: iso) ? 1 : 0
@@ -40,9 +40,9 @@ enum PerGameShaderSelection {
         string(keys.presetRef, useCurrent: useCurrent, iso: iso)
     }
 
-    /// Off keeps the enabled key and drops the preset; absence is the answer that inherits.
+    /// Off writes enabled false and drops the preset; no keys at all inherits the global setting.
     static func write(chain: Int, presetRef: String, useCurrent: Bool, iso: String) {
-        // Enabled true with no preset key reads the GLOBAL preset out of the base layer.
+        // Enabled with no preset key would read the global preset from the base layer.
         let resolved = chain == 1 && !presetRef.isEmpty
             ? ShaderPresetLibrary.resolve(presetRef)
             : nil

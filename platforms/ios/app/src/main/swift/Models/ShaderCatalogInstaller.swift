@@ -30,8 +30,8 @@ enum ShaderCatalogInstallError: LocalizedError {
     }
 }
 
-/// Written into every installed folder so a later build can tell what a pack came from and at
-/// which upstream pin, and hidden so `ShaderPresetLibrary.scan()` never lists it as content.
+/// Records the catalogue entry and upstream pin a folder came from. Hidden, so
+/// `ShaderPresetLibrary.scan()` skips it.
 struct ShaderCatalogMarker: Codable {
     let id: String
     let pin: String
@@ -44,8 +44,8 @@ struct ShaderCatalogMarker: Codable {
 @MainActor
 final class ShaderCatalogInstaller: ObservableObject {
     @Published private(set) var installing: Set<String> = []
-    @Published var errors: [String: String] = [:]
-    /// Catalogue id to the folder its marker is in, so a row knows itself installed across relaunches.
+    @Published private(set) var errors: [String: String] = [:]
+    /// Catalogue id to the folder holding its marker, so a row shows installed after a relaunch.
     @Published private(set) var installed: [String: String] = [:]
 
     static let stagingPrefix = "shader-download-"
@@ -88,8 +88,7 @@ final class ShaderCatalogInstaller: ObservableObject {
     }
 
     private func perform(_ entry: ShaderCatalogEntry, pin: String) async throws {
-        // The manifest states the size in advance, so a refusal costs no transfer. The largest
-        // zip in the published run is under a megabyte; this is a fence, not a limit.
+        // The manifest states the size, so an oversized entry is refused before any transfer.
         guard entry.zip.bytes > 0 else { throw ShaderCatalogInstallError.statedNoBytes }
         guard entry.zip.bytes <= Self.maxDownloadBytes else {
             throw ShaderCatalogInstallError.tooLarge(entry.zip.bytes)
@@ -140,8 +139,7 @@ final class ShaderCatalogInstaller: ObservableObject {
         }
         let folder = ShaderPresetLibrary.userRoot?.appendingPathComponent(name, isDirectory: true)
 
-        // The extract itself is not interruptible, so cancelling during it removes the pack
-        // afterwards rather than stopping it. Better than a lie about when cancelling works.
+        // Extraction can't be interrupted, so a cancel during it removes the pack afterwards.
         if Task.isCancelled {
             if let folder { try? FileManager.default.removeItem(at: folder) }
             throw CancellationError()
@@ -179,8 +177,7 @@ final class ShaderCatalogInstaller: ObservableObject {
 
     // MARK: - Staging
 
-    /// `defer` does not run when iOS kills a backgrounded app mid-download, which is the
-    /// ordinary outcome rather than an edge case, so the next launch sweeps what it left.
+    /// Removes downloads left in tmp when iOS killed the app mid-download, where defer never ran.
     static func sweepStagedDownloads() {
         let temporary = FileManager.default.temporaryDirectory
         let contents = (try? FileManager.default.contentsOfDirectory(
