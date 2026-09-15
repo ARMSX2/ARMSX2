@@ -918,18 +918,15 @@ bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 	{
 		ReportShaderChainError("frame", err);
 		m_shader_chain_failed = true;
-		// A chain that failed partway has already encoded passes into this command buffer, and
-		// the ring it recycles per-frame objects over is shallower than our deferred-submit
-		// window. The success path flushes for exactly that reason; so must this one.
+		// A failed frame may already have encoded passes, so it flushes like the success path.
 		FlushEncoders();
 		return false;
 	}
 	m_shader_frame_count++;
 	dTex->SetState(GSTexture::State::Dirty);
 
-	// librashader recycles per-frame objects over a ring shallower than our deferred-submit
-	// window, so a frame is only safe once a submit follows it. This also clears the
-	// deferred-submit counters, so a chain frame always ends a batch
+	// librashader reuses per-frame objects over a ring shallower than the deferred-submit window,
+	// so every chain frame is submitted before the next. This also ends the current batch.
 	FlushEncoders();
 	return true;
 #endif

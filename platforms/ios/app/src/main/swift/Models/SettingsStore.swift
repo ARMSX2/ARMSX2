@@ -270,10 +270,7 @@ final class SettingsStore {
     /// Marks the start of a visual slider drag so per-tick value changes do not each
     /// trigger a graphics reload. Balanced by endVisualSliderEdit(), which fires a
     /// single coalesced apply when the last drag ends.
-    ///
-    /// The watchdog is the safety net. This used to be two call sites on one screen; it is
-    /// now every slider in the app, and a drag that is torn down without its editing-ended
-    /// handler would otherwise leave the count raised and live apply off for the session.
+    /// A watchdog releases the count if a drag ends without its editing-ended handler.
     func beginVisualSliderEdit() {
         visualSliderDragCount += 1
         visualSliderWatchdog?.cancel()
@@ -320,9 +317,8 @@ final class SettingsStore {
         ShaderParams.pushStored(token: shaderChainPresetRef)
     }
 
-    /// Re-roots the selection against the container this launch got, before the GS device
-    /// first reads the config. A value an older build left is a bare absolute path, which is
-    /// turned into a token here or dropped if it names nothing under either root any more.
+    /// Re-roots the selection in this launch's container before the GS device reads the config.
+    /// An older build's absolute path becomes a token, or is dropped if it names nothing.
     private static func migrateShaderChainSelectionV1() {
         let stored = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPreset", defaultValue: "")
         var token = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPresetRef", defaultValue: "")
@@ -336,9 +332,8 @@ final class SettingsStore {
         }
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: token)
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
-        // The only other push is a selection changing, which a launch does not do, so without
-        // this one the chain reaches its first frame on the preset's own numbers. Static and
-        // bridge-only, like the rest of this function: init must not touch SettingsStore.shared.
+        // Launch changes no selection, so the saved parameters are pushed here. Static and
+        // bridge-only, since init must not touch SettingsStore.shared.
         ShaderParams.pushStored(token: token)
     }
 
@@ -740,9 +735,8 @@ final class SettingsStore {
         suppressible: false,
         codec: .bool)
     var shaderChainEnabled: Bool = false { didSet { commit(_shaderChainEnabledConfig, shaderChainEnabled) } }
-    // The selection is kept as a ShaderPresetLibrary token rather than a path, because both
-    // iOS roots sit under a container UUID that changes on every install. Core still reads
-    // ShaderChainPreset as an absolute path, so applyShaderChainSelection writes that through.
+    // Stored as a ShaderPresetLibrary token, since the container path changes on every install;
+    // applyShaderChainSelection writes the absolute ShaderChainPreset that core reads.
     let _shaderChainPresetRefConfig = Setting<String>(
         section: "EmuCore/GS", key: "ShaderChainPresetRef", default: "",
         suppressible: false,
@@ -1643,24 +1637,21 @@ final class SettingsStore {
 
     // ── Init from INI ──
     private init() {
-        // Assignments here do not fire their didSet. Swift skips property observers
-        // inside a class's own init and @Observable does not change that, so nothing
-        // below writes back while the INI loads. Worth knowing before you split this
-        // up: in a helper they are ordinary assignments, the observers fire, and
-        // every non-suppressible setting writes itself to disk on each launch.
+        // Assignments in init skip didSet, so loading the INI writes nothing back. Moved
+        // into a helper they would fire, and every non-suppressible setting would rewrite
+        // itself each launch.
         suppressINIWrites = true
         defer {
             suppressINIWrites = false
             applyFrameLimiterSettings()
         }
 
-        // Frame Pacing default migration. Runs before any stored property is
-        // read so the values below are authoritative. Writes the INI directly
-        // — can't touch SettingsStore.shared mid-init (swift_once deadlock).
+        // Runs before any stored property is read, and writes the INI directly because
+        // init can't touch SettingsStore.shared (swift_once deadlock).
         Self.migrateFramePacingOptimalDefaultV1()
-        // Same deal: the phone rumble slider changed meaning without changing key.
+        // The phone rumble slider changed meaning without changing key.
         Self.migratePhoneRumbleStrengthRescaleV1()
-        // Same deal again, and these run every launch: the container moved.
+        // These two run on every launch, because every install moves the container.
         ShaderPresetLibrary.repairSavedReferences()
         Self.migrateShaderChainSelectionV1()
 

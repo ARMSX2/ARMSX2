@@ -10,8 +10,7 @@ private struct ShaderPackPickerSource: Identifiable {
     var id: Bool { isFolder }
 }
 
-/// Persistence arrives from the caller, so these rows can serve the in-game pause surface
-/// later without knowing which settings tier is writing underneath them.
+/// Persistence comes from the caller, so Settings and the pause card share these rows.
 struct ShaderChainSection: View {
     @Binding var enabled: Bool
     @Binding var presetRef: String
@@ -146,9 +145,8 @@ struct ShaderChainSection: View {
                 } label: {
                     Label(localized("Save as New Preset"), systemImage: "square.and.arrow.down")
                 }
-                // Item-bound, not isPresented: the host holds an observed SettingsStore, so an
-                // isPresented content closure belongs to a body that re-runs on every settings
-                // change and the name field would lose the keyboard on each keystroke.
+                // Item-bound: an isPresented sheet re-runs with the host's settings body and drops
+                // the keyboard on each keystroke.
                 .sheet(item: $saveRequest) { request in
                     ShaderPresetSaveSheet(request: request, localized: localized) { name in
                         Task { if let token = await params.save(as: name) { select(token) } }
@@ -179,7 +177,7 @@ struct ShaderChainSection: View {
     @ViewBuilder
     private func parameterRow(_ param: ShaderParam) -> some View {
         if param.isAdjustable {
-            // setValue is the clamp that reaches the store: NaN lands on the author's initial.
+            // setValue clamps before storing, and NaN becomes the author's initial.
             NumberRow(
                 param.label,
                 value: Binding(
@@ -212,13 +210,7 @@ struct ShaderChainSection: View {
     }
 
     private var presetName: String {
-        guard let separator = presetRef.firstIndex(of: ShaderPresetLibrary.markerSeparator) else {
-            return localized("None")
-        }
-        let relative = presetRef[presetRef.index(after: separator)...]
-        let name = URL(fileURLWithPath: String(relative))
-            .deletingPathExtension().lastPathComponent
-        return name.isEmpty ? localized("None") : name
+        ShaderPresetLibrary.displayName(for: presetRef) ?? localized("None")
     }
 
     @ViewBuilder

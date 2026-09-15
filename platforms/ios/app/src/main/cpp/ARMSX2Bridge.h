@@ -272,18 +272,15 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // hardware). Used by the settings UI to hide the Upscaler option where unusable.
 + (BOOL)isMetalFXSupported;
 
-// Whether this build was compiled with librashader. Not a runtime probe: without cargo
-// the chain is compiled out, and the settings UI leaves the shader section out with it.
+// Whether this build includes librashader. Without cargo it is compiled out and Settings hides Shaders.
 + (BOOL)isShaderChainSupported;
 
-// The tweakable parameters a .slangp preset declares, as a JSON array of objects carrying
-// name, description, initial, minimum, maximum and step, in the author's declaration order.
-// nil when this build has no librashader or the preset will not load; "[]" for a preset that
-// declares none. Blocking file work — never call it on the main thread.
+// A .slangp preset's parameters as a JSON array of {name, description, initial, minimum,
+// maximum, step} in declaration order, or "[]" for none. nil when this build has no
+// librashader or the preset won't load. Reads files, so call it off the main thread.
 + (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path NS_SWIFT_NAME(shaderPresetParameters(atPath:));
 
-// Queues parameter values for the chain built from preset. The GS thread applies them before
-// its next frame, so this is how a value change reaches a running chain.
+// Queues parameter values for the chain built from preset; the GS thread applies them before its next frame.
 + (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset NS_SWIFT_NAME(setShaderChainParameters(_:forPreset:));
 
 // Per-game INI access — reads/writes the per-game INI file

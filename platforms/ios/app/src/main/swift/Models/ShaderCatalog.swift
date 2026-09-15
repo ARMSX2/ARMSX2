@@ -9,8 +9,7 @@ struct ShaderCatalogArchive: Codable, Equatable, Sendable {
     let sha256: String
 }
 
-/// The manifest's per-entry `files` array is 96% of its bytes. Not declaring the key is what
-/// keeps the cache near 300 KB instead of 8 MB; the zip's own sha256 covers every file in it.
+/// Leaves out the manifest's per-entry files array, most of its bytes; the zip's sha256 covers those files.
 struct ShaderCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
@@ -47,8 +46,7 @@ enum ShaderCatalogError: LocalizedError {
     }
 }
 
-/// One manifest and one zip per preset. Nothing here walks a preset's file closure over the
-/// network — the closure is resolved off-device and shipped inside the zip.
+/// One manifest and one zip per preset; each zip already holds the preset's whole file closure.
 @MainActor
 final class ShaderCatalog: ObservableObject {
     static let schema = 1
@@ -56,8 +54,7 @@ final class ShaderCatalog: ObservableObject {
     nonisolated static let overrideSection = "EmuCore/GS"
     nonisolated static let overrideKey = "ShaderCatalogueBase"
 
-    /// Read once. No UI writes it; it exists so a simulator can be pointed at a local emit,
-    /// which is the only way to exercise this without a host, since ATS refuses plain HTTP.
+    /// Read once and only set by hand, to point a simulator at a local catalogue; ATS refuses plain HTTP.
     nonisolated static let base: URL = resolvedBase()
 
     @Published private(set) var entries: [ShaderCatalogEntry] = []
@@ -99,8 +96,7 @@ final class ShaderCatalog: ObservableObject {
             Self.writeCache(manifest)
         } catch {
             guard !Task.isCancelled else { return }
-            // Entries already on screen came from disk, so a failed refresh ages them rather
-            // than emptying the list. It is a banner, not an error state.
+            // Cached entries stay listed and are marked stale instead of cleared.
             if entries.isEmpty {
                 lastError = (error as? ShaderCatalogError ?? .unreachable).localizedDescription
             } else {
@@ -124,7 +120,6 @@ final class ShaderCatalog: ObservableObject {
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw ShaderCatalogError.serverError(http.statusCode)
         }
-        // Reaching it, reading it, and reading a format this build knows are three failures.
         let manifest: ShaderCatalogManifest
         do {
             manifest = try JSONDecoder().decode(ShaderCatalogManifest.self, from: data)
@@ -143,8 +138,7 @@ final class ShaderCatalog: ObservableObject {
         assetURL("manifest.json") ?? base
     }
 
-    /// `..` and `/` both survive percent-encoding for `.urlPathAllowed`, so a hostile manifest
-    /// entry could otherwise walk the path off the catalogue root.
+    /// Checked first, because `..` and `/` survive percent-encoding for `.urlPathAllowed`.
     static func assetURL(_ path: String) -> URL? {
         guard SkinAssetPath.isSafeRelative(path) else { return nil }
         let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
@@ -190,8 +184,7 @@ final class ShaderCatalog: ObservableObject {
         return cached
     }
 
-    /// Written as this build's own slim projection rather than the served bytes, so the cache
-    /// costs what the app reads and not what the publisher sends.
+    /// Caches only the fields this build decodes, not the served manifest.
     private static func writeCache(_ manifest: ShaderCatalogManifest) {
         guard let directory = cacheDirectory, let file = cacheFile else { return }
         let cached = CachedCatalogue(

@@ -451,8 +451,7 @@ struct GameScreenView: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: childPresentedBinding(.shaders)) {
-            // Large only: this panel pushes a searchable browser and grows a variable-length
-            // parameter list, and a medium detent under a search keyboard shows almost nothing.
+            // Large only: a medium detent leaves little room for preset search and parameters.
             ShaderControlPanel(settings: settings)
                 .presentationDetents([.large])
         }
@@ -1922,8 +1921,8 @@ private struct SpeedControlPanel: View {
 
 // MARK: - Shader Control Panel
 
-/// The settings tree's shader section, hosted for the pause card. Both settings live in
-/// `EmuCore/GS`, so `commit` already coalesces the graphics apply and this panel writes none.
+/// The Settings shader section in the pause card. Both settings are in `EmuCore/GS`, so
+/// `commit` applies them and the panel applies nothing itself.
 private struct ShaderControlPanel: View {
     @Bindable var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss

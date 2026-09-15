@@ -3,7 +3,7 @@
 
 import SwiftUI
 
-/// A constant id, so a host body re-running cannot rebuild the browser's search field under the keyboard.
+/// A constant id, so a re-running host body keeps the browser's search field and keyboard.
 struct ShaderPresetBrowserRequest: Identifiable {
     let id = "shader-preset-browser"
 }
@@ -77,8 +77,7 @@ struct ShaderPresetBrowserView: View {
                 Text(localized("Presets saved from it stop working."))
             }
         }
-        // Rescanned on every appearance: packs land in Documents through the Files app
-        // while ARMSX2 is running, so a tree held across presentations goes stale.
+        // Rescanned on every appearance, since packs can arrive through the Files app while the app runs.
         .onAppear { Task { await rescan() } }
     }
 
@@ -134,8 +133,7 @@ struct ShaderPresetBrowserView: View {
     private func rescan() async {
         let target = folder
         listing = await Task.detached(priority: .userInitiated) { () -> ShaderPresetListing in
-            let library = ShaderPresetLibrary()
-            return target.map { library.listing(at: $0) } ?? library.scan()
+            target.map { ShaderPresetLibrary.listing(at: $0) } ?? ShaderPresetLibrary.scan()
         }.value
         scanned = true
     }

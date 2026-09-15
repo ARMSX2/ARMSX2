@@ -1355,8 +1355,8 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	// Guarded here rather than in the backends so a device that never overrides
 	// DoApplyShaderChain (software, or a build without librashader) costs nothing.
 	const bool wanted = GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty();
-	// On the edge, not every frame: turning the chain off used to leave every pass's target
-	// and pipeline resident until the preset changed or the device died.
+	// Frees a chain that is no longer wanted. GSRenderer::Merge only calls this while one is,
+	// so the release doesn't run from there.
 	if (!wanted && m_shader_chain_loaded)
 	{
 		ReleaseShaderChain();
