@@ -431,7 +431,11 @@ struct PerGameSettingsPanel: View {
                 context: perGamePadLayoutEditorContext
             )
         }
-        .sheet(item: $shaderPresetRequest) { _ in
+        .sheet(item: $shaderPresetRequest, onDismiss: {
+            if !perGameShaderPresetRef.isEmpty, ShaderPresetLibrary.resolve(perGameShaderPresetRef) == nil {
+                perGameShaderPresetRef = ""
+            }
+        }) { _ in
             NavigationStack {
                 ShaderPresetBrowserView(
                     title: settings.localized("Shader Presets"),
