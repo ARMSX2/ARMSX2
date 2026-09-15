@@ -25,8 +25,7 @@ struct ShaderPresetListing: Hashable {
     static let empty = ShaderPresetListing(folders: [], presets: [])
 }
 
-/// Where preset files live, what they are called from one install to the next, and what each
-/// costs in passes. Not observable and not shared: a caller owns an instance while it browses.
+/// Where preset files live and what they are called from one install to the next.
 final class ShaderPresetLibrary {
     static let presetExtension = "slangp"
     static let rootFolderName = "shaders"
@@ -41,18 +40,9 @@ final class ShaderPresetLibrary {
     // path separator, so the relative half never needs escaping. Decoding splits on the first.
     static let markerSeparator: Character = ":"
 
-    // The bundle's shaders/ root also holds the emulator's own GLSL and Metal resources, which
-    // are not user content and must never reach a browser. Only these two are preset trees.
+    // shaders/ in the bundle also holds the core's own GLSL and Metal, which must never be listed.
     private static let bundlePresetFolders = ["presets", "armsx2-tracer"]
-    private static let maxReferenceDepth = 16
     private static let maxScanDepth = 12
-
-    private struct PassCountKey: Hashable {
-        let path: String
-        let modified: Date?
-    }
-
-    private var passCounts: [PassCountKey: Int?] = [:]
 
     // MARK: - Roots
 
@@ -146,16 +136,16 @@ final class ShaderPresetLibrary {
 
     // MARK: - Scanning
 
-    /// The browsable top level. Packs get dropped in while the app is alive, so a caller
-    /// rescans rather than holding a tree across presentations.
     func scan() -> ShaderPresetListing {
         Self.prepareUserRoots()
         var folders: [ShaderPresetFolder] = []
         var presets: [ShaderPresetFile] = []
         if let bundle = Self.bundleRoot {
-            folders += Self.bundlePresetFolders
-                .map { bundle.appendingPathComponent($0, isDirectory: true) }
-                .compactMap { Self.folder(at: $0) }
+            for name in Self.bundlePresetFolders {
+                let level = listing(at: bundle.appendingPathComponent(name, isDirectory: true))
+                folders += level.folders
+                presets += level.presets
+            }
         }
         if let user = Self.userRoot {
             let level = listing(at: user)
@@ -243,71 +233,5 @@ final class ShaderPresetLibrary {
 
     private static func sorted(_ presets: [ShaderPresetFile]) -> [ShaderPresetFile] {
         presets.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    // MARK: - Pass count
-
-    /// Follows `#reference` to whichever file actually declares the count. nil is an ordinary
-    /// answer, not an error: 691 of the stock pack's 2542 presets declare none anywhere in
-    /// their chain. It is reported and nothing else — never used to rank, filter or badge.
-    func passCount(for url: URL) -> Int? {
-        var visited: Set<String> = []
-        return passCount(for: url, depth: 0, visited: &visited)
-    }
-
-    private func passCount(for url: URL, depth: Int, visited: inout Set<String>) -> Int? {
-        let path = url.standardizedFileURL.path
-        guard depth <= Self.maxReferenceDepth, visited.insert(path).inserted else { return nil }
-        let key = PassCountKey(path: path, modified: Self.modificationDate(of: path))
-        if let cached = passCounts[key] { return cached }
-
-        let facts = Self.facts(of: url)
-        var result = facts.shaders
-        if result == nil {
-            let directory = url.deletingLastPathComponent()
-            for reference in facts.references {
-                let target = directory.appendingPathComponent(reference).standardizedFileURL
-                guard FileManager.default.fileExists(atPath: target.path) else { continue }
-                if let count = passCount(for: target, depth: depth + 1, visited: &visited) {
-                    result = count
-                    break
-                }
-            }
-        }
-        passCounts[key] = result
-        return result
-    }
-
-    private static func facts(of url: URL) -> (shaders: Int?, references: [String]) {
-        guard let text = (try? String(contentsOf: url, encoding: .utf8))
-            ?? (try? String(contentsOf: url, encoding: .isoLatin1)) else { return (nil, []) }
-        var references: [String] = []
-        for raw in text.split(whereSeparator: \.isNewline) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if let count = value(of: "shaders", in: line).flatMap({ Int(unquoted($0)) }) {
-                return (count, references)
-            }
-            if line.lowercased().hasPrefix("#reference") {
-                let target = unquoted(String(line.dropFirst("#reference".count))
-                    .trimmingCharacters(in: .whitespaces))
-                if !target.isEmpty { references.append(target) }
-            }
-        }
-        return (nil, references)
-    }
-
-    private static func value(of key: String, in line: String) -> String? {
-        guard line.lowercased().hasPrefix(key) else { return nil }
-        let rest = String(line.dropFirst(key.count)).trimmingCharacters(in: .whitespaces)
-        guard rest.hasPrefix("=") else { return nil }
-        return String(rest.dropFirst()).trimmingCharacters(in: .whitespaces)
-    }
-
-    private static func unquoted(_ value: String) -> String {
-        value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-    }
-
-    private static func modificationDate(of path: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     }
 }

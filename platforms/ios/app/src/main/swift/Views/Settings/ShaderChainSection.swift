@@ -35,90 +35,82 @@ struct ShaderChainSection: View {
 
     private var chainSection: some View {
         Section {
-            Toggle(localized("Shader Chain"), isOn: $enabled)
-                .sheet(item: $pickerSource) { source in
-                    picker(for: source)
-                }
-                .task(id: presetRef) {
-                    await params.load(token: presetRef)
-                }
-
-            if enabled {
-                NavigationLink {
-                    ShaderPresetBrowserView(
-                        title: localized("Shader Presets"),
-                        folder: nil,
-                        selectedToken: presetRef,
-                        localized: localized,
-                        onSelect: { presetRef = $0 }
-                    )
-                } label: {
-                    HStack {
-                        Text(localized("Preset"))
-                        Spacer()
-                        Text(presetName)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+            NavigationLink {
+                ShaderPresetBrowserView(
+                    title: localized("Shader Presets"),
+                    folder: nil,
+                    selectedToken: presetRef,
+                    localized: localized,
+                    onSelect: select
+                )
+            } label: {
+                HStack {
+                    Text(localized("Preset"))
+                    Spacer()
+                    Text(presetName)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
+            .sheet(item: $pickerSource) { source in
+                picker(for: source)
+            }
+            .task(id: presetRef) {
+                await params.load(token: presetRef)
+            }
 
-            // Outside the gate on purpose: with the chain off there is nothing to pick yet,
-            // and a first run would otherwise have to guess that the toggle comes first.
+            if !presetRef.isEmpty {
+                Toggle(localized("Shaders"), isOn: $enabled)
+            }
+
             NavigationLink {
                 ShaderCatalogBrowserView(localized: localized, onSelect: select)
             } label: {
                 Label(localized("Download Shaders"), systemImage: "arrow.down.circle")
             }
 
-            if enabled {
-                Menu {
-                    Button {
-                        pickerSource = ShaderPackPickerSource(isFolder: false)
-                    } label: {
-                        Label(localized("From a Zip Archive"), systemImage: "doc.zipper")
-                    }
-                    Button {
-                        pickerSource = ShaderPackPickerSource(isFolder: true)
-                    } label: {
-                        Label(localized("From a Folder"), systemImage: "folder")
-                    }
+            Menu {
+                Button {
+                    pickerSource = ShaderPackPickerSource(isFolder: false)
                 } label: {
-                    Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
+                    Label(localized("From a Zip Archive"), systemImage: "doc.zipper")
                 }
-                .disabled(importer.isBusy)
-
-                if importer.isBusy {
-                    ProgressView(localized("Installing..."))
+                Button {
+                    pickerSource = ShaderPackPickerSource(isFolder: true)
+                } label: {
+                    Label(localized("From a Folder"), systemImage: "folder")
                 }
+            } label: {
+                Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
+            }
+            .disabled(importer.isBusy)
 
-                if let installed = importer.installedName {
-                    Text(localized("Installed") + " " + installed)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            if importer.isBusy {
+                ProgressView(localized("Installing..."))
+            }
 
-                ForEach(importer.errors.sorted { $0.key < $1.key }, id: \.key) { entry in
-                    Text(entry.value)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+            if let installed = importer.installedName {
+                Text(localized("Installed") + " " + installed)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-                if !presetRef.isEmpty {
-                    Button(role: .destructive) {
-                        presetRef = ""
-                    } label: {
-                        Text(localized("Clear Preset"))
-                    }
+            ForEach(importer.errors.sorted { $0.key < $1.key }, id: \.key) { entry in
+                Text(entry.value)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            if !presetRef.isEmpty {
+                Button(role: .destructive) {
+                    presetRef = ""
+                } label: {
+                    Text(localized("Clear Preset"))
                 }
             }
-        } header: {
-            Text(localized("Shader Chain"))
         } footer: {
-            Text(localized("RetroArch .slangp presets, applied to the finished image after the other post-processing steps. A preset compiles the first time you select it, so that one frame can hitch.")
-                + "\n\n"
-                + localized("Presets from the RetroArch collection, one at a time. Each download is checked against the catalogue's own hash before anything is written, and lands beside a pack you installed by hand."))
+            Text(localized("Filters like CRT scanlines or LCD grids, drawn over the game. The first frame can stutter while one loads."))
         }
     }
 
@@ -171,7 +163,7 @@ struct ShaderChainSection: View {
         } header: {
             Text(localized("Parameters"))
         } footer: {
-            Text(localized("What this preset's author chose to expose, in the order they declared it. A saved preset lands in My Presets and is selectable from the browser; it points at the base pack by path, so removing that pack breaks it, and Reset on a saved preset returns to the values you saved."))
+            Text(localized("Changes show right away. Save as New Preset keeps them in My Presets. A saved preset stops working if you delete the shader it came from."))
         }
     }
 

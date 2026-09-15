@@ -14,7 +14,7 @@ struct PerGameShaderSection: View {
 
     var body: some View {
         Section {
-            Picker(settings.localized("Shader Chain"), selection: $chain) {
+            Picker(settings.localized("Shaders"), selection: $chain) {
                 Text(settings.localized("Use Global")).tag(-1)
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
@@ -44,7 +44,7 @@ struct PerGameShaderSection: View {
         } header: {
             Text(settings.localized("Shaders"))
         } footer: {
-            Text(settings.localized("A game with no shader of its own uses the global chain. Off means no shader for this game even while the global chain is running. Parameter values belong to the preset and not to the game, so two games on the same preset share them."))
+            Text(settings.localized("Use Global follows the Shaders page. Off turns shaders off for this game only. Slider values belong to the preset, so games on the same preset share them."))
         }
     }
 
