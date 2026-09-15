@@ -3,6 +3,12 @@
 
 import SwiftUI
 
+/// A constant id, so a host body re-running cannot rebuild the browser's search field under the keyboard.
+struct ShaderPresetBrowserRequest: Identifiable {
+    let id = "shader-preset-browser"
+}
+
+/// The host closes its sheet in onSelect, since an outer folder's dismiss is ignored under an inner one.
 struct ShaderPresetBrowserView: View {
     let title: String
     let folder: ShaderPresetFolder?
@@ -10,7 +16,6 @@ struct ShaderPresetBrowserView: View {
     let localized: @MainActor (String) -> String
     let onSelect: @MainActor (String) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var listing = ShaderPresetListing.empty
     @State private var scanned = false
     @State private var searchText = ""
@@ -34,7 +39,6 @@ struct ShaderPresetBrowserView: View {
             ForEach(presets) { preset in
                 Button {
                     onSelect(preset.token)
-                    dismiss()
                 } label: {
                     presetRow(preset)
                 }
