@@ -92,6 +92,9 @@ struct ShaderChainSection: View {
                 } label: {
                     Label(localized("From a Folder"), systemImage: "folder")
                 }
+                Button(action: getBasePack) {
+                    basePackLabel
+                }
             } label: {
                 Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
             }
@@ -100,12 +103,16 @@ struct ShaderChainSection: View {
                 picker(for: source)
             }
 
-            if importer.isBusy {
+            if importer.installing.contains(ShaderPresetLibrary.basePackFolderName) {
+                ProgressView(localized("Downloading RetroArch Slang Shaders..."))
+            } else if importer.isBusy {
                 ProgressView(localized("Installing..."))
             }
 
             if let installed = importer.installedName {
-                Text(String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
+                Text(installed == ShaderPresetLibrary.basePackFolderName
+                     ? localized("RetroArch Slang Shaders are installed.")
+                     : String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -207,6 +214,22 @@ struct ShaderChainSection: View {
     private func select(_ token: String) {
         enabled = true
         presetRef = token
+    }
+
+    private func getBasePack() {
+        Task { await importer.installBasePack() }
+    }
+
+    private var basePackInstalled: Bool {
+        ShaderPresetLibrary.basePackRoot.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
+    private var basePackLabel: some View {
+        Label {
+            Text(localized("RetroArch Slang Shaders") + " (" + ShaderPackImporter.basePackBytes.formatted(.byteCount(style: .file)) + ")")
+        } icon: {
+            Image(systemName: basePackInstalled ? "checkmark.circle" : "arrow.down.circle")
+        }
     }
 
     private var presetName: String {

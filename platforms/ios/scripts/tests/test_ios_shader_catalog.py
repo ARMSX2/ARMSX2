@@ -84,6 +84,21 @@ class Downloader(unittest.TestCase):
                          "the installer reads importer.installedName, which a concurrent "
                          "install overwrites")
 
+    def test_the_base_pack_replaces_its_folder_instead_of_landing_beside_it(self):
+        """Downloading RetroArch Slang Shaders again replaces shaders/shaders_slang."""
+        importer = read(SWIFT / "Models/ShaderPackImporter.swift")
+        self.assertIn('"https://buildbot.libretro.com/assets/frontend/shaders_slang.zip"', importer)
+        install = at(importer, "install(archiveAt: staged, named: key)", "the base pack install")
+        cleared = at(importer, "installedName = nil", "clearing the landed folder name")
+        replace = at(importer, "Self.replaceBasePack(with: landed)", "the replace call")
+        self.assertLess(install, replace, "the base pack folder is replaced before it is installed")
+        self.assertLess(install, cleared, "installedName is cleared before the install sets it")
+        self.assertLess(cleared, replace,
+                        "installedName still shows shaders_slang (2) while the old copy is replaced")
+        remove = at(importer, "try FileManager.default.removeItem(at: base)", "removing the old copy")
+        move = at(importer, "try FileManager.default.moveItem(", "moving the new copy in")
+        self.assertLess(remove, move, "the new copy is moved before the old folder is removed")
+
     def test_per_game_on_without_a_resolvable_preset_is_written_off(self):
         """Per-game On with a preset that does not resolve is saved as Off."""
         body = block(read(PER_GAME), "static func write(chain:")

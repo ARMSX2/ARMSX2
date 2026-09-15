@@ -38,6 +38,38 @@ final class ShaderPackImporter: ObservableObject {
         await install(source, named: nil, writing: Self.copyTree)
     }
 
+    static let basePackURL = URL(string: "https://buildbot.libretro.com/assets/frontend/shaders_slang.zip")!
+    static let basePackBytes: Int64 = 54_000_000
+
+    func installBasePack() async {
+        let key = ShaderPresetLibrary.basePackFolderName
+        installing.insert(key)
+        errors[key] = nil
+        defer { installing.remove(key) }
+        do {
+            let staged = try await ShaderCatalogInstaller.stage(Self.basePackURL)
+            defer { try? FileManager.default.removeItem(at: staged) }
+            guard let landed = await install(archiveAt: staged, named: key) else {
+                errors[key] = errors.removeValue(forKey: staged.lastPathComponent)
+                    ?? ShaderPackImportError.notAShaderPack.localizedDescription
+                return
+            }
+            installedName = nil
+            try await Task.detached(priority: .userInitiated) { try Self.replaceBasePack(with: landed) }.value
+            installedName = key
+        } catch {
+            errors[key] = error.localizedDescription
+        }
+    }
+
+    private nonisolated static func replaceBasePack(with landed: String) throws {
+        let name = ShaderPresetLibrary.basePackFolderName
+        guard landed != name, let root = ShaderPresetLibrary.userRoot else { return }
+        let base = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.removeItem(at: base)
+        try FileManager.default.moveItem(at: root.appendingPathComponent(landed, isDirectory: true), to: base)
+    }
+
     private func install(
         _ source: URL,
         named: String?,

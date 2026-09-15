@@ -2913,6 +2913,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     NSMutableArray<NSNumber *> *indices = [NSMutableArray array];
+    BOOL hasStages = NO;
     for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0)); i++) {
         zip_stat_t stat = {};
         if (zip_stat_index(zf.get(), i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
@@ -2928,9 +2929,11 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
         [names addObject:entryName];
         [indices addObject:@(i)];
+        hasStages = hasStages || [entryName.pathExtension.lowercaseString isEqualToString:@"slang"];
     }
 
-    NSString *commonRoot = ARMSX2CommonArchiveRoot(names);
+    // A pack with no .slang files reaches other packs through ../ paths, so it keeps its top folder.
+    NSString *commonRoot = hasStages ? ARMSX2CommonArchiveRoot(names) : nil;
     NSMutableArray<NSURL *> *extracted = [NSMutableArray array];
     NSMutableArray<NSURL *> *createdDirectories = [NSMutableArray array];
     zip_uint64_t totalBytes = 0;
