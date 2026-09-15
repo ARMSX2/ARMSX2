@@ -4,6 +4,8 @@
 #pragma once
 
 #include "GS/GS.h"
+#include "GS/GSRegs.h"
+#include "GS/GSVector.h"
 
 // The alpha stencil counter, drawn by the blend unit instead of by reading the render target.
 //
@@ -19,12 +21,16 @@
 // Ad * s + Ad * a1 (source DST_ALPHA, destination SRC1_ALPHA) gives Ad * (1 + 3/255) for Av 130 and
 // Ad * 252/255 for Av 127. Both factors are whole 8-bit values, so a fixed-point 8-bit blend unit
 // carries them without loss. The up step matches the console for Ad 64..191 and the down step for
-// Ad 43..212 except exactly 128; these games keep the counter near 96. The blend unit also applies
+// Ad 43..212 except exactly 128, where it stores 126 and the console 127. The Jak games keep the
+// counter near 96; Ratchet & Clank: Up Your Arsenal's effect counter, which also takes this road, sits
+// at 128 and can drift a few levels low. The blend unit also applies
 // overlapping triangles in order within one draw, so the whole volume can arrive as one draw that
 // reads nothing.
 //
 // Whether a device takes this road is GSDevice::FeatureSupport::fast_stencil_shadow, decided once
-// from DeviceQualifies below.
+// from DeviceQualifies below. Whether a draw takes it is IsCounterShape, from the registers, which
+// the auto-flush predicate can see, and VerticesQualify, from the vertex trace, which only the
+// renderer has.
 namespace GSFastStencilShadow
 {
 	// The device rule is three facts:
@@ -47,5 +53,34 @@ namespace GSFastStencilShadow
 	constexpr bool DeviceQualifies(RenderAPI api, bool texture_barrier, bool dual_source_blend)
 	{
 		return api == RenderAPI::Vulkan && !texture_barrier && dual_source_blend;
+	}
+
+	// The counter's registers: flat-shaded triangles, textured with nearest sampling from the 32-bit
+	// frame they write, modulating with texture alpha, writing alpha alone, with an alpha test that
+	// cannot fail, no destination alpha test, no depth write, no FBA, no fog and no AA1. The
+	// primitive class and the vertices are the caller's to check.
+	inline bool IsCounterShape(const GIFRegPRIM& prim, const GIFRegTEX0& tex0, const GIFRegTEX1& tex1,
+		const GIFRegTEST& test, const GIFRegFRAME& frame, const GIFRegZBUF& zbuf, const GIFRegFBA& fba)
+	{
+		return prim.TME && !prim.IIP && !prim.FGE && !prim.AA1 &&
+		       frame.PSM == PSMCT32 && frame.FBMSK == 0x00FFFFFF &&
+		       tex0.TBP0 == frame.Block() && tex0.PSM == PSMCT32 && tex0.TFX == TFX_MODULATE && tex0.TCC &&
+		       tex1.MMAG == 0 && tex1.MMIN == 0 &&
+		       !test.DATE && (!test.ATE || test.ATST == ATST_ALWAYS) &&
+		       zbuf.ZMSK && !fba.FBA;
+	}
+
+	// What the registers cannot say, from the draw's vertex bounds. Every vertex alpha lies in
+	// 127..130: the shader makes 127 the down step, 130 the up step, and 128 or 129 no change, which
+	// is exact for 128 and, below Ad 128, for 129. The games only send 127 and 130. And every vertex
+	// samples the pixel under it, by the bounding-box test CanUseTexIsFB applies to the same pattern.
+	inline bool VerticesQualify(int alpha_min, int alpha_max, const GSVector4& pos_min, const GSVector4& pos_max,
+		const GSVector4& tex_min, const GSVector4& tex_max)
+	{
+		if (alpha_min < 127 || alpha_max > 130)
+			return false;
+
+		const GSVector4 diff(pos_min.upld(pos_max) - tex_min.upld(tex_max));
+		return (diff.abs() < GSVector4(1.0f)).alltrue();
 	}
 } // namespace GSFastStencilShadow

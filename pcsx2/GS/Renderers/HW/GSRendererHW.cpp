@@ -8,6 +8,7 @@
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
+#include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
@@ -3330,6 +3331,13 @@ void GSRendererHW::Draw()
 	}
 
 	m_process_texture = PRIM->TME && !(NeedsBlending() && m_context->ALPHA.IsBlack() && !m_cached_ctx.TEX0.TCC) && !(no_rt && (!m_cached_ctx.TEST.ATE || m_cached_ctx.TEST.ATST <= ATST_ALWAYS));
+
+	// The alpha stencil counter on a device that draws it through the blend unit
+	// (GSFastStencilShadow.h). Its texture is the frame's own alpha at the pixel being written, which
+	// the blend reads for nothing, so the texture is never looked up.
+	m_fast_stencil_shadow = m_process_texture && !no_rt && IsFastStencilShadowDraw();
+	if (m_fast_stencil_shadow)
+		m_process_texture = false;
 
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
 	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
@@ -9553,6 +9561,24 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	m_conf.tex = src_copy.get();
 }
 
+bool GSRendererHW::IsFastStencilShadowDraw() const
+{
+	if (!g_gs_device->Features().fast_stencil_shadow || m_vt.m_primclass != GS_TRIANGLE_CLASS)
+		return false;
+
+	// The renderer's cached registers, which have already dropped an alpha test that cannot change what
+	// is written. That admits Ratchet & Clank: Up Your Arsenal's effect counter (alpha test never
+	// passing, failing to the frame only), deliberately. Its counter sits at 128, and a down step from
+	// exactly 128 lands one level low on every blend unit (252/255 of 128 stores 126, the console 127), so
+	// that hidden counter can drift a few levels. Presented frames were unchanged in every dump tested,
+	// and the draw loses its render-pass break and copy. GSState::IsAutoFlushDraw reads the registers as
+	// written, where the alpha test is still present, so that counter keeps its auto-flush split.
+	return GSFastStencilShadow::IsCounterShape(*PRIM, m_cached_ctx.TEX0, m_context->TEX1, m_cached_ctx.TEST,
+			   m_cached_ctx.FRAME, m_cached_ctx.ZBUF, m_context->FBA) &&
+		   GSFastStencilShadow::VerticesQualify(m_vt.m_min.c.a, m_vt.m_max.c.a, m_vt.m_min.p, m_vt.m_max.p,
+			   m_vt.m_min.t, m_vt.m_max.t);
+}
+
 bool GSRendererHW::CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex,
 	const TextureMinMaxResult& tmm)
 {
@@ -10218,6 +10244,17 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	CalculateAlphaRange(rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max,
 		rt_new_alpha_known, rt_new_alpha_via_union);
 
+	if (m_fast_stencil_shadow && rt)
+	{
+		// The counter multiplies whatever each pixel held, and one unsplit draw can step a pixel many
+		// times, so nothing is known about the result. A bound above 128 also makes
+		// DetermineAlphaScaling unscale an alpha-scaled target once, before this draw.
+		rt_new_alpha_min = 0;
+		rt_new_alpha_max = 255;
+		rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
+		rt_new_alpha_via_union = false;
+	}
+
 	// DATE: selection of the algorithm.
 	EmulateDATESelectMethod(date_options, rt, blend_alpha_min, blend_alpha_max);
 
@@ -10280,6 +10317,23 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 			// Restrict this to only when we're overwriting the whole target.
 			new_scale_rt_alpha = full_cover || rt->m_last_draw >= s_n;
 		}
+	}
+
+	if (m_fast_stencil_shadow && rt)
+	{
+		// One blend equation for both steps: A = Ad * s + Ad * a1, with s in the first output's alpha
+		// and a1 in the second (PS_STENCIL_COUNTER). RGB keeps the destination through its blend
+		// factors as well as the write mask, because some Adreno drivers ignore the write mask while
+		// depth testing is on. The blend unit applies overlapping triangles in order, so nothing is
+		// read.
+		m_conf.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_ZERO, GSDevice::CONST_ONE, GSDevice::OP_ADD,
+			GSDevice::DST_ALPHA, GSDevice::SRC1_ALPHA, false, 0);
+		m_conf.ps.stencil_counter = 1;
+		m_conf.ps.no_color1 = false;
+
+		// Multiplying the stored alpha is the same whether or not it is stored scaled, so this draw
+		// never switches the target's alpha scaling.
+		new_scale_rt_alpha = rt->m_rt_alpha_scale;
 	}
 
 	// The blend is chosen. A held exact alpha-mask decision is now either free or pointless.

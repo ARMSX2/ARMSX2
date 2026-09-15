@@ -825,6 +825,11 @@ struct alignas(16) GSHWDrawConfig
 				// ROVs
 				u32 rov_color : 1;
 				PS_ROV_DEPTH rov_depth : 2;
+
+				// Alpha stencil counter drawn by the blend unit (GSFastStencilShadow.h): the shader
+				// writes the per-triangle alpha step to both outputs instead of a colour, for a blend
+				// of source DST_ALPHA and destination SRC1_ALPHA. Reads nothing.
+				u32 stencil_counter : 1;
 			};
 
 			struct

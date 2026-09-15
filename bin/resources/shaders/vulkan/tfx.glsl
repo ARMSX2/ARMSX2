@@ -596,6 +596,7 @@ void main()
 #define PS_TEX_IS_FB 0
 #define PS_ROV_COLOR 0
 #define PS_ROV_DEPTH 0
+#define PS_STENCIL_COUNTER 0
 #endif
 
 #define SW_BLEND (PS_BLEND_A || PS_BLEND_B || PS_BLEND_D)
@@ -1989,6 +1990,16 @@ void main()
 		#endif
 		#if !PS_NO_COLOR1
 			o_col1 = alpha_blend;
+		#endif
+
+		#if PS_STENCIL_COUNTER && !PS_NO_COLOR1
+			// Alpha stencil counter (GSFastStencilShadow.h): new A = (Ad * Av) >> 7 with a flat Av of
+			// 127 or 130. The blend unit computes Ad * o_col0.a + Ad * o_col1.a (source DST_ALPHA,
+			// destination SRC1_ALPHA). The factors are whole 8-bit values because a fixed-point blend
+			// unit keeps 8 bits: up is Ad * (1 + 3/255), down is Ad * 252/255, and 128 or 129 leave Ad
+			// alone. RGB is kept by its blend factors.
+			o_col0 = vec4(0.0f, 0.0f, 0.0f, (vsIn.c.a > 129.5f) ? (3.0f / 255.0f) : 0.0f);
+			o_col1 = vec4((vsIn.c.a < 127.5f) ? (252.0f / 255.0f) : 1.0f);
 		#endif
 
 		// Alpha test with feedback
