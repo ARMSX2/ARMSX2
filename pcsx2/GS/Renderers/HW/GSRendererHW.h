@@ -216,6 +216,8 @@ private:
 	template <bool linear>
 	void RoundSpriteOffset();
 
+	void CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt);
+
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
 	void ResetStates();

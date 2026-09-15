@@ -3157,6 +3157,100 @@ void GSRendererHW::RoundSpriteOffset()
 	}
 }
 
+// The upscaling coverage corrections for sprites: the AlignSpriteX game fix, the pixel-grid snap
+// and RoundSprite. All three rewrite the vertex buffer in place.
+//
+// This must be the LAST pass in a draw that touches geometry. It used to run in Draw(), before
+// DrawPrims, and two passes downstream of it rebuild the whole vertex buffer out of m_vt.m_min /
+// m_vt.m_max -- bounds taken once by m_vt.Update in GSState::DrawRecordTail and never refreshed by
+// anything that moves a vertex. MergeSprite (the paving merge, GameDB mergeSprite) and
+// ConvertSpriteTextureShuffleImpl both do that, so both threw every correction away. Ace Combat 5
+// is the visible case: its display-buffer strips end at x=511.5, the snap pushed the last one out
+// to 512, and the merge put 511.5 back, so at 2x the right-hand device column of the frame was
+// black. Running here instead means both rebuilds have already happened and there is no stale
+// reader left.
+//
+// Texture-shuffle draws are skipped outright. The rebuild replaces the batch with a single quad on
+// whole native pixels, so the snap and AlignSpriteX find nothing to move; only RoundSprite would
+// still act, and putting it on shuffle geometry is a behaviour change, not an ordering fix. Today
+// all three run on a shuffle draw and all three are discarded, so skipping them changes nothing and
+// saves the walk.
+void GSRendererHW::CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt)
+{
+	// Be careful to not correct downscaled targets, this can get messy and break post processing
+	// but it still needs to adjust native stuff from memory as it's not been compensated for
+	// upscaling (Dragon Quest 8 font for example).
+	if (!CanUpscale() || m_vt.m_primclass != GS_SPRITE_CLASS || !rt || rt->GetScale() <= 1.0f || m_texture_shuffle)
+		return;
+
+	// Every pass below reads the first sprite, and the rebuilds upstream set the count themselves.
+	const u32 count = m_vertex->next;
+	if (count < 2)
+		return;
+
+	GSVertex* v = &m_vertex->buff[0];
+
+	// Hack to avoid vertical black line in various games (ace combat/tekken)
+	//
+	// This runs before SnapSpriteEdgesToPixelGrid because its one decision is read off the
+	// first sprite's coordinates, and the snap moves exactly those.
+	bool align_sprite_x = false;
+	if (GSConfig.UserHacks_AlignSpriteX)
+	{
+		// Note for performance reason I do the check only once on the first
+		// primitive
+		const bool unaligned_texture = ((v[1].U & 0xF) == 0) && PRIM->FST; // I'm not sure this check is useful
+		const int win_position = v[1].XYZ.X - m_context->XYOFFSET.OFX;
+		// v[2] only exists, and is only asked about, when the batch has a second sprite.
+		align_sprite_x = GSSpriteEdgeSnap::AlignSpriteXApplies(win_position, v[1].U, PRIM->FST, count,
+			v[1].XYZ.X, (count >= 4) ? v[2].XYZ.X : 0);
+		if (align_sprite_x)
+		{
+			// Normaly vertex are aligned on full pixels and texture in half
+			// pixels. Let's extend the coverage of an half-pixel to avoid
+			// hole after upscaling
+			for (u32 i = 0; i < count; i += 2)
+			{
+				v[i + 1].XYZ.X += 8;
+				// I really don't know if it is a good idea. Neither what to do for !PRIM->FST
+				if (unaligned_texture)
+					v[i + 1].U += 8;
+			}
+		}
+	}
+
+	// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
+	// into a pixel covers exactly what one ending on the boundary covers. Upscaling
+	// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
+	// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
+	// straight back through DATE with one ending at x=320: identical at 1x, one device
+	// column apart at 2x, and that column is the bright line down the middle of the screen.
+	//
+	// The hack above has already pushed every far X in this batch out by half a pixel for
+	// the same reason, on a batch-wide decision the snap does not get to second-guess per
+	// sprite. Snapping on top of that would move some of them a second time, so leave the
+	// batch alone when it fired.
+	if (!align_sprite_x)
+		SnapSpriteEdgesToPixelGrid();
+
+	// Noting to do if no texture is sampled
+	const bool draw_sprite_tex = PRIM->TME && (m_vt.m_primclass == GS_SPRITE_CLASS);
+	if (PRIM->FST && draw_sprite_tex && m_process_texture)
+	{
+		if ((GSConfig.UserHacks_RoundSprite > 1) || (GSConfig.UserHacks_RoundSprite == 1 && !m_vt.IsLinear()))
+		{
+			if (m_vt.IsLinear())
+				RoundSpriteOffset<true>();
+			else
+				RoundSpriteOffset<false>();
+		}
+	}
+	else
+	{
+		; // vertical line in Yakuza (note check m_userhacks_align_sprite_X behavior)
+	}
+}
+
 namespace
 {
 	/// Closes the per-draw debugger label and the open draw-log row on every exit from
@@ -5607,76 +5701,6 @@ void GSRendererHW::Draw()
 		GL_INS("HW: Warning skipping a draw call (%lld)", s_n);
 		CleanupDraw(true);
 		return;
-	}
-
-	// A couple of hack to avoid upscaling issue. So far it seems to impacts mostly sprite
-	// Note: first hack corrects both position and texture coordinate
-	// Note: second hack corrects only the texture coordinate
-	// Be careful to not correct downscaled targets, this can get messy and break post processing
-	// but it still needs to adjust native stuff from memory as it's not been compensated for upscaling (Dragon Quest 8 font for example).
-	if (CanUpscale() && (m_vt.m_primclass == GS_SPRITE_CLASS) && rt && rt->GetScale() > 1.0f)
-	{
-		const u32 count = m_vertex->next;
-		GSVertex* v = &m_vertex->buff[0];
-
-		// Hack to avoid vertical black line in various games (ace combat/tekken)
-		//
-		// This runs before SnapSpriteEdgesToPixelGrid because its one decision is read off the
-		// first sprite's coordinates, and the snap moves exactly those.
-		bool align_sprite_x = false;
-		if (GSConfig.UserHacks_AlignSpriteX)
-		{
-			// Note for performance reason I do the check only once on the first
-			// primitive
-			const bool unaligned_texture = ((v[1].U & 0xF) == 0) && PRIM->FST; // I'm not sure this check is useful
-			const int win_position = v[1].XYZ.X - context->XYOFFSET.OFX;
-			// v[2] only exists, and is only asked about, when the batch has a second sprite.
-			align_sprite_x = GSSpriteEdgeSnap::AlignSpriteXApplies(win_position, v[1].U, PRIM->FST, count,
-				v[1].XYZ.X, (count >= 4) ? v[2].XYZ.X : 0);
-			if (align_sprite_x)
-			{
-				// Normaly vertex are aligned on full pixels and texture in half
-				// pixels. Let's extend the coverage of an half-pixel to avoid
-				// hole after upscaling
-				for (u32 i = 0; i < count; i += 2)
-				{
-					v[i + 1].XYZ.X += 8;
-					// I really don't know if it is a good idea. Neither what to do for !PRIM->FST
-					if (unaligned_texture)
-						v[i + 1].U += 8;
-				}
-			}
-		}
-
-		// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
-		// into a pixel covers exactly what one ending on the boundary covers. Upscaling
-		// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
-		// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
-		// straight back through DATE with one ending at x=320: identical at 1x, one device
-		// column apart at 2x, and that column is the bright line down the middle of the screen.
-		//
-		// The hack above has already pushed every far X in this batch out by half a pixel for
-		// the same reason, on a batch-wide decision the snap does not get to second-guess per
-		// sprite. Snapping on top of that would move some of them a second time, so leave the
-		// batch alone when it fired.
-		if (!align_sprite_x)
-			SnapSpriteEdgesToPixelGrid();
-
-		// Noting to do if no texture is sampled
-		if (PRIM->FST && draw_sprite_tex && m_process_texture)
-		{
-			if ((GSConfig.UserHacks_RoundSprite > 1) || (GSConfig.UserHacks_RoundSprite == 1 && !m_vt.IsLinear()))
-			{
-				if (m_vt.IsLinear())
-					RoundSpriteOffset<true>();
-				else
-					RoundSpriteOffset<false>();
-			}
-		}
-		else
-		{
-			; // vertical line in Yakuza (note check m_userhacks_align_sprite_X behavior)
-		}
 	}
 
 	//
@@ -10504,6 +10528,10 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 			return;
 		}
 	}
+
+	// Last pass that moves a vertex: both rebuilds above have run, so nothing downstream can
+	// discard the correction by reading bounds taken before it.
+	CorrectSpriteCoverageForUpscale(rt);
 
 	if (EmulateDATEEarlyFail(date_options, rt))
 		return;
