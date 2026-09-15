@@ -1687,6 +1687,9 @@ protected:
 	/// Bumped by RetryShaderChain; a backend that latched a failed preset tries it again once it moves.
 	static u64 GetShaderChainRetry();
 
+	/// Records why the chain built for [preset] failed; an empty preset clears it.
+	static void SetShaderChainError(std::string preset, std::string message);
+
 	/// Resolves CAS shader includes for the specified source.
 	static bool GetCASShaderSource(std::string* source);
 
@@ -1790,6 +1793,9 @@ public:
 
 	/// Asks the backend to try a preset that failed to load once more.
 	static void RetryShaderChain();
+
+	/// Copies librashader's message into [message] when the last chain built for [preset] failed.
+	static bool GetShaderChainError(const std::string& preset, std::string* message);
 
 	/// Parses the configured fullscreen mode into its components (width * height @ refresh Hz)
 	static bool GetRequestedExclusiveFullscreenMode(u32* width, u32* height, float* refresh_rate);

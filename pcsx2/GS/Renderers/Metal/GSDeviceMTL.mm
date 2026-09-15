@@ -810,12 +810,14 @@ void GSDeviceMTL::DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float par
 
 #ifdef ARMSX2_HAS_LIBRASHADER
 
-static void ReportShaderChainError(const char* what, libra_error_t err)
+static std::string ReportShaderChainError(const char* what, libra_error_t err)
 {
+	std::string message;
 	char* msg = nullptr;
 	if (libra_error_write(err, &msg) == 0 && msg)
 	{
 		Console.Error("(GS) librashader %s failed: %s", what, msg);
+		message = msg;
 		libra_error_free_string(&msg);
 	}
 	else
@@ -823,6 +825,7 @@ static void ReportShaderChainError(const char* what, libra_error_t err)
 		Console.Error("(GS) librashader %s failed (errno %d)", what, static_cast<int>(libra_error_errno(err)));
 	}
 	libra_error_free(&err);
+	return message;
 }
 
 #endif
@@ -896,12 +899,13 @@ bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 		libra_mtl_filter_chain_t chain = nullptr;
 		if (libra_error_t err = libra_mtl_filter_chain_create(&preset, m_queue, nullptr, &chain))
 		{
-			ReportShaderChainError("chain create", err);
+			SetShaderChainError(m_shader_chain_preset, ReportShaderChainError("chain create", err));
 			m_shader_chain_failed = true;
 			return false;
 		}
 
 		m_shader_chain = chain;
+		SetShaderChainError({}, {});
 		m_shader_frame_count = 0;
 		m_shader_param_generation = 0;
 		Console.WriteLn("(GS) librashader: loaded preset '%s'", m_shader_chain_preset.c_str());
@@ -921,7 +925,7 @@ bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 	if (libra_error_t err = libra_mtl_filter_chain_frame(
 			&chain, GetRenderCmdBuf(), m_shader_frame_count, src, dst, &vp, nullptr, nullptr))
 	{
-		ReportShaderChainError("frame", err);
+		SetShaderChainError(m_shader_chain_preset, ReportShaderChainError("frame", err));
 		m_shader_chain_failed = true;
 		// A failed frame may already have encoded passes, so it flushes like the success path.
 		FlushEncoders();

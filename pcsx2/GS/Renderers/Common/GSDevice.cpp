@@ -39,6 +39,9 @@ namespace
 	std::vector<std::pair<std::string, float>> s_shader_params;
 	std::atomic<u64> s_shader_param_generation{0};
 	std::atomic<u64> s_shader_chain_retry{0};
+	std::mutex s_shader_chain_error_mutex;
+	std::string s_shader_chain_error_preset;
+	std::string s_shader_chain_error;
 } // namespace
 
 void GSDevice::SetShaderChainParams(std::string preset, std::vector<std::pair<std::string, float>> params)
@@ -61,12 +64,32 @@ u64 GSDevice::GetShaderChainParamGeneration()
 
 void GSDevice::RetryShaderChain()
 {
+	{
+		std::unique_lock lock(s_shader_chain_error_mutex);
+		s_shader_chain_error_preset.clear();
+	}
 	s_shader_chain_retry.fetch_add(1, std::memory_order_release);
 }
 
 u64 GSDevice::GetShaderChainRetry()
 {
 	return s_shader_chain_retry.load(std::memory_order_acquire);
+}
+
+void GSDevice::SetShaderChainError(std::string preset, std::string message)
+{
+	std::unique_lock lock(s_shader_chain_error_mutex);
+	s_shader_chain_error_preset = std::move(preset);
+	s_shader_chain_error = std::move(message);
+}
+
+bool GSDevice::GetShaderChainError(const std::string& preset, std::string* message)
+{
+	std::unique_lock lock(s_shader_chain_error_mutex);
+	if (preset.empty() || s_shader_chain_error_preset != preset)
+		return false;
+	*message = s_shader_chain_error;
+	return true;
 }
 
 bool GSDevice::GetShaderChainParams(const std::string& preset, std::vector<std::pair<std::string, float>>* out)

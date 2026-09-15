@@ -4,12 +4,14 @@
 import re
 import unittest
 
-from ios_source import CPP, SWIFT, at, block, read
+from ios_source import CPP, ROOT, SWIFT, at, block, read
 
 BRIDGE = CPP / "ARMSX2Bridge.mm"
 PARAMS = SWIFT / "Models/ShaderParams.swift"
 IMPORTER = SWIFT / "Models/ShaderPackImporter.swift"
 SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
+METAL = ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
+COMMON = ROOT / "pcsx2/GS/Renderers/Common/GSDevice.cpp"
 
 
 class ShaderPresetLoadFailure(unittest.TestCase):
@@ -65,6 +67,34 @@ class ShaderPresetLoadFailure(unittest.TestCase):
         unresolved = block(load, "guard let url = ShaderPresetLibrary.resolve(newToken) else")
         self.assertIn("isLoading = false", unresolved,
                       "a token that names no file leaves Reading parameters on screen")
+
+    def test_the_renderer_records_a_chain_that_fails_to_build(self):
+        apply = block(read(METAL), "bool GSDeviceMTL::DoApplyShaderChain(")
+        for stage in ("chain create", "frame"):
+            self.assertIn(
+                'SetShaderChainError(m_shader_chain_preset, ReportShaderChainError("%s", err));' % stage,
+                apply, "a %s failure isn't recorded for the Shaders section" % stage)
+        built = at(apply, "m_shader_chain = chain;", "storing the built chain")
+        cleared = at(apply, "SetShaderChainError({}, {});", "clearing the recorded failure")
+        self.assertLess(built, cleared, "the recorded failure is cleared before the chain exists")
+
+    def test_a_retry_clears_the_recorded_failure_first(self):
+        common = read(COMMON)
+        retry = block(common, "void GSDevice::RetryShaderChain()")
+        self.assertLess(at(retry, "s_shader_chain_error_preset.clear()", "clearing the recorded failure"),
+                        at(retry, "s_shader_chain_retry.fetch_add(1", "the retry bump"),
+                        "the clear runs after the bump, so it can wipe the retried build's failure")
+        for name in ("void GSDevice::SetShaderChainError(", "bool GSDevice::GetShaderChainError("):
+            self.assertIn("std::unique_lock lock(s_shader_chain_error_mutex);", block(common, name),
+                          "%s touches the recorded failure without its lock" % name)
+
+    def test_a_parsed_preset_still_reports_a_failed_build(self):
+        load = block(read(PARAMS), "func load(token newToken: String)")
+        success = at(load, "case .success", "the parsed case")
+        lookup = at(load, "ARMSX2Bridge.shaderChainError(forPreset: url.path)", "the build failure lookup")
+        failure = at(load, "case .failure", "the failed parse case")
+        self.assertLess(success, lookup, "the build failure is looked up before the parse succeeds")
+        self.assertLess(lookup, failure, "the build failure is only looked up when the parse fails")
 
     def test_a_path_that_leaves_the_shader_roots_asks_for_a_reinstall(self):
         init = block(read(PARAMS), "init(_ error: Error, preset: URL)")
