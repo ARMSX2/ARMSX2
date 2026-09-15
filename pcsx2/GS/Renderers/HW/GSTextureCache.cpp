@@ -2346,10 +2346,14 @@ GSTextureCache::Target* GSTextureCache::FindTargetOverlap(Target* target, int ty
 	return nullptr;
 }
 
+int GSTextureCache::ScaleNativeToDevice(int native, float scale)
+{
+	return static_cast<int>(std::ceil(static_cast<float>(native) * scale));
+}
+
 GSVector2i GSTextureCache::ScaleRenderTargetSize(const GSVector2i& sz, float scale)
 {
-	return GSVector2i(static_cast<int>(std::ceil(static_cast<float>(sz.x) * scale)),
-		static_cast<int>(std::ceil(static_cast<float>(sz.y) * scale)));
+	return GSVector2i(ScaleNativeToDevice(sz.x, scale), ScaleNativeToDevice(sz.y, scale));
 }
 
 void GSTextureCache::CombineAlignedInsideTargets(Target* target, GSTextureCache::Source* src)
@@ -3650,11 +3654,16 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 								old_dst->m_valid = old_dst->m_valid.rintersect(GSVector4i(old_dst->m_valid.x, old_dst->m_valid.y, old_dst->m_valid.z, old_dst->m_valid.w - change_height));
 								old_dst->m_TEX0.TBP0 += block_diff;
 
-								const GSVector2i new_scaled_size = GSVector2i(old_dst->m_unscaled_size * old_dst->m_scale);
+								// Size the replacement by the same rule that sized the texture we are copying out of.
+								// GSVector2i's multiply takes an int per lane, so the float scale used to narrow to an
+								// int here: at 1.5x the new texture came out 1x wide and then took a 1.5x-wide copy.
+								const GSVector2i new_scaled_size = ScaleRenderTargetSize(old_dst->m_unscaled_size, old_dst->m_scale);
 								if (GSTexture* tex = g_gs_device->CreateCompatible(dst->m_texture, new_scaled_size, true))
 								{
-									const int height_offset = change_height * old_dst->m_scale;
-									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_offset, old_dst->GetUnscaledWidth() * old_dst->m_scale, old_dst->GetUnscaledHeight() * old_dst->m_scale), 0, 0);
+									// The rows from native row change_height down survive, and that row starts at
+									// device row ceil(change_height * scale).
+									const int height_offset = ScaleNativeToDevice(change_height, old_dst->m_scale);
+									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_offset, new_scaled_size.x, new_scaled_size.y), 0, 0);
 
 									g_gs_device->Recycle(old_dst->m_texture);
 									old_dst->m_texture = tex;
@@ -5604,14 +5613,18 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		req_resize = true;
 	}
 
-	// Scale coordinates.
+	// Scale coordinates. The extents ceil because that is how the targets themselves were sized.
+	// The two offsets take the same rule as each other, and the same rule as the extents: each one
+	// names the first device pixel its native pixel owns. Rounding the source and the destination
+	// differently would slide the copied block by a device pixel at a fractional scale, and
+	// truncating an offset would start the read one pixel inside the block before the one named.
 	const float scale = src->m_scale;
-	const int scaled_sx = static_cast<int>(sx * scale);
-	const int scaled_sy = static_cast<int>(sy * scale);
-	const int scaled_dx = static_cast<int>(dx * scale);
-	const int scaled_dy = static_cast<int>(dy * scale);
-	const int scaled_w = static_cast<int>(w * scale);
-	const int scaled_h = static_cast<int>(h * scale);
+	const int scaled_sx = ScaleNativeToDevice(sx, scale);
+	const int scaled_sy = ScaleNativeToDevice(sy, scale);
+	const int scaled_dx = ScaleNativeToDevice(dx, scale);
+	const int scaled_dy = ScaleNativeToDevice(dy, scale);
+	const int scaled_w = ScaleNativeToDevice(w, scale);
+	const int scaled_h = ScaleNativeToDevice(h, scale);
 
 	// The source isn't in our texture, otherwise it could falsely expand the texture causing a misdetection later, which then renders black.
 	if ((scaled_sx + scaled_w) > src->m_texture->GetWidth() || (scaled_sy + scaled_h) > src->m_texture->GetHeight())

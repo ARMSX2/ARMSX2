@@ -522,6 +522,12 @@ protected:
 	bool PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size, bool is_frame,
 		bool preload, bool preserve_target, const GSVector4i draw_rect, Target* dst, GSTextureCache::Source* src = nullptr);
 
+	/// Converts one native coordinate or extent to the device grid. Native pixel n owns device
+	/// pixels [ceil(n * scale), ceil((n + 1) * scale)), which is where the rasteriser puts it, so
+	/// the conversion ceils. This is the one place that rule lives; everything below scales
+	/// through it rather than open-coding a multiply that truncates.
+	static int ScaleNativeToDevice(int native, float scale);
+
 	// Returns scaled texture size.
 	static GSVector2i ScaleRenderTargetSize(const GSVector2i& sz, float scale);
 
