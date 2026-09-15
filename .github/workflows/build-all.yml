@@ -167,6 +167,11 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app
 
+      # librashader is built by cargo for iOS; without this target CMake turns shader
+      # support off and the app hides Shaders, while the build still passes.
+      - name: Install Rust iOS target
+        run: rustup target add aarch64-apple-ios
+
       # RetroAchievements grants hardcore on the client name and version in the HTTP user
       # agent, and pcsx2/Host.cpp reads that version from a gitignored header. Only builds
       # that reach players get it: a pull request artifact would be one more public copy of
