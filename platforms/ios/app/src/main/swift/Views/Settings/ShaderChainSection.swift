@@ -71,6 +71,10 @@ struct ShaderChainSection: View {
                 await params.load(token: presetRef)
             }
 
+            if let failure = params.loadFailure {
+                problem(failure)
+            }
+
             if !presetRef.isEmpty {
                 Toggle(localized("Shaders"), isOn: $enabled)
             }
@@ -115,6 +119,10 @@ struct ShaderChainSection: View {
                      : String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let failure = importer.installProblem, params.loadFailure == nil {
+                problem(failure)
             }
 
             ForEach(importer.errors.sorted { $0.key < $1.key }, id: \.key) { entry in
@@ -217,18 +225,37 @@ struct ShaderChainSection: View {
     }
 
     private func getBasePack() {
-        Task { await importer.installBasePack() }
-    }
-
-    private var basePackInstalled: Bool {
-        ShaderPresetLibrary.basePackRoot.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        Task {
+            await importer.installBasePack()
+            await params.load(token: presetRef)
+        }
     }
 
     private var basePackLabel: some View {
         Label {
             Text(localized("RetroArch Slang Shaders") + " (" + ShaderPackImporter.basePackBytes.formatted(.byteCount(style: .file)) + ")")
         } icon: {
-            Image(systemName: basePackInstalled ? "checkmark.circle" : "arrow.down.circle")
+            Image(systemName: ShaderPresetLibrary.hasBasePack ? "checkmark.circle" : "arrow.down.circle")
+        }
+    }
+
+    @ViewBuilder
+    private func problem(_ failure: ShaderPresetFailure) -> some View {
+        switch failure {
+        case .needsBasePack:
+            Text(localized("It needs RetroArch Slang Shaders."))
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Button(action: getBasePack) { basePackLabel }
+                .disabled(importer.isBusy)
+        case .missing(let file):
+            Text(String(format: localized("It can't load because %@ is missing or broken."), file))
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .needsReimport:
+            Text(localized("It needs its shader pack installed again."))
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 

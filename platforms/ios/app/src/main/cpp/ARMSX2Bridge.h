@@ -277,8 +277,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // A .slangp preset's parameters as a JSON array of {name, description, initial, minimum,
 // maximum, step} in declaration order, or "[]" for none. nil when this build has no
-// librashader or the preset won't load. Reads files, so call it off the main thread.
-+ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path NS_SWIFT_NAME(shaderPresetParameters(atPath:));
+// librashader or the preset won't load, with librashader's message in error. Reads files,
+// so call it off the main thread.
++ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(shaderPresetParameters(atPath:));
 
 // Queues parameter values for the chain built from preset; the GS thread applies them before its next frame.
 + (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset NS_SWIFT_NAME(setShaderChainParameters(_:forPreset:));

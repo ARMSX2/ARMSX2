@@ -23,6 +23,7 @@ final class ShaderPackImporter: ObservableObject {
     @Published private(set) var installing: Set<String> = []
     @Published private(set) var errors: [String: String] = [:]
     @Published private(set) var installedName: String?
+    @Published private(set) var installProblem: ShaderPresetFailure?
 
     var isBusy: Bool { !installing.isEmpty }
 
@@ -79,13 +80,16 @@ final class ShaderPackImporter: ObservableObject {
         installing.insert(key)
         errors[key] = nil
         installedName = nil
+        installProblem = nil
         var landed: String?
         do {
-            // A full RetroArch pack is thousands of files, too slow for the main actor.
-            landed = try await Task.detached(priority: .userInitiated) {
+            let (name, problem) = try await Task.detached(priority: .userInitiated) {
+                // A full RetroArch pack is thousands of files, too slow for the main actor.
                 try Self.perform(source, named, writing)
             }.value
-            installedName = landed
+            landed = name
+            installedName = name
+            installProblem = problem
         } catch {
             errors[key] = error.localizedDescription
         }
@@ -97,7 +101,7 @@ final class ShaderPackImporter: ObservableObject {
         _ source: URL,
         _ named: String?,
         _ writing: @Sendable (URL, URL) throws -> Void
-    ) throws -> String {
+    ) throws -> (String, ShaderPresetFailure?) {
         guard let root = ShaderPresetLibrary.prepareUserRoots() else {
             throw ShaderPackImportError.noUserRoot
         }
@@ -112,12 +116,13 @@ final class ShaderPackImporter: ObservableObject {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
+        let presets = presetFiles(under: destination)
         // A folder with no presets would sit in the browser with nothing to pick, so it is refused.
-        guard presetCount(under: destination) > 0 else {
+        guard !presets.isEmpty else {
             try? FileManager.default.removeItem(at: destination)
             throw ShaderPackImportError.notAShaderPack
         }
-        return name
+        return (name, problem(in: presets))
     }
 
     private nonisolated static func extract(_ source: URL, _ destination: URL) throws {
@@ -153,7 +158,7 @@ final class ShaderPackImporter: ObservableObject {
 
     private nonisolated static func readableName(_ source: URL) -> String {
         var name = source.lastPathComponent
-        if name.lowercased().hasSuffix(".zip") {
+        while name.lowercased().hasSuffix(".zip") {
             name = String(name.dropLast(4))
         }
         return sanitised(name)
@@ -167,16 +172,30 @@ final class ShaderPackImporter: ObservableObject {
         return cleaned.isEmpty ? "Shader Pack" : cleaned
     }
 
-    private nonisolated static func presetCount(under directory: URL) -> Int {
+    private nonisolated static func presetFiles(under directory: URL) -> [URL] {
         guard let walk = FileManager.default.enumerator(
             at: directory, includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]) else { return 0 }
-        var found = 0
+            options: [.skipsHiddenFiles]) else { return [] }
+        var found: [URL] = []
         while let url = walk.nextObject() as? URL {
             if url.pathExtension.lowercased() == ShaderPresetLibrary.presetExtension {
-                found += 1
+                found.append(url)
             }
         }
         return found
+    }
+
+    /// A pack that fails here stays installed, since it may only need another pack beside it.
+    private nonisolated static func problem(in presets: [URL]) -> ShaderPresetFailure? {
+        var failure: ShaderPresetFailure?
+        for preset in presets.prefix(3) {
+            do {
+                _ = try ARMSX2Bridge.shaderPresetParameters(atPath: preset.path)
+                return nil
+            } catch {
+                failure = ShaderPresetFailure(error, preset: preset)
+            }
+        }
+        return failure
     }
 }

@@ -62,8 +62,8 @@ enum ShaderPresetLibrary {
 
     static let basePackFolderName = "shaders_slang"
 
-    static var basePackRoot: URL? {
-        userRoot?.appendingPathComponent(basePackFolderName, isDirectory: true)
+    static var hasBasePack: Bool {
+        userRoot.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent(basePackFolderName).path) } ?? false
     }
 
     @discardableResult

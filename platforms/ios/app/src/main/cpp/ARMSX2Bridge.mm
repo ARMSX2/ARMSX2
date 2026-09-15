@@ -4309,9 +4309,24 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
 #pragma mark - Shader chain parameters
 
+#ifdef ARMSX2_HAS_LIBRASHADER
+static void ARMSX2ShaderPresetFailure(libra_error_t err, NSError** error)
+{
+    char* msg = nullptr;
+    if (error && libra_error_write(err, &msg) == 0 && msg)
+    {
+        *error = [NSError errorWithDomain:@"librashader"
+                                     code:static_cast<NSInteger>(libra_error_errno(err))
+                                 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:msg] ?: @""}];
+        libra_error_free_string(&msg);
+    }
+    libra_error_free(&err);
+}
+#endif
+
 // Uses its own preset handle, since creating a chain consumes the renderer's. Parsing needs no
 // Metal device and no running VM.
-+ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path {
++ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path error:(NSError * _Nullable * _Nullable)error {
 #ifndef ARMSX2_HAS_LIBRASHADER
     return nil;
 #else
@@ -4323,7 +4338,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     libra_error_t err = libra_preset_create(filename, &preset);
     if (err)
     {
-        libra_error_free(&err);
+        ARMSX2ShaderPresetFailure(err, error);
         return nil;
     }
 
@@ -4331,7 +4346,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     err = libra_preset_get_runtime_params(&preset, &params);
     if (err)
     {
-        libra_error_free(&err);
+        ARMSX2ShaderPresetFailure(err, error);
         libra_preset_free(&preset);
         return nil;
     }
