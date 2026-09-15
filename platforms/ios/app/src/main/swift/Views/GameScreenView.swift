@@ -1164,7 +1164,7 @@ struct GameScreenView: View {
             bootPath: nil,
             coverURL: nil,
             coverSignature: nil,
-            metadata: serial.isEmpty ? [:] : ["serial": serial],
+            metadata: ["serial": serial, "crc": (info["crc"] as? String) ?? ""].filter { !$0.value.isEmpty },
             size: 0,
             isFavorite: false
         )
