@@ -1,11 +1,10 @@
 import re
 import unittest
-from pathlib import Path
+
+from ios_source import SWIFT, block
 
 
-# Repo root, same as the other tests here.
-ROOT = Path(__file__).resolve().parents[4]
-MODELS = ROOT / "platforms/ios/app/src/main/swift/Models"
+MODELS = SWIFT / "Models"
 STORE = MODELS / "SettingsStore.swift"
 
 DESCRIPTOR = re.compile(r"let _(\w+)Config = Setting<([^>]+)>\(")
@@ -39,16 +38,6 @@ def normalised(value):
     return value.strip().replace("SettingsStore.", "Self.")
 
 
-def block_at(lines, first):
-    """The brace-balanced block starting at line index `first`."""
-    depth = 0
-    for i in range(first, len(lines)):
-        depth += lines[i].count("{") - lines[i].count("}")
-        if depth == 0 and i > first:
-            return lines[first:i + 1]
-    return lines[first:]
-
-
 def call_at(lines, first):
     """The paren-balanced `Setting<T>(...)` literal starting at line index `first`."""
     depth = 0
@@ -57,13 +46,6 @@ def call_at(lines, first):
         if depth == 0 and i >= first:
             return lines[first:i + 1]
     return lines[first:]
-
-
-def block_named(lines, opener):
-    for i, line in enumerate(lines):
-        if line.strip().startswith(opener):
-            return block_at(lines, i)
-    raise AssertionError(f"{opener!r} is gone from SettingsStore.swift; update this test")
 
 
 class SettingsDescriptorTests(unittest.TestCase):
@@ -86,11 +68,12 @@ class SettingsDescriptorTests(unittest.TestCase):
         # The property each descriptor belongs to, read off its commit call.
         owner = {m.group(1): m.group(2) for m in COMMIT.finditer(cls.source)}
         cls.property_of = {name: owner.get(name, name) for name in cls.descriptors}
-        cls.init_body = "\n".join(block_named(cls.lines, "private init()"))
+        cls.init_body = block(cls.source, "private init()")
         # The whole store, extensions included, so a read that moved into a
         # helper file cannot slip past the checks below.
         cls.store_source = "\n".join(
             path.read_text(encoding="utf-8") for path in sorted(MODELS.glob("SettingsStore*.swift")))
+        cls.by_hand = set(re.findall(r'getINI\w+\(\s*"([^"]+)",\s*key: "([^"]+)"', cls.store_source))
 
     def test_the_descriptors_were_actually_found(self):
         """Rename the convention and every check below passes on an empty set."""
@@ -103,12 +86,11 @@ class SettingsDescriptorTests(unittest.TestCase):
                 assigned = re.findall(rf"^\s*{re.escape(prop)} = (.+)$", self.init_body, re.M)
                 self.assertFalse(any(".load(" in rhs for rhs in assigned),
                                  f"{prop} loads through its descriptor now; drop the exemption")
-        by_hand = set(re.findall(r'getINI\w+\(\s*"([^"]+)",\s*key: "([^"]+)"', self.store_source))
-        self.assertEqual(sorted(MIGRATION_READS - by_hand), [],
+        self.assertEqual(sorted(MIGRATION_READS - self.by_hand), [],
                          "these are exempted but nothing reads them by hand any more")
 
     def test_every_descriptor_is_loaded_in_init(self):
-        """A new setting that nobody loads is the whole bug class this guards."""
+        """A setting init() never loads keeps its declared default instead of the INI value."""
         for name, prop in self.property_of.items():
             with self.subTest(setting=prop):
                 assigned = re.findall(rf"^\s*{re.escape(prop)} = (.+)$", self.init_body, re.M)
@@ -124,12 +106,11 @@ class SettingsDescriptorTests(unittest.TestCase):
         allowed = MIGRATION_READS | {self.descriptors[n][:2] for n in self.descriptors
                                      if self.property_of[n] in HAND_LOADED}
         owned = {(section, key) for section, key, _ in self.descriptors.values()}
-        by_hand = set(re.findall(r'getINI\w+\(\s*"([^"]+)",\s*key: "([^"]+)"', self.store_source))
-        self.assertEqual(sorted((by_hand & owned) - allowed), [],
+        self.assertEqual(sorted((self.by_hand & owned) - allowed), [],
                          "a descriptor owns these keys, but the store still reads them by hand")
 
     def test_every_descriptor_picks_a_named_codec(self):
-        """An inline read/write pair is free to disagree, which is the thing this all exists to stop."""
+        """An inline read/write pair can disagree, so each descriptor names a codec preset."""
         for i, line in enumerate(self.lines):
             match = DESCRIPTOR.search(line)
             if not match:
@@ -156,10 +137,10 @@ class SettingsDescriptorTests(unittest.TestCase):
         """Anything writing the INI its own way skips suppression and the graphics apply."""
         for name, prop in self.property_of.items():
             with self.subTest(setting=prop):
-                declared = next((i for i, l in enumerate(self.lines)
+                declared = next((l for l in self.lines
                                  if re.match(rf"^\s*var {re.escape(prop)}\b", l)), None)
                 self.assertIsNotNone(declared, f"cannot find the declaration of {prop}")
-                observer = "\n".join(block_at(self.lines, declared))
+                observer = block(self.source, declared)
                 self.assertIn(f"commit(_{name}Config, {prop})", observer,
                               f"{prop}'s didSet does not commit itself through _{name}Config")
 
@@ -181,10 +162,10 @@ class SettingsDescriptorTests(unittest.TestCase):
                                  f"but _{name}Config defaults to {default}")
 
     def test_resets_agree_with_the_descriptor_defaults(self):
-        """Reset keeps readable literals; this is what stops them drifting."""
+        """Reset functions assign literals, so each is compared with its descriptor default."""
         by_property = {self.property_of[n]: (n, d) for n, (_, _, d) in self.descriptors.items()}
         for func in RESET_FUNCS:
-            for line in block_named(self.lines, f"func {func}"):
+            for line in block(self.source, f"func {func}").split("\n"):
                 match = re.match(r"^\s*(\w+) = (.+?)(?:\s*//.*)?$", line)
                 if not match or match.group(1) not in by_property:
                     continue
