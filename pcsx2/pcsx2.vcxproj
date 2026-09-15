@@ -863,6 +863,7 @@
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />

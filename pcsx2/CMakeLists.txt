@@ -586,6 +586,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSFastList.h
+	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h
 	GS/Renderers/Common/GSFramebufferFetchPolicy.h
 	GS/Renderers/Common/GSFunctionMap.h

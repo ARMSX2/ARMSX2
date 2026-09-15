@@ -50,6 +50,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_alpha_known_bits_tests.cpp
 	gs_depth_coverage_tests.cpp
 	gs_draw_alpha_mask_tests.cpp
+	gs_fast_stencil_shadow_tests.cpp
 	gs_sprite_cover_tests.cpp
 	gs_sprite_edge_snap_tests.cpp
 	gs_sw_texture_dirty_tests.cpp

@@ -37,6 +37,7 @@ namespace
 	constexpr u64 kLibretroRetireFrames = 6;
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 
@@ -4112,6 +4113,13 @@ bool GSDeviceVK::CheckFeatures()
 	// by the time this reads it.
 	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
+	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). Decided here because
+	// both inputs are final by now: texture_barrier after the RT-copy workaround above, and
+	// dual_source_blend just above. With barriers off every frame read on this backend is a pass break
+	// plus a copy, which is the cost the blend removes; today that is exactly the Adreno parts.
+	m_features.fast_stencil_shadow =
+		GSFastStencilShadow::DeviceQualifies(GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
+
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
 	m_features.broken_mad_deinterlace = is_mali_g57;
@@ -4162,7 +4170,7 @@ bool GSDeviceVK::CheckFeatures()
 	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
 	// Mali driver-support deep dive.
 	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
-					"inpAttFB=%s dualSrc=%s blendConst=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
+					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
 					"streamRings=%s(type %u)",
 		m_device_properties.deviceName,
 		m_device_properties.vendorID,
@@ -4177,6 +4185,7 @@ bool GSDeviceVK::CheckFeatures()
 		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
 		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
 		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
+		m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
 		m_features.test_and_sample_depth ? "on" : "off",
 		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
 		m_use_push_descriptors ? "on" : "off",
