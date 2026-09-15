@@ -290,7 +290,8 @@ void Threading::SleepUntil(u64 ticks)
 	if (diff <= 0)
 		return;
 
-	const u64 nanos = (static_cast<u64>(diff) * static_cast<u64>(s_timebase_info.denom)) / static_cast<u64>(s_timebase_info.numer);
+	// mach_timebase_info converts absolute ticks to nanoseconds using numer / denom.
+	const u64 nanos = (static_cast<u64>(diff) * static_cast<u64>(s_timebase_info.numer)) / static_cast<u64>(s_timebase_info.denom);
 	if (nanos == 0)
 		return;
 
