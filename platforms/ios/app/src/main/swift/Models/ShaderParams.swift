@@ -125,27 +125,33 @@ final class ShaderParams: ObservableObject {
     nonisolated static let invariant = Locale(identifier: "en_US_POSIX")
 
     private var token = ""
+    private var generation = 0
 
     var hasOverrides: Bool { !overrides.isEmpty }
 
     func load(token newToken: String) async {
+        generation += 1
+        let current = generation
         token = newToken
         errorText = nil
         loadFailure = nil
+        params = []
         guard let url = ShaderPresetLibrary.resolve(newToken) else {
-            params = []
             overrides = [:]
+            isLoading = false
             return
         }
         overrides = Self.stored()[newToken] ?? [:]
         isLoading = true
-        do {
-            params = try await Task.detached(priority: .userInitiated) { try Self.read(at: url) }.value
-        } catch {
-            params = []
+        let result = await Task.detached(priority: .userInitiated) { Result { try Self.read(at: url) } }.value
+        guard current == generation else { return }
+        isLoading = false
+        switch result {
+        case .success(let decoded):
+            params = decoded
+        case .failure(let error):
             loadFailure = ShaderPresetFailure(error, preset: url)
         }
-        isLoading = false
         pushEffective()
     }
 
