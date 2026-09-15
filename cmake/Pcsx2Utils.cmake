@@ -270,6 +270,10 @@ int main() {
 endfunction()
 
 function(detect_cache_line_size)
+	if(DEFINED HOST_CACHE_LINE_SIZE)
+		message(STATUS "Host cache line size (preset): ${HOST_CACHE_LINE_SIZE}")
+		return()
+	endif()
 	message(STATUS "Determining host cache line size")
 	set(detect_cache_line_size_file ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/src.c)
 	file(WRITE ${detect_cache_line_size_file} "

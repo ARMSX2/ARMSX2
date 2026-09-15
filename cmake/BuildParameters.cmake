@@ -24,6 +24,14 @@ option(PACKAGE_MODE "Use this option to ease packaging of PCSX2 (developer/distr
 set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git checkout")
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
+option(BUILD_DEPENDENCIES "Enables building dependencies" OFF)
+
+# default to static building of libraries
+if(BUILD_DEPENDENCIES)
+	option(BUILD_DEPENDENCIES_AS_SHARED_LIBS "Build dependencies as shared libraries" OFF)
+else()
+	set(BUILD_DEPENDENCIES_AS_SHARED_LIBS OFF)
+endif()
 
 #-------------------------------------------------------------------------------
 # Graphical option
