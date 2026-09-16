@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/OpenGL/GLContext.h"
 #include "GS/Renderers/OpenGL/GSDeviceOGL.h"
+#include "GS/Renderers/OpenGL/GLLibretro.h"
 #include "GS/Renderers/OpenGL/GLState.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
@@ -730,6 +731,38 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	return true;
 }
 
+bool GSDeviceOGL::AbandonContext(bool still_valid)
+{
+	// Runs on: the GS thread, through MTGS::RunOnGSThread, because the context
+	// being given up is current on that thread and nowhere else.
+	if (!m_gl_context)
+		return false;
+	if (m_gl_context->IsAbandoned())
+		return m_context_released;
+
+	GLLibretro::AbortPacing();
+
+	if (still_valid)
+	{
+		// Retire what is already queued while the context can still run it,
+		// then unbind it, so the teardown that follows runs with no context
+		// current and its GL calls go nowhere.
+		glFinish();
+		m_gl_context->DoneCurrent();
+		m_context_released = true;
+	}
+	else
+	{
+		// The display is already gone, so the ordinary unbind - which needs it -
+		// is the call that hangs inside the driver. Ask the platform whether it
+		// has any way to let go from here; on EGL it has none.
+		m_context_released = m_gl_context->ReleaseThread();
+	}
+
+	m_gl_context->Abandon();
+	return m_context_released;
+}
+
 void GSDeviceOGL::Destroy()
 {
 	// Frees GL objects, so it has to run before the context is dropped below.
@@ -1373,6 +1406,13 @@ void GSDeviceOGL::DestroyResources()
 {
 	m_shader_cache.Close();
 
+	// Before anything else: the frontend may still be holding the last
+	// published texture, so stop handing it new ones first.
+	GLLibretro::AbortPacing();
+	for (std::unique_ptr<GSTextureOGL>& bb : m_libretro_bb)
+		bb.reset();
+	m_libretro_bb_idx = 0;
+
 	if (m_palette_ss != 0)
 		glDeleteSamplers(1, &m_palette_ss);
 
@@ -1484,6 +1524,17 @@ bool GSDeviceOGL::UpdateWindow()
 
 void GSDeviceOGL::ResizeWindow(u32 new_window_width, u32 new_window_height, float new_window_scale)
 {
+	if (GLLibretro::Active)
+	{
+		// The "window" is the backbuffer texture rendered for the frontend, so
+		// just adopt the new size - DoBeginPresent builds one to match on the
+		// next frame.
+		m_window_info.surface_width = new_window_width;
+		m_window_info.surface_height = new_window_height;
+		m_window_info.surface_scale = new_window_scale;
+		return;
+	}
+
 	m_window_info.surface_scale = new_window_scale;
 	if (m_window_info.type == WindowInfo::Type::Surfaceless ||
 		(m_window_info.surface_width == new_window_width &&
@@ -1520,16 +1571,46 @@ std::string GSDeviceOGL::GetDriverInfo() const
 
 GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 {
-	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless)
+	if (frame_skip)
+		return PresentResult::FrameSkipped;
+
+	// Libretro: a real present, aimed at a backbuffer texture instead of a
+	// window, so the whole normal path - the aspect-correct PresentRect, the TV
+	// shaders, the ImGui overlay in EndPresent - works unchanged. The frontend's
+	// own FBO is not an option: FBOs are not shared between contexts, and this
+	// thread's context is a share of the frontend's rather than the same one.
+	// EndPresent publishes the finished texture, and retro_run blits it.
+	const bool libretro = GLLibretro::Active;
+	if (!libretro && m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
 
 	// Get the pipeline statistics for this frame before postprocessing.
 	if (m_gpu_pipeline_statistics_enabled)
 		PopPipelineStatisticsQuery();
 
-	// Not necessarily zero: a libretro frontend hands the core its own FBO to
-	// draw the finished frame into.
-	OMSetFBO(m_gl_context->GetDefaultFramebuffer());
+	const GSVector2i present_size = GetWindowSize();
+
+	if (libretro)
+	{
+		std::unique_ptr<GSTextureOGL>& bb = m_libretro_bb[m_libretro_bb_idx];
+		if (!bb || bb->GetWidth() != present_size.x || bb->GetHeight() != present_size.y)
+		{
+			bb = std::make_unique<GSTextureOGL>(
+				GSTexture::RenderTarget, present_size.x, present_size.y, 1, GSTexture::Format::Color);
+			if (!bb->GetID())
+			{
+				bb.reset();
+				return PresentResult::FrameSkipped;
+			}
+		}
+
+		OMSetRenderTargets(bb.get(), nullptr, nullptr);
+	}
+	else
+	{
+		OMSetFBO(m_gl_context->GetDefaultFramebuffer());
+	}
+
 	OMSetColorMaskState();
 
 	// On TBDR, hint that the default framebuffer's prior content is throwaway
@@ -1538,7 +1619,10 @@ GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 	// used at all on the system framebuffer. Default-FBO uses GL_COLOR / DEPTH
 	// / STENCIL (not GL_*_ATTACHMENT). Pure TBDR tile-bandwidth win and inert on
 	// desktop immediate renderers, so gated to GLES to keep the desktop path canonical.
-	if (m_is_gles)
+	// GL_COLOR and friends name the default framebuffer's attachments, so this
+	// is only right when that is what is bound - a backbuffer texture wants the
+	// GL_COLOR_ATTACHMENT0 spelling, and nothing here would gain from it.
+	if (m_is_gles && !libretro)
 	{
 		const GLenum attachments[] = {GL_COLOR, GL_DEPTH, GL_STENCIL};
 		glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(attachments), attachments);
@@ -1549,9 +1633,8 @@ GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 	glClear(GL_COLOR_BUFFER_BIT);
 	glEnable(GL_SCISSOR_TEST);
 
-	const GSVector2i size = GetWindowSize();
-	SetViewport(size);
-	SetScissor(GSVector4i::loadh(size));
+	SetViewport(present_size);
+	SetScissor(GSVector4i::loadh(present_size));
 
 	return PresentResult::OK;
 }
@@ -1563,17 +1646,37 @@ void GSDeviceOGL::EndPresent()
 	if (m_gpu_timing_enabled)
 		PopTimestampQuery();
 
-	// Discard the default framebuffer's depth/stencil before the swap. We
-	// never wrote anything meaningful to them, so on TBDR drivers writing
-	// the tile back to system memory at SwapBuffers is wasted bandwidth.
-	// Color is preserved (it's what gets presented). GLES/TBDR-only (inert on desktop).
-	if (m_is_gles)
+	if (GLLibretro::Active)
 	{
-		const GLenum attachments[] = {GL_DEPTH, GL_STENCIL};
-		glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(attachments), attachments);
-	}
+		// The frontend reads this texture from its own context, on its own
+		// thread, so the ordering has to be spelled out: a fence it can wait
+		// on, and a flush, without which the fence may never be submitted and
+		// the wait never completes.
+		GSTextureOGL* bb = m_libretro_bb[m_libretro_bb_idx].get();
+		GLLibretro::Frame frame;
+		frame.texture = bb->GetID();
+		frame.width = static_cast<u32>(bb->GetWidth());
+		frame.height = static_cast<u32>(bb->GetHeight());
+		frame.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+		glFlush();
 
-	m_gl_context->SwapBuffers();
+		m_libretro_bb_idx = (m_libretro_bb_idx + 1) % kLibretroBackbuffers;
+		GLLibretro::PublishFrame(frame);
+	}
+	else
+	{
+		// Discard the default framebuffer's depth/stencil before the swap. We
+		// never wrote anything meaningful to them, so on TBDR drivers writing
+		// the tile back to system memory at SwapBuffers is wasted bandwidth.
+		// Color is preserved (it's what gets presented). GLES/TBDR-only (inert on desktop).
+		if (m_is_gles)
+		{
+			const GLenum attachments[] = {GL_DEPTH, GL_STENCIL};
+			glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(attachments), attachments);
+		}
+
+		m_gl_context->SwapBuffers();
+	}
 
 	if (m_gpu_timing_enabled)
 		KickTimestampQuery();

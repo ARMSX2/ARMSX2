@@ -23,7 +23,7 @@
 #include "glad/gl.h"
 
 #if defined(ENABLE_LIBRETRO)
-#include "GS/Renderers/OpenGL/GLContextLibretro.h"
+#include "GS/Renderers/OpenGL/GLLibretro.h"
 #endif
 
 static bool ShouldPreferESContext()
@@ -78,12 +78,19 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 	}
 
 	std::unique_ptr<GLContext> context;
-	// A frontend-owned context wins over anything we could open ourselves, so
-	// it is asked first: in a libretro core there is no window for any of the
-	// platform contexts below to attach to in the first place.
+	// Libretro: the frontend owns the only context that can reach the screen,
+	// and it is current on the frontend's own thread - so this thread, the GS
+	// thread, gets one that shares its objects rather than one of its own. See
+	// GLLibretro. Nothing below could help here anyway: there is no window for
+	// a platform context to attach to.
 #if defined(ENABLE_LIBRETRO)
-	if (GLContextLibretro::IsAvailable())
-		context = GLContextLibretro::Create(wi, error);
+	if (GLLibretro::Active)
+	{
+		context = GLLibretro::CreateSharedContext(
+			wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+		if (!context)
+			return nullptr;
+	}
 #endif
 
 #ifdef __ANDROID__

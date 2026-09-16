@@ -673,10 +673,10 @@ if(USE_OPENGL)
 	target_link_libraries(PCSX2_FLAGS INTERFACE glad)
 
 	if(ENABLE_LIBRETRO)
-		# The context the frontend owns; picked over the platform ones below
-		# when the core installs its callbacks.
-		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextLibretro.cpp)
-		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextLibretro.h)
+		# Context sharing with the frontend, and the finished-frame handoff that
+		# goes with it.
+		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLLibretro.cpp)
+		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLLibretro.h)
 	endif()
 
 	if(WIN32)
@@ -684,7 +684,11 @@ if(USE_OPENGL)
 		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextWGL.h)
 		target_link_libraries(PCSX2_FLAGS INTERFACE opengl32.lib WinPixEventRuntime::WinPixEventRuntime)
 	else()
-		if(X11_API OR WAYLAND_API)
+		# The libretro core builds with X11_API and WAYLAND_API off - it has no
+		# window of its own - but it still needs the EGL context class, because
+		# the context it renders on is an EGL one shared with the frontend's.
+		# (Android adds the same file further down, and CMake drops the repeat.)
+		if(X11_API OR WAYLAND_API OR ENABLE_LIBRETRO)
 			list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextEGL.cpp)
 			list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextEGL.h)
 		endif()
