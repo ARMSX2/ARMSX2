@@ -2680,7 +2680,7 @@ static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, ScaleFactor)      == of
 // DoInterlace hands the shader the whole InterlaceConstantBuffer, so the two layouts have to agree.
 static_assert(sizeof(InterlaceConstantBuffer) == sizeof(GSMTLInterlacePSUniform));
 static_assert(offsetof(InterlaceConstantBuffer, ZrH)        == offsetof(GSMTLInterlacePSUniform, ZrH));
-static_assert(offsetof(InterlaceConstantBuffer, NativeLine) == offsetof(GSMTLInterlacePSUniform, native_line));
+static_assert(offsetof(InterlaceConstantBuffer, FieldPad)   == offsetof(GSMTLInterlacePSUniform, field_pad));
 
 void GSDeviceMTL::SetupDestinationAlpha(GSTexture* rt, GSTexture* ds, const GSVector4i& r, SetDATM datm)
 {

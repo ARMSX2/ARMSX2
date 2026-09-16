@@ -191,6 +191,9 @@ bool GSRenderer::Merge(int field)
 
 	GSVector4 src_gs_read[2] = {};
 	GSVector4 dst[3] = {};
+	// Device rows at the top of the merge target each circuit's picture was pushed past. The target
+	// is cleared, so for the field that moved down, nothing drew those rows.
+	float top_pad[2] = {};
 
 	// Use offset for bob deinterlacing always, extra offset added later for FFMD mode.
 	const bool scanmask_frame = m_scanmask_used && abs(PCRTCDisplays.PCRTCDisplays[0].displayRect.y - PCRTCDisplays.PCRTCDisplays[1].displayRect.y) != 1;
@@ -228,6 +231,7 @@ bool GSRenderer::Merge(int field)
 
 		// dst is the final destination rect with offset on the screen.
 		dst[i] = scale * GSVector4(curCircuit.displayRect);
+		const float unshifted_top = dst[i].y;
 
 		// src_gs_read is the size which we're really reading from GS memory.
 		src_gs_read[i] = ((GSVector4(curCircuit.framebufferRect) + GSVector4(0, y_offset[i], 0, y_offset[i])) * scale) / GSVector4(tex[i]->GetSize()).xyxy();
@@ -252,6 +256,11 @@ bool GSRenderer::Merge(int field)
 		}
 
 		dst[i] += GSVector4(0.0f, interlace_offset, 0.0f, interlace_offset);
+		// A row is drawn when its centre lies at or below the rect's top edge, so the first drawn row
+		// of a rect starting at y is ceil(y - 0.5). Count whole rows rather than passing the raw
+		// offset: at a fractional scale the offset is not a whole number of rows and half a row of
+		// shift would otherwise land the shader's fetch on a texel boundary. 2 rows at 2x, 1 at 1.5x.
+		top_pad[i] = std::max(std::ceil(dst[i].y - 0.5f) - std::ceil(unshifted_top - 0.5f), 0.0f);
 	}
 
 	if (feedback_merge && tex[2])
@@ -289,13 +298,13 @@ bool GSRenderer::Merge(int field)
 	{
 		const float offset = is_bob ? (tex[1] ? tex_scale[1] : tex_scale[0]) : 0.0f;
 
-		// How many device rows of the merge target one native line occupies. Same quantity, picked
-		// the same way, as the FFMD offset above: the merge wrote each circuit at tex_scale times
-		// its native display rect, so that is the size of a line in the picture the deinterlacer
-		// reads. The shaders need it because field parity belongs to the native line, not the row.
-		const float line_scale = tex[1] ? tex_scale[1] : tex_scale[0];
+		// Device rows at the top of the merge that nothing drew for this field. In FFMD mode the
+		// loop above pushed one field's picture down by a native line, and the merge target is
+		// cleared, so the weave and MAD passes would otherwise read a hole there. Read from the same
+		// circuit the bob offset is taken from.
+		const float field_pad = top_pad[tex[1] ? 1 : 0];
 
-		g_gs_device->Interlace(fs, field ^ field2, mode, offset, line_scale);
+		g_gs_device->Interlace(fs, field ^ field2, mode, offset, field_pad);
 	}
 
 	// Adaptive deinterlacing consumes prior fields. A skipped interlaced frame must update that

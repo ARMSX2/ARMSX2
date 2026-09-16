@@ -30,4 +30,6 @@
 // line before testing field parity, so interlace.* gains a constant-buffer field and tfx.* changes.
 // 119: the TFX dither test (ps_dither, PS_DITHER == 1) gets the same device-row/column-to-native
 // fix as 118's scan mask, on both axes, so tfx.* changes again.
-static constexpr u32 SHADER_CACHE_VERSION = 119; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 120: 118's native-line deinterlace is reverted -- interlace.* is back to testing field parity on
+// the device row -- and the constant buffer's second vector now carries the undrawn top band.
+static constexpr u32 SHADER_CACHE_VERSION = 120; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

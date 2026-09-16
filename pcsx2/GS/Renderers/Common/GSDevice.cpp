@@ -1268,16 +1268,14 @@ void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, con
 	m_current = m_merge;
 }
 
-void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float scale)
+void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float top_pad)
 {
 	FlushDeferredDraws();
-	// Every shader below divides by it; a zero here would reach the GPU as an infinity.
-	pxAssert(scale > 0.0f);
 	static int bufIdx = 0;
 	float offset = yoffset * static_cast<float>(field);
 	offset = GSConfig.DisableInterlaceOffset ? 0.0f : offset;
 
-	auto do_interlace = [this, scale](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
+	auto do_interlace = [this, top_pad](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
 		const GSVector2i ds_i = dTex->GetSize();
 		const GSVector2 ds = GSVector2(static_cast<float>(ds_i.x), static_cast<float>(ds_i.y));
 
@@ -1294,14 +1292,9 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 				dRect.w -= half_size;
 		}
 
-		// The destination is an exact multiple of the scale at every multiplier the UI offers, so
-		// this is a whole number of native lines; round rather than truncate so a float that lands
-		// a bit under the integer does not lose a line.
-		const float native_lines = std::round(ds.y / scale);
-
 		const InterlaceConstantBuffer cb = {
 			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY),
-			GSVector4(scale, native_lines, 0.0f, 0.0f)
+			GSVector4(top_pad, 0.0f, 0.0f, 0.0f)
 		};
 
 		GL_PUSH("DoInterlace %dx%d Shader:%d Filter:%d", ds_i.x, ds_i.y, static_cast<int>(shader), filter);

@@ -636,14 +636,12 @@ static_assert(sizeof(MergeConstantBuffer) == 32, "MergeConstantBuffer is correct
 struct alignas(16) InterlaceConstantBuffer
 {
 	GSVector4 ZrH; // (buffer index, 1 / ds.y, ds.y, MAD sensitivity)
-	// At scale S one native line is S device rows, and native line k owns device rows
-	// [ceil(kS), ceil((k+1)S)), so the line owning integer row r is floor(r / S). Which field a row
-	// belongs to is a property of that line, so every shader that tests field parity reduces its
-	// device row to the line first, and the blend and MAD passes step by a native line rather than
-	// by a device row. The reciprocal is deliberately NOT carried: r * (1/S) can land a hair under
-	// an integer where r / S is exactly integral, which puts the row in the line below.
-	// (device rows per native line, native lines in ds.y, unused, unused)
-	GSVector4 NativeLine;
+	// In FFMD mode GSRenderer::Merge draws one of the two fields a native line lower than the other,
+	// so the top rows of that field's merge were never written and the target is cleared under them
+	// (two rows at 2x, one at 1x and at 1.5x). The weave and MAD buffering passes read the first row
+	// that WAS drawn instead of the hole; without it the frame carries a black row at 2x and above.
+	// (undrawn device rows at the top of the merge, unused, unused, unused)
+	GSVector4 FieldPad;
 };
 static_assert(sizeof(InterlaceConstantBuffer) == 32, "InterlaceConstantBuffer is correct size");
 
@@ -2122,8 +2120,9 @@ public:
 
 	void ClearCurrent();
 	void Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c);
-	/// `scale` is how many device rows of the merge target one native line occupies.
-	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float scale);
+	/// `top_pad` is how many device rows at the top of the merge target were not drawn for this
+	/// field, because the merge offset that field's picture down by a native line.
+	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float top_pad);
 	void FXAA();
 	void ShadeBoost();
 	/// Runs the configured RetroArch (.slangp) shader chain over m_current, after

@@ -10,10 +10,10 @@ in vec2 PSin_t;
 in vec4 PSin_c;
 
 uniform vec4 ZrH;
-// x: device rows per native line (the scale S), y: native lines in the destination.
-// Native line k owns device rows [ceil(kS), ceil((k+1)S)), so the line owning integer row r is
-// floor(r / S). At 1x that is the row itself and every use below is a no-op.
-uniform vec4 NativeLine;
+// x: device rows at the top of the merge that were not drawn for the field being read; y, z and w
+// are unused. GSRenderer::Merge offsets a field's picture down by one native line and the merge
+// target is cleared, so nothing drew the rows above it.
+uniform vec4 FieldPad;
 
 layout(binding = 0) uniform sampler2D TextureSampler;
 
@@ -25,15 +25,17 @@ void ps_main0()
 {
 	int idx   = int(ZrH.x);          // buffer index passed from CPU
 	int field = idx & 1;             // current field
-	// A field is every other NATIVE line, so the device row has to be reduced to the line that
-	// owns it before the parity test. Testing the row keeps one device row of every line and drops
-	// the rest, which thins the picture instead of deinterlacing it. Floor the row before dividing:
-	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
-	// above the one that owns them.
-	int vpos  = int(floor(gl_FragCoord.y) / NativeLine.x); // native line owning this row
+	int vpos  = int(gl_FragCoord.y); // vertical position of destination texture
 
 	if ((vpos & 1) == field)
-		SV_Target0 = textureLod(TextureSampler, PSin_t, 0.0);
+	{
+		// Rows above the pad were never drawn for this field, so read the first row that was
+		// instead of the cleared hole. At 1x the pad is one row and the field's own lowest row is
+		// row 1, so nothing moves; at 2x the pad is two rows and this is what fills the black
+		// device row 1.
+		float src_row = max(float(vpos), FieldPad.x);
+		SV_Target0 = textureLod(TextureSampler, PSin_t + vec2(0.0f, (src_row - float(vpos)) * ZrH.y), 0.0);
+	}
 	else
 		discard;
 }
@@ -49,11 +51,7 @@ void ps_main1()
 // Blend shader
 void ps_main2()
 {
-	// One step is one NATIVE line, not one device row. At scale S the S device rows of a line hold
-	// the same colour, so stepping a row would average a row with itself and blend nothing. The
-	// filter is bilinear, so sampling one native line either side at the same sub-line phase is the
-	// native operation carried onto the device grid.
-	vec2 vstep = vec2(0.0f, ZrH.y * NativeLine.x);
+	vec2 vstep = vec2(0.0f, ZrH.y);
 	vec4 c0 = textureLod(TextureSampler, PSin_t - vstep, 0.0);
 	vec4 c1 = textureLod(TextureSampler, PSin_t, 0.0);
 	vec4 c2 = textureLod(TextureSampler, PSin_t + vstep, 0.0);
@@ -75,14 +73,21 @@ void ps_main3()
 	int  idx    = int(ZrH.x);                                // buffer index passed from CPU
 	int  bank   = idx >> 1;                                  // current bank
 	int  field  = idx & 1;                                   // current field
-	int  vres   = int(NativeLine.y) >> 1;                    // source height in native lines
+	int  vres   = int(ZrH.z) >> 1;                           // vertical resolution of source texture
 	int  lofs   = ((((vres + 1) >> 1) << 1) - vres) & bank;  // line alignment offset for bank 1
-	int  vpos   = int(floor(gl_FragCoord.y) / NativeLine.x) + lofs; // native line owning this row
+	int  vpos   = int(gl_FragCoord.y) + lofs;                // vertical position of destination texture
 
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
 	if ((vpos & 1) == field)
-		SV_Target0 = textureLod(TextureSampler, PSin_t, 0.0);
+	{
+		// Same undrawn band as the weave shader. This pass writes one bank of a target twice the
+		// source's height, so the source row a fragment reads is its row within the bank, and one
+		// source row is 1 / vres of the texture coordinate.
+		int   srow    = int(gl_FragCoord.y) - bank * vres;
+		float src_row = max(float(srow), FieldPad.x);
+		SV_Target0 = textureLod(TextureSampler, PSin_t + vec2(0.0f, (src_row - float(srow)) / float(vres)), 0.0);
+	}
 	else
 		discard;
 }
@@ -95,12 +100,12 @@ void ps_main4()
 
 	int   idx          = int(ZrH.x);                         // buffer index passed from CPU
 	int   field        = idx & 1;                            // current field
-	int   vpos         = int(floor(gl_FragCoord.y) / NativeLine.x); // native line owning this row
+	int   vpos         = int(gl_FragCoord.y);                // vertical position of destination texture
 	float sensitivity  = ZrH.w;                              // passed from CPU, higher values mean more likely to use weave
 	vec3  motion_thr   = vec3(1.0, 1.0, 1.0) * sensitivity;  //
 	vec2  bofs         = vec2(0.0f, 0.5f);                   // position of the bank 1 relative to source texture size
 	vec2  vscale       = vec2(1.0f, 0.5f);                   // scaling factor from source to destination texture
-	vec2  lofs         = vec2(0.0f, ZrH.y * NativeLine.x) * vscale; // one native line relative to source texture size
+	vec2  lofs         = vec2(0.0f, ZrH.y) * vscale;         // distance between two adjacent lines relative to source texture size
 	vec2  iptr         = PSin_t * vscale;                    // pointer to the current pixel in the source texture
 
 	vec2 p_t0; // pointer to current pixel (missing or not) from most recent frame
