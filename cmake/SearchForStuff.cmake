@@ -39,8 +39,13 @@ if (WIN32)
 	add_subdirectory(3rdparty/winwil EXCLUDE_FROM_ALL)
 	find_package(Vtune)
 else()
-	find_package(CURL REQUIRED)
+	# Neither iOS nor tvOS has a libcurl to link against, and common/CMakeLists
+	# already leaves HTTPDownloaderCurl.cpp out there for that reason -
+	# HTTPDownloader::Create() returns nothing and its callers (achievements,
+	# cover downloads) treat the downloader as unavailable. So this must not be
+	# REQUIRED there either; it was the first thing an iOS configure stopped on.
 	if(NOT IOS)
+		find_package(CURL REQUIRED)
 		find_package(PCAP REQUIRED)
 	endif()
 	find_package(Vtune)

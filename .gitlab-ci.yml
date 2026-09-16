@@ -1,7 +1,7 @@
 # DESCRIPTION: GitLab CI/CD for libRetro (NOT FOR GitLab-proper)
 #
 # Builds armsx2_libretro.so on the libretro buildbot (git.libretro.com mirror)
-# for Linux aarch64, macOS arm64 and Android arm64-v8a. Inert on GitHub
+# for Linux aarch64, macOS arm64, Android arm64-v8a, iOS arm64 and tvOS arm64. Inert on GitHub
 # — the GitHub Actions workflows under .github/workflows/ are the project's
 # own CI.
 #
@@ -137,6 +137,72 @@
           ./.github/workflows/scripts/macos/build-dependencies-slice.sh "$CI_PROJECT_DIR/.deps"
       fi
 
+# iOS and tvOS. The same core as everywhere else, with three differences that
+# all come from the platform rather than from taste:
+#
+#   * Every dependency is static. A loose dylib beside a core is not something
+#     these systems will load, so build-dependencies-embedded.sh builds the set
+#     that way rather than reusing the macOS one.
+#   * No Vulkan. MoltenVK ships as a dylib, which is the same problem, so the
+#     GS is Metal here and USE_VULKAN is off.
+#   * JIT needs the process to be allowed to map executable pages, which on a
+#     stock install it is not. That is a property of the platform and the same
+#     bargain every JIT core on it makes; it is not something this build can
+#     fix, and it is why these two jobs exist at all rather than being
+#     pretended to be more finished than they are.
+#
+# allow_failure while they settle: this fork has never been built against an
+# Apple embedded SDK through the root CMakeLists, and the first pipelines are
+# discovery rather than a promise.
+.core-defs-apple-embedded:
+  extends: .core-defs
+  variables:
+    EXTRA_PATH: pcsx2-libretro
+    # 17.4 is what the iOS app in platforms/ios targets; there is no reason for
+    # the core to ask for an older one. Two names because the two templates
+    # spell it differently: ios-cmake.yml reads IOS_MINVER, tvos-cmake.yml
+    # reads MINVER.
+    IOS_MINVER: "17.4"
+    MINVER: "17.4"
+    CC: clang
+    CXX: clang++
+    # Replaces the Linux CORE_ARGS wholesale, like the macOS jobs do: the
+    # clang/lld flags there name binaries that exist only in the Linux image.
+    CORE_ARGS: >-
+      -DCMAKE_PREFIX_PATH=$CI_PROJECT_DIR/.deps
+      -DCMAKE_FIND_ROOT_PATH=$CI_PROJECT_DIR/.deps
+      -DENABLE_LIBRETRO=ON
+      -DENABLE_QT_UI=OFF
+      -DENABLE_SDL_FRONTEND=OFF
+      -DENABLE_GSRUNNER=OFF
+      -DENABLE_TESTS=OFF
+      -DENABLE_RECOMPILER_TEST_HOOKS=OFF
+      -DENABLE_SETCAP=OFF
+      -DUSE_BACKTRACE=OFF
+      -DUSE_VULKAN=OFF
+      -DX11_API=OFF
+      -DWAYLAND_API=OFF
+      -DDISABLE_ADVANCE_SIMD=TRUE
+      -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+      -DCMAKE_MACOSX_BUNDLE=OFF
+  cache:
+    key:
+      files:
+        - .github/workflows/scripts/macos/build-dependencies-embedded.sh
+      prefix: apple-$APPLE_PLATFORM
+    paths:
+      - .deps/
+  before_script:
+    # Replaces the template's before_script, which is where NUMPROC is normally
+    # set for its `-j $NUMPROC` build line. sysctl, not nproc: a stock macOS
+    # runner has no coreutils.
+    - export NUMPROC=$(($(sysctl -n hw.ncpu)/2)); [ "$NUMPROC" -lt 1 ] && export NUMPROC=1
+    - |
+      if [ ! -d "$CI_PROJECT_DIR/.deps/include/SDL3" ]; then
+        APPLE_PLATFORM=$APPLE_PLATFORM \
+          ./.github/workflows/scripts/macos/build-dependencies-embedded.sh "$CI_PROJECT_DIR/.deps"
+      fi
+
 # The Android image carries the NDK and nothing else - no package manager entry
 # for any of the pinned libraries, and no distribution behind it to take zlib,
 # png or SDL from - so the whole dependency set is cross-built from source first,
@@ -200,6 +266,12 @@ include:
   - project: 'libretro-infrastructure/ci-templates'
     file: '/android-cmake.yml'
 
+  # Apple embedded (iOS and tvOS, both arm64).
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/ios-cmake.yml'
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/tvos-cmake.yml'
+
 # Stages for building
 stages:
   - build-prepare
@@ -236,3 +308,22 @@ libretro-build-android-arm64-v8a:
   extends:
     - .libretro-android-cmake-arm64-v8a
     - .core-defs-android
+
+##################################### APPLE ##################################
+# iOS (arm64).
+libretro-build-ios-arm64:
+  allow_failure: true
+  extends:
+    - .libretro-ios-cmake-arm64
+    - .core-defs-apple-embedded
+  variables:
+    APPLE_PLATFORM: ios
+
+# tvOS (arm64).
+libretro-build-tvos-arm64:
+  allow_failure: true
+  extends:
+    - .libretro-tvos-cmake-arm64
+    - .core-defs-apple-embedded
+  variables:
+    APPLE_PLATFORM: tvos

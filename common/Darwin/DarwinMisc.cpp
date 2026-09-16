@@ -1276,7 +1276,14 @@ void DarwinMisc::LogDyldMain() {}
 void DarwinMisc::RecordJitBlock(u32 guest_pc, void* recptr, u32 size) {}
 bool DarwinMisc::FindJitBlock(uintptr_t site, u32* out_guest_pc, void** out_recptr) { return false; }
 
+// Mach exception ports are the better handler - they catch a fault before the
+// signal machinery does - but tvOS marks the whole set unavailable:
+// mach_msg_overwrite, task_get/set_exception_ports and
+// thread_set_exception_ports are all API_UNAVAILABLE(tvos). There it takes the
+// sigaction path below, which is the same one every non-Darwin platform uses.
+#if !TARGET_OS_TV
 #define USE_MACH_EXCEPTION_PORTS
+#endif
 
 namespace PageFaultHandler
 {
@@ -1535,8 +1542,11 @@ bool PageFaultHandler::Install(Error* error)
 	}
 #endif
 
-	// Allow us to ignore faults when running under lldb.
+	// Allow us to ignore faults when running under lldb. Not on tvOS, where the
+	// call is unavailable - and where nothing is running under lldb.
+#if !TARGET_OS_TV
 	task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, MACH_PORT_NULL, EXCEPTION_DEFAULT, 0);
+#endif
 
 	s_installed = true;
 	return true;
