@@ -1510,14 +1510,7 @@ void ps_dither(inout vec3 C, float As)
 		#if PS_DITHER == 2
 			fpos = ivec2(gl_FragCoord.xy);
 		#else
-			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
-			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
-			// floor before dividing, because gl_FragCoord is coord + 0.5, and a true divide by S
-			// (recovered from ScaledScaleFactor, the fixed-point S/16 the texture path already
-			// carries) rather than a reciprocal multiply, which can land a hair under an integer
-			// where the divide is exact.
-			const float dither_scale = ScaledScaleFactor * 16.0f;
-			fpos = ivec2(floor(gl_FragCoord.xy) / dither_scale);
+			fpos = ivec2(gl_FragCoord.xy * RcpScaleFactor);
 		#endif
 
 		float value = gpu_matrix_element(DitherMatrix, fpos.y & 3, fpos.x & 3);
@@ -1817,7 +1810,7 @@ void main()
 	// above their owner; and a multiply by RcpScaleFactor can land a hair under an integer where
 	// row / S is exactly integral. ScaledScaleFactor is S/16, the fixed-point convention the
 	// texture path uses, and scaling it by 16 is exact, so this recovers S and divides.
-	// (The dither path above uses the same floor-then-divide fix.)
+	// (The dither path above still multiplies by RcpScaleFactor and has the same exposure.)
 	const float scanmsk_scale = ScaledScaleFactor * 16.0f;
 	if ((int(floor(gl_FragCoord.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 		DISCARD;
