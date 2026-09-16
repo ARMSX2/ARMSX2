@@ -543,8 +543,28 @@ bool GSRendererHW::LinesToPixelRuns()
 		}
 	}
 
-	if (total == 0 || total > 0x10000 / 4)
+	if (total == 0)
 		return false;
+
+	if (total > 0x10000 / 4)
+	{
+		// One rectangle is four vertices indexed 16-bit, so 16384 of them is the ceiling. No dump
+		// we have comes near it, which is why it is worth saying out loud when it happens: the
+		// draw silently changes shape, from the pixels the GS lights to a figure centred on the
+		// line, and the minor axis goes out by up to half a native pixel.
+		GL_INS("HW: %u pixel-run rectangles for %u lines is past the %d a 16-bit index buffer holds.",
+			total, line_count, 0x10000 / 4);
+		static bool logged_once = false;
+		if (!logged_once)
+		{
+			logged_once = true;
+			Console.Warning("GS: a line draw needs %u pixel-run rectangles, past the %d a 16-bit index "
+							"buffer holds. Falling back to expanded lines, which place the minor axis "
+							"up to half a pixel out. Please report the game and scene.",
+				total, 0x10000 / 4);
+		}
+		return false;
+	}
 
 	while (total * 4 > m_vertex->maxcount)
 		GrowVertexBuffer();
@@ -6154,6 +6174,22 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 				}
 				else if (unscale_pt_ln)
 				{
+					// The pixel runs were refused. What is left is a figure centred on the line's
+					// own coordinate rather than on the pixel the GS lights, so the perpendicular
+					// coordinate -- which rounds to nearest, exactly as a point does -- comes out
+					// up to half a native pixel off. Half a native pixel of vertex offset is the
+					// constant that makes this agree with a pixel-run rectangle on a line sitting
+					// on a whole coordinate, and no constant can do better, since the rounding is a
+					// step function (GSPointPlace.h). DetermineVSConfig only supplies that value in
+					// the Align to Native modes and the mod_xy hack can scale it up, so it is
+					// written here for every mode.
+					//
+					// At native resolution the pixel runs are the only correction, and a refusal
+					// there falls through to a bare GPU line rather than coming in here. That is
+					// deliberate and measured: an expanded line covers its whole segment, so it
+					// draws the last pixel the GS drops, and on the gs-prim capture it scores 81 of
+					// 188 line cells against the GPU line's 122. The GS's endpoint rule is a
+					// diamond test, which is the rule a spec-conformant GPU line already uses.
 					if (features.line_expand)
 					{
 						m_conf.line_expand = true;
@@ -6166,6 +6202,11 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 						m_conf.indices_per_prim = 6;
 						ExpandLineIndices();
 					}
+
+					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::CentredFigureOffset(sx) + 1.0f,
+						oy * sy - GSPointPlace::CentredFigureOffset(sy) + 1.0f);
 				}
 			}
 			break;
