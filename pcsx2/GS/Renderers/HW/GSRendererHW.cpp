@@ -1758,6 +1758,51 @@ GSVector4 GSRendererHW::RealignTargetTextureCoordinate(const GSTextureCache::Sou
 	return half_offset;
 }
 
+// Half-pixel-offset mode 5's texture-side offset, shared by both of EmulateTextureSampler's
+// texture arms. The FST offset is 8 - 4/scale sixteenths of a texel: it is written open-coded
+// below because the closed form rounds one ULP differently at some scale-and-width pairs (1.5x
+// and 3x among them), and changing the number is not what this helper is for.
+//
+// Offsets are required when using FST -- it can be seen with the cabin part of the ship in God
+// of War. ST uses a normalized position and needs no offset here, which breaks Bionicle Heroes
+// if it gets one; `allow_st` is the only thing the two call sites disagree about, because the
+// shuffle arm has no ST/Q path at all. The shuffle arm's other difference, declining the whole
+// offset on a texture shuffle, stays at its own call site.
+void GSRendererHW::ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
+	const GSTextureCache::Target* ds, bool allow_st, GSVector2& texture_offset)
+{
+	if (GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset)
+		return;
+
+	const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
+	const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
+
+	if (!can_offset || tex->m_scale <= 1.0f)
+		return;
+
+	const GSVertex* v = &m_vertex->buff[0];
+	if (PRIM->FST)
+	{
+		// Per axis, and only where the far edge lands on a whole native pixel.
+		const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
+		const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
+
+		if (!(x1_frac & 8))
+			texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
+		if (!(y1_frac & 8))
+			texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
+	}
+	else if (allow_st && m_vt.m_eq.q)
+	{
+		const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
+		const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
+		const float q = v[0].RGBAQ.Q;
+
+		texture_offset.x = 0.5f * q / tw;
+		texture_offset.y = 0.5f * q / th;
+	}
+}
+
 GSVector4i GSRendererHW::ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale)
 {
 	// A line lights the pixel its coordinate rounds to, and that pixel's far edge can sit a pixel and
@@ -9458,29 +9503,14 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
 
-		// Can be seen with the cabin part of the ship in God of War, offsets are required when using FST.
-		// ST uses a normalized position so doesn't need an offset here, will break Bionicle Heroes.
 		// Do not apply HPO on texture shuffles as it already aligns the coordinates.
-		if (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::NativeWTexOffset && !m_texture_shuffle)
-		{
-			const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
-			const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
-
-			if (can_offset && tex->m_scale > 1.0f)
-			{
-				const GSVertex* v = &m_vertex->buff[0];
-				if (PRIM->FST)
-				{
-					const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
-					const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
-
-					if (!(x1_frac & 8))
-						m_conf.cb_vs.texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
-					if (!(y1_frac & 8))
-						m_conf.cb_vs.texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
-				}
-			}
-		}
+		// NOTE: this arm is reached only when m_conf.ps.shuffle is set, and the one place that
+		// sets it is inside `if (m_texture_shuffle)` in EmulateTextureShuffleAndFbmask, with
+		// ResetStates() zeroing it per draw in between. So the condition below is always false
+		// and the call never happens. Left as it stands -- the asymmetry with the other call
+		// site is reported, not resolved, in the C5 record.
+		if (!m_texture_shuffle)
+			ApplyNativeWTexOffset(tex, rt, ds, false, m_conf.cb_vs.texture_offset);
 	}
 	else if (tex->m_target)
 	{
@@ -9532,35 +9562,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
 
-		if (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::NativeWTexOffset)
-		{
-			const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
-			const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
-
-			if (can_offset && tex->m_scale > 1.0f)
-			{
-				const GSVertex* v = &m_vertex->buff[0];
-				if (PRIM->FST)
-				{
-					const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
-					const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
-
-					if (!(x1_frac & 8))
-						m_conf.cb_vs.texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
-					if (!(y1_frac & 8))
-						m_conf.cb_vs.texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
-				}
-				else if (m_vt.m_eq.q)
-				{
-					const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
-					const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
-					const float q = v[0].RGBAQ.Q;
-
-					m_conf.cb_vs.texture_offset.x = 0.5f * q / tw;
-					m_conf.cb_vs.texture_offset.y = 0.5f * q / th;
-				}
-			}
-		}
+		ApplyNativeWTexOffset(tex, rt, ds, true, m_conf.cb_vs.texture_offset);
 
 		if (m_vt.m_primclass == GS_SPRITE_CLASS && m_index->tail >= 4 && GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].bpp >= 16 &&
 			((tex->m_from_target_TEX0.PSM & 0x30) == 0x30 || GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].pal > 0))
