@@ -25,6 +25,14 @@ set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git ch
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
 
+if(ENABLE_LIBRETRO)
+	option(USE_GLES "Use GLES instead of GL" OFF)
+
+	if(USE_GLES)
+        add_compile_definitions(USE_GLES)
+    endif()
+endif()
+
 #-------------------------------------------------------------------------------
 # Graphical option
 #-------------------------------------------------------------------------------
