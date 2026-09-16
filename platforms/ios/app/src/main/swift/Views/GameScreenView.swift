@@ -113,7 +113,7 @@ struct EmulationOnlyGameView: View {
             PhoneGameSurface()
                 .ignoresSafeArea()
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Game display")
+                .accessibilityLabel(Text("Game display"))
                 .accessibilityAddTraits(.isImage)
                 .persistentSystemOverlays(.hidden)
                 .onAppear(perform: preparePresentation)
@@ -171,7 +171,7 @@ struct EmulationOnlyGameView: View {
     private var accessibleMetalSurface: some View {
         PhoneGameSurface()
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Game display")
+            .accessibilityLabel(Text("Game display"))
             .accessibilityAddTraits(.isImage)
     }
 
@@ -352,9 +352,9 @@ struct GameScreenView: View {
                         PhoneGameSurface()
                             .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Game display")
+                            .accessibilityLabel(Text("Game display"))
                             .accessibilityAddTraits(.isImage)
-                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .accessibilityHint(Text("VoiceOver image recognition can read on-screen text."))
                             .overlay { menuRevealTapCatcher }
                         AccessibilityHUDMirror()
                         if effectiveVirtualPadVisible {
@@ -385,9 +385,9 @@ struct GameScreenView: View {
                             .clipped()
                             .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Game display")
+                            .accessibilityLabel(Text("Game display"))
                             .accessibilityAddTraits(.isImage)
-                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .accessibilityHint(Text("VoiceOver image recognition can read on-screen text."))
                             .overlay {
                                 ZStack {
                                     menuRevealTapCatcher

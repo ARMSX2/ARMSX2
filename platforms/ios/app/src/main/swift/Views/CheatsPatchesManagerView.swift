@@ -15,6 +15,7 @@ struct CheatsPatchesManagerView: View {
     let gameTitle: String
     let launchContext: CheatsPatchesLaunchContext
 
+    @ObservedObject private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
     @State private var showImportPicker = false
     @State private var importAsCheat = false
@@ -49,7 +50,7 @@ struct CheatsPatchesManagerView: View {
                 if PatchStore.hardcoreBlocksPnachContent() {
                     Section {
                         Label {
-                            Text("Hardcore Mode is on. Cheats and most patches are blocked, but widescreen and 60fps patches from a trusted database can still be enabled.")
+                            Text(settings.localized("Hardcore Mode is on. Cheats and most patches are blocked, but widescreen and 60fps patches from a trusted database can still be enabled."))
                                 .fixedSize(horizontal: false, vertical: true)
                         } icon: {
                             Image(systemName: "lock.fill")
@@ -62,7 +63,7 @@ struct CheatsPatchesManagerView: View {
                     // entries below carry on working.
                     Section {
                         Label {
-                            Text("Hardcore Mode is switched on but has not taken hold yet. Anything enabled here still works until you boot a game, and will stop then.")
+                            Text(settings.localized("Hardcore Mode is switched on but has not taken hold yet. Anything enabled here still works until you boot a game, and will stop then."))
                                 .fixedSize(horizontal: false, vertical: true)
                         } icon: {
                             Image(systemName: "clock.badge.exclamationmark")
@@ -75,11 +76,11 @@ struct CheatsPatchesManagerView: View {
                 importSection
                 advancedSection
             }
-            .navigationTitle("Cheats & Patches")
+            .navigationTitle(settings.localized("Cheats & Patches"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(settings.localized("Done")) { dismiss() }
                 }
             }
             .onAppear {
@@ -116,24 +117,24 @@ struct CheatsPatchesManagerView: View {
                 titleVisibility: .visible
             ) {
                 Button(removalActionTitle, role: .destructive) { performPendingRemoval() }
-                Button("Cancel", role: .cancel) { pendingRemoval = nil }
+                Button(settings.localized("Cancel"), role: .cancel) { pendingRemoval = nil }
             } message: {
                 Text(removalMessage)
             }
             .confirmationDialog(
-                "Remove this entry?",
+                settings.localized("Remove this entry?"),
                 isPresented: Binding(get: { pendingEntryRemoval != nil }, set: { if !$0 { pendingEntryRemoval = nil } }),
                 titleVisibility: .visible
             ) {
-                Button("Remove Entry", role: .destructive) {
+                Button(settings.localized("Remove Entry"), role: .destructive) {
                     if let entry = pendingEntryRemoval {
                         store.removeEntry(entry)
                     }
                     pendingEntryRemoval = nil
                 }
-                Button("Cancel", role: .cancel) { pendingEntryRemoval = nil }
+                Button(settings.localized("Cancel"), role: .cancel) { pendingEntryRemoval = nil }
             } message: {
-                Text("This removes only this entry from its file. All other entries are kept.")
+                Text(settings.localized("This removes only this entry from its file. All other entries are kept."))
             }
         }
     }
@@ -161,9 +162,9 @@ struct CheatsPatchesManagerView: View {
     }
 
     private var capabilityMessage: String? {
-        if let guidance = store.identityState.guidance { return guidance }
+        if let guidance = store.identityState.guidance { return settings.localized(guidance) }
         if !store.canManageInstalledFiles {
-            return "Patch storage is not ready for this game. Try again in a moment."
+            return settings.localized("Patch storage is not ready for this game. Try again in a moment.")
         }
         return nil
     }
@@ -179,10 +180,10 @@ struct CheatsPatchesManagerView: View {
             }
 
             if launchContext == .inGame {
-                Button("Retry Game Information") { reload() }
+                Button(settings.localized("Retry Game Information")) { reload() }
             }
         } header: {
-            Text("Game Identification")
+            Text(settings.localized("Game Identification"))
         }
     }
 
@@ -203,7 +204,7 @@ struct CheatsPatchesManagerView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss message")
+                .accessibilityLabel(settings.localized("Dismiss message"))
             }
         }
     }
@@ -238,7 +239,7 @@ struct CheatsPatchesManagerView: View {
                 ForEach(PatchDisplayGroup.allCases, id: \.self) { group in
                     let entries = store.installed.filter { $0.displayGroup == group }
                     if !entries.isEmpty {
-                        Text(group.title)
+                        Text(settings.localized(group.title))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .accessibilityAddTraits(.isHeader)
@@ -249,7 +250,7 @@ struct CheatsPatchesManagerView: View {
                                         Button(role: .destructive) {
                                             pendingEntryRemoval = entry
                                         } label: {
-                                            Label("Remove Entry", systemImage: "trash")
+                                            Label(settings.localized("Remove Entry"), systemImage: "trash")
                                         }
                                     }
                                 }
@@ -262,14 +263,14 @@ struct CheatsPatchesManagerView: View {
                         Button {
                             store.setAllNamedEntries(enabled: true)
                         } label: {
-                            Label("Enable All", systemImage: "checkmark.circle")
+                            Label(settings.localized("Enable All"), systemImage: "checkmark.circle")
                         }
                         .disabled(!store.canEnableAll)
 
                         Button {
                             store.setAllNamedEntries(enabled: false)
                         } label: {
-                            Label("Disable All", systemImage: "circle.slash")
+                            Label(settings.localized("Disable All"), systemImage: "circle.slash")
                         }
                         .disabled(!store.canDisableAll)
                     }
@@ -282,39 +283,39 @@ struct CheatsPatchesManagerView: View {
                         Button(role: .destructive) {
                             pendingRemoval = .patch
                         } label: {
-                            Label("Remove Patch File (\(entryCountLabel(patchEntryCount)))", systemImage: "trash")
+                            Label(String(format: settings.localized("Remove Patch File (%@)"), entryCountLabel(patchEntryCount)), systemImage: "trash")
                         }
                     }
                     if cheatEntryCount > 0 {
                         Button(role: .destructive) {
                             pendingRemoval = .cheat
                         } label: {
-                            Label("Remove Cheat File (\(entryCountLabel(cheatEntryCount)))", systemImage: "trash")
+                            Label(String(format: settings.localized("Remove Cheat File (%@)"), entryCountLabel(cheatEntryCount)), systemImage: "trash")
                         }
                     }
                     if patchEntryCount > 0 && cheatEntryCount > 0 {
                         Button(role: .destructive) {
                             pendingRemoval = .all
                         } label: {
-                            Label("Remove All Installed Files", systemImage: "trash.fill")
+                            Label(settings.localized("Remove All Installed Files"), systemImage: "trash.fill")
                         }
                     }
                 } label: {
-                    Label("Remove Installed Files…", systemImage: "trash")
+                    Label(settings.localized("Remove Installed Files…"), systemImage: "trash")
                 }
-                .accessibilityHint("Removes complete installed files, not individual entries")
+                .accessibilityHint(settings.localized("Removes complete installed files, not individual entries"))
             }
         } header: {
-            Text("Installed")
+            Text(settings.localized("Installed"))
         } footer: {
-            Text("Some changes only take effect after restarting the game.")
+            Text(settings.localized("Some changes only take effect after restarting the game."))
         }
     }
 
     private var installedEmptyMessage: String {
         store.canManageInstalledFiles
-            ? "No cheats or patches are installed for this game yet."
-            : "No installed entries are available yet."
+            ? settings.localized("No cheats or patches are installed for this game yet.")
+            : settings.localized("No installed entries are available yet.")
     }
 
     private var hasNamedEntries: Bool {
@@ -330,37 +331,37 @@ struct CheatsPatchesManagerView: View {
     }
 
     private func entryCountLabel(_ count: Int) -> String {
-        "\(count) \(count == 1 ? "entry" : "entries")"
+        count == 1 ? settings.localized("1 entry") : String(format: settings.localized("%d entries"), count)
     }
 
     private var removalTitle: String {
         switch pendingRemoval {
-        case .patch: return "Remove installed patch file?"
-        case .cheat: return "Remove installed cheat file?"
-        case .all: return "Remove all installed files?"
-        case nil: return "Remove installed files?"
+        case .patch: return settings.localized("Remove installed patch file?")
+        case .cheat: return settings.localized("Remove installed cheat file?")
+        case .all: return settings.localized("Remove all installed files?")
+        case nil: return settings.localized("Remove installed files?")
         }
     }
 
     private var removalActionTitle: String {
         switch pendingRemoval {
-        case .patch: return "Remove Patch File"
-        case .cheat: return "Remove Cheat File"
-        case .all: return "Remove All Files"
-        case nil: return "Remove"
+        case .patch: return settings.localized("Remove Patch File")
+        case .cheat: return settings.localized("Remove Cheat File")
+        case .all: return settings.localized("Remove All Files")
+        case nil: return settings.localized("Remove")
         }
     }
 
     private var removalMessage: String {
         switch pendingRemoval {
         case .patch:
-            return "This removes the complete patch file and \(entryCountLabel(patchEntryCount)) in it. This cannot be undone."
+            return String(format: settings.localized("This removes the complete patch file and %@ in it. This cannot be undone."), entryCountLabel(patchEntryCount))
         case .cheat:
-            return "This removes the complete cheat file and \(entryCountLabel(cheatEntryCount)) in it. This cannot be undone."
+            return String(format: settings.localized("This removes the complete cheat file and %@ in it. This cannot be undone."), entryCountLabel(cheatEntryCount))
         case .all:
-            return "This removes both installed files and \(entryCountLabel(patchEntryCount + cheatEntryCount)) in them. This cannot be undone."
+            return String(format: settings.localized("This removes both installed files and %@ in them. This cannot be undone."), entryCountLabel(patchEntryCount + cheatEntryCount))
         case nil:
-            return "This cannot be undone."
+            return settings.localized("This cannot be undone.")
         }
     }
 
@@ -397,12 +398,12 @@ struct CheatsPatchesManagerView: View {
                     Button {
                         store.toggle(entry)
                     } label: {
-                        Label("Suppressed by Hardcore", systemImage: "lock.fill")
+                        Label(settings.localized("Suppressed by Hardcore"), systemImage: "lock.fill")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityHint("Turns this entry off. It can’t be turned back on while Hardcore is active.")
+                    .accessibilityHint(settings.localized("Turns this entry off. It can’t be turned back on while Hardcore is active."))
                 }
             } else {
                 Toggle(
@@ -419,11 +420,11 @@ struct CheatsPatchesManagerView: View {
                             Image(systemName: "checkmark.shield.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.green)
-                                .accessibilityLabel("Hardcore-safe")
+                                .accessibilityLabel(settings.localized("Hardcore-safe"))
                         }
                     }
                 }
-                .accessibilityHint("Enables or disables this entry for the current game")
+                .accessibilityHint(settings.localized("Enables or disables this entry for the current game"))
                 .disabled(!isOn && !PatchStore.hardcorePermitsEnable(entry))
             }
 
@@ -435,7 +436,7 @@ struct CheatsPatchesManagerView: View {
             }
 
             HStack(spacing: 8) {
-                Text(entry.displayCategory.title)
+                Text(settings.localized(entry.displayCategory.title))
                     .font(.caption2.weight(.medium))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -444,7 +445,7 @@ struct CheatsPatchesManagerView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if entry.isLegacy {
-                    Text("Legacy")
+                    Text(settings.localized("Legacy"))
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
@@ -464,14 +465,14 @@ struct CheatsPatchesManagerView: View {
                     startDatabaseDownload(asCheat: false)
                 } label: {
                     Label(
-                        hasDatabasePatch ? "Reinstall Patches" : "Download Patches",
+                        hasDatabasePatch ? settings.localized("Reinstall Patches") : settings.localized("Download Patches"),
                         systemImage: hasDatabasePatch ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
                 }
                 .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
-                .accessibilityHint(store.identityState.canUseDatabase ? "Downloads matching patches from every configured source" : "Requires an identified game CRC")
+                .accessibilityHint(settings.localized(store.identityState.canUseDatabase ? "Downloads matching patches from every configured source" : "Requires an identified game CRC"))
             } else {
-                Text("No patch download source is configured. Add one in Advanced or import a file below.")
+                Text(settings.localized("No patch download source is configured. Add one in Advanced or import a file below."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -482,7 +483,7 @@ struct CheatsPatchesManagerView: View {
                     startDatabaseDownload(asCheat: true)
                 } label: {
                     Label(
-                        hasDatabaseCheat ? "Reinstall Cheats" : "Download Cheats",
+                        hasDatabaseCheat ? settings.localized("Reinstall Cheats") : settings.localized("Download Cheats"),
                         systemImage: hasDatabaseCheat ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
                 }
@@ -492,18 +493,18 @@ struct CheatsPatchesManagerView: View {
             if store.isDownloading {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Downloading…")
+                    Text(settings.localized("Downloading…"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Download in progress")
+                .accessibilityLabel(settings.localized("Download in progress"))
             }
 
         } header: {
-            Text("Available")
+            Text(settings.localized("Available"))
         } footer: {
-            Text("Downloads query every configured source and merge results into one file after making a backup. Patches must match this game’s region and version.")
+            Text(settings.localized("Downloads query every configured source and merge results into one file after making a backup. Patches must match this game’s region and version."))
         }
     }
 
@@ -526,22 +527,22 @@ struct CheatsPatchesManagerView: View {
 
     private var importSection: some View {
         Section {
-            Picker("Import As", selection: $importAsCheat) {
-                Text("Patch").tag(false)
-                Text("Cheat").tag(true)
+            Picker(settings.localized("Import As"), selection: $importAsCheat) {
+                Text(settings.localized("Patch")).tag(false)
+                Text(settings.localized("Cheat")).tag(true)
             }
             .pickerStyle(.segmented)
 
             Button {
                 showImportPicker = true
             } label: {
-                Label("Import File", systemImage: "square.and.arrow.down")
+                Label(settings.localized("Import File"), systemImage: "square.and.arrow.down")
             }
             .disabled(!store.canManageInstalledFiles)
         } header: {
-            Text("Import")
+            Text(settings.localized("Import"))
         } footer: {
-            Text("Importing merges with the current patch or cheat file after making a backup. Named entries can be enabled individually.")
+            Text(settings.localized("Importing merges with the current patch or cheat file after making a backup. Named entries can be enabled individually."))
         }
     }
 
@@ -550,15 +551,15 @@ struct CheatsPatchesManagerView: View {
     private var advancedSection: some View {
         Section {
             DisclosureGroup(isExpanded: $showAdvanced) {
-                Text("Patch sources")
+                Text(settings.localized("Patch sources"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(patchSourcesDraft.indices, id: \.self) { index in
                     sourceRow(
-                        placeholder: "Patch Source URL",
+                        placeholder: settings.localized("Patch Source URL"),
                         text: $patchSourcesDraft[index],
-                        label: "Patch source URL"
+                        label: settings.localized("Patch source URL")
                     ) {
                         guard patchSourcesDraft.indices.contains(index) else { return }
                         patchSourcesDraft.remove(at: index)
@@ -567,20 +568,20 @@ struct CheatsPatchesManagerView: View {
                 Button {
                     patchSourcesDraft.append("")
                 } label: {
-                    Label("Add source", systemImage: "plus.circle")
+                    Label(settings.localized("Add source"), systemImage: "plus.circle")
                 }
                 .buttonStyle(.borderless)
 
-                Text("Cheat sources")
+                Text(settings.localized("Cheat sources"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                     .padding(.top, 8)
                 ForEach(cheatSourcesDraft.indices, id: \.self) { index in
                     sourceRow(
-                        placeholder: "Cheat Source URL",
+                        placeholder: settings.localized("Cheat Source URL"),
                         text: $cheatSourcesDraft[index],
-                        label: "Cheat source URL"
+                        label: settings.localized("Cheat source URL")
                     ) {
                         guard cheatSourcesDraft.indices.contains(index) else { return }
                         cheatSourcesDraft.remove(at: index)
@@ -589,31 +590,31 @@ struct CheatsPatchesManagerView: View {
                 Button {
                     cheatSourcesDraft.append("")
                 } label: {
-                    Label("Add source", systemImage: "plus.circle")
+                    Label(settings.localized("Add source"), systemImage: "plus.circle")
                 }
                 .buttonStyle(.borderless)
 
-                Button("Save Source URLs") {
+                Button(settings.localized("Save Source URLs")) {
                     store.patchDatabaseURLTemplates = patchSourcesDraft
                     store.cheatDatabaseURLTemplates = cheatSourcesDraft
                     patchSourcesDraft = store.patchDatabaseURLTemplates
                     cheatSourcesDraft = store.cheatDatabaseURLTemplates
-                    store.applyFeedback("Source URLs saved.", kind: .success)
+                    store.applyFeedback(settings.localized("Source URLs saved."), kind: .success)
                 }
                 .buttonStyle(.borderless)
                 .padding(.top, 8)
 
-                Text("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches, an UltraWidescreen / NaturalVision pack, and a community cheat collection. Only add sources you trust.")
+                Text(settings.localized("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches, an UltraWidescreen / NaturalVision pack, and a community cheat collection. Only add sources you trust."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } label: {
-                Label("Source URLs", systemImage: "link")
+                Label(settings.localized("Source URLs"), systemImage: "link")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
         } header: {
-            Text("Advanced")
+            Text(settings.localized("Advanced"))
         }
     }
 
@@ -637,7 +638,7 @@ struct CheatsPatchesManagerView: View {
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove source")
+            .accessibilityLabel(settings.localized("Remove source"))
         }
     }
 }

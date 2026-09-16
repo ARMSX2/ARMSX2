@@ -295,7 +295,7 @@ struct CompositeDPadView: View {
             releaseAll()
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("D-pad")
+        .accessibilityLabel(Text("D-pad"))
         .accessibilityAddTraits(.isButton)
     }
 
@@ -572,7 +572,7 @@ struct CompositeFaceView: View {
             releaseAll()
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Face buttons")
+        .accessibilityLabel(Text("Face buttons"))
         .accessibilityAddTraits(.isButton)
     }
 
