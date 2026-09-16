@@ -188,6 +188,26 @@ TEST(GSLineWalk, ZeroLengthLineDrawsNothing)
 		EXPECT_TRUE(Walk16(f, 16 - f, f, 16 - f).empty()) << "fraction " << f;
 }
 
+// Sly 3 and Sly Cooper draw their particles as one short line per draw, and 60 to 216 of them per
+// capture light no pixel at all: the segment starts outside its first pixel's diamond and ends
+// inside its last one, so the walk's first pixel is past its last and there is no span. These are
+// the coordinates the games send, relative to XYOFFSET, in 1/16 pixel. GSRendererHW draws nothing
+// for such a draw -- neither an expanded stripe nor a GPU line -- which is what this pins.
+TEST(GSLineWalk, ShortSegmentThatNeverOwnsAPixelDrawsNothing)
+{
+	const int segments[6][4] = {
+		{4887, 2066, 4901, 2081}, // Sly Cooper, draw 2585: 14/16 x 15/16, major Y
+		{4916, 2106, 4924, 2092}, // Sly Cooper, draw 2653: the same, heading up
+		{5254, 1995, 5261, 1979}, // Sly Cooper, draw 2851: a whole pixel on Y
+		{4427, 2652, 4420, 2643}, // Sly 3, draw 3375: 9/16 on the major axis
+		{4482, 2249, 4498, 2253}, // Sly 3, draw 3429: a whole pixel on X
+		{4324, 2372, 4331, 2386}, // Sly Cooper, draw 2907
+	};
+	for (const auto& s : segments)
+		EXPECT_TRUE(Walk16(s[0], s[1], s[2], s[3]).empty())
+			<< "(" << s[0] << "," << s[1] << ") -> (" << s[2] << "," << s[3] << ")";
+}
+
 // Ace Combat 5's GUN box, as the game sends it (SLUS-20851 dump 20260812132022, frame 0): a line
 // strip whose left side runs upward one row past the top edge. The row past is the dropped last
 // pixel, so the box closes and nothing is lit above the top edge.

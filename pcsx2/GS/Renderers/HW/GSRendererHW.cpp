@@ -425,7 +425,7 @@ namespace
 	}
 } // namespace
 
-bool GSRendererHW::LinesToPixelRuns()
+GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
 {
 	// Draws every line as rectangles over exactly the pixels the GS lights (GSLineWalk.h), one
 	// rectangle per run of pixels that share a minor coordinate, a colour and a fog value. Drawn as
@@ -440,8 +440,10 @@ bool GSRendererHW::LinesToPixelRuns()
 	// coordinate of its top-left corner, so at native resolution pixel i samples the line at i,
 	// which is where the software renderer evaluates it.
 	//
-	// Returns false with the draw untouched when the rectangles would not fit 16-bit indices, when
-	// nothing would be drawn, or when a group in the full-barrier draw list would end up empty.
+	// Refused leaves the draw untouched, for the caller to draw as expanded lines: the rectangles
+	// would not fit 16-bit indices, or a group in the full-barrier draw list would end up empty.
+	// NothingLit is the other thing entirely -- the GS walk lights no pixel for any line in the
+	// draw, so there is nothing to draw by any means.
 
 	const u32 line_count = m_index->tail / 2;
 	const int ofx = m_context->XYOFFSET.OFX;
@@ -534,7 +536,7 @@ bool GSRendererHW::LinesToPixelRuns()
 				if (--group_left == 0)
 				{
 					if (group_quads == 0)
-						return false;
+						return LineRunResult::Refused;
 					group_quads = 0;
 					if (++group < m_drawlist.size())
 						group_left = m_drawlist[group];
@@ -544,7 +546,14 @@ bool GSRendererHW::LinesToPixelRuns()
 	}
 
 	if (total == 0)
-		return false;
+	{
+		// Every line in the draw enters and leaves inside one pixel's diamond, or has zero length.
+		// The GS lights nothing for those (GSLineWalk.h; the gs-prim console capture matched the
+		// walk on all 188 of its line cases), so nothing is what we draw -- an expanded stripe or a
+		// GPU line here would paint pixels the console does not.
+		GL_INS("HW: %u lines light no pixel; nothing to draw.", line_count);
+		return LineRunResult::NothingLit;
+	}
 
 	if (total > 0x10000 / 4)
 	{
@@ -563,7 +572,7 @@ bool GSRendererHW::LinesToPixelRuns()
 							"up to half a pixel out. Please report the game and scene.",
 				total, 0x10000 / 4);
 		}
-		return false;
+		return LineRunResult::Refused;
 	}
 
 	while (total * 4 > m_vertex->maxcount)
@@ -644,7 +653,7 @@ bool GSRendererHW::LinesToPixelRuns()
 		index[5] = base + 3;
 	}
 	m_index->tail = written * 6;
-	return true;
+	return LineRunResult::Converted;
 }
 
 template<u32 primclass, bool fst>
@@ -6024,7 +6033,7 @@ void GSRendererHW::HandleFlatShadedVertices()
 	}
 }
 
-void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt)
+bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt)
 {
 	GL_PUSH("HW: IA");
 
@@ -6092,7 +6101,7 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 						m_conf.nverts = m_vertex->next;
 						m_conf.nindices = m_index->tail * 6;
 						m_conf.indices_per_prim = 6;
-						return;
+						return true;
 					}
 					else
 					{
@@ -6150,63 +6159,84 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.indices_per_prim = 6;
 					ExpandLineIndices();
 				}
-				else if ((unscale_pt_ln || target_scale == 1.0f) && LinesToPixelRuns())
+				else
 				{
-					// Native resolution included: the GPU's single-pixel line rule is not the GS's,
-					// and it is not the same rule on every driver.
-					GL_INS("HW: Lines drawn as pixel runs.");
-					m_conf.topology = GSHWDrawConfig::Topology::Triangle;
-					m_conf.indices_per_prim = 6;
+					// The pixel runs are tried at native resolution as well as above it: the GPU's
+					// single-pixel line rule is not the GS's, and it is not the same rule on every
+					// driver. Turning safe features off above native turns the whole correction off.
+					const LineRunResult runs =
+						(unscale_pt_ln || target_scale == 1.0f) ? LinesToPixelRuns() : LineRunResult::Refused;
 
-					// The rectangle corners are pixel boundaries, so they take exactly half a device
-					// pixel of offset, the amount that puts a boundary between two device pixels.
-					// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
-					// and the mod_xy hack scales the half pixel up. Both correct geometry a game
-					// places on pixel centres, and applied here they move every rectangle, a device
-					// pixel right and down at 2x under Align to Native. GSPointPlace.h has the
-					// arithmetic and the other figure, the centred one, that takes a different
-					// offset; at native resolution the two agree and this is the value
-					// DetermineVSConfig already chose.
-					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
-					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
-					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::BoundaryFigureOffset(sx, target_scale) + 1.0f,
-						oy * sy - GSPointPlace::BoundaryFigureOffset(sy, target_scale) + 1.0f);
-				}
-				else if (unscale_pt_ln)
-				{
-					// The pixel runs were refused. What is left is a figure centred on the line's
-					// own coordinate rather than on the pixel the GS lights, so the perpendicular
-					// coordinate -- which rounds to nearest, exactly as a point does -- comes out
-					// up to half a native pixel off. Half a native pixel of vertex offset is the
-					// constant that makes this agree with a pixel-run rectangle on a line sitting
-					// on a whole coordinate, and no constant can do better, since the rounding is a
-					// step function (GSPointPlace.h). DetermineVSConfig only supplies that value in
-					// the Align to Native modes and the mod_xy hack can scale it up, so it is
-					// written here for every mode.
-					//
-					// At native resolution the pixel runs are the only correction, and a refusal
-					// there falls through to a bare GPU line rather than coming in here. That is
-					// deliberate and measured: an expanded line covers its whole segment, so it
-					// draws the last pixel the GS drops, and on the gs-prim capture it scores 81 of
-					// 188 line cells against the GPU line's 122. The GS's endpoint rule is a
-					// diamond test, which is the rule a spec-conformant GPU line already uses.
-					if (features.line_expand)
+					if (runs == LineRunResult::NothingLit)
 					{
-						m_conf.line_expand = true;
+						// The GS lights no pixel for any line in this draw, so nothing is what we
+						// draw. The alternatives both paint pixels the console leaves alone: above
+						// native the fallback below draws a stripe centred on the line, and at
+						// native a bare GPU line applies whatever single-pixel rule the driver has.
+						// Sly 3 and Sly Cooper send 60 to 216 of these per capture -- particle
+						// segments about a pixel long that start and end inside one pixel's diamond
+						// -- and the stripe was the only thing on those pixels.
+						GL_INS("HW: Line draw lights no pixel; nothing submitted.");
+						return false;
 					}
-					else if (features.vs_expand)
+
+					if (runs == LineRunResult::Converted)
 					{
-						m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
-						m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+						GL_INS("HW: Lines drawn as pixel runs.");
 						m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 						m_conf.indices_per_prim = 6;
-						ExpandLineIndices();
-					}
 
-					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
-					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
-					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::CentredFigureOffset(sx) + 1.0f,
-						oy * sy - GSPointPlace::CentredFigureOffset(sy) + 1.0f);
+						// The rectangle corners are pixel boundaries, so they take exactly half a device
+						// pixel of offset, the amount that puts a boundary between two device pixels.
+						// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
+						// and the mod_xy hack scales the half pixel up. Both correct geometry a game
+						// places on pixel centres, and applied here they move every rectangle, a device
+						// pixel right and down at 2x under Align to Native. GSPointPlace.h has the
+						// arithmetic and the other figure, the centred one, that takes a different
+						// offset; at native resolution the two agree and this is the value
+						// DetermineVSConfig already chose.
+						const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+						const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+						m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::BoundaryFigureOffset(sx, target_scale) + 1.0f,
+							oy * sy - GSPointPlace::BoundaryFigureOffset(sy, target_scale) + 1.0f);
+					}
+					else if (unscale_pt_ln)
+					{
+						// The pixel runs were refused -- too many rectangles for a 16-bit index buffer,
+						// or a full-barrier group left empty. What is left is a figure centred on the line's
+						// own coordinate rather than on the pixel the GS lights, so the perpendicular
+						// coordinate -- which rounds to nearest, exactly as a point does -- comes out
+						// up to half a native pixel off. Half a native pixel of vertex offset is the
+						// constant that makes this agree with a pixel-run rectangle on a line sitting
+						// on a whole coordinate, and no constant can do better, since the rounding is a
+						// step function (GSPointPlace.h). DetermineVSConfig only supplies that value in
+						// the Align to Native modes and the mod_xy hack can scale it up, so it is
+						// written here for every mode.
+						//
+						// At native resolution the pixel runs are the only correction, and a refusal
+						// there falls through to a bare GPU line rather than coming in here. That is
+						// deliberate and measured: an expanded line covers its whole segment, so it
+						// draws the last pixel the GS drops, and on the gs-prim capture it scores 81 of
+						// 188 line cells against the GPU line's 122. The GS's endpoint rule is a
+						// diamond test, which is the rule a spec-conformant GPU line already uses.
+						if (features.line_expand)
+						{
+							m_conf.line_expand = true;
+						}
+						else if (features.vs_expand)
+						{
+							m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
+							m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+							m_conf.topology = GSHWDrawConfig::Topology::Triangle;
+							m_conf.indices_per_prim = 6;
+							ExpandLineIndices();
+						}
+
+						const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+						const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+						m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::CentredFigureOffset(sx) + 1.0f,
+							oy * sy - GSPointPlace::CentredFigureOffset(sy) + 1.0f);
+					}
 				}
 			}
 			break;
@@ -6238,7 +6268,7 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.nverts = m_vertex->next;
 					m_conf.nindices = m_index->tail * 3;
 					m_conf.indices_per_prim = 6;
-					return;
+					return true;
 				}
 				else
 				{
@@ -6303,6 +6333,7 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 	}
 	m_conf.nverts = m_vertex->next;
 	m_conf.nindices = m_index->tail;
+	return true;
 }
 
 void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
@@ -10869,7 +10900,13 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	HandleFlatShadedVertices();
 
-	SetupIA(rtscale, vs_scale_x, vs_scale_y, m_channel_shuffle_width != 0, no_rt);
+	if (!SetupIA(rtscale, vs_scale_x, vs_scale_y, m_channel_shuffle_width != 0, no_rt))
+	{
+		// Nothing the draw asks for lands on a pixel. The draw log still gets its row, marked
+		// unsubmitted, the same as any other draw that returns from here without rendering.
+		GL_INS("HW: Draw %u lights no pixel; not submitted.", static_cast<u32>(s_n));
+		return;
+	}
 
 	if (m_conf.ds && m_conf.ps.IsFeedbackLoopDepth() && !g_gs_device->Features().depth_feedback && !m_conf.ps.HasDepthROV())
 	{

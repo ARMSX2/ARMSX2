@@ -222,7 +222,9 @@ private:
 
 	void ResetStates();
 	void HandleFlatShadedVertices();
-	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
+	/// Fills in the topology, the indices and the vertex offset for the draw's primitive class.
+	/// Returns false when the draw lights no pixel at all and must not be submitted.
+	bool SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
 	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
@@ -409,7 +411,16 @@ public:
 	void Lines2Sprites();
 	bool VerifyIndices();
 	void ExpandLineIndices();
-	bool LinesToPixelRuns();
+	/// What LinesToPixelRuns() did with the draw. The three outcomes are not two: a draw the GS
+	/// lights no pixel for is not a draw the pixel runs could not take, and the fallback figure is
+	/// wrong for it -- it would paint a stripe the console never paints.
+	enum class LineRunResult
+	{
+		Converted, ///< The vertex buffer now holds the rectangles. Draw them.
+		NothingLit, ///< The GS lights no pixel for any line in the draw. Draw nothing.
+		Refused, ///< The draw is untouched and needs the expanded-line fallback.
+	};
+	LineRunResult LinesToPixelRuns();
 	void SnapPointsToNativePixel();
 	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
 	GSVector4i ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale);
