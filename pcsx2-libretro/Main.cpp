@@ -1681,6 +1681,8 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info)
 	std::memset(info, 0, sizeof(*info));
 	info->geometry.base_width = LibretroCore::kFrameWidth;
 	info->geometry.base_height = LibretroCore::kFrameHeight;
+	info->geometry.max_width = LibretroCore::kFrameWidth;
+	info->geometry.max_height = LibretroCore::kFrameHeight;
 #ifdef ENABLE_VULKAN
 	info->geometry.max_width = VKLibretro::kMaxCanvasWidth;
 	info->geometry.max_height = VKLibretro::kMaxCanvasHeight;
