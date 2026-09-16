@@ -52,6 +52,29 @@
 
 .core-defs-linux:
   extends: .core-defs
+  variables:
+      CORE_ARGS: >-
+        -DCMAKE_C_COMPILER=clang
+        -DCMAKE_CXX_COMPILER=clang++
+        -DCMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld
+        -DCMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld
+        -DCMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld
+        -DCMAKE_PREFIX_PATH=$CI_PROJECT_DIR/.deps
+        -DENABLE_LIBRETRO=ON
+        -DENABLE_QT_UI=OFF
+        -DENABLE_SDL_FRONTEND=OFF
+        -DENABLE_GSRUNNER=OFF
+        -DENABLE_TESTS=OFF
+        -DENABLE_RECOMPILER_TEST_HOOKS=OFF
+        -DENABLE_SETCAP=OFF
+        -DUSE_BACKTRACE=OFF
+        -DX11_API=OFF
+        -DWAYLAND_API=OFF
+        -DDISABLE_ADVANCE_SIMD=TRUE
+        -DHOST_PAGE_SIZE=4096
+        -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+        -DBUILD_DEPENDENCIES=ON
+
   before_script:
     # The ci-template's script builds with `-j $NUMPROC`; its before_script
     # (which normally sets it) is replaced by this one.
@@ -60,7 +83,7 @@
     - apt-get update
     - >-
       apt-get -y install
-      build-essential ca-certificates cmake curl git ninja-build nasm pkg-config
+      bison build-essential ca-certificates cmake curl flex git ninja-build nasm pkg-config
       wget
       zlib1g-dev libaio-dev libasound2-dev libcurl4-openssl-dev
       libdbus-1-dev libdrm-dev libegl-dev libevdev-dev libfontconfig1-dev
@@ -83,7 +106,7 @@
         ln -sf "/usr/bin/ld.lld-$v" /usr/bin/ld.lld
       fi
       clang++ --version
-    - ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
+    #- ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
 
 # macOS has no buildbot image to apt-install from: the runner is a shared Mac
 # with whatever Xcode it happens to carry and none of the pinned dependencies,
