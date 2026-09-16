@@ -62,7 +62,7 @@ struct GraphicsSettingsView: View {
             return settings.localized("Ignored at 1x Internal Resolution.")
         case .fromGameDatabase:
             if let game = appState.runningGameName {
-                return settings.localized("The game database is setting this for") + " \(game)."
+                return String(format: settings.localized("The game database is setting this for %@."), game)
             }
             return settings.localized("The game database is setting this for this game.")
         case .needsManualHacks:

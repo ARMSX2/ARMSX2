@@ -899,8 +899,8 @@ struct GameListView: View {
                     }
                 }
 			} message: {
-				let target = pendingGameName.isEmpty ? "Boot BIOS" : (pendingGameName as NSString).lastPathComponent
-				Text("\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(settings.localized(target))?")
+				let target = pendingGameName.isEmpty ? settings.localized("Boot BIOS") : (pendingGameName as NSString).lastPathComponent
+				Text(String(format: settings.localized("VM is currently running.\nShut down and start %@?"), target))
 			}
             .alert(
                 settings.localized("Delete Game Data?"),

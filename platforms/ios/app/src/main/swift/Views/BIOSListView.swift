@@ -210,11 +210,7 @@ struct BIOSListView: View {
                     appState.shutdownAndBootBIOS()
                 }
             } message: {
-                Text(
-                    "\(settings.localized("VM is currently running."))\n" +
-                    "\(settings.localized("Shut down and start")) " +
-                    "\(settings.localized("Boot BIOS"))?"
-                )
+                Text(String(format: settings.localized("VM is currently running.\nShut down and start %@?"), settings.localized("Boot BIOS")))
             }
         }
         .onAppear {

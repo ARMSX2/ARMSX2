@@ -509,7 +509,7 @@ struct StorageSettingsView: View {
         report = await StorageCleaner.report(paths: paths)
         isWorking = false
 
-        var message = "\(settings.localized("Removed about")) \(formatBytes(result.bytesRemoved)) \(settings.localized("of generated data."))"
+        var message = String(format: settings.localized("Removed about %@ of generated data."), formatBytes(result.bytesRemoved))
         if !result.failures.isEmpty {
             message += "\n\n\(settings.localized("Some files could not be removed:"))\n\(result.failures.prefix(5).joined(separator: "\n"))"
         }
