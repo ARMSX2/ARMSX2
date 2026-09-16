@@ -7107,8 +7107,13 @@ void GSRendererHW::EmulateDither()
 // for the odd. Which cells own the extra pixel is fixed by that ownership rule, but which matrix
 // entry a cell indexes is not -- adding a phase before the index is masked to 4x4 rotates the
 // matrix under it. Spend the extra area on the quietest rows and columns the matrix has, measured
-// as the sum of |DIMX| over them, so the cells that cover more screen are the ones that push the
-// colour least and the four-native-pixel period does not turn into a visible harmonic.
+// as the sum of DIMX^2 over them, not the sum of |DIMX| -- loudness is contrast, not average
+// magnitude, so a row or column of entries that are merely large should cost more than one whose
+// entries are merely spread out. On the standard matrix this is not academic: every column sums to
+// the same 8 in |DIMX|, which ties the x phase to 0 and does nothing; the same columns square to
+// 26/18/26/18, which breaks the tie and moves x to the quieter pair. The cells that cover more
+// screen are the ones that push the colour least, and the four-native-pixel period does not turn
+// into a visible harmonic.
 //
 // At a whole-number scale every cell owns exactly S device pixels, no cell is wider than another,
 // every phase scores zero, and this returns 0. That is what keeps 1x, 2x and every other whole
@@ -7160,7 +7165,10 @@ u32 GSRendererHW::GetDitherPhase(const GIFRegDIMX& DIMX, float scale)
 
 				const int line = (i + p) & 3;
 				for (int j = 0; j < 4; j++)
-					cost += std::abs((axis == 1) ? dimx[line][j] : dimx[j][line]);
+				{
+					const int v = (axis == 1) ? dimx[line][j] : dimx[j][line];
+					cost += v * v;
+				}
 			}
 
 			// Strictly less, so a tie -- every tie, including the all-zero one a whole-number
