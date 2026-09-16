@@ -285,7 +285,15 @@ bool GSFrontState::IsCoverageAlphaSupported()
 		else if (!GSIsHardwareRenderer())
 			m_cov_answer = true; // SW: IsCoverageAlpha() alone
 		else
-			m_cov_answer = m_back->IsRTWrittenLive(m_context->ALPHA) && g_gs_device->Features().aa1;
+		{
+			// The HW answer is two roads: the vertex-shader expansion, and -- for lines only --
+			// the coverage the pixel runs carry on their own vertex alpha. AA1LineCoverageFromPixelRuns()
+			// reads the primclass off the back object for the same reason everything else here
+			// does: it is the last executed draw's class, which is what a single object would see.
+			const bool pixel_runs = m_back->AA1LineCoverageFromPixelRunsLive(PRIM->TME, m_context->TEX0.TCC);
+			m_cov_answer = m_back->IsRTWrittenLive(m_context->ALPHA) &&
+						   (g_gs_device->Features().aa1 || pixel_runs);
+		}
 	}
 
 	return m_cov_answer;
@@ -8720,6 +8728,41 @@ bool GSState::IsCoverageAlpha()
 bool GSState::IsCoverageAlphaFixedOne()
 {
 	return IsCoverageAlpha() && !PRIM->ABE && !IsCoverageAlphaSupported();
+}
+
+bool GSState::AA1LineCoverageFromPixelRuns()
+{
+	return AA1LineCoverageFromPixelRunsLive(PRIM->TME, m_context->TEX0.TCC);
+}
+
+// The texture state is a parameter for the same reason IsRTWrittenLive's ALPHA is: the split
+// front object evaluates this at kick time with ITS live registers, while the primclass below
+// stays the back object's last-executed draw -- the mixed read a single object performs.
+bool GSState::AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc)
+{
+	// Whether an AA1 LINE draw can carry the GS's per-pixel coverage on the pixel-run rectangles
+	// the hardware renderer already builds a line out of (GSRendererHW::LinesToPixelRuns).
+	//
+	// The coverage travels as the pixel's alpha, because that is what the GS does with it: the
+	// coverage REPLACES the alpha, and everything downstream -- the blend factor, the alpha test,
+	// what lands in memory -- reads the replaced value (gs-prim Results 4, 7, 8 and 9). So a
+	// rectangle whose vertex alpha is the coverage needs no shader work, no vertex-shader
+	// expansion and no feedback loop, which is the whole difference from the HWAA1 road.
+	//
+	// That only holds while the alpha reaching the fragment IS the vertex alpha. A texture that
+	// contributes alpha rewrites it, and the coverage would be thrown away with it, so those
+	// draws decline and keep the un-antialiased pixels they get today.
+	if (m_vt.m_primclass != GS_LINE_CLASS)
+		return false;
+
+	if (g_gs_device->Features().aa1)
+		return false; // the vertex-shader expansion owns AA1 wherever it is available
+
+	if (tme && tcc)
+		return false;
+
+	// Turning safe features off turns the whole pixel-run correction off, coverage included.
+	return !GSConfig.UserHacks_DisableSafeFeatures;
 }
 
 bool GSState::IsCoverageAlphaSupported()

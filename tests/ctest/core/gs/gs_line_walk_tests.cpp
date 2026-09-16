@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -108,6 +109,117 @@ namespace
 		while (true)
 		{
 			out.emplace_back(xi, yi);
+			if (step_x ? (xi == rxi1) : (yi == ryi1))
+				break;
+			D += dD;
+			xi += step_x ? dxi : 0;
+			yi += step_x ? 0 : dyi;
+			if (pos_D)
+			{
+				if (D >= scaleD / 2)
+					StepDependent(1);
+			}
+			else
+			{
+				if (D < -scaleD / 2)
+					StepDependent(-1);
+			}
+		}
+		return out;
+	}
+
+	using CovPixel = std::tuple<int, int, int>; // x, y, the 16-bit coverage
+	using CovPixels = std::vector<CovPixel>;
+
+	CovPixels WalkAA16(int x0, int y0, int x1, int y1)
+	{
+		CovPixels out;
+		const int n = GSLineWalk::WalkAA1(x0, y0, x1, y1,
+			[&](int x, int y, int cov, int side) {
+				EXPECT_EQ(side, static_cast<int>(out.size()) & 1);
+				out.emplace_back(x, y, cov);
+			});
+		EXPECT_EQ(static_cast<size_t>(n), out.size());
+		return out;
+	}
+
+	/// GSRasterizer::DrawEdgeLine's ANTIALIASED path, as the software renderer writes it. Same walk
+	/// as Reference() above, with the aa arm of its loop body: two pixels a step, sharing a coverage.
+	CovPixels ReferenceAA(float x0, float y0, float x1, float y1)
+	{
+		const float delta_x = x1 - x0;
+		const float delta_y = y1 - y0;
+		const bool step_x = std::abs(delta_x) >= std::abs(delta_y);
+		const bool pos_x = delta_x >= 0.0f;
+		const bool pos_y = delta_y >= 0.0f;
+		const int dxi = pos_x ? 1 : -1;
+		const int dyi = pos_y ? 1 : -1;
+
+		float rx0 = std::floor(x0 + 0.5f);
+		float ry0 = std::floor(y0 + 0.5f);
+		float rx1 = std::floor(x1 + 0.5f);
+		float ry1 = std::floor(y1 + 0.5f);
+
+		const auto TestEndpoint = [&](float dx, float dy) {
+			const float dist = std::abs(dx) + std::abs(dy);
+			if (dist < 0.5f)
+				return false;
+			if (step_x)
+			{
+				const bool x_good = pos_x ? (dx > 0.0f) : (dx < 0.0f);
+				return x_good && (dist > 0.5f || dy >= 0.0f);
+			}
+			const bool y_good = pos_y ? (dy > 0.0f) : (dy < 0.0f);
+			return y_good && (dist > 0.5f || dx >= 0.0f);
+		};
+
+		const bool draw_first = !TestEndpoint(x0 - rx0, y0 - ry0);
+		const bool draw_last = TestEndpoint(x1 - rx1, y1 - ry1);
+		if (!draw_first)
+		{
+			rx0 += step_x ? dxi : 0.0f;
+			ry0 += step_x ? 0.0f : dyi;
+		}
+		if (!draw_last)
+		{
+			rx1 -= step_x ? dxi : 0.0f;
+			ry1 -= step_x ? 0.0f : dyi;
+		}
+		if ((step_x ? (dxi * (rx1 - rx0)) : (dyi * (ry1 - ry0))) < 0.0f)
+			return {};
+
+		const int rxi1 = static_cast<int>(rx1);
+		const int ryi1 = static_cast<int>(ry1);
+		const bool pos_D = step_x ? pos_y : pos_x;
+		const int scaleD = static_cast<int>(2 * 16 * 16 * std::abs(step_x ? delta_x : delta_y));
+		const float scaleDf = static_cast<float>(scaleD);
+		const int dD = static_cast<int>(2 * 16 * 16 * (step_x ? delta_y : delta_x));
+		int D = static_cast<int>(scaleD * (step_x ? (y0 - ry0) : (x0 - rx0)));
+		int xi = static_cast<int>(rx0);
+		int yi = static_cast<int>(ry0);
+
+		const auto StepDependent = [&](int sign) {
+			D -= scaleD * sign;
+			xi += (step_x ? 0 : 1) * sign;
+			yi += (step_x ? 1 : 0) * sign;
+		};
+
+		const float prestep = step_x ? dxi * (rx0 - x0) : dyi * (ry0 - y0);
+		D += static_cast<int>(dD * prestep);
+		while (D >= scaleD / 2)
+			StepDependent(1);
+		while (D < -scaleD / 2)
+			StepDependent(-1);
+
+		CovPixels out;
+		while (true)
+		{
+			const float cov = 0xffff * std::abs(static_cast<float>(D) / scaleDf);
+			const int covi = std::clamp(static_cast<int>(cov), 0, 0xffff);
+			const int offset = D >= 0 ? 1 : -1;
+			out.emplace_back(xi, yi, 0xffff - covi);
+			out.emplace_back(xi + (step_x ? 0 : offset), yi + (step_x ? offset : 0), covi);
+
 			if (step_x ? (xi == rxi1) : (yi == ryi1))
 				break;
 			D += dD;
@@ -262,4 +374,116 @@ TEST(GSLineWalk, MatchesTheSoftwareRendererWalk)
 		}
 	}
 	EXPECT_GT(lines, 100000);
+}
+
+// gs-prim Result 8: "A perfectly horizontal AA1 line draws 11 pixels at coverage 127 and 11 more
+// at coverage 0." The second row blends nothing, but its alpha is written, so it is a pixel the
+// console touches and the walk has to produce it. 127 and not 128 because the scanline reads the
+// top 7 bits of a 16-bit value whose maximum is 0xffff.
+TEST(GSLineWalk, AA1AxisAlignedLineWritesASecondRowAtZeroCoverage)
+{
+	const CovPixels px = WalkAA16(0, 104 * 16, 176, 104 * 16);
+	ASSERT_EQ(px.size(), 22u);
+
+	int at_full = 0, at_zero = 0;
+	for (size_t i = 0; i < px.size(); i++)
+	{
+		const auto [x, y, cov] = px[i];
+		EXPECT_EQ(x, static_cast<int>(i / 2));
+		if ((i & 1) == 0)
+		{
+			EXPECT_EQ(y, 104);
+			EXPECT_EQ(cov >> 9, 127); // the alpha the pixel carries
+			at_full++;
+		}
+		else
+		{
+			EXPECT_EQ(y, 105); // the row the line leans towards, D == 0 so downwards
+			EXPECT_EQ(cov >> 9, 0);
+			at_zero++;
+		}
+	}
+	EXPECT_EQ(at_full, 11);
+	EXPECT_EQ(at_zero, 11);
+}
+
+// gs-prim Result 5: the coverage is a full-resolution value, 33 distinct factors on lines with
+// gaps of 1 between neighbours -- not the 4- or 5-bit weight a shader would be tempted to quantise
+// it to. A line at a shallow angle sweeps the ramp, so the walk has to produce more levels than
+// any coarse coverage could.
+TEST(GSLineWalk, AA1CoverageIsFullResolution)
+{
+	std::set<int> levels;
+	for (const auto& [x, y, cov] : WalkAA16(0, 0, 200 * 16, 3 * 16))
+		levels.insert(cov >> 9);
+
+	EXPECT_GT(levels.size(), 33u);
+	EXPECT_GE(*levels.begin(), 0);
+	EXPECT_LE(*levels.rbegin(), 127);
+}
+
+// An AA1 line's two pixels a step never land on the same pixel, which is what lets the hardware
+// renderer merge each side into its own runs and emit them in whatever order it likes.
+TEST(GSLineWalk, AA1PixelsOfOneLineNeverCoincide)
+{
+	for (int dy = 0; dy <= 160; dy += 16)
+	{
+		for (int f = 0; f < 16; f += 3)
+		{
+			const CovPixels px = WalkAA16(f, 0, 160 * 16 + f, dy);
+			std::set<Pixel> seen;
+			for (const auto& [x, y, cov] : px)
+				EXPECT_TRUE(seen.emplace(x, y).second) << "dy " << dy << " fraction " << f << " at " << x << "," << y;
+		}
+	}
+}
+
+// The integer AA1 walk against the float code it restates, over the same spread of phases, signs
+// and octants the un-antialiased sweep above uses. Positions AND coverages, in emission order: a
+// coverage that is right on the wrong pixel is not right.
+TEST(GSLineWalk, AA1MatchesTheSoftwareRendererEdge)
+{
+	int lines = 0;
+	for (int base : {-40 * 16, 3 * 16, 700 * 16})
+	{
+		for (int fx = 0; fx < 16; fx++)
+		{
+			for (int fy = 0; fy < 16; fy += 3)
+			{
+				for (int dx = -75; dx <= 75; dx += 5)
+				{
+					for (int dy = -75; dy <= 75; dy += 5)
+					{
+						const int x0 = base + fx;
+						const int y0 = base + 7 * 16 + fy;
+						const int x1 = x0 + dx + (dx & 3);
+						const int y1 = y0 + dy - (dy & 5);
+						const CovPixels expected = ReferenceAA(x0 / 16.0f, y0 / 16.0f, x1 / 16.0f, y1 / 16.0f);
+						ASSERT_EQ(WalkAA16(x0, y0, x1, y1), expected)
+							<< "(" << x0 << "," << y0 << ") -> (" << x1 << "," << y1 << ")";
+						lines++;
+					}
+				}
+			}
+		}
+	}
+	EXPECT_GT(lines, 100000);
+}
+
+// A segment the GS lights nothing for lights nothing with AA1 on either: the software renderer
+// leaves DrawEdgeLine through the same rejection whether it is antialiasing or not. These are the
+// Sly segments the un-antialiased test above pins.
+TEST(GSLineWalk, AA1SegmentThatNeverOwnsAPixelDrawsNothing)
+{
+	const int segments[6][4] = {
+		{4887, 2066, 4901, 2081},
+		{4916, 2106, 4924, 2092},
+		{5254, 1995, 5261, 1979},
+		{4427, 2652, 4420, 2643},
+		{4482, 2249, 4498, 2253},
+		{4324, 2372, 4331, 2386},
+	};
+	for (const auto& s : segments)
+		EXPECT_TRUE(WalkAA16(s[0], s[1], s[2], s[3]).empty())
+			<< "(" << s[0] << "," << s[1] << ") -> (" << s[2] << "," << s[3] << ")";
 }

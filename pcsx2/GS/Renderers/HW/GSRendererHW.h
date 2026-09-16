@@ -428,7 +428,7 @@ public:
 		NothingLit, ///< The GS lights no pixel for any line in the draw. Draw nothing.
 		Refused, ///< The draw is untouched and needs the expanded-line fallback.
 	};
-	LineRunResult LinesToPixelRuns();
+	LineRunResult LinesToPixelRuns(bool aa1);
 	void SnapPointsToNativePixel();
 	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
 	GSVector4i ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale);

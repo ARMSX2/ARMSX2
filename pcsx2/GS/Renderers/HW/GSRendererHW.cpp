@@ -424,9 +424,24 @@ namespace
 		const double v = a + (static_cast<double>(b) - a) * t;
 		return static_cast<T>(std::clamp(std::round(v), 0.0, max));
 	}
+
+	/// The alpha an AA1 pixel carries, given the pixel's own colour and the walk's 16-bit coverage.
+	///
+	/// The GS substitutes the coverage FOR the alpha rather than multiplying anything by it: with
+	/// blending off it always does, and with blending on only where the alpha is exactly 128
+	/// (gs-prim Results 4 and 7 -- one above the boundary switches it off, so the rule is equality
+	/// and not a threshold). The scanline reads the top 7 bits of the 16-bit value, which is why a
+	/// line sitting on a row of pixel centres comes back at 127 and not 128.
+	u32 LineCoverageAlpha(u32 rgba, int cov, bool abe)
+	{
+		if (abe && (rgba >> 24) != 128)
+			return rgba;
+
+		return (rgba & 0x00FFFFFFu) | (static_cast<u32>(cov >> 9) << 24);
+	}
 } // namespace
 
-GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
+GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns(bool aa1)
 {
 	// Draws every line as rectangles over exactly the pixels the GS lights (GSLineWalk.h), one
 	// rectangle per run of pixels that share a minor coordinate, a colour and a fog value. Drawn as
@@ -445,6 +460,13 @@ GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
 	// would not fit 16-bit indices, or a group in the full-barrier draw list would end up empty.
 	// NothingLit is the other thing entirely -- the GS walk lights no pixel for any line in the
 	// draw, so there is nothing to draw by any means.
+	//
+	// With aa1 set, the walk is the antialiased one: two pixels per step rather than one, each
+	// carrying the GS's coverage as its alpha (GSLineWalk::WalkAA1 and LineCoverageAlpha). The
+	// coverage varies per pixel, so runs only merge where it holds -- which is every axis-aligned
+	// line, and no other. At more than native scale the rectangle is still the native pixel's
+	// whole device block and the coverage is still the native value: the console's picture
+	// enlarged, which is the same answer every other pixel run gives.
 
 	const u32 line_count = m_index->tail / 2;
 	const int ofx = m_context->XYOFFSET.OFX;
@@ -459,6 +481,7 @@ GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
 
 	const bool flat = !m_conf.vs.iip;
 	const bool fog = PRIM->FGE;
+	const bool abe = PRIM->ABE;
 
 	// Calls run(v0, v1, step_x, m0, dm, lo, hi, minor, rgba, fog) for each run of one line, after
 	// clipping to the representable range. lo/hi are the run's end pixels on the major axis.
@@ -490,12 +513,15 @@ GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
 				run(v0, v1, step_x, m0, dm, clo, chi, minor, rgba, f);
 		};
 
-		GSLineWalk::Walk(x0, y0, x1, y1, [&](int x, int y) {
+		// cov < 0 means no antialiasing: the pixel keeps the colour the gradient gives it.
+		const auto pixel = [&](int x, int y, int cov) {
 			const int m = step_x ? x : y;
 			const int n = step_x ? y : x;
 			// dm is never zero here: a zero-length line lights nothing.
 			const s64 k = static_cast<s64>(m) * 16 - m0;
-			const u32 c = colour_varies ? LineGradient8(v0.RGBAQ.U32[0], v1.RGBAQ.U32[0], k, dm) : v1.RGBAQ.U32[0];
+			u32 c = colour_varies ? LineGradient8(v0.RGBAQ.U32[0], v1.RGBAQ.U32[0], k, dm) : v1.RGBAQ.U32[0];
+			if (cov >= 0)
+				c = LineCoverageAlpha(c, cov, abe);
 			const u32 fg = fog_varies ? LineGradient8(v0.FOG, v1.FOG, k, dm) : v1.FOG;
 			if (open && n == minor && c == rgba && fg == f)
 			{
@@ -509,8 +535,32 @@ GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns()
 			minor = n;
 			rgba = c;
 			f = fg;
-		});
-		close();
+		};
+
+		if (aa1)
+		{
+			// An AA1 line lights two pixels per step, and they interleave: the walk's own pixel,
+			// then its neighbour on the other side of the exact line. Taking one side at a time
+			// keeps a single open run, so a line that holds one coverage for its whole length --
+			// every axis-aligned one -- comes out as two rectangles instead of two per pixel.
+			// Nothing depends on the order: within a line no two of these pixels coincide, since
+			// the two of a step differ by one on the minor axis and consecutive steps differ on
+			// the major.
+			for (int side = 0; side < 2; side++)
+			{
+				GSLineWalk::WalkAA1(x0, y0, x1, y1, [&](int x, int y, int cov, int s) {
+					if (s == side)
+						pixel(x, y, cov);
+				});
+				close();
+				open = false;
+			}
+		}
+		else
+		{
+			GSLineWalk::Walk(x0, y0, x1, y1, [&](int x, int y) { pixel(x, y, -1); });
+			close();
+		}
 	};
 
 	// The full-barrier draw list counts primitives per group. Each group's line count becomes its
@@ -6162,11 +6212,19 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 				}
 				else
 				{
+					// An AA1 line's pixels carry the GS's coverage as their alpha. IsCoverageAlphaSupported()
+					// already answered whether that is this draw's road -- with it true, everything
+					// upstream (the alpha range, fixed_one_a, the depth write) is set for a coverage
+					// that exists, so the rectangles have to carry one.
+					const bool aa1_coverage = !no_rt && PRIM->AA1 && AA1LineCoverageFromPixelRuns() &&
+											  IsCoverageAlphaSupported();
+
 					// The pixel runs are tried at native resolution as well as above it: the GPU's
 					// single-pixel line rule is not the GS's, and it is not the same rule on every
 					// driver. Turning safe features off above native turns the whole correction off.
-					const LineRunResult runs =
-						(unscale_pt_ln || target_scale == 1.0f) ? LinesToPixelRuns() : LineRunResult::Refused;
+					const LineRunResult runs = (unscale_pt_ln || target_scale == 1.0f) ?
+												   LinesToPixelRuns(aa1_coverage) :
+												   LineRunResult::Refused;
 
 					if (runs == LineRunResult::NothingLit)
 					{
@@ -6179,6 +6237,16 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 						// -- and the stripe was the only thing on those pixels.
 						GL_INS("HW: Line draw lights no pixel; nothing submitted.");
 						return false;
+					}
+
+					if (runs == LineRunResult::Refused && aa1_coverage && !PRIM->ABE)
+					{
+						// The coverage never reached any geometry, so the draw is back to the
+						// approximation a renderer that cannot carry one makes: with blending off
+						// the GS writes the coverage as the alpha, and a fixed one is the closest
+						// single value to it. m_conf.ps.fixed_one_a was cleared for this draw
+						// because IsCoverageAlphaSupported() said the coverage was coming.
+						m_conf.ps.fixed_one_a = true;
 					}
 
 					if (runs == LineRunResult::Converted)
@@ -6638,8 +6706,6 @@ void GSRendererHW::EmulateAA1()
 
 	if (IsCoverageAlphaSupported())
 	{
-		m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
-
 		if (m_vt.m_primclass == GS_LINE_CLASS)
 		{
 			GL_INS("HW: AA1 lines. No depth write.");
@@ -6648,10 +6714,22 @@ void GSRendererHW::EmulateAA1()
 			m_conf.depth.zwe = false;
 			m_cached_ctx.ZBUF.ZMSK = 1;
 
+			if (AA1LineCoverageFromPixelRuns())
+			{
+				// The coverage is already the vertex alpha of every pixel-run rectangle, and the
+				// substitution rule was applied there, where the per-pixel alpha is known. The
+				// shader has nothing left to do and no inv_cov to do it with -- there is no
+				// vertex-shader expansion on this road.
+				return;
+			}
+
+			m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
 			m_conf.ps.aa1 = GSHWDrawConfig::PS_AA1::LINE;
 		}
 		else if (m_vt.m_primclass == GS_TRIANGLE_CLASS)
 		{
+			m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
+
 			// Force SW depth so that Z writes can be prevented for edge pixels.
 			if (m_cached_ctx.DepthWrite())
 			{
@@ -12582,5 +12660,9 @@ std::size_t GSRendererHW::ComputeDrawlistGetSize(float scale)
 
 bool GSRendererHW::IsCoverageAlphaSupported()
 {
-	return IsCoverageAlpha() && IsRTWritten() && g_gs_device->Features().aa1;
+	// Two roads carry the GS's coverage. The vertex-shader expansion does triangles and lines and
+	// needs a feedback loop; the pixel runs do lines only and need nothing, because the coverage
+	// rides the rectangle's own vertex alpha (AA1LineCoverageFromPixelRuns).
+	return IsCoverageAlpha() && IsRTWritten() &&
+		   (g_gs_device->Features().aa1 || AA1LineCoverageFromPixelRuns());
 }

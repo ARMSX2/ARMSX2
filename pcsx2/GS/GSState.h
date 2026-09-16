@@ -490,6 +490,8 @@ protected:
 	bool IsMipMapActive();
 	bool IsCoverageAlpha();
 	bool IsCoverageAlphaFixedOne();
+	bool AA1LineCoverageFromPixelRuns();
+	bool AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc);
 	virtual bool IsCoverageAlphaSupported();
 	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
 	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
