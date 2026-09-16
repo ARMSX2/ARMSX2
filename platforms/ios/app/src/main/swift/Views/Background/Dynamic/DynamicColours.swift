@@ -1088,16 +1088,16 @@ struct ThemePaletteEditorHeader: View {
             .frame(width: 28, height: 32)
         }
         .disabled(!canUndo)
-        .accessibilityLabel("Undo")
-        .help("Undo")
+        .accessibilityLabel(Text("Undo"))
+        .help(Text("Undo"))
 
         Button(action: redo) {
           Image(systemName: "arrow.uturn.forward")
             .frame(width: 28, height: 32)
         }
         .disabled(!canRedo)
-        .accessibilityLabel("Redo")
-        .help("Redo")
+        .accessibilityLabel(Text("Redo"))
+        .help(Text("Redo"))
 
         Button("Apply", action: apply)
           .fontWeight(.semibold)
@@ -1145,6 +1145,7 @@ struct ThemePaletteEditorSliderReadout: View {
 
 struct ThemePaletteEditor: View {
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.layoutDirection) private var layoutDirection
 
   @Binding var target: ThemePaletteTarget
   @Binding var sharedPalette: ThemePalette
@@ -1376,7 +1377,9 @@ struct ThemePaletteEditor: View {
       return
     }
 
-    moveToAdjacentTab(forward: horizontalDistance < 0)
+    let isRTL = layoutDirection == .rightToLeft
+    let forward = isRTL ? horizontalDistance > 0 : horizontalDistance < 0
+    moveToAdjacentTab(forward: forward)
   }
 
   private func moveToAdjacentTab(forward: Bool) {
@@ -1422,7 +1425,7 @@ struct ThemePaletteEditor: View {
         .ignoresSafeArea()
         .allowsHitTesting(activeSliderTitle == nil)
         .onTapGesture(perform: endBackgroundPreview)
-        .accessibilityLabel("Show controls")
+        .accessibilityLabel(Text("Show controls"))
     )
   }
 
