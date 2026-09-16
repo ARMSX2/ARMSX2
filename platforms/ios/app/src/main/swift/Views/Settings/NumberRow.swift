@@ -109,22 +109,12 @@ struct NumberFormat {
     }
 
     /// Undoes `scale`, so typing 70 into a 0...1 opacity row gets you 0.7.
-    ///
-    /// German groups on "." and points on ",", so stripping the grouping separator first turned
-    /// a typed "0.5" into "05". Only treat "." as grouping when the text also holds a real
-    /// decimal separator; otherwise a lone "." or "," is the point the user meant.
-    func parse(_ text: String, locale: Locale) -> Double? {
-        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let decimal = locale.decimalSeparator, cleaned.contains(decimal) {
-            if let grouping = locale.groupingSeparator {
-                cleaned = cleaned.replacingOccurrences(of: grouping, with: "")
-            }
-            cleaned = cleaned.replacingOccurrences(of: decimal, with: ".")
-        } else {
-            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-        }
-        guard let shown = Double(cleaned), shown.isFinite else { return nil }
-        return shown / scale
+    /// Respects .grouping(.never): settings sliders never group thousands. Accepts both '.' and ',' as decimal separators.
+    func parse(_ text: String, locale: Locale = .autoupdatingCurrent) -> Double? {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = cleaned.replacingOccurrences(of: ",", with: ".")
+        guard let val = Double(normalized), val.isFinite else { return nil }
+        return val / scale
     }
 }
 
@@ -789,12 +779,13 @@ struct NumberRow: View {
 
     /// Two steps on purpose. Focus cannot land on a field that does not exist yet, and setting
     /// both in one update is where the keyboard appears and immediately vanishes.
-    /// The field always edits in Latin digits. Arabic reads as Arabic-Indic, which Double cannot
-    /// parse back, so a localized field would have been impossible to type into at all.
-    private static let editingLocale = Locale(identifier: "en_US_POSIX")
+    /// Arabic reads as Arabic-Indic digits; keyboards type in Latin digits, so edit in Latin.
+    private var editingLocale: Locale {
+        settings.appLanguage.resolved == .arabic ? Locale(identifier: "en") : settings.numberLocale
+    }
 
     private func beginTyping() {
-        draft = format.digits(clamped(store.wrappedValue), locale: Self.editingLocale)
+        draft = format.digits(clamped(store.wrappedValue), locale: editingLocale)
         seededDraft = draft
         isTyping = true
         DispatchQueue.main.async { fieldFocused = true }
@@ -805,7 +796,7 @@ struct NumberRow: View {
     /// digits would otherwise clamp to the nearest bound on the way past.
     private func draftChanged() {
         guard isTyping, draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: Self.editingLocale),
+        guard let parsed = format.parse(draft, locale: editingLocale),
               range.contains(parsed) else { return }
         store.wrappedValue = parsed
     }
@@ -820,7 +811,7 @@ struct NumberRow: View {
         // as the rounded readout, so writing it back would quietly drop whatever precision the
         // stored value had beyond the decimals on show.
         guard draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: Self.editingLocale) else { return }
+        guard let parsed = format.parse(draft, locale: editingLocale) else { return }
         let next = clamped(parsed)
         guard next != store.wrappedValue else { return }
         store.wrappedValue = next
