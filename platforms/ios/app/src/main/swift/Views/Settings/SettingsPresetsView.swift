@@ -269,7 +269,7 @@ struct SettingsPresetsView: View {
         } header: {
             Text(settings.localized("Device Presets"))
         } footer: {
-            Text(settings.localized(BuiltInSettingsPreset.allCases.map(\.detail).joined(separator: "\n\n") + " Default restores global settings; other presets change only their listed settings."))
+            Text(BuiltInSettingsPreset.allCases.map { settings.localized($0.detail) }.joined(separator: "\n\n") + " " + settings.localized("Default restores global settings; other presets change only their listed settings."))
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
         }
