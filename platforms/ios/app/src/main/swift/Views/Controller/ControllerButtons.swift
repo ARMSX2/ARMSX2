@@ -428,7 +428,7 @@ struct StickView: View {
         .frame(width: effectiveCapture, height: effectiveCapture)
         .contentShape(Circle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isLeft ? "Left stick" : "Right stick")
+        .accessibilityLabel(isLeft ? Text("Left stick") : Text("Right stick"))
         .accessibilityAddTraits(.isButton)
         .simultaneousGesture(DragGesture(minimumDistance: 0)
             .onChanged { v in
