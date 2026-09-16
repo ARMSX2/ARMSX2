@@ -83,15 +83,43 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .portuguese: return Locale(identifier: "pt")
         case .japanese: return Locale(identifier: "ja")
         case .korean: return Locale(identifier: "ko")
-        case .system, .english: return Locale(identifier: "en_US_POSIX")
+        case .system, .english: return Locale(identifier: "en")
         }
     }
 
-    func localized(_ key: String) -> String {
-        guard let translated = Self.translations[resolved]?[key] else {
-            return Self.commonTranslations[resolved]?[key] ?? Self.uiSupplementTranslations[resolved]?[key] ?? key
+    var bcp47Code: String {
+        switch resolved {
+        case .simplifiedChinese: return "zh-Hans"
+        case .arabic: return "ar"
+        case .spanish: return "es"
+        case .french: return "fr"
+        case .german: return "de"
+        case .italian: return "it"
+        case .portuguese: return "pt"
+        case .japanese: return "ja"
+        case .korean: return "ko"
+        case .system, .english: return "en"
         }
-        return translated
+    }
+
+    private static let bundleCache: [AppLanguage: Bundle] = {
+        var cache: [AppLanguage: Bundle] = [:]
+        for language in allCases where language != .system {
+            if let path = Bundle.main.path(forResource: language.bcp47Code, ofType: "lproj"),
+               let bundle = Bundle(path: path) {
+                cache[language] = bundle
+            }
+        }
+        return cache
+    }()
+
+    var bundle: Bundle {
+        guard self != .system else { return .main }
+        return Self.bundleCache[self] ?? .main
+    }
+
+    func localized(_ key: String) -> String {
+        bundle.localizedString(forKey: key, value: key, table: nil)
     }
 
 }

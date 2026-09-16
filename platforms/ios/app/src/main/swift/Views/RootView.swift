@@ -133,6 +133,7 @@ struct RootView: View {
                 .zIndex(100)
             }
         }
+        .environment(\.locale, settings.appLanguage == .system ? .autoupdatingCurrent : Locale(identifier: settings.appLanguage.bcp47Code))
         .environment(\.layoutDirection, settings.localizedLayoutDirection)
         .environment(\.clearLiquidGlassUIEnabled, settings.clearLiquidGlassUI)
         .statusBarHidden(showBootSplash)
@@ -174,7 +175,8 @@ struct RootView: View {
                 appState.pendingRestartGame = nil
             }
         } message: {
-            Text("\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(((appState.pendingRestartGame ?? "") as NSString).lastPathComponent)?")
+            let target = ((appState.pendingRestartGame ?? "") as NSString).lastPathComponent
+            Text(String(format: settings.localized("VM is currently running.\nShut down and start %@?"), target))
         }
         .alert(
             settings.localized("BIOS"),

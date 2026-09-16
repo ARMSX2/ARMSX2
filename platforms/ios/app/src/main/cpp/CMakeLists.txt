@@ -442,6 +442,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		"${ARMSX2_SHARED_RESOURCES}/game_controller_db.txt"
 		"${ARMSX2_ROOT}/bin/resources-overlay/armsx2_overrides.yaml"
 		"${CMAKE_SOURCE_DIR}/../assets/resources/patches.zip"
+		"${CMAKE_SOURCE_DIR}/../assets/resources/Localizable.xcstrings"
 	)
 
 	target_sources(ARMSX2iOS PRIVATE ${METAL_SHADERS} ${FONTS} ${IOS_SHADER_RESOURCES})
