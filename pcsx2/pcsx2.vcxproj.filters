@@ -1082,6 +1082,9 @@
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
@@ -2553,6 +2556,12 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h">

@@ -153,6 +153,7 @@ The clamp modes are also numerically based.
 * conservativeFramebuffer   [`0` or `1`]               {Off or On}                             Default: On (`1`)
 * texturePreloading         [`0` or `1` or `2`]        {None, Partial or Full Hash Cache}     Default: None (`0`)
 * deinterlace               [Value between `0` to `9`] {Automatic, Off, WeaveTFF, WeaveBFF, BobTFF, BobBFF, BlendTFF, BlendBFF, AdaptiveTFF, AdaptiveBFF} Default: Automatic (No value, looks up GameDB)
+* fieldShift                [`0` or `1`]               {Both fields draw the same picture, Projection moves half a display line per field} Default: no value, worked out from the frames at run time. Only read when the upscale is an integer 2 or more, where the field render is presented without a deinterlace pass and this is the only correction left.
 
 ### GS Hardware Renderer Fixes
 

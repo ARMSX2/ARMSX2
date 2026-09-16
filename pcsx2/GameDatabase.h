@@ -77,6 +77,7 @@ namespace GameDatabaseSchema
 		NativeScaling,
 		TexturePreloading,
 		Deinterlace,
+		FieldShift,
 		CPUSpriteRenderBW,
 		CPUSpriteRenderLevel,
 		CPUCLUTRender,

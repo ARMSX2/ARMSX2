@@ -43,6 +43,30 @@ TEST(GSInterlaceModePolicy, ExplicitModesMapToExpectedShadersAndFields)
 	EXPECT_EQ(SelectGSInterlaceMode(8, false, false, false, false).shader_mode, 3);
 }
 
+TEST(GSInterlaceModePolicy, FieldRenderAtIntegerUpscaleIsPresentedDirectly)
+{
+	// At an integer upscale of 2 or more the field render already holds every display line of the
+	// screen at that field's moment, so there is nothing for a weave to reconstruct.
+	const GSInterlaceModeSelection selection = SelectGSInterlaceMode(0, true, false, true, false, true);
+	EXPECT_EQ(selection.shader_mode, -1);
+	EXPECT_TRUE(selection.present_field_direct);
+}
+
+TEST(GSInterlaceModePolicy, FieldDirectNeedsAutomaticFieldModeAndNoScanmask)
+{
+	// 1x and every fractional scale: the caller says the render is not the whole picture.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, false, true, false, false).present_field_direct);
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, true, false, false).shader_mode, 3);
+	// Frame mode, even where a game moves its framebuffer per field.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, true, false, false, true).present_field_direct);
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, true, false, false, true).shader_mode, 3);
+	// SCANMSK keeps its pass.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, false, true, true, true).present_field_direct);
+	// Every explicitly chosen mode is left exactly as it was.
+	for (int mode = 1; mode < 10; mode++)
+		EXPECT_FALSE(SelectGSInterlaceMode(mode, false, false, true, false, true).present_field_direct);
+}
+
 TEST(GSPresentationPolicy, SkipsOnlyBlankFramesBeforeFirstOutput)
 {
 	EXPECT_TRUE(ShouldSkipAndroidBlankFrame(true, false, true, 1));

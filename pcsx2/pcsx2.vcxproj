@@ -343,6 +343,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp" />
     <ClCompile Include="GS\GSDrawingContext.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanline.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanlineCodeGenerator.all.cpp">
@@ -864,6 +865,8 @@
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />

@@ -1042,6 +1042,10 @@ struct Pcsx2Config
 		GSLimit24BitDepth UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
+		/// Whether this title moves its projection half a display line between fields, which decides
+		/// whether the FFMD merge offset is applied when a field render is presented directly at an
+		/// integer upscale of 2 or more. -1 leaves it to the runtime detector, which defaults to 1.
+		s8 FieldShift = -1;
 		s8 OverrideTextureBarriers = -1;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 		GSBackThreadMode BackThreadMode = GSBackThreadMode::Off;

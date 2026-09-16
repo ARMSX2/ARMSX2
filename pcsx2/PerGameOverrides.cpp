@@ -78,6 +78,7 @@ namespace
 		{"UserHacks_SkipDraw_End", GSHWFixId::SkipDrawEnd, GSUserHackOverride::MaxCount},
 		{"texture_preloading", GSHWFixId::TexturePreloading, GSUserHackOverride::MaxCount},
 		{"deinterlace_mode", GSHWFixId::Deinterlace, GSUserHackOverride::MaxCount},
+		{"field_shift", GSHWFixId::FieldShift, GSUserHackOverride::MaxCount},
 		{"HWDownloadMode", GSHWFixId::HWDownloadMode, GSUserHackOverride::MaxCount},
 
 		// One control, two database fixes: the database clamps the blend level from

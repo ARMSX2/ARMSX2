@@ -433,6 +433,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"nativeScaling",
 	"texturePreloading",
 	"deinterlace",
+	"fieldShift",
 	"cpuSpriteRenderBW",
 	"cpuSpriteRenderLevel",
 	"cpuCLUTRender",
@@ -471,6 +472,7 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 	switch (id)
 	{
 		case GSHWFixId::Deinterlace:
+		case GSHWFixId::FieldShift:
 		case GSHWFixId::Mipmap:
 		case GSHWFixId::TexturePreloading:
 		case GSHWFixId::TrilinearFiltering:
@@ -807,6 +809,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::Deinterlace:
 			return (config.InterlaceMode == GSInterlaceMode::Automatic || static_cast<int>(config.InterlaceMode) == value);
 
+		case GSHWFixId::FieldShift:
+			return (config.FieldShift < 0 || static_cast<int>(config.FieldShift) == value);
+
 		case GSHWFixId::HWDownloadMode:
 			// A non-default user choice already "matches" (we never override it — see the apply switch).
 			return (config.HWDownloadMode != GSHardwareDownloadMode::Enabled || static_cast<int>(config.HWDownloadMode) == value);
@@ -1058,6 +1063,16 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 						if (!quiet)
 						Console.Warning("GameDB: Game requires different deinterlace mode but it has been overridden by user setting.");
 				}
+			}
+			break;
+
+			case GSHWFixId::FieldShift:
+			{
+				// Says whether the game moves its projection half a display line between fields.
+				// Only read where the field render is presented directly (integer upscale of 2 or
+				// more); elsewhere it costs nothing. A player's own answer wins.
+				if (value >= 0 && value <= 1 && config.FieldShift < 0)
+					config.FieldShift = static_cast<s8>(value);
 			}
 			break;
 

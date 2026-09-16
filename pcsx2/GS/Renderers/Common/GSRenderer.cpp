@@ -94,11 +94,17 @@ void GSRenderer::Reset(bool hardware_reset)
 	if (hardware_reset)
 		g_gs_device->ClearCurrent();
 
+	// Whatever the field-shift detector had in flight belonged to the old device state.
+	m_field_shift.Reset();
+
 	GSState::Reset(hardware_reset);
 }
 
 void GSRenderer::Destroy()
 {
+	// The probe target and its readback buffer belong to the device, which is torn down right
+	// after this. Hand them back while it still exists.
+	m_field_shift.Reset();
 }
 
 void GSRenderer::UpdateRenderFixes()
@@ -197,6 +203,24 @@ bool GSRenderer::Merge(int field)
 
 	// Use offset for bob deinterlacing always, extra offset added later for FFMD mode.
 	const bool scanmask_frame = m_scanmask_used && abs(PCRTCDisplays.PCRTCDisplays[0].displayRect.y - PCRTCDisplays.PCRTCDisplays[1].displayRect.y) != 1;
+
+	// At an integer upscale of 2 or more a field render has that many device rows per field line,
+	// and the s'th of them is the scene at display line 2j+f+s -- so the render already holds EVERY
+	// display line of the screen at that field's moment. A weave can only replace half of them with
+	// lines from a different moment. Present it as it stands instead, and let the FFMD offset be
+	// the only correction (see below). Requires every enabled circuit to actually be at that scale:
+	// a target that was downscaled back to native holds half the lines and still needs the weave.
+	const float upscale = GetUpscaleMultiplier();
+	const int upscale_rows = static_cast<int>(upscale);
+	bool field_render_is_whole_picture =
+		(upscale_rows >= 2) && (static_cast<float>(upscale_rows) == upscale) && !feedback_merge;
+	for (int i = 0; i < 2 && field_render_is_whole_picture; i++)
+	{
+		if (PCRTCDisplays.PCRTCDisplays[i].enabled && tex[i] && tex_scale[i] != upscale)
+			field_render_is_whole_picture = false;
+	}
+	field_render_is_whole_picture &= isReallyInterlaced() && !m_scanmask_used;
+
 	// FFMD (half frames) requires blend deinterlacing, so automatically use that. Same when SCANMSK is used but not blended in the merge circuit (Alpine Racer 3).
 	// Centralised in GSInterlaceModePolicy.h so the progressive pass-through case (shader_mode -1)
 	// is pinned by static_assert and unit tests rather than resting on the sign behaviour of a
@@ -206,10 +230,24 @@ bool GSRenderer::Merge(int field)
 		GSConfig.InterlaceMode == GSInterlaceMode::Automatic,
 		game_deinterlacing,
 		m_regs->SMODE2.FFMD,
-		scanmask_frame);
+		scanmask_frame,
+		field_render_is_whole_picture);
 	const int field2 = interlace_selection.field_offset;
+	const bool present_field_direct = interlace_selection.present_field_direct;
 	int mode = interlace_selection.shader_mode;
 	bool is_bob = GSConfig.InterlaceMode == GSInterlaceMode::BobTFF || GSConfig.InterlaceMode == GSInterlaceMode::BobBFF;
+
+	// Half the field-mode titles move their projection half a display line between fields, so their
+	// consecutive field renders are one native line apart and need the offset to line up; the rest
+	// draw the identical picture on both fields, and giving them the offset is what makes a still
+	// picture jitter a line every frame. GameDB (and the INI) can say outright; otherwise the
+	// detector watches the frames and says, defaulting to shift until it has an answer.
+	bool apply_field_shift = false;
+	if (present_field_direct && !GSConfig.DisableInterlaceOffset)
+	{
+		apply_field_shift =
+			(GSConfig.FieldShift >= 0) ? (GSConfig.FieldShift != 0) : m_field_shift.WantsShift();
+	}
 
 	// FastMAD (mode 3) stores four fields in a two-bank history target. Older Mali-G57 Vulkan drivers
 	// can expose stale/alternating banks during reconstruction; Bob isn't a safe fallback (its
@@ -237,7 +275,14 @@ bool GSRenderer::Merge(int field)
 		src_gs_read[i] = ((GSVector4(curCircuit.framebufferRect) + GSVector4(0, y_offset[i], 0, y_offset[i])) * scale) / GSVector4(tex[i]->GetSize()).xyxy();
 
 		float interlace_offset = 0.0f;
-		if (isReallyInterlaced() && m_regs->SMODE2.FFMD && !is_bob && !stable_mad_fallback && !GSConfig.DisableInterlaceOffset && GSConfig.InterlaceMode != GSInterlaceMode::Off)
+		if (present_field_direct)
+		{
+			// The offset is no longer a nudge before a deinterlace pass; it is the entire
+			// correction, so it is applied only to the games that move between fields.
+			if (apply_field_shift)
+				interlace_offset = (scale.y) * static_cast<float>(field ^ field2);
+		}
+		else if (isReallyInterlaced() && m_regs->SMODE2.FFMD && !is_bob && !stable_mad_fallback && !GSConfig.DisableInterlaceOffset && GSConfig.InterlaceMode != GSInterlaceMode::Off)
 		{
 			interlace_offset = (scale.y) * static_cast<float>(field ^ field2);
 		}
@@ -255,7 +300,28 @@ bool GSRenderer::Merge(int field)
 			}
 		}
 
-		dst[i] += GSVector4(0.0f, interlace_offset, 0.0f, interlace_offset);
+		if (present_field_direct)
+		{
+			// Move what is READ rather than where it is drawn. Screen row r gets the source content
+			// of row r - offset either way, so every drawn pixel is identical; the difference is at
+			// the top edge, where shifting the destination leaves rows the cleared merge target
+			// never drew (AC5's black row 1) and shifting the source asks the sampler for rows
+			// above the rect and gets the clamp -- the first drawn row, repeated, which is the fill
+			// C3d's shaders do by hand. Every backend's merge sampler clamps on both axes.
+			// The bottom is the same under both: the shifted field's last rows of source content
+			// fall off the screen, and no band appears.
+			const float dst_span = dst[i].w - dst[i].y;
+			if (interlace_offset != 0.0f && dst_span > 0.0f)
+			{
+				const float src_per_dst_row = (src_gs_read[i].w - src_gs_read[i].y) / dst_span;
+				const float src_shift = interlace_offset * src_per_dst_row;
+				src_gs_read[i] -= GSVector4(0.0f, src_shift, 0.0f, src_shift);
+			}
+		}
+		else
+		{
+			dst[i] += GSVector4(0.0f, interlace_offset, 0.0f, interlace_offset);
+		}
 		// A row is drawn when its centre lies at or below the rect's top edge, so the first drawn row
 		// of a rect starting at y is ceil(y - 0.5). Count whole rows rather than passing the raw
 		// offset: at a fractional scale the offset is not a whole number of rows and half a row of
@@ -293,6 +359,15 @@ bool GSRenderer::Merge(int field)
 
 	const u32 c = (m_regs->BGCOLOR.U32[0] & 0x00FFFFFFu) | (m_regs->PMODE.ALP << 24);
 	g_gs_device->Merge(tex, src_gs_read, dst, fs, m_regs->PMODE, m_regs->EXTBUF, c);
+
+	// Show the detector this field, offset and all. It is told which offset was applied so it can
+	// take it back out and measure what the GAME did between fields. Costs nothing once decided,
+	// and never once a GameDB or INI answer exists.
+	if (present_field_direct && (tex[0] || tex[1]) && GSConfig.FieldShift < 0 && !GSConfig.DisableInterlaceOffset)
+	{
+		m_field_shift.Update(g_gs_device->GetCurrent(), fs, upscale_rows,
+			apply_field_shift ? (upscale_rows * (field ^ field2)) : 0, field ^ field2);
+	}
 
 	if ((tex[0] || tex[1]) && isReallyInterlaced() && GSConfig.InterlaceMode != GSInterlaceMode::Off)
 	{

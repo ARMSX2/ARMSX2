@@ -893,6 +893,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_TextureInsideRt) &&
 		OpEqu(UserHacks_Limit24BitDepth) &&
 		OpEqu(UserHacks_BilinearHack) &&
+		OpEqu(FieldShift) &&
 		OpEqu(OverrideTextureBarriers) &&
 		OpEqu(DepthFeedbackMode) &&
 		OpEqu(BackThreadMode) &&
@@ -1117,6 +1118,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 
 	SettingsWrapIntEnumEx(LinearPresent, "linear_present_mode");
 	SettingsWrapIntEnumEx(InterlaceMode, "deinterlace_mode");
+	SettingsWrapBitfieldEx(FieldShift, "field_shift");
 
 	SettingsWrapEntry(OsdScale);
 	SettingsWrapEntry(OsdColor);
