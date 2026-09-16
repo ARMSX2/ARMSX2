@@ -33,4 +33,6 @@
 // 120: 118's native-line deinterlace is reverted -- interlace.* is back to testing field parity on
 // the device row -- and the constant buffer's second vector now carries the undrawn top band.
 // 121: the dither index change of 119 is reverted on the owner's flips; tfx.* changes back.
-static constexpr u32 SHADER_CACHE_VERSION = 121; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 122: scaled dither indexes the native pixel again, and the matrix is rotated under that index by
+// a per-axis phase the CPU picks, so tfx.* changes and the PS constant buffer's last pad is named.
+static constexpr u32 SHADER_CACHE_VERSION = 122; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

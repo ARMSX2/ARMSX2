@@ -2307,6 +2307,7 @@ static void DumpPSConstantBuffer(DrawConfigWriter& out, const GSHWDrawConfig::PS
 	DumpVector4(out, "DitherMatrix_3", cb.DitherMatrix[3]);
 	DumpVector4(out, "ScaleFactor", cb.ScaleFactor);
 	out.WriteLn("LineCovScale: {}", cb.LineCovScale);
+	out.WriteLn("DitherPhase: [{}, {}]", cb.DitherPhase & 3, (cb.DitherPhase >> 2) & 3);
 }
 
 static void DumpVSConstantBuffer(DrawConfigWriter& out, const GSHWDrawConfig::VSConstantBuffer& cb)

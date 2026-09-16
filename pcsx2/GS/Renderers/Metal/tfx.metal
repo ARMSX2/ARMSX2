@@ -1346,7 +1346,21 @@ struct PSMain
 		if (PS_DITHER == 2)
 			fpos = ushort2(in.p.xy);
 		else
-			fpos = ushort2(in.p.xy * float2(cb.scale_factor.y));
+		{
+			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
+			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
+			// floor before dividing, because in.p.xy is coord + 0.5, and a true divide by S
+			// (recovered from cb.scale_factor.x, the fixed-point S/16 the texture path already
+			// carries) rather than a reciprocal multiply, which can land a hair under an integer
+			// where the divide is exact.
+			// dither_phase then rotates the matrix under that index. At a fractional S some native
+			// pixels own one more device pixel than their neighbours, so their matrix entry covers
+			// more of the screen than the others; the phase decides which entries those are, and
+			// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
+			float dither_scale = cb.scale_factor.x * 16.f;
+			fpos = ushort2(floor(in.p.xy) / dither_scale)
+			     + ushort2(cb.dither_phase & 3u, (cb.dither_phase >> 2) & 3u);
+		}
 		float value = cb.dither_matrix[fpos.y & 3][fpos.x & 3];
 
 		// The idea here is we add on the dither amount adjusted by the alpha before it goes to the hw blend
@@ -1553,7 +1567,7 @@ struct PSMain
 			// a multiply by the reciprocal can land a hair under an integer where row / S is exactly
 			// integral. scale_factor.x is S/16, the fixed-point convention the texture path uses,
 			// and scaling it by 16 is exact, so this recovers S and divides.
-			// (The dither path above still multiplies by scale_factor.y and has the same exposure.)
+			// (The dither path above uses the same floor-then-divide fix.)
 			float scanmsk_scale = cb.scale_factor.x * 16.f;
 			if ((uint(floor(in.p.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 				discard();

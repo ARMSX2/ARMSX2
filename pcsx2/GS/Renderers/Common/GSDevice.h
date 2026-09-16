@@ -1176,7 +1176,10 @@ struct alignas(16) GSHWDrawConfig
 		/// merging one, which a substituting draw's is not.
 		u32 SubstituteAlphaKeep;
 		u32 SubstituteAlphaValue;
-		float _pad0;
+		/// PS_DITHER == 1: how far to rotate the dither matrix under the native-pixel index, x in
+		/// bits 0-1 and y in bits 2-3. Zero at every whole upscale, where it rotates nothing.
+		/// GSRendererHW::GetDitherPhase picks it; ps_dither adds it before masking to 4x4.
+		u32 DitherPhase;
 
 		__fi PSConstantBuffer()
 		{

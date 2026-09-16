@@ -269,6 +269,7 @@ private:
 	void EmulateDATEGetConfig(DATEOptions& date, bool scale_rt_alpha, GSDevice::RecycledTexture& temp_ds);
 
 	void EmulateDither();
+	u32 GetDitherPhase(const GIFRegDIMX& DIMX, float scale);
 
 	void DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, const GSVector2i& rtsize,
 		const GSVector2i& unscaled_size, float& vs_scale_x, float& vs_scale_y);
@@ -342,6 +343,13 @@ private:
 	u32 m_split_texture_shuffle_start_FBP = 0;
 	u32 m_split_texture_shuffle_start_TBP = 0;
 	u32 m_split_texture_shuffle_fbw = 0;
+
+	// GetDitherPhase's answer, and the two inputs it was computed from. A scale of -1 is the
+	// "nothing cached yet" mark, since no target ever has a negative scale and DIMX == 0 is a
+	// perfectly ordinary matrix.
+	u64 m_dither_phase_dimx = 0;
+	float m_dither_phase_scale = -1.0f;
+	u32 m_dither_phase = 0;
 
 	u32 m_last_channel_shuffle_fbmsk = 0;
 	u32 m_last_channel_shuffle_fbp = 0;

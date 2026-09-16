@@ -21,6 +21,7 @@
 #include "common/BitUtils.h"
 #include "common/StringUtil.h"
 #include <bit>
+#include <limits>
 
 using PS_ATST  = GSShader::PS_ATST;
 using PS_AFAIL = GSShader::PS_AFAIL;
@@ -7086,12 +7087,98 @@ void GSRendererHW::EmulateDither()
 		m_conf.cb_ps.DitherMatrix[1] = GSVector4(DIMX.DM10, DIMX.DM11, DIMX.DM12, DIMX.DM13);
 		m_conf.cb_ps.DitherMatrix[2] = GSVector4(DIMX.DM20, DIMX.DM21, DIMX.DM22, DIMX.DM23);
 		m_conf.cb_ps.DitherMatrix[3] = GSVector4(DIMX.DM30, DIMX.DM31, DIMX.DM32, DIMX.DM33);
+
+		// Scaled dither (PS_DITHER == 1) indexes the matrix by native pixel, so the phase goes up
+		// with the matrix. ScaleFactor.x is S/16 and the shader recovers S the same way, so both
+		// sides are talking about the same S -- including the case where the texture and the
+		// render target are at different scales and this is the texture's.
+		m_conf.cb_ps.DitherPhase = GetDitherPhase(DIMX, m_conf.cb_ps.ScaleFactor.x * 16.0f);
 	}
 	else if (GSConfig.Dithering > 2)
 	{
 		m_conf.ps.dither = GSConfig.Dithering;
 		m_conf.blend_multi_pass.dither = GSConfig.Dithering;
 	}
+}
+
+// Scaled dither indexes the matrix by native pixel, so at a fractional upscale the cells do not all
+// cover the same number of device pixels: native cell k owns device pixels
+// [ceil(k * S), ceil((k + 1) * S)), which at 1.5x is two device pixels for the even cells and one
+// for the odd. Which cells own the extra pixel is fixed by that ownership rule, but which matrix
+// entry a cell indexes is not -- adding a phase before the index is masked to 4x4 rotates the
+// matrix under it. Spend the extra area on the quietest rows and columns the matrix has, measured
+// as the sum of |DIMX| over them, so the cells that cover more screen are the ones that push the
+// colour least and the four-native-pixel period does not turn into a visible harmonic.
+//
+// At a whole-number scale every cell owns exactly S device pixels, no cell is wider than another,
+// every phase scores zero, and this returns 0. That is what keeps 1x, 2x and every other whole
+// multiplier rendering exactly as they did before the phase existed.
+//
+// Four cells are a whole period of the pattern only when S's denominator divides 4, which every
+// multiplier the UI offers does (quarter steps to 3x, then halves, then whole numbers). A scale
+// from anywhere else still gets a phase; it is just chosen from the first four cells rather than
+// from a repeating period.
+u32 GSRendererHW::GetDitherPhase(const GIFRegDIMX& DIMX, float scale)
+{
+	if (DIMX.U64 == m_dither_phase_dimx && scale == m_dither_phase_scale)
+		return m_dither_phase;
+
+	// DIMX names its entries DMyx: the first index is the row the y axis picks, the second the
+	// column the x axis picks, which is what every backend's matrix fetch resolves to.
+	const int dimx[4][4] = {
+		{DIMX.DM00, DIMX.DM01, DIMX.DM02, DIMX.DM03},
+		{DIMX.DM10, DIMX.DM11, DIMX.DM12, DIMX.DM13},
+		{DIMX.DM20, DIMX.DM21, DIMX.DM22, DIMX.DM23},
+		{DIMX.DM30, DIMX.DM31, DIMX.DM32, DIMX.DM33},
+	};
+
+	// Which of the four cells own more device pixels than the narrowest cell does. Doubles, not
+	// floats: every multiplier the UI offers is exact in both, but a scale that is not leaves a
+	// product like 3 * S a hair under a whole number, and ceil() would answer a pixel too low.
+	const double s = static_cast<double>(scale);
+	const int narrow = static_cast<int>(std::floor(s));
+	bool wide[4];
+	for (int i = 0; i < 4; i++)
+	{
+		const int first = static_cast<int>(std::ceil(static_cast<double>(i) * s));
+		const int last = static_cast<int>(std::ceil(static_cast<double>(i + 1) * s));
+		wide[i] = (last - first) > narrow;
+	}
+
+	u32 phase = 0;
+	for (int axis = 0; axis < 2; axis++) // 0 = x, which picks a matrix column; 1 = y, a matrix row
+	{
+		int best_phase = 0;
+		int best_cost = std::numeric_limits<int>::max();
+		for (int p = 0; p < 4; p++)
+		{
+			int cost = 0;
+			for (int i = 0; i < 4; i++)
+			{
+				if (!wide[i])
+					continue;
+
+				const int line = (i + p) & 3;
+				for (int j = 0; j < 4; j++)
+					cost += std::abs((axis == 1) ? dimx[line][j] : dimx[j][line]);
+			}
+
+			// Strictly less, so a tie -- every tie, including the all-zero one a whole-number
+			// scale produces -- keeps the lowest phase, which is the rotation that does nothing.
+			if (cost < best_cost)
+			{
+				best_cost = cost;
+				best_phase = p;
+			}
+		}
+
+		phase |= static_cast<u32>(best_phase) << (axis * 2);
+	}
+
+	m_dither_phase_dimx = DIMX.U64;
+	m_dither_phase_scale = scale;
+	m_dither_phase = phase;
+	return phase;
 }
 
 // An exact alpha-mask decision is worth taking for one thing: the barrier it removes, and with it,

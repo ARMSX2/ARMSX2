@@ -145,7 +145,7 @@ struct GSMTLMainPSUniform
 	float line_cov_scale;
 	unsigned int substitute_alpha_keep;
 	unsigned int substitute_alpha_value;
-	float _pad0;
+	unsigned int dither_phase;
 };
 
 enum GSMTLAttributes

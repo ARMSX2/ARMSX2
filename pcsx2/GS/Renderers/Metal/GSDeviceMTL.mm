@@ -2676,6 +2676,7 @@ static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, TCOffsetHack)     == of
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, STScale)          == offsetof(GSMTLMainPSUniform, st_scale));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherMatrix)     == offsetof(GSMTLMainPSUniform, dither_matrix));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, ScaleFactor)      == offsetof(GSMTLMainPSUniform, scale_factor));
+static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherPhase)      == offsetof(GSMTLMainPSUniform, dither_phase));
 
 // DoInterlace hands the shader the whole InterlaceConstantBuffer, so the two layouts have to agree.
 static_assert(sizeof(InterlaceConstantBuffer) == sizeof(GSMTLInterlacePSUniform));
