@@ -859,6 +859,7 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
+    <ClInclude Include="GS\Renderers\HW\GSPointPlace.h" />
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />

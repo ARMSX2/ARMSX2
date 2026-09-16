@@ -613,6 +613,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineWalk.h
+	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
 	GS/Renderers/HW/GSSpriteEdgeSnap.h
 	GS/Renderers/HW/GSTextureCache.h

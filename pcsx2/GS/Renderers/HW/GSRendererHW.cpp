@@ -6,6 +6,7 @@
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSLineWalk.h"
+#include "GS/Renderers/HW/GSPointPlace.h"
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
@@ -324,6 +325,33 @@ void GSRendererHW::Lines2Sprites()
 
 		m_vertex->head = m_vertex->tail = m_vertex->next = count * 2;
 		m_index->tail = count * 3;
+	}
+}
+
+void GSRendererHW::SnapPointsToNativePixel()
+{
+	// Moves every point onto the near boundary of the pixel the GS lights, which rounds to nearest
+	// rather than corner-sampling (GSPointPlace.h has the console measurement). At native
+	// resolution the point stays on the pixel it was already on, except at exactly half a pixel,
+	// where it moves to the one silicon draws. Above it, the snapped coordinate is what lets a
+	// whole-native-pixel figure land on the pixel's whole device block: the rounding is a step
+	// function, so it cannot come out of the draw's single vertex offset.
+	const int ofx = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int ofy = static_cast<int>(m_context->XYOFFSET.OFY);
+
+	for (u32 i = 0; i < m_vertex->next; i++)
+	{
+		GSVertex& v = m_vertex->buff[i];
+		const int x = ofx + GSPointPlace::SnapToPixel(static_cast<int>(v.XYZ.X) - ofx);
+		const int y = ofy + GSPointPlace::SnapToPixel(static_cast<int>(v.XYZ.Y) - ofy);
+
+		// A coordinate within half a pixel of either end of the 16-bit range would wrap instead of
+		// moving, and wrapping puts the point somewhere else entirely. Those points are thousands
+		// of pixels off any target; leave them where they are.
+		if (static_cast<u32>(x) <= 0xFFFFu)
+			v.XYZ.X = static_cast<u16>(x);
+		if (static_cast<u32>(y) <= 0xFFFFu)
+			v.XYZ.Y = static_cast<u16>(y);
 	}
 }
 
@@ -1653,8 +1681,11 @@ GSVector4 GSRendererHW::RealignTargetTextureCoordinate(const GSTextureCache::Sou
 GSVector4i GSRendererHW::ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale)
 {
 	// A line lights the pixel its coordinate rounds to, and that pixel's far edge can sit a pixel and
-	// a half past the vertex bounds, so lines get the wider margin too.
-	const bool wide = IsCoverageAlphaSupported() || m_vt.m_primclass == GS_LINE_CLASS;
+	// a half past the vertex bounds, so lines get the wider margin too. A point rounds the same way
+	// (GSPointPlace.h) and reaches just as far: a point at x + 8/16 lights the pixel at x + 1, whose
+	// far edge is at x + 2.
+	const bool wide = IsCoverageAlphaSupported() || m_vt.m_primclass == GS_LINE_CLASS ||
+					  m_vt.m_primclass == GS_POINT_CLASS;
 	const GSVector4 offset = wide ? GSVector4(-2.0f, 2.0f) : GSVector4(-1.0f, 1.0f); // Round value
 	const GSVector4 box = m_vt.m_min.p.upld(m_vt.m_max.p) + offset.xxyy();
 	return GSVector4i(box * GSVector4(rtscale)).rintersect(GSVector4i(0, 0, rtsize.x, rtsize.y));
@@ -5997,23 +6028,57 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 			{
 				m_conf.topology = GSHWDrawConfig::Topology::Point;
 				m_conf.indices_per_prim = 1;
+
+				// A point rounds to nearest where a sprite corner-samples, and upscaled it covers
+				// the whole device block of the native pixel it lights. GSPointPlace.h carries the
+				// console measurement and the derivation; the two steps are here. First put the
+				// vertex on the pixel, at native resolution, where the rule was measured.
+				SnapPointsToNativePixel();
+
+				// Then give the draw the offset the figure this backend draws needs. It is written
+				// here rather than left to DetermineVSConfig because that function hands some
+				// draws more -- Align to Native offsets by half a native pixel at any scale, and
+				// the mod_xy hack scales the half pixel up. Both correct geometry a game puts on
+				// pixel centres, which a snapped point is not, so they would move it off its block.
+				const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+				const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+				const auto set_vertex_offset = [&](float dx, float dy) {
+					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - dx + 1.0f, oy * sy - dy + 1.0f);
+				};
+
 				if (unscale_pt_ln)
 				{
 					if (features.point_expand)
 					{
+						// A hardware point sprite is centred on the position and target_scale
+						// device pixels across: half a native pixel puts its centre on the middle
+						// of the block.
 						m_conf.vs.point_size = true;
 						m_conf.cb_vs.point_size = GSVector2(target_scale);
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 					}
 					else if (features.vs_expand)
 					{
+						// The expanded quad grows one native pixel right and down from the
+						// position, so its corners are pixel boundaries: half a device pixel, the
+						// same figure and the same offset as a pixel-run rectangle. This is the
+						// one path that stays exact at a fractional scale.
 						m_conf.vs.expand = GSHWDrawConfig::VSExpand::Point;
 						m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+						set_vertex_offset(GSPointPlace::BoundaryFigureOffset(sx, target_scale),
+							GSPointPlace::BoundaryFigureOffset(sy, target_scale));
 						m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 						m_conf.verts = m_vertex->buff;
 						m_conf.nverts = m_vertex->next;
 						m_conf.nindices = m_index->tail * 6;
 						m_conf.indices_per_prim = 6;
 						return;
+					}
+					else
+					{
+						// Neither: a one-device-pixel point, still centred on the position, so the
+						// same offset lands it inside the block rather than on its edge.
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 					}
 				}
 				else
@@ -6023,6 +6088,10 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 					// M1 requires point size output on *all* points.
 					m_conf.vs.point_size = true;
+
+					// One native pixel is one device pixel here, so this is the value
+					// DetermineVSConfig already chose, in every half-pixel-offset mode.
+					set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 				}
 			}
 			break;
@@ -6074,12 +6143,14 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
 					// and the mod_xy hack scales the half pixel up. Both correct geometry a game
 					// places on pixel centres, and applied here they move every rectangle, a device
-					// pixel right and down at 2x under Align to Native. sx/sy are GS units (1/16
-					// pixel) to NDC, so half a device pixel is 8 * sx / target_scale; at native
-					// resolution this is the value DetermineVSConfig already chose.
+					// pixel right and down at 2x under Align to Native. GSPointPlace.h has the
+					// arithmetic and the other figure, the centred one, that takes a different
+					// offset; at native resolution the two agree and this is the value
+					// DetermineVSConfig already chose.
 					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
 					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
-					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - 8.0f * sx / target_scale + 1.0f, oy * sy - 8.0f * sy / target_scale + 1.0f);
+					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::BoundaryFigureOffset(sx, target_scale) + 1.0f,
+						oy * sy - GSPointPlace::BoundaryFigureOffset(sy, target_scale) + 1.0f);
 				}
 				else if (unscale_pt_ln)
 				{
