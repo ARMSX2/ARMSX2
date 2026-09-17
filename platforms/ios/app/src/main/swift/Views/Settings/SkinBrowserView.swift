@@ -5,20 +5,11 @@ import SwiftUI
 
 struct SkinBrowserView: View {
     /// Ready means the skin ships a layout for iOS. The rest still install, they
-    /// just leave you to place the buttons.
-    private enum Filter: Hashable, CaseIterable {
-        case all, installed, ready
-
-        // SettingsStore is @MainActor, and a computed property on a nested
-        // enum is not - the isolation has to be said out loud. Every caller is
-        // a View body, which is on the main actor already.
-        @MainActor var title: String {
-            switch self {
-            case .all: return SettingsStore.shared.localized("All")
-            case .installed: return SettingsStore.shared.localized("Installed")
-            case .ready: return SettingsStore.shared.localized("Ready")
-            }
-        }
+    /// just leave you to place the buttons. The raw values are the catalog keys.
+    private enum Filter: String, Hashable, CaseIterable {
+        case all = "All"
+        case installed = "Installed"
+        case ready = "Ready"
     }
 
     @State private var settings = SettingsStore.shared
@@ -59,7 +50,7 @@ struct SkinBrowserView: View {
             if !catalog.skins.isEmpty {
                 Picker("Show", selection: $filter) {
                     ForEach(Filter.allCases, id: \.self) { option in
-                        Text(option.title).tag(option)
+                        Text(settings.localized(option.rawValue)).tag(option)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -90,20 +81,14 @@ struct SkinBrowserView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
-        .alert(settings.localized("Skin Install"), isPresented: Binding(
-            get: { detailAlert != nil },
-            set: { if !$0 { detailAlert = nil } }
-        )) {
+        .alert(settings.localized("Skin Install"), isPresented: isDetailAlertPresented) {
             Button(settings.localized("OK"), role: .cancel) {}
         } message: {
             Text(detailAlert ?? "")
         }
         .alert(
             settings.localized("Remove Skin?"),
-            isPresented: Binding(
-                get: { skinPendingRemoval != nil },
-                set: { if !$0 { skinPendingRemoval = nil } }
-            ),
+            isPresented: isRemoveAlertPresented,
             presenting: skinPendingRemoval
         ) { skin in
             Button(String(format: settings.localized("Remove %@"), skin.name), role: .destructive) {
@@ -140,6 +125,20 @@ struct SkinBrowserView: View {
             : Locale(identifier: settings.appLanguage.bcp47Code)
         let relative: String = updated.formatted(.relative(presentation: .named).locale(locale))
         return String(format: settings.localized("Last updated %@"), relative)
+    }
+
+    private var isDetailAlertPresented: Binding<Bool> {
+        Binding(
+            get: { detailAlert != nil },
+            set: { if !$0 { detailAlert = nil } }
+        )
+    }
+
+    private var isRemoveAlertPresented: Binding<Bool> {
+        Binding(
+            get: { skinPendingRemoval != nil },
+            set: { if !$0 { skinPendingRemoval = nil } }
+        )
     }
 
     /// Read here rather than inside a row closure so the library registers with
