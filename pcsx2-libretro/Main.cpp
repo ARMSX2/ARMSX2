@@ -1686,12 +1686,22 @@ RETRO_API void retro_init(void)
 	// not read, a BIOS it did not like - reaches the console sink only, which
 	// is a terminal nobody has open, or logcat on Android. The RetroArch log
 	// then shows the symptom with no cause: "MTGS::WaitForOpen failed".
-	Log::SetHostOutputLevel(LOGLEVEL_WARNING, [](LOGLEVEL level, ConsoleColors, std::string_view message) {
+	//
+	// INFO rather than WARNING, because a core's console sink reaches nobody:
+	// the lines that say what the GS device did on its way up - which context
+	// was captured, which version was created, which renderer opened - are all
+	// Console.WriteLn, and without them a black screen is reported with a log
+	// that has nothing in it at all. The frontend decides what it prints:
+	// RetroArch shows RETRO_LOG_INFO only at verbose, so this is off by
+	// default where it matters and there to be turned on where it does not.
+	Log::SetHostOutputLevel(LOGLEVEL_INFO, [](LOGLEVEL level, ConsoleColors, std::string_view message) {
 		if (!log_cb)
 			return;
 
-		log_cb(level <= LOGLEVEL_ERROR ? RETRO_LOG_ERROR : RETRO_LOG_WARN, "%.*s\n",
-			static_cast<int>(message.size()), message.data());
+		const retro_log_level retro_level = (level <= LOGLEVEL_ERROR) ? RETRO_LOG_ERROR
+			: (level == LOGLEVEL_WARNING)                             ? RETRO_LOG_WARN
+																	  : RETRO_LOG_INFO;
+		log_cb(retro_level, "%.*s\n", static_cast<int>(message.size()), message.data());
 	});
 	LibretroCore::s_frame_buffer.assign(
 		LibretroCore::kFrameWidth * LibretroCore::kFrameHeight, 0);
