@@ -153,19 +153,22 @@ final class FrameTimeDynamicResolutionController {
             guard perGame else { return }
         }
 
-        let history: [NSNumber] = ARMSX2Bridge.frameTimeHistory()
-        let cursor: Int = Int(ARMSX2Bridge.frameTimeHistoryPos())
-        let total: Int = history.count
+        let data = ARMSX2Bridge.frameTimeHistory()
+        let total = data.count / MemoryLayout<Float>.size
         guard total > 0 else { return }
 
         // Collect the most recent `smoothingWindow` non-zero samples before
         // the cursor, wrapping around the ring buffer.
+        let cursor = Int(ARMSX2Bridge.frameTimeHistoryPos())
         var samples: [Float] = []
         samples.reserveCapacity(Self.smoothingWindow)
-        for i in 0..<Self.smoothingWindow {
-            let idx = ((cursor - 1 - i) % total + total) % total
-            let value = history[idx].floatValue
-            if value > 0 { samples.append(value) }
+        data.withUnsafeBytes { raw in
+            let buffer = raw.bindMemory(to: Float.self)
+            for i in 0..<Self.smoothingWindow {
+                let idx = ((cursor - 1 - i) % total + total) % total
+                let value = buffer[idx]
+                if value > 0 { samples.append(value) }
+            }
         }
         guard samples.count >= Self.minSamplesForAction else { return }
 

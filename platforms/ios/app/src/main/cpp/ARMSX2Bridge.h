@@ -264,7 +264,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // 150-sample ring buffer) and frameTimeHistoryPos returns its current write
 // cursor. Used by the adaptive-resolution controller to read the freshest
 // samples before the cursor.
-+ (nonnull NSArray<NSNumber *> *)frameTimeHistory;
++ (nonnull NSData *)frameTimeHistory;
 + (NSUInteger)frameTimeHistoryPos;
 
 // MetalFX Spatial upscaler availability probe. Returns YES only on iOS 16+ with
