@@ -155,8 +155,8 @@ struct DynamicThumbstickView: View {
             .gesture(dragGesture)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isLeft ? "Dynamic left thumbstick area" : "Dynamic right thumbstick area")
-        .accessibilityHint("Press and drag anywhere in this area")
+        .accessibilityLabel(isLeft ? Text("Dynamic left thumbstick area") : Text("Dynamic right thumbstick area"))
+        .accessibilityHint(Text("Press and drag anywhere in this area"))
         .onDisappear(perform: reset)
     }
 
@@ -372,8 +372,8 @@ struct VirtualPadCameraSwipeView: View {
             .gesture(swipeGesture)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Camera swipe area")
-        .accessibilityHint("Swipe to move the emulated right analog stick")
+        .accessibilityLabel(Text("Camera swipe area"))
+        .accessibilityHint(Text("Swipe to move the emulated right analog stick"))
         .onDisappear(perform: endInteractionIfNeeded)
     }
 

@@ -372,7 +372,7 @@ struct PerGameSettingsPanel: View {
         let suffix = savesToRunningGame
             ? settings.localized("Saved — changes apply now. Renderer and recompiler settings need a reset.")
             : settings.localized("Reset or relaunch the game to apply.")
-        return "\(settings.localized("Saved for")) \(serial). \(suffix)"
+        return String(format: settings.localized("Saved for %1$@. %2$@"), serial, suffix)
     }
 
     /// Clears every per-game override by disabling the master toggle and saving; the
