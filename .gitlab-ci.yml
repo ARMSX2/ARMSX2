@@ -159,11 +159,14 @@
   variables:
     EXTRA_PATH: pcsx2-libretro
     # 17.4 is what the iOS app in platforms/ios targets; there is no reason for
-    # the core to ask for an older one. Two names because the two templates
-    # spell it differently: ios-cmake.yml reads IOS_MINVER, tvos-cmake.yml
-    # reads MINVER.
-    IOS_MINVER: "17.4"
-    MINVER: "17.4"
+    # the core to ask for an older one. One number under three names: the two
+    # templates spell it differently (ios-cmake.yml reads IOS_MINVER,
+    # tvos-cmake.yml reads MINVER) and the dependency script takes it as
+    # APPLE_DEPLOYMENT_TARGET, so a bump here moves the dependencies and the
+    # core together instead of leaving them built against different targets.
+    APPLE_DEPLOYMENT_TARGET: "17.4"
+    IOS_MINVER: "$APPLE_DEPLOYMENT_TARGET"
+    MINVER: "$APPLE_DEPLOYMENT_TARGET"
     CC: clang
     CXX: clang++
     # Replaces the Linux CORE_ARGS wholesale, like the macOS jobs do: the
@@ -189,7 +192,10 @@
     key:
       files:
         - .github/workflows/scripts/macos/build-dependencies-embedded.sh
-      prefix: apple-$APPLE_PLATFORM
+      # The target is part of the key: dependencies built for one deployment
+      # target are not the ones a different target wants, and a cache that
+      # ignored it would hand a bumped core the old set.
+      prefix: apple-$APPLE_PLATFORM-$APPLE_DEPLOYMENT_TARGET
     paths:
       - .deps/
   before_script:
@@ -200,6 +206,7 @@
     - |
       if [ ! -d "$CI_PROJECT_DIR/.deps/include/SDL3" ]; then
         APPLE_PLATFORM=$APPLE_PLATFORM \
+        APPLE_DEPLOYMENT_TARGET=$APPLE_DEPLOYMENT_TARGET \
           ./.github/workflows/scripts/macos/build-dependencies-embedded.sh "$CI_PROJECT_DIR/.deps"
       fi
 

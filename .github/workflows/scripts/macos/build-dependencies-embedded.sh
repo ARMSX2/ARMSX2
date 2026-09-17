@@ -52,8 +52,11 @@ if [ "${INSTALLDIR:0:1}" != "/" ]; then
 	INSTALLDIR="$PWD/$INSTALLDIR"
 fi
 
-# 17.4 matches the iOS app in platforms/ios; tvOS takes the same number, which
-# is a real tvOS release too.
+# The build passes this in: the core's own job sets one deployment target and
+# hands it here, so the dependencies and the core are built against the same
+# one. The default is for running this script by hand - 17.4 matches the iOS app
+# in platforms/ios, and tvOS takes the same number, which is a real tvOS release
+# too.
 : ${APPLE_DEPLOYMENT_TARGET:=17.4}
 
 FREETYPE=2.14.3
