@@ -19,6 +19,37 @@ find_package(LZ4 REQUIRED)
 find_package(WebP REQUIRED) # v1.3.2, spews an error on Linux because no pkg-config.
 find_package(SDL3 3.2.6 REQUIRED)
 find_package(Freetype 2.10 REQUIRED) # 2.10 is the first with COLRv0 support, which we need for rendering emoji
+
+# No CONFIG keyword above, so that's Module-mode find_package(Freetype) resolving
+# through CMake's own FindFreetype.cmake, which knows nothing of HarfBuzz. A shared
+# libfreetype.so records its own HarfBuzz dependency and needs nothing from us; a
+# static libfreetype.a (build-dependencies-runner.sh's ARMSX2_DEPS_STATIC=1 path,
+# built with FT_REQUIRE_HARFBUZZ=TRUE) genuinely calls hb_* symbols and does not,
+# same as libwebp/sharpyuv above (cmake/FindWebP.cmake). Gate on the archive we
+# actually found being static, so every shared resolution (Qt desktop, macOS,
+# Windows) stays a no-op.
+get_filename_component(FREETYPE_LIBRARY_EXT "${FREETYPE_LIBRARY}" EXT)
+if (NOT WIN32 AND FREETYPE_LIBRARY_EXT STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+	# Archive first. The static prefix has libharfbuzz.a, and resolving a system
+	# libharfbuzz.so here would put a NEEDED entry back onto a binary whose whole
+	# purpose is carrying everything it needs.
+	find_library(HARFBUZZ_LIBRARY
+		NAMES "${CMAKE_STATIC_LIBRARY_PREFIX}harfbuzz${CMAKE_STATIC_LIBRARY_SUFFIX}"
+		      harfbuzz libharfbuzz)
+	if (NOT HARFBUZZ_LIBRARY)
+		message(FATAL_ERROR "Found a static FreeType (${FREETYPE_LIBRARY}) but no HarfBuzz: "
+			"a static libfreetype.a built by build-dependencies-runner.sh calls into "
+			"HarfBuzz directly and won't resolve without it.")
+	endif()
+	# HarfBuzz, then FreeType again. The two archives call into each other, and a
+	# single-pass linker only resolves that if whichever still owes symbols comes
+	# last. Both orders worked on binutils 2.44; CI runs an older one, and being
+	# wrong here leaves undefined symbols in a .so that links clean and then
+	# fails at dlopen, which is the failure this whole change exists to remove.
+	set_property(TARGET Freetype::Freetype APPEND PROPERTY
+		INTERFACE_LINK_LIBRARIES "${HARFBUZZ_LIBRARY}" "${FREETYPE_LIBRARY}")
+endif()
+unset(FREETYPE_LIBRARY_EXT)
 find_package(plutovg 1.1.0 REQUIRED)
 find_package(plutosvg 0.0.7 REQUIRED)
 # NOT taking upstream's find_package(ryml): we re-vendor rapidyaml in-tree (see the
