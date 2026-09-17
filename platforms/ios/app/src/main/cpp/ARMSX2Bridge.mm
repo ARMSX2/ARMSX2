@@ -867,6 +867,8 @@ static MemoryCardFileType ARMSX2MemoryCardFileTypeForSizeMB(NSInteger sizeMB)
 
 static NSData* ARMSX2ReadSaveStatePreviewPNG(const std::string& path)
 {
+    static const zip_uint64_t kMaxPreviewBytes = 8 * 1024 * 1024;
+
     if (path.empty())
         return nil;
 
@@ -880,7 +882,7 @@ static NSData* ARMSX2ReadSaveStatePreviewPNG(const std::string& path)
         return nil;
 
     std::optional<std::vector<u8>> data = ReadBinaryFileInZip(zff.get());
-    if (!data.has_value() || data->empty())
+    if (!data.has_value() || data->empty() || data->size() > kMaxPreviewBytes)
         return nil;
 
     return [NSData dataWithBytes:data->data() length:data->size()];
@@ -2348,8 +2350,9 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         if (!file)
             continue;
 
+        const zip_uint64_t entryCap = ARMSX2IsControllerSkinImageName(entryName) ? kMaxSkinArchiveEntryBytes : kMaxLooseLayoutBytes;
         std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
-        if (!data.has_value() || data->empty())
+        if (!data.has_value() || data->empty() || data->size() > entryCap)
             continue;
 
         NSString *safeName = ARMSX2SanitizedSkinFileName(entryName);
@@ -2532,6 +2535,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 }
 
 + (nullable NSData *)peekSkinManifestDataAtURL:(NSURL *)archiveURL {
+    static const zip_uint64_t kMaxManifestBytes = 16 * 1024 * 1024;
+
     if (!archiveURL.isFileURL) {
         return nil;
     }
@@ -2564,7 +2569,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             if (![entryName.lastPathComponent.lowercaseString isEqualToString:wanted]) {
                 continue;
             }
-            if ((stat.valid & ZIP_STAT_SIZE) && stat.size > 16 * 1024 * 1024) {
+            if ((stat.valid & ZIP_STAT_SIZE) && stat.size > kMaxManifestBytes) {
                 continue;
             }
             auto file = zip_fopen_index_managed(zf.get(), i, ZIP_FL_ENC_GUESS);
@@ -2572,7 +2577,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
                 continue;
             }
             std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
-            if (!data.has_value() || data->empty()) {
+            if (!data.has_value() || data->empty() || data->size() > kMaxManifestBytes) {
                 continue;
             }
             return [NSData dataWithBytes:data->data() length:data->size()];
@@ -2692,7 +2697,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             continue;
         }
         std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
-        if (!data.has_value() || data->empty()) {
+        if (!data.has_value() || data->empty() || data->size() > kMaxPackageEntryBytes) {
             continue;
         }
 
@@ -2759,7 +2764,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         if (!file)
             continue;
         std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
-        if (!data.has_value() || data->empty())
+        if (!data.has_value() || data->empty() || data->size() > kMaxMemcardEntryBytes)
             continue;
 
         NSString *destinationPath = [memcardDir stringByAppendingPathComponent:safeName];
