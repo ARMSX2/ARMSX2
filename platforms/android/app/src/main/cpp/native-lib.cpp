@@ -1472,7 +1472,11 @@ public:
     // until a manual menu resume. The CPU/MTGS/MTVU threads are still parked
     // for the JIT/GS rebuild; only the audio pause edges are suppressed, and
     // the stream emits silence on underrun so there's no audible artifact.
-    explicit ScopedVMPause(bool pause_audio = true) {
+    // resume_on_destroy=false leaves the VM parked when the guard goes out of
+    // scope. Used by the disc-swap path, where Kotlin is the single resume
+    // authority and unpauses only after the caller has returned.
+    explicit ScopedVMPause(bool pause_audio = true, bool resume_on_destroy = true) {
+        m_resume_on_destroy = resume_on_destroy;
         m_was_running = (VMManager::GetState() == VMState::Running);
         m_was_paused = (VMManager::GetState() == VMState::Paused);
         if (m_was_running)
@@ -1521,23 +1525,22 @@ public:
         for (int i = 0; i < 3000 && !ParkedNow(); ++i)
         {
             if ((i % 16) == 0 && !s_execute_exit.load(std::memory_order_acquire) && Cpu)
-            {
-                // Logged only for the retries, not the initial kick above, so a
-                // normal park stays silent and any line here means the CPU
-                // thread had to be nudged again to reach its message pump.
-                if (i > 0)
-                    Console.WriteLn("@@ANDROID_PARK_RENUDGE@@ waited_ms=%d", i);
                 Cpu->ExitExecution();
-            }
             usleep(1000);
         }
         m_parked = ParkedNow() || m_was_paused;
-        Console.WriteLn("@@ANDROID_PARK@@ parked=%d state=%d execute_exit=%d",
-            m_parked ? 1 : 0, static_cast<int>(VMManager::GetState()),
-            s_execute_exit.load(std::memory_order_acquire) ? 1 : 0);
+        // A healthy park is silent; anything logged here means the CPU thread
+        // never reached a safe point and the caller must skip the state op.
+        if (!m_parked)
+        {
+            Console.Error("Failed to park the CPU thread for a state operation "
+                          "(state=%d execute_exit=%d)",
+                          static_cast<int>(VMManager::GetState()),
+                          s_execute_exit.load(std::memory_order_acquire) ? 1 : 0);
+        }
     }
     ~ScopedVMPause() {
-        if (m_was_running && !s_stop_requested.load(std::memory_order_acquire))
+        if (m_was_running && m_resume_on_destroy && !s_stop_requested.load(std::memory_order_acquire))
             VMManager::SetPaused(false);
         if (m_audio_pause_suppressed)
             SPU2::SetOutputPauseSuppressed(false);
@@ -1561,6 +1564,7 @@ private:
     bool m_was_paused = false;
     bool m_parked = false;
     bool m_audio_pause_suppressed = false;
+    bool m_resume_on_destroy = true;
 };
 
 static void LogAndroidGSSettings(const char* reason)
@@ -3316,18 +3320,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_changeDisc(JNIEnv *env, jclass clazz, jstri
         return false;
     // ChangeDisc mutates live CDVD/IOP/tray state OWNED by the CPU thread, so it
     // must run THERE, not from JNI (doing it here races the emulator and hangs).
-    // Park the CPU thread so the paused idle loop (runVMThread) drains the queue
-    // within a frame; RunOnCPUThread(block) then waits for the swap to finish.
-    // We deliberately do NOT resume here — the Kotlin caller unpauses afterward
+    // Park through the same guard the save-state path uses instead of flipping
+    // the pause from this JNI thread: SetState(Paused) runs MTGS::WaitGS() (and
+    // vu1Thread.WaitVU() under MTVU), which end in WorkSema::WaitForEmpty() — a
+    // primitive that supports exactly one waiter — so pausing here races the
+    // EE's own MTGS waits. RunOnCPUThread(block) then waits for the swap to
+    // finish. resume_on_destroy is off: the Kotlin caller unpauses afterward
     // (single resume authority), so the game runs and detects the new disc.
-    const bool was_running = (VMManager::GetState() == VMState::Running);
-    if (was_running) {
-        VMManager::SetPaused(true);
-        if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
-            Cpu->ExitExecution();
-        for (int i = 0; i < 3000 && !s_execute_exit.load(std::memory_order_acquire); ++i)
-            usleep(1000);
-    }
+    const ScopedVMPause vm_pause(/*pause_audio=*/true, /*resume_on_destroy=*/false);
+    if (!vm_pause.parked())
+        return false;
     bool ok = false;
     Host::RunOnCPUThread([&path, &ok]() {
         ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, path);
