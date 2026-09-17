@@ -94,7 +94,8 @@ class TestLocalizationParity(unittest.TestCase):
             ("The game database is setting this for this game.", []),
             ("Saved for %1$@. %2$@", ["%1$@", "%2$@"]),
             ("Default restores global settings; other presets change only their listed settings.", []),
-            ("%@ s", ["%@"])
+            ("%@ s", ["%@"]),
+            ("Last updated %@", ["%@"]),
         ]
         
         for key, specifiers in slice3_keys:
@@ -136,6 +137,7 @@ class TestLocalizationParity(unittest.TestCase):
             ("Downloading…", []),
             ("Reinstall Patches", []),
             ("Download Patches", []),
+            ("Import", []),
         ]
 
         for key, specifiers in slice4_sample_keys:
