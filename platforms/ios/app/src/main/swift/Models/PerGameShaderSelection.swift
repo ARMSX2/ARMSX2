@@ -3,8 +3,7 @@
 
 import Foundation
 
-/// No keys use the global chain. `ShaderChainEnabled = false`, or a token that names no file, uses
-/// no chain, never the global preset.
+/// No keys means the global chain. `ShaderChainEnabled = false`, or a token naming no file, means none.
 enum PerGameShaderSelection {
     static let section = "EmuCore/GS"
 
@@ -63,45 +62,31 @@ enum PerGameShaderSelection {
         }
     }
 
+    private static func targetISO(useCurrent: Bool, iso: String) -> String? {
+        useCurrent ? nil : iso
+    }
+
     private static func has(_ key: String, useCurrent: Bool, iso: String) -> Bool {
-        useCurrent
-            ? ARMSX2Bridge.hasPerGameINIValueForCurrentGame(section, key: key)
-            : ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: iso)
+        ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func bool(_ key: String, useCurrent: Bool, iso: String) -> Bool {
-        useCurrent
-            ? ARMSX2Bridge.getPerGameINIBoolForCurrentGame(section, key: key, defaultValue: false)
-            : ARMSX2Bridge.getPerGameINIBool(section, key: key, defaultValue: false, forISO: iso)
+        ARMSX2Bridge.getPerGameINIBool(section, key: key, defaultValue: false, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func string(_ key: String, useCurrent: Bool, iso: String) -> String {
-        useCurrent
-            ? ARMSX2Bridge.getPerGameINIStringForCurrentGame(section, key: key, defaultValue: "")
-            : ARMSX2Bridge.getPerGameINIString(section, key: key, defaultValue: "", forISO: iso)
+        ARMSX2Bridge.getPerGameINIString(section, key: key, defaultValue: "", forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func setBool(_ key: String, _ value: Bool, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.setPerGameINIBoolForCurrentGame(section, key: key, value: value)
-        } else {
-            ARMSX2Bridge.setPerGameINIBool(section, key: key, value: value, forISO: iso)
-        }
+        ARMSX2Bridge.setPerGameINIBool(section, key: key, value: value, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func setString(_ key: String, _ value: String, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.setPerGameINIStringForCurrentGame(section, key: key, value: value)
-        } else {
-            ARMSX2Bridge.setPerGameINIString(section, key: key, value: value, forISO: iso)
-        }
+        ARMSX2Bridge.setPerGameINIString(section, key: key, value: value, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func delete(_ key: String, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.deletePerGameINIValueForCurrentGame(section, key: key)
-        } else {
-            ARMSX2Bridge.deletePerGameINIValue(section, key: key, forISO: iso)
-        }
+        ARMSX2Bridge.deletePerGameINIValue(section, key: key, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 }

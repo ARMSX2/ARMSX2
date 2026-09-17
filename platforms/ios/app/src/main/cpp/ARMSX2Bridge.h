@@ -74,10 +74,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)prepareGameRenderViewForCurrentRenderer;
 
 // Lifecycle
-+ (void)saveNVRAM;
-+ (void)saveMemoryCards;
 + (void)saveAllState;  // NVM + MC
-+ (BOOL)isRunning;
 
 // Pad input
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
@@ -145,77 +142,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSArray<NSString *> *)availableISOs;
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries;
 + (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
 + (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
-+ (void)setGameSettingsForISO:(nonnull NSString *)isoName
-                       enabled:(BOOL)enabled
-             upscaleMultiplier:(float)upscaleMultiplier
-                   aspectRatio:(nonnull NSString *)aspectRatio
-              textureFiltering:(int)textureFiltering
-            hardwareMipmapping:(int)hardwareMipmapping
-              blendingAccuracy:(int)blendingAccuracy
-               interlaceMode:(int)interlaceMode
-        trilinearFiltering:(int)trilinearFiltering
-          halfPixelOffset:(int)halfPixelOffset
-              roundSprite:(int)roundSprite
-              alignSprite:(int)alignSprite
-              mergeSprite:(int)mergeSprite
-           wildArmsOffset:(int)wildArmsOffset
-    textureOffsetXOverride:(BOOL)textureOffsetXOverride
-           textureOffsetX:(int)textureOffsetX
-    textureOffsetYOverride:(BOOL)textureOffsetYOverride
-           textureOffsetY:(int)textureOffsetY
-     skipDrawStartOverride:(BOOL)skipDrawStartOverride
-            skipDrawStart:(int)skipDrawStart
-       skipDrawEndOverride:(BOOL)skipDrawEndOverride
-              skipDrawEnd:(int)skipDrawEnd
-         volumeOverride:(BOOL)volumeOverride
-           volumePercent:(int)volumePercent
-                    eeCoreType:(int)eeCoreType
-                          mtvu:(BOOL)mtvu
-           eeCycleRateOverride:(BOOL)eeCycleRateOverride
-                   eeCycleRate:(int)eeCycleRate
-               fastBootOverride:(BOOL)fastBootOverride
-                       fastBoot:(BOOL)fastBoot
-                  enableCheats:(BOOL)enableCheats
-                 enablePatches:(BOOL)enablePatches
-              enableGameFixes:(BOOL)enableGameFixes
-    enableGameDBHardwareFixes:(BOOL)enableGameDBHardwareFixes
-    NS_SWIFT_NAME(setGameSettings(forISO:enabled:upscaleMultiplier:aspectRatio:textureFiltering:hardwareMipmapping:blendingAccuracy:interlaceMode:trilinearFiltering:halfPixelOffset:roundSprite:alignSprite:mergeSprite:wildArmsOffset:textureOffsetXOverride:textureOffsetX:textureOffsetYOverride:textureOffsetY:skipDrawStartOverride:skipDrawStart:skipDrawEndOverride:skipDrawEnd:volumeOverride:volumePercent:eeCoreType:mtvu:eeCycleRateOverride:eeCycleRate:fastBootOverride:fastBoot:enableCheats:enablePatches:enableGameFixes:enableGameDBHardwareFixes:));
-+ (void)setGameSettingsForCurrentGameWithEnabled:(BOOL)enabled
-                               upscaleMultiplier:(float)upscaleMultiplier
-                                     aspectRatio:(nonnull NSString *)aspectRatio
-                                textureFiltering:(int)textureFiltering
-                              hardwareMipmapping:(int)hardwareMipmapping
-                                blendingAccuracy:(int)blendingAccuracy
-                                   interlaceMode:(int)interlaceMode
-                              trilinearFiltering:(int)trilinearFiltering
-                                 halfPixelOffset:(int)halfPixelOffset
-                                     roundSprite:(int)roundSprite
-                                     alignSprite:(int)alignSprite
-                                     mergeSprite:(int)mergeSprite
-                                  wildArmsOffset:(int)wildArmsOffset
-                           textureOffsetXOverride:(BOOL)textureOffsetXOverride
-                                  textureOffsetX:(int)textureOffsetX
-                           textureOffsetYOverride:(BOOL)textureOffsetYOverride
-                                  textureOffsetY:(int)textureOffsetY
-                            skipDrawStartOverride:(BOOL)skipDrawStartOverride
-                                   skipDrawStart:(int)skipDrawStart
-                              skipDrawEndOverride:(BOOL)skipDrawEndOverride
-                                     skipDrawEnd:(int)skipDrawEnd
-                                   volumeOverride:(BOOL)volumeOverride
-                                     volumePercent:(int)volumePercent
-                                      eeCoreType:(int)eeCoreType
-                                            mtvu:(BOOL)mtvu
-                             eeCycleRateOverride:(BOOL)eeCycleRateOverride
-                                     eeCycleRate:(int)eeCycleRate
-                                 fastBootOverride:(BOOL)fastBootOverride
-                                         fastBoot:(BOOL)fastBoot
-                                    enableCheats:(BOOL)enableCheats
-                                   enablePatches:(BOOL)enablePatches
-                                 enableGameFixes:(BOOL)enableGameFixes
-                      enableGameDBHardwareFixes:(BOOL)enableGameDBHardwareFixes
-    NS_SWIFT_NAME(setGameSettingsForCurrentGame(enabled:upscaleMultiplier:aspectRatio:textureFiltering:hardwareMipmapping:blendingAccuracy:interlaceMode:trilinearFiltering:halfPixelOffset:roundSprite:alignSprite:mergeSprite:wildArmsOffset:textureOffsetXOverride:textureOffsetX:textureOffsetYOverride:textureOffsetY:skipDrawStartOverride:skipDrawStart:skipDrawEndOverride:skipDrawEnd:volumeOverride:volumePercent:eeCoreType:mtvu:eeCycleRateOverride:eeCycleRate:fastBootOverride:fastBoot:enableCheats:enablePatches:enableGameFixes:enableGameDBHardwareFixes:));
++ (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
++ (void)setGameSettingsForCurrentGame:(nonnull NSDictionary<NSString *, id> *)settings;
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
 + (void)setLinkedDiscPath:(nullable NSString *)discPath forELF:(nonnull NSString *)elfName NS_SWIFT_NAME(setLinkedDiscPath(_:forELF:));
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(clearCache(forISO:));
@@ -292,17 +222,17 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Per-game INI access — reads/writes the per-game INI file
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
-// patch-enable-list helpers. "For current game" write/delete variants live-apply.
-+ (BOOL)hasPerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(hasPerGameINIValue(_:key:forISO:));
-+ (int)getPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIInt(_:key:defaultValue:forISO:));
-+ (BOOL)getPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIBool(_:key:defaultValue:forISO:));
-+ (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIFloat(_:key:defaultValue:forISO:));
-+ (nonnull NSString *)getPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(getPerGameINIString(_:key:defaultValue:forISO:));
-+ (void)setPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIInt(_:key:value:forISO:));
-+ (void)setPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIBool(_:key:value:forISO:));
-+ (void)setPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIFloat(_:key:value:forISO:));
-+ (void)setPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setPerGameINIString(_:key:value:forISO:));
-+ (void)deletePerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(deletePerGameINIValue(_:key:forISO:));
+// patch-enable-list helpers. Pass nil for isoName to target the running game (live-applies).
++ (BOOL)hasPerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName NS_SWIFT_NAME(hasPerGameINIValue(_:key:forISO:));
++ (int)getPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIInt(_:key:defaultValue:forISO:));
++ (BOOL)getPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIBool(_:key:defaultValue:forISO:));
++ (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIFloat(_:key:defaultValue:forISO:));
++ (nonnull NSString *)getPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIString(_:key:defaultValue:forISO:));
++ (void)setPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setPerGameINIInt(_:key:value:forISO:));
++ (void)setPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setPerGameINIBool(_:key:value:forISO:));
++ (void)setPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setPerGameINIFloat(_:key:value:forISO:));
++ (void)setPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setPerGameINIString(_:key:value:forISO:));
++ (void)deletePerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName NS_SWIFT_NAME(deletePerGameINIValue(_:key:forISO:));
 + (BOOL)hasPerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(hasPerGameINIValueForCurrentGame(_:key:));
 + (int)getPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def NS_SWIFT_NAME(getPerGameINIIntForCurrentGame(_:key:defaultValue:));
 + (BOOL)getPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def NS_SWIFT_NAME(getPerGameINIBoolForCurrentGame(_:key:defaultValue:));
@@ -316,9 +246,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Identity the accessors above key on, or "" when there isn't one. The current-game
 // variant only reads VM state; the ISO variant opens the disc image, so keep it
-// off render paths.
+// off render paths. Pass nil for isoName to target the running game.
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame;
-+ (nonnull NSString *)perGameIdentityKeyForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
++ (nonnull NSString *)perGameIdentityKeyForISO:(nullable NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
 
 // Runtime speed control
 + (int)limiterMode;
@@ -340,25 +270,25 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(saveState(toSlot:completion:));
 + (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(loadState(fromSlot:completion:));
 
-// PNACH cheats/patches
+// PNACH cheats/patches (pass nil for isoName to target the running game)
 + (nullable NSString *)pnachPathForCurrentGameAsCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPathForCurrentGame(asCheat:));
-+ (nullable NSString *)pnachPathForISO:(nonnull NSString *)isoName asCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPath(forISO:asCheat:));
++ (nullable NSString *)pnachPathForISO:(nullable NSString *)isoName asCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPath(forISO:asCheat:));
 + (void)reloadPatches;
 
 // Per-game patch/cheat enable lists (stored in the per-game INI under [Cheats]/Enable
 // and [Patches]/Enable, matching the PCSX2 patch loader). Used by the Cheats & Patches
-// manager to toggle named patch entries without rewriting .pnach files.
-+ (nonnull NSArray<NSString *> *)patchEnableListForISO:(nonnull NSString *)isoName
+// manager to toggle named patch entries without rewriting .pnach files. Pass nil for isoName to target the running game.
++ (nonnull NSArray<NSString *> *)patchEnableListForISO:(nullable NSString *)isoName
                                                section:(nonnull NSString *)section
-                                                  key:(nonnull NSString *)key
+                                                   key:(nonnull NSString *)key
         NS_SWIFT_NAME(patchEnableList(forISO:section:key:));
 + (nonnull NSArray<NSString *> *)patchEnableListForCurrentGameSection:(nonnull NSString *)section
                                                                   key:(nonnull NSString *)key
         NS_SWIFT_NAME(patchEnableListForCurrentGame(section:key:));
 + (void)setPatchEnableList:(nonnull NSArray<NSString *> *)values
-                   forISO:(nonnull NSString *)isoName
-                 section:(nonnull NSString *)section
-                    key:(nonnull NSString *)key
+                    forISO:(nullable NSString *)isoName
+                   section:(nonnull NSString *)section
+                       key:(nonnull NSString *)key
         NS_SWIFT_NAME(setPatchEnableList(_:forISO:section:key:));
 + (void)setPatchEnableListForCurrentGame:(nonnull NSArray<NSString *> *)values
                                  section:(nonnull NSString *)section

@@ -33,9 +33,16 @@ def once_blocks(text):
 
 
 class OnceCachedGlobals(unittest.TestCase):
+    def test_the_once_blocks_were_actually_found(self):
+        """The check below passes on an empty list, so count the blocks first."""
+        self.assertGreater(len(list(once_blocks(BRIDGE.read_text()))), 3)
+
     def test_bridge_is_still_mrc(self):
         """The once-block check below assumes the target is built without ARC."""
         cmake = (CPP / "CMakeLists.txt").read_text()
+        # The two assertNotIn below also pass when the bridge is no longer
+        # compiled at all, so check that it is still in the build.
+        self.assertIn("ARMSX2Bridge.mm", cmake)
         self.assertNotIn("fobjc-arc", cmake)
         self.assertNotIn("OBJC_ARC", cmake)
 

@@ -150,33 +150,27 @@ struct PadTab: View {
     // variants resolve their identity from the running VM and silently no-op without
     // one, so the library path has to address the per-game INI by ISO instead.
 
+    private var targetISO: String? { savesToRunningGame ? nil : iso }
+
     private func hasInversionOverride(_ key: String) -> Bool {
-        savesToRunningGame
-            ? ARMSX2Bridge.hasPerGameINIValueForCurrentGame(inversionSection, key: key)
-            : ARMSX2Bridge.hasPerGameINIValue(inversionSection, key: key, forISO: iso)
+        ARMSX2Bridge.hasPerGameINIValue(inversionSection, key: key, forISO: targetISO)
     }
 
     private func inversionOverride(_ key: String) -> Bool {
-        savesToRunningGame
-            ? ARMSX2Bridge.getPerGameINIBoolForCurrentGame(inversionSection, key: key, defaultValue: false)
-            : ARMSX2Bridge.getPerGameINIBool(inversionSection, key: key, defaultValue: false, forISO: iso)
+        ARMSX2Bridge.getPerGameINIBool(inversionSection, key: key, defaultValue: false, forISO: targetISO)
     }
 
     private func setInversionOverride(_ key: String, _ value: Bool) {
+        ARMSX2Bridge.setPerGameINIBool(inversionSection, key: key, value: value, forISO: targetISO)
         if savesToRunningGame {
-            ARMSX2Bridge.setPerGameINIBoolForCurrentGame(inversionSection, key: key, value: value)
             SettingsStore.shared.reloadStickInversionOverrides()
-        } else {
-            ARMSX2Bridge.setPerGameINIBool(inversionSection, key: key, value: value, forISO: iso)
         }
     }
 
     private func clearInversionOverride(_ key: String) {
+        ARMSX2Bridge.deletePerGameINIValue(inversionSection, key: key, forISO: targetISO)
         if savesToRunningGame {
-            ARMSX2Bridge.deletePerGameINIValueForCurrentGame(inversionSection, key: key)
             SettingsStore.shared.reloadStickInversionOverrides()
-        } else {
-            ARMSX2Bridge.deletePerGameINIValue(inversionSection, key: key, forISO: iso)
         }
     }
 

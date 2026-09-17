@@ -912,14 +912,15 @@ struct PerGameSettingsPanel: View {
     // `useCurrent` selects the VM-safe current-game variant (which live-applies);
     // otherwise the ISO variant writes the per-game file without applying.
 
+    private static func targetISO(useCurrent: Bool, iso: String) -> String? {
+        useCurrent ? nil : iso
+    }
+
     /// Reads a per-game int override; returns -1 ("use global") when no per-game key is set.
     private static func loadedPerGameInt(_ section: String, _ key: String, globalDefault: Int32, useCurrent: Bool, iso: String) -> Int {
-        if useCurrent {
-            guard ARMSX2Bridge.hasPerGameINIValueForCurrentGame(section, key: key) else { return -1 }
-            return Int(ARMSX2Bridge.getPerGameINIIntForCurrentGame(section, key: key, defaultValue: globalDefault))
-        }
-        guard ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: iso) else { return -1 }
-        return Int(ARMSX2Bridge.getPerGameINIInt(section, key: key, defaultValue: globalDefault, forISO: iso))
+        let target = targetISO(useCurrent: useCurrent, iso: iso)
+        guard ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: target) else { return -1 }
+        return Int(ARMSX2Bridge.getPerGameINIInt(section, key: key, defaultValue: globalDefault, forISO: target))
     }
 
     /// Pin a loaded value to what its control can show. The sentinel is not a value, so it is
@@ -930,57 +931,32 @@ struct PerGameSettingsPanel: View {
 
     /// Reads a per-game bool override; returns -1 ("use global"), 0 (off), or 1 (on).
     private static func loadedPerGameBool(_ section: String, _ key: String, useCurrent: Bool, iso: String) -> Int {
-        if useCurrent {
-            guard ARMSX2Bridge.hasPerGameINIValueForCurrentGame(section, key: key) else { return -1 }
-            return ARMSX2Bridge.getPerGameINIBoolForCurrentGame(section, key: key, defaultValue: false) ? 1 : 0
-        }
-        guard ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: iso) else { return -1 }
-        return ARMSX2Bridge.getPerGameINIBool(section, key: key, defaultValue: false, forISO: iso) ? 1 : 0
+        let target = targetISO(useCurrent: useCurrent, iso: iso)
+        guard ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: target) else { return -1 }
+        return ARMSX2Bridge.getPerGameINIBool(section, key: key, defaultValue: false, forISO: target) ? 1 : 0
     }
 
     private static func setPerGameBoolValue(_ section: String, _ key: String, _ value: Bool, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.setPerGameINIBoolForCurrentGame(section, key: key, value: value)
-        } else {
-            ARMSX2Bridge.setPerGameINIBool(section, key: key, value: value, forISO: iso)
-        }
+        ARMSX2Bridge.setPerGameINIBool(section, key: key, value: value, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func setPerGameIntValue(_ section: String, _ key: String, _ value: Int, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.setPerGameINIIntForCurrentGame(section, key: key, value: Int32(value))
-        } else {
-            ARMSX2Bridge.setPerGameINIInt(section, key: key, value: Int32(value), forISO: iso)
-        }
+        ARMSX2Bridge.setPerGameINIInt(section, key: key, value: Int32(value), forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func setPerGameFloatValue(_ section: String, _ key: String, _ value: Float, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.setPerGameINIFloatForCurrentGame(section, key: key, value: value)
-        } else {
-            ARMSX2Bridge.setPerGameINIFloat(section, key: key, value: value, forISO: iso)
-        }
+        ARMSX2Bridge.setPerGameINIFloat(section, key: key, value: value, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     /// Reads independent per-game limiter and presentation-cadence overrides.
     /// Legacy files are interpreted correctly until the native runtime or Save
     /// migrates their encoded target into the dedicated cadence key.
     private static func loadedPerGameFrameLimiter(useCurrent: Bool, iso: String) -> (limiter: Int, fps: Float) {
-        let scalarPresent: Bool
-        let scalar: Float
-        let targetPresent: Bool
-        let storedTarget: Float
-        if useCurrent {
-            scalarPresent = ARMSX2Bridge.hasPerGameINIValueForCurrentGame("Framerate", key: "NominalScalar")
-            scalar = scalarPresent ? ARMSX2Bridge.getPerGameINIFloatForCurrentGame("Framerate", key: "NominalScalar", defaultValue: 1.0) : 1.0
-            targetPresent = ARMSX2Bridge.hasPerGameINIValueForCurrentGame("ARMSX2iOS/FramePacing", key: "TargetFPS")
-            storedTarget = targetPresent ? ARMSX2Bridge.getPerGameINIFloatForCurrentGame("ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: SettingsStore.defaultTargetFPS) : SettingsStore.defaultTargetFPS
-        } else {
-            scalarPresent = ARMSX2Bridge.hasPerGameINIValue("Framerate", key: "NominalScalar", forISO: iso)
-            scalar = scalarPresent ? ARMSX2Bridge.getPerGameINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0, forISO: iso) : 1.0
-            targetPresent = ARMSX2Bridge.hasPerGameINIValue("ARMSX2iOS/FramePacing", key: "TargetFPS", forISO: iso)
-            storedTarget = targetPresent ? ARMSX2Bridge.getPerGameINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: SettingsStore.defaultTargetFPS, forISO: iso) : SettingsStore.defaultTargetFPS
-        }
+        let target = targetISO(useCurrent: useCurrent, iso: iso)
+        let scalarPresent = ARMSX2Bridge.hasPerGameINIValue("Framerate", key: "NominalScalar", forISO: target)
+        let scalar = scalarPresent ? ARMSX2Bridge.getPerGameINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0, forISO: target) : 1.0
+        let targetPresent = ARMSX2Bridge.hasPerGameINIValue("ARMSX2iOS/FramePacing", key: "TargetFPS", forISO: target)
+        let storedTarget = targetPresent ? ARMSX2Bridge.getPerGameINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: SettingsStore.defaultTargetFPS, forISO: target) : SettingsStore.defaultTargetFPS
 
         let limiter = scalarPresent ? (SettingsStore.frameLimiterEnabled(fromNominalScalar: scalar) ? 1 : 0) : -1
         if targetPresent {
@@ -1022,11 +998,7 @@ struct PerGameSettingsPanel: View {
     }
 
     private static func clearPerGameValue(_ section: String, _ key: String, useCurrent: Bool, iso: String) {
-        if useCurrent {
-            ARMSX2Bridge.deletePerGameINIValueForCurrentGame(section, key: key)
-        } else {
-            ARMSX2Bridge.deletePerGameINIValue(section, key: key, forISO: iso)
-        }
+        ARMSX2Bridge.deletePerGameINIValue(section, key: key, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }
 
     private static func loadedPerGameEEClamp(useCurrent: Bool, iso: String) -> Int {
@@ -1086,80 +1058,42 @@ struct PerGameSettingsPanel: View {
             skipDrawEnd = normalizedSkipDraw.end
         }
 
-        if savesToRunningGame {
-            ARMSX2Bridge.setGameSettingsForCurrentGame(
-                enabled: enabled,
-                upscaleMultiplier: upscaleMultiplier,
-                aspectRatio: aspectRatio,
-                textureFiltering: Int32(textureFiltering),
-                hardwareMipmapping: Int32(hardwareMipmapping),
-                blendingAccuracy: Int32(blendingAccuracy),
-                interlaceMode: Int32(interlaceMode),
-                trilinearFiltering: Int32(trilinearFiltering),
-                halfPixelOffset: Int32(halfPixelOffset),
-                roundSprite: Int32(roundSprite),
-                alignSprite: Int32(alignSprite),
-                mergeSprite: Int32(mergeSprite),
-                wildArmsOffset: Int32(wildArmsOffset),
-                textureOffsetXOverride: textureOffsetXOverride,
-                textureOffsetX: Int32(textureOffsetX),
-                textureOffsetYOverride: textureOffsetYOverride,
-                textureOffsetY: Int32(textureOffsetY),
-                skipDrawStartOverride: skipDrawStartOverride,
-                skipDrawStart: Int32(normalizedSkipDraw.start),
-                skipDrawEndOverride: skipDrawEndOverride,
-                skipDrawEnd: Int32(normalizedSkipDraw.end),
-                volumeOverride: enabled && volumeOverride,
-                volumePercent: Int32(volumePercent),
-                eeCoreType: enabled ? Int32(eeCoreType) : 0,
-                mtvu: enabled && mtvu,
-                eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
-                eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
-                fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
-                fastBoot: fastBoot == Self.fastBootOn,
-                enableCheats: enabled && enableCheats,
-                enablePatches: enabled && enablePatches,
-                enableGameFixes: enabled && enableGameFixes,
-                enableGameDBHardwareFixes: enabled && enableGameDBHardwareFixes
-            )
-        } else {
-            ARMSX2Bridge.setGameSettings(
-                forISO: game.bootName,
-                enabled: enabled,
-                upscaleMultiplier: upscaleMultiplier,
-                aspectRatio: aspectRatio,
-                textureFiltering: Int32(textureFiltering),
-                hardwareMipmapping: Int32(hardwareMipmapping),
-                blendingAccuracy: Int32(blendingAccuracy),
-                interlaceMode: Int32(interlaceMode),
-                trilinearFiltering: Int32(trilinearFiltering),
-                halfPixelOffset: Int32(halfPixelOffset),
-                roundSprite: Int32(roundSprite),
-                alignSprite: Int32(alignSprite),
-                mergeSprite: Int32(mergeSprite),
-                wildArmsOffset: Int32(wildArmsOffset),
-                textureOffsetXOverride: textureOffsetXOverride,
-                textureOffsetX: Int32(textureOffsetX),
-                textureOffsetYOverride: textureOffsetYOverride,
-                textureOffsetY: Int32(textureOffsetY),
-                skipDrawStartOverride: skipDrawStartOverride,
-                skipDrawStart: Int32(normalizedSkipDraw.start),
-                skipDrawEndOverride: skipDrawEndOverride,
-                skipDrawEnd: Int32(normalizedSkipDraw.end),
-                volumeOverride: enabled && volumeOverride,
-                volumePercent: Int32(volumePercent),
-                eeCoreType: enabled ? Int32(eeCoreType) : 0,
-                mtvu: enabled && mtvu,
-                eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
-                eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
-                fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
-                fastBoot: fastBoot == Self.fastBootOn,
-                enableCheats: enabled && enableCheats,
-                enablePatches: enabled && enablePatches,
-                enableGameFixes: enabled && enableGameFixes,
-                enableGameDBHardwareFixes: enabled && enableGameDBHardwareFixes
-            )
-        }
+        let settingsDict: [String: Any] = [
+            "enabled": enabled,
+            "upscaleMultiplier": upscaleMultiplier,
+            "aspectRatio": aspectRatio,
+            "textureFiltering": Int32(textureFiltering),
+            "hardwareMipmapping": Int32(hardwareMipmapping),
+            "blendingAccuracy": Int32(blendingAccuracy),
+            "interlaceMode": Int32(interlaceMode),
+            "trilinearFiltering": Int32(trilinearFiltering),
+            "halfPixelOffset": Int32(halfPixelOffset),
+            "roundSprite": Int32(roundSprite),
+            "alignSprite": Int32(alignSprite),
+            "mergeSprite": Int32(mergeSprite),
+            "wildArmsOffset": Int32(wildArmsOffset),
+            "hasTextureOffsetXOverride": textureOffsetXOverride,
+            "textureOffsetX": Int32(textureOffsetX),
+            "hasTextureOffsetYOverride": textureOffsetYOverride,
+            "textureOffsetY": Int32(textureOffsetY),
+            "hasSkipDrawStartOverride": skipDrawStartOverride,
+            "skipDrawStart": Int32(normalizedSkipDraw.start),
+            "hasSkipDrawEndOverride": skipDrawEndOverride,
+            "skipDrawEnd": Int32(normalizedSkipDraw.end),
+            "hasVolumeOverride": enabled && volumeOverride,
+            "volumePercent": Int32(volumePercent),
+            "eeCoreType": enabled ? Int32(eeCoreType) : 0,
+            "mtvu": enabled && mtvu,
+            "hasEECycleRateOverride": enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
+            "eeCycleRate": Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
+            "hasFastBootOverride": enabled && fastBoot != Self.fastBootUseGlobalSentinel,
+            "fastBoot": fastBoot == Self.fastBootOn,
+            "enableCheats": enabled && enableCheats,
+            "enablePatches": enabled && enablePatches,
+            "enableGameFixes": enabled && enableGameFixes,
+            "enableGameDBHardwareFixes": enabled && enableGameDBHardwareFixes
+        ]
+        ARMSX2Bridge.setGameSettings(settingsDict, forISO: savesToRunningGame ? nil : game.bootName)
         savePerGameCompatibility()
         statusMessage = postSaveMessage
         savedFingerprint = perGameFingerprint()
