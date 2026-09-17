@@ -60,6 +60,7 @@ final class AppState: @unchecked Sendable {
     var bootDisclaimerMessage: String?
     var pendingJITGameBoot: PendingJITGameBoot?
     var pendingRestartGame: String?
+    var pendingLibraryExport: String?
     var gameplayLaunchTransition: GameplayLaunchTransition?
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
