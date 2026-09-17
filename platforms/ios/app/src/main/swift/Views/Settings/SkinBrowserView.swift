@@ -33,13 +33,10 @@ struct SkinBrowserView: View {
     var body: some View {
         List {
             if let updated = catalog.lastUpdated {
-                HStack(spacing: 4) {
-                    Text(settings.localized("Updated"))
-                    Text(updated, style: .relative)
-                    Text(settings.localized("ago"))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(String(format: settings.localized("Last updated %@"),
+                            updated.formatted(.relative(presentation: .named).locale(Locale(identifier: settings.language.bcp47Code)))))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if catalog.isLoading {
