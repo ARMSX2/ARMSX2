@@ -15,7 +15,7 @@ struct CheatsPatchesManagerView: View {
     let gameTitle: String
     let launchContext: CheatsPatchesLaunchContext
 
-    @ObservedObject private var settings = SettingsStore.shared
+    @State private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
     @State private var showImportPicker = false
     @State private var importAsCheat = false
