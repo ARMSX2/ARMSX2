@@ -9,6 +9,8 @@
 # libraries, so before_script reuses
 # .github/workflows/scripts/linux/build-dependencies-runner.sh to build the
 # same dependency set the GitHub nightly uses (shaderc, SDL3, zstd, lz4, ...).
+# The Linux job asks that script for a STATIC set: what ships from here is one
+# .so and nothing beside it, so every self-built library has to be inside it.
 
 ##############################################################################
 ################################# BOILERPLATE ################################
@@ -83,7 +85,9 @@
         ln -sf "/usr/bin/ld.lld-$v" /usr/bin/ld.lld
       fi
       clang++ --version
-    - ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
+    # Static: the core is shipped as a lone .so, so a self-built shared library
+    # is one the user's machine has no copy of. It loaded here and nowhere else.
+    - ARMSX2_DEPS_STATIC=1 ./.github/workflows/scripts/linux/build-dependencies-runner.sh "$CI_PROJECT_DIR/.deps"
 
 # macOS has no buildbot image to apt-install from: the runner is a shared Mac
 # with whatever Xcode it happens to carry and none of the pinned dependencies,
