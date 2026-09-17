@@ -1112,7 +1112,7 @@ struct GameScreenView: View {
     }
 
     private func gameNameMatchingRuntimeIdentity() -> String? {
-        let identity = normalizedRuntimeIdentity(ARMSX2Bridge.compatibilityIdentityForCurrentGame())
+        let identity = normalizedRuntimeIdentity(ARMSX2Bridge.currentDiscIdentity())
         guard !identity.isEmpty else {
             return nil
         }

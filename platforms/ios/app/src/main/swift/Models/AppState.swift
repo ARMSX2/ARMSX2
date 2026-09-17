@@ -289,7 +289,7 @@ final class AppState: @unchecked Sendable {
                 launchTransition: launchTransition
             )
         }
-        ARMSX2Bridge.requestVMShutdown()
+        ARMSX2Bridge.requestVMStop()
     }
 
     func shutdownAndBootBIOS() {
@@ -297,7 +297,7 @@ final class AppState: @unchecked Sendable {
         pendingBootAction = { [weak self] in
             self?.bootBIOSOnly()
         }
-        ARMSX2Bridge.requestVMShutdown()
+        ARMSX2Bridge.requestVMStop()
     }
 
     func resetCurrentVM() {

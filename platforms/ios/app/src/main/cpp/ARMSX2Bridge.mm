@@ -179,17 +179,6 @@ static void ARMSX2ClearPendingRetroAchievementsNotification()
 #endif
 }
 
-static NSString* const ARMSX2CompatibilityProfileOff = @"off";
-static NSString* const ARMSX2CompatibilityProfileCOP1 = @"cop1";
-static NSString* const ARMSX2CompatibilityProfileLoadStore = @"loadstore";
-static NSString* const ARMSX2CompatibilityProfileMMI = @"mmi";
-static NSString* const ARMSX2CompatibilityProfileCOP2VU = @"cop2vu";
-static NSString* const ARMSX2CompatibilityProfileMultDiv = @"multdiv";
-static NSString* const ARMSX2CompatibilityProfileShifts = @"shifts";
-static NSString* const ARMSX2CompatibilityProfileMoves = @"moves";
-static NSString* const ARMSX2CompatibilityProfileIntegerALU = @"integeralu";
-static NSString* const ARMSX2CompatibilityProfileBranches = @"branches";
-static NSString* const ARMSX2CompatibilityProfileCustom = @"custom";
 static constexpr int ARMSX2UseGlobalIntSentinel = -1;
 // "Use global" markers. Out of band for their ranges: upscale is positive, the int keys start
 // at 0, AspectRatio uses an empty string.
@@ -200,6 +189,129 @@ static constexpr int ARMSX2DefaultAudioVolumePercent = 100;
 static int ARMSX2ClampInt(int value, int minValue, int maxValue)
 {
     return std::min(std::max(value, minValue), maxValue);
+}
+
+static NSString* ARMSX2NSStringFromStdString(const std::string& value);
+
+static NSString* ARMSX2RegionFallbackForSerial(const std::string& serial)
+{
+    std::string normalized;
+    normalized.reserve(serial.size());
+    for (const char ch : serial)
+    {
+        if (ch != '-' && ch != '_' && ch != ' ')
+            normalized.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+    }
+
+    auto startsWith = [&normalized](const char* prefix) {
+        return normalized.rfind(prefix, 0) == 0;
+    };
+
+    if (startsWith("SLUS") || startsWith("SCUS") || startsWith("PBPX"))
+        return @"NTSC-U";
+    if (startsWith("SLES") || startsWith("SCES") || startsWith("SLED") || startsWith("SCED"))
+        return @"PAL";
+    if (startsWith("SLPS") || startsWith("SLPM") || startsWith("SCPS") || startsWith("PCPX") || startsWith("SCAJ"))
+        return @"NTSC-J";
+    if (startsWith("SLKA") || startsWith("SCKA"))
+        return @"NTSC-K";
+    if (startsWith("SCCS"))
+        return @"NTSC-C";
+    if (startsWith("SLAJ"))
+        return @"NTSC-HK";
+
+    return nil;
+}
+
+static NSString* ARMSX2BIOSDisplayRegionForZone(NSString* zone)
+{
+    if ([zone isEqualToString:@"USA"])
+        return @"North America";
+    if ([zone length] > 0)
+        return zone;
+    return @"Unknown Region";
+}
+
+static NSString* ARMSX2BIOSCountryCodeForZone(NSString* zone)
+{
+    if ([zone isEqualToString:@"Japan"])
+        return @"JP";
+    if ([zone isEqualToString:@"USA"])
+        return @"US";
+    if ([zone isEqualToString:@"Europe"])
+        return @"EU";
+    if ([zone isEqualToString:@"Asia"])
+        return @"HK";
+    if ([zone isEqualToString:@"China"])
+        return @"CN";
+    return @"";
+}
+
+static ARMSX2BIOSInfo* ARMSX2MakeBIOSInfo(NSString* fileName, NSString* directory)
+{
+    ARMSX2BIOSInfo* info = [ARMSX2BIOSInfo new];
+    info.fileName = fileName ?: @"";
+    info.filePath = directory ? [directory stringByAppendingPathComponent:fileName ?: @""] : @"";
+    info.regionName = @"Unknown Region";
+    info.countryCode = @"";
+    info.descriptionText = @"Region unavailable";
+    info.regionCode = -1;
+    info.valid = NO;
+
+    u32 version = 0;
+    u32 region = 0;
+    std::string description;
+    std::string zone;
+    if (IsBIOS(info.filePath.UTF8String, version, description, region, zone)) {
+        NSString* zoneString = ARMSX2NSStringFromStdString(zone);
+        info.valid = YES;
+        info.regionCode = static_cast<NSInteger>(region);
+        info.regionName = ARMSX2BIOSDisplayRegionForZone(zoneString);
+        info.countryCode = ARMSX2BIOSCountryCodeForZone(zoneString);
+        info.descriptionText = ARMSX2NSStringFromStdString(description);
+    }
+
+    return info;
+}
+
+static int* ARMSX2JITBisectFlagPtr(NSString* key)
+{
+    if ([key isEqualToString:@"COP1EverythingOnly"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_ONLY;
+    if ([key isEqualToString:@"COP1EverythingPlusLoadStore"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_LOADSTORE;
+    if ([key isEqualToString:@"COP1EverythingPlusMMI"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_MMI;
+    if ([key isEqualToString:@"COP1EverythingPlusCOP2VU"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_COP2_VU;
+    if ([key isEqualToString:@"COP1EverythingPlusMultDiv"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_MULTDIV;
+    if ([key isEqualToString:@"COP1EverythingPlusShifts"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_SHIFTS;
+    if ([key isEqualToString:@"COP1EverythingPlusMoves"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_MOVES;
+    if ([key isEqualToString:@"COP1EverythingPlusIntegerALU"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_INTEGER_ALU;
+    if ([key isEqualToString:@"COP1EverythingPlusBranches"]) return &DarwinMisc::iPSX2_BISECT_COP1_EVERYTHING_PLUS_BRANCHES;
+    return nullptr;
+}
+
+static void ARMSX2ApplyJITBisectFlag(NSString* key, BOOL enabled)
+{
+    if (int* flag = ARMSX2JITBisectFlagPtr(key))
+        *flag = enabled ? 1 : 0;
+}
+
+static NSArray<NSString*>* ARMSX2JITBisectFlagKeys()
+{
+    static NSArray<NSString*>* keys;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = [[NSArray alloc] initWithObjects:
+            @"COP1EverythingOnly",
+            @"COP1EverythingPlusLoadStore",
+            @"COP1EverythingPlusMMI",
+            @"COP1EverythingPlusCOP2VU",
+            @"COP1EverythingPlusMultDiv",
+            @"COP1EverythingPlusShifts",
+            @"COP1EverythingPlusMoves",
+            @"COP1EverythingPlusIntegerALU",
+            @"COP1EverythingPlusBranches",
+            nil];
+    });
+    return keys;
 }
 
 static NSString* ARMSX2NSStringFromStdString(const std::string& value);
@@ -1068,129 +1180,6 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
         }
     }
     return removed;
-}
-
-static NSString* ARMSX2CompatibilityIdentityForISOName(NSString* isoName, GameList::Entry* entryOut = nullptr)
-{
-    GameList::Entry entry;
-    NSString* resolvedPath = nil;
-    if (!ARMSX2PopulateGameListEntryForISO(isoName, &entry, &resolvedPath) || entry.crc == 0)
-        return @"";
-
-    if (entryOut)
-        *entryOut = entry;
-
-    return ARMSX2CompatibilityIdentityKey(ARMSX2NSStringFromStdString(entry.serial), entry.crc);
-}
-
-static NSString* ARMSX2CompatibilityIdentityKey(NSString* serial, u32 crc)
-{
-    NSString* normalizedSerial = [[serial ?: @"" stringByReplacingOccurrencesOfString:@"_" withString:@"-"] uppercaseString];
-    normalizedSerial = [normalizedSerial stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (normalizedSerial.length > 0)
-        return normalizedSerial;
-
-    if (crc != 0)
-        return [NSString stringWithFormat:@"CRC-%08X", crc];
-
-    return @"";
-}
-
-static NSString* ARMSX2CurrentCompatibilityIdentityKey()
-{
-    if (!VMManager::HasValidVM())
-        return @"";
-
-    return ARMSX2CompatibilityIdentityKey(ARMSX2NSStringFromStdString(VMManager::GetDiscSerial()), VMManager::GetDiscCRC());
-}
-
-static NSString* ARMSX2CompatibilityBuiltInPreset(NSString* title, NSString* serial)
-{
-    return ARMSX2CompatibilityProfileOff;
-}
-
-static NSString* ARMSX2SavedCompatibilityPreset(NSString* identity)
-{
-    if (!g_p44_settings_interface || identity.length == 0)
-        return @"";
-
-    std::string value = g_p44_settings_interface->GetStringValue("ARMSX2/JITBisectGamePresets", identity.UTF8String, "");
-    if (value.empty())
-        return @"";
-
-    return ARMSX2NormalizeCompatibilityProfile(ARMSX2NSStringFromStdString(value));
-}
-
-static NSString* ARMSX2ResolvedCompatibilityPreset(NSString* identity, NSString* title)
-{
-    if (!g_p44_settings_interface)
-        return ARMSX2CompatibilityProfileOff;
-
-    const bool autoPresets = g_p44_settings_interface->GetBoolValue("ARMSX2/JITBisect", "AutoGamePresets", true);
-    if (!autoPresets)
-        return ARMSX2CurrentCompatibilityProfileFromSettings();
-
-    NSString* saved = ARMSX2SavedCompatibilityPreset(identity);
-    if (saved.length > 0)
-        return saved;
-
-    NSString* builtIn = ARMSX2CompatibilityBuiltInPreset(title, identity);
-    if (builtIn.length > 0)
-        return builtIn;
-
-    return ARMSX2CompatibilityProfileOff;
-}
-
-static void ARMSX2ApplyCompatibilityPresetForISOName(NSString* isoName)
-{
-    NSString* identity = @"";
-    NSString* title = isoName.stringByDeletingPathExtension ?: isoName;
-    NSString* path = ARMSX2ResolveISOPath(isoName);
-
-    if (path.length > 0) {
-        GameList::Entry entry;
-        if (GameList::PopulateEntryFromPath(path.UTF8String, &entry)) {
-            identity = ARMSX2CompatibilityIdentityKey(ARMSX2NSStringFromStdString(entry.serial), entry.crc);
-            title = ARMSX2NSStringFromStdString(entry.GetTitle(false));
-            if (title.length == 0)
-                title = isoName.stringByDeletingPathExtension ?: isoName;
-        }
-    }
-
-    const bool autoPresets = g_p44_settings_interface ?
-        g_p44_settings_interface->GetBoolValue("ARMSX2/JITBisect", "AutoGamePresets", true) : false;
-    NSString* saved = ARMSX2SavedCompatibilityPreset(identity);
-    NSString* builtIn = ARMSX2CompatibilityBuiltInPreset(title, identity);
-    NSString* profile = ARMSX2ResolvedCompatibilityPreset(identity, title);
-    std::fprintf(stderr,
-        "@@IOS_JIT_PRESET_RESOLVE@@ iso=\"%s\" path=\"%s\" identity=\"%s\" title=\"%s\" auto=%d saved=\"%s\" builtin=\"%s\" profile=\"%s\"\n",
-        isoName ? isoName.UTF8String : "", path ? path.UTF8String : "", identity ? identity.UTF8String : "",
-        title ? title.UTF8String : "", autoPresets ? 1 : 0, saved ? saved.UTF8String : "",
-        builtIn ? builtIn.UTF8String : "", profile ? profile.UTF8String : "");
-    std::fflush(stderr);
-    if ([profile isEqualToString:ARMSX2CompatibilityProfileCustom]) {
-        if (ARMSX2LoadCompatibilityCustomFlagsForIdentity(identity)) {
-            NSLog(@"[ARMSX2Bridge] Compatibility preset=custom identity=%@ reason=boot %@", identity ?: @"", title ?: @"");
-            std::fprintf(stderr,
-                "@@IOS_JIT_PROFILE_APPLY@@ profile=custom reason=\"boot %s %s\" persisted=1 flags_preserved=0 loaded_custom=1\n",
-                identity ? identity.UTF8String : "", title ? title.UTF8String : "");
-            std::fflush(stderr);
-            return;
-        }
-
-        if (builtIn.length > 0) {
-            g_p44_settings_interface->DeleteValue("ARMSX2/JITBisectGamePresets", identity.UTF8String);
-            ARMSX2ClearCompatibilityCustomFlagsForIdentity(identity);
-            profile = builtIn;
-            std::fprintf(stderr,
-                "@@IOS_JIT_PROFILE_STALE_CUSTOM_IGNORED@@ identity=\"%s\" title=\"%s\" fallback=\"%s\"\n",
-                identity ? identity.UTF8String : "", title ? title.UTF8String : "", profile.UTF8String);
-            std::fflush(stderr);
-        } else {
-            profile = ARMSX2CompatibilityProfileOff;
-        }
-    }
-    ARMSX2ApplyCompatibilityProfile(profile, YES, [NSString stringWithFormat:@"boot %@ %@", identity ?: @"", title ?: @""]);
 }
 
 static NSString* ARMSX2SanitizedMemoryCardName(NSString* name)
@@ -4064,7 +4053,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 	g_p44_settings_interface->SetBoolValue("GameISO", "FastBoot", fastBoot);
 	g_p44_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
 	g_p44_settings_interface->Save();
-	ARMSX2ApplyCompatibilityPresetForISOName(bootValue);
 	std::fprintf(stderr, "@@BOOT_FASTBOOT_SET@@ value=%d source=settings\n", fastBoot ? 1 : 0);
 	std::fflush(stderr);
 	NSLog(@"bootISO: set BootISO=%@ resolved=%@", bootValue, resolvedPath ?: @"");
@@ -4907,187 +4895,18 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
         ARMSX2SetPresentFPSCapValue(fps);
 }
 
-#pragma mark - Compatibility Lab
-
-+ (BOOL)getJITBisectFlag:(nonnull NSString *)key defaultValue:(BOOL)def
-{
-    BOOL value = def;
-    if (g_p44_settings_interface)
-        value = g_p44_settings_interface->GetBoolValue("ARMSX2/JITBisect", key.UTF8String, def);
-
-    ARMSX2ApplyJITBisectFlag(key, value);
-    return value;
-}
-
-+ (void)setJITBisectFlag:(nonnull NSString *)key value:(BOOL)value
-{
-    ARMSX2ApplyJITBisectFlag(key, value);
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetBoolValue("ARMSX2/JITBisect", key.UTF8String, value);
-        g_p44_settings_interface->SetStringValue("ARMSX2/JITBisect", "Profile", ARMSX2CompatibilityProfileCustom.UTF8String);
-        g_p44_settings_interface->Save();
++ (nonnull NSString *)currentDiscIdentity {
+    if (!VMManager::HasValidVM())
+        return @"";
+    const std::string serial = VMManager::GetDiscSerial();
+    if (!serial.empty()) {
+        NSString* s = [NSString stringWithUTF8String:serial.c_str()];
+        return [[s stringByReplacingOccurrencesOfString:@"_" withString:@"-"] uppercaseString];
     }
-    NSString* identity = ARMSX2CurrentCompatibilityIdentityKey();
-    if (identity.length > 0)
-        ARMSX2SaveCompatibilityCustomFlagsForIdentity(identity);
-    NSLog(@"[ARMSX2Bridge] Compatibility Lab %@ %@", key, value ? @"ON" : @"OFF");
-}
-
-+ (nonnull NSString *)compatibilityPresetForCurrentGame
-{
-    return ARMSX2CurrentCompatibilityProfileFromSettings();
-}
-
-+ (nonnull NSString *)compatibilityIdentityForCurrentGame
-{
-    return ARMSX2CurrentCompatibilityIdentityKey();
-}
-
-+ (nonnull NSString *)compatibilityPresetForISO:(nonnull NSString *)isoName
-{
-    GameList::Entry entry;
-    NSString* identity = ARMSX2CompatibilityIdentityForISOName(isoName, &entry);
-    if (identity.length == 0)
-        return ARMSX2CompatibilityProfileOff;
-
-    NSString* title = ARMSX2NSStringFromStdString(entry.GetTitle(false));
-    if (title.length == 0)
-        title = isoName.stringByDeletingPathExtension ?: isoName;
-
-    return ARMSX2ResolvedCompatibilityPreset(identity, title);
-}
-
-+ (nonnull NSString *)compatibilityIdentityForISO:(nonnull NSString *)isoName
-{
-    return ARMSX2CompatibilityIdentityForISOName(isoName);
-}
-
-+ (BOOL)isCompatibilityAutoGamePresetsEnabled
-{
-    if (!g_p44_settings_interface)
-        return YES;
-    return g_p44_settings_interface->GetBoolValue("ARMSX2/JITBisect", "AutoGamePresets", true) ? YES : NO;
-}
-
-+ (void)setCompatibilityAutoGamePresetsEnabled:(BOOL)enabled
-{
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetBoolValue("ARMSX2/JITBisect", "AutoGamePresets", enabled ? true : false);
-        g_p44_settings_interface->Save();
-    }
-    NSLog(@"[ARMSX2Bridge] Compatibility auto game presets %@", enabled ? @"ON" : @"OFF");
-}
-
-+ (void)setCompatibilityPreset:(nonnull NSString *)preset forISO:(nonnull NSString *)isoName
-{
-    if (!g_p44_settings_interface)
-        return;
-
-    NSString* normalized = ARMSX2NormalizeCompatibilityProfile(preset);
-    NSString* identity = ARMSX2CompatibilityIdentityForISOName(isoName);
-    if (identity.length == 0) {
-        NSLog(@"[ARMSX2Bridge] Compatibility preset save rejected iso=%@", isoName);
-        return;
-    }
-
-    g_p44_settings_interface->SetStringValue("ARMSX2/JITBisectGamePresets", identity.UTF8String, normalized.UTF8String);
-    if (![normalized isEqualToString:ARMSX2CompatibilityProfileCustom])
-        ARMSX2ClearCompatibilityCustomFlagsForIdentity(identity);
-    g_p44_settings_interface->Save();
-    NSLog(@"[ARMSX2Bridge] Compatibility saved preset=%@ identity=%@ iso=%@", normalized, identity, isoName);
-}
-
-+ (BOOL)compatibilityFlag:(nonnull NSString *)flag forISO:(nonnull NSString *)isoName
-{
-    if (!g_p44_settings_interface)
-        return NO;
-
-    NSString* identity = ARMSX2CompatibilityIdentityForISOName(isoName);
-    NSString* key = ARMSX2CompatibilityProfileFlagKey(ARMSX2NormalizeCompatibilityProfile(flag));
-    if (identity.length == 0 || key.length == 0)
-        return NO;
-
-    NSString* section = ARMSX2CompatibilityCustomFlagSection(identity);
-    bool value = false;
-    if (g_p44_settings_interface->GetBoolValue(section.UTF8String, key.UTF8String, &value))
-        return value ? YES : NO;
-
-    NSString* activeKey = ARMSX2CompatibilityProfileFlagKey(ARMSX2ResolvedCompatibilityPreset(identity, identity));
-    return (activeKey.length > 0 && [activeKey isEqualToString:key]) ? YES : NO;
-}
-
-+ (void)setCompatibilityFlag:(nonnull NSString *)flag enabled:(BOOL)enabled forISO:(nonnull NSString *)isoName
-{
-    if (!g_p44_settings_interface)
-        return;
-
-    NSString* identity = ARMSX2CompatibilityIdentityForISOName(isoName);
-    NSString* key = ARMSX2CompatibilityProfileFlagKey(ARMSX2NormalizeCompatibilityProfile(flag));
-    if (identity.length == 0 || key.length == 0) {
-        NSLog(@"[ARMSX2Bridge] Compatibility custom flag rejected flag=%@ iso=%@", flag, isoName);
-        return;
-    }
-
-    NSString* section = ARMSX2CompatibilityCustomFlagSection(identity);
-    g_p44_settings_interface->SetStringValue("ARMSX2/JITBisectGamePresets", identity.UTF8String, ARMSX2CompatibilityProfileCustom.UTF8String);
-    g_p44_settings_interface->SetBoolValue(section.UTF8String, key.UTF8String, enabled ? true : false);
-
-    NSString* currentIdentity = ARMSX2CurrentCompatibilityIdentityKey();
-    if ([identity isEqualToString:currentIdentity]) {
-        ARMSX2ApplyJITBisectFlag(key, enabled);
-        g_p44_settings_interface->SetBoolValue("ARMSX2/JITBisect", key.UTF8String, enabled ? true : false);
-        g_p44_settings_interface->SetStringValue("ARMSX2/JITBisect", "Profile", ARMSX2CompatibilityProfileCustom.UTF8String);
-    }
-
-    g_p44_settings_interface->Save();
-    NSLog(@"[ARMSX2Bridge] Compatibility custom flag %@ %@ identity=%@ iso=%@", key, enabled ? @"ON" : @"OFF", identity, isoName);
-}
-
-+ (void)setCompatibilityPreset:(nonnull NSString *)preset rememberForCurrentGame:(BOOL)rememberForCurrentGame
-{
-    NSString* normalized = ARMSX2NormalizeCompatibilityProfile(preset);
-    ARMSX2ApplyCompatibilityProfile(normalized, YES, rememberForCurrentGame ? @"remember current game" : @"manual preset");
-
-    if (rememberForCurrentGame && g_p44_settings_interface) {
-        NSString* identity = ARMSX2CurrentCompatibilityIdentityKey();
-        if (identity.length > 0) {
-            g_p44_settings_interface->SetStringValue("ARMSX2/JITBisectGamePresets", identity.UTF8String, normalized.UTF8String);
-            g_p44_settings_interface->Save();
-            NSLog(@"[ARMSX2Bridge] Compatibility remembered preset=%@ identity=%@", normalized, identity);
-        }
-    }
-}
-
-+ (void)forgetCompatibilityPresetForCurrentGame
-{
-    if (!g_p44_settings_interface)
-        return;
-
-    NSString* identity = ARMSX2CurrentCompatibilityIdentityKey();
-    if (identity.length == 0)
-        return;
-
-    g_p44_settings_interface->DeleteValue("ARMSX2/JITBisectGamePresets", identity.UTF8String);
-    ARMSX2ClearCompatibilityCustomFlagsForIdentity(identity);
-    g_p44_settings_interface->Save();
-    NSString* profile = ARMSX2ResolvedCompatibilityPreset(identity, identity);
-    ARMSX2ApplyCompatibilityProfile(profile, YES, [NSString stringWithFormat:@"forget %@", identity]);
-    NSLog(@"[ARMSX2Bridge] Compatibility forgot preset identity=%@", identity);
-}
-
-+ (void)forgetCompatibilityPresetForISO:(nonnull NSString *)isoName
-{
-    if (!g_p44_settings_interface)
-        return;
-
-    NSString* identity = ARMSX2CompatibilityIdentityForISOName(isoName);
-    if (identity.length == 0)
-        return;
-
-    g_p44_settings_interface->DeleteValue("ARMSX2/JITBisectGamePresets", identity.UTF8String);
-    ARMSX2ClearCompatibilityCustomFlagsForIdentity(identity);
-    g_p44_settings_interface->Save();
-    NSLog(@"[ARMSX2Bridge] Compatibility forgot preset identity=%@ iso=%@", identity, isoName);
+    const u32 crc = VMManager::GetDiscCRC();
+    if (crc != 0)
+        return [NSString stringWithFormat:@"CRC-%08X", crc];
+    return @"";
 }
 
 #pragma mark - VM lifecycle
@@ -5115,9 +4934,6 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot" object:nil];
 }
 
-+ (void)requestVMShutdown {
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMShutdown" object:nil];
-}
 
 + (void)testControllerRumble {
     ARMSX2_iOSTestGamepadRumble();

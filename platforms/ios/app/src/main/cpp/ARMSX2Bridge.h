@@ -325,27 +325,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setLimiterMode:(int)mode;
 + (void)setPresentFPSCap:(float)fps NS_SWIFT_NAME(setPresentFPSCap(_:));
 
-// Compatibility Lab
-+ (BOOL)getJITBisectFlag:(nonnull NSString *)key defaultValue:(BOOL)def;
-+ (void)setJITBisectFlag:(nonnull NSString *)key value:(BOOL)value;
-+ (nonnull NSString *)compatibilityPresetForCurrentGame;
-+ (nonnull NSString *)compatibilityIdentityForCurrentGame;
-+ (nonnull NSString *)compatibilityPresetForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(compatibilityPreset(forISO:));
-+ (nonnull NSString *)compatibilityIdentityForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(compatibilityIdentity(forISO:));
-+ (BOOL)isCompatibilityAutoGamePresetsEnabled;
-+ (void)setCompatibilityAutoGamePresetsEnabled:(BOOL)enabled;
-+ (void)setCompatibilityPreset:(nonnull NSString *)preset rememberForCurrentGame:(BOOL)rememberForCurrentGame;
-+ (void)setCompatibilityPreset:(nonnull NSString *)preset forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setCompatibilityPreset(_:forISO:));
-+ (BOOL)compatibilityFlag:(nonnull NSString *)flag forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(compatibilityFlag(_:forISO:));
-+ (void)setCompatibilityFlag:(nonnull NSString *)flag enabled:(BOOL)enabled forISO:(nonnull NSString *)isoName NS_SWIFT_NAME(setCompatibilityFlag(_:enabled:forISO:));
-+ (void)forgetCompatibilityPresetForCurrentGame;
-+ (void)forgetCompatibilityPresetForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(forgetCompatibilityPreset(forISO:));
+// Runtime disc identity
++ (nonnull NSString *)currentDiscIdentity;
 
 // VM lifecycle for menu flow
 + (BOOL)isVMRunning;
 + (BOOL)hasBIOS;
 + (void)requestVMBoot;
-+ (void)requestVMShutdown;
 + (void)testControllerRumble;
 
 // Save states
