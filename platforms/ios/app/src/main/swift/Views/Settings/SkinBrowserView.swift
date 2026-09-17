@@ -9,7 +9,10 @@ struct SkinBrowserView: View {
     private enum Filter: Hashable, CaseIterable {
         case all, installed, ready
 
-        var title: String {
+        // SettingsStore is @MainActor, and a computed property on a nested
+        // enum is not - the isolation has to be said out loud. Every caller is
+        // a View body, which is on the main actor already.
+        @MainActor var title: String {
             switch self {
             case .all: return SettingsStore.shared.localized("All")
             case .installed: return SettingsStore.shared.localized("Installed")
@@ -18,7 +21,7 @@ struct SkinBrowserView: View {
         }
     }
 
-    @ObservedObject private var settings = SettingsStore.shared
+    @State private var settings = SettingsStore.shared
     @StateObject private var catalog = SkinCatalog()
     @StateObject private var installer = SkinInstaller()
     // Held directly so the rows invalidate off the library itself rather than
@@ -32,12 +35,7 @@ struct SkinBrowserView: View {
 
     var body: some View {
         List {
-            if let updated = catalog.lastUpdated {
-                Text(String(format: settings.localized("Last updated %@"),
-                            updated.formatted(.relative(presentation: .named).locale(Locale(identifier: settings.language.bcp47Code)))))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            lastUpdatedRow
 
             if catalog.isLoading {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -119,6 +117,29 @@ struct SkinBrowserView: View {
         .sheet(item: $previewSkin) { skin in
             SkinPreviewSheet(skin: skin)
         }
+    }
+
+    /// Out of body, and in two steps. A format string wrapped around a
+    /// relative-date style wrapped around a locale built from a setting is one
+    /// expression, and the type checker charges the time it spends on it to
+    /// whatever it is nested in - which was the whole of body.
+    @ViewBuilder private var lastUpdatedRow: some View {
+        if let updated = catalog.lastUpdated {
+            Text(lastUpdatedText(updated))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func lastUpdatedText(_ updated: Date) -> String {
+        // appLanguage, and the same shape RootView gives the environment locale:
+        // .system means whatever the device is set to, and bcp47Code answers
+        // "en" for it, which would have pinned this one line to English.
+        let locale = settings.appLanguage == .system
+            ? Locale.autoupdatingCurrent
+            : Locale(identifier: settings.appLanguage.bcp47Code)
+        let relative: String = updated.formatted(.relative(presentation: .named).locale(locale))
+        return String(format: settings.localized("Last updated %@"), relative)
     }
 
     /// Read here rather than inside a row closure so the library registers with
