@@ -4437,16 +4437,11 @@ static void ARMSX2ShaderPresetFailure(libra_error_t err, NSError** error)
 
 #pragma mark - Frame-time history
 
-// Returns the 150-sample PerformanceMetrics frame-time history (read-only).
-// Each sample is boxed as an NSNumber so Swift sees `[NSNumber]`.
-+ (nonnull NSArray<NSNumber *> *)frameTimeHistory {
-    const PerformanceMetrics::FrameTimeHistory& history = PerformanceMetrics::GetFrameTimeHistory();
-    NSMutableArray<NSNumber *>* result = [NSMutableArray arrayWithCapacity:history.size()];
-    for (size_t i = 0; i < history.size(); i++) {
-        [result addObject:@(history[i])];
-    }
-    return result;
-}
+// Returns the 150-sample PerformanceMetrics frame-time history as raw floats.
++ (nonnull NSData *)frameTimeHistory {
++    const PerformanceMetrics::FrameTimeHistory& history = PerformanceMetrics::GetFrameTimeHistory();
++    return [NSData dataWithBytes:history.data() length:history.size() * sizeof(float)];
++}
 
 // Current write cursor inside the ring buffer, so callers can read the most
 // recent N samples (those just before the cursor) rather than treating the
