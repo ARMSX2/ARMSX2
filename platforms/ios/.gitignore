@@ -22,6 +22,7 @@ app/src/main/assets/discord_creds.env
 
 # Temporary/log/output files
 log.txt
+*.log
 
 # Third-party (vendored) native or generated sources
 app/src/main/cpp/3rdparty/rcheevos/.build
