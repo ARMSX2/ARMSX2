@@ -289,10 +289,8 @@ final class PatchStore: @unchecked Sendable {
     }
 
     private func managedPath(forISO iso: String, asCheat: Bool) -> String? {
-        if launchContext == .inGame && iso == isoName {
-            return ARMSX2Bridge.pnachPathForCurrentGame(asCheat: asCheat)
-        }
-        return ARMSX2Bridge.pnachPath(forISO: iso, asCheat: asCheat)
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        return ARMSX2Bridge.pnachPath(forISO: target, asCheat: asCheat)
     }
 
     private func hasManagedPath(forISO iso: String) -> Bool {
@@ -833,19 +831,14 @@ final class PatchStore: @unchecked Sendable {
 
     private func enableList(forISO iso: String, isCheat: Bool) -> [String] {
         let section = isCheat ? Self.cheatsSection : Self.patchesSection
-        if launchContext == .inGame && iso == isoName {
-            return ARMSX2Bridge.patchEnableListForCurrentGame(section: section, key: Self.enableKey)
-        }
-        return ARMSX2Bridge.patchEnableList(forISO: iso, section: section, key: Self.enableKey)
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        return ARMSX2Bridge.patchEnableList(forISO: target, section: section, key: Self.enableKey)
     }
 
     private func setEnableList(_ names: [String], forISO iso: String, isCheat: Bool) {
         let section = isCheat ? Self.cheatsSection : Self.patchesSection
-        if launchContext == .inGame && iso == isoName {
-            ARMSX2Bridge.setPatchEnableListForCurrentGame(names, section: section, key: Self.enableKey)
-        } else {
-            ARMSX2Bridge.setPatchEnableList(names, forISO: iso, section: section, key: Self.enableKey)
-        }
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        ARMSX2Bridge.setPatchEnableList(names, forISO: target, section: section, key: Self.enableKey)
     }
 
     // MARK: - Sidecar (records only the origin of an installed file)
