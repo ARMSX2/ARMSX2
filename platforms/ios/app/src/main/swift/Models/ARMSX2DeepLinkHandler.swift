@@ -88,6 +88,12 @@ enum ARMSX2DeepLinkHandler {
             return
         }
 
+        // The link chose this callback, so RootView confirms the destination first.
+        AppState.shared.pendingLibraryExport = callback
+        NSLog("[ARMSX2 iOS DeepLink] library export awaiting confirmation callback=%@", callback)
+    }
+
+    static func performLibraryExport(callback: String) {
         let payload = libraryPayload()
         do {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

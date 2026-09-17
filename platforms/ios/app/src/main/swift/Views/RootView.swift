@@ -179,6 +179,27 @@ struct RootView: View {
             Text(String(format: settings.localized("VM is currently running.\nShut down and start %@?"), target))
         }
         .alert(
+            settings.localized("Send your game library?"),
+            isPresented: Binding(
+                get: { appState.pendingLibraryExport != nil },
+                set: { if !$0 { appState.pendingLibraryExport = nil } }
+            )
+        ) {
+            Button(settings.localized("Cancel"), role: .cancel) {
+                appState.pendingLibraryExport = nil
+            }
+            Button(settings.localized("Send"), role: .destructive) {
+                if let callback = appState.pendingLibraryExport {
+                    ARMSX2DeepLinkHandler.performLibraryExport(callback: callback)
+                }
+                appState.pendingLibraryExport = nil
+            }
+        } message: {
+            let pending = appState.pendingLibraryExport ?? ""
+            let target = URL(string: pending)?.host ?? pending
+            Text(String(format: settings.localized("A link is asking for the name, serial and CRC of every game you have.\nSend that list to %@?"), target))
+        }
+        .alert(
             settings.localized("BIOS"),
             isPresented: Binding(
                 get: { appState.bootDisclaimerMessage != nil },
