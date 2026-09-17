@@ -93,11 +93,11 @@ u64 GetAvailablePhysicalMemory()
 	return get_available_mem;
 }
 
-static mach_timebase_info_data_t s_timebase_info;
 static const u64 tickfreq = []() {
-	if (mach_timebase_info(&s_timebase_info) != KERN_SUCCESS)
+	mach_timebase_info_data_t info;
+	if (mach_timebase_info(&info) != KERN_SUCCESS)
 		abort();
-	return (u64)1e9 * (u64)s_timebase_info.denom / (u64)s_timebase_info.numer;
+	return (u64)1e9 * (u64)info.denom / (u64)info.numer;
 }();
 
 // returns the performance-counter frequency: ticks per second (Hz)
@@ -110,15 +110,7 @@ static const u64 tickfreq = []() {
 // GetTickFrequency() to maintain good precision.
 u64 GetTickFrequency()
 {
-#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(__aarch64__)
-	// iOS: read the frequency of the architected virtual counter directly,
-	// avoiding the mach_absolute_time trap overhead on every GetCPUTicks call.
-	u64 freq;
-	asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-	return freq;
-#else
 	return tickfreq;
-#endif
 }
 
 // return the number of "ticks" since some arbitrary, fixed time in the
@@ -127,15 +119,7 @@ u64 GetTickFrequency()
 // nanoseconds.
 u64 GetCPUTicks()
 {
-#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(__aarch64__)
-	// iOS: read the monotonic architected virtual counter directly, avoiding
-	// the mach_absolute_time trap on every tick (frame limiter, profiling).
-	u64 val;
-	asm volatile("mrs %0, cntvct_el0" : "=r"(val)::"memory");
-	return val;
-#else
 	return mach_absolute_time();
-#endif
 }
 
 static std::string sysctl_str(int category, int name)
@@ -267,8 +251,7 @@ void Threading::Sleep(int ms)
 
 void Threading::SleepUntil(u64 ticks)
 {
-#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(__aarch64__)
-	// iOS: convert the remaining counter ticks and retry after interrupted sleeps.
+	// clock_nanosleep() doesn't exist here, so re-arm nanosleep until the deadline passes.
 	for (;;)
 	{
 		const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
@@ -280,26 +263,9 @@ void Threading::SleepUntil(u64 ticks)
 		ts.tv_sec = static_cast<time_t>(static_cast<u64>(diff) / freq);
 		ts.tv_nsec = static_cast<long>(((static_cast<u64>(diff) % freq) * 1000000000ULL) / freq);
 
-		const int err = nanosleep(&ts, nullptr);
-		if (err != 0 && errno != EINTR)
+		if (nanosleep(&ts, nullptr) != 0 && errno != EINTR)
 			return;
 	}
-#else
-	// This is definitely sub-optimal, but apparently clock_nanosleep() doesn't exist.
-	const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
-	if (diff <= 0)
-		return;
-
-	// mach_timebase_info converts absolute ticks to nanoseconds using numer / denom.
-	const u64 nanos = (static_cast<u64>(diff) * static_cast<u64>(s_timebase_info.numer)) / static_cast<u64>(s_timebase_info.denom);
-	if (nanos == 0)
-		return;
-
-	struct timespec ts;
-	ts.tv_sec = nanos / 1000000000ULL;
-	ts.tv_nsec = nanos % 1000000000ULL;
-	nanosleep(&ts, nullptr);
-#endif
 }
 
 std::vector<DarwinMisc::CPUClass> DarwinMisc::GetCPUClasses()
