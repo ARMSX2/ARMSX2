@@ -199,6 +199,11 @@ namespace GLLibretro
 		SetPacing(false);
 	}
 
+	void Deactivate()
+	{
+		Active = false;
+	}
+
 	void Shutdown()
 	{
 		ReleaseFrontendContext();

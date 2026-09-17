@@ -186,6 +186,7 @@ private:
 	std::array<std::unique_ptr<GSTextureOGL>, kLibretroBackbuffers> m_libretro_bb;
 	u32 m_libretro_bb_idx = 0;
 	bool m_context_released = false;
+	bool m_objects_destroyed = false;
 
 public:
 	// Libretro: the frontend threw away the context this device's own context
@@ -317,6 +318,7 @@ private:
 
 	void SetSwapInterval();
 	void DestroyResources();
+	void DestroyDeviceObjects();
 
 	void CreateTimestampQueries();
 	void DestroyTimestampQueries();

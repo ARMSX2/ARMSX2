@@ -515,6 +515,18 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block)
 	s_cpu_queue_cv.notify_all();
 }
 
+// The MTGS ring has a single producer by design - see the reasoning above the
+// assert in MTGS::RunOnGSThread - so a caller that is not the CPU thread has to
+// arrive through it rather than pushing a packet of its own. The CPU thread
+// drains this queue every vsync, in PumpMessagesOnCPUThread.
+void Host::RunOnGSThread(std::function<void()> function)
+{
+	RunOnCPUThread([fn = std::move(function)]() {
+		if (MTGS::IsOpen())
+			MTGS::RunOnGSThread(std::move(fn));
+	});
+}
+
 void Host::RefreshGameListAsync(bool invalidate_cache)
 {
 	// The frontend owns the game list.
@@ -1479,15 +1491,22 @@ static void OnGLContextDestroy(void)
 
 	if (MTGS::IsOpen())
 	{
-		std::atomic_bool gs_released{false};
-		MTGS::RunOnGSThread([&gs_released]() {
+		// Through Host::RunOnGSThread rather than MTGS::RunOnGSThread: this is
+		// the frontend's thread, and the ring takes packets from the CPU thread
+		// only.
+		//
+		// The flag is shared rather than a local by reference, because the wait
+		// below gives up after two seconds: a callback that ran after that
+		// would be writing through a reference to a stack slot that is gone.
+		auto gs_released = std::make_shared<std::atomic_bool>(false);
+		Host::RunOnGSThread([gs_released]() {
 			if (g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::OpenGL)
 				static_cast<GSDeviceOGL*>(g_gs_device.get())->AbandonContext(true);
-			gs_released.store(true, std::memory_order_release);
+			gs_released->store(true, std::memory_order_release);
 		});
-		for (int i = 0; i < 2000 && !gs_released.load(std::memory_order_acquire); i++)
+		for (int i = 0; i < 2000 && !gs_released->load(std::memory_order_acquire); i++)
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		if (!gs_released.load(std::memory_order_acquire))
+		if (!gs_released->load(std::memory_order_acquire))
 			log_cb(RETRO_LOG_ERROR, "The GS thread did not let go of its GL context in time.\n");
 	}
 

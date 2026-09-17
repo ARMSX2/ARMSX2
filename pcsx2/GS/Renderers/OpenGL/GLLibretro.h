@@ -57,6 +57,7 @@ namespace GLLibretro
 		u32 height = 0;
 	};
 
+	inline void Deactivate() {}
 	inline void PublishFrame(const Frame&) {}
 	inline bool ConsumeFrame(Frame*) { return false; }
 	inline bool HasFrame() { return false; }
@@ -72,6 +73,10 @@ namespace GLLibretro
 	// True when the GL device is presenting through a libretro frontend;
 	// checked by GSDeviceOGL during init and present.
 	extern bool Active;
+
+	// Turns the handoff off. For the GS thread, which is the thread that reads
+	// Active: past a context loss there is no frontend context to publish into.
+	void Deactivate();
 
 	// Grabs the GL context the frontend has current on the calling thread.
 	// Must be called from the frontend's context_reset, on its thread.

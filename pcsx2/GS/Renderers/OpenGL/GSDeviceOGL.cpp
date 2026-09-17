@@ -740,14 +740,22 @@ bool GSDeviceOGL::AbandonContext(bool still_valid)
 	if (m_gl_context->IsAbandoned())
 		return m_context_released;
 
+	// Nothing more goes to the frontend: the context its present path publishes
+	// into is the one going away. Cleared here rather than by the caller
+	// because this is the GS thread, which is the thread that reads it.
+	GLLibretro::Deactivate();
 	GLLibretro::AbortPacing();
 
 	if (still_valid)
 	{
 		// Retire what is already queued while the context can still run it,
-		// then unbind it, so the teardown that follows runs with no context
-		// current and its GL calls go nowhere.
+		// then free everything this device built on it. That has to happen here
+		// rather than at Destroy(): this is the last moment a context is
+		// current to delete through, and the frontend finishes by terminating
+		// the display those objects belong to, so a later teardown would be
+		// glDelete* into a driver with no context to delete from.
 		glFinish();
+		DestroyDeviceObjects();
 		m_gl_context->DoneCurrent();
 		m_context_released = true;
 	}
@@ -763,9 +771,15 @@ bool GSDeviceOGL::AbandonContext(bool still_valid)
 	return m_context_released;
 }
 
-void GSDeviceOGL::Destroy()
+// Everything this device owns in the GL context, freed in one place so that both
+// the ordinary teardown and the context-loss one delete through a live context.
+// Runs once: whichever of the two gets here first does the work.
+void GSDeviceOGL::DestroyDeviceObjects()
 {
-	// Frees GL objects, so it has to run before the context is dropped below.
+	if (m_objects_destroyed)
+		return;
+	m_objects_destroyed = true;
+
 	DestroyShaderChain();
 
 	GSDevice::Destroy();
@@ -775,8 +789,21 @@ void GSDeviceOGL::Destroy()
 		DestroyTimestampQueries();
 		DestroyPipelineStatisticsQueries();
 		DestroyResources();
+	}
+}
 
-		m_gl_context->DoneCurrent();
+void GSDeviceOGL::Destroy()
+{
+	// On the context-loss path this is already done - it happened at the
+	// abandon, while there was still a context to delete through - and what is
+	// left here is the context object itself. The unbind is for the live case
+	// only: the abandoned one has no display behind it any more.
+	DestroyDeviceObjects();
+
+	if (m_gl_context)
+	{
+		if (!m_gl_context->IsAbandoned())
+			m_gl_context->DoneCurrent();
 		m_gl_context.reset();
 	}
 }
