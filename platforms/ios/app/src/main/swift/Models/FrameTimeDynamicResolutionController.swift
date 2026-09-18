@@ -39,9 +39,9 @@ final class FrameTimeDynamicResolutionController {
     private static let smoothingWindow: Int = 60
     private static let reduceThresholdMs: Float = 22.0
     private static let increaseThresholdMs: Float = 14.0
-    /// Minimum non-zero sample count required to act. The history is empty
-    /// until the first frames land, so the controller waits for enough data.
-    private static let minSamplesForAction: Int = 60
+    /// Minimum non-zero samples required to act. Derived, because when this and
+    /// the window were both 60 one 0 ms frame left 59 and silenced the poll.
+    private static let minSamplesForAction: Int = smoothingWindow / 2
     /// Window after one of our own writes during which an observed change is
     /// treated as our echo rather than a manual user change.
     private static let ownWriteEchoWindow: TimeInterval = 1.0
@@ -144,13 +144,12 @@ final class FrameTimeDynamicResolutionController {
     private func poll() {
         // A per-game value, when present, overrides the global enable for the
         // running game: absent uses the global setting, 0 forces off, 1 on.
-        if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(Self.perGameSection, key: Self.perGameKey) {
-            let perGame = ARMSX2Bridge.getPerGameINIBoolForCurrentGame(
-                Self.perGameSection,
-                key: Self.perGameKey,
-                defaultValue: enabled
-            )
-            guard perGame else { return }
+        if let perGame = ARMSX2Bridge.perGameINIBoolIfPresent(
+            Self.perGameSection,
+            key: Self.perGameKey,
+            forISO: nil
+        ), !perGame.boolValue {
+            return
         }
 
         let data = ARMSX2Bridge.frameTimeHistory()
