@@ -52,10 +52,6 @@ struct VPadSkinDescriptor: Codable, Equatable, Identifiable {
         self.updatedAt = updatedAt
     }
 
-    var isImported: Bool {
-        source == .imported
-    }
-
     var virtualPadSkin: VirtualPadSkin {
         if source == .builtIn,
            let raw = builtInSkinRawValue,

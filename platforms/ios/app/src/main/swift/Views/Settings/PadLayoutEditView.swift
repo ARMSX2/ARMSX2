@@ -42,10 +42,6 @@ private struct PadEditorControlGeometry {
         )
     }
 
-    var visibleFrame: CGRect {
-        CGRect(x: center.x - visibleSize.width / 2, y: center.y - visibleSize.height / 2, width: visibleSize.width, height: visibleSize.height)
-    }
-
     var hitFrame: CGRect {
         CGRect(x: center.x - hitSize.width / 2, y: center.y - hitSize.height / 2, width: hitSize.width, height: hitSize.height)
     }

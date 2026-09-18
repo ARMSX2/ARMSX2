@@ -149,13 +149,7 @@ final class PatchStore: @unchecked Sendable {
         currentTitle = ""
     }
 
-    // MARK: - Identity
-
-    static func gameIdentityAvailable(forISO iso: String) -> Bool {
-        let info = ARMSX2Bridge.gameSettings(forISO: iso)
-        let crc = (info["crc"] as? String) ?? ""
-        return !PadLayoutGameIdentity.normalizedCRC(crc).isEmpty
-    }
+    // MARK: - Hardcore
 
     /// True when Hardcore Mode is actually in force, which is the only state the core refuses
     /// pnach content in. Every gate down there keys on IsHardcoreModeActive, so the preference

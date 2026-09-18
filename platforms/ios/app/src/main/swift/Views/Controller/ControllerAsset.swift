@@ -174,38 +174,6 @@ enum ControllerAsset {
         return UIImage(contentsOfFile: url.path)
     }
 
-    static func fullSkinImage(
-        descriptor: VPadSkinDescriptor,
-        isLandscape: Bool,
-        skinLibrary: VPadSkinLibraryStore = .shared
-    ) -> UIImage? {
-        let skin = descriptor.virtualPadSkin
-        let directory: URL?
-        if descriptor.source == .imported {
-            directory = skinLibrary.importedAssetsDirectory(for: descriptor)
-        } else if isLegacyCustomDescriptor(descriptor) {
-            directory = VirtualPadSkin.legacyCustomSkinDirectory()
-        } else {
-            directory = nil
-        }
-        guard let directory else {
-            return nil
-        }
-
-        let orientationCandidates = isLandscape
-            ? ["controller_edgetoedge_landscape", "iphone_edgetoedge_landscape", "controller_landscape", "iphone_landscape", "skin_landscape", "background_landscape", "gamepad_landscape", "landscape"]
-            : ["controller_edgetoedge_portrait", "iphone_edgetoedge_portrait", "controller_portrait", "iphone_portrait", "skin_portrait", "background_portrait", "gamepad_portrait", "portrait"]
-        let sharedCandidates = ["controller", "skin", "background", "gamepad", "full", "layout"]
-
-        for baseName in orientationCandidates + sharedCandidates {
-            if let image = customImage(named: "\(baseName).png", baseName: baseName, directory: directory) {
-                return image
-            }
-        }
-
-        return nil
-    }
-
     static func gameplayFullSkinImage(skin: VirtualPadSkin, isLandscape: Bool) -> UIImage? {
         guard skin == .custom, let directory = VirtualPadSkin.customSkinDirectory() else {
             return nil
