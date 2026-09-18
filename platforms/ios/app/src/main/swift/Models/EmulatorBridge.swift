@@ -105,14 +105,6 @@ final class EmulatorBridge: @unchecked Sendable {
         buildVersion = ARMSX2Bridge.buildVersion()
     }
 
-    func saveAll() {
-        state = .saving
-        ARMSX2Bridge.saveAllState()
-        lastSaveDate = Date()
-        lastSaveSuccess = true
-        state = .running
-    }
-
     func setPadButton(_ button: ARMSX2PadButton, pressed: Bool) {
         ARMSX2Bridge.setPadButton(button, pressed: pressed)
     }
@@ -195,8 +187,4 @@ final class EmulatorBridge: @unchecked Sendable {
         return (input.x * scale, input.y * scale)
     }
 
-    var isOsdVisible: Bool {
-        get { ARMSX2Bridge.isPerformanceOverlayVisible() }
-        set { ARMSX2Bridge.setPerformanceOverlayVisible(newValue) }
-    }
 }

@@ -1898,16 +1898,6 @@ private struct DynamicAimCrosshairView: View {
         }
     }
 
-    private func radialLines(count: Int, innerRadius: CGFloat, outerRadius: CGFloat) -> Path {
-        var path = Path()
-        for index in 0..<count {
-            let angle = Double(index) * 2 * .pi / Double(count)
-            path.move(to: CGPoint(x: CGFloat(cos(angle)) * innerRadius, y: CGFloat(sin(angle)) * innerRadius))
-            path.addLine(to: CGPoint(x: CGFloat(cos(angle)) * outerRadius, y: CGFloat(sin(angle)) * outerRadius))
-        }
-        return path
-    }
-
     private func cornerBrackets(radius: CGFloat) -> Path {
         let inner = radius * 0.38
         let outer = radius * 0.72
