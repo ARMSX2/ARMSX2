@@ -644,6 +644,8 @@ private fun MenuHeader(
 
 @Composable
 private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val gsDumpQueued = str("gsdump.quick.queued")
     ActionGrid(
         actions = listOf(
             MenuAction(str("action.resume"), str("action.play"), "▶", Success, viewModel::resume),
@@ -655,6 +657,15 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
             MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, MainActivityRuntime::restart),
             MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, MainActivityRuntime::promptSwapDisc),
+            // Here and not only in Settings > Renderer, where it sat at the bottom of a long page:
+            // a GS dump is what gets asked for when someone reports a graphics bug, and this is
+            // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
+            // draws, and none is drawn while this menu holds the game paused.
+            MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null) {
+                runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
+                android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
+                viewModel.resume()
+            },
             MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
                 MainActivityRuntime.closeGame()
             },

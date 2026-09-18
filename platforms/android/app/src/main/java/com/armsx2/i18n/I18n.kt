@@ -1371,6 +1371,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.gsBackThread.description" to "Off by default. Runs GS rendering on a second thread so you can push 2x/3x internal resolution without the frame dips. If a game shows graphics glitches, turn it back off (can be set per-game). Restart the game to apply.",
     "renderer.gsDump.description" to "Saves one frame of GPU commands (.gs) to the snaps folder — replayable in desktop PCSX2 to diagnose rendering bugs.",
     "renderer.gsDump.label" to "Capture GS Dump (bug report)",
+    "gsdump.quick.detail" to "One frame of GPU commands, for a graphics bug report",
+    "gsdump.quick.queued" to "Capturing a GS dump of the next frame. It is saved to the snaps folder.",
     "renderer.gsDump.queued" to "GS dump queued — close this menu so it captures the frame. Saved to the snaps folder.",
     "renderer.gsDump.startGameFirst" to "Start a game first, then capture while the glitch is on screen.",
     "renderer.hardwareDownloadMode.description" to "Readback accuracy for effects that need GPU data. Faster modes may break effects. \"Async\" is experimental: it reads the data back without pausing emulation, which can help a lot in games that stall on readbacks, at the cost of showing that data a frame or two late.",
