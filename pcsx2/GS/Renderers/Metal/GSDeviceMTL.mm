@@ -403,6 +403,7 @@ void GSDeviceMTL::FlushEncoders()
 
 void GSDeviceMTL::FlushEncodersForReadback()
 {
+	m_last_readback_frame = m_frame;
 	FlushEncoders();
 	if (@available(macOS 10.15, iOS 10.3, *))
 	{
@@ -2737,6 +2738,20 @@ void GSDeviceMTL::DoRenderHW(GSHWDrawConfig& config)
 { @autoreleasepool {
 	if (config.tex && (config.ds == config.tex || config.rt == config.tex))
 		EndRenderPass(); // Barrier
+
+	// Submit accumulated work at an existing pass boundary when recent frames
+	// needed synchronous readbacks. This lets GPU execution overlap CPU recording.
+	// Bound outstanding submissions to avoid excessive command-buffer queueing.
+	// The current (unsubmitted) buffer contributes one to this difference.
+	const u64 pending_draws = m_current_draw - m_last_finished_draw.load(std::memory_order_acquire);
+	// Get work to an idle GPU sooner, while retaining larger batches once it is busy.
+	const u32 readback_submit_threshold = (pending_draws <= 1) ? 32 : 64;
+	if (m_last_readback_frame != ~0u && (m_frame - m_last_readback_frame) <= 3 &&
+		!m_current_render.encoder && m_encoders_in_current_cmdbuf >= readback_submit_threshold &&
+		pending_draws <= 4)
+	{
+		FlushEncoders();
+	}
 
 	if (m_dev.features.broken_shader_depth && (config.depth.ztst >= ZTST_GEQUAL || config.depth.zwe))
 		config.ps.zfloor = true; // Depth must always go through shader (see tfx vs for comment with details)
