@@ -158,6 +158,12 @@ namespace VMManager
 	/// Reloads game specific settings, and applys any changes present.
 	bool ReloadGameSettings();
 
+	/// Re-reads this game's settings file into the game settings layer and applies nothing,
+	/// for a frontend that has just rewritten the file and is about to apply settings itself.
+	/// The layer is otherwise only read at boot, so until then it keeps answering with what
+	/// the file said then, both for values and for which settings the database may overwrite.
+	bool ReloadGameSettingsLayer();
+
 	/// Reloads game patches.
 	void ReloadPatches(bool reload_files, bool reload_enabled_list, bool verbose, bool verbose_if_changed);
 

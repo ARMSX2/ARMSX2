@@ -74,6 +74,7 @@
 #include <fcntl.h>
 #include <thread>
 #include <regex>
+#include <tuple>
 #include <vector>
 
 
@@ -265,6 +266,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
         Console.WriteLnFmt("{}", msg);
 }
 
+// Defined in VMManager.cpp; see AndroidWriteStagedGameIni.
+extern void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path);
+static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path);
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
@@ -282,6 +287,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     // where DataRoot points.
     std::string _szPath = GetJavaString(env, p_szpath);
     std::string _szBiosFolder = GetJavaString(env, p_szbiosfolder);
+    g_android_before_game_settings_load = &AndroidWriteStagedGameIni;
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
@@ -4411,6 +4417,29 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdApplyFlags(JNIEnv*, jclass,
 // next boot via UpdateGameSettingsLayer.
 static std::unique_ptr<INISettingsInterface> s_export_game_ini;
 
+using GameIniClaims = std::vector<std::pair<std::string, std::string>>;
+using GameIniEntries = std::vector<std::tuple<std::string, std::string, std::string>>;
+
+// Keys the export has to leave in the file even when the app wrote nothing for them: GameDB
+// entries the player switched off for this game. See gameIniClaim.
+static GameIniClaims s_export_claims;
+
+// While gameIniBeginStage is active the stream builds a STAGED copy instead of writing a file.
+static bool s_export_is_stage = false;
+static std::string s_export_stage_serial;
+static GameIniEntries s_export_stage_entries;
+
+// A game's per-game file, built at launch and waiting to be written. The app knows the serial
+// then, but the file is <serial>_<CRC>.ini and nothing knows the CRC until the core has read the
+// disc -- so VMManager calls AndroidWriteStagedGameIni with the name just before loading it.
+struct StagedGameIni {
+    std::string serial;
+    GameIniEntries entries;
+    GameIniClaims claims;
+};
+static std::mutex s_staged_game_ini_mutex;
+static std::optional<StagedGameIni> s_staged_game_ini;
+
 // The [sections] applyTo() owns and fully regenerates on each per-game write. We LOAD the
 // existing file and clear only these, rather than starting from a FRESH (unloaded) interface:
 // a fresh start dropped every FOREIGN key in the file, most visibly the [Patches]/[Cheats]
@@ -4433,9 +4462,9 @@ static constexpr const char* OWNED_GAME_INI_SECTIONS[] = {
     "SPU2", "SPU2/Output", "USB1",
 };
 
-// Open [path] as the active export interface for the gameIniPut/gameIniCommitWrite stream that
-// follows: load what's there (so foreign keys survive), then blank the sections we regenerate.
-static void BeginGameIniExport(const std::string& path) {
+// Open [path] for a per-game write: load what's there (so foreign keys survive), then blank the
+// sections we regenerate.
+static std::unique_ptr<INISettingsInterface> OpenGameIniForExport(const std::string& path) {
     auto ini = std::make_unique<INISettingsInterface>(path);
     ini->Load(); // failure just means there was no file yet, i.e. nothing to preserve
     // Per-host DNS entries live in INDEXED sections (DEV9/Eth/Hosts/Host0, Host1, ...) that can't
@@ -4447,7 +4476,101 @@ static void BeginGameIniExport(const std::string& path) {
         ini->ClearSection(sec);
     for (int i = 0, n = std::max(host_count, 8) + 8; i < n; i++)
         ini->ClearSection(fmt::format("DEV9/Eth/Hosts/Host{}", i).c_str());
-    s_export_game_ini = std::move(ini);
+    return ini;
+}
+
+// Open [path] as the active export interface for the gameIniPut/gameIniCommitWrite stream that
+// follows.
+static void BeginGameIniExport(const std::string& path) {
+    s_export_game_ini = OpenGameIniForExport(path);
+    s_export_claims.clear();
+    s_export_is_stage = false;
+    s_export_stage_serial.clear();
+    s_export_stage_entries.clear();
+}
+
+// Give each claimed key a value where the app wrote none. It has no control for some of what the
+// database sets -- the EE division rounding mode, for one -- so switching such an entry off has
+// nothing of the app's to write. What goes in is what the game would run with if the database
+// stayed out: the player's base-layer value, else the stock default. The key's PRESENCE is what
+// makes the database skip the entry (ComputePerGameOverrides); the value only has to be neutral.
+static void FillGameIniClaims(INISettingsInterface& ini, const GameIniClaims& claims) {
+    std::unique_ptr<MemorySettingsInterface> stock;
+    for (const auto& [section, key] : claims) {
+        if (ini.ContainsValue(section.c_str(), key.c_str()))
+            continue;
+        std::string value = Host::GetBaseStringSettingValue(section.c_str(), key.c_str(), "");
+        if (value.empty()) {
+            if (!stock) {
+                stock = std::make_unique<MemorySettingsInterface>();
+                Pcsx2Config defaults;
+                SettingsSaveWrapper wrapper(*stock);
+                defaults.LoadSaveCore(wrapper);
+            }
+            stock->GetStringValue(section.c_str(), key.c_str(), &value);
+        }
+        if (!value.empty())
+            ini.SetStringValue(section.c_str(), key.c_str(), value.c_str());
+        else
+            Console.WarningFmt("@@ANDROID_GAMEINI@@ no value to claim {}/{} with", section, key);
+    }
+}
+
+// Finish a per-game write: claims filled in, empty sections dropped, and the file deleted when
+// nothing is left in it (FullscreenUI parity). [what] only labels the log line.
+static bool CommitGameIniExport(INISettingsInterface& ini, const GameIniClaims& claims, const char* what) {
+    Error error;
+    bool ok = true;
+
+    FillGameIniClaims(ini, claims);
+
+    // The [Patches]/[Cheats] enable lists are preserved by loading the file instead of starting
+    // fresh; nothing to carry over here. Log what actually survives so a "my patches vanished"
+    // report can be diagnosed from an emulog instead of guesswork.
+    const size_t kept_patches = ini.GetStringList("Patches", "Enable").size();
+    const size_t kept_cheats = ini.GetStringList("Cheats", "Enable").size();
+
+    ini.RemoveEmptySections();
+    const bool empty = ini.IsEmpty();
+    if (empty) {
+        // No per-game overrides — remove the file entirely (FullscreenUI parity).
+        const std::string fn = ini.GetFileName();
+        if (FileSystem::FileExists(fn.c_str()))
+            ok = FileSystem::DeleteFilePath(fn.c_str(), &error);
+    } else {
+        ok = ini.Save(&error);
+    }
+    Console.WriteLnFmt("@@ANDROID_GAMEINI@@ {} {} patches={} cheats={} claims={}",
+        what, empty ? "removed" : "saved", kept_patches, kept_cheats, claims.size());
+    if (!ok)
+        Console.ErrorFmt("@@ANDROID_GAMEINI@@ {} failed: {}", what, error.GetDescription());
+    return ok;
+}
+
+// VMManager::UpdateGameSettingsLayer calls this with the file it is about to read. If the app
+// staged this game's settings at launch, now is the first moment the file can be named, so write
+// it before the read: that is what lets a per-game choice outrank the database from the first
+// boot, instead of only once the player has saved something in-game.
+static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path) {
+    std::optional<StagedGameIni> staged;
+    {
+        std::lock_guard lock(s_staged_game_ini_mutex);
+        if (!s_staged_game_ini)
+            return;
+        // Used once. Whatever writes the file after this (an in-game save, a reset) knows better,
+        // and a launch-time copy replayed over it on a later reload would undo it.
+        staged = std::move(s_staged_game_ini);
+        s_staged_game_ini.reset();
+    }
+    if (serial.empty() || !StringUtil::compareNoCase(staged->serial, serial)) {
+        Console.WriteLnFmt("@@ANDROID_GAMEINI@@ staged settings for {} unused, booting '{}'", staged->serial, serial);
+        return;
+    }
+
+    std::unique_ptr<INISettingsInterface> ini = OpenGameIniForExport(path);
+    for (const auto& [section, key, value] : staged->entries)
+        ini->SetStringValue(section.c_str(), key.c_str(), value.c_str());
+    CommitGameIniExport(*ini, staged->claims, "boot");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -4719,15 +4842,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWriteForSerial(JNIEnv* env, jcl
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniPut(JNIEnv* env, jclass,
                                                 jstring p_section, jstring p_key, jstring p_value) {
-    if (!s_export_game_ini)
+    if (!s_export_game_ini && !s_export_is_stage)
         return;
     const char* section = env->GetStringUTFChars(p_section, nullptr);
     const char* key = env->GetStringUTFChars(p_key, nullptr);
     const char* value = env->GetStringUTFChars(p_value, nullptr);
     // CSimpleIni is untyped string storage; the typed getters (GetBoolValue etc.)
     // parse the string back, so writing the Kotlin string repr round-trips.
-    if (section && key && value)
-        s_export_game_ini->SetStringValue(section, key, value);
+    if (section && key && value) {
+        if (s_export_is_stage)
+            s_export_stage_entries.emplace_back(section, key, value);
+        else
+            s_export_game_ini->SetStringValue(section, key, value);
+    }
     if (value) env->ReleaseStringUTFChars(p_value, value);
     if (key) env->ReleaseStringUTFChars(p_key, key);
     if (section) env->ReleaseStringUTFChars(p_section, section);
@@ -4735,33 +4862,103 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniPut(JNIEnv* env, jclass,
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniCommitWrite(JNIEnv*, jclass) {
+    if (s_export_is_stage) {
+        // Nothing to write yet: the file cannot be named before the core knows the disc CRC.
+        std::lock_guard lock(s_staged_game_ini_mutex);
+        Console.WriteLnFmt("@@ANDROID_GAMEINI@@ staged {} keys={} claims={}",
+            s_export_stage_serial, s_export_stage_entries.size(), s_export_claims.size());
+        s_staged_game_ini = StagedGameIni{std::move(s_export_stage_serial), std::move(s_export_stage_entries),
+            std::move(s_export_claims)};
+        s_export_is_stage = false;
+        s_export_stage_serial.clear();
+        s_export_stage_entries.clear();
+        s_export_claims.clear();
+        return JNI_TRUE;
+    }
     if (!s_export_game_ini)
         return JNI_FALSE;
-    Error error;
-    bool ok = true;
-
-    // The [Patches]/[Cheats] enable lists are preserved by gameIniBeginWrite loading the file
-    // instead of starting fresh; nothing to carry over here. Log what actually survives so a
-    // "my patches vanished" report can be diagnosed from an emulog instead of guesswork.
-    const size_t kept_patches = s_export_game_ini->GetStringList("Patches", "Enable").size();
-    const size_t kept_cheats = s_export_game_ini->GetStringList("Cheats", "Enable").size();
-
-    s_export_game_ini->RemoveEmptySections();
-    const bool empty = s_export_game_ini->IsEmpty();
-    if (empty) {
-        // No per-game overrides — remove the file entirely (FullscreenUI parity).
-        const std::string fn = s_export_game_ini->GetFileName();
-        if (FileSystem::FileExists(fn.c_str()))
-            ok = FileSystem::DeleteFilePath(fn.c_str(), &error);
-    } else {
-        ok = s_export_game_ini->Save(&error);
-    }
-    Console.WriteLnFmt("@@ANDROID_GAMEINI@@ commit {} patches={} cheats={}",
-        empty ? "removed" : "saved", kept_patches, kept_cheats);
+    const bool ok = CommitGameIniExport(*s_export_game_ini, s_export_claims, "commit");
     s_export_game_ini.reset();
-    if (!ok)
-        Console.ErrorFmt("@@ANDROID_GAMEINI@@ commit failed: {}", error.GetDescription());
+    s_export_claims.clear();
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+// Build a game's per-game file at launch, for the core to write when it loads it. The same
+// put/claim/commit stream as gameIniBeginWrite; see AndroidWriteStagedGameIni for why the
+// writing has to wait.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginStage(JNIEnv* env, jclass, jstring p_serial) {
+    const std::string serial = p_serial ? GetJavaString(env, p_serial) : std::string();
+    if (serial.empty())
+        return JNI_FALSE;
+    s_export_game_ini.reset();
+    s_export_claims.clear();
+    s_export_stage_entries.clear();
+    s_export_stage_serial = serial;
+    s_export_is_stage = true;
+    return JNI_TRUE;
+}
+
+// Drop whatever is staged, for a launch with nothing of its own to write.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClearStage(JNIEnv*, jclass) {
+    std::lock_guard lock(s_staged_game_ini_mutex);
+    s_staged_game_ini.reset();
+}
+
+// Keep [section]/[key] in the file being written even if the app writes nothing for it. The key's
+// presence is what tells the core the player decided that setting for this game, so this is how a
+// GameDB entry gets switched off. The value is filled in at commit (FillGameIniClaims).
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClaim(JNIEnv* env, jclass, jstring p_section, jstring p_key) {
+    if (!s_export_game_ini && !s_export_is_stage)
+        return;
+    std::string section = p_section ? GetJavaString(env, p_section) : std::string();
+    std::string key = p_key ? GetJavaString(env, p_key) : std::string();
+    if (!section.empty() && !key.empty())
+        s_export_claims.emplace_back(std::move(section), std::move(key));
+}
+
+// Re-read the running game's per-game file into the game layer, after the app rewrote it. The
+// layer is otherwise only read at boot, so the commit that follows would still apply what the
+// file said then -- values, and which database entries the player had taken back. Applies
+// nothing itself; the caller's commit does.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
+    if (!VMManager::HasValidVM())
+        return;
+    Host::RunOnCPUThread([]() { VMManager::ReloadGameSettingsLayer(); }, /*block=*/true);
+}
+
+// What the game database sets for [serial], one line per setting a per-game key can claim:
+//   name <TAB> value <TAB> flags <TAB> section/key[|section/key...]
+// flags: 'c' skipped while automatic game fixes are off, 'u' skipped while manual hardware fixes
+// are on, '-' neither. Empty when the game has no entry or sets nothing claimable.
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGameDbEntries(JNIEnv* env, jclass, jstring p_serial) {
+    std::string out;
+    const std::string serial = p_serial ? GetJavaString(env, p_serial) : std::string();
+    const GameDatabaseSchema::GameEntry* game = serial.empty() ? nullptr : GameDatabase::findGame(serial);
+    if (game) {
+        for (const GameDatabaseSchema::GameEntry::ClaimableSetting& setting : game->claimableSettings()) {
+            std::string keys;
+            for (const auto& [section, key] : setting.keys)
+                fmt::format_to(std::back_inserter(keys), "{}{}/{}", keys.empty() ? "" : "|", section, key);
+            const char* flags = setting.core ? "c" : (setting.user_hack ? "u" : "-");
+            fmt::format_to(std::back_inserter(out), "{}\t{}\t{}\t{}\n", setting.name, setting.value, flags, keys);
+        }
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+// Every settings key whose presence in a per-game file claims some database setting, one
+// "section/key" per line.
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameDbClaimingKeys(JNIEnv* env, jclass) {
+    std::string out;
+    for (const auto& [section, key] : PerGameOverrideKeys::AllClaimingKeys())
+        fmt::format_to(std::back_inserter(out), "{}/{}\n", section, key);
+    return env->NewStringUTF(out.c_str());
 }
 
 // ---------------------------------------------------------------------------

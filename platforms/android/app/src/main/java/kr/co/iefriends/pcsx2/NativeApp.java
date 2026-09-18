@@ -413,6 +413,25 @@ public class NativeApp {
 	public static native String getElfDiscOverride(String elfPath);
 	public static native void gameIniPut(String section, String key, String value);
 	public static native boolean gameIniCommitWrite();
+	/** Keep section/key in the INI being written even if nothing was put for it: the key's
+	 *  presence is what tells the core the player decided that setting for this game, so the
+	 *  game database leaves it alone. The value is filled in natively at commit. */
+	public static native void gameIniClaim(String section, String key);
+	/** Same stream as {@link #gameIniBeginWrite()}, but held until the core loads this game's
+	 *  settings at boot: at launch the file cannot be named yet (its name carries the disc CRC).
+	 *  Written once, just before the core reads it. */
+	public static native boolean gameIniBeginStage(String serial);
+	/** Drop anything staged by {@link #gameIniBeginStage(String)}. */
+	public static native void gameIniClearStage();
+	/** Re-read the running game's INI into the core's game layer after rewriting it, so the
+	 *  commit that follows applies what the file says now. Applies nothing itself. */
+	public static native void reloadGameSettingsLayer();
+	/** What the game database sets for a serial: one line per setting a per-game key can claim,
+	 *  "name TAB value TAB flags TAB section/key|section/key". See GameDbOverrides. */
+	public static native String getGameDbEntries(String serial);
+	/** Every "section/key" whose presence in a per-game INI claims a game database setting,
+	 *  one per line. */
+	public static native String gameDbClaimingKeys();
 
 	/** Pin a custom Vulkan driver (e.g. Mesa Turnip) for the next VM
 	 *  start. Must be called BEFORE MainActivityRuntime.start() — the first MTGS::Open

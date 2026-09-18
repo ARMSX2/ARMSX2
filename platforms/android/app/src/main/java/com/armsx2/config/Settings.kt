@@ -1370,49 +1370,86 @@ data class Settings(
         )
     }
 
-    /** Upstream-style per-game export (mirrors PCSX2's FullscreenUI): write only
-     *  the keys that differ from [global] into the running game's
-     *  gamesettings/<serial>_<CRC>.ini, so the on-disk layer is sparse and
-     *  portable (a later global tweak still reaches the game for keys it didn't
-     *  override). Reuses applyTo's exact field→key mapping via [emitSink]: the
-     *  global pass captures a baseline, the effective pass writes the diff. The
-     *  running game already reflects the change live, so the native commit does
-     *  not reload — the INI applies as the game layer on the next boot. No-op
-     *  when no VM is running. */
-    fun writeGameSettingsIni(global: Settings, serial: String? = null) {
-        // Baseline: global's persisted keys. applyTo early-returns before the
-        // live pokes/commit while emitSink is set, so nothing touches the VM.
-        val baseline = HashMap<String, String>()
-        emitSink = { section, key, _, value -> baseline["$section$key"] = value }
-        try {
-            global.applyTo()
-        } finally {
-            emitSink = null
+    /** Upstream-style per-game export (mirrors PCSX2's FullscreenUI): write the keys that
+     *  differ from [global] into the game's gamesettings/<serial>_<CRC>.ini, so the on-disk
+     *  layer is sparse and portable (a later global tweak still reaches the game for keys it
+     *  didn't override). Reuses applyTo's exact field→key mapping via [emitSink]: the global
+     *  pass captures a baseline, the effective pass writes the diff.
+     *
+     *  Also written, even where they equal global: every key the game database contends that
+     *  [claimsFor]'s own settings set, and the keys of the database entries switched off for it
+     *  (GameDbOverrides). Presence in this file is how the core tells a per-game choice from an
+     *  inherited one, and only a per-game choice outranks the database. Pass [claimsFor]
+     *  whenever the game is known; without it the file carries only the diff.
+     *
+     *  With a running VM the target is the current game; with no VM, [serial]'s existing file.
+     *  No-op when there is neither. */
+    fun writeGameSettingsIni(global: Settings, serial: String? = null, claimsFor: String? = serial) {
+        synchronized(gameIniExportLock) {
+            // With a running VM the target is the current game (gameIniBeginWrite). With no VM — a
+            // per-game Reset done from the library — pass [serial] to locate the file directly;
+            // false there means no stale override file exists, so there is nothing to rewrite.
+            val began = if (serial == null) NativeApp.gameIniBeginWrite()
+                        else NativeApp.gameIniBeginWriteForSerial(serial)
+            if (!began) return
+            streamGameSettingsIni(global, claimsFor)
+            NativeApp.gameIniCommitWrite()
         }
-        // With a running VM the target is the current game (gameIniBeginWrite). With no VM — a
-        // per-game Reset done from the library — pass [serial] to locate the file directly; false
-        // there means no stale override file exists, so there is nothing to rewrite.
-        val began = if (serial == null) NativeApp.gameIniBeginWrite()
-                    else NativeApp.gameIniBeginWriteForSerial(serial)
-        if (!began) return
+    }
+
+    /** [writeGameSettingsIni] for a game about to boot. Its file cannot be named yet, because the
+     *  name carries the disc CRC, so the native side holds the result and writes it just before
+     *  the core loads the file (VMManager::UpdateGameSettingsLayer). Without this, a game whose
+     *  settings were only ever changed from the library had no file at boot, and the game
+     *  database overwrote every one of those settings it also sets. */
+    fun stageGameSettingsIni(global: Settings, serial: String) {
+        synchronized(gameIniExportLock) {
+            if (!NativeApp.gameIniBeginStage(serial)) return
+            streamGameSettingsIni(global, serial)
+            NativeApp.gameIniCommitWrite()
+        }
+    }
+
+    private fun streamGameSettingsIni(global: Settings, claimsFor: String?) {
+        // applyTo early-returns before the live pokes/commit while a sink is set, so neither pass
+        // touches the VM.
+        val baseline = global.emittedKeys()
+        val effective = emittedKeys()
         // What outranks the GameDB is key presence in the game layer
         // (ComputePerGameOverrides), so VU1's group is written even where its values match
-        // global's.
-        val forcedKeys: Set<String> = if (vu1ClampMode != global.vu1ClampMode)
-            setOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
-        else emptySet()
-        // Effective pass: stream only the keys that differ from the baseline.
-        emitSink = { section, key, _, value ->
-            if (baseline["$section$key"] != value ||
-                (section == "EmuCore/CPU/Recompiler" && key in forcedKeys))
-                NativeApp.gameIniPut(section, key, value)
+        // global's...
+        val forced = HashSet<String>()
+        if (vu1ClampMode != global.vu1ClampMode)
+            listOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
+                .mapTo(forced) { "EmuCore/CPU/Recompiler/$it" }
+        // ...and so is everything the game's own settings and switched-off entries claim.
+        val claims = runCatching { GameDbOverrides.claimsFor(claimsFor, this, global, effective) }
+            .getOrDefault(GameDbOverrides.Claims.NONE)
+        forced.addAll(claims.keys)
+        for ((id, value) in effective) {
+            if (baseline[id] == value && id !in forced) continue
+            val cut = id.lastIndexOf('/')
+            NativeApp.gameIniPut(id.substring(0, cut), id.substring(cut + 1), value)
         }
+        // Some switched-off entries have no setting in this app (the EE division rounding mode,
+        // for one), so nothing above wrote their key. The native side fills those in.
+        for (id in claims.switchedOffKeys) {
+            val cut = id.lastIndexOf('/')
+            NativeApp.gameIniClaim(id.substring(0, cut), id.substring(cut + 1))
+        }
+    }
+
+    /** Every key [applyTo] persists, as "section/key" to value, without writing any of them. */
+    internal fun emittedKeys(): LinkedHashMap<String, String> {
+        val out = LinkedHashMap<String, String>()
+        val outer = emitSink
+        emitSink = { section, key, _, value -> out["$section/$key"] = value }
         try {
             applyTo()
         } finally {
-            emitSink = null
+            emitSink = outer
         }
-        NativeApp.gameIniCommitWrite()
+        return out
     }
 
     /** Writes every EmuCore/GS key (display + renderer + hardware/upscaling
@@ -1617,7 +1654,7 @@ data class Settings(
 
     /** True when any hardware/upscaling fix is non-default — used to auto-enable
      *  the UserHacks master so individual hacks aren't silently masked off. */
-    private fun anyUserHackEnabled(): Boolean =
+    internal fun anyUserHackEnabled(): Boolean =
         manualUserHacks ||
             autoFlush != 0 || halfPixelOffset != 0 || limit24BitDepth != 0 ||
             textureInsideRt != 0 || nativeScaling != 0 || roundSprite != 0 ||
@@ -1961,11 +1998,24 @@ data class Settings(
 
     companion object {
         /** When non-null, [put] routes persisted-key emits here instead of the
-         *  native base layer. Set transiently by [writeGameSettingsIni] to
-         *  capture the key set for the sparse per-game INI export without
-         *  touching the base layer or re-poking the running VM. */
+         *  native base layer. Set transiently by [writeGameSettingsIni] (via
+         *  [emittedKeys]) to capture the key set for the sparse per-game INI export
+         *  without touching the base layer or re-poking the running VM.
+         *
+         *  Per thread. A launch applies settings for real on the VM launch thread while the
+         *  UI thread can be running an export, and a shared sink would divert that launch's
+         *  writes into the export: the game would boot without them. */
+        private val emitSinkLocal = ThreadLocal<((String, String, String, String) -> Unit)?>()
+
+        /** One per-game INI export at a time. The native side streams it through a single
+         *  begin/put/commit state, and a game launch stages one on the launch thread while the UI
+         *  thread can be saving settings. */
+        private val gameIniExportLock = Any()
+
         @JvmStatic
-        internal var emitSink: ((String, String, String, String) -> Unit)? = null
+        internal var emitSink: ((String, String, String, String) -> Unit)?
+            get() = emitSinkLocal.get()
+            set(value) = emitSinkLocal.set(value)
 
         /** [upscaler] values, straight from the core's GSUpscaler. Named because 1 is Apple's
          *  MetalFX and never appears in this UI, so FSR1's value (2) does NOT line up with its

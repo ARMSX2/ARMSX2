@@ -790,6 +790,7 @@ open class MainActivityRuntime : ComponentActivity() {
                             ))
                         }
                     }
+                    stagePerGameSettingsFile(currentGame.value?.settingsKey)
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
@@ -853,6 +854,32 @@ open class MainActivityRuntime : ComponentActivity() {
                 n++
             }
             return n + (if (sawJoyCon) 1 else 0)
+        }
+
+        /**
+         * Hand the core this game's per-game settings file, for it to write as it loads it: the
+         * first moment the file can be named, because the name carries the disc CRC.
+         *
+         * That file is how the core tells the player's choices for a game from inherited ones, and
+         * only those outrank the game database (PerGameOverrides). It used to be written only by an
+         * in-game save, so settings changed from the library never reached it and the database
+         * quietly overwrote them on every boot. A game with no settings of its own stages nothing,
+         * and its file, if it has one, is left exactly as it was.
+         */
+        private fun stagePerGameSettingsFile(serial: String?) {
+            runCatching {
+                val key = serial?.takeIf { it.isNotBlank() }
+                val overrides = key?.let { com.armsx2.config.ConfigStore.loadOverrides(it) }
+                if (key == null || overrides == null || overrides.length() == 0) {
+                    NativeApp.gameIniClearStage()
+                    return
+                }
+                com.armsx2.config.ConfigStore.resolveForGame(key)
+                    .stageGameSettingsIni(com.armsx2.config.ConfigStore.loadGlobal(), key)
+            }.onFailure {
+                println("@@ANDROID_GAMEINI@@ stage failed: $it")
+                runCatching { NativeApp.gameIniClearStage() }
+            }
         }
 
         private fun applyRendererPrefs() {
@@ -1150,6 +1177,8 @@ open class MainActivityRuntime : ComponentActivity() {
                                 ctx, null, MemoryCardBackup.Reason.SESSION, null))
                         }
                     }
+                    // No game of its own, so nothing staged by an earlier launch may be written.
+                    stagePerGameSettingsFile(null)
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     eState.value = EmuState.STOPPED

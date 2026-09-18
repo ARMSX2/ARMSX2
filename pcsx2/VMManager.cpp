@@ -1139,12 +1139,25 @@ std::string VMManager::GetSerialForGameSettings()
 	return s_elf_override.empty() ? std::string(s_disc_serial) : std::string();
 }
 
+#if defined(__ANDROID__)
+// Set by the Android frontend. Its per-game settings live in the app's own store, and the file
+// read below is a copy it writes -- which it cannot even name until the disc CRC is known, and
+// that is here. Called with the name just before the read, so the file the database consults
+// for what the player claimed already says what they chose, from the very first boot.
+void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path) = nullptr;
+#endif
+
 bool VMManager::UpdateGameSettingsLayer()
 {
 	std::unique_ptr<INISettingsInterface> new_interface;
 	if (s_disc_crc != 0)
 	{
-		std::string filename(GetGameSettingsPath(GetSerialForGameSettings(), s_disc_crc));
+		const std::string serial = GetSerialForGameSettings();
+		std::string filename(GetGameSettingsPath(serial, s_disc_crc));
+#if defined(__ANDROID__)
+		if (g_android_before_game_settings_load)
+			g_android_before_game_settings_load(serial, filename);
+#endif
 		if (!FileSystem::FileExists(filename.c_str()))
 		{
 			// try the legacy format (crc.ini)
@@ -1204,6 +1217,11 @@ bool VMManager::UpdateGameSettingsLayer()
 	s_input_settings_interface = std::move(input_interface);
 	s_input_profile_name = std::move(input_profile_name);
 	return true;
+}
+
+bool VMManager::ReloadGameSettingsLayer()
+{
+	return UpdateGameSettingsLayer();
 }
 
 void VMManager::UpdateDiscDetails(bool booting)

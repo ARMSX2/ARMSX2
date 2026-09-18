@@ -92,6 +92,9 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "spinCpuReadbacks", "spinGpuReadbacks", "swThreads", "swThreadsHeight",
         "syncToHostRefresh", "textureInsideRt", "textureOffsetX", "textureOffsetY",
         "unscaledPaletteDraw", "useBlitSwapChain", "vsyncQueueSize",
+        // Not a Settings field: the game database entries switched off for this game, which the
+        // Fixes tab lists. Resetting the tab turns them back on. Global scope never has it.
+        com.armsx2.config.GameDbOverrides.OFF_KEY,
     ),
     // Controls / Hotkeys / Skins / General / Info / Patches / About own no Settings fields —
     // Controls keeps its binds and tunables in ControllerMappings and has its own reset row.

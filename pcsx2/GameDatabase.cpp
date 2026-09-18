@@ -1228,6 +1228,57 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 	}
 }
 
+std::vector<GameDatabaseSchema::GameEntry::ClaimableSetting> GameDatabaseSchema::GameEntry::claimableSettings() const
+{
+	std::vector<ClaimableSetting> out;
+
+	// Names match the labels applyGameFixes() logs, so the list and a log line read together.
+	const auto add_knob = [&out](CoreGameDBKnob knob, const char* name, int value) {
+		const PerGameOverrideKeys::CoreKnobKeys keys = PerGameOverrideKeys::ForCoreKnob(knob);
+		if (!keys.section)
+			return;
+
+		ClaimableSetting& setting = out.emplace_back(ClaimableSetting{name, value, true, false, {}});
+		for (u32 i = 0; i < keys.count; i++)
+			setting.keys.emplace_back(keys.section, keys.keys[i]);
+	};
+
+	if (eeRoundMode < FPRoundMode::MaxCount)
+		add_knob(CoreGameDBKnob::EERoundMode, "eeRoundMode", static_cast<int>(eeRoundMode));
+	if (eeDivRoundMode < FPRoundMode::MaxCount)
+		add_knob(CoreGameDBKnob::EEDivRoundMode, "eeDivRoundMode", static_cast<int>(eeDivRoundMode));
+	if (vu0RoundMode < FPRoundMode::MaxCount)
+		add_knob(CoreGameDBKnob::VU0RoundMode, "vu0RoundMode", static_cast<int>(vu0RoundMode));
+	if (vu1RoundMode < FPRoundMode::MaxCount)
+		add_knob(CoreGameDBKnob::VU1RoundMode, "vu1RoundMode", static_cast<int>(vu1RoundMode));
+	if (eeClampMode != ClampMode::Undefined)
+		add_knob(CoreGameDBKnob::EEClampMode, "eeClampMode", enum_cast(eeClampMode));
+	if (vu0ClampMode != ClampMode::Undefined)
+		add_knob(CoreGameDBKnob::VU0ClampMode, "vu0ClampMode", enum_cast(vu0ClampMode));
+	if (vu1ClampMode != ClampMode::Undefined)
+		add_knob(CoreGameDBKnob::VU1ClampMode, "vu1ClampMode", enum_cast(vu1ClampMode));
+
+	for (const auto& [hack, value] : speedHacks)
+	{
+		if (const char* key = PerGameOverrideKeys::ForSpeedHack(hack))
+			out.push_back({Pcsx2Config::SpeedhackOptions::GetSpeedHackName(hack), value, true, false, {{"EmuCore/Speedhacks", key}}});
+	}
+
+	for (const GamefixId id : gameFixes)
+	{
+		if (const char* key = PerGameOverrideKeys::ForGamefix(id))
+			out.push_back({Pcsx2Config::GamefixOptions::GetGameFixName(id), 1, true, false, {{"EmuCore/Gamefixes", key}}});
+	}
+
+	for (const auto& [id, value] : gsHWFixes)
+	{
+		if (const char* key = PerGameOverrideKeys::ForGSHWFix(id))
+			out.push_back({getHWFixName(id), value, false, isUserHackHWFix(id), {{"EmuCore/GS", key}}});
+	}
+
+	return out;
+}
+
 void GameDatabase::loadFile(const std::string& path, const std::string& name, bool is_override)
 {
 	std::optional<std::string> buffer = FileSystem::ReadFileToString(path.c_str());

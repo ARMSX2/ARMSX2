@@ -10,6 +10,7 @@ import com.armsx2.config.SettingsScope
 import com.armsx2.navigation.SettingsCategory
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.InGameOverlay
+import kr.co.iefriends.pcsx2.NativeApp
 
 data class SettingsUiState(
     val category: SettingsCategory = SettingsCategory.General,
@@ -80,9 +81,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             when {
                 // In-game: re-apply live so the change shows immediately, then regenerate the
                 // running game's INI for the next boot (mirrors InGameOverlay.saveSettings).
+                // File first, then the core's copy of it, then the commit: the commit applies what
+                // the in-memory game layer says (see InGameOverlay.saveSettings).
                 gameSerial != null && running -> {
+                    ConfigStore.resolveForGame(gameSerial).writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = gameSerial)
+                    NativeApp.reloadGameSettingsLayer()
                     settings.value.applyTo()
-                    ConfigStore.resolveForGame(gameSerial).writeGameSettingsIni(ConfigStore.loadGlobal())
                 }
                 // From the library (no VM): the INI can't be reached through a running game, so
                 // rewrite it by serial. A no-op when the game never wrote one — then the pruned

@@ -11,6 +11,7 @@
 #include "common/Assertions.h"
 #include "common/SettingsInterface.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -224,6 +225,33 @@ bool PerGameOverrideKeys::ClaimsAGameDBSetting(const char* section, const char* 
 	}
 
 	return false;
+}
+
+std::vector<std::pair<const char*, const char*>> PerGameOverrideKeys::AllClaimingKeys()
+{
+	std::vector<std::pair<const char*, const char*>> keys;
+
+	for (const GSKeyRow& row : s_gs_keys)
+	{
+		// The blend level has a row per database clamp but is one key.
+		if (std::none_of(keys.begin(), keys.end(), [&row](const auto& k) { return std::strcmp(k.second, row.key) == 0; }))
+			keys.emplace_back("EmuCore/GS", row.key);
+	}
+
+	for (const char* gamefix : s_gamefix_keys)
+		keys.emplace_back("EmuCore/Gamefixes", gamefix);
+
+	for (const char* speedhack : s_speedhack_keys)
+		keys.emplace_back("EmuCore/Speedhacks", speedhack);
+
+	for (u32 i = 0; i < static_cast<u32>(CoreGameDBKnob::MaxCount); i++)
+	{
+		const CoreKnobKeys knob = ForCoreKnob(static_cast<CoreGameDBKnob>(i));
+		for (u32 k = 0; k < knob.count; k++)
+			keys.emplace_back(knob.section, knob.keys[k]);
+	}
+
+	return keys;
 }
 
 PerGameOverrides ComputePerGameOverrides(const SettingsInterface& game_layer)
