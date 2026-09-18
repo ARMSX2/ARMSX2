@@ -89,12 +89,15 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/deps
-          # Shares the SDL job's dependency cache — same dep set (superset).
-          key: ${{ inputs.os }} ${{ inputs.platform }} sdl-deps ${{ hashFiles('.github/workflows/scripts/linux/build-dependencies-runner.sh', '.github/workflows/scripts/common/*.patch') }}
+          # Still shares the SDL job's cache: both ask that script for a static
+          # set, so the prefix is the same one. The mode is in the key so a
+          # shared-mode job added later gets its own cache rather than these
+          # archives.
+          key: ${{ inputs.os }} ${{ inputs.platform }} static-deps ${{ hashFiles('.github/workflows/scripts/linux/build-dependencies-runner.sh', '.github/workflows/scripts/common/*.patch') }}
 
       - name: Build Dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: .github/workflows/scripts/linux/build-dependencies-runner.sh "$HOME/deps"
+        run: ARMSX2_DEPS_STATIC=1 .github/workflows/scripts/linux/build-dependencies-runner.sh "$HOME/deps"
 
       - name: Generate CMake
         run: |

@@ -18,6 +18,12 @@
 # deps prefix). glibc / libstdc++ / mesa / libdrm / libgbm / the Vulkan loader
 # come from the device's own base system, exactly like a hand-assembled
 # on-device lib/ bundle.
+#
+# Built against a static dependency set (ARMSX2_DEPS_STATIC=1, which is what CI
+# asks for), there are no self-built shared libraries at all and lib/ does not
+# appear in the tarball. The gathering below stays because a shared-mode build
+# still needs it, and because it is what decides which case we are in: whatever
+# resolves out of the deps prefix has to travel, however the set was built.
 
 set -e
 
@@ -78,8 +84,15 @@ for so in "$STAGE"/lib/*.so*; do
     patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
 done
 
-echo "Bundled libraries:"
-ls -1 "$STAGE/lib" | sed 's/^/    /'
+# rmdir succeeds only on an empty directory, so it doubles as the test: a
+# static set leaves nothing to bundle, and shipping an empty lib/ next to a
+# binary that needs no lib/ only invites someone to put something in it.
+if rmdir "$STAGE/lib" 2>/dev/null; then
+    echo "No self-built shared libraries to bundle (static dependency set)."
+else
+    echo "Bundled libraries:"
+    ls -1 "$STAGE/lib" | sed 's/^/    /'
+fi
 
 echo "Creating $NAME.tar.zst…"
 rm -f "$NAME.tar.zst"

@@ -90,11 +90,17 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/deps
-          key: ${{ inputs.os }} ${{ inputs.platform }} sdl-deps ${{ hashFiles('.github/workflows/scripts/linux/build-dependencies-runner.sh', '.github/workflows/scripts/common/*.patch') }}
+          # Static set, shared with the libretro job, which asks for the same
+          # one. The mode is in the key so a shared-mode job added later gets
+          # its own cache instead of being handed archives.
+          key: ${{ inputs.os }} ${{ inputs.platform }} static-deps ${{ hashFiles('.github/workflows/scripts/linux/build-dependencies-runner.sh', '.github/workflows/scripts/common/*.patch') }}
 
       - name: Build Dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: .github/workflows/scripts/linux/build-dependencies-runner.sh "$HOME/deps"
+        # The handheld tarball travels to devices whose base system we do not
+        # control - Armbian and friends have complained about exactly this - so
+        # everything we build ourselves goes inside the binary.
+        run: ARMSX2_DEPS_STATIC=1 .github/workflows/scripts/linux/build-dependencies-runner.sh "$HOME/deps"
 
       - name: Generate CMake
         run: |

@@ -808,14 +808,21 @@ if(USE_VULKAN)
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 	endif()
 
-	# Off Android the shader compiler is dlopened, which means the core needs a
+	# Off Android the shader compiler is dlopened, which means the binary needs a
 	# shaderc on the machine it is run on - and on a machine without one the
 	# Vulkan renderer fails to build a pipeline and the frontend gets a black
 	# screen. Where the static archive was found, link it and call it directly:
-	# then the core carries its own. A shared library is deliberately not linked
-	# here, since a hard dependency would stop the core loading at all for
+	# then the binary carries its own. A shared library is deliberately not
+	# linked here, since a hard dependency would stop it loading at all for
 	# someone who is happily using the OpenGL renderer.
-	if(ENABLE_LIBRETRO AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
+	#
+	# Finding the archive is the whole condition; the frontend is not part of it.
+	# The libretro core was simply the first thing to travel to a machine we know
+	# nothing about, and the SDL handheld tarball does exactly the same - it too
+	# would otherwise dlopen a shaderc that its own dependency set no longer
+	# builds. Every build against a shared shaderc is unaffected, because then
+	# this does not match.
+	if(NOT ANDROID AND TARGET Shaderc::shaderc_shared
 			AND SHADERC_LIBRARY MATCHES "shaderc_combined")
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_LINK_SHADERC)
