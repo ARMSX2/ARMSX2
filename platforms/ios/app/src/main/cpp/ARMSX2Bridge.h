@@ -223,6 +223,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
 // patch-enable-list helpers. Pass nil for isoName to target the running game (live-applies).
 + (BOOL)hasPerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName NS_SWIFT_NAME(hasPerGameINIValue(_:key:forISO:));
+// Presence and value in one read; nil when the per-game INI has no entry.
++ (nullable NSNumber *)perGameINIBoolIfPresent:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName NS_SWIFT_NAME(perGameINIBoolIfPresent(_:key:forISO:));
 + (int)getPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIInt(_:key:defaultValue:forISO:));
 + (BOOL)getPerGameINIBool:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIBool(_:key:defaultValue:forISO:));
 + (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nullable NSString *)isoName NS_SWIFT_NAME(getPerGameINIFloat(_:key:defaultValue:forISO:));
@@ -239,6 +241,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // variant only reads VM state; the ISO variant opens the disc image, so keep it
 // off render paths. Pass nil for isoName to target the running game.
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame;
+// Serial and crc from VM state, without the INI parse gameSettingsForCurrentGame does.
++ (nullable NSDictionary<NSString *, NSString *> *)perGameIdentityForCurrentGame;
 + (nonnull NSString *)perGameIdentityKeyForISO:(nullable NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
 
 // Runtime speed control

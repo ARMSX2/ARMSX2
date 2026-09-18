@@ -1408,12 +1408,12 @@ struct GameScreenView: View {
     }
 
     private func runtimePadLayoutIdentityForCurrentGame() -> PadLayoutGameIdentity? {
-        guard let info = ARMSX2Bridge.gameSettingsForCurrentGame() else {
+        guard let info = ARMSX2Bridge.perGameIdentityForCurrentGame() else {
             return nil
         }
         return PadLayoutGameIdentity(
-            serial: info["serial"] as? String,
-            crc: info["crc"] as? String
+            serial: info["serial"],
+            crc: info["crc"]
         )
     }
 
