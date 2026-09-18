@@ -13,8 +13,6 @@ SECTION = SWIFT / "Views/Settings/PerGame/PerGameShaderSection.swift"
 STRING_METHODS = (
     "getPerGameINIString:",
     "setPerGameINIString:",
-    "getPerGameINIStringForCurrentGame:",
-    "setPerGameINIStringForCurrentGame:",
 )
 RESOLVER = "ShaderPresetLibrary.resolve"
 TOKEN_KEY = "ShaderChainPresetRef"

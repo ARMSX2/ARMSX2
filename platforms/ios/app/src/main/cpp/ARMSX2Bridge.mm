@@ -3051,10 +3051,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     }
 }
 
-+ (void)setGameSettingsForCurrentGame:(nonnull NSDictionary<NSString *, id> *)settings {
-    [self setGameSettings:settings forISO:nil];
-}
-
 
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName {
     NSString* resolvedPath = ARMSX2ResolveISOPath(elfName);
@@ -3955,40 +3951,8 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
     return [self hasPerGameINIValue:section key:key forISO:nil];
 }
 
-+ (int)getPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def {
-    return [self getPerGameINIInt:section key:key defaultValue:def forISO:nil];
-}
-
 + (BOOL)getPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def {
     return [self getPerGameINIBool:section key:key defaultValue:def forISO:nil];
-}
-
-+ (float)getPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def {
-    return [self getPerGameINIFloat:section key:key defaultValue:def forISO:nil];
-}
-
-+ (nonnull NSString *)getPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def {
-    return [self getPerGameINIString:section key:key defaultValue:def forISO:nil];
-}
-
-+ (void)setPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value {
-    [self setPerGameINIInt:section key:key value:value forISO:nil];
-}
-
-+ (void)setPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value {
-    [self setPerGameINIBool:section key:key value:value forISO:nil];
-}
-
-+ (void)setPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value {
-    [self setPerGameINIFloat:section key:key value:value forISO:nil];
-}
-
-+ (void)setPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value {
-    [self setPerGameINIString:section key:key value:value forISO:nil];
-}
-
-+ (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key {
-    [self deletePerGameINIValue:section key:key forISO:nil];
 }
 
 + (nonnull NSString *)perGameIdentityKeyForISO:(nullable NSString *)isoName {
@@ -4398,19 +4362,11 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     return ARMSX2PatchEnableListForIdentity(serial, crc, section, key);
 }
 
-+ (NSArray<NSString *> *)patchEnableListForCurrentGameSection:(NSString *)section key:(NSString *)key {
-    return [self patchEnableListForISO:nil section:section key:key];
-}
-
 + (void)setPatchEnableList:(NSArray<NSString *> *)values forISO:(nullable NSString *)isoName section:(NSString *)section key:(NSString *)key {
     std::string serial;
     u32 crc = 0;
     if (!ARMSX2PerGameIdentityForISO(isoName, &serial, &crc)) return;
     ARMSX2SetPatchEnableListForIdentity(values, serial, crc, section, key);
-}
-
-+ (void)setPatchEnableListForCurrentGame:(NSArray<NSString *> *)values section:(NSString *)section key:(NSString *)key {
-    [self setPatchEnableList:values forISO:nil section:section key:key];
 }
 
 #pragma mark - Memory cards

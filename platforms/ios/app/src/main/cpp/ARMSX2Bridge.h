@@ -145,7 +145,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
 + (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
 + (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
-+ (void)setGameSettingsForCurrentGame:(nonnull NSDictionary<NSString *, id> *)settings;
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
 + (void)setLinkedDiscPath:(nullable NSString *)discPath forELF:(nonnull NSString *)elfName NS_SWIFT_NAME(setLinkedDiscPath(_:forELF:));
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(clearCache(forISO:));
@@ -234,15 +233,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setPerGameINIString(_:key:value:forISO:));
 + (void)deletePerGameINIValue:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName NS_SWIFT_NAME(deletePerGameINIValue(_:key:forISO:));
 + (BOOL)hasPerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(hasPerGameINIValueForCurrentGame(_:key:));
-+ (int)getPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def NS_SWIFT_NAME(getPerGameINIIntForCurrentGame(_:key:defaultValue:));
 + (BOOL)getPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def NS_SWIFT_NAME(getPerGameINIBoolForCurrentGame(_:key:defaultValue:));
-+ (float)getPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def NS_SWIFT_NAME(getPerGameINIFloatForCurrentGame(_:key:defaultValue:));
-+ (nonnull NSString *)getPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def NS_SWIFT_NAME(getPerGameINIStringForCurrentGame(_:key:defaultValue:));
-+ (void)setPerGameINIIntForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value NS_SWIFT_NAME(setPerGameINIIntForCurrentGame(_:key:value:));
-+ (void)setPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value NS_SWIFT_NAME(setPerGameINIBoolForCurrentGame(_:key:value:));
-+ (void)setPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value NS_SWIFT_NAME(setPerGameINIFloatForCurrentGame(_:key:value:));
-+ (void)setPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value NS_SWIFT_NAME(setPerGameINIStringForCurrentGame(_:key:value:));
-+ (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(deletePerGameINIValueForCurrentGame(_:key:));
 
 // Identity the accessors above key on, or "" when there isn't one. The current-game
 // variant only reads VM state; the ISO variant opens the disc image, so keep it
@@ -282,18 +273,11 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                section:(nonnull NSString *)section
                                                    key:(nonnull NSString *)key
         NS_SWIFT_NAME(patchEnableList(forISO:section:key:));
-+ (nonnull NSArray<NSString *> *)patchEnableListForCurrentGameSection:(nonnull NSString *)section
-                                                                  key:(nonnull NSString *)key
-        NS_SWIFT_NAME(patchEnableListForCurrentGame(section:key:));
 + (void)setPatchEnableList:(nonnull NSArray<NSString *> *)values
                     forISO:(nullable NSString *)isoName
                    section:(nonnull NSString *)section
                        key:(nonnull NSString *)key
         NS_SWIFT_NAME(setPatchEnableList(_:forISO:section:key:));
-+ (void)setPatchEnableListForCurrentGame:(nonnull NSArray<NSString *> *)values
-                                 section:(nonnull NSString *)section
-                                     key:(nonnull NSString *)key
-        NS_SWIFT_NAME(setPatchEnableListForCurrentGame(_:section:key:));
 
 // Memory card management
 + (nonnull NSString *)memoryCardDirectory;
