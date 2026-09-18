@@ -51,7 +51,9 @@ SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 [[ -n "$SDK" && -d "$SDK" ]] || { echo "FATAL: ANDROID_HOME/ANDROID_SDK_ROOT not set" >&2; exit 1; }
 BT="$(find "$SDK/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
 ZIPALIGN="$BT/zipalign"; APKSIGNER="$BT/apksigner"; AAPT="$BT/aapt2"
-for t in "$ZIPALIGN" "$APKSIGNER"; do
+# aapt2 is required (not optional): the VERIFY step uses it to assert the APK really carries
+# $APK_ID, and a missing tool must fail the build rather than silently skip that check.
+for t in "$ZIPALIGN" "$APKSIGNER" "$AAPT"; do
 	[[ -x "$t" ]] || { echo "FATAL: missing build-tool $t" >&2; exit 1; }
 done
 
@@ -153,12 +155,11 @@ echo "-- 16k alignment --"; "$ZIPALIGN" -c -P 16 4 "$OUT" && echo "  align OK"
 echo "-- signature --"; "$APKSIGNER" verify "$OUT" && echo "  sig OK"
 # The whole point of APK_ID is a side-by-side install; if the -P property ever fails to reach AGP
 # the APK silently comes out as com.armsx2 again and would update over the stable app instead.
-# Fail closed rather than publish that.
-if [[ -x "$AAPT" ]]; then
-	badging="$("$AAPT" dump badging "$OUT" 2>/dev/null)"
-	echo "$badging" | grep -E "package: name|versionCode|versionName" | head -2
-	echo "$badging" | grep -q "package: name='${APK_ID}'" \
-		|| { echo "FATAL: APK package is not ${APK_ID} — applicationId property did not take" >&2; exit 1; }
-fi
+# Fail closed rather than publish that. (aapt2 is required at the top of the script, so this
+# cannot be skipped by a missing tool.)
+badging="$("$AAPT" dump badging "$OUT" 2>/dev/null)"
+echo "$badging" | grep -E "package: name|versionCode|versionName" | head -2
+echo "$badging" | grep -q "package: name='${APK_ID}'" \
+	|| { echo "FATAL: APK package is not ${APK_ID} — applicationId property did not take" >&2; exit 1; }
 echo; echo "OUTPUT: $OUT"
 echo "NIGHTLY-DUALCORE-DONE"

@@ -137,6 +137,13 @@ jobs:
             echo "- Android: Android-arm64.apk (installs as ARMSX2 Nightly, alongside the stable app)"
             echo "- iOS: iOS-arm64.ipa, unsigned, sideload it"
             echo
+            # Temporary while old com.armsx2 nightlies are still installed. The old updater shows
+            # this body, so it is how those users learn there is no in-place route back to stable.
+            echo 'Coming from an old nightly? It is now a separate app (ARMSX2 Nightly) that installs'
+            echo 'beside the stable app. The old nightly cannot install a stable over itself, because'
+            echo 'Android refuses that version downgrade, so to return to stable: back up your saves'
+            echo 'and memory cards, uninstall the old nightly, then install a stable APK.'
+            echo
             echo "## What's new"
             if [ -s changes.txt ]; then cat changes.txt; else echo "- No notable changes since the last nightly."; fi
             if [ -n "$PREV" ]; then

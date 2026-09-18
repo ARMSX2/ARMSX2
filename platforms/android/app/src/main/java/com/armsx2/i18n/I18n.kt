@@ -329,8 +329,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "update.downloadFailed" to "Download failed",
     "update.checkOnLaunch" to "Check on launch",
     "update.checkOnLaunch.desc" to "Automatically check GitHub for a new version each time ARMSX2 starts.",
-    "update.includeNightly" to "Include nightly versions",
-    "update.includeNightly.desc" to "Also offer nightly (pre-release) builds. A nightly installs as a separate app (ARMSX2 Nightly) beside this one, so both can stay installed. Off by default.",
     "update.later" to "Later",
     "app.theme.system" to "System",
     "app.theme.materialyou" to "Material You",
