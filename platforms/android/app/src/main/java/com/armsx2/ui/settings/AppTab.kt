@@ -447,6 +447,54 @@ fun AppTab() {
             description = str("app.bootLogo.desc"),
             onChange = { BootLogoPreferences.set(it) },
         )
+        // Custom intro: a video the user picked from their own device, copied into app storage
+        // so it survives the source moving and plays even before an SD card mounts. Only shown
+        // while the boot animation is on, since it is what that toggle plays.
+        if (BootLogoPreferences.enabled.value) {
+            // Resolved here: str() is composable and the picker's result callback is not.
+            val introSetMsg = str("app.bootIntro.set")
+            val introTooLargeMsg = str("app.bootIntro.tooLarge")
+            val introUnreadableMsg = str("app.bootIntro.unreadable")
+            val introPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri ->
+                if (uri != null) {
+                    val name = androidx.documentfile.provider.DocumentFile
+                        .fromSingleUri(appContext, uri)?.name ?: "Custom intro"
+                    val msg = when (com.armsx2.BootIntro.setCustom(appContext, uri, name)) {
+                        com.armsx2.BootIntro.SetResult.OK -> introSetMsg
+                        com.armsx2.BootIntro.SetResult.TOO_LARGE -> introTooLargeMsg
+                        com.armsx2.BootIntro.SetResult.UNREADABLE -> introUnreadableMsg
+                    }
+                    android.widget.Toast.makeText(appContext, msg, android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            val introName = com.armsx2.BootIntro.customName.value
+            Text(
+                if (introName != null) str("app.bootIntro.current").format(introName)
+                else str("app.bootIntro.default"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val pick = { introPicker.launch(arrayOf("video/*")) }
+                OutlinedButton(
+                    onClick = pick,
+                    modifier = Modifier.controllerFocusable("app.bootIntro.choose", onConfirm = pick),
+                ) { Text(str("app.bootIntro.choose")) }
+                if (introName != null) {
+                    val reset = { com.armsx2.BootIntro.clearCustom(appContext) }
+                    OutlinedButton(
+                        onClick = reset,
+                        modifier = Modifier.controllerFocusable("app.bootIntro.reset", onConfirm = reset),
+                    ) { Text(str("app.bootIntro.reset")) }
+                }
+            }
+        }
 
         BackupRestoreRows()
 
