@@ -53,7 +53,11 @@ object TouchControls {
      *  close match for the small top-right button NetherSX2 draws. */
     const val PAUSE_DEFAULT_DP = 48f
     private const val KEY_FACE_MULTI = "touch.faceMulti"
+    // Legacy boolean. Still READ once to migrate a user who has never seen the three-way
+    // setting, and still WRITTEN (as mode == HOLD_ALL) so a downgrade lands on the closest
+    // behaviour the older build has.
     private const val KEY_TOUCH_GLIDING = "touch.gliding"
+    private const val KEY_GLIDE_MODE = "touch.glideMode"
     private const val KEY_TOUCH_HAPTICS = "touch.haptics"
     private const val KEY_GESTURE_ON = "touch.gesture.enabled"
     private const val KEY_GESTURE_UP = "touch.gesture.up"
@@ -186,11 +190,28 @@ object TouchControls {
     // held). Persisted under KEY_FACE_MULTI. Default ON.
     val faceMultiTouch = mutableStateOf(true)
 
-    // Touch Gliding (NetherSX2-style): while ON, dragging a finger LATCHES every
-    // button it crosses (held until the finger lifts) instead of only the one it's
-    // currently over — so you can hold several face/shoulder buttons with one drag.
-    // Requires the multi-touch layer (faceMultiTouch). Default OFF. Under KEY_TOUCH_GLIDING.
-    val touchGliding = mutableStateOf(false)
+    /**
+     * What a finger sliding across the face/shoulder buttons presses. Requires the
+     * multi-touch layer (faceMultiTouch); without it each button handles its own touch
+     * and nothing can be glided across at all.
+     *
+     * Three modes because players genuinely want different things, and no single one is
+     * right for every game:
+     *
+     *   FOLLOW      only the button(s) under the finger right now, released as it leaves.
+     *               PPSSPP's behaviour -- sliding still works, it just never accumulates.
+     *               Fighters and rhythm games, where a slide is a sequence of inputs.
+     *   HOLD_FIRST  the first button the finger lands on stays held until lift, plus
+     *               whatever it is over now. Hold Cross, slide to Square -> both; slide off
+     *               Square -> Cross still held. For two-input movement (Sly, Jak).
+     *   HOLD_ALL    every button crossed stays held until lift. NetherSX2's behaviour.
+     *
+     * FOLLOW and HOLD_ALL are exactly the old "Gliding Off" / "Gliding On", so nobody's
+     * controls change on update. Stored by NAME, never ordinal, so reordering is safe.
+     */
+    enum class GlideMode { FOLLOW, HOLD_FIRST, HOLD_ALL }
+
+    val glideMode = mutableStateOf(GlideMode.FOLLOW)
 
     // Touch Haptics (issue #247, PPSSPP/Azahar-style): a short vibration tick on every
     // on-screen button press (via NativeApp.touchHaptic). Independent of game rumble.
@@ -738,7 +759,11 @@ object TouchControls {
             MainActivityRuntime.prefs.getFloat(KEY_GESTURE_SENS, 0.17f).coerceIn(0.05f, 0.60f)
         gestureDoubleTap.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_DTAP, 0)
         gestureDoubleTapHold.value = MainActivityRuntime.prefs.getBoolean(KEY_GESTURE_DTAP_HOLD, false)
-        touchGliding.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
+        glideMode.value = MainActivityRuntime.prefs.getString(KEY_GLIDE_MODE, null)
+            ?.let { name -> GlideMode.entries.firstOrNull { it.name == name } }
+            // Never set: carry over the old on/off exactly, so the update changes nothing.
+            ?: if (MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)) GlideMode.HOLD_ALL
+               else GlideMode.FOLLOW
         touchHaptics.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
         multiTouchRadius.floatValue = MainActivityRuntime.prefs.getFloat(KEY_MULTI_RADIUS, 0.62f).coerceIn(0.50f, 0.95f)
         dpadSpacing.floatValue = MainActivityRuntime.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
@@ -841,7 +866,8 @@ object TouchControls {
                 .putFloat(KEY_GESTURE_SENS, gestureSwipeSensitivity.floatValue)
                 .putInt(KEY_GESTURE_DTAP, gestureDoubleTap.intValue)
                 .putBoolean(KEY_GESTURE_DTAP_HOLD, gestureDoubleTapHold.value)
-                .putBoolean(KEY_TOUCH_GLIDING, touchGliding.value)
+                .putString(KEY_GLIDE_MODE, glideMode.value.name)
+                .putBoolean(KEY_TOUCH_GLIDING, glideMode.value == GlideMode.HOLD_ALL)
                 .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
                 .putFloat(KEY_MULTI_RADIUS, multiTouchRadius.floatValue)
                 .putFloat(KEY_DPAD_SPACING, dpadSpacing.floatValue)
@@ -1247,8 +1273,8 @@ object TouchControls {
             .filter { it.kind == TouchButtonId.Kind.FACE || it.kind == TouchButtonId.Kind.SHOULDER }
             .map { it.keycode to it.label }
 
-    fun setTouchGliding(enabled: Boolean) {
-        touchGliding.value = enabled
+    fun setGlideMode(mode: GlideMode) {
+        glideMode.value = mode
         persist()
     }
 

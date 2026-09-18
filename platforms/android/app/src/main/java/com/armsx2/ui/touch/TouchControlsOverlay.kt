@@ -333,7 +333,7 @@ fun TouchControlsOverlay() {
                 layout = layout,
                 widthPx = widthPx,
                 heightPx = heightPx,
-                glide = TouchControls.touchGliding.value,
+                glideMode = TouchControls.glideMode.value,
                 onPressedChange = { unifiedPressed = it },
             )
         }
@@ -659,7 +659,7 @@ private fun UnifiedTouchLayer(
     layout: TouchLayout,
     widthPx: Float,
     heightPx: Float,
-    glide: Boolean = false,
+    glideMode: TouchControls.GlideMode = TouchControls.GlideMode.FOLLOW,
     onPressedChange: (Set<TouchButtonId>) -> Unit,
 ) {
     if (widthPx <= 0f || heightPx <= 0f) return
@@ -724,7 +724,7 @@ private fun UnifiedTouchLayer(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(buttonRects, foreignBounds, dims, glide) {
+            .pointerInput(buttonRects, foreignBounds, dims, glideMode) {
                 var pressed = emptySet<TouchButtonId>()
                 fun updatePressed(next: Set<TouchButtonId>) {
                     if (pressed == next) return
@@ -760,17 +760,29 @@ private fun UnifiedTouchLayer(
                     updatePressed(emptySet())
                 }
                 awaitPointerEventScope {
-                    // Per-finger state:
-                    //   latched  — every button this finger has crossed since DOWN
-                    //              (glide mode; held until lift).
-                    //   current  — the button(s) directly under this finger right now
-                    //              (non-glide mode; released on leave).
-                    //   foreign  — fingers whose DOWN was consumed by a widget above
-                    //              us or landed inside a d-pad/stick/tap-hold region;
-                    //              never contribute to the aggregate.
+                    // Per-finger state. All three are tracked whatever the mode, and the mode
+                    // only chooses which to read -- see contribution() -- so each mode is a
+                    // pure function of the same history rather than a separate code path.
+                    //   current  -- the button(s) directly under this finger right now.
+                    //   first    -- the first NON-EMPTY hit this finger landed on. A touch that
+                    //               starts between buttons and slides onto one still gets a
+                    //               first button, rather than being locked to nothing.
+                    //   latched  -- every button this finger has crossed since DOWN.
+                    //   foreign  -- fingers whose DOWN was consumed by a widget above
+                    //               us or landed inside a d-pad/stick/tap-hold region;
+                    //               never contribute to the aggregate.
                     val latched = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, MutableSet<TouchButtonId>>()
                     val current = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
+                    val first = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
                     val foreign = mutableSetOf<androidx.compose.ui.input.pointer.PointerId>()
+                    // What one finger holds down. FOLLOW and HOLD_ALL read exactly what the old
+                    // glide=false and glide=true read, so those two are unchanged.
+                    fun contribution(id: androidx.compose.ui.input.pointer.PointerId): Set<TouchButtonId> =
+                        when (glideMode) {
+                            TouchControls.GlideMode.FOLLOW -> current[id].orEmpty()
+                            TouchControls.GlideMode.HOLD_FIRST -> first[id].orEmpty() + current[id].orEmpty()
+                            TouchControls.GlideMode.HOLD_ALL -> latched[id].orEmpty()
+                        }
                     try {
                         while (true) {
                             val ev = awaitPointerEvent()
@@ -787,22 +799,17 @@ private fun UnifiedTouchLayer(
                                     // Lift / cancel: drop this finger's state entirely.
                                     latched.remove(ch.id)
                                     current.remove(ch.id)
+                                    first.remove(ch.id)
                                     foreign.remove(ch.id)
                                     continue
                                 }
                                 if (ch.id in foreign) continue
                                 val h = hits(ch.position)
-                                if (glide) {
-                                    latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
-                                } else {
-                                    current[ch.id] = h
-                                }
+                                current[ch.id] = h
+                                latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
+                                if (ch.id !in first && h.isNotEmpty()) first[ch.id] = h
                             }
-                            val agg = if (glide) {
-                                latched.values.flatten().toSet()
-                            } else {
-                                current.values.flatten().toSet()
-                            }
+                            val agg = current.keys.flatMap { contribution(it) }.toSet()
                             (pressed - agg).forEach { sendDigital(it.keycode, false) }
                             (agg - pressed).forEach { sendDigital(it.keycode, true) }
                             // Per-finger consume: only claim changes for fingers WE own
@@ -811,11 +818,7 @@ private fun UnifiedTouchLayer(
                             // Pause long-press on a finger we don't own.
                             for (ch in ev.changes) {
                                 if (ch.id in foreign) continue
-                                val owns = if (glide)
-                                    !latched[ch.id].isNullOrEmpty()
-                                else
-                                    !current[ch.id].isNullOrEmpty()
-                                if (owns) ch.consume()
+                                if (contribution(ch.id).isNotEmpty()) ch.consume()
                             }
                             updatePressed(agg)
                         }
@@ -2056,9 +2059,22 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             ToolbarChip(if (TouchControls.faceMultiTouch.value) str("touch.editor.multiTouchOn") else str("touch.editor.multiTouchOff")) {
                 TouchControls.setFaceMultiTouch(!TouchControls.faceMultiTouch.value)
             }
-            // Touch Gliding: drag a finger to hold every button it crosses (NetherSX2-style).
-            ToolbarChip(if (TouchControls.touchGliding.value) str("touch.editor.glidingOn") else str("touch.editor.glidingOff")) {
-                TouchControls.setTouchGliding(!TouchControls.touchGliding.value)
+            // Glide: what a finger sliding across buttons presses. Cycles Follow -> Hold first
+            // -> Hold all. Only means anything with multi-touch on -- without it each button
+            // owns its own touch and nothing can be glided across -- so the chip is disabled
+            // there instead of silently doing nothing, which is what the old toggle did.
+            val multi = TouchControls.faceMultiTouch.value
+            ToolbarChip(
+                if (!multi) str("touch.editor.glideNeedsMulti")
+                else when (TouchControls.glideMode.value) {
+                    TouchControls.GlideMode.FOLLOW -> str("touch.editor.glideFollow")
+                    TouchControls.GlideMode.HOLD_FIRST -> str("touch.editor.glideHoldFirst")
+                    TouchControls.GlideMode.HOLD_ALL -> str("touch.editor.glideHoldAll")
+                },
+                enabled = multi,
+            ) {
+                val modes = TouchControls.GlideMode.entries
+                TouchControls.setGlideMode(modes[(TouchControls.glideMode.value.ordinal + 1) % modes.size])
             }
             ToolbarChip(if (TouchControls.floatingStick.value) str("touch.editor.floatingStickOn") else str("touch.editor.floatingStickOff")) {
                 TouchControls.setFloatingStick(!TouchControls.floatingStick.value)
@@ -2213,15 +2229,20 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ToolbarChip(label: String, onClick: () -> Unit) {
+private fun ToolbarChip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         Modifier
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1F1F2C))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
-        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            label,
+            color = if (enabled) Color.White else Color.White.copy(alpha = 0.4f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
