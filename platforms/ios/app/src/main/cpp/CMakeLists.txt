@@ -86,13 +86,13 @@ set(TOP_CMAKE_WAS_SOURCED TRUE)
 # they are built from the repo root. See REFACTOR_STATUS.md.
 get_filename_component(ARMSX2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
 
-# Use the iOS-aware cmake modules vendored beside this entry point (copies of
-# the known-good modules: Pcsx2Utils has the IOS branch + a cross-compile-safe
-# page-size detect, BuildParameters sets Apple-Silicon ARM64 flags, SearchForStuff
-# builds all deps from vendored sources instead of desktop find_package). The
-# root cmake/ modules are desktop-only and do system find_package() calls iOS
-# cannot satisfy, so we point at our LOCAL dir (mirroring how Android does it).
-set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+# The iOS-aware modules vendored beside this entry point come first so they win
+# over their root namesakes: BuildParameters sets Apple-Silicon ARM64 flags and
+# SearchForStuff builds every dep from vendored sources rather than making the
+# desktop find_package() calls iOS cannot satisfy. Root is the fallback, and
+# Pcsx2Utils resolves there — it carries the IOS branch and the cross-compile
+# page-size escape, and its detect_* functions run only under LINUX.
+set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" "${ARMSX2_ROOT}/cmake")
 
 # include some generic functions to ensure correctness of the env
 include(Pcsx2Utils)
