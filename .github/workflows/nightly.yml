@@ -35,12 +35,19 @@ jobs:
       proceed: ${{ steps.check.outputs.proceed }}
       date: ${{ steps.check.outputs.date }}
       sha: ${{ steps.check.outputs.sha }}
+      version_name: ${{ steps.check.outputs.version_name }}
+      version_code: ${{ steps.check.outputs.version_code }}
       notes: ${{ steps.notes.outputs.body }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0     # needed for the 24h commit count below
+          fetch-tags: true   # previous-nightly tag for the changelog, and the version fallback
       - id: check
+        env:
+          # Read access for `gh release list`. Available in-repo regardless of the
+          # workflow-level contents:write permission.
+          GH_TOKEN: ${{ github.token }}
         run: |
           DATE=$(date -u +%Y%m%d)
           SHA=$(git rev-parse --short HEAD)
@@ -53,10 +60,32 @@ jobs:
           else
             PROCEED=false
           fi
+          # Nightly version identity, computed once here and handed to the Android
+          # job, which checks out shallowly and has no tags.
+          #
+          # Base = newest STABLE release tag from the Releases API, not a tag scan.
+          # ARMSX2/ARMSX2 carries PCSX2's full tag history (~808 v2.x tags) and those
+          # are tag-only, never releases, so the API is the authoritative "what did
+          # ARMSX2 ship" source. The digit-prefix filter drops the iOS release channel
+          # (tags like iOSv2.5.2, which publish no APK). Result reads like
+          # 2.6.9-nightly.20260918.58c812a77a. Falls back to the nearest reachable
+          # non-nightly git tag if the API is unreachable.
+          # versionCode is the UTC date as YYYYMMDD: monotonic night over night,
+          # self-describing, and inside int32 until 2147.
+          BASE_TAG="$(gh release list -R "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts -L 100 \
+            --json tagName --jq '[.[] | .tagName | select(test("^[0-9]+[.][0-9]+"))] | .[0]' 2>/dev/null || true)"
+          if [ -z "$BASE_TAG" ]; then
+            BASE_TAG="$(git describe --abbrev=0 --tags --exclude 'nightly-*' 2>/dev/null || true)"
+            BASE_TAG="${BASE_TAG#v}"
+          fi
+          VN="${BASE_TAG:-0.0.0}-nightly.${DATE}.${SHA}"
+          VC="$DATE"
           echo "date=$DATE"       >> "$GITHUB_OUTPUT"
           echo "sha=$SHA"         >> "$GITHUB_OUTPUT"
           echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
-          echo "proceed=$PROCEED date=$DATE sha=$SHA"
+          echo "version_name=$VN" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+          echo "proceed=$PROCEED date=$DATE sha=$SHA version=$VN vc=$VC"
 
       # Plain-language changelog for the release body: one bullet per commit
       # since the previous nightly tag, with noise filtered and dev "[scope]"
@@ -105,7 +134,7 @@ jobs:
             echo "- Windows arm64: Windows-arm64.zip"
             echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst, a 4K-page build"
             echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst, a 4K-page build (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
-            echo "- Android: Android-arm64.apk, sideload it"
+            echo "- Android: Android-arm64.apk (installs as ARMSX2 Nightly, alongside the stable app)"
             echo "- iOS: iOS-arm64.ipa, unsigned, sideload it"
             echo
             echo "## What's new"
@@ -245,14 +274,24 @@ jobs:
       # nightly matches release performance. See tools/ci-nightly-dualcore.sh.
       - name: Build dual-core (4k + 16k) + PGO APK
         env:
-          FLAVOR: Github   # sideload build (com.armsx2)
-          # Rotation signing so a nightly installs OVER an existing com.armsx2 build.
-          # Add these repo secrets (base64 the keystores + lineage.bin):
+          FLAVOR: Github
+          # Separate package + label so nightly installs BESIDE stable com.armsx2 instead of
+          # replacing it. This is also what keeps the nightly's in-app updater on the nightly
+          # channel: the app is built with -Parmsx2.channel=nightly (see ci-nightly-dualcore.sh).
+          APK_ID: com.armsx2.nightly
+          # Version identity comes from the gate job, which has full history + tags. Do NOT
+          # recompute here: this job checks out one commit with no tags, and the old inline
+          # grep simply matched the hardcoded 2.6.1 fallback in build.gradle.kts, so every
+          # nightly reported 2.6.1.
+          VC: ${{ needs.gate.outputs.version_code }}
+          VN: ${{ needs.gate.outputs.version_name }}
+          # Rotation signing keeps every nightly on ONE certificate so a nightly updates over
+          # the previous nightly. Add these repo secrets (base64 the keystores + lineage.bin):
           #   NIGHTLY_DEBUG_KS_B64      = base64 of the <=API32 debug keystore (f942d6bb)
           #   NIGHTLY_RELEASE_KS_B64    = base64 of armsx2_release.jks (df91c9ce)
           #   NIGHTLY_LINEAGE_B64       = base64 of the signing lineage .bin
           #   NIGHTLY_RELEASE_KS_PASS / NIGHTLY_RELEASE_KEY_ALIAS / NIGHTLY_RELEASE_KEY_PASS
-          # Without them the script warns and uses a throwaway key (won't update-install).
+          # Without them the script refuses to build (a throwaway key would strand users).
           ROTATION_DEBUG_KS_B64: ${{ secrets.NIGHTLY_DEBUG_KS_B64 }}
           ROTATION_RELEASE_KS_B64: ${{ secrets.NIGHTLY_RELEASE_KS_B64 }}
           ROTATION_LINEAGE_B64: ${{ secrets.NIGHTLY_LINEAGE_B64 }}
@@ -260,13 +299,6 @@ jobs:
           ROTATION_RELEASE_KEY_ALIAS: ${{ secrets.NIGHTLY_RELEASE_KEY_ALIAS }}
           ROTATION_RELEASE_KEY_PASS: ${{ secrets.NIGHTLY_RELEASE_KEY_PASS }}
         run: |
-          # versionCode = Unix seconds since 2023-11-14: monotonic, unique per build, and
-          # always far above the manual 10xx codes, so a nightly always installs over the
-          # previously installed build (and over the last hand-built release). Fits int32
-          # for ~60 years. Manual builds, if any, should stay below or also use this.
-          export VC="$(( $(date -u +%s) - 1700000000 ))"
-          export VN="$(grep 'versionName' app/build.gradle.kts | sed -n 's/.*?:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-          export VN="${VN:-nightly}"
           if [ -n "$ROTATION_DEBUG_KS_B64" ] && [ -n "$ROTATION_RELEASE_KS_B64" ] && [ -n "$ROTATION_LINEAGE_B64" ]; then
             printf '%s' "$ROTATION_DEBUG_KS_B64"   | base64 -d > "$RUNNER_TEMP/debug.jks"
             printf '%s' "$ROTATION_RELEASE_KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"

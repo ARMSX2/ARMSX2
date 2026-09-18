@@ -330,7 +330,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "update.checkOnLaunch" to "Check on launch",
     "update.checkOnLaunch.desc" to "Automatically check GitHub for a new version each time ARMSX2 starts.",
     "update.includeNightly" to "Include nightly versions",
-    "update.includeNightly.desc" to "Also offer nightly (pre-release) builds, not just stable releases. Off by default. A nightly build can’t downgrade back to a stable release in-app — reinstall a stable APK manually if you want to switch back.",
+    "update.includeNightly.desc" to "Also offer nightly (pre-release) builds. A nightly installs as a separate app (ARMSX2 Nightly) beside this one, so both can stay installed. Off by default.",
     "update.later" to "Later",
     "app.theme.system" to "System",
     "app.theme.materialyou" to "Material You",
