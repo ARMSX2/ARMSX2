@@ -10,7 +10,9 @@ set(date "")
 set(rev "")
 
 if(EXISTS "${GIT_WORKING_DIR}/.git")
-	execute_process(WORKING_DIRECTORY "${GIT_WORKING_DIR}" COMMAND git describe --tags
+	# --exclude nightly-* keeps the nearest nightly tag from becoming the reported version;
+	# the regexes below accept both ARMSX2's undecorated tags (2.6.9) and upstream's (v2.9.30).
+	execute_process(WORKING_DIRECTORY "${GIT_WORKING_DIR}" COMMAND git describe --tags --exclude nightly-*
 		OUTPUT_VARIABLE rev OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 
 	execute_process(WORKING_DIRECTORY "${GIT_WORKING_DIR}" COMMAND git tag --points-at HEAD --sort=version:refname
@@ -40,7 +42,7 @@ if(NOT rev)
 	endif()
 endif()
 
-if("${tag}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+if("${tag}" MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
 	set(contents
 		"#define GIT_TAG \"${tag}\"\n"
 		"#define GIT_TAGGED_COMMIT 1\n"
@@ -48,7 +50,7 @@ if("${tag}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
 		"#define GIT_TAG_MID ${CMAKE_MATCH_2}\n"
 		"#define GIT_TAG_LO  ${CMAKE_MATCH_3}\n"
 		"#define GIT_REV \"${tag}\"\n")
-elseif("${rev}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+elseif("${rev}" MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
 	set(contents
 		"#define GIT_TAG \"${tag}\"\n"
 		"#define GIT_TAGGED_COMMIT 0\n"
