@@ -17,7 +17,11 @@
 #
 # Env:
 #   VC, VN                versionCode / versionName            (required)
-#   FLAVOR                Github (sideload, com.armsx2) | Play (default Github)
+#   FLAVOR                Github (sideload) | Play (default Github)
+#   APK_ID                applicationId (default com.armsx2.nightly). Nightlies use their own id
+#                         so they install ALONGSIDE the stable com.armsx2 app instead of replacing
+#                         it; the two therefore never share a signing requirement or an updater.
+#   APP_LABEL             android:label override (default @string/app_name_nightly)
 #   PROF                  merged .profdata  (default pgo/armsx2.profdata; if the
 #                         file is absent the build falls back to PGO=none rather
 #                         than failing, so a missing profile never breaks CI)
@@ -37,6 +41,8 @@ VC="${VC:?set VC=<versionCode>}"
 VN="${VN:?set VN=<versionName>}"
 FLAVOR="${FLAVOR:-Github}"                                    # Github | Play
 flavor_lc="$(printf '%s' "$FLAVOR" | tr '[:upper:]' '[:lower:]')"
+APK_ID="${APK_ID:-com.armsx2.nightly}"                        # separate package -> side-by-side install
+APP_LABEL="${APP_LABEL:-@string/app_name_nightly}"
 PROF="${PROF:-$ROOT_DIR/pgo/armsx2.profdata}"
 OUT="${OUT:-$ROOT_DIR/app/build/outputs/apk/nightly/ARMSX2-nightly-${VN}-vc${VC}.apk}"
 
@@ -45,7 +51,9 @@ SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 [[ -n "$SDK" && -d "$SDK" ]] || { echo "FATAL: ANDROID_HOME/ANDROID_SDK_ROOT not set" >&2; exit 1; }
 BT="$(find "$SDK/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
 ZIPALIGN="$BT/zipalign"; APKSIGNER="$BT/apksigner"; AAPT="$BT/aapt2"
-for t in "$ZIPALIGN" "$APKSIGNER"; do
+# aapt2 is required (not optional): the VERIFY step uses it to assert the APK really carries
+# $APK_ID, and a missing tool must fail the build rather than silently skip that check.
+for t in "$ZIPALIGN" "$APKSIGNER" "$AAPT"; do
 	[[ -x "$t" ]] || { echo "FATAL: missing build-tool $t" >&2; exit 1; }
 done
 
@@ -66,7 +74,7 @@ fsize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }   # Linux || macOS
 
 build_core() { # pagesize libname
 	local ps="$1" ln="$2"
-	echo "=== core $ln (page=$ps, flavor=$FLAVOR) ==="
+	echo "=== core $ln (page=$ps, flavor=$FLAVOR, id=$APK_ID) ==="
 	rm -f "$BUILT"
 	"$GRADLE" -p "$ROOT_DIR" ":app:assemble${FLAVOR}Release" \
 		-Parmsx2.hostPageSize="$ps" \
@@ -74,6 +82,9 @@ build_core() { # pagesize libname
 		"${PGO_ARGS[@]}" \
 		-Parmsx2.versionCode="$VC" \
 		-Parmsx2.versionName="$VN" \
+		-Parmsx2.applicationId="$APK_ID" \
+		-Parmsx2.channel=nightly \
+		-Parmsx2.appLabel="$APP_LABEL" \
 		--stacktrace
 	[[ -f "$BUILT" ]] || { echo "FATAL: gradle produced no APK for $ln ($BUILT)" >&2; exit 1; }
 	unzip -l "$BUILT" "lib/arm64-v8a/lib${ln}.so" >/dev/null \
@@ -101,11 +112,13 @@ zip -qd "$UNS" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so
 
 # --- sign ---------------------------------------------------------------------
 # Preferred: the SAME v3 rotation lineage as the hand-built releases (old debug
-# key for API<=32 --next-signer--> release key for API33+). This is what lets a
-# nightly install OVER an existing com.armsx2 install. The three keystores +
-# lineage arrive as repo secrets, decoded to files by the workflow and passed in
-# as ROTATION_* env vars. If they're absent we fall back to a throwaway key and
-# LOUDLY warn (that APK won't update over installed builds).
+# key for API<=32 --next-signer--> release key for API33+). Nightlies now ship a
+# distinct package (com.armsx2.nightly) and install beside the stable app, so this
+# no longer bridges to com.armsx2 — what it still guarantees is that every nightly
+# carries the SAME certificate, so one nightly updates over the previous nightly in
+# place. The three keystores + lineage arrive as repo secrets, decoded to files by
+# the workflow and passed in as ROTATION_* env vars. If they're absent we fall back
+# to a throwaway key and LOUDLY warn (that APK won't update over installed builds).
 rm -f "$OUT"
 if [[ -n "${ROTATION_DEBUG_KS:-}"   && -f "${ROTATION_DEBUG_KS:-/nope}"   \
    && -n "${ROTATION_RELEASE_KS:-}" && -f "${ROTATION_RELEASE_KS:-/nope}" \
@@ -121,14 +134,15 @@ if [[ -n "${ROTATION_DEBUG_KS:-}"   && -f "${ROTATION_DEBUG_KS:-/nope}"   \
 		--lineage "$ROTATION_LINEAGE" \
 		--in "$ALN" --out "$OUT"
 else
-	# FAIL CLOSED. A throwaway-signed nightly cannot update over any rotation-signed
-	# com.armsx2 build (signature mismatch -> "App not installed"), and once published
-	# it strands every user who installs it — a certificate change can never update in
-	# place. So refuse to build rather than ship a non-updatable APK to a public release.
-	# (This is exactly how the first nightly-20260713 stranded users before the secrets
-	#  were wired up.) Provide the ROTATION_* secrets to sign; do not remove this guard.
+	# FAIL CLOSED. A throwaway-signed nightly cannot update over a previously
+	# rotation-signed nightly (signature mismatch -> "App not installed"), and once
+	# published it strands every user who installs it — a certificate change can
+	# never update in place. So refuse to build rather than ship a non-updatable APK
+	# to a public release. (This is exactly how the first nightly-20260713 stranded
+	# users before the secrets were wired up.) Provide the ROTATION_* secrets; do not
+	# remove this guard.
 	echo "FATAL: ROTATION_* signing secrets not set — refusing to build a nightly that" >&2
-	echo "       would NOT install over existing com.armsx2 builds. Set ROTATION_DEBUG_KS," >&2
+	echo "       would NOT install over existing nightlies. Set ROTATION_DEBUG_KS," >&2
 	echo "       ROTATION_RELEASE_KS, ROTATION_LINEAGE, ROTATION_RELEASE_KEY_ALIAS and" >&2
 	echo "       ROTATION_RELEASE_KS_PASS (see nightly.yml secrets)." >&2
 	exit 1
@@ -139,6 +153,13 @@ echo "-- both cores present --"
 unzip -l "$OUT" | grep -E "libemucore_(4k|16k)\.so" || { echo "FATAL: cores missing" >&2; exit 1; }
 echo "-- 16k alignment --"; "$ZIPALIGN" -c -P 16 4 "$OUT" && echo "  align OK"
 echo "-- signature --"; "$APKSIGNER" verify "$OUT" && echo "  sig OK"
-[[ -x "$AAPT" ]] && "$AAPT" dump badging "$OUT" 2>/dev/null | grep -E "package: name|versionCode|versionName" | head -2
+# The whole point of APK_ID is a side-by-side install; if the -P property ever fails to reach AGP
+# the APK silently comes out as com.armsx2 again and would update over the stable app instead.
+# Fail closed rather than publish that. (aapt2 is required at the top of the script, so this
+# cannot be skipped by a missing tool.)
+badging="$("$AAPT" dump badging "$OUT" 2>/dev/null)"
+echo "$badging" | grep -E "package: name|versionCode|versionName" | head -2
+echo "$badging" | grep -q "package: name='${APK_ID}'" \
+	|| { echo "FATAL: APK package is not ${APK_ID} — applicationId property did not take" >&2; exit 1; }
 echo; echo "OUTPUT: $OUT"
 echo "NIGHTLY-DUALCORE-DONE"
