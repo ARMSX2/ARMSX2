@@ -3491,6 +3491,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down && event.repeatCount == 0) cycleDisplayRefresh()
                     return true
                 }
+                ControllerMappings.SysHotkey.SECOND_SCREEN -> {
+                    if (down && event.repeatCount == 0) toggleSecondScreen()
+                    return true
+                }
                 ControllerMappings.SysHotkey.GYRO_HOLD -> {
                     // "Only while aiming": gyro is live only while the button is held.
                     // Same shape as the FAST_FORWARD hold — act on both edges, ignore
@@ -3822,6 +3826,13 @@ open class MainActivityRuntime : ComponentActivity() {
      *  Session-only, deliberately: it is a "right now, on this panel" control, and a persisted
      *  refresh override would follow the user onto a device whose modes don't match. */
     private var refreshModeIndex = -1
+    /** The second-screen panel on or off: the same setting as App settings and the in-game menu. */
+    private fun toggleSecondScreen() {
+        val on = !com.armsx2.SecondScreen.enabled.value
+        com.armsx2.SecondScreen.set(applicationContext, on)
+        hotkeyToast(if (on) "Second screen ON" else "Second screen OFF")
+    }
+
     private fun cycleDisplayRefresh() {
         @Suppress("DEPRECATION")
         val disp = runCatching {
@@ -5035,6 +5046,7 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.TOGGLE_OSD -> hotkeyToast(InGameOverlay.cycleOsd())
             ControllerMappings.SysHotkey.TOGGLE_KEYBOARD -> toggleSoftKeyboard()
             ControllerMappings.SysHotkey.DISPLAY_REFRESH -> cycleDisplayRefresh()
+            ControllerMappings.SysHotkey.SECOND_SCREEN -> toggleSecondScreen()
             ControllerMappings.SysHotkey.PREV_SLOT -> cycleSaveSlot(-1)
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,

@@ -1023,6 +1023,10 @@ object ControllerMappings {
         // Requested for battery — dropping a 120Hz panel to 60 while a 60fps game runs costs
         // nothing visually. Appended last for the persisted-by-ordinal reason above.
         DISPLAY_REFRESH("pad.displayrefresh.keycode", "Cycle Display Refresh Rate"),
+        // The second-screen panel on/off without leaving the game. Docked to a monitor over USB-C,
+        // the panel goes to the monitor, and turning it off meant unplugging or digging into App
+        // settings (SoraNo, on a Thor). Appended last for the persisted-by-ordinal reason above.
+        SECOND_SCREEN("pad.secondscreen.keycode", "Second Screen Panel (toggle)"),
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is

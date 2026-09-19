@@ -697,6 +697,12 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             com.armsx2.ui.InGameOverlay.setOsdMode(osdModes[next])
         }
         Spacer(Modifier.height(6.dp))
+        // The second-screen panel, one tap away. Docked to a monitor over USB-C it goes to the
+        // monitor, and turning it off meant unplugging or digging into App settings (SoraNo).
+        MenuSwitchRow(str("secondScreen.label"), com.armsx2.SecondScreen.enabled.value) { on ->
+            com.armsx2.SecondScreen.set(context.applicationContext, on)
+        }
+        Spacer(Modifier.height(6.dp))
         MenuSwitchRow(str("perf.frameLimit.label"), state.settings.frameLimitEnable) { value ->
             viewModel.updateSettings { it.copy(frameLimitEnable = value) }
         }
