@@ -1529,6 +1529,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "textures.online.sort.game" to "Game",
     "textures.online.sort.serial" to "Serial",
     "textures.online.contribute" to "Where these come from \u2014 submit a pack \u2197",
+    "textures.online.submitDiscord" to "Contact us on our Discord to submit a pack \u2197",
     "textures.online.cached" to "Showing a saved copy of the catalog \u2014 could not refresh.",
     "renderer.section.texturePacks" to "Texture Packs",
     "renderer.texturePacks.manage.description" to "This game's installed packs, community downloads, and import.",

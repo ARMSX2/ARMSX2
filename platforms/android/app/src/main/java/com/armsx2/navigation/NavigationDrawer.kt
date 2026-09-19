@@ -76,7 +76,8 @@ private val ExitRed = Color(0xFFE60012)
 // Community/project links for the drawer's About section. Plain https on purpose: Android App
 // Links hand these to the Discord/GitHub apps when they're installed and fall back to the
 // browser when they aren't, so there's no app-specific scheme to special-case.
-private const val DiscordUrl = "https://discord.gg/2Tynvwhc4A"
+/** Our Discord invite. Also where new texture packs are sent (TextureOnlineSection). */
+internal const val DiscordUrl = "https://discord.gg/2Tynvwhc4A"
 private const val GithubUrl = "https://github.com/ARMSX2/ARMSX2"
 private const val WebsiteUrl = "https://armsx2.net/"
 
