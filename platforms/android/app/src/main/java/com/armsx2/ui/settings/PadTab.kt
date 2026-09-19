@@ -631,14 +631,32 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             SettingsDivider()
             val visibilityOff = str("setup.toggle.off")
             val visibilityAuto = str("backend.renderer.auto")
+            val visibilityAlways = str("pad.onScreenControls.always")
             IntSliderRow(
                 label = str("pad.onScreenControls.label"),
                 value = TouchControls.visibilityMode.value,
                 min = 0,
-                max = 11,
+                max = TouchControls.VISIBILITY_ALWAYS,
                 description = str("pad.onScreenControls.description"),
-                valueFormatter = { when (it) { 0 -> visibilityOff; 11 -> visibilityAuto; else -> "${it}s" } },
+                valueFormatter = {
+                    when (it) {
+                        0 -> visibilityOff
+                        11 -> visibilityAuto
+                        TouchControls.VISIBILITY_ALWAYS -> visibilityAlways
+                        else -> "${it}s"
+                    }
+                },
                 onChange = { TouchControls.setVisibilityMode(it) },
+            )
+            SettingsDivider()
+            // Touch as Player 2: one person on a controller, another on the screen. Asked for by
+            // players who share a device; Player 1 is the controller's, so nothing else changes.
+            SegmentedRow(
+                label = str("pad.touchPlayer.label"),
+                options = listOf(str("pad.player1"), str("pad.player2")),
+                selectedIndex = TouchControls.touchPlayer.intValue,
+                description = str("pad.touchPlayer.description"),
+                onChange = { TouchControls.setTouchPlayer(it) },
             )
             SettingsDivider()
             // Touch Haptics (#247): vibrate on on-screen button presses.

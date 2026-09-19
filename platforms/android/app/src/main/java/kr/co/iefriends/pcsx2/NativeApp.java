@@ -502,12 +502,14 @@ public class NativeApp {
 		// Player 1 alone may fall back to whatever last sent input -- Player 2 stays silent,
 		// because buzzing Player 1's controller for Player 2 is worse than not buzzing.
 		if (devId < 0 && pad == 0) devId = sRumbleDeviceId;
-		// devId may stay -1 for touch-only Player 1 (no gamepad); vibrateDevice still
-		// drives the device's own haptic for P1 (issue #241). P2 with no pad has no target.
-		if (devId < 0 && pad != 0) return;
+		// The phone's own haptic belongs to whoever plays on the touch screen: Player 1
+		// normally (issue #241), Player 2 when the touch controls are set to play as Player 2.
+		// A player with no controller and no touch controls has nothing to buzz.
+		final int touchPad = com.armsx2.ui.touch.TouchControls.playerPort;
+		if (devId < 0 && pad != touchPad) return;
 		float low = Math.max(0f, Math.min(1f, largeMotor / 255f));   // low-frequency / large
 		float high = Math.max(0f, Math.min(1f, smallMotor / 255f));  // high-frequency / small
-		vibrateDevice(devId, low, high, RUMBLE_MS, pad == 0);
+		vibrateDevice(devId, low, high, RUMBLE_MS, pad == touchPad);
 	}
 
 	// ---- Achievement / notification sound playback ----

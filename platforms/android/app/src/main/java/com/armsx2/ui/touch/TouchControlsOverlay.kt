@@ -1688,17 +1688,20 @@ private fun computeStickEmit(nx: Float, ny: Float, left: Boolean): StickEmit {
 }
 
 private fun applyStickDiff(codes: StickCodes, prev: StickEmit, next: StickEmit) {
-    if (prev.xPos != next.xPos) NativeApp.setPadButton(codes.xPos, next.xPos, next.xPos > 0)
-    if (prev.xNeg != next.xNeg) NativeApp.setPadButton(codes.xNeg, next.xNeg, next.xNeg > 0)
-    if (prev.yPos != next.yPos) NativeApp.setPadButton(codes.yPos, next.yPos, next.yPos > 0)
-    if (prev.yNeg != next.yNeg) NativeApp.setPadButton(codes.yNeg, next.yNeg, next.yNeg > 0)
+    // The player the touch controls play as (Player 1 unless set to 2); see sendDigital.
+    val port = TouchControls.playerPort
+    if (prev.xPos != next.xPos) NativeApp.setPadButtonForPort(port, codes.xPos, next.xPos, next.xPos > 0)
+    if (prev.xNeg != next.xNeg) NativeApp.setPadButtonForPort(port, codes.xNeg, next.xNeg, next.xNeg > 0)
+    if (prev.yPos != next.yPos) NativeApp.setPadButtonForPort(port, codes.yPos, next.yPos, next.yPos > 0)
+    if (prev.yNeg != next.yNeg) NativeApp.setPadButtonForPort(port, codes.yNeg, next.yNeg, next.yNeg > 0)
 }
 
 private fun releaseStick(codes: StickCodes, last: StickEmit) {
-    if (last.xPos != 0) NativeApp.setPadButton(codes.xPos, 0, false)
-    if (last.xNeg != 0) NativeApp.setPadButton(codes.xNeg, 0, false)
-    if (last.yPos != 0) NativeApp.setPadButton(codes.yPos, 0, false)
-    if (last.yNeg != 0) NativeApp.setPadButton(codes.yNeg, 0, false)
+    val port = TouchControls.playerPort
+    if (last.xPos != 0) NativeApp.setPadButtonForPort(port, codes.xPos, 0, false)
+    if (last.xNeg != 0) NativeApp.setPadButtonForPort(port, codes.xNeg, 0, false)
+    if (last.yPos != 0) NativeApp.setPadButtonForPort(port, codes.yPos, 0, false)
+    if (last.yNeg != 0) NativeApp.setPadButtonForPort(port, codes.yNeg, 0, false)
 }
 
 /* -------------------------------------------------------------------- */
@@ -1876,11 +1879,13 @@ private fun sendDigital(keycode: Int, pressed: Boolean) {
     // while the modifier is held; 0 (full press) otherwise. native-lib.cpp's
     // setPadButton turns the range into a 0..1 pressure value.
     val range = if (pressed) TouchControls.pressureRangeFor(keycode) else 0
+    // The player the touch controls play as: Player 1, unless Controls > On-Screen Controls puts
+    // them on Player 2 (one person on a controller, one on the screen). Fixed for the session.
+    val port = TouchControls.playerPort
     // Track the held state so the modifier can be applied LIVE to a button already down
-    // (MGS2: hold Square to aim, then ease off to cancel the shot). Port 0 — the on-screen
-    // pad always drives P1.
-    TouchControls.notePressureKeyState(0, keycode, pressed)
-    NativeApp.setPadButton(keycode, range, pressed)
+    // (MGS2: hold Square to aim, then ease off to cancel the shot).
+    TouchControls.notePressureKeyState(port, keycode, pressed)
+    NativeApp.setPadButtonForPort(port, keycode, range, pressed)
     // Touch haptics (#247): a short vibration tick when a button goes DOWN. Press-only
     // (release stays silent); gated by the Touch Haptics setting (default on).
     if (pressed && TouchControls.touchHaptics.value) NativeApp.touchHaptic()

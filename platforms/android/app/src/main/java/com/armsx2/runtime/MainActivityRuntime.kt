@@ -970,6 +970,9 @@ open class MainActivityRuntime : ComponentActivity() {
             // shapeStickMag) is the single authority now, so keep the native radial
             // deadzone off so it can't re-deaden the already-shaped input. AxisScale
             // (1.33, helps small sticks reach full deflection) is left untouched.
+            // Player 1 unless the block below plugs in port 2 for the touch controls, so a failed
+            // write here can't leave touch aimed at the previous game's Player 2.
+            com.armsx2.ui.touch.TouchControls.playerPort = 0
             runCatching {
                 NativeApp.setSetting("Pad1", "Deadzone", "float", "0")
                 NativeApp.setSetting("Pad2", "Deadzone", "float", "0")
@@ -978,12 +981,20 @@ open class MainActivityRuntime : ComponentActivity() {
                 // NOT by hot-plugging it mid-game, which rebuilt the live pad list and
                 // crashed. Single controller → "None" (port 2 off; zero change for
                 // solo play). So: connect BOTH controllers before launching the game.
-                val twoPads = connectedGamepadCount() >= 2
+                //
+                // The touch controls can be the second player too (Controls > On-Screen
+                // Controls), one person on a controller and one on the screen. Fixed here
+                // for the whole session, for the same reason: this is the only point port 2
+                // can be plugged in, so a mid-game switch would aim touch at an empty port.
+                val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
+                val twoPads = connectedGamepadCount() >= 2 || touchIsP2
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
                     NativeApp.setSetting("Pad2", "AxisScale", "float", "1.33")
                     NativeApp.setSetting("Pad2", "ButtonDeadzone", "float", "0")
                 }
+                // Only once port 2 is set to be plugged in (reset to Player 1 above this block).
+                if (touchIsP2) com.armsx2.ui.touch.TouchControls.playerPort = 1
                 // PS2 Multitap: when enabled, arm BOTH ports as 4-slot multitaps at BOOT
                 // (before runVMThread -> Pad::LoadConfig) so a game launched with 3-8
                 // controllers sees them. Flag keys are off-by-one: [Pad] MultitapPort1 ->
@@ -2155,7 +2166,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // screen press flips them back on. Idempotent. Not for the phone's own volume keys
         // ([fromController] false): they are how people add triggers to touch-only play, and
         // hiding the touch controls on every press left them nothing else to play with.
-        if (fromController) com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
+        if (fromController) com.armsx2.ui.touch.TouchControls.onControllerInputDetected(port)
         // D-pad as left analog stick: a physical d-pad press (arriving as a key,
         // not a HAT) drives the left stick instead of the digital d-pad. The
         // remapped code is >=110 so the analog-force branch below gives a
@@ -4141,14 +4152,14 @@ open class MainActivityRuntime : ComponentActivity() {
                 !ev.isFromSource(InputDevice.SOURCE_GAMEPAD)) {
                 return super.dispatchGenericMotionEvent(ev)
             }
+            // Local co-op: which PS2 port this physical device drives (P1=0 / P2=1).
+            // Stick mode + CUSTOM binds are read per-player; emits route to `port`.
+            val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
             // SOURCE_TOUCHSCREEN motion events go through dispatchTouchEvent,
             // not here — generic motion is gamepad / mouse / stylus. A controller
             // that is actually being used latches the touch controls off; its
             // resting noise does not (see isDeliberateControllerMotion).
-            if (isDeliberateControllerMotion(ev)) com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
-            // Local co-op: which PS2 port this physical device drives (P1=0 / P2=1).
-            // Stick mode + CUSTOM binds are read per-player; emits route to `port`.
-            val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
+            if (isDeliberateControllerMotion(ev)) com.armsx2.ui.touch.TouchControls.onControllerInputDetected(port)
             // Analog sticks → analog (default) OR remapped to the D-pad / face
             // buttons (per ControllerMappings.{left,right}StickMode) — useful for
             // fighting games on analog-centric pads (e.g. left stick = D-pad).

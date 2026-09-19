@@ -78,6 +78,7 @@ object TouchControls {
     private const val KEY_ANALOG_EXTRA_ANGLE = "touch.analogExtraAngle"
     private const val KEY_GRID_SNAP = "touch.gridSnap"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
+    private const val KEY_TOUCH_PLAYER = "touch.player"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
     // predate the default changes, so the new defaults wouldn't otherwise apply).
     private const val KEY_DEFAULTS_MIGRATED_247 = "touch.defaults.migrated.247"
@@ -457,8 +458,28 @@ object TouchControls {
      *  controls devices like the RP6 — also hides the settings cog so nothing
      *  overlaps R1); 1..10 = auto-hide after that many seconds of no touch;
      *  11 = Auto — show on screen touch, hide when a controller is used (the
-     *  default / legacy behavior). Persisted. */
+     *  default / legacy behavior); 12 = Always, never hidden by anything but the
+     *  in-game menu's switch. Persisted.
+     *
+     *  Always exists for people who play with a controller AND touch buttons at once: Auto hid
+     *  the touch buttons on every controller input, and a timer hid them between touches. */
     val visibilityMode = mutableIntStateOf(11)
+    const val VISIBILITY_ALWAYS = 12
+
+    /** Which player the on-screen controls play as: 0 = Player 1, 1 = Player 2. Player 2 is for
+     *  two people on one device, one on a controller and one on the touch screen. Persisted; the
+     *  running game uses [playerPort], fixed when it boots. */
+    val touchPlayer = mutableIntStateOf(0)
+
+    /** The PS2 port the on-screen controls drive in the running game, fixed at boot from
+     *  [touchPlayer] (MainActivityRuntime.applyRendererPrefs). Player 2's port can only be plugged
+     *  in at boot, so a mid-game switch would have sent every touch to an empty port. */
+    @Volatile @JvmField var playerPort = 0
+
+    fun setTouchPlayer(player: Int) {
+        touchPlayer.intValue = player.coerceIn(0, 1)
+        persist()
+    }
 
     /** Bumped on every touch interaction (screen tap or on-screen button press)
      *  so the auto-hide timer restarts. Not persisted. */
@@ -825,7 +846,8 @@ object TouchControls {
         analogExtraDistance.floatValue =
             MainActivityRuntime.prefs.getFloat(KEY_ANALOG_EXTRA_DIST, 0.35f).coerceIn(0.1f, 1.5f)
         gridSnap.value = MainActivityRuntime.prefs.getBoolean(KEY_GRID_SNAP, false)
-        visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, 11)
+        visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, VISIBILITY_ALWAYS)
+        touchPlayer.intValue = MainActivityRuntime.prefs.getInt(KEY_TOUCH_PLAYER, 0).coerceIn(0, 1)
         if (visibilityMode.intValue == 0) visible.value = false
         // #357: show/hide became tap-to-reveal (inverted). Seed the new pref from the old one so
         // anyone who had the button hidden keeps it hidden — now as tap-to-reveal, which still
@@ -927,6 +949,7 @@ object TouchControls {
                 .putBoolean(KEY_FULL_HALF_KEEP_LEFT, fullHalfKeepLeftStick.value)
                 .putBoolean(KEY_GRID_SNAP, gridSnap.value)
                 .putInt(KEY_VIS_MODE, visibilityMode.intValue)
+                .putInt(KEY_TOUCH_PLAYER, touchPlayer.intValue)
                 .putBoolean(KEY_PAUSE_TAP_REVEAL, pauseTapToReveal.value)
         }
         syncFolder()
@@ -934,7 +957,7 @@ object TouchControls {
 
     /** Set the on-screen controls visibility mode (see [visibilityMode]). */
     fun setVisibilityMode(mode: Int) {
-        visibilityMode.intValue = mode.coerceIn(0, 11)
+        visibilityMode.intValue = mode.coerceIn(0, VISIBILITY_ALWAYS)
         // Reflect immediately: Never hides; any other mode shows.
         visible.value = visibilityMode.intValue != 0
         interactionTick.intValue++
@@ -1374,8 +1397,13 @@ object TouchControls {
 
     /** Latched off the touch controls when a controller key/axis fires.
      *  Only in "Auto" mode (11) — when an auto-hide timeout is set (1..10) the
-     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent. */
-    fun onControllerInputDetected() {
+     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent.
+     *
+     *  Only for a controller playing the SAME player as the touch controls ([port]): with the
+     *  touch controls on Player 2, Player 1's controller is somebody else, and hiding the touch
+     *  buttons on every press of theirs would leave Player 2 with nothing to play with. */
+    fun onControllerInputDetected(port: Int = 0) {
+        if (port != playerPort) return
         if (visibilityMode.intValue == 11 && visible.value) visible.value = false
     }
 

@@ -176,7 +176,7 @@ private class GestureInputNode(private var params: GestureParams) : Modifier.Nod
         fired = false
         lastTapTime = 0L
         if (latchedCode != 0) {
-            runCatching { kr.co.iefriends.pcsx2.NativeApp.setPadButton(latchedCode, 0, false) }
+            runCatching { kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, latchedCode, 0, false) }
             latchedCode = 0
         }
     }
@@ -189,9 +189,9 @@ private class GestureInputNode(private var params: GestureParams) : Modifier.Nod
         MainActivityRuntime.instance?.let {
             kotlin.concurrent.thread(name = "armsx2-gesture-pulse") {
                 runCatching {
-                    kr.co.iefriends.pcsx2.NativeApp.setPadButton(code, 0, true)
+                    kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, code, 0, true)
                     Thread.sleep(40)
-                    kr.co.iefriends.pcsx2.NativeApp.setPadButton(code, 0, false)
+                    kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, code, 0, false)
                 }
             }
         }
@@ -202,12 +202,12 @@ private class GestureInputNode(private var params: GestureParams) : Modifier.Nod
         if (code == 0) return
         runCatching {
             if (latchedCode == code) {
-                kr.co.iefriends.pcsx2.NativeApp.setPadButton(code, 0, false)
+                kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, code, 0, false)
                 latchedCode = 0
             } else {
                 if (latchedCode != 0)
-                    kr.co.iefriends.pcsx2.NativeApp.setPadButton(latchedCode, 0, false)
-                kr.co.iefriends.pcsx2.NativeApp.setPadButton(code, 0, true)
+                    kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, latchedCode, 0, false)
+                kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(TouchControls.playerPort, code, 0, true)
                 latchedCode = code
             }
         }
