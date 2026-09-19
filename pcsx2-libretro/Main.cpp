@@ -74,7 +74,8 @@
 #include "pcsx2/GS/Renderers/Vulkan/VKLibretro.h"
 #endif
 #ifdef ENABLE_OPENGL
-#include "pcsx2/GS/Renderers/OpenGL/GLContextLibretro.h"
+#include "pcsx2/GS/Renderers/OpenGL/GLLibretro.h"
+#include "pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.h"
 #endif
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
@@ -512,6 +513,18 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block)
 		s_cpu_queue.emplace_back(std::move(function));
 	}
 	s_cpu_queue_cv.notify_all();
+}
+
+// The MTGS ring has a single producer by design - see the reasoning above the
+// assert in MTGS::RunOnGSThread - so a caller that is not the CPU thread has to
+// arrive through it rather than pushing a packet of its own. The CPU thread
+// drains this queue every vsync, in PumpMessagesOnCPUThread.
+void Host::RunOnGSThread(std::function<void()> function)
+{
+	RunOnCPUThread([fn = std::move(function)]() {
+		if (MTGS::IsOpen())
+			MTGS::RunOnGSThread(std::move(fn));
+	});
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -1412,52 +1425,95 @@ static bool CreateVulkanDevice(retro_vulkan_context* context, VkInstance instanc
 }
 #endif
 
-// The GL half of the same story. The frontend owns the context; the core only
-// needs its two callbacks - one to resolve entry points, one to ask which FBO
-// this frame belongs in - which GLContextLibretro hands to GSDeviceOGL.
+// The GL half of the same story, and it is not the same story at all, because
+// a GL context belongs to one thread while a Vulkan device belongs to none.
+// The frontend's context is current on the thread that calls retro_run; the GS
+// renders on its own thread, where nothing is current - which is why the GL
+// path used to draw nothing at all while the audio played on (ARMSX2 #705).
+//
+// What the two threads can share is an object space. context_reset runs on the
+// frontend's thread with its context current, which is the only moment the core
+// can see that context at all - libretro has no GL equivalent of
+// retro_hw_render_interface_vulkan - so that is where it is captured. The GS
+// thread then builds a context that shares its objects (GLLibretro), renders as
+// usual into a texture, and retro_run blits that texture into the frontend's
+// framebuffer from the thread that owns it.
 //
 // None of it exists where the GL renderer is not built: USE_OPENGL is not even
 // offered on Apple, where the GS is Metal and Vulkan.
 #ifdef ENABLE_OPENGL
 static struct retro_hw_render_callback s_gl_hw_render = {};
-
-static void* GLGetProcAddress(const char* name)
-{
-	return s_gl_hw_render.get_proc_address ?
-			   reinterpret_cast<void*>(s_gl_hw_render.get_proc_address(name)) :
-			   nullptr;
-}
-
-static u32 GLGetCurrentFramebuffer()
-{
-	return s_gl_hw_render.get_current_framebuffer ?
-			   static_cast<u32>(s_gl_hw_render.get_current_framebuffer()) :
-			   0;
-}
+// The FBO retro_run reads the GS thread's texture through. An FBO is not a
+// shared object, so it belongs to the frontend's context and is made on the
+// frontend's thread.
+static GLuint s_gl_present_fbo = 0;
 
 static void OnGLContextReset(void)
 {
-	// The flavour goes with the callbacks: it is what GLContext::Create picks
-	// the desktop or the ES entry-point loader from, and what GSDeviceOGL asks
-	// before it decides which GL feature set it is allowed to use. It is the
-	// context type asked for in retro_load_game, since that is what the
-	// frontend has just made current.
-	const GLContext::Profile profile =
-		(s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES2 ||
-			s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES3 ||
-			s_gl_hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION) ?
-			GLContext::Profile::ES :
-			GLContext::Profile::Core;
+	// Runs on: the frontend's video thread, with its context current.
+	Error error;
+	if (!GLLibretro::CaptureFrontendContext(&error))
+	{
+		// Nothing to share from, so there is nothing for the GS thread to draw
+		// on. Say why - this is the one place that knows - and let the load
+		// continue: GSDeviceOGL will fail to open and the core falls back to
+		// the null renderer, which is a black screen with a reason in the log
+		// rather than a black screen without one.
+		log_cb(RETRO_LOG_ERROR, "Failed to capture the frontend's GL context: %s\n",
+			error.GetDescription().c_str());
+		GLLibretro::Active = false;
+	}
+	else
+	{
+		GLLibretro::Active = true;
+		GLLibretro::SetPacing(true);
+	}
 
-	GLContextLibretro::SetCallbacks(GLGetProcAddress, GLGetCurrentFramebuffer, profile,
-		static_cast<int>(s_gl_hw_render.version_major), static_cast<int>(s_gl_hw_render.version_minor));
+	s_gl_present_fbo = 0;
 	LibretroCore::s_context_ready.store(true, std::memory_order_release);
 }
 
 static void OnGLContextDestroy(void)
 {
+	// Runs on: the frontend's video thread, before the frontend destroys its
+	// context, while the GS thread keeps going. Stop the handoff first so the
+	// GS thread cannot park waiting for a retro_run that is not coming, then
+	// have it let go of its own context.
+	//
+	// That last part has to happen HERE rather than when the device is torn
+	// down later: the GS thread's context shares an EGL display with the
+	// frontend's, and the frontend ends by terminating it - after which every
+	// handle the GS thread holds points into freed driver state, and even
+	// unbinding the context is a fault inside the driver. This is the last
+	// moment those handles are still good.
+	GLLibretro::AbortPacing();
 	LibretroCore::s_context_ready.store(false, std::memory_order_release);
-	GLContextLibretro::SetCallbacks(nullptr, nullptr);
+
+	if (MTGS::IsOpen())
+	{
+		// Through Host::RunOnGSThread rather than MTGS::RunOnGSThread: this is
+		// the frontend's thread, and the ring takes packets from the CPU thread
+		// only.
+		//
+		// The flag is shared rather than a local by reference, because the wait
+		// below gives up after two seconds: a callback that ran after that
+		// would be writing through a reference to a stack slot that is gone.
+		auto gs_released = std::make_shared<std::atomic_bool>(false);
+		Host::RunOnGSThread([gs_released]() {
+			if (g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::OpenGL)
+				static_cast<GSDeviceOGL*>(g_gs_device.get())->AbandonContext(true);
+			gs_released->store(true, std::memory_order_release);
+		});
+		for (int i = 0; i < 2000 && !gs_released->load(std::memory_order_acquire); i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		if (!gs_released->load(std::memory_order_acquire))
+			log_cb(RETRO_LOG_ERROR, "The GS thread did not let go of its GL context in time.\n");
+	}
+
+	// The FBO went with the context; a new one gets made against whatever
+	// context_reset hands over next.
+	s_gl_present_fbo = 0;
+	GLLibretro::ReleaseFrontendContext();
 }
 #endif // ENABLE_OPENGL
 
@@ -1649,12 +1705,22 @@ RETRO_API void retro_init(void)
 	// not read, a BIOS it did not like - reaches the console sink only, which
 	// is a terminal nobody has open, or logcat on Android. The RetroArch log
 	// then shows the symptom with no cause: "MTGS::WaitForOpen failed".
-	Log::SetHostOutputLevel(LOGLEVEL_WARNING, [](LOGLEVEL level, ConsoleColors, std::string_view message) {
+	//
+	// INFO rather than WARNING, because a core's console sink reaches nobody:
+	// the lines that say what the GS device did on its way up - which context
+	// was captured, which version was created, which renderer opened - are all
+	// Console.WriteLn, and without them a black screen is reported with a log
+	// that has nothing in it at all. The frontend decides what it prints:
+	// RetroArch shows RETRO_LOG_INFO only at verbose, so this is off by
+	// default where it matters and there to be turned on where it does not.
+	Log::SetHostOutputLevel(LOGLEVEL_INFO, [](LOGLEVEL level, ConsoleColors, std::string_view message) {
 		if (!log_cb)
 			return;
 
-		log_cb(level <= LOGLEVEL_ERROR ? RETRO_LOG_ERROR : RETRO_LOG_WARN, "%.*s\n",
-			static_cast<int>(message.size()), message.data());
+		const retro_log_level retro_level = (level <= LOGLEVEL_ERROR) ? RETRO_LOG_ERROR
+			: (level == LOGLEVEL_WARNING)                             ? RETRO_LOG_WARN
+																	  : RETRO_LOG_INFO;
+		log_cb(retro_level, "%.*s\n", static_cast<int>(message.size()), message.data());
 	});
 	LibretroCore::s_frame_buffer.assign(
 		LibretroCore::kFrameWidth * LibretroCore::kFrameHeight, 0);
@@ -1776,17 +1842,37 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 		static_cast<int>(GSRendererType::Auto));
 	[[maybe_unused]] const bool asked_for_gl = (renderer_setting == static_cast<int>(GSRendererType::OGL));
 
+	// On Auto, ask the frontend what it would rather give. A frontend built
+	// without Vulkan, or running on a driver it cannot use, answers GL - and
+	// then trying Vulkan first only spends a refused request before the list
+	// below gets to GL anyway. Where the frontend does not answer, the order
+	// stays what it was: Vulkan first, because it is the path this core is
+	// furthest along with.
+	[[maybe_unused]] bool prefers_gl = false;
+	if (renderer_setting == static_cast<int>(GSRendererType::Auto))
+	{
+		unsigned preferred = RETRO_HW_CONTEXT_NONE;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, &preferred))
+		{
+			prefers_gl = (preferred == RETRO_HW_CONTEXT_OPENGL || preferred == RETRO_HW_CONTEXT_OPENGL_CORE ||
+						  preferred == RETRO_HW_CONTEXT_OPENGLES2 || preferred == RETRO_HW_CONTEXT_OPENGLES3 ||
+						  preferred == RETRO_HW_CONTEXT_OPENGLES_VERSION);
+			log_cb(RETRO_LOG_INFO, "The frontend would rather give a %s context.\n",
+				prefers_gl ? "GL" : (preferred == RETRO_HW_CONTEXT_VULKAN ? "Vulkan" : "different"));
+		}
+	}
+
 	HwApi candidates[2];
 	size_t candidate_count = 0;
 #ifdef ENABLE_OPENGL
-	if (asked_for_gl)
+	if (asked_for_gl || prefers_gl)
 		candidates[candidate_count++] = HwApi::GL;
 #endif
 #ifdef ENABLE_VULKAN
 	candidates[candidate_count++] = HwApi::Vulkan;
 #endif
 #ifdef ENABLE_OPENGL
-	if (!asked_for_gl)
+	if (!(asked_for_gl || prefers_gl))
 		candidates[candidate_count++] = HwApi::GL;
 #endif
 
@@ -1841,7 +1927,13 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 		s_gl_hw_render.context_destroy = OnGLContextDestroy;
 		s_gl_hw_render.depth = false;
 		s_gl_hw_render.bottom_left_origin = true;
-		s_gl_hw_render.cache_context = true;
+		// Deliberately false, and it matters more than it looks: asking the
+		// frontend to preserve the context makes it skip context_destroy when
+		// it rebuilds its video driver anyway, and context_destroy is the only
+		// notice that arrives while the context is still usable. Without it the
+		// GS thread's context can never be let go of, and the picture is stuck
+		// until the content is reloaded.
+		s_gl_hw_render.cache_context = false;
 
 		// The GS runs on its own thread, so the frontend has to create the
 		// context in a way that lets a second thread use it. Without this the
@@ -2004,6 +2096,9 @@ RETRO_API void retro_unload_game(void)
 
 	VKLibretro::AbortPacing(); // GS thread may be parked in PublishFrame
 #endif
+#ifdef ENABLE_OPENGL
+	GLLibretro::AbortPacing(); // same, for the GL handoff
+#endif
 	s_shutdown_requested.store(true, std::memory_order_release);
 	if (VMManager::HasValidVM())
 		VMManager::SetState(VMState::Stopping);
@@ -2020,6 +2115,10 @@ RETRO_API void retro_unload_game(void)
 #ifdef ENABLE_VULKAN
 	VKLibretro::Shutdown();
 	VKLibretro::Active = false;
+#endif
+#ifdef ENABLE_OPENGL
+	GLLibretro::Shutdown();
+	GLLibretro::Active = false;
 #endif
 	LibretroCore::s_context_ready.store(false, std::memory_order_release);
 	LibretroCore::s_cpu_thread_initialized.store(false, std::memory_order_release);
@@ -2144,12 +2243,59 @@ RETRO_API void retro_run(void)
 #endif
 	if (LibretroCore::s_hw_render_gl)
 	{
-		// GL needs no frame handover of its own: GSDeviceOGL has already drawn
-		// into the FBO the frontend named through get_current_framebuffer, so
-		// the frame is where the frontend expects it. The canvas is the fixed
-		// surface BuildLibretroWindowInfo reports, not the aspect-expanded one
-		// the Vulkan path resizes to.
-		video_cb(RETRO_HW_FRAME_BUFFER_VALID, LibretroCore::kFrameWidth, LibretroCore::kFrameHeight, 0);
+#ifdef ENABLE_OPENGL
+		// This thread has the frontend's context current and the GS thread's
+		// context shares its objects, so the texture the GS just published can
+		// be read straight into the frontend's framebuffer.
+		static u32 last_gl_width = LibretroCore::kFrameWidth;
+		static u32 last_gl_height = LibretroCore::kFrameHeight;
+		GLLibretro::Frame frame;
+		if (s_gl_hw_render.get_current_framebuffer && GLLibretro::ConsumeFrame(&frame))
+		{
+			// Sharing objects does not share ordering: the fence is what says
+			// the GS thread's rendering has actually landed rather than just
+			// been queued. Waiting on the server side costs this thread
+			// nothing - the blit below is what ends up waiting.
+			if (frame.fence)
+			{
+				glWaitSync(frame.fence, 0, GL_TIMEOUT_IGNORED);
+				glDeleteSync(frame.fence);
+			}
+
+			if (s_gl_present_fbo == 0)
+				glGenFramebuffers(1, &s_gl_present_fbo);
+
+			const GLuint target_fbo = static_cast<GLuint>(s_gl_hw_render.get_current_framebuffer());
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, s_gl_present_fbo);
+			glFramebufferTexture2D(
+				GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, frame.texture, 0);
+			glReadBuffer(GL_COLOR_ATTACHMENT0);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target_fbo);
+
+			// A blit is masked by both of these, and this context is shared
+			// with the GS thread's - whatever either side last set is still
+			// set, so say what this one needs rather than assuming.
+			glDisable(GL_SCISSOR_TEST);
+			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+			glBlitFramebuffer(0, 0, frame.width, frame.height, 0, 0, frame.width, frame.height,
+				GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+			// bottom_left_origin is set, so the frontend reads the lower-left
+			// frame.width x frame.height of its framebuffer - which is exactly
+			// where a GL blit to (0,0) lands.
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, target_fbo);
+			last_gl_width = frame.width;
+			last_gl_height = frame.height;
+			video_cb(RETRO_HW_FRAME_BUFFER_VALID, frame.width, frame.height, 0);
+		}
+		else
+		{
+			// Nothing new - still booting, or a duplicate frame. Repeat at the
+			// size the last real one arrived at, so a frontend that scales by
+			// integers does not recompute its viewport in between.
+			video_cb(nullptr, last_gl_width, last_gl_height, 0);
+		}
+#endif
 	}
 	else
 	{
@@ -2220,6 +2366,9 @@ RETRO_API bool retro_serialize(void* data, size_t size)
 #ifdef ENABLE_VULKAN
 	VKLibretro::SetPacing(false);
 #endif
+#ifdef ENABLE_OPENGL
+	GLLibretro::SetPacing(false);
+#endif
 
 	std::vector<u8> buffer;
 	bool ok = false;
@@ -2241,6 +2390,10 @@ RETRO_API bool retro_serialize(void* data, size_t size)
 #ifdef ENABLE_VULKAN
 	if (LibretroCore::s_context_ready.load(std::memory_order_acquire))
 		VKLibretro::SetPacing(true);
+#endif
+#ifdef ENABLE_OPENGL
+	if (GLLibretro::Active && LibretroCore::s_context_ready.load(std::memory_order_acquire))
+		GLLibretro::SetPacing(true);
 #endif
 
 	if (!ok || sizeof(u64) + buffer.size() > size)
@@ -2272,6 +2425,9 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
 #ifdef ENABLE_VULKAN
 	VKLibretro::SetPacing(false);
 #endif
+#ifdef ENABLE_OPENGL
+	GLLibretro::SetPacing(false);
+#endif
 
 	bool ok = false;
 	const u8* zip_data = static_cast<const u8*>(data) + sizeof(u64);
@@ -2287,6 +2443,10 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
 #ifdef ENABLE_VULKAN
 	if (LibretroCore::s_context_ready.load(std::memory_order_acquire))
 		VKLibretro::SetPacing(true);
+#endif
+#ifdef ENABLE_OPENGL
+	if (GLLibretro::Active && LibretroCore::s_context_ready.load(std::memory_order_acquire))
+		GLLibretro::SetPacing(true);
 #endif
 
 	return ok;

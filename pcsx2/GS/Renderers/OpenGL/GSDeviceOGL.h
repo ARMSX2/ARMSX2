@@ -13,6 +13,8 @@
 
 #include "common/HashCombine.h"
 
+#include <array>
+
 class GLContext;
 
 class GSDepthStencilOGL
@@ -176,6 +178,31 @@ private:
 	// GL_ARM_shader_framebuffer_fetch_depth_stencil extension is present.
 	bool m_arm_depth_fetch = false;
 
+	// Libretro: there is no window to present into, so the present pass draws
+	// into one of these instead and hands it to the frontend. Rotated rather
+	// than reused, because the blit the frontend issues from its own context is
+	// not ordered against the GS thread's next frame.
+	static constexpr u32 kLibretroBackbuffers = 3;
+	std::array<std::unique_ptr<GSTextureOGL>, kLibretroBackbuffers> m_libretro_bb;
+	u32 m_libretro_bb_idx = 0;
+	bool m_context_released = false;
+	bool m_objects_destroyed = false;
+
+public:
+	// Libretro: the frontend threw away the context this device's own context
+	// shares with, taking the EGL display - and the driver state that lives in
+	// it - with it. Give the context up: afterwards this device can only be
+	// destroyed, never drawn with.
+	//
+	// still_valid says whether the frontend has yet to do the deed, which is
+	// the difference between unbinding the context properly and not daring to
+	// touch it at all.
+	//
+	// Returns whether the thread's binding was actually given up, and so
+	// whether a replacement device can be built on this thread at all.
+	bool AbandonContext(bool still_valid);
+
+private:
 	GLuint m_fbo = 0; // frame buffer container
 	GLuint m_fbo_read = 0; // frame buffer container only for reading
 	GLuint m_fbo_write = 0;	// frame buffer container only for writing
@@ -291,6 +318,7 @@ private:
 
 	void SetSwapInterval();
 	void DestroyResources();
+	void DestroyDeviceObjects();
 
 	void CreateTimestampQueries();
 	void DestroyTimestampQueries();

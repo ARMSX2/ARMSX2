@@ -20,6 +20,13 @@ public:
 
 	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, std::span<const Version> versions_to_try, Error* error);
 
+	// Libretro: the Windows half of what GLContextEGL does - capture the
+	// frontend's context inside its context_reset, then give the GS thread one
+	// that shares its objects. See GLLibretro.
+	static HGLRC CaptureCurrentContext();
+	static std::unique_ptr<GLContext> CreateShared(const WindowInfo& wi, HGLRC share_context,
+		std::span<const Version> versions_to_try, Error* error);
+
 	void* GetProcAddress(const char* name) override;
 	bool ChangeSurface(const WindowInfo& new_wi) override;
 	void ResizeSurface(u32 new_surface_width = 0, u32 new_surface_height = 0) override;
@@ -27,6 +34,7 @@ public:
 	bool IsCurrent() override;
 	bool MakeCurrent() override;
 	bool DoneCurrent() override;
+	bool ReleaseThread() override;
 	bool SupportsNegativeSwapInterval() const override;
 	bool SetSwapInterval(s32 interval) override;
 	std::unique_ptr<GLContext> CreateSharedContext(const WindowInfo& wi, Error* error) override;
