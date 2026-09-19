@@ -1676,6 +1676,7 @@ void GSDeviceMTL::Destroy()
 	GSDevice::Destroy();
 	GSDeviceMTL::DestroySurface();
 	m_queue = nullptr;
+	m_zero_clear_buffer = nullptr;
 	m_dev.Reset();
 }}
 
@@ -2000,9 +2001,28 @@ void GSDeviceMTL::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i&
 
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
 
-	// Commit clear for the destination texture.
-	GSVector2i dsize = dTex->GetSize();
-	if (r.width() < dsize.x || r.height() < dsize.y)
+	// Small partial copies into zero-cleared targets otherwise need a separate
+	// render pass just to initialize the untouched pixels. Preserve those zeros
+	// using the same blit encoder as the copy.
+	const GSVector2i dsize = dTex->GetSize();
+	const bool partial_copy = r.width() < dsize.x || r.height() < dsize.y;
+	constexpr int max_clear_dimension = 256;
+	bool blit_clear = m_dev.features.unified_memory && partial_copy && sT != dT && dT->IsRenderTarget() &&
+		dT->GetFormat() == GSTexture::Format::Color &&
+		dT->GetState() == GSTexture::State::Cleared && dT->GetClearColor() == 0 &&
+		dsize.x <= max_clear_dimension && dsize.y <= max_clear_dimension;
+	if (blit_clear && !m_zero_clear_buffer)
+	{
+		constexpr size_t buffer_size = max_clear_dimension * max_clear_dimension * 4;
+		m_zero_clear_buffer = MRCTransfer([m_dev.dev newBufferWithLength:buffer_size options:MTLResourceStorageModeShared]);
+		if (m_zero_clear_buffer)
+		{
+			memset([m_zero_clear_buffer contents], 0, buffer_size);
+			[m_zero_clear_buffer setLabel:@"Small target zero initialization"];
+		}
+	}
+	blit_clear = blit_clear && m_zero_clear_buffer;
+	if (partial_copy && !blit_clear)
 		dT->FlushClears();
 	else
 		dT->SetState(GSTexture::State::Dirty);
@@ -2015,6 +2035,20 @@ void GSDeviceMTL::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i&
 	id<MTLCommandBuffer> cmdbuf = GetRenderCmdBuf();
 	id<MTLBlitCommandEncoder> encoder = [cmdbuf blitCommandEncoder];
 	[encoder setLabel:@"DoCopyRect"];
+	if (blit_clear)
+	{
+		g_perfmon.Put(GSPerfMon::TextureUploads, 1);
+		const size_t pitch = Common::AlignUpPow2(static_cast<size_t>(dsize.x) * 4, static_cast<size_t>(256));
+		[encoder copyFromBuffer:m_zero_clear_buffer
+		          sourceOffset:0
+		     sourceBytesPerRow:pitch
+		   sourceBytesPerImage:pitch * dsize.y
+		            sourceSize:MTLSizeMake(dsize.x, dsize.y, 1)
+		             toTexture:dT->GetTexture()
+		      destinationSlice:0
+		      destinationLevel:0
+		     destinationOrigin:MTLOriginMake(0, 0, 0)];
+	}
 	[encoder copyFromTexture:sT->GetTexture()
 	             sourceSlice:0
 	             sourceLevel:0

@@ -237,6 +237,7 @@ public:
 	GSMTLDevice m_dev;
 	MRCOwned<id<MTLCommandQueue>> m_queue;
 	MRCOwned<id<MTLFence>> m_draw_sync_fence;
+	MRCOwned<id<MTLBuffer>> m_zero_clear_buffer;
 	MRCOwned<MTLFunctionConstantValues*> m_fn_constants;
 	MRCOwned<MTLVertexDescriptor*> m_hw_vertex;
 	MTLResourceOptions m_resource_options_shared_wc;
