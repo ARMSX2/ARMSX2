@@ -1415,6 +1415,15 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
 
 @Composable
 private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    // RetroAchievements on or off, saved in the menu's scope: for this game when one is running,
+    // which is the point -- it can be off globally and on for the games you want it in. The core
+    // starts or stops it live (Achievements::UpdateSettings), no restart.
+    MenuSwitchRow(
+        str(if (com.armsx2.ui.InGameOverlay.settingsScope.value == com.armsx2.config.SettingsScope.Game)
+            "ra.enable.thisGame" else "ra.enable.label"),
+        state.settings.achievementsEnabled,
+    ) { on -> viewModel.updateSettings { it.copy(achievementsEnabled = on) } }
+    Spacer(Modifier.height(4.dp))
     // Gateway to the full RetroAchievements screen (unlock list + presentation options).
     CompactAction(str("ra.viewAchievements"), "★", Modifier.fillMaxWidth(), viewModel::openAchievements)
     Spacer(Modifier.height(4.dp))

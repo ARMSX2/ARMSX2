@@ -4460,6 +4460,9 @@ static constexpr const char* OWNED_GAME_INI_SECTIONS[] = {
     "EmuCore/Gamefixes", "EmuCore/Speedhacks", "Framerate", "MemoryCards",
     "DEV9", "DEV9/Eth", "DEV9/Eth/Hosts", "DEV9/Hdd",
     "SPU2", "SPU2/Output", "USB1",
+    // RetroAchievements' on/off is a per-game setting too (Settings.achievementsEnabled). Only
+    // that key is ever written here: the account lives in the base layer and in secrets.ini.
+    "Achievements",
 };
 
 // Open [path] for a per-game write: load what's there (so foreign keys survive), then blank the

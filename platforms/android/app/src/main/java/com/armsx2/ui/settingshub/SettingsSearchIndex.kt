@@ -204,6 +204,8 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("overlay.quickMenuSide.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiSize.label", true, SettingsCategory.OnScreen),
     SettingsSearchEntry("overlay.uiFontSize.label", true, SettingsCategory.OnScreen),
+    SettingsSearchEntry("ra.enable.label", true, SettingsCategory.Achievements),
+    SettingsSearchEntry("ra.title", true, SettingsCategory.Achievements),
     SettingsSearchEntry("fixes.antiBlur.label", true, SettingsCategory.Advanced),
     SettingsSearchEntry("fixes.screenOffsets.label", true, SettingsCategory.Advanced),
     SettingsSearchEntry("fixes.showOverscan.label", true, SettingsCategory.Advanced),

@@ -198,6 +198,11 @@ data class Settings(
     /** EmuCore/HostFs — host: filesystem access in the VM, for ELF/homebrew and mods
      *  (e.g. modded Persona 3 FES). Per-game capable; applies on the next game boot. */
     val hostFs: Boolean = false,
+    /** Achievements/Enabled — RetroAchievements. A standard setting so it can differ per game: off
+     *  globally and on for the games you want it in, or the other way round. The core starts and
+     *  stops RetroAchievements itself when a game's value differs (Achievements::UpdateSettings).
+     *  On by default, matching the native first-run seed and the login, which both switch it on. */
+    val achievementsEnabled: Boolean = true,
     /** EmuCore/EnablePINE — the IPC server external tools drive the emulator through
      *  (read/write guest memory, savestates, GS dumps). On Android it listens on loopback
      *  TCP, so it is reachable from a workstation only after `adb forward`; nothing outside
@@ -894,6 +899,7 @@ data class Settings(
         put("EmuCore", "EnableNoInterlacingPatches", "bool", enableNoInterlacingPatches.toString())
         put("EmuCore", "EnableFastBoot", "bool", enableFastBoot.toString())
         put("EmuCore", "HostFs", "bool", hostFs.toString())
+        put("Achievements", "Enabled", "bool", achievementsEnabled.toString())
         // VMManager::ReloadPINE compares these against the live server and starts, stops or
         // rebinds it, so a commit is enough — no game restart.
         put("EmuCore", "EnablePINE", "bool", pineEnabled.toString())
@@ -1128,6 +1134,7 @@ data class Settings(
             enableNoInterlacingPatches = boolAt("EmuCore/EnableNoInterlacingPatches") ?: this.enableNoInterlacingPatches,
             enableFastBoot = boolAt("EmuCore/EnableFastBoot") ?: this.enableFastBoot,
             hostFs = boolAt("EmuCore/HostFs") ?: this.hostFs,
+            achievementsEnabled = boolAt("Achievements/Enabled") ?: this.achievementsEnabled,
             pineEnabled = boolAt("EmuCore/EnablePINE") ?: this.pineEnabled,
             pineSlot = intAt("EmuCore/PINESlot") ?: this.pineSlot,
             enableGameFixes = boolAt("EmuCore/EnableGameFixes") ?: this.enableGameFixes,
@@ -1801,6 +1808,7 @@ data class Settings(
         put("enableNoInterlacingPatches", enableNoInterlacingPatches)
         put("enableFastBoot", enableFastBoot)
         put("hostFs", hostFs)
+        put("achievementsEnabled", achievementsEnabled)
         put("pineEnabled", pineEnabled)
         put("pineSlot", pineSlot)
         put("enableGameFixes", enableGameFixes)
@@ -2098,6 +2106,7 @@ data class Settings(
                 enableNoInterlacingPatches = json.optBoolean("enableNoInterlacingPatches", def.enableNoInterlacingPatches),
                 enableFastBoot = json.optBoolean("enableFastBoot", def.enableFastBoot),
                 hostFs = json.optBoolean("hostFs", def.hostFs),
+                achievementsEnabled = json.optBoolean("achievementsEnabled", def.achievementsEnabled),
                 pineEnabled = json.optBoolean("pineEnabled", def.pineEnabled),
                 pineSlot = json.optInt("pineSlot", def.pineSlot),
                 enableGameFixes = json.optBoolean("enableGameFixes", def.enableGameFixes),
@@ -2357,6 +2366,7 @@ data class Settings(
             if (current.enableNoInterlacingPatches != base.enableNoInterlacingPatches) j.put("enableNoInterlacingPatches", current.enableNoInterlacingPatches)
             if (current.enableFastBoot != base.enableFastBoot) j.put("enableFastBoot", current.enableFastBoot)
             if (current.hostFs != base.hostFs) j.put("hostFs", current.hostFs)
+            if (current.achievementsEnabled != base.achievementsEnabled) j.put("achievementsEnabled", current.achievementsEnabled)
             if (current.enableGameFixes != base.enableGameFixes) j.put("enableGameFixes", current.enableGameFixes)
             if (current.gamefixSoftwareRendererFmv != base.gamefixSoftwareRendererFmv) j.put("gamefixSoftwareRendererFmv", current.gamefixSoftwareRendererFmv)
             if (current.gamefixSkipMpeg != base.gamefixSkipMpeg) j.put("gamefixSkipMpeg", current.gamefixSkipMpeg)
@@ -2595,6 +2605,7 @@ data class Settings(
             enableNoInterlacingPatches = if (overrides.has("enableNoInterlacingPatches")) overrides.getBoolean("enableNoInterlacingPatches") else base.enableNoInterlacingPatches,
             enableFastBoot = if (overrides.has("enableFastBoot")) overrides.getBoolean("enableFastBoot") else base.enableFastBoot,
             hostFs = if (overrides.has("hostFs")) overrides.getBoolean("hostFs") else base.hostFs,
+            achievementsEnabled = if (overrides.has("achievementsEnabled")) overrides.getBoolean("achievementsEnabled") else base.achievementsEnabled,
             // Always the global value: PINE is one server for the process, so "this game runs
             // with PINE on" is not a thing that can be true. Deliberately absent from the diff
             // above too, so a per-game file never acquires the key -- but it still has to be
