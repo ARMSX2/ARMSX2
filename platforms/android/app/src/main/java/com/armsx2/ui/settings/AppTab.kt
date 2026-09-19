@@ -455,41 +455,66 @@ fun AppTab() {
             val introSetMsg = str("app.bootIntro.set")
             val introTooLargeMsg = str("app.bootIntro.tooLarge")
             val introUnreadableMsg = str("app.bootIntro.unreadable")
+            val introScope = rememberCoroutineScope()
+            var introBusy by remember { mutableStateOf(false) }
             val introPicker = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument()
             ) { uri ->
-                if (uri != null) {
-                    val name = androidx.documentfile.provider.DocumentFile
-                        .fromSingleUri(appContext, uri)?.name ?: "Custom intro"
-                    val msg = when (com.armsx2.BootIntro.setCustom(appContext, uri, name)) {
-                        com.armsx2.BootIntro.SetResult.OK -> introSetMsg
-                        com.armsx2.BootIntro.SetResult.TOO_LARGE -> introTooLargeMsg
-                        com.armsx2.BootIntro.SetResult.UNREADABLE -> introUnreadableMsg
+                if (uri != null && !introBusy) {
+                    introBusy = true
+                    // Off the main thread: a video can be up to BootIntro.MaxBytes, and copying
+                    // that on the UI thread would stall the app long enough to trip an ANR.
+                    introScope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            val name = androidx.documentfile.provider.DocumentFile
+                                .fromSingleUri(appContext, uri)?.name ?: "Custom intro"
+                            com.armsx2.BootIntro.setCustom(appContext, uri, name)
+                        }
+                        introBusy = false
+                        val msg = when (result) {
+                            com.armsx2.BootIntro.SetResult.OK -> introSetMsg
+                            com.armsx2.BootIntro.SetResult.TOO_LARGE -> introTooLargeMsg
+                            com.armsx2.BootIntro.SetResult.UNREADABLE -> introUnreadableMsg
+                        }
+                        android.widget.Toast.makeText(appContext, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
-                    android.widget.Toast.makeText(appContext, msg, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
             val introName = com.armsx2.BootIntro.customName.value
             Text(
-                if (introName != null) str("app.bootIntro.current").format(introName)
-                else str("app.bootIntro.default"),
+                when {
+                    introBusy -> str("app.bootIntro.importing")
+                    introName != null -> str("app.bootIntro.current").format(introName)
+                    else -> str("app.bootIntro.default")
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp),
             )
-            Row(
+            // Wraps: three buttons do not fit across a phone held upright.
+            FlowRow(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val pick = { introPicker.launch(arrayOf("video/*")) }
+                val pick = { if (!introBusy) introPicker.launch(arrayOf("video/*")) }
                 OutlinedButton(
                     onClick = pick,
+                    enabled = !introBusy,
                     modifier = Modifier.controllerFocusable("app.bootIntro.choose", onConfirm = pick),
                 ) { Text(str("app.bootIntro.choose")) }
+                // Plays whichever intro is current, the user's or the bundled one. It otherwise
+                // only shows on a cold start.
+                val preview = { if (!introBusy) com.armsx2.BootIntro.preview(appContext) }
+                OutlinedButton(
+                    onClick = preview,
+                    enabled = !introBusy,
+                    modifier = Modifier.controllerFocusable("app.bootIntro.preview", onConfirm = preview),
+                ) { Text(str("app.bootIntro.preview")) }
                 if (introName != null) {
-                    val reset = { com.armsx2.BootIntro.clearCustom(appContext) }
+                    val reset = { if (!introBusy) com.armsx2.BootIntro.clearCustom(appContext) }
                     OutlinedButton(
                         onClick = reset,
+                        enabled = !introBusy,
                         modifier = Modifier.controllerFocusable("app.bootIntro.reset", onConfirm = reset),
                     ) { Text(str("app.bootIntro.reset")) }
                 }

@@ -18,9 +18,13 @@ import androidx.core.view.WindowInsetsControllerCompat
  * all fall through to the app so a bad codec or slow decode never strands the user on a
  * black screen. The splash is opt-out via the "ui.bootLogo" preference (App settings,
  * default on) — when disabled it launches Main immediately.
+ *
+ * Started with [BootIntro.EXTRA_PREVIEW] it is the Preview button in App settings instead: it
+ * plays regardless of the toggle and the once-per-process rule, then just closes.
  */
 class BootSplashActivity : ComponentActivity() {
     private var launchedMain = false
+    private var preview = false
     private var rootView: View? = null
     private val timeoutRunnable = Runnable { launchMainAndFinish() }
     // True while a user-chosen intro is the one playing. Cleared if it fails and we fall back.
@@ -33,13 +37,14 @@ class BootSplashActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         applyImmersiveUi()
 
+        preview = intent?.getBooleanExtra(BootIntro.EXTRA_PREVIEW, false) == true
         val prefs = getSharedPreferences("ARMSX2", MODE_PRIVATE)
         val bootLogoEnabled = prefs.getBoolean("ui.bootLogo", true)
-        if (!bootLogoEnabled || playedThisProcess) {
+        if (!preview && (!bootLogoEnabled || playedThisProcess)) {
             launchMainAndFinish()
             return
         }
-        playedThisProcess = true
+        if (!preview) playedThisProcess = true
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = launchMainAndFinish()
@@ -122,6 +127,11 @@ class BootSplashActivity : ComponentActivity() {
         if (launchedMain) return
         launchedMain = true
         rootView?.removeCallbacks(timeoutRunnable)
+        if (preview) {
+            // Main is already running underneath; closing returns to App settings.
+            finish()
+            return
+        }
         val launch = Intent(this, Main::class.java)
         intent?.let { source ->
             launch.action = source.action

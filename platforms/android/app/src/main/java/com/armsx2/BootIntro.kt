@@ -1,6 +1,8 @@
 package com.armsx2
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.edit
@@ -90,6 +92,17 @@ object BootIntro {
         customName.value = displayName
         MainActivityRuntime.prefs.edit { putString(CustomNameKey, displayName) }
         return SetResult.OK
+    }
+
+    /** Extra that turns [BootSplashActivity] into a one-off preview. */
+    const val EXTRA_PREVIEW = "com.armsx2.bootintro.PREVIEW"
+
+    /** Play the current intro now. It otherwise shows only on a cold start, so without this the
+     *  only way to see a new pick is to close the app completely. */
+    fun preview(context: Context) {
+        val intent = Intent(context, BootSplashActivity::class.java).putExtra(EXTRA_PREVIEW, true)
+        if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
     }
 
     /** Drop the custom intro and go back to the bundled one. */
