@@ -960,7 +960,7 @@
  "pad.testRumble.player2": "测试震动：玩家 2",
  "pad.touchHaptics.description": "按下屏幕按键时短暂振动（类似 PPSSPP / Azahar）。与手柄震动独立。",
  "pad.touchHaptics.label": "触控触觉",
- "pad.touchPlayer.description": "选择屏幕控件对应哪位玩家。设为玩家 2 可让一人用手柄、另一人用触摸屏游玩。下次启动游戏时生效。",
+ "pad.touchPlayer.description": "选择屏幕控件对应哪位玩家。设为玩家 2 可让一人用手柄、另一人用触摸屏游玩。重启游戏生效。",
  "pad.touchPlayer.label": "触控按键操控的玩家",
  "pad.usb.help": "为端口连接模拟 USB 设备：Buzz 蜂鸣器、Rock Band 架子鼓、Keyboardmania、DJ 转盘、GunCon 2 等。使用你平常的按键操作即可驱动，无需额外映射。更改端口后请重启游戏：游戏只在启动时检测已连接的设备。",
  "pad.usb.none": "未连接",

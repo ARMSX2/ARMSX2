@@ -958,7 +958,7 @@
  "pad.testRumble.player2": "진동 테스트: 플레이어 2",
  "pad.touchHaptics.description": "화면 버튼을 누를 때 짧게 진동합니다(PPSSPP / Azahar 방식). 컨트롤러 진동과는 별개입니다.",
  "pad.touchHaptics.label": "터치 햅틱",
- "pad.touchPlayer.description": "화면 컨트롤이 어느 플레이어로 동작할지 정합니다. 플레이어 2로 설정하면 한 사람은 컨트롤러로, 다른 사람은 터치 화면으로 플레이할 수 있습니다. 다음 게임 실행 시 적용됩니다.",
+ "pad.touchPlayer.description": "화면 컨트롤이 어느 플레이어로 동작할지 정합니다. 플레이어 2로 설정하면 한 사람은 컨트롤러로, 다른 사람은 터치 화면으로 플레이할 수 있습니다. 적용하려면 게임을 재시작하세요.",
  "pad.touchPlayer.label": "터치 컨트롤로 조작할 플레이어",
  "pad.usb.help": "에뮬레이트된 USB 장치를 포트에 연결합니다. Buzz 버저, Rock Band 드럼 킷, Keyboardmania, DJ 턴테이블, GunCon 2 등을 지원합니다. 평소 조작으로 동작하므로 추가 매핑이 필요 없습니다. 포트를 변경한 후에는 게임을 재시작하세요. 게임은 부팅할 때 연결된 장치를 확인합니다.",
  "pad.usb.none": "연결 안 됨",

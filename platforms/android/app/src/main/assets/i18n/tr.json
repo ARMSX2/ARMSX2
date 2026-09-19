@@ -958,7 +958,7 @@
  "pad.testRumble.player2": "Titreşimi test et: 2. Oyuncu",
  "pad.touchHaptics.description": "Ekran üstü bir düğmeye bastığınızda kısaca titreşir (PPSSPP / Azahar gibi). Kumanda titreşiminden ayrıdır.",
  "pad.touchHaptics.label": "Dokunmatik Titreşim",
- "pad.touchPlayer.description": "Ekran üstü kontrollerin hangi oyuncu olduğunu belirler. 2. Oyuncu, bir kişinin kumandayla, diğerinin dokunmatik ekranla oynamasını sağlar. Bir sonraki oyun başlatmada etkinleşir.",
+ "pad.touchPlayer.description": "Ekran üstü kontrollerin hangi oyuncu olduğunu belirler. 2. Oyuncu, bir kişinin kumandayla, diğerinin dokunmatik ekranla oynamasını sağlar. Uygulamak için oyunu yeniden başlatın.",
  "pad.touchPlayer.label": "Dokunmatik kontrol oyuncusu",
  "pad.usb.help": "Bir porta emüle edilmiş bir USB cihazı takın: Buzz butonları, Rock Band davul seti, Keyboardmania, DJ pikabı, GunCon 2 ve daha fazlası. Normal kontrolleriniz onu yönetir, ek eşleme gerekmez. Bir portu değiştirdikten sonra oyunu yeniden başlatın: oyun, açılışta neyin takılı olduğunu kontrol eder.",
  "pad.usb.none": "Bağlı Değil",

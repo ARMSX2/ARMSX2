@@ -958,7 +958,7 @@
  "pad.testRumble.player2": "Test wibracji: Gracz 2",
  "pad.touchHaptics.description": "Krótka wibracja przy naciśnięciu przycisku na ekranie (jak PPSSPP / Azahar). Osobno od wibracji kontrolera.",
  "pad.touchHaptics.label": "Wibracje dotyku",
- "pad.touchPlayer.description": "Określa, którym graczem jest sterowanie na ekranie. Gracz 2 pozwala jednej osobie grać na kontrolerze, a drugiej na ekranie dotykowym. Działa przy następnym uruchomieniu gry.",
+ "pad.touchPlayer.description": "Określa, którym graczem jest sterowanie na ekranie. Gracz 2 pozwala jednej osobie grać na kontrolerze, a drugiej na ekranie dotykowym. Uruchom grę ponownie, aby zastosować.",
  "pad.touchPlayer.label": "Sterowanie dotykowe gra jako",
  "pad.usb.help": "Podłącz emulowane urządzenie USB do portu: przyciski Buzz, perkusję Rock Band, kontroler Keyboardmania, gramofon DJ, GunCon 2 i inne. Steruje nim zwykłe sterowanie, bez dodatkowego mapowania. Po zmianie portu zrestartuj grę: gra sprawdza, co jest podłączone, podczas uruchamiania.",
  "pad.usb.none": "Niepodłączone",

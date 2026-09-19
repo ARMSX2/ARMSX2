@@ -958,7 +958,7 @@
   "pad.testRumble.player2": "Tes getar: Pemain 2",
   "pad.touchHaptics.description": "Bergetar sebentar saat Anda menekan tombol di layar (seperti PPSSPP / Azahar). Terpisah dari getar controller.",
   "pad.touchHaptics.label": "Haptik Sentuh",
-  "pad.touchPlayer.description": "Menentukan pemain mana yang dikendalikan kontrol di layar. Pemain 2 memungkinkan satu orang bermain dengan controller dan orang lain di layar sentuh. Berlaku pada peluncuran game berikutnya.",
+  "pad.touchPlayer.description": "Menentukan pemain mana yang dikendalikan kontrol di layar. Pemain 2 memungkinkan satu orang bermain dengan controller dan orang lain di layar sentuh. Mulai ulang game untuk menerapkan.",
   "pad.touchPlayer.label": "Kontrol sentuh bermain sebagai",
   "pad.usb.help": "Pasang perangkat USB teremulasi ke sebuah port: buzzer Buzz, drum kit Rock Band, Keyboardmania, turntable DJ, GunCon 2, dan lainnya. Kontrol normal Anda yang mengendalikannya, tanpa perlu pemetaan tambahan. Mulai ulang game setelah mengubah port: game memeriksa apa yang tercolok saat boot.",
   "pad.usb.none": "Tidak Terhubung",

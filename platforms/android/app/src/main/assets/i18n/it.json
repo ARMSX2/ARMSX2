@@ -953,7 +953,7 @@
  "pad.testRumble.player2": "Prova rumble (Giocatore 2)",
  "pad.touchHaptics.description": "Vibra brevemente quando premi un pulsante su schermo (come PPSSPP / Azahar). Separato dal rumble del controller.",
  "pad.touchHaptics.label": "Aptica touch",
- "pad.touchPlayer.description": "Sceglie a quale giocatore corrispondono i controlli su schermo. Giocatore 2 permette a una persona di giocare con un controller e a un'altra sul touchscreen. Si applica al prossimo avvio di un gioco.",
+ "pad.touchPlayer.description": "Sceglie a quale giocatore corrispondono i controlli su schermo. Giocatore 2 permette a una persona di giocare con un controller e a un'altra sul touchscreen. Riavvia il gioco per applicare.",
  "pad.touchPlayer.label": "Giocatore dei controlli touch",
  "pad.usb.help": "Collega un dispositivo USB emulato a una porta: buzzer Buzz, batteria Rock Band, Keyboardmania, giradischi DJ, GunCon 2 e altro. I tuoi normali controlli lo gestiscono, senza mappatura aggiuntiva. Riavvia il gioco dopo aver cambiato una porta: il gioco controlla cosa è collegato all'avvio.",
  "pad.usb.none": "Non collegato",

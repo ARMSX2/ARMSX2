@@ -889,7 +889,7 @@
  "pad.testRumble.player2": "Vibrationstest für Spieler 2",
  "pad.touchHaptics.description": "Kurz vibrieren beim Drücken einer Bildschirmtaste (wie PPSSPP / Azahar). Unabhängig vom Controller-Rumble.",
  "pad.touchHaptics.label": "Touch-Haptik",
- "pad.touchPlayer.description": "Legt fest, als welcher Spieler die Bildschirmsteuerung spielt. Mit Spieler 2 kann eine Person am Controller und eine andere auf dem Touchscreen spielen. Gilt ab dem nächsten Spielstart.",
+ "pad.touchPlayer.description": "Legt fest, als welcher Spieler die Bildschirmsteuerung spielt. Mit Spieler 2 kann eine Person am Controller und eine andere auf dem Touchscreen spielen. Zum Übernehmen Spiel neu starten.",
  "pad.touchPlayer.label": "Touch-Steuerung spielt als",
  "pad.usb.help": "Ein emuliertes USB-Gerät an einen Port anschließen: Buzz-Buzzer, ein Rock-Band-Schlagzeug, Keyboardmania, ein DJ-Plattenteller, GunCon 2 und mehr. Die normale Steuerung bedient es, eine zusätzliche Belegung ist nicht nötig. Nach dem Ändern eines Ports das Spiel neu starten: Das Spiel prüft beim Start, was angeschlossen ist.",
  "pad.usb.none": "Nicht verbunden",

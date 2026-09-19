@@ -972,7 +972,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.onScreenControls.description" to "On-screen touch buttons. Off: hidden, for devices with built-in controls. 1–10s: hide after that long without a touch. Auto: show on touch, hide when you use a controller. Always: never hide, for playing with a controller and the touch buttons together.",
     "pad.onScreenControls.always" to "Always",
     "pad.touchPlayer.label" to "Touch controls play as",
-    "pad.touchPlayer.description" to "Which player the on-screen controls are. Player 2 lets one person play on a controller and another on the touch screen. Applies the next time a game starts.",
+    "pad.touchPlayer.description" to "Which player the on-screen controls are. Player 2 lets one person play on a controller and another on the touch screen. Restart the game to apply.",
     "pad.multiTouch.description" to "How far from a button's center a touch still counts as a press, so you can hit two adjacent on-screen buttons at once. Higher = more reach (easier rolls and combos).",
     "pad.onScreenControls.label" to "On-screen controls",
     "pad.player1" to "Player 1",

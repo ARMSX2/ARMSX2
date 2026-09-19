@@ -958,7 +958,7 @@
   "pad.testRumble.player2": "Thử rung: Người chơi 2",
   "pad.touchHaptics.description": "Rung nhẹ khi bạn nhấn một nút trên màn hình (giống PPSSPP / Azahar). Tách biệt với rung tay cầm.",
   "pad.touchHaptics.label": "Phản hồi rung cảm ứng",
-  "pad.touchPlayer.description": "Chọn người chơi cho điều khiển trên màn hình. Người chơi 2 cho phép một người chơi bằng tay cầm và một người khác chơi trên màn hình cảm ứng. Có hiệu lực vào lần khởi động game tiếp theo.",
+  "pad.touchPlayer.description": "Chọn người chơi cho điều khiển trên màn hình. Người chơi 2 cho phép một người chơi bằng tay cầm và một người khác chơi trên màn hình cảm ứng. Khởi động lại game để áp dụng.",
   "pad.touchPlayer.label": "Điều khiển cảm ứng dành cho",
   "pad.usb.help": "Gắn một thiết bị USB giả lập vào một cổng: bộ bấm Buzz, bộ trống Rock Band, Keyboardmania, bàn xoay DJ, GunCon 2 và nhiều thiết bị khác. Điều khiển thông thường của bạn sẽ điều khiển nó, không cần gán thêm. Khởi động lại game sau khi đổi cổng: game kiểm tra thiết bị đang cắm khi khởi động.",
   "pad.usb.none": "Chưa kết nối",

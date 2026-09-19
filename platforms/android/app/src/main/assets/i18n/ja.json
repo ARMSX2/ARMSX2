@@ -958,7 +958,7 @@
   "pad.testRumble.player2": "振動テスト：Player 2",
   "pad.touchHaptics.description": "画面上のボタンを押したときに短く振動します（PPSSPP／Azaharのように）。コントローラーの振動とは別です。",
   "pad.touchHaptics.label": "タッチ触覚",
-  "pad.touchPlayer.description": "画面上のコントロールをどのプレイヤーの操作にするかを選びます。Player 2にすると、1人がコントローラー、もう1人がタッチ画面でプレイできます。次回のゲーム起動時に適用されます。",
+  "pad.touchPlayer.description": "画面上のコントロールをどのプレイヤーの操作にするかを選びます。Player 2にすると、1人がコントローラー、もう1人がタッチ画面でプレイできます。適用にはゲームの再起動が必要です。",
   "pad.touchPlayer.label": "タッチコントロールで操作するプレイヤー",
   "pad.usb.help": "エミュレートしたUSBデバイスをポートに接続します（Buzzのブザー、Rock Bandのドラムキット、Keyboardmania、DJターンテーブル、GunCon 2など）。通常の操作で動かせるため、追加のマッピングは不要です。ポートを変更したらゲームを再起動してください。ゲームは起動時に接続されている機器を確認します。",
   "pad.usb.none": "未接続",

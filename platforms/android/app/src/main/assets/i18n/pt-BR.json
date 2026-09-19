@@ -511,7 +511,7 @@
  "pad.testRumble.player2": "Testar rumble: Jogador 2",
  "pad.touchHaptics.description": "Vibra brevemente ao pressionar um botão na tela (como PPSSPP / Azahar). Separado do rumble do controle.",
  "pad.touchHaptics.label": "Hápticos de Toque",
- "pad.touchPlayer.description": "Qual jogador os controles na tela representam. Jogador 2 permite que uma pessoa jogue com um controle e outra na tela sensível ao toque. Aplica-se na próxima vez que um jogo for iniciado.",
+ "pad.touchPlayer.description": "Qual jogador os controles na tela representam. Jogador 2 permite que uma pessoa jogue com um controle e outra na tela sensível ao toque. Reinicie o jogo para aplicar.",
  "pad.touchPlayer.label": "Controles de toque jogam como",
  "patches.action.allOff": "Desligar tudo",
  "patches.action.allOn": "Ligar tudo",

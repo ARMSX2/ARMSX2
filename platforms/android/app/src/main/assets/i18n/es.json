@@ -953,7 +953,7 @@
  "pad.testRumble.player2": "Probar vibración (Jugador 2)",
  "pad.touchHaptics.description": "Vibra brevemente al pulsar un botón en pantalla (como PPSSPP / Azahar). Independiente de la vibración del mando.",
  "pad.touchHaptics.label": "Háptica táctil",
- "pad.touchPlayer.description": "Elige a qué jugador corresponden los controles en pantalla. Jugador 2 permite que una persona juegue con un mando y otra en la pantalla táctil. Se aplica la próxima vez que se inicie un juego.",
+ "pad.touchPlayer.description": "Elige a qué jugador corresponden los controles en pantalla. Jugador 2 permite que una persona juegue con un mando y otra en la pantalla táctil. Reinicia el juego para aplicar.",
  "pad.touchPlayer.label": "Jugador de los controles táctiles",
  "pad.usb.help": "Conecta un dispositivo USB emulado a un puerto: pulsadores de Buzz, una batería de Rock Band, Keyboardmania, un plato de DJ, GunCon 2 y más. Se maneja con tus controles normales, sin asignaciones extra. Reinicia el juego tras cambiar un puerto: el juego comprueba qué hay conectado al arrancar.",
  "pad.usb.none": "No conectado",
