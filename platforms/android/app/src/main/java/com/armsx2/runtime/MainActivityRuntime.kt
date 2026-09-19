@@ -2126,6 +2126,7 @@ open class MainActivityRuntime : ComponentActivity() {
 
     private fun handleTurbo(physicalCode: Int, type: KeyEventType, target: Int, port: Int) {
         val key = turboMapKey(physicalCode, port)
+        val fromController = !isVolumeKey(physicalCode)
         if (type == KeyEventType.KeyDown) {
             if (turboRunnables.containsKey(key)) return // already firing (auto-repeat DOWNs)
             turboPressed[key] = false
@@ -2133,7 +2134,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 override fun run() {
                     val pressed = !(turboPressed[key] ?: false)
                     turboPressed[key] = pressed
-                    sendKeyAction(if (pressed) KeyEventType.KeyDown else KeyEventType.KeyUp, target, port)
+                    sendKeyAction(if (pressed) KeyEventType.KeyDown else KeyEventType.KeyUp, target, port, fromController)
                     turboHandler.postDelayed(this, 33L) // ~15 presses/sec (33ms on, 33ms off)
                 }
             }
@@ -2142,15 +2143,17 @@ open class MainActivityRuntime : ComponentActivity() {
         } else {
             turboRunnables.remove(key)?.let { turboHandler.removeCallbacks(it) }
             turboPressed.remove(key)
-            sendKeyAction(KeyEventType.KeyUp, target, port) // guarantee released on let-go
+            sendKeyAction(KeyEventType.KeyUp, target, port, fromController) // guarantee released on let-go
         }
     }
 
-    fun sendKeyAction(p_action: KeyEventType, p_keycode_in: Int, port: Int = 0) {
+    fun sendKeyAction(p_action: KeyEventType, p_keycode_in: Int, port: Int = 0, fromController: Boolean = true) {
         // Any physical gamepad key event implies the user is on a
         // controller — latch the on-screen touch controls hidden until a
-        // screen press flips them back on. Idempotent.
-        com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
+        // screen press flips them back on. Idempotent. Not for the phone's own volume keys
+        // ([fromController] false): they are how people add triggers to touch-only play, and
+        // hiding the touch controls on every press left them nothing else to play with.
+        if (fromController) com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
         // D-pad as left analog stick: a physical d-pad press (arriving as a key,
         // not a HAT) drives the left stick instead of the digital d-pad. The
         // remapped code is >=110 so the analog-force branch below gives a
@@ -3581,13 +3584,14 @@ open class MainActivityRuntime : ComponentActivity() {
         // Local co-op routing and macro precedence exactly match the old Compose
         // onKeyEvent path; only the dispatch layer has changed.
         val port = com.armsx2.input.PadRouter.portForDevice(event.deviceId)
+        val fromController = !isVolumeKey(physicalCode)
         com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(physicalCode)?.let { macro ->
             com.armsx2.ui.touch.TouchControls.fireMacro(
                 macro, "pad$port", type == KeyEventType.KeyDown,
             ) { code, pressed ->
                 sendKeyAction(
                     if (pressed) KeyEventType.KeyDown else KeyEventType.KeyUp,
-                    code, port,
+                    code, port, fromController,
                 )
             }
             return true
@@ -3602,10 +3606,15 @@ open class MainActivityRuntime : ComponentActivity() {
         if (ControllerMappings.isTurboTarget(target, port)) {
             handleTurbo(physicalCode, edge, target, port)
         } else {
-            sendKeyAction(edge, target, port)
+            sendKeyAction(edge, target, port, fromController)
         }
         return true
     }
+
+    /** The phone's own volume keys. Bindable as buttons, but not a controller. */
+    private fun isVolumeKey(code: Int): Boolean =
+        code == KeyEvent.KEYCODE_VOLUME_UP || code == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            code == KeyEvent.KEYCODE_VOLUME_MUTE
 
     /** #254: forward a hardware keyboard KeyEvent to the emulated USB keyboard.
      *  Returns true (event consumed) only when the game runs with the USB
