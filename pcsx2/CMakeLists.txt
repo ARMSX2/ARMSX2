@@ -881,7 +881,11 @@ elseif(LINUX)
 	list(APPEND pcsx2USBHeaders
 		USB/usb-eyetoy/cam-linux.h
 	)
-elseif(APPLE)
+elseif(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+	# cam-macos.mm asks AVCaptureDeviceDiscoverySession for
+	# AVCaptureDeviceTypeExternalUnknown, which is marked unavailable on tvOS.
+	# There it takes the same no-op backend as every other platform without a
+	# camera; iOS keeps the one it always had.
 	list(APPEND pcsx2USBSources
 		USB/usb-eyetoy/cam-macos.mm
 	)
@@ -1269,7 +1273,12 @@ set(pcsx2arm64Headers
 # forks (refresh-experimental / iOS-refresh). Source wiring only: real NDK /
 # Xcode builds are required to validate include paths and link deps.
 # See REFACTOR_STATUS.md.
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+# tvOS is the same platform as far as this build is concerned: no libpcap, no
+# OpenGL, Metal for the GS, and the same Apple embedded rules about what a
+# process may map and load. The buildbot's templates already pass -DIOS=ON for
+# both, so the `NOT IOS` guards elsewhere cover tvOS; this is the other half of
+# that, and without it a tvOS link is short the PCAPAdapter stubs.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
 	set(ARMSX2_IOS TRUE)
 endif()
 
@@ -1336,6 +1345,16 @@ if(ARMSX2_IOS)
 		# iOS has no libpcap, so pcap_io.cpp is excluded above; reuse the (platform-
 		# agnostic) Android stub to supply the PCAPAdapter definitions DEV9 references.
 		Android/AndroidPcapStubs.cpp)
+	# MacOSStubs.cpp excludes itself on the embedded platforms (it is
+	# !TARGET_OS_IPHONE throughout), so what those need instead is here: the
+	# optical drive CDVDdiscReader names, the sound CocoaTools would have
+	# played, and the downloader there is no libcurl for. Only for a core: the
+	# iOS app answers for all of it in its own IOS/HostImpls.mm, and two
+	# definitions of each is a duplicate symbol at link.
+	if(ENABLE_LIBRETRO)
+		list(APPEND pcsx2Sources
+			Apple/AppleEmbeddedStubs.cpp)
+	endif()
 endif()
 
 # These ones benefit a lot from LTO
@@ -1519,9 +1538,10 @@ endif()
 target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
 
 if(APPLE OR BSD)
-	# Disc sources use IOKit, which doesn't exist on iOS.
-	if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-		# No disc support on iOS.
+	# Disc sources use IOKit, which exists on neither iOS nor tvOS.
+	if(ARMSX2_IOS)
+		# No disc support there; Apple/AppleEmbeddedStubs.cpp answers for what
+		# CDVDdiscReader names.
 	elseif(APPLE)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2OSXSources})
@@ -1705,8 +1725,8 @@ fixup_file_properties(PCSX2)
 force_include_last(PCSX2_FLAGS "/(usr|local)/include/?$")
 
 if (APPLE)
-	if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
-		# AppKit and IOKit are macOS-only; iOS links the rest at the app target.
+	if(NOT ARMSX2_IOS)
+		# AppKit and IOKit are macOS-only.
 		find_library(APPKIT_LIBRARY AppKit)
 		find_library(IOKIT_LIBRARY IOKit)
 		find_library(METAL_LIBRARY Metal)
@@ -1721,11 +1741,31 @@ if (APPLE)
 			${AVFOUNDATION_LIBRARY}
 			${COREMEDIA_LIBRARY}
 		)
+	elseif(ENABLE_LIBRETRO)
+		# The iOS app links these at its own target, so PCSX2 never had to -
+		# but a libretro core is the final link itself, and the Metal renderer
+		# it carries names MTLCreateSystemDefaultDevice and CAMetalLayer. The
+		# two macOS-only frameworks above stay out.
+		find_library(METAL_LIBRARY Metal)
+		find_library(QUARTZCORE_LIBRARY QuartzCore)
+		find_library(AVFOUNDATION_LIBRARY AVFoundation)
+		find_library(COREMEDIA_LIBRARY CoreMedia)
+		target_link_libraries(PCSX2_FLAGS INTERFACE
+			${METAL_LIBRARY}
+			${QUARTZCORE_LIBRARY}
+			${AVFOUNDATION_LIBRARY}
+			${COREMEDIA_LIBRARY}
+		)
 	endif()
 	# Weak-link MetalFX so older OS versions still load. Skip on the iOS simulator:
 	# MetalFX.framework isn't in the iphonesimulator SDK (see PCSX2_HAS_METALFX in
 	# GSDeviceMTL.h), so linking it there fails with "framework not found".
-	if(ARMSX2_REAL_DEVICE OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	#
+	# ARMSX2_REAL_DEVICE is the iOS app's own switch and nothing sets it for the
+	# libretro core, which is only ever built against a device SDK - and without
+	# the framework the link is short MTLFXSpatialScalerDescriptor, because the
+	# header is there and PCSX2_HAS_METALFX is 1.
+	if(ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 	endif()
 endif()
