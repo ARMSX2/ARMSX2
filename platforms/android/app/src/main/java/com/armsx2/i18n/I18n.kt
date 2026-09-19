@@ -1184,7 +1184,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "perf.fix.vuSync.desc" to "Runs VU1 tightly synced with the EE, fixing games that break with threaded or fast VU1 (reduces some MTVU benefit).",
     "perf.frameSkip.description" to "Low-end devices: draw 1 of every (N+1) frames to free up GPU. Emulation still runs full speed; higher = choppier but faster.",
     "perf.frameSkip.label" to "Frame Skip",
-    "perf.gamedbFixes.help" to "Compatibility shortcuts. Leave GameDB Fixes off unless a game needs one of the fixes below.",
+    "perf.gamedbFixes.help" to "Per-game compatibility fixes. Keep GameDB Fixes on: it applies the fixes the game database lists for each game. Turn on one of the fixes below only if a game needs it.",
     "perf.gamedbFixes.legend" to "Skip BIOS - bypasses the PS2 startup screen.\n",
     "perf.gamedbFixes.title" to "GameDB Fixes",
     "gamedb.title" to "Game database settings for this game",
