@@ -3878,24 +3878,50 @@ open class MainActivityRuntime : ComponentActivity() {
     private var lastDecorW = 0
     private var lastDecorH = 0
 
-    /** Last line logged by [logTouchScaleOnce], so a steady state prints once rather than per event. */
-    private var loggedTouchScale = ""
+    // How far touches had reached when one first left the window, per window size (-1 = not
+    // yet). The one question a tester's log could not answer is what opened the gate.
+    private var escapePeakX = -1
+    private var escapePeakY = -1
 
-    /** One line per distinct touch-scale state. Turns "does it feel right" into a pasteable fact. */
+    // What logTouchScaleOnce last reported. It runs on every touch event, so it compares these
+    // before building anything: formatting the line to find it unchanged cost a string on every
+    // event of every session.
+    private var loggedDecorW = -1
+    private var loggedDecorH = -1
+    private var loggedReported: Pair<Float, Float>? = null
+    private var loggedEscaped = false
+    private var loggedSx = Float.NaN
+    private var loggedSy = Float.NaN
+
+    /** One line per distinct touch-scale state. Turns "does it feel right" into a pasteable fact.
+     *  [reported] is the digitizer as the device published it and [digitizer] as it was used,
+     *  turned to the display when they differ. */
     private fun logTouchScaleOnce(
         decorW: Int,
         decorH: Int,
+        reported: Pair<Float, Float>?,
         digitizer: Pair<Float, Float>?,
         escaped: Boolean,
         sx: Float,
         sy: Float,
     ) {
-        val line = "window=${decorW}x$decorH digitizer=" +
-            (digitizer?.let { "${it.first.toInt()}x${it.second.toInt()}" } ?: "unavailable") +
-            " escaped=$escaped applied=%.4f,%.4f".format(sx, sy)
-        if (line == loggedTouchScale) return
-        loggedTouchScale = line
+        if (decorW == loggedDecorW && decorH == loggedDecorH && reported == loggedReported &&
+            escaped == loggedEscaped && sx == loggedSx && sy == loggedSy) return
+        loggedDecorW = decorW; loggedDecorH = decorH; loggedReported = reported
+        loggedEscaped = escaped; loggedSx = sx; loggedSy = sy
+
+        fun size(p: Pair<Float, Float>) = "${p.first.toInt()}x${p.second.toInt()}"
+        val line = buildString {
+            append("window=${decorW}x$decorH digitizer=")
+            append(reported?.let(::size) ?: "unavailable")
+            if (digitizer != null && digitizer != reported) append(" (turned to ${size(digitizer)})")
+            append(" escaped=$escaped")
+            if (escaped) append(" reaching $escapePeakX,$escapePeakY")
+            append(" applied=%.4f,%.4f".format(sx, sy))
+        }
         android.util.Log.i("ARMSX2-Touch", line)
+        // Testers send the emulog (Save Log), never logcat.
+        runCatching { NativeApp.emulog("@@TOUCH@@ $line") }
     }
 
     /**
@@ -3937,6 +3963,36 @@ open class MainActivityRuntime : ComponentActivity() {
     }.getOrNull()
 
     /**
+     * [digitizer] turned to the display's current orientation.
+     *
+     * Android 13 publishes a touchscreen's motion ranges in the panel's own unrotated space
+     * ("InputReader works in the un-rotated display coordinate space", TouchInputMapper), while
+     * Android 14 onwards publishes them rotated to the display. A handheld built around a
+     * portrait panel and held in landscape therefore reads 1080x1920 on 13 against a 1920x1080
+     * window. The Odin 3 is on 15 and reads 1920x1080, which is why it could never show this.
+     *
+     * Taken as it came, that pairs the window's height with the panel's LONG side: a vertical
+     * scale of 0.5625, and the horizontal 1.78 hidden by the clamp. Once the gate opened, every
+     * touch landed at 56% of its height, so menus picked the row a couple above the finger and
+     * the bottom 44% of the screen could not be touched at all (Odin 2 Mini on Android 13,
+     * reported on ARMSX3 #132).
+     *
+     * A touchscreen covers the display it belongs to, so when one is landscape and the other
+     * portrait the ranges are the unrotated ones, and turning them is the whole fix. Checked
+     * against the display rather than the window, since a split-screen window can be portrait
+     * on a landscape display; the display is only asked when the window already disagrees.
+     */
+    private fun orientedToDisplay(digitizer: Pair<Float, Float>, decorW: Int, decorH: Int): Pair<Float, Float> {
+        if (digitizer.first == digitizer.second) return digitizer
+        val digitizerLandscape = digitizer.first > digitizer.second
+        if (digitizerLandscape == decorW > decorH) return digitizer
+        val real = realPanelMetrics() ?: return digitizer.second to digitizer.first
+        if (real.widthPixels == real.heightPixels) return digitizer
+        return if (digitizerLandscape != real.widthPixels > real.heightPixels) digitizer.second to digitizer.first
+        else digitizer
+    }
+
+    /**
      * Correct the touch offset on devices whose "high resolution mode" downscales the app.
      *
      * Reported on Samsung QHD+ (S24 Ultra, ≈1.33 scale) and on Honor's 1.5K mode (Magic6,
@@ -3963,7 +4019,9 @@ open class MainActivityRuntime : ComponentActivity() {
      * before the scale is computed, which a held finger prevents.
      *
      * Self-gating either way: on a device with no downscale the digitizer and the window
-     * describe the same space, the scale is 1 and nothing is touched.
+     * describe the same space, the scale is 1 and nothing is touched. That holds only once the
+     * digitizer is turned to the display (see [orientedToDisplay]); Android 13 publishes it
+     * unrotated, and on a portrait panel held in landscape the two spaces did not match.
      */
     private fun maybeCorrectTouchScale(ev: MotionEvent) {
         runCatching {
@@ -3976,6 +4034,7 @@ open class MainActivityRuntime : ComponentActivity() {
             if (decorW != lastDecorW || decorH != lastDecorH) {
                 touchPeakX = 0f; touchPeakY = 0f
                 lastDecorW = decorW; lastDecorH = decorH
+                escapePeakX = -1; escapePeakY = -1
             }
             // Grow the observed extent from THIS event's pointers (raw, before any correction),
             // capped at 2x the window so one spurious out-of-range sample can't over-shrink touch.
@@ -3985,7 +4044,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (ev.getX(i) > touchPeakX) touchPeakX = minOf(ev.getX(i), capX)
                 if (ev.getY(i) > touchPeakY) touchPeakY = minOf(ev.getY(i), capY)
             }
-            val digitizer = digitizerExtent(ev)
+            val reported = digitizerExtent(ev)
+            val digitizer = reported?.let { orientedToDisplay(it, decorW, decorH) }
 
             // THE GATE: has a touch ever landed outside the window?
             //
@@ -4002,6 +4062,9 @@ open class MainActivityRuntime : ComponentActivity() {
             // the downscale is a property of the display, not of one direction, which is what
             // the old per-axis gating got wrong.
             val escaped = touchPeakX > decorW + slop || touchPeakY > decorH + slop
+            if (escaped && escapePeakX < 0) {
+                escapePeakX = touchPeakX.toInt(); escapePeakY = touchPeakY.toInt()
+            }
 
             var sx = 1f
             var sy = 1f
@@ -4010,8 +4073,17 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (digitizer != null) {
                     // Exact, and known in full from the first escaping touch rather than
                     // converged towards over several.
-                    sx = (decorW / digitizer.first).coerceIn(0.5f, 1f)
-                    sy = (decorH / digitizer.second).coerceIn(0.5f, 1f)
+                    val rx = decorW / digitizer.first
+                    val ry = decorH / digitizer.second
+                    // And only when it IS a downscale. A vendor resolution mode shrinks both
+                    // axes by one factor (Samsung 0.75, Honor 0.875), and a window stopping short
+                    // of a cutout skews that by a few percent. Axes further apart than that are
+                    // two unrelated sizes, and scaling by them moves touch instead of correcting
+                    // it: the Odin 2 Mini's unturned ranges gave 1.78 against 0.5625.
+                    if (kotlin.math.abs(rx - ry) <= 0.05f) {
+                        sx = rx.coerceIn(0.5f, 1f)
+                        sy = ry.coerceIn(0.5f, 1f)
+                    }
                 } else {
                     // No usable ranges: fall back to the extent learned from the touches.
                     val real = realPanelMetrics()
@@ -4022,7 +4094,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
             }
 
-            logTouchScaleOnce(decorW, decorH, digitizer, escaped, sx, sy)
+            logTouchScaleOnce(decorW, decorH, reported, digitizer, escaped, sx, sy)
 
             if (sx != 1f || sy != 1f) {
                 ev.transform(android.graphics.Matrix().apply { setScale(sx, sy) })
