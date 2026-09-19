@@ -1247,7 +1247,7 @@
   "ra.scope.game": "Ev mîheng tenê ji bo %s ne, û ji yên giştî pêştir tên.",
   "ra.scope.global": "Mîhengên giştî: her lîstika bêyî ya xwe, van dişopîne.",
   "ra.scope.thisGame": "vê lîstikê",
-  "ra.scope.useGlobal": "Ji bo vê lîstikê mîhengên giştî bikar bîne",
+  "ra.scope.useGlobal": "Mîhengên giştî bikar bîne",
   "ra.server.reset": "Servera Serkeftinan Vegerîne Xwerû",
   "ra.server.reset.desc": "Zorkirina serverek taybet/offline paqij dike. Têketina ku bi 'No response' têk diçe rast dike.",
   "ra.status.loading.body": "Lîsteya destkeftiyê distîne.",

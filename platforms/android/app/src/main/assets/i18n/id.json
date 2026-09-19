@@ -1220,7 +1220,7 @@
   "ra.scope.game": "Pengaturan ini hanya untuk %s, dan lebih diutamakan daripada pengaturan global.",
   "ra.scope.global": "Pengaturan global: setiap game yang tidak punya pengaturan sendiri mengikuti ini.",
   "ra.scope.thisGame": "game ini",
-  "ra.scope.useGlobal": "Pakai pengaturan global untuk game ini",
+  "ra.scope.useGlobal": "Pakai pengaturan global",
   "ra.server.reset": "Reset server achievement",
   "ra.server.reset.desc": "Menghapus override server kustom/offline. Memperbaiki login yang gagal dengan pesan 'No response'.",
   "ra.status.loading.body": "Mengambil daftar achievement.",

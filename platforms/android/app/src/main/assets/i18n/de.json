@@ -1151,7 +1151,7 @@
  "ra.scope.game": "Diese Einstellungen gelten nur für %s und haben Vorrang vor den globalen.",
  "ra.scope.global": "Globale Einstellungen: Jedes Spiel ohne eigene Einstellungen folgt diesen.",
  "ra.scope.thisGame": "dieses Spiel",
- "ra.scope.useGlobal": "Globale Einstellungen für dieses Spiel verwenden",
+ "ra.scope.useGlobal": "Globale Einstellungen verwenden",
  "ra.server.reset": "Erfolge-Server zurücksetzen",
  "ra.server.reset.desc": "Entfernt eine benutzerdefinierte oder Offline-Server-Vorgabe. Behebt Anmeldefehler mit der Meldung „No response“.",
  "ra.status.loading.body": "Erfolgsliste wird abgerufen.",

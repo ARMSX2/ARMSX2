@@ -1220,7 +1220,7 @@
  "ra.scope.game": "这些设置仅适用于 %s，并且优先于全局设置。",
  "ra.scope.global": "全局设置：没有单独设置的游戏都会遵循这些设置。",
  "ra.scope.thisGame": "此游戏",
- "ra.scope.useGlobal": "此游戏使用全局设置",
+ "ra.scope.useGlobal": "使用全局设置",
  "ra.server.reset": "重置成就服务器",
  "ra.server.reset.desc": "清除自定义／离线服务器覆盖设置。可修复登录时出现“无响应”错误的问题。",
  "ra.status.loading.body": "正在获取成就列表。",

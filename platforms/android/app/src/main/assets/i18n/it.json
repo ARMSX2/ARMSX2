@@ -1215,7 +1215,7 @@
  "ra.scope.game": "Queste impostazioni valgono solo per %s e hanno la precedenza su quelle globali.",
  "ra.scope.global": "Impostazioni globali: ogni gioco senza impostazioni proprie segue queste.",
  "ra.scope.thisGame": "questo gioco",
- "ra.scope.useGlobal": "Usa le impostazioni globali per questo gioco",
+ "ra.scope.useGlobal": "Usa le impostazioni globali",
  "ra.server.reset": "Reimposta server degli obiettivi",
  "ra.server.reset.desc": "Cancella la sostituzione con un server personalizzato/offline. Risolve l'accesso che fallisce con 'No response'.",
  "ra.status.loading.body": "Recupero elenco obiettivi.",

@@ -1220,7 +1220,7 @@
   "ra.scope.game": "これらの設定は%sのみに適用され、グローバル設定より優先されます。",
   "ra.scope.global": "グローバル設定：個別の設定がないすべてのゲームは、これに従います。",
   "ra.scope.thisGame": "このゲーム",
-  "ra.scope.useGlobal": "このゲームにグローバル設定を使用",
+  "ra.scope.useGlobal": "グローバル設定を使用",
   "ra.server.reset": "実績サーバーをリセット",
   "ra.server.reset.desc": "カスタム／オフラインサーバーの上書き設定を消去します。「No response」でサインインに失敗する問題を修正します。",
   "ra.status.loading.body": "実績リストを取得中。",

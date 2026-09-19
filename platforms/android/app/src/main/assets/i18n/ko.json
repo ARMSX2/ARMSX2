@@ -1220,7 +1220,7 @@
  "ra.scope.game": "이 설정은 %s에만 적용되며 전역 설정보다 우선합니다.",
  "ra.scope.global": "전역 설정: 자체 설정이 없는 모든 게임은 이 설정을 따릅니다.",
  "ra.scope.thisGame": "이 게임",
- "ra.scope.useGlobal": "이 게임에 전역 설정 사용",
+ "ra.scope.useGlobal": "전역 설정 사용",
  "ra.server.reset": "도전과제 서버 초기화",
  "ra.server.reset.desc": "커스텀/오프라인 서버 재정의를 지웁니다. 'No response' 오류로 로그인에 실패하는 문제를 해결합니다.",
  "ra.status.loading.body": "도전과제 목록을 가져오는 중.",

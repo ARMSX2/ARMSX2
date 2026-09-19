@@ -1220,7 +1220,7 @@
   "ra.scope.game": "Các cài đặt này chỉ dành cho %s, và được ưu tiên hơn cài đặt toàn cục.",
   "ra.scope.global": "Cài đặt toàn cục: mọi game không có cài đặt riêng sẽ theo các cài đặt này.",
   "ra.scope.thisGame": "game này",
-  "ra.scope.useGlobal": "Dùng cài đặt toàn cục cho game này",
+  "ra.scope.useGlobal": "Dùng cài đặt toàn cục",
   "ra.server.reset": "Đặt lại máy chủ thành tựu",
   "ra.server.reset.desc": "Xóa ghi đè máy chủ tùy chỉnh/ngoại tuyến. Khắc phục lỗi đăng nhập báo 'No response'.",
   "ra.status.loading.body": "Đang tải danh sách thành tựu.",

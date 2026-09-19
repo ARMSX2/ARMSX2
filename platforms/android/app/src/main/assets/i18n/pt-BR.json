@@ -1383,7 +1383,7 @@
  "ra.scope.game": "Essas configurações são só para %s, e têm prioridade sobre as globais.",
  "ra.scope.global": "Configurações globais: todo jogo sem as suas próprias segue estas.",
  "ra.scope.thisGame": "este jogo",
- "ra.scope.useGlobal": "Usar as configurações globais para este jogo",
+ "ra.scope.useGlobal": "Usar configurações globais",
  "ra.options.soundEffects.desc": "Toque um som quando uma conquista for desbloqueada.",
  "ra.options.unlockSound": "Som de desbloqueio de conquista",
  "ra.options.unlockSound.default": "Padrão: toque para escolher um som personalizado (por exemplo, Xbox 360)",

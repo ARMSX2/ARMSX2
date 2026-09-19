@@ -1220,7 +1220,7 @@
  "ra.scope.game": "Te ustawienia dotyczą tylko %s i mają pierwszeństwo przed globalnymi.",
  "ra.scope.global": "Ustawienia globalne: każda gra bez własnych korzysta z tych.",
  "ra.scope.thisGame": "tej gry",
- "ra.scope.useGlobal": "Użyj globalnych ustawień dla tej gry",
+ "ra.scope.useGlobal": "Użyj ustawień globalnych",
  "ra.server.reset": "Resetuj serwer osiągnięć",
  "ra.server.reset.desc": "Czyści niestandardowe/offline nadpisanie serwera. Naprawia logowanie kończące się błędem „Brak odpowiedzi”.",
  "ra.status.loading.body": "Pobieranie listy osiągnięć.",

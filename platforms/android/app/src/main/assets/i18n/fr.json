@@ -1215,7 +1215,7 @@
   "ra.scope.game": "Ces paramètres ne s'appliquent qu'à %s et priment sur les paramètres globaux.",
   "ra.scope.global": "Paramètres globaux : chaque jeu sans paramètres propres les suit.",
   "ra.scope.thisGame": "ce jeu",
-  "ra.scope.useGlobal": "Utiliser les paramètres globaux pour ce jeu",
+  "ra.scope.useGlobal": "Utiliser les paramètres globaux",
   "ra.server.reset": "Réinitialiser le serveur de succès",
   "ra.server.reset.desc": "Efface un remplacement de serveur personnalisé/hors ligne. Corrige l'échec de connexion avec l'erreur « No response ».",
   "ra.status.loading.body": "Récupération de la liste des succès.",

@@ -1220,7 +1220,7 @@
  "ra.scope.game": "這些設定僅適用於 %s，並且優先於全域設定。",
  "ra.scope.global": "全域設定：沒有個別設定的遊戲都會遵循這些設定。",
  "ra.scope.thisGame": "此遊戲",
- "ra.scope.useGlobal": "此遊戲使用全域設定",
+ "ra.scope.useGlobal": "使用全域設定",
  "ra.server.reset": "重設成就伺服器",
  "ra.server.reset.desc": "清除自訂／離線伺服器覆寫設定。可修正登入時出現「無回應」錯誤的問題。",
  "ra.status.loading.body": "擷取成就清單。",

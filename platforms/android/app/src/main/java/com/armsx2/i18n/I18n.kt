@@ -1265,7 +1265,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "ra.scope.game" to "These settings are for %s only, and outrank the global ones.",
     "ra.scope.thisGame" to "this game",
     "ra.scope.global" to "Global settings: every game without its own follows these.",
-    "ra.scope.useGlobal" to "Use the global settings for this game",
+    "ra.scope.useGlobal" to "Use global settings",
     "ra.options.notifSize" to "Notification size",
     "ra.options.notifSize.desc" to "Size of achievement popups and in-game indicators, text and icons alike.",
     "ra.subset.base" to "Base Set",

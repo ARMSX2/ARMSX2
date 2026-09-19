@@ -31,7 +31,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -178,6 +177,19 @@ private fun AchievementAccount(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // A quiet link under the scope line rather than a full-width button: in the in-game
+            // tab's narrow column the old outlined button wrapped its label into a two-line pill
+            // that dwarfed the setting rows around it. Only there when this game has its own.
+            if (state.perGame && state.hasGameOverrides) {
+                val useGlobal = { viewModel.useGlobalSettings() }
+                TextButton(
+                    onClick = useGlobal,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.controllerFocusable("ra.useGlobal", onConfirm = useGlobal),
+                ) {
+                    Text("\u21BA  " + str("ra.scope.useGlobal"), style = MaterialTheme.typography.labelLarge)
+                }
+            }
             SettingSwitchRow(
                 title = str(if (state.perGame) "ra.enable.thisGame" else "ra.enable.label"),
                 description = str("ra.enable.description"),
@@ -190,13 +202,6 @@ private fun AchievementAccount(
                     onRight = { if (!state.enabled) viewModel.setEnabled(true) },
                 ),
             )
-            if (state.perGame && state.hasGameOverrides) {
-                val useGlobal = { viewModel.useGlobalSettings() }
-                OutlinedButton(
-                    onClick = useGlobal,
-                    modifier = Modifier.controllerFocusable("ra.useGlobal", onConfirm = useGlobal),
-                ) { Text(str("ra.scope.useGlobal")) }
-            }
             SettingSwitchRow(
                 title = str("ra.mode.hardcore"),
                 description = str("patches.hardcoreNoticeCheatsDisabled"),

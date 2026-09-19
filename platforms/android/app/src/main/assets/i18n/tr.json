@@ -1220,7 +1220,7 @@
  "ra.scope.game": "Bu ayarlar yalnızca %s içindir ve genel ayarların önüne geçer.",
  "ra.scope.global": "Genel ayarlar: kendi ayarı olmayan her oyun bunları izler.",
  "ra.scope.thisGame": "bu oyun",
- "ra.scope.useGlobal": "Bu oyun için genel ayarları kullan",
+ "ra.scope.useGlobal": "Genel ayarları kullan",
  "ra.server.reset": "Başarım sunucusunu sıfırla",
  "ra.server.reset.desc": "Özel/çevrimdışı sunucu geçersiz kılmasını temizler. \"Yanıt yok\" hatasıyla başarısız olan girişi düzeltir.",
  "ra.status.loading.body": "Başarım listesi getiriliyor.",

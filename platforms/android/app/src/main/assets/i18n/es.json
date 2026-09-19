@@ -1215,7 +1215,7 @@
  "ra.scope.game": "Estos ajustes son solo para %s y tienen prioridad sobre los globales.",
  "ra.scope.global": "Ajustes globales: todos los juegos sin ajustes propios se rigen por estos.",
  "ra.scope.thisGame": "este juego",
- "ra.scope.useGlobal": "Usar los ajustes globales para este juego",
+ "ra.scope.useGlobal": "Usar ajustes globales",
  "ra.server.reset": "Restablecer servidor de logros",
  "ra.server.reset.desc": "Elimina la redirección a un servidor personalizado o sin conexión. Corrige el inicio de sesión que falla con 'No response'.",
  "ra.status.loading.body": "Obteniendo lista de logros.",
