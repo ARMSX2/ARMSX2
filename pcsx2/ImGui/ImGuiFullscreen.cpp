@@ -193,6 +193,7 @@ namespace ImGuiFullscreen
 	static float s_notification_vertical_position = 0.15f;
 	static float s_notification_vertical_direction = 1.0f;
 	static float s_notification_horizontal_position = 0.0f; // 0.0 = left, 0.5 = center, 1.0 = right
+	static float s_notification_scale = 1.0f; // ARMSX2: user-set popup size, see SetNotificationScale
 
 	static std::string s_toast_title;
 	static std::string s_toast_message;
@@ -2976,6 +2977,11 @@ void ImGuiFullscreen::SetNotificationPosition(float horizontal_position, float v
 	s_notification_vertical_direction = direction;
 }
 
+void ImGuiFullscreen::SetNotificationScale(float scale)
+{
+	s_notification_scale = scale;
+}
+
 void ImGuiFullscreen::OpenProgressDialog(const char* str_id, std::string message, s32 min, s32 max, s32 value)
 {
 	const ImGuiID id = ImHashStr(str_id);
@@ -3182,18 +3188,21 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 	static constexpr float MOVE_DURATION = 0.5f;
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 
-	const float horizontal_padding = ImGuiFullscreen::LayoutScale(20.0f);
-	const float vertical_padding = ImGuiFullscreen::LayoutScale(10.0f);
-	const float horizontal_spacing = ImGuiFullscreen::LayoutScale(10.0f);
-	const float vertical_spacing = ImGuiFullscreen::LayoutScale(4.0f);
-	const float badge_size = ImGuiFullscreen::LayoutScale(48.0f);
-	const float min_width = ImGuiFullscreen::LayoutScale(200.0f);
-	const float max_width = ImGuiFullscreen::LayoutScale(800.0f);
-	const float shadow_size = ImGuiFullscreen::LayoutScale(4.0f);
-	const float rounding = ImGuiFullscreen::LayoutScale(4.0f);
+	// ARMSX2: everything scales with the user's notification size, text and badge included --
+	// the stock size was hard to read on a handheld.
+	const float scale = s_notification_scale;
+	const float horizontal_padding = ImGuiFullscreen::LayoutScale(20.0f) * scale;
+	const float vertical_padding = ImGuiFullscreen::LayoutScale(10.0f) * scale;
+	const float horizontal_spacing = ImGuiFullscreen::LayoutScale(10.0f) * scale;
+	const float vertical_spacing = ImGuiFullscreen::LayoutScale(4.0f) * scale;
+	const float badge_size = ImGuiFullscreen::LayoutScale(48.0f) * scale;
+	const float min_width = ImGuiFullscreen::LayoutScale(200.0f) * scale;
+	const float max_width = ImGuiFullscreen::LayoutScale(800.0f) * scale;
+	const float shadow_size = ImGuiFullscreen::LayoutScale(4.0f) * scale;
+	const float rounding = ImGuiFullscreen::LayoutScale(4.0f) * scale;
 
-	const std::pair<ImFont*, float> title_font = ImGuiFullscreen::g_large_font;
-	const std::pair<ImFont*, float> text_font = ImGuiFullscreen::g_medium_font;
+	const std::pair<ImFont*, float> title_font(ImGuiFullscreen::g_large_font.first, ImGuiFullscreen::g_large_font.second * scale);
+	const std::pair<ImFont*, float> text_font(ImGuiFullscreen::g_medium_font.first, ImGuiFullscreen::g_medium_font.second * scale);
 
 	const u32 toast_background_color = IM_COL32(0x21, 0x21, 0x21, 255);
 	const u32 toast_border_color = IM_COL32(0x48, 0x48, 0x48, 255);

@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -168,6 +169,34 @@ private fun AchievementAccount(
                 StatusChip("${state.items.count { it.unlocked }} / ${state.items.size}")
             }
             LibraryProgressSection()
+            // Everything below is a standard setting: in-game it is this game's own, which
+            // outranks the global value; from the library it is the global value every game
+            // without its own follows. Say which, since the screen looks the same either way.
+            Text(
+                if (state.perGame) str("ra.scope.game").format(state.scopeTitle.ifBlank { str("ra.scope.thisGame") })
+                else str("ra.scope.global"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SettingSwitchRow(
+                title = str(if (state.perGame) "ra.enable.thisGame" else "ra.enable.label"),
+                description = str("ra.enable.description"),
+                checked = state.enabled,
+                onCheckedChange = { viewModel.setEnabled(it) },
+                modifier = Modifier.controllerFocusable(
+                    "ra.enabled",
+                    onConfirm = { viewModel.setEnabled(!state.enabled) },
+                    onLeft = { if (state.enabled) viewModel.setEnabled(false) },
+                    onRight = { if (!state.enabled) viewModel.setEnabled(true) },
+                ),
+            )
+            if (state.perGame && state.hasGameOverrides) {
+                val useGlobal = { viewModel.useGlobalSettings() }
+                OutlinedButton(
+                    onClick = useGlobal,
+                    modifier = Modifier.controllerFocusable("ra.useGlobal", onConfirm = useGlobal),
+                ) { Text(str("ra.scope.useGlobal")) }
+            }
             SettingSwitchRow(
                 title = str("ra.mode.hardcore"),
                 description = str("patches.hardcoreNoticeCheatsDisabled"),
@@ -239,6 +268,18 @@ private fun AchievementAccount(
                     onSelect = { viewModel.setOptionInt("notificationPosition", it) },
                 )
             }
+            // Size of the popups and of the in-game indicators, text and icons alike. Asked for
+            // because the stock size is hard to read on a handheld.
+            com.armsx2.ui.settings.IntSliderRow(
+                label = str("ra.options.notifSize"),
+                value = state.notificationScale,
+                min = 50,
+                max = 250,
+                description = str("ra.options.notifSize.desc"),
+                valueFormatter = { "$it%" },
+                onReset = { viewModel.setOptionInt("notificationScale", 100) },
+                onChange = { viewModel.setOptionInt("notificationScale", it) },
+            )
             SettingSwitchRow(
                 title = str("ra.options.inGameIndicators"),
                 description = str("ra.options.inGameIndicators.desc"),

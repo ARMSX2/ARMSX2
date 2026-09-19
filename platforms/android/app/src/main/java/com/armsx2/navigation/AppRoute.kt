@@ -35,7 +35,6 @@ enum class SettingsCategory {
     Hotkeys,
     Network,
     OnScreen,
-    Achievements,
     Skins,
     Advanced,
     Patches,

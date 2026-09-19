@@ -434,8 +434,6 @@ private fun settingsSections() = listOf(
     SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
     SettingsSection(SettingsCategory.Network, "tab.network", "◎"),
     SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
-    // A page of its own, so RetroAchievements can be switched per game like any other setting.
-    SettingsSection(SettingsCategory.Achievements, "ra.title", "★"),
     SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
     SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
 )
@@ -452,7 +450,6 @@ private fun CategoryContent(category: SettingsCategory, viewModel: SettingsViewM
         SettingsCategory.Hotkeys -> HotkeysTab(viewModel.settings)
         SettingsCategory.Network -> NetworkTab(viewModel.settings)
         SettingsCategory.OnScreen -> OverlayTab(viewModel.settings)
-        SettingsCategory.Achievements -> com.armsx2.ui.settings.AchievementsSettingsTab(viewModel.settings)
         SettingsCategory.Skins -> SkinsTab(viewModel.settings)
         SettingsCategory.Advanced -> FixesTab(viewModel.settings)
         SettingsCategory.Patches -> com.armsx2.ui.patches.PatchesSettingsTab(viewModel.uiState.value.game)
@@ -471,7 +468,6 @@ internal fun categoryTitle(category: SettingsCategory): String = when (category)
     SettingsCategory.Hotkeys -> str("tab.hotkeys")
     SettingsCategory.Network -> str("tab.network")
     SettingsCategory.OnScreen -> str("tab.overlay")
-    SettingsCategory.Achievements -> str("ra.title")
     SettingsCategory.Skins -> str("tab.skins")
     SettingsCategory.Advanced -> str("tab.fixes")
     SettingsCategory.Patches -> str("patches.dialog.patchesAndCheats")

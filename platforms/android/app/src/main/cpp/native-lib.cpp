@@ -608,14 +608,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loginAchievements(JNIEnv *env, jclass clazz
         s_secrets_settings_interface->Save();
     }
 
-    // Achievements::Initialize is gated on EmuConfig.Achievements.Enabled —
-    // a returning user with the old default-off config might still have it
-    // off. Push Enabled=true and ApplySettings so UpdateSettings detects
-    // the change and runs Initialize for any current/future VM. Initialize
-    // reads the just-persisted Token and re-logs in on the persistent
-    // s_client, then BeginLoadGame loads the running game's achievement
-    // set.
-    Host::SetBaseBoolSettingValue("Achievements", "Enabled", true);
+    // Enabled is NOT forced on here any more. It used to be, for a returning user with an old
+    // default-off config, but it is a standard setting now (Settings.achievementsEnabled, global
+    // and per game) that the app writes at every launch and settings change, and forcing it would
+    // switch RetroAchievements on for a game the player turned it off for. ApplySettings still
+    // runs, so a game that has it on picks the new login up straight away.
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {

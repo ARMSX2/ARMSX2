@@ -1519,6 +1519,11 @@ struct Pcsx2Config
 		static constexpr u32 MAXIMUM_NOTIFICATION_DURATION = 30;
 		static constexpr u32 DEFAULT_NOTIFICATION_DURATION = 5;
 		static constexpr u32 DEFAULT_LEADERBOARD_DURATION = 10;
+		// Size of the achievement popups and in-game indicators, as a percentage of the normal
+		// layout. ARMSX2: on a handheld the stock size was hard to read.
+		static constexpr u32 MINIMUM_NOTIFICATION_SCALE = 50;
+		static constexpr u32 MAXIMUM_NOTIFICATION_SCALE = 250;
+		static constexpr u32 DEFAULT_NOTIFICATION_SCALE = 100;
 
 		static const char* OverlayPositionNames[(size_t)AchievementOverlayPosition::MaxCount + 1];
 
@@ -1541,6 +1546,7 @@ struct Pcsx2Config
 
 		u32 NotificationsDuration = DEFAULT_NOTIFICATION_DURATION;
 		u32 LeaderboardsDuration = DEFAULT_LEADERBOARD_DURATION;
+		u32 NotificationScale = DEFAULT_NOTIFICATION_SCALE;
 		AchievementOverlayPosition OverlayPosition = AchievementOverlayPosition::BottomRight;
 		OsdOverlayPos NotificationPosition = OsdOverlayPos::TopLeft;
 

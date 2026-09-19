@@ -272,7 +272,9 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
 
     fun confirmToggleHardcore() {
         val target = state.value.pendingHardcore ?: return
-        NativeApp.setHardcoreMode(target)
+        // A standard setting, saved in this menu's scope -- this game, with one running -- like
+        // every other RetroAchievements option (Settings.achievementsHardcore).
+        updateSettings { it.copy(achievementsHardcore = target) }
         state.value = state.value.copy(hardcore = target, pendingHardcore = null)
         // Enabling hardcore only takes hold on a system reset, and the VM is paused
         // behind this menu — so the native "will be enabled on system reset" toast

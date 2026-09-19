@@ -69,8 +69,6 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "osdShowMessages", "osdShowResolution", "osdShowSettings", "osdShowSpeed",
         "osdShowVersion", "osdShowVps",
     ),
-    // AchievementsSettingsTab.kt
-    SettingsCategory.Achievements to listOf("achievementsEnabled"),
     // FixesTab.kt — also owns the GameDB fixes and the recompiler toggles, which moved here
     // from Performance and from the retired Recompiler tab.
     SettingsCategory.Advanced to listOf(
