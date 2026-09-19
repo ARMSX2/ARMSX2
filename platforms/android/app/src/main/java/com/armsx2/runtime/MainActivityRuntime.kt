@@ -98,6 +98,9 @@ private const val TRIGGER_DEAD = 0.06f
 // held trigger a combo modifier. Well above TRIGGER_DEAD: pressure ramps from a brush, but
 // "pressed" should mean a deliberate press.
 private const val TRIGGER_DIGITAL_THRESHOLD = 0.5f
+// Travel a HELD trigger has to fall below before it counts as released. Lower than the press
+// threshold so a trigger resting near it cannot chatter across and fire a hotkey twice.
+private const val TRIGGER_RELEASE_THRESHOLD = 0.35f
 // Threshold past which a stick remapped to D-pad / face buttons registers as a
 // digital press. Higher than STICK_DEAD so a resting/wobbling stick doesn't fire.
 private const val STICK_DIGITAL_THRESHOLD = 0.5f
@@ -3399,13 +3402,17 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-add it for the match (FAST_FORWARD needs to recognise its own
             // release). heldKeys still carries the modifier either way.
             val matchKeys = if (down) heldKeys else heldKeys + kc
-            // A trigger the axis path already acted on this press. Only L2/R2 can be claimed,
-            // and only by sendTrigger — see triggerHotkeyClaimed.
-            if ((kc == KeyEvent.KEYCODE_BUTTON_L2 || kc == KeyEvent.KEYCODE_BUTTON_R2) &&
-                triggerHotkeyClaimed.contains(kc))
-            {
-                if (!down) triggerHotkeyClaimed.remove(kc)
-                return true
+            // L2/R2: whichever of this path and the axis path saw the press first owns it, press
+            // and release. A press the axis path owns is consumed here, as it always was; a
+            // press this path saw first is ours, and sendTrigger leaves it alone. See
+            // triggerHotkeyOwner.
+            if (kc == KeyEvent.KEYCODE_BUTTON_L2 || kc == KeyEvent.KEYCODE_BUTTON_R2) {
+                if (down) {
+                    if (triggerHotkeyOwner.putIfAbsent(kc, false) == true) return true
+                } else {
+                    if (triggerHotkeyOwner[kc] == true) return true
+                    triggerHotkeyOwner.remove(kc)
+                }
             }
             val matched = ControllerMappings.matchHotkey(kc, matchKeys)
             when (matched) {
@@ -5188,7 +5195,8 @@ open class MainActivityRuntime : ComponentActivity() {
     private val triggerHotkeyHeld = Array(8) { HashSet<Int>() }
 
     /**
-     * Trigger keycodes whose hotkey edge the AXIS path has already fired for the current press.
+     * Which path owns the current L2/R2 press for hotkeys and macros: true = the axis path
+     * (sendTrigger), false = the key path. Absent = no press in flight.
      *
      * ★ Some pads report a trigger BOTH ways — as an axis and as a key event — so a single pull
      * reaches the hotkey dispatcher twice, once from sendTrigger and once from the key path. For
@@ -5198,10 +5206,14 @@ open class MainActivityRuntime : ComponentActivity() {
      * non-trigger button, and worked once the pad was switched to digital triggers — reported by
      * SKrazy on an AYN pad and Shmoda12 on a Thor.
      *
-     * The axis path claims the press; the key path sees the claim and skips its own edge. Scoped
-     * to L2/R2 alone so nothing else changes, and cleared on release so the next pull re-arms.
+     * The first fix let only the AXIS path claim a press, which assumed the axis always crosses
+     * TRIGGER_DIGITAL_THRESHOLD before the pad sends its key. A pad whose own digital threshold is
+     * lower sends the key first, the key path fired, and the axis fired again — still a double
+     * toggle, reported with Select+R2 Fast Forward on a Thor after that fix shipped. So whichever
+     * path sees the press first owns it, press and release both, and the other skips it. Scoped to
+     * L2/R2 alone so nothing else changes; the owner is dropped on its release.
      */
-    private val triggerHotkeyClaimed = HashSet<Int>()
+    private val triggerHotkeyOwner = HashMap<Int, Boolean>()
 
     private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int) {
         // -1 = no trigger axis on this side; its L2/R2 is a key event, key path owns it.
@@ -5209,7 +5221,8 @@ open class MainActivityRuntime : ComponentActivity() {
         if (raw < 0f) return
         val code = triggerKeyCode(left)
         val held = triggerHotkeyHeld[port]
-        val pressed = raw > TRIGGER_DIGITAL_THRESHOLD
+        // Hysteresis: a held trigger stays held until it falls well below the press threshold.
+        val pressed = raw > (if (held.contains(code)) TRIGGER_RELEASE_THRESHOLD else TRIGGER_DIGITAL_THRESHOLD)
 
         // Mirror into heldKeys so a held trigger can be a combo MODIFIER, exactly as it is on a
         // pad whose triggers send key events. Cleared on OUR release edge only — a pad that
@@ -5218,14 +5231,19 @@ open class MainActivityRuntime : ComponentActivity() {
         if (pressed) heldKeys.add(code)
         if (pressed != held.contains(code)) {
             if (pressed) held.add(code) else { held.remove(code); heldKeys.remove(code) }
-            // Claim this press so the key path does not fire the same hotkey again on a pad
-            // that reports the trigger both ways. See triggerHotkeyClaimed.
-            if (pressed) triggerHotkeyClaimed.add(code) else triggerHotkeyClaimed.remove(code)
+            // Only the path that saw this press first fires its hotkey or macro, on both edges;
+            // on a pad that reports the trigger both ways the key path has the other. See
+            // triggerHotkeyOwner.
+            val ours = if (pressed) {
+                triggerHotkeyOwner.putIfAbsent(code, true) == null
+            } else {
+                (triggerHotkeyOwner[code] == true).also { if (it) triggerHotkeyOwner.remove(code) }
+            }
             // Triggers now reach the Hotkeys tab's capture like any other button, so they have
             // to be able to fire one here. Hold-type hotkeys act on both edges (a trigger has a
             // real release, unlike a stick edge); the rest fire on the press. Matching on
             // release re-adds the code, as the key path does, so a combo still resolves.
-            ControllerMappings.matchHotkey(code, if (pressed) heldKeys else heldKeys + code)?.let { hk ->
+            if (ours) ControllerMappings.matchHotkey(code, if (pressed) heldKeys else heldKeys + code)?.let { hk ->
                 when (hk) {
                     ControllerMappings.SysHotkey.FAST_FORWARD -> {
                         if (pressed) fastForwardToggleActive = false
@@ -5241,7 +5259,7 @@ open class MainActivityRuntime : ComponentActivity() {
             }
             // Macros are keyed on the physical code too, and the Pad tab now lets a trigger be
             // captured for one. Same both-edges firing as dispatchGameplayKey.
-            com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code)?.let { macro ->
+            if (ours) com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code)?.let { macro ->
                 com.armsx2.ui.touch.TouchControls.fireMacro(macro, "pad$port", pressed) { c, p ->
                     sendKeyAction(if (p) KeyEventType.KeyDown else KeyEventType.KeyUp, c, port)
                 }
