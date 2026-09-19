@@ -80,6 +80,7 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.min
 import androidx.core.net.toUri
 import androidx.core.content.edit
@@ -4141,10 +4142,10 @@ open class MainActivityRuntime : ComponentActivity() {
                 return super.dispatchGenericMotionEvent(ev)
             }
             // SOURCE_TOUCHSCREEN motion events go through dispatchTouchEvent,
-            // not here — generic motion is gamepad / mouse / stylus. So any
-            // event reaching this method means a controller (or similar
-            // pointing device) is being used; latch touch controls off.
-            com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
+            // not here — generic motion is gamepad / mouse / stylus. A controller
+            // that is actually being used latches the touch controls off; its
+            // resting noise does not (see isDeliberateControllerMotion).
+            if (isDeliberateControllerMotion(ev)) com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
             // Local co-op: which PS2 port this physical device drives (P1=0 / P2=1).
             // Stick mode + CUSTOM binds are read per-player; emits route to `port`.
             val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
@@ -4299,6 +4300,25 @@ open class MainActivityRuntime : ComponentActivity() {
             maxOf(ev.getAxisValue(a), ev.getAxisValue(b)),
             if (c >= 0) ev.getAxisValue(c) else 0f,
         ).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Whether this joystick event is someone actually using the controller: a stick pushed past
+     * halfway, a trigger past its press point, or a HAT (d-pad) direction.
+     *
+     * Auto mode hides the touch controls when a controller is used, and it took ANY joystick event
+     * as use. Pads send those at rest too, from a stick that drifts or a controller clipped to the
+     * phone reporting its resting noise, so the controls kept disappearing on someone who was only
+     * touching the screen. Reads the same axes the pad does (rightStickAxes, triggerTravel), so a
+     * pad that idles a trigger axis at -1 does not read as held.
+     */
+    private fun isDeliberateControllerMotion(ev: MotionEvent): Boolean {
+        if (ev.getAxisValue(MotionEvent.AXIS_HAT_X) != 0f || ev.getAxisValue(MotionEvent.AXIS_HAT_Y) != 0f) return true
+        val (rightX, rightY) = rightStickAxes(ev.deviceId)
+        if (hypot(ev.getAxisValue(MotionEvent.AXIS_X), ev.getAxisValue(MotionEvent.AXIS_Y)) >= STICK_DIGITAL_THRESHOLD) return true
+        if (hypot(ev.getAxisValue(rightX), ev.getAxisValue(rightY)) >= STICK_DIGITAL_THRESHOLD) return true
+        return triggerTravel(ev, left = true) > TRIGGER_DIGITAL_THRESHOLD ||
+            triggerTravel(ev, left = false) > TRIGGER_DIGITAL_THRESHOLD
     }
 
     /** The keycode a trigger stands in for. The binding model is keyed on keycodes and most
@@ -4573,7 +4593,9 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         NativeApp.sRumbleDeviceId = ev.deviceId  // track active gamepad for rumble
 
-        com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
+        // Gated like the in-game path: the hidden state carries into the next game, so noise
+        // in the library would start it with the touch controls already gone.
+        if (isDeliberateControllerMotion(ev)) com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
         return if (WindowImpl.overlayVisible.value) {
             handleOverlayControllerMotion(ev)
         } else {
