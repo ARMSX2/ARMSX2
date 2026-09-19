@@ -630,14 +630,22 @@ private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
                         TouchControls.pressureModifierHeld.value = true
                         // Soften buttons already held (MGS2: hold Square, then ease off).
                         TouchControls.reapplyPressureToHeldButtons()
-                        TouchControls.noteTouchInteraction()
-                        while (true) {
-                            val next = awaitPointerEvent()
-                            val nc = next.changes.firstOrNull { it.id == change.id }
-                            if (nc == null || !nc.pressed) break
+                        // Held = in use, for the auto-hide timer (see TouchControls.activeHolds).
+                        TouchControls.beginTouchHold()
+                        try {
+                            while (true) {
+                                val next = awaitPointerEvent()
+                                val nc = next.changes.firstOrNull { it.id == change.id }
+                                if (nc == null || !nc.pressed) break
+                            }
+                        } finally {
+                            // Also when the widget goes away mid-press (the controls hiding, the
+                            // pause menu): otherwise every press after it stayed soft until P was
+                            // pressed again.
+                            TouchControls.endTouchHold()
+                            TouchControls.pressureModifierHeld.value = false
+                            TouchControls.reapplyPressureToHeldButtons()
                         }
-                        TouchControls.pressureModifierHeld.value = false
-                        TouchControls.reapplyPressureToHeldButtons()
                     }
                 }
             }
@@ -989,7 +997,10 @@ private fun FastForwardWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.30f * opacity))
                 .pointerInput(cfg.id) {
-                    detectTapGestures(onTap = { MainActivityRuntime.instance?.toggleFastForward() })
+                    detectTapGestures(
+                        onPress = { TouchControls.noteTouchInteraction() },
+                        onTap = { MainActivityRuntime.instance?.toggleFastForward() },
+                    )
                 },
             contentAlignment = Alignment.Center,
         ) {
@@ -1018,14 +1029,20 @@ private fun Modifier.macroPressGestures(macroId: TouchButtonId) =
                 TouchControls.fireMacro(macroId, "touch", true) { code, pressed ->
                     sendDigital(code, pressed)
                 }
-                TouchControls.noteTouchInteraction()
-                while (true) {
-                    val next = awaitPointerEvent()
-                    val nc = next.changes.firstOrNull { it.id == change.id }
-                    if (nc == null || !nc.pressed) break
-                }
-                TouchControls.fireMacro(macroId, "touch", false) { code, pressed ->
-                    sendDigital(code, pressed)
+                // Held = in use, for the auto-hide timer (see TouchControls.activeHolds).
+                TouchControls.beginTouchHold()
+                try {
+                    while (true) {
+                        val next = awaitPointerEvent()
+                        val nc = next.changes.firstOrNull { it.id == change.id }
+                        if (nc == null || !nc.pressed) break
+                    }
+                } finally {
+                    // Also when the widget goes away mid-press, or the macro's buttons stay held.
+                    TouchControls.endTouchHold()
+                    TouchControls.fireMacro(macroId, "touch", false) { code, pressed ->
+                        sendDigital(code, pressed)
+                    }
                 }
             }
         }
@@ -1110,6 +1127,7 @@ private fun StateActionWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 .background(Color.Black.copy(alpha = 0.30f * opacity))
                 .pointerInput(cfg.id) {
                     detectTapGestures(
+                        onPress = { TouchControls.noteTouchInteraction() },
                         // Quick TAP = save/load the current slot directly (native shows an OSD
                         // confirmation). LONG-PRESS = open the slot picker to choose a slot.
                         onTap = {
@@ -1157,49 +1175,71 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
     } else {
         Modifier.pointerInput(cfg.id) {
             awaitPointerEventScope {
-                while (true) {
-                    val ev = awaitPointerEvent()
-                    val change = ev.changes.firstOrNull() ?: continue
-                    if (!change.pressed) {
-                        if (active.value.any()) {
-                            releaseDpad(active.value)
-                            active.value = DpadState()
+                // A thumb on the D-pad is the controls in use, for as long as it stays down: the
+                // D-pad never told the auto-hide timer anything, so moving with it for longer than
+                // the timeout hid the controls under the thumb (see TouchControls.activeHolds).
+                var holding = false
+                try {
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val change = ev.changes.firstOrNull() ?: continue
+                        if (!change.pressed) {
+                            if (active.value.any()) {
+                                releaseDpad(active.value)
+                                active.value = DpadState()
+                            }
+                            if (holding) {
+                                holding = false
+                                TouchControls.endTouchHold()
+                            }
+                            continue
                         }
-                        continue
+                        if (!holding) {
+                            holding = true
+                            TouchControls.beginTouchHold()
+                        }
+                        val pos = change.position
+                        val cx = size.width / 2f
+                        val cy = size.height / 2f
+                        val dx = pos.x - cx
+                        val dy = pos.y - cy
+                        // Dead-center grows with the key spacing so the empty middle gap
+                        // between the spread-apart arms registers nothing (a small base gap
+                        // is always present to avoid center-jitter at spacing 0).
+                        val deadR = min(cx, cy) * (0.08f + TouchControls.dpadSpacing.floatValue)
+                        val r = hypot(dx, dy)
+                        // 8-way with cardinal-biased sectors: the minor axis
+                        // only fires when its magnitude is at least
+                        // `diagBias` of the major axis. With diagBias=0.55
+                        // that's an angle within ~29° of 45° — a ~58° wedge
+                        // around each diagonal; everything outside snaps to
+                        // the dominant cardinal so a slightly-angled press
+                        // doesn't fire two axes by accident.
+                        val target = if (r < deadR) DpadState() else {
+                            val absDx = abs(dx)
+                            val absDy = abs(dy)
+                            val diagBias = 0.55f
+                            val keepX = absDx >= absDy * diagBias
+                            val keepY = absDy >= absDx * diagBias
+                            DpadState(
+                                up    = keepY && dy < 0f,
+                                down  = keepY && dy > 0f,
+                                left  = keepX && dx < 0f,
+                                right = keepX && dx > 0f,
+                            )
+                        }
+                        if (target != active.value) {
+                            applyDpadDiff(active.value, target)
+                            active.value = target
+                        }
                     }
-                    val pos = change.position
-                    val cx = size.width / 2f
-                    val cy = size.height / 2f
-                    val dx = pos.x - cx
-                    val dy = pos.y - cy
-                    // Dead-center grows with the key spacing so the empty middle gap
-                    // between the spread-apart arms registers nothing (a small base gap
-                    // is always present to avoid center-jitter at spacing 0).
-                    val deadR = min(cx, cy) * (0.08f + TouchControls.dpadSpacing.floatValue)
-                    val r = hypot(dx, dy)
-                    // 8-way with cardinal-biased sectors: the minor axis
-                    // only fires when its magnitude is at least
-                    // `diagBias` of the major axis. With diagBias=0.55
-                    // that's an angle within ~29° of 45° — a ~58° wedge
-                    // around each diagonal; everything outside snaps to
-                    // the dominant cardinal so a slightly-angled press
-                    // doesn't fire two axes by accident.
-                    val target = if (r < deadR) DpadState() else {
-                        val absDx = abs(dx)
-                        val absDy = abs(dy)
-                        val diagBias = 0.55f
-                        val keepX = absDx >= absDy * diagBias
-                        val keepY = absDy >= absDx * diagBias
-                        DpadState(
-                            up    = keepY && dy < 0f,
-                            down  = keepY && dy > 0f,
-                            left  = keepX && dx < 0f,
-                            right = keepX && dx > 0f,
-                        )
-                    }
-                    if (target != active.value) {
-                        applyDpadDiff(active.value, target)
-                        active.value = target
+                } finally {
+                    if (holding) TouchControls.endTouchHold()
+                    // Removed mid-press (the controls hiding, the pause menu): let go of the
+                    // direction too, or the game kept it held.
+                    if (active.value.any()) {
+                        releaseDpad(active.value)
+                        active.value = DpadState()
                     }
                 }
             }
@@ -1353,108 +1393,124 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 // or release mid-gesture (worse with the floating origin, which
                 // would then re-capture at the surviving finger's position).
                 var activeId: androidx.compose.ui.input.pointer.PointerId? = null
-                while (true) {
-                    val ev = awaitPointerEvent()
-                    val tracked = if (activeId == null)
-                        ev.changes.firstOrNull { it.pressed }
-                    else
-                        ev.changes.firstOrNull { it.id == activeId }
-                    // Release: our tracked pointer lifted or is gone.
-                    if (tracked == null || !tracked.pressed) {
-                        if (activeId != null) {
-                            thumb.value = Offset.Zero
-                            origin.value = null
-                            baseShift.value = Offset.Zero
-                            activeId = null
-                            if (lastEmit.value.any()) {
-                                releaseStick(codes, lastEmit.value)
-                                lastEmit.value = StickEmit()
+                // End the gesture: recentre, let go of the stick and the extra button, and stop
+                // counting as a touch for the auto-hide timer.
+                fun letGo() {
+                    thumb.value = Offset.Zero
+                    origin.value = null
+                    baseShift.value = Offset.Zero
+                    activeId = null
+                    if (lastEmit.value.any()) {
+                        releaseStick(codes, lastEmit.value)
+                        lastEmit.value = StickEmit()
+                    }
+                    // Lifting off always drops this gesture's hold on the extra button.
+                    if (extraHeld.value) {
+                        extraHeld.value = false
+                        if (TouchControls.noteAnalogExtraHold(false)) {
+                            sendDigital(TouchControls.analogExtraKeycode.intValue, false)
+                        }
+                    }
+                    TouchControls.endTouchHold()
+                }
+                try {
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val tracked = if (activeId == null)
+                            ev.changes.firstOrNull { it.pressed }
+                        else
+                            ev.changes.firstOrNull { it.id == activeId }
+                        // Release: our tracked pointer lifted or is gone.
+                        if (tracked == null || !tracked.pressed) {
+                            if (activeId != null) letGo()
+                            continue
+                        }
+                        // Start of gesture: lock onto this pointer's id. A thumb on the stick is the
+                        // controls in use for as long as it stays down; the stick never told the
+                        // auto-hide timer anything, so steering with it for longer than the timeout
+                        // hid the controls mid-move (see TouchControls.activeHolds).
+                        if (activeId == null) {
+                            activeId = tracked.id
+                            TouchControls.beginTouchHold()
+                        }
+                        val cxLocal = size.width / 2f
+                        val cyLocal = size.height / 2f
+                        // Floating stick: the FIRST touch-down point of a gesture becomes
+                        // the origin (ring re-centers under the finger); fixed center when
+                        // off. Snap-back on release is unchanged either way.
+                        if (origin.value == null) {
+                            if (TouchControls.floatingStick.value) {
+                                // Clamp the captured origin so the cap circle (and the
+                                // visible ring) stays fully within the widget, keeping
+                                // full deflection reachable in every direction.
+                                val hiX = (size.width - capPx).coerceAtLeast(capPx)
+                                val hiY = (size.height - capPx).coerceAtLeast(capPx)
+                                val ox = tracked.position.x.coerceIn(capPx, hiX)
+                                val oy = tracked.position.y.coerceIn(capPx, hiY)
+                                origin.value = Offset(ox, oy)
+                                baseShift.value = Offset(ox - cxLocal, oy - cyLocal)
+                            } else {
+                                origin.value = Offset(cxLocal, cyLocal)
+                                baseShift.value = Offset.Zero
                             }
-                            // Lifting off always drops this gesture's hold on the extra button.
-                            if (extraHeld.value) {
-                                extraHeld.value = false
-                                if (TouchControls.noteAnalogExtraHold(false)) {
-                                    sendDigital(TouchControls.analogExtraKeycode.intValue, false)
+                        }
+                        val o = origin.value!!
+                        val dx = tracked.position.x - o.x
+                        val dy = tracked.position.y - o.y
+                        val r = hypot(dx, dy)
+                        val scale = if (r > capPx) capPx / r else 1f
+                        val capDx = dx * scale
+                        val capDy = dy * scale
+                        thumb.value = Offset(capDx, capDy)
+                        var nx = (capDx / capPx).coerceIn(-1f, 1f)
+                        var ny = (capDy / capPx).coerceIn(-1f, 1f)
+                        // Honor the per-stick axis correction (swap first, then inverts)
+                        // exactly like the physical-pad path (MainActivityRuntime.dispatchStick) — the
+                        // tester's "Right Stick Invert Y works on a gamepad but the touch
+                        // stick is still upside-down".
+                        val leftStick = cfg.id == TouchButtonId.L_STICK
+                        if (ControllerMappings.stickSwapXY(leftStick)) { val t = nx; nx = ny; ny = t }
+                        if (ControllerMappings.stickInvertX(leftStick)) nx = -nx
+                        if (ControllerMappings.stickInvertY(leftStick)) ny = -ny
+                        val emit = computeStickEmit(nx, ny, leftStick)
+                        if (emit != lastEmit.value) {
+                            applyStickDiff(codes, lastEmit.value, emit)
+                            lastEmit.value = emit
+                        }
+                        // Extra stick button (left stick only): a circular zone directly ABOVE the
+                        // stick. Hit-tested HERE, inside the stick's own gesture, which is the whole
+                        // point — the pointer is locked to this handler, so a finger that glides up
+                        // out of the stick still reports here and can latch the button. Deflection
+                        // keeps being emitted above, so "run forward + sprint" is one thumb motion.
+                        if (leftStick) {
+                            // ★ The zone is the extra button widget's OWN circle, wherever the user
+                            // dragged it — one position, one source of truth, so what you see is what
+                            // you can glide onto. tracked.position is in the STICK's local space and
+                            // the button is a sibling widget, so lift it to overlay coordinates first.
+                            val circle = extraButtonCircle()
+                            val dims = OverlayDims.last
+                            val inZone = circle != null && dims != null && run {
+                                val (c, r) = circle
+                                // This widget's own top-left in overlay space: the layout anchors on
+                                // the widget CENTRE (see the placement loop), hence the half-size.
+                                val absX = dims.widthPx * cfg.xFrac - size.width / 2f + tracked.position.x
+                                val absY = dims.heightPx * cfg.yFrac - size.height / 2f + tracked.position.y
+                                val zdx = absX - c.x
+                                val zdy = absY - c.y
+                                (zdx * zdx + zdy * zdy) <= r * r
+                            }
+                            if (inZone != extraHeld.value) {
+                                extraHeld.value = inZone
+                                if (TouchControls.noteAnalogExtraHold(inZone)) {
+                                    sendDigital(TouchControls.analogExtraKeycode.intValue, inZone)
                                 }
                             }
                         }
-                        continue
                     }
-                    // Start of gesture: lock onto this pointer's id.
-                    if (activeId == null) activeId = tracked.id
-                    val cxLocal = size.width / 2f
-                    val cyLocal = size.height / 2f
-                    // Floating stick: the FIRST touch-down point of a gesture becomes
-                    // the origin (ring re-centers under the finger); fixed center when
-                    // off. Snap-back on release is unchanged either way.
-                    if (origin.value == null) {
-                        if (TouchControls.floatingStick.value) {
-                            // Clamp the captured origin so the cap circle (and the
-                            // visible ring) stays fully within the widget, keeping
-                            // full deflection reachable in every direction.
-                            val hiX = (size.width - capPx).coerceAtLeast(capPx)
-                            val hiY = (size.height - capPx).coerceAtLeast(capPx)
-                            val ox = tracked.position.x.coerceIn(capPx, hiX)
-                            val oy = tracked.position.y.coerceIn(capPx, hiY)
-                            origin.value = Offset(ox, oy)
-                            baseShift.value = Offset(ox - cxLocal, oy - cyLocal)
-                        } else {
-                            origin.value = Offset(cxLocal, cyLocal)
-                            baseShift.value = Offset.Zero
-                        }
-                    }
-                    val o = origin.value!!
-                    val dx = tracked.position.x - o.x
-                    val dy = tracked.position.y - o.y
-                    val r = hypot(dx, dy)
-                    val scale = if (r > capPx) capPx / r else 1f
-                    val capDx = dx * scale
-                    val capDy = dy * scale
-                    thumb.value = Offset(capDx, capDy)
-                    var nx = (capDx / capPx).coerceIn(-1f, 1f)
-                    var ny = (capDy / capPx).coerceIn(-1f, 1f)
-                    // Honor the per-stick axis correction (swap first, then inverts)
-                    // exactly like the physical-pad path (MainActivityRuntime.dispatchStick) — the
-                    // tester's "Right Stick Invert Y works on a gamepad but the touch
-                    // stick is still upside-down".
-                    val leftStick = cfg.id == TouchButtonId.L_STICK
-                    if (ControllerMappings.stickSwapXY(leftStick)) { val t = nx; nx = ny; ny = t }
-                    if (ControllerMappings.stickInvertX(leftStick)) nx = -nx
-                    if (ControllerMappings.stickInvertY(leftStick)) ny = -ny
-                    val emit = computeStickEmit(nx, ny, leftStick)
-                    if (emit != lastEmit.value) {
-                        applyStickDiff(codes, lastEmit.value, emit)
-                        lastEmit.value = emit
-                    }
-                    // Extra stick button (left stick only): a circular zone directly ABOVE the
-                    // stick. Hit-tested HERE, inside the stick's own gesture, which is the whole
-                    // point — the pointer is locked to this handler, so a finger that glides up
-                    // out of the stick still reports here and can latch the button. Deflection
-                    // keeps being emitted above, so "run forward + sprint" is one thumb motion.
-                    if (leftStick) {
-                        // ★ The zone is the extra button widget's OWN circle, wherever the user
-                        // dragged it — one position, one source of truth, so what you see is what
-                        // you can glide onto. tracked.position is in the STICK's local space and
-                        // the button is a sibling widget, so lift it to overlay coordinates first.
-                        val circle = extraButtonCircle()
-                        val dims = OverlayDims.last
-                        val inZone = circle != null && dims != null && run {
-                            val (c, r) = circle
-                            // This widget's own top-left in overlay space: the layout anchors on
-                            // the widget CENTRE (see the placement loop), hence the half-size.
-                            val absX = dims.widthPx * cfg.xFrac - size.width / 2f + tracked.position.x
-                            val absY = dims.heightPx * cfg.yFrac - size.height / 2f + tracked.position.y
-                            val zdx = absX - c.x
-                            val zdy = absY - c.y
-                            (zdx * zdx + zdy * zdy) <= r * r
-                        }
-                        if (inZone != extraHeld.value) {
-                            extraHeld.value = inZone
-                            if (TouchControls.noteAnalogExtraHold(inZone)) {
-                                sendDigital(TouchControls.analogExtraKeycode.intValue, inZone)
-                            }
-                        }
-                    }
+                } finally {
+                    // Removed mid-move (the controls hiding, the pause menu): without this the
+                    // stick stayed deflected in the game and the character kept walking.
+                    if (activeId != null) letGo()
                 }
             }
         }
@@ -1544,14 +1600,20 @@ private fun AnalogExtraWidget(cfg: TouchButtonCfg, edit: Boolean) {
                         if (TouchControls.noteAnalogExtraHold(true)) {
                             sendDigital(TouchControls.analogExtraKeycode.intValue, true)
                         }
-                        TouchControls.noteTouchInteraction()
-                        while (true) {
-                            val next = awaitPointerEvent()
-                            val nc = next.changes.firstOrNull { it.id == change.id }
-                            if (nc == null || !nc.pressed) break
-                        }
-                        if (TouchControls.noteAnalogExtraHold(false)) {
-                            sendDigital(TouchControls.analogExtraKeycode.intValue, false)
+                        // Held = in use, for the auto-hide timer (see TouchControls.activeHolds).
+                        TouchControls.beginTouchHold()
+                        try {
+                            while (true) {
+                                val next = awaitPointerEvent()
+                                val nc = next.changes.firstOrNull { it.id == change.id }
+                                if (nc == null || !nc.pressed) break
+                            }
+                        } finally {
+                            // Also when the widget goes away mid-press, or the button stays held.
+                            TouchControls.endTouchHold()
+                            if (TouchControls.noteAnalogExtraHold(false)) {
+                                sendDigital(TouchControls.analogExtraKeycode.intValue, false)
+                            }
                         }
                     }
                 }
@@ -1757,6 +1819,10 @@ private class HalfStickInputNode(private var params: HalfStickParams) : Modifier
                 val leftHalf = ch.position.x < p.widthPx / 2f
                 if (!ch.isConsumed && !p.inForeign(ch.position) && !(p.keepLeft && leftHalf)) {
                     tracks[ch.id] = HalfStickTrack(leftHalf, ch.position)
+                    // A thumb on a stick is the controls in use, for as long as it stays down.
+                    // Without it a timed auto-hide hid the controls mid-move, and this layer went
+                    // with them (see TouchControls.activeHolds).
+                    TouchControls.beginTouchHold()
                 }
             }
             val t = tracks[ch.id] ?: continue
@@ -1766,6 +1832,7 @@ private class HalfStickInputNode(private var params: HalfStickParams) : Modifier
             if (!ch.pressed) {
                 tracks.remove(ch.id)
                 if (t.last.any()) releaseStick(halfStickCodes(t.leftHalf), t.last)
+                TouchControls.endTouchHold()
                 continue
             }
             val leftStick = t.leftHalf
@@ -1792,7 +1859,10 @@ private class HalfStickInputNode(private var params: HalfStickParams) : Modifier
     override fun onDetach() = releaseAll()
 
     private fun releaseAll() {
-        tracks.values.forEach { t -> if (t.last.any()) releaseStick(halfStickCodes(t.leftHalf), t.last) }
+        tracks.values.forEach { t ->
+            if (t.last.any()) releaseStick(halfStickCodes(t.leftHalf), t.last)
+            TouchControls.endTouchHold()
+        }
         tracks.clear()
     }
 }
