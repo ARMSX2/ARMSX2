@@ -2533,7 +2533,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (setupRecoveryNeeded.value) {
                     android.widget.Toast.makeText(
                         applicationContext,
-                        "Couldn't open your saved game folder — this can happen after reinstalling or restoring a backup. Please re-select it.",
+                        "Couldn't open your saved game folder. This can happen after reinstalling or restoring a backup. Please re-select it.",
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
                     setupRecoveryNeeded.value = false

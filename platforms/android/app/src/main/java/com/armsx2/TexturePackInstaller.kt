@@ -118,7 +118,7 @@ object TexturePackInstaller {
                 val partActual = hex(partDigest.digest())
                 if (!partActual.equals(part.sha256, ignoreCase = true)) {
                     Log.w(TAG, "part ${index + 1} sha256 mismatch: expected ${part.sha256} got $partActual")
-                    return Outcome(false, "Checksum mismatch$label — the download was corrupted")
+                    return Outcome(false, "Checksum mismatch$label: the download was corrupted")
                 }
                 done += n
             }
@@ -132,7 +132,7 @@ object TexturePackInstaller {
             val actual = hex(digest.digest())
             if (!actual.equals(pack.sha256, ignoreCase = true)) {
                 Log.w(TAG, "sha256 mismatch: expected ${pack.sha256} got $actual")
-                return Outcome(false, "Checksum mismatch — the download was corrupted")
+                return Outcome(false, "Checksum mismatch: the download was corrupted")
             }
 
             val extracted = File(staging, "out")

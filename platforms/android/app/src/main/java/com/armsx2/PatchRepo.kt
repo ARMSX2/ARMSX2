@@ -166,7 +166,7 @@ object PatchRepo {
     suspend fun fetchForGame(serial: String?, crc: String, bundledZip: File? = null): Result {
         val c = crc.trim().uppercase()
         if (!CRC_RE.matches(c))
-            return Result("", emptyList(), "No game CRC yet — boot the game first.")
+            return Result("", emptyList(), "No game CRC yet. Boot the game first.")
 
         var gametitle = ""
         val entries = mutableListOf<Entry>()

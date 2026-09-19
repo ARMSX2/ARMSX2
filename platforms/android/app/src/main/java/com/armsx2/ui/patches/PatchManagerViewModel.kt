@@ -292,7 +292,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
             state.value.copy(
                 message = if (loadable) "Imported as ${target.name}."
                 else "Imported ${target.name}, but the core only loads <SERIAL>_<CRC>.pnach and " +
-                    "no CRC is known yet — launch this game once, then re-import to have it renamed.",
+                    "no CRC is known yet. Launch this game once, then re-import to have it renamed.",
             )
         } else state.value.copy(error = "Patch import failed.")
         if (success) {
@@ -459,7 +459,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
             }
             state.value = state.value.copy(
                 error = "Can't install for ${snapshot.onlineSerial}: no disc CRC known. " +
-                    "Launch the game once, then install — the core only loads <serial>_<CRC>.pnach.",
+                    "Launch the game once, then install. The core only loads <serial>_<CRC>.pnach.",
             )
             return
         }
@@ -861,8 +861,8 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
                     state.value.copy(
                         editorPath = null, editorName = "", editorText = "", editorNew = false,
                         message = if (loadable) "Saved ${f.name}."
-                        else "Saved ${f.name}, but the core only loads <SERIAL>_<CRC>.pnach — " +
-                            "launch this game once, then rename or re-save.",
+                        else "Saved ${f.name}, but the core only loads <SERIAL>_<CRC>.pnach. " +
+                            "Launch this game once, then rename or re-save.",
                     )
                 },
                 onFailure = { state.value.copy(error = "Could not save the patch file.") },

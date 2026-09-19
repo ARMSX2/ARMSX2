@@ -604,7 +604,7 @@ private fun BundledPatchCard(
             cheats.forEach { cheat ->
                 val unnamed = cheat.name.equals("Unlabelled", true)
                 Text(
-                    if (unnamed) "• ${cheat.name} — ${str("patches.bundled.alwaysOn")}" else "• ${cheat.name}",
+                    if (unnamed) "• ${cheat.name} (${str("patches.bundled.alwaysOn")})" else "• ${cheat.name}",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (unnamed) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurface,

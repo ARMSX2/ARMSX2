@@ -178,7 +178,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         // here since this tab scrolls far from that toggle.
         Text(
             when {
-                editSerial != null -> "● Editing controls for THIS GAME ($editSerial) — switch to Global up top to change all games."
+                editSerial != null -> "● Editing controls for THIS GAME ($editSerial). Switch to Global up top to change all games."
                 padSerial != null -> str("pad.scopeHint.globalWithGameHint")
                 else -> str("pad.scopeHint.global")
             },
@@ -327,7 +327,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                     // does exactly that -- and no API call can tell that apart from a working
                     // motor, so the fallback has to be selectable rather than detected.
                     SegmentedRow(
-                        label = pad.name + " — " + str("pad.assign.rumble"),
+                        label = pad.name + ": " + str("pad.assign.rumble"),
                         options = rumbleLabels,
                         selectedIndex = rumbleModes.indexOf(
                             com.armsx2.input.PadRouter.rumbleMode(pad.descriptor),
@@ -1003,7 +1003,7 @@ private fun StickDirPickerRow(
     }
     if (showPicker.value) {
         StickTargetPickerDialog(
-            title = "${str(if (leftStick) "pad.leftStick.label" else "pad.rightStick.label")} — ${dir.id.replaceFirstChar { it.uppercase() }}",
+            title = "${str(if (leftStick) "pad.leftStick.label" else "pad.rightStick.label")}: ${dir.id.replaceFirstChar { it.uppercase() }}",
             current = code,
             onPick = { picked ->
                 if (picked == null) ControllerMappings.resetStickCode(leftStick, dir, player, serial)

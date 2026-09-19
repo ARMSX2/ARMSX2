@@ -1019,7 +1019,7 @@ private fun ClearShaderCacheRow() {
             .clickable {
                 val n = clearShaderCache(File(MainActivityRuntime.assetCopyRoot(context), "cache"))
                 status.value = if (n > 0)
-                    "Cleared $n shader-cache file${if (n == 1) "" else "s"} — restart the game to rebuild."
+                    "Cleared $n shader-cache file${if (n == 1) "" else "s"}. Restart the game to rebuild."
                 else
                     I18n.get("renderer.clearShaderCache.alreadyEmpty")
                 Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()

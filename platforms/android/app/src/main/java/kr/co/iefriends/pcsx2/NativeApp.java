@@ -810,19 +810,19 @@ public class NativeApp {
 
 		com.armsx2.input.PadRouter.RumbleMode mode =
 			com.armsx2.input.PadRouter.INSTANCE.rumbleModeForDevice(devId);
-		if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return head + " — rumble turned off for this pad";
-		if (mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE) return head + " — set to vibrate this device";
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return head + ". Rumble turned off for this pad";
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE) return head + ". Set to vibrate this device";
 
 		// Reported through the SAME discovery the motors are actually driven from, so the
 		// diagnosis cannot disagree with the behaviour it is describing.
 		if (com.armsx2.input.UsbRumble.INSTANCE.padFor(d) != null) {
-			return head + " — rumble OK (driven directly over USB, 2 motors)";
+			return head + ". Rumble OK (driven directly over USB, 2 motors)";
 		}
 		int motors = motorsOf(d).size();
 		if (motors > 0) {
-			return head + " — rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")";
+			return head + ". Rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")";
 		}
-		return head + " — NO rumble exposed by Android"
+		return head + ". NO rumble exposed by Android"
 			+ (sRumbleFallbackExternal ? " (vibrating this device instead)"
 				: " (turn on \"Vibrate this device instead\" to feel it here)");
 	}
