@@ -271,20 +271,6 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 onChange = { ControllerMappings.setHapticIntensity(it); refreshToken.intValue++ },
             )
             SettingsDivider()
-            // How hard the DS2 pressure modifier presses. There was a PRESSURE button (on-screen
-            // and bindable as "Pressure Modifier (hold)") but no way to choose the amount, so it
-            // was permanently stuck at the hardcoded 50%. Range is deliberately 5..95: 0 collides
-            // with the "full press" sentinel and 100 is just a normal press.
-            IntSliderRow(
-                label = str("pad.pressureAmount.label"),
-                value = com.armsx2.ui.touch.TouchControls.pressurePercent.intValue,
-                min = 5,
-                max = 95,
-                description = str("pad.pressureAmount.description"),
-                valueFormatter = { "${it}%" },
-                onChange = { com.armsx2.ui.touch.TouchControls.setPressurePercent(it) },
-            )
-            SettingsDivider()
             // PS2 Multitap: route up to 8 controllers (both ports become 4-slot taps).
             // The pref drives PadRouter's slot count + the boot-time native arming; when a
             // game is already running we also arm it live. setMultitap parks the VM, so it
@@ -672,6 +658,22 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 description = str("pad.multiTouch.description"),
                 valueFormatter = { "${it}%" },
                 onChange = { TouchControls.setMultiTouchRadius(it / 100f) },
+            )
+            SettingsDivider()
+            // How hard the DS2 pressure modifier presses. There was a PRESSURE button (on-screen
+            // and bindable as "Pressure Modifier (hold)") but no way to choose the amount, so it
+            // was permanently stuck at the hardcoded 50%. Range is deliberately 5..95: 0 collides
+            // with the "full press" sentinel and 100 is just a normal press. Here, next to the
+            // rest of the on-screen controls, because that is where the P button is; it sat under
+            // Player & Rumble, where nobody looking for it found it.
+            IntSliderRow(
+                label = str("pad.pressureAmount.label"),
+                value = TouchControls.pressurePercent.intValue,
+                min = 5,
+                max = 95,
+                description = str("pad.pressureAmount.description"),
+                valueFormatter = { "${it}%" },
+                onChange = { TouchControls.setPressurePercent(it) },
             )
             // D-Pad key spacing lives in the Touch Layout editor now: open the editor,
             // tap the D-Pad to select it, and use the "D-Pad spacing" slider to spread
@@ -1458,10 +1460,12 @@ internal fun MacrosSection(
                     onChange = { TouchControls.setMacroFrequency(mid, it) },
                 )
             }
-            // Pressure, per macro, once it holds a pressure-sensitive button. Two macros for the
-            // same button at different pressures is how NetherSX2 players got two map zoom levels
-            // out of Square (Cotcho); the only pressure here used to be the one global amount.
-            if (buttons.any { TouchControls.isPressureCapable(it) }) {
+            // Pressure, per macro. Two macros for the same button at different pressures is how
+            // NetherSX2 players got two map zoom levels out of Square (Cotcho); the only pressure
+            // here used to be the one global amount. Shown with any button, like Frequency above,
+            // rather than only once a pressure-sensitive one is in: hidden until then, it could not
+            // be found. The description says which buttons feel it.
+            if (buttons.isNotEmpty()) {
                 val pressure = TouchControls.macroPressure(mid)
                 val fullLabel = str("pad.macro.pressure.full")
                 IntSliderRow(

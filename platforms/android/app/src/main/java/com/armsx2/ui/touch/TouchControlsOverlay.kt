@@ -2299,8 +2299,8 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 }
             }
             // How hard the pressure (P) button presses. The same amount as Settings > Controls >
-            // Pressure Amount, surfaced here because this is where the button is set up and nothing
-            // here said what it did (Cotcho).
+            // On-Screen Controls > Pressure modifier amount, surfaced here because this is where the
+            // button is set up and nothing here said what it did (Cotcho).
             if (selectedCfg.id == TouchButtonId.PRESSURE) {
                 EditorPercentSlider(
                     label = str("touch.editor.pressureAmount"),
