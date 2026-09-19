@@ -551,10 +551,7 @@ bool ARMSX2IOSPathIsInsideRoot(const std::string& path, const std::string& root)
 
 bool ARMSX2IOSPathContainsContainerFragment(const std::string& path)
 {
-    return path.find("Data/Application/") != std::string::npos ||
-           path.find("/Containers/Data/Application/") != std::string::npos ||
-           path.find("/var/mobile/Containers/Data/Application/") != std::string::npos ||
-           path.find("/private/var/mobile/Containers/Data/Application/") != std::string::npos;
+    return path.find("Data/Application/") != std::string::npos;
 }
 
 std::string ARMSX2IOSResolveFolderPath(const std::string& root, const std::string& value)

@@ -891,20 +891,19 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         Coordinator(selection: $selection, onReselect: onReselect)
     }
 
-    func makeUIView(context: Context) -> LegacyCompatibleMenuTabBar {
-        let tabBar = LegacyCompatibleMenuTabBar()
+    func makeUIView(context: Context) -> UITabBar {
+        let tabBar = UITabBar()
         tabBar.delegate = context.coordinator
         configureAppearance(of: tabBar)
         tabBar.items = makeItems()
         if let items = tabBar.items, items.indices.contains(selection) {
             tabBar.selectedItem = items[selection]
         }
-        tabBar.setSelectedIndex(selection, animated: false)
         return tabBar
     }
 
     func updateUIView(
-        _ tabBar: LegacyCompatibleMenuTabBar,
+        _ tabBar: UITabBar,
         context: Context
     ) {
         context.coordinator.selection = $selection
@@ -924,12 +923,11 @@ private struct NativeMenuTabBar: UIViewRepresentable {
                 tabBar.selectedItem = items[selection]
             }
         }
-        tabBar.setSelectedIndex(selection, animated: true)
     }
 
     func sizeThatFits(
         _ proposal: ProposedViewSize,
-        uiView: LegacyCompatibleMenuTabBar,
+        uiView: UITabBar,
         context: Context
     ) -> CGSize? {
         let width = proposal.width ?? uiView.bounds.width
@@ -960,14 +958,13 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         )
     }
 
-    private func configureAppearance(of tabBar: LegacyCompatibleMenuTabBar) {
+    private func configureAppearance(of tabBar: UITabBar) {
         tabBar.tintColor = .systemBlue
         tabBar.isTranslucent = true
         tabBar.isOpaque = false
         tabBar.backgroundColor = .clear
         tabBar.backgroundImage = UIImage()
         tabBar.shadowImage = UIImage()
-        tabBar.isCompactHeightLayout = isCompactHeight
 
         let appearance = tabBar.standardAppearance.copy()
         appearance.configureWithTransparentBackground()
@@ -992,284 +989,13 @@ private struct NativeMenuTabBar: UIViewRepresentable {
             ] = selectedFont
         }
 
-        if #available(iOS 26.0, *) {
-            // Tint UIKit's own Liquid Glass selection pill instead of replacing
-            // it. Its blur, refraction, morph, and press effects remain native.
-            appearance.selectionIndicatorImage = nil
-            appearance.selectionIndicatorTintColor =
-                UIColor.systemBlue.withAlphaComponent(0.18)
-            tabBar.usesLegacySelectionPill = false
-        } else {
-            // iOS 17/18 has no native floating tab capsule. Suppress UIKit's
-            // rectangular bar/indicator and render a material outer pill with
-            // a live, animated monochrome-blue selection pill below.
-            appearance.selectionIndicatorImage = UIImage()
-            appearance.selectionIndicatorTintColor = .clear
-            tabBar.usesLegacySelectionPill = true
-
-            let layouts = [
-                appearance.stackedLayoutAppearance,
-                appearance.inlineLayoutAppearance,
-                appearance.compactInlineLayoutAppearance,
-            ]
-            for layout in layouts {
-                layout.normal.iconColor = .secondaryLabel
-                layout.normal.titleTextAttributes[.foregroundColor] =
-                    UIColor.secondaryLabel
-                layout.selected.iconColor = .systemBlue
-                layout.selected.titleTextAttributes[.foregroundColor] =
-                    UIColor.systemBlue
-            }
-        }
+        // Tint UIKit's own Liquid Glass selection pill instead of replacing it.
+        // Its blur, refraction, morph, and press effects remain native.
+        appearance.selectionIndicatorImage = nil
+        appearance.selectionIndicatorTintColor =
+            UIColor.systemBlue.withAlphaComponent(0.18)
         tabBar.standardAppearance = appearance
         tabBar.scrollEdgeAppearance = appearance
-    }
-
-    final class LegacyCompatibleMenuTabBar: UITabBar {
-        var isCompactHeightLayout = false {
-            didSet {
-                guard oldValue != isCompactHeightLayout else { return }
-                setNeedsLayout()
-            }
-        }
-
-        var usesLegacySelectionPill = false {
-            didSet {
-                legacyBarPill.isHidden = !usesLegacySelectionPill
-                legacySelectionPill.isHidden = !usesLegacySelectionPill
-                setNeedsLayout()
-            }
-        }
-
-        private let legacyBarPill = LegacyBarPillView()
-        private let legacySelectionPill = LegacySelectionPillView()
-        private var selectedIndex = 0
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            legacyBarPill.isHidden = true
-            legacyBarPill.isUserInteractionEnabled = false
-            legacySelectionPill.isHidden = true
-            legacySelectionPill.isUserInteractionEnabled = false
-            addSubview(legacyBarPill)
-            addSubview(legacySelectionPill)
-        }
-
-        required init?(coder: NSCoder) {
-            super.init(coder: coder)
-            legacyBarPill.isHidden = true
-            legacyBarPill.isUserInteractionEnabled = false
-            legacySelectionPill.isHidden = true
-            legacySelectionPill.isUserInteractionEnabled = false
-            addSubview(legacyBarPill)
-            addSubview(legacySelectionPill)
-        }
-
-        func setSelectedIndex(_ index: Int, animated: Bool) {
-            let changed = selectedIndex != index
-            selectedIndex = index
-            updateLegacySelectionPill(
-                animated: animated && changed && window != nil
-            )
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            updateLegacyBarLayout()
-            updateLegacySelectionPill(animated: false)
-        }
-
-        private var legacyBarFrame: CGRect {
-            let maximumWidth: CGFloat = isCompactHeightLayout ? 420 : 360
-            let proportionalWidth = bounds.width * 0.84
-            let width = min(
-                max(0, bounds.width - 24),
-                proportionalWidth,
-                maximumWidth
-            )
-            return CGRect(
-                x: (bounds.width - width) / 2,
-                y: 2,
-                width: width,
-                height: max(0, bounds.height - 4)
-            )
-        }
-
-        private func legacyItemControls() -> [UIControl] {
-            subviews
-                .compactMap { $0 as? UIControl }
-                .sorted { $0.frame.minX < $1.frame.minX }
-        }
-
-        private func updateLegacyBarLayout() {
-            guard usesLegacySelectionPill else {
-                setSystemBarBackgroundHidden(false)
-                return
-            }
-
-            setSystemBarBackgroundHidden(true)
-            let barFrame = legacyBarFrame
-            legacyBarPill.frame = barFrame
-            legacyBarPill.updateCornerRadius(barFrame.height / 2)
-
-            let itemControls = legacyItemControls()
-            guard !itemControls.isEmpty else { return }
-            let contentFrame = barFrame.insetBy(dx: 8, dy: 0)
-            let itemWidth = contentFrame.width / CGFloat(itemControls.count)
-            for (index, control) in itemControls.enumerated() {
-                control.frame = CGRect(
-                    x: contentFrame.minX + (CGFloat(index) * itemWidth),
-                    y: contentFrame.minY,
-                    width: itemWidth,
-                    height: contentFrame.height
-                )
-            }
-
-            insertSubview(legacyBarPill, at: 0)
-            if let firstItem = itemControls.first {
-                insertSubview(legacySelectionPill, belowSubview: firstItem)
-            }
-        }
-
-        private func setSystemBarBackgroundHidden(_ hidden: Bool) {
-            for view in subviews {
-                let className = NSStringFromClass(type(of: view))
-                if className.contains("BarBackground") {
-                    view.isHidden = hidden
-                }
-            }
-        }
-
-        private func updateLegacySelectionPill(animated: Bool) {
-            guard usesLegacySelectionPill else { return }
-
-            let itemControls = legacyItemControls()
-            guard itemControls.indices.contains(selectedIndex) else {
-                return
-            }
-
-            if let firstItem = itemControls.first {
-                insertSubview(legacySelectionPill, belowSubview: firstItem)
-            }
-
-            let itemFrame = itemControls[selectedIndex].frame
-            // Slightly overlap each slot so the selected pill feels broader
-            // than the icon/title pair while remaining inside the outer pill.
-            let proposedFrame = itemFrame.insetBy(dx: -5, dy: 4)
-            let targetFrame = proposedFrame.intersection(
-                legacyBarFrame.insetBy(dx: 4, dy: 4)
-            )
-            legacySelectionPill.updateCornerRadius(
-                max(0, targetFrame.height / 2)
-            )
-
-            let updates = {
-                self.legacySelectionPill.frame = targetFrame
-                self.legacySelectionPill.alpha = 1
-            }
-            if animated {
-                UIView.animate(
-                    withDuration: 0.36,
-                    delay: 0,
-                    usingSpringWithDamping: 0.82,
-                    initialSpringVelocity: 0.18,
-                    options: [.beginFromCurrentState, .allowUserInteraction],
-                    animations: updates
-                )
-            } else {
-                updates()
-            }
-        }
-    }
-
-    final class LegacyBarPillView: UIView {
-        private let materialView = UIVisualEffectView(
-            effect: UIBlurEffect(style: .systemUltraThinMaterial)
-        )
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            isOpaque = false
-
-            layer.shadowColor = UIColor.black.cgColor
-            layer.shadowOpacity = 0.2
-            layer.shadowRadius = 14
-            layer.shadowOffset = CGSize(width: 0, height: 6)
-
-            materialView.isUserInteractionEnabled = false
-            materialView.clipsToBounds = true
-            addSubview(materialView)
-        }
-
-        required init?(coder: NSCoder) {
-            nil
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            materialView.frame = bounds
-            layer.shadowPath = UIBezierPath(
-                roundedRect: bounds,
-                cornerRadius: layer.cornerRadius
-            ).cgPath
-        }
-
-        func updateCornerRadius(_ radius: CGFloat) {
-            layer.cornerRadius = radius
-            materialView.layer.cornerRadius = radius
-            materialView.layer.borderWidth = 0.65
-            materialView.layer.borderColor =
-                UIColor.separator.withAlphaComponent(0.22).cgColor
-            setNeedsLayout()
-        }
-    }
-
-    final class LegacySelectionPillView: UIView {
-        private let materialView = UIVisualEffectView(
-            effect: UIBlurEffect(style: .systemUltraThinMaterial)
-        )
-        private let blueTintView = UIView()
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            isOpaque = false
-
-            layer.shadowColor = UIColor.systemBlue.cgColor
-            layer.shadowOpacity = 0.1
-            layer.shadowRadius = 8
-            layer.shadowOffset = CGSize(width: 0, height: 2)
-
-            materialView.isUserInteractionEnabled = false
-            materialView.clipsToBounds = true
-            addSubview(materialView)
-
-            blueTintView.backgroundColor =
-                UIColor.systemBlue.withAlphaComponent(0.11)
-            materialView.contentView.addSubview(blueTintView)
-        }
-
-        required init?(coder: NSCoder) {
-            nil
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            materialView.frame = bounds
-            blueTintView.frame = materialView.bounds
-            layer.shadowPath = UIBezierPath(
-                roundedRect: bounds,
-                cornerRadius: layer.cornerRadius
-            ).cgPath
-        }
-
-        func updateCornerRadius(_ radius: CGFloat) {
-            layer.cornerRadius = radius
-            materialView.layer.cornerRadius = radius
-            materialView.layer.borderWidth = 0.75
-            materialView.layer.borderColor =
-                UIColor.systemBlue.withAlphaComponent(0.2).cgColor
-            setNeedsLayout()
-        }
     }
 
     final class Coordinator: NSObject, UITabBarDelegate {

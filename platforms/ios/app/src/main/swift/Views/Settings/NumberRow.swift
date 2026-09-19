@@ -52,17 +52,17 @@ struct NumberFormat {
 
     func decimals(_ count: Int) -> NumberFormat {
         NumberFormat(unit: unit, decimals: count, scale: scale, showsSign: showsSign,
-                     trimsTrailingZeros: trimsTrailingZeros)
+                     trimsTrailingZeros: trimsTrailingZeros, literal: literal)
     }
 
     func compactDecimals(_ count: Int) -> NumberFormat {
         NumberFormat(unit: unit, decimals: count, scale: scale, showsSign: showsSign,
-                     trimsTrailingZeros: true)
+                     trimsTrailingZeros: true, literal: literal)
     }
 
     var signed: NumberFormat {
         NumberFormat(unit: unit, decimals: decimals, scale: scale, showsSign: true,
-                     trimsTrailingZeros: trimsTrailingZeros)
+                     trimsTrailingZeros: trimsTrailingZeros, literal: literal)
     }
 
     /// An opaque readout is a string somebody else built, so it cannot be labelled onto the

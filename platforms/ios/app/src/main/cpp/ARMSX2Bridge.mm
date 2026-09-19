@@ -3892,6 +3892,14 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
     });
 }
 
++ (nullable NSNumber *)perGameINIBoolIfPresent:(nonnull NSString *)section key:(nonnull NSString *)key forISO:(nullable NSString *)isoName {
+    return ARMSX2ReadPerGameINI<NSNumber*>(isoName, nil, [&](const INISettingsInterface& si) -> NSNumber* {
+        if (!si.ContainsValue(section.UTF8String, key.UTF8String))
+            return nil;
+        return @(si.GetBoolValue(section.UTF8String, key.UTF8String, false));
+    });
+}
+
 + (int)getPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def forISO:(nullable NSString *)isoName {
     return ARMSX2ReadPerGameINI(isoName, def, [&](const INISettingsInterface& si) {
         return si.GetIntValue(section.UTF8String, key.UTF8String, def);
@@ -3965,6 +3973,21 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
 
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame {
     return [self perGameIdentityKeyForISO:nil];
+}
+
++ (nullable NSDictionary<NSString *, NSString *> *)perGameIdentityForCurrentGame {
+    if (!VMManager::HasValidVM())
+        return nil;
+    std::string serial;
+    u32 crc = 0;
+    // Matches what gameSettingsForCurrentGame leaves in the dictionary when the
+    // identity is not resolvable: the globals-seeded blanks, not the partial serial.
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return @{@"serial": @"", @"crc": @""};
+    return @{
+        @"serial": ARMSX2NSStringFromStdString(serial),
+        @"crc": [NSString stringWithFormat:@"%08X", crc],
+    };
 }
 
 + (int)limiterMode
