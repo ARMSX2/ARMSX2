@@ -48,8 +48,6 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Calendar
-import java.util.TimeZone
 
 /**
  * In-app updater — GitHub sideload flavor ONLY. Renders a "Check for updates" panel in the About
@@ -58,14 +56,19 @@ import java.util.TimeZone
  * src/play, so this code (and REQUEST_INSTALL_PACKAGES / the FileProvider) never enters the AAB —
  * build-play-aab.sh also fails closed if the permission ever leaks in.
  *
- * Nightly-safe: nightly builds use versionCode = Unix seconds (> 1e6), so their version is always
- * far ahead of any stable release. We short-circuit those to "up to date" and never prompt a nightly
- * user to a stable — comparison is by the numeric versionCode magnitude, not the version string.
+ * Channel-aware: the build carries BuildConfig.CHANNEL ("stable" or "nightly"), baked in at build
+ * time, and each package follows only its own channel. A nightly package (com.armsx2.nightly) is
+ * never offered a stable; a stable package is never offered a nightly, because the nightly is a
+ * different package and installing it would add a second app rather than update this one. The
+ * installed nightly's build day is its versionCode, which the nightly pipeline sets to YYYYMMDD, so
+ * it is compared directly against the nightly-YYYYMMDD tag — no epoch arithmetic.
  */
 
 private const val LATEST_URL = "https://api.github.com/repos/ARMSX2/ARMSX2/releases/latest"
 private const val RELEASES_URL = "https://api.github.com/repos/ARMSX2/ARMSX2/releases?per_page=20"
-private const val NIGHTLY_VC_THRESHOLD = 1_000_000  // stable VCs are ~1300; nightly = Unix seconds.
+
+/** True for a nightly package: it always follows the nightly channel, toggle or not. */
+private val IS_NIGHTLY: Boolean = BuildConfig.CHANNEL == "nightly"
 
 private sealed interface UpdateState {
     data object Idle : UpdateState
@@ -102,7 +105,7 @@ fun UpdaterEntry() {
                     Text(str("update.checking"), style = MaterialTheme.typography.bodySmall)
                 }
                 is UpdateState.UpToDate -> Text(
-                    if (BuildConfig.VERSION_CODE > NIGHTLY_VC_THRESHOLD) str("update.onNightly")
+                    if (IS_NIGHTLY) str("update.onNightly")
                     else str("update.upToDate"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
@@ -128,10 +131,7 @@ fun UpdaterEntry() {
             val runCheck: () -> Unit = {
                 scope.launch {
                     state = UpdateState.Checking
-                    state = checkForUpdate(
-                        MainActivityRuntime.prefs.getBoolean("update.includeNightly", false),
-                        checkFailedPrefix,
-                    )
+                    state = checkForUpdate(checkFailedPrefix)
                 }
             }
             Button(
@@ -154,19 +154,10 @@ fun UpdaterEntry() {
                 },
             )
 
-            // Opt-in: also consider nightly (pre-release) builds when checking (default off).
-            var includeNightly by remember {
-                mutableStateOf(MainActivityRuntime.prefs.getBoolean("update.includeNightly", false))
-            }
-            SettingSwitchRow(
-                title = str("update.includeNightly"),
-                description = str("update.includeNightly.desc"),
-                checked = includeNightly,
-                onCheckedChange = {
-                    includeNightly = it
-                    MainActivityRuntime.prefs.edit().putBoolean("update.includeNightly", it).apply()
-                },
-            )
+            // No channel switcher here. Each package follows only its own channel: a nightly
+            // installs as a second app (com.armsx2.nightly) rather than replacing this one, so an
+            // "include nightlies" opt-in would offer that same nightly on every check and never a
+            // new stable. People who want nightlies install the nightly app.
         }
     }
 
@@ -205,7 +196,7 @@ fun UpdaterEntry() {
  * Boot-time auto-check (github flavor only). Mounted once at the app root; when the "check on
  * launch" toggle is on, it runs a single silent GitHub check on start and pops the update prompt
  * ONLY if a newer release exists — no "up to date" popup, no noise on every boot. Reuses the exact
- * check/download/install path as the manual button. Nightly-safe via checkForUpdate's VC guard.
+ * check/download/install path as the manual button. Follows this package's own channel.
  */
 @Composable
 fun AutoUpdateGate() {
@@ -216,10 +207,7 @@ fun AutoUpdateGate() {
 
     LaunchedEffect(Unit) {
         if (MainActivityRuntime.prefs.getBoolean("update.checkOnLaunch", false)) {
-            val result = checkForUpdate(
-                MainActivityRuntime.prefs.getBoolean("update.includeNightly", false),
-                checkFailedPrefix,
-            )
+            val result = checkForUpdate(checkFailedPrefix)
             if (result is UpdateState.Available) state = result  // stay silent on up-to-date / errors
         }
     }
@@ -270,12 +258,14 @@ fun AutoUpdateGate() {
     }
 }
 
-private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: String): UpdateState = withContext(Dispatchers.IO) {
+private suspend fun checkForUpdate(checkFailedPrefix: String): UpdateState = withContext(Dispatchers.IO) {
     try {
-        if (!includeNightly) {
-            // Stable channel. A nightly build (VC = Unix seconds) is always ahead of any stable, so
-            // never prompt it — and never offer it a stable (that would be a versionCode downgrade).
-            if (BuildConfig.VERSION_CODE > NIGHTLY_VC_THRESHOLD) return@withContext UpdateState.UpToDate
+        // Each package follows only its own channel. A stable app is never offered a nightly: the
+        // nightly is a different package, so installing it would add a second app rather than
+        // update this one, and with no installed nightly to measure against it would be offered
+        // again on every check — while a nightly sits above the stable in the list, so the user
+        // would stop seeing stable updates too.
+        if (!IS_NIGHTLY) {
             val obj = JSONObject(httpGet(LATEST_URL))
             val apkUrl = apkAssetForThisDevice(obj) ?: return@withContext UpdateState.UpToDate
             val tag = obj.getString("tag_name")
@@ -285,24 +275,18 @@ private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: S
         }
 
         // Nightly channel: GitHub returns releases newest-first, so offer the first genuinely-newer
-        // one that has an APK. Nightlies are pre-releases tagged nightly-YYYYMMDD; stables are vX.Y.Z.
-        // Compare nightlies by day (the installed nightly's build day comes from its VC = Unix seconds);
-        // compare stables by version name. A nightly install is never offered a stable — that's a
-        // versionCode downgrade the system installer rejects anyway (reinstall stable manually).
+        // one that has an APK. Nightlies are pre-releases tagged nightly-YYYYMMDD, and the installed
+        // nightly's versionCode IS its build day (YYYYMMDD), so the two compare directly. A stable
+        // release is never offered here: this is the nightly package, which a stable cannot update.
         val arr = JSONArray(httpGet(RELEASES_URL))
-        val installedIsNightly = BuildConfig.VERSION_CODE > NIGHTLY_VC_THRESHOLD
-        val installedDay = if (installedIsNightly) epochSecToYyyymmdd(BuildConfig.VERSION_CODE.toLong()) else 0
+        val installedDay = BuildConfig.VERSION_CODE
         for (i in 0 until arr.length()) {
             val rel = arr.getJSONObject(i)
             if (rel.optBoolean("draft", false)) continue
             val apkUrl = apkAssetForThisDevice(rel) ?: continue
             val tag = rel.getString("tag_name")
             val isNightlyRel = rel.optBoolean("prerelease", false) || tag.startsWith("nightly-", ignoreCase = true)
-            val newer = if (isNightlyRel) {
-                nightlyTagDay(tag) > installedDay  // stable install => installedDay 0 => any nightly is newer
-            } else {
-                !installedIsNightly && isNewer(tag, BuildConfig.VERSION_NAME)
-            }
+            val newer = isNightlyRel && nightlyTagDay(tag) > installedDay
             if (newer) return@withContext UpdateState.Available(tag, rel.optString("body", ""), apkUrl)
         }
         UpdateState.UpToDate
@@ -399,12 +383,6 @@ private fun apkAssetForThisDevice(release: JSONObject): String? {
 /** "nightly-YYYYMMDD" -> YYYYMMDD as an int (0 if the tag isn't a dated nightly). */
 private fun nightlyTagDay(tag: String): Int =
     Regex("nightly-(\\d{8})", RegexOption.IGNORE_CASE).find(tag)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-
-/** Unix-epoch seconds (a nightly build's versionCode) -> UTC YYYYMMDD int, matching the nightly tag. */
-private fun epochSecToYyyymmdd(epochSec: Long): Int {
-    val c = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = epochSec * 1000L }
-    return c.get(Calendar.YEAR) * 10000 + (c.get(Calendar.MONTH) + 1) * 100 + c.get(Calendar.DAY_OF_MONTH)
-}
 
 /** Semantic-version compare of the release tag vs the installed versionName. Non-numeric suffixes
  *  (e.g. the "2.6.4.3.r" tag) are dropped — only the leading dotted integers matter. */

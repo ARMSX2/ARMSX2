@@ -26,7 +26,6 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("app.launcherRotation", true, SettingsCategory.General),
     SettingsSearchEntry("app.bgColor", true, SettingsCategory.General),
     SettingsSearchEntry("app.menuSfx", true, SettingsCategory.General),
-    SettingsSearchEntry("update.includeNightly", true, SettingsCategory.General),
     SettingsSearchEntry("perf.fix.skipBios", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.gamedbFixes", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.skipMpeg", true, SettingsCategory.Advanced),
