@@ -359,7 +359,10 @@ fun TouchControlsOverlay() {
             if (!cfg.enabled && !edit) continue
             // With full-half sticks on, the invisible half-screen layer owns the analogs — hide the
             // normal L/R stick widgets during play (edit mode still shows them so they stay editable).
-            if (!edit && TouchControls.fullHalfSticks.value && cfg.id.kind == TouchButtonId.Kind.STICK) continue
+            // Except the left one when the player chose to keep it: then only the right half is a
+            // stick, and this widget is the left stick as usual.
+            if (!edit && TouchControls.fullHalfSticks.value && cfg.id.kind == TouchButtonId.Kind.STICK &&
+                !(cfg.id == TouchButtonId.L_STICK && TouchControls.fullHalfKeepLeftStick.value)) continue
             // Drawn above during play (outside the auto-hide / "Never" gate) so it can't be
             // hidden away; skip it here or it would render twice. Edit mode still gets it from
             // the loop, so it stays draggable/resizable like every other widget.
@@ -1653,12 +1656,14 @@ private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Fl
         }
     val leftCodes = StickCodes(xPos = 111, xNeg = 113, yPos = 112, yNeg = 110)
     val rightCodes = StickCodes(xPos = 121, xNeg = 123, yPos = 122, yNeg = 120)
+    // The on-screen left stick is kept, so the left half is not a stick: leave it alone.
+    val keepLeft = TouchControls.fullHalfKeepLeftStick.value
     // Deflection radius from the floating origin: a comfortable thumb reach gives full tilt.
     val capPx = with(density) { 100.dp.toPx() }
     val dims = widthPx to heightPx
 
     Box(
-        modifier = Modifier.fillMaxSize().pointerInput(foreignBounds, dims) {
+        modifier = Modifier.fillMaxSize().pointerInput(foreignBounds, dims, keepLeft) {
             fun inForeign(pos: Offset) = foreignBounds.any {
                 pos.x >= it.left && pos.x <= it.right && pos.y >= it.top && pos.y <= it.bottom
             }
@@ -1672,8 +1677,9 @@ private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Fl
                             if (ch.changedToDown()) {
                                 // Claim this finger for a stick unless a widget above took the DOWN or
                                 // it landed on a button. Which screen half decides which stick.
-                                if (!ch.isConsumed && !inForeign(ch.position)) {
-                                    tracks[ch.id] = HalfStickTrack(ch.position.x < widthPx / 2f, ch.position)
+                                val leftHalf = ch.position.x < widthPx / 2f
+                                if (!ch.isConsumed && !inForeign(ch.position) && !(keepLeft && leftHalf)) {
+                                    tracks[ch.id] = HalfStickTrack(leftHalf, ch.position)
                                 }
                             }
                             if (!ch.pressed) {
@@ -2081,6 +2087,16 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             }
             ToolbarChip(if (TouchControls.fullHalfSticks.value) str("touch.editor.fullHalfSticksOn") else str("touch.editor.fullHalfSticksOff")) {
                 TouchControls.setFullHalfSticks(!TouchControls.fullHalfSticks.value)
+            }
+            // Only meaningful with half-screen sticks on: keep the normal left stick on screen and
+            // make only the right half a stick.
+            if (TouchControls.fullHalfSticks.value) {
+                ToolbarChip(
+                    if (TouchControls.fullHalfKeepLeftStick.value) str("touch.editor.keepLeftStickOn")
+                    else str("touch.editor.keepLeftStickOff"),
+                ) {
+                    TouchControls.setFullHalfKeepLeftStick(!TouchControls.fullHalfKeepLeftStick.value)
+                }
             }
             // Snap-to-grid: aligns dragged widgets to a square grid so buttons line up cleanly.
             ToolbarChip(if (TouchControls.gridSnap.value) str("touch.editor.gridOn") else str("touch.editor.gridOff")) {

@@ -71,6 +71,7 @@ object TouchControls {
     private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_FULL_HALF_STICKS = "touch.fullHalfSticks"
+    private const val KEY_FULL_HALF_KEEP_LEFT = "touch.fullHalfKeepLeftStick"
     private const val KEY_ANALOG_EXTRA = "touch.analogExtra"
     private const val KEY_ANALOG_EXTRA_CODE = "touch.analogExtraCode"
     private const val KEY_ANALOG_EXTRA_DIST = "touch.analogExtraDist"
@@ -263,6 +264,12 @@ object TouchControls {
     // its stick from wherever it touches down (floating origin). The normal L/R stick widgets are
     // hidden while this is on. Global; persisted under KEY_FULL_HALF_STICKS.
     val fullHalfSticks = mutableStateOf(false)
+
+    // With [fullHalfSticks] on: keep the normal on-screen LEFT stick instead of turning the left
+    // half of the screen into one, so only the right half is an invisible stick. For players who
+    // want a stick they can see under the thumb that moves them and a free-look half for the
+    // camera (Ladi Altera: "don't remove Left Analog Stick when Half-Screen On"). Global.
+    val fullHalfKeepLeftStick = mutableStateOf(false)
 
     // Editor-only: while ON, dragging a widget in edit mode snaps its centre anchor to the
     // nearest cross of a square grid (see GRID_COLS in TouchControlsOverlay). Lets the user
@@ -769,6 +776,7 @@ object TouchControls {
         dpadSpacing.floatValue = MainActivityRuntime.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
         floatingStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FLOATING_STICK, false)
         fullHalfSticks.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_STICKS, false)
+        fullHalfKeepLeftStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_KEEP_LEFT, false)
         analogExtraEnabled.value = MainActivityRuntime.prefs.getBoolean(KEY_ANALOG_EXTRA, false)
         analogExtraKeycode.intValue = MainActivityRuntime.prefs.getInt(KEY_ANALOG_EXTRA_CODE, 96)
         analogExtraDistance.floatValue =
@@ -873,6 +881,7 @@ object TouchControls {
                 .putFloat(KEY_DPAD_SPACING, dpadSpacing.floatValue)
                 .putBoolean(KEY_FLOATING_STICK, floatingStick.value)
                 .putBoolean(KEY_FULL_HALF_STICKS, fullHalfSticks.value)
+                .putBoolean(KEY_FULL_HALF_KEEP_LEFT, fullHalfKeepLeftStick.value)
                 .putBoolean(KEY_GRID_SNAP, gridSnap.value)
                 .putInt(KEY_VIS_MODE, visibilityMode.intValue)
                 .putBoolean(KEY_PAUSE_TAP_REVEAL, pauseTapToReveal.value)
@@ -1300,6 +1309,11 @@ object TouchControls {
 
     fun setFullHalfSticks(enabled: Boolean) {
         fullHalfSticks.value = enabled
+        persist()
+    }
+
+    fun setFullHalfKeepLeftStick(enabled: Boolean) {
+        fullHalfKeepLeftStick.value = enabled
         persist()
     }
 
