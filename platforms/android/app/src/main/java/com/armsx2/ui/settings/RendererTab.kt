@@ -178,6 +178,53 @@ fun RendererTab(state: MutableState<Settings>) {
                     onChange = { pct -> apply(s.copy(upscaleFloat = pct / 100f)) },
                 )
             }
+            // Texture packs, right under the resolution they are usually paired with. They were a
+            // collapsed section near the bottom of this tab, which for one of the most-used
+            // features on the device was far too deep.
+            SettingsDivider()
+            TextureManagerRow()
+            SettingsDivider()
+            ToggleRow(
+                str("renderer.loadTexturePacks.label"),
+                s.loadTextureReplacements,
+                description = str("renderer.loadTexturePacks.description"),
+            ) {
+                apply(s.copy(loadTextureReplacements = it))
+            }
+            SettingsDivider()
+            ToggleRow(
+                str("renderer.asyncTextureLoading.label"),
+                s.loadTextureReplacementsAsync,
+                description = str("renderer.asyncTextureLoading.description"),
+            ) {
+                apply(s.copy(loadTextureReplacementsAsync = it))
+            }
+            SettingsDivider()
+            ToggleRow(
+                str("renderer.precacheTexturePacks.label"),
+                s.precacheTextureReplacements,
+                description = str("renderer.precacheTexturePacks.description"),
+            ) {
+                apply(s.copy(precacheTextureReplacements = it))
+            }
+            SettingsDivider()
+            TexturePackImportRow()
+            SettingsDivider()
+            ToggleRow(
+                str("renderer.dumpReplaceableTextures.label"),
+                s.dumpReplaceableTextures,
+                description = str("renderer.dumpReplaceableTextures.description"),
+            ) {
+                apply(s.copy(dumpReplaceableTextures = it))
+            }
+            SettingsDivider()
+            ToggleRow(
+                str("renderer.texturePackOsd.label"),
+                s.osdShowTextureReplacements,
+                description = str("renderer.texturePackOsd.description"),
+            ) {
+                apply(s.copy(osdShowTextureReplacements = it))
+            }
             SettingsDivider()
             SegmentedRow(
                 label = str("renderer.displayMode.label"),
@@ -495,52 +542,6 @@ fun RendererTab(state: MutableState<Settings>) {
             OverlayArtSection()
         }
         SettingsDivider()
-        CollapsibleSection(str("renderer.section.texturePacks")) {
-            ToggleRow(
-                str("renderer.loadTexturePacks.label"),
-                s.loadTextureReplacements,
-                description = str("renderer.loadTexturePacks.description"),
-            ) {
-                apply(s.copy(loadTextureReplacements = it))
-            }
-            SettingsDivider()
-            ToggleRow(
-                str("renderer.asyncTextureLoading.label"),
-                s.loadTextureReplacementsAsync,
-                description = str("renderer.asyncTextureLoading.description"),
-            ) {
-                apply(s.copy(loadTextureReplacementsAsync = it))
-            }
-            SettingsDivider()
-            ToggleRow(
-                str("renderer.precacheTexturePacks.label"),
-                s.precacheTextureReplacements,
-                description = str("renderer.precacheTexturePacks.description"),
-            ) {
-                apply(s.copy(precacheTextureReplacements = it))
-            }
-            SettingsDivider()
-            TexturePackImportRow()
-            SettingsDivider()
-            GsDumpCaptureRow()
-            SettingsDivider()
-            ToggleRow(
-                str("renderer.dumpReplaceableTextures.label"),
-                s.dumpReplaceableTextures,
-                description = str("renderer.dumpReplaceableTextures.description"),
-            ) {
-                apply(s.copy(dumpReplaceableTextures = it))
-            }
-            SettingsDivider()
-            ToggleRow(
-                str("renderer.texturePackOsd.label"),
-                s.osdShowTextureReplacements,
-                description = str("renderer.texturePackOsd.description"),
-            ) {
-                apply(s.copy(osdShowTextureReplacements = it))
-            }
-        }
-        SettingsDivider()
         CollapsibleSection(str("renderer.section.blendingAdvanced")) {
             SegmentedRow(
                 label = str("renderer.blendingAccuracy.label"),
@@ -659,6 +660,51 @@ fun RendererTab(state: MutableState<Settings>) {
                 onChange = {
                     apply(s.copy(gpuProfile = it))
                 },
+            )
+            // Here rather than among the texture pack rows, where it used to sit: a GS dump is a
+            // renderer bug report. The in-game menu's Session page has the one-tap version.
+            SettingsDivider()
+            GsDumpCaptureRow()
+        }
+    }
+}
+
+/**
+ * Opens the texture pack manager: the game's installed packs, community downloads and import.
+ * Over a running game it opens in place of this screen, the way the in-game menu's button does;
+ * from the library it is its own screen.
+ */
+@Composable
+private fun TextureManagerRow() {
+    val open = {
+        if (com.armsx2.ui.WindowImpl.inGameScreen.value != null)
+            com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.Textures)
+        else
+            com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.TextureManager)
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .controllerFocusable("renderer.textureManager", RoundedCornerShape(16.dp), onConfirm = open)
+            .clickable(onClick = open)
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Column {
+            Text(
+                str("renderer.section.texturePacks"),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                str("renderer.texturePacks.manage.description"),
+                color = Colors.pasx2_blue,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
             )
         }
     }

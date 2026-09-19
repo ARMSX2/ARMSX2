@@ -869,16 +869,9 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     ) { on ->
         viewModel.updateSettings { it.copy(gsBackThreadMode = if (on) 3 else 0) }
     }
-    // Every phone GPU is a tiler, so this belongs in the in-game menu next to the other
-    // renderer levers, not just in full settings — it is the kind of thing you toggle while
-    // looking at the framerate.
-    MenuSwitchRow(
-        str("renderer.coalesceRenderPasses.label"),
-        settings.coalesceRenderPasses,
-        description = str("renderer.coalesceRenderPasses.description"),
-    ) { on ->
-        viewModel.updateSettings { it.copy(coalesceRenderPasses = on) }
-    }
+    // Coalesce Render Passes is deliberately NOT here. It only helps Dirge of Cerberus, and the
+    // game database already turns it on for Dirge, so it lives in All Settings > Renderer >
+    // advanced and nowhere a player tuning performance would reach for it.
     CompactAction(str("backend.applyRestart"), "↻", Modifier.fillMaxWidth(), MainActivityRuntime::restart)
     HorizontalOptions(
         title = str("renderer.upscale.label"),
@@ -950,6 +943,19 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
                 )
             }
         }
+    }
+    // Texture packs, straight after the resolution they are usually paired with. They used to be
+    // split between the bottom of this page (the switches) and the Options page (the manager),
+    // which for one of the most-used features on the device was two places too deep.
+    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
+    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.loadTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(loadTextureReplacements = it) }
+    }
+    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.loadTextureReplacementsAsync) {
+        viewModel.updateSettings { current -> current.copy(loadTextureReplacementsAsync = it) }
+    }
+    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.precacheTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(precacheTextureReplacements = it) }
     }
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
@@ -1069,15 +1075,6 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     }
     MenuSwitchRow(str("fixes.syncToHostRefresh.label"), settings.syncToHostRefresh) {
         viewModel.updateSettings { current -> current.copy(syncToHostRefresh = it) }
-    }
-    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.loadTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacements = it) }
-    }
-    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.loadTextureReplacementsAsync) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacementsAsync = it) }
-    }
-    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.precacheTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(precacheTextureReplacements = it) }
     }
     // RetroArch shaders, end-to-end in-game: toggle → pick a preset → download more.
     // Same composables the Settings renderer tab renders (single definition in ui/common);
@@ -1367,14 +1364,9 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         CompactAction(str("memcard.title"), "▤", Modifier.weight(1f), viewModel::openMemcard)
         CompactAction(str("patches.dialog.patchesAndCheats"), "✦", Modifier.weight(1f), viewModel::openPatches)
     }
-    Spacer(Modifier.height(6.dp))
-    // Texture packs belong here too: the pack folder has to match the RUNNING game's serial,
-    // so the screen only tells you anything useful with a game loaded — and buried in
-    // All Settings -> Renderer it was effectively unreachable mid-session.
-    // Glyph must be one already proven to render in the shipped font — "▩" (U+25A9) and
-    // "⏻" (U+23FB) come out as tofu boxes on device. "▣" is used by the BIOS/onboarding
-    // screens, so it is known good.
-    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
+    // The texture pack manager moved to the Renderer page, under the resolution. Its glyph,
+    // "▣", is one already proven to render in the shipped font -- "▩" (U+25A9) and "⏻" (U+23FB)
+    // come out as tofu boxes on device.
     Spacer(Modifier.height(6.dp))
     MenuSwitchRow(str("patches.enablePatches.label"), settings.enablePatches) {
         viewModel.updateSettings { current -> current.copy(enablePatches = it) }

@@ -1525,6 +1525,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "textures.online.contribute" to "Where these come from \u2014 submit a pack \u2197",
     "textures.online.cached" to "Showing a saved copy of the catalog \u2014 could not refresh.",
     "renderer.section.texturePacks" to "Texture Packs",
+    "renderer.texturePacks.manage.description" to "This game's installed packs, community downloads, and import.",
     "renderer.texturePacks.copying" to "Copying %d files…",
     "renderer.texturePacks.activeSerial" to "Active game folder: %s",
     "renderer.texturePacks.restartHint" to "Texture packs are loaded when the game boots — restart to apply changes made here.",
