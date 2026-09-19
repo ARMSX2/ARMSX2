@@ -49,7 +49,14 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import android.content.res.Configuration
@@ -353,7 +360,7 @@ fun TouchControlsOverlay() {
         // Full-half invisible analog sticks: an invisible layer owning each screen half, composed
         // z-BELOW the visual widgets so a finger starting on a button drives the button, not a stick.
         if (!edit && TouchControls.fullHalfSticks.value) {
-            FullHalfStickLayer(layout = layout, widthPx = widthPx, heightPx = heightPx)
+            FullHalfStickLayer(layout = layout, widthPx = widthPx, heightPx = heightPx, faceMulti = faceMulti)
         }
         for (cfg in layout.buttons) {
             if (!cfg.enabled && !edit) continue
@@ -790,8 +797,12 @@ private fun UnifiedTouchLayer(
                         while (true) {
                             val ev = awaitPointerEvent()
                             for (ch in ev.changes) {
-                                // A fresh DOWN decides ownership of this finger once.
-                                if (ch.changedToDown()) {
+                                // A fresh DOWN decides ownership of this finger once. IgnoreConsumed,
+                                // because changedToDown() is false for a DOWN that is already
+                                // consumed, so the isConsumed test below never saw the very fingers
+                                // it is for: one the Half-Screen Sticks layer had claimed was tracked
+                                // as ours and pressed whatever it slid across.
+                                if (ch.changedToDownIgnoreConsumed()) {
                                     if (ch.isConsumed || inForeignRegion(ch.position)) {
                                         foreign.add(ch.id)
                                     } else {
@@ -1635,18 +1646,43 @@ private class HalfStickTrack(val leftHalf: Boolean, val origin: Offset) {
     var last: StickEmit = StickEmit()
 }
 
+private val HalfStickLeftCodes = StickCodes(xPos = 111, xNeg = 113, yPos = 112, yNeg = 110)
+private val HalfStickRightCodes = StickCodes(xPos = 121, xNeg = 123, yPos = 122, yNeg = 120)
+private fun halfStickCodes(leftHalf: Boolean) = if (leftHalf) HalfStickLeftCodes else HalfStickRightCodes
+
+/** Everything [HalfStickInputNode] decides with. A data class, so the node only starts over (and
+ *  lets go of held sticks) when one of these really changes, the way a pointerInput key did. */
+private data class HalfStickParams(
+    val widthPx: Float,
+    /** Every enabled non-stick widget's square. */
+    val foreignRects: List<UnifiedRect>,
+    /** The multi-touch buttons' hit circles, which reach past their squares. */
+    val foreignCircles: List<UnifiedHit>,
+    val keepLeft: Boolean,
+    /** Deflection radius from the floating origin. */
+    val capPx: Float,
+) {
+    fun inForeign(pos: Offset): Boolean =
+        foreignRects.any { pos.x >= it.left && pos.x <= it.right && pos.y >= it.top && pos.y <= it.bottom } ||
+            foreignCircles.any {
+                val dx = pos.x - it.cx
+                val dy = pos.y - it.cy
+                dx * dx + dy * dy <= it.radius * it.radius
+            }
+}
+
 /** Invisible full-screen layer: the LEFT half drives the left analog, the RIGHT half the right one.
  *  Each finger is tracked independently (both halves work simultaneously) and drives its stick from
- *  its touch-down point (floating origin). A DOWN that a widget above already consumed, or that lands
- *  on an enabled button, is ignored — so every on-screen button keeps working. Composed z-below the
- *  widgets and renders nothing. */
+ *  its touch-down point (floating origin). A finger that lands on a button is left to the button,
+ *  so every on-screen button keeps working (see [HalfStickInputNode] for how). Composed z-below
+ *  the widgets and renders nothing. */
 @Composable
-private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Float) {
+private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Float, faceMulti: Boolean) {
     if (widthPx <= 0f || heightPx <= 0f) return
     val density = LocalDensity.current
     // Foreign regions: every enabled non-stick widget (D-pad, face, shoulders, menu, L3/R3, Pause,
     // FF, macro, state, pressure). A finger starting on one of these drives the button, not a stick.
-    val foreignBounds = layout.buttons
+    val foreignRects = layout.buttons
         .filter { it.enabled && it.id.kind != TouchButtonId.Kind.STICK }
         .map { cfg ->
             val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
@@ -1654,66 +1690,109 @@ private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Fl
             val cy = heightPx * cfg.yFrac
             UnifiedRect(cx - sizePx / 2f, cy - sizePx / 2f, cx + sizePx / 2f, cy + sizePx / 2f)
         }
-    val leftCodes = StickCodes(xPos = 111, xNeg = 113, yPos = 112, yNeg = 110)
-    val rightCodes = StickCodes(xPos = 121, xNeg = 123, yPos = 122, yNeg = 120)
-    // The on-screen left stick is kept, so the left half is not a stick: leave it alone.
-    val keepLeft = TouchControls.fullHalfKeepLeftStick.value
-    // Deflection radius from the floating origin: a comfortable thumb reach gives full tilt.
-    val capPx = with(density) { 100.dp.toPx() }
-    val dims = widthPx to heightPx
+    // With multi-touch on, a face/shoulder/menu button answers anywhere in its hit circle
+    // (UnifiedTouchLayer), and the circle reaches past the square. Leave those to the button too,
+    // or a thumb on the rim of Cross would move the right stick instead.
+    val radius = TouchControls.multiTouchRadius.floatValue
+    val foreignCircles = if (!faceMulti) emptyList() else layout.buttons
+        .filter { it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold }
+        .map { cfg ->
+            val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
+            UnifiedHit(id = cfg.id, cx = widthPx * cfg.xFrac, cy = heightPx * cfg.yFrac, radius = sizePx * radius)
+        }
+    val params = HalfStickParams(
+        widthPx = widthPx,
+        foreignRects = foreignRects,
+        foreignCircles = foreignCircles,
+        // The on-screen left stick is kept, so the left half is not a stick: leave it alone.
+        keepLeft = TouchControls.fullHalfKeepLeftStick.value,
+        // A comfortable thumb reach gives full tilt.
+        capPx = with(density) { 100.dp.toPx() },
+    )
+    Box(Modifier.fillMaxSize().then(HalfStickInputElement(params)))
+}
 
-    Box(
-        modifier = Modifier.fillMaxSize().pointerInput(foreignBounds, dims, keepLeft) {
-            fun inForeign(pos: Offset) = foreignBounds.any {
-                pos.x >= it.left && pos.x <= it.right && pos.y >= it.top && pos.y <= it.bottom
-            }
-            fun codesFor(leftHalf: Boolean) = if (leftHalf) leftCodes else rightCodes
-            awaitPointerEventScope {
-                val tracks = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, HalfStickTrack>()
-                try {
-                    while (true) {
-                        val ev = awaitPointerEvent()
-                        for (ch in ev.changes) {
-                            if (ch.changedToDown()) {
-                                // Claim this finger for a stick unless a widget above took the DOWN or
-                                // it landed on a button. Which screen half decides which stick.
-                                val leftHalf = ch.position.x < widthPx / 2f
-                                if (!ch.isConsumed && !inForeign(ch.position) && !(keepLeft && leftHalf)) {
-                                    tracks[ch.id] = HalfStickTrack(leftHalf, ch.position)
-                                }
-                            }
-                            if (!ch.pressed) {
-                                tracks.remove(ch.id)?.let { t ->
-                                    if (t.last.any()) releaseStick(codesFor(t.leftHalf), t.last)
-                                }
-                                continue
-                            }
-                            val t = tracks[ch.id] ?: continue
-                            val leftStick = t.leftHalf
-                            val dx = ch.position.x - t.origin.x
-                            val dy = ch.position.y - t.origin.y
-                            val r = hypot(dx, dy)
-                            val scale = if (r > capPx) capPx / r else 1f
-                            var nx = ((dx * scale) / capPx).coerceIn(-1f, 1f)
-                            var ny = ((dy * scale) / capPx).coerceIn(-1f, 1f)
-                            if (ControllerMappings.stickSwapXY(leftStick)) { val tmp = nx; nx = ny; ny = tmp }
-                            if (ControllerMappings.stickInvertX(leftStick)) nx = -nx
-                            if (ControllerMappings.stickInvertY(leftStick)) ny = -ny
-                            val emit = computeStickEmit(nx, ny, leftStick)
-                            if (emit != t.last) {
-                                applyStickDiff(codesFor(leftStick), t.last, emit)
-                                t.last = emit
-                            }
-                        }
-                    }
-                } finally {
-                    // Zero every held axis on cancel/dispose so nothing sticks on.
-                    tracks.values.forEach { t -> if (t.last.any()) releaseStick(codesFor(t.leftHalf), t.last) }
-                    tracks.clear()
+/**
+ * Touch handling for [FullHalfStickLayer]: a node rather than a `pointerInput`, so it can share.
+ *
+ * This layer and [UnifiedTouchLayer] (every face, shoulder and Start/Select button while
+ * multi-touch is on) both cover the whole screen, and Compose gives a touch to only ONE of two
+ * overlapping siblings unless the upper one says otherwise. This one is the upper one, so with
+ * Half-Screen Sticks on it took every touch and those buttons never saw a press. The D-pad and a
+ * kept left stick still worked only because they have their own handlers above both layers.
+ *
+ * So it shares ([sharePointerInputWithSiblings]) and decides who owns a finger first, in the
+ * Initial pass, before any layer under it has looked. A finger it claims for a stick is consumed,
+ * which the button layer reads at DOWN as someone else's. A finger on a button is neither claimed
+ * nor consumed, and reaches the buttons as if this layer were not there.
+ */
+private class HalfStickInputElement(val params: HalfStickParams) : ModifierNodeElement<HalfStickInputNode>() {
+    override fun create() = HalfStickInputNode(params)
+    override fun update(node: HalfStickInputNode) = node.update(params)
+    override fun equals(other: Any?) = other is HalfStickInputElement && other.params == params
+    override fun hashCode() = params.hashCode()
+}
+
+private class HalfStickInputNode(private var params: HalfStickParams) : Modifier.Node(), PointerInputModifierNode {
+    private val tracks = HashMap<PointerId, HalfStickTrack>()
+
+    fun update(next: HalfStickParams) {
+        if (next == params) return
+        // What a pointerInput key change did: let go of whatever is held and start over.
+        releaseAll()
+        params = next
+    }
+
+    override fun sharePointerInputWithSiblings() = true
+
+    override fun onPointerEvent(pointerEvent: PointerEvent, pass: PointerEventPass, bounds: IntSize) {
+        if (pass != PointerEventPass.Initial) return
+        val p = params
+        for (ch in pointerEvent.changes) {
+            if (ch.changedToDownIgnoreConsumed()) {
+                // Claim this finger for a stick unless something already took the DOWN or it
+                // landed on a button. Which screen half decides which stick.
+                val leftHalf = ch.position.x < p.widthPx / 2f
+                if (!ch.isConsumed && !p.inForeign(ch.position) && !(p.keepLeft && leftHalf)) {
+                    tracks[ch.id] = HalfStickTrack(leftHalf, ch.position)
                 }
             }
-        },
-    )
+            val t = tracks[ch.id] ?: continue
+            // Ours, so nothing under this layer may act on it: a stick thumb sliding across Cross
+            // must not press it.
+            ch.consume()
+            if (!ch.pressed) {
+                tracks.remove(ch.id)
+                if (t.last.any()) releaseStick(halfStickCodes(t.leftHalf), t.last)
+                continue
+            }
+            val leftStick = t.leftHalf
+            val dx = ch.position.x - t.origin.x
+            val dy = ch.position.y - t.origin.y
+            val r = hypot(dx, dy)
+            val scale = if (r > p.capPx) p.capPx / r else 1f
+            var nx = ((dx * scale) / p.capPx).coerceIn(-1f, 1f)
+            var ny = ((dy * scale) / p.capPx).coerceIn(-1f, 1f)
+            if (ControllerMappings.stickSwapXY(leftStick)) { val tmp = nx; nx = ny; ny = tmp }
+            if (ControllerMappings.stickInvertX(leftStick)) nx = -nx
+            if (ControllerMappings.stickInvertY(leftStick)) ny = -ny
+            val emit = computeStickEmit(nx, ny, leftStick)
+            if (emit != t.last) {
+                applyStickDiff(halfStickCodes(leftStick), t.last, emit)
+                t.last = emit
+            }
+        }
+    }
+
+    // Zero every held axis on cancel/dispose so nothing sticks on.
+    override fun onCancelPointerInput() = releaseAll()
+
+    override fun onDetach() = releaseAll()
+
+    private fun releaseAll() {
+        tracks.values.forEach { t -> if (t.last.any()) releaseStick(halfStickCodes(t.leftHalf), t.last) }
+        tracks.clear()
+    }
 }
 
 /* -------------------------------------------------------------------- */
