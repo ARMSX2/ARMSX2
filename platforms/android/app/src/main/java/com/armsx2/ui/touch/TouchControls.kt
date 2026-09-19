@@ -398,10 +398,18 @@ object TouchControls {
     /** Range to send for [keycode] given the current modifier state: a reduced
      *  (soft) range while the modifier is held on a pressure-capable button,
      *  else 0 (full press). */
-    fun pressureRangeFor(keycode: Int): Int =
-        if (pressureModifierHeld.value && keycode in PRESSURE_KEYCODES)
+    fun pressureRangeFor(keycode: Int): Int {
+        if (keycode !in PRESSURE_KEYCODES) return 0
+        // A macro with its own pressure is pressing this button right now: its amount wins,
+        // so two macros on the same button can press it at two strengths (see macroPressure).
+        macroPressureHeld[keycode]?.let { return (PRESSURE_FULL_RANGE * it / 100).coerceAtLeast(1) }
+        return if (pressureModifierHeld.value)
             (PRESSURE_FULL_RANGE * pressurePercent.intValue / 100).coerceAtLeast(1)
         else 0
+    }
+
+    /** Whether [keycode] is one of the DualShock2's pressure-sensitive inputs. */
+    fun isPressureCapable(keycode: Int): Boolean = keycode in PRESSURE_KEYCODES
 
     /** Pressure-capable buttons currently held down, per port, so the modifier can be applied
      *  LIVE to a button that is ALREADY down. [pressureRangeFor] is only consulted when a press
@@ -438,6 +446,9 @@ object TouchControls {
     /** Drop all held-pressure bookkeeping (VM stop / pad reset), so a stale key can't be re-emitted. */
     fun clearHeldPressureKeys() {
         synchronized(heldPressureKeys) { heldPressureKeys.clear() }
+        // And any macro's own pressure, or a macro held as the VM stopped (its release never
+        // arrives) would leave that button soft on the next press.
+        macroPressureHeld.clear()
     }
 
     /** On-screen touch controls visibility. 0 = Never show (for physical-
@@ -577,6 +588,31 @@ object TouchControls {
         macroBindTick.intValue++
     }
 
+    // ---- Macro pressure ----------------------------------------------------------
+    // How hard a macro presses its pressure-sensitive buttons. NetherSX2 players kept duplicate
+    // macros of one button at different pressures -- two map zoom levels on Square -- and the only
+    // pressure here was the one global modifier amount (Cotcho). Per macro now; 100 = a full
+    // press, which is what every macro did before and stays the default.
+
+    private const val KEY_MACRO_PRESSURE_PREFIX = "touch.macro.pressure."
+
+    /** Lowest pressure a macro may press with; below this the game reads no press at all. */
+    const val MACRO_PRESSURE_MIN = 5
+
+    fun macroPressure(id: TouchButtonId): Int =
+        MainActivityRuntime.prefs.getInt(KEY_MACRO_PRESSURE_PREFIX + id.name, 100).coerceIn(MACRO_PRESSURE_MIN, 100)
+
+    fun setMacroPressure(id: TouchButtonId, percent: Int) {
+        MainActivityRuntime.prefs.edit {
+            putInt(KEY_MACRO_PRESSURE_PREFIX + id.name, percent.coerceIn(MACRO_PRESSURE_MIN, 100))
+        }
+        macroBindTick.intValue++
+    }
+
+    /** Pressure-sensitive buttons a macro with its own pressure is holding, and that pressure.
+     *  Read by [pressureRangeFor]; touch and pad input arrive on different threads. */
+    private val macroPressureHeld = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
     /** A frame in ms. The emulated console is the thing being counted, so 60Hz — an NTSC
      *  frame. This is the one approximation here: a PAL title's frames are 20ms, so its
      *  toggle runs ~17% fast. Not worth chasing the live refresh rate for a turbo. */
@@ -611,15 +647,20 @@ object TouchControls {
         val wantsPressure = MACRO_CODE_PRESSURE in codes
         val buttons = codes.filter { it != MACRO_CODE_PRESSURE }
         val runKey = "${id.name}:$key"
+        // This macro's own pressure, for its pressure-sensitive buttons. 100 = full press = none.
+        val pressure = macroPressure(id)
+        val pressured = if (pressure < 100) buttons.filter { it in PRESSURE_KEYCODES } else emptyList()
         if (!down) {
             macroRunnables.remove(runKey)?.let { macroHandler.removeCallbacks(it) }
             buttons.forEach { emit(it, false) }
             if (wantsPressure) pressureModifierHeld.value = false
+            pressured.forEach { macroPressureHeld.remove(it) }
             return
         }
         // Set BEFORE the buttons go down — pressureRangeFor is read at emit time, so the
         // order is what decides whether the press is soft.
         if (wantsPressure) pressureModifierHeld.value = true
+        pressured.forEach { macroPressureHeld[it] = pressure }
         if (buttons.isEmpty()) return
         val frames = macroFrequency(id)
         if (frames <= 0) {

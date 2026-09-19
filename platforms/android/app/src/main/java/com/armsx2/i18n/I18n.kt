@@ -1632,6 +1632,9 @@ private val BASE_EN: Map<String, String> = mapOf(
     "savestate.restoreBackup.confirmTitle" to "Restore backup?",
     "savestate.slot.emptyTapToSave" to "(empty — tap to save here)",
     "savestate.title.loadManage" to "Load / Manage Saves",
+    "pad.macro.pressure.label" to "Pressure",
+    "pad.macro.pressure.description" to "How hard this macro presses its pressure-sensitive buttons. Two macros for the same button at different pressures give you, say, two zoom levels.",
+    "pad.macro.pressure.full" to "Full press",
     "pad.pressureAmount.label" to "Pressure modifier amount",
     "pad.pressureAmount.description" to
         "How hard the pressure modifier presses, for DualShock 2 pressure-sensitive games " +

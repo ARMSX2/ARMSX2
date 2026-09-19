@@ -1458,6 +1458,23 @@ internal fun MacrosSection(
                     onChange = { TouchControls.setMacroFrequency(mid, it) },
                 )
             }
+            // Pressure, per macro, once it holds a pressure-sensitive button. Two macros for the
+            // same button at different pressures is how NetherSX2 players got two map zoom levels
+            // out of Square (Cotcho); the only pressure here used to be the one global amount.
+            if (buttons.any { TouchControls.isPressureCapable(it) }) {
+                val pressure = TouchControls.macroPressure(mid)
+                val fullLabel = str("pad.macro.pressure.full")
+                IntSliderRow(
+                    label = str("pad.macro.pressure.label"),
+                    value = pressure,
+                    min = TouchControls.MACRO_PRESSURE_MIN,
+                    max = 100,
+                    description = str("pad.macro.pressure.description"),
+                    valueFormatter = { if (it >= 100) fullLabel else "$it%" },
+                    onReset = if (pressure >= 100) null else ({ TouchControls.setMacroPressure(mid, 100) }),
+                    onChange = { TouchControls.setMacroPressure(mid, it) },
+                )
+            }
             SettingsDivider()
         }
         macroDialogFor.value?.let { mid ->

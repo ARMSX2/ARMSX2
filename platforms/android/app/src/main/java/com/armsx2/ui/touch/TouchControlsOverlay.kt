@@ -2206,6 +2206,27 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                     }
                 }
             }
+            // How hard the pressure (P) button presses. The same amount as Settings > Controls >
+            // Pressure Amount, surfaced here because this is where the button is set up and nothing
+            // here said what it did (Cotcho).
+            if (selectedCfg.id == TouchButtonId.PRESSURE) {
+                EditorPercentSlider(
+                    label = str("touch.editor.pressureAmount"),
+                    value = TouchControls.pressurePercent.intValue,
+                    range = 5..95,
+                    onChange = { TouchControls.setPressurePercent(it) },
+                )
+            }
+            // A macro's own pressure, for the same reason; also in Settings > Controls under the macro.
+            if (selectedCfg.id.kind == TouchButtonId.Kind.MACRO) {
+                @Suppress("UNUSED_EXPRESSION") TouchControls.macroBindTick.intValue
+                EditorPercentSlider(
+                    label = str("touch.editor.macroPressure"),
+                    value = TouchControls.macroPressure(selectedCfg.id),
+                    range = TouchControls.MACRO_PRESSURE_MIN..100,
+                    onChange = { TouchControls.setMacroPressure(selectedCfg.id, it) },
+                )
+            }
             // D-Pad key spacing — only when the D-Pad is selected. Spreads the four
             // directions apart (opens a center gap), NetherSX2-style, with live preview.
             if (selectedCfg.id == TouchButtonId.DPAD) {
@@ -2241,6 +2262,32 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+}
+
+/** A labelled percentage slider for the editor's selected-widget panel, styled like the D-Pad
+ *  spacing row next to it. */
+@Composable
+private fun EditorPercentSlider(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(label, color = Color(0xFFFFD33A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        androidx.compose.material3.Slider(
+            value = value.toFloat(),
+            onValueChange = { onChange(it.roundToInt().coerceIn(range.first, range.last)) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            modifier = Modifier
+                .width(240.dp)
+                .height(28.dp),
+            colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = Color(0xFFFFD33A),
+                activeTrackColor = Color(0xFFFFD33A),
+                inactiveTrackColor = Color(0xFF444433),
+            ),
+        )
+        Text("$value%", color = Color(0xFFAAAAAA), fontSize = 11.sp, modifier = Modifier.width(48.dp))
     }
 }
 
