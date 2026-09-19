@@ -344,12 +344,14 @@ object TouchControls {
     // different screen coordinates in each, so a portrait offset applied in landscape would shove it
     // off-screen. Lets the user drag the settings panel out of the way and resize it so it stops
     // covering the buttons. Not persisted: raw-px offsets don't survive a resolution change.
+    // Opens a notch under full size: at 1.0 it covered too much of a handheld's screen.
+    private const val EDITOR_PANEL_DEFAULT_SCALE = 0.9f
     private val editorPanelDxP = mutableFloatStateOf(0f)
     private val editorPanelDyP = mutableFloatStateOf(0f)
-    private val editorPanelScaleP = mutableFloatStateOf(1f)
+    private val editorPanelScaleP = mutableFloatStateOf(EDITOR_PANEL_DEFAULT_SCALE)
     private val editorPanelDxL = mutableFloatStateOf(0f)
     private val editorPanelDyL = mutableFloatStateOf(0f)
-    private val editorPanelScaleL = mutableFloatStateOf(1f)
+    private val editorPanelScaleL = mutableFloatStateOf(EDITOR_PANEL_DEFAULT_SCALE)
 
     fun editorPanelDx(landscape: Boolean) = if (landscape) editorPanelDxL else editorPanelDxP
     fun editorPanelDy(landscape: Boolean) = if (landscape) editorPanelDyL else editorPanelDyP
@@ -358,7 +360,7 @@ object TouchControls {
     fun resetEditorPanel(landscape: Boolean) {
         editorPanelDx(landscape).floatValue = 0f
         editorPanelDy(landscape).floatValue = 0f
-        editorPanelScale(landscape).floatValue = 1f
+        editorPanelScale(landscape).floatValue = EDITOR_PANEL_DEFAULT_SCALE
     }
 
     /** Held-state for the DS2 pressure-sensitivity modifier. While true, the

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -2028,6 +2030,9 @@ private fun EditAdornment(id: TouchButtonId? = null) {
 private fun EditToolbar(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
+            // The grip row fills the width, so without a cap the panel was always as wide as the
+            // screen. Capped, the chips below wrap onto another line instead.
+            .widthIn(max = 600.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xCC000000))
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -2107,9 +2112,14 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
         // Action chips up top — save commits the live layout into the
         // active profile, discard reverts to the saved version, reset
         // restores the default, profiles opens the picker.
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        //
+        // A FlowRow, so the chips wrap. In a Row, each chip got only the width left over, and one
+        // that got none wrapped its label a letter per line: the panel grew tall enough to push the
+        // sliders under it off the screen. Half-Screen Sticks adds a chip, which tipped it over.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            itemVerticalAlignment = Alignment.CenterVertically,
         ) {
             ToolbarChip(str("action.save")) {
                 // Commit the snap HERE, not only on finger-up.
@@ -2222,9 +2232,12 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             TouchControls.activeLayout.value.buttons.firstOrNull { it.id == selected }
         else null
         if (selectedCfg != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            // Wraps for the same reason as the chips above: the size slider plus Hide, Turbo and
+            // Tap-hold is wider than the panel.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     selectedCfg.id.label + " size",
