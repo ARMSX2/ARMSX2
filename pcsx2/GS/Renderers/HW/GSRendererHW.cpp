@@ -7184,7 +7184,23 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		// but sometimes it slips through
 		if (m_conf.require_one_barrier || m_conf.require_full_barrier)
 			pxAssert(!m_conf.blend.enable);
+	}
 
+	// The in-pass destination read comes in two spellings, and both make the per-draw barrier
+	// redundant for the same reason -- something other than our barriers is ordering the read.
+	// Framebuffer fetch earns it from rasterization-order attachment access; the declared
+	// attachment feedback loop earns it from Turnip running the pass untiled with the coherent
+	// primitive mode (campaign gs-adreno-inpass-read, GSSelfReadRoadPolicy.h). Only the first
+	// carries Metal's dual-source restriction above, which is why that stayed in its own block.
+	//
+	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM, and it is the thing the
+	// campaign is measuring. Keeping it would cost several times base -- an overlapping self-read
+	// draw gets require_full_barrier, i.e. one vkCmdPipelineBarrier per primitive group -- and,
+	// worse, it would SUPPLY the ordering the experiment is testing for, so a correct picture
+	// would prove nothing. DeclareAttachmentFeedbackLoop=2 keeps them deliberately, as the
+	// diagnostic arm.
+	if (features.framebuffer_fetch || features.declared_feedback_loop_orders_overlap)
+	{
 		// If we use depth feedback directly, we must use barriers for the depth texture.
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
 		const bool need_barriers_for_depth = m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback;
@@ -7193,7 +7209,8 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		// within the draw is a per-backend property, and the software blend path enabled above
 		// depends on that ordering. See FbFetchDropsDrawBarriers for the full reasoning.
 		// PRIM_OVERLAP_UNKNOWN counts as overlapping.
-		if (FbFetchDropsDrawBarriers(features.framebuffer_fetch_orders_overlap,
+		if (FbFetchDropsDrawBarriers(
+				features.framebuffer_fetch_orders_overlap || features.declared_feedback_loop_orders_overlap,
 				m_prim_overlap != PRIM_OVERLAP_NO, need_barriers_for_depth))
 		{
 			m_conf.require_one_barrier = false;
@@ -9851,6 +9868,8 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
 	copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
 	copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
+	copy_policy.declared_feedback_loop_orders_overlap =
+		g_gs_device->Features().declared_feedback_loop_orders_overlap;
 	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
 		if (log_self_read) [[unlikely]]
 			GSDrawLog::NoteSelfRead(resolution);

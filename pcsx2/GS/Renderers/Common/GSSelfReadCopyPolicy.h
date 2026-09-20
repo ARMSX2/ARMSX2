@@ -92,6 +92,16 @@ struct GSSelfReadCopyInputs
 	/// rather than resting on that coincidence.
 	bool feedback_loop_layout = false;
 
+	/// The backend declares an attachment feedback loop and the driver orders overlapping
+	/// primitives within the draw because of it (campaign gs-adreno-inpass-read's arm; see
+	/// GSSelfReadRoadPolicy.h). That ordering is per PIXEL -- Adreno's
+	/// FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives covering the same sample, and says
+	/// nothing about a read of a pixel some earlier primitive in the same draw wrote. Identical
+	/// limit to the in-tile read, and on that road the per-draw barrier that used to cover the
+	/// offset case is dropped, so the offset read needs the copy for the same reason it does
+	/// under fetch.
+	bool declared_feedback_loop_orders_overlap = false;
+
 };
 
 // Returns true when this draw's self-read must be served from a copy of the target.
@@ -104,6 +114,12 @@ constexpr bool SelfReadNeedsSourceCopy(const GSSelfReadCopyInputs& in)
 	// would undo the entire reason the fetch path exists.
 	if (in.same_pixel_read)
 		return false;
+
+	// The declared-feedback-loop road: the driver orders the fragment's own pixel and nothing
+	// else, and the barrier that used to cover the rest is gone. Same answer as the in-tile road,
+	// reached before the feedback_loop_layout term below, which that road also sets.
+	if (in.declared_feedback_loop_orders_overlap)
+		return true;
 
 	// No in-tile read: either a real barrier orders the sample (desktop), or the backend is
 	// already cloning the target for it. Both are roads this policy does not touch.
@@ -134,3 +150,11 @@ static_assert(!SelfReadNeedsSourceCopy(
 static_assert(SelfReadNeedsSourceCopy(
 	{.same_pixel_read = false, .framebuffer_fetch = true, .texture_barrier = true}));
 static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = false, .texture_barrier = true}));
+
+// The declared-feedback-loop arm: an offset read copies, the destination read still does not. The
+// road sets feedback_loop_layout too, which alone would have said "leave it alone" -- the term
+// above it is what stops that.
+static_assert(SelfReadNeedsSourceCopy({.texture_barrier = true, .feedback_loop_layout = true,
+	.declared_feedback_loop_orders_overlap = true}));
+static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = true, .texture_barrier = true,
+	.feedback_loop_layout = true, .declared_feedback_loop_orders_overlap = true}));

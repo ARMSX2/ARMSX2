@@ -40,6 +40,7 @@ namespace
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 #include "BuildVersion.h"
 #include "Host.h"
@@ -2394,8 +2395,17 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 	}
 
+	// ⚠️ The `!UseFeedbackLoopLayout()` term is not redundant, and it is a no-op on every device
+	// that exists today. The rasterization-order subpass flag is legal only when every pipeline
+	// bound in the subpass carries the matching blend flag, and CreateTFXPipeline gates that one on
+	// m_features.framebuffer_fetch. Those two agree everywhere today because the layout road
+	// requires the rasterization-order extension to be ABSENT, so this condition already implies
+	// UseFeedbackLoopLayout() is false. Campaign gs-adreno-inpass-read's arm breaks that
+	// implication -- extension present, layout road forced, in-tile read off -- and without this
+	// term the subpass would declare rasterization-order access that no pipeline in it has.
 	VkSubpassDescriptionFlags subpass_flags =
-		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access) ?
+		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access &&
+			!UseFeedbackLoopLayout()) ?
 			VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT :
 			0;
 	// Mobile ordered depth feedback: on the framebuffer_fetch path the depth self-dependency above
@@ -3999,8 +4009,24 @@ bool GSDeviceVK::CheckFeatures()
 						"key only lifts the Mali destination-read deny. Framebuffer fetch is unchanged.",
 			m_device_properties.deviceName, m_device_properties.vendorID);
 	}
-	m_features.framebuffer_fetch = fetch_decision.enabled;
-	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;
+	// Which of the three self-read roads this device takes, and what that implies for texture
+	// barriers, the in-tile read, the layout spelling and primitive ordering. One function, all
+	// inputs explicit, and every no-change case pinned at compile time -- the four bits below used
+	// to be decided by four expressions spread over 150 lines of this function, which is the shape
+	// the OpenGL fetch decision was in when it contradicted itself in a single log.
+	GSSelfReadRoadInputs road_inputs;
+	road_inputs.in_tile_read_available = fetch_decision.enabled;
+	road_inputs.layout_road_available = m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
+	road_inputs.roaa_available = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+	road_inputs.rt_self_read_is_broken = rt_self_read_is_broken;
+	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
+	road_inputs.arm = GSConfig.DeclareAttachmentFeedbackLoop;
+	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
+
+	// Before anything that can create an image, a descriptor layout or a render pass, because each
+	// of those bakes the spelling in permanently.
+	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
+
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
 	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
 	// (draw_rt_clone) instead of sampling the live attachment, and "fbfetch needs barriers" below
@@ -4016,11 +4042,32 @@ bool GSDeviceVK::CheckFeatures()
 	// Only applied when OverrideTextureBarriers is on auto (-1). An explicit 1 still wins, so the
 	// in-tile path stays reachable for A/B-ing this workaround's cost and for a future driver
 	// revision that fixes the read; an explicit 0 already lands here anyway.
-	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0)
+	//
+	// ⚠️ The rule above is about the road it was MEASURED on: the in-pass read while the pass is
+	// tiled, in both spellings that were reachable in July 2026. The third road -- declare the
+	// attachment feedback loop, which makes Turnip refuse to tile the pass and programs a coherent
+	// destination read on the untiled path -- was not reachable from this tree at all when the rule
+	// was written, because UseFeedbackLoopLayout() returns false on any device advertising
+	// rasterization-order attachment access, which every Turnip device does. Campaign
+	// gs-adreno-inpass-read is measuring exactly that gap. The rule is NOT modified: what changes
+	// is that DecideSelfReadRoad has a third answer to give, and only when asked.
+	m_features.framebuffer_fetch = road.in_tile_read;
+	m_features.texture_barrier = road.texture_barrier;
+	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0 && !m_features.texture_barrier)
 	{
 		Console.WriteLn("VK: driver has an unreliable in-pass render-target self-read — forcing the "
 						"RT-copy blend path.");
-		m_features.texture_barrier = false;
+	}
+	if (road.arm_unavailable)
+	{
+		// A silently inert arm is a device round that measures base twice and calls it an A/B.
+		Console.Error("VK: DeclareAttachmentFeedbackLoop=%u was requested and CANNOT be applied "
+					  "(VK_EXT_attachment_feedback_loop_layout %s, OverrideTextureBarriers=%d). "
+					  "This build is running the device's own self-read road.",
+			static_cast<unsigned>(GSConfig.DeclareAttachmentFeedbackLoop),
+			m_optional_extensions.vk_ext_attachment_feedback_loop_layout ? "present" : "ABSENT",
+			static_cast<int>(GSConfig.OverrideTextureBarriers));
 	}
 	// (Mali r44p1 used to get its own copy of the block above, testing driverInfo for "r44p1" and
 	// clearing texture_barrier a second time. It is now rule vk-arm-r44p1-attachment-self-read in
@@ -4063,8 +4110,10 @@ bool GSDeviceVK::CheckFeatures()
 			((props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0);
 	}
 
-	// Fbfetch is useless if we don't have barriers enabled.
-	m_features.framebuffer_fetch &= m_features.texture_barrier;
+	// Fbfetch is useless if we don't have barriers enabled. DecideSelfReadRoad already folds this
+	// in -- the in-tile read IS the in-pass read, so it cannot outlive the bit that permits one --
+	// and this is here to catch a future edit to that function that forgets it.
+	pxAssert(!m_features.framebuffer_fetch || m_features.texture_barrier);
 
 	// Which spelling of the in-pass self-read this backend uses, published so GSRendererHW can tell
 	// the two apart without knowing about Vulkan extensions. The layout road samples the attachment
@@ -4130,6 +4179,39 @@ bool GSDeviceVK::CheckFeatures()
 	// depth attachment (tex == ds) — force it off there so tex == ds takes a depth copy instead of an
 	// in-pass self-read.
 	m_features.test_and_sample_depth = m_features.texture_barrier && !is_adreno;
+
+	// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read, the depth probe.
+	//
+	// Nobody has measured an in-pass DEPTH self-read on any Adreno part. ARMSX2 #442 covered the
+	// COLOUR read only, and the `!is_adreno` term above is the consequence of a HANG, not of a
+	// wrong picture: Turnip wedges the tiler sampling the live depth buffer while it is also the
+	// depth attachment. The answer decides whether Indiana Jones is reachable at all -- 394 of its
+	// 837 feedback copies a frame are depth, and the colour half alone leaves it at ~25.5 ms
+	// against a 16.67 budget.
+	//
+	// The hypothesis this probe tests is that the hang needs the pass to be TILED, and that a
+	// declared feedback loop -- which makes Turnip refuse to tile the pass at all -- removes the
+	// condition. It is a hypothesis. ⚠️ EXPECT A POSSIBLE DEVICE LOCKUP ON THIS ARM, and run it
+	// after the colour arm's results are banked rather than interleaved with them.
+	//
+	// It rides on the colour arm because it has to: the in-pass depth read needs texture barriers,
+	// and texture barriers on is what takes COLOUR self-reads off the copy road. One bit, three
+	// consumers. Splitting them would mean threading a per-draw-class "may read in pass" predicate
+	// through HandleTextureHazards and DoRenderHW, which is a shipping change, not a probe.
+	const bool declare_depth_loop = road.arm_applied && GSConfig.DeclareDepthFeedbackLoop;
+	if (declare_depth_loop)
+		m_features.test_and_sample_depth = true;
+	else if (road.arm_applied)
+	{
+		// The colour arm alone must NOT acquire the depth road as a side effect of turning
+		// barriers on, or the two probes are measured together and neither answers anything.
+		m_features.test_and_sample_depth = false;
+	}
+	if (GSConfig.DeclareDepthFeedbackLoop && !road.arm_applied)
+	{
+		Console.Error("VK: DeclareDepthFeedbackLoop needs DeclareAttachmentFeedbackLoop, which is "
+					  "not in effect. The depth probe is NOT running.");
+	}
 
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
 	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
@@ -4263,7 +4345,33 @@ bool GSDeviceVK::CheckFeatures()
 #else
 	m_features.depth_feedback = m_features.feedback_loops();
 #endif
+	// The other half of the depth probe, and the other half of the reason the colour arm must not
+	// drift into it. depth_feedback is what decides whether a draw that SAMPLES the depth buffer it
+	// has attached (software Z, DATE-depth, AA1) reads it in the pass or goes through
+	// BeginDSAsRT's depth-to-colour blit -- and on this build it is just feedback_loops(), i.e.
+	// texture_barrier, so turning barriers on for the colour arm would have flipped it on by
+	// itself. Forced back off there, and on only when the depth probe is asked for.
+	if (road.arm_applied)
+		m_features.depth_feedback = declare_depth_loop;
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
+
+	// The self-read road, and -- on the declared road -- which Vulkan declarations this binary
+	// actually makes. A device record quotes this line, because "which declarations did the arm
+	// carry" is the question the July 2026 round could not answer about itself, and that is why
+	// its negative result stood unchallenged for two months. Emitted here rather than beside the
+	// GPU banner because depth_feedback is only final a few lines above.
+	Console.WriteLn("VK: self-read road = %s [texbarrier=%s intile=%s layout=%s ordersOverlap=%s]",
+		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
+		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
+		m_features.declared_feedback_loop_orders_overlap ? "claimed" : "no");
+	if (UseFeedbackLoopLayout() && m_features.texture_barrier)
+	{
+		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP pipeline flag + "
+						"ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout + pass-to-pass sampler ordering; "
+						"depth loop %s (test_and_sample_depth=%s depth_feedback=%s).",
+			declare_depth_loop ? "DECLARED" : "not declared",
+			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
+	}
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",

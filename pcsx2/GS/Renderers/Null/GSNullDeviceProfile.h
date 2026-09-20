@@ -120,6 +120,9 @@ namespace GSNullDeviceProfile
 		f.depth_feedback = false; // EmuCore/GS HWROV defaults off
 		f.aa1 = false; // EmuCore/GS HWAA1 defaults off
 		f.feedback_loop_layout = false; // both advertise ROAA, which excludes the layout road
+		// Campaign gs-adreno-inpass-read's arm is off by default and these profiles model the
+		// SHIPPED road, so neither device declares a feedback loop and neither claims the ordering.
+		f.declared_feedback_loop_orders_overlap = false;
 		f.broken_mad_deinterlace = false; // that bug is Mali-G57 only
 
 		// --- where the two roads part ---

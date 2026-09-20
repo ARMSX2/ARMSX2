@@ -74,11 +74,30 @@ public:
 	/// else should, and nothing may change it after the rings exist.
 	__fi const GSStreamRingMemoryDecision& GetStreamRingMemory() const { return m_stream_ring_memory; }
 
-	// The interaction between raster order attachment access and fbfetch is unclear.
+	// Which spelling the in-pass self-read uses: the attachment-feedback-loop layout with an
+	// ordinary sampler, or a subpass input attachment with subpassLoad. The two are mutually
+	// exclusive everywhere in this backend -- image usage bit, shader variant, descriptor type and
+	// render-pass input reference all branch on this one answer -- and it is fixed for the life of
+	// the device.
+	//
+	// The negated rasterization-order term is a PREFERENCE, not a correctness gate: where a device
+	// advertises that extension its subpassLoad is ordered in tile memory, which is the cheap road,
+	// so take it. (The helper used to carry the comment "the interaction is unclear", which was
+	// inherited hedging with no measurement behind it.) The preference is right on Mali, vacuous on
+	// desktop -- which does not advertise the extension and so already takes the layout road, with
+	// the pipeline create flag and everything else it implies -- and wrong on Adreno under Turnip,
+	// where the in-tile read is the broken one.
+	//
+	// m_force_feedback_loop_layout is how campaign gs-adreno-inpass-read overrides the preference
+	// on that one part. It is false unless EmuCore/GS/DeclareAttachmentFeedbackLoop asks for it, so
+	// the expression is unchanged on every shipping device; see GSSelfReadRoadPolicy.h. It is
+	// written once in CheckFeatures, which runs before the first image, descriptor layout or render
+	// pass exists, and never again -- none of those can be changed afterwards.
 	__fi bool UseFeedbackLoopLayout() const
 	{
 		return m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
-		       !m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		       (m_force_feedback_loop_layout ||
+		        !m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	}
 
 	// Helpers for getting constants
@@ -113,6 +132,13 @@ public:
 	// Adreno-5xx / pre-0x801EA000 driver bug: colorWriteMask is ignored while a depth
 	// test is active (PPSSPP #10421). Cached in CheckFeatures, consumed in CreateTFXPipeline.
 	bool m_broken_colormask_with_depth = false;
+
+	// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read. Take the attachment-feedback-loop
+	// spelling even on a device that advertises rasterization-order attachment access. Decided by
+	// GSSelfReadRoadPolicy.h from EmuCore/GS/DeclareAttachmentFeedbackLoop, written once in
+	// CheckFeatures before any image or render pass exists, and read by UseFeedbackLoopLayout()
+	// above. Replaced by a driver-database rule if the road lands.
+	bool m_force_feedback_loop_layout = false;
 
 	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).
 	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == 0x1010u); }
