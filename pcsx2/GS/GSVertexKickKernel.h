@@ -111,6 +111,10 @@ namespace GSVertexKickKernel
 		// flush, and a flush can move what the rest of the run is decided against.
 		GSVector4i carry_m0;
 		GIFPackedLayout off;
+		// The cull grid the accepted-prim bbox rounds onto. Appended for the same
+		// reason carry_m0 is: the contiguous layouts never read it, and every field
+		// they do read keeps the offset it had.
+		GSVertexKernels::CullGrid grid;
 	};
 
 	// The buffer cursor is NOT marshalled. Every field of it -- head, tail, next,
@@ -556,7 +560,7 @@ namespace GSVertexKickKernel
 			}
 
 			const GSVector4i bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(
-				BroadcastXY(xyp0), BroadcastXY(xyp1), BroadcastXY(xyp2), true, false);
+				BroadcastXY(xyp0), BroadcastXY(xyp1), BroadcastXY(xyp2), inv.grid, false);
 
 			if constexpr (prim == GS_TRIANGLESTRIP)
 			{

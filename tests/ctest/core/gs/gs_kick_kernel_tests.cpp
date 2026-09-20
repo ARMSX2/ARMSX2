@@ -274,6 +274,7 @@ namespace
 			m_env.PRIM.AA1 = s.aa1;
 
 			m_nativeres = true;
+			m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
 			UpdateContext();
 			UpdateVertexKick();
 

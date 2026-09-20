@@ -28,6 +28,7 @@ GSRendererSW::GSRendererSW(int threads)
 	: GSRenderer(), m_fzb(NULL)
 {
 	m_nativeres = true; // ignore ini, sw is always native
+	m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4); // ... and so is its cull grid
 
 	m_tc = std::make_unique<GSTextureCacheSW>();
 	m_rl = GSRasterizerList::Create(threads);

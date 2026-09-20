@@ -369,6 +369,9 @@ protected:
 
 	void RefreshKickMirror();
 
+	// The cull grid the current config asks for.
+	static GSVertexKernels::CullGrid ConfigCullGrid();
+
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
 
@@ -581,6 +584,11 @@ public:
 	bool m_are_quads = false;
 	bool m_are_quads_shuffle = false;
 	bool m_nativeres = false;
+	// The sample-point grid the per-prim cull rounds onto (GSVertexKick.h). Set
+	// from config beside m_nativeres, which keeps its own, narrower meaning: the
+	// scale is exactly 1. The software engine pins this native the same way it
+	// pins m_nativeres.
+	GSVertexKernels::CullGrid m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
 	bool m_mipmap = false;
 	bool m_texflush_flag = false;
 	// This engine draws the alpha stencil counter through the blend unit, so IsAutoFlushDraw leaves the

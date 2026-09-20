@@ -111,12 +111,85 @@ constexpr int GSState::GetSaveStateSize(int version)
 	return size;
 }
 
+// The sample-point grid the per-prim cull rounds onto, from config. See CullGrid
+// in GSVertexKick.h for what a shift means.
+//
+// A window coordinate w (12.4 sub-texels, XYOFFSET subtracted) reaches window
+// position w*S/16 + c, where S is the target scale and c is the constant
+// DetermineVSConfig folds into its vertex offset. Device sample points are pixel
+// centres, so they sit at w = (16/S)*(k + 0.5 - c), and the multiples of
+// 16 >> shift ARE that set of points exactly when both of these hold:
+//
+//   * c == 0.5, i.e. the grid has no phase error, and
+//   * 16/S is a power of two, so the sample points land on whole sub-texels.
+//
+// At S == 1 both hold on every path through DetermineVSConfig, which is why the
+// shipped native rule is exact rather than a guess. Above 1, c is 0.5 only on the
+// upscaling branch with no half-pixel offset folded in:
+//
+//   * HalfPixelOffset Native and NativeWTexOffset take the other branch, which
+//     puts c at S/2 -- a phase of half a step at 2x, the worst there is.
+//   * HalfPixelOffset Normal adds mod_xy/2 instead, and which targets carry that
+//     offset is a per-draw fact (Target::OffsetHack_modxy, m_texture_shuffle) the
+//     vertex kick cannot see.
+//
+// Both decline. A phase that cannot be known is a phase that cannot be culled
+// against: a finer grid halves the population at risk without emptying it, since
+// a prim narrower than the step can still hold a sample point and no grid point.
+//
+// Non-power-of-two scales decline for the same reason and it is not a rounding
+// nicety. At 1.5x the sample points are 10.667 sub-texels apart, so a prim
+// spanning sub-texels 10..11 holds the sample at 10.667 and holds no multiple of
+// 8, of 4 or of 2. Only step 1 -- no grid -- is safe there.
+//
+// ⚠️ Above native the grid takes ONE BINADE OF MARGIN: it culls a prim only when
+// the prim spans no point of a grid twice as fine as the device's. The exact grid
+// is right about what paints -- that part is arithmetic, and the probe behind it
+// measured the device step and phase directly. What it is not right about is what
+// culling COSTS: dropping a prim out of a draw that still happens shrinks that
+// draw's vertex trace, and the vertex trace sizes the draw rect and the
+// texture-cache source region, so a surviving prim's bilinear tap can land on a
+// texel that was not fetched. Over the 47-dump C12 corpus at 2x the exact grid
+// moved eight pixels by one colour level on one frame of one dump (OutRun 2006,
+// SLES-53998, 2026-08-01 capture) and nothing anywhere else; with the margin
+// nothing moves on any of the 47 at either scale. The margin costs draws: on WRC 3
+// it removes 17.0% of the 2x draws where the exact grid removes 26.4%, and on
+// Brian Lara 5.7% against 16.6%. Both numbers are in C12/RESULT.md so the trade is
+// re-openable.
+//
+// The margin is not applied at scale 1, where nothing is being added: the shipped
+// native rule is kept exactly, and 1x byte identity is structural.
+GSVertexKernels::CullGrid GSState::ConfigCullGrid()
+{
+	const float scale = GSConfig.UpscaleMultiplier;
+	int shift = 0;
+
+	if (scale == 1.0f)
+	{
+		shift = 4;
+	}
+	else if (GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::Normal &&
+			 GSConfig.UserHacks_HalfPixelOffset < GSHalfPixelOffset::Native)
+	{
+		shift = GSVertexKernels::DeviceCullGridShift(scale);
+		if (shift != 0)
+			shift--; // the margin; at 8x it lands on 0 and nothing is culled
+	}
+
+	// Sprites move after the cull at every upscale (CorrectSpriteCoverageForUpscale
+	// pushes a far edge out to the next whole pixel), so only the native grid --
+	// where that pass returns early -- is decided on the coordinates that get
+	// rasterised.
+	return GSVertexKernels::MakeCullGrid(shift, (shift == 4) ? 4 : 0);
+}
+
 GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	: m_vt(this)
 {
 	// m_nativeres seems to be a hack. Unfortunately it impacts draw call number which make debug painful in the replayer.
 	// Let's keep it disabled to ease debug.
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
+	m_cull_grid = ConfigCullGrid();
 	m_mipmap = GSConfig.Mipmap;
 	m_back_records = GSConfig.BackThreadMode != GSBackThreadMode::Off;
 	if (shared_chan)
@@ -2434,6 +2507,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// Re-read across the seam: see the comment on inv above.
 		inv.xyof = m_xyof;
 		inv.bounds = m_cull_bounds_band;
+		inv.grid = m_cull_grid;
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 		// A carrying layout's carry is re-read here for the same reason the cull
@@ -7834,7 +7908,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 				const GSVector4i v0 = c.vb->xy[(xy_tail - 1) & 3];
 				const GSVector4i v1 = c.vb->xy[(xy_tail - 2) & 3];
 				const GSVector4i v2 = c.vb->xy[(xy_tail - 3) & 3];
-				bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(v0, v1, v2, m_nativeres, aa1_expand);
+				bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(v0, v1, v2, m_cull_grid, aa1_expand);
 			}
 		}
 		else
@@ -7843,7 +7917,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 			const GSVector4i v1 = c.vb->xy[(xy_tail - 2) & 3];
 			const GSVector4i v2 = (prim == GS_TRIANGLEFAN) ? c.vb->xyhead : c.vb->xy[(xy_tail - 3) & 3];
 
-			skip |= GSVertexKernels::CullTest<n, primclass>(v0, v1, v2, m_context->scissor.cull, m_nativeres, aa1_expand, bbox);
+			skip |= GSVertexKernels::CullTest<n, primclass>(v0, v1, v2, m_context->scissor.cull, m_cull_grid, aa1_expand, bbox);
 		}
 	}
 
