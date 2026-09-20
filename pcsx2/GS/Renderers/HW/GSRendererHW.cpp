@@ -4795,8 +4795,19 @@ void GSRendererHW::Draw()
 				return;
 			}
 
+			// A texture shuffle that does not write every channel needs the ones it skips to
+			// survive, and a target being created here has nowhere to get them from but local
+			// memory. PreloadTarget's default road only looks for EE uploads, so content an
+			// earlier draw left in that memory is invisible to it and the skipped channels come
+			// back as zero. Sly 3 parks its scene's green at a flat 126 in the buffer it is
+			// about to shuffle alpha into, reads it back a frame later through a 37.5% blend,
+			// and got black from us: the console has the whole buffer at tag 1, we had 1.56% of
+			// it (SCPH-30001, Sly 3 SCUS-97464). Same reasoning as the CLUT draw above, which
+			// preloads because it only writes alpha.
+			const bool preload_for_shuffle = m_texture_shuffle && !m_texture_shuffle.WritesAllChannels();
+
 			rt = g_texture_cache->CreateTarget(FRAME_TEX0, t_size, GetValidSize(src, possible_shuffle), (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off && scale_draw < 0 && is_possible_mem_clear != ClearType::NormalClear) ? ((src && src->m_from_target) ? src->m_from_target->GetScale() : (ds ? ds->m_scale : 1.0f)) : target_scale,
-			                                   GSTextureCache::RenderTarget, true, fm, false, force_preload, preserve_rt_color || possible_shuffle, lookup_rect, src);
+			                                   GSTextureCache::RenderTarget, true, fm, false, force_preload || preload_for_shuffle, preserve_rt_color || possible_shuffle, lookup_rect, src);
 
 			if (!rt) [[unlikely]]
 			{
