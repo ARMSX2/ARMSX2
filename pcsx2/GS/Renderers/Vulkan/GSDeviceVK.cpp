@@ -40,6 +40,7 @@ namespace
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
+#include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
@@ -511,6 +512,14 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// version rather than re-blocking the whole vendor.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): asked for ONLY when the harness
+	// wants the per-draw spelling of the feedback-loop declaration. Requesting an extension
+	// changes the device this process creates, and every byte-identity gate in this programme is
+	// taken on a device created without it, so the request is gated rather than unconditional.
+	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
+		GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw() &&
+		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, false);
 	m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
 	// VK_EXT_device_fault: post-mortem for VK_ERROR_DEVICE_LOST. The ~1-in-60 SD865
@@ -739,6 +748,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT};
 	VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT attachment_feedback_loop_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+	VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT attachment_feedback_loop_dynamic_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
 	// VK_EXT_swapchain_maintenance1 types/enums are aliases of VK_KHR_swapchain_maintenance1 types/enums.
 	VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance1_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
@@ -874,6 +885,11 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		attachment_feedback_loop_feature.attachmentFeedbackLoopLayout = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &attachment_feedback_loop_feature);
 	}
+	if (m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state)
+	{
+		attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &attachment_feedback_loop_dynamic_feature);
+	}
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 	{
 		swapchain_maintenance1_feature.swapchainMaintenance1 = VK_TRUE;
@@ -998,6 +1014,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR, nullptr, VK_FALSE};
 	VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT attachment_feedback_loop_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+	VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT attachment_feedback_loop_dynamic_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT };
 
@@ -1010,6 +1028,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		Vulkan::AddPointerToChain(&features2, &rasterization_order_access_feature);
 	if (m_optional_extensions.vk_ext_attachment_feedback_loop_layout)
 		Vulkan::AddPointerToChain(&features2, &attachment_feedback_loop_feature);
+	if (m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state)
+		Vulkan::AddPointerToChain(&features2, &attachment_feedback_loop_dynamic_feature);
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 		Vulkan::AddPointerToChain(&features2, &swapchain_maintenance1_feature);
 	if (m_optional_extensions.vk_ext_fragment_shader_interlock)
@@ -1027,6 +1047,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	m_optional_extensions.vk_ext_roaa_depth &= m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout &=
 		(attachment_feedback_loop_feature.attachmentFeedbackLoopLayout == VK_TRUE);
+	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state &=
+		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
 	VkPhysicalDeviceProperties2 properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
 
@@ -4029,6 +4052,24 @@ bool GSDeviceVK::CheckFeatures()
 	// of those bakes the spelling in permanently.
 	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
 
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): declare the loop per draw instead
+	// of per pipeline. Resolved here for the same reason as the line above -- a pipeline's
+	// dynamic-state list is fixed at creation, so this has to be final before the first one
+	// exists. False unless the harness asked, and the extension is not even requested then.
+	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
+		GSDynamicFeedbackLoopPolicy::GetSpelling(), UseFeedbackLoopLayout(),
+		m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state};
+	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
+	if (GSDynamicLoopRequestedButUnavailable(dynamic_loop_inputs))
+	{
+		// A silently inert arm is a device round that measures the other arm twice.
+		Console.Error("VK: the per-draw feedback-loop declaration was requested and CANNOT be applied "
+					  "(VK_EXT_attachment_feedback_loop_dynamic_state %s, feedback-loop layout road %s). "
+					  "This build declares the loop with the pipeline create flag.",
+			m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state ? "present" : "ABSENT",
+			UseFeedbackLoopLayout() ? "live" : "NOT live");
+	}
+
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
 	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
 	// (draw_rt_clone) instead of sampling the live attachment, and "fbfetch needs barriers" below
@@ -4378,9 +4419,11 @@ bool GSDeviceVK::CheckFeatures()
 	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
-	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s",
+	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
+					"loop-spelling=%s(%s)",
 		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
-		GSDeclaredLoopScopePolicy::Name());
+		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
+		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect");
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
@@ -7535,10 +7578,23 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
 	if (UseFeedbackLoopLayout())
 	{
-		if (p.IsRTFeedbackLoop())
-			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-		if (p.IsTestingAndSamplingDepth())
-			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+		// ⚠️ MEASUREMENT OVERRIDE: the same declaration, spelled per draw. The dynamic state goes
+		// on exactly the pipelines the create flag would have gone on, so the population declared
+		// is the population declared before and only WHEN it is stated changes. The two spellings
+		// are mutually exclusive by more than taste: the Vulkan runtime filters the create flags
+		// out of a pipeline that declares the state dynamic. See GSDynamicFeedbackLoopPolicy.h.
+		if (m_declare_loop_per_draw)
+		{
+			if (p.IsRTFeedbackLoop() || p.IsTestingAndSamplingDepth())
+				gpb.AddDynamicState(VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT);
+		}
+		else
+		{
+			if (p.IsRTFeedbackLoop())
+				gpb.AddPipelineFlags(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+			if (p.IsTestingAndSamplingDepth())
+				gpb.AddPipelineFlags(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+		}
 	}
 
 	gpb.SetPrimitiveTopology(topology_lookup[p.topology]);
@@ -9178,8 +9234,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	// now we can do the actual draw
 	if (BindDrawPipeline(pipe))
+	{
+		DeclareDrawFeedbackLoop(config, pipe);
 		SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
 			config.require_one_barrier, config.require_full_barrier);
+	}
 
 	// blend second pass
 	if (config.blend_multi_pass.enable)
@@ -9193,6 +9252,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.ps.dither = config.blend_multi_pass.dither;
 		if (BindDrawPipeline(pipe))
 		{
+			DeclareDrawFeedbackLoop(config, pipe);
 			// TODO: This probably should have barriers, in case we want to use it conditionally.
 			Draw(config);
 		}
@@ -9214,6 +9274,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.bs = config.blend;
 		if (BindDrawPipeline(pipe))
 		{
+			DeclareDrawFeedbackLoop(config, pipe);
 			SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
 				config.alpha_second_pass.require_one_barrier, config.alpha_second_pass.require_full_barrier);
 		}
@@ -9370,6 +9431,36 @@ VkDependencyFlags GSDeviceVK::GetFeedbackBarrierDependencyFlags() const
 {
 	return UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
 	                                 VK_DEPENDENCY_BY_REGION_BIT;
+}
+
+void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe)
+{
+	if (!m_declare_loop_per_draw)
+		return;
+
+	// ⚠️ Only the pipelines that would have carried the create flag declare the state dynamic, and
+	// only they may be SET: calling a dynamic-state setter for state the bound pipeline specified
+	// statically is itself illegal (VUID-vkCmdDraw*-None-08608, which the Khronos layer raises on
+	// every ordinary draw if this early-out is missing). A pipeline without the dynamic state has
+	// no loop to declare anyway -- its static value is "none", which is what those draws want.
+	if (!pipe.IsRTFeedbackLoop() && !pipe.IsTestingAndSamplingDepth())
+		return;
+
+	// The colour aspect is narrowed to the draws that actually read the target. That is the whole
+	// point: the flag word on the pipeline selector is carried across the non-readers that follow
+	// a reader, so asking it alone would declare the loop for every draw in the latched pass,
+	// which is what the pipeline create flag already does. The depth aspect is a straight mirror
+	// of the create flag it replaces -- nothing in this campaign declares a depth loop.
+	VkImageAspectFlags aspects = 0;
+	if (pipe.IsRTFeedbackLoop() && config.IsFeedbackLoopRT(pipe.ps))
+		aspects |= VK_IMAGE_ASPECT_COLOR_BIT;
+	if (pipe.IsTestingAndSamplingDepth())
+		aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
+
+	// ⚠️ Issued after the pipeline bind, every draw, deliberately. The Mesa runtime resets this
+	// value while filling a bound pipeline's static state, so a value set once per pass would be
+	// gone by the second draw. VK_IMAGE_ASPECT_NONE is the legal way to say "no loop".
+	vkCmdSetAttachmentFeedbackLoopEnableEXT(GetCurrentCommandBuffer(), aspects);
 }
 
 void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,

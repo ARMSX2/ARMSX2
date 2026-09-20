@@ -53,6 +53,7 @@
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
+#include "pcsx2/GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
@@ -1118,6 +1119,14 @@ static void PrintCommandLineHelp(const char* progname)
 						 "serve; the rest it serves exactly. Measurement instrument: the driver's coherent primitive "
 						 "mode is what the declaration buys and what it costs, so this confines the cost to the draws "
 						 "that need the ordering. Inert on a build that declares nothing. Vulkan only.\n");
+	std::fprintf(stderr, "  -dynamic-loop-enable: Declare the attachment feedback loop per draw with "
+						 "vkCmdSetAttachmentFeedbackLoopEnableEXT instead of with the pipeline create flag, enabled on "
+						 "the draws that read the render target and disabled on the ones that do not. Same draws "
+						 "declared, same passes, same image layout -- only when it is stated changes. Measurement "
+						 "instrument: a driver that programs a serialising primitive mode from the declaration then "
+						 "applies it to readers instead of to every pipeline in the pass. Needs "
+						 "VK_EXT_attachment_feedback_loop_dynamic_state and the feedback-loop layout road; says so "
+						 "loudly if either is missing. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1679,6 +1688,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// not a user preference. Read where the backend builds the carry inputs, once
 				// per draw, which is long after argument parsing.
 				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
+				continue;
+			}
+			else if (CHECK_ARG("-dynamic-loop-enable"))
+			{
+				Console.WriteLn("Declaring the attachment feedback loop per draw, not per pipeline");
+				// Not a setting: which spelling a driver charges less for is a measurement result
+				// on one device. It must be set before the VM starts, because a pipeline's
+				// dynamic-state list is fixed at creation.
+				GSDynamicFeedbackLoopPolicy::SetSpelling(GSLoopDeclarationSpelling::DynamicPerDraw);
 				continue;
 			}
 			else if (CHECK_ARG("-declare-overlap-only"))

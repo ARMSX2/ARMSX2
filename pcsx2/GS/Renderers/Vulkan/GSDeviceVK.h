@@ -49,6 +49,10 @@ public:
 		bool vk_khr_driver_properties : 1;
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
+		/// VK_EXT_attachment_feedback_loop_dynamic_state. ⚠️ Requested ONLY when the harness
+		/// asks for the per-draw spelling (GSDynamicFeedbackLoopPolicy.h), so device creation
+		/// is byte-for-byte what it was on every ordinary run.
+		bool vk_ext_attachment_feedback_loop_dynamic_state : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
 		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
 		/// renderer. They are requested anyway whenever the driver really has them, because the
@@ -132,6 +136,15 @@ public:
 	// Adreno-5xx / pre-0x801EA000 driver bug: colorWriteMask is ignored while a depth
 	// test is active (PPSSPP #10421). Cached in CheckFeatures, consumed in CreateTFXPipeline.
 	bool m_broken_colormask_with_depth = false;
+
+	// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b (lane C25). Declare the
+	// feedback loop per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT instead of with the
+	// pipeline create flag, so a driver that programs its coherent primitive mode from the
+	// declaration applies it to the draws that read rather than to every pipeline in the latched
+	// pass. Decided by GSDynamicFeedbackLoopPolicy.h, written once in CheckFeatures before the
+	// first pipeline exists -- a pipeline's dynamic-state list cannot be changed afterwards --
+	// and read in CreateTFXPipeline and per draw in DoRenderHW.
+	bool m_declare_loop_per_draw = false;
 
 	// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read. Take the attachment-feedback-loop
 	// spelling even on a device that advertises rasterization-order attachment access. Decided by
@@ -818,6 +831,13 @@ public:
 	VkDependencyFlags GetFeedbackBarrierDependencyFlags() const;
 	void SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
 		bool one_barrier, bool full_barrier);
+
+	/// ⚠️ MEASUREMENT OVERRIDE — the per-draw half of the dynamic feedback-loop spelling. Declares
+	/// this draw's loop (or its absence) with vkCmdSetAttachmentFeedbackLoopEnableEXT. A no-op
+	/// unless m_declare_loop_per_draw. Must be called AFTER the pipeline bind and before the
+	/// draw: the Mesa runtime resets the dynamic value on every bind, so it cannot be set once
+	/// per pass. See GSDynamicFeedbackLoopPolicy.h.
+	void DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Vulkan State

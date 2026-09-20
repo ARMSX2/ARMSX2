@@ -871,6 +871,7 @@
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDateRoadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDeclaredLoopScopePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />

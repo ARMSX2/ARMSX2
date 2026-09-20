@@ -586,6 +586,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSDateRoadPolicy.h
 	GS/Renderers/Common/GSDeclaredLoopScopePolicy.h
+	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSFastList.h
