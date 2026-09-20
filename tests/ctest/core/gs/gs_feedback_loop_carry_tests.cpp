@@ -386,7 +386,8 @@ TEST(GSFeedbackLoopCarry, TheOverrideIsInertWhenNotAsked)
 {
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(MaliWithFetch()));
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(AdrenoOnTheLayoutRoad()));
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(M2OnTheLayoutRoad()));
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(M2OnTheLayoutRoad()));
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(LayoutRoadWithNoOrdering()));
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(OffTheFetchPath()));
 
 	GSFeedbackLoopCarryInputs broadcom;
