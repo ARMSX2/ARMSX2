@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "common/Pcsx2Defs.h"
+
 // Whether a backend may keep the feedback-loop flag set across a run of draws on one target.
 //
 // The backend ends a render pass whenever the feedback-loop flag word of the draw it is about to
@@ -126,6 +128,19 @@
 
 struct GSFeedbackLoopCarryInputs
 {
+	/// ⚠️ MEASUREMENT OVERRIDE, not a device fact. The harness asked for the carry to be off for
+	/// the whole process, so the answer is false on every road and for every vendor -- including
+	/// the unconditional Broadcom one, because an override that a device could out-vote would
+	/// make one row of the A/B silently measure the other arm.
+	///
+	/// Why it exists: the carry ORs the loop flags onto every following pipeline in a latched
+	/// pass, and on Turnip that pipeline create flag is what takes the pass out of tiling and
+	/// programs the coherent primitive mode. So a declared-road arm that is slow cannot be read
+	/// -- the cost may be the declaration on the readers, or the carry spreading it over the
+	/// whole run, and nothing switched between the two at runtime. Campaign
+	/// gs-adreno-inpass-read E4b, lane C25. See GSFeedbackLoopCarryPolicy::SetForcedOff below.
+	bool override_off = false;
+
 	/// Devices that carried the flag before this policy existed and keep carrying it
 	/// unconditionally (Broadcom/V3D). Their COLOUR carry is not this policy's to change.
 	/// The depth term below does reach them, because it is a correctness rule about what the
@@ -183,6 +198,10 @@ struct GSFeedbackLoopCarryInputs
 // measured on for that reason.
 constexpr bool CarryFeedbackLoopAcrossTargetRun(const GSFeedbackLoopCarryInputs& in)
 {
+	// Above the unconditional carry on purpose -- see the field's comment.
+	if (in.override_off)
+		return false;
+
 	if (in.device_always_carries)
 		return true;
 
@@ -291,3 +310,36 @@ static_assert(!CarryDepthFeedbackAcrossTargetRun({.barriers_order_reads = true,
 	.feedback_loop_layout = true, .draw_writes_depth = true}));
 static_assert(CarryDepthFeedbackAcrossTargetRun(
 	{.barriers_order_reads = true, .feedback_loop_layout = true}));
+
+// The override beats every road and every vendor term, in both halves of the decision.
+static_assert(!CarryFeedbackLoopAcrossTargetRun({.override_off = true, .device_always_carries = true}));
+static_assert(!CarryFeedbackLoopAcrossTargetRun({.override_off = true,
+	.device_is_measured_vendor = true, .framebuffer_fetch = true}));
+static_assert(!CarryFeedbackLoopAcrossTargetRun({.override_off = true,
+	.device_is_layout_road_vendor = true, .feedback_loop_layout = true}));
+static_assert(!CarryDepthFeedbackAcrossTargetRun({.override_off = true, .device_always_carries = true}));
+static_assert(!CarryDepthFeedbackAcrossTargetRun({.override_off = true,
+	.device_is_layout_road_vendor = true, .feedback_loop_layout = true}));
+// Left alone it changes nothing: every answer above is the answer with the field default.
+static_assert(CarryFeedbackLoopAcrossTargetRun({.override_off = false, .device_always_carries = true}));
+static_assert(CarryFeedbackLoopAcrossTargetRun({.override_off = false,
+	.device_is_layout_road_vendor = true, .feedback_loop_layout = true}));
+
+namespace GSFeedbackLoopCarryPolicy
+{
+	/// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b (lane C25), gsrunner only.
+	///
+	/// Turns the carry off for this process. It is deliberately NOT a setting: which road a
+	/// device should take here is a measurement result, not a user preference, and a user cannot
+	/// tell which side of the trade their driver is on. Set once before the VM starts, read
+	/// wherever the backend builds the carry inputs. Same shape, and the same reason, as
+	/// GpuProfileDetector::SetForcedBugs.
+	///
+	/// There is no ForceOn twin. Carrying on a device the carry was not reasoned about is the
+	/// mistake the vendor terms above exist to prevent, and this is an instrument for separating
+	/// two costs, not for widening a road.
+	inline bool s_force_off = false;
+
+	inline void SetForcedOff(bool value) { s_force_off = value; }
+	inline bool IsForcedOff() { return s_force_off; }
+} // namespace GSFeedbackLoopCarryPolicy

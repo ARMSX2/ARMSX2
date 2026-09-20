@@ -4373,6 +4373,12 @@ bool GSDeviceVK::CheckFeatures()
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
 
+	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
+	// run, including the ones that pass no flag, so a log from a device round says which arm it is
+	// rather than leaving it to be inferred from the command line somebody typed.
+	Console.WriteLn("VK: measurement overrides: feedback-carry=%s",
+		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy");
+
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
 		m_features.provoking_vertex_last ? " provoking_vertex_last" : "", m_features.vs_expand ? " vs_expand" : "",
@@ -8935,6 +8941,13 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
 		// inherit a stale depth feedback layout: precisely the flicker mode described above.
 		GSFeedbackLoopCarryInputs carry;
+		// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-feedback-carry), campaign gs-adreno-inpass-read
+		// E4b. False unless the harness asked, so every expression below is unchanged on every
+		// shipping device. It sits above the vendor terms in the policy because a declared-road
+		// arm that is slow has two candidate causes -- the declaration on the readers, or this
+		// carry spreading the same pipeline create flag over every draw in the latched pass --
+		// and until now nothing separated them at runtime.
+		carry.override_off = GSFeedbackLoopCarryPolicy::IsForcedOff();
 		carry.device_always_carries = IsDeviceBroadcom();
 		carry.device_is_measured_vendor = IsDeviceMali();
 		carry.device_is_layout_road_vendor = IsDeviceAdreno();

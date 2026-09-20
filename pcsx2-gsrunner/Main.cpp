@@ -51,6 +51,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
+#include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
@@ -1097,6 +1098,12 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
 						 "and the framebuffer-fetch / depth-feedback paths that build on it.\n");
+	std::fprintf(stderr, "  -no-feedback-carry: Stop the backend keeping the feedback-loop flag set across the draws that "
+						 "follow a self-reading one in the same render pass. Every draw is then declared on its own "
+						 "merits. Measurement instrument: the carry hands every pipeline in a latched pass the same "
+						 "create flag, which on Turnip is what untiles the pass and programs the coherent primitive "
+						 "mode, so it is the confound between 'declaring the read is expensive' and 'declaring it for "
+						 "draws that do not read is expensive'. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1649,6 +1656,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				Console.WriteLn("Forcing texture barriers off (OverrideTextureBarriers=0)");
 				s_settings_interface.SetIntValue("EmuCore/GS", "OverrideTextureBarriers", 0);
+				continue;
+			}
+			else if (CHECK_ARG("-no-feedback-carry"))
+			{
+				Console.WriteLn("Forcing the feedback-loop carry off for this process");
+				// Not a setting: which road a device should take here is a measurement result,
+				// not a user preference. Read where the backend builds the carry inputs, once
+				// per draw, which is long after argument parsing.
+				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))
