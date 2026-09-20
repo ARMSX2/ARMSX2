@@ -1069,10 +1069,11 @@ TEST(GsKickKernel, ShortStreamsWithExtremeValuesPinTheAccumulator)
 namespace
 {
 	// The formula as GSVertexKick.h's header comment states it, written out.
-	GSVertexKernels::CullMirrorEntry ModelEntry(int wx, int wy, const GSVertexKernels::CullBounds& b, bool banded)
+	GSVertexKernels::CullMirrorEntry ModelEntry(
+		int wx, int wy, const GSVertexKernels::CullBounds& b, bool banded, int band_shift)
 	{
-		const int bx = (wx - 1) >> 4;
-		const int by = (wy - 1) >> 4;
+		const int bx = (wx - 1) >> band_shift;
+		const int by = (wy - 1) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -1093,15 +1094,16 @@ namespace
 	// Every window coordinate whose band sits on or beside a bound, plus both ends
 	// of the band itself (wx = bx*16 + 1 is the first coordinate in band bx and
 	// bx*16 + 16 the last), plus a coordinate whose band is negative.
-	std::vector<int> BoundaryCoords(int lo_band, int hi_band)
+	std::vector<int> BoundaryCoords(int lo_band, int hi_band, int band_shift = 4)
 	{
+		const int step = 1 << band_shift;
 		std::vector<int> out;
 		for (int band : {lo_band - 2, lo_band - 1, lo_band, lo_band + 1,
 			     hi_band - 2, hi_band - 1, hi_band, hi_band + 1, 0, -1, -2})
 		{
-			out.push_back(band * 16 + 1);  // first coordinate in the band
-			out.push_back(band * 16 + 8);  // middle
-			out.push_back(band * 16 + 16); // last
+			out.push_back(band * step + 1);        // first coordinate in the band
+			out.push_back(band * step + step / 2); // middle
+			out.push_back(band * step + step);     // last
 		}
 		return out;
 	}
@@ -1109,25 +1111,30 @@ namespace
 
 TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 {
-	const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
-	const std::vector<int> xs = BoundaryCoords(bounds.l, bounds.r);
-	const std::vector<int> ys = BoundaryCoords(bounds.t, bounds.b);
-
-	for (int wx : xs)
+	// Every band width the cull grid can ask for: 4 at native, 3 at 2x, 2 at 4x,
+	// 1 at 8x.
+	for (int band_shift : {4, 3, 2, 1})
 	{
-		for (int wy : ys)
+		const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
+		const std::vector<int> xs = BoundaryCoords(bounds.l, bounds.r, band_shift);
+		const std::vector<int> ys = BoundaryCoords(bounds.t, bounds.b, band_shift);
+
+		for (int wx : xs)
 		{
-			SCOPED_TRACE(::testing::Message() << "wx=" << wx << " wy=" << wy);
+			for (int wy : ys)
+			{
+				SCOPED_TRACE(::testing::Message() << "shift=" << band_shift << " wx=" << wx << " wy=" << wy);
 
-			const auto banded = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds);
-			const auto banded_ref = ModelEntry(wx, wy, bounds, true);
-			EXPECT_EQ(banded.xyp, banded_ref.xyp) << "banded xyp";
-			EXPECT_EQ(banded.meta, banded_ref.meta) << "banded meta";
+				const auto banded = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift);
+				const auto banded_ref = ModelEntry(wx, wy, bounds, true, band_shift);
+				EXPECT_EQ(banded.xyp, banded_ref.xyp) << "banded xyp";
+				EXPECT_EQ(banded.meta, banded_ref.meta) << "banded meta";
 
-			const auto raw = GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds);
-			const auto raw_ref = ModelEntry(wx, wy, bounds, false);
-			EXPECT_EQ(raw.xyp, raw_ref.xyp) << "raw xyp";
-			EXPECT_EQ(raw.meta, raw_ref.meta) << "raw meta";
+				const auto raw = GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift);
+				const auto raw_ref = ModelEntry(wx, wy, bounds, false, band_shift);
+				EXPECT_EQ(raw.xyp, raw_ref.xyp) << "raw xyp";
+				EXPECT_EQ(raw.meta, raw_ref.meta) << "raw meta";
+			}
 		}
 	}
 }
@@ -1142,17 +1149,21 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 	{
 		for (int ofy : {0, 1808 * 16})
 		{
+		  for (int band_shift : {4, 3, 2, 1})
+		  {
+		    for (bool banded : {true, false})
+		    {
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
 			const GSVector4i xyof(ofx, ofy, ofx, ofy);
-			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds);
+			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds, band_shift, banded);
 
 			std::vector<int> xs, ys;
-			for (int v : BoundaryCoords(bounds.l, bounds.r))
+			for (int v : BoundaryCoords(bounds.l, bounds.r, band_shift))
 			{
 				if (v + ofx >= 0 && v + ofx <= 0xFFFF)
 					xs.push_back(v);
 			}
-			for (int v : BoundaryCoords(bounds.t, bounds.b))
+			for (int v : BoundaryCoords(bounds.t, bounds.b, band_shift))
 			{
 				if (v + ofy >= 0 && v + ofy <= 0xFFFF)
 					ys.push_back(v);
@@ -1185,7 +1196,9 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 					// ADC on two lanes of every quad, so a stuck lane shows up.
 					raw[k][3] = (k & 1) ? 0x8000u : 0u;
 
-					expect[k] = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds);
+					expect[k] = banded ?
+									GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift) :
+									GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift);
 					if (k & 1)
 						expect[k].meta |= GSVertexKickKernel::kCullMetaAdcBit;
 				}
@@ -1204,6 +1217,8 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 					EXPECT_EQ(got_meta[k], expect[k].meta) << "meta";
 				}
 			}
+		    }
+		  }
 		}
 	}
 }

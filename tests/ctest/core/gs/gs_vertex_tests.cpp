@@ -386,11 +386,16 @@ namespace
 	// above). Production-shaped inputs: scissor cull rects are 16k-8 .. 16k+8 with
 	// SCAX0 <= SCAX1 (empty scissors take the m_scissor_invalid path and never
 	// reach the cull decision), coords are offset-subtracted 12.4. The fast-path
-	// gate is baked in: banded classes run nativeres, no AA1.
+	// gate is baked in: a rounded class runs with a grid, and no AA1.
+	//
+	// Every grid a rounded class can get is swept, which is the whole of the
+	// scalar path's contract: at native the outcode compares bands against the
+	// rounding-folded bounds, and at every finer grid it compares raw 12.4 against
+	// the plain cull rect while the bands carry the grid test.
 	template <u32 n, int primclass>
 	void RunScalarCullSweep(u64 seed, int iters)
 	{
-		constexpr bool banded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		constexpr bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
 		std::mt19937_64 rng(seed);
 
 		for (int iter = 0; iter < iters; iter++)
@@ -439,25 +444,32 @@ namespace
 				y2 &= ~0xF;
 			}
 
+			// Shift 4 (native) through 1 (8x) for a rounded class; point/line never
+			// consult the grid, so any value drives the same code there.
+			const int shift = rounded ? (1 + static_cast<int>(rng() % 4)) : 4;
+			const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(shift, shift);
+			const bool banded = rounded && (shift == 4);
+
 			GSVector4i bbox;
-			// The scalar path is native-only for the rounded classes, and the grid
-			// does not reach point/line at all, so one native grid covers the sweep.
-			const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(4, 4);
 			const u32 expected = GSVertexKernels::CullTest<n, primclass>(WindowEntry(x0, y0), WindowEntry(x1, y1),
 				WindowEntry(x2, y2), cull, grid, false, bbox);
 
 			const GSVertexKernels::CullBounds bounds =
 				banded ? GSVertexKernels::MakeBandedCullBounds(cull) : GSVertexKernels::MakeRawCullBounds(cull);
-			const GSVertexKernels::CullMirrorEntry e0 = GSVertexKernels::MakeCullMirrorEntry<banded>(x0, y0, bounds);
-			const GSVertexKernels::CullMirrorEntry e1 = GSVertexKernels::MakeCullMirrorEntry<banded>(x1, y1, bounds);
-			const GSVertexKernels::CullMirrorEntry e2 = GSVertexKernels::MakeCullMirrorEntry<banded>(x2, y2, bounds);
+			const auto entry = [&](int x, int y) {
+				return banded ? GSVertexKernels::MakeCullMirrorEntry<true>(x, y, bounds, shift) :
+								GSVertexKernels::MakeCullMirrorEntry<false>(x, y, bounds, shift);
+			};
+			const GSVertexKernels::CullMirrorEntry e0 = entry(x0, y0);
+			const GSVertexKernels::CullMirrorEntry e1 = entry(x1, y1);
+			const GSVertexKernels::CullMirrorEntry e2 = entry(x2, y2);
 
 			const u32 got = GSVertexKernels::CullTestScalar<n, primclass>(e0, e1, e2);
 
 			ASSERT_EQ(expected != 0 ? 1u : 0u, got != 0 ? 1u : 0u)
 				<< "scalar cull divergence at iter " << iter << " n=" << n << " class=" << primclass
-				<< " v0=(" << x0 << "," << y0 << ") v1=(" << x1 << "," << y1 << ") v2=(" << x2 << "," << y2
-				<< ") scissor=(" << sax0 << "," << say0 << "," << sax1 << "," << say1 << ")";
+				<< " shift=" << shift << " v0=(" << x0 << "," << y0 << ") v1=(" << x1 << "," << y1 << ") v2=("
+				<< x2 << "," << y2 << ") scissor=(" << sax0 << "," << say0 << "," << sax1 << "," << say1 << ")";
 		}
 	}
 } // namespace

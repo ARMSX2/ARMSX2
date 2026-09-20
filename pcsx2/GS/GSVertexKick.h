@@ -703,21 +703,36 @@ namespace GSVertexKernels
 		return {(cull.x + 14) >> 4, (cull.y + 14) >> 4, (cull.z - 1) >> 4, (cull.w - 1) >> 4};
 	}
 
-	// Raw 12.4 bounds for point/line (no rounding, exclusive bbox test folded in).
+	// Raw 12.4 bounds for point/line, and for triangle/sprite wherever the cull
+	// grid is finer than native (no rounding, exclusive bbox test folded in).
+	//
+	// Why the raw bounds serve a grid class too: away from native the rounded
+	// classes' scissor test runs on the shipped trim box, whose only difference
+	// from the raw box is one sub-texel off a bottom/right edge that sits exactly
+	// on a pixel boundary. That difference is invisible to this test, because the
+	// trimmed edge only changes the answer when it meets the cull rect exactly,
+	// and the cull rect's edges are SCAX*16 -/+ 8 (GSDrawingContext::UpdateScissor)
+	// -- never a multiple of 16. GsVertexCull.ScalarTriangleSweep pins it.
 	__forceinline_odr CullBounds MakeRawCullBounds(const GSVector4i& cull)
 	{
 		return {cull.x, cull.y, cull.z, cull.w};
 	}
 
-	// Build one mirror entry from a vertex's window position. banded selects which
-	// coordinate space the outcode compares in (bands for triangle/sprite native
-	// res, raw 12.4 for point/line); bands are packed regardless so the entry
-	// shape is uniform.
+	// Build one mirror entry from a vertex's window position.
+	//
+	// `banded` selects which coordinate space the outcode compares in: bands at
+	// native res, where the scissor test runs on the pixel-centre-rounded box and
+	// the rounding folds into the bounds, and raw 12.4 everywhere else.
+	// `band_shift` is the cull grid's log2 sub-texel step, which sets how wide a
+	// band is -- 4 at native, 3 at 2x and so on. Bands are packed whatever the
+	// outcode space, so the entry shape is uniform; the band fields are read only
+	// as differences between vertices of one prim, which share an XYOFFSET, so a
+	// narrower band cannot overflow the 28-bit field either.
 	template <bool banded>
-	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(int wx, int wy, const CullBounds& bounds)
+	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(int wx, int wy, const CullBounds& bounds, int band_shift)
 	{
-		const int bx = (wx - 1) >> 4;
-		const int by = (wy - 1) >> 4;
+		const int bx = (wx - 1) >> band_shift;
+		const int by = (wy - 1) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -737,7 +752,15 @@ namespace GSVertexKernels
 
 	// The scalar decision. e0 is the most recent vertex. Unused entries (n < 3)
 	// may alias e0. Bit-equivalent to CullTest's return under the fast-path gate
-	// (point/line always; triangle non-fan / sprite when nativeres && !aa1).
+	// (point/line always; triangle non-fan / sprite whenever the class has a cull
+	// grid and there is no AA1 expansion).
+	//
+	// The band-equality test is "every vertex in one band on some axis", which is
+	// exactly "the prim spans no grid point" at whatever step the bands were built
+	// with -- so it serves as the native interior-empty test and as the upscale
+	// grid test without changing shape. It also subsumes the shipped trim box's
+	// own empty test: a box the trim empties spans at most one sub-texel, which
+	// cannot straddle two grid points.
 	template <u32 n, int primclass>
 	__forceinline_odr u32 CullTestScalar(const CullMirrorEntry& e0, const CullMirrorEntry& e1, const CullMirrorEntry& e2)
 	{

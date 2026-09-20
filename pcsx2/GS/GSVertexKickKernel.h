@@ -88,7 +88,7 @@ namespace GSVertexKickKernel
 	struct Invariants
 	{
 		GSVector4i xyof;                       // {ofx, ofy, ofx, ofy}
-		GSVertexKernels::CullBounds bounds;    // banded, i.e. triangle/sprite native res
+		GSVertexKernels::CullBounds bounds;    // banded at native res, raw 12.4 above it
 		u64 uvfog;                             // XYZ2: {UV, FOG}; XYZF2: UV in the low word
 		GSVector4i clamp_keep;                 // depth clamp, as two lane masks over m[1]:
 		GSVector4i clamp_shifted;              //   m1' = (m1 & keep) | ((m1 >> 8) & shifted)
@@ -210,9 +210,12 @@ namespace GSVertexKickKernel
 	struct MirrorBounds
 	{
 		int32x4_t ofx, ofy, l, t, r, b;
+		int32x4_t band_shift; // negative, so SSHL right-shifts by the grid's log2 step
+		uint32x4_t banded;    // all-ones when the outcode compares bands, zero for raw 12.4
 	};
 
-	__forceinline_odr MirrorBounds MakeMirrorBounds(const GSVector4i& xyof, const GSVertexKernels::CullBounds& bounds)
+	__forceinline_odr MirrorBounds MakeMirrorBounds(
+		const GSVector4i& xyof, const GSVertexKernels::CullBounds& bounds, int band_shift, bool banded)
 	{
 		MirrorBounds m;
 		m.ofx = vdupq_n_s32(xyof.I32[0]);
@@ -221,6 +224,8 @@ namespace GSVertexKickKernel
 		m.t = vdupq_n_s32(bounds.t);
 		m.r = vdupq_n_s32(bounds.r);
 		m.b = vdupq_n_s32(bounds.b);
+		m.band_shift = vdupq_n_s32(-band_shift);
+		m.banded = vdupq_n_u32(banded ? 0xFFFFFFFFu : 0u);
 		return m;
 	}
 
@@ -242,14 +247,21 @@ namespace GSVertexKickKernel
 		const int32x4_t wx = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(X, m16)), k.ofx);
 		const int32x4_t wy = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(Y, m16)), k.ofy);
 
+		// SSHL by a negative amount is an arithmetic right shift, which is what a
+		// runtime band width needs -- the immediate form cannot take one.
 		const int32x4_t one = vdupq_n_s32(1);
-		const int32x4_t bx = vshrq_n_s32(vsubq_s32(wx, one), 4);
-		const int32x4_t by = vshrq_n_s32(vsubq_s32(wy, one), 4);
+		const int32x4_t bx = vshlq_s32(vsubq_s32(wx, one), k.band_shift);
+		const int32x4_t by = vshlq_s32(vsubq_s32(wy, one), k.band_shift);
 
-		uint32x4_t oc = vandq_u32(vcltq_s32(bx, k.l), vdupq_n_u32(1));
-		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(bx, k.r), vdupq_n_u32(2)));
-		oc = vorrq_u32(oc, vandq_u32(vcltq_s32(by, k.t), vdupq_n_u32(4)));
-		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(by, k.b), vdupq_n_u32(8)));
+		// The outcode compares bands at native and raw 12.4 everywhere else; the
+		// bands are packed either way.
+		const int32x4_t cx = vbslq_s32(k.banded, bx, wx);
+		const int32x4_t cy = vbslq_s32(k.banded, by, wy);
+
+		uint32x4_t oc = vandq_u32(vcltq_s32(cx, k.l), vdupq_n_u32(1));
+		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(cx, k.r), vdupq_n_u32(2)));
+		oc = vorrq_u32(oc, vandq_u32(vcltq_s32(cy, k.t), vdupq_n_u32(4)));
+		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(cy, k.b), vdupq_n_u32(8)));
 		// ADC rides in meta bit 60, four above the outcode field, so it joins the
 		// outcode here and lands with it in one shift.
 		oc = vorrq_u32(oc, vshrq_n_u32(vandq_u32(F, vdupq_n_u32(0x8000u)), 11));
@@ -291,6 +303,10 @@ namespace GSVertexKickKernel
 		const int ofx = inv.xyof.I32[0];
 		const int ofy = inv.xyof.I32[1];
 		const int bl = inv.bounds.l, bt = inv.bounds.t, br = inv.bounds.r, bb = inv.bounds.b;
+		// The cull grid's log2 sub-texel step, and whether the outcode compares in
+		// band space. Both are invariant for the batch; see MakeCullMirrorEntry.
+		const int band_shift = inv.grid.shift;
+		const bool banded = (band_shift == 4);
 		const GSVector4i keep = inv.clamp_keep;
 		const GSVector4i shifted = inv.clamp_shifted;
 #ifdef ARCH_ARM64
@@ -298,7 +314,7 @@ namespace GSVertexKickKernel
 		// function-local statics that clang rematerializes from the frame every
 		// iteration.
 		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts();
-		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds);
+		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds, band_shift, banded);
 #endif
 
 		// The vertex parse is per vertex (one TBL pair each); the mirror build is
@@ -386,14 +402,16 @@ namespace GSVertexKickKernel
 			const u32 raw_y = rv[off_xyz].U32[1];
 			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
 			const int wy = static_cast<int>(raw_y & 0xFFFFu) - ofy;
-			const int bx = (wx - 1) >> 4;
-			const int by = (wy - 1) >> 4;
+			const int bx = (wx - 1) >> band_shift;
+			const int by = (wy - 1) >> band_shift;
+			const int cx = banded ? bx : wx;
+			const int cy = banded ? by : wy;
 
 			u32 oc = 0;
-			oc |= (bx < bl) ? 1u : 0u;
-			oc |= (bx >= br) ? 2u : 0u;
-			oc |= (by < bt) ? 4u : 0u;
-			oc |= (by >= bb) ? 8u : 0u;
+			oc |= (cx < bl) ? 1u : 0u;
+			oc |= (cx >= br) ? 2u : 0u;
+			oc |= (cy < bt) ? 4u : 0u;
+			oc |= (cy >= bb) ? 8u : 0u;
 
 			side_xyp[i] = static_cast<u64>(static_cast<u32>(wx)) | (static_cast<u64>(static_cast<u32>(wy)) << 32);
 			side_meta[i] = (static_cast<u64>(static_cast<u32>(bx)) & GSVertexKernels::kCullMetaBandXMask) |
@@ -411,9 +429,9 @@ namespace GSVertexKickKernel
 	//   * itail != 0, so the per-draw environment snapshot cannot fire inside;
 	//   * m_recent_buffer_switch is clear or draw buffering is off;
 	//   * the scissor is valid, so the ADC bit is the whole pre-cull rejection;
-	//   * the scalar-outcode cull applies -- native res and no AA1 expansion, so
-	//     the bounding box takes the interior-pixel-centre rounding
-	//     unconditionally and nothing has to carry a `nativeres` flag;
+	//   * the scalar-outcode cull applies -- the prim's class has a cull grid and
+	//     there is no AA1 expansion -- so the decision is the band/outcode pair and
+	//     the accepted-prim bbox takes whichever rounding inv.grid names;
 	//   * tail + count + 3 <= maxcount, so no growth can be needed;
 	//   * tail + count < MaxVerticesForPrim, so no VERTEXCOUNT flush can be
 	//     needed.

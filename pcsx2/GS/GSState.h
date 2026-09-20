@@ -369,6 +369,25 @@ protected:
 
 	void RefreshKickMirror();
 
+	// One kick-mirror entry for a vertex of `primclass`. Which coordinate space
+	// the outcode compares in, and how wide a band is, both follow the cull grid
+	// (GSVertexKick.h): bands against the banded bounds at native, raw 12.4
+	// against the plain cull rect everywhere else. primclass is a constant at the
+	// hot call site, so the selection folds away there.
+	__fi GSVertexKernels::CullMirrorEntry MakeKickMirror(int primclass, int wx, int wy) const
+	{
+		const bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		const int shift = !rounded ? 0 :
+		                             ((primclass == GS_SPRITE_CLASS) ? m_cull_grid.sprite_shift : m_cull_grid.shift);
+
+		if (shift == 4)
+			return GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band, 4);
+
+		// shift 0 means this class has no grid, so nothing reads the bands; pack
+		// them at the native width rather than at a degenerate one.
+		return GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw, (shift != 0) ? shift : 4);
+	}
+
 	// The cull grid the current config asks for.
 	static GSVertexKernels::CullGrid ConfigCullGrid();
 
