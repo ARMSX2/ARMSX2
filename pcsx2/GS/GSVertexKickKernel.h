@@ -115,6 +115,11 @@ namespace GSVertexKickKernel
 		// reason carry_m0 is: the contiguous layouts never read it, and every field
 		// they do read keeps the offset it had.
 		GSVertexKernels::CullGrid grid;
+		// Whether to accumulate the native-grid draw rect as well (draw buffering
+		// on; see GSState::temp_native_draw_rect). A batch invariant, not a
+		// per-prim decision: without draw buffering the heuristic that reads the
+		// rect returns at its first line and the accumulation is dead work.
+		bool track_native_rect;
 	};
 
 	// The buffer cursor is NOT marshalled. Every field of it -- head, tail, next,
@@ -128,7 +133,10 @@ namespace GSVertexKickKernel
 	// The one thing that does come back is the deferred draw-rect accumulation,
 	// which is not a buffer member: the union of the chunk's accepted prim rects,
 	// returned in a vector register, plus a two-bit state saying whether it is
-	// empty, unions into temp_draw_rect, or replaces it.
+	// empty, unions into temp_draw_rect, or replaces it. When
+	// Invariants::track_native_rect is set a second union comes back the same way,
+	// the same rects asked on the native pixel grid; it shares the state, because
+	// every accepted prim contributes to both.
 	enum AccState : u32
 	{
 		kAccEmpty = 0,
@@ -444,7 +452,8 @@ namespace GSVertexKickKernel
 	template <u32 prim, GSVertexKernels::PackedLayout layout>
 	__noinline GSVector4i RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
 		GSBackQueue::VertexBuff* RESTRICT vertex_buf, GSBackQueue::IndexBuff* RESTRICT index_buf,
-		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, u32* RESTRICT acc_state_out)
+		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, u32* RESTRICT acc_state_out,
+		GSVector4i* RESTRICT native_acc_out)
 	{
 		constexpr u32 n = (prim == GS_SPRITE) ? 2u : 3u;
 		constexpr int primclass = GSUtil::GetPrimClass(prim);
@@ -484,6 +493,8 @@ namespace GSVertexKickKernel
 		bool fmm_valid = vertex_buf->fmm_valid;
 		u32 acc_state = kAccEmpty;
 		GSVector4i acc_rect = GSVector4i::zero();
+		GSVector4i native_acc_rect = GSVector4i::zero();
+		const bool track_native = inv.track_native_rect;
 
 		const u32 shade = inv.shade;
 		const bool tme = (shade & 1u) != 0;
@@ -645,14 +656,21 @@ namespace GSVertexKickKernel
 			}
 #endif
 
-			const GSVector4i draw_rect = bbox.sra32<4>() + GSVector4i(0, 0, 1, 1);
+			// The native-grid twin sits inside each arm rather than above them, so
+			// that with draw buffering off the two arms are exactly the code that
+			// was here before -- no select and no second union per prim.
+			const GSVector4i draw_rect = GSVertexKernels::PrimDrawRect(bbox);
 			if (acc_state != 0)
 			{
 				acc_rect = acc_rect.runion(draw_rect);
+				if (track_native)
+					native_acc_rect = native_acc_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
 			}
 			else
 			{
 				acc_rect = draw_rect;
+				if (track_native)
+					native_acc_rect = GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox);
 				acc_state = (itail == n) ? kAccReplace : kAccUnion;
 			}
 		}
@@ -751,6 +769,7 @@ namespace GSVertexKickKernel
 		index_buf->tail = itail;
 
 		*acc_state_out = acc_state;
+		*native_acc_out = native_acc_rect;
 		return acc_rect;
 	}
 } // namespace GSVertexKickKernel

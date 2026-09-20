@@ -241,6 +241,10 @@ namespace GSBackQueue
 		GSDrawingEnvironment next_env;
 		GSVertex next_v;
 		GSVector4i draw_rect; // temp_draw_rect at flush
+		// temp_native_draw_rect at flush. Carried beside draw_rect, and installed
+		// beside it, so the shipped rect and its native-grid twin cannot drift
+		// apart on the pipelined path.
+		GSVector4i native_draw_rect;
 		VertexBuff* vertex; // = &node->vb/&node->ib on the record path
 		IndexBuff* index;
 		DrawNode* node; // released by the consumer after the tail runs (null in tests)

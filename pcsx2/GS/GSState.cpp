@@ -615,7 +615,10 @@ void GSState::ResetDrawBufferIdx()
 		if (m_index_buffers[i].tail > 0 || i == m_current_buffer_idx)
 		{
 			if (m_index_buffers[i].tail == 0)
+			{
 				m_env_buffers[i].draw_rect = GSVector4i::zero();
+				m_env_buffers[i].native_draw_rect = GSVector4i::zero();
+			}
 
 			if (entry_ptr == i && (m_index_buffers[i].tail > 0 || i == m_current_buffer_idx))
 			{
@@ -689,6 +692,7 @@ void GSState::ResetDrawBufferIdx()
 	{
 		m_dirty_gs_regs = m_env_buffers[m_current_buffer_idx].m_dirty_regs;
 		temp_draw_rect = m_env_buffers[m_current_buffer_idx].draw_rect;
+		temp_native_draw_rect = m_env_buffers[m_current_buffer_idx].native_draw_rect;
 	}
 }
 
@@ -971,6 +975,7 @@ void GSState::FlushBuffers(bool flush_base_only, bool use_flush_reason, GSFlushR
 			m_backed_up_ctx = m_env_buffers[m_current_buffer_idx].m_backed_up_ctx;
 			m_dirty_gs_regs = m_env_buffers[m_current_buffer_idx].m_dirty_regs;
 			temp_draw_rect = m_env_buffers[m_current_buffer_idx].draw_rect;
+			temp_native_draw_rect = m_env_buffers[m_current_buffer_idx].native_draw_rect;
 
 			std::memcpy(&m_prev_env, &m_env_buffers[m_current_buffer_idx].m_env, 88);
 			std::memcpy(&m_prev_env.CTXT[0], &m_env_buffers[m_current_buffer_idx].m_env.CTXT[0], 96);
@@ -1062,6 +1067,7 @@ void GSState::PushBuffer()
 
 		m_current_buffer_idx = m_used_buffers_idx;
 		temp_draw_rect = GSVector4i::zero();
+		temp_native_draw_rect = GSVector4i::zero();
 		m_dirty_gs_regs = 0;
 		m_used_buffers_idx++;
 		m_recent_buffer_switch = true;
@@ -1199,6 +1205,7 @@ bool GSState::CanBufferNewDraw()
 				m_vertex->tail += copy_amt;
 				m_backed_up_ctx = m_env_buffers[i].m_backed_up_ctx;
 				temp_draw_rect = m_env_buffers[i].draw_rect;
+				temp_native_draw_rect = m_env_buffers[i].native_draw_rect;
 				m_env_buffers[i].m_dirty_regs = 0;
 				std::memcpy(&m_prev_env, &m_env_buffers[i].m_env, 88);
 				std::memcpy(&m_prev_env.CTXT[0], &m_env_buffers[i].m_env.CTXT[0], 96);
@@ -1320,6 +1327,7 @@ void GSState::SetDrawBuffDirty()
 {
 	m_env_buffers[m_current_buffer_idx].m_dirty_regs = m_dirty_gs_regs;
 	m_env_buffers[m_current_buffer_idx].draw_rect = temp_draw_rect;
+	m_env_buffers[m_current_buffer_idx].native_draw_rect = temp_native_draw_rect;
 }
 
 void GSState::ResetHandlers()
@@ -2411,6 +2419,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// m_v is written by whichever path kicks the batch's last vertex: the kernel
 	// from its own parse, the seam from KickPackedOneLegacy's.
 	inv.last_out = &m_v;
+	// Config-level and so genuinely call-invariant, unlike the cull grid and the
+	// cull bounds below: a seam kick can flush, but it cannot turn draw buffering
+	// on or off.
+	inv.track_native_rect = GSConfig.UserHacks_DrawBuffering;
 	if constexpr (!GSVertexKernels::LayoutIsContiguousTriple(layout))
 		inv.off = m_packed_layout;
 
@@ -2568,8 +2580,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// not a buffer member, folded here under one scissor clamp exactly as
 		// VertexKickCursor::Store does it.
 		u32 acc_state = GSVertexKickKernel::kAccEmpty;
+		GSVector4i native_acc_rect = GSVector4i::zero();
 		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
-			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state);
+			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state, &native_acc_rect);
 
 		if (acc_state != GSVertexKickKernel::kAccEmpty)
 		{
@@ -2577,6 +2590,14 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 										  acc_rect :
 										  temp_draw_rect.runion(acc_rect);
 			temp_draw_rect = merged.rintersect(m_context->scissor.in);
+
+			if (inv.track_native_rect)
+			{
+				const GSVector4i nat = (acc_state == GSVertexKickKernel::kAccReplace) ?
+				                           native_acc_rect :
+				                           temp_native_draw_rect.runion(native_acc_rect);
+				temp_native_draw_rect = nat.rintersect(m_context->scissor.in);
+			}
 		}
 
 		k += chunk;
@@ -3755,6 +3776,7 @@ void GSState::FlushDraw(GSFlushReason reason)
 
 		m_dirty_gs_regs = 0;
 		temp_draw_rect = GSVector4i::zero();
+		temp_native_draw_rect = GSVector4i::zero();
 	}
 
 	m_state_flush_reason = GSFlushReason::UNKNOWN;
@@ -4055,6 +4077,7 @@ void GSState::FlushPrim()
 		std::memcpy(&rec.next_env, &m_env, sizeof(rec.next_env));
 		rec.next_v = m_v;
 		rec.draw_rect = temp_draw_rect;
+		rec.native_draw_rect = temp_native_draw_rect;
 		rec.vertex = &node->vb;
 		rec.index = &node->ib;
 		rec.node = node;
@@ -4150,6 +4173,7 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	std::memcpy(&m_env, &rec.next_env, sizeof(m_env));
 	m_v = rec.next_v;
 	temp_draw_rect = rec.draw_rect;
+	temp_native_draw_rect = rec.native_draw_rect;
 	m_vertex = rec.vertex;
 	m_index = rec.index;
 	m_backed_up_ctx = rec.backed_up_ctx;
@@ -7720,13 +7744,21 @@ __noinline bool GSState::CheckOverlapVertsSlow(u32 n)
 			new_area = new_area.sra32<4>();
 			new_area = new_area.rintersect(m_context->scissor.in);
 
-			if (new_area.rintersect(m_env_buffers[m_current_buffer_idx].draw_rect).eq(new_area))
+			// Both operands are native-pixel footprints of the same PS2 geometry, so
+			// the answer cannot depend on the upscale. new_area already is one -- it
+			// is built from the raw window coordinates and shifted, at every scale.
+			// The buffered rect is native_draw_rect rather than draw_rect, which
+			// above native keeps its raw sub-texel extent and takes every prim the
+			// finer cull grid let through, including the ones that paint no native
+			// pixel at all. See GSVertexKernels::PrimNativeDrawRect; at native
+			// resolution the two rects are the same value.
+			if (new_area.rintersect(m_env_buffers[m_current_buffer_idx].native_draw_rect).eq(new_area))
 				return true;
 				
 			if (m_current_buffer_idx < (m_used_buffers_idx - 1))
 			{
 				GSDrawingEnvironment& next_env = m_env_buffers[m_current_buffer_idx + 1].m_env;
-				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(m_env_buffers[m_current_buffer_idx + 1].draw_rect).rempty())
+				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(m_env_buffers[m_current_buffer_idx + 1].native_draw_rect).rempty())
 					return true;
 			}
 		}
@@ -8136,14 +8168,21 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// Update rectangle for the current draw (accumulated in the cursor, folded
 	// into temp_draw_rect with one scissor clamp at every seam). Needs exclusive
 	// endpoints.
-	const GSVector4i draw_rect = bbox.sra32<4>() + GSVector4i(0, 0, 1, 1);
+	// The native-grid twin is inside each arm rather than computed once above
+	// them, so that with draw buffering off the two arms are exactly the code that
+	// was here before: no select, no second union, nothing live across the loop.
+	const GSVector4i draw_rect = GSVertexKernels::PrimDrawRect(bbox);
 	if (c.acc_state != 0)
 	{
 		c.acc_rect = c.acc_rect.runion(draw_rect);
+		if (c.track_native)
+			c.native_acc_rect = c.native_acc_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
 	}
 	else
 	{
 		c.acc_rect = draw_rect;
+		if (c.track_native)
+			c.native_acc_rect = GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox);
 		c.acc_state = (c.itail == n) ? 2 : 1;
 	}
 

@@ -7,6 +7,7 @@
 #include "GS/GSVector.h"
 
 #include <cfloat>
+#include <limits>
 
 // Pure kernels backing the fused GIF packed vertex handlers and the per-prim
 // accept/cull decision in GSState::VertexKick. Factored out of GSState.cpp so the
@@ -594,6 +595,85 @@ namespace GSVertexKernels
 		}
 
 		return bbox;
+	}
+
+	// The pixel rect one accepted prim contributes to temp_draw_rect: the class
+	// rounding is already in bbox, this is only the sub-pixel shift and the
+	// exclusive bottom/right endpoint.
+	__forceinline_odr GSVector4i PrimDrawRect(const GSVector4i& bbox)
+	{
+		return bbox.sra32<4>() + GSVector4i(0, 0, 1, 1);
+	}
+
+	// The same rect asked on the NATIVE pixel grid, whatever grid bbox was rounded
+	// on -- what the draw-buffering overlap heuristic compares its raw incoming
+	// prim box against (GSState::CheckOverlapVertsSlow). Only that heuristic reads
+	// it; temp_draw_rect keeps the shipped rounding, because it reaches the texture
+	// cache and rounding it moved pixels on five of forty-seven dumps at 2x.
+	//
+	// Why the one expression works at every grid. RoundCullRect leaves the
+	// bottom/right edge on the native grid already: its upscale arm trims the one
+	// sub-texel that separates floor(z/16)+1 from floor((z-1)/16)+1, and its native
+	// arm computes the latter outright. So the only edge that moves with the grid is
+	// top/left, floor above native against ceil at it, and +15 before the shift is
+	// that ceil:
+	//   * at the native grid bbox.x is already a multiple of 16, so +15 cannot reach
+	//     the next one and this is bit-identical to PrimDrawRect -- 1x is a
+	//     structural no-op, not a configuration branch;
+	//   * above it, (raw.x + 15) >> 4 is ceil(raw.x / 16), the native answer.
+	// The AA1 expansion is a whole pixel on every edge and is applied after the
+	// rounding in both arms, so it commutes with this.
+	//
+	// The point and line classes are excluded because RoundCullRect does not round
+	// them either: their contribution is the raw box at every scale, already
+	// scale-invariant, and putting the ceil on it would change native output.
+	template <int primclass>
+	__forceinline_odr GSVector4i PrimNativeDrawRect(const GSVector4i& bbox)
+	{
+		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
+			return (bbox + GSVector4i(15, 15, -1, -1)).sra32<4>() + GSVector4i(0, 0, 1, 1);
+		else
+			return PrimDrawRect(bbox);
+	}
+
+	// The identity element of runion, for a prim whose native rect is empty.
+	//
+	// A prim that spans no native sample point paints no native pixel, and at the
+	// native grid it is not merely thin -- CullTest rejects it on bbox.rempty() and
+	// it never reaches the accumulation. So the native rect must not take it either,
+	// and runion is a plain min/max with no notion of an empty operand: unioning
+	// such a box pulls the rect out to that prim's pixel, which is the 2x behaviour
+	// this is here to remove.
+	//
+	// It survives the fold's rintersect(scissor) as the scissor's own corners
+	// inverted -- still empty, and still an identity, because clamping the union
+	// gives the same answer as clamping the real operand alone.
+	__forceinline_odr GSVector4i NativeDrawRectNone()
+	{
+		return GSVector4i(std::numeric_limits<int>::max(), std::numeric_limits<int>::max(),
+			std::numeric_limits<int>::min(), std::numeric_limits<int>::min());
+	}
+
+	// PrimNativeDrawRect, with an empty result replaced by the union identity.
+	// Branchless: the emptiness is a data-dependent predicate (69% of Stuntman's
+	// submitted prims are sub-native at 2x), so a branch here mispredicts per prim.
+	template <int primclass>
+	__forceinline_odr GSVector4i PrimNativeDrawRectOrNone(const GSVector4i& bbox)
+	{
+		const GSVector4i rect = PrimNativeDrawRect<primclass>(bbox);
+		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
+		{
+			// lt lanes: (x < z, y < w, false, false) -- the same test rempty() runs,
+			// kept in vector registers. ANDed with itself lane-swapped and then
+			// broadcast, so every lane carries "not empty".
+			const GSVector4i lt = rect.lt32(rect.zwzw());
+			const GSVector4i keep = (lt & lt.yxwz()).xyxy();
+			return NativeDrawRectNone().blend8(rect, keep);
+		}
+		else
+		{
+			return rect;
+		}
 	}
 
 	// Whether the prim spans no point of the cull grid, and so paints nothing.

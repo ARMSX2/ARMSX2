@@ -268,6 +268,14 @@ protected:
 		int m_backed_up_ctx = 0;
 		u32 m_dirty_regs = 0;
 		GSVector4i draw_rect = GSVector4i::zero();
+		// draw_rect asked on the native pixel grid, whatever the upscale (see
+		// GSVertexKernels::PrimNativeDrawRect). Read by CheckOverlapVertsSlow and by
+		// nothing else -- draw_rect above keeps the shipped rounding because it
+		// reaches the texture cache. Equal to draw_rect at native resolution, by
+		// construction rather than by a branch. Only maintained while
+		// GSConfig.UserHacks_DrawBuffering is set, which is the only way the
+		// heuristic that reads it is reachable.
+		GSVector4i native_draw_rect = GSVector4i::zero();
 		bool related_draw = false;
 	};
 
@@ -325,6 +333,16 @@ protected:
 		GSVector4i* temp_rect;
 		const GSVector4i* scissor_in;
 
+		// The same accumulation on the native pixel grid, for the draw-buffering
+		// overlap heuristic. Shares acc_state: every accepted prim contributes to
+		// both, an empty native rect contributing the union's identity element
+		// rather than nothing, so "did this chunk accumulate, and does it replace or
+		// union" has one answer. Only tracked when draw buffering is on
+		// (track_native); the rect is dead state otherwise.
+		GSVector4i native_acc_rect;
+		GSVector4i* temp_native_rect;
+		bool track_native;
+
 		__fi void Load(GSState& s)
 		{
 			vb = s.m_vertex;
@@ -340,6 +358,8 @@ protected:
 			acc_state = 0;
 			temp_rect = &s.temp_draw_rect;
 			scissor_in = &s.m_context->scissor.in;
+			temp_native_rect = &s.temp_native_draw_rect;
+			track_native = GSConfig.UserHacks_DrawBuffering;
 		}
 
 		__fi void Store() const
@@ -354,6 +374,12 @@ protected:
 			{
 				const GSVector4i merged = (acc_state == 2) ? acc_rect : temp_rect->runion(acc_rect);
 				*temp_rect = merged.rintersect(*scissor_in);
+
+				if (track_native)
+				{
+					const GSVector4i nat = (acc_state == 2) ? native_acc_rect : temp_native_rect->runion(native_acc_rect);
+					*temp_native_rect = nat.rintersect(*scissor_in);
+				}
 			}
 		}
 	};
@@ -599,6 +625,10 @@ public:
 	const GSDrawingEnvironment* m_draw_env = &m_env;
 	GSDrawingContext* m_context = nullptr;
 	GSVector4i temp_draw_rect;
+	// temp_draw_rect on the native pixel grid. Tracks temp_draw_rect at every write
+	// site so the two cannot drift; read only by CheckOverlapVertsSlow, through
+	// m_env_buffers[i].native_draw_rect.
+	GSVector4i temp_native_draw_rect;
 	// Owned by the renderer, which opens and closes it on the present path. The transfer
 	// and ReadFIFO packets that fill it are produced on the parse path, which is the front
 	// object under the split — hence GetDumpSink() rather than a bare m_dump read. Both

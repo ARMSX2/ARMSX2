@@ -107,6 +107,11 @@ namespace
 		u32 iip = 1, tme = 0, fst = 0, aa1 = 0, ctxt = 0;
 		bool draw_buffering = false;
 		bool recent_buffer_switch = false;
+		// The cull grid's triangle-class shift. 4 is the native pixel-centre grid,
+		// which is what every case here used before the native draw rect existed;
+		// 2 is what CullGridFor lands on at 2x, where the shipped rect and its
+		// native-grid twin stop being the same value.
+		int cull_shift = 4;
 		bool empty_scissor = false; // drives m_scissor_invalid
 
 		// Autoflush. `autoflush` installs the global level the handler tables are
@@ -273,8 +278,8 @@ namespace
 			m_env.PRIM.FST = s.fst;
 			m_env.PRIM.AA1 = s.aa1;
 
-			m_nativeres = true;
-			m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
+			m_nativeres = (s.cull_shift == 4);
+			m_cull_grid = GSVertexKernels::MakeCullGrid(s.cull_shift, (s.cull_shift == 4) ? 4 : 0);
 			UpdateContext();
 			UpdateVertexKick();
 
@@ -284,6 +289,7 @@ namespace
 			// the first accepted prim writes it), so two probes would start with
 			// different garbage and a run that completes no prim would compare it.
 			temp_draw_rect = GSVector4i::zero();
+			temp_native_draw_rect = GSVector4i::zero();
 		}
 
 		void SetPrim(u32 prim)
@@ -574,6 +580,11 @@ namespace
 		}
 
 		EXPECT_TRUE(SameBytes("temp_draw_rect", &a.temp_draw_rect, &b.temp_draw_rect, sizeof(GSVector4i)));
+		// The draw-buffering overlap heuristic's rect. Accumulated by the same two
+		// paths as temp_draw_rect and by the same rule, so it belongs in the same
+		// differential -- and above native it is the one of the two that moves.
+		EXPECT_TRUE(SameBytes("temp_native_draw_rect", &a.temp_native_draw_rect,
+			&b.temp_native_draw_rect, sizeof(GSVector4i)));
 
 		EXPECT_TRUE(SameEnvCopy("m_prev_env", a.m_prev_env, a.m_env, b.m_prev_env, b.m_env));
 		EXPECT_EQ(a.m_dirty_gs_regs, b.m_dirty_gs_regs) << "m_dirty_gs_regs";
@@ -716,6 +727,61 @@ namespace
 			s.adc = AdcAt(adc, i, rng);
 			// Derived, not drawn from the generator, so adding UV to the corpus
 			// does not move any existing test's stream.
+			s.uv_u = s.z ^ 0xA5A5A5A5u;
+			s.uv_v = s.rgba ^ 0x5A5A5A5Au;
+			v.push_back(s);
+		}
+		return v;
+	}
+
+	// Every in-scissor coordinate MakeStream produces is an exact multiple of 16,
+	// so every primitive it makes lands on the native sample grid and the native
+	// draw rect is bit-identical to the shipped one -- which makes it useless for
+	// telling the two apart. This variant keeps the same shapes and the same ADC
+	// patterns but puts coordinates anywhere in the sub-texel range, and makes a
+	// third of the run sub-native: small enough to span no native sample point,
+	// which is the population the native rect drops and the shipped rect keeps.
+	std::vector<VertexSpec> MakeSubPixelStream(u32 count, AdcPattern adc, u32 seed)
+	{
+		std::mt19937 rng(seed);
+		std::vector<VertexSpec> v;
+		v.reserve(count);
+
+		u32 cluster_x = 100 * 16, cluster_y = 100 * 16;
+		for (u32 i = 0; i < count; i++)
+		{
+			VertexSpec s = {};
+			if ((i % 9) == 0)
+			{
+				cluster_x = (rng() % 600) * 16 + (rng() % 16);
+				cluster_y = (rng() % 400) * 16 + (rng() % 16);
+			}
+
+			const u32 roll = rng() % 100;
+			if (roll < 35)
+			{
+				// Whole prim inside one 16-sub-texel cell.
+				s.x = static_cast<u16>(cluster_x + (rng() % 14));
+				s.y = static_cast<u16>(cluster_y + (rng() % 14));
+			}
+			else if (roll < 85)
+			{
+				s.x = static_cast<u16>((rng() % 640) * 16 + (rng() % 16));
+				s.y = static_cast<u16>((rng() % 448) * 16 + (rng() % 16));
+			}
+			else
+			{
+				s.x = static_cast<u16>(2000 * 16 + (rng() % 1000)); // right of the scissor
+				s.y = static_cast<u16>((rng() % 448) * 16 + (rng() % 16));
+			}
+
+			s.z = rng();
+			s.rgba = rng();
+			s.fog = rng() & 0xFF;
+			s.s = static_cast<float>(static_cast<int>(rng() % 2000) - 1000) / 64.0f;
+			s.t = static_cast<float>(static_cast<int>(rng() % 2000) - 1000) / 64.0f;
+			s.q = ((rng() % 16) == 0) ? 0.0f : (1.0f + static_cast<float>(rng() % 100) / 32.0f);
+			s.adc = AdcAt(adc, i, rng);
 			s.uv_u = s.z ^ 0xA5A5A5A5u;
 			s.uv_v = s.rgba ^ 0x5A5A5A5Au;
 			v.push_back(s);
@@ -944,6 +1010,76 @@ TEST(GsKickKernel, DrawBufferingOverlapPrologue)
 		SCOPED_TRACE(::testing::Message() << "prim=" << prim);
 		RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::Stuntman, 800 + prim), {300});
 		RunAndCompare(s, prim, false, MakeStream(300, AdcPattern::None, 810 + prim), {7, 7, 286});
+	}
+}
+
+// The native-grid draw rect, above native, where it stops being temp_draw_rect.
+// Both kick paths compute it from the same helper, but they accumulate it in
+// different places -- the cursor in VertexKickDirect, a chunk-local in RunChunk --
+// and a disagreement between them would show up only as a draw-buffering decision
+// taken differently, which no pixel gate names.
+TEST(GsKickKernel, NativeDrawRectMatchesLegacyAboveNative)
+{
+	KickSetup s;
+	s.draw_buffering = true;
+	s.cull_shift = 2; // what CullGridFor gives at 2x
+
+	u32 seed = 3100;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (AdcPattern adc : {AdcPattern::None, AdcPattern::Stuntman, AdcPattern::Katamari})
+		{
+			for (u32 len : kRunLengths)
+			{
+				SCOPED_TRACE(::testing::Message() << "prim=" << prim << " adc="
+												  << static_cast<int>(adc) << " len=" << len);
+				RunAndCompare(s, prim, false, MakeSubPixelStream(len, adc, seed++), {len});
+				RunAndCompare(s, prim, true, MakeSubPixelStream(len, adc, seed++), {len});
+			}
+		}
+	}
+
+	// Split across handler calls, so the kernel re-enters mid-draw and the union
+	// has to fold through temp_native_draw_rect instead of staying chunk-local.
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST})
+	{
+		SCOPED_TRACE(::testing::Message() << "split prim=" << prim);
+		RunAndCompare(s, prim, false, MakeSubPixelStream(300, AdcPattern::Stuntman, seed++), {7, 7, 286});
+		RunAndCompare(s, prim, false, MakeSubPixelStream(300, AdcPattern::None, seed++), {1, 2, 3, 294});
+	}
+}
+
+// ...and the control for it, because a differential that compares two equal
+// things passes whatever the code does. At the 2x grid over a sub-pixel stream the
+// two rects must actually come out different, and at the native grid over the same
+// stream they must come out identical -- which is the 1x no-op, seen through the
+// whole kick rather than through the helper alone.
+TEST(GsKickKernel, NativeDrawRectControlDiffersAboveNativeAndNotAtIt)
+{
+	const std::vector<VertexSpec> verts = MakeSubPixelStream(400, AdcPattern::None, 4242);
+	const std::vector<GIFPackedReg> stream = EncodeStream(verts, false);
+
+	auto walk = [&](int cull_shift, bool use_kernel) {
+		KickSetup s;
+		s.draw_buffering = true;
+		s.cull_shift = cull_shift;
+		const DrawBufferingGuard guard(true);
+		auto p = MakeProbe(s, GS_TRIANGLESTRIP, use_kernel);
+		p->KickCallDyn(GS_TRIANGLESTRIP, stream.data(), static_cast<u32>(verts.size()) * 3, false);
+		return std::pair<GSVector4i, GSVector4i>(p->temp_draw_rect, p->temp_native_draw_rect);
+	};
+
+	for (bool use_kernel : {false, true})
+	{
+		const auto at2x = walk(2, use_kernel);
+		EXPECT_FALSE(at2x.second.eq(at2x.first))
+			<< "the 2x differential is vacuous: shipped and native rects are equal"
+			<< " (kernel=" << use_kernel << ")";
+
+		const auto at1x = walk(4, use_kernel);
+		EXPECT_TRUE(at1x.second.eq(at1x.first))
+			<< "native rect is not the shipped rect at the native grid"
+			<< " (kernel=" << use_kernel << ")";
 	}
 }
 
