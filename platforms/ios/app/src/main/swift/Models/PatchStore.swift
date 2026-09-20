@@ -11,7 +11,7 @@ import SwiftUI
 
 @MainActor
 @Observable
-final class PatchStore: @unchecked Sendable {
+final class PatchStore {
     static let shared = PatchStore()
 
     static let cheatsSection = "Cheats"
