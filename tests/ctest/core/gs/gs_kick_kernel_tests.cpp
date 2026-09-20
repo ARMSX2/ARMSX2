@@ -221,6 +221,7 @@ namespace
 		using GSState::m_isPackedUV_HackFlag;
 		using GSState::m_packed_layout;
 		using GSState::m_q;
+		using GSState::m_track_native_draw_rect;
 		using GSState::m_v;
 		using GSState::m_vertex;
 		using GSState::s_fused_kick_use_kernel;
@@ -279,7 +280,10 @@ namespace
 			m_env.PRIM.AA1 = s.aa1;
 
 			m_nativeres = (s.cull_shift == 4);
-			m_cull_grid = GSVertexKernels::MakeCullGrid(s.cull_shift, (s.cull_shift == 4) ? 4 : 0);
+			// SetCullGrid, not a bare assignment: it also decides whether the kick
+			// maintains the native draw rect, and the differential below is about
+			// exactly that.
+			SetCullGrid(GSVertexKernels::MakeCullGrid(s.cull_shift, (s.cull_shift == 4) ? 4 : 0));
 			UpdateContext();
 			UpdateVertexKick();
 
@@ -1050,36 +1054,47 @@ TEST(GsKickKernel, NativeDrawRectMatchesLegacyAboveNative)
 }
 
 // ...and the control for it, because a differential that compares two equal
-// things passes whatever the code does. At the 2x grid over a sub-pixel stream the
-// two rects must actually come out different, and at the native grid over the same
-// stream they must come out identical -- which is the 1x no-op, seen through the
-// whole kick rather than through the helper alone.
-TEST(GsKickKernel, NativeDrawRectControlDiffersAboveNativeAndNotAtIt)
+// things passes whatever the code does. Above native the two rects must actually
+// come out different over a sub-pixel stream; at the native grid the kick must not
+// maintain the second rect at all, since there it would be a second copy of the
+// first. (That the expression WOULD return the same value there is pinned over
+// 200k primitives by GsDrawBufferOverlap.NativeRectEqualsShippedRectAtTheNativeGrid.)
+TEST(GsKickKernel, NativeDrawRectControlDiffersAboveNativeAndIsNotTrackedAtIt)
 {
 	const std::vector<VertexSpec> verts = MakeSubPixelStream(400, AdcPattern::None, 4242);
 	const std::vector<GIFPackedReg> stream = EncodeStream(verts, false);
 
-	auto walk = [&](int cull_shift, bool use_kernel) {
+	struct Walk
+	{
+		GSVector4i shipped, native;
+		bool tracked;
+	};
+	auto walk = [&](int cull_shift, bool draw_buffering, bool use_kernel) {
 		KickSetup s;
-		s.draw_buffering = true;
+		s.draw_buffering = draw_buffering;
 		s.cull_shift = cull_shift;
-		const DrawBufferingGuard guard(true);
+		const DrawBufferingGuard guard(draw_buffering);
 		auto p = MakeProbe(s, GS_TRIANGLESTRIP, use_kernel);
 		p->KickCallDyn(GS_TRIANGLESTRIP, stream.data(), static_cast<u32>(verts.size()) * 3, false);
-		return std::pair<GSVector4i, GSVector4i>(p->temp_draw_rect, p->temp_native_draw_rect);
+		return Walk{p->temp_draw_rect, p->temp_native_draw_rect, p->m_track_native_draw_rect};
 	};
 
 	for (bool use_kernel : {false, true})
 	{
-		const auto at2x = walk(2, use_kernel);
-		EXPECT_FALSE(at2x.second.eq(at2x.first))
-			<< "the 2x differential is vacuous: shipped and native rects are equal"
+		const Walk at2x = walk(2, true, use_kernel);
+		EXPECT_TRUE(at2x.tracked) << "kernel=" << use_kernel;
+		EXPECT_FALSE(at2x.native.eq(at2x.shipped))
+			<< "the differential above is vacuous: shipped and native rects are equal"
 			<< " (kernel=" << use_kernel << ")";
 
-		const auto at1x = walk(4, use_kernel);
-		EXPECT_TRUE(at1x.second.eq(at1x.first))
-			<< "native rect is not the shipped rect at the native grid"
-			<< " (kernel=" << use_kernel << ")";
+		const Walk at1x = walk(4, true, use_kernel);
+		EXPECT_FALSE(at1x.tracked) << "the native rect is tracked at the native grid, where it cannot differ";
+		EXPECT_TRUE(at1x.native.eq(GSVector4i::zero()))
+			<< "the native rect moved at the native grid (kernel=" << use_kernel << ")";
+		EXPECT_FALSE(at1x.shipped.eq(GSVector4i::zero())) << "the 1x walk drew nothing";
+
+		// And with draw buffering off it is not tracked at any grid.
+		EXPECT_FALSE(walk(2, false, use_kernel).tracked) << "tracked with draw buffering off";
 	}
 }
 

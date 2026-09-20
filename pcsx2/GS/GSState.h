@@ -338,7 +338,9 @@ protected:
 		// both, an empty native rect contributing the union's identity element
 		// rather than nothing, so "did this chunk accumulate, and does it replace or
 		// union" has one answer. Only tracked when draw buffering is on
-		// (track_native); the rect is dead state otherwise.
+		// (track_native, i.e. GSState::m_track_native_draw_rect); the rect is dead
+		// state otherwise, and at the native grid it would be a second copy of the
+		// same number.
 		GSVector4i native_acc_rect;
 		GSVector4i* temp_native_rect;
 		bool track_native;
@@ -359,7 +361,7 @@ protected:
 			temp_rect = &s.temp_draw_rect;
 			scissor_in = &s.m_context->scissor.in;
 			temp_native_rect = &s.temp_native_draw_rect;
-			track_native = GSConfig.UserHacks_DrawBuffering;
+			track_native = s.m_track_native_draw_rect;
 		}
 
 		__fi void Store() const
@@ -646,6 +648,20 @@ public:
 	// scale is exactly 1. The software engine pins this native the same way it
 	// pins m_nativeres.
 	GSVertexKernels::CullGrid m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
+	// Whether the vertex kick maintains the native-grid draw rect beside the
+	// shipped one. Only where it can differ: draw buffering on, and a grid that is
+	// not the native one. At the native grid the two rects are the same value by
+	// construction, so tracking there is pure cost -- measured at +1.1% to +3.8% of
+	// GS-thread CPU on the three drawBuffering dumps in the corpus.
+	bool m_track_native_draw_rect = false;
+
+	// Set them together: forgetting the second is a silent cost above native and a
+	// silently stale rect below it.
+	__fi void SetCullGrid(const GSVertexKernels::CullGrid& grid)
+	{
+		m_cull_grid = grid;
+		m_track_native_draw_rect = GSConfig.UserHacks_DrawBuffering && grid.shift != 4;
+	}
 	bool m_mipmap = false;
 	bool m_texflush_flag = false;
 	// This engine draws the alpha stencil counter through the blend unit, so IsAutoFlushDraw leaves the

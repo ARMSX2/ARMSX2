@@ -227,7 +227,7 @@ GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	// m_nativeres seems to be a hack. Unfortunately it impacts draw call number which make debug painful in the replayer.
 	// Let's keep it disabled to ease debug.
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
-	m_cull_grid = ConfigCullGrid();
+	SetCullGrid(ConfigCullGrid());
 	m_mipmap = GSConfig.Mipmap;
 	m_back_records = GSConfig.BackThreadMode != GSBackThreadMode::Off;
 	if (shared_chan)
@@ -2422,7 +2422,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// Config-level and so genuinely call-invariant, unlike the cull grid and the
 	// cull bounds below: a seam kick can flush, but it cannot turn draw buffering
 	// on or off.
-	inv.track_native_rect = GSConfig.UserHacks_DrawBuffering;
+	inv.track_native_rect = m_track_native_draw_rect;
 	if constexpr (!GSVertexKernels::LayoutIsContiguousTriple(layout))
 		inv.off = m_packed_layout;
 
@@ -7751,14 +7751,19 @@ __noinline bool GSState::CheckOverlapVertsSlow(u32 n)
 			// above native keeps its raw sub-texel extent and takes every prim the
 			// finer cull grid let through, including the ones that paint no native
 			// pixel at all. See GSVertexKernels::PrimNativeDrawRect; at native
-			// resolution the two rects are the same value.
-			if (new_area.rintersect(m_env_buffers[m_current_buffer_idx].native_draw_rect).eq(new_area))
+			// resolution the two rects are the same value, so the kick does not
+			// spend anything keeping a second copy of it and this reads draw_rect.
+			const GSDrawBufferEnv& cur_buf = m_env_buffers[m_current_buffer_idx];
+			const GSVector4i cur_rect = m_track_native_draw_rect ? cur_buf.native_draw_rect : cur_buf.draw_rect;
+			if (new_area.rintersect(cur_rect).eq(new_area))
 				return true;
 				
 			if (m_current_buffer_idx < (m_used_buffers_idx - 1))
 			{
-				GSDrawingEnvironment& next_env = m_env_buffers[m_current_buffer_idx + 1].m_env;
-				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(m_env_buffers[m_current_buffer_idx + 1].native_draw_rect).rempty())
+				const GSDrawBufferEnv& next_buf = m_env_buffers[m_current_buffer_idx + 1];
+				const GSDrawingEnvironment& next_env = next_buf.m_env;
+				const GSVector4i next_rect = m_track_native_draw_rect ? next_buf.native_draw_rect : next_buf.draw_rect;
+				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(next_rect).rempty())
 					return true;
 			}
 		}
