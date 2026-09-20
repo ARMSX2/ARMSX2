@@ -29,7 +29,7 @@ struct CoverDownloadSummary: Sendable {
 
 @MainActor
 @Observable
-final class CoverStore: @unchecked Sendable {
+final class CoverStore {
     static let shared = CoverStore()
 
     static let defaultCoverURLTemplate = "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/${serial}.jpg"
