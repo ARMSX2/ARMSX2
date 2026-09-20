@@ -8779,7 +8779,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// flag is draw-local, so OMSetRenderTargets ends and restarts the pass on every
 		// reader/non-reader alternation, and an isolated reader costs two pass boundaries.
 		//
-		// Two device classes carry, for the same reason and on different evidence:
+		// Three device classes carry, for the same reason and on different evidence:
 		//
 		// Broadcom/V3D (Raspberry Pi, via the Linux arm64 build) is tile-based and pays
 		// heavily to close and reopen a tile render pass. Its carry is unconditional and
@@ -8793,6 +8793,18 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// its frame time from about 32 ms to 16.7, frames identical either way on all 22
 		// corpus dumps.
 		//
+		// The attachment-feedback-loop LAYOUT path samples the attachment in that layout
+		// with an ordinary sampler, and there the declaration buys the ordering itself:
+		// Turnip will not tile a pass holding a pipeline that declares a texture feedback
+		// loop, and on the untiled path the same declaration programs the primitive mode
+		// that orders the read. Gated to Adreno, where that is true; without the carry,
+		// declaring the loop RAISED the pass count on three of seven census dumps
+		// (Splashdown 4,766 → 9,451), which is this alternation. Not reached in this tree
+		// yet: UseFeedbackLoopLayout() wants the rasterization-order extension ABSENT and
+		// Turnip advertises it, so an Adreno here takes the copy road. Campaign
+		// gs-adreno-inpass-read is what makes the road selectable; this is here so the
+		// carry arrives with it rather than after it.
+		//
 		// Everything else keeps feedback-loop state draw-local: carrying it over can leave
 		// later draws in the previous feedback render pass/layout and cause Vulkan-only
 		// flicker. That matches sashkinbro/EmuCoreX, which removes the carry globally. A
@@ -8805,6 +8817,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		GSFeedbackLoopCarryInputs carry;
 		carry.device_always_carries = IsDeviceBroadcom();
 		carry.device_is_measured_vendor = IsDeviceMali();
+		// The layout road's carry is Adreno's, and only Adreno's. The M2 reaches this road
+		// too — Honeykrisp advertises no rasterization-order extension — and must not carry:
+		// its self-read is ordered by the barriers below, not by a driver primitive mode.
+		carry.device_is_layout_road_vendor = IsDeviceAdreno();
 		carry.framebuffer_fetch = m_features.framebuffer_fetch;
 		carry.feedback_loop_layout = UseFeedbackLoopLayout();
 		// SendHWDraw only receives a target to barrier against when the pipeline's matching
