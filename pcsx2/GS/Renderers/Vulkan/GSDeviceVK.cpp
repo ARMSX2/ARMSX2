@@ -4164,21 +4164,6 @@ bool GSDeviceVK::CheckFeatures()
 		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
 	}
 
-	// Whether a TFX render pass is opened over its draws or over the whole target. A tile-based
-	// renderer pays for a pass by its area, so a full-target bracket around a 64-pixel draw is a
-	// full load and a full store for nothing; a tiler with a direct-rendering fallback does not
-	// pay that and does pay for the extra pass a narrow area eventually forces. GSRenderAreaPolicy.h
-	// carries both halves of that trade with the device numbers behind them.
-	{
-		GSRenderAreaInputs render_area_inputs;
-		render_area_inputs.override_mode = GSRenderAreaPolicy::GetOverride();
-		render_area_inputs.is_apple = IsDeviceAppleGPU();
-		render_area_inputs.is_mali = IsDeviceMali();
-		render_area_inputs.is_powervr = IsDevicePowerVR();
-		render_area_inputs.is_adreno = IsDeviceAdreno();
-		m_narrow_render_area = GSDecideNarrowRenderArea(render_area_inputs);
-	}
-
 	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
 	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
 	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
@@ -4186,7 +4171,7 @@ bool GSDeviceVK::CheckFeatures()
 	// Mali driver-support deep dive.
 	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
 					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
-					"streamRings=%s(type %u) narrowRenderArea=%s",
+					"streamRings=%s(type %u)",
 		m_device_properties.deviceName,
 		m_device_properties.vendorID,
 		m_device_driver_properties.driverName,
@@ -4204,8 +4189,7 @@ bool GSDeviceVK::CheckFeatures()
 		m_features.test_and_sample_depth ? "on" : "off",
 		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
 		m_use_push_descriptors ? "on" : "off",
-		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index,
-		m_narrow_render_area ? "on(draw-sized)" : "off(full-target)");
+		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
 
 	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
 	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
@@ -5472,12 +5456,13 @@ void GSDeviceVK::OMSetRenderTargets(
 		// Framebuffer unchanged, but check for clears
 		// Use an attachment clear to wipe it out without restarting the render pass
 		//
-		// Unless the open pass was narrowed to its draws (GSRenderAreaPolicy.h): a
+		// Unless the open pass's render area is narrower than the attachment: a
 		// vkCmdClearAttachments rect has to lie inside the render area, so a whole-attachment
-		// clear issued into a narrow pass would stop at the pass's edge and leave the rest of
-		// the target holding stale pixels. End the pass instead and leave the Cleared state
-		// alone, which puts the clear on the next pass's load op -- exactly what happens when
-		// this is reached outside a pass.
+		// clear issued into a narrower pass would stop at the pass's edge and leave the rest of
+		// the target holding stale pixels. A colclip resolve pass and a stretch-rect pass can both
+		// open narrower than their attachment today, so this is reachable now, not hypothetical.
+		// End the pass instead and leave the Cleared state alone, which puts the clear on the next
+		// pass's load op -- exactly what happens when this is reached outside a pass.
 		const bool clear_pending = (vkRt && vkRt->GetState() == GSTexture::State::Cleared) ||
 								   (vkDs && vkDs->GetState() == GSTexture::State::Cleared);
 		if (clear_pending &&
@@ -8048,29 +8033,6 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
-GSVector4i GSDeviceVK::AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& rtsize)
-{
-	// vkGetRenderAreaGranularity is spelled per render pass, and every driver we run on answers
-	// with the tile size, which is a property of the device. Ask once and keep the answer: an
-	// unaligned area is a slow path, never a wrong one, so a pass whose granularity differed
-	// would lose a little speed and nothing else.
-	if (!m_render_area_granularity_known)
-	{
-		vkGetRenderAreaGranularity(m_device, rp, &m_render_area_granularity);
-		if (m_render_area_granularity.width == 0)
-			m_render_area_granularity.width = 1;
-		if (m_render_area_granularity.height == 0)
-			m_render_area_granularity.height = 1;
-		m_render_area_granularity_known = true;
-	}
-
-	const s32 gw = static_cast<s32>(m_render_area_granularity.width);
-	const s32 gh = static_cast<s32>(m_render_area_granularity.height);
-	const GSVector4i aligned((area.left / gw) * gw, (area.top / gh) * gh, ((area.right + gw - 1) / gw) * gw,
-		((area.bottom + gh - 1) / gh) * gh);
-	return aligned.rintersect(GSVector4i::loadh(rtsize));
-}
-
 void GSDeviceVK::CountRenderPassArea(const GSVector4i& rect)
 {
 	// Counted where the area is handed to vkCmdBeginRenderPass, which is the only site that cannot
@@ -8964,43 +8926,6 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	OMSetRenderTargets(draw_rt, draw_ds, config.scissor, static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), rtsize);
 
-	// A pass opened over its draws (GSRenderAreaPolicy.h) cannot hold one that reaches outside it:
-	// rendering outside renderArea is undefined. There is no way to widen an open pass, so this is
-	// where the containment question gets asked -- before the draw is recorded -- and a draw that
-	// does not fit ends the pass so the block below reopens it over the union of the two. The area
-	// only ever grows, so a pass converges on the union of what it holds and the reopenings stop.
-	// Past the cap it opens at the full target instead, which ends them outright.
-	//
-	// OMSetRenderTargets has already ended the pass if the framebuffer changed, so reaching here
-	// inside a pass means this draw is joining the one that is open.
-	//
-	// The rect a pass is opened on is config.drawarea with a margin, because drawarea is not a
-	// strict bound on what the draw lights. GSRendererHW::ComputeBoundingBoxRT builds it from the
-	// vertex trace in NATIVE coordinates, adds its rounding margin there, multiplies by the scale
-	// and truncates -- so the exclusive right and bottom edges can land a device pixel short -- and
-	// it does not model the half-pixel placement offset the vertex shader applies on top. Each is
-	// worth up to one device pixel. Measured on Sly 3, where a pass opened on drawarea exactly cost
-	// 8 pixels of a HUD edge at a delta of 2 levels, and a one-pixel margin restored byte identity
-	// across the whole corpus.
-	//
-	// A render area is a permission, not a coverage claim: too wide costs a little tile traffic and
-	// too narrow loses pixels, so it is the wrong quantity to be tight with.
-	static constexpr int RENDER_AREA_MARGIN = 2;
-	const GSVector4i draw_area =
-		GSVector4i(config.drawarea.left - RENDER_AREA_MARGIN, config.drawarea.top - RENDER_AREA_MARGIN,
-			config.drawarea.right + RENDER_AREA_MARGIN, config.drawarea.bottom + RENDER_AREA_MARGIN)
-			.rintersect(GSVector4i::loadh(rtsize));
-
-	GSVector4i grown_render_area = GSVector4i::zero();
-	if (m_narrow_render_area && InRenderPass() && !m_current_render_pass_area.rcontains(draw_area))
-	{
-		grown_render_area = (m_render_area_growths < MAX_RENDER_AREA_GROWTHS) ?
-								m_current_render_pass_area.runion(draw_area) :
-								GSVector4i::loadh(rtsize);
-		m_render_area_growths++;
-		EndRenderPass();
-	}
-
 	// Begin render pass if new target or out of the area.
 	if (!InRenderPass())
 	{
@@ -9020,34 +8945,17 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
 		// buffer size, otherwise it'll only clear the draw part of the depth buffer.
-		GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
+		//
+		// A TFX pass is opened at the full render target on purpose. Sizing it to its draws instead
+		// (grow to the union of what it holds, pad 2 px, align to the render-area granularity)
+		// removed 98% of Stuntman's render-pass area and moved GPU time by +0.01%..+0.09% on Apple
+		// silicon, +0.59 ms on a Snapdragon 865, and flat to +40% on a Mali-G615. None of Turnip,
+		// Honeykrisp or the Mali driver charge for render-pass AREA -- each charges roughly 12-34
+		// microseconds per PASS, and a narrower area only forces more of them. Commit f9b5395855 has
+		// the mechanism this reverted, and the measurements behind these numbers.
+		const GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
 		                             ? config.drawarea
 		                             : GSVector4i::loadh(rtsize);
-
-		// Size the pass to its draws where the device is paid by render-pass area
-		// (GSRenderAreaPolicy.h). Three exclusions, and each of them keeps the full target for a
-		// reason of its own:
-		//
-		//  - a clearing pass, because the clear IS the load op and a narrow one would leave the
-		//    rest of the attachment undefined. Its own comment below says so.
-		//  - anything colclip, because the convert blit that runs inside this pass covers the
-		//    whole target in ConvertOnly mode, and the resolve half has an area already.
-		//  - a DONT_CARE load op, because that makes the render area's contents undefined and
-		//    narrowing would change WHICH pixels are undefined. Today every pixel of the target
-		//    is; narrowing would leave the outside holding its old contents instead. Nothing
-		//    should be reading either, but "should" is not what a byte-identity gate measures.
-		if (!is_clearing_rt && !pipe.ps.colclip_hw && m_narrow_render_area &&
-			(!draw_rt || rt_op == VK_ATTACHMENT_LOAD_OP_LOAD) &&
-			(!draw_ds || ds_op == VK_ATTACHMENT_LOAD_OP_LOAD))
-		{
-			const GSVector4i want = grown_render_area.rempty() ? draw_area : grown_render_area;
-			if (!want.rempty())
-				render_area = AlignRenderArea(rp, want, rtsize);
-		}
-
-		// A pass opened for any reason other than a growth starts the count again.
-		if (grown_render_area.rempty())
-			m_render_area_growths = 0;
 
 		if (is_clearing_rt)
 		{
@@ -9074,16 +8982,6 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			BeginRenderPass(rp, render_area);
 		}
 	}
-
-	// Nothing may render outside renderArea, and config.scissor is the full scissor rather than
-	// the draw's box for every draw that is not a barrier-less DATE draw (GSRendererHW.cpp, where
-	// m_conf.scissor is assigned). The draw's geometry is inside config.drawarea by construction,
-	// so this clamp is behaviour-neutral -- which is what the byte-identity gate tests. What it
-	// buys is that if a bounding box is ever wrong, the result is a defined clip instead of
-	// undefined rendering. It is a no-op when the pass is the full target: the scissor is already
-	// clamped to the target size.
-	if (m_narrow_render_area && InRenderPass())
-		SetScissor(config.scissor.rintersect(m_current_render_pass_area));
 
 	// Guard on stencil_buffer: devices without a stencil attachment (e.g. Adreno, forced D32F) have no
 	// stencil aspect to clear.
