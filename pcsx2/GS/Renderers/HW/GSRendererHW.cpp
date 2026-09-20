@@ -13,6 +13,7 @@
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSDateRoadPolicy.h"
+#include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
@@ -7236,7 +7237,19 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// worse, it would SUPPLY the ordering the experiment is testing for, so a correct picture
 	// would prove nothing. DeclareAttachmentFeedbackLoop=2 keeps them deliberately, as the
 	// diagnostic arm.
-	if (features.framebuffer_fetch || features.declared_feedback_loop_orders_overlap)
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only), campaign gs-adreno-inpass-read
+	// E4b. Which readers on the declared road actually declare. Off the road, and at the default
+	// scope, this is false for every draw and everything below is unchanged. The withheld draws
+	// go back on the copy road: the backend clones the target for them and samples the clone,
+	// which is what the device does today and what it does for every reader on every other
+	// backend. See GSDeclaredLoopScopePolicy.h for why the scope is worth measuring.
+	m_conf.undeclare_rt_feedback_loop = GSDrawWithholdsFeedbackLoop(
+		{.scope = GSDeclaredLoopScopePolicy::GetScope(),
+			.declared_road = features.declared_feedback_loop_orders_overlap,
+			.prim_overlap_yes = (m_prim_overlap == PRIM_OVERLAP_YES)});
+
+	if (features.framebuffer_fetch ||
+		(features.declared_feedback_loop_orders_overlap && !m_conf.undeclare_rt_feedback_loop))
 	{
 		// If we use depth feedback directly, we must use barriers for the depth texture.
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
@@ -7252,6 +7265,19 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		{
 			m_conf.require_one_barrier = false;
 			m_conf.require_full_barrier = false;
+		}
+	}
+	else if (m_conf.undeclare_rt_feedback_loop)
+	{
+		// A withheld draw is served by one pre-draw snapshot of the target, which is the ordering
+		// a single barrier buys and never the per-primitive kind. Collapse the request to match,
+		// the same collapse a device with no barriers at all makes below -- otherwise the backend
+		// would be asked to split the draw and barrier against a target it is not sampling, and
+		// the clone would not be bound, because binding it is gated on require_one_barrier.
+		if (m_conf.require_full_barrier)
+		{
+			m_conf.require_full_barrier = false;
+			m_conf.require_one_barrier = true;
 		}
 	}
 	// Multi-pass algorithms shouldn't be needed with full barrier and backends may not handle this correctly

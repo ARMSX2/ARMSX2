@@ -52,6 +52,7 @@
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/Renderers/Common/GSDateRoadPolicy.h"
+#include "pcsx2/GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
@@ -1111,6 +1112,12 @@ static void PrintCommandLineHelp(const char* progname)
 						 "destination read moves DATE draws onto the Full road by itself, so an A/B of the colour road "
 						 "otherwise changes two mechanisms at once. ⚠️ EXPECTED TO MOVE PIXELS -- the DATE roads are four "
 						 "approximations of one PS2 rule and they disagree at the edges.\n");
+	std::fprintf(stderr, "  -declare-overlap-only: On a build that declares an attachment feedback loop for the draws that "
+						 "read their own render target, declare it only for the draws whose own primitives overlap, and "
+						 "leave every other reader on the copy road. Those are the draws a once-per-draw clone cannot "
+						 "serve; the rest it serves exactly. Measurement instrument: the driver's coherent primitive "
+						 "mode is what the declaration buys and what it costs, so this confines the cost to the draws "
+						 "that need the ordering. Inert on a build that declares nothing. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1672,6 +1679,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// not a user preference. Read where the backend builds the carry inputs, once
 				// per draw, which is long after argument parsing.
 				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
+				continue;
+			}
+			else if (CHECK_ARG("-declare-overlap-only"))
+			{
+				Console.WriteLn("Declaring the attachment feedback loop only for self-overlapping draws");
+				// Not a setting: which draws should pay a driver's serialising primitive mode is a
+				// measurement result on one device. Read per draw, in DetermineBarriers.
+				GSDeclaredLoopScopePolicy::SetScope(GSDeclaredLoopScope::OverlapOnly);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-date-road"))

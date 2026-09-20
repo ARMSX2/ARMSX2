@@ -39,6 +39,7 @@ namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDateRoadPolicy.h"
+#include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
@@ -4377,8 +4378,9 @@ bool GSDeviceVK::CheckFeatures()
 	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
-	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s",
-		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name());
+	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s",
+		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
+		GSDeclaredLoopScopePolicy::Name());
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
@@ -8986,7 +8988,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 		if (CarryFeedbackLoopAcrossTargetRun(carry))
 		{
-			if (draw_rt && m_current_render_target == draw_rt)
+			// A draw the scope override withheld the declaration from is about to take the copy
+			// road, which ends the pass anyway; inheriting the flag would re-declare exactly what
+			// the override withheld and make the arm measure the blanket road again.
+			if (draw_rt && m_current_render_target == draw_rt && !config.undeclare_rt_feedback_loop)
 				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
 			if (draw_ds && m_current_depth_target == draw_ds && CarryDepthFeedbackAcrossTargetRun(carry))
 			{
@@ -8996,7 +9001,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
-	if (draw_rt && ((config.require_one_barrier && (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps)))) && !m_features.texture_barrier)
+	// undeclare_rt_feedback_loop is the measurement override (gsrunner -declare-overlap-only)
+	// putting this one draw back on the copy road although the device is on the declared road.
+	// False on every draw unless the harness asked, so the condition is unchanged everywhere else.
+	if (draw_rt && ((config.require_one_barrier && (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps)))) &&
+		(!m_features.texture_barrier || config.undeclare_rt_feedback_loop))
 	{
 		// Requires a copy of the RT.
 		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
@@ -9285,7 +9294,11 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
 	if (m_features.texture_barrier)
 	{
-		if (config.IsFeedbackLoopRT(config.ps))
+		// The colour half is what the scope override withholds -- the pipeline create flag it
+		// produces is what untiles the pass on Turnip and programs the serialising primitive
+		// mode, and confining that to the draws that need the ordering is the whole experiment.
+		// The depth half is untouched: nothing in this campaign declares a depth loop.
+		if (config.IsFeedbackLoopRT(config.ps) && !config.undeclare_rt_feedback_loop)
 			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
 
 		if (config.IsFeedbackLoopDepth(config.ps))

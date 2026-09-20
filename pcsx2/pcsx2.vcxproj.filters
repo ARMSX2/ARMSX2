@@ -2576,6 +2576,9 @@
     <ClInclude Include="GS\Renderers\Common\GSDateRoadPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDeclaredLoopScopePolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
