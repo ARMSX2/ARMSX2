@@ -577,15 +577,20 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	const GSVector4i g8c = GSVector4i(w.c.g8);
 	const GSVector4i g8f = GSVector4i(w.f.g8).xxxx();
 
-	for (int s = 0; s < 8; s++)
+	// The ramp term of a step is gc times the whole vector, wherever in the vector
+	// the span begins, so this one is constant across the table.
+	for (int l = 0; l < vlen; l++)
+		kbuf[l] = static_cast<float>(vlen);
+
+	const GSVector4 kv = GSVector4::load<true>(kbuf);
+
+	// The step out of a vector is a property of the VECTOR, not of the pixel
+	// inside it that the span happens to start on: steps() reads `base` and
+	// nothing else, and the ramp above is constant. So the four entries of a
+	// vector all hold the same pair, and the pair is computed once per vector
+	// rather than once per entry.
+	for (int base = 0; base < 8; base += vlen)
 	{
-		const int base = s & ~(vlen - 1);
-
-		for (int l = 0; l < 4; l++)
-			kbuf[l] = 4.0f;
-
-		const GSVector4 kv = GSVector4::load<true>(kbuf);
-
 		steps(w.c, base);
 		const GSVector4 hi = GSVector4::load<true>(hibuf);
 		const GSVector4 lo = GSVector4::load<true>(lobuf);
@@ -601,12 +606,22 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 
 		const GSVector4i sf = entry(fgc, fdw, kv, fhi, flo, fpf);
 
-		local.dw[s][0].rb = pack(sr, sb);
-		local.dw[s][0].ga = pack(sg, sa);
-		local.dw[s][0].f = sf.xxzzlh();
-		local.dw[s][1].rb = pack(g8c.xxxx() - sr, g8c.zzzz() - sb);
-		local.dw[s][1].ga = pack(g8c.yyyy() - sg, g8c.wwww() - sa);
-		local.dw[s][1].f = (g8f - sf).xxzzlh();
+		const GSVector4i rb0 = pack(sr, sb);
+		const GSVector4i ga0 = pack(sg, sa);
+		const GSVector4i f0 = sf.xxzzlh();
+		const GSVector4i rb1 = pack(g8c.xxxx() - sr, g8c.zzzz() - sb);
+		const GSVector4i ga1 = pack(g8c.yyyy() - sg, g8c.wwww() - sa);
+		const GSVector4i f1 = (g8f - sf).xxzzlh();
+
+		for (int s = base; s < base + vlen; s++)
+		{
+			local.dw[s][0].rb = rb0;
+			local.dw[s][0].ga = ga0;
+			local.dw[s][0].f = f0;
+			local.dw[s][1].rb = rb1;
+			local.dw[s][1].ga = ga1;
+			local.dw[s][1].f = f1;
+		}
 	}
 #endif
 }
