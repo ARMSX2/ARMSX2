@@ -145,6 +145,35 @@ struct GSColourWalk
 	int d;           ///< +1 walking right, -1 walking left
 	int top_anchor;  ///< the anchor is the spine's TOP end
 	int live;        ///< this primitive walks a gradient at all
+
+	/// What GSDrawScanline::SetupColourWalkTables has already made of this walk:
+	/// which row the scanline's lane and step tables currently hold, so that a row
+	/// wanting the same bytes does not rebuild them.
+	///
+	/// The tables are a function of this walk and of the row's own fractional
+	/// part, and of nothing else -- the row enters the build only through that
+	/// fraction. So two rows whose fractions are equal want the same bytes, and a
+	/// gradient shallow enough that the fraction does not move keeps one set of
+	/// tables for many rows.
+	///
+	/// It sits inside the walk because it is only ever valid FOR this walk:
+	/// clearing the walk clears the record with it, which is what a caller driving
+	/// the scanline directly already does. GSRasterizer::SetupPrim clears it by
+	/// hand for the primitives whose walk it does not rewrite.
+	struct
+	{
+		GSVector4 cfrac; ///< the colour fraction those tables were built from
+		GSVector4 ffrac; ///< the fog fraction, likewise
+		int state;       ///< GSColourWalkTablesState
+	} tables;
+};
+
+/// What the tables named by GSColourWalk::tables currently hold.
+enum GSColourWalkTablesState : int
+{
+	GSColourWalkTablesStale = 0, ///< a new primitive; nothing there can be reused
+	GSColourWalkTablesZero,      ///< the tables hold the zeros a walkless primitive wants
+	GSColourWalkTablesBuilt,     ///< the tables hold the row whose fractions are recorded
 };
 
 __forceinline static void GSColourWalkGradientInit(GSColourWalkGradient& out,

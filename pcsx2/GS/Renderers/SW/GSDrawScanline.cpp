@@ -382,7 +382,13 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	if (!w.live)
 	{
 		// Lines, points, sprites and the AA1 edge pass have no walk of their own,
-		// and their dscan is zero anyway.
+		// and their dscan is zero anyway. The zeros are the same on every row, so
+		// the first row of the primitive writes them and the rest find them.
+		if (w.tables.state == GSColourWalkTablesZero)
+			return;
+
+		local.cwalk.tables.state = GSColourWalkTablesZero;
+
 		for (int s = 0; s < 8; s++)
 		{
 			local.d[s].rb = VectorI::zero();
@@ -436,6 +442,24 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	const GSVector4 rowf = w.f.pa + GSColourWalkTruncUnit(w.f.gy * GSVector4(static_cast<float>(yf) - w.yr));
 	const GSVector4 cfrac = rowc - rowc.floor();
 	const GSVector4 ffrac = rowf - rowf.floor();
+
+	// The row reaches the tables below ONLY through these two fractions, so a row
+	// that repeats them wants the bytes that are already there. It repeats them
+	// whenever the row pair does -- yf is the pair's row, so every second row is
+	// free -- and it keeps repeating them for as long as the vertical gradient
+	// takes to walk a whole colour unit, which on a shallow gradient is many rows.
+	// The tables cannot have been left by a different primitive: SetupPrim clears
+	// the state, and nothing between two rows of one primitive writes d[] or dw[].
+	if (w.tables.state == GSColourWalkTablesBuilt
+		&& (w.tables.cfrac == cfrac).alltrue()
+		&& (w.tables.ffrac == ffrac).alltrue())
+	{
+		return;
+	}
+
+	local.cwalk.tables.cfrac = cfrac;
+	local.cwalk.tables.ffrac = ffrac;
+	local.cwalk.tables.state = GSColourWalkTablesBuilt;
 
 	const VectorF gcv(w.c.gc);
 	const VectorF dwv(w.c.dw);

@@ -1858,6 +1858,9 @@ void GSRasterizer::AddScanline(GSVertexSW* e, int pixels, int left, int top, con
 void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live)
 {
 	m_local.cwalk.live = cwalk_live ? 1 : 0;
+	// The lane and step tables are a function of this walk, so whatever the last
+	// primitive left in them is not this one's answer, whatever row it was for.
+	m_local.cwalk.tables.state = GSColourWalkTablesStale;
 
 	m_setup_prim(vertex, index, dscan, m_local);
 }
