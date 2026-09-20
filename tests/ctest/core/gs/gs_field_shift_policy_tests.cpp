@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <random>
 #include <vector>
 
@@ -171,4 +172,119 @@ TEST(GSFieldShiftPolicy, BothShiftDirectionsAreRecognised)
 		ShiftDown(prev, -kStep).data(), prev.data(), kCols, kRows, kStep, 0);
 	EXPECT_FLOAT_EQ(up.mad_up, 0.0f);
 	EXPECT_GT(up.mad_aligned, 1.0f);
+}
+
+// -------------------------------------------------------------------------------------------
+// The top band. The shift moves what the merge READS, so the rows it exposes at the top of a
+// circuit's rect are filled by the sampler's clamp at the TEXTURE's edge. That is the rect's own
+// first row only when the rect starts at the texture top; otherwise the merge has to draw the
+// band itself.
+
+namespace
+{
+// The geometry the emulator is in at 2x on a 480i field-mode title: a 224-line field render into
+// a 1280x896 target, magnified over 894 destination rows, shifted by one native line (2 device
+// rows) on the odd field.
+constexpr int kTexHeight = 896;
+constexpr float kDstTop = 0.0f;
+constexpr float kDstBottom = 894.0f;
+constexpr float kShiftRows = 2.0f;
+
+// Which texel row a destination row samples, for a nearest-filtered draw of [src_top_v, src_bot_v]
+// over [dst_top, dst_bottom).
+int SampledTexelRow(float src_top_v, float src_bot_v, float dst_top, float dst_bottom, int dst_row)
+{
+	const float src_top = src_top_v * static_cast<float>(kTexHeight);
+	const float src_bot = src_bot_v * static_cast<float>(kTexHeight);
+	const float per_row = (src_bot - src_top) / (dst_bottom - dst_top);
+	const float v = src_top + (static_cast<float>(dst_row) + 0.5f - dst_top) * per_row;
+	return static_cast<int>(std::floor(v));
+}
+} // namespace
+
+TEST(GSFieldShiftTopBand, RectAtTheTextureTopNeedsNoBand)
+{
+	// The whole corpus is here: every field-mode title that shifts has DISPFB.DBY = 0, so the
+	// clamp already returns the rect's first row and the common path must not gain a draw.
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(0, 0.0f, kDstTop, kShiftRows, kTexHeight);
+	EXPECT_FALSE(band.enabled);
+}
+
+TEST(GSFieldShiftTopBand, NoShiftMeansNoBand)
+{
+	// The unshifted field reads its own rect and exposes nothing.
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(1, 2.0f / kTexHeight, kDstTop, 0.0f, kTexHeight);
+	EXPECT_FALSE(band.enabled);
+}
+
+TEST(GSFieldShiftTopBand, RectBelowTheTextureTopGetsABandOnItsOwnFirstRow)
+{
+	// DISPFB.DBY = 1 at 2x: the rect starts at texel row 2, so the clamp at texel row 0 would
+	// hand back two rows this circuit does not own.
+	const float src_top_v = 2.0f / kTexHeight;
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(1, src_top_v, kDstTop, kShiftRows, kTexHeight);
+	ASSERT_TRUE(band.enabled);
+
+	// Every row of the band samples the centre of texel row 2 -- the rect's first row.
+	EXPECT_FLOAT_EQ(band.src_v * static_cast<float>(kTexHeight), 2.5f);
+	EXPECT_FLOAT_EQ(band.dst_top, kDstTop);
+	EXPECT_FLOAT_EQ(band.dst_bottom, kDstTop + kShiftRows);
+}
+
+TEST(GSFieldShiftTopBand, TheBandCoversExactlyTheRowsTheShiftExposed)
+{
+	const float src_top_v = 2.0f / kTexHeight;
+	const float src_bot_v = (2.0f + 448.0f) / kTexHeight;
+	const float per_dst_row = (src_bot_v - src_top_v) / (kDstBottom - kDstTop);
+	const float shift_v = kShiftRows * per_dst_row;
+
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(1, src_top_v, kDstTop, kShiftRows, kTexHeight);
+	ASSERT_TRUE(band.enabled);
+
+	// A destination row belongs to the band when the shifted main draw would sample above the
+	// rect. Below the band the main draw is inside the rect and must be left alone.
+	for (int row = 0; row < 8; row++)
+	{
+		const int sampled = SampledTexelRow(
+			src_top_v - shift_v, src_bot_v - shift_v, kDstTop, kDstBottom, row);
+		const bool in_band = static_cast<float>(row) + 0.5f < band.dst_bottom;
+		EXPECT_EQ(in_band, sampled < 2) << "destination row " << row;
+	}
+}
+
+TEST(GSFieldShiftTopBand, TheBandRepeatsTheRowTheShiftedDrawShowsBelowIt)
+{
+	// The band and the shifted main draw abut. If they disagreed about which texel row sits at
+	// the seam the fix would trade a wrong band for a visible step.
+	const float src_top_v = 2.0f / kTexHeight;
+	const float src_bot_v = (2.0f + 448.0f) / kTexHeight;
+	const float per_dst_row = (src_bot_v - src_top_v) / (kDstBottom - kDstTop);
+	const float shift_v = kShiftRows * per_dst_row;
+
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(1, src_top_v, kDstTop, kShiftRows, kTexHeight);
+	ASSERT_TRUE(band.enabled);
+
+	const int band_row = static_cast<int>(std::floor(band.src_v * static_cast<float>(kTexHeight)));
+	const int first_row_below = static_cast<int>(std::ceil(band.dst_bottom - 0.5f));
+	EXPECT_EQ(band_row, SampledTexelRow(src_top_v - shift_v, src_bot_v - shift_v, kDstTop,
+							 kDstBottom, first_row_below));
+}
+
+TEST(GSFieldShiftTopBand, TheBandTracksTheRectWhereverItSits)
+{
+	// The point of the change: the fill follows the rect, not the texture.
+	for (const int dby : {1, 2, 7, 64})
+	{
+		const float src_top_v = static_cast<float>(dby * 2) / kTexHeight;
+		const GSFieldShiftTopBand band =
+			GSComputeFieldShiftTopBand(dby, src_top_v, kDstTop, kShiftRows, kTexHeight);
+		ASSERT_TRUE(band.enabled) << "DBY " << dby;
+		EXPECT_FLOAT_EQ(band.src_v * static_cast<float>(kTexHeight), static_cast<float>(dby * 2) + 0.5f)
+			<< "DBY " << dby;
+	}
 }

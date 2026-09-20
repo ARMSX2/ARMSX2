@@ -1893,7 +1893,7 @@ void GSDevice11::DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rect
 	DrawIndexedPrimitive();
 }
 
-void GSDevice11::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+void GSDevice11::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 	const GSVector4 full_r(0.0f, 0.0f, 1.0f, 1.0f);
 	const bool feedback_write_2 = PMODE.EN2 && sTex[2] != nullptr && EXTBUF.FBIN == 1;
@@ -1917,6 +1917,8 @@ void GSDevice11::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		// 2nd output is enabled and selected. Copy it to destination so we can blend it with 1st output
 		// Note: value outside of dRect must contains the background color (c)
 		StretchRect(sTex[1], sRect[1], dTex, PMODE.SLBG ? dRect[2] : dRect[1], ShaderConvert::COPY, filter);
+		if (top_band[1].enabled)
+			StretchRect(sTex[1], top_band[1].src, dTex, top_band[1].dst, ShaderConvert::COPY, filter);
 	}
 
 	// Save 2nd output
@@ -1934,6 +1936,11 @@ void GSDevice11::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 	{
 		// 1st output is enabled. It must be blended
 		DoStretchRect(sTex[0], sRect[0], dTex, dRect[0], m_merge.ps[PMODE.MMOD].get(), m_merge.cb.get(), m_merge.bs.get(), filter);
+		if (top_band[0].enabled)
+		{
+			DoStretchRect(sTex[0], top_band[0].src, dTex, top_band[0].dst, m_merge.ps[PMODE.MMOD].get(), m_merge.cb.get(),
+				m_merge.bs.get(), filter);
+		}
 	}
 
 	if (feedback_write_1)

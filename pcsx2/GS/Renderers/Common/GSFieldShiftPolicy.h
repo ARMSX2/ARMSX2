@@ -146,3 +146,49 @@ inline bool GSFieldShiftTallySaysNoShift(const GSFieldShiftTally& t)
 {
 	return t.noshift >= GS_FIELD_SHIFT_MIN_VOTES && t.noshift * 4 >= t.informative() * 3;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The top band
+//
+// The field-direct merge applies the shift by moving what it READS, not where it draws, so screen
+// row r gets the source content of row r - offset and no destination row is left undrawn. The rows
+// at the top of the circuit's rect now ask for source rows above the rect, and the sampler answers
+// with its clamp -- the TEXTURE's first row.
+//
+// That is the rect's own first row only when the rect starts at the texture top. It usually does:
+// the rect begins at DISPFB.DBY (plus any whole-page offset between the display pointer and the
+// target's base), and every field-mode title that shifts has DBY = 0. When it does not, the clamp
+// returns rows the circuit does not own, so the merge draws the band itself instead, every row of
+// it sampling the centre of the rect's first texel row.
+//
+// The band is exactly `shift_rows` destination rows deep -- a destination row is in it when its
+// centre maps above the rect, which is r + 0.5 < dst_top + shift_rows -- so it abuts the shifted
+// main draw with no gap and no overlap, and the first row below it samples the same texel row the
+// band repeats.
+
+struct GSFieldShiftTopBand
+{
+	// Normalised v for every row of the band: the centre of the rect's first texel row.
+	float src_v = 0.0f;
+	// Destination rows [dst_top, dst_bottom), in device pixels.
+	float dst_top = 0.0f;
+	float dst_bottom = 0.0f;
+	bool enabled = false;
+};
+
+/// rect_top_rows is where the circuit's rect starts in the texture, in native lines (DISPFB.DBY
+/// plus the target page offset). Zero -- the common case -- means the sampler's clamp already
+/// returns the rect's first row and no band is needed.
+inline GSFieldShiftTopBand GSComputeFieldShiftTopBand(
+	int rect_top_rows, float src_top_v, float dst_top, float shift_rows, int texture_height)
+{
+	GSFieldShiftTopBand band;
+	if (rect_top_rows <= 0 || shift_rows <= 0.0f || texture_height <= 0)
+		return band;
+
+	band.src_v = src_top_v + 0.5f / static_cast<float>(texture_height);
+	band.dst_top = dst_top;
+	band.dst_bottom = dst_top + shift_rows;
+	band.enabled = true;
+	return band;
+}

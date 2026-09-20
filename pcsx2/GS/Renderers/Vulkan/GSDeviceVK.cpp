@@ -5006,7 +5006,7 @@ void GSDeviceVK::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u
 }
 
 void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect,
-	const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+	const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 	GL_PUSH("DoMerge");
 
@@ -5054,6 +5054,8 @@ void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 			BeginClearRenderPass(m_utility_color_render_pass_clear, darea, c);
 			SetPipeline(GetConvertPipeline(ShaderConvert::COPY));
 			DrawStretchRect(sRect[1], PMODE.SLBG ? dRect[2] : dRect[1], dsize);
+			if (top_band[1].enabled)
+				DrawStretchRect(top_band[1].src, top_band[1].dst, dsize);
 			dTex->SetState(GSTexture::State::Dirty);
 			dcleared = true;
 		}
@@ -5106,6 +5108,8 @@ void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		SetPipeline(m_merge[PMODE.MMOD]);
 		SetUtilityPushConstants(&bg_color, sizeof(bg_color));
 		DrawStretchRect(sRect[0], dRect[0], dTex->GetSize());
+		if (top_band[0].enabled)
+			DrawStretchRect(top_band[0].src, top_band[0].dst, dTex->GetSize());
 	}
 
 	if (feedback_write_1)

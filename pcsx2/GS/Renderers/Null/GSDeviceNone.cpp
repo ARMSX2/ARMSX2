@@ -228,7 +228,7 @@ GSTexture* GSDeviceNone::CreateSurface(GSTexture::Usage usage, int width, int he
 }
 
 void GSDeviceNone::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect,
-	const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+	const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 }
 

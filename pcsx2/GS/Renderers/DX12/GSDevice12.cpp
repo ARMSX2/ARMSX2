@@ -2109,7 +2109,7 @@ void GSDevice12::DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect,
 }
 
 void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect,
-	const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+	const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 	GL_PUSH("DoMerge");
 
@@ -2166,6 +2166,8 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		SetUtilityRootSignature();
 		SetPipeline(GetConvertPipeline(ShaderConvert::COPY));
 		DrawStretchRect(sRect[1], PMODE.SLBG ? dRect[2] : dRect[1], dsize);
+		if (top_band[1].enabled)
+			DrawStretchRect(top_band[1].src, top_band[1].dst, dsize);
 		dTex->SetState(GSTexture::State::Dirty);
 		dcleared = true;
 	}
@@ -2222,6 +2224,8 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		SetUtilityTexture(sTex[0], sampler);
 		SetPipeline(m_merge[PMODE.MMOD].get());
 		DrawStretchRect(sRect[0], dRect[0], dTex->GetSize());
+		if (top_band[0].enabled)
+			DrawStretchRect(top_band[0].src, top_band[0].dst, dTex->GetSize());
 	}
 
 	if (feedback_write_1) // FIXME I'm not sure dRect[0] is always correct

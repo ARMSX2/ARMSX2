@@ -4,6 +4,7 @@
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiManager.h"
 #include "GS/Renderers/Common/GSRenderer.h"
+#include "GS/Renderers/Common/GSFieldShiftPolicy.h"
 #include "GS/Renderers/Common/GSInterlaceModePolicy.h"
 #include "GS/Renderers/Common/GSPresentationPolicy.h"
 #include "GS/Renderers/Common/GSSnapshotPolicy.h"
@@ -197,6 +198,9 @@ bool GSRenderer::Merge(int field)
 
 	GSVector4 src_gs_read[2] = {};
 	GSVector4 dst[3] = {};
+	// Filled in only for a circuit whose shifted read would fall above its own rect in the texture,
+	// where the sampler's clamp cannot supply the rect's first row (see below).
+	GSDevice::MergeTopBand top_band[2] = {};
 	// Device rows at the top of the merge target each circuit's picture was pushed past. The target
 	// is cleared, so for the field that moved down, nothing drew those rows.
 	float top_pad[2] = {};
@@ -315,6 +319,22 @@ bool GSRenderer::Merge(int field)
 			{
 				const float src_per_dst_row = (src_gs_read[i].w - src_gs_read[i].y) / dst_span;
 				const float src_shift = interlace_offset * src_per_dst_row;
+
+				// The clamp is at the TEXTURE's edge, which is the rect's own first row only when
+				// the rect starts at the texture top. When DISPFB.DBY (or a whole-page offset into
+				// the target) puts it lower, the clamp would hand back rows this circuit does not
+				// own, so the merge draws the band itself. Every field-mode title in the corpus
+				// that shifts has DBY = 0, so this costs them nothing and cannot move their pixels.
+				const GSFieldShiftTopBand band = GSComputeFieldShiftTopBand(
+					curCircuit.framebufferRect.y + y_offset[i], src_gs_read[i].y, dst[i].y,
+					interlace_offset, tex[i]->GetHeight());
+				if (band.enabled)
+				{
+					top_band[i].src = GSVector4(src_gs_read[i].x, band.src_v, src_gs_read[i].z, band.src_v);
+					top_band[i].dst = GSVector4(dst[i].x, band.dst_top, dst[i].z, band.dst_bottom);
+					top_band[i].enabled = true;
+				}
+
 				src_gs_read[i] -= GSVector4(0.0f, src_shift, 0.0f, src_shift);
 			}
 		}
@@ -358,7 +378,7 @@ bool GSRenderer::Merge(int field)
 	}
 
 	const u32 c = (m_regs->BGCOLOR.U32[0] & 0x00FFFFFFu) | (m_regs->PMODE.ALP << 24);
-	g_gs_device->Merge(tex, src_gs_read, dst, fs, m_regs->PMODE, m_regs->EXTBUF, c);
+	g_gs_device->Merge(tex, src_gs_read, dst, top_band, fs, m_regs->PMODE, m_regs->EXTBUF, c);
 
 	// Show the detector this field, offset and all. It is told which offset was applied so it can
 	// take it back out and measure what the GAME did between fields. Costs nothing once decided,

@@ -1548,6 +1548,20 @@ public:
 		GSHWDrawConfig::ColorMaskSelector wmask; // 0xf for all channels by default
 	};
 
+	/// One display circuit's top band in the merge. The field-direct presentation shifts what the
+	/// merge READS rather than where it draws, and leans on the sampler's clamp to fill the rows
+	/// that shift exposes at the top of the circuit's rect. The clamp is at the texture's edge, so
+	/// it supplies the rect's own first row only when the rect starts at the texture top; when it
+	/// does not, the merge draws this band with the circuit's own pipeline and blend state instead.
+	/// src is a zero-height rect on the centre of the rect's first texel row, so every destination
+	/// row in dst repeats that row. See GSFieldShiftPolicy.h.
+	struct MergeTopBand
+	{
+		GSVector4 src;
+		GSVector4 dst;
+		bool enabled = false;
+	};
+
 	struct TextureRecycleDeleter
 	{
 		void operator()(GSTexture* const tex);
@@ -1669,7 +1683,7 @@ protected:
 
 	virtual GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) = 0;
 
-	virtual void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) = 0;
+	virtual void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) = 0;
 	virtual void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) = 0;
 	virtual void DoFXAA(GSTexture* sTex, GSTexture* dTex) = 0;
 	virtual void DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float params[4]) = 0;
@@ -2122,7 +2136,7 @@ public:
 	virtual void ClearSamplerCache() = 0;
 
 	void ClearCurrent();
-	void Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c);
+	void Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const MergeTopBand* top_band, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c);
 	/// `top_pad` is how many device rows at the top of the merge target were not drawn for this
 	/// field, because the merge offset that field's picture down by a native line.
 	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float top_pad);

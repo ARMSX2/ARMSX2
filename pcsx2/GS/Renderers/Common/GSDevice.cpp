@@ -1259,11 +1259,11 @@ void GSDevice::ClearCurrent()
 	m_sgsr_output = nullptr;
 }
 
-void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
+void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const MergeTopBand* top_band, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
 {
 	FlushDeferredDraws();
 	if (ResizeRenderTarget(&m_merge, fs.x, fs.y, false, false))
-		DoMerge(sTex, sRect, m_merge, dRect, PMODE, EXTBUF, c, BilnIf(GSConfig.PCRTCOffsets));
+		DoMerge(sTex, sRect, m_merge, dRect, top_band, PMODE, EXTBUF, c, BilnIf(GSConfig.PCRTCOffsets));
 
 	m_current = m_merge;
 }
