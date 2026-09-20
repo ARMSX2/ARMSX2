@@ -2618,6 +2618,9 @@
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h">
       <Filter>System\Ps2\GS\Renderers\Null</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h">
+      <Filter>System\Ps2\GS\Renderers\Null</Filter>
+    </ClInclude>
     <ClInclude Include="MTGS.h">
       <Filter>Misc</Filter>
     </ClInclude>

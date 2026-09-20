@@ -53,6 +53,7 @@
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
+#include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
@@ -1016,6 +1017,15 @@ static void PrintCommandLineHelp(const char* progname)
 						 "renderer path (GIF decode, vertex kick, texture cache, everything Draw() does to build a "
 						 "submission), with no GPU work behind it. GPU-side @HWSTAT@ fields (render passes, barriers, "
 						 "copies, uploads, readbacks, GPU time/usage) report n/a rather than a fabricated zero.\n");
+	std::fprintf(stderr, "  -nullhw-profile <name>: Which device '-renderer nullhw' reports the features of. "
+						 "GSRendererHW takes a lot of CPU-side decisions from GSDevice::FeatureSupport -- whether "
+						 "the alpha stencil counter goes through the blend unit, whether points and lines are "
+						 "expanded in software, whether a feedback read is cheap -- so a null device with no "
+						 "features is not any real device and counts taken on it are about nothing. 'sd865' "
+						 "(default) is the Adreno 650 / Turnip render-target-copy road; 'mali-g615' is the "
+						 "Dimensity 8300 in-tile framebuffer-fetch road; 'blank' restores FeatureSupport's own "
+						 "defaults, which is what the null arm reported before profiles existed. The resolved bits "
+						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1366,6 +1376,23 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				Console.WriteLn("Using %s renderer.", Pcsx2Config::GSOptions::GetRendererName(type));
 				s_settings_interface.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(type));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-nullhw-profile"))
+			{
+				// Which device -renderer nullhw reports the features of. Not a setting: the null
+				// device is a measurement instrument, and its profile belongs to the run, not to
+				// the user's configuration.
+				const char* pname = argv[++i];
+				const std::optional<GSNullDeviceProfile::Id> id = GSNullDeviceProfile::Parse(pname);
+				if (!id.has_value())
+				{
+					ArgError("-nullhw-profile: unknown profile '{}'. Known: {}.", pname,
+						GSNullDeviceProfile::NameList());
+					return false;
+				}
+
+				GSDeviceNone::SetFeatureProfile(id.value());
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-backthread"))

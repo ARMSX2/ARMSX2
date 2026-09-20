@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/Null/GSDeviceNone.h"
+#include "GS/GS.h"
 #include "GS/GSPerfMon.h"
+
+#include "common/Console.h"
 
 // -------------------------------------------------------------------------
 // GSTextureNone
@@ -101,6 +104,45 @@ bool GSDeviceNone::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 	m_name = "None";
 	m_max_texture_size = 8192;
+
+	// The features a real device would report. Left at FeatureSupport's defaults this device is
+	// not any device, and GSRendererHW's CPU decisions follow the difference -- see
+	// GSNullDeviceProfile.h. Printed in full because a count taken here is a count ABOUT some
+	// device, and the reader has to be able to see which one without reading the source.
+	//
+	// Only for NullHW, the measurement renderer. The plain Null renderer shares this device but
+	// draws nothing, and eerunner --renderer null is a shipped way to run a VM with no GPU at all;
+	// neither is measuring a device, and giving them a device's features would change behaviour
+	// nobody asked to change. GSCurrentRenderer is not set until OpenGSRenderer, which runs after
+	// this, so the requested renderer is read from the config.
+	if (GSConfig.Renderer == GSRendererType::NullHW)
+	{
+		m_features = GSNullDeviceProfile::Features(s_feature_profile);
+
+		Console.WriteLn("Null (HW) device: feature profile '%s' -- %s", GSNullDeviceProfile::Name(s_feature_profile),
+			GSNullDeviceProfile::Description(s_feature_profile));
+		Console.WriteLn("Null (HW) features: texbarrier=%s fbfetch=%s dualSrc=%s fastShadow=%s blendConst=%s "
+						"testSampleDepth=%s stencil=%s vs_expand=%s primID=%s provokingLast=%s "
+						"point/lineExpand=%s/%s preferNewTex=%s aa1=%s depthFeedback=%s rov=%s "
+						"cheapRtRead=%s multidrawFbCopy=%s fbfetchOrdersOverlap=%s feedbackLoopLayout=%s "
+						"noZQuant=%s astc=%s dxt/bptc=%s/%s brokenPointSampler=%s brokenMadDeint=%s",
+			m_features.texture_barrier ? "on" : "off", m_features.framebuffer_fetch ? "yes(in-tile)" : "NO",
+			m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
+			m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
+			m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
+			m_features.test_and_sample_depth ? "on" : "off", m_features.stencil_buffer ? "yes" : "no",
+			m_features.vs_expand ? "yes" : "no", m_features.primitive_id ? "yes" : "no",
+			m_features.provoking_vertex_last ? "yes" : "no", m_features.point_expand ? "yes" : "no",
+			m_features.line_expand ? "yes" : "no", m_features.prefer_new_textures ? "yes" : "no",
+			m_features.aa1 ? "yes" : "no", m_features.depth_feedback ? "yes" : "no",
+			m_features.rov ? "yes" : "no", m_features.cheap_rt_feedback_read ? "yes" : "no",
+			m_features.multidraw_fb_copy ? "yes" : "no",
+			m_features.framebuffer_fetch_orders_overlap ? "yes" : "no",
+			m_features.feedback_loop_layout ? "yes" : "no", m_features.no_ps2_z_quantization ? "yes" : "no",
+			m_features.astc_textures ? "yes" : "no", m_features.dxt_textures ? "yes" : "no",
+			m_features.bptc_textures ? "yes" : "no", m_features.broken_point_sampler ? "yes" : "no",
+			m_features.broken_mad_deinterlace ? "yes" : "no");
+	}
 
 	// Nominal surfaceless "window" so layout consumers (ImGui display size, OSD
 	// scale) see sane nonzero dimensions.

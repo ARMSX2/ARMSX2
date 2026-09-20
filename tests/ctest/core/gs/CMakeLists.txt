@@ -6,9 +6,9 @@
 #
 # gs_interlace_policy_tests.cpp, gs_framebuffer_fetch_policy_tests.cpp,
 # gs_feedback_loop_carry_tests.cpp, gs_self_read_copy_tests.cpp,
-# gs_stream_ring_memory_tests.cpp and gs_stream_ring_flush_tests.cpp ride this
-# target rather than adding one: those policies are header-only, so they need no
-# extra linkage.
+# gs_stream_ring_memory_tests.cpp, gs_stream_ring_flush_tests.cpp and
+# gs_null_device_profile_tests.cpp ride this target rather than adding one: those
+# policies are header-only, so they need no extra linkage.
 add_pcsx2_test(gs_vertex_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	gs_vertex_tests.cpp
@@ -57,6 +57,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sprite_cover_tests.cpp
 	gs_sprite_edge_snap_tests.cpp
 	gs_sprite_pass_order_tests.cpp
+	gs_null_device_profile_tests.cpp
 	gs_sw_texture_dirty_tests.cpp
 	gs_blend_constant_policy_tests.cpp
 	gs_autoflush_engine_level_tests.cpp

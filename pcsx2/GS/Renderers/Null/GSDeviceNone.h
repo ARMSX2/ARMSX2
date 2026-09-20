@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Null/GSNullDeviceProfile.h"
 
 #include <vector>
 
@@ -61,6 +62,13 @@ class GSDeviceNone : public GSDevice
 public:
 	GSDeviceNone() = default;
 
+	// Which device this one reports the features of. Set once before the VM starts (gsrunner's
+	// -nullhw-profile) and read in Create(); a static because the device object is built deep
+	// inside GSopen and there is no user-facing setting for a measurement-only renderer. See
+	// GSNullDeviceProfile.h for why the features are not left at their defaults.
+	static void SetFeatureProfile(GSNullDeviceProfile::Id id) { s_feature_profile = id; }
+	static GSNullDeviceProfile::Id GetFeatureProfile() { return s_feature_profile; }
+
 	bool Create(GSVSyncMode vsync_mode, bool allow_present_throttle) override;
 
 	RenderAPI GetRenderAPI() const override;
@@ -96,6 +104,8 @@ public:
 	void ClearSamplerCache() override;
 
 protected:
+	static inline GSNullDeviceProfile::Id s_feature_profile = GSNullDeviceProfile::kDefault;
+
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
 
 	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,

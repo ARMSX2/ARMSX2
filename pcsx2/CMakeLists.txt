@@ -609,6 +609,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
 	GS/Renderers/Null/GSDeviceNone.h
+	GS/Renderers/Null/GSNullDeviceProfile.h
 	GS/Renderers/Null/GSRendererNull.h
 	GS/Renderers/HW/GSAlphaKnownBits.h
 	GS/Renderers/HW/GSDepthCoverage.h

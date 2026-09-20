@@ -823,6 +823,7 @@
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h" />
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSColourWalk.h" />
