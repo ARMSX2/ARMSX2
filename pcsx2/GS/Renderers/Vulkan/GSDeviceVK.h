@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
+#include "GS/Renderers/Common/GSRenderAreaPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
@@ -831,6 +832,10 @@ public:
 	/// The frame's tile load-and-store bill, one pass at a time (GSPerfMon::RenderPassAreaPixels).
 	void CountRenderPassArea(const GSVector4i& rect);
 	void BeginRenderPass(VkRenderPass rp, const GSVector4i& rect);
+	/// Grows a render area outward to the device's render-area granularity, clamped to the target.
+	/// Alignment is an optimality condition in Vulkan, never a correctness one, which is why a
+	/// single cached granularity serves every render pass.
+	GSVector4i AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& rtsize);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, float depth, u8 stencil);
@@ -902,6 +907,18 @@ private:
 	VkFramebuffer m_current_framebuffer = VK_NULL_HANDLE;
 	VkRenderPass m_current_render_pass = VK_NULL_HANDLE;
 	GSVector4i m_current_render_pass_area = GSVector4i::zero();
+
+	// Open a TFX pass over the draws it will hold rather than over the whole target. Resolved at
+	// device creation; GSRenderAreaPolicy.h carries the decision and the device numbers behind it.
+	bool m_narrow_render_area = false;
+	// How many times the open TFX pass has been reopened larger because a draw reached outside it.
+	// A pass grows to the union of what it holds, so the growths run out on their own; the cap is
+	// there for the pass that scatters far enough that they would not, and it trades the area back
+	// for a bounded pass count.
+	u32 m_render_area_growths = 0;
+	static constexpr u32 MAX_RENDER_AREA_GROWTHS = 8;
+	VkExtent2D m_render_area_granularity = {1u, 1u};
+	bool m_render_area_granularity_known = false;
 
 	// Mid-frame submission for readback-prone frames: when a game synchronously reads
 	// GS memory back (local->host TRXDIR), the readback fence-waits on everything

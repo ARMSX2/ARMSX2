@@ -2588,6 +2588,9 @@
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSRenderAreaPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

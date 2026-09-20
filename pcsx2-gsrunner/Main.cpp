@@ -51,6 +51,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
+#include "pcsx2/GS/Renderers/Common/GSRenderAreaPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
@@ -1088,6 +1089,12 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
 						 "and the framebuffer-fetch / depth-feedback paths that build on it.\n");
+	std::fprintf(stderr, "  -narrow-render-area / -no-narrow-render-area: Force a Vulkan render pass to be opened over "
+						 "the draws it will hold, or over the whole render target, instead of letting the device decide. "
+						 "A tile-based GPU pays for a pass by its area and wins; a tiler that falls back to direct "
+						 "rendering for small passes does not, and loses on the extra pass a narrow area forces. Moves no "
+						 "pixels either way -- this is for pricing the trade on a device whose default is the other "
+						 "answer. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1640,6 +1647,21 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				Console.WriteLn("Forcing texture barriers off (OverrideTextureBarriers=0)");
 				s_settings_interface.SetIntValue("EmuCore/GS", "OverrideTextureBarriers", 0);
+				continue;
+			}
+			else if (CHECK_ARG("-narrow-render-area"))
+			{
+				Console.WriteLn("Forcing render passes to be opened over their draws");
+				// Not a setting: which road a device should take here is a measurement result,
+				// not a user preference. Read when the device resolves its features, which
+				// happens after argument parsing.
+				GSRenderAreaPolicy::SetOverride(GSRenderAreaOverride::ForceOn);
+				continue;
+			}
+			else if (CHECK_ARG("-no-narrow-render-area"))
+			{
+				Console.WriteLn("Forcing render passes to be opened over the whole render target");
+				GSRenderAreaPolicy::SetOverride(GSRenderAreaOverride::ForceOff);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))
