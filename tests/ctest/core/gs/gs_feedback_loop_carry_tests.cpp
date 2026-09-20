@@ -8,14 +8,17 @@
 // non-reader. It exists because a tiler pays a full tile store and reload at every pass boundary,
 // and on the framebuffer-fetch path the flag costs nothing to leave set.
 //
-// There are two such paths -- framebuffer fetch on Mali, and the attachment-feedback-loop layout
-// on Adreno under Turnip, where the declaration is itself what orders the read.
+// The rule is that a run may be latched wherever the ROAD orders the read, and there are three
+// ways a road does that: rasterization-order attachment access on the framebuffer-fetch path
+// (Mali), the driver's own coherent primitive mode on the attachment-feedback-loop layout path
+// (Adreno under Turnip), and this backend's explicit per-draw feedback barriers on that same
+// layout path everywhere else (Apple silicon under Honeykrisp, which takes the road by default).
 //
-// What these tests are for is the OTHER half: every device that is not on one of those paths must
-// reach exactly the behaviour it had before, and there is no way to see that on the machine the
-// gates run on, which is neither vendor. So the decision was written as a pure function and the
-// no-change cases are pinned here by name -- including the M2, which DOES take the layout road and
-// still must not carry.
+// What these tests are for is the other half: a road with no ordering must reach exactly the
+// behaviour it had before, and most of those combinations cannot be produced on any machine in
+// the building. So the decision was written as a pure function and every row is pinned here by
+// name -- the copy road, the layout road with texture barriers off, and each road's term proven
+// not to leak into the other's answer.
 //
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
@@ -55,11 +58,21 @@ namespace
 		return in;
 	}
 
-	// The M2. The layout road is its DEFAULT road, because Honeykrisp advertises no
-	// rasterization-order extension -- but its self-read is ordered by the backend's own barriers,
-	// not by any driver primitive mode, and it is the machine every byte-identity gate in this
-	// programme runs on. It must reach exactly the behaviour it had before.
+	// The M2 on its shipped road. The layout road is its DEFAULT road, because Honeykrisp
+	// advertises no rasterization-order extension, and with texture barriers on the backend orders
+	// the self-read itself: SendHWDraw emits a framebuffer-local feedback barrier for every draw
+	// that reads its own target. No driver primitive mode is involved, and none is needed.
 	constexpr GSFeedbackLoopCarryInputs M2OnTheLayoutRoad()
+	{
+		GSFeedbackLoopCarryInputs in;
+		in.feedback_loop_layout = true;
+		in.barriers_order_reads = true;
+		return in;
+	}
+
+	// The same machine with -no-tex-barriers. Nothing asks for a feedback barrier, so no draw reads
+	// its own target and the road orders nothing -- the case the carry must not fire on.
+	constexpr GSFeedbackLoopCarryInputs LayoutRoadWithNoOrdering()
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.feedback_loop_layout = true;
@@ -93,9 +106,9 @@ TEST(GSFeedbackLoopCarry, OffTheFetchPathNothingCarries)
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(other_vendor));
 }
 
-// The attachment-feedback-loop image layout is the other way of reading the target. It has its own
-// carry now (below), on its own vendor -- so the fetch vendor does not inherit it, and a device
-// that somehow reported both spellings would be answered by the layout road's term alone.
+// The two spellings are mutually exclusive on Vulkan, but the decision does not assume it: a
+// device reporting both is answered by the layout road's terms alone, and the fetch vendor does
+// not carry over into them. Here neither layout-road ordering is present, so it refuses.
 TEST(GSFeedbackLoopCarry, FeedbackLoopLayoutDoesNotCarry)
 {
 	GSFeedbackLoopCarryInputs in = MaliWithFetch();
@@ -111,17 +124,45 @@ TEST(GSFeedbackLoopCarry, LayoutRoadCarriesOnTheDeviceThatOrdersTheRead)
 	EXPECT_TRUE(CarryDepthFeedbackAcrossTargetRun(AdrenoOnTheLayoutRoad()));
 }
 
-// The guard that makes this lane inert on every machine the gates run on. The M2 takes the layout
-// road by default, so it is the row that would move if the road alone were the condition.
-TEST(GSFeedbackLoopCarry, LayoutRoadDoesNotCarryOnAnyOtherDevice)
+// The layout road's other ordering, and the one that is live on hardware today: the backend's own
+// per-draw feedback barriers. No vendor term, and it carries.
+TEST(GSFeedbackLoopCarry, LayoutRoadCarriesWhenBarriersOrderTheRead)
 {
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(M2OnTheLayoutRoad()));
-	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(M2OnTheLayoutRoad()));
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(M2OnTheLayoutRoad()));
+	EXPECT_TRUE(CarryDepthFeedbackAcrossTargetRun(M2OnTheLayoutRoad()));
+}
 
-	// ...and having the fetch road's vendor does not help it, on the road it is not measured on.
-	GSFeedbackLoopCarryInputs fetch_vendor = M2OnTheLayoutRoad();
+// The road with neither ordering carries nothing. This is the M2 under -no-tex-barriers, and it is
+// what makes that arm inert by construction rather than by measurement: with no barrier there is
+// no reader, so there is nothing for a latched pass to have been ordered against.
+TEST(GSFeedbackLoopCarry, LayoutRoadDoesNotCarryWithNothingOrderingTheRead)
+{
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(LayoutRoadWithNoOrdering()));
+	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(LayoutRoadWithNoOrdering()));
+
+	// ...and having the fetch road's vendor does not supply an ordering it does not have.
+	GSFeedbackLoopCarryInputs fetch_vendor = LayoutRoadWithNoOrdering();
 	fetch_vendor.device_is_measured_vendor = true;
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(fetch_vendor));
+}
+
+// The four ways the layout road can be ordered, in one place: neither source, each alone, both.
+// Either one is enough and neither is required of the other.
+TEST(GSFeedbackLoopCarry, TheLayoutRoadNeedsEitherOrderingAndNotBoth)
+{
+	GSFeedbackLoopCarryInputs in;
+	in.feedback_loop_layout = true;
+
+	for (int driver = 0; driver < 2; driver++)
+	{
+		for (int barriers = 0; barriers < 2; barriers++)
+		{
+			in.device_is_layout_road_vendor = driver != 0;
+			in.barriers_order_reads = barriers != 0;
+			EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), driver != 0 || barriers != 0)
+				<< "driver=" << driver << " barriers=" << barriers;
+		}
+	}
 }
 
 // The road is a condition, not just a vendor: the same device with neither in-pass spelling live
@@ -133,6 +174,23 @@ TEST(GSFeedbackLoopCarry, TheLayoutVendorNeedsTheLayoutRoad)
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(copy_road));
 }
 
+// And neither does the barrier term. Texture barriers are on for every device that reaches this
+// decision with either in-pass spelling live, so this is the row that would move if the ordering
+// input were ever consulted outside its road: a desktop GPU on the copy road with barriers on.
+TEST(GSFeedbackLoopCarry, BarriersAloneAreNotARoad)
+{
+	GSFeedbackLoopCarryInputs copy_road;
+	copy_road.barriers_order_reads = true;
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(copy_road));
+
+	// ...including on a device that has fetch but is not the vendor the fetch carry was measured
+	// on. Barriers do not stand in for that vendor round.
+	GSFeedbackLoopCarryInputs unmeasured_fetch;
+	unmeasured_fetch.framebuffer_fetch = true;
+	unmeasured_fetch.barriers_order_reads = true;
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(unmeasured_fetch));
+}
+
 // The barrier term reaches the new road for the same reason it reaches the old one: the backend
 // hands SendHWDraw a target to barrier against only when the pipeline's feedback bit is set.
 TEST(GSFeedbackLoopCarry, ALayoutRoadBarrierRequestBlocksTheCarry)
@@ -140,6 +198,15 @@ TEST(GSFeedbackLoopCarry, ALayoutRoadBarrierRequestBlocksTheCarry)
 	GSFeedbackLoopCarryInputs in = AdrenoOnTheLayoutRoad();
 	in.draw_needs_own_barrier = true;
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(in));
+
+	// The barrier-ordered road is where this term does its real work: it is what keeps the READING
+	// draws out of the carry, so they go on setting their own flag word and emitting their own
+	// barrier inside the held-open pass. A road ordered by barriers that also latched its readers
+	// would be latching the draws whose ordering it depends on.
+	GSFeedbackLoopCarryInputs reader = M2OnTheLayoutRoad();
+	reader.draw_needs_own_barrier = true;
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(reader));
+	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(reader));
 }
 
 // The fetch road's answer is untouched by the layout road's vendor term, either way.
@@ -150,6 +217,18 @@ TEST(GSFeedbackLoopCarry, TheFetchRoadIsUnchangedByTheLayoutTerm)
 
 	in.device_is_layout_road_vendor = true;
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
+
+	// The barrier term is true on Mali too -- framebuffer_fetch is masked by texture_barrier, so
+	// fetch being live means barriers are on -- and it must not be what that road's answer rests
+	// on. Removing the fetch vendor still refuses, with barriers on either way.
+	in.barriers_order_reads = true;
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
+
+	in.device_is_layout_road_vendor = false;
+	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
+
+	in.device_is_measured_vendor = false;
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(in));
 }
 
 // The carry must never be the thing that introduces a barrier: the backend hands SendHWDraw a
@@ -174,14 +253,14 @@ TEST(GSFeedbackLoopCarry, BroadcomCarryIsUnchanged)
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
 }
 
-// The invariant, swept: carrying requires a road AND that road's own measured vendor, whatever
-// else is true. (This replaces a sweep that said "requires the fetch path", which stopped being
-// the whole rule when the layout road got a carry of its own.) It is the statement every guard
-// device needs -- a shipping Adreno is the all-false row, the M2 is the feedback_loop_layout row
-// with no vendor term -- and it fails if a later term is added that can carry without one.
+// The invariant, swept: carrying requires a road that orders the read, whatever else is true. The
+// fetch road is ordered by rasterization-order access and is scoped to the vendor it was measured
+// on; the layout road is ordered by the driver or by our own barriers, either one. A shipping
+// Adreno is the all-false row and the M2 under -no-tex-barriers is the feedback_loop_layout row
+// with neither ordering term. It fails if a later term is ever added that can carry on no road.
 TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 {
-	for (int bits = 0; bits < 32; bits++)
+	for (int bits = 0; bits < 64; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_is_measured_vendor = (bits & 1) != 0;
@@ -189,9 +268,10 @@ TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 		in.feedback_loop_layout = (bits & 4) != 0;
 		in.draw_needs_own_barrier = (bits & 8) != 0;
 		in.device_is_layout_road_vendor = (bits & 16) != 0;
+		in.barriers_order_reads = (bits & 32) != 0;
 
 		const bool road = in.feedback_loop_layout ?
-		                      in.device_is_layout_road_vendor :
+		                      (in.device_is_layout_road_vendor || in.barriers_order_reads) :
 		                      (in.device_is_measured_vendor && in.framebuffer_fetch);
 		EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), road && !in.draw_needs_own_barrier)
 			<< "bits=" << bits;
@@ -243,7 +323,7 @@ TEST(GSFeedbackLoopCarry, BroadcomDepthCarryStopsAtADepthWriter)
 // this is what catches it.
 TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 {
-	for (int bits = 0; bits < 128; bits++)
+	for (int bits = 0; bits < 256; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_always_carries = (bits & 1) != 0;
@@ -253,6 +333,7 @@ TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 		in.draw_needs_own_barrier = (bits & 16) != 0;
 		in.draw_writes_depth = (bits & 32) != 0;
 		in.device_is_layout_road_vendor = (bits & 64) != 0;
+		in.barriers_order_reads = (bits & 128) != 0;
 
 		const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
 		EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
