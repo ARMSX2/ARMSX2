@@ -464,13 +464,13 @@ final class SettingsStore {
     var eeClampMode: Int {
         didSet {
             guard !suppressINIWrites else { return }
-            Self.applyEEClampMode(Self.clampedClampMode(eeClampMode))
+            Self.applyEEClampMode(Self.clamped(eeClampMode, to: 0...3))
         }
     }
     var vuClampMode: Int {
         didSet {
             guard !suppressINIWrites else { return }
-            Self.applyVUClampMode(Self.clampedClampMode(vuClampMode))
+            Self.applyVUClampMode(Self.clamped(vuClampMode, to: 0...3))
         }
     }
     var frameLimiterEnabled: Bool {
