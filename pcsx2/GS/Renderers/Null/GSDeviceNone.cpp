@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/Null/GSDeviceNone.h"
+#include "GS/GSPerfMon.h"
 
 // -------------------------------------------------------------------------
 // GSTextureNone
@@ -216,6 +217,14 @@ void GSDeviceNone::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex,
 
 void GSDeviceNone::DoRenderHW(GSHWDrawConfig& config)
 {
+	// The only backend-independent fact about a submission: GSRendererHW called RenderHW()
+	// once for this internal draw (exactly one of DrawPrims/EndHLEHardwareDraw/the channel-
+	// shuffle completion calls it per draw, never more than one). Real backends additionally
+	// split this into several submissions for reasons that only exist with a GPU behind them
+	// -- a DATE primitive-ID prepass, a per-primitive texture-barrier loop, a colclip
+	// encode/resolve pass -- none of which this stub performs, so this count is a floor on a
+	// real backend's Draw Calls, not an equal.
+	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
 }
 
 void GSDeviceNone::ClearSamplerCache()

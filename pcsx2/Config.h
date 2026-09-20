@@ -316,6 +316,15 @@ enum class GSRendererType : s8
 	VK = 14,
 	Metal = 17,
 	DX12 = 15,
+
+	// GSRendererHW paired with the deviceless GSDeviceNone: the hardware renderer's CPU-side
+	// path (GIF decode, vertex kick, texture cache, everything Draw() does to build a
+	// submission) with no GPU behind it. Distinct from Null, which pairs GSDeviceNone with
+	// GSRendererNull and draws nothing at all -- reusing Null here would make GSIsHardwareRenderer(),
+	// UseHardwareRenderer() and every "renderer == Null" check in GS.cpp/GSState.cpp answer as if
+	// nothing were running, when GSRendererHW's real CPU logic is. pcsx2-gsrunner only
+	// (`-renderer nullhw`); deliberately not added to any Qt/ImGui renderer picker.
+	NullHW = 18,
 };
 
 enum class GSVSyncMode : u8

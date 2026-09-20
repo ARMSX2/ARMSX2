@@ -218,6 +218,14 @@ static u64 s_total_draws_rov = 0;
 static u64 s_total_barriers_rov = 0;
 static u32 s_total_frames = 0;
 static u32 s_total_drawn_frames = 0;
+// Captured once, on the GS thread with the device definitely live (same reasoning as
+// s_device_name below): whether this run has a real graphics API behind it. False only for
+// -renderer nullhw, where GSRendererHW runs against GSDeviceNone -- every counter that is
+// actually a backend/GPU submission concept (render passes, barriers, copies, uploads,
+// readbacks, GPU time/usage) stays at zero forever there because nothing ever calls Put() for
+// it, and DumpStats()/the JSON writer report those as "n/a" rather than a fabricated 0.
+static bool s_has_gpu_backend = true;
+static bool s_has_gpu_backend_known = false;
 static std::vector<std::string> s_extended_stats_snapshot;
 
 // Process resident set size in kB, or 0 where the platform has no procfs to ask.
@@ -678,6 +686,17 @@ void Host::BeginPresentFrame()
 			s_driver_info = g_gs_device->GetDriverInfo();
 		}
 
+		if (!s_has_gpu_backend_known && g_gs_device)
+		{
+			// Not GetRenderAPI() != RenderAPI::None: X11's <X.h> #defines None to 0L, which this
+			// TU pulls in (X11_API), so the enumerator can't be named as a value here. The
+			// renderer type says the same thing without the collision -- Null and NullHW are
+			// exactly the two types GS.cpp pairs with GSDeviceNone (GetAPIForRenderer in GS.cpp).
+			const GSRendererType current = GSGetCurrentRenderer();
+			s_has_gpu_backend = (current != GSRendererType::Null && current != GSRendererType::NullHW);
+			s_has_gpu_backend_known = true;
+		}
+
 		const u32 last_draws = s_total_internal_draws;
 
 		// Returns this frame's delta as well as accumulating it, so the per-frame
@@ -992,7 +1011,11 @@ static void PrintCommandLineHelp(const char* progname)
 						 "run cannot even create an instance under it.\n");
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
-	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto.\n");
+	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto. 'nullhw' runs "
+						 "GSRendererHW on the deviceless Null device -- a per-frame CPU-only cost of the hardware "
+						 "renderer path (GIF decode, vertex kick, texture cache, everything Draw() does to build a "
+						 "submission), with no GPU work behind it. GPU-side @HWSTAT@ fields (render passes, barriers, "
+						 "copies, uploads, readbacks, GPU time/usage) report n/a rather than a fabricated zero.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1333,6 +1356,8 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				else if (StringUtil::Strcasecmp(rname, "sw") == 0)
 					type = GSRendererType::SW;
+				else if (StringUtil::Strcasecmp(rname, "nullhw") == 0)
+					type = GSRendererType::NullHW;
 				else
 				{
 					ArgError("-renderer: unknown renderer '{}'.", rname);
@@ -1956,22 +1981,27 @@ static void WriteStatsJson(const std::string& path)
 	// sits in the same percentile as steady state and there is no way to take it out.
 	std::fprintf(fp.get(), "    \"loop_count\": %d,\n    \"frames_per_loop\": %u,\n",
 		s_loop_count, s_dump_frames_per_loop);
+	// GSDeviceNone (-renderer nullhw) never calls Put() for these -- they are backend/GPU
+	// submission concepts, not CPU ones -- so they are JSON `null`, not a fabricated 0, and
+	// "has_gpu_backend" above tells a reader why a whole run's worth of these came back null.
+	const auto j_u64 = [](u64 v) -> std::string { return s_has_gpu_backend ? std::to_string(v) : std::string("null"); };
+	std::fprintf(fp.get(), "    \"has_gpu_backend\": %s,\n", s_has_gpu_backend ? "true" : "false");
 	std::fprintf(fp.get(), "    \"prims\": %" PRIu64 ",\n    \"draws\": %" PRIu64 ",\n    \"draw_calls\": %" PRIu64 ",\n",
 		s_total_prims, s_total_internal_draws, s_total_draws);
-	std::fprintf(fp.get(), "    \"render_passes\": %" PRIu64 ",\n    \"barriers\": %" PRIu64 ",\n", s_total_render_passes, s_total_barriers);
-	std::fprintf(fp.get(), "    \"render_pass_area_pixels\": %" PRIu64 ",\n", s_total_render_pass_area_pixels);
-	std::fprintf(fp.get(), "    \"copies\": %" PRIu64 ",\n    \"uploads\": %" PRIu64 ",\n    \"readbacks\": %" PRIu64 ",\n",
-		s_total_copies, s_total_uploads, s_total_readbacks);
-	std::fprintf(fp.get(), "    \"copies_rov\": %" PRIu64 ",\n    \"draw_calls_rov\": %" PRIu64 ",\n    \"barriers_rov\": %" PRIu64 ",\n",
-		s_total_copies_rov, s_total_draws_rov, s_total_barriers_rov);
+	std::fprintf(fp.get(), "    \"render_passes\": %s,\n    \"barriers\": %s,\n", j_u64(s_total_render_passes).c_str(), j_u64(s_total_barriers).c_str());
+	std::fprintf(fp.get(), "    \"render_pass_area_pixels\": %s,\n", j_u64(s_total_render_pass_area_pixels).c_str());
+	std::fprintf(fp.get(), "    \"copies\": %s,\n    \"uploads\": %s,\n    \"readbacks\": %s,\n",
+		j_u64(s_total_copies).c_str(), j_u64(s_total_uploads).c_str(), j_u64(s_total_readbacks).c_str());
+	std::fprintf(fp.get(), "    \"copies_rov\": %s,\n    \"draw_calls_rov\": %s,\n    \"barriers_rov\": %s,\n",
+		j_u64(s_total_copies_rov).c_str(), j_u64(s_total_draws_rov).c_str(), j_u64(s_total_barriers_rov).c_str());
 	std::fprintf(fp.get(), "    \"tc_source_hit\": %" PRIu64 ",\n    \"tc_source_miss\": %" PRIu64 ",\n",
 		s_total_tc_source_hit, s_total_tc_source_miss);
 	std::fprintf(fp.get(), "    \"tc_target_hit\": %" PRIu64 ",\n    \"tc_target_miss\": %" PRIu64 ",\n",
 		s_total_tc_target_hit, s_total_tc_target_miss);
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
-	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
-	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %" PRIu64 ",\n", s_total_gpu_blocking_waits);
+	std::fprintf(fp.get(), "    \"pipeline_switches\": %s,\n", j_u64(s_total_pipeline_switches).c_str());
+	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %s,\n", j_u64(s_total_gpu_blocking_waits).c_str());
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
 	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
@@ -2001,27 +2031,31 @@ static void WriteStatsJson(const std::string& path)
 	for (size_t i = 0; i < s_frame_samples.size(); i++)
 	{
 		const FrameSample& s = s_frame_samples[i];
+		// gpu_ms itself is GSPerfMon-derived GPU timing, also backend-only -- null on the same
+		// condition as the counters below rather than a 0.0 a reader could mistake for "no GPU
+		// time this frame" instead of "no GPU to time."
+		const std::string gpu_ms_str = s_has_gpu_backend ? fmt::format("{:.3f}", s.gpu_ms) : std::string("null");
 		std::fprintf(fp.get(),
-			"    {\"frame\":%u,\"frame_in_dump\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
+			"    {\"frame\":%u,\"frame_in_dump\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%s,\"gs_cpu_ms\":%.3f,"
 			"\"prims\":%" PRIu64 ",\"draws\":%" PRIu64 ",\"draw_calls\":%" PRIu64 ","
-			"\"render_passes\":%" PRIu64 ",\"render_pass_area_pixels\":%" PRIu64 ","
-			"\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
-			"\"uploads\":%" PRIu64 ",\"readbacks\":%" PRIu64 ","
-			"\"copies_rov\":%" PRIu64 ",\"draw_calls_rov\":%" PRIu64 ",\"barriers_rov\":%" PRIu64 ","
+			"\"render_passes\":%s,\"render_pass_area_pixels\":%s,"
+			"\"barriers\":%s,\"copies\":%s,"
+			"\"uploads\":%s,\"readbacks\":%s,"
+			"\"copies_rov\":%s,\"draw_calls_rov\":%s,\"barriers_rov\":%s,"
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
-			"\"pipeline_switches\":%" PRIu64 ",\"gpu_blocking_waits\":%" PRIu64 ","
+			"\"pipeline_switches\":%s,\"gpu_blocking_waits\":%s,"
 			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 "}%s\n",
-			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
+			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, gpu_ms_str.c_str(), s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
-			s.render_passes, s.render_pass_area_pixels, s.barriers, s.copies,
-			s.uploads, s.readbacks,
-			s.copies_rov, s.draw_calls_rov, s.barriers_rov,
+			j_u64(s.render_passes).c_str(), j_u64(s.render_pass_area_pixels).c_str(), j_u64(s.barriers).c_str(), j_u64(s.copies).c_str(),
+			j_u64(s.uploads).c_str(), j_u64(s.readbacks).c_str(),
+			j_u64(s.copies_rov).c_str(), j_u64(s.draw_calls_rov).c_str(), j_u64(s.barriers_rov).c_str(),
 			s.tc_source_hit, s.tc_source_miss,
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
-			s.pipeline_switches, s.gpu_blocking_waits,
+			j_u64(s.pipeline_switches).c_str(), j_u64(s.gpu_blocking_waits).c_str(),
 			s.rss_kb, s.minflt_delta,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
@@ -2033,29 +2067,54 @@ static void WriteStatsJson(const std::string& path)
 void GSRunner::DumpStats()
 {
 	std::atomic_thread_fence(std::memory_order_acquire);
+	// Fields below are split into two kinds: CPU-observable ones (Prims, Draws, Draw Calls as
+	// "RenderHW() was invoked" -- see GSDeviceNone::DoRenderHW -- TC/hash-cache hit-miss) that
+	// -renderer nullhw reports for real, and backend/GPU submission concepts (render passes,
+	// barriers, copies, uploads, readbacks, GPU blocking waits, pipeline switches, the ROV
+	// variants, GPU time/usage) that GSDeviceNone never populates because nothing calls Put()
+	// for them -- those print "n/a" here rather than a fabricated 0.0 that a parser could read
+	// as "measured zero cost."
+	const char* const na = "n/a";
 	Console.WriteLn(fmt::format("======= HW STATISTICS FOR {} ({}) FRAMES ========", s_total_frames, s_total_drawn_frames));
 	Console.WriteLn(fmt::format("@HWSTAT@ Prims: {} (avg {})", s_total_prims, static_cast<u64>(std::ceil(s_total_prims / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws: {} (avg {})", s_total_internal_draws, static_cast<u64>(std::ceil(s_total_internal_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draw Calls: {} (avg {})", s_total_draws, static_cast<u64>(std::ceil(s_total_draws / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", s_total_render_passes, static_cast<u64>(std::ceil(s_total_render_passes / static_cast<double>(s_total_drawn_frames)))));
-	// The same passes weighed rather than counted: megapixels of renderArea a drawn frame loads and
-	// stores, which is what a pass costs on a tiler.
-	Console.WriteLn(fmt::format("@HWSTAT@ Render Pass Area Mpx: {:.2f} (avg {:.2f}/frame)",
-		s_total_render_pass_area_pixels / 1e6,
-		s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
-	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Readbacks: {} (avg {})", s_total_readbacks, static_cast<u64>(std::ceil(s_total_readbacks / static_cast<double>(s_total_drawn_frames)))));
-	// Not a duplicate of Readbacks: that counts copies that reach the device, this counts the times
-	// the GS thread BLOCKED for one. Zero is the target; any nonzero value costs the frame
-	// min(cpu, gpu) whatever the magnitude.
-	Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {:.2f}/frame)", s_total_gpu_blocking_waits,
-		s_total_gpu_blocking_waits / static_cast<double>(s_total_drawn_frames)));
-	Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
-	Console.WriteLn(fmt::format("@HWSTAT@ Barriers (ROV): {} (avg {})", s_total_barriers_rov, static_cast<u64>(std::ceil(s_total_barriers_rov / static_cast<double>(s_total_drawn_frames)))));
+	if (s_has_gpu_backend)
+	{
+		Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", s_total_render_passes, static_cast<u64>(std::ceil(s_total_render_passes / static_cast<double>(s_total_drawn_frames)))));
+		// The same passes weighed rather than counted: megapixels of renderArea a drawn frame loads and
+		// stores, which is what a pass costs on a tiler.
+		Console.WriteLn(fmt::format("@HWSTAT@ Render Pass Area Mpx: {:.2f} (avg {:.2f}/frame)",
+			s_total_render_pass_area_pixels / 1e6,
+			s_total_render_pass_area_pixels / 1e6 / static_cast<double>(s_total_drawn_frames)));
+		Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Readbacks: {} (avg {})", s_total_readbacks, static_cast<u64>(std::ceil(s_total_readbacks / static_cast<double>(s_total_drawn_frames)))));
+		// Not a duplicate of Readbacks: that counts copies that reach the device, this counts the times
+		// the GS thread BLOCKED for one. Zero is the target; any nonzero value costs the frame
+		// min(cpu, gpu) whatever the magnitude.
+		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {:.2f}/frame)", s_total_gpu_blocking_waits,
+			s_total_gpu_blocking_waits / static_cast<double>(s_total_drawn_frames)));
+		Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", s_total_copies_rov, static_cast<u64>(std::ceil(s_total_copies_rov / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", s_total_draws_rov, static_cast<u64>(std::ceil(s_total_draws_rov / static_cast<double>(s_total_drawn_frames)))));
+		Console.WriteLn(fmt::format("@HWSTAT@ Barriers (ROV): {} (avg {})", s_total_barriers_rov, static_cast<u64>(std::ceil(s_total_barriers_rov / static_cast<double>(s_total_drawn_frames)))));
+	}
+	else
+	{
+		Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Render Pass Area Mpx: {} (avg {}/frame)", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Readbacks: {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ GPU Blocking Waits: {} (avg {}/frame)", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Copies (ROV): {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Draws Calls (ROV): {} (avg {})", na, na));
+		Console.WriteLn(fmt::format("@HWSTAT@ Barriers (ROV): {} (avg {})", na, na));
+	}
 	Console.WriteLn(fmt::format("@HWSTAT@ TC Source Hit/Miss: {}/{} ({:.1f}% hit)", s_total_tc_source_hit, s_total_tc_source_miss,
 		Ratio(s_total_tc_source_hit, s_total_tc_source_hit + s_total_tc_source_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ TC Target Hit/Miss: {}/{} ({:.1f}% hit)", s_total_tc_target_hit, s_total_tc_target_miss,
@@ -2074,12 +2133,18 @@ void GSRunner::DumpStats()
 		// that is really work moved onto an unlisted thread.
 		if (s_perf_saw_gs_back_thread)
 			Console.WriteLn(fmt::format("@HWSTAT@ GS Back Thread Usage: {:.3f} %", s_perf_sum_gs_back_thread_usage / s_perf_updates));
-		Console.WriteLn(fmt::format("@HWSTAT@ GPU Usage: {:.3f} %", s_perf_sum_gpu_usage / s_perf_updates));
+		if (s_has_gpu_backend)
+			Console.WriteLn(fmt::format("@HWSTAT@ GPU Usage: {:.3f} %", s_perf_sum_gpu_usage / s_perf_updates));
+		else
+			Console.WriteLn(fmt::format("@HWSTAT@ GPU Usage: {} %", na));
 		Console.WriteLn(fmt::format("@HWSTAT@ Average CPU Thread Time: {:.3f} ms", s_perf_sum_cpu_thread_time / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ Average GS Thread Time: {:.3f} ms", s_perf_sum_gs_thread_time / s_perf_updates));
 		if (s_perf_saw_gs_back_thread)
 			Console.WriteLn(fmt::format("@HWSTAT@ Average GS Back Thread Time: {:.3f} ms", s_perf_sum_gs_back_thread_time / s_perf_updates));
-		Console.WriteLn(fmt::format("@HWSTAT@ Average GPU Time: {:.3f} ms", s_perf_sum_gpu_time / s_perf_updates));
+		if (s_has_gpu_backend)
+			Console.WriteLn(fmt::format("@HWSTAT@ Average GPU Time: {:.3f} ms", s_perf_sum_gpu_time / s_perf_updates));
+		else
+			Console.WriteLn(fmt::format("@HWSTAT@ Average GPU Time: {} ms", na));
 	}
 	if (!s_stats_json_path.empty())
 	{

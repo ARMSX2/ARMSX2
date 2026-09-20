@@ -98,6 +98,10 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
 		// Null renderer pairs with the deviceless None host device — headless runs
 		// (eerunner A/B, CI) must not require a working Vulkan/GL context.
 		case GSRendererType::Null:
+		// Same deviceless host device, but paired with GSRendererHW below (OpenGSRenderer's
+		// `renderer != SW` branch already handles it, since NullHW is neither Null nor SW) --
+		// a per-title CPU-only cost measurement of the hardware renderer path.
+		case GSRendererType::NullHW:
 			return RenderAPI::None;
 
 		case GSRendererType::OGL:
@@ -254,6 +258,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	}
 	else if (renderer != GSRendererType::SW)
 	{
+		// NullHW lands here too (paired with GSDeviceNone via GetAPIForRenderer above): it is
+		// neither Null nor SW, so it gets the real GSRendererHW object, just with no GPU behind
+		// the device it talks to.
 		// Verify-by-effect for measurement harnesses: a scorer should not trust the command
 		// line about which renderer a run used. It can read this line out of the emulog and
 		// refuse a run whose identity does not match what it asked for; without it a

@@ -714,15 +714,16 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
 	switch (type)
 	{
 			// clang-format off
-		case GSRendererType::Auto:  return "Auto";
-		case GSRendererType::DX11:  return "Direct3D 11";
-		case GSRendererType::DX12:  return "Direct3D 12";
-		case GSRendererType::Metal: return "Metal";
-		case GSRendererType::OGL:   return "OpenGL";
-		case GSRendererType::VK:    return "Vulkan";
-		case GSRendererType::SW:    return "Software";
-		case GSRendererType::Null:  return "Null";
-		default:                    return "";
+		case GSRendererType::Auto:   return "Auto";
+		case GSRendererType::DX11:   return "Direct3D 11";
+		case GSRendererType::DX12:   return "Direct3D 12";
+		case GSRendererType::Metal:  return "Metal";
+		case GSRendererType::OGL:    return "OpenGL";
+		case GSRendererType::VK:     return "Vulkan";
+		case GSRendererType::SW:     return "Software";
+		case GSRendererType::Null:   return "Null";
+		case GSRendererType::NullHW: return "Null (HW)";
+		default:                     return "";
 			// clang-format on
 	}
 }
