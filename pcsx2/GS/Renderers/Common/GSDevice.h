@@ -1429,6 +1429,10 @@ struct alignas(16) GSHWDrawConfig
 			case ATST_NEVER:
 			case ATST_ALWAYS:
 			default:
+				// The shader never reads AREF under NONE, but every caller copies aref_out
+				// into the PS constant buffer regardless, and an unset local there is an
+				// uninitialised read that also defeats the constant-buffer dedupe.
+				aref_out = 0.0f;
 				ps_atst_out = PS_ATST::NONE;
 				break;
 		}
