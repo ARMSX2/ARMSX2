@@ -1109,6 +1109,63 @@ namespace
 	}
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Which half-pixel-offset modes may keep the cull grid.
+//
+// The grid is only the device sample set when the window-space constant
+// DetermineVSConfig folds into its vertex offset is 0.5 device pixels. Two of the
+// six modes move it and must decline, and they are not the two the branch
+// structure suggests: NativeWTexOffset divides its offset by the scale and lands
+// back on 0.5, while Native does not and sits half a step out at 2x. Getting that
+// pair the wrong way round costs half the corpus, so it is pinned here rather than
+// left to the comment in GSState::CullGridFor.
+// ---------------------------------------------------------------------------
+TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
+{
+	constexpr GSHalfPixelOffset kAll[] = {GSHalfPixelOffset::Off, GSHalfPixelOffset::Normal,
+		GSHalfPixelOffset::Special, GSHalfPixelOffset::SpecialAggressive, GSHalfPixelOffset::Native,
+		GSHalfPixelOffset::NativeWTexOffset};
+
+	// At 2x: Normal and Native move the phase, the other four do not. The grid that
+	// lands is one binade finer than the device's, so 2 rather than 3.
+	for (GSHalfPixelOffset hpo : kAll)
+	{
+		const GSVertexKernels::CullGrid g = GSState::CullGridFor(2.0f, hpo);
+		const bool declines = (hpo == GSHalfPixelOffset::Normal || hpo == GSHalfPixelOffset::Native);
+		EXPECT_EQ(declines ? 0 : 2, g.shift) << "mode " << static_cast<int>(hpo) << " at 2x";
+
+		// Sprites move after the cull at every upscale, so they decline whatever the
+		// triangle class does.
+		EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 2x";
+	}
+
+	// At native every mode keeps the shipped pixel-centre grid, sprites included --
+	// that is what makes 1x byte identity structural.
+	for (GSHalfPixelOffset hpo : kAll)
+	{
+		const GSVertexKernels::CullGrid g = GSState::CullGridFor(1.0f, hpo);
+		EXPECT_EQ(4, g.shift) << "mode " << static_cast<int>(hpo) << " at 1x";
+		EXPECT_EQ(4, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 1x";
+	}
+
+	// A scale whose sample points are not a sub-texel grid declines whatever the
+	// mode is, and so does 8x, where one binade finer than the device grid is no
+	// grid at all.
+	for (GSHalfPixelOffset hpo : kAll)
+	{
+		for (float scale : {1.5f, 3.0f, 8.0f})
+		{
+			const GSVertexKernels::CullGrid g = GSState::CullGridFor(scale, hpo);
+			EXPECT_EQ(0, g.shift) << "mode " << static_cast<int>(hpo) << " at " << scale << "x";
+			EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at " << scale << "x";
+		}
+	}
+
+	// 4x keeps a grid for the four phase-zero modes, one binade finer than its own.
+	EXPECT_EQ(1, GSState::CullGridFor(4.0f, GSHalfPixelOffset::NativeWTexOffset).shift);
+	EXPECT_EQ(0, GSState::CullGridFor(4.0f, GSHalfPixelOffset::Native).shift);
+}
+
 TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 {
 	// Every band width the cull grid can ask for: 4 at native, 3 at 2x, 2 at 4x,

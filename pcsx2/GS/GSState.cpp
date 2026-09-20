@@ -124,18 +124,36 @@ constexpr int GSState::GetSaveStateSize(int version)
 //   * 16/S is a power of two, so the sample points land on whole sub-texels.
 //
 // At S == 1 both hold on every path through DetermineVSConfig, which is why the
-// shipped native rule is exact rather than a guess. Above 1, c is 0.5 only on the
-// upscaling branch with no half-pixel offset folded in:
+// shipped native rule is exact rather than a guess. Above 1, which modes keep c at
+// 0.5 has to be read off DetermineVSConfig's two branches, and the answer is not
+// the same for the two "align to native" modes.
 //
-//   * HalfPixelOffset Native and NativeWTexOffset take the other branch, which
-//     puts c at S/2 -- a phase of half a step at 2x, the worst there is.
-//   * HalfPixelOffset Normal adds mod_xy/2 instead, and which targets carry that
+// The upscaling branch (HalfPixelOffset below Native, or a texture shuffle) takes
+// sx = 2*rtscale/(rtsize.x << 4) and ox2 = -1/rtsize.x. A window coordinate w then
+// reaches window position w*sx*rtsize.x/2 - ox2*rtsize.x/2, i.e. a device step of
+// rtscale per native pixel and a phase of rtsize.x/(2*rtsize.x) = 0.5. Exactly the
+// grid, unless HalfPixelOffset Normal folds mod_xy in.
+//
+// The align-to-native branch takes sx = 2/(unscaled_x << 4), so the device step is
+// rtsize.x/unscaled_x, and the phase is whatever -ox2*rtsize.x/2 comes to:
+//
+//   * NativeWTexOffset: ox2 = -1/(unscaled_x * rtscale), so the phase is
+//     rtsize.x/(2*unscaled_x*rtscale) = 0.5 -- the same half device pixel the
+//     upscaling branch gives, because the offset is divided by the scale. The grid
+//     is exact here. The one thing that moves it, NativeSpritePushApplies, moves
+//     SPRITE-class draws only, and the sprite class has no grid above native
+//     anyway. Measured: phase 0.5 and step 2.0 on every non-sprite draw of
+//     Prince of Persia, Sly 1 and Black at 2x.
+//   * Native: ox2 = -1/unscaled_x, so the phase is rtsize.x/(2*unscaled_x) = S/2 --
+//     one device pixel at 2x, half a step, the worst misalignment there is. It
+//     declines. Measured: phase 1.0 on Katamari Damacy and Jak II at 2x.
+//   * Normal: adds mod_xy/2 on the upscaling branch, and which targets carry that
 //     offset is a per-draw fact (Target::OffsetHack_modxy, m_texture_shuffle) the
-//     vertex kick cannot see.
+//     vertex kick cannot see. It declines.
 //
-// Both decline. A phase that cannot be known is a phase that cannot be culled
-// against: a finer grid halves the population at risk without emptying it, since
-// a prim narrower than the step can still hold a sample point and no grid point.
+// A phase that cannot be known is a phase that cannot be culled against: a finer
+// grid halves the population at risk without emptying it, since a prim narrower
+// than the step can still hold a sample point and no grid point.
 //
 // Non-power-of-two scales decline for the same reason and it is not a rounding
 // nicety. At 1.5x the sample points are 10.667 sub-texels apart, so a prim
@@ -159,17 +177,15 @@ constexpr int GSState::GetSaveStateSize(int version)
 //
 // The margin is not applied at scale 1, where nothing is being added: the shipped
 // native rule is kept exactly, and 1x byte identity is structural.
-GSVertexKernels::CullGrid GSState::ConfigCullGrid()
+GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hpo)
 {
-	const float scale = GSConfig.UpscaleMultiplier;
 	int shift = 0;
 
 	if (scale == 1.0f)
 	{
 		shift = 4;
 	}
-	else if (GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::Normal &&
-			 GSConfig.UserHacks_HalfPixelOffset < GSHalfPixelOffset::Native)
+	else if (hpo != GSHalfPixelOffset::Normal && hpo != GSHalfPixelOffset::Native)
 	{
 		shift = GSVertexKernels::DeviceCullGridShift(scale);
 		if (shift != 0)
@@ -181,6 +197,11 @@ GSVertexKernels::CullGrid GSState::ConfigCullGrid()
 	// where that pass returns early -- is decided on the coordinates that get
 	// rasterised.
 	return GSVertexKernels::MakeCullGrid(shift, (shift == 4) ? 4 : 0);
+}
+
+GSVertexKernels::CullGrid GSState::ConfigCullGrid()
+{
+	return CullGridFor(GSConfig.UpscaleMultiplier, GSConfig.UserHacks_HalfPixelOffset);
 }
 
 GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)

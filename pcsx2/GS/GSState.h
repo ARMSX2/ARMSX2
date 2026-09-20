@@ -391,6 +391,13 @@ protected:
 	// The cull grid the current config asks for.
 	static GSVertexKernels::CullGrid ConfigCullGrid();
 
+public:
+	// The cull grid a scale and a half-pixel-offset mode ask for. Pure and public
+	// so gs_vertex_tests can pin the mode decisions without standing up a GS.
+	static GSVertexKernels::CullGrid CullGridFor(float scale, GSHalfPixelOffset hpo);
+
+protected:
+
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
 
