@@ -2737,7 +2737,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 }
 
 + (nullable NSString *)currentISOPath {
-    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *docsPath = [self documentsDirectory];
     NSString *iniPath = [docsPath stringByAppendingPathComponent:@"ARMSX2-iOS.ini"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:iniPath])
         iniPath = [docsPath stringByAppendingPathComponent:@"PCSX2-iOS.ini"];
@@ -2781,7 +2781,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 }
 
 + (nonnull NSString *)isoDirectory {
-    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *docsPath = [self documentsDirectory];
     NSString *isoDir = [docsPath stringByAppendingPathComponent:@"iso"];
     [[NSFileManager defaultManager] createDirectoryAtPath:isoDir withIntermediateDirectories:YES attributes:nil error:nil];
     return isoDir;
@@ -2824,7 +2824,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         [isos addObject:relativeName];
         [seen addObject:relativeName];
     });
-    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *docsPath = [self documentsDirectory];
     scanDir(docsPath);
 
 	return isos;
@@ -3406,7 +3406,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 #pragma mark - BIOS management
 
 + (nonnull NSString *)biosDirectory {
-    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *docsPath = [self documentsDirectory];
     NSString *biosDir = [docsPath stringByAppendingPathComponent:@"bios"];
     [[NSFileManager defaultManager] createDirectoryAtPath:biosDir withIntermediateDirectories:YES attributes:nil error:nil];
     return biosDir;
