@@ -1069,11 +1069,11 @@ TEST(GsKickKernel, ShortStreamsWithExtremeValuesPinTheAccumulator)
 namespace
 {
 	// The formula as GSVertexKick.h's header comment states it, written out.
-	GSVertexKernels::CullMirrorEntry ModelEntry(
-		int wx, int wy, const GSVertexKernels::CullBounds& b, bool banded, int band_shift)
+	GSVertexKernels::CullMirrorEntry ModelEntry(int wx, int wy, const GSVertexKernels::CullBounds& b,
+		bool banded, int band_shift, int bias_x = 1, int bias_y = 1)
 	{
-		const int bx = (wx - 1) >> band_shift;
-		const int by = (wy - 1) >> band_shift;
+		const int bx = (wx - bias_x) >> band_shift;
+		const int by = (wy - bias_y) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -1110,21 +1110,20 @@ namespace
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Which half-pixel-offset modes may keep the cull grid.
+// Which half-pixel-offset modes may keep the cull grid, and at what phase.
 //
 // Five of the six keep it above native; only Normal declines, because only its
 // phase is unknowable to the vertex kick (mod_xy is a per-target fact). Four of
-// the five have a phase of exactly 0.5 device pixels, so the device grid IS their
-// sample set. The fifth, Native, sits half a device step out -- and the grid that
-// lands above native is one binade finer than the device's, so its points include
-// every odd half step: 8k+4 is a multiple of 4 at 2x, 4k+2 a multiple of 2 at 4x.
-// Native's sample set is a subset of the grid, so the cull cannot drop a prim that
-// paints.
+// the five have a window constant of exactly 0.5 device pixels, so the device grid
+// at phase 0 IS their sample set. The fifth, Native, sits at S/2, which puts its
+// samples on the odd multiples of half the device step -- sub-texel 8k+4 at 2x,
+// 4k+2 at 4x, 2k+1 at 8x. The grid carries that as a phase, so Native's row is
+// exact rather than contained.
 //
-// ⚠️ Native's row is therefore conditional on that margin binade. If CullGridFor
-// ever stops taking the margin, Native has to decline again and these expectations
-// change with it. Getting this pair the wrong way round costs half the corpus, so
-// it is pinned here rather than left to the comment in GSState::CullGridFor.
+// ⚠️ Getting the Native/NativeWTexOffset pair the wrong way round costs half the
+// corpus (C12 §6), and getting Native's phase wrong drops 6,466 painting prims out
+// of a single Jak II frame (C12d §1), so both are pinned here rather than left to
+// the comment in GSState::CullGridFor.
 // ---------------------------------------------------------------------------
 TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 {
@@ -1132,35 +1131,40 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 		GSHalfPixelOffset::Special, GSHalfPixelOffset::SpecialAggressive, GSHalfPixelOffset::Native,
 		GSHalfPixelOffset::NativeWTexOffset};
 
-	// At 2x: only Normal declines. The grid that lands is one binade finer than the
-	// device's, so 2 rather than 3 -- which is also what admits Native, whose
-	// samples are the odd multiples of 4 sub-texels there.
+	// At 2x: only Normal declines. The grid is the device's own, step 8 sub-texels,
+	// at phase 0 for every mode but Native, which takes phase 4.
 	for (GSHalfPixelOffset hpo : kAll)
 	{
 		const GSVertexKernels::CullGrid g = GSState::CullGridFor(2.0f, hpo);
 		const bool declines = (hpo == GSHalfPixelOffset::Normal);
-		EXPECT_EQ(declines ? 0 : 2, g.shift) << "mode " << static_cast<int>(hpo) << " at 2x";
+		const int want_phase = (hpo == GSHalfPixelOffset::Native) ? 4 : 0;
+		EXPECT_EQ(declines ? 0 : 3, g.shift) << "mode " << static_cast<int>(hpo) << " at 2x";
+		EXPECT_EQ(want_phase, g.band_bias_x - 1) << "phase x, mode " << static_cast<int>(hpo) << " at 2x";
+		EXPECT_EQ(want_phase, g.band_bias_y - 1) << "phase y, mode " << static_cast<int>(hpo) << " at 2x";
+		EXPECT_EQ(want_phase, g.phase.I32[0]) << "phase vec, mode " << static_cast<int>(hpo) << " at 2x";
 
 		// Sprites move after the cull at every upscale, so they decline whatever the
 		// triangle class does.
 		EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 2x";
 	}
 
-	// At native every mode keeps the shipped pixel-centre grid, sprites included --
-	// that is what makes 1x byte identity structural.
+	// At native every mode keeps the shipped pixel-centre grid, sprites included,
+	// and every phase is zero -- that is what makes 1x byte identity structural.
 	for (GSHalfPixelOffset hpo : kAll)
 	{
 		const GSVertexKernels::CullGrid g = GSState::CullGridFor(1.0f, hpo);
 		EXPECT_EQ(4, g.shift) << "mode " << static_cast<int>(hpo) << " at 1x";
 		EXPECT_EQ(4, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 1x";
+		EXPECT_EQ(1, g.band_bias_x) << "phase x, mode " << static_cast<int>(hpo) << " at 1x";
+		EXPECT_EQ(1, g.band_bias_y) << "phase y, mode " << static_cast<int>(hpo) << " at 1x";
 	}
 
 	// A scale whose sample points are not a sub-texel grid declines whatever the
-	// mode is, and so does 8x, where one binade finer than the device grid is no
-	// grid at all.
+	// mode is. 8x no longer does: the device grid there is 2 sub-texels, which is a
+	// grid, and Native's phase on it is 1.
 	for (GSHalfPixelOffset hpo : kAll)
 	{
-		for (float scale : {1.5f, 3.0f, 8.0f})
+		for (float scale : {1.5f, 3.0f})
 		{
 			const GSVertexKernels::CullGrid g = GSState::CullGridFor(scale, hpo);
 			EXPECT_EQ(0, g.shift) << "mode " << static_cast<int>(hpo) << " at " << scale << "x";
@@ -1168,15 +1172,20 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 		}
 	}
 
-	// 4x keeps a grid one binade finer than its own for every mode but Normal.
-	// Native is in because its samples there are the odd multiples of 2 sub-texels,
-	// which the step-2 grid contains.
-	for (GSHalfPixelOffset hpo : kAll)
+	// 4x and 8x keep the device grid for every mode but Normal, with Native's phase
+	// at half the step in each.
+	for (float scale : {4.0f, 8.0f})
 	{
-		const GSVertexKernels::CullGrid g = GSState::CullGridFor(4.0f, hpo);
-		const bool declines = (hpo == GSHalfPixelOffset::Normal);
-		EXPECT_EQ(declines ? 0 : 1, g.shift) << "mode " << static_cast<int>(hpo) << " at 4x";
-		EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 4x";
+		const int want_shift = (scale == 4.0f) ? 2 : 1;
+		for (GSHalfPixelOffset hpo : kAll)
+		{
+			const GSVertexKernels::CullGrid g = GSState::CullGridFor(scale, hpo);
+			const bool declines = (hpo == GSHalfPixelOffset::Normal);
+			const int want_phase = declines ? 0 : ((hpo == GSHalfPixelOffset::Native) ? (1 << (want_shift - 1)) : 0);
+			EXPECT_EQ(declines ? 0 : want_shift, g.shift) << "mode " << static_cast<int>(hpo) << " at " << scale << "x";
+			EXPECT_EQ(want_phase, g.band_bias_x - 1) << "phase, mode " << static_cast<int>(hpo) << " at " << scale << "x";
+			EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at " << scale << "x";
+		}
 	}
 }
 
@@ -1186,25 +1195,42 @@ TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 	// 1 at 8x.
 	for (int band_shift : {4, 3, 2, 1})
 	{
-		const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
-		const std::vector<int> xs = BoundaryCoords(bounds.l, bounds.r, band_shift);
-		const std::vector<int> ys = BoundaryCoords(bounds.t, bounds.b, band_shift);
-
-		for (int wx : xs)
+		// Phase 0 is every mode but Native; half the step is Native's.
+		for (int phase : {0, 1 << (band_shift - 1)})
 		{
-			for (int wy : ys)
+			const int bias = phase + 1;
+			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
+			std::vector<int> xs = BoundaryCoords(bounds.l, bounds.r, band_shift);
+			std::vector<int> ys = BoundaryCoords(bounds.t, bounds.b, band_shift);
+			// A phase moves the band boundaries, so sweep both sides of each.
+			for (const int d : {-1, 1})
 			{
-				SCOPED_TRACE(::testing::Message() << "shift=" << band_shift << " wx=" << wx << " wy=" << wy);
+				const size_t nx = xs.size(), ny = ys.size();
+				for (size_t i = 0; i < nx; i++)
+					xs.push_back(xs[i] + phase * d);
+				for (size_t i = 0; i < ny; i++)
+					ys.push_back(ys[i] + phase * d);
+			}
 
-				const auto banded = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift);
-				const auto banded_ref = ModelEntry(wx, wy, bounds, true, band_shift);
-				EXPECT_EQ(banded.xyp, banded_ref.xyp) << "banded xyp";
-				EXPECT_EQ(banded.meta, banded_ref.meta) << "banded meta";
+			for (int wx : xs)
+			{
+				for (int wy : ys)
+				{
+					SCOPED_TRACE(::testing::Message() << "shift=" << band_shift << " phase=" << phase
+					                                  << " wx=" << wx << " wy=" << wy);
 
-				const auto raw = GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift);
-				const auto raw_ref = ModelEntry(wx, wy, bounds, false, band_shift);
-				EXPECT_EQ(raw.xyp, raw_ref.xyp) << "raw xyp";
-				EXPECT_EQ(raw.meta, raw_ref.meta) << "raw meta";
+					const auto banded =
+						GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift, bias, bias);
+					const auto banded_ref = ModelEntry(wx, wy, bounds, true, band_shift, bias, bias);
+					EXPECT_EQ(banded.xyp, banded_ref.xyp) << "banded xyp";
+					EXPECT_EQ(banded.meta, banded_ref.meta) << "banded meta";
+
+					const auto raw =
+						GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift, bias, bias);
+					const auto raw_ref = ModelEntry(wx, wy, bounds, false, band_shift, bias, bias);
+					EXPECT_EQ(raw.xyp, raw_ref.xyp) << "raw xyp";
+					EXPECT_EQ(raw.meta, raw_ref.meta) << "raw meta";
+				}
 			}
 		}
 	}
@@ -1222,11 +1248,14 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 		{
 		  for (int band_shift : {4, 3, 2, 1})
 		  {
+		    for (int phase : {0, 1 << (band_shift - 1)})
+		    {
 		    for (bool banded : {true, false})
 		    {
+			const int bias = phase + 1;
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
 			const GSVector4i xyof(ofx, ofy, ofx, ofy);
-			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds, band_shift, banded);
+			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds, band_shift, banded, bias, bias);
 
 			std::vector<int> xs, ys;
 			for (int v : BoundaryCoords(bounds.l, bounds.r, band_shift))
@@ -1267,9 +1296,9 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 					// ADC on two lanes of every quad, so a stuck lane shows up.
 					raw[k][3] = (k & 1) ? 0x8000u : 0u;
 
-					expect[k] = banded ?
-									GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift) :
-									GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift);
+					expect[k] =
+						banded ? GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift, bias, bias) :
+								 GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift, bias, bias);
 					if (k & 1)
 						expect[k].meta |= GSVertexKickKernel::kCullMetaAdcBit;
 				}
@@ -1288,6 +1317,7 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 					EXPECT_EQ(got_meta[k], expect[k].meta) << "meta";
 				}
 			}
+		    }
 		    }
 		  }
 		}

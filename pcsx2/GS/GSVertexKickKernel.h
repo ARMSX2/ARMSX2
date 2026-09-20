@@ -210,12 +210,13 @@ namespace GSVertexKickKernel
 	struct MirrorBounds
 	{
 		int32x4_t ofx, ofy, l, t, r, b;
-		int32x4_t band_shift; // negative, so SSHL right-shifts by the grid's log2 step
-		uint32x4_t banded;    // all-ones when the outcode compares bands, zero for raw 12.4
+		int32x4_t band_shift;      // negative, so SSHL right-shifts by the grid's log2 step
+		int32x4_t bias_x, bias_y;  // the grid's phase plus one (see MakeCullMirrorEntry)
+		uint32x4_t banded;         // all-ones when the outcode compares bands, zero for raw 12.4
 	};
 
-	__forceinline_odr MirrorBounds MakeMirrorBounds(
-		const GSVector4i& xyof, const GSVertexKernels::CullBounds& bounds, int band_shift, bool banded)
+	__forceinline_odr MirrorBounds MakeMirrorBounds(const GSVector4i& xyof,
+		const GSVertexKernels::CullBounds& bounds, int band_shift, bool banded, int bias_x, int bias_y)
 	{
 		MirrorBounds m;
 		m.ofx = vdupq_n_s32(xyof.I32[0]);
@@ -225,6 +226,8 @@ namespace GSVertexKickKernel
 		m.r = vdupq_n_s32(bounds.r);
 		m.b = vdupq_n_s32(bounds.b);
 		m.band_shift = vdupq_n_s32(-band_shift);
+		m.bias_x = vdupq_n_s32(bias_x);
+		m.bias_y = vdupq_n_s32(bias_y);
 		m.banded = vdupq_n_u32(banded ? 0xFFFFFFFFu : 0u);
 		return m;
 	}
@@ -249,9 +252,8 @@ namespace GSVertexKickKernel
 
 		// SSHL by a negative amount is an arithmetic right shift, which is what a
 		// runtime band width needs -- the immediate form cannot take one.
-		const int32x4_t one = vdupq_n_s32(1);
-		const int32x4_t bx = vshlq_s32(vsubq_s32(wx, one), k.band_shift);
-		const int32x4_t by = vshlq_s32(vsubq_s32(wy, one), k.band_shift);
+		const int32x4_t bx = vshlq_s32(vsubq_s32(wx, k.bias_x), k.band_shift);
+		const int32x4_t by = vshlq_s32(vsubq_s32(wy, k.bias_y), k.band_shift);
 
 		// The outcode compares bands at native and raw 12.4 everywhere else; the
 		// bands are packed either way.
@@ -307,6 +309,8 @@ namespace GSVertexKickKernel
 		// band space. Both are invariant for the batch; see MakeCullMirrorEntry.
 		const int band_shift = inv.grid.shift;
 		const bool banded = (band_shift == 4);
+		const int band_bias_x = inv.grid.band_bias_x;
+		const int band_bias_y = inv.grid.band_bias_y;
 		const GSVector4i keep = inv.clamp_keep;
 		const GSVector4i shifted = inv.clamp_shifted;
 #ifdef ARCH_ARM64
@@ -314,7 +318,7 @@ namespace GSVertexKickKernel
 		// function-local statics that clang rematerializes from the frame every
 		// iteration.
 		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts();
-		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds, band_shift, banded);
+		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds, band_shift, banded, band_bias_x, band_bias_y);
 #endif
 
 		// The vertex parse is per vertex (one TBL pair each); the mirror build is
@@ -402,8 +406,8 @@ namespace GSVertexKickKernel
 			const u32 raw_y = rv[off_xyz].U32[1];
 			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
 			const int wy = static_cast<int>(raw_y & 0xFFFFu) - ofy;
-			const int bx = (wx - 1) >> band_shift;
-			const int by = (wy - 1) >> band_shift;
+			const int bx = (wx - band_bias_x) >> band_shift;
+			const int by = (wy - band_bias_y) >> band_shift;
 			const int cx = banded ? bx : wx;
 			const int cy = banded ? by : wy;
 

@@ -481,12 +481,27 @@ namespace GSVertexKernels
 	//
 	// Invariant: sprite_shift is either equal to shift or 0, so the round vectors
 	// are valid for whichever class ends up using them.
+	//
+	// The grid also carries a per-axis PHASE, in sub-texels: the sample points are
+	// `phase + k*step`, not `k*step`. Every half-pixel-offset mode whose window
+	// constant is half a device pixel has phase 0, and HalfPixelOffset::Native --
+	// whose align-to-native branch puts the constant at S/2 -- has phase step/2,
+	// the odd multiples of half the device step (sub-texel 8k+4 at 2x, 4k+2 at 4x).
+	// See GSState::CullGridFor for the derivation from the mode's ox2.
+	//
+	// Invariant: phase is zero at shift 4 (native, where 1x byte identity is
+	// structural) and at shift 0 (no grid), and 0 <= phase < step otherwise. The
+	// sprite class therefore needs no phase of its own: it only ever carries the
+	// native grid.
 	struct CullGrid
 	{
 		GSVector4i round_add;  // (step - 1, step - 1, -1, -1)
 		GSVector4i round_mask; // ~(step - 1)
+		GSVector4i phase;      // (phase_x, phase_y, phase_x, phase_y)
 		int shift;             // triangle class
 		int sprite_shift;      // sprite class
+		int band_bias_x;       // phase_x + 1, the constant the band expression subtracts
+		int band_bias_y;       // phase_y + 1
 
 		template <int primclass>
 		__forceinline_odr int ShiftFor() const
@@ -511,10 +526,11 @@ namespace GSVertexKernels
 		return 0;
 	}
 
-	__forceinline_odr CullGrid MakeCullGrid(int shift, int sprite_shift)
+	__forceinline_odr CullGrid MakeCullGrid(int shift, int sprite_shift, int phase_x = 0, int phase_y = 0)
 	{
 		const int step = 1 << shift;
-		return {GSVector4i(step - 1, step - 1, -1, -1), GSVector4i(~(step - 1)), shift, sprite_shift};
+		return {GSVector4i(step - 1, step - 1, -1, -1), GSVector4i(~(step - 1)),
+			GSVector4i(phase_x, phase_y, phase_x, phase_y), shift, sprite_shift, phase_x + 1, phase_y + 1};
 	}
 
 	// Raw bounding box of one completed prim's window entries, no rounding.
@@ -594,7 +610,12 @@ namespace GSVertexKernels
 		if (shift == 0 || shift == 4)
 			return 0;
 
-		GSVector4i snapped = RoundToCullGrid(bbox, grid);
+		// The phase shifts the sample set, so snap in the grid's own frame: subtract
+		// it, snap, and leave it subtracted. rempty() compares the two edges against
+		// each other, so the translation cancels and adding the phase back would be
+		// dead work. The AA1 expansion is +/-16 sub-texels, a multiple of every step
+		// the grid can take, so it commutes with the snap either way round.
+		GSVector4i snapped = RoundToCullGrid(bbox - grid.phase, grid);
 		if (aa1_expand)
 			snapped += GSVector4i(-0x10, -0x10, 0x10, 0x10);
 
@@ -728,11 +749,17 @@ namespace GSVertexKernels
 	// outcode space, so the entry shape is uniform; the band fields are read only
 	// as differences between vertices of one prim, which share an XYOFFSET, so a
 	// narrower band cannot overflow the 28-bit field either.
+	// `band_bias_*` is the grid's phase plus one, so a band boundary sits on a
+	// sample point: the band test asks "do all the prim's vertices fall between the
+	// same two sample points", and with a phase those points are phase + k*step.
+	// It is 1 at native and wherever the phase is zero, which is every mode but
+	// HalfPixelOffset::Native.
 	template <bool banded>
-	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(int wx, int wy, const CullBounds& bounds, int band_shift)
+	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(
+		int wx, int wy, const CullBounds& bounds, int band_shift, int band_bias_x = 1, int band_bias_y = 1)
 	{
-		const int bx = (wx - 1) >> band_shift;
-		const int by = (wy - 1) >> band_shift;
+		const int bx = (wx - band_bias_x) >> band_shift;
+		const int by = (wy - band_bias_y) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
