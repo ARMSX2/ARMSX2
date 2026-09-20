@@ -51,6 +51,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
+#include "pcsx2/GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
@@ -1104,6 +1105,12 @@ static void PrintCommandLineHelp(const char* progname)
 						 "create flag, which on Turnip is what untiles the pass and programs the coherent primitive "
 						 "mode, so it is the confound between 'declaring the read is expensive' and 'declaring it for "
 						 "draws that do not read is expensive'. Vulkan only.\n");
+	std::fprintf(stderr, "  -date-road <auto|primid>: Which road the destination alpha test takes. auto is the per-draw "
+						 "decision the renderer already makes; primid pins every DATE draw to primitive-ID tracking, the "
+						 "road both handheld targets take today. Measurement instrument: giving a build an in-pass "
+						 "destination read moves DATE draws onto the Full road by itself, so an A/B of the colour road "
+						 "otherwise changes two mechanisms at once. ⚠️ EXPECTED TO MOVE PIXELS -- the DATE roads are four "
+						 "approximations of one PS2 rule and they disagree at the edges.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1665,6 +1672,21 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// not a user preference. Read where the backend builds the carry inputs, once
 				// per draw, which is long after argument parsing.
 				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-date-road"))
+			{
+				const char* road_arg = argv[++i];
+				if (std::strcmp(road_arg, "auto") == 0)
+					GSDateRoadPolicy::SetOverride(GSDateRoadOverride::Auto);
+				else if (std::strcmp(road_arg, "primid") == 0)
+					GSDateRoadPolicy::SetOverride(GSDateRoadOverride::PrimID);
+				else
+				{
+					ArgError("-date-road: '{}' is not a road (expected auto or primid).", road_arg);
+					return false;
+				}
+				Console.WriteLn(fmt::format("Destination alpha test road = {}", GSDateRoadPolicy::Name()));
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))

@@ -38,6 +38,7 @@ namespace
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
+#include "GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
@@ -4376,8 +4377,8 @@ bool GSDeviceVK::CheckFeatures()
 	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
-	Console.WriteLn("VK: measurement overrides: feedback-carry=%s",
-		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy");
+	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s",
+		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name());
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",

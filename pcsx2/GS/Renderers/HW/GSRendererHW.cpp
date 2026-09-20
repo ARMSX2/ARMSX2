@@ -12,6 +12,7 @@
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
@@ -6834,6 +6835,14 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
 
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -date-road primid): the barrier state as the road
+	// selection found it, so that pinning the road to primitive-ID tracking can give back
+	// exactly the barrier this selection asks for and nothing that was already required for
+	// blending or fbmask. Two plain bools on a path that is not hot; inert when the override is
+	// not asked for. See the block after the chain, and GSDateRoadPolicy.h.
+	const bool one_barrier_before_date = m_conf.require_one_barrier;
+	const bool full_barrier_before_date = m_conf.require_full_barrier;
+
 	// Date one can run with complex alpha test if there's no overlap.
 	const bool complex_alpha_test = m_cached_ctx.TEST.ATE &&
 	                                m_cached_ctx.TEST.ATST != ATST_ALWAYS &&
@@ -6951,6 +6960,34 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		GL_PERF("DATE: Accurate with no alpha write");
 		m_conf.require_one_barrier = true;
 		date_options.barrier = true;
+	}
+
+	// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b, lane C25.
+	//
+	// Pin every DATE draw to primitive-ID tracking, the road both handheld targets take today,
+	// so the DATE mechanism can be held still while the colour self-read road changes under it.
+	// Without this, giving a build an in-pass destination read moves draws onto the Full road by
+	// itself, and Stuntman's and Indiana Jones's arm deltas mix two mechanisms with no way to
+	// tell them apart afterwards.
+	//
+	// Here rather than in EmulateDATEGetConfig, although that is where the road becomes a
+	// DestinationAlphaMode: this is the function that CHOOSES, and every branch above that picks
+	// a road also asks for the barrier that road needs. Undoing the choice means undoing the
+	// barrier with it, and restoring the state this function was entered with is the only
+	// spelling of that which cannot take away a barrier some earlier stage required for its own
+	// reasons. It also runs before EmulateBlending, so the whole downstream draw is configured
+	// the way it would have been had the primitive-ID road been chosen on its merits.
+	if (GSDateRoadForcesPrimID({.override_mode = GSDateRoadPolicy::GetOverride(),
+			.date_enabled = date_options.enabled,
+			.already_primid = date_options.primid,
+			.device_has_primitive_id = features.primitive_id,
+			.scanmsk_discards_lines = (m_conf.ps.scanmsk & 2) != 0}))
+	{
+		date_options.stencil_one = false;
+		date_options.barrier = false;
+		date_options.primid = true;
+		m_conf.require_one_barrier = one_barrier_before_date;
+		m_conf.require_full_barrier = full_barrier_before_date;
 	}
 
 	// Will save my life !
