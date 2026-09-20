@@ -177,6 +177,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		IOS/PlaySoundAsync.mm
 		IOS/SceneDelegate.mm
 	)
+	# Only the bridge. The files in IOS_RUNTIME_SOURCES still release by hand, and
+	# test_ios_airplay.py pins one of those lines out of SceneDelegate.mm.
+	set_source_files_properties(ARMSX2Bridge.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 	add_executable(ARMSX2iOS ${IOS_RUNTIME_SOURCES} ARMSX2Bridge.mm ${SWIFT_SOURCES})
 	set_target_properties(ARMSX2iOS PROPERTIES
 		MACOSX_BUNDLE TRUE
