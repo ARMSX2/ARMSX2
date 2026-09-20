@@ -56,21 +56,6 @@ enum PadSizeAxis {
     case y
 }
 
-protocol PadLayoutINIStore: AnyObject {
-    func getFloat(_ section: String, key: String, defaultValue: Float) -> Float
-    func setFloat(_ section: String, key: String, value: Float)
-}
-
-final class ARMSX2BridgePadLayoutINIStore: PadLayoutINIStore {
-    func getFloat(_ section: String, key: String, defaultValue: Float) -> Float {
-        ARMSX2Bridge.getINIFloat(section, key: key, defaultValue: defaultValue)
-    }
-
-    func setFloat(_ section: String, key: String, value: Float) {
-        ARMSX2Bridge.setINIFloat(section, key: key, value: value)
-    }
-}
-
 enum PadLayoutMetrics {
     static let minimumTouchLength: CGFloat = 55
     static let minControlScale: CGFloat = 0.5
@@ -127,7 +112,6 @@ enum VirtualPadButtonOffset {
 @Observable
 final class PadLayoutStore: @unchecked Sendable {
     static let shared = PadLayoutStore()
-    private let iniStore: PadLayoutINIStore
 
     static let actionButtonIDs = ["cross", "circle", "square", "triangle"]
     static let perButtonIDs = ["triangle", "circle", "square", "cross", "up", "down", "left", "right"]
@@ -176,13 +160,10 @@ final class PadLayoutStore: @unchecked Sendable {
         "rstick": PadGroupPosition(x: 0.68, y: 0.86, scale: 1.0),
     ]
 
-    init(iniStore: PadLayoutINIStore = ARMSX2BridgePadLayoutINIStore(), loadFromStore: Bool = true) {
-        self.iniStore = iniStore
+    init() {
         portrait = Self.defaultPortrait
         landscape = Self.defaultLandscape
-        if loadFromStore {
-            load()
-        }
+        load()
     }
 
     func position(for id: String, landscape isLandscape: Bool) -> PadGroupPosition {
@@ -349,65 +330,65 @@ final class PadLayoutStore: @unchecked Sendable {
     /// carry the X axis (representative) so older readers still get a sane value;
     /// the four `*_scaleX/Y`/`*_hitScaleX/Y` keys carry the full per-axis state.
     private func writeSizeKeys(_ pos: PadGroupPosition, section: String, id: String) {
-        iniStore.setFloat(section, key: "\(id)_scale", value: Float(pos.scaleX))
-        iniStore.setFloat(section, key: "\(id)_hitScale", value: Float(pos.hitScaleX))
-        iniStore.setFloat(section, key: "\(id)_scaleX", value: Float(pos.scaleX))
-        iniStore.setFloat(section, key: "\(id)_scaleY", value: Float(pos.scaleY))
-        iniStore.setFloat(section, key: "\(id)_hitScaleX", value: Float(pos.hitScaleX))
-        iniStore.setFloat(section, key: "\(id)_hitScaleY", value: Float(pos.hitScaleY))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_scale", value: Float(pos.scaleX))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_hitScale", value: Float(pos.hitScaleX))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_scaleX", value: Float(pos.scaleX))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_scaleY", value: Float(pos.scaleY))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_hitScaleX", value: Float(pos.hitScaleX))
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_hitScaleY", value: Float(pos.hitScaleY))
     }
 
     private func writeSizeKeysSentinel(section: String, id: String) {
         for suffix in ["scale", "hitScale", "scaleX", "scaleY", "hitScaleX", "hitScaleY"] {
-            iniStore.setFloat(section, key: "\(id)_\(suffix)", value: -1.0)
+            ARMSX2Bridge.setINIFloat(section, key: "\(id)_\(suffix)", value: -1.0)
         }
     }
 
     func save() {
         for id in Self.groupIDs {
             if let pos = portrait[id] {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_x", value: Float(pos.x))
-                iniStore.setFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_y", value: Float(pos.y))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_x", value: Float(pos.x))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_y", value: Float(pos.y))
                 writeSizeKeys(pos, section: "ARMSX2iOS/PadLayout/Portrait", id: id)
             }
             if let pos = landscape[id] {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_x", value: Float(pos.x))
-                iniStore.setFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_y", value: Float(pos.y))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_x", value: Float(pos.x))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_y", value: Float(pos.y))
                 writeSizeKeys(pos, section: "ARMSX2iOS/PadLayout/Landscape", id: id)
             }
         }
         // Per-button positions: write override if present, sentinel -1 otherwise.
         for id in Self.perButtonIDs {
             if let pos = perButtonPortrait[id] {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_x", value: Float(pos.x))
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_y", value: Float(pos.y))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_x", value: Float(pos.x))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_y", value: Float(pos.y))
                 writeSizeKeys(pos, section: "ARMSX2iOS/PadLayout/PerButtonPortrait", id: id)
             } else {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_x", value: -1.0)
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_y", value: -1.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_x", value: -1.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonPortrait", key: "\(id)_y", value: -1.0)
                 writeSizeKeysSentinel(section: "ARMSX2iOS/PadLayout/PerButtonPortrait", id: id)
             }
             if let pos = perButtonLandscape[id] {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_x", value: Float(pos.x))
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_y", value: Float(pos.y))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_x", value: Float(pos.x))
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_y", value: Float(pos.y))
                 writeSizeKeys(pos, section: "ARMSX2iOS/PadLayout/PerButtonLandscape", id: id)
             } else {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_x", value: -1.0)
-                iniStore.setFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_y", value: -1.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_x", value: -1.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/PerButtonLandscape", key: "\(id)_y", value: -1.0)
                 writeSizeKeysSentinel(section: "ARMSX2iOS/PadLayout/PerButtonLandscape", id: id)
             }
         }
         // Visibility: `0` = hidden, `1` = visible. Absent means visible (default).
         for id in Self.groupIDs {
             let isVisible = isControlVisible(id)
-            iniStore.setFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: isVisible ? 1.0 : 0.0)
+            ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: isVisible ? 1.0 : 0.0)
         }
         // Per-button visibility overrides (only action buttons in this pass).
         for id in Self.actionButtonIDs {
             if let explicit = controlVisibility[id] {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: explicit ? 1.0 : 0.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: explicit ? 1.0 : 0.0)
             } else {
-                iniStore.setFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: -1.0)
+                ARMSX2Bridge.setINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, value: -1.0)
             }
         }
     }
@@ -419,12 +400,12 @@ final class PadLayoutStore: @unchecked Sendable {
     ///   hitScaleY = *_hitScaleY ?? *_hitScale ?? scaleY
     /// Scales are clamped to a positive range, so a non-positive read means absent.
     private func readSizeAxes(section: String, id: String) -> (scaleX: CGFloat, scaleY: CGFloat, hitScaleX: CGFloat, hitScaleY: CGFloat) {
-        let legacyScale = iniStore.getFloat(section, key: "\(id)_scale", defaultValue: -1)
-        let legacyHit = iniStore.getFloat(section, key: "\(id)_hitScale", defaultValue: -1)
-        let sx = iniStore.getFloat(section, key: "\(id)_scaleX", defaultValue: -1)
-        let sy = iniStore.getFloat(section, key: "\(id)_scaleY", defaultValue: -1)
-        let hx = iniStore.getFloat(section, key: "\(id)_hitScaleX", defaultValue: -1)
-        let hy = iniStore.getFloat(section, key: "\(id)_hitScaleY", defaultValue: -1)
+        let legacyScale = ARMSX2Bridge.getINIFloat(section, key: "\(id)_scale", defaultValue: -1)
+        let legacyHit = ARMSX2Bridge.getINIFloat(section, key: "\(id)_hitScale", defaultValue: -1)
+        let sx = ARMSX2Bridge.getINIFloat(section, key: "\(id)_scaleX", defaultValue: -1)
+        let sy = ARMSX2Bridge.getINIFloat(section, key: "\(id)_scaleY", defaultValue: -1)
+        let hx = ARMSX2Bridge.getINIFloat(section, key: "\(id)_hitScaleX", defaultValue: -1)
+        let hy = ARMSX2Bridge.getINIFloat(section, key: "\(id)_hitScaleY", defaultValue: -1)
 
         let baseScale = PadLayoutMetrics.clampedScale(CGFloat(legacyScale > 0 ? legacyScale : 1.0))
         let scaleX = PadLayoutMetrics.clampedScale(sx > 0 ? CGFloat(sx) : baseScale)
@@ -438,28 +419,28 @@ final class PadLayoutStore: @unchecked Sendable {
     func load() {
         for id in Self.groupIDs {
             // Portrait
-            let px = iniStore.getFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_x", defaultValue: -1)
+            let px = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_x", defaultValue: -1)
             if px >= 0 {
-                let py = iniStore.getFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_y", defaultValue: 0.5)
+                let py = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/Portrait", key: "\(id)_y", defaultValue: 0.5)
                 let axes = readSizeAxes(section: "ARMSX2iOS/PadLayout/Portrait", id: id)
                 portrait[id] = PadGroupPosition(x: CGFloat(px), y: CGFloat(py), scaleX: axes.scaleX, scaleY: axes.scaleY, hitScaleX: axes.hitScaleX, hitScaleY: axes.hitScaleY)
             }
             // Landscape
-            let lx = iniStore.getFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_x", defaultValue: -1)
+            let lx = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_x", defaultValue: -1)
             if lx >= 0 {
-                let ly = iniStore.getFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_y", defaultValue: 0.5)
+                let ly = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/Landscape", key: "\(id)_y", defaultValue: 0.5)
                 let axes = readSizeAxes(section: "ARMSX2iOS/PadLayout/Landscape", id: id)
                 landscape[id] = PadGroupPosition(x: CGFloat(lx), y: CGFloat(ly), scaleX: axes.scaleX, scaleY: axes.scaleY, hitScaleX: axes.hitScaleX, hitScaleY: axes.hitScaleY)
             }
         }
         for id in Self.perButtonIDs {
             // Portrait
-            let px = iniStore.getFloat(
+            let px = ARMSX2Bridge.getINIFloat(
                 "ARMSX2iOS/PadLayout/PerButtonPortrait",
                 key: "\(id)_x",
                 defaultValue: -1
             )
-            let py = iniStore.getFloat(
+            let py = ARMSX2Bridge.getINIFloat(
                 "ARMSX2iOS/PadLayout/PerButtonPortrait",
                 key: "\(id)_y",
                 defaultValue: -1
@@ -476,12 +457,12 @@ final class PadLayoutStore: @unchecked Sendable {
                 )
             }
             // Landscape
-            let lx = iniStore.getFloat(
+            let lx = ARMSX2Bridge.getINIFloat(
                 "ARMSX2iOS/PadLayout/PerButtonLandscape",
                 key: "\(id)_x",
                 defaultValue: -1
             )
-            let ly = iniStore.getFloat(
+            let ly = ARMSX2Bridge.getINIFloat(
                 "ARMSX2iOS/PadLayout/PerButtonLandscape",
                 key: "\(id)_y",
                 defaultValue: -1
@@ -500,14 +481,14 @@ final class PadLayoutStore: @unchecked Sendable {
         }
         // Visibility: `0` = hidden, `1` = visible, absent = visible (default).
         for id in Self.groupIDs {
-            let value = iniStore.getFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, defaultValue: -1)
+            let value = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, defaultValue: -1)
             if value >= 0 {
                 controlVisibility[id] = (value > 0.5)
             }
         }
         // Per-button visibility overrides.
         for id in Self.actionButtonIDs {
-            let value = iniStore.getFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, defaultValue: -1)
+            let value = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, defaultValue: -1)
             if value >= 0 {
                 controlVisibility[id] = (value > 0.5)
             }
