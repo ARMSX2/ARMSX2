@@ -36,9 +36,8 @@ extension SettingCodec where Value == Int {
         Self(clampedBy: { SettingsStore.clamped($0, to: range) })
     }
 
-    /// Two clamps that are not plain ranges.
-    static let roundMode = Self(clampedBy: SettingsStore.clampedRoundMode)
-    static let cycleSkip = Self(clampedBy: SettingsStore.clampedCycleSkip)
+    static let roundMode = int(in: 0...3)
+    static let cycleSkip = int(in: 0...3)
 
     private init(clampedBy clamp: @escaping @MainActor (Int) -> Int) {
         self.init(

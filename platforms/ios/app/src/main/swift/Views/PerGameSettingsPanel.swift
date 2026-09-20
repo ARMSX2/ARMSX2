@@ -238,7 +238,7 @@ struct PerGameSettingsPanel: View {
         let inheritedEECycleRate = Self.clampedEECycleRate(Self.intValue(info["globalEECycleRate"], defaultValue: 0))
         _globalEECycleRate = State(initialValue: inheritedEECycleRate)
         _eeCycleRate = State(initialValue: Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) ? Self.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel)
-        let inheritedEECycleSkip = SettingsStore.clampedCycleSkip(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)))
+        let inheritedEECycleSkip = SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)), to: 0...3)
         _globalEECycleSkip = State(initialValue: inheritedEECycleSkip)
         let inheritedFastBoot = Self.boolValue(info["globalFastBoot"], defaultValue: false)
         _globalFastBoot = State(initialValue: inheritedFastBoot)
@@ -318,9 +318,9 @@ struct PerGameSettingsPanel: View {
         _perGameVU1Round = State(initialValue: Self.loadedPerGameInt("EmuCore/CPU", "VU1.Roundmode", globalDefault: 3, useCurrent: useCurrent, iso: perGameISO))
         _perGameEEClamp = State(initialValue: Self.loadedPerGameEEClamp(useCurrent: useCurrent, iso: perGameISO))
         _perGameVUClamp = State(initialValue: Self.loadedPerGameVUClamp(useCurrent: useCurrent, iso: perGameISO))
-        _globalEEFpuRound = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "FPU.Roundmode", defaultValue: 3))))
-        _globalVU0Round = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU0.Roundmode", defaultValue: 3))))
-        _globalVU1Round = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU1.Roundmode", defaultValue: 3))))
+        _globalEEFpuRound = State(initialValue: SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "FPU.Roundmode", defaultValue: 3)), to: 0...3))
+        _globalVU0Round = State(initialValue: SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU0.Roundmode", defaultValue: 3)), to: 0...3))
+        _globalVU1Round = State(initialValue: SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU1.Roundmode", defaultValue: 3)), to: 0...3))
         _globalEEClamp = State(initialValue: SettingsStore.eeClampModeFromBools(
             ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuOverflow", defaultValue: true),
             ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuExtraOverflow", defaultValue: false),
