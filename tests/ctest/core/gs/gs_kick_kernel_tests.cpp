@@ -1112,13 +1112,19 @@ namespace
 // ---------------------------------------------------------------------------
 // Which half-pixel-offset modes may keep the cull grid.
 //
-// The grid is only the device sample set when the window-space constant
-// DetermineVSConfig folds into its vertex offset is 0.5 device pixels. Two of the
-// six modes move it and must decline, and they are not the two the branch
-// structure suggests: NativeWTexOffset divides its offset by the scale and lands
-// back on 0.5, while Native does not and sits half a step out at 2x. Getting that
-// pair the wrong way round costs half the corpus, so it is pinned here rather than
-// left to the comment in GSState::CullGridFor.
+// Five of the six keep it above native; only Normal declines, because only its
+// phase is unknowable to the vertex kick (mod_xy is a per-target fact). Four of
+// the five have a phase of exactly 0.5 device pixels, so the device grid IS their
+// sample set. The fifth, Native, sits half a device step out -- and the grid that
+// lands above native is one binade finer than the device's, so its points include
+// every odd half step: 8k+4 is a multiple of 4 at 2x, 4k+2 a multiple of 2 at 4x.
+// Native's sample set is a subset of the grid, so the cull cannot drop a prim that
+// paints.
+//
+// ⚠️ Native's row is therefore conditional on that margin binade. If CullGridFor
+// ever stops taking the margin, Native has to decline again and these expectations
+// change with it. Getting this pair the wrong way round costs half the corpus, so
+// it is pinned here rather than left to the comment in GSState::CullGridFor.
 // ---------------------------------------------------------------------------
 TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 {
@@ -1126,12 +1132,13 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 		GSHalfPixelOffset::Special, GSHalfPixelOffset::SpecialAggressive, GSHalfPixelOffset::Native,
 		GSHalfPixelOffset::NativeWTexOffset};
 
-	// At 2x: Normal and Native move the phase, the other four do not. The grid that
-	// lands is one binade finer than the device's, so 2 rather than 3.
+	// At 2x: only Normal declines. The grid that lands is one binade finer than the
+	// device's, so 2 rather than 3 -- which is also what admits Native, whose
+	// samples are the odd multiples of 4 sub-texels there.
 	for (GSHalfPixelOffset hpo : kAll)
 	{
 		const GSVertexKernels::CullGrid g = GSState::CullGridFor(2.0f, hpo);
-		const bool declines = (hpo == GSHalfPixelOffset::Normal || hpo == GSHalfPixelOffset::Native);
+		const bool declines = (hpo == GSHalfPixelOffset::Normal);
 		EXPECT_EQ(declines ? 0 : 2, g.shift) << "mode " << static_cast<int>(hpo) << " at 2x";
 
 		// Sprites move after the cull at every upscale, so they decline whatever the
@@ -1161,9 +1168,16 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 		}
 	}
 
-	// 4x keeps a grid for the four phase-zero modes, one binade finer than its own.
-	EXPECT_EQ(1, GSState::CullGridFor(4.0f, GSHalfPixelOffset::NativeWTexOffset).shift);
-	EXPECT_EQ(0, GSState::CullGridFor(4.0f, GSHalfPixelOffset::Native).shift);
+	// 4x keeps a grid one binade finer than its own for every mode but Normal.
+	// Native is in because its samples there are the odd multiples of 2 sub-texels,
+	// which the step-2 grid contains.
+	for (GSHalfPixelOffset hpo : kAll)
+	{
+		const GSVertexKernels::CullGrid g = GSState::CullGridFor(4.0f, hpo);
+		const bool declines = (hpo == GSHalfPixelOffset::Normal);
+		EXPECT_EQ(declines ? 0 : 1, g.shift) << "mode " << static_cast<int>(hpo) << " at 4x";
+		EXPECT_EQ(0, g.sprite_shift) << "sprite, mode " << static_cast<int>(hpo) << " at 4x";
+	}
 }
 
 TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)

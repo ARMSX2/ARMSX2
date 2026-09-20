@@ -117,8 +117,8 @@ constexpr int GSState::GetSaveStateSize(int version)
 // A window coordinate w (12.4 sub-texels, XYOFFSET subtracted) reaches window
 // position w*S/16 + c, where S is the target scale and c is the constant
 // DetermineVSConfig folds into its vertex offset. Device sample points are pixel
-// centres, so they sit at w = (16/S)*(k + 0.5 - c), and the multiples of
-// 16 >> shift ARE that set of points exactly when both of these hold:
+// centres, so they sit at w = (16/S)*(k + 0.5 - c), and the multiples of the grid
+// step 1 << shift ARE that set of points exactly when both of these hold:
 //
 //   * c == 0.5, i.e. the grid has no phase error, and
 //   * 16/S is a power of two, so the sample points land on whole sub-texels.
@@ -145,15 +145,38 @@ constexpr int GSState::GetSaveStateSize(int version)
 //     anyway. Measured: phase 0.5 and step 2.0 on every non-sprite draw of
 //     Prince of Persia, Sly 1 and Black at 2x.
 //   * Native: ox2 = -1/unscaled_x, so the phase is rtsize.x/(2*unscaled_x) = S/2 --
-//     one device pixel at 2x, half a step, the worst misalignment there is. It
-//     declines. Measured: phase 1.0 on Katamari Damacy and Jak II at 2x.
+//     one device pixel at 2x. That is half a device step, and half a step is the
+//     one nonzero phase the margin below already contains, so it keeps the grid.
+//     Measured: phase 1.0 on Katamari Damacy and Jak II at 2x.
+//
+//     The containment. With c = S/2 the sample points sit at window coordinate
+//     w = 16k/S + 8/S - 8, i.e. at the ODD multiples of half the device step:
+//     sub-texels 8k+4 at 2x, 4k+2 at 4x. The grid that lands above native is one
+//     binade finer than the device's -- step 4 at 2x, step 2 at 4x -- and every
+//     8k+4 is a multiple of 4, every 4k+2 a multiple of 2. Native's sample set is
+//     therefore a SUBSET of the margin grid, so a prim that spans a sample point
+//     spans a grid point and the cull can never drop a prim that paints. Checked
+//     against real geometry rather than left as arithmetic: over the 64,575
+//     primitives of one Jak II frame at 2x, 51,344 hold a Native sample point and
+//     the margin grid drops 0 of them. An exact step-8 grid at phase 0 -- which is
+//     NOT Native's sample set -- would drop 6,466 of them, 12.6%.
+//
+//     ⚠️ This row depends on the margin, and only on the margin. If the margin is
+//     ever traded away for the exact device grid (see below -- the trade is left
+//     open), Native has to go back to declining: the exact grid's points are the
+//     multiples of the device step and Native's samples are the ODD multiples of
+//     half of it, so the two sets are disjoint, and a prim narrow enough to hold a
+//     sample and no grid point gets culled although it paints. 6,466 of that same
+//     Jak II frame's primitives are narrow enough.
 //   * Normal: adds mod_xy/2 on the upscaling branch, and which targets carry that
 //     offset is a per-draw fact (Target::OffsetHack_modxy, m_texture_shuffle) the
-//     vertex kick cannot see. It declines.
+//     vertex kick cannot see. It declines, and it is the only mode that does.
 //
 // A phase that cannot be known is a phase that cannot be culled against: a finer
 // grid halves the population at risk without emptying it, since a prim narrower
-// than the step can still hold a sample point and no grid point.
+// than the step can still hold a sample point and no grid point. That is Normal's
+// case and not Native's -- a known exact half step is contained by the margin, an
+// unknown phase is contained by nothing.
 //
 // Non-power-of-two scales decline for the same reason and it is not a rounding
 // nicety. At 1.5x the sample points are 10.667 sub-texels apart, so a prim
@@ -185,7 +208,7 @@ GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hp
 	{
 		shift = 4;
 	}
-	else if (hpo != GSHalfPixelOffset::Normal && hpo != GSHalfPixelOffset::Native)
+	else if (hpo != GSHalfPixelOffset::Normal)
 	{
 		shift = GSVertexKernels::DeviceCullGridShift(scale);
 		if (shift != 0)
