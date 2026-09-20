@@ -16,6 +16,7 @@
 #include "Input/InputManager.h"
 #include "MTGS.h"
 #include "pcsx2/GS.h"
+#include "GS/Renderers/Common/GSCopyRoadBlendingPolicy.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 #include "GS/Renderers/Null/GSRendererNull.h"
 #include "GS/Renderers/HW/GSRendererHW.h"
@@ -229,6 +230,46 @@ static void GSClampUpscaleMultiplier(Pcsx2Config::GSOptions& config)
 	config.UpscaleMultiplier = static_cast<float>(max_upscale_multiplier);
 }
 
+// A title whose database entry caps its blending accuracy on the render-target-copy road gets that
+// cap applied here, where the device that decides whether the cap means anything finally exists.
+//
+// Applied to GSConfig rather than to EmuConfig on purpose. The cap is a property of this device,
+// not of the player's settings: writing it back would make the settings screen show a level the
+// player never chose, raise the "blending accuracy is below Basic" unsafe-settings warning for a
+// database decision, and persist a device fact into an INI that may next be read on another GPU.
+// GSConfig is the renderer's own copy and is rebuilt from EmuConfig on every settings change, so
+// this runs again each time and nothing accumulates.
+//
+// Reasoning, measurements and the owner's decision: GSCopyRoadBlendingPolicy.h.
+static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
+{
+	// Blending accuracy is a hardware-renderer concept; the software renderer blends exactly and
+	// reads none of this, so leaving its level alone keeps the log and the OSD honest.
+	if (!GSIsHardwareRenderer() || config.CopyRoadMaximumBlendingLevel < 0)
+		return;
+
+	const GSDevice::FeatureSupport& f = g_gs_device->Features();
+
+	GSCopyRoadBlendingInputs in;
+	in.framebuffer_fetch = f.framebuffer_fetch;
+	in.texture_barrier = f.texture_barrier;
+	in.multidraw_fb_copy = f.multidraw_fb_copy;
+	in.title_cap = config.CopyRoadMaximumBlendingLevel;
+	in.configured_level = static_cast<int>(config.AccurateBlendingUnit);
+
+	const int level = CopyRoadBlendingLevel(in);
+	if (level == in.configured_level)
+		return;
+
+	static constexpr const char* blend_level_names[] = {
+		"Minimum", "Basic", "Medium", "High", "Full", "Maximum"};
+
+	Console.WriteLn("GS: this device reads the render target from a per-draw copy, so the game "
+					"database's copy-road blending cap applies: blending accuracy %s -> %s.",
+		blend_level_names[in.configured_level], blend_level_names[level]);
+	config.AccurateBlendingUnit = static_cast<AccBlendLevel>(level);
+}
+
 // GV7-1d-ii: the front parser object of the two-object split (GSState.h).
 // Non-null only when GSBackThreadMode::Pipelined engaged; all GIF-parse entry
 // points below route to it, while draw/present/TC stay on g_gs_renderer.
@@ -268,6 +309,7 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		Console.WriteLn("GS: Classic renderer active (renderer=%s)",
 			Pcsx2Config::GSOptions::GetRendererName(renderer));
 		GSClampUpscaleMultiplier(GSConfig);
+		GSApplyCopyRoadBlendingCap(GSConfig);
 		g_gs_renderer = std::make_unique<GSRendererHW>();
 	}
 	else
@@ -1003,6 +1045,10 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 
 	// Ensure upscale multiplier is in range.
 	GSClampUpscaleMultiplier(GSConfig);
+
+	// GSConfig was just replaced wholesale, so the cap has to be re-derived; old_config carries
+	// the previous run's capped value and new_config carries none.
+	GSApplyCopyRoadBlendingCap(GSConfig);
 
 	// Options which aren't using the global struct yet, so we need to recreate all GS objects.
 	if (GSConfig.SWExtraThreads != old_config.SWExtraThreads ||

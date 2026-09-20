@@ -318,6 +318,11 @@
               "minimum": 0,
               "maximum": 5
             },
+            "copyRoadMaximumBlendingLevel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
             "recommendedBlendingLevel": {
               "type": "integer",
               "minimum": 0,

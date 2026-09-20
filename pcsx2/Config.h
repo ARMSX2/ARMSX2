@@ -1022,6 +1022,12 @@ struct Pcsx2Config
 		float UpscaleMultiplier = DEFAULT_UPSCALE_MULTIPLIER;
 
 		AccBlendLevel AccurateBlendingUnit = DEFAULT_BLENDING_ACCURACY;
+		/// The highest blending accuracy this title may run at while the device has to read the
+		/// render target from a per-draw copy of it, as AccBlendLevel's integer; -1 when the title
+		/// asks for nothing, which is every title but Splashdown. Written only by the game
+		/// database (copyRoadMaximumBlendingLevel) and read only by the GS, which is the side that
+		/// knows which road the device took. See GS/Renderers/Common/GSCopyRoadBlendingPolicy.h.
+		s8 CopyRoadMaximumBlendingLevel = -1;
 		BiFiltering TextureFiltering = DEFAULT_TEXTURE_FILTERING_MODE;
 		TexturePreloadingLevel TexturePreloading = TexturePreloadingLevel::Full;
 		GSDumpCompressionMethod GSDumpCompression = GSDumpCompressionMethod::Zstandard;

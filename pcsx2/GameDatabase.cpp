@@ -441,6 +441,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"gpuPaletteConversion",
 	"minimumBlendingLevel",
 	"maximumBlendingLevel",
+	"copyRoadMaximumBlendingLevel",
 	"recommendedBlendingLevel",
 	"recommendedAccurateAlphaTest",
 	"recommendedHWAA1",
@@ -478,6 +479,7 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 		case GSHWFixId::TrilinearFiltering:
 		case GSHWFixId::MinimumBlendingLevel:
 		case GSHWFixId::MaximumBlendingLevel:
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
 		case GSHWFixId::RecommendedBlendingLevel:
 		case GSHWFixId::PCRTCOffsets:
 		case GSHWFixId::PCRTCOverscan:
@@ -837,6 +839,11 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::MaximumBlendingLevel:
 			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
 
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			// The cap is a ceiling the GS applies later and only on one road, so a player already
+			// at or below it has nothing left for this fix to do, on any device.
+			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
+
 		case GSHWFixId::RecommendedBlendingLevel:
 			return true;
 
@@ -1116,6 +1123,17 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 			{
 				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
 					config.AccurateBlendingUnit = std::min(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
+			}
+			break;
+
+			case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			{
+				// Recorded, not applied. Whether the cap bites depends on how the device serves a
+				// render-target self-read, and that is not known here -- the GS device may not
+				// exist yet, and it is the GS thread's to read when it does. So the value rides to
+				// GSConfig and GS.cpp asks GSCopyRoadBlendingPolicy.h once the device is up.
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+					config.CopyRoadMaximumBlendingLevel = static_cast<s8>(value);
 			}
 			break;
 

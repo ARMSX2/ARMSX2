@@ -574,3 +574,26 @@ SLES-50120:
 SLES-50121:
   gsHWFixes:
     hwDownloadMode: 4
+
+# Splashdown: Rides Gone Wild -- blending accuracy held at Minimum (0) on any device that has to
+# read the render target from a per-draw copy of it.
+# Source: bmdhacks, 2026-09-24. Campaign upscale-unify, lanes Q-native (the price), F1 (the flips)
+# and C24 (this entry). The owner judged the Minimum picture on 2026-09-24 and passed it.
+# The cost it saves: on an SD865 under Turnip at native scale, 1,169 of Splashdown's 2,690 draws a
+# frame read the render target, which on that driver's RT-copy workaround (ARMSX2 #442) is 1,192
+# render passes and 1,177 target copies a frame and a 32.18 ms p95 against a 16.67 ms budget. At
+# Minimum that is 24 passes, 8 copies and 23.70 ms -- 8.48 ms, 26% of the frame. At 2x it is worth
+# 1.20 ms, because the frame is fill-bound by then.
+# What it costs: about 30% of the frame moves, by up to 40 levels out of 255, across the water
+# spray behind the boat. A tester should compare the wake against a barrier-capable device.
+# Verified on: ARMSX2 ee3bc443c9 + this change, Classic Vulkan. Cap taken on the SD865/Turnip road
+# and reproduced on an Apple M2 (Honeykrisp) with OverrideTextureBarriers=0; not taken on the M2's
+# default road, where all 47 corpus dumps stay byte-identical at 1x and 2x.
+# copyRoadMaximumBlendingLevel is deliberately NOT maximumBlendingLevel: the cost exists only on
+# the copy road, so on a Mali with in-tile fetch, on any desktop GPU, and on the Adreno declared-
+# read road when it ships, the entry is inert and the picture is the one it always was.
+# gsHWFixes replaces upstream's block, so upstream's autoFlush is restated beside it.
+SLUS-20686:
+  gsHWFixes:
+    autoFlush: 1
+    copyRoadMaximumBlendingLevel: 0
