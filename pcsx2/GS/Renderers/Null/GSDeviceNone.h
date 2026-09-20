@@ -51,7 +51,12 @@ private:
 	std::vector<u8> m_buffer;
 };
 
-class GSDeviceNone final : public GSDevice
+// Not final: tests/ctest/core/gs/gs_sprite_pass_order_tests.cpp derives from this to keep the
+// GSHWDrawConfig the backend is handed, which is how it reads the geometry a real GSRendererHW
+// draw submits without a graphics API. Nothing in the tree holds a GSDeviceNone* -- every caller
+// goes through GSDevice* (g_gs_device) -- so dropping final devirtualizes nothing and generates
+// no different code.
+class GSDeviceNone : public GSDevice
 {
 public:
 	GSDeviceNone() = default;
