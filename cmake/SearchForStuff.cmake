@@ -28,8 +28,46 @@ find_package(Freetype 2.10 REQUIRED) # 2.10 is the first with COLRv0 support, wh
 # same as libwebp/sharpyuv above (cmake/FindWebP.cmake). Gate on the archive we
 # actually found being static, so every shared resolution (Qt desktop, macOS,
 # Windows) stays a no-op.
+#
+# Static does not always mean it calls HarfBuzz, and the two prefixes we build
+# differ: the Android one
+# (.github/workflows/scripts/android/build-dependencies.sh) and the iOS one
+# (platforms/ios/.../SearchForStuff.cmake) build FreeType with
+# FT_DISABLE_HARFBUZZ=ON and ship no HarfBuzz at all, so requiring one there
+# fails a build whose libfreetype.a wants nothing - which is exactly how the
+# android-arm64-v8a job died. So ask the archive instead of assuming: nm lists
+# what it leaves undefined, and an FT_REQUIRE_HARFBUZZ build leaves hb_* there.
 get_filename_component(FREETYPE_LIBRARY_EXT "${FREETYPE_LIBRARY}" EXT)
 if (NOT WIN32 AND FREETYPE_LIBRARY_EXT STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+	# CMAKE_NM is what the toolchain (including the NDK's) points at; nm and
+	# llvm-nm are the fallbacks for a plain host build. Mach-O prefixes the
+	# underscore, hence the optional one in the pattern.
+	set(FREETYPE_NEEDS_HARFBUZZ FALSE)
+	find_program(ARMSX2_NM NAMES "${CMAKE_NM}" nm llvm-nm)
+	if (ARMSX2_NM)
+		execute_process(COMMAND "${ARMSX2_NM}" -u "${FREETYPE_LIBRARY}"
+			OUTPUT_VARIABLE FREETYPE_UNDEFINED
+			ERROR_VARIABLE FREETYPE_NM_ERROR
+			RESULT_VARIABLE FREETYPE_NM_RESULT
+			OUTPUT_STRIP_TRAILING_WHITESPACE)
+		if (NOT FREETYPE_NM_RESULT EQUAL 0)
+			# Cannot tell: keep the old assumption rather than hand the linker an
+			# archive with unresolved hb_* in it.
+			message(STATUS "Could not run ${ARMSX2_NM} on ${FREETYPE_LIBRARY}, assuming it needs HarfBuzz")
+			set(FREETYPE_NEEDS_HARFBUZZ TRUE)
+		elseif (FREETYPE_UNDEFINED MATCHES "[ \t]_?hb_")
+			set(FREETYPE_NEEDS_HARFBUZZ TRUE)
+		endif()
+		unset(FREETYPE_UNDEFINED)
+		unset(FREETYPE_NM_ERROR)
+		unset(FREETYPE_NM_RESULT)
+	else()
+		message(STATUS "No nm to inspect ${FREETYPE_LIBRARY} with, assuming it needs HarfBuzz")
+		set(FREETYPE_NEEDS_HARFBUZZ TRUE)
+	endif()
+endif()
+
+if (FREETYPE_NEEDS_HARFBUZZ)
 	# Archive first. The static prefix has libharfbuzz.a, and resolving a system
 	# libharfbuzz.so here would put a NEEDED entry back onto a binary whose whole
 	# purpose is carrying everything it needs.
@@ -37,9 +75,9 @@ if (NOT WIN32 AND FREETYPE_LIBRARY_EXT STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}"
 		NAMES "${CMAKE_STATIC_LIBRARY_PREFIX}harfbuzz${CMAKE_STATIC_LIBRARY_SUFFIX}"
 		      harfbuzz libharfbuzz)
 	if (NOT HARFBUZZ_LIBRARY)
-		message(FATAL_ERROR "Found a static FreeType (${FREETYPE_LIBRARY}) but no HarfBuzz: "
-			"a static libfreetype.a built by build-dependencies-runner.sh calls into "
-			"HarfBuzz directly and won't resolve without it.")
+		message(FATAL_ERROR "${FREETYPE_LIBRARY} leaves hb_* undefined but no HarfBuzz was found: "
+			"a static libfreetype.a built with FT_REQUIRE_HARFBUZZ calls into HarfBuzz "
+			"directly and won't resolve without it.")
 	endif()
 	# HarfBuzz, then FreeType again. The two archives call into each other, and a
 	# single-pass linker only resolves that if whichever still owes symbols comes
@@ -49,6 +87,7 @@ if (NOT WIN32 AND FREETYPE_LIBRARY_EXT STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}"
 	set_property(TARGET Freetype::Freetype APPEND PROPERTY
 		INTERFACE_LINK_LIBRARIES "${HARFBUZZ_LIBRARY}" "${FREETYPE_LIBRARY}")
 endif()
+unset(FREETYPE_NEEDS_HARFBUZZ)
 unset(FREETYPE_LIBRARY_EXT)
 find_package(plutovg 1.1.0 REQUIRED)
 find_package(plutosvg 0.0.7 REQUIRED)
