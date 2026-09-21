@@ -589,21 +589,38 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// measurement — three parts across two Adreno generations and every Mesa we have. That is the
 	// standard this rule does not yet meet.
 	//
-	// ⚠️ Being wrong here is user-visible in BOTH directions, so there is no safe default to sit
+	// ⚠️ Being wrong here is user-visible in BOTH directions, so there is no quiet default to sit
 	// on. Applying it where the bug is absent forces the render-target copy road, which is not
 	// merely slower: it differs from the in-pass read on 47 of 94 corpus cells, and on the SD865 it
 	// puts NASCAR's sky at mean |Δ| 26.93 from the software renderer against 1.61 on either
 	// declared arm (campaign gs-adreno-inpass-read, E5 sky addendum, measured on the device).
-	// Lifting it where the bug is present loses Tales of the Abyss's text layer outright. The two
-	// errors are not equally severe — a lost text layer is worse than a wrong sky — which is why
-	// narrowing this rule needs better evidence than leaving it alone, not merely equal evidence.
+	// Lifting it where the bug is present loses Tales of the Abyss's text layer outright.
+	//
+	// Do NOT settle that by comparing severities. A lost text layer is worse per user who hits it,
+	// but the populations differ and nobody has measured them: #442 needs an HD texture pack AND a
+	// replacement whose alpha range flips those draws to require_one_barrier — narrow and opt-in —
+	// while the copy road is unconditional for every Adreno user. Severity points one way and
+	// population plausibly points the other, so that comparison can be reopened by anyone.
+	// The argument that needs neither: NARROWING IS AN ACTIVE BEHAVIOUR CHANGE AND LEAVING IT IS
+	// THE STATUS QUO, and a change needs more behind it than an absence of one. This rule has one
+	// part's measurement; narrowing it on one contrary part would swap an under-evidenced rule for
+	// an equally under-evidenced one, which is the trade to refuse whichever harm is worse.
 	//
 	// The probe that would settle it, when an a7xx part is free: #442's lost text layer on an
 	// Adreno 740, testing BOTH in-pass forms separately, because this rule asserts both bug bits
-	// and a probe that exercises one licenses only half of it. ⚠️ Note which outcome is which: the
-	// rule being VINDICATED on a740 costs nothing and finally measures the reach, while the read
-	// WORKING on a740 argues for a model bound — a behaviour change to a shipped rule on evidence
-	// from a single part, which is the same shape of claim this note exists to flag.
+	// and a probe that exercises one licenses only half of it. ⚠️ Reproduce #442's actual TRIGGER,
+	// not the in-pass read in general — the texture pack and the alpha range that flip those draws
+	// — and record the conditions with the verdict. A probe that exercises the read some other way
+	// and finds it working has not tested what this rule is about, and would license exactly the
+	// narrowing the paragraph above says to refuse.
+	//
+	// ⚠️ The best outcome is the one that reads as the dull one. If a740 DROPS the content the rule
+	// is vindicated, and the bounds can then be set INCLUSIVELY and as a measurement — a650 through
+	// a740, stated the way vk-turnip-blend-constant states its own reach. That is strengthening the
+	// rule, and it is the only branch that ends with this entry meeting the standard rather than
+	// carrying a note saying it does not. If the read WORKS on a740 under #442's own conditions,
+	// that does not oblige a bound; it says what one part establishes and names the second
+	// measurement someone would have to buy.
 	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
