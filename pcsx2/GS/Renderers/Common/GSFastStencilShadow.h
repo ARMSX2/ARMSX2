@@ -155,10 +155,15 @@ namespace GSFastStencilShadow
 	///
 	/// ⚠️ OverrideTextureBarriers=1 is NOT the arm for that job, though it looks like it. Turning
 	/// barriers on without an arm does not leave the copy road: the road policy falls past its
-	/// Copy return and selects InPassBarrier, spelling InputAttachment -- the in-pass self-read
-	/// with no declared loop, which is the configuration the vk-turnip-attachment-self-read
-	/// profile rule exists to forbid. It renders wrong, so its timings measure a different
-	/// workload. This switch is the one that holds the road still.
+	/// Copy return, and since vk-turnip-attachment-self-read takes away the layout road but not
+	/// the rasterization-order one, the in-tile read is still available and the road selected is
+	/// InPassOrdered, spelling InputAttachment -- the in-pass self-read with no declared loop,
+	/// which is the configuration that same profile rule exists to forbid. A device agrees with
+	/// the walk: on an Adreno 650 the arm reports the input attachment in use and emits zero
+	/// barriers, and zero is what separates this road from InPassBarrier
+	/// (campaigns/sotc-sd865-flicker-2026-09-05). That configuration has been run and never
+	/// scored against a reference, so its timings measure a workload of unknown shape -- which
+	/// is reason enough not to use it here. This switch is the one that holds the road still.
 	///
 	/// Correct by construction when asked: the counter is an optimisation, and without it the
 	/// renderer takes the ordinary render-target read it took before the counter existed. So
