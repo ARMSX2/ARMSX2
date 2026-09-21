@@ -169,15 +169,28 @@ struct GSSelfReadRoadDecision
 	/// buys the layout and the validity relaxation. It does not buy ordering between overlapping
 	/// fragments that sample the attachment they write -- that is what
 	/// VK_EXT_rasterization_order_attachment_access promises, and the layout extension says nothing
-	/// about it. Two drivers, two answers, both in mesa at c71af679f08:
+	/// about it. Two drivers, and NEITHER of them orders -- for different reasons, both in mesa at
+	/// c71af679f08:
 	///
-	/// - Turnip implements it. A declared loop forces sysmem (tu_cmd_buffer.cc:5568) and sets
-	///   SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP_AND_OVERWRITE for `feedback_loops` -- the same enum on
-	///   the same register it uses for ROAA (tu_pipeline.cc:3813). Its comment names this exact
-	///   case. That forced sysmem is also why E4a counted zero tiled passes on declared passes.
-	/// - Honeykrisp does not. It advertises the layout extension (hk_physical_device.c:144) and has
-	///   no ordering machinery anywhere in src/asahi/vulkan. Claiming ordering there moves 70 of 94
-	///   corpus cells (upscale-unify/Q-copyroad2x).
+	/// - Turnip EMITS the ordering mode and does not deliver it. A declared loop forces sysmem
+	///   (tu_cmd_buffer.cc:5568) and sets SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP_AND_OVERWRITE for
+	///   `feedback_loops` -- the same enum on the same register it uses for ROAA
+	///   (tu_pipeline.cc:3813), and that forced sysmem is also why E4a counted zero tiled passes on
+	///   declared passes. The term is unchanged in the device's own release (introduced
+	///   a99600322c1, an ancestor of mesa-26.1.2; the function diffs empty against our clone).
+	///   ⚠️ **And the picture still moves and still races.** On an Adreno 650, claiming ordering
+	///   moves 47 of 94 corpus cells and is nondeterministic in 20 of them -- worst case 11
+	///   distinct outputs from 11 runs, against an arm that keeps the barriers and never once
+	///   disagreed with itself over 658 runs (campaign gs-adreno-inpass-read, E5). Whether that is
+	///   the distro's build, our own pipelines, or the mode not doing what its name says is
+	///   unseparated.
+	/// - Honeykrisp does not even emit it. It advertises the layout extension
+	///   (hk_physical_device.c:144) and has no ordering machinery anywhere in src/asahi/vulkan.
+	///   Claiming ordering there moves 70 of 94 corpus cells (upscale-unify/Q-copyroad2x).
+	///
+	/// ⚠️ **The strongest case for this guard is the first bullet**: the one driver whose source
+	/// says it orders, measurably does not. Reading the emission and concluding the behaviour is
+	/// exactly the mistake this comment existed to prevent, and its first version made it.
 	///
 	/// So only an explicit experimental arm may set this today -- asking for arm 1 IS the
 	/// experiment. **Before this road can default on, the claim has to arrive as a
