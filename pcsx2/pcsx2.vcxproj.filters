@@ -2579,6 +2579,9 @@
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

@@ -872,6 +872,7 @@
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
     <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h" />

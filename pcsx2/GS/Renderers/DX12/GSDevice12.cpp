@@ -3299,6 +3299,7 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	sm.AddMacro("PS_TCOFFSETHACK", sel.tcoffsethack);
 	sm.AddMacro("PS_POINT_SAMPLER", sel.point_sampler);
 	sm.AddMacro("PS_REGION_RECT", sel.region_rect);
+	sm.AddMacro("PS_NATIVE_TEXEL_GRID", sel.native_texel_grid);
 	sm.AddMacro("PS_SHUFFLE", sel.shuffle);
 	sm.AddMacro("PS_SHUFFLE_SAME", sel.shuffle_same);
 	sm.AddMacro("PS_PROCESS_BA", sel.process_ba);

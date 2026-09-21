@@ -35,4 +35,6 @@
 // 121: the dither index change of 119 is reverted on the owner's flips; tfx.* changes back.
 // 122: scaled dither indexes the native pixel again, and the matrix is rotated under that index by
 // a per-axis phase the CPU picks, so tfx.* changes and the PS constant buffer's last pad is named.
-static constexpr u32 SHADER_CACHE_VERSION = 122; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 123: a sprite that minifies a GS-memory texture under a nearest sampler reads the texel its
+// native pixel read, so tfx.* gains PS_NATIVE_TEXEL_GRID and the PS constant buffer gains a vector.
+static constexpr u32 SHADER_CACHE_VERSION = 123; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

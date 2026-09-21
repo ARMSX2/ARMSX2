@@ -146,6 +146,8 @@ struct GSMTLMainPSUniform
 	unsigned int substitute_alpha_keep;
 	unsigned int substitute_alpha_value;
 	unsigned int dither_phase;
+
+	vector_float4 native_texel_grid;
 };
 
 enum GSMTLAttributes
@@ -228,6 +230,7 @@ enum GSMTLFnConstants
 	GSMTLConstantIndex_PS_AUTOMATIC_LOD,
 	GSMTLConstantIndex_PS_MANUAL_LOD,
 	GSMTLConstantIndex_PS_REGION_RECT,
+	GSMTLConstantIndex_PS_NATIVE_TEXEL_GRID,
 	GSMTLConstantIndex_PS_SCANMSK,
 	GSMTLConstantIndex_PS_AA1,
 	GSMTLConstantIndex_PS_ABE,

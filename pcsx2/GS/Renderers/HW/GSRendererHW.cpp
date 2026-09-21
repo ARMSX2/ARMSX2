@@ -12,6 +12,7 @@
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -9716,6 +9717,81 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	// clamp to base level if we're not providing or generating mipmaps
 	// manual trilinear causes the chain to be uploaded, auto causes it to be generated
 	m_conf.sampler.lodclamp = !(trilinear_manual || trilinear_auto);
+
+	// A sprite that minifies a GS-memory texture under a nearest sampler reads the texel its NATIVE
+	// pixel would have read, not the one its own device sample point lands on. The whole rule, the
+	// mechanism it repairs and the arithmetic the shader repeats are in GSNativeTexelGridPolicy.h;
+	// everything here is the facts that policy asks for.
+	GSNativeTexelGridInputs grid;
+	grid.sprite = (m_vt.m_primclass == GS_SPRITE_CLASS);
+	grid.texture_from_memory = !tex->m_target;
+	grid.texel_coordinates = !!PRIM->FST;
+	grid.nearest = !bilinear;
+	grid.mipmapped = trilinear_manual || trilinear_auto;
+	grid.scale = scale_rt;
+
+	// The per-sprite walk is the only part of this with a cost, so it runs only where the rest of
+	// the rule already holds. It leaves both steps at zero when the draw's sprites disagree, and a
+	// zero step is refused below.
+	if (GSDrawCouldSampleOnTheNativeTexelGrid(grid))
+		GetAgreedSpriteTexelSteps(grid.step_u, grid.step_v);
+
+	if (GSSpriteSamplesOnTheNativeTexelGrid(grid))
+	{
+		m_conf.ps.native_texel_grid = 1;
+
+		// The shader works in the fragment's own texture coordinates, which are texels over the
+		// TEX0 size -- the same normalisation the vertex shader's TextureScale applies -- so the
+		// step is divided by it here rather than in every fragment.
+		m_conf.cb_ps.NativeTexelGrid = GSVector4(
+			GSNativeTexelGridStep(grid.step_u) / static_cast<float>(tw),
+			GSNativeTexelGridStep(grid.step_v) / static_cast<float>(th), scale_rt, 0.0f);
+
+		g_perfmon.Put(GSPerfMon::NativeTexelGridDraws, 1);
+	}
+}
+
+bool GSRendererHW::GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const
+{
+	step_u = GSNativeTexelStep();
+	step_v = GSNativeTexelStep();
+
+	// Two indices per sprite, the two opposite corners.
+	const u32 count = m_index->tail & ~1u;
+	if (count < 2)
+		return false;
+
+	const GSVertex* const v = m_vertex->buff;
+	const u16* const idx = m_index->buff;
+
+	for (u32 i = 0; i < count; i += 2)
+	{
+		const GSVertex& a = v[idx[i]];
+		const GSVertex& b = v[idx[i + 1]];
+
+		const GSNativeTexelStep u = GSMakeNativeTexelStep(
+			static_cast<int>(b.U) - static_cast<int>(a.U),
+			static_cast<int>(b.XYZ.X) - static_cast<int>(a.XYZ.X));
+		const GSNativeTexelStep t = GSMakeNativeTexelStep(
+			static_cast<int>(b.V) - static_cast<int>(a.V),
+			static_cast<int>(b.XYZ.Y) - static_cast<int>(a.XYZ.Y));
+
+		if (i == 0)
+		{
+			step_u = u;
+			step_v = t;
+			continue;
+		}
+
+		if (!GSNativeTexelStepsAgree(step_u, u) || !GSNativeTexelStepsAgree(step_v, t))
+		{
+			step_u = GSNativeTexelStep();
+			step_v = GSNativeTexelStep();
+			return false;
+		}
+	}
+
+	return true;
 }
 
 __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,

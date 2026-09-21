@@ -818,6 +818,13 @@ struct alignas(16) GSHWDrawConfig
 				u32 point_sampler : 1;
 				u32 region_rect : 1;
 
+				// A sprite that minifies a GS-memory texture under a nearest sampler reads the
+				// texel its NATIVE pixel would have read, not the one its own device sample point
+				// lands on. See GSNativeTexelGridPolicy.h for the rule and the arithmetic; the
+				// shader gets the per-axis step and the scale in NativeTexelGrid. Never set below
+				// scale 1, so it adds no permutation at native.
+				u32 native_texel_grid : 1;
+
 				// Scan mask
 				u32 scanmsk : 2;
 
@@ -1180,6 +1187,12 @@ struct alignas(16) GSHWDrawConfig
 		/// bits 0-1 and y in bits 2-3. Zero at every whole upscale, where it rotates nothing.
 		/// GSRendererHW::GetDitherPhase picks it; ps_dither adds it before masking to 4x4.
 		u32 DitherPhase;
+
+		/// PS_NATIVE_TEXEL_GRID: xy is the source texel step per NATIVE pixel, per axis, already
+		/// divided by the texture size so it is in the fragment's own texture-coordinate units, and
+		/// zero on an axis that does not minify. z is the render target's scale. See
+		/// GSNativeTexelGridPolicy.h.
+		GSVector4 NativeTexelGrid;
 
 		__fi PSConstantBuffer()
 		{

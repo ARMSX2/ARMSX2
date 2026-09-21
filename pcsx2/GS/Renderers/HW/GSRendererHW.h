@@ -6,6 +6,7 @@
 #include "GSTextureCache.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
+#include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
@@ -250,6 +251,12 @@ private:
 		bool& target_region, GSVector2i& unscaled_size, float& scale, GSDevice::RecycledTexture& src_copy);
 	bool CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex,
 		const TextureMinMaxResult& tmm);
+
+	/// The texel step per native pixel that every sprite of this draw agrees on, per axis, in the
+	/// GS's own sixteenths. False -- and both steps zeroed -- when the draw has no sprites or two of
+	/// them walk the texture at different rates, because the shader carries one step for the whole
+	/// draw. See GSNativeTexelGridPolicy.h.
+	bool GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const;
 	bool IsFastStencilShadowDraw() const;
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);

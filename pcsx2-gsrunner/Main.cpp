@@ -360,6 +360,11 @@ struct FrameSample
 	u64 hash_cache_miss;
 	u64 pipeline_switches;
 
+	/// Draws that read their texture on the native pixel grid because a sprite minifies a
+	/// GS-memory texture under a nearest sampler (GSNativeTexelGridPolicy.h). Renderer-side, so
+	/// -renderer nullhw reports it for real; always zero at native scale.
+	u64 native_texel_grid_draws;
+
 	/// Process resident set size in kB at the end of this frame. Per frame rather than
 	/// once at the end because the shape is the finding: a run that leaks and a run that
 	/// merely started big have the same closing figure and different curves, and a
@@ -396,6 +401,8 @@ static double s_last_hash_cache_hit = 0;
 static double s_last_hash_cache_miss = 0;
 static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
+static double s_last_native_texel_grid_draws = 0;
+static u64 s_total_native_texel_grid_draws = 0;
 
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
@@ -736,6 +743,8 @@ void Host::BeginPresentFrame()
 		sample.hash_cache_hit = update_stat(GSPerfMon::HashCacheHit, s_total_hash_cache_hit, s_last_hash_cache_hit);
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
+		sample.native_texel_grid_draws = update_stat(
+			GSPerfMon::NativeTexelGridDraws, s_total_native_texel_grid_draws, s_last_native_texel_grid_draws);
 
 		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
 		// frame with only texture uploads as drawn; under Tile every present-only frame
@@ -2028,6 +2037,7 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %s,\n", j_u64(s_total_pipeline_switches).c_str());
+	std::fprintf(fp.get(), "    \"native_texel_grid_draws\": %" PRIu64 ",\n", s_total_native_texel_grid_draws);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %s,\n", j_u64(s_total_gpu_blocking_waits).c_str());
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
@@ -2073,6 +2083,7 @@ static void WriteStatsJson(const std::string& path)
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
 			"\"pipeline_switches\":%s,\"gpu_blocking_waits\":%s,"
+			"\"native_texel_grid_draws\":%" PRIu64 ","
 			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 "}%s\n",
 			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, gpu_ms_str.c_str(), s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
@@ -2083,6 +2094,7 @@ static void WriteStatsJson(const std::string& path)
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
 			j_u64(s.pipeline_switches).c_str(), j_u64(s.gpu_blocking_waits).c_str(),
+			s.native_texel_grid_draws,
 			s.rss_kb, s.minflt_delta,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
@@ -2148,6 +2160,8 @@ void GSRunner::DumpStats()
 		Ratio(s_total_tc_target_hit, s_total_tc_target_hit + s_total_tc_target_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Hit/Miss: {}/{} ({:.1f}% hit)", s_total_hash_cache_hit, s_total_hash_cache_miss,
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
+	Console.WriteLn(fmt::format("@HWSTAT@ Native Texel Grid Draws: {} (avg {})", s_total_native_texel_grid_draws,
+		static_cast<u64>(std::ceil(s_total_native_texel_grid_draws / static_cast<double>(s_total_drawn_frames)))));
 	if (s_perf_enable)
 	{
 		Console.WriteLn(fmt::format("@HWSTAT@ Minimum Frame Time: {:.3f} ms ({:.3f} FPS)", PerformanceMetrics::GetMinimumFrameTime(), 1000.0f / PerformanceMetrics::GetMinimumFrameTime()));

@@ -75,6 +75,7 @@ constant bool PS_TEX_IS_FB          [[function_constant(GSMTLConstantIndex_PS_TE
 constant bool PS_AUTOMATIC_LOD      [[function_constant(GSMTLConstantIndex_PS_AUTOMATIC_LOD)]];
 constant bool PS_MANUAL_LOD         [[function_constant(GSMTLConstantIndex_PS_MANUAL_LOD)]];
 constant bool PS_REGION_RECT        [[function_constant(GSMTLConstantIndex_PS_REGION_RECT)]];
+constant bool PS_NATIVE_TEXEL_GRID  [[function_constant(GSMTLConstantIndex_PS_NATIVE_TEXEL_GRID)]];
 constant uint PS_SCANMSK            [[function_constant(GSMTLConstantIndex_PS_SCANMSK)]];
 constant uint PS_AA1_RAW            [[function_constant(GSMTLConstantIndex_PS_AA1)]];
 constant bool PS_ABE                [[function_constant(GSMTLConstantIndex_PS_ABE)]];
@@ -1254,6 +1255,25 @@ struct PSMain
 			// Note: xy are normalized coordinates
 			st = in.ti.xy;
 			st_int = in.ti.zw;
+		}
+
+		if (PS_NATIVE_TEXEL_GRID)
+		{
+			// A sprite that MINIFIES a GS-memory texture under a nearest sampler reads the texel
+			// its NATIVE pixel read, not the one this device pixel's own sample point lands on.
+			// The console samples a sprite once per pixel, so at two source texels per native
+			// pixel it never displays the texels in between, and at 2x those unreachable texels
+			// land on every second device column. See GSNativeTexelGridPolicy.h for the whole rule.
+			//
+			// native_texel_grid.xy is the source step per NATIVE pixel in these same coordinates
+			// -- zero on an axis that does not minify, which makes that axis' term vanish -- and
+			// .z is the scale. The convention is the integer pixel index, not the fragment centre:
+			// a device pixel samples where native coordinate pixel/scale samples, and its owner
+			// native pixel sampled at the floor of that. Hence floor the coordinate first, and
+			// divide rather than multiply by a reciprocal, which can land a hair under an integer
+			// where the divide is exact.
+			float2 native_here = floor(in.p.xy) / cb.native_texel_grid.z;
+			st += cb.native_texel_grid.xy * (floor(native_here) - native_here);
 		}
 
 		float4 T;

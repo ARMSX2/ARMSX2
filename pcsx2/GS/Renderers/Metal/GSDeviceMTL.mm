@@ -2442,6 +2442,7 @@ void GSDeviceMTL::MRESetHWPipelineState(GSHWDrawConfig::VSSelector vssel, GSHWDr
 		setFnConstantB(m_fn_constants, pssel.automatic_lod,         GSMTLConstantIndex_PS_AUTOMATIC_LOD);
 		setFnConstantB(m_fn_constants, pssel.manual_lod,            GSMTLConstantIndex_PS_MANUAL_LOD);
 		setFnConstantB(m_fn_constants, pssel.region_rect,           GSMTLConstantIndex_PS_REGION_RECT);
+		setFnConstantB(m_fn_constants, pssel.native_texel_grid,     GSMTLConstantIndex_PS_NATIVE_TEXEL_GRID);
 		setFnConstantI(m_fn_constants, pssel.scanmsk,               GSMTLConstantIndex_PS_SCANMSK);
 		setFnConstantI(m_fn_constants, pssel.aa1,                   GSMTLConstantIndex_PS_AA1);
 		setFnConstantB(m_fn_constants, pssel.abe,                   GSMTLConstantIndex_PS_ABE);
@@ -2689,6 +2690,7 @@ static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, STScale)          == of
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherMatrix)     == offsetof(GSMTLMainPSUniform, dither_matrix));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, ScaleFactor)      == offsetof(GSMTLMainPSUniform, scale_factor));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherPhase)      == offsetof(GSMTLMainPSUniform, dither_phase));
+static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, NativeTexelGrid)  == offsetof(GSMTLMainPSUniform, native_texel_grid));
 
 // DoInterlace hands the shader the whole InterlaceConstantBuffer, so the two layouts have to agree.
 static_assert(sizeof(InterlaceConstantBuffer) == sizeof(GSMTLInterlacePSUniform));
