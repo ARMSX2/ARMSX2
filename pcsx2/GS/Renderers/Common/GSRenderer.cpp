@@ -1302,8 +1302,16 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		{
 			m_dump_frames = m_snapshot_dump_frames;
 
-			if (GSConfig.UserHacks_ReadTCOnClose)
-				ReadbackTextureCache();
+			// Always, not under UserHacks_ReadTCOnClose: a dump's local memory has to be what
+			// the game had, and the hardware renderer keeps drawn targets on the GPU -- only EE
+			// uploads, explicit readbacks and constant clears ever reach GS memory. Freeze the
+			// state without reading the targets back and every address the hardware drew to is
+			// stale residue in the dump, which the software renderer, a console replay (which
+			// uploads the dump's memory before it replays) and any memory-honouring hardware
+			// path all render faithfully. Sly 3 dumps captured that way held one constant word
+			// across a whole 512x224 buffer, and it looked like a scene to everything that read it.
+			// On the software renderer this is a no-op, so the call is unconditional here.
+			ReadbackTextureCache();
 
 			// The dump replays from this state forward, so it has to be the state a
 			// savestate would record here: parse registers from the front object under
