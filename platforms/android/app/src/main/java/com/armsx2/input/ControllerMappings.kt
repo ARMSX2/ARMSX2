@@ -998,19 +998,31 @@ object ControllerMappings {
     // every gameplay gate, because sendTrigger only runs while a game is RUNNING and this row
     // lives in a settings screen where it never fires. Armed only while the Pad tab is on
     // screen so the probe costs nothing the rest of the time.
+    //
+    // Per PLAYER, so two pads paired for local co-op each feed their own row instead of both
+    // writing one indicator and fighting over it, and so the number reflects the settings of
+    // the player being edited rather than P1's.
+    //
+    // With pressure ON this is also exactly what the PS2 receives. With it OFF it is the
+    // trigger's travel only: the digital key event is left alone in that mode, so on a pad
+    // that reports a trigger both ways the game sees a full press once that key fires,
+    // whatever this reads. The row mutes the number when OFF for that reason.
     @Volatile var triggerMonitorActive = false
 
     /** Live post-deadzone travel as a percentage, or -1 when this pad reports no analog axis
      *  on that side (a digital-trigger pad, where the row's toggle can do nothing). Index 0 =
      *  left / L2, 1 = right / R2. */
-    val triggerLive = arrayOf(mutableIntStateOf(-1), mutableIntStateOf(-1))
+    val triggerLive = Array(2) { arrayOf(mutableIntStateOf(-1), mutableIntStateOf(-1)) }
+
+    /** Clamp any unified pad slot to the two mapping tiers the settings have, exactly as
+     *  [playerPrefix] does — the multitap slots share Player 1's. */
+    fun liveTier(player: Int): Int = if (player == P2) P2 else P1
 
     /** Arm/disarm the probe, clearing stale readings so a disconnected pad doesn't leave the
      *  last percentage frozen on screen. */
     fun setTriggerMonitor(on: Boolean) {
         if (on) {
-            triggerLive[0].intValue = -1
-            triggerLive[1].intValue = -1
+            for (tier in triggerLive) for (side in tier) side.intValue = -1
         }
         triggerMonitorActive = on
     }

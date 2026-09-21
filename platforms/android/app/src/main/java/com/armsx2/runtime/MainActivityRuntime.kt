@@ -4376,11 +4376,17 @@ open class MainActivityRuntime : ComponentActivity() {
         if (!ev.isFromSource(InputDevice.SOURCE_JOYSTICK) &&
             !ev.isFromSource(InputDevice.SOURCE_GAMEPAD))
             return
+        // Which player's pad this is, resolved the same way the gameplay path resolves it, so
+        // two pads paired for local co-op each drive their OWN row and each is shaped by its
+        // own player's settings. Sampling as P1 unconditionally meant the second pad overwrote
+        // the first's reading, and the P2 rows showed P1's curve.
+        val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
+        val tier = ControllerMappings.liveTier(port)
         for (left in booleanArrayOf(true, false)) {
             val raw = triggerTravel(ev, left)
             val pct = if (raw < 0f) -1
-                else (shapeTrigger(raw, left, 0) * 100f).toInt().coerceIn(0, 100)
-            val slot = ControllerMappings.triggerLive[if (left) 0 else 1]
+                else (shapeTrigger(raw, left, port) * 100f).toInt().coerceIn(0, 100)
+            val slot = ControllerMappings.triggerLive[tier][if (left) 0 else 1]
             if (slot.intValue != pct) slot.intValue = pct
         }
     }

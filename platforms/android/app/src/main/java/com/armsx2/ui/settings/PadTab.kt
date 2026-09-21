@@ -524,13 +524,28 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                                 fontSize = 14.sp,
                                 modifier = Modifier.weight(1f),
                             )
-                            // Live travel, so pulling the trigger right here shows what the PS2
-                            // would receive. "--" means this pad reports no analog axis on that
-                            // side, i.e. its triggers are digital and the toggle cannot help.
-                            val live = ControllerMappings.triggerLive[if (action.id == "l2") 0 else 1].intValue
+                            // Live travel from the pad of the player being edited, so a second
+                            // paired controller drives the P2 rows rather than these. "--" means
+                            // that pad reports no analog axis on this side, i.e. its triggers are
+                            // digital and the toggle cannot help.
+                            //
+                            // Muted while the option is OFF: in that mode the digital key event
+                            // is deliberately left alone, so on a pad that reports a trigger both
+                            // ways the game gets a full press once that key fires regardless of
+                            // what this reads. Accented when ON, where it IS what the PS2
+                            // receives. It stays visible either way because "does this pad have
+                            // an analog trigger at all" is how you decide whether to switch it on.
+                            //
+                            // The accent tracks whether the OPTION is live, not whether the
+                            // trigger is moving, so a resting 0% reads as accented the moment it
+                            // is switched on. "--" stays muted either way: no analog axis on this
+                            // side means the option has nothing to act on.
+                            val live = ControllerMappings.triggerLive[
+                                ControllerMappings.liveTier(editPlayer.intValue)
+                            ][if (action.id == "l2") 0 else 1].intValue
                             Text(
                                 if (live < 0) "--" else "$live%",
-                                color = if (live > 0) Color(0xFF4DA3FF)
+                                color = if (pressure.value && live >= 0) Color(0xFF4DA3FF)
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
