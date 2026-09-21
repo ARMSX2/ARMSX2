@@ -90,16 +90,44 @@ namespace GSFastStencilShadow
 	//    ordering claim; if the counter switched off on one of them that comparison would move two
 	//    things again, which is the mistake this rule is fixing.
 	//
-	// The roads that do not:
+	//  - The backend's own per-draw barriers, with the read in-pass and nothing declared
+	//    (GSSelfReadRoad::InPassBarrier). The read costs no copy, but auto-flush still cuts the
+	//    volume into one- and two-triangle draws, and stopping that split is the rest of what the
+	//    counter does. Measured on an Apple M2 Max under Honeykrisp, Classic Vulkan, frame-time
+	//    p50 over 5 interleaved reps an arm (campaign upscale-unify, C31): Jak II 170.237 ms ->
+	//    18.247 ms at 2x and 128.703 -> 16.246 at native; Jak 3 44.434 -> 7.726 at 2x; the Ratchet
+	//    & Clank: Up Your Arsenal effects capture 30.491 -> 4.618 at 2x. That is -82.6% to -89.3%
+	//    against a same-sitting base-vs-base noise floor of 0.04% to 0.83%. A second, lighter Jak
+	//    II capture is -13.2%/-14.3%, because the counter's value tracks the counter draws' share
+	//    of the frame rather than the title. The mechanism shows in the barrier count: Jak II at
+	//    2x emits 126,285 per-draw feedback barriers a run without the counter and 386 with it.
 	//
-	//  - The backend's own per-draw barriers with no declaration -- Apple silicon under
-	//    Honeykrisp, desktop Vulkan, and an Adreno with OverrideTextureBarriers=1. Nobody has
-	//    measured the counter there. It would remove the same auto-flush split it removes
-	//    everywhere else, so it may well pay, but that is a guess and this rule ships answers.
-	//    SetForcedOn below is how it gets measured.
+	//    ⚠️ Two limits, and they are the part of this bullet worth reading.
 	//
-	//  - The in-tile read (Mali under rasterization-order attachment access). Also unmeasured, and
-	//    those parts report no dual-source blending anyway, so they fail the first half too.
+	//    DESKTOP VULKAN IS ON THIS ROAD BY A POLICY WALK, NOT BY A MEASUREMENT. It keeps its
+	//    texture barriers, and an in-tile read needs a Mali or Adreno part
+	//    (DecideVulkanFramebufferFetch), so it has none available and falls to this road -- but no
+	//    desktop GPU was timed. The exposure is scope rather than correctness: the blend
+	//    arithmetic is fixed-point 8-bit on whole factors, which Vulkan guarantees rather than AGX,
+	//    so what is unmeasured is how much it saves there, not whether it draws the same pixels.
+	//
+	//    NO HANDHELD IS ON THIS ROAD. Every Adreno is on Copy, and Mali parts report no
+	//    dual-source blending and so fail the first half before the road is asked. This bullet
+	//    buys frame time on the dev box and on desktop Vulkan and changes nothing on the handheld
+	//    targets the campaign is measured against.
+	//
+	// The road that does not:
+	//
+	//  - The in-tile read (GSSelfReadRoad::InPassOrdered): Mali under rasterization-order
+	//    attachment access, and an Adreno with OverrideTextureBarriers=1. Turning barriers back on
+	//    does not reach the bullet above -- the part still advertises rasterization-order access,
+	//    so the policy takes the in-tile read instead. Unmeasured on both, and the Mali parts
+	//    cannot draw the counter anyway.
+	//
+	//    ⚠️ This is why the rule names InPassBarrier rather than asking `road != Copy`. The loose
+	//    form reads as "any road that is not the copy road" and would take the counter onto both
+	//    of these: a debug lever whose own output is unscored, and a road whose parts fail the
+	//    dual-source term.
 	//
 	// ⚠️ Neither `!texture_barrier` nor the road on its own is this rule. D3D11 runs without
 	// texture barriers as well, its copies are cheap, and its shader has no counter block, so
@@ -110,7 +138,9 @@ namespace GSFastStencilShadow
 		if (facts.api != RenderAPI::Vulkan || !facts.dual_source_blend)
 			return false;
 
-		return facts.road == GSSelfReadRoad::Copy || facts.loop_declared;
+		return facts.road == GSSelfReadRoad::Copy
+			|| facts.road == GSSelfReadRoad::InPassBarrier
+			|| facts.loop_declared;
 	}
 
 	// The counter's registers: flat-shaded triangles, textured with nearest sampling from the 32-bit
@@ -190,12 +220,16 @@ namespace GSFastStencilShadow
 	/// with the loop declared, and E4e measured it at or inside noise of base with base's own draw
 	/// counts and bit-identical frames. DeviceQualifies says that on its own now.
 	///
-	/// What is left for it is the road nobody has measured: an in-pass read ordered by the
-	/// backend's own per-draw barriers, with no declaration. Apple silicon under Honeykrisp is the
-	/// one anybody runs; an Adreno with OverrideTextureBarriers=1 is the other. The counter would
-	/// remove the same auto-flush split there that it removes on every other road, so it may well
-	/// pay -- but that is an argument, and the rule above ships measurements. This is the switch
-	/// that turns it into one.
+	/// It then did the same job a second time, on the barrier-ordered road. C31 ran this switch
+	/// against the default on an M2 Max and priced it -- -82.6% to -89.3% of frame-time p50 on Jak
+	/// II, Jak 3 and the Ratchet effects capture, frames byte-identical on all 94 corpus cells --
+	/// and DeviceQualifies now says so on its own, so on that device this switch changes nothing.
+	///
+	/// What is left for it is the one road the rule still declines: the in-tile read, which is
+	/// Mali's default and where an Adreno with OverrideTextureBarriers=1 lands. The Mali parts
+	/// cannot draw the counter at all, so the only reachable case is that Adreno lever -- and the
+	/// lever's own output has been run and never scored, which is the caveat SetForcedOff above
+	/// spells out. Measuring the counter there means scoring the road first.
 	///
 	/// ⚠️ Still gated on what the backend can DRAW, not merely on wanting it. The Vulkan TFX
 	/// shader is the only one carrying the counter's output block and the second factor needs
