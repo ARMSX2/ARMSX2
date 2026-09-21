@@ -203,17 +203,6 @@ private:
 		{
 			return (channels & TextureShuffleChannels_SameGroup) != 0;
 		}
-
-		/// Whether every channel of the destination is written. A shuffle that leaves one
-		/// out needs whatever was already there to survive, so the target it draws into
-		/// has to carry that content before the draw runs.
-		bool WritesAllChannels() const
-		{
-			return (channels & TextureShuffleChannels_WriteRed) != 0 &&
-			       (channels & TextureShuffleChannels_WriteGreen) != 0 &&
-			       (channels & TextureShuffleChannels_WriteBlue) != 0 &&
-			       (channels & TextureShuffleChannels_WriteAlpha) != 0;
-		}
 	};
 
 	bool HasEEUpload(GSVector4i r);
