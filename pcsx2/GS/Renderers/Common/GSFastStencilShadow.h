@@ -48,8 +48,9 @@ namespace GSFastStencilShadow
 		/// answers "what does a frame read cost here" rather than "is a frame read legal here".
 		GSSelfReadRoad road = GSSelfReadRoad::Copy;
 
-		/// The feedback loop is declared by configuration rather than chosen by the device --
-		/// GSSelfReadRoadDecision::arm_applied. True for both declaration arms; see below.
+		/// The road declares an attachment feedback loop rather than reaching the same spelling by
+		/// the device's own preference -- GSSelfReadRoadDecision::loop_declared. True for both
+		/// declaration arms and for the driver fact that selects the same road; see below.
 		bool loop_declared = false;
 	};
 

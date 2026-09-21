@@ -120,8 +120,13 @@ namespace GSNullDeviceProfile
 		f.depth_feedback = false; // EmuCore/GS HWROV defaults off
 		f.aa1 = false; // EmuCore/GS HWAA1 defaults off
 		f.feedback_loop_layout = false; // both advertise ROAA, which excludes the layout road
-		// Campaign gs-adreno-inpass-read's arm is off by default and these profiles model the
-		// SHIPPED road, so neither device declares a feedback loop and neither claims the ordering.
+		// Neither device declares a feedback loop, so neither claims the ordering. Both halves of
+		// that are true of the drivers these profiles name: the experiment key is off by default,
+		// and the driver fact that also selects the declared road needs a Turnip build carrying the
+		// a6xx feedback-loop fix, which the SD865 profile's stock ROCKNIX Turnip is not. If a
+		// profile is ever added for a device running our driver pack, it is a THIRD row -- the same
+		// part on a different driver is a different resolved feature set, and editing this one
+		// would silently restate every number taken under the row's current name.
 		f.declared_feedback_loop_orders_overlap = false;
 		f.broken_mad_deinterlace = false; // that bug is Mali-G57 only
 

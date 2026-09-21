@@ -93,10 +93,11 @@ public:
 	// where the in-tile read is the broken one.
 	//
 	// m_force_feedback_loop_layout is how campaign gs-adreno-inpass-read overrides the preference
-	// on that one part. It is false unless EmuCore/GS/DeclareAttachmentFeedbackLoop asks for it, so
-	// the expression is unchanged on every shipping device; see GSSelfReadRoadPolicy.h. It is
-	// written once in CheckFeatures, which runs before the first image, descriptor layout or render
-	// pass exists, and never again -- none of those can be changed afterwards.
+	// on that one part. It is false unless the self-read road declares a feedback loop -- the
+	// experiment key, or a driver the database recognises as one that orders declared loops -- so
+	// the expression is unchanged on every device that is neither; see GSSelfReadRoadPolicy.h. It
+	// is written once in CheckFeatures, which runs before the first image, descriptor layout or
+	// render pass exists, and never again -- none of those can be changed afterwards.
 	__fi bool UseFeedbackLoopLayout() const
 	{
 		return m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
@@ -146,11 +147,12 @@ public:
 	// and read in CreateTFXPipeline and per draw in DoRenderHW.
 	bool m_declare_loop_per_draw = false;
 
-	// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read. Take the attachment-feedback-loop
-	// spelling even on a device that advertises rasterization-order attachment access. Decided by
-	// GSSelfReadRoadPolicy.h from EmuCore/GS/DeclareAttachmentFeedbackLoop, written once in
+	// Take the attachment-feedback-loop spelling even on a device that advertises
+	// rasterization-order attachment access. Decided by GSSelfReadRoadPolicy.h, written once in
 	// CheckFeatures before any image or render pass exists, and read by UseFeedbackLoopLayout()
-	// above. Replaced by a driver-database rule if the road lands.
+	// above. Two things set it: the driver database recognising a driver build measured to order
+	// declared loops, and EmuCore/GS/DeclareAttachmentFeedbackLoop, which is experiment scaffolding
+	// and still outranks the database where it is set.
 	bool m_force_feedback_loop_layout = false;
 
 	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).
