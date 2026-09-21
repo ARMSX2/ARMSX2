@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
+#include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 #include "GS/Renderers/Null/GSNullDeviceProfile.h"
 
 #include <gtest/gtest.h>
@@ -63,7 +64,9 @@ TEST(GsNullDeviceProfile, Sd865IsTheRenderTargetCopyRoad)
 	// one-triangle draws. Asked of the rule rather than asserted, so the table cannot
 	// drift away from GSFastStencilShadow.
 	EXPECT_TRUE(f.fast_stencil_shadow);
-	EXPECT_EQ(GSFastStencilShadow::DeviceQualifies(RenderAPI::Vulkan, f.texture_barrier, f.dual_source_blend),
+	EXPECT_EQ(GSFastStencilShadow::DeviceQualifies({.api = RenderAPI::Vulkan,
+				  .dual_source_blend = f.dual_source_blend,
+				  .road = GSSelfReadRoad::Copy}),
 		f.fast_stencil_shadow);
 
 	EXPECT_FALSE(f.test_and_sample_depth); // texture_barrier && !is_adreno
@@ -110,7 +113,11 @@ TEST(GsNullDeviceProfile, MaliG615IsTheInTileFetchRoad)
 	// shader per draw -- and the stencil counter stays on the per-face frame read.
 	EXPECT_FALSE(f.dual_source_blend);
 	EXPECT_FALSE(f.fast_stencil_shadow);
-	EXPECT_EQ(GSFastStencilShadow::DeviceQualifies(RenderAPI::Vulkan, f.texture_barrier, f.dual_source_blend),
+	// The in-tile read is an InPassOrdered road the device chose for itself, and it declares no
+	// feedback loop -- so the counter is declined on the road as well as on dual-source blending.
+	EXPECT_EQ(GSFastStencilShadow::DeviceQualifies({.api = RenderAPI::Vulkan,
+				  .dual_source_blend = f.dual_source_blend,
+				  .road = GSSelfReadRoad::InPassOrdered}),
 		f.fast_stencil_shadow);
 
 	EXPECT_TRUE(f.test_and_sample_depth); // barriers on, not Adreno

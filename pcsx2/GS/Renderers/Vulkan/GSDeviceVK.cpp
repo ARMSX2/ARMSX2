@@ -4206,17 +4206,27 @@ bool GSDeviceVK::CheckFeatures()
 	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
 	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). Decided here because
-	// both inputs are final by now: texture_barrier after the RT-copy workaround above, and
-	// dual_source_blend just above. With barriers off every frame read on this backend is a pass break
-	// plus a copy, which is the cost the blend removes; today that is exactly the Adreno parts.
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-fast-stencil-shadow) sits above the device rule, so the
-	// harness can take the counter away while leaving texture_barrier, the road and the spelling
-	// exactly where the device put them. Declaring the feedback loop turns barriers on and so
-	// disables this counter as a side effect; without a way to drop the counter alone, a
-	// base-vs-declared A/B on Jak II moves both at once. False unless asked.
-	m_features.fast_stencil_shadow =
-		GSFastStencilShadow::Resolve(GSFastStencilShadow::IsForcedOff(), GSFastStencilShadow::IsForcedOn(),
-			GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
+	// every input is final by now: the road above, and dual_source_blend just above.
+	//
+	// It reads the ROAD, not m_features.texture_barrier, and the difference matters. The bit means
+	// "a draw may read the render target from inside the pass"; the counter's question is "does a
+	// frame read cost the renderer its cheap path", and the two only agree while the copy road is
+	// the only expensive one. Declaring the feedback loop sets texture_barrier as a side effect, so
+	// keying on the bit switched the counter off on the declared road -- and campaign
+	// gs-adreno-inpass-read E4e measured that absence as the declared road's ENTIRE cost on Jak II
+	// and Jak 3 (+11.5..+42.0% without it, +0.13..+0.90% with it forced on, same draw counts as the
+	// copy road, bit-identical frames). road.arm_applied is what separates a declared loop from a
+	// device that simply orders its own reads.
+	//
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-fast-stencil-shadow / -force-fast-stencil-shadow) sits
+	// above the device rule, so the harness can move the counter while leaving texture_barrier, the
+	// road and the spelling exactly where the device put them. Both false unless asked.
+	m_features.fast_stencil_shadow = GSFastStencilShadow::Resolve(GSFastStencilShadow::IsForcedOff(),
+		GSFastStencilShadow::IsForcedOn(),
+		{.api = GetRenderAPI(),
+			.dual_source_blend = m_features.dual_source_blend,
+			.road = road.road,
+			.loop_declared = road.arm_applied});
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.

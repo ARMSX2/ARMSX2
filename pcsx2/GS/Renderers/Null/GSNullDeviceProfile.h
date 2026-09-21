@@ -139,8 +139,12 @@ namespace GSNullDeviceProfile
 		// Mali Vulkan stacks report dualSrcBlend false; GSRendererHW then software-blends the
 		// specific draws that need SRC1 instead of raising the global blending level.
 		f.dual_source_blend = !mali;
-		// Vulkan && !texture_barrier && dual_source_blend (GSFastStencilShadow::DeviceQualifies).
-		// True on the Adreno road only -- which is what stops auto-flush splitting the counter.
+		// GSFastStencilShadow::DeviceQualifies: Vulkan, dual-source blending, and a road whose
+		// frame read is not one the device serves in-pass for itself. The Adreno is on the copy
+		// road, so it qualifies; the Mali is on the in-tile read and reports no dual-source blend,
+		// so it fails on both halves. Neither declares a feedback loop -- these profiles model the
+		// shipped road, and the arm is off. True on the Adreno road only, which is what stops
+		// auto-flush splitting the counter.
 		f.fast_stencil_shadow = !mali;
 		// Mali gets the gl_FragDepth skip so DepthReplacing does not kill early-ZS.
 		f.no_ps2_z_quantization = mali;

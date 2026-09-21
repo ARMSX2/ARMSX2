@@ -1111,17 +1111,17 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -no-fast-stencil-shadow: Take the alpha stencil counter (Jak II / Jak 3 shadow volumes) off "
 						 "the blend unit and back onto the ordinary render-target read, leaving texture barriers, the "
 						 "self-read road and the loop spelling exactly where the device put them. Measurement "
-						 "instrument: declaring the feedback loop turns barriers ON, and the counter requires them "
-						 "OFF, so a base-vs-declared A/B moves both at once. This isolates the counter. Frames must "
-						 "match base -- the counter is an optimisation, not a different picture. Vulkan only.\n");
-	std::fprintf(stderr, "  -force-fast-stencil-shadow: Take the alpha stencil counter on a device whose rule declines "
-						 "it, by lifting only the texture-barrier term (the Vulkan and dual-source terms still gate "
-						 "it, since those decide whether the counter can be drawn at all). Measurement instrument: "
-						 "declaring the feedback loop turns barriers on and so drops the counter, and E4d showed the "
-						 "declared road substitutes for most of what the counter provides rather than stacking on "
-						 "losing it -- so 'counter on AND loop declared' is the cell that decides whether the coupling "
-						 "is accidental. Also the first switch under which the M2, which keeps barriers on, can run "
-						 "the counter road at all. -no-fast-stencil-shadow wins if both are passed. Vulkan only.\n");
+						 "instrument: it separates the counter's own contribution from the road's, which is what a "
+						 "base-vs-declared A/B cannot do on its own. Frames must match base -- the counter is an "
+						 "optimisation, not a different picture. Vulkan only.\n");
+	std::fprintf(stderr, "  -force-fast-stencil-shadow: Take the alpha stencil counter on a road whose rule declines "
+						 "it, by lifting only the road term (the Vulkan and dual-source terms still gate it, since "
+						 "those decide whether the counter can be drawn at all). The road the rule declines is an "
+						 "in-pass read the device orders for itself with per-draw barriers -- Apple silicon, desktop "
+						 "Vulkan, or an Adreno with OverrideTextureBarriers=1 -- where the counter has never been "
+						 "measured. The copy road and a declared feedback loop both qualify on their own now, so this "
+						 "switch changes nothing there. -no-fast-stencil-shadow wins if both are passed. Vulkan "
+						 "only.\n");
 	std::fprintf(stderr, "  -date-road <auto|primid>: Which road the destination alpha test takes. auto is the per-draw "
 						 "decision the renderer already makes; primid pins every DATE draw to primitive-ID tracking, the "
 						 "road both handheld targets take today. Measurement instrument: giving a build an in-pass "
@@ -1717,9 +1717,9 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-force-fast-stencil-shadow"))
 			{
 				Console.WriteLn("Forcing the alpha stencil counter on for this process");
-				// Lifts only the texture-barrier term of the device rule; the Vulkan and
-				// dual-source terms still gate it, because those are about whether the backend
-				// can draw the counter at all rather than whether it is worth drawing.
+				// Lifts only the road term of the device rule; the Vulkan and dual-source terms
+				// still gate it, because those are about whether the backend can draw the counter
+				// at all rather than whether it is worth drawing.
 				GSFastStencilShadow::SetForcedOn(true);
 				continue;
 			}
