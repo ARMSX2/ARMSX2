@@ -7144,6 +7144,32 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 	m_conf.cb_vs.vertex_scale = GSVector2(sx, sy);
 	m_conf.cb_vs.vertex_offset = GSVector2(ox * sx + ox2 + 1, oy * sy + oy2 + 1);
 
+	// A sprite that reads its texture on the native texel grid needs this transform to be the
+	// plain one: native coordinate n at device coordinate n * scale + 0.5. Half-pixel-offset modes
+	// that place the vertices elsewhere make floor(fragment)/scale the wrong native pixel, so the
+	// draw loses the road here rather than snapping to a grid that is not its own.
+	// GSNativeTexelGridPolicy.h carries the rule and the numbers.
+	//
+	// The transform above is window = n * (8 * s * size) + (-0.5 * o2 * size), read straight out of
+	// s and o2 rather than out of the backend's window mapping, so the answer does not depend on
+	// which way a viewport happens to be flipped.
+	if (m_conf.ps.native_texel_grid)
+	{
+		const bool grid_x = GSDeviceGridIsNativeGridScaled(8.0f * sx * static_cast<float>(rtsize.x),
+			-0.5f * ox2 * static_cast<float>(rtsize.x), rtscale);
+		const bool grid_y = GSDeviceGridIsNativeGridScaled(8.0f * sy * static_cast<float>(rtsize.y),
+			-0.5f * oy2 * static_cast<float>(rtsize.y), rtscale);
+		if (grid_x && grid_y)
+		{
+			g_perfmon.Put(GSPerfMon::NativeTexelGridDraws, 1);
+		}
+		else
+		{
+			m_conf.ps.native_texel_grid = 0;
+			m_conf.cb_ps.NativeTexelGrid = GSVector4::zero();
+		}
+	}
+
 	m_conf.vs.iip = !IsFlatShaded();
 }
 
@@ -9728,6 +9754,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	grid.texel_coordinates = !!PRIM->FST;
 	grid.nearest = !bilinear;
 	grid.mipmapped = trilinear_manual || trilinear_auto;
+	grid.field_render = m_regs->SMODE2.FFMD && isReallyInterlaced();
 	grid.scale = scale_rt;
 
 	// The per-sprite walk is the only part of this with a cost, so it runs only where the rest of
@@ -9747,7 +9774,9 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 			GSNativeTexelGridStep(grid.step_u) / static_cast<float>(tw),
 			GSNativeTexelGridStep(grid.step_v) / static_cast<float>(th), scale_rt, 0.0f);
 
-		g_perfmon.Put(GSPerfMon::NativeTexelGridDraws, 1);
+		// The last gate -- that the device grid IS the native grid scaled -- is the one fact this
+		// site cannot see, because the vertex transform is chosen later. DetermineVSConfig takes
+		// the bit away again if the mapping is not n * scale + 0.5, and counts the draw if it is.
 	}
 }
 

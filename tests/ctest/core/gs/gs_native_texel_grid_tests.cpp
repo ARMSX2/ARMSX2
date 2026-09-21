@@ -116,6 +116,53 @@ TEST(GSNativeTexelGrid, EachGateRefusesOnItsOwn)
 		in.mipmapped = true;
 		EXPECT_FALSE(GSSpriteSamplesOnTheNativeTexelGrid(in)) << "the mip level is a function of the same step";
 	}
+	{
+		GSNativeTexelGridInputs in = NascarHazeSprite(2.0f);
+		in.field_render = true;
+		EXPECT_FALSE(GSSpriteSamplesOnTheNativeTexelGrid(in)) << "a field render's extra device rows are display lines, not copies";
+	}
+}
+
+TEST(GSNativeTexelGrid, AFieldRenderIsRefusedAndAnInterlacedFrameIsNot)
+{
+	// The two are different facts and the corpus contains both. Armored Core 3 and Shin Onimusha
+	// draw half-height fields (SMODE2.FFMD), and at an integer upscale the merge presents the field
+	// render as the whole picture because its extra device rows hold the display lines between the
+	// field's own -- which is exactly what this rule takes back out. NASCAR's output is interlaced
+	// too, with FFMD clear and whole 640x448 targets, so interlaced output gates nothing.
+	GSNativeTexelGridInputs field = NascarHazeSprite(2.0f);
+	field.field_render = true;
+	EXPECT_FALSE(GSSpriteSamplesOnTheNativeTexelGrid(field));
+
+	GSNativeTexelGridInputs whole = NascarHazeSprite(2.0f);
+	whole.field_render = false;
+	EXPECT_TRUE(GSSpriteSamplesOnTheNativeTexelGrid(whole));
+}
+
+TEST(GSNativeTexelGrid, TheDeviceGridHasToBeTheNativeGridScaled)
+{
+	// Read off the real draws at 2x. The first three titles put native coordinate 0 at device 0.5
+	// and native 1 at 2.5; Katamari Damacy runs under GameDB halfPixelOffset 4 (Native), which puts
+	// them at 1.0 and 3.0, and that half-device-pixel shift is what makes floor(fragment)/scale the
+	// wrong native pixel for it.
+	EXPECT_TRUE(GSDeviceGridIsNativeGridScaled(2.0f, 0.5000f, 2.0f)) << "NASCAR Thunder 2002";
+	EXPECT_TRUE(GSDeviceGridIsNativeGridScaled(2.0f, 0.4999f, 2.0f)) << "Armored Core 3";
+	EXPECT_TRUE(GSDeviceGridIsNativeGridScaled(2.0f, 0.5000f, 2.0f)) << "Shin Onimusha";
+	EXPECT_FALSE(GSDeviceGridIsNativeGridScaled(2.0f, 1.0000f, 2.0f)) << "Katamari Damacy";
+
+	// The slack exists for the reciprocal in the vertex offset, and for nothing wider than that.
+	EXPECT_TRUE(GSDeviceGridIsNativeGridScaled(2.0f, 0.5f + 1.0f / 128.0f, 2.0f));
+	EXPECT_FALSE(GSDeviceGridIsNativeGridScaled(2.0f, 0.5f + 1.0f / 32.0f, 2.0f));
+
+	// The rate has to be the draw's own scale as well as the offset being half a pixel: a target
+	// whose texture is larger than its native size scaled walks the device grid at another rate,
+	// and the fragment's native coordinate is then not its device coordinate over the scale.
+	EXPECT_FALSE(GSDeviceGridIsNativeGridScaled(2.125f, 0.5f, 2.0f));
+	EXPECT_FALSE(GSDeviceGridIsNativeGridScaled(1.0f, 0.5f, 2.0f));
+
+	// Every scale the corpus runs, with the plain mapping.
+	for (const float scale : {1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 8.0f})
+		EXPECT_TRUE(GSDeviceGridIsNativeGridScaled(scale, 0.5f, scale)) << "scale " << scale;
 }
 
 TEST(GSNativeTexelGrid, OrdinaryUpscaledBlitsAreUntouched)

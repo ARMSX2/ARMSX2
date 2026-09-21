@@ -42,6 +42,34 @@
 //     starts skipping texels. At a step of one nothing is skipped and there is nothing to restore.
 //   * SCALE ABOVE 1, which is where a native pixel has more than one device pixel to disagree
 //     about. At native the rule below is the identity, term for term, so 1x cannot move.
+//   * THE DEVICE GRID IS THE NATIVE GRID SCALED -- a vertex at native coordinate n has to land at
+//     device coordinate n * scale + 0.5, because that and nothing else makes floor(fragment)/scale
+//     the fragment's OWN native pixel. Several half-pixel-offset modes deliberately put the
+//     vertices somewhere else: GameDB `halfPixelOffset: 4` (Native) places them at
+//     scale * (n + 0.5), so at 2x native 0 lands at device 1.0 rather than 0.5. Snapping on that
+//     mapping hands the fragment a native pixel that is not its owner. Measured: Katamari Damacy's
+//     two dumps are the corpus's Native-mode draws, they land at device 1.0 and 3.0 for native 0
+//     and 1, and correcting them is a wash against the software renderer at native (exact
+//     agreement 15.1% -> 15.0% on the pixels that move); with the mapping put back to
+//     n * scale + 0.5 the same draws go 5.6% -> 19.8% exact and mean error 31.73 -> 17.25. So a
+//     draw on another mapping is refused here rather than corrected on the wrong grid. Reading
+//     the mapping the renderer actually used, and correcting for it, is a better rule and a
+//     different change; this gate is what keeps the wrong answer off the screen until then.
+//   * NOT A FIELD RENDER. In field mode (SMODE2.FFMD under an interlaced output) the game draws
+//     half-height fields, and at an integer upscale of 2 or more the merge presents that field
+//     render as the whole picture rather than weaving it -- because each field line now occupies
+//     that many device rows, and those rows carry the display lines BETWEEN the field's own
+//     (`field_render_is_whole_picture` in GSRenderer.cpp, `present_field_direct` in
+//     GSInterlaceModePolicy.h). Those in-between lines are precisely what this rule removes: it
+//     gives every device row of a native row the same texel. So in field mode the device picture
+//     is deliberately not the native picture enlarged, and the derivation below does not hold.
+//     Measured: Armored Core 3 and Shin Onimusha are the corpus's only FFMD dumps, and corrected
+//     they move away from the software renderer at native (Armored Core 3, exact agreement
+//     15.1% -> 4.9%) -- but with the field composition out of the way the same draws move hard
+//     toward it (3.7% -> 38.6% exact, mean error 26.77 -> 6.31). The rule picks the right texel
+//     for them and the composition discards it. That composition is another lane's; this gate
+//     keeps this rule out of its way. Interlaced OUTPUT is not the condition and does not gate
+//     anything -- NASCAR's output is interlaced too, and its targets are whole 640x448 frames.
 //
 // A note on what is NOT gated, and why. The step is read per AXIS: NASCAR's draws are 2:1 in U and
 // 1:1 in V, so U snaps and V is left alone. And the step is read per SPRITE and the draw is refused
@@ -110,6 +138,25 @@ constexpr bool GSNativeTexelStepsAgree(const GSNativeTexelStep& a, const GSNativ
 	return static_cast<long long>(a.texels) * b.pixels == static_cast<long long>(b.texels) * a.pixels;
 }
 
+/// Two device-pixel quantities are the same to within a sixty-fourth of a device pixel. The
+/// mappings that break the rule's premise miss by half a device pixel or more, and the vertex
+/// offset is built out of a reciprocal, so a draw whose algebra says 0.5 can evaluate to 0.4999.
+constexpr bool GSDeviceGridWithinSlack(float a, float b)
+{
+	constexpr float slack = 1.0f / 64.0f;
+	return (a - b) <= slack && (b - a) <= slack;
+}
+
+/// Whether a vertex at native coordinate n lands at device coordinate n * scale + 0.5 -- the
+/// mapping the correction is derived on, and the one gate that cannot be read off the draw itself.
+/// `grid_scale` is device pixels per native pixel as the vertex transform actually spells it, and
+/// `grid_offset` is where native coordinate 0 lands. Both are taken from the transform rather than
+/// assumed, so a target whose texture is larger than its native size scaled fails here too.
+constexpr bool GSDeviceGridIsNativeGridScaled(float grid_scale, float grid_offset, float scale)
+{
+	return GSDeviceGridWithinSlack(grid_scale, scale) && GSDeviceGridWithinSlack(grid_offset, 0.5f);
+}
+
 struct GSNativeTexelGridInputs
 {
 	/// The draw is sprite class.
@@ -130,6 +177,10 @@ struct GSNativeTexelGridInputs
 	/// The draw selects a mip level, manually or automatically.
 	bool mipmapped = false;
 
+	/// The frame is a FIELD render -- SMODE2.FFMD under an interlaced output -- so the merge does
+	/// not present the device picture as the native picture enlarged.
+	bool field_render = false;
+
 	/// Device pixels per native pixel for this draw's render target.
 	float scale = 1.0f;
 
@@ -142,7 +193,8 @@ struct GSNativeTexelGridInputs
 /// sprites to find out. Split out so that walk only happens where it could matter.
 constexpr bool GSDrawCouldSampleOnTheNativeTexelGrid(const GSNativeTexelGridInputs& in)
 {
-	if (!in.sprite || !in.texture_from_memory || !in.texel_coordinates || !in.nearest || in.mipmapped)
+	if (!in.sprite || !in.texture_from_memory || !in.texel_coordinates || !in.nearest ||
+		in.mipmapped || in.field_render)
 		return false;
 
 	// Not `>= 1.0f`: at native every term of the correction cancels anyway, and refusing here keeps
@@ -262,3 +314,32 @@ static_assert(!GSAxisMinifiesToNativeTexels({640 * 16, 0}));
 // Two sprites of one draw at the same rate in different terms, and two that disagree.
 static_assert(GSNativeTexelStepsAgree({640 * 16, 320 * 16}, {320 * 16, 160 * 16}));
 static_assert(!GSNativeTexelStepsAgree({640 * 16, 320 * 16}, {639 * 16, 320 * 16}));
+
+// A field render is refused whatever else the draw looks like: NASCAR's own sprite, drawn in field
+// mode, would have the merge present the field as the whole picture and this rule would take the
+// in-between display lines back out again.
+static_assert(!GSSpriteSamplesOnTheNativeTexelGrid({.sprite = true,
+	.texture_from_memory = true,
+	.texel_coordinates = true,
+	.nearest = true,
+	.field_render = true,
+	.scale = 2.0f,
+	.step_u = {640 * 16, 320 * 16},
+	.step_v = {448 * 16, 448 * 16}}));
+
+// The measured mappings, at 2x. NASCAR, Armored Core 3 and Shin Onimusha put native 0 at device
+// 0.5; Katamari Damacy's Native half-pixel-offset mode puts it at 1.0, which is the refusal.
+static_assert(GSDeviceGridIsNativeGridScaled(2.0f, 0.5f, 2.0f));
+static_assert(!GSDeviceGridIsNativeGridScaled(2.0f, 1.0f, 2.0f));
+
+// The slack is there for the reciprocal, not for half a pixel: an Armored Core 3 draw evaluates to
+// 0.4999 and passes, and nothing a quarter of a pixel out does.
+static_assert(GSDeviceGridIsNativeGridScaled(2.0f, 0.4999f, 2.0f));
+static_assert(!GSDeviceGridIsNativeGridScaled(2.0f, 0.75f, 2.0f));
+
+// Native scale is the identity mapping, and is refused earlier anyway by the scale gate.
+static_assert(GSDeviceGridIsNativeGridScaled(1.0f, 0.5f, 1.0f));
+
+// A target whose texture is bigger than its native size scaled walks the device grid at its own
+// rate, so floor(fragment)/scale is not the fragment's native pixel there either.
+static_assert(!GSDeviceGridIsNativeGridScaled(2.125f, 0.5f, 2.0f));
