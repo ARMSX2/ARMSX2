@@ -542,17 +542,6 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		Workaround(DriverWorkaround::DisableProvokingVertex) |
 			Workaround(DriverWorkaround::PreferCoherentReadback) |
 			Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
-	// Turnip shares none of the blob's other defects but inherits the same broken render-target
-	// self-read, so it needs its own rule rather than the vk-qualcomm-proprietary one (which is
-	// keyed on MobileGpuDriver::QualcommProprietary).
-	//
-	// ARMSX2 #442: with an HD texture pack, Tales of the Abyss loses its entire 2D text layer the
-	// moment the replacement's alpha range flips those draws to require_one_barrier and the RT
-	// self-read engages. Device A/B on Turnip/Mesa 26.1.2 + Adreno 650 established that BOTH
-	// in-pass forms drop the content — the subpassLoad input attachment AND the
-	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
-	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
-	// failure on the proprietary blob.
 	// Every Turnip device writes its stream rings into write-combined memory, because
 	// VKStreamBuffer asks VMA for HOST_COHERENT and Turnip's write-combined type is the first one
 	// that satisfies it. On an MQ65 (Adreno 610, four A73 at 2.1 GHz) that costs about a third of
@@ -580,6 +569,41 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	{"vk-turnip-a610-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 610, 610, 0, {}, {}, 0, 0, false,
 		0, Workaround(DriverWorkaround::PreferCachedStreamRingMemory)},
+	// Turnip shares none of the blob's other defects but inherits the same broken render-target
+	// self-read, so it needs its own rule rather than the vk-qualcomm-proprietary one (which is
+	// keyed on MobileGpuDriver::QualcommProprietary).
+	//
+	// ARMSX2 #442: with an HD texture pack, Tales of the Abyss loses its entire 2D text layer the
+	// moment the replacement's alpha range flips those draws to require_one_barrier and the RT
+	// self-read engages. Device A/B on Turnip/Mesa 26.1.2 + Adreno 650 established that BOTH
+	// in-pass forms drop the content — the subpassLoad input attachment AND the
+	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
+	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
+	// failure on the proprietary blob.
+	//
+	// ⚠️ WHAT THIS ESTABLISHES, AND WHAT IT DOES NOT. The model bounds below are 0/0, so this rule
+	// reaches EVERY Adreno on Turnip, every generation. The evidence above is one part (Adreno 650)
+	// on one Mesa (26.1.2). The bug on that part is not in doubt; its REACH has never been
+	// measured, and the unbounded form is a default nobody wrote down as a decision rather than a
+	// finding. Compare vk-turnip-blend-constant below, which is also unbounded and says so as a
+	// measurement — three parts across two Adreno generations and every Mesa we have. That is the
+	// standard this rule does not yet meet.
+	//
+	// ⚠️ Being wrong here is user-visible in BOTH directions, so there is no safe default to sit
+	// on. Applying it where the bug is absent forces the render-target copy road, which is not
+	// merely slower: it differs from the in-pass read on 47 of 94 corpus cells, and on the SD865 it
+	// puts NASCAR's sky at mean |Δ| 26.93 from the software renderer against 1.61 on either
+	// declared arm (campaign gs-adreno-inpass-read, E5 sky addendum, measured on the device).
+	// Lifting it where the bug is present loses Tales of the Abyss's text layer outright. The two
+	// errors are not equally severe — a lost text layer is worse than a wrong sky — which is why
+	// narrowing this rule needs better evidence than leaving it alone, not merely equal evidence.
+	//
+	// The probe that would settle it, when an a7xx part is free: #442's lost text layer on an
+	// Adreno 740, testing BOTH in-pass forms separately, because this rule asserts both bug bits
+	// and a probe that exercises one licenses only half of it. ⚠️ Note which outcome is which: the
+	// rule being VINDICATED on a740 costs nothing and finally measures the reach, while the read
+	// WORKING on a740 argues for a model bound — a behaviour change to a shipped rule on evidence
+	// from a single part, which is the same shape of claim this note exists to flag.
 	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
