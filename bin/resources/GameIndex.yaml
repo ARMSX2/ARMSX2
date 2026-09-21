@@ -13509,6 +13509,7 @@ SLAJ-25080:
   name-sort: "Godfather, The"
   region: "NTSC-Unk"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
 SLAJ-25081:
@@ -25291,6 +25292,7 @@ SLES-53967:
   name-sort: "Godfather, The"
   region: "PAL-M6"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -25298,6 +25300,7 @@ SLES-53968:
   name: "Parrain, Le"
   region: "PAL-F"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -25305,6 +25308,7 @@ SLES-53969:
   name: "Pate, Der"
   region: "PAL-G"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -25312,6 +25316,7 @@ SLES-53970:
   name: "Padrino, Il"
   region: "PAL-I"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -25319,6 +25324,7 @@ SLES-53971:
   name: "Padrino, El"
   region: "PAL-S"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -72292,6 +72298,7 @@ SLUS-21385:
   region: "NTSC-U"
   compat: 5
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -72421,6 +72428,7 @@ SLUS-21406:
   name-sort: "Godfather, The - Limited Edition"
   region: "NTSC-U"
   gsHWFixes:
+    minimumBlendingLevel: 3 # Fixes lamp light: destination alpha above 128 has no fixed-function expression.
     textureInsideRT: 1 # Required for complex offset shuffles.
     halfPixelOffset: 2 # Fixes center line in post-processing.
     nativeScaling: 2 # Fixes post effects.
