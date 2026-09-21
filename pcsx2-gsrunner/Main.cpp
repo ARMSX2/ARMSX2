@@ -54,6 +54,7 @@
 #include "pcsx2/GS/Renderers/Common/GSDateRoadPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
+#include "pcsx2/GS/Renderers/Common/GSFastStencilShadow.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
@@ -1107,6 +1108,12 @@ static void PrintCommandLineHelp(const char* progname)
 						 "create flag, which on Turnip is what untiles the pass and programs the coherent primitive "
 						 "mode, so it is the confound between 'declaring the read is expensive' and 'declaring it for "
 						 "draws that do not read is expensive'. Vulkan only.\n");
+	std::fprintf(stderr, "  -no-fast-stencil-shadow: Take the alpha stencil counter (Jak II / Jak 3 shadow volumes) off "
+						 "the blend unit and back onto the ordinary render-target read, leaving texture barriers, the "
+						 "self-read road and the loop spelling exactly where the device put them. Measurement "
+						 "instrument: declaring the feedback loop turns barriers ON, and the counter requires them "
+						 "OFF, so a base-vs-declared A/B moves both at once. This isolates the counter. Frames must "
+						 "match base -- the counter is an optimisation, not a different picture. Vulkan only.\n");
 	std::fprintf(stderr, "  -date-road <auto|primid>: Which road the destination alpha test takes. auto is the per-draw "
 						 "decision the renderer already makes; primid pins every DATE draw to primitive-ID tracking, the "
 						 "road both handheld targets take today. Measurement instrument: giving a build an in-pass "
@@ -1688,6 +1695,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// not a user preference. Read where the backend builds the carry inputs, once
 				// per draw, which is long after argument parsing.
 				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
+				continue;
+			}
+			else if (CHECK_ARG("-no-fast-stencil-shadow"))
+			{
+				Console.WriteLn("Forcing the alpha stencil counter off for this process");
+				// Not a setting: whether a frame read is worth avoiding is a device rule, and a
+				// user cannot tell which side of it their driver is on. Read once, where
+				// CheckFeatures resolves the feature bit, which is long after argument parsing.
+				GSFastStencilShadow::SetForcedOff(true);
 				continue;
 			}
 			else if (CHECK_ARG("-dynamic-loop-enable"))

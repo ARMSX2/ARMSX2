@@ -454,3 +454,62 @@ TEST(GSFastStencilShadow, HardwareEngineSplitsOtherSelfTexturingDraws)
 		1u)
 		<< "colour written";
 }
+
+// ── The measurement override (gsrunner -no-fast-stencil-shadow) ──────────────────────
+//
+// It exists because declaring the feedback loop turns texture barriers ON, and
+// DeviceQualifies requires them OFF -- so the declared road disables this counter as a
+// side effect and a base-vs-declared A/B moves two things at once. These pin the two
+// properties the decomposition rests on: inert unless asked, and above the device rule
+// when asked.
+
+// Default state is off, so every build that never calls the setter answers exactly as it
+// did before the switch existed. Runs first by name within the suite, before any test
+// below can set it.
+TEST(GSFastStencilShadowOverride, AAA_DefaultsToInert)
+{
+	EXPECT_FALSE(GSFastStencilShadow::IsForcedOff());
+}
+
+// The switch does not touch DeviceQualifies -- that stays a pure function of the device
+// rule. The override is applied by the backend at the point it resolves the feature bit,
+// which is what lets the road and the spelling stay exactly where the device put them.
+TEST(GSFastStencilShadowOverride, DoesNotAlterTheDeviceRule)
+{
+	GSFastStencilShadow::SetForcedOff(true);
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(RenderAPI::Vulkan, false, true));
+	GSFastStencilShadow::SetForcedOff(false);
+}
+
+// The backend's expression, as GSDeviceVK::CheckFeatures spells it. Asked for, it beats a
+// qualifying device; left alone, it changes nothing on any of the four device rows.
+TEST(GSFastStencilShadowOverride, BeatsAQualifyingDeviceAndIsOtherwiseInvisible)
+{
+	const auto resolved = [](RenderAPI api, bool texture_barrier, bool dual_source) {
+		return !GSFastStencilShadow::IsForcedOff() &&
+			   GSFastStencilShadow::DeviceQualifies(api, texture_barrier, dual_source);
+	};
+
+	GSFastStencilShadow::SetForcedOff(true);
+	EXPECT_FALSE(resolved(RenderAPI::Vulkan, false, true)) << "the one qualifying row must go off";
+	EXPECT_FALSE(resolved(RenderAPI::Vulkan, true, true));
+	EXPECT_FALSE(resolved(RenderAPI::Vulkan, false, false));
+	EXPECT_FALSE(resolved(RenderAPI::D3D11, false, true));
+
+	GSFastStencilShadow::SetForcedOff(false);
+	EXPECT_TRUE(resolved(RenderAPI::Vulkan, false, true)) << "and come back when not asked";
+	EXPECT_FALSE(resolved(RenderAPI::Vulkan, true, true));
+	EXPECT_FALSE(resolved(RenderAPI::Vulkan, false, false));
+	EXPECT_FALSE(resolved(RenderAPI::D3D11, false, true));
+}
+
+// Setting it twice, or clearing it when it was never set, is not a state machine.
+TEST(GSFastStencilShadowOverride, IsIdempotentAndRestorable)
+{
+	GSFastStencilShadow::SetForcedOff(true);
+	GSFastStencilShadow::SetForcedOff(true);
+	EXPECT_TRUE(GSFastStencilShadow::IsForcedOff());
+	GSFastStencilShadow::SetForcedOff(false);
+	GSFastStencilShadow::SetForcedOff(false);
+	EXPECT_FALSE(GSFastStencilShadow::IsForcedOff());
+}

@@ -4209,7 +4209,12 @@ bool GSDeviceVK::CheckFeatures()
 	// both inputs are final by now: texture_barrier after the RT-copy workaround above, and
 	// dual_source_blend just above. With barriers off every frame read on this backend is a pass break
 	// plus a copy, which is the cost the blend removes; today that is exactly the Adreno parts.
-	m_features.fast_stencil_shadow =
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-fast-stencil-shadow) sits above the device rule, so the
+	// harness can take the counter away while leaving texture_barrier, the road and the spelling
+	// exactly where the device put them. Declaring the feedback loop turns barriers on and so
+	// disables this counter as a side effect; without a way to drop the counter alone, a
+	// base-vs-declared A/B on Jak II moves both at once. False unless asked.
+	m_features.fast_stencil_shadow = !GSFastStencilShadow::IsForcedOff() &&
 		GSFastStencilShadow::DeviceQualifies(GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
@@ -4420,10 +4425,11 @@ bool GSDeviceVK::CheckFeatures()
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
 	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
-					"loop-spelling=%s(%s)",
+					"loop-spelling=%s(%s) fast-stencil-shadow=%s",
 		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
 		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
-		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect");
+		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
+		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" : "device policy");
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",

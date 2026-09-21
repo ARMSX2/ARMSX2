@@ -83,4 +83,36 @@ namespace GSFastStencilShadow
 		const GSVector4 diff(pos_min.upld(pos_max) - tex_min.upld(tex_max));
 		return (diff.abs() < GSVector4(1.0f)).alltrue();
 	}
+
+	/// ⚠️ MEASUREMENT OVERRIDE, not a device fact and not a setting. The harness asked for the
+	/// counter to be off for the whole process, so DeviceQualifies is overruled wherever the
+	/// backend consults it.
+	///
+	/// Why it exists: the declared-feedback-loop road turns texture barriers ON
+	/// (GSSelfReadRoadPolicy's arm branch), and DeviceQualifies requires them OFF -- so declaring
+	/// the loop disables this counter as a side effect, on every Adreno part, under either
+	/// spelling of the declaration. A base-vs-declared A/B on Jak II therefore moves two things at
+	/// once and cannot say which paid.
+	///
+	/// ⚠️ OverrideTextureBarriers=1 is NOT the arm for that job, though it looks like it. Turning
+	/// barriers on without an arm does not leave the copy road: the road policy falls past its
+	/// Copy return and selects InPassBarrier, spelling InputAttachment -- the in-pass self-read
+	/// with no declared loop, which is the configuration the vk-turnip-attachment-self-read
+	/// profile rule exists to forbid. It renders wrong, so its timings measure a different
+	/// workload. This switch is the one that holds the road still.
+	///
+	/// Correct by construction when asked: the counter is an optimisation, and without it the
+	/// renderer takes the ordinary render-target read it took before the counter existed. So
+	/// frames under this flag must equal base's, and that equality is the proof the arm measured
+	/// our workload rather than a broken road.
+	///
+	/// There is no force-ON twin. Qualifying is a device rule about what a frame read costs, and
+	/// forcing the counter onto a device where reads are cheap would draw it wrong for no gain --
+	/// see the D3D11 note on DeviceQualifies above.
+	///
+	/// Campaign gs-adreno-inpass-read, the fast-stencil-shadow decomposition.
+	inline bool s_force_off = false;
+
+	inline void SetForcedOff(bool value) { s_force_off = value; }
+	inline bool IsForcedOff() { return s_force_off; }
 } // namespace GSFastStencilShadow
