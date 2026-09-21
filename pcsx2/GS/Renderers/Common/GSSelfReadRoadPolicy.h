@@ -164,6 +164,27 @@ struct GSSelfReadRoadDecision
 	/// -> GSDevice::FeatureSupport::declared_feedback_loop_orders_overlap. Licenses
 	/// DetermineBarriers to drop the per-draw barriers, and tells GSSelfReadCopyPolicy that an
 	/// OFFSET read still needs its copy.
+	///
+	/// ⚠️ **This asserts a fact about the DRIVER, not about the road.** Declaring a feedback loop
+	/// buys the layout and the validity relaxation. It does not buy ordering between overlapping
+	/// fragments that sample the attachment they write -- that is what
+	/// VK_EXT_rasterization_order_attachment_access promises, and the layout extension says nothing
+	/// about it. Two drivers, two answers, both in mesa at c71af679f08:
+	///
+	/// - Turnip implements it. A declared loop forces sysmem (tu_cmd_buffer.cc:5568) and sets
+	///   SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP_AND_OVERWRITE for `feedback_loops` -- the same enum on
+	///   the same register it uses for ROAA (tu_pipeline.cc:3813). Its comment names this exact
+	///   case. That forced sysmem is also why E4a counted zero tiled passes on declared passes.
+	/// - Honeykrisp does not. It advertises the layout extension (hk_physical_device.c:144) and has
+	///   no ordering machinery anywhere in src/asahi/vulkan. Claiming ordering there moves 70 of 94
+	///   corpus cells (upscale-unify/Q-copyroad2x).
+	///
+	/// So only an explicit experimental arm may set this today -- asking for arm 1 IS the
+	/// experiment. **Before this road can default on, the claim has to arrive as a
+	/// driver-established input**, shaped like rt_self_read_is_broken: false unless that driver has
+	/// been measured to order, so an unrecognised driver keeps its barriers and comes out
+	/// correct-and-slower instead of fast-and-wrong. GSSelfReadArm::DeclaredKeepBarriers is the arm
+	/// that measures it.
 	bool orders_overlapping_prims = false;
 
 	/// The arm was asked for and applied. Everything above is derived from it, but the depth probe
@@ -200,6 +221,10 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 		d.texture_barrier = true;
 		d.in_tile_read = false;
 		d.force_feedback_loop_layout = true;
+		// Arm 1 asserts the driver orders overlapping self-reads; arm 2 declares the identical loop
+		// and keeps the barriers. That one bit is the whole difference, and measuring it is what
+		// arm 2 exists for. Nothing off the arm may assert it -- see the field's note, and the
+		// Off-never-claims assertions below, which hold whatever the device advertises.
 		d.orders_overlapping_prims = (in.arm == static_cast<u8>(GSSelfReadArm::Declared));
 		return d;
 	}
@@ -334,6 +359,27 @@ static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_a
 				  .roaa_available = true, .rt_self_read_is_broken = true,
 				  .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)})
 				  .road == GSSelfReadRoad::InPassBarrier);
+
+// ⚠️ THE SHIPPED DEFAULT NEVER CLAIMS THE ORDERING, whatever the device advertises. No combination
+// of extensions earns it, because none of them promise it -- only an explicit arm asserts it. These
+// four are the guard on that: a future default road that wants the claim has to bring a
+// driver-established input, and it has to come through here to get it.
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true,
+					.roaa_available = true, .rt_self_read_is_broken = true})
+				   .orders_overlapping_prims);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true,
+					.roaa_available = true, .rt_self_read_is_broken = false,
+					.override_texture_barriers = 1})
+				   .orders_overlapping_prims);
+// The Honeykrisp shape, and the reason this guard is not hypothetical: layout extension present, no
+// ROAA, no in-tile read, nothing broken -- a device that takes the layout road and does not order.
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = false, .layout_road_available = true,
+					.roaa_available = false, .rt_self_read_is_broken = false})
+				   .orders_overlapping_prims);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = false, .layout_road_available = true,
+					.roaa_available = false, .rt_self_read_is_broken = false,
+					.override_texture_barriers = 0})
+				   .orders_overlapping_prims);
 
 // The arm on a device with no layout extension does nothing, and says so.
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true,

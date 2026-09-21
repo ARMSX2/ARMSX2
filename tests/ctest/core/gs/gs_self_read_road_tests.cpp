@@ -210,3 +210,71 @@ TEST(GSSelfReadRoad, RoadNameNamesBothAxes)
 	EXPECT_STRNE(GSSelfReadRoadName(DecideSelfReadRoad(TurnipShipped())),
 		GSSelfReadRoadName(DecideSelfReadRoad(MaliDefault())));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The ordering claim is about the DRIVER, not the road.
+//
+// Declaring a feedback loop buys the layout and the validity relaxation. It does not buy ordering
+// between overlapping fragments that sample the attachment they write. Turnip implements that
+// ordering anyway (forced sysmem + FLUSH_PER_OVERLAP_AND_OVERWRITE); Honeykrisp advertises the same
+// layout extension and has no ordering machinery at all, and moves 70 of 94 corpus cells when the
+// claim is made on it.
+//
+// Note Honeykrisp's inputs are Desktop()'s inputs. That is the point: this is not one odd part, it
+// is every device that has the layout extension and no rasterization-order extension -- which is
+// most of them, desktop included. They work today because our barriers do the ordering. The claim
+// is what removes those barriers, so nothing but an explicit arm may make it.
+
+TEST(GSSelfReadRoad, ArmOffNeverClaimsOrdering)
+{
+	for (int bits = 0; bits < 16; bits++)
+	{
+		for (const s8 override_barriers : {s8(-1), s8(0), s8(1)})
+		{
+			GSSelfReadRoadInputs in;
+			in.in_tile_read_available = (bits & 1) != 0;
+			in.layout_road_available = (bits & 2) != 0;
+			in.roaa_available = (bits & 4) != 0;
+			in.rt_self_read_is_broken = (bits & 8) != 0;
+			in.override_texture_barriers = override_barriers;
+
+			const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
+			EXPECT_FALSE(d.orders_overlapping_prims)
+				<< "device bits " << bits << ", override " << int(override_barriers)
+				<< ": no combination of extensions earns the ordering claim, because none of them "
+				   "promise it";
+		}
+	}
+}
+
+TEST(GSSelfReadRoad, ArmTwoIsArmOneWithoutTheOrderingClaim)
+{
+	// What makes arm 2 a usable control: identical in every bit the pass is built from, so a
+	// corpus difference between the two arms isolates the ordering and nothing else.
+	for (const GSSelfReadRoadInputs& in : {TurnipShipped(), Desktop()})
+	{
+		const GSSelfReadRoadDecision one = DecideSelfReadRoad(WithArm(in, GSSelfReadArm::Declared));
+		const GSSelfReadRoadDecision two =
+			DecideSelfReadRoad(WithArm(in, GSSelfReadArm::DeclaredKeepBarriers));
+
+		EXPECT_TRUE(one.orders_overlapping_prims);
+		EXPECT_FALSE(two.orders_overlapping_prims);
+
+		EXPECT_EQ(one.spelling, two.spelling);
+		EXPECT_EQ(one.texture_barrier, two.texture_barrier);
+		EXPECT_EQ(one.in_tile_read, two.in_tile_read);
+		EXPECT_EQ(one.force_feedback_loop_layout, two.force_feedback_loop_layout);
+		EXPECT_EQ(one.arm_applied, two.arm_applied);
+		EXPECT_EQ(one.arm_unavailable, two.arm_unavailable);
+	}
+}
+
+TEST(GSSelfReadRoad, DesktopShapeTakesTheLayoutSpellingAndOrdersWithBarriers)
+{
+	// Honeykrisp's shape is this shape. The road is correct here only because the barriers are
+	// still being emitted -- which is exactly what the ordering claim would drop.
+	const GSSelfReadRoadDecision d = DecideSelfReadRoad(Desktop());
+	EXPECT_EQ(d.spelling, GSSelfReadSpelling::FeedbackLoopLayout);
+	EXPECT_TRUE(d.texture_barrier);
+	EXPECT_FALSE(d.orders_overlapping_prims);
+}
