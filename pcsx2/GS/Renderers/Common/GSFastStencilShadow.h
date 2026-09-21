@@ -115,4 +115,47 @@ namespace GSFastStencilShadow
 
 	inline void SetForcedOff(bool value) { s_force_off = value; }
 	inline bool IsForcedOff() { return s_force_off; }
+
+	/// ⚠️ MEASUREMENT OVERRIDE, the twin of the above and the one E4d made necessary. Takes the
+	/// counter on a device the rule declines, so long as the backend can actually draw it.
+	///
+	/// Why the rule declines it, and why that may be wrong: DeviceQualifies requires
+	/// `!texture_barrier` because the JUSTIFICATION was written for the copy road -- with barriers
+	/// off a frame read is a pass break plus a copy, which is the cost the blend removes. With
+	/// barriers on "the read stays inside the pass", so the rule concludes the counter is not
+	/// needed. **The blend does not stop working; it stops being obviously worth it.** Avoiding a
+	/// read outright is still cheaper than a cheap read.
+	///
+	/// E4d measured what that assumption costs. Declaring the feedback loop turns barriers on and
+	/// so drops the counter, and on jak2 at 2x the counter's absence is worth +341.9% on the copy
+	/// road but only +39.3% on the declared road -- the declared road SUBSTITUTES for ~88% of the
+	/// counter rather than stacking on top of losing it. The two are answers to one cost. That
+	/// leaves the cell nobody has run: **counter ON with the loop declared.** If it lands at or
+	/// below base, the coupling is accidental and the fix is to split texture_barrier's two jobs.
+	///
+	/// ⚠️ Still gated on what the backend can DRAW, not merely on wanting it. The Vulkan TFX
+	/// shader is the only one carrying the counter's output block and the second factor needs
+	/// dual-source blending, so this override keeps the API and dual-source terms and lifts only
+	/// the barrier term. Forcing it on D3D11 would draw the counter wrong -- the mistake
+	/// DeviceQualifies already warns about in the opposite direction.
+	///
+	/// Reaches the M2: that device keeps barriers on, so it has never been able to take the
+	/// counter road at all, and this is the first switch under which an M2 gate can score it.
+	inline bool s_force_on = false;
+
+	inline void SetForcedOn(bool value) { s_force_on = value; }
+	inline bool IsForcedOn() { return s_force_on; }
+
+	/// What the backend should use, with both overrides resolved. Force-off wins over force-on:
+	/// asking for both is a harness mistake, and the safe resolution is the one that changes least
+	/// from the shipped picture.
+	constexpr bool Resolve(bool forced_off, bool forced_on, RenderAPI api, bool texture_barrier,
+		bool dual_source_blend)
+	{
+		if (forced_off)
+			return false;
+		if (forced_on)
+			return api == RenderAPI::Vulkan && dual_source_blend;
+		return DeviceQualifies(api, texture_barrier, dual_source_blend);
+	}
 } // namespace GSFastStencilShadow

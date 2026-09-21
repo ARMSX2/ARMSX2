@@ -4214,8 +4214,9 @@ bool GSDeviceVK::CheckFeatures()
 	// exactly where the device put them. Declaring the feedback loop turns barriers on and so
 	// disables this counter as a side effect; without a way to drop the counter alone, a
 	// base-vs-declared A/B on Jak II moves both at once. False unless asked.
-	m_features.fast_stencil_shadow = !GSFastStencilShadow::IsForcedOff() &&
-		GSFastStencilShadow::DeviceQualifies(GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
+	m_features.fast_stencil_shadow =
+		GSFastStencilShadow::Resolve(GSFastStencilShadow::IsForcedOff(), GSFastStencilShadow::IsForcedOn(),
+			GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
@@ -4429,7 +4430,8 @@ bool GSDeviceVK::CheckFeatures()
 		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
 		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
 		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
-		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" : "device policy");
+		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
+											 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"));
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",

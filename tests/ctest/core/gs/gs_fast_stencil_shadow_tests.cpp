@@ -513,3 +513,61 @@ TEST(GSFastStencilShadowOverride, IsIdempotentAndRestorable)
 	GSFastStencilShadow::SetForcedOff(false);
 	EXPECT_FALSE(GSFastStencilShadow::IsForcedOff());
 }
+
+// ── The force-ON override (gsrunner -force-fast-stencil-shadow) ──────────────────────
+//
+// E4d's inversion made this necessary: the declared road substitutes for most of what
+// the counter provides rather than stacking on losing it, so "counter on AND loop
+// declared" is the cell that decides whether the coupling is accidental. These pin what
+// the override may and may not lift.
+
+TEST(GSFastStencilShadowOverride, AAB_ForceOnDefaultsToInert)
+{
+	EXPECT_FALSE(GSFastStencilShadow::IsForcedOn());
+}
+
+// It lifts ONLY the barrier term. The Vulkan and dual-source terms decide whether the
+// counter can be drawn at all, not whether it is worth drawing, so forcing past them
+// would draw it wrong -- the D3D11 mistake DeviceQualifies warns about, in reverse.
+TEST(GSFastStencilShadowOverride, ForceOnLiftsOnlyTheBarrierTerm)
+{
+	// The cell E4d could not reach: barriers ON (as the declared road leaves them).
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, false, RenderAPI::Vulkan, true, true))
+		<< "device rule declines it";
+	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, true, RenderAPI::Vulkan, true, true))
+		<< "forced on, and the backend can draw it";
+
+	// Still gated on what the backend can draw.
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, RenderAPI::Vulkan, true, false))
+		<< "no dual-source blending: the second factor has nowhere to go";
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, RenderAPI::D3D11, false, true))
+		<< "no counter block in that backend's shader";
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, RenderAPI::D3D11, true, true));
+}
+
+// Asking for both is a harness mistake; resolve to the one that changes least from the
+// shipped picture.
+TEST(GSFastStencilShadowOverride, ForceOffBeatsForceOn)
+{
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, RenderAPI::Vulkan, true, true));
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, RenderAPI::Vulkan, false, true))
+		<< "even on the row the device rule would have allowed";
+}
+
+// With neither override asked, Resolve is DeviceQualifies on every row -- so a build
+// that never calls either setter answers exactly as it did before both existed.
+TEST(GSFastStencilShadowOverride, ResolveIsTheDeviceRuleWhenNeitherIsAsked)
+{
+	for (RenderAPI api : {RenderAPI::Vulkan, RenderAPI::D3D11, RenderAPI::OpenGL, RenderAPI::Metal})
+	{
+		for (bool barrier : {false, true})
+		{
+			for (bool dual : {false, true})
+			{
+				EXPECT_EQ(GSFastStencilShadow::Resolve(false, false, api, barrier, dual),
+					GSFastStencilShadow::DeviceQualifies(api, barrier, dual))
+					<< "api " << static_cast<int>(api) << " barrier " << barrier << " dual " << dual;
+			}
+		}
+	}
+}
