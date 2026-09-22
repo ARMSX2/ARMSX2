@@ -2,6 +2,7 @@ package com.armsx2.input
 
 import android.content.SharedPreferences
 import android.view.KeyEvent
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import com.armsx2.runtime.MainActivityRuntime
 import androidx.core.content.edit
@@ -912,6 +913,120 @@ object ControllerMappings {
         MainActivityRuntime.releaseLatches()
     }
 
+    // ---- Analog-trigger pressure (L2/R2, per player) ----------------------
+    // The PS2's L2/R2 are PRESSURE-sensitive (0-255) and the axis path has always sent a
+    // proportional value, so on most pads analog triggers already work. What breaks them is a
+    // pad that reports a trigger BOTH ways: the axis ramps 0..1 while the driver ALSO
+    // synthesises a KEYCODE_BUTTON_L2/R2 key event partway through the pull, and that key event
+    // writes a FULL press over the axis value — a half-pulled trigger snaps to 100% (Odin 2 Portal).
+    //
+    // OFF (the DEFAULT) is byte-for-byte today's behaviour: proportional value sent, key event
+    // untouched, no curve. Pads that never had the collision are therefore completely
+    // unaffected by this setting existing — the opt-in convention the rest of this file follows.
+    // ON makes the trigger AXIS the sole owner of that button's pad state: the digital key event
+    // is dropped (only on pads that actually have an axis to fall back on) and the response
+    // curve below applies.
+    //
+    // Keyed by the PHYSICAL side, not the PS2 target: it describes how this pad reports its
+    // trigger, which does not change when the row is remapped. The L2 row is the left trigger,
+    // R2 the right.
+    private const val TRIGGER_PRESSURE_PREFIX = "pad.triggerPressure."
+    private fun triggerPressureKey(action: Action, player: Int) =
+        playerPrefix(player) + TRIGGER_PRESSURE_PREFIX + action.id
+
+    /** True for the two trigger rows (L2/R2) — the only actions these options apply to. */
+    fun isTriggerAction(action: Action): Boolean = action.id == "l2" || action.id == "r2"
+
+    /** The left trigger is the "l2" row, the right the "r2" row. */
+    private fun triggerActionFor(left: Boolean): Action? =
+        actions.firstOrNull { it.id == (if (left) "l2" else "r2") }
+
+    fun isTriggerPressureAction(action: Action, player: Int = 0): Boolean =
+        MainActivityRuntime.prefs.getBoolean(triggerPressureKey(action, player), false)
+
+    fun setTriggerPressureAction(action: Action, player: Int, on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(triggerPressureKey(action, player), on) }
+        invalidateRuntimeCaches()
+    }
+
+    /** True when the [left]/right PHYSICAL trigger is in analog-pressure mode for [player]. */
+    fun isTriggerPressure(left: Boolean, player: Int = 0): Boolean =
+        runtimeBindings().triggerPressure[if (player == P2) P2 else P1][if (left) 0 else 1]
+
+    // ---- Analog-trigger response curve (L2/R2, per player) ----------------
+    // A handheld's triggers have a far shorter throw than a DualShock's, so a LINEAR map spends
+    // the whole PS2 pressure range over a few millimetres and feels twitchy — the Odin 2 Portal's
+    // measured travel is the full 0..32767 with ~450 distinct steps, so the range and the
+    // resolution are both there; it is the SHAPE that needs to change, not calibration.
+    //
+    // Applied as output = travel^exponent, stored as a percentage (100 = 1.00 = linear, i.e.
+    // exactly today's behaviour). Above 1.0 the low end is stretched, so easing onto the
+    // trigger gives fine control and full pressure still needs a full pull — what a racing
+    // game wants. Below 1.0 does the reverse for games that want to reach full quickly.
+    //
+    // Keyed by the PHYSICAL side rather than the PS2 target, unlike the pressure flag: a curve
+    // describes how this pad's trigger travels under a finger, which does not change when the
+    // row is remapped to a different PS2 button. The L2 row drives the left trigger, R2 the
+    // right; in the default mapping the two keyings coincide anyway.
+    private const val TRIGGER_CURVE_PREFIX = "pad.triggerCurve."
+    private fun triggerCurveKey(action: Action, player: Int) =
+        playerPrefix(player) + TRIGGER_CURVE_PREFIX + action.id
+
+    /** 100 = linear. The stored percentage, for the Pad tab's slider. */
+    fun triggerCurveAction(action: Action, player: Int = 0): Int =
+        MainActivityRuntime.prefs.getInt(triggerCurveKey(action, player), 100)
+
+    fun setTriggerCurveAction(action: Action, player: Int, percent: Int) {
+        MainActivityRuntime.prefs.edit {
+            putInt(triggerCurveKey(action, player), percent.coerceIn(50, 250))
+        }
+        invalidateRuntimeCaches()
+    }
+
+    /** Exponent for the [left]/right PHYSICAL trigger — 1f when untouched, so the common case
+     *  costs a `pow(x, 1f)` the callers skip outright. */
+    fun triggerCurve(left: Boolean, player: Int = 0): Float =
+        runtimeBindings().triggerCurves[if (player == P2) P2 else P1][if (left) 0 else 1]
+
+    // ---- Live trigger readout (Pad tab) -----------------------------------
+    // The pressure row shows the trigger's CURRENT travel next to the toggle, so a user can
+    // see at a glance whether their pad has analog triggers at all and what the PS2 would
+    // receive — the question "is this even analog on my handheld?" otherwise has no answer
+    // short of a third-party gamepad tester.
+    //
+    // Sampled by MainActivityRuntime.noteTriggerLive from the RAW motion dispatch, ahead of
+    // every gameplay gate, because sendTrigger only runs while a game is RUNNING and this row
+    // lives in a settings screen where it never fires. Armed only while the Pad tab is on
+    // screen so the probe costs nothing the rest of the time.
+    //
+    // Per PLAYER, so two pads paired for local co-op each feed their own row instead of both
+    // writing one indicator and fighting over it, and so the number reflects the settings of
+    // the player being edited rather than P1's.
+    //
+    // With pressure ON this is also exactly what the PS2 receives. With it OFF it is the
+    // trigger's travel only: the digital key event is left alone in that mode, so on a pad
+    // that reports a trigger both ways the game sees a full press once that key fires,
+    // whatever this reads. The row mutes the number when OFF for that reason.
+    @Volatile var triggerMonitorActive = false
+
+    /** Live post-deadzone travel as a percentage, or -1 when this pad reports no analog axis
+     *  on that side (a digital-trigger pad, where the row's toggle can do nothing). Index 0 =
+     *  left / L2, 1 = right / R2. */
+    val triggerLive = Array(2) { arrayOf(mutableIntStateOf(-1), mutableIntStateOf(-1)) }
+
+    /** Clamp any unified pad slot to the two mapping tiers the settings have, exactly as
+     *  [playerPrefix] does — the multitap slots share Player 1's. */
+    fun liveTier(player: Int): Int = if (player == P2) P2 else P1
+
+    /** Arm/disarm the probe, clearing stale readings so a disconnected pad doesn't leave the
+     *  last percentage frozen on screen. */
+    fun setTriggerMonitor(on: Boolean) {
+        if (on) {
+            for (tier in triggerLive) for (side in tier) side.intValue = -1
+        }
+        triggerMonitorActive = on
+    }
+
     /** True when a physical button's PS2 target [targetKeyCode] is latch-flagged. */
     fun isLatchTarget(targetKeyCode: Int, player: Int = 0): Boolean {
         return targetKeyCode in runtimeBindings().latchTargets[if (player == P2) P2 else P1]
@@ -1050,6 +1165,8 @@ object ControllerMappings {
         val targets: Array<Map<Int, Int>>,
         val turboTargets: Array<Set<Int>>,
         val latchTargets: Array<Set<Int>>,
+        val triggerPressure: Array<BooleanArray>,
+        val triggerCurves: Array<FloatArray>,
         val hotkeys: List<RuntimeHotkey>,
         val dpadAsLeftStick: Boolean,
     )
@@ -1081,6 +1198,21 @@ object ControllerMappings {
                 .map { it.targetKeyCode }
                 .toSet()
         }
+        // [left, right] per player, resolved once so the motion path never reads preferences.
+        val triggerPressure = Array(2) { player ->
+            booleanArrayOf(
+                triggerActionFor(true)?.let { isTriggerPressureAction(it, player) } ?: false,
+                triggerActionFor(false)?.let { isTriggerPressureAction(it, player) } ?: false,
+            )
+        }
+        // [left, right] exponent per player, resolved once here so the motion path never
+        // touches preferences. Index 0 = the "l2" row / left trigger, 1 = "r2" / right.
+        val triggerCurves = Array(2) { player ->
+            floatArrayOf(
+                (triggerActionFor(true)?.let { triggerCurveAction(it, player) } ?: 100) / 100f,
+                (triggerActionFor(false)?.let { triggerCurveAction(it, player) } ?: 100) / 100f,
+            )
+        }
         val hotkeys = SysHotkey.values().map { action ->
             RuntimeHotkey(action, hotkeyCode(action), hotkeyModCode(action))
         }
@@ -1089,6 +1221,8 @@ object ControllerMappings {
             targets,
             turboTargets,
             latchTargets,
+            triggerPressure,
+            triggerCurves,
             hotkeys,
             resolveBoolean(KEY_DPAD_AS_LSTICK, false),
         )

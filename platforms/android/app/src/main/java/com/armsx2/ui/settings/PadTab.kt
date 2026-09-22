@@ -45,6 +45,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -85,6 +86,14 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
     val focusRequester = remember { FocusRequester() }
     // Which macro is capturing a physical-controller trigger button (null = none).
     val macroCapture = remember { mutableStateOf<TouchButtonId?>(null) }
+
+    // Live trigger readout on the L2/R2 pressure rows. Armed for the whole tab rather than per
+    // row so it survives the button-mapping section being collapsed and re-expanded, and is
+    // released the moment the tab leaves the screen.
+    DisposableEffect(Unit) {
+        ControllerMappings.setTriggerMonitor(true)
+        onDispose { ControllerMappings.setTriggerMonitor(false) }
+    }
 
     val stickCapture = ControllerMappings.captureStickDir
     LaunchedEffect(capture.value, stickCapture.value, macroCapture.value) {
@@ -483,6 +492,150 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
+                    }
+                    // Analog pressure — L2/R2 only, because they are the only PS2 buttons a
+                    // handheld's analog triggers map onto. OFF (the default) is exactly the
+                    // behaviour this frontend has always had, so pads that never had the problem
+                    // are untouched. ON makes the trigger AXIS the sole owner of the button:
+                    // a pad that reports its trigger BOTH as an axis and as a key event no longer
+                    // lets the key event slam a half-pull to full — see sendTrigger.
+                    if (ControllerMappings.isTriggerAction(action)) {
+                        val pressure = remember(action.id, editPlayer.intValue, refreshToken.intValue) {
+                            mutableStateOf(
+                                ControllerMappings.isTriggerPressureAction(action, editPlayer.intValue),
+                            )
+                        }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val nv = !pressure.value
+                                    pressure.value = nv
+                                    ControllerMappings.setTriggerPressureAction(
+                                        action, editPlayer.intValue, nv,
+                                    )
+                                }
+                                .padding(start = 18.dp, end = 10.dp, top = 2.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "\u21b3 Analog pressure (use travel, not the button press)",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            // Live travel from the pad of the player being edited, so a second
+                            // paired controller drives the P2 rows rather than these. "--" means
+                            // that pad reports no analog axis on this side, i.e. its triggers are
+                            // digital and the toggle cannot help.
+                            //
+                            // Muted while the option is OFF: in that mode the digital key event
+                            // is deliberately left alone, so on a pad that reports a trigger both
+                            // ways the game gets a full press once that key fires regardless of
+                            // what this reads. Accented when ON, where it IS what the PS2
+                            // receives. It stays visible either way because "does this pad have
+                            // an analog trigger at all" is how you decide whether to switch it on.
+                            //
+                            // The accent tracks whether the OPTION is live, not whether the
+                            // trigger is moving, so a resting 0% reads as accented the moment it
+                            // is switched on. "--" stays muted either way: no analog axis on this
+                            // side means the option has nothing to act on.
+                            val live = ControllerMappings.triggerLive[
+                                ControllerMappings.liveTier(editPlayer.intValue)
+                            ][if (action.id == "l2") 0 else 1].intValue
+                            Text(
+                                if (live < 0) "--" else "$live%",
+                                color = if (pressure.value && live >= 0) Color(0xFF4DA3FF)
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.End,
+                                // Fixed width: the number changes every sample while the trigger
+                                // moves, and without this the ON/OFF beside it would shuffle.
+                                modifier = Modifier.width(52.dp),
+                            )
+                            // The readout is a live measurement and the ON/OFF is a setting; with
+                            // nothing between them they read as one run-on value.
+                            Spacer(Modifier.width(14.dp))
+                            Text(
+                                if (pressure.value) "ON" else "OFF",
+                                color = if (pressure.value) Color(0xFF4DA3FF)
+                                else Color(0xFF808080),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.End,
+                                // Fixed width so toggling ON<->OFF (different text widths) doesn't
+                                // drag the percentage sideways, and so this row's ON/OFF ends on
+                                // the same right edge as Turbo's and Tap-to-hold's above it.
+                                modifier = Modifier.width(34.dp),
+                            )
+                        }
+                        // Pressure only reaches the game once the emulated DualShock 2 is in
+                        // ANALOG mode, and the pad's Analog button is UNBOUND by default (see
+                        // the "analog" Action) — so the common outcome of switching this on is
+                        // that nothing at all changes, with no hint as to why. Point at the
+                        // cause and arm that row's capture directly rather than making the user
+                        // find it. Shown only while the cause is live: pressure ON and the
+                        // Analog row still unbound in the scope being edited.
+                        val analogAction = remember { ControllerMappings.actions.first { it.id == "analog" } }
+                        val analogBound = ControllerMappings.physicalForScope(
+                            analogAction, editPlayer.intValue, editSerial,
+                        ) != android.view.KeyEvent.KEYCODE_UNKNOWN
+                        if (pressure.value && !analogBound) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { capture.value = analogAction }
+                                    .padding(start = 18.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "\u26a0 Needs analog mode: \"Analog (toggle)\" is unbound. " +
+                                        "Tap to bind it, then press it in-game.",
+                                    color = Color(0xFFE0A030),
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                        // Response curve. Only while pressure is ON, because it shapes a
+                        // pressure value that digital mode doesn't send — showing a live slider
+                        // that provably does nothing is worse than not showing it. A handheld's
+                        // trigger throw is short, so a linear map feels twitchy; above 100% the
+                        // low end stretches and a full pull is still needed for full pressure.
+                        // The live % above reflects the curve, so this can be dialled in by feel
+                        // right here without a game running.
+                        if (pressure.value) {
+                            val curve = remember(action.id, editPlayer.intValue, refreshToken.intValue) {
+                                mutableIntStateOf(
+                                    ControllerMappings.triggerCurveAction(action, editPlayer.intValue),
+                                )
+                            }
+                            IntSliderRow(
+                                label = "\u21b3 Response curve",
+                                value = curve.intValue,
+                                min = 50,
+                                max = 250,
+                                description = "How trigger travel maps to PS2 pressure. 100% is " +
+                                    "linear. Higher softens the first half of the pull for finer " +
+                                    "control; lower reaches full pressure sooner.",
+                                valueFormatter = { if (it == 100) "100% (linear)" else "$it%" },
+                                onReset = if (curve.intValue != 100) {
+                                    {
+                                        curve.intValue = 100
+                                        ControllerMappings.setTriggerCurveAction(
+                                            action, editPlayer.intValue, 100,
+                                        )
+                                    }
+                                } else null,
+                                onChange = {
+                                    curve.intValue = it
+                                    ControllerMappings.setTriggerCurveAction(
+                                        action, editPlayer.intValue, it,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
                 SettingsDivider()

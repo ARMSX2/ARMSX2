@@ -82,6 +82,7 @@ import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.pow
 import androidx.core.net.toUri
 import androidx.core.content.edit
 
@@ -3615,6 +3616,24 @@ open class MainActivityRuntime : ComponentActivity() {
         }
 
         val target = ControllerMappings.targetForPhysical(physicalCode, port) ?: return false
+        // Pads that report a trigger BOTH ways (Odin 2 Portal and friends) synthesise a
+        // KEYCODE_BUTTON_L2/R2 key event partway through the pull. In analog-pressure mode that
+        // key would write a FULL press over the axis path's proportional value, snapping a
+        // half-pulled trigger to 100% — so the axis owns the pad state and the key event is
+        // dropped here. Only when this pad actually HAS a trigger axis on that side (else
+        // nothing would drive L2/R2 at all), and never when turbo or tap-to-hold is flagged on
+        // that target, since those act on key edges the axis path doesn't produce. The event is
+        // still consumed so it can't fall through to the frontend. See sendTrigger.
+        if (physicalCode == KeyEvent.KEYCODE_BUTTON_L2 || physicalCode == KeyEvent.KEYCODE_BUTTON_R2) {
+            val left = physicalCode == KeyEvent.KEYCODE_BUTTON_L2
+            if (ControllerMappings.isTriggerPressure(left, port) &&
+                !ControllerMappings.isTurboTarget(target, port) &&
+                !ControllerMappings.isLatchTarget(target, port) &&
+                deviceHasTriggerAxis(event.deviceId, left)
+            ) {
+                return true
+            }
+        }
         // Tap to hold rewrites the edges before anything else sees them (#612); a swallowed event
         // is still consumed, or the key would fall through to the frontend.
         val edge = if (ControllerMappings.isLatchTarget(target, port))
@@ -4120,6 +4139,12 @@ open class MainActivityRuntime : ComponentActivity() {
         // gameplay path would drop. Pure logging — no behaviour change.
         logControllerDeviceOnce(ev.deviceId)
         logControllerMotion(ev)
+        // Live trigger readout for the Pad tab's pressure rows. Sampled HERE, ahead of every
+        // gate below, because that tab is a settings screen: the gameplay path is gated on
+        // EmuState.RUNNING and the frontend-nav path consumes the event, so neither would ever
+        // feed the row. Pure observation — nothing is consumed, and the flag is only set while
+        // those rows are on screen.
+        if (ControllerMappings.triggerMonitorActive) noteTriggerLive(ev)
         // While (re)binding a pad button or a hotkey, the physical D-pad on many
         // handhelds (AYN Odin 3, RP6, etc.) arrives HERE as a HAT *axis*, never as
         // a key in dispatchKeyEvent — so the capture (which only listens for key
@@ -4304,8 +4329,7 @@ open class MainActivityRuntime : ComponentActivity() {
      *  "released" every motion event, cancelling a held R2 whenever the stick moved. */
     private fun triggerTravel(ev: MotionEvent, left: Boolean): Float {
         val (a, b, c) = triggerAxes(ev.deviceId, left)
-        if (!deviceHasAxis(ev.deviceId, a) && !deviceHasAxis(ev.deviceId, b) &&
-            !deviceHasAxis(ev.deviceId, c))
+        if (!deviceHasTriggerAxis(ev.deviceId, left))
             return -1f
         return maxOf(
             maxOf(ev.getAxisValue(a), ev.getAxisValue(b)),
@@ -4330,6 +4354,50 @@ open class MainActivityRuntime : ComponentActivity() {
         if (hypot(ev.getAxisValue(rightX), ev.getAxisValue(rightY)) >= STICK_DIGITAL_THRESHOLD) return true
         return triggerTravel(ev, left = true) > TRIGGER_DIGITAL_THRESHOLD ||
             triggerTravel(ev, left = false) > TRIGGER_DIGITAL_THRESHOLD
+    }
+
+    /** Deadzone off the bottom, re-normalized, then the user's response curve. One helper so
+     *  the Pad tab's live readout and the value the PS2 actually receives can never disagree —
+     *  the readout exists precisely to show what the game gets. */
+    private fun shapeTrigger(raw: Float, left: Boolean, port: Int): Float {
+        val out = if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
+        // The curve belongs to analog-pressure mode; with the option off this is exactly the
+        // plain re-normalized travel the frontend has always sent.
+        if (out <= 0f || !ControllerMappings.isTriggerPressure(left, port)) return out
+        val exp = ControllerMappings.triggerCurve(left, port)
+        return if (exp == 1f) out else out.toDouble().pow(exp.toDouble()).toFloat()
+    }
+
+    /** Publish both triggers' current travel for the Pad tab's pressure rows: the same
+     *  post-deadzone percentage [sendTrigger] would hand the PS2, or -1 when the pad has no
+     *  analog axis on that side. Only writes on a CHANGE, so a pad idling its axes doesn't
+     *  recompose the settings list every motion sample. */
+    private fun noteTriggerLive(ev: MotionEvent) {
+        if (!ev.isFromSource(InputDevice.SOURCE_JOYSTICK) &&
+            !ev.isFromSource(InputDevice.SOURCE_GAMEPAD))
+            return
+        // Which player's pad this is, resolved the same way the gameplay path resolves it, so
+        // two pads paired for local co-op each drive their OWN row and each is shaped by its
+        // own player's settings. Sampling as P1 unconditionally meant the second pad overwrote
+        // the first's reading, and the P2 rows showed P1's curve.
+        val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
+        val tier = ControllerMappings.liveTier(port)
+        for (left in booleanArrayOf(true, false)) {
+            val raw = triggerTravel(ev, left)
+            val pct = if (raw < 0f) -1
+                else (shapeTrigger(raw, left, port) * 100f).toInt().coerceIn(0, 100)
+            val slot = ControllerMappings.triggerLive[tier][if (left) 0 else 1]
+            if (slot.intValue != pct) slot.intValue = pct
+        }
+    }
+
+    /** True when this pad reports the [left]/right trigger as an ANALOG AXIS at all. False for
+     *  pads whose L2/R2 are key events only (a Switch Pro Controller), where the key path is the
+     *  one and only signal and must keep driving the pad. */
+    private fun deviceHasTriggerAxis(deviceId: Int, left: Boolean): Boolean {
+        val (a, b, c) = triggerAxes(deviceId, left)
+        return deviceHasAxis(deviceId, a) || deviceHasAxis(deviceId, b) ||
+            (c >= 0 && deviceHasAxis(deviceId, c))
     }
 
     /** The keycode a trigger stands in for. The binding model is keyed on keycodes and most
@@ -5403,15 +5471,20 @@ open class MainActivityRuntime : ComponentActivity() {
         // Resolve the physical trigger keycode to its mapped PS2 target — null = cleared,
         // so the trigger is disabled; otherwise drive the resolved (possibly remapped) code.
         val target = ControllerMappings.targetForPhysical(code, port) ?: return
-        // Deadzone off the bottom, re-normalized, so pressure ramps from zero instead of
-        // flicking on/off at a hard threshold (the jitter non-Xbox pads showed).
-        val out = if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
+        // Deadzone off the bottom, re-normalized (so pressure ramps from zero instead of
+        // flicking on/off at a hard threshold — the jitter non-Xbox pads showed), then the
+        // user's response curve. Same helper the live readout uses.
+        val out = shapeTrigger(raw, left, port)
         if (target in 110..123) {
             // Trigger bound to a PS2 STICK direction ("(send)" rows): contribute the
             // proportional pressure to the merge layer so it can't be released by
-            // the target stick's own (resting) ANALOG writer in the same event.
+            // the target stick's own (resting) ANALOG writer in the same event. A stick
+            // direction has no pressure byte to soften, so it always tracks the travel.
             accumAnalog(target, out)
         } else {
+            // Unchanged from before the pressure option existed. What the option alters is
+            // whether the KEY path is allowed to overwrite this value (dispatchGameplayKey)
+            // and whether [shapeTrigger] applied a curve — never this write itself.
             NativeApp.setPadButtonForPort(port, target, (out * 32767).toInt(), out > 0f)
         }
     }
