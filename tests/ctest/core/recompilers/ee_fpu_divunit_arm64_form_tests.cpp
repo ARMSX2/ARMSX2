@@ -124,8 +124,8 @@ TEST(EeFpuDivUnitArm64Form, MatchesThePortableLoopAcrossTheDividendsOfTheWitness
 }
 
 // Every dividend against the witness divisors and as many again drawn at
-// random. Minutes, so not in the default run.
-TEST(EeFpuDivUnitArm64Form, DISABLED_MatchesThePortableLoopOnEveryDividend)
+// random. Measured at 38.7 s on this machine, so it stays in the default run.
+TEST(EeFpuDivUnitArm64Form, MatchesThePortableLoopOnEveryDividend)
 {
 	Xorshift64s rng{0x2545F4914F6CDD1DULL};
 	Tally t;
