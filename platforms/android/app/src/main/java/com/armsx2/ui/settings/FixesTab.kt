@@ -44,6 +44,7 @@ fun FixesTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
+        GameDbSection(state)
         CollapsibleSection(str("fixes.section.display")) {
         HelpText(
             str("fixes.section.display.help"),

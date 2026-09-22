@@ -41,6 +41,7 @@
 #include "EeFpuModel.h"
 #include "VU.h"
 #include "VUmicro.h"
+#include "MTVU.h"
 #include "Config.h"
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
@@ -127,7 +128,46 @@ struct DigestSet
 	// VU0 -- where the thirteen ops are NOPs. 0 in a pin row = probe absent.
 	u64 signClampEfu;
 	u64 exactEfu;
-
+	// The load/store address path, on the VU whose data memory the recompiler
+	// reaches off the pinned register file. Every probe above is memory-free,
+	// which is why abi 4's constant-address fold moved no digest at all.
+	// 0 in a pin row = probe absent.
+	u64 vu1LoadStore;
+	// A program end under MTVU, the setting every probe above compiles with off
+	// -- and off is the setting under which a VU1 end raises no interrupt, so
+	// the exit an MTVU end takes is in none of the digests above.
+	// 0 in a pin row = probe absent.
+	u64 vu1EbitMtvu;
+	// CLIP, the one upper op that produces a GPR flag word rather than a vector
+	// result. Its comparison-to-bits gather is emitted nowhere else, and no
+	// probe above carries a CLIP, so the whole of it could be rewritten without
+	// moving a digest. 0 in a pin row = probe absent.
+	u64 clipFlag;
+	// Four consecutively numbered VF reads, so mvuPreloadRegisters queues
+	// 1,2,3,4 and both pairs are adjacent in the state block. Every probe
+	// above preloads too, but a probe whose register numbers make no pair
+	// cannot tell a lost fold from a reordered queue. 0 in a pin row = probe
+	// absent.
+	u64 preloadPairs;
+	// Two masked writes whose destinations are also preloaded, so each one
+	// reaches clearNeeded with a second cached copy of its own register in
+	// front of it. Every probe above writes whole registers, so none of them
+	// reaches the merge at all. 0 in a pin row = probe absent.
+	u64 mergeFold;
+	// The single-lane dest program at vuClampMode:2, the mode where the
+	// result clamp answers a single-lane dest with its own sequence. The two
+	// probes that carry that sequence today are DIV and RSQRT; the FMACs with
+	// a single-lane dest above compile at modes 3 and 4, where the
+	// sign-preserving clamp takes them instead. 0 in a pin row = probe absent.
+	u64 clampESS;
+	// MADDA with a dest field that is neither one lane nor all four, and MADDA
+	// with one lane: the two shapes whose accumulate runs on a scratch copy of
+	// ACC. Every MADD and MSUB above writes all four lanes, which is the third
+	// branch. Compiled at vuClampMode 2, where only the wider of the two folds
+	// its copy into the clamp, and again at 3, where both do.
+	// 0 in a pin row = probe absent.
+	u64 clampEPartialAcc;
+	u64 signClampPartialAcc;
 };
 
 struct AbiPin
@@ -182,7 +222,7 @@ constexpr AbiPin kPins[] = {
 	// straight-line probes are bit-identical to abi 9.
 	{10, {0xb35dd0237372d734, 0xb6dfab5c9a56d900, 0xc9abe2f224fb5710, 0xbdfce8a7ecebe6a6, 0x1fe80e2917de1c2d}},
 	// abi 11: resume-aware dispatch (VE-07). mVUtestCycles' budget-break
-	// exit BLs copyPLStateResume — a new stub id in the fixup stream. The
+	// exit B's mVU.cycleBreak — a new stub id in the fixup stream. The
 	// instruction count and shape of every block are unchanged, but every
 	// block carries a testCycles, so every probe's fixup structure (and
 	// therefore digest) moves.
@@ -270,6 +310,111 @@ constexpr AbiPin kPins[] = {
 	// moves -- the default-mode probe; signClampDivUnit and exactDivUnit keep
 	// abi 19's values.
 	{20, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x01dc53e64a60783b, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0xa2465092b0e3404a, 0x04899f265502aa58, 0x6b119d8d1e4fd199, 0x97c76bda811bc8e4, 0xd933afa738820832, 0xa7ad93456cba5eb2}},
+	// abi 21: an operand clamp reads the register the clone-write copy in front
+	// of it copied, and the copy goes. Five probes move -- broadcastChain at
+	// the default mode and maddClampE at 2, through mVUclamp1's four-lane arm,
+	// and signClampMulAdd, signClampDivUnit and signClampEfu at 3, through
+	// mVUclamp2's. The rest emit copies the clamp cannot reach, because
+	// something stands between: an allocation of the other operand
+	// (msubClampE) or a MAC predicate (the vuClampMode:4 probes). signClampSS
+	// emits no whole-register copy at all -- a single-lane clone rotates the
+	// lane it wants into place instead.
+	{21, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xc745a3959fa555ed, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x01dc53e64a60783b, 0x7b2cf129a0112eb5, 0x1270eee2b9725c68, 0xdd9e01f04dfdf231, 0x00410ea5fd07a5f9, 0xa2465092b0e3404a, 0x04899f265502aa58, 0xe2c3e03122ce9e70, 0x97c76bda811bc8e4, 0x9600d0c470905660, 0xa7ad93456cba5eb2}},
+	// 22: mVUclamp1 reads its bounds out of q25/q26 instead of loading them,
+	// the block lays the pair down once at its entry, and q25/q26 leave the
+	// VF pool in micro mode -- so every probe moves, the clamp-free ones
+	// through the entry Ldp and what the allocator hands out.
+	{22, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0x0126dc75bb4430b9, 0xaebf14b1ed6decc1, 0xb43ff459f5b10828, 0x7b02c5ad05cbf2da, 0xbb97e4783596605e, 0xe140eff6bb95297c}},
+	// abi 23: the model-call seam moved behind a per-target stub and the
+	// serializer gained a stub id per target.
+	// Only the four exact-mode probes move; divUnit and signClampDivUnit run
+	// below mode 4 and stay bit-identical to abi 22.
+	{23, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5}},
+	// abi 24: ILW and ILWR add their lane offset to the address in the register
+	// width mVUaddrFix answered in rather than the low half of it. No probe
+	// here reaches a memory op, so all eighteen digests are bit-identical to
+	// abi 23; the bump evicts caches holding the truncating form.
+	{24, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5}},
+	// abi 25: VU1's data memory moved into the object that holds the register
+	// file, a fixed distance from the pointer the recompiler keeps pinned to
+	// it, so a VU1 access reaches memory off that pin and carries the distance
+	// in its own displacement instead of loading VURegs::Mem. The eighteen
+	// probes above are memory-free and stay bit-identical to abi 24; the bump
+	// evicts caches recorded with the pointer-load shape, and the new
+	// vu1LoadStore probe pins the address path from here on.
+	{25, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x4ce85fa74802244b}},
+	// abi 26: LQD and SQD off a vi00 base take the pre-decrement every other
+	// base takes. The eighteen memory-free probes stay bit-identical to abi
+	// 25; vu1LoadStore gains the LQD that pins the shape, and the bump evicts
+	// caches recorded while a vi00 base answered a fixed address.
+	{26, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x76e983749424f6a7}},
+	// abi 27: ILW and ILWR read the lane their dest field's two-bit code names.
+	// The eighteen memory-free probes stay bit-identical to abi 26;
+	// vu1LoadStore's ILW moves to a field the two rules disagree about, and
+	// the bump evicts caches recorded with the first-bit-set offset.
+	{27, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e}},
+	// abi 28: a VU1 program ending on the E bit under MTVU branches to an exit
+	// entry that raises the interrupt instead of calling mVUEBit and then
+	// branching to the plain exit. The nineteen probes above compile with MTVU
+	// off, where no raise was emitted either way, and stay bit-identical to abi
+	// 27; the bump evicts caches recorded with the call, and the new
+	// vu1EbitMtvu probe pins the MTVU end from here on.
+	{28, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2}},
+	// abi 29: no emitted shape changes -- the options sentinel gained
+	// THREAD_VU1, and the bump evicts the caches recorded while it could not
+	// tell an MTVU run from a run without it. All twenty probes are
+	// bit-identical to abi 28. The clipFlag probe is new in this row; a probe
+	// changes no emitted code, so it needs no bump of its own.
+	{29, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2, 0x6054df75e702ca90}},
+	// abi 30: CLIP packs its six comparison results with one UZP1 and a
+	// weighted ADDV instead of moving each comparison lane to a GPR and
+	// shifting it into place. clipFlag is the only probe that carries a CLIP,
+	// so it is the only digest that moves; the weight vector is appended past
+	// macWeights, which leaves every other [x25, #imm] where it was.
+	{30, {0x7282c445048bef4b, 0x89652dee7bcd0ce6, 0xb8d7c5cd93fbb74e, 0x49385e15e4f6e37e, 0x389454f62983c56c, 0x7ee1c5b565aaee67, 0x1771f7876dde341b, 0xb39c16ac7a312e7c, 0xd7ba3d958fcf1701, 0x339ea6032537601a, 0xbf94567a340e484f, 0xd58dea7aac63b17d, 0xd12f010786dd4b74, 0x6f406715e3b136e3, 0xb43ff459f5b10828, 0xbc94317b2bbc5f9f, 0xbb97e4783596605e, 0x5106c85d18b5c7a5, 0x2a33091e21e64b2e, 0xc43c3130b53ef6c2, 0x32907d678adc7b1c}},
+	// abi 31: block-start VF preloads queued and emitted together. Every digest
+	// in the row moves, because every probe preloads both VI and VF and the VF
+	// loads now follow the VI ones instead of interleaving with them. The
+	// preloadPairs probe is new in this row.
+	{31, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb}},
+	// abi 32: a three-component write keeps its own slot and takes the fourth
+	// component from the other cached copy. No probe above writes a masked
+	// destination, so every digest in the row is the abi 31 value; the
+	// mergeFold probe is new and is the only one that reaches the merge.
+	{32, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x0dbe431ba7baaf38, 0xec2e364d3f85ea15, 0x0642ad7febc371dd, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
+	// abi 33: the flag queue reorder at a block link. indirectJump and
+	// condEvilBranch are the two probes that link blocks at all, and both
+	// move; every other digest in the row is the abi 32 value.
+	{33, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0xa4a62656a8a9349d, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0x8e18f3dc58066cc7, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8}},
+	// abi 34: the single-lane result clamp. divUnit and signClampDivUnit move,
+	// because DIV and RSQRT are the only ops in this table that reach the
+	// single-lane case: the FMACs with a single-lane dest field compile at
+	// modes 3 and 4, where the sign-preserving clamp takes their operands
+	// instead. Every other digest in the row is the abi 33 value.
+	{34, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0x9922363b6464ec7a, 0x23ea8e71f7369f2e, 0x553f416f68fea579, 0xef4f9d0d4006e176, 0xef2d5c2fc47b5fbc, 0xf295da959d87f2eb, 0x0ca04784dfd0f42e, 0x13c623d3df5f5258, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
+	// abi 35: the sign-preserving clamp's paired bounds. The eight probes that
+	// compile at vuClampMode 3 and 4 move, which is every one that reaches
+	// mVUclamp2's integer path at all; clampESS is a mode below it and holds
+	// the abi 34 value, as does every digest above signClampMulAdd.
+	{35, {0xa863f1f9879ae2b5, 0x8fdfe3b98dfea42d, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xd192a204bad1f3e0, 0xe3db98da4cbd7d0b, 0x13165636b400bc74, 0x5025a647a5291be9, 0xc580902ac88802bc, 0x20f440e8c49d3b85, 0xa826c26b402d511f, 0xbed63e7a97c66fe9, 0x7138104cc75f1f14, 0xc924075bd9ae8ce3, 0x65f71dc1b0e950ea, 0x547b51b54e2f65d5, 0xf0fdbefe96fe37bf, 0x9a85250029e6d52e, 0x609feb3860a77eb4, 0x0d2f4a1d43a8196f, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0x03f5e94967268aad}},
+	// abi 36: operand clamps take their folds up front. Sixteen digests move,
+	// which is every probe that clamps two operands together: at the default
+	// clamp mode the FMAC body does that, and from vuClampMode 2 up the body's
+	// own calls are switched off and the arithmetic step does it instead, so
+	// the two halves of the change land on disjoint probes. Every other digest
+	// in the row is the abi 35 value.
+	{36, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c}},
+	// abi 37: the accumulate's own copy of ACC joins the fold. No digest above
+	// moves -- every MADD and MSUB in the table writes all four lanes, which is
+	// the branch that accumulates into ACC itself and makes no copy -- so the
+	// two probes for the other branches are added here, and the rest of the row
+	// is the abi 36 value.
+	{37, {0x7900a833415f808c, 0x7f9ea711b0215957, 0x8331e0b01b2391b0, 0xec2e364d3f85ea15, 0xa104a156e75bad17, 0xe3db98da4cbd7d0b, 0x3bb0d5a0635e95e1, 0x5025a647a5291be9, 0x58571595e2afc721, 0x4773d7af5676cbf6, 0x739e35859f782c59, 0x018c5e3bc50fbde8, 0xcecfc92a38a94129, 0x0a01fc0a416b74b4, 0x2f11a92405afafa3, 0xebbb4c0fe0ded02f, 0x4b83b4d5ec1cf0fb, 0x134f8aa4c8fef68c, 0x609feb3860a77eb4, 0x19ae51a331f34432, 0xce62e252482f10f7, 0x65d99aa82d01f2eb, 0x2872d007bb0040b8, 0xb995f93ecebfab9c, 0x4b3ab298c551a643, 0xa7196c456f0fe346}},
+
+	// abi 38: the cycle-budget break moves into a shared stub. Every digest
+	// moves — mVUtestCycles runs at the top of every block, so every probe
+	// carries the arm.
+	{38, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0x2179f3c725e74523, 0x28d99b6d7e13c0c8, 0x0f96630605ddf7d5, 0x008451d3443b1898, 0x6635ce78819a2162, 0x3ad5ab94e92fe23a, 0x631b8efb8b3cb5e5, 0xa19f8472ae85bb94, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x1b2a82838a2443b2}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -325,6 +470,22 @@ u64 CompileAndDigestVu1(std::initializer_list<vu::VuOp> pairs,
 	RecompilerTestEnvironment::ResetVuBlockCache(1);
 
 	EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;
+	return digest;
+}
+
+// Same contract again, with MTVU on -- what decides how a program ending on the
+// E bit leaves. The interrupt word is restored around it because the compiled
+// code raises the E-bit flag in it as the harness runs.
+u64 CompileAndDigestVu1Mtvu(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedThread = EmuConfig.Speedhacks.vuThread;
+	const u32 savedInterrupts = vu1Thread.mtvuInterrupts.load(std::memory_order_relaxed);
+	EmuConfig.Speedhacks.vuThread = true;
+
+	const u64 digest = CompileAndDigestVu1(pairs);
+
+	EmuConfig.Speedhacks.vuThread = savedThread;
+	vu1Thread.mtvuInterrupts.store(savedInterrupts, std::memory_order_relaxed);
 	return digest;
 }
 
@@ -512,6 +673,16 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	actual.signClampSS = CompileAndDigestSignClamp(ssProgram);
 	actual.exactMulAdd = CompileAndDigestExact(mulAddProgram);
 	actual.exactSS = CompileAndDigestExact(ssProgram);
+	// The same single-lane program one mode down, where the result clamp is
+	// the one mVUclamp1 emits rather than the sign-preserving integer pair.
+	actual.clampESS = CompileAndDigestClampE(ssProgram);
+
+	const std::initializer_list<vu::VuOp> partialAccProgram = {
+		UpperOnly(VMADDA_U(mask::x | mask::y, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VMADDA_U(mask::z, vf::vf1, vf::vf2)),
+	};
+	actual.clampEPartialAcc = CompileAndDigestClampE(partialAccProgram);
+	actual.signClampPartialAcc = CompileAndDigestSignClamp(partialAccProgram);
 
 	// The divUnit program under the same mode. Its three ops keep the host
 	// divide everywhere below it, so the arm that calls the model is emitted
@@ -539,13 +710,17 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
 	// the shape the ABI-15 E-bit lookahead forcing touches. Every other probe
 	// here is VU0, so without this one a VU1-only emitter change moves no digest.
-	actual.vu1BranchToEbit = CompileAndDigestVu1({
+	// The same program compiles twice, the second time under MTVU, which is what
+	// decides the exit those two ends take.
+	const std::initializer_list<vu::VuOp> vu1EbitProgram = {
 		LowerOnly(VIBNE_L(vi::vi1, vi::vi0, 3)),
 		UpperOnly(VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf2)),
 		UpperOnly(bits::E | VSUB_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf2)),
 		NopPair(),
 		UpperOnly(bits::E | VMUL_U(mask::xyzw, vf::vf6, vf::vf1, vf::vf2)),
-	});
+	};
+	actual.vu1BranchToEbit = CompileAndDigestVu1(vu1EbitProgram);
+	actual.vu1EbitMtvu = CompileAndDigestVu1Mtvu(vu1EbitProgram);
 
 	// The EFU under the same two modes, on the only VU that has one. A scalar
 	// form, a four-lane form and a two-lane form, so a change to how the
@@ -563,6 +738,54 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	actual.signClampEfu = CompileAndDigestVu1SignClamp(efuProgram,
 		"the EFU's models are a mode above this one");
 	actual.exactEfu = CompileAndDigestVu1Exact(efuProgram);
+
+	// The load/store address path. The two vi00 loads take the constant-address
+	// fold on either side of a halfword's displacement reach -- one folded
+	// whole, one back on the pointer -- the LQD steps off vi00, and the rest
+	// address off a live VI. The ILW's dest field is one the lane code and the
+	// first-bit-set rule disagree about, so its offset is pinned as well.
+	actual.vu1LoadStore = CompileAndDigestVu1({
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf5, vi::vi0, 1000)),
+		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
+		LowerOnly(VLQD_L(mask::xyzw, vf::vf7, vi::vi0)),
+		LowerOnly(VILW_L(mask::y | mask::z, vi::vi2, vi::vi1, 4)),
+		LowerOnly(VISWR_L(mask::xyzw, vi::vi2, vi::vi1)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf5)),
+	});
+
+	// Two CLIPs, so the second one's shift of the first one's result is in the
+	// shape too. Operands the other way round from every probe above: vf2's
+	// components against vf1's w, which is the small one, so the comparisons
+	// come out mixed rather than all false.
+	actual.clipFlag = CompileAndDigest({
+		UpperOnly(VCLIP_U(vf::vf2, vf::vf1)),
+		UpperOnly(VCLIP_U(vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+	});
+
+	// Queues vf1,vf2,vf3,vf4 in that order, so the preload walk hands the
+	// fold two adjacent pairs. Only vf1 and vf2 are seeded, so vf3 and vf4
+	// are each read alongside a seeded register rather than each other: a
+	// zero result would set MAC Z, and its sticky bit is one the forced
+	// flag hack leaves out of the recompiler's status but not the
+	// interpreter's, which fails the harness diff for reasons that have
+	// nothing to do with the emitted load.
+	actual.preloadPairs = CompileAndDigest({
+		UpperOnly(VADD_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf2)),
+		UpperOnly(VADD_U(mask::xyzw, vf::vf6, vf::vf3, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf7, vf::vf4, vf::vf1)),
+	});
+
+	// Two three-component writes with different masks, so which lane the
+	// reversal reads is in the shape twice. Both destinations are written
+	// partially, which is what makes mvuPreloadRegisters load them, and the
+	// preloaded copy is the one the merge folds against. vf1 and vf2 are the
+	// seeded pair and no component of either difference is zero.
+	actual.mergeFold = CompileAndDigest({
+		UpperOnly(VSUB_U(mask::x | mask::y | mask::z, vf::vf5, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::x | mask::z | mask::w, vf::vf6, vf::vf2, vf::vf1)),
+	});
 
 	mVUPersist::SetRecordingEnabled(false);
 
@@ -583,6 +806,18 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.exactDivUnit, 0u);
 	ASSERT_NE(actual.signClampEfu, 0u);
 	ASSERT_NE(actual.exactEfu, 0u);
+	ASSERT_NE(actual.vu1LoadStore, 0u);
+	ASSERT_NE(actual.vu1EbitMtvu, 0u);
+	ASSERT_NE(actual.clipFlag, 0u);
+	ASSERT_NE(actual.preloadPairs, 0u);
+	ASSERT_NE(actual.mergeFold, 0u);
+	ASSERT_NE(actual.clampESS, 0u);
+	ASSERT_NE(actual.clampEPartialAcc, 0u);
+	ASSERT_NE(actual.signClampPartialAcc, 0u);
+	// MTVU is the only thing between the two, and it has to reach the emitter:
+	// equal digests mean the same exit was emitted either way and the probe
+	// above pins nothing.
+	ASSERT_NE(actual.vu1EbitMtvu, actual.vu1BranchToEbit);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -625,7 +860,15 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.signClampDivUnit
 		<< ", 0x" << actual.exactDivUnit
 		<< ", 0x" << actual.signClampEfu
-		<< ", 0x" << actual.exactEfu << "}";
+		<< ", 0x" << actual.exactEfu
+		<< ", 0x" << actual.vu1LoadStore
+		<< ", 0x" << actual.vu1EbitMtvu
+		<< ", 0x" << actual.clipFlag
+		<< ", 0x" << actual.preloadPairs
+		<< ", 0x" << actual.mergeFold
+		<< ", 0x" << actual.clampESS
+		<< ", 0x" << actual.clampEPartialAcc
+		<< ", 0x" << actual.signClampPartialAcc << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -677,22 +920,25 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		EXPECT_EQ(actual.msubClampE, pin->digests.msubClampE)
 			<< explain("msubClampE", actual.msubClampE, pin->digests.msubClampE);
 	}
+	// The four exact-mode probes call the EE FPU / EFU model, and a call site
+	// spills what EEFPU_MODEL_CALL does not spare (EeFpuModel.h). The compiler
+	// picks that: clang-cl has no mangling for preserve_all and takes the wide
+	// spill, a shape the pin table carries no row for.
+	const bool modelCallShapePinned = EEFPU_MODEL_CALL_SPARES_MOST != 0;
 	if (pin->digests.signClampMulAdd != 0) // probes added at abi 19; older rows unpinned
 	{
 		EXPECT_EQ(actual.signClampMulAdd, pin->digests.signClampMulAdd)
 			<< explain("signClampMulAdd", actual.signClampMulAdd, pin->digests.signClampMulAdd);
 		EXPECT_EQ(actual.signClampSS, pin->digests.signClampSS)
 			<< explain("signClampSS", actual.signClampSS, pin->digests.signClampSS);
-		EXPECT_EQ(actual.exactMulAdd, pin->digests.exactMulAdd)
-			<< explain("exactMulAdd", actual.exactMulAdd, pin->digests.exactMulAdd);
-		EXPECT_EQ(actual.exactSS, pin->digests.exactSS)
-			<< explain("exactSS", actual.exactSS, pin->digests.exactSS);
+		if (modelCallShapePinned)
+		{
+			EXPECT_EQ(actual.exactMulAdd, pin->digests.exactMulAdd)
+				<< explain("exactMulAdd", actual.exactMulAdd, pin->digests.exactMulAdd);
+			EXPECT_EQ(actual.exactSS, pin->digests.exactSS)
+				<< explain("exactSS", actual.exactSS, pin->digests.exactSS);
+		}
 	}
-	// The exact-mode probes are the two that call the EE FPU model, and a call
-	// site spills what EEFPU_MODEL_CALL does not spare (EeFpuModel.h). The
-	// compiler picks that: clang-cl has no mangling for preserve_all and takes
-	// the wide spill, a shape the pin table carries no row for.
-	const bool modelCallShapePinned = EEFPU_MODEL_CALL_SPARES_MOST != 0;
 	if (pin->digests.signClampDivUnit != 0) // probes added at abi 19; older rows unpinned
 	{
 		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
@@ -713,15 +959,42 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 				<< explain("exactEfu", actual.exactEfu, pin->digests.exactEfu);
 		}
 	}
-	if (pin->digests.signClampDivUnit != 0) // probe added at abi 23; older rows unpinned
+	if (pin->digests.vu1EbitMtvu != 0) // probe added at abi 28; older rows unpinned
 	{
-		EXPECT_EQ(actual.signClampDivUnit, pin->digests.signClampDivUnit)
-			<< explain("signClampDivUnit", actual.signClampDivUnit, pin->digests.signClampDivUnit);
+		EXPECT_EQ(actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu)
+			<< explain("vu1EbitMtvu", actual.vu1EbitMtvu, pin->digests.vu1EbitMtvu);
 	}
-	if (pin->digests.signClampEfu != 0) // probe added at abi 24; older rows unpinned
+	if (pin->digests.clipFlag != 0) // probe added at abi 29; older rows unpinned
 	{
-		EXPECT_EQ(actual.signClampEfu, pin->digests.signClampEfu)
-			<< explain("signClampEfu", actual.signClampEfu, pin->digests.signClampEfu);
+		EXPECT_EQ(actual.clipFlag, pin->digests.clipFlag)
+			<< explain("clipFlag", actual.clipFlag, pin->digests.clipFlag);
+	}
+	if (pin->digests.preloadPairs != 0) // probe added at abi 31; older rows unpinned
+	{
+		EXPECT_EQ(actual.preloadPairs, pin->digests.preloadPairs)
+			<< explain("preloadPairs", actual.preloadPairs, pin->digests.preloadPairs);
+	}
+	if (pin->digests.mergeFold != 0) // probe added at abi 32; older rows unpinned
+	{
+		EXPECT_EQ(actual.mergeFold, pin->digests.mergeFold)
+			<< explain("mergeFold", actual.mergeFold, pin->digests.mergeFold);
+	}
+	if (pin->digests.clampESS != 0) // probe added at abi 34; older rows unpinned
+	{
+		EXPECT_EQ(actual.clampESS, pin->digests.clampESS)
+			<< explain("clampESS", actual.clampESS, pin->digests.clampESS);
+	}
+	if (pin->digests.clampEPartialAcc != 0) // probes added at abi 37; older rows unpinned
+	{
+		EXPECT_EQ(actual.clampEPartialAcc, pin->digests.clampEPartialAcc)
+			<< explain("clampEPartialAcc", actual.clampEPartialAcc, pin->digests.clampEPartialAcc);
+		EXPECT_EQ(actual.signClampPartialAcc, pin->digests.signClampPartialAcc)
+			<< explain("signClampPartialAcc", actual.signClampPartialAcc, pin->digests.signClampPartialAcc);
+	}
+	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
+	{
+		EXPECT_EQ(actual.vu1LoadStore, pin->digests.vu1LoadStore)
+			<< explain("vu1LoadStore", actual.vu1LoadStore, pin->digests.vu1LoadStore);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }

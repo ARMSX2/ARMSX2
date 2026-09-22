@@ -10,6 +10,8 @@
 
 #include <bitset>
 #include <optional>
+#include <utility>
+#include <vector>
 
 class SettingsInterface;
 
@@ -105,4 +107,9 @@ namespace PerGameOverrideKeys
 	/// contends. For frontends that keep a stored claim mask in step as the player
 	/// edits, rather than deriving it on load.
 	bool ClaimsAGameDBSetting(const char* section, const char* key);
+
+	/// Every (section, key) that claims something, each once. The same set
+	/// ClaimsAGameDBSetting() answers for, listed, for a frontend that has to decide in bulk
+	/// which of its keys a per-game file needs to carry.
+	std::vector<std::pair<const char*, const char*>> AllClaimingKeys();
 } // namespace PerGameOverrideKeys

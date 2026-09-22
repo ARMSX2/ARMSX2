@@ -55,7 +55,25 @@ public:
 
 	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, Error* error);
 
+	// Libretro: the frontend is about to throw away the context this one shares
+	// with, and on EGL that takes the whole display - driver state included -
+	// with it, leaving these handles pointing at freed memory. Called while
+	// they are still valid, this gives the context up without destroying it:
+	// afterwards nothing here touches the platform again, so the handles leak
+	// rather than crash. They belong to a display that is being torn down
+	// anyway, so there is nothing left to leak.
+	virtual void Abandon() { m_abandoned = true; }
+	__fi bool IsAbandoned() const { return m_abandoned; }
+
+	// Unbind whatever this thread has current, on the way to abandoning it,
+	// knowing the platform state behind the context may already be gone.
+	// Returns false when the platform offers no way to do that safely - the
+	// binding then stays, and no context can ever be made current on this
+	// thread again.
+	virtual bool ReleaseThread() { return false; }
+
 protected:
 	WindowInfo m_wi;
 	Version m_version = {};
+	bool m_abandoned = false;
 };

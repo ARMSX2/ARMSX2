@@ -2117,6 +2117,7 @@ void Pcsx2Config::AchievementsOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(LBOverlays);
 	SettingsWrapEntry(NotificationsDuration);
 	SettingsWrapEntry(LeaderboardsDuration);
+	SettingsWrapEntry(NotificationScale);
 	SettingsWrapIntEnumEx(OverlayPosition, "OverlayPosition");
 	SettingsWrapIntEnumEx(NotificationPosition, "NotificationPosition");
 	SettingsWrapEntry(InfoSoundName);
@@ -2128,13 +2129,14 @@ void Pcsx2Config::AchievementsOptions::LoadSave(SettingsWrapper& wrap)
 		//Clamp in case setting was updated manually using the INI
 		NotificationsDuration = std::clamp(NotificationsDuration, MINIMUM_NOTIFICATION_DURATION, MAXIMUM_NOTIFICATION_DURATION);
 		LeaderboardsDuration = std::clamp(LeaderboardsDuration, MINIMUM_NOTIFICATION_DURATION, MAXIMUM_NOTIFICATION_DURATION);
+		NotificationScale = std::clamp(NotificationScale, MINIMUM_NOTIFICATION_SCALE, MAXIMUM_NOTIFICATION_SCALE);
 	}
 }
 
 bool Pcsx2Config::AchievementsOptions::operator==(const AchievementsOptions& right) const
 {
 	return OpEqu(bitset) && OpEqu(NotificationsDuration) && OpEqu(LeaderboardsDuration) &&
-		   OpEqu(OverlayPosition) && OpEqu(NotificationPosition);
+		   OpEqu(NotificationScale) && OpEqu(OverlayPosition) && OpEqu(NotificationPosition);
 }
 
 bool Pcsx2Config::AchievementsOptions::operator!=(const AchievementsOptions& right) const

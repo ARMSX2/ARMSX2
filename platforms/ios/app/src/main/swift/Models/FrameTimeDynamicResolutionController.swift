@@ -39,9 +39,9 @@ final class FrameTimeDynamicResolutionController {
     private static let smoothingWindow: Int = 60
     private static let reduceThresholdMs: Float = 22.0
     private static let increaseThresholdMs: Float = 14.0
-    /// Minimum non-zero sample count required to act. The history is empty
-    /// until the first frames land, so the controller waits for enough data.
-    private static let minSamplesForAction: Int = 60
+    /// Minimum non-zero samples required to act. Derived, because when this and
+    /// the window were both 60 one 0 ms frame left 59 and silenced the poll.
+    private static let minSamplesForAction: Int = smoothingWindow / 2
     /// Window after one of our own writes during which an observed change is
     /// treated as our echo rather than a manual user change.
     private static let ownWriteEchoWindow: TimeInterval = 1.0
@@ -144,28 +144,30 @@ final class FrameTimeDynamicResolutionController {
     private func poll() {
         // A per-game value, when present, overrides the global enable for the
         // running game: absent uses the global setting, 0 forces off, 1 on.
-        if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(Self.perGameSection, key: Self.perGameKey) {
-            let perGame = ARMSX2Bridge.getPerGameINIBoolForCurrentGame(
-                Self.perGameSection,
-                key: Self.perGameKey,
-                defaultValue: enabled
-            )
-            guard perGame else { return }
+        if let perGame = ARMSX2Bridge.perGameINIBoolIfPresent(
+            Self.perGameSection,
+            key: Self.perGameKey,
+            forISO: nil
+        ), !perGame.boolValue {
+            return
         }
 
-        let history: [NSNumber] = ARMSX2Bridge.frameTimeHistory()
-        let cursor: Int = Int(ARMSX2Bridge.frameTimeHistoryPos())
-        let total: Int = history.count
+        let data = ARMSX2Bridge.frameTimeHistory()
+        let total = data.count / MemoryLayout<Float>.size
         guard total > 0 else { return }
 
         // Collect the most recent `smoothingWindow` non-zero samples before
         // the cursor, wrapping around the ring buffer.
+        let cursor = Int(ARMSX2Bridge.frameTimeHistoryPos())
         var samples: [Float] = []
         samples.reserveCapacity(Self.smoothingWindow)
-        for i in 0..<Self.smoothingWindow {
-            let idx = ((cursor - 1 - i) % total + total) % total
-            let value = history[idx].floatValue
-            if value > 0 { samples.append(value) }
+        data.withUnsafeBytes { raw in
+            let buffer = raw.bindMemory(to: Float.self)
+            for i in 0..<Self.smoothingWindow {
+                let idx = ((cursor - 1 - i) % total + total) % total
+                let value = buffer[idx]
+                if value > 0 { samples.append(value) }
+            }
         }
         guard samples.count >= Self.minSamplesForAction else { return }
 

@@ -49,17 +49,15 @@ import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
- * Browse and install texture packs from the shared online catalog (hosted by sashkinbro, used with
- * his approval).
+ * Browse and install texture packs from the online catalog: ours on B2 first, with sashkinbro's
+ * original catalog (used with his approval) as the fallback -- see TextureCatalog. New packs reach
+ * us over Discord and are uploaded by hand, so that is where the submit link goes.
  *
  * The whole catalog is browsable with no game running. Each pack names the serials it belongs to, so
  * the install target comes from the pack itself rather than from whatever happens to be loaded —
  * requiring a running game was a restriction the data never justified. Packs matching something in
  * your library are listed first; the rest stay visible so you can grab them before you own the disc.
  */
-/** The catalog repo: where the packs live and where contributions go. */
-private const val CATALOG_REPO_URL = "https://github.com/sashkinbro/EmuCoreX-Textures"
-
 /** Rows composed per page in the online catalogue. Small enough that the first frame is cheap,
  *  large enough to fill a phone screen without immediately needing 'Show more'. */
 private const val ONLINE_PAGE = 20
@@ -329,14 +327,15 @@ fun TextureOnlineSection(
                         Text(status, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+
                     Spacer(Modifier.height(8.dp))
-                    // Where packs come from, and where to send new ones. People kept asking; the
-                    // catalog is a public repo with a CONTRIBUTING guide, so point straight at it.
-                    val contribute = { uriHandler.openUri(CATALOG_REPO_URL) }
+                    // New packs come to us over Discord and are uploaded to the catalog by hand;
+                    // there is no public repo to send people to, so the link is the server itself.
+                    val contact = { uriHandler.openUri(com.armsx2.navigation.DiscordUrl) }
                     TextButton(
-                        onClick = contribute,
-                        modifier = Modifier.controllerFocusable("tex.contribute", onConfirm = contribute),
-                    ) { Text(str("textures.online.contribute")) }
+                        onClick = contact,
+                        modifier = Modifier.controllerFocusable("tex.contribute", onConfirm = contact),
+                    ) { Text(str("textures.online.submitDiscord")) }
 
                     if (fromCache) {
                         Spacer(Modifier.height(6.dp))

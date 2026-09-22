@@ -63,6 +63,8 @@ Common::Timer s_last_update_timer_cpu_info = Common::Timer(0.0);
 
 ImU32 s_speed_line_color;
 SmallString s_speed_line;
+// Device temperatures (Android), on a line of their own under the speed line.
+SmallString s_thermal_line;
 SmallString s_gs_stats_line;
 SmallString s_gs_memory_stats_line;
 SmallString s_gs_frame_times_line;
@@ -485,6 +487,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			const float speed = PerformanceMetrics::GetSpeed();
 
 			s_speed_line.clear();
+			s_thermal_line.clear();
 
 #if defined(__ANDROID__)
 			if (const u32 skip = GSGetManualFrameSkip(); skip > 0)
@@ -501,12 +504,14 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				const float cpu_t = Armsx2Thermals::cpu.load(std::memory_order_relaxed);
 				const float gpu_t = Armsx2Thermals::gpu.load(std::memory_order_relaxed);
 				const float bat_t = Armsx2Thermals::battery.load(std::memory_order_relaxed);
+				// Their own line (drawn after the speed line): appended to the speed line they ran
+				// straight into the FPS readout, "BAT 38°FPS: 60.00" (Ladi Altera, Cotcho).
 				if (cpu_t > ARMSX2_THERMAL_NONE)
-					s_speed_line.append_format("{}CPU {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", cpu_t);
+					s_thermal_line.append_format("{}CPU {:.0f}\xc2\xb0", s_thermal_line.empty() ? "" : " | ", cpu_t);
 				if (gpu_t > ARMSX2_THERMAL_NONE)
-					s_speed_line.append_format("{}GPU {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", gpu_t);
+					s_thermal_line.append_format("{}GPU {:.0f}\xc2\xb0", s_thermal_line.empty() ? "" : " | ", gpu_t);
 				if (bat_t > ARMSX2_THERMAL_NONE)
-					s_speed_line.append_format("{}BAT {:.0f}\xc2\xb0", s_speed_line.empty() ? "" : " | ", bat_t);
+					s_thermal_line.append_format("{}BAT {:.0f}\xc2\xb0", s_thermal_line.empty() ? "" : " | ", bat_t);
 			}
 #endif
 
@@ -515,16 +520,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				switch (PerformanceMetrics::GetInternalFPSMethod())
 				{
 					case PerformanceMetrics::InternalFPSMethod::GSPrivilegedRegister:
-						s_speed_line.append_format("FPS: {:.2f} [P]", PerformanceMetrics::GetInternalFPS());
+						s_speed_line.append_format("{}FPS: {:.2f} [P]", s_speed_line.empty() ? "" : " | ", PerformanceMetrics::GetInternalFPS());
 						break;
 
 					case PerformanceMetrics::InternalFPSMethod::DISPFBBlit:
-						s_speed_line.append_format("FPS: {:.2f} [B]", PerformanceMetrics::GetInternalFPS());
+						s_speed_line.append_format("{}FPS: {:.2f} [B]", s_speed_line.empty() ? "" : " | ", PerformanceMetrics::GetInternalFPS());
 						break;
 
 					case PerformanceMetrics::InternalFPSMethod::None:
 					default:
-						s_speed_line.append("FPS: N/A");
+						s_speed_line.append_format("{}FPS: N/A", s_speed_line.empty() ? "" : " | ");
 						break;
 				}
 
@@ -595,6 +600,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			// user comparing "the game runs at 30" with "the screen gets 60" wants them adjacent.
 			if (!s_lsfg_line.empty())
 				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
+
+			if (!s_thermal_line.empty())
+				DRAW_LINE(osd_font, font_size, s_thermal_line.c_str(), OsdTextColor());
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 			if (ARMSX2_iOSShouldShowDeviceStatsOverlay())
@@ -775,6 +783,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 			if (!s_lsfg_line.empty())
 				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
+
+			if (!s_thermal_line.empty())
+				DRAW_LINE(osd_font, font_size, s_thermal_line.c_str(), OsdTextColor());
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 			if (ARMSX2_iOSShouldShowDeviceStatsOverlay() && !s_ios_device_stats_line.empty())

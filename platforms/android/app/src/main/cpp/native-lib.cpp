@@ -74,6 +74,7 @@
 #include <fcntl.h>
 #include <thread>
 #include <regex>
+#include <tuple>
 #include <vector>
 
 
@@ -265,6 +266,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
         Console.WriteLnFmt("{}", msg);
 }
 
+// Defined in VMManager.cpp; see AndroidWriteStagedGameIni.
+extern void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path);
+static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path);
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
@@ -282,6 +287,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     // where DataRoot points.
     std::string _szPath = GetJavaString(env, p_szpath);
     std::string _szBiosFolder = GetJavaString(env, p_szbiosfolder);
+    g_android_before_game_settings_load = &AndroidWriteStagedGameIni;
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
@@ -602,14 +608,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loginAchievements(JNIEnv *env, jclass clazz
         s_secrets_settings_interface->Save();
     }
 
-    // Achievements::Initialize is gated on EmuConfig.Achievements.Enabled —
-    // a returning user with the old default-off config might still have it
-    // off. Push Enabled=true and ApplySettings so UpdateSettings detects
-    // the change and runs Initialize for any current/future VM. Initialize
-    // reads the just-persisted Token and re-logs in on the persistent
-    // s_client, then BeginLoadGame loads the running game's achievement
-    // set.
-    Host::SetBaseBoolSettingValue("Achievements", "Enabled", true);
+    // Enabled is NOT forced on here any more. It used to be, for a returning user with an old
+    // default-off config, but it is a standard setting now (Settings.achievementsEnabled, global
+    // and per game) that the app writes at every launch and settings change, and forcing it would
+    // switch RetroAchievements on for a game the player turned it off for. ApplySettings still
+    // runs, so a game that has it on picks the new login up straight away.
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -1475,7 +1478,11 @@ public:
     // until a manual menu resume. The CPU/MTGS/MTVU threads are still parked
     // for the JIT/GS rebuild; only the audio pause edges are suppressed, and
     // the stream emits silence on underrun so there's no audible artifact.
-    explicit ScopedVMPause(bool pause_audio = true) {
+    // resume_on_destroy=false leaves the VM parked when the guard goes out of
+    // scope. Used by the disc-swap path, where Kotlin is the single resume
+    // authority and unpauses only after the caller has returned.
+    explicit ScopedVMPause(bool pause_audio = true, bool resume_on_destroy = true) {
+        m_resume_on_destroy = resume_on_destroy;
         m_was_running = (VMManager::GetState() == VMState::Running);
         m_was_paused = (VMManager::GetState() == VMState::Paused);
         if (m_was_running)
@@ -1487,18 +1494,59 @@ public:
                 m_audio_pause_suppressed = true;
                 SPU2::SetOutputPauseSuppressed(true);
             }
-            VMManager::SetPaused(true);
+            // Queue the pause onto the CPU thread instead of flipping it here.
+            // SetState(Paused) calls MTGS::WaitGS() -- and vu1Thread.WaitVU()
+            // when MTVU is on -- and both land in WorkSema::WaitForEmpty(),
+            // which supports exactly one waiter ("Multiple threads attempted to
+            // wait for empty (not currently supported)"). The EE issues its own
+            // MTGS waits continuously while emulating, so pausing from this JNI
+            // thread races it. A Debug build aborts on the assert; a Release
+            // build silently leaves the semaphore with two waiters and the EE
+            // blocks inside WaitForEmpty forever -- it never reaches a safe
+            // point, the park below times out as cpu_thread_not_parked, no state
+            // file is written, and the resumes the UI queues meanwhile never
+            // drain, so the game stays paused until the process is killed.
+            // Reproduced on both builds; turning MTVU off only removes one of
+            // the two semaphores and makes it rarer, not absent. The UI pause
+            // path (pauseVM) has always queued it this way -- only this
+            // savestate path did it inline.
+            Host::RunOnCPUThread([]() {
+                if (VMManager::HasValidVM() && VMManager::GetState() == VMState::Running)
+                    VMManager::SetPaused(true);
+            });
             if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
                 Cpu->ExitExecution();
         }
-        // A healthy VM exits Execute() within a frame of the state flip;
-        // allow a generous 3s before declaring failure.
-        for (int i = 0; i < 3000 && !s_execute_exit.load(std::memory_order_acquire); ++i)
+        // A healthy VM exits Execute() and applies the queued pause within a
+        // frame; allow a generous 3s before declaring failure.
+        //
+        // Because the pause is queued, leaving Execute() is not sufficient on
+        // its own — ParkedNow() also requires the state to have flipped, so a
+        // state op can never start while the pause is still in the queue.
+        //
+        // Keep nudging the EE out, rate-limited, exactly like the stop path
+        // does: one ExitExecution() can land in the window where runVMThread
+        // has cleared s_execute_exit but has not re-entered Execute() yet, and
+        // then nothing would ask it to leave again before the timeout.
+        for (int i = 0; i < 3000 && !ParkedNow(); ++i)
+        {
+            if ((i % 16) == 0 && !s_execute_exit.load(std::memory_order_acquire) && Cpu)
+                Cpu->ExitExecution();
             usleep(1000);
-        m_parked = s_execute_exit.load(std::memory_order_acquire) || m_was_paused;
+        }
+        m_parked = ParkedNow() || m_was_paused;
+        // A healthy park is silent; anything logged here means the CPU thread
+        // never reached a safe point and the caller must skip the state op.
+        if (!m_parked)
+        {
+            Console.Error("Failed to park the CPU thread for a state operation "
+                          "(state=%d execute_exit=%d)",
+                          static_cast<int>(VMManager::GetState()),
+                          s_execute_exit.load(std::memory_order_acquire) ? 1 : 0);
+        }
     }
     ~ScopedVMPause() {
-        if (m_was_running && !s_stop_requested.load(std::memory_order_acquire))
+        if (m_was_running && m_resume_on_destroy && !s_stop_requested.load(std::memory_order_acquire))
             VMManager::SetPaused(false);
         if (m_audio_pause_suppressed)
             SPU2::SetOutputPauseSuppressed(false);
@@ -1509,10 +1557,20 @@ public:
     bool parked() const { return m_parked; }
 
 private:
+    // Parked == the CPU thread is outside Cpu->Execute() AND the queued pause
+    // has been applied. Checking only s_execute_exit would let a state op start
+    // while the pause was still sitting in the CPU thread's queue.
+    static bool ParkedNow()
+    {
+        return s_execute_exit.load(std::memory_order_acquire) &&
+               VMManager::GetState() == VMState::Paused;
+    }
+
     bool m_was_running = false;
     bool m_was_paused = false;
     bool m_parked = false;
     bool m_audio_pause_suppressed = false;
+    bool m_resume_on_destroy = true;
 };
 
 static void LogAndroidGSSettings(const char* reason)
@@ -3268,18 +3326,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_changeDisc(JNIEnv *env, jclass clazz, jstri
         return false;
     // ChangeDisc mutates live CDVD/IOP/tray state OWNED by the CPU thread, so it
     // must run THERE, not from JNI (doing it here races the emulator and hangs).
-    // Park the CPU thread so the paused idle loop (runVMThread) drains the queue
-    // within a frame; RunOnCPUThread(block) then waits for the swap to finish.
-    // We deliberately do NOT resume here — the Kotlin caller unpauses afterward
+    // Park through the same guard the save-state path uses instead of flipping
+    // the pause from this JNI thread: SetState(Paused) runs MTGS::WaitGS() (and
+    // vu1Thread.WaitVU() under MTVU), which end in WorkSema::WaitForEmpty() — a
+    // primitive that supports exactly one waiter — so pausing here races the
+    // EE's own MTGS waits. RunOnCPUThread(block) then waits for the swap to
+    // finish. resume_on_destroy is off: the Kotlin caller unpauses afterward
     // (single resume authority), so the game runs and detects the new disc.
-    const bool was_running = (VMManager::GetState() == VMState::Running);
-    if (was_running) {
-        VMManager::SetPaused(true);
-        if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
-            Cpu->ExitExecution();
-        for (int i = 0; i < 3000 && !s_execute_exit.load(std::memory_order_acquire); ++i)
-            usleep(1000);
-    }
+    const ScopedVMPause vm_pause(/*pause_audio=*/true, /*resume_on_destroy=*/false);
+    if (!vm_pause.parked())
+        return false;
     bool ok = false;
     Host::RunOnCPUThread([&path, &ok]() {
         ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, path);
@@ -4361,6 +4417,29 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdApplyFlags(JNIEnv*, jclass,
 // next boot via UpdateGameSettingsLayer.
 static std::unique_ptr<INISettingsInterface> s_export_game_ini;
 
+using GameIniClaims = std::vector<std::pair<std::string, std::string>>;
+using GameIniEntries = std::vector<std::tuple<std::string, std::string, std::string>>;
+
+// Keys the export has to leave in the file even when the app wrote nothing for them: GameDB
+// entries the player switched off for this game. See gameIniClaim.
+static GameIniClaims s_export_claims;
+
+// While gameIniBeginStage is active the stream builds a STAGED copy instead of writing a file.
+static bool s_export_is_stage = false;
+static std::string s_export_stage_serial;
+static GameIniEntries s_export_stage_entries;
+
+// A game's per-game file, built at launch and waiting to be written. The app knows the serial
+// then, but the file is <serial>_<CRC>.ini and nothing knows the CRC until the core has read the
+// disc -- so VMManager calls AndroidWriteStagedGameIni with the name just before loading it.
+struct StagedGameIni {
+    std::string serial;
+    GameIniEntries entries;
+    GameIniClaims claims;
+};
+static std::mutex s_staged_game_ini_mutex;
+static std::optional<StagedGameIni> s_staged_game_ini;
+
 // The [sections] applyTo() owns and fully regenerates on each per-game write. We LOAD the
 // existing file and clear only these, rather than starting from a FRESH (unloaded) interface:
 // a fresh start dropped every FOREIGN key in the file, most visibly the [Patches]/[Cheats]
@@ -4381,11 +4460,14 @@ static constexpr const char* OWNED_GAME_INI_SECTIONS[] = {
     "EmuCore/Gamefixes", "EmuCore/Speedhacks", "Framerate", "MemoryCards",
     "DEV9", "DEV9/Eth", "DEV9/Eth/Hosts", "DEV9/Hdd",
     "SPU2", "SPU2/Output", "USB1",
+    // RetroAchievements' on/off is a per-game setting too (Settings.achievementsEnabled). Only
+    // that key is ever written here: the account lives in the base layer and in secrets.ini.
+    "Achievements",
 };
 
-// Open [path] as the active export interface for the gameIniPut/gameIniCommitWrite stream that
-// follows: load what's there (so foreign keys survive), then blank the sections we regenerate.
-static void BeginGameIniExport(const std::string& path) {
+// Open [path] for a per-game write: load what's there (so foreign keys survive), then blank the
+// sections we regenerate.
+static std::unique_ptr<INISettingsInterface> OpenGameIniForExport(const std::string& path) {
     auto ini = std::make_unique<INISettingsInterface>(path);
     ini->Load(); // failure just means there was no file yet, i.e. nothing to preserve
     // Per-host DNS entries live in INDEXED sections (DEV9/Eth/Hosts/Host0, Host1, ...) that can't
@@ -4397,7 +4479,101 @@ static void BeginGameIniExport(const std::string& path) {
         ini->ClearSection(sec);
     for (int i = 0, n = std::max(host_count, 8) + 8; i < n; i++)
         ini->ClearSection(fmt::format("DEV9/Eth/Hosts/Host{}", i).c_str());
-    s_export_game_ini = std::move(ini);
+    return ini;
+}
+
+// Open [path] as the active export interface for the gameIniPut/gameIniCommitWrite stream that
+// follows.
+static void BeginGameIniExport(const std::string& path) {
+    s_export_game_ini = OpenGameIniForExport(path);
+    s_export_claims.clear();
+    s_export_is_stage = false;
+    s_export_stage_serial.clear();
+    s_export_stage_entries.clear();
+}
+
+// Give each claimed key a value where the app wrote none. It has no control for some of what the
+// database sets -- the EE division rounding mode, for one -- so switching such an entry off has
+// nothing of the app's to write. What goes in is what the game would run with if the database
+// stayed out: the player's base-layer value, else the stock default. The key's PRESENCE is what
+// makes the database skip the entry (ComputePerGameOverrides); the value only has to be neutral.
+static void FillGameIniClaims(INISettingsInterface& ini, const GameIniClaims& claims) {
+    std::unique_ptr<MemorySettingsInterface> stock;
+    for (const auto& [section, key] : claims) {
+        if (ini.ContainsValue(section.c_str(), key.c_str()))
+            continue;
+        std::string value = Host::GetBaseStringSettingValue(section.c_str(), key.c_str(), "");
+        if (value.empty()) {
+            if (!stock) {
+                stock = std::make_unique<MemorySettingsInterface>();
+                Pcsx2Config defaults;
+                SettingsSaveWrapper wrapper(*stock);
+                defaults.LoadSaveCore(wrapper);
+            }
+            stock->GetStringValue(section.c_str(), key.c_str(), &value);
+        }
+        if (!value.empty())
+            ini.SetStringValue(section.c_str(), key.c_str(), value.c_str());
+        else
+            Console.WarningFmt("@@ANDROID_GAMEINI@@ no value to claim {}/{} with", section, key);
+    }
+}
+
+// Finish a per-game write: claims filled in, empty sections dropped, and the file deleted when
+// nothing is left in it (FullscreenUI parity). [what] only labels the log line.
+static bool CommitGameIniExport(INISettingsInterface& ini, const GameIniClaims& claims, const char* what) {
+    Error error;
+    bool ok = true;
+
+    FillGameIniClaims(ini, claims);
+
+    // The [Patches]/[Cheats] enable lists are preserved by loading the file instead of starting
+    // fresh; nothing to carry over here. Log what actually survives so a "my patches vanished"
+    // report can be diagnosed from an emulog instead of guesswork.
+    const size_t kept_patches = ini.GetStringList("Patches", "Enable").size();
+    const size_t kept_cheats = ini.GetStringList("Cheats", "Enable").size();
+
+    ini.RemoveEmptySections();
+    const bool empty = ini.IsEmpty();
+    if (empty) {
+        // No per-game overrides — remove the file entirely (FullscreenUI parity).
+        const std::string fn = ini.GetFileName();
+        if (FileSystem::FileExists(fn.c_str()))
+            ok = FileSystem::DeleteFilePath(fn.c_str(), &error);
+    } else {
+        ok = ini.Save(&error);
+    }
+    Console.WriteLnFmt("@@ANDROID_GAMEINI@@ {} {} patches={} cheats={} claims={}",
+        what, empty ? "removed" : "saved", kept_patches, kept_cheats, claims.size());
+    if (!ok)
+        Console.ErrorFmt("@@ANDROID_GAMEINI@@ {} failed: {}", what, error.GetDescription());
+    return ok;
+}
+
+// VMManager::UpdateGameSettingsLayer calls this with the file it is about to read. If the app
+// staged this game's settings at launch, now is the first moment the file can be named, so write
+// it before the read: that is what lets a per-game choice outrank the database from the first
+// boot, instead of only once the player has saved something in-game.
+static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path) {
+    std::optional<StagedGameIni> staged;
+    {
+        std::lock_guard lock(s_staged_game_ini_mutex);
+        if (!s_staged_game_ini)
+            return;
+        // Used once. Whatever writes the file after this (an in-game save, a reset) knows better,
+        // and a launch-time copy replayed over it on a later reload would undo it.
+        staged = std::move(s_staged_game_ini);
+        s_staged_game_ini.reset();
+    }
+    if (serial.empty() || !StringUtil::compareNoCase(staged->serial, serial)) {
+        Console.WriteLnFmt("@@ANDROID_GAMEINI@@ staged settings for {} unused, booting '{}'", staged->serial, serial);
+        return;
+    }
+
+    std::unique_ptr<INISettingsInterface> ini = OpenGameIniForExport(path);
+    for (const auto& [section, key, value] : staged->entries)
+        ini->SetStringValue(section.c_str(), key.c_str(), value.c_str());
+    CommitGameIniExport(*ini, staged->claims, "boot");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -4669,15 +4845,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWriteForSerial(JNIEnv* env, jcl
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniPut(JNIEnv* env, jclass,
                                                 jstring p_section, jstring p_key, jstring p_value) {
-    if (!s_export_game_ini)
+    if (!s_export_game_ini && !s_export_is_stage)
         return;
     const char* section = env->GetStringUTFChars(p_section, nullptr);
     const char* key = env->GetStringUTFChars(p_key, nullptr);
     const char* value = env->GetStringUTFChars(p_value, nullptr);
     // CSimpleIni is untyped string storage; the typed getters (GetBoolValue etc.)
     // parse the string back, so writing the Kotlin string repr round-trips.
-    if (section && key && value)
-        s_export_game_ini->SetStringValue(section, key, value);
+    if (section && key && value) {
+        if (s_export_is_stage)
+            s_export_stage_entries.emplace_back(section, key, value);
+        else
+            s_export_game_ini->SetStringValue(section, key, value);
+    }
     if (value) env->ReleaseStringUTFChars(p_value, value);
     if (key) env->ReleaseStringUTFChars(p_key, key);
     if (section) env->ReleaseStringUTFChars(p_section, section);
@@ -4685,33 +4865,103 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniPut(JNIEnv* env, jclass,
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniCommitWrite(JNIEnv*, jclass) {
+    if (s_export_is_stage) {
+        // Nothing to write yet: the file cannot be named before the core knows the disc CRC.
+        std::lock_guard lock(s_staged_game_ini_mutex);
+        Console.WriteLnFmt("@@ANDROID_GAMEINI@@ staged {} keys={} claims={}",
+            s_export_stage_serial, s_export_stage_entries.size(), s_export_claims.size());
+        s_staged_game_ini = StagedGameIni{std::move(s_export_stage_serial), std::move(s_export_stage_entries),
+            std::move(s_export_claims)};
+        s_export_is_stage = false;
+        s_export_stage_serial.clear();
+        s_export_stage_entries.clear();
+        s_export_claims.clear();
+        return JNI_TRUE;
+    }
     if (!s_export_game_ini)
         return JNI_FALSE;
-    Error error;
-    bool ok = true;
-
-    // The [Patches]/[Cheats] enable lists are preserved by gameIniBeginWrite loading the file
-    // instead of starting fresh; nothing to carry over here. Log what actually survives so a
-    // "my patches vanished" report can be diagnosed from an emulog instead of guesswork.
-    const size_t kept_patches = s_export_game_ini->GetStringList("Patches", "Enable").size();
-    const size_t kept_cheats = s_export_game_ini->GetStringList("Cheats", "Enable").size();
-
-    s_export_game_ini->RemoveEmptySections();
-    const bool empty = s_export_game_ini->IsEmpty();
-    if (empty) {
-        // No per-game overrides — remove the file entirely (FullscreenUI parity).
-        const std::string fn = s_export_game_ini->GetFileName();
-        if (FileSystem::FileExists(fn.c_str()))
-            ok = FileSystem::DeleteFilePath(fn.c_str(), &error);
-    } else {
-        ok = s_export_game_ini->Save(&error);
-    }
-    Console.WriteLnFmt("@@ANDROID_GAMEINI@@ commit {} patches={} cheats={}",
-        empty ? "removed" : "saved", kept_patches, kept_cheats);
+    const bool ok = CommitGameIniExport(*s_export_game_ini, s_export_claims, "commit");
     s_export_game_ini.reset();
-    if (!ok)
-        Console.ErrorFmt("@@ANDROID_GAMEINI@@ commit failed: {}", error.GetDescription());
+    s_export_claims.clear();
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+// Build a game's per-game file at launch, for the core to write when it loads it. The same
+// put/claim/commit stream as gameIniBeginWrite; see AndroidWriteStagedGameIni for why the
+// writing has to wait.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginStage(JNIEnv* env, jclass, jstring p_serial) {
+    const std::string serial = p_serial ? GetJavaString(env, p_serial) : std::string();
+    if (serial.empty())
+        return JNI_FALSE;
+    s_export_game_ini.reset();
+    s_export_claims.clear();
+    s_export_stage_entries.clear();
+    s_export_stage_serial = serial;
+    s_export_is_stage = true;
+    return JNI_TRUE;
+}
+
+// Drop whatever is staged, for a launch with nothing of its own to write.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClearStage(JNIEnv*, jclass) {
+    std::lock_guard lock(s_staged_game_ini_mutex);
+    s_staged_game_ini.reset();
+}
+
+// Keep [section]/[key] in the file being written even if the app writes nothing for it. The key's
+// presence is what tells the core the player decided that setting for this game, so this is how a
+// GameDB entry gets switched off. The value is filled in at commit (FillGameIniClaims).
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClaim(JNIEnv* env, jclass, jstring p_section, jstring p_key) {
+    if (!s_export_game_ini && !s_export_is_stage)
+        return;
+    std::string section = p_section ? GetJavaString(env, p_section) : std::string();
+    std::string key = p_key ? GetJavaString(env, p_key) : std::string();
+    if (!section.empty() && !key.empty())
+        s_export_claims.emplace_back(std::move(section), std::move(key));
+}
+
+// Re-read the running game's per-game file into the game layer, after the app rewrote it. The
+// layer is otherwise only read at boot, so the commit that follows would still apply what the
+// file said then -- values, and which database entries the player had taken back. Applies
+// nothing itself; the caller's commit does.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
+    if (!VMManager::HasValidVM())
+        return;
+    Host::RunOnCPUThread([]() { VMManager::ReloadGameSettingsLayer(); }, /*block=*/true);
+}
+
+// What the game database sets for [serial], one line per setting a per-game key can claim:
+//   name <TAB> value <TAB> flags <TAB> section/key[|section/key...]
+// flags: 'c' skipped while automatic game fixes are off, 'u' skipped while manual hardware fixes
+// are on, '-' neither. Empty when the game has no entry or sets nothing claimable.
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGameDbEntries(JNIEnv* env, jclass, jstring p_serial) {
+    std::string out;
+    const std::string serial = p_serial ? GetJavaString(env, p_serial) : std::string();
+    const GameDatabaseSchema::GameEntry* game = serial.empty() ? nullptr : GameDatabase::findGame(serial);
+    if (game) {
+        for (const GameDatabaseSchema::GameEntry::ClaimableSetting& setting : game->claimableSettings()) {
+            std::string keys;
+            for (const auto& [section, key] : setting.keys)
+                fmt::format_to(std::back_inserter(keys), "{}{}/{}", keys.empty() ? "" : "|", section, key);
+            const char* flags = setting.core ? "c" : (setting.user_hack ? "u" : "-");
+            fmt::format_to(std::back_inserter(out), "{}\t{}\t{}\t{}\n", setting.name, setting.value, flags, keys);
+        }
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+// Every settings key whose presence in a per-game file claims some database setting, one
+// "section/key" per line.
+extern "C" JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_gameDbClaimingKeys(JNIEnv* env, jclass) {
+    std::string out;
+    for (const auto& [section, key] : PerGameOverrideKeys::AllClaimingKeys())
+        fmt::format_to(std::back_inserter(out), "{}/{}\n", section, key);
+    return env->NewStringUTF(out.c_str());
 }
 
 // ---------------------------------------------------------------------------

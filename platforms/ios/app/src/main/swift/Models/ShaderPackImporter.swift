@@ -17,21 +17,18 @@ enum ShaderPackImportError: LocalizedError {
     }
 }
 
-/// Installs a shader pack under a free name in the user root, then reports what happened.
+/// Installs a shader pack into the user root under a free folder name.
 @MainActor
 final class ShaderPackImporter: ObservableObject {
     @Published private(set) var installing: Set<String> = []
     @Published private(set) var errors: [String: String] = [:]
     @Published private(set) var installedName: String?
+    @Published private(set) var installProblem: ShaderPresetFailure?
 
     var isBusy: Bool { !installing.isEmpty }
 
-    /// `named` overrides the archive's own name, for a caller whose staging file is a UUID.
-    ///
-    /// The name is returned as well as published. `installedName` is one property on a shared
-    /// importer, so two installs running at once overwrite each other's answer and a caller can
-    /// act on the wrong folder. The published copy stays for the settings row that reports the
-    /// last install; anything acting on a specific call reads the return value.
+    /// `named` replaces the archive's own name, for a staging file named by UUID. Callers use the
+    /// returned folder name, since concurrent installs overwrite `installedName`.
     @discardableResult
     func install(archiveAt source: URL, named: String? = nil) async -> String? {
         await install(source, named: named, writing: Self.extract)
@@ -40,6 +37,38 @@ final class ShaderPackImporter: ObservableObject {
     @discardableResult
     func install(folderAt source: URL) async -> String? {
         await install(source, named: nil, writing: Self.copyTree)
+    }
+
+    static let basePackURL = URL(string: "https://buildbot.libretro.com/assets/frontend/shaders_slang.zip")!
+    static let basePackBytes: Int64 = 54_000_000
+
+    func installBasePack() async {
+        let key = ShaderPresetLibrary.basePackFolderName
+        installing.insert(key)
+        errors[key] = nil
+        defer { installing.remove(key) }
+        do {
+            let staged = try await ShaderCatalogInstaller.stage(Self.basePackURL)
+            defer { try? FileManager.default.removeItem(at: staged) }
+            guard let landed = await install(archiveAt: staged, named: key) else {
+                errors[key] = errors.removeValue(forKey: staged.lastPathComponent)
+                    ?? ShaderPackImportError.notAShaderPack.localizedDescription
+                return
+            }
+            installedName = nil
+            try await Task.detached(priority: .userInitiated) { try Self.replaceBasePack(with: landed) }.value
+            installedName = key
+        } catch {
+            errors[key] = error.localizedDescription
+        }
+    }
+
+    private nonisolated static func replaceBasePack(with landed: String) throws {
+        let name = ShaderPresetLibrary.basePackFolderName
+        guard landed != name, let root = ShaderPresetLibrary.userRoot else { return }
+        let base = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.removeItem(at: base)
+        try FileManager.default.moveItem(at: root.appendingPathComponent(landed, isDirectory: true), to: base)
     }
 
     private func install(
@@ -51,14 +80,16 @@ final class ShaderPackImporter: ObservableObject {
         installing.insert(key)
         errors[key] = nil
         installedName = nil
+        installProblem = nil
         var landed: String?
         do {
-            // A full RetroArch pack is thousands of files, so this blocks for long enough
-            // to stall the settings screen if it runs on the main actor.
-            landed = try await Task.detached(priority: .userInitiated) {
+            let (name, problem) = try await Task.detached(priority: .userInitiated) {
+                // A full RetroArch pack is thousands of files, too slow for the main actor.
                 try Self.perform(source, named, writing)
             }.value
-            installedName = landed
+            landed = name
+            installedName = name
+            installProblem = problem
         } catch {
             errors[key] = error.localizedDescription
         }
@@ -70,7 +101,7 @@ final class ShaderPackImporter: ObservableObject {
         _ source: URL,
         _ named: String?,
         _ writing: @Sendable (URL, URL) throws -> Void
-    ) throws -> String {
+    ) throws -> (String, ShaderPresetFailure?) {
         guard let root = ShaderPresetLibrary.prepareUserRoots() else {
             throw ShaderPackImportError.noUserRoot
         }
@@ -85,13 +116,13 @@ final class ShaderPackImporter: ObservableObject {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
-        // A pack folder with nothing selectable in it stays in the browser forever as a
-        // dead end, so a refusal the user can read beats keeping what they handed over.
-        guard presetCount(under: destination) > 0 else {
+        let presets = presetFiles(under: destination)
+        // A folder with no presets would sit in the browser with nothing to pick, so it is refused.
+        guard !presets.isEmpty else {
             try? FileManager.default.removeItem(at: destination)
             throw ShaderPackImportError.notAShaderPack
         }
-        return name
+        return (name, problem(in: presets))
     }
 
     private nonisolated static func extract(_ source: URL, _ destination: URL) throws {
@@ -109,8 +140,7 @@ final class ShaderPackImporter: ObservableObject {
         }
     }
 
-    /// Copied as it stands, because a .slangp names its stages by relative path and the
-    /// tree is therefore part of the pack rather than an arrangement of it.
+    /// Copied as is, because a .slangp names its stages by relative path.
     private nonisolated static func copyTree(_ source: URL, _ destination: URL) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }
@@ -128,7 +158,7 @@ final class ShaderPackImporter: ObservableObject {
 
     private nonisolated static func readableName(_ source: URL) -> String {
         var name = source.lastPathComponent
-        if name.lowercased().hasSuffix(".zip") {
+        while name.lowercased().hasSuffix(".zip") {
             name = String(name.dropLast(4))
         }
         return sanitised(name)
@@ -142,16 +172,30 @@ final class ShaderPackImporter: ObservableObject {
         return cleaned.isEmpty ? "Shader Pack" : cleaned
     }
 
-    private nonisolated static func presetCount(under directory: URL) -> Int {
+    private nonisolated static func presetFiles(under directory: URL) -> [URL] {
         guard let walk = FileManager.default.enumerator(
             at: directory, includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]) else { return 0 }
-        var found = 0
+            options: [.skipsHiddenFiles]) else { return [] }
+        var found: [URL] = []
         while let url = walk.nextObject() as? URL {
             if url.pathExtension.lowercased() == ShaderPresetLibrary.presetExtension {
-                found += 1
+                found.append(url)
             }
         }
         return found
+    }
+
+    /// A pack that fails here stays installed, since it may only need another pack beside it.
+    private nonisolated static func problem(in presets: [URL]) -> ShaderPresetFailure? {
+        var failure: ShaderPresetFailure?
+        for preset in presets.prefix(3) {
+            do {
+                _ = try ARMSX2Bridge.shaderPresetParameters(atPath: preset.path)
+                return nil
+            } catch {
+                failure = ShaderPresetFailure(error, preset: preset)
+            }
+        }
+        return failure
     }
 }

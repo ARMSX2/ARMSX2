@@ -146,9 +146,7 @@ enum SkinManifestImporter {
     /// callers parse strictly first and only fall back on failure. Nothing below
     /// 0x20 can be a UTF-8 continuation byte or half of a "\t" pair, so escapes
     /// and multi-byte text are left alone.
-    ///
-    /// The extractor needs this before Swift ever sees the file, so the same
-    /// walk exists as ARMSX2RepairedJSONData in ARMSX2Bridge.mm. Keep them level.
+    /// Manifest sanitizer for hand-edited JSON files containing unescaped control bytes.
     static func repairedJSON(_ data: Data) -> Data? {
         var out = Data(capacity: data.count)
         var inString = false

@@ -38,6 +38,7 @@ enum class SettingsScope { Global, Game }
 
 object ConfigStore {
     private const val KEY_GLOBAL = "config.global"
+    private const val KEY_ACHIEVEMENTS_MIGRATED = "config.migrated.achievementsToSettings"
     private const val KEY_BLEND_BASIC_MIGRATED = "config.migrated.blendBasic"
     // One-time seed of the (now per-game) renderer/upscale fields from the legacy
     // global prefs, so updating doesn't reset everyone's backend/resolution.
@@ -248,6 +249,29 @@ object ConfigStore {
      * mode 7 self-disables on any device where the performance tier cannot be resolved or is too
      * narrow to hold the emu threads, so the worst case is the behaviour they already had.
      */
+    /**
+     * One-time: carry the RetroAchievements options over from the native config into global
+     * settings, where they now live so a game can have its own (Settings.achievementsHardcore and
+     * friends). They used to be written straight into PCSX2-Android.ini by the RetroAchievements
+     * screen, so that file is the only record of anything a player already changed; without this
+     * the new defaults would quietly undo it at the next launch. Only [Achievements] keys are read
+     * -- the rest of that file holds whatever the last game ran with, not global choices.
+     */
+    fun migrateAchievementsToSettings() {
+        if (MainActivityRuntime.prefs.getBoolean(KEY_ACHIEVEMENTS_MIGRATED, false)) return
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_ACHIEVEMENTS_MIGRATED, true).apply()
+        // A fresh install has nothing to carry over: reconcileReusedFolder already seeded it from
+        // the folder's INI (readFromIni reads these keys too), or the defaults are right.
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
+        val root = MainActivityRuntime.currentInitDataRoot()?.takeIf { it.isNotBlank() } ?: return
+        val ini = File(root, "PCSX2-Android.ini")
+        if (!ini.exists() || ini.length() == 0L) return
+        runCatching {
+            val ra = parseIni(ini.readText()).filterKeys { it.startsWith("Achievements/") }
+            if (ra.isNotEmpty()) saveGlobal(loadGlobal().readFromIni(ra))
+        }
+    }
+
     fun migrateAffinityPerfCores(context: android.content.Context) {
         if (MainActivityRuntime.prefs.getBoolean(KEY_AFFINITY_PERF_CORES_MIGRATED, false)) return
         MainActivityRuntime.prefs.edit().putBoolean(KEY_AFFINITY_PERF_CORES_MIGRATED, true).apply()

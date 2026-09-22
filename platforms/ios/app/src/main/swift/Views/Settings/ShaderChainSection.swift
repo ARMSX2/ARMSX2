@@ -10,8 +10,7 @@ private struct ShaderPackPickerSource: Identifiable {
     var id: Bool { isFolder }
 }
 
-/// Persistence arrives from the caller, so these rows can serve the in-game pause surface
-/// later without knowing which settings tier is writing underneath them.
+/// Persistence comes from the caller, so Settings and the pause card share these rows.
 struct ShaderChainSection: View {
     @Binding var enabled: Bool
     @Binding var presetRef: String
@@ -72,6 +71,10 @@ struct ShaderChainSection: View {
                 await params.load(token: presetRef)
             }
 
+            if let failure = params.loadFailure {
+                problem(failure)
+            }
+
             if !presetRef.isEmpty {
                 Toggle(localized("Shaders"), isOn: $enabled)
             }
@@ -93,6 +96,9 @@ struct ShaderChainSection: View {
                 } label: {
                     Label(localized("From a Folder"), systemImage: "folder")
                 }
+                Button(action: getBasePack) {
+                    basePackLabel
+                }
             } label: {
                 Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
             }
@@ -101,14 +107,22 @@ struct ShaderChainSection: View {
                 picker(for: source)
             }
 
-            if importer.isBusy {
+            if importer.installing.contains(ShaderPresetLibrary.basePackFolderName) {
+                ProgressView(localized("Downloading RetroArch Slang Shaders..."))
+            } else if importer.isBusy {
                 ProgressView(localized("Installing..."))
             }
 
             if let installed = importer.installedName {
-                Text(String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
+                Text(installed == ShaderPresetLibrary.basePackFolderName
+                     ? localized("RetroArch Slang Shaders are installed.")
+                     : String(format: localized("Installed %@. Pick a preset from it under Preset."), installed))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let failure = importer.installProblem, params.loadFailure == nil {
+                problem(failure)
             }
 
             ForEach(importer.errors.sorted { $0.key < $1.key }, id: \.key) { entry in
@@ -146,9 +160,8 @@ struct ShaderChainSection: View {
                 } label: {
                     Label(localized("Save as New Preset"), systemImage: "square.and.arrow.down")
                 }
-                // Item-bound, not isPresented: the host holds an observed SettingsStore, so an
-                // isPresented content closure belongs to a body that re-runs on every settings
-                // change and the name field would lose the keyboard on each keystroke.
+                // Item-bound: an isPresented sheet re-runs with the host's settings body and drops
+                // the keyboard on each keystroke.
                 .sheet(item: $saveRequest) { request in
                     ShaderPresetSaveSheet(request: request, localized: localized) { name in
                         Task { if let token = await params.save(as: name) { select(token) } }
@@ -179,7 +192,7 @@ struct ShaderChainSection: View {
     @ViewBuilder
     private func parameterRow(_ param: ShaderParam) -> some View {
         if param.isAdjustable {
-            // setValue is the clamp that reaches the store: NaN lands on the author's initial.
+            // setValue clamps before storing, and NaN becomes the author's initial.
             NumberRow(
                 param.label,
                 value: Binding(
@@ -211,14 +224,44 @@ struct ShaderChainSection: View {
         presetRef = token
     }
 
-    private var presetName: String {
-        guard let separator = presetRef.firstIndex(of: ShaderPresetLibrary.markerSeparator) else {
-            return localized("None")
+    private func getBasePack() {
+        Task {
+            await importer.installBasePack()
+            ARMSX2Bridge.retryShaderChain()
+            await params.load(token: presetRef)
         }
-        let relative = presetRef[presetRef.index(after: separator)...]
-        let name = URL(fileURLWithPath: String(relative))
-            .deletingPathExtension().lastPathComponent
-        return name.isEmpty ? localized("None") : name
+    }
+
+    private var basePackLabel: some View {
+        Label {
+            Text(localized("RetroArch Slang Shaders") + " (" + ShaderPackImporter.basePackBytes.formatted(.byteCount(style: .file)) + ")")
+        } icon: {
+            Image(systemName: ShaderPresetLibrary.hasBasePack ? "checkmark.circle" : "arrow.down.circle")
+        }
+    }
+
+    @ViewBuilder
+    private func problem(_ failure: ShaderPresetFailure) -> some View {
+        switch failure {
+        case .needsBasePack:
+            Text(localized("It needs RetroArch Slang Shaders."))
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Button(action: getBasePack) { basePackLabel }
+                .disabled(importer.isBusy)
+        case .missing(let file):
+            Text(String(format: localized("It can't load because %@ is missing or broken."), file))
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .needsReimport:
+            Text(localized("It needs its shader pack installed again."))
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var presetName: String {
+        ShaderPresetLibrary.displayName(for: presetRef) ?? localized("None")
     }
 
     @ViewBuilder

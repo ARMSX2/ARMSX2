@@ -54,15 +54,7 @@ struct PerGameShaderSection: View {
         }
     }
 
-    /// The tail of the token, which is the file name a player picked it by. Four lines the global
-    /// section also carries, copied rather than shared so its fenced initializer stays shut.
     private var presetName: String {
-        guard let separator = presetRef.firstIndex(of: ShaderPresetLibrary.markerSeparator) else {
-            return settings.localized("None")
-        }
-        let relative = presetRef[presetRef.index(after: separator)...]
-        let name = URL(fileURLWithPath: String(relative))
-            .deletingPathExtension().lastPathComponent
-        return name.isEmpty ? settings.localized("None") : name
+        ShaderPresetLibrary.displayName(for: presetRef) ?? settings.localized("None")
     }
 }

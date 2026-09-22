@@ -23,8 +23,30 @@ enum ShaderParamsError: LocalizedError {
     }
 }
 
-/// One tweakable value a `.slangp` declares. Every number here is the shader author's, so
-/// every number is treated as hostile: absent, non-finite, inverted and zero-step all occur.
+/// What stops a preset loading, read off the path librashader quotes in its error.
+enum ShaderPresetFailure: Equatable, Sendable {
+    case needsBasePack
+    case needsReimport
+    case missing(String)
+
+    init(_ error: Error, preset: URL) {
+        let quoted = error.localizedDescription.components(separatedBy: "\"")
+        let path = quoted.count > 2 && quoted[1].hasPrefix("/") ? quoted[1] : preset.path
+        let base = "/" + ShaderPresetLibrary.basePackFolderName + "/"
+        // librashader keeps ../ in the quoted path, and on a device it starts with /private/var.
+        let bare = path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path
+        if path.contains("/../"),
+           [path, bare].allSatisfy({ ShaderPresetLibrary.token(for: URL(fileURLWithPath: $0).standardized) == nil }) {
+            self = .needsReimport
+        } else {
+            self = path.contains(base) && !ShaderPresetLibrary.hasBasePack
+                ? .needsBasePack : .missing((path as NSString).lastPathComponent)
+        }
+    }
+}
+
+/// One tweakable value a `.slangp` declares. Its numbers can be missing, non-finite, inverted
+/// or zero-step, so each one is checked before use.
 struct ShaderParam: Identifiable, Hashable, Sendable {
     let name: String
     let description: String
@@ -36,13 +58,12 @@ struct ShaderParam: Identifiable, Hashable, Sendable {
     var id: String { name }
     var label: String { description.isEmpty ? name : description }
 
-    /// Whether the author left any room to move, and the only thing inferred about a
-    /// parameter's role. Do not "improve" this by reading the name or the description: stock
-    /// packs name real sliders like headings, so any such rule hides a working control.
+    /// Whether the range allows movement. Names and descriptions are not read, since stock packs
+    /// give working sliders heading-like names.
     var isAdjustable: Bool { maximum > minimum }
 
-    /// What a control actually moves by. A zero, negative or wider-than-the-range step is
-    /// ordinary rather than broken, and RetroArch reads one as "no increment declared" too.
+    /// The step a control moves by. A zero, negative or wider-than-range step counts as none, as in
+    /// RetroArch, and moves by a hundredth of the range.
     var increment: Float {
         let span = maximum - minimum
         guard span > 0 else { return 0 }
@@ -90,35 +111,50 @@ extension ShaderParam: Decodable {
     }
 }
 
-/// A preset's parameters, the user's overrides on them, and the two directions those travel:
-/// down to the running chain, and out to a saved preset of the user's own.
+/// A preset's parameters and the user's overrides, pushed to the running chain and saved as presets.
 @MainActor
 final class ShaderParams: ObservableObject {
     @Published private(set) var params: [ShaderParam] = []
     @Published private(set) var overrides: [String: Float] = [:]
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
+    @Published private(set) var loadFailure: ShaderPresetFailure?
 
     nonisolated static let section = "EmuCore/GS"
     nonisolated static let key = "ShaderChainParams"
     nonisolated static let invariant = Locale(identifier: "en_US_POSIX")
 
     private var token = ""
+    private var generation = 0
 
     var hasOverrides: Bool { !overrides.isEmpty }
 
     func load(token newToken: String) async {
+        generation += 1
+        let current = generation
         token = newToken
         errorText = nil
+        loadFailure = nil
+        params = []
         guard let url = ShaderPresetLibrary.resolve(newToken) else {
-            params = []
             overrides = [:]
+            isLoading = false
             return
         }
         overrides = Self.stored()[newToken] ?? [:]
         isLoading = true
-        params = await Task.detached(priority: .userInitiated) { Self.read(at: url) }.value
+        let result = await Task.detached(priority: .userInitiated) { Result { try Self.read(at: url) } }.value
+        guard current == generation else { return }
         isLoading = false
+        switch result {
+        case .success(let decoded):
+            params = decoded
+            if let failure = ARMSX2Bridge.shaderChainError(forPreset: url.path) {
+                loadFailure = ShaderPresetFailure(failure, preset: url)
+            }
+        case .failure(let error):
+            loadFailure = ShaderPresetFailure(error, preset: url)
+        }
         pushEffective()
     }
 
@@ -171,8 +207,7 @@ final class ShaderParams: ObservableObject {
         }
     }
 
-    /// Sends EVERY parameter's effective value. librashader has no unset call, so a name
-    /// dropped from the map would leave the chain on whatever was pushed last.
+    /// Sends every parameter's effective value, since librashader has no call to unset one.
     private func pushEffective() {
         guard !params.isEmpty, let url = ShaderPresetLibrary.resolve(token) else { return }
         var effective: [String: NSNumber] = [:]
@@ -183,12 +218,9 @@ final class ShaderParams: ObservableObject {
         ARMSX2Bridge.setShaderChainParameters(effective, forPreset: url.path)
     }
 
-    /// The saved overrides for a preset, pushed without a `ShaderParams` to push them: every
-    /// other push happens because a shader screen is open, and a cold launch opens none. Only
-    /// the overrides go down, because a chain built from the preset file already holds that
-    /// preset's number for every name it is not told about, and reading the file here to say
-    /// so again would put a librashader parse on the launch path.
-    /// nonisolated so the per-game boot path can push before bootISO, without hopping actors.
+    /// Pushes a preset's saved overrides with no shader screen open, at launch and per-game boot.
+    /// Only overrides go down; a new chain already holds the preset's own values. nonisolated so
+    /// the per-game boot path can call it before bootISO.
     nonisolated static func pushStored(token: String) {
         guard let url = ShaderPresetLibrary.resolve(token) else { return }
         var values: [String: NSNumber] = [:]
@@ -220,9 +252,9 @@ final class ShaderParams: ObservableObject {
         return decoded
     }
 
-    private nonisolated static func read(at url: URL) -> [ShaderParam] {
-        guard let json = ARMSX2Bridge.shaderPresetParameters(atPath: url.path),
-              let data = json.data(using: .utf8),
+    private nonisolated static func read(at url: URL) throws -> [ShaderParam] {
+        let json = try ARMSX2Bridge.shaderPresetParameters(atPath: url.path)
+        guard let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([ShaderParam].self, from: data) else {
             return []
         }
@@ -231,9 +263,8 @@ final class ShaderParams: ObservableObject {
 
     // MARK: - Saving
 
-    /// A RetroArch simple preset: a reference to the base plus the changed values. Reading one
-    /// back reports those values as each parameter's initial, so Reset on a saved preset means
-    /// "back to what I saved" rather than back to the base's own numbers.
+    /// A RetroArch simple preset: a #reference to the base plus the changed values. Those read back
+    /// as each parameter's initial, so Reset on a saved preset returns to the saved value.
     private static func presetText(
         base: URL, params: [ShaderParam], overrides: [String: Float]
     ) -> String {
@@ -245,8 +276,8 @@ final class ShaderParams: ObservableObject {
         return text
     }
 
-    /// Relative while the base sits in the same Documents root, so the pair survives the
-    /// container UUID moving. A bundled base gets a path, which launch re-roots after a reinstall.
+    /// Relative when the base is under the user root, so the pair survives a new container UUID.
+    /// A bundled base gets an absolute path, which launch re-roots after a reinstall.
     private static func reference(to base: URL) -> String {
         let target = base.standardizedFileURL
         guard let root = ShaderPresetLibrary.userRoot?.standardizedFileURL,
@@ -271,8 +302,7 @@ final class ShaderParams: ObservableObject {
         guard url.deletingLastPathComponent().path == root.path else {
             throw ShaderParamsError.noName
         }
-        // Saving onto the base leaves a preset that references itself, and the sheet
-        // pre-fills the base's name, so the default is what walks into it.
+        // The sheet pre-fills the base's name, and saving onto the base would reference itself.
         guard url.path != base.standardizedFileURL.path else {
             throw ShaderParamsError.wouldOverwriteBase
         }

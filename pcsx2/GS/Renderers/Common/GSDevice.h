@@ -1685,8 +1685,7 @@ protected:
 	GSTexture* m_mad = nullptr;
 	GSTexture* m_target_tmp = nullptr;
 	GSTexture* m_current = nullptr;
-	/// Whether a chain is loaded in the backend, so ApplyShaderChain can free it on the
-	/// frame the player turns shaders off rather than polling for it.
+	/// Whether the backend holds a chain, so ApplyShaderChain knows there is one to free.
 	bool m_shader_chain_loaded = false;
 	GSTexture* m_cas = nullptr;
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
@@ -1725,10 +1724,8 @@ protected:
 	/// the Vulkan/OpenGL devices override it, everything else keeps the no-op.
 	virtual bool DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex) { return false; }
 
-	/// Free whatever the chain is holding. A loaded chain owns a render target and a
-	/// pipeline per pass and the collection runs to forty of them, so leaving it resident
-	/// after the player turns shaders off is the memory that matters on a handheld. Same
-	/// override rule as above: only the librashader-capable backends implement it.
+	/// Frees what the chain holds, a render target and a pipeline per pass. Only the
+	/// librashader backends implement it.
 	virtual void ReleaseShaderChain() {}
 
 	/// Generation of the parameter-override store, bumped on every SetShaderChainParams.
@@ -1741,6 +1738,12 @@ protected:
 	/// (and leaving [out] alone) when the store holds another preset's values or none at
 	/// all. Takes the lock, so call it only once the generation says something changed.
 	static bool GetShaderChainParams(const std::string& preset, std::vector<std::pair<std::string, float>>* out);
+
+	/// Bumped by RetryShaderChain; a backend that latched a failed preset tries it again once it moves.
+	static u64 GetShaderChainRetry();
+
+	/// Records why the chain built for [preset] failed; an empty preset clears it.
+	static void SetShaderChainError(std::string preset, std::string message);
 
 	/// Resolves CAS shader includes for the specified source.
 	static bool GetCASShaderSource(std::string* source);
@@ -1842,6 +1845,12 @@ public:
 	/// moved on to preset B, which would otherwise silently apply A's values to B's
 	/// same-named parameters.
 	static void SetShaderChainParams(std::string preset, std::vector<std::pair<std::string, float>> params);
+
+	/// Asks the backend to try a preset that failed to load once more.
+	static void RetryShaderChain();
+
+	/// Copies librashader's message into [message] when the last chain built for [preset] failed.
+	static bool GetShaderChainError(const std::string& preset, std::string* message);
 
 	/// Parses the configured fullscreen mode into its components (width * height @ refresh Hz)
 	static bool GetRequestedExclusiveFullscreenMode(u32* width, u32* height, float* refresh_rate);

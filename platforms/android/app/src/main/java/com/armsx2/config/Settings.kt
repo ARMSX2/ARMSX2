@@ -198,6 +198,35 @@ data class Settings(
     /** EmuCore/HostFs — host: filesystem access in the VM, for ELF/homebrew and mods
      *  (e.g. modded Persona 3 FES). Per-game capable; applies on the next game boot. */
     val hostFs: Boolean = false,
+    /** Achievements/Enabled — RetroAchievements. A standard setting so it can differ per game: off
+     *  globally and on for the games you want it in, or the other way round. The core starts and
+     *  stops RetroAchievements itself when a game's value differs (Achievements::UpdateSettings).
+     *  On by default, matching the native first-run seed and the login, which both switch it on. */
+    val achievementsEnabled: Boolean = true,
+    /** The rest of RetroAchievements' own options, the [Achievements] section the RetroAchievements
+     *  screen and the in-game menu's 🏆 tab edit. Standard settings like [achievementsEnabled], so
+     *  what is chosen for a game applies to that game and outranks the global value; they used to
+     *  be written straight into the global native config from wherever they were changed.
+     *  Defaults are Pcsx2Config::AchievementsOptions'. Hardcore still only engages from a clean
+     *  boot (Achievements::UpdateSettings defers it), which the hardcore switch handles. The
+     *  positions are the core's enum values: OsdOverlayPos (TopLeft = 1) for notifications,
+     *  AchievementOverlayPosition (TopLeft = 0) for the overlay. */
+    val achievementsHardcore: Boolean = false,
+    val achievementsNotifications: Boolean = true,
+    val achievementsLeaderboardNotifications: Boolean = true,
+    val achievementsOverlays: Boolean = true,
+    val achievementsLbOverlays: Boolean = true,
+    val achievementsSoundEffects: Boolean = true,
+    val achievementsEncoreMode: Boolean = false,
+    val achievementsSpectatorMode: Boolean = false,
+    val achievementsUnofficialTestMode: Boolean = false,
+    val achievementsNotificationsDuration: Int = 5,
+    val achievementsLeaderboardsDuration: Int = 10,
+    val achievementsNotificationPosition: Int = 1,
+    val achievementsOverlayPosition: Int = 8,
+    /** Achievements/NotificationScale — size of the achievement popups and in-game indicators, as a
+     *  percentage of the stock layout (50..250). The stock size was hard to read on a handheld. */
+    val achievementsNotificationScale: Int = 100,
     /** EmuCore/EnablePINE — the IPC server external tools drive the emulator through
      *  (read/write guest memory, savestates, GS dumps). On Android it listens on loopback
      *  TCP, so it is reachable from a workstation only after `adb forward`; nothing outside
@@ -894,6 +923,21 @@ data class Settings(
         put("EmuCore", "EnableNoInterlacingPatches", "bool", enableNoInterlacingPatches.toString())
         put("EmuCore", "EnableFastBoot", "bool", enableFastBoot.toString())
         put("EmuCore", "HostFs", "bool", hostFs.toString())
+        put("Achievements", "Enabled", "bool", achievementsEnabled.toString())
+        put("Achievements", "ChallengeMode", "bool", achievementsHardcore.toString())
+        put("Achievements", "Notifications", "bool", achievementsNotifications.toString())
+        put("Achievements", "LeaderboardNotifications", "bool", achievementsLeaderboardNotifications.toString())
+        put("Achievements", "Overlays", "bool", achievementsOverlays.toString())
+        put("Achievements", "LBOverlays", "bool", achievementsLbOverlays.toString())
+        put("Achievements", "SoundEffects", "bool", achievementsSoundEffects.toString())
+        put("Achievements", "EncoreMode", "bool", achievementsEncoreMode.toString())
+        put("Achievements", "SpectatorMode", "bool", achievementsSpectatorMode.toString())
+        put("Achievements", "UnofficialTestMode", "bool", achievementsUnofficialTestMode.toString())
+        put("Achievements", "NotificationsDuration", "int", achievementsNotificationsDuration.coerceIn(3, 30).toString())
+        put("Achievements", "LeaderboardsDuration", "int", achievementsLeaderboardsDuration.coerceIn(3, 30).toString())
+        put("Achievements", "NotificationPosition", "int", achievementsNotificationPosition.toString())
+        put("Achievements", "OverlayPosition", "int", achievementsOverlayPosition.toString())
+        put("Achievements", "NotificationScale", "int", achievementsNotificationScale.coerceIn(50, 250).toString())
         // VMManager::ReloadPINE compares these against the live server and starts, stops or
         // rebinds it, so a commit is enough — no game restart.
         put("EmuCore", "EnablePINE", "bool", pineEnabled.toString())
@@ -1128,6 +1172,21 @@ data class Settings(
             enableNoInterlacingPatches = boolAt("EmuCore/EnableNoInterlacingPatches") ?: this.enableNoInterlacingPatches,
             enableFastBoot = boolAt("EmuCore/EnableFastBoot") ?: this.enableFastBoot,
             hostFs = boolAt("EmuCore/HostFs") ?: this.hostFs,
+            achievementsEnabled = boolAt("Achievements/Enabled") ?: this.achievementsEnabled,
+            achievementsHardcore = boolAt("Achievements/ChallengeMode") ?: this.achievementsHardcore,
+            achievementsNotifications = boolAt("Achievements/Notifications") ?: this.achievementsNotifications,
+            achievementsLeaderboardNotifications = boolAt("Achievements/LeaderboardNotifications") ?: this.achievementsLeaderboardNotifications,
+            achievementsOverlays = boolAt("Achievements/Overlays") ?: this.achievementsOverlays,
+            achievementsLbOverlays = boolAt("Achievements/LBOverlays") ?: this.achievementsLbOverlays,
+            achievementsSoundEffects = boolAt("Achievements/SoundEffects") ?: this.achievementsSoundEffects,
+            achievementsEncoreMode = boolAt("Achievements/EncoreMode") ?: this.achievementsEncoreMode,
+            achievementsSpectatorMode = boolAt("Achievements/SpectatorMode") ?: this.achievementsSpectatorMode,
+            achievementsUnofficialTestMode = boolAt("Achievements/UnofficialTestMode") ?: this.achievementsUnofficialTestMode,
+            achievementsNotificationsDuration = intAt("Achievements/NotificationsDuration") ?: this.achievementsNotificationsDuration,
+            achievementsLeaderboardsDuration = intAt("Achievements/LeaderboardsDuration") ?: this.achievementsLeaderboardsDuration,
+            achievementsNotificationPosition = intAt("Achievements/NotificationPosition") ?: this.achievementsNotificationPosition,
+            achievementsOverlayPosition = intAt("Achievements/OverlayPosition") ?: this.achievementsOverlayPosition,
+            achievementsNotificationScale = intAt("Achievements/NotificationScale") ?: this.achievementsNotificationScale,
             pineEnabled = boolAt("EmuCore/EnablePINE") ?: this.pineEnabled,
             pineSlot = intAt("EmuCore/PINESlot") ?: this.pineSlot,
             enableGameFixes = boolAt("EmuCore/EnableGameFixes") ?: this.enableGameFixes,
@@ -1370,49 +1429,86 @@ data class Settings(
         )
     }
 
-    /** Upstream-style per-game export (mirrors PCSX2's FullscreenUI): write only
-     *  the keys that differ from [global] into the running game's
-     *  gamesettings/<serial>_<CRC>.ini, so the on-disk layer is sparse and
-     *  portable (a later global tweak still reaches the game for keys it didn't
-     *  override). Reuses applyTo's exact field→key mapping via [emitSink]: the
-     *  global pass captures a baseline, the effective pass writes the diff. The
-     *  running game already reflects the change live, so the native commit does
-     *  not reload — the INI applies as the game layer on the next boot. No-op
-     *  when no VM is running. */
-    fun writeGameSettingsIni(global: Settings, serial: String? = null) {
-        // Baseline: global's persisted keys. applyTo early-returns before the
-        // live pokes/commit while emitSink is set, so nothing touches the VM.
-        val baseline = HashMap<String, String>()
-        emitSink = { section, key, _, value -> baseline["$section$key"] = value }
-        try {
-            global.applyTo()
-        } finally {
-            emitSink = null
+    /** Upstream-style per-game export (mirrors PCSX2's FullscreenUI): write the keys that
+     *  differ from [global] into the game's gamesettings/<serial>_<CRC>.ini, so the on-disk
+     *  layer is sparse and portable (a later global tweak still reaches the game for keys it
+     *  didn't override). Reuses applyTo's exact field→key mapping via [emitSink]: the global
+     *  pass captures a baseline, the effective pass writes the diff.
+     *
+     *  Also written, even where they equal global: every key the game database contends that
+     *  [claimsFor]'s own settings set, and the keys of the database entries switched off for it
+     *  (GameDbOverrides). Presence in this file is how the core tells a per-game choice from an
+     *  inherited one, and only a per-game choice outranks the database. Pass [claimsFor]
+     *  whenever the game is known; without it the file carries only the diff.
+     *
+     *  With a running VM the target is the current game; with no VM, [serial]'s existing file.
+     *  No-op when there is neither. */
+    fun writeGameSettingsIni(global: Settings, serial: String? = null, claimsFor: String? = serial) {
+        synchronized(gameIniExportLock) {
+            // With a running VM the target is the current game (gameIniBeginWrite). With no VM — a
+            // per-game Reset done from the library — pass [serial] to locate the file directly;
+            // false there means no stale override file exists, so there is nothing to rewrite.
+            val began = if (serial == null) NativeApp.gameIniBeginWrite()
+                        else NativeApp.gameIniBeginWriteForSerial(serial)
+            if (!began) return
+            streamGameSettingsIni(global, claimsFor)
+            NativeApp.gameIniCommitWrite()
         }
-        // With a running VM the target is the current game (gameIniBeginWrite). With no VM — a
-        // per-game Reset done from the library — pass [serial] to locate the file directly; false
-        // there means no stale override file exists, so there is nothing to rewrite.
-        val began = if (serial == null) NativeApp.gameIniBeginWrite()
-                    else NativeApp.gameIniBeginWriteForSerial(serial)
-        if (!began) return
+    }
+
+    /** [writeGameSettingsIni] for a game about to boot. Its file cannot be named yet, because the
+     *  name carries the disc CRC, so the native side holds the result and writes it just before
+     *  the core loads the file (VMManager::UpdateGameSettingsLayer). Without this, a game whose
+     *  settings were only ever changed from the library had no file at boot, and the game
+     *  database overwrote every one of those settings it also sets. */
+    fun stageGameSettingsIni(global: Settings, serial: String) {
+        synchronized(gameIniExportLock) {
+            if (!NativeApp.gameIniBeginStage(serial)) return
+            streamGameSettingsIni(global, serial)
+            NativeApp.gameIniCommitWrite()
+        }
+    }
+
+    private fun streamGameSettingsIni(global: Settings, claimsFor: String?) {
+        // applyTo early-returns before the live pokes/commit while a sink is set, so neither pass
+        // touches the VM.
+        val baseline = global.emittedKeys()
+        val effective = emittedKeys()
         // What outranks the GameDB is key presence in the game layer
         // (ComputePerGameOverrides), so VU1's group is written even where its values match
-        // global's.
-        val forcedKeys: Set<String> = if (vu1ClampMode != global.vu1ClampMode)
-            setOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
-        else emptySet()
-        // Effective pass: stream only the keys that differ from the baseline.
-        emitSink = { section, key, _, value ->
-            if (baseline["$section$key"] != value ||
-                (section == "EmuCore/CPU/Recompiler" && key in forcedKeys))
-                NativeApp.gameIniPut(section, key, value)
+        // global's...
+        val forced = HashSet<String>()
+        if (vu1ClampMode != global.vu1ClampMode)
+            listOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
+                .mapTo(forced) { "EmuCore/CPU/Recompiler/$it" }
+        // ...and so is everything the game's own settings and switched-off entries claim.
+        val claims = runCatching { GameDbOverrides.claimsFor(claimsFor, this, global, effective) }
+            .getOrDefault(GameDbOverrides.Claims.NONE)
+        forced.addAll(claims.keys)
+        for ((id, value) in effective) {
+            if (baseline[id] == value && id !in forced) continue
+            val cut = id.lastIndexOf('/')
+            NativeApp.gameIniPut(id.substring(0, cut), id.substring(cut + 1), value)
         }
+        // Some switched-off entries have no setting in this app (the EE division rounding mode,
+        // for one), so nothing above wrote their key. The native side fills those in.
+        for (id in claims.switchedOffKeys) {
+            val cut = id.lastIndexOf('/')
+            NativeApp.gameIniClaim(id.substring(0, cut), id.substring(cut + 1))
+        }
+    }
+
+    /** Every key [applyTo] persists, as "section/key" to value, without writing any of them. */
+    internal fun emittedKeys(): LinkedHashMap<String, String> {
+        val out = LinkedHashMap<String, String>()
+        val outer = emitSink
+        emitSink = { section, key, _, value -> out["$section/$key"] = value }
         try {
             applyTo()
         } finally {
-            emitSink = null
+            emitSink = outer
         }
-        NativeApp.gameIniCommitWrite()
+        return out
     }
 
     /** Writes every EmuCore/GS key (display + renderer + hardware/upscaling
@@ -1617,7 +1713,7 @@ data class Settings(
 
     /** True when any hardware/upscaling fix is non-default — used to auto-enable
      *  the UserHacks master so individual hacks aren't silently masked off. */
-    private fun anyUserHackEnabled(): Boolean =
+    internal fun anyUserHackEnabled(): Boolean =
         manualUserHacks ||
             autoFlush != 0 || halfPixelOffset != 0 || limit24BitDepth != 0 ||
             textureInsideRt != 0 || nativeScaling != 0 || roundSprite != 0 ||
@@ -1764,6 +1860,21 @@ data class Settings(
         put("enableNoInterlacingPatches", enableNoInterlacingPatches)
         put("enableFastBoot", enableFastBoot)
         put("hostFs", hostFs)
+        put("achievementsEnabled", achievementsEnabled)
+        put("achievementsHardcore", achievementsHardcore)
+        put("achievementsNotifications", achievementsNotifications)
+        put("achievementsLeaderboardNotifications", achievementsLeaderboardNotifications)
+        put("achievementsOverlays", achievementsOverlays)
+        put("achievementsLbOverlays", achievementsLbOverlays)
+        put("achievementsSoundEffects", achievementsSoundEffects)
+        put("achievementsEncoreMode", achievementsEncoreMode)
+        put("achievementsSpectatorMode", achievementsSpectatorMode)
+        put("achievementsUnofficialTestMode", achievementsUnofficialTestMode)
+        put("achievementsNotificationsDuration", achievementsNotificationsDuration)
+        put("achievementsLeaderboardsDuration", achievementsLeaderboardsDuration)
+        put("achievementsNotificationPosition", achievementsNotificationPosition)
+        put("achievementsOverlayPosition", achievementsOverlayPosition)
+        put("achievementsNotificationScale", achievementsNotificationScale)
         put("pineEnabled", pineEnabled)
         put("pineSlot", pineSlot)
         put("enableGameFixes", enableGameFixes)
@@ -1961,11 +2072,28 @@ data class Settings(
 
     companion object {
         /** When non-null, [put] routes persisted-key emits here instead of the
-         *  native base layer. Set transiently by [writeGameSettingsIni] to
-         *  capture the key set for the sparse per-game INI export without
-         *  touching the base layer or re-poking the running VM. */
+         *  native base layer. Set transiently by [writeGameSettingsIni] (via
+         *  [emittedKeys]) to capture the key set for the sparse per-game INI export
+         *  without touching the base layer or re-poking the running VM.
+         *
+         *  Per thread. A launch applies settings for real on the VM launch thread while the
+         *  UI thread can be running an export, and a shared sink would divert that launch's
+         *  writes into the export: the game would boot without them. */
+        private val emitSinkLocal = ThreadLocal<((String, String, String, String) -> Unit)?>()
+
+        /** Every RetroAchievements field, by JSON key: what the RetroAchievements screen clears to
+         *  put one game back on the global settings. */
+        val ACHIEVEMENTS_KEYS: List<String> = listOf("achievementsEnabled", "achievementsHardcore", "achievementsNotifications", "achievementsLeaderboardNotifications", "achievementsOverlays", "achievementsLbOverlays", "achievementsSoundEffects", "achievementsEncoreMode", "achievementsSpectatorMode", "achievementsUnofficialTestMode", "achievementsNotificationsDuration", "achievementsLeaderboardsDuration", "achievementsNotificationPosition", "achievementsOverlayPosition", "achievementsNotificationScale")
+
+        /** One per-game INI export at a time. The native side streams it through a single
+         *  begin/put/commit state, and a game launch stages one on the launch thread while the UI
+         *  thread can be saving settings. */
+        private val gameIniExportLock = Any()
+
         @JvmStatic
-        internal var emitSink: ((String, String, String, String) -> Unit)? = null
+        internal var emitSink: ((String, String, String, String) -> Unit)?
+            get() = emitSinkLocal.get()
+            set(value) = emitSinkLocal.set(value)
 
         /** [upscaler] values, straight from the core's GSUpscaler. Named because 1 is Apple's
          *  MetalFX and never appears in this UI, so FSR1's value (2) does NOT line up with its
@@ -2048,6 +2176,21 @@ data class Settings(
                 enableNoInterlacingPatches = json.optBoolean("enableNoInterlacingPatches", def.enableNoInterlacingPatches),
                 enableFastBoot = json.optBoolean("enableFastBoot", def.enableFastBoot),
                 hostFs = json.optBoolean("hostFs", def.hostFs),
+                achievementsEnabled = json.optBoolean("achievementsEnabled", def.achievementsEnabled),
+                achievementsHardcore = json.optBoolean("achievementsHardcore", def.achievementsHardcore),
+                achievementsNotifications = json.optBoolean("achievementsNotifications", def.achievementsNotifications),
+                achievementsLeaderboardNotifications = json.optBoolean("achievementsLeaderboardNotifications", def.achievementsLeaderboardNotifications),
+                achievementsOverlays = json.optBoolean("achievementsOverlays", def.achievementsOverlays),
+                achievementsLbOverlays = json.optBoolean("achievementsLbOverlays", def.achievementsLbOverlays),
+                achievementsSoundEffects = json.optBoolean("achievementsSoundEffects", def.achievementsSoundEffects),
+                achievementsEncoreMode = json.optBoolean("achievementsEncoreMode", def.achievementsEncoreMode),
+                achievementsSpectatorMode = json.optBoolean("achievementsSpectatorMode", def.achievementsSpectatorMode),
+                achievementsUnofficialTestMode = json.optBoolean("achievementsUnofficialTestMode", def.achievementsUnofficialTestMode),
+                achievementsNotificationsDuration = json.optInt("achievementsNotificationsDuration", def.achievementsNotificationsDuration),
+                achievementsLeaderboardsDuration = json.optInt("achievementsLeaderboardsDuration", def.achievementsLeaderboardsDuration),
+                achievementsNotificationPosition = json.optInt("achievementsNotificationPosition", def.achievementsNotificationPosition),
+                achievementsOverlayPosition = json.optInt("achievementsOverlayPosition", def.achievementsOverlayPosition),
+                achievementsNotificationScale = json.optInt("achievementsNotificationScale", def.achievementsNotificationScale),
                 pineEnabled = json.optBoolean("pineEnabled", def.pineEnabled),
                 pineSlot = json.optInt("pineSlot", def.pineSlot),
                 enableGameFixes = json.optBoolean("enableGameFixes", def.enableGameFixes),
@@ -2307,6 +2450,21 @@ data class Settings(
             if (current.enableNoInterlacingPatches != base.enableNoInterlacingPatches) j.put("enableNoInterlacingPatches", current.enableNoInterlacingPatches)
             if (current.enableFastBoot != base.enableFastBoot) j.put("enableFastBoot", current.enableFastBoot)
             if (current.hostFs != base.hostFs) j.put("hostFs", current.hostFs)
+            if (current.achievementsEnabled != base.achievementsEnabled) j.put("achievementsEnabled", current.achievementsEnabled)
+            if (current.achievementsHardcore != base.achievementsHardcore) j.put("achievementsHardcore", current.achievementsHardcore)
+            if (current.achievementsNotifications != base.achievementsNotifications) j.put("achievementsNotifications", current.achievementsNotifications)
+            if (current.achievementsLeaderboardNotifications != base.achievementsLeaderboardNotifications) j.put("achievementsLeaderboardNotifications", current.achievementsLeaderboardNotifications)
+            if (current.achievementsOverlays != base.achievementsOverlays) j.put("achievementsOverlays", current.achievementsOverlays)
+            if (current.achievementsLbOverlays != base.achievementsLbOverlays) j.put("achievementsLbOverlays", current.achievementsLbOverlays)
+            if (current.achievementsSoundEffects != base.achievementsSoundEffects) j.put("achievementsSoundEffects", current.achievementsSoundEffects)
+            if (current.achievementsEncoreMode != base.achievementsEncoreMode) j.put("achievementsEncoreMode", current.achievementsEncoreMode)
+            if (current.achievementsSpectatorMode != base.achievementsSpectatorMode) j.put("achievementsSpectatorMode", current.achievementsSpectatorMode)
+            if (current.achievementsUnofficialTestMode != base.achievementsUnofficialTestMode) j.put("achievementsUnofficialTestMode", current.achievementsUnofficialTestMode)
+            if (current.achievementsNotificationsDuration != base.achievementsNotificationsDuration) j.put("achievementsNotificationsDuration", current.achievementsNotificationsDuration)
+            if (current.achievementsLeaderboardsDuration != base.achievementsLeaderboardsDuration) j.put("achievementsLeaderboardsDuration", current.achievementsLeaderboardsDuration)
+            if (current.achievementsNotificationPosition != base.achievementsNotificationPosition) j.put("achievementsNotificationPosition", current.achievementsNotificationPosition)
+            if (current.achievementsOverlayPosition != base.achievementsOverlayPosition) j.put("achievementsOverlayPosition", current.achievementsOverlayPosition)
+            if (current.achievementsNotificationScale != base.achievementsNotificationScale) j.put("achievementsNotificationScale", current.achievementsNotificationScale)
             if (current.enableGameFixes != base.enableGameFixes) j.put("enableGameFixes", current.enableGameFixes)
             if (current.gamefixSoftwareRendererFmv != base.gamefixSoftwareRendererFmv) j.put("gamefixSoftwareRendererFmv", current.gamefixSoftwareRendererFmv)
             if (current.gamefixSkipMpeg != base.gamefixSkipMpeg) j.put("gamefixSkipMpeg", current.gamefixSkipMpeg)
@@ -2545,6 +2703,21 @@ data class Settings(
             enableNoInterlacingPatches = if (overrides.has("enableNoInterlacingPatches")) overrides.getBoolean("enableNoInterlacingPatches") else base.enableNoInterlacingPatches,
             enableFastBoot = if (overrides.has("enableFastBoot")) overrides.getBoolean("enableFastBoot") else base.enableFastBoot,
             hostFs = if (overrides.has("hostFs")) overrides.getBoolean("hostFs") else base.hostFs,
+            achievementsEnabled = if (overrides.has("achievementsEnabled")) overrides.getBoolean("achievementsEnabled") else base.achievementsEnabled,
+            achievementsHardcore = if (overrides.has("achievementsHardcore")) overrides.getBoolean("achievementsHardcore") else base.achievementsHardcore,
+            achievementsNotifications = if (overrides.has("achievementsNotifications")) overrides.getBoolean("achievementsNotifications") else base.achievementsNotifications,
+            achievementsLeaderboardNotifications = if (overrides.has("achievementsLeaderboardNotifications")) overrides.getBoolean("achievementsLeaderboardNotifications") else base.achievementsLeaderboardNotifications,
+            achievementsOverlays = if (overrides.has("achievementsOverlays")) overrides.getBoolean("achievementsOverlays") else base.achievementsOverlays,
+            achievementsLbOverlays = if (overrides.has("achievementsLbOverlays")) overrides.getBoolean("achievementsLbOverlays") else base.achievementsLbOverlays,
+            achievementsSoundEffects = if (overrides.has("achievementsSoundEffects")) overrides.getBoolean("achievementsSoundEffects") else base.achievementsSoundEffects,
+            achievementsEncoreMode = if (overrides.has("achievementsEncoreMode")) overrides.getBoolean("achievementsEncoreMode") else base.achievementsEncoreMode,
+            achievementsSpectatorMode = if (overrides.has("achievementsSpectatorMode")) overrides.getBoolean("achievementsSpectatorMode") else base.achievementsSpectatorMode,
+            achievementsUnofficialTestMode = if (overrides.has("achievementsUnofficialTestMode")) overrides.getBoolean("achievementsUnofficialTestMode") else base.achievementsUnofficialTestMode,
+            achievementsNotificationsDuration = if (overrides.has("achievementsNotificationsDuration")) overrides.getInt("achievementsNotificationsDuration") else base.achievementsNotificationsDuration,
+            achievementsLeaderboardsDuration = if (overrides.has("achievementsLeaderboardsDuration")) overrides.getInt("achievementsLeaderboardsDuration") else base.achievementsLeaderboardsDuration,
+            achievementsNotificationPosition = if (overrides.has("achievementsNotificationPosition")) overrides.getInt("achievementsNotificationPosition") else base.achievementsNotificationPosition,
+            achievementsOverlayPosition = if (overrides.has("achievementsOverlayPosition")) overrides.getInt("achievementsOverlayPosition") else base.achievementsOverlayPosition,
+            achievementsNotificationScale = if (overrides.has("achievementsNotificationScale")) overrides.getInt("achievementsNotificationScale") else base.achievementsNotificationScale,
             // Always the global value: PINE is one server for the process, so "this game runs
             // with PINE on" is not a thing that can be true. Deliberately absent from the diff
             // above too, so a per-game file never acquires the key -- but it still has to be

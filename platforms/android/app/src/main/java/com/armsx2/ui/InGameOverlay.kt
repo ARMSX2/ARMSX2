@@ -133,7 +133,12 @@ object InGameOverlay {
                     // were affected. ConfigStore.save() above has already stored the new values, so
                     // resolveForGame() here reads them and nothing depends on applyTo() running first.
                     currentSerial.value?.takeIf { it.isNotBlank() }?.let { serial ->
-                        ConfigStore.resolveForGame(serial).writeGameSettingsIni(ConfigStore.loadGlobal())
+                        ConfigStore.resolveForGame(serial).writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = serial)
+                        // The core read that file into its game layer at boot and keeps answering
+                        // from memory, so without a re-read this commit would still apply what the
+                        // file said then: old values, and old answers about which GameDB fixes the
+                        // player has taken back for this game.
+                        NativeApp.reloadGameSettingsLayer()
                     }
                     updated.applyTo()
                 }

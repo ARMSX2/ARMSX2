@@ -6,9 +6,8 @@
 # Name/Version token of that agent, so a build without this header is softcore only. The
 # header is gitignored, which is why a runner has to write it.
 #
-# Holding the version in a repository secret stops a fork or a code-lift from inheriting a
-# live ARMSX2 identity. It hides nothing from anyone holding a build: the compiler bakes
-# the finished agent into the binary as a plain literal.
+# The version lives in a repository secret so forks don't inherit the ARMSX2 identity; it is
+# still a plain string in the binary.
 
 set -euo pipefail
 
@@ -22,8 +21,8 @@ if [[ -z "$VERSION" ]]; then
 	exit 0
 fi
 
-# A refused agent behaves exactly like an unknown one on the client, so catch a version
-# RetroAchievements cannot order here rather than at a player's first hardcore unlock.
+# The client treats a refused agent like an unknown one, so reject a version
+# RetroAchievements can't order.
 if [[ ! "$VERSION" =~ ^[0-9]+([.-][0-9]+)*$ ]]; then
 	echo "::error::IOS_RA_UA_VERSION is not a numeric dotted version. RetroAchievements cannot order it and will treat the client as unknown."
 	exit 1

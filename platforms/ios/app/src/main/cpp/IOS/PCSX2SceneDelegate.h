@@ -1,9 +1,8 @@
 #pragma once
 #import <UIKit/UIKit.h>
 
-@interface PCSX2SceneDelegate : UIResponder <UIWindowSceneDelegate, UIDocumentPickerDelegate>
+@interface PCSX2SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
-@property (strong, nonatomic) UIButton *startBiosButton;
 @end
 
 @interface ARMSX2ExternalDisplaySceneDelegate : UIResponder <UIWindowSceneDelegate>

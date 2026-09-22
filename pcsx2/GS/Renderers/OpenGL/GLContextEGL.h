@@ -17,6 +17,14 @@ public:
 
 	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, std::span<const Version> versions_to_try, Error* error);
 
+	// Libretro: the frontend's GL context is only visible to the core from
+	// inside its context_reset callback, on the frontend's own thread. These
+	// two grab it there, and then build the GS thread a context that shares
+	// its objects - see GLLibretro.
+	static bool CaptureCurrentContext(EGLDisplay* display, EGLContext* context, bool* is_gles);
+	static std::unique_ptr<GLContext> CreateShared(const WindowInfo& wi, EGLDisplay display, EGLContext share_context,
+		std::span<const Version> versions_to_try, Error* error);
+
 	void* GetProcAddress(const char* name) override;
 	virtual bool ChangeSurface(const WindowInfo& new_wi) override;
 	virtual void ResizeSurface(u32 new_surface_width = 0, u32 new_surface_height = 0) override;
@@ -24,6 +32,7 @@ public:
 	bool IsCurrent() override;
 	bool MakeCurrent() override;
 	bool DoneCurrent() override;
+	bool ReleaseThread() override;
 	bool SupportsNegativeSwapInterval() const override;
 	bool SetSwapInterval(s32 interval) override;
 	virtual std::unique_ptr<GLContext> CreateSharedContext(const WindowInfo& wi, Error* error) override;

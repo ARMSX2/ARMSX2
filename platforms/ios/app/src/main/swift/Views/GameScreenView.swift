@@ -113,7 +113,7 @@ struct EmulationOnlyGameView: View {
             PhoneGameSurface()
                 .ignoresSafeArea()
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Game display")
+                .accessibilityLabel(Text("Game display"))
                 .accessibilityAddTraits(.isImage)
                 .persistentSystemOverlays(.hidden)
                 .onAppear(perform: preparePresentation)
@@ -171,7 +171,7 @@ struct EmulationOnlyGameView: View {
     private var accessibleMetalSurface: some View {
         PhoneGameSurface()
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Game display")
+            .accessibilityLabel(Text("Game display"))
             .accessibilityAddTraits(.isImage)
     }
 
@@ -352,9 +352,9 @@ struct GameScreenView: View {
                         PhoneGameSurface()
                             .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Game display")
+                            .accessibilityLabel(Text("Game display"))
                             .accessibilityAddTraits(.isImage)
-                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .accessibilityHint(Text("VoiceOver image recognition can read on-screen text."))
                             .overlay { menuRevealTapCatcher }
                         AccessibilityHUDMirror()
                         if effectiveVirtualPadVisible {
@@ -385,9 +385,9 @@ struct GameScreenView: View {
                             .clipped()
                             .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Game display")
+                            .accessibilityLabel(Text("Game display"))
                             .accessibilityAddTraits(.isImage)
-                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .accessibilityHint(Text("VoiceOver image recognition can read on-screen text."))
                             .overlay {
                                 ZStack {
                                     menuRevealTapCatcher
@@ -451,8 +451,7 @@ struct GameScreenView: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: childPresentedBinding(.shaders)) {
-            // Large only: this panel pushes a searchable browser and grows a variable-length
-            // parameter list, and a medium detent under a search keyboard shows almost nothing.
+            // Large only: a medium detent leaves little room for preset search and parameters.
             ShaderControlPanel(settings: settings)
                 .presentationDetents([.large])
         }
@@ -1113,7 +1112,7 @@ struct GameScreenView: View {
     }
 
     private func gameNameMatchingRuntimeIdentity() -> String? {
-        let identity = normalizedRuntimeIdentity(ARMSX2Bridge.compatibilityIdentityForCurrentGame())
+        let identity = normalizedRuntimeIdentity(ARMSX2Bridge.currentDiscIdentity())
         guard !identity.isEmpty else {
             return nil
         }
@@ -1409,12 +1408,12 @@ struct GameScreenView: View {
     }
 
     private func runtimePadLayoutIdentityForCurrentGame() -> PadLayoutGameIdentity? {
-        guard let info = ARMSX2Bridge.gameSettingsForCurrentGame() else {
+        guard let info = ARMSX2Bridge.perGameIdentityForCurrentGame() else {
             return nil
         }
         return PadLayoutGameIdentity(
-            serial: info["serial"] as? String,
-            crc: info["crc"] as? String
+            serial: info["serial"],
+            crc: info["crc"]
         )
     }
 
@@ -1922,8 +1921,8 @@ private struct SpeedControlPanel: View {
 
 // MARK: - Shader Control Panel
 
-/// The settings tree's shader section, hosted for the pause card. Both settings live in
-/// `EmuCore/GS`, so `commit` already coalesces the graphics apply and this panel writes none.
+/// The Settings shader section in the pause card. Both settings are in `EmuCore/GS`, so
+/// `commit` applies them and the panel applies nothing itself.
 private struct ShaderControlPanel: View {
     @Bindable var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss

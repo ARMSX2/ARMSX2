@@ -56,7 +56,11 @@ function(get_git_version_info)
 	set(PCSX2_GIT_TAG "")
 	set(PCSX2_GIT_HASH "")
 	if (GIT_FOUND AND EXISTS ${PROJECT_SOURCE_DIR}/.git)
-		EXECUTE_PROCESS(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} describe --tags
+		# --exclude nightly-*: nightly tags are the nearest tags on master, so a plain
+		# `describe --tags` reports the build as e.g. "nightly-20260917-18-gabc" instead of
+		# the release the tree is actually based on. write_svnrev_h below accepts the
+		# undecorated version tags ARMSX2 uses (2.6.9) as well as upstream's v2.9.30.
+		EXECUTE_PROCESS(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} describe --tags --exclude nightly-*
 			OUTPUT_VARIABLE PCSX2_GIT_REV
 			OUTPUT_STRIP_TRAILING_WHITESPACE
 			ERROR_QUIET)
@@ -110,7 +114,7 @@ function(get_git_version_info)
 endfunction()
 
 function(write_svnrev_h)
-	if ("${PCSX2_GIT_TAG}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+	if ("${PCSX2_GIT_TAG}" MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
 		file(WRITE ${CMAKE_BINARY_DIR}/common/include/svnrev.h
 			"#define GIT_TAG \"${PCSX2_GIT_TAG}\"\n"
 			"#define GIT_TAGGED_COMMIT 1\n"
@@ -121,7 +125,7 @@ function(write_svnrev_h)
 			"#define GIT_HASH \"${PCSX2_GIT_HASH}\"\n"
 			"#define GIT_DATE \"${PCSX2_GIT_DATE}\"\n"
 		)
-	elseif ("${PCSX2_GIT_REV}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+	elseif ("${PCSX2_GIT_REV}" MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
 		file(WRITE ${CMAKE_BINARY_DIR}/common/include/svnrev.h
 			"#define GIT_TAG \"${PCSX2_GIT_TAG}\"\n"
 			"#define GIT_TAGGED_COMMIT 0\n"

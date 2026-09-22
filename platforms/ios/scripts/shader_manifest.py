@@ -4,19 +4,15 @@
     python3 shader_manifest.py classify --checkout <pinned slang-shaders tree>
     python3 shader_manifest.py emit     --checkout <tree> --rules <signed rules file>
 
-A preset's dependencies live inside file bodies, not in any index, so nothing upstream
-can say what a preset needs before it is read. Reading them on a phone is a sequential
-network walk of unbounded depth; reading them once here, against a local clone, answers
-the transport question and the licence question with one artifact.
+A preset's dependencies are only named inside the files themselves, so they are resolved
+here against a local clone instead of over the network on the phone.
 
-`classify` needs no human input. It produces the ballot, the per-file evidence table, a
-deterministic sample per class and a reconciliation table. `emit` produces the manifest
-and the zips and refuses to start without a signed rules file recording this pin, so the
-catalogue cannot physically exist before a person has signed the rules it was built from.
+`classify` writes the ballot, the per-file evidence table, a sample per class and a
+reconciliation table. `emit` writes the manifest and the zips, and refuses to run without
+a signed rules file for this pin.
 
-The script never states a verdict. It assigns an evidence CLASS -- what a file's own
-header says, with line numbers -- and leaves the verdict empty. A verdict is a statement
-about redistributability and only the signed rules turn one into the other.
+Each file gets an evidence class (what its own header says, with line numbers), never a
+verdict; only the signed rules decide what may be served.
 """
 
 import argparse
@@ -44,17 +40,15 @@ BRIDGE = ROOT / "platforms/ios/app/src/main/cpp/ARMSX2Bridge.mm"
 # both silently.
 PIN = "80372284ea8c00ae5e25e5a6e4f9f49415f85896"
 
-# Borrowed from ShaderPresetLibrary.swift:47 rather than rediscovered: a reference chain
-# deeper than this is reported unresolved, and a `visited` set is what makes a cycle
-# terminate instead of hanging.
+# librashader refuses #reference chains deeper than 16 (SHADER_MAX_REFERENCE_DEPTH), so a
+# deeper closure is reported unresolved. A visited set stops a cycle.
 MAX_DEPTH = 16
 
 GUARD_MODULE = "test_ios_shader_prescale_guard"
 GUARD_PATH = Path(__file__).resolve().parent / "tests" / (GUARD_MODULE + ".py")
 
-# ARMSX2Bridge.mm:2915. The extractor enforces this by silently skipping the entry, so a
-# closure with one oversized file installs with that file missing and still passes
-# presetCount > 0. Refuse here, where the byte count is already in hand.
+# kMaxShaderPackEntryBytes in ARMSX2Bridge.mm. The extractor skips a larger entry without an
+# error, so a closure containing one is refused here.
 MAX_FILE_BYTES = 8 * 1024 * 1024
 DEFAULT_CLOSURE_BYTES = 32 * 1024 * 1024
 
@@ -112,12 +106,10 @@ def sha256_bytes(data):
 
 
 def load_prescale():
-    """Import the detector from the bundled-tree fence rather than copying it.
+    """Import the prescale detector from test_ios_shader_prescale_guard instead of copying it.
 
-    The direction is unconventional -- production code importing from a test module --
-    and it is deliberate. The alternative is two copies of a regex that decides whether a
-    user's frame goes black, or editing a landed SC-10 fence to extract a shared module.
-    If the tests directory is ever reorganised, this import moves with it.
+    A generator importing a test module is unusual, but it keeps one copy of the regex that
+    decides whether a preset turns the frame black.
     """
     module = sys.modules.get(GUARD_MODULE)
     if module is None:
@@ -151,8 +143,7 @@ class Unsafe(Exception):
 
 
 def is_safe_relative(path):
-    """The predicate SkinAssetPath.isSafeRelative applies, so the app's check is a second
-    line of defence rather than the only one."""
+    """Same rule as SkinAssetPath.isSafeRelative, checked here as well as in the app."""
     trimmed = path.strip()
     if not trimmed:
         return False
@@ -306,7 +297,7 @@ def apply_patches(checkout, directory):
     if not patches:
         raise SystemExit("no shader patch found in %s. Upstream still turns the frame "
                          "black at 2x and the resolver walks both affected files, so a "
-                         "run without the patches would re-ship SC-10." % directory)
+                         "run without the patches would serve that bug." % directory)
 
     for patch, _ in patches:
         if git_apply(checkout, ["--check", "-R", "-p9", str(patch)]).returncode == 0:
@@ -635,11 +626,9 @@ def classify_file(checkout, relative, text, size, ceiling):
     if families:
         return families.pop(), directory_licence(checkout, relative)
 
-    # Nothing in the file. The carve-out below is Plan 03's own, made machine-checkable:
-    # not one .slangp in any closure carries a header, so the standing rule read strictly
-    # rejects the whole collection. The ceiling and the no-expression test are what keep
-    # it from drifting into source -- a header-less eight-line #define wrapper is a .slang
-    # and falls to NO_LICENCE, even though it is bundled today.
+    # No licence text in the file. A header-less .slangp of key = value lines under the
+    # ceiling counts as config, since no .slangp in any closure carries a header. A
+    # header-less .slang, even an eight-line #define wrapper, stays NO_LICENCE.
     governing = directory_licence(checkout, relative)
     if Path(relative).suffix.lower() == ".slangp" and config_only(text, size, ceiling):
         return CONFIG_ONLY, governing
@@ -1060,9 +1049,9 @@ def write_ballot(out, checkout, pin, entries, records, counts, offenders, option
                         for p in populations[UNCLASSIFIED]] or [("none", "", "")]))
 
     parts.append("\n## Unclamped prescale, in full\n")
-    parts.append("Every file below carries the SC-10 bug with no patch behind it. Extend "
-                 "platforms/ios/patches/ -- which is a new modification needing its own "
-                 "sign-off -- or leave the presets refused.\n")
+    parts.append("Every file below has an unclamped prescale and no patch. Extend "
+                 "platforms/ios/patches/, which needs its own sign-off, or leave the "
+                 "presets refused.\n")
     parts.append(table(["Path", "Line", "Source"],
                        [(path, hits[0][0], hits[0][1].replace("|", "/"))
                         for path, hits in sorted(offenders.items())] or [("none", "", "")]))

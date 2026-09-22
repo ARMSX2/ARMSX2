@@ -33,8 +33,6 @@
 #include <ucontext.h>
 #endif
 
-extern VURegs vuRegs[2];
-
 namespace mvu_divtrace
 {
 	std::atomic<bool>          g_enabled{false};

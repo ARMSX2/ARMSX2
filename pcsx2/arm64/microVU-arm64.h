@@ -117,7 +117,60 @@
 //       model calls.
 //  20 — the zero-divisor Q is 0x7FFFFFFF from vuClampMode 3 and maxvals below,
 //       so DIV and RSQRT carry the signbit/maxvals pair again at modes 0-2.
-static constexpr u32 kMvuCompilerAbiVersion = 20;
+//  21 — an operand clamp reads the register a clone-write copy was about to
+//       fill and the copy goes, so a clamped FMAC on a cached VF is a word
+//       shorter.
+//  22 — the clamp bounds are register-resident: every mVUclamp1 drops its two
+//       Ldrs, the block gains an Ldp at its entry, and q25/q26 leave the VF
+//       pool in micro mode as well, moving what the allocator hands out.
+//  23 — the EE FPU / EFU model calls reach their target through a stub in
+//       mVU.cache instead of spilling at the site, so every block carrying
+//       one is 22 instructions shorter and records a stub fixup id.
+//  24 — ILW and ILWR add their lane offset to the address at the width
+//       mVUaddrFix answered in, so VU0's window onto VU1's registers no
+//       longer loses the top half of its offset.
+//  25 — VU1's data memory is a fixed distance from gprVUState, so a VU1 load
+//       or store drops its VURegs::Mem load and carries the distance in its
+//       own displacement; a constant address off vi00 drops the whole chain.
+//  26 — LQD and SQD off a vi00 base take the same pre-decrement as every
+//       other base, so on VU1 they lose the fixed address the else-clause
+//       answered and gain the step and mVUaddrFix.
+//  27 — ILW and ILWR read the lane their dest field's two-bit code names
+//       rather than the first bit set in it, so every multi-lane field but
+//       xy, xz, yzw and xyzw carries a different offset.
+//  28 — a VU1 program ending on the E bit under MTVU branches to an exit
+//       entry that raises the interrupt, so each of those ends loses the
+//       four instructions an absolute call to mVUEBit took.
+//  29 — no emitted shape changes; the options sentinel now records
+//       THREAD_VU1, and the bump evicts the caches recorded while it could
+//       not tell an MTVU run from a run without it.
+//  30 — CLIP packs its six comparison results with one UZP1 and a weighted
+//       ADDV instead of moving each lane to a GPR, so the op loses nine
+//       instructions and mVUglob gains the weight vector they read.
+//  31 — block-start VF preloads are queued and emitted together, so a pair
+//       one VF apart loads with one Ldp and the VI preloads no longer sit
+//       between them.
+//  32 — a three-lane partial write keeps its own slot and takes the one lane
+//       it did not write from the other cached copy, one Ins in place of the
+//       two mVUmergeRegs emitted in the other direction.
+//  33 — the block-link flag queue reorder opens with whichever whole-vector
+//       shuffle gets the most lanes right rather than always a copy, and an
+//       identity reorder no longer loads and stores the queue unchanged.
+//  34 — the single-lane result clamp chains both bounds through the scratch
+//       and writes lane 0 once, dropping the writeback between them.
+//  35 — the sign-preserving clamp's two bounds sit next to each other in
+//       mVUglob, so the row it selects arrives in one Ldp rather than a load
+//       in front of each min.
+//  36 — an FMAC body takes the clone-write fold for every operand it clamps
+//       before it emits any of the clamps, so the second and third operand's
+//       copies fold as well as the first's.
+//  37 — the accumulator copy a two-step FMAC makes for its own accumulate is
+//       offered to that fold too, which takes it wherever the step's clamp
+//       rewrites every lane of it.
+//  38 — mVUtestCycles' budget-break exit is one shared stub reached by B,
+//       carrying the block pointer and the resume PC, instead of the block
+//       pointer, a call and mVUendProgram(0) inline in every block.
+static constexpr u32 kMvuCompilerAbiVersion = 38;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -211,6 +264,18 @@ struct microJumpCache
 	void* hostEntry;
 };
 
+// mVUdetectSpinLoop's answer for a block, memoized in microBlock::spinState.
+// Asked for the first time by mVUspinBounce, on the block a cycle-budget
+// break parked. A block's encoding cannot change under it — a micro-memory
+// write invalidates the block along with the answer — so the memo is as
+// durable as the compiled code.
+enum microBlockSpin : u8
+{
+	mVUspinUnknown = 0,
+	mVUspinNo,
+	mVUspinYes,
+};
+
 struct alignas(16) microBlock
 {
 	microRegInfo    pState;
@@ -218,7 +283,12 @@ struct alignas(16) microBlock
 	u8*             x86ptrStart; // Code entry point (name kept for struct compatibility)
 	void*           hostEntry;   // see microJumpCache::hostEntry
 	microJumpCache* jumpCache;
+	u8              spinState;   // microBlockSpin
+	u8              spinExitOnEq;
+	u8              spinViA;
+	u8              spinViB;
 };
+static_assert(sizeof(microBlock) == 224, "the spin memo rides microBlock's tail padding");
 
 struct microTempRegInfo
 {
@@ -469,6 +539,31 @@ void mVUunpack_xyzw(const a64::VRegister& dstreg, const a64::VRegister& srcreg, 
 // microVU Main Structure
 //------------------------------------------------------------------
 
+// The EE FPU / EFU model seam (EeFpuModelCall-arm64.h), emitted once per
+// target and reached by a bl.
+enum : int
+{
+	mVUModelStubDivide,
+	mVUModelStubSqrtBits,
+	mVUModelStubRecipSqrt,
+	mVUModelStubMulShortTailBand,
+	mVUModelStubEfuSum,
+	mVUModelStubEfuSquareSum,
+	mVUModelStubEfuRecipSquareSum,
+	mVUModelStubEfuLength,
+	mVUModelStubEfuRecipLength,
+	mVUModelStubEfuRecip,
+	mVUModelStubEfuSqrt,
+	mVUModelStubEfuRecipSqrt,
+	mVUModelStubEfuSin,
+	mVUModelStubEfuExp,
+	mVUModelStubEfuAtan,
+	mVUModelStubEfuAtanRatio,
+	mVUModelStubCount
+};
+
+EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex);
+
 struct microVU
 {
 	alignas(16) u32 statFlag[4];
@@ -496,7 +591,7 @@ struct microVU
 
 	// Resume-aware dispatch (VE-07). A cycle-budget break re-enters the very
 	// block that broke (mVUtestCycles saves that block's own pState/TPC), so
-	// its early-exit path parks the block's hostEntry here (copyPLStateResume,
+	// its early-exit path parks the block's hostEntry here (mVU.cycleBreak,
 	// [gprMVUFlag, #imm] — keep this field in the pin window above `prog`).
 	// recMicroVUx::Execute consumes it once (std::exchange) and enters
 	// startFunctResume, skipping mVUlookupProg entirely. Disarmed by anything
@@ -504,6 +599,10 @@ struct microVU
 	// kick selects a new quick slot), mVUclear (any micro-mem write, same
 	// contract as the lpState zero), mVUreset (pointer would dangle).
 	void* resumeEntry;
+	// The block resumeEntry came out of, parked by the same break, so the
+	// dispatch can reach its spin memo without a lookup. Valid exactly while
+	// resumeEntry is.
+	microBlock* resumeBlock;
 
 	u32 index;
 	u32 cop2;
@@ -560,16 +659,19 @@ struct microVU
 	// joins startFunct's post-lookup tail with x0 as the block to enter.
 	u8* startFunctResume;
 	u8* exitFunct;
+	// VU1 only: exitFunct with the E-bit interrupt raise in front of it.
+	u8* exitFunctEBit;
 	u8* startFunctXG;
 	u8* exitFunctXG;
 	u8* waitMTVU;
 	u8* copyPLState;
-	// copyPLState + parks the breaking block's hostEntry in resumeEntry.
-	// Called ONLY from mVUtestCycles' budget-break exit, where x0 is the
-	// block's own &pState (== the microBlock, pState sits at offset 0).
-	// The M-bit end sites keep plain copyPLState: they save pStateEnd and
-	// resume at the *branch target*, which a fresh lookup must resolve.
-	u8* copyPLStateResume;
+	// The whole of mVUtestCycles' budget-break exit, entered by B with
+	// x0 = &pBlock->pState (== the microBlock) and w1 = the block's start
+	// PC. It copies the state and additionally parks the breaking block's
+	// hostEntry in resumeEntry. The M-bit end site keeps plain copyPLState:
+	// it saves pStateEnd and resumes at the *branch target*, which a fresh
+	// lookup must resolve. See mVUGenerateCycleBreak in microVU-arm64.cpp.
+	u8* cycleBreak;
 	// Per-VU SFLAGc + micro_flag tail helpers BL'd by mVUendProgram /
 	// mVUsetupBranch emit. See mVUGenerateEndProgramFlagsHelper in
 	// microVU-arm64.cpp — each exit thunk's inline shrinks from ~20 insns
@@ -577,6 +679,9 @@ struct microVU
 	u8* endProgramFlagsA; // non-Ebit exits (isEbit == 0 || isEbit == 3)
 	u8* endProgramFlagsB; // Ebit exits (isEbit && isEbit != 3)
 	u8* resumePtrXG;
+
+	// mVUModelStubTarget entries.
+	u8* modelStubs[mVUModelStubCount];
 
 	// Compile-time only (never read by emitted code): pool GPR index holding
 	// the live IBcc condition value between the branch op and condBranch's
@@ -741,6 +846,10 @@ public:
 			}
 
 			std::memcpy(&newBlock->block, pBlock, sizeof(microBlock));
+			// A block gets its spin memo from mVUspinBounce, never from
+			// whatever the caller's microBlock was holding: the allocation
+			// can be a freed block's, and the IR copy carries no answer.
+			newBlock->block.spinState = mVUspinUnknown;
 			thisBlock = &newBlock->block;
 
 			quickLookup.push_back({&newBlock->block, pBlock->pState.quick64[0]});
@@ -883,6 +992,15 @@ __fi void* mVUentryGet(microVU& mVU, microBlockManager* block, u32 startPC, uptr
 }
 
 //------------------------------------------------------------------
+void mVUGenerateModelStubs(microVU& mVU);
+
+__fi static void mVUemitModelCall(microVU& mVU, int stub)
+{
+	pxAssert(stub >= 0 && stub < mVUModelStubCount);
+	pxAssert(mVU.modelStubs[stub]); // generated with the dispatchers, at every reset
+	armEmitCall(mVU.modelStubs[stub]);
+}
+
 // ARM64 helper .inl files + shared analysis/tables
 //------------------------------------------------------------------
 #include "microVU_Clamp-arm64.inl"

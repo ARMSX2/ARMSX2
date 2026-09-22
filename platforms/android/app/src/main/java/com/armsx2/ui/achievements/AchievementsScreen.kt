@@ -168,6 +168,40 @@ private fun AchievementAccount(
                 StatusChip("${state.items.count { it.unlocked }} / ${state.items.size}")
             }
             LibraryProgressSection()
+            // Everything below is a standard setting: in-game it is this game's own, which
+            // outranks the global value; from the library it is the global value every game
+            // without its own follows. Say which, since the screen looks the same either way.
+            Text(
+                if (state.perGame) str("ra.scope.game").format(state.scopeTitle.ifBlank { str("ra.scope.thisGame") })
+                else str("ra.scope.global"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // A quiet link under the scope line rather than a full-width button: in the in-game
+            // tab's narrow column the old outlined button wrapped its label into a two-line pill
+            // that dwarfed the setting rows around it. Only there when this game has its own.
+            if (state.perGame && state.hasGameOverrides) {
+                val useGlobal = { viewModel.useGlobalSettings() }
+                TextButton(
+                    onClick = useGlobal,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.controllerFocusable("ra.useGlobal", onConfirm = useGlobal),
+                ) {
+                    Text("\u21BA  " + str("ra.scope.useGlobal"), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            SettingSwitchRow(
+                title = str(if (state.perGame) "ra.enable.thisGame" else "ra.enable.label"),
+                description = str("ra.enable.description"),
+                checked = state.enabled,
+                onCheckedChange = { viewModel.setEnabled(it) },
+                modifier = Modifier.controllerFocusable(
+                    "ra.enabled",
+                    onConfirm = { viewModel.setEnabled(!state.enabled) },
+                    onLeft = { if (state.enabled) viewModel.setEnabled(false) },
+                    onRight = { if (!state.enabled) viewModel.setEnabled(true) },
+                ),
+            )
             SettingSwitchRow(
                 title = str("ra.mode.hardcore"),
                 description = str("patches.hardcoreNoticeCheatsDisabled"),
@@ -239,6 +273,18 @@ private fun AchievementAccount(
                     onSelect = { viewModel.setOptionInt("notificationPosition", it) },
                 )
             }
+            // Size of the popups and of the in-game indicators, text and icons alike. Asked for
+            // because the stock size is hard to read on a handheld.
+            com.armsx2.ui.settings.IntSliderRow(
+                label = str("ra.options.notifSize"),
+                value = state.notificationScale,
+                min = 50,
+                max = 250,
+                description = str("ra.options.notifSize.desc"),
+                valueFormatter = { "$it%" },
+                onReset = { viewModel.setOptionInt("notificationScale", 100) },
+                onChange = { viewModel.setOptionInt("notificationScale", it) },
+            )
             SettingSwitchRow(
                 title = str("ra.options.inGameIndicators"),
                 description = str("ra.options.inGameIndicators.desc"),

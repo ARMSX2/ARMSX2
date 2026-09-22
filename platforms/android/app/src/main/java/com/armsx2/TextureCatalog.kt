@@ -27,6 +27,7 @@ object TextureCatalog {
      *  schema-1 ZIP packs when B2 is unreachable. The raw host is fastest, the second is a
      *  different GitHub edge, and jsDelivr survives GitHub being blocked on some networks. */
     private val CATALOG_URLS = listOf(
+        "https://dl.ps2ktxpak.net/textures.json",
         "https://f005.backblazeb2.com/file/armsx2-textures/textures.json",
         "https://raw.githubusercontent.com/sashkinbro/EmuCoreX-Textures/main/textures.json",
         "https://github.com/sashkinbro/EmuCoreX-Textures/raw/main/textures.json",

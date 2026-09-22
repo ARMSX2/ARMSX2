@@ -25,22 +25,21 @@ struct ShaderPresetListing: Hashable {
     static let empty = ShaderPresetListing(folders: [], presets: [])
 }
 
-/// Where preset files live and what they are called from one install to the next.
-final class ShaderPresetLibrary {
+/// The two preset roots, and tokens that name a preset across reinstalls.
+enum ShaderPresetLibrary {
     static let presetExtension = "slangp"
     static let rootFolderName = "shaders"
     static let savedPresetFolderName = "My Presets"
 
-    // A preset is persisted as a root marker plus a root-relative path because both iOS roots
-    // sit under a container UUID that changes on every install, and a sideloaded build is
-    // reinstalled constantly. An absolute path goes stale within days; this does not.
+    // Stored as a root marker plus a relative path, because both roots sit under a container
+    // UUID that changes on every install.
     static let bundleMarker = "bundle"
     static let userMarker = "data"
-    // A colon: Files refuses it in a name and shows any it finds as a slash, and it is not a
-    // path separator, so the relative half never needs escaping. Decoding splits on the first.
+    // Files doesn't allow a colon in names and it isn't a path separator, so the relative half
+    // needs no escaping. Decoding splits on the first one.
     static let markerSeparator: Character = ":"
 
-    // shaders/ in the bundle also holds the core's own GLSL and Metal, which must never be listed.
+    // The bundle's shaders/ also holds the core's GLSL and Metal sources, so only these are listed.
     private static let bundlePresetFolders = ["presets", "armsx2-tracer"]
     private static let maxScanDepth = 12
 
@@ -56,9 +55,15 @@ final class ShaderPresetLibrary {
             .appendingPathComponent(rootFolderName, isDirectory: true)
     }
 
-    // Saved presets sit inside the scanned root, so each one is selectable with no extra plumbing.
+    // Inside the scanned root, so saved presets list like any other.
     static var savedPresetRoot: URL? {
         userRoot?.appendingPathComponent(savedPresetFolderName, isDirectory: true)
+    }
+
+    static let basePackFolderName = "shaders_slang"
+
+    static var hasBasePack: Bool {
+        userRoot.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent(basePackFolderName).path) } ?? false
     }
 
     @discardableResult
@@ -90,13 +95,19 @@ final class ShaderPresetLibrary {
         return url
     }
 
+    static func displayName(for token: String) -> String? {
+        guard let separator = token.firstIndex(of: markerSeparator) else { return nil }
+        let name = URL(fileURLWithPath: String(token[token.index(after: separator)...]))
+            .deletingPathExtension().lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+
     static func token(forLegacyPath path: String) -> String? {
         guard path.hasPrefix("/") else { return nil }
         if let token = token(for: URL(fileURLWithPath: path)), resolve(token) != nil {
             return token
         }
-        // The prefix carries the container UUID of the install that wrote it, so on the far
-        // side of a reinstall only the tail below the shaders folder still matches.
+        // The prefix holds an older container UUID, so only the part below shaders/ still matches.
         guard let tail = pathBelowRootFolder(path) else { return nil }
         return markedRoots()
             .map { $0.marker + String(markerSeparator) + tail }
@@ -152,7 +163,7 @@ final class ShaderPresetLibrary {
 
     // MARK: - Scanning
 
-    func scan() -> ShaderPresetListing {
+    static func scan() -> ShaderPresetListing {
         Self.prepareUserRoots()
         var folders: [ShaderPresetFolder] = []
         var presets: [ShaderPresetFile] = []
@@ -171,7 +182,7 @@ final class ShaderPresetLibrary {
         return ShaderPresetListing(folders: Self.sorted(folders), presets: Self.sorted(presets))
     }
 
-    func listing(at folder: ShaderPresetFolder) -> ShaderPresetListing {
+    static func listing(at folder: ShaderPresetFolder) -> ShaderPresetListing {
         listing(at: folder.url)
     }
 
@@ -188,7 +199,7 @@ final class ShaderPresetLibrary {
         return parent == savedPresetRoot?.standardizedFileURL.path ? preset.url : nil
     }
 
-    private func listing(at directory: URL) -> ShaderPresetListing {
+    private static func listing(at directory: URL) -> ShaderPresetListing {
         let level = Self.children(of: directory)
         let folders = level.directories.compactMap {
             Self.folder(at: $0, pinned: Self.isSavedPresetRoot($0))
@@ -198,9 +209,8 @@ final class ShaderPresetLibrary {
             presets: Self.sorted(level.presets.compactMap { Self.preset(at: $0) }))
     }
 
-    /// Promoted past a single wrapping install folder so a pack's categories become its root,
-    /// and dropped unless a preset lives somewhere under it — a pack keeps its .slang stages in
-    /// a shaders/ folder beside the presets, and those are build inputs, not places to browse.
+    /// Skips a single wrapping folder so a pack's categories list at its root, and drops folders
+    /// with no preset under them, such as a pack's shaders/ stage folder.
     private static func folder(at url: URL, pinned: Bool = false) -> ShaderPresetFolder? {
         let level = children(of: url)
         if !pinned, level.presets.isEmpty, level.directories.count == 1,

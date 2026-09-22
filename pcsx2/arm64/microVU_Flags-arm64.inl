@@ -428,21 +428,29 @@ static __fi void mVUsetFlags(mV, microFlagCycles& mFC)
 #define getFlagReg3(x) ((gFlag == x) ? gprT1 : getFlagReg(x))
 #define getFlagReg4(x) ((gFlag == x) ? gprT1 : gprT2)
 
-// Emit NEON lane-shuffle equivalent to x86's SHUF.PS xmm, xmm, pattern.
-// bFlag[i] names the source lane that should end up in dest lane i.
-// Clobbers one temp NEON register.
-static __fi void mVUshuffleFlagVec(a64::VRegister vec, const int* bFlag, a64::VRegister tmp)
+// Reorder one flag queue in place: the four instances at `mem` become
+// { q[bFlag[0]], q[bFlag[1]], q[bFlag[2]], q[bFlag[3]] }. The gather lands in
+// `tmp` and is stored from there, which leaves `vec` holding the instances
+// every element insert reads and lets the opening shuffle write a whole
+// register rather than copy one first.
+static __fi void mVUshuffleFlagQueue(const a64::MemOperand& mem, const int* bFlag,
+	a64::VRegister vec, a64::VRegister tmp)
 {
-	// If already identity, nothing to do.
+	// An identity reorder would store back the bytes it just loaded.
 	if (bFlag[0] == 0 && bFlag[1] == 1 && bFlag[2] == 2 && bFlag[3] == 3)
-		return;
-	// Copy source so we can read lanes before overwriting them.
-	armAsm->Mov(tmp.V16B(), vec.V16B());
-	for (int i = 0; i < 4; i++)
 	{
-		if (bFlag[i] != i)
-			armAsm->Ins(vec.V4S(), i, tmp.V4S(), bFlag[i]);
+#ifdef PCSX2_RECOMPILER_TESTS
+		g_mvuFlagQueueIdentities++;
+#endif
+		return;
 	}
+	armAsm->Ldr(vec, mem);
+	[[maybe_unused]] const int emitted = armEmitLaneGather32(tmp, vec, bFlag);
+	armAsm->Str(tmp, mem);
+#ifdef PCSX2_RECOMPILER_TESTS
+	g_mvuFlagQueueReorders++;
+	g_mvuFlagQueueWorst = std::max(g_mvuFlagQueueWorst, static_cast<u32>(emitted));
+#endif
 }
 
 // Recompiles code for proper flags on block linkings (equivalent to x86's mVUsetupFlags).
@@ -513,17 +521,13 @@ static __fi void mVUsetupFlags(mV, microFlagCycles& mFC)
 	{
 		int bMac[4];
 		sortFlag(mFC.xMac, bMac, mFC.cycles);
-		armAsm->Ldr(qmmT1, a64::MemOperand(gprMVUFlag));
-		mVUshuffleFlagVec(qmmT1, bMac, qmmT2);
-		armAsm->Str(qmmT1, a64::MemOperand(gprMVUFlag));
+		mVUshuffleFlagQueue(a64::MemOperand(gprMVUFlag), bMac, qmmT1, qmmT2);
 	}
 
 	if (doCFlagInsts && __Clip)
 	{
 		int bClip[4];
 		sortFlag(mFC.xClip, bClip, mFC.cycles);
-		armAsm->Ldr(qmmT2, a64::MemOperand(gprMVUFlag, 16));
-		mVUshuffleFlagVec(qmmT2, bClip, qmmT1);
-		armAsm->Str(qmmT2, a64::MemOperand(gprMVUFlag, 16));
+		mVUshuffleFlagQueue(a64::MemOperand(gprMVUFlag, 16), bClip, qmmT2, qmmT1);
 	}
 }

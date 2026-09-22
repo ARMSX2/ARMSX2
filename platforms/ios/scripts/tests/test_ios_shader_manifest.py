@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""The catalogue generator must not serve a preset nobody looked at.
+"""shader_manifest.py tests, run on a synthetic tree in a temp directory with no network.
 
-shader_manifest.py resolves preset closures off-device and describes them for a manifest
-an app will fetch. Three of its rules are load-bearing and none of them is visible in the
-output when it is working: the closure is complete or the preset is dropped, the bytes in
-the zip are the bytes that were scanned and hashed, and no manifest exists before a person
-signed the class rules it was built from.
-
-Everything here runs against a synthetic tree in a temp directory. No network, no clone.
+A preset with an incomplete closure is dropped, a zip holds the bytes that were scanned and
+hashed, and emit writes nothing without a signed rules file.
 """
 
 import hashlib
@@ -23,9 +18,10 @@ import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
+from ios_source import CPP, ROOT
+
 GENERATOR = ROOT / "platforms/ios/scripts/shader_manifest.py"
-BRIDGE = ROOT / "platforms/ios/app/src/main/cpp/ARMSX2Bridge.mm"
+BRIDGE = CPP / "ARMSX2Bridge.mm"
 REAL_PATCH = ROOT / "platforms/ios/patches/slang-shaders-prescale-zero-guard.patch"
 
 
@@ -43,8 +39,7 @@ manifest = load("shader_manifest", GENERATOR)
 guard = load("test_ios_shader_prescale_guard",
              Path(__file__).resolve().parent / "test_ios_shader_prescale_guard.py")
 
-# The two spellings the SC-10 patch turns into each other, copied out of the patch itself
-# so the fence tests the actual bug rather than a paraphrase of it.
+# The two lines slang-shaders-prescale-zero-guard.patch turns into each other, copied from it.
 UNCLAMPED = "    float scale = floor(params.OutputSize.y * params.SourceSize.w);"
 CLAMPED = "    float scale = max(floor(params.OutputSize.y * params.SourceSize.w), 1.0);"
 
@@ -96,7 +91,7 @@ class Tree:
     """A synthetic checkout: a preset tree, a .git/HEAD at the pin, and a patch directory."""
 
     def __init__(self):
-        self.base = Path(tempfile.mkdtemp(prefix="shader-manifest-fence-"))
+        self.base = Path(tempfile.mkdtemp(prefix="shader-manifest-"))
         self.checkout = self.base / "checkout"
         self.patches = self.base / "patches"
         self.out = self.base / "out"
@@ -142,6 +137,14 @@ def prescale_patch(relative, before, after):
 
 def patchable_stage(before):
     return "#version 450\n%s\nvoid main() { }\n" % before
+
+
+def seed(tree):
+    tree.write("keep.slangp", "shaders = 1\nshader0 = keep.slang\n")
+    tree.write("keep.slang", stage(PUBLIC_DOMAIN_HEADER))
+    tree.write("patched.slangp", "shaders = 1\nshader0 = patched.slang\n")
+    tree.write("patched.slang", patchable_stage(UNCLAMPED))
+    tree.patch("prescale.patch", prescale_patch("patched.slang", UNCLAMPED, CLAMPED))
 
 
 def run(command, tree, extra=(), out=None):
@@ -249,11 +252,7 @@ class Buckets(unittest.TestCase):
     def setUp(self):
         self.tree = Tree()
         self.addCleanup(self.tree.drop)
-        self.tree.write("keep.slangp", "shaders = 1\nshader0 = keep.slang\n")
-        self.tree.write("keep.slang", stage(PUBLIC_DOMAIN_HEADER))
-        self.tree.write("patched.slangp", "shaders = 1\nshader0 = patched.slang\n")
-        self.tree.write("patched.slang", patchable_stage(UNCLAMPED))
-        self.tree.patch("prescale.patch", prescale_patch("patched.slang", UNCLAMPED, CLAMPED))
+        seed(self.tree)
 
     def classify(self, extra=()):
         code, output = run("classify", self.tree, extra)
@@ -318,17 +317,15 @@ class Buckets(unittest.TestCase):
 
 
 class Classification(unittest.TestCase):
-    """One fixture per class, built from the spellings the audit quotes."""
+    """One fixture per licence class."""
 
     def setUp(self):
         self.tree = Tree()
         self.addCleanup(self.tree.drop)
-        self.checkout = manifest.Checkout(self.tree.checkout)
 
     def classify(self, relative, text, ceiling=manifest.DEFAULT_CONFIG_BYTES):
         self.tree.write(relative, text)
-        self.checkout = manifest.Checkout(self.tree.checkout)
-        return self.checkout and manifest.classify_file(
+        return manifest.classify_file(
             manifest.Checkout(self.tree.checkout), relative, text, len(text), ceiling)[0]
 
     def test_each_class_is_reached_by_its_own_evidence(self):
@@ -412,11 +409,7 @@ class Gate(unittest.TestCase):
     def setUp(self):
         self.tree = Tree()
         self.addCleanup(self.tree.drop)
-        self.tree.write("keep.slangp", "shaders = 1\nshader0 = keep.slang\n")
-        self.tree.write("keep.slang", stage(PUBLIC_DOMAIN_HEADER))
-        self.tree.write("patched.slangp", "shaders = 1\nshader0 = patched.slang\n")
-        self.tree.write("patched.slang", patchable_stage(UNCLAMPED))
-        self.tree.patch("prescale.patch", prescale_patch("patched.slang", UNCLAMPED, CLAMPED))
+        seed(self.tree)
 
     def assertNothingEmitted(self):
         self.assertFalse((self.tree.out / "manifest.json").exists())
@@ -560,15 +553,14 @@ class Emitted(unittest.TestCase):
 
 
 class SharedDetector(unittest.TestCase):
-    def test_the_prescale_regex_is_the_bundled_fence_object_not_a_copy(self):
+    def test_the_prescale_regex_comes_from_the_prescale_guard(self):
         self.assertIs(manifest.PRESCALE, guard.PRESCALE)
-        # re.compile caches, so identity alone cannot see a second literal of the same
-        # pattern. The source is what stops the two trees drifting on the spelling.
+        # re.compile caches, so assertIs cannot see a second literal of the same pattern.
         source = GENERATOR.read_text(encoding="utf-8")
         self.assertNotIn("PRESCALE = re.compile", source)
         self.assertIn("test_ios_shader_prescale_guard", source)
 
-    def test_the_real_patch_still_turns_the_spelling_this_fence_uses(self):
+    def test_the_patch_contains_both_prescale_spellings(self):
         body = REAL_PATCH.read_text(encoding="utf-8")
         self.assertIn(UNCLAMPED.strip(), body)
         self.assertIn(CLAMPED.strip(), body)

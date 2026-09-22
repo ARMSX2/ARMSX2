@@ -682,10 +682,10 @@ if(USE_OPENGL)
 	target_link_libraries(PCSX2_FLAGS INTERFACE glad)
 
 	if(ENABLE_LIBRETRO)
-		# The context the frontend owns; picked over the platform ones below
-		# when the core installs its callbacks.
-		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextLibretro.cpp)
-		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextLibretro.h)
+		# Context sharing with the frontend, and the finished-frame handoff that
+		# goes with it.
+		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLLibretro.cpp)
+		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLLibretro.h)
 	endif()
 
 	if(WIN32)
@@ -693,7 +693,11 @@ if(USE_OPENGL)
 		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextWGL.h)
 		target_link_libraries(PCSX2_FLAGS INTERFACE opengl32.lib WinPixEventRuntime::WinPixEventRuntime)
 	else()
-		if(X11_API OR WAYLAND_API)
+		# The libretro core builds with X11_API and WAYLAND_API off - it has no
+		# window of its own - but it still needs the EGL context class, because
+		# the context it renders on is an EGL one shared with the frontend's.
+		# (Android adds the same file further down, and CMake drops the repeat.)
+		if(X11_API OR WAYLAND_API OR ENABLE_LIBRETRO)
 			list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextEGL.cpp)
 			list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextEGL.h)
 		endif()
@@ -817,14 +821,21 @@ if(USE_VULKAN)
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 	endif()
 
-	# Off Android the shader compiler is dlopened, which means the core needs a
+	# Off Android the shader compiler is dlopened, which means the binary needs a
 	# shaderc on the machine it is run on - and on a machine without one the
 	# Vulkan renderer fails to build a pipeline and the frontend gets a black
 	# screen. Where the static archive was found, link it and call it directly:
-	# then the core carries its own. A shared library is deliberately not linked
-	# here, since a hard dependency would stop the core loading at all for
+	# then the binary carries its own. A shared library is deliberately not
+	# linked here, since a hard dependency would stop it loading at all for
 	# someone who is happily using the OpenGL renderer.
-	if(ENABLE_LIBRETRO AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
+	#
+	# Finding the archive is the whole condition; the frontend is not part of it.
+	# The libretro core was simply the first thing to travel to a machine we know
+	# nothing about, and the SDL handheld tarball does exactly the same - it too
+	# would otherwise dlopen a shaderc that its own dependency set no longer
+	# builds. Every build against a shared shaderc is unaffected, because then
+	# this does not match.
+	if(NOT ANDROID AND TARGET Shaderc::shaderc_shared
 			AND SHADERC_LIBRARY MATCHES "shaderc_combined")
 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_LINK_SHADERC)
@@ -890,7 +901,11 @@ elseif(LINUX)
 	list(APPEND pcsx2USBHeaders
 		USB/usb-eyetoy/cam-linux.h
 	)
-elseif(APPLE)
+elseif(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+	# cam-macos.mm asks AVCaptureDeviceDiscoverySession for
+	# AVCaptureDeviceTypeExternalUnknown, which is marked unavailable on tvOS.
+	# There it takes the same no-op backend as every other platform without a
+	# camera; iOS keeps the one it always had.
 	list(APPEND pcsx2USBSources
 		USB/usb-eyetoy/cam-macos.mm
 	)
@@ -1231,6 +1246,7 @@ set(pcsx2x86Headers
 # ARM64
 set(pcsx2arm64Sources
 	arm64/AsmHelpers.cpp
+	arm64/FPU-divunit-arm64.cpp
 	arm64/iCore-arm64.cpp
 	arm64/iR3000A-arm64.cpp
 	arm64/iR3000Atables-arm64.cpp
@@ -1261,6 +1277,7 @@ set(pcsx2arm64Sources
 
 set(pcsx2arm64Headers
 	arm64/AsmHelpers.h
+	arm64/FPU-divunit-arm64.h
 	arm64/iCore-arm64.h
 	arm64/iR3000A-arm64.h
 	arm64/iR5900-arm64.h
@@ -1278,7 +1295,12 @@ set(pcsx2arm64Headers
 # forks (refresh-experimental / iOS-refresh). Source wiring only: real NDK /
 # Xcode builds are required to validate include paths and link deps.
 # See REFACTOR_STATUS.md.
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+# tvOS is the same platform as far as this build is concerned: no libpcap, no
+# OpenGL, Metal for the GS, and the same Apple embedded rules about what a
+# process may map and load. The buildbot's templates already pass -DIOS=ON for
+# both, so the `NOT IOS` guards elsewhere cover tvOS; this is the other half of
+# that, and without it a tvOS link is short the PCAPAdapter stubs.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
 	set(ARMSX2_IOS TRUE)
 endif()
 
@@ -1345,6 +1367,16 @@ if(ARMSX2_IOS)
 		# iOS has no libpcap, so pcap_io.cpp is excluded above; reuse the (platform-
 		# agnostic) Android stub to supply the PCAPAdapter definitions DEV9 references.
 		Android/AndroidPcapStubs.cpp)
+	# MacOSStubs.cpp excludes itself on the embedded platforms (it is
+	# !TARGET_OS_IPHONE throughout), so what those need instead is here: the
+	# optical drive CDVDdiscReader names, the sound CocoaTools would have
+	# played, and the downloader there is no libcurl for. Only for a core: the
+	# iOS app answers for all of it in its own IOS/HostImpls.mm, and two
+	# definitions of each is a duplicate symbol at link.
+	if(ENABLE_LIBRETRO)
+		list(APPEND pcsx2Sources
+			Apple/AppleEmbeddedStubs.cpp)
+	endif()
 endif()
 
 # These ones benefit a lot from LTO
@@ -1528,9 +1560,10 @@ endif()
 target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
 
 if(APPLE OR BSD)
-	# Disc sources use IOKit, which doesn't exist on iOS.
-	if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-		# No disc support on iOS.
+	# Disc sources use IOKit, which exists on neither iOS nor tvOS.
+	if(ARMSX2_IOS)
+		# No disc support there; Apple/AppleEmbeddedStubs.cpp answers for what
+		# CDVDdiscReader names.
 	elseif(APPLE)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2OSXSources})
@@ -1714,8 +1747,8 @@ fixup_file_properties(PCSX2)
 force_include_last(PCSX2_FLAGS "/(usr|local)/include/?$")
 
 if (APPLE)
-	if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
-		# AppKit and IOKit are macOS-only; iOS links the rest at the app target.
+	if(NOT ARMSX2_IOS)
+		# AppKit and IOKit are macOS-only.
 		find_library(APPKIT_LIBRARY AppKit)
 		find_library(IOKIT_LIBRARY IOKit)
 		find_library(METAL_LIBRARY Metal)
@@ -1730,11 +1763,31 @@ if (APPLE)
 			${AVFOUNDATION_LIBRARY}
 			${COREMEDIA_LIBRARY}
 		)
+	elseif(ENABLE_LIBRETRO)
+		# The iOS app links these at its own target, so PCSX2 never had to -
+		# but a libretro core is the final link itself, and the Metal renderer
+		# it carries names MTLCreateSystemDefaultDevice and CAMetalLayer. The
+		# two macOS-only frameworks above stay out.
+		find_library(METAL_LIBRARY Metal)
+		find_library(QUARTZCORE_LIBRARY QuartzCore)
+		find_library(AVFOUNDATION_LIBRARY AVFoundation)
+		find_library(COREMEDIA_LIBRARY CoreMedia)
+		target_link_libraries(PCSX2_FLAGS INTERFACE
+			${METAL_LIBRARY}
+			${QUARTZCORE_LIBRARY}
+			${AVFOUNDATION_LIBRARY}
+			${COREMEDIA_LIBRARY}
+		)
 	endif()
 	# Weak-link MetalFX so older OS versions still load. Skip on the iOS simulator:
 	# MetalFX.framework isn't in the iphonesimulator SDK (see PCSX2_HAS_METALFX in
 	# GSDeviceMTL.h), so linking it there fails with "framework not found".
-	if(ARMSX2_REAL_DEVICE OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	#
+	# ARMSX2_REAL_DEVICE is the iOS app's own switch and nothing sets it for the
+	# libretro core, which is only ever built against a device SDK - and without
+	# the framework the link is short MTLFXSpatialScalerDescriptor, because the
+	# header is there and PCSX2_HAS_METALFX is 1.
+	if(ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 	endif()
 endif()

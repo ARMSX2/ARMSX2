@@ -53,7 +53,11 @@ object TouchControls {
      *  close match for the small top-right button NetherSX2 draws. */
     const val PAUSE_DEFAULT_DP = 48f
     private const val KEY_FACE_MULTI = "touch.faceMulti"
+    // Legacy boolean. Still READ once to migrate a user who has never seen the three-way
+    // setting, and still WRITTEN (as mode == HOLD_ALL) so a downgrade lands on the closest
+    // behaviour the older build has.
     private const val KEY_TOUCH_GLIDING = "touch.gliding"
+    private const val KEY_GLIDE_MODE = "touch.glideMode"
     private const val KEY_TOUCH_HAPTICS = "touch.haptics"
     private const val KEY_GESTURE_ON = "touch.gesture.enabled"
     private const val KEY_GESTURE_UP = "touch.gesture.up"
@@ -67,12 +71,14 @@ object TouchControls {
     private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_FULL_HALF_STICKS = "touch.fullHalfSticks"
+    private const val KEY_FULL_HALF_KEEP_LEFT = "touch.fullHalfKeepLeftStick"
     private const val KEY_ANALOG_EXTRA = "touch.analogExtra"
     private const val KEY_ANALOG_EXTRA_CODE = "touch.analogExtraCode"
     private const val KEY_ANALOG_EXTRA_DIST = "touch.analogExtraDist"
     private const val KEY_ANALOG_EXTRA_ANGLE = "touch.analogExtraAngle"
     private const val KEY_GRID_SNAP = "touch.gridSnap"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
+    private const val KEY_TOUCH_PLAYER = "touch.player"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
     // predate the default changes, so the new defaults wouldn't otherwise apply).
     private const val KEY_DEFAULTS_MIGRATED_247 = "touch.defaults.migrated.247"
@@ -186,11 +192,28 @@ object TouchControls {
     // held). Persisted under KEY_FACE_MULTI. Default ON.
     val faceMultiTouch = mutableStateOf(true)
 
-    // Touch Gliding (NetherSX2-style): while ON, dragging a finger LATCHES every
-    // button it crosses (held until the finger lifts) instead of only the one it's
-    // currently over — so you can hold several face/shoulder buttons with one drag.
-    // Requires the multi-touch layer (faceMultiTouch). Default OFF. Under KEY_TOUCH_GLIDING.
-    val touchGliding = mutableStateOf(false)
+    /**
+     * What a finger sliding across the face/shoulder buttons presses. Requires the
+     * multi-touch layer (faceMultiTouch); without it each button handles its own touch
+     * and nothing can be glided across at all.
+     *
+     * Three modes because players genuinely want different things, and no single one is
+     * right for every game:
+     *
+     *   FOLLOW      only the button(s) under the finger right now, released as it leaves.
+     *               PPSSPP's behaviour -- sliding still works, it just never accumulates.
+     *               Fighters and rhythm games, where a slide is a sequence of inputs.
+     *   HOLD_FIRST  the first button the finger lands on stays held until lift, plus
+     *               whatever it is over now. Hold Cross, slide to Square -> both; slide off
+     *               Square -> Cross still held. For two-input movement (Sly, Jak).
+     *   HOLD_ALL    every button crossed stays held until lift. NetherSX2's behaviour.
+     *
+     * FOLLOW and HOLD_ALL are exactly the old "Gliding Off" / "Gliding On", so nobody's
+     * controls change on update. Stored by NAME, never ordinal, so reordering is safe.
+     */
+    enum class GlideMode { FOLLOW, HOLD_FIRST, HOLD_ALL }
+
+    val glideMode = mutableStateOf(GlideMode.FOLLOW)
 
     // Touch Haptics (issue #247, PPSSPP/Azahar-style): a short vibration tick on every
     // on-screen button press (via NativeApp.touchHaptic). Independent of game rumble.
@@ -242,6 +265,12 @@ object TouchControls {
     // its stick from wherever it touches down (floating origin). The normal L/R stick widgets are
     // hidden while this is on. Global; persisted under KEY_FULL_HALF_STICKS.
     val fullHalfSticks = mutableStateOf(false)
+
+    // With [fullHalfSticks] on: keep the normal on-screen LEFT stick instead of turning the left
+    // half of the screen into one, so only the right half is an invisible stick. For players who
+    // want a stick they can see under the thumb that moves them and a free-look half for the
+    // camera (Ladi Altera: "don't remove Left Analog Stick when Half-Screen On"). Global.
+    val fullHalfKeepLeftStick = mutableStateOf(false)
 
     // Editor-only: while ON, dragging a widget in edit mode snaps its centre anchor to the
     // nearest cross of a square grid (see GRID_COLS in TouchControlsOverlay). Lets the user
@@ -316,12 +345,14 @@ object TouchControls {
     // different screen coordinates in each, so a portrait offset applied in landscape would shove it
     // off-screen. Lets the user drag the settings panel out of the way and resize it so it stops
     // covering the buttons. Not persisted: raw-px offsets don't survive a resolution change.
+    // Opens a notch under full size: at 1.0 it covered too much of a handheld's screen.
+    private const val EDITOR_PANEL_DEFAULT_SCALE = 0.9f
     private val editorPanelDxP = mutableFloatStateOf(0f)
     private val editorPanelDyP = mutableFloatStateOf(0f)
-    private val editorPanelScaleP = mutableFloatStateOf(1f)
+    private val editorPanelScaleP = mutableFloatStateOf(EDITOR_PANEL_DEFAULT_SCALE)
     private val editorPanelDxL = mutableFloatStateOf(0f)
     private val editorPanelDyL = mutableFloatStateOf(0f)
-    private val editorPanelScaleL = mutableFloatStateOf(1f)
+    private val editorPanelScaleL = mutableFloatStateOf(EDITOR_PANEL_DEFAULT_SCALE)
 
     fun editorPanelDx(landscape: Boolean) = if (landscape) editorPanelDxL else editorPanelDxP
     fun editorPanelDy(landscape: Boolean) = if (landscape) editorPanelDyL else editorPanelDyP
@@ -330,7 +361,7 @@ object TouchControls {
     fun resetEditorPanel(landscape: Boolean) {
         editorPanelDx(landscape).floatValue = 0f
         editorPanelDy(landscape).floatValue = 0f
-        editorPanelScale(landscape).floatValue = 1f
+        editorPanelScale(landscape).floatValue = EDITOR_PANEL_DEFAULT_SCALE
     }
 
     /** Held-state for the DS2 pressure-sensitivity modifier. While true, the
@@ -370,10 +401,18 @@ object TouchControls {
     /** Range to send for [keycode] given the current modifier state: a reduced
      *  (soft) range while the modifier is held on a pressure-capable button,
      *  else 0 (full press). */
-    fun pressureRangeFor(keycode: Int): Int =
-        if (pressureModifierHeld.value && keycode in PRESSURE_KEYCODES)
+    fun pressureRangeFor(keycode: Int): Int {
+        if (keycode !in PRESSURE_KEYCODES) return 0
+        // A macro with its own pressure is pressing this button right now: its amount wins,
+        // so two macros on the same button can press it at two strengths (see macroPressure).
+        macroPressureHeld[keycode]?.let { return (PRESSURE_FULL_RANGE * it / 100).coerceAtLeast(1) }
+        return if (pressureModifierHeld.value)
             (PRESSURE_FULL_RANGE * pressurePercent.intValue / 100).coerceAtLeast(1)
         else 0
+    }
+
+    /** Whether [keycode] is one of the DualShock2's pressure-sensitive inputs. */
+    fun isPressureCapable(keycode: Int): Boolean = keycode in PRESSURE_KEYCODES
 
     /** Pressure-capable buttons currently held down, per port, so the modifier can be applied
      *  LIVE to a button that is ALREADY down. [pressureRangeFor] is only consulted when a press
@@ -410,14 +449,37 @@ object TouchControls {
     /** Drop all held-pressure bookkeeping (VM stop / pad reset), so a stale key can't be re-emitted. */
     fun clearHeldPressureKeys() {
         synchronized(heldPressureKeys) { heldPressureKeys.clear() }
+        // And any macro's own pressure, or a macro held as the VM stopped (its release never
+        // arrives) would leave that button soft on the next press.
+        macroPressureHeld.clear()
     }
 
     /** On-screen touch controls visibility. 0 = Never show (for physical-
      *  controls devices like the RP6 — also hides the settings cog so nothing
      *  overlaps R1); 1..10 = auto-hide after that many seconds of no touch;
      *  11 = Auto — show on screen touch, hide when a controller is used (the
-     *  default / legacy behavior). Persisted. */
+     *  default / legacy behavior); 12 = Always, never hidden by anything but the
+     *  in-game menu's switch. Persisted.
+     *
+     *  Always exists for people who play with a controller AND touch buttons at once: Auto hid
+     *  the touch buttons on every controller input, and a timer hid them between touches. */
     val visibilityMode = mutableIntStateOf(11)
+    const val VISIBILITY_ALWAYS = 12
+
+    /** Which player the on-screen controls play as: 0 = Player 1, 1 = Player 2. Player 2 is for
+     *  two people on one device, one on a controller and one on the touch screen. Persisted; the
+     *  running game uses [playerPort], fixed when it boots. */
+    val touchPlayer = mutableIntStateOf(0)
+
+    /** The PS2 port the on-screen controls drive in the running game, fixed at boot from
+     *  [touchPlayer] (MainActivityRuntime.applyRendererPrefs). Player 2's port can only be plugged
+     *  in at boot, so a mid-game switch would have sent every touch to an empty port. */
+    @Volatile @JvmField var playerPort = 0
+
+    fun setTouchPlayer(player: Int) {
+        touchPlayer.intValue = player.coerceIn(0, 1)
+        persist()
+    }
 
     /** Bumped on every touch interaction (screen tap or on-screen button press)
      *  so the auto-hide timer restarts. Not persisted. */
@@ -549,6 +611,31 @@ object TouchControls {
         macroBindTick.intValue++
     }
 
+    // ---- Macro pressure ----------------------------------------------------------
+    // How hard a macro presses its pressure-sensitive buttons. NetherSX2 players kept duplicate
+    // macros of one button at different pressures -- two map zoom levels on Square -- and the only
+    // pressure here was the one global modifier amount (Cotcho). Per macro now; 100 = a full
+    // press, which is what every macro did before and stays the default.
+
+    private const val KEY_MACRO_PRESSURE_PREFIX = "touch.macro.pressure."
+
+    /** Lowest pressure a macro may press with; below this the game reads no press at all. */
+    const val MACRO_PRESSURE_MIN = 5
+
+    fun macroPressure(id: TouchButtonId): Int =
+        MainActivityRuntime.prefs.getInt(KEY_MACRO_PRESSURE_PREFIX + id.name, 100).coerceIn(MACRO_PRESSURE_MIN, 100)
+
+    fun setMacroPressure(id: TouchButtonId, percent: Int) {
+        MainActivityRuntime.prefs.edit {
+            putInt(KEY_MACRO_PRESSURE_PREFIX + id.name, percent.coerceIn(MACRO_PRESSURE_MIN, 100))
+        }
+        macroBindTick.intValue++
+    }
+
+    /** Pressure-sensitive buttons a macro with its own pressure is holding, and that pressure.
+     *  Read by [pressureRangeFor]; touch and pad input arrive on different threads. */
+    private val macroPressureHeld = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
     /** A frame in ms. The emulated console is the thing being counted, so 60Hz — an NTSC
      *  frame. This is the one approximation here: a PAL title's frames are 20ms, so its
      *  toggle runs ~17% fast. Not worth chasing the live refresh rate for a turbo. */
@@ -583,15 +670,20 @@ object TouchControls {
         val wantsPressure = MACRO_CODE_PRESSURE in codes
         val buttons = codes.filter { it != MACRO_CODE_PRESSURE }
         val runKey = "${id.name}:$key"
+        // This macro's own pressure, for its pressure-sensitive buttons. 100 = full press = none.
+        val pressure = macroPressure(id)
+        val pressured = if (pressure < 100) buttons.filter { it in PRESSURE_KEYCODES } else emptyList()
         if (!down) {
             macroRunnables.remove(runKey)?.let { macroHandler.removeCallbacks(it) }
             buttons.forEach { emit(it, false) }
             if (wantsPressure) pressureModifierHeld.value = false
+            pressured.forEach { macroPressureHeld.remove(it) }
             return
         }
         // Set BEFORE the buttons go down — pressureRangeFor is read at emit time, so the
         // order is what decides whether the press is soft.
         if (wantsPressure) pressureModifierHeld.value = true
+        pressured.forEach { macroPressureHeld[it] = pressure }
         if (buttons.isEmpty()) return
         val frames = macroFrequency(id)
         if (frames <= 0) {
@@ -738,18 +830,24 @@ object TouchControls {
             MainActivityRuntime.prefs.getFloat(KEY_GESTURE_SENS, 0.17f).coerceIn(0.05f, 0.60f)
         gestureDoubleTap.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_DTAP, 0)
         gestureDoubleTapHold.value = MainActivityRuntime.prefs.getBoolean(KEY_GESTURE_DTAP_HOLD, false)
-        touchGliding.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
+        glideMode.value = MainActivityRuntime.prefs.getString(KEY_GLIDE_MODE, null)
+            ?.let { name -> GlideMode.entries.firstOrNull { it.name == name } }
+            // Never set: carry over the old on/off exactly, so the update changes nothing.
+            ?: if (MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)) GlideMode.HOLD_ALL
+               else GlideMode.FOLLOW
         touchHaptics.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
         multiTouchRadius.floatValue = MainActivityRuntime.prefs.getFloat(KEY_MULTI_RADIUS, 0.62f).coerceIn(0.50f, 0.95f)
         dpadSpacing.floatValue = MainActivityRuntime.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
         floatingStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FLOATING_STICK, false)
         fullHalfSticks.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_STICKS, false)
+        fullHalfKeepLeftStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_KEEP_LEFT, false)
         analogExtraEnabled.value = MainActivityRuntime.prefs.getBoolean(KEY_ANALOG_EXTRA, false)
         analogExtraKeycode.intValue = MainActivityRuntime.prefs.getInt(KEY_ANALOG_EXTRA_CODE, 96)
         analogExtraDistance.floatValue =
             MainActivityRuntime.prefs.getFloat(KEY_ANALOG_EXTRA_DIST, 0.35f).coerceIn(0.1f, 1.5f)
         gridSnap.value = MainActivityRuntime.prefs.getBoolean(KEY_GRID_SNAP, false)
-        visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, 11)
+        visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, VISIBILITY_ALWAYS)
+        touchPlayer.intValue = MainActivityRuntime.prefs.getInt(KEY_TOUCH_PLAYER, 0).coerceIn(0, 1)
         if (visibilityMode.intValue == 0) visible.value = false
         // #357: show/hide became tap-to-reveal (inverted). Seed the new pref from the old one so
         // anyone who had the button hidden keeps it hidden — now as tap-to-reveal, which still
@@ -841,14 +939,17 @@ object TouchControls {
                 .putFloat(KEY_GESTURE_SENS, gestureSwipeSensitivity.floatValue)
                 .putInt(KEY_GESTURE_DTAP, gestureDoubleTap.intValue)
                 .putBoolean(KEY_GESTURE_DTAP_HOLD, gestureDoubleTapHold.value)
-                .putBoolean(KEY_TOUCH_GLIDING, touchGliding.value)
+                .putString(KEY_GLIDE_MODE, glideMode.value.name)
+                .putBoolean(KEY_TOUCH_GLIDING, glideMode.value == GlideMode.HOLD_ALL)
                 .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
                 .putFloat(KEY_MULTI_RADIUS, multiTouchRadius.floatValue)
                 .putFloat(KEY_DPAD_SPACING, dpadSpacing.floatValue)
                 .putBoolean(KEY_FLOATING_STICK, floatingStick.value)
                 .putBoolean(KEY_FULL_HALF_STICKS, fullHalfSticks.value)
+                .putBoolean(KEY_FULL_HALF_KEEP_LEFT, fullHalfKeepLeftStick.value)
                 .putBoolean(KEY_GRID_SNAP, gridSnap.value)
                 .putInt(KEY_VIS_MODE, visibilityMode.intValue)
+                .putInt(KEY_TOUCH_PLAYER, touchPlayer.intValue)
                 .putBoolean(KEY_PAUSE_TAP_REVEAL, pauseTapToReveal.value)
         }
         syncFolder()
@@ -856,7 +957,7 @@ object TouchControls {
 
     /** Set the on-screen controls visibility mode (see [visibilityMode]). */
     fun setVisibilityMode(mode: Int) {
-        visibilityMode.intValue = mode.coerceIn(0, 11)
+        visibilityMode.intValue = mode.coerceIn(0, VISIBILITY_ALWAYS)
         // Reflect immediately: Never hides; any other mode shows.
         visible.value = visibilityMode.intValue != 0
         interactionTick.intValue++
@@ -1247,8 +1348,8 @@ object TouchControls {
             .filter { it.kind == TouchButtonId.Kind.FACE || it.kind == TouchButtonId.Kind.SHOULDER }
             .map { it.keycode to it.label }
 
-    fun setTouchGliding(enabled: Boolean) {
-        touchGliding.value = enabled
+    fun setGlideMode(mode: GlideMode) {
+        glideMode.value = mode
         persist()
     }
 
@@ -1277,6 +1378,11 @@ object TouchControls {
         persist()
     }
 
+    fun setFullHalfKeepLeftStick(enabled: Boolean) {
+        fullHalfKeepLeftStick.value = enabled
+        persist()
+    }
+
     fun setGridSnap(enabled: Boolean) {
         gridSnap.value = enabled
         persist()
@@ -1291,8 +1397,13 @@ object TouchControls {
 
     /** Latched off the touch controls when a controller key/axis fires.
      *  Only in "Auto" mode (11) — when an auto-hide timeout is set (1..10) the
-     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent. */
-    fun onControllerInputDetected() {
+     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent.
+     *
+     *  Only for a controller playing the SAME player as the touch controls ([port]): with the
+     *  touch controls on Player 2, Player 1's controller is somebody else, and hiding the touch
+     *  buttons on every press of theirs would leave Player 2 with nothing to play with. */
+    fun onControllerInputDetected(port: Int = 0) {
+        if (port != playerPort) return
         if (visibilityMode.intValue == 11 && visible.value) visible.value = false
     }
 

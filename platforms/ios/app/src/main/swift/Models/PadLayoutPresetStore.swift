@@ -11,14 +11,6 @@ struct PadLayoutSnapshot: Codable, Equatable {
     var perButtonLandscape: [String: PadGroupPosition]
     var controlVisibility: [String: Bool]
 
-    static let builtInDefault = PadLayoutSnapshot(
-        portrait: PadLayoutStore.defaultPortrait,
-        landscape: PadLayoutStore.defaultLandscape,
-        perButtonPortrait: [:],
-        perButtonLandscape: [:],
-        controlVisibility: [:]
-    )
-
     func position(for id: String, landscape isLandscape: Bool) -> PadGroupPosition {
         let dict = isLandscape ? landscape : portrait
         let defaults = isLandscape ? PadLayoutStore.defaultLandscape : PadLayoutStore.defaultPortrait

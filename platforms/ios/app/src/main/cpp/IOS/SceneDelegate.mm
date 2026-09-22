@@ -61,6 +61,7 @@
 #include "IOSRuntime.h"
 #import "IOS/ARMSX2GameView.h"
 #import "IOS/PCSX2SceneDelegate.h"
+#import "ARMSX2Bridge.h"
 
 // Defined below, next to the VM worker state it reads.
 static bool ARMSX2JITWorkerBusy();
@@ -319,14 +320,6 @@ static bool ARMSX2JITWorkerBusy();
 #endif
     }];
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ARMSX2iOSRequestVMShutdown"
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-        Console.WriteLn("[UI] VM shutdown requested from UI");
-        s_requestVMStop.store(true);
-    }];
-
     // ARMSX2iOSVMDidShutdown / ARMSX2iOSReturnToMenu: no rootVC background change needed.
     // SwiftUI RootView handles menu background via Color(systemGroupedBackground).ignoresSafeArea().
     // rootVC stays black after first boot — eliminates white flash during VM restart.
@@ -389,10 +382,6 @@ static bool ARMSX2JITWorkerBusy();
 #endif
     } else {
         Console.Warning("No valid BIOS found. Showing selection UI.");
-        if (self.startBiosButton) {
-            self.startBiosButton.hidden = NO;
-            [self.window bringSubviewToFront:self.startBiosButton];
-        }
     }
 #endif
 }
@@ -407,50 +396,27 @@ static bool ARMSX2JITWorkerBusy();
 
 #pragma mark - BIOS discovery
 - (void)checkAndConfigureBIOS {
-    std::string dataRoot = EmuFolders::DataRoot;
-    std::string biosDir = dataRoot + "/bios";
-    
-    // 0. [iPSX2] Check Env Var Override (ARMSX2_BIOS_PATH)
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *biosDir = [docs stringByAppendingPathComponent:@"bios"];
+    [fm createDirectoryAtPath:biosDir withIntermediateDirectories:YES attributes:nil error:nil];
+    Console.WriteLn("@@BIOS_DIR@@ path=\"%s\"", biosDir.UTF8String);
+
+    // 0. Check Env Var Override (ARMSX2_BIOS_PATH)
     const char* envBios = getenv("ARMSX2_BIOS_PATH");
-    // Simulator: use ARMSX2_BIOS_PATH env var or auto-scan Documents/bios/
-    // Real device: BIOS must be placed in Documents/bios/ via Files app
-    Console.WriteLn("@@BIOS_DIR@@ path=\"%s\"", biosDir.c_str());
-    
-    if (envBios) {
-        bool exists = FileSystem::FileExists(envBios);
+    if (envBios && envBios[0]) {
+        NSString *envPath = [NSString stringWithUTF8String:envBios];
+        BOOL exists = [fm fileExistsAtPath:envPath];
         Console.WriteLn("@@BIOS_ENV@@ exists=%d", exists ? 1 : 0);
-        
         if (exists) {
-            // Copy to EmuFolders::Bios to ensure sandbox compliance
-            struct stat st = {0};
-            if (stat(biosDir.c_str(), &st) == -1) mkdir(biosDir.c_str(), 0755);
-            
-            std::string fileName(Path::GetFileName(envBios));
-            std::string destPath = Path::Combine(biosDir, fileName);
-            
-            // Only copy if source != dest
-            if (std::string(envBios) != destPath) {
-                FILE *src = fopen(envBios, "rb");
-                FILE *dst = fopen(destPath.c_str(), "wb");
-                if (src && dst) {
-                     char buffer[4096];
-                     size_t bytes;
-                     while ((bytes = fread(buffer, 1, 4096, src)) > 0) fwrite(buffer, 1, bytes, dst);
-                     fclose(src); fclose(dst);
-                     Console.WriteLn("Copied env-var BIOS to: %s", destPath.c_str());
-                } else {
-                     Console.Error("Failed to copy env-var BIOS. src=%p dst=%p", src, dst);
-                     if (src) fclose(src);
-                     if (dst) fclose(dst);
-                }
+            NSString *fileName = envPath.lastPathComponent;
+            NSString *destPath = [biosDir stringByAppendingPathComponent:fileName];
+            if (![envPath isEqualToString:destPath]) {
+                [fm removeItemAtPath:destPath error:nil];
+                [fm copyItemAtPath:envPath toPath:destPath error:nil];
             }
-            
-            EmuConfig.BaseFilenames.Bios = fileName;
-            if (s_settings_interface) {
-                s_settings_interface->SetStringValue("Filenames", "BIOS", EmuConfig.BaseFilenames.Bios.c_str());
-                s_settings_interface->Save();
-            }
-            Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=env", EmuConfig.BaseFilenames.Bios.c_str());
+            [ARMSX2Bridge setDefaultBIOS:fileName];
+            Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=env", fileName.UTF8String);
             return;
         }
     } else {
@@ -458,163 +424,62 @@ static bool ARMSX2JITWorkerBusy();
     }
 
     // 1. Check existing config
-    if (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios).c_str())) {
-        Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=config", EmuConfig.BaseFilenames.Bios.c_str());
+    NSString *currentBios = [ARMSX2Bridge defaultBIOSName];
+    if (currentBios.length > 0 && [fm fileExistsAtPath:[biosDir stringByAppendingPathComponent:currentBios]]) {
+        Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=config", currentBios.UTF8String);
         return;
     }
 
-    // 1b. Auto-move BIOS files from Documents/ root to bios/ subfolder
-    {
-        FileSystem::FindResultsArray rootResults;
-        if (FileSystem::FindFiles(dataRoot.c_str(), "*", FILESYSTEM_FIND_FILES, &rootResults)) {
-            for (const auto& fd : rootResults) {
-                if (fd.Size >= 1024*1024 && fd.Size <= 50*1024*1024) {
-                    std::string fn = std::string(Path::GetFileName(fd.FileName));
-                    std::string ext = fn.size() >= 4 ? fn.substr(fn.size() - 4) : "";
-                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                    if (ext == ".bin" || ext == ".rom") {
-                        std::string src = Path::Combine(dataRoot, fn);
-                        std::string dst = Path::Combine(biosDir, fn);
-                        if (!FileSystem::FileExists(dst.c_str())) {
-                            if (rename(src.c_str(), dst.c_str()) == 0)
-                                Console.WriteLn("[Files] Moved BIOS to bios/: %s", fn.c_str());
-                            else
-                                Console.WriteLn("[Files] Failed to move BIOS: %s (errno=%d)", fn.c_str(), errno);
-                        }
-                    }
-                }
+    // 1b. Auto-move BIOS files from Documents/ root to bios/ subfolder.
+    // availableISOs treats a .bin over 50 MB as a game image, so the size range
+    // keeps a game left in Documents from being moved out of the library.
+    for (NSString *file in [fm contentsOfDirectoryAtPath:docs error:nil]) {
+        NSString *ext = file.pathExtension.lowercaseString;
+        if ([ext isEqualToString:@"bin"] || [ext isEqualToString:@"rom"]) {
+            NSString *src = [docs stringByAppendingPathComponent:file];
+            const unsigned long long size = [[fm attributesOfItemAtPath:src error:nil] fileSize];
+            if (size < 1024 * 1024 || size > 50 * 1024 * 1024)
+                continue;
+            NSString *dst = [biosDir stringByAppendingPathComponent:file];
+            if (![fm fileExistsAtPath:dst]) {
+                [fm moveItemAtPath:src toPath:dst error:nil];
             }
         }
     }
 
-    // 2. Scan Documents/bios
-    FileSystem::FindResultsArray results;
-    int foundCount = 0;
-    if (FileSystem::FindFiles(biosDir.c_str(), "*", FILESYSTEM_FIND_FILES, &results)) {
-        for (const auto& fd : results) {
-            foundCount++;
-            if (fd.Size >= 1024*1024 && (fd.FileName.find(".bin") != std::string::npos || fd.FileName.find(".BIN") != std::string::npos)) {
-                // Found a candidate
-                std::string currentName = std::string(Path::GetFileName(fd.FileName));
-                EmuConfig.BaseFilenames.Bios = currentName;
-                Console.WriteLn("Auto-detected BIOS (name only): %s", EmuConfig.BaseFilenames.Bios.c_str());
-                if (s_settings_interface) {
-                    s_settings_interface->SetStringValue("Filenames", "BIOS", EmuConfig.BaseFilenames.Bios.c_str());
-                    s_settings_interface->Save();
-                }
-                Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=scan", EmuConfig.BaseFilenames.Bios.c_str());
+    // 2. Scan available BIOSes
+    NSArray<ARMSX2BIOSInfo *> *bioses = [ARMSX2Bridge availableBIOSInfos];
+    // availableBIOSInfos sorts valid entries first, and also lists companion
+    // ROMs like ROM1.BIN, which cannot be booted.
+    if (bioses.firstObject.valid) {
+        NSString *picked = bioses.firstObject.fileName;
+        [ARMSX2Bridge setDefaultBIOS:picked];
+        Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=scan", picked.UTF8String);
+        return;
+    }
+    Console.WriteLn("@@BIOS_SCAN@@ found=%d", (int)bioses.count);
+    Console.WriteLn("@@BIOS_PICK@@ result=\"(none)\" source=none");
+
+    // 3. Check Bundle Resources (Fallback)
+    NSString *bundleBios = [[NSBundle mainBundle].resourcePath stringByAppendingPathComponent:@"BiosFiles"];
+    NSArray<NSString *> *bundleFiles = [fm contentsOfDirectoryAtPath:bundleBios error:nil];
+    for (NSString *file in bundleFiles) {
+        if ([file.pathExtension caseInsensitiveCompare:@"bin"] == NSOrderedSame) {
+            NSString *src = [bundleBios stringByAppendingPathComponent:file];
+            NSString *dst = [biosDir stringByAppendingPathComponent:file];
+            [fm removeItemAtPath:dst error:nil];
+            if ([fm copyItemAtPath:src toPath:dst error:nil]) {
+                [ARMSX2Bridge setDefaultBIOS:file];
                 return;
             }
         }
     }
-    Console.WriteLn("@@BIOS_SCAN@@ found=%d", foundCount);
-    Console.WriteLn("@@BIOS_PICK@@ result=\"(none)\" source=none");
 
-    // 3. Check Bundle Resources (Fallback)
-    NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
-    std::string bundleDir = [resourcePath UTF8String];
-    FileSystem::FindResultsArray bundleResults;
-
-    // [iPSX2] Support "BiosFiles" folder reference
-    std::string bfDir = bundleDir + "/BiosFiles";
-    if (FileSystem::FindFiles(bfDir.c_str(), "*", FILESYSTEM_FIND_FILES, &bundleResults)) {
-        for (const auto& fd : bundleResults) {
-             if (fd.Size >= 1024*1024 && (fd.FileName.find(".bin") != std::string::npos || fd.FileName.find(".BIN") != std::string::npos)) {
-                 Console.WriteLn("Found BIOS in BiosFiles: %s", fd.FileName.c_str());
-                 struct stat st = {0};
-                 if (stat(biosDir.c_str(), &st) == -1) mkdir(biosDir.c_str(), 0755);
-
-                 std::string src = bfDir + "/" + fd.FileName;
-                 std::string dst = biosDir + "/" + fd.FileName;
-                 FILE *s=fopen(src.c_str(),"rb"), *d=fopen(dst.c_str(),"wb");
-                 if(s && d) { char b[4096]; size_t n; while((n=fread(b,1,4096,s))>0) fwrite(b,1,n,d); }
-                 if(s) fclose(s); if(d) fclose(d);
-                 EmuConfig.BaseFilenames.Bios = fd.FileName;
-                 return;
-             }
-        }
-    }
-    if (FileSystem::FindFiles(bundleDir.c_str(), "*", FILESYSTEM_FIND_FILES, &bundleResults)) {
-        for (const auto& fd : bundleResults) {
-             if (fd.Size >= 1024*1024 && (fd.FileName.find(".bin") != std::string::npos || fd.FileName.find(".BIN") != std::string::npos)) {
-                 Console.WriteLn("Found BIOS in Bundle: %s. Copying...", fd.FileName.c_str());
-                 std::string srcPath = bundleDir + "/" + fd.FileName;
-                 std::string destPath = biosDir + "/" + fd.FileName;
-                 
-                 struct stat st = {0};
-                 if (stat(biosDir.c_str(), &st) == -1) mkdir(biosDir.c_str(), 0755);
-
-                 FILE *src = fopen(srcPath.c_str(), "rb");
-                 FILE *dst = fopen(destPath.c_str(), "wb");
-                 if (src && dst) {
-                     char buffer[4096];
-                     size_t bytes;
-                     while ((bytes = fread(buffer, 1, 4096, src)) > 0) fwrite(buffer, 1, bytes, dst);
-                     fclose(src); fclose(dst);
-                     EmuConfig.BaseFilenames.Bios = fd.FileName;
-                     Console.WriteLn("Copy and set successful.");
-                     return;
-                 }
-                 if(src) fclose(src);
-                 if(dst) fclose(dst);
-             }
-        }
-    }
-    
     Console.Warning("No BIOS found automatically.");
     EmuConfig.BaseFilenames.Bios.clear();
 }
 
-#pragma mark - BIOS picker
-- (void)showBiosPicker {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.data"] inMode:UIDocumentPickerModeImport];
-#pragma clang diagnostic pop
-    documentPicker.delegate = self;
-    documentPicker.allowsMultipleSelection = NO;
-    [self.window.rootViewController presentViewController:documentPicker animated:YES completion:nil];
-}
 
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    if (urls.count == 0) return;
-    
-    NSURL *url = urls.firstObject;
-    Console.WriteLn("User picked file: %s", [[url path] UTF8String]);
-    
-    // Copy to Documents/bios
-    std::string biosDir = EmuFolders::DataRoot + "/bios";
-    struct stat st = {0};
-    if (stat(biosDir.c_str(), &st) == -1) mkdir(biosDir.c_str(), 0755);
-    
-    NSString *destPath = [NSString stringWithFormat:@"%s/%@", biosDir.c_str(), [url lastPathComponent]];
-    NSError *error = nil;
-    
-    // Remove if exists
-    [[NSFileManager defaultManager] removeItemAtPath:destPath error:nil];
-    
-    if ([[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:destPath] error:&error]) {
-        Console.WriteLn("Imported BIOS to: %s", [destPath UTF8String]);
-        
-        std::string fileName = [[destPath lastPathComponent] UTF8String];
-        EmuConfig.BaseFilenames.Bios = fileName;
-        
-        // Hide button and start VM
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.startBiosButton.hidden = YES;
-        });
-        
-#if TARGET_OS_SIMULATOR
-        [self startVMThread];
-#else
-        [self checkJITAndStartVM];
-#endif
-
-    } else {
-        Console.Error("Failed to import BIOS: %s", [[error localizedDescription] UTF8String]);
-        Host::ReportErrorAsync("Import Failed", [[error localizedDescription] UTF8String]);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // JIT keepalive timer (Component 2: idle-period grant validation)
@@ -710,10 +575,6 @@ static void ARMSX2StartJITKeepalive()
         if (!DarwinMisc::ValidateJITAlive())
         {
             s_jitExpired.store(true);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter]
-                    postNotificationName:@"ARMSX2iOSJITExpired" object:nil];
-            });
             ARMSX2StopJITKeepalive();
         }
     });

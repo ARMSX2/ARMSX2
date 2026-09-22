@@ -35,7 +35,8 @@ struct microMapGPR
 // ARM64 Register Pools
 //------------------------------------------------------------------
 
-// NEON allocatable: Q0-Q27 (28 registers). Q28=PQ, Q29-Q31=scratch.
+// NEON allocatable: Q0-Q27 less Q25/Q26 (26 registers). Q25/Q26 carry the
+// clamp bounds, Q28=PQ, Q29-Q31=scratch.
 static const int neonAllocTotal = 28;
 
 // GPR allocatable for VI: x14-x15 (2) + x26-x28 (3) = 5.
@@ -47,12 +48,23 @@ static const int neonAllocTotal = 28;
 // dispatcher's x29/x30 Stp/Ldp), x30=lr, sp=stack.
 static const int gprAllocCount = 32; // Total GPR IDs (unusable ones are marked in the map)
 
+// Fold count for vu_merge_fold_tests, so a test cannot pass on a build
+// where the reversal never fires.
+#ifdef PCSX2_RECOMPILER_TESTS
+inline u32 g_mvuMergeFoldCount = 0;
+#endif
+
 //------------------------------------------------------------------
 // ARM64 microRegAlloc
 //------------------------------------------------------------------
 
 class microRegAlloc
 {
+public:
+	// How many clone-write copies in a row the fold can reach back over. Four
+	// is one more than the widest operand list any FMAC body clamps.
+	static constexpr int kCloneRunMax = 4;
+
 protected:
 	std::array<microMapNEON, neonAllocTotal> neonMap;
 	std::array<microMapGPR, gprAllocCount>   gprMap;
@@ -60,7 +72,26 @@ protected:
 	int counter;
 	int neonWatermark; // see getNeonWatermark()
 	int index; // VU0 or VU1
-	bool neonCop2Mode; // SL-13: macro mode — q25/q26 unallocatable (EE clamp consts)
+
+	// The run of clone-write copies allocReg emitted at the end of the buffer,
+	// while they are still its final words: dst holds nothing but a copy of
+	// src, so an emitter that reads dst and writes dst can read src instead and
+	// the copy goes away. takeCloneSource() is the consumer; see
+	// mVUclampOperands.
+	//
+	// A body that clamps two operands makes two of these back to back, so the
+	// run is a stack: only the last is foldable, and folding it rewinds to the
+	// end of the one below, which is then foldable in turn. Anything else
+	// emitted in between ends the run, because rewinding over it would take
+	// that instruction with it.
+	struct CloneNote
+	{
+		int dst;
+		int src;
+		ptrdiff_t end;
+	};
+	CloneNote clones[kCloneRunMax];
+	int cloneCount = 0;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -89,10 +120,12 @@ protected:
 			armAsm->Dup(reg.V4S(), reg.V4S(), 0); // Broadcast to all lanes
 	}
 
-	// SL-13: NEON pool gate — cop2mode excludes q25/q26 (see reset()).
+	// NEON pool gate: q25/q26 hold the clamp bounds in either mode — micro
+	// mode's own qmmClampMax/qmmClampMin, macro mode the EE's SL-13
+	// broadcasts, which are the same two values.
 	__ri bool neonUsable(int i) const
 	{
-		return !neonCop2Mode || (i != 25 && i != 26);
+		return (i != 25 && i != 26);
 	}
 
 	// Find least-recently-used NEON reg (recursive, for eviction)
@@ -268,14 +301,14 @@ public:
 	// meaning — fastmem-base/text-pointer usability — doesn't apply here;
 	// those bases are pinned outside the allocatable set.)
 	//
-	// SL-13: cop2mode likewise gates the q25/q26 NEON slots — in EE-block
-	// context they hold the COP2 clamp-constant broadcasts (see
-	// NEON_RESERVED_COP2_CLAMPMAX/MIN, iCore-arm64.h), and the clamp validity
-	// flag deliberately RIDES THROUGH the mVU-reuse macro wrappers (they emit
-	// no C call), so an mVU allocation landing there would silently corrupt
-	// the constants for every later clamp site in the block. Micro mode keeps
-	// both (micro programs run under the dispatcher; EE re-materializes on
-	// every path back). Pinned by EeVu0Cop2ClampResidency.MacroModeNeonPool*.
+	// SL-13: q25/q26 are out of the NEON pool in both modes (see
+	// neonUsable). In EE-block context they hold the COP2 clamp-constant
+	// broadcasts (NEON_RESERVED_COP2_CLAMPMAX/MIN, iCore-arm64.h) and the
+	// clamp validity flag deliberately rides through the mVU-reuse macro
+	// wrappers, so an mVU allocation landing there would silently corrupt the
+	// constants for every later clamp site in the block; in micro mode they
+	// hold the same two values for mVUclamp1. Pinned by
+	// EeVu0Cop2ClampResidency.NeonPoolExcludesClampRegsInBothModes.
 	void reset(bool cop2mode = false)
 	{
 		// Clear x26/x27 unconditionally so no VI binding survives a
@@ -285,7 +318,6 @@ public:
 		clearGPR(27);
 		gprMap[26].usable = !cop2mode;
 		gprMap[27].usable = !cop2mode;
-		neonCop2Mode = cop2mode;
 		for (int i = 0; i < neonAllocTotal; i++)
 			clearNeon(i);
 		for (int i = 0; i < gprAllocCount; i++)
@@ -295,6 +327,7 @@ public:
 		}
 		counter = 0;
 		neonWatermark = 0;
+		cloneCount = 0;
 	}
 
 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
@@ -306,6 +339,46 @@ public:
 	//------------------------------------------------------------------
 	// VF Register Allocation (NEON Q registers)
 	//------------------------------------------------------------------
+
+	// Record a whole-register copy as foldable. Single-lane copies (the
+	// emitSSShuffle rotations) are not: their consumer is the single-lane
+	// clamp, which leaves lanes 1-3 of dst alone and so still needs them
+	// filled in.
+	__fi void noteClone(int dst, int src)
+	{
+		const ptrdiff_t end = armAsm->GetCursorOffset();
+		if (cloneCount == kCloneRunMax || cloneCount == 0
+			|| clones[cloneCount - 1].end != end - 4)
+			cloneCount = 0;
+		clones[cloneCount++] = {dst, src, end};
+	}
+
+	// The register `dst` was copied from, or -1 when there is no such copy to
+	// fold. On a hit the copy is dropped from the buffer, and the caller owes
+	// dst a write that reads the returned register in its place. Only the top
+	// of the run is foldable, and only while it is the last word emitted: that
+	// is what says nothing has read dst, and that no label was bound over it.
+	int takeCloneSource(int dst)
+	{
+		if (cloneCount == 0)
+			return -1;
+		const CloneNote& top = clones[cloneCount - 1];
+		if (top.dst != dst || top.end != armAsm->GetCursorOffset() || top.end < 4)
+			return -1;
+
+		// MOV Vd.16B, Vn.16B is ORR Vd.16B, Vn.16B, Vn.16B.
+		const u32 expect = 0x4EA01C00u | (top.src << 16) | (top.src << 5) | top.dst;
+		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(top.end - 4);
+		if (*word != expect)
+		{
+			pxFailRel("mVU clone fold: unexpected word");
+			return -1;
+		}
+
+		armAsm->GetBuffer()->Rewind(top.end - 4);
+		cloneCount--;
+		return top.src;
+	}
 
 	// Emit the NEON equivalent of x86's PSHUF.D(dst, src, imm) used in the
 	// clone-write path for single-scalar VF ops. Moves src's lane `srcLane`
@@ -373,7 +446,10 @@ public:
 							else if (xyzw == 1)
 								emitSSShuffle(qmmZ, qmmI, 3); // W to lane 0
 							else if (z != i)
+							{
 								armAsm->Mov(qmmZ.V16B(), qmmI.V16B());
+								noteClone(z, i);
+							}
 
 							mapI.count = counter; // Reg i was used, so update counter.
 						}
@@ -451,6 +527,49 @@ public:
 		neonMap[x].count     = counter;
 		neonMap[x].isNeeded  = true;
 		return qmmX;
+	}
+
+	// Two read-only VF loads as one Ldp, for state-block slots 16 bytes
+	// apart. mvuPreloadRegisters is the only caller and the preconditions
+	// are its own: it preloads a register only when no slot already holds
+	// one, so both allocations reach the fresh-slot path allocReg takes
+	// after its cache search fails, and its four-free-slot gate means
+	// findFreeNeon returns an unoccupied slot, so neither writeBack stores
+	// anything between the two.
+	void allocRegPair(int vfLoadA, int vfLoadB)
+	{
+		counter++;
+		const int x = findFreeNeon(vfLoadA);
+		writeBackNeon(x);
+		neonMap[x].VFreg = vfLoadA;
+		neonMap[x].xyzw = 0;
+		neonMap[x].isZero = (vfLoadA == 0);
+		neonMap[x].count = counter;
+		neonMap[x].isNeeded = true; // hold the slot while the second is chosen
+
+		counter++;
+		const int y = findFreeNeon(vfLoadB);
+		pxAssertMsg(y != x, "microVU preload pair took one slot twice!");
+		writeBackNeon(y);
+		neonMap[y].VFreg = vfLoadB;
+		neonMap[y].xyzw = 0;
+		neonMap[y].isZero = (vfLoadB == 0);
+		neonMap[y].count = counter;
+
+		// Ldp's first register takes the lower address, so a descending pair
+		// loads into the two slots the other way round.
+		const int64_t offA = offsetof(VURegs, VF) + vfLoadA * sizeof(VECTOR);
+		const int64_t offB = offsetof(VURegs, VF) + vfLoadB * sizeof(VECTOR);
+		if (offA < offB)
+			armAsm->Ldp(armQRegister(x), armQRegister(y), mVUstateMem(offA));
+		else
+			armAsm->Ldp(armQRegister(y), armQRegister(x), mVUstateMem(offB));
+
+		// Both slots end cached and unheld — what clearNeeded leaves behind
+		// for a read-only slot, which is what the preloader does with the
+		// register allocReg hands it.
+		neonMap[x].isNeeded = false;
+		neonMap[y].isNeeded = false;
 	}
 
 	//------------------------------------------------------------------
@@ -653,6 +772,12 @@ public:
 	// Clear / Flush
 	//------------------------------------------------------------------
 
+	// Lane holding the one component a three-lane write left alone, indexed by
+	// the mask of components not written (X=8 is lane 0). -1 for every mask
+	// that leaves more or fewer than one component behind.
+	static constexpr int kMergeLane[16] = {
+		-1, 3, 2, -1, 1, -1, -1, -1, 0, -1, -1, -1, -1, -1, -1, -1};
+
 	// Mark a NEON slot as no-longer-needed after the op that allocated it is
 	// done. Matches x86 clearNeeded: when the cleared
 	// slot was written to (xyzw != 0), we must either merge the partial
@@ -685,7 +810,7 @@ public:
 		}
 
 		// Modified VFreg: handle merge / invalidate of other cached copies.
-		int mergeState = 0; // 0: full-write, invalidate others
+		int mergeState = 0; // 0: this slot holds the whole register, invalidate others
 		                    // 1: partial-write, haven't merged yet
 		                    // 2: partial-write, merged into another slot
 		if (clear.xyzw < 0xF)
@@ -701,6 +826,36 @@ public:
 
 			if (mergeState == 1)
 			{
+				// Both directions read the other copy's natural lanes, which a
+				// partial write does not leave behind — allocReg's single-lane
+				// path puts the value in lane 0. A partial slot never gets past
+				// its own clearNeeded, so reaching one here would mean two live
+				// partial writes to the same register.
+				pxAssertMsg(mapI.xyzw == 0 || mapI.xyzw == 0xF,
+					"microVU merge found a partially-written cached copy!");
+
+				// A three-lane write goes the other way round: take the one
+				// lane we did not write from the other copy, one Ins where
+				// mVUmergeRegs needs two, and our slot is the whole register.
+				// It is the other copy that gets dropped, and no microVU
+				// emitter allocates a NEON register after a clearNeeded, so a
+				// copy still marked needed cannot be taken from its holder.
+				const int missing = (~clear.xyzw) & 0xF;
+				const int lane = kMergeLane[missing];
+				if (lane >= 0)
+				{
+					armAsm->Ins(reg.V4S(), lane, armQRegister(i).V4S(), lane);
+#ifdef PCSX2_RECOMPILER_TESTS
+					g_mvuMergeFoldCount++;
+#endif
+					clear.xyzw   = 0xF;
+					clear.count  = counter;
+					clear.isZero = mapI.isZero;
+					clearNeon(i);
+					mergeState = 0; // holding the whole register is the full-write state
+					continue;
+				}
+
 				// First other cached copy found — merge our partial write
 				// into it. The merged reg now holds the complete state, so
 				// mark it as fully valid (xyzw=0xF). We'll invalidate our
@@ -858,7 +1013,7 @@ public:
 		int count = 0;
 		for (int i = 0; i < neonAllocTotal; i++)
 		{
-			if (!neonMap[i].isNeeded && neonMap[i].VFreg < 0)
+			if (neonUsable(i) && !neonMap[i].isNeeded && neonMap[i].VFreg < 0)
 				count++;
 		}
 		return count;

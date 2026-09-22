@@ -176,6 +176,71 @@ void armGetMemOperandInRegister(const vixl::aarch64::Register& addr_reg,
 
 void armLoadConstant128(const vixl::aarch64::VRegister& reg, const void* ptr);
 
+// One-instruction whole-vector shuffles of a single source: entry `lane[i]` is
+// the source lane that lands in result lane i. `kind` picks the instruction
+// (copy, element broadcast, doubleword broadcast, rotate) and `arg` is the
+// lane, doubleword or rotate distance it takes.
+struct ArmLaneGatherBase
+{
+	u8 lane[4];
+	u8 kind;
+	u8 arg;
+};
+static constexpr ArmLaneGatherBase armLaneGatherBases[] = {
+	{{0, 1, 2, 3}, 0, 0},
+	{{0, 0, 0, 0}, 1, 0},
+	{{1, 1, 1, 1}, 1, 1},
+	{{2, 2, 2, 2}, 1, 2},
+	{{3, 3, 3, 3}, 1, 3},
+	{{0, 1, 0, 1}, 2, 0},
+	{{2, 3, 2, 3}, 2, 1},
+	{{1, 2, 3, 0}, 3, 1},
+	{{2, 3, 0, 1}, 3, 2},
+	{{3, 0, 1, 2}, 3, 3},
+};
+
+// dst = { src[lane[0]], src[lane[1]], src[lane[2]], src[lane[3]] }, four 32-bit
+// lanes gathered from one source. `src` is left untouched and must not be
+// `dst`. Returns the number of instructions emitted.
+//
+// Armv8 has no single-instruction arbitrary lane gather short of TBL, and TBL
+// wants its index vector in a register. It does have the shuffles above, any of
+// which can open the sequence; each lane one of them leaves wrong then costs an
+// element insert reading `src`, so the opening to take is the one that gets the
+// most lanes right. The plain copy is among them, which is the bound: this is
+// never longer than a copy plus an insert per lane that moves.
+__fi static int armEmitLaneGather32(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::VRegister& src, const int lane[4])
+{
+	const ArmLaneGatherBase* base = nullptr;
+	int wrong = 5;
+	for (const ArmLaneGatherBase& b : armLaneGatherBases)
+	{
+		int n = 0;
+		for (int i = 0; i < 4; i++)
+			n += (b.lane[i] != lane[i]);
+		if (n < wrong)
+		{
+			base = &b;
+			wrong = n;
+		}
+	}
+
+	switch (base->kind)
+	{
+		case 0: armAsm->Mov(dst.V16B(), src.V16B()); break;
+		case 1: armAsm->Dup(dst.V4S(), src.V4S(), base->arg); break;
+		case 2: armAsm->Dup(dst.V2D(), src.V2D(), base->arg); break;
+		default: armAsm->Ext(dst.V16B(), src.V16B(), src.V16B(), 4 * base->arg); break;
+	}
+	for (int i = 0; i < 4; i++)
+	{
+		if (base->lane[i] != lane[i])
+			armAsm->Ins(dst.V4S(), i, src.V4S(), lane[i]);
+	}
+	return 1 + wrong;
+}
+
 // Per-lane weight for armEmitPackSignZeroBits' combined weight vector.
 //
 // Lane `lane` contributes its zero bit at result bit `bit` and its sign bit at

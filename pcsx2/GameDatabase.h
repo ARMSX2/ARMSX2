@@ -147,6 +147,25 @@ namespace GameDatabaseSchema
 
 		/// Returns true if the current config value for the specified hw fix id matches the value.
 		static bool configMatchesHWFix(const Pcsx2Config::GSOptions& config, GSHWFixId id, int value);
+
+		/// One setting this entry writes, in the terms a settings screen needs to show it and
+		/// to let a player take it back: the name the log uses, the value, and the per-game
+		/// keys whose presence makes applyGameFixes()/applyGSHardwareFixes() skip it.
+		struct ClaimableSetting
+		{
+			std::string name;
+			int value;
+			/// Skipped wholesale while automatic game fixes are off.
+			bool core;
+			/// Skipped wholesale while manual hardware fixes are on.
+			bool user_hack;
+			std::vector<std::pair<const char*, const char*>> keys; ///< section, key
+		};
+
+		/// Every setting this entry writes that a per-game key can claim, in the order the
+		/// apply functions visit them. Leaves out the renderer routine selectors, which no
+		/// setting can claim, and the recommendations, which only raise a warning.
+		std::vector<ClaimableSetting> claimableSettings() const;
 	};
 }; // namespace GameDatabaseSchema
 

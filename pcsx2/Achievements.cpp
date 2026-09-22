@@ -933,6 +933,7 @@ void Achievements::UpdateNotificationPosition()
 	}
 
 	ImGuiFullscreen::SetNotificationPosition(horizontal_position, vertical_position, direction);
+	ImGuiFullscreen::SetNotificationScale(EmuConfig.Achievements.NotificationScale / 100.0f);
 }
 
 void Achievements::UpdateSettings(const Pcsx2Config::AchievementsOptions& old_config)
@@ -991,7 +992,8 @@ void Achievements::UpdateSettings(const Pcsx2Config::AchievementsOptions& old_co
 	}
 
 	// Update notification position if it changed
-	if (EmuConfig.Achievements.NotificationPosition != old_config.NotificationPosition)
+	if (EmuConfig.Achievements.NotificationPosition != old_config.NotificationPosition ||
+		EmuConfig.Achievements.NotificationScale != old_config.NotificationScale)
 		UpdateNotificationPosition();
 
 	// in case cache directory changed
@@ -2474,7 +2476,6 @@ static ImVec2 GetStackingDirection(AchievementOverlayPosition alignment)
 
 void Achievements::DrawGameOverlays()
 {
-	using ImGuiFullscreen::g_medium_font;
 	using ImGuiFullscreen::LayoutScale;
 
 	if (!HasActiveGame() || !(EmuConfig.Achievements.Overlays || EmuConfig.Achievements.LBOverlays))
@@ -2482,9 +2483,12 @@ void Achievements::DrawGameOverlays()
 
 	const auto lock = GetLock();
 
-	const float spacing = LayoutScale(10.0f);
-	const float padding = LayoutScale(10.0f);
-	const ImVec2 image_size = LayoutScale(ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT);
+	// ARMSX2: the indicators follow the notification size too, text and icons both.
+	const float scale = EmuConfig.Achievements.NotificationScale / 100.0f;
+	const std::pair<ImFont*, float> g_medium_font(ImGuiFullscreen::g_medium_font.first, ImGuiFullscreen::g_medium_font.second * scale);
+	const float spacing = LayoutScale(10.0f) * scale;
+	const float padding = LayoutScale(10.0f) * scale;
+	const ImVec2 image_size = LayoutScale(ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT) * scale;
 	const ImGuiIO& io = ImGui::GetIO();
 	ImVec2 position = CalculateOverlayPosition(io, padding, EmuConfig.Achievements.OverlayPosition);
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -2560,7 +2564,7 @@ void Achievements::DrawGameOverlays()
 
 		const ImVec2 box_min = box_position;
 		const ImVec2 box_max = box_position + progress_box_size;
-		const float box_rounding = LayoutScale(1.0f);
+		const float box_rounding = LayoutScale(1.0f) * scale;
 
 		dl->AddRectFilled(box_min, box_max, ImGui::GetColorU32(ImVec4(0.13f, 0.13f, 0.13f, opacity * 0.5f)), box_rounding);
 		dl->AddRect(box_min, box_max, ImGui::GetColorU32(ImVec4(0.8f, 0.8f, 0.8f, opacity)), box_rounding);
@@ -2609,7 +2613,7 @@ void Achievements::DrawGameOverlays()
 
 			const ImVec2 box_min = box_position;
 			const ImVec2 box_max = box_position + tracker_box_size;
-			const float box_rounding = LayoutScale(1.0f);
+			const float box_rounding = LayoutScale(1.0f) * scale;
 			dl->AddRectFilled(box_min, box_max, ImGui::GetColorU32(ImVec4(0.13f, 0.13f, 0.13f, opacity * 0.5f)), box_rounding);
 			dl->AddRect(box_min, box_max, ImGui::GetColorU32(ImVec4(0.8f, 0.8f, 0.8f, opacity)), box_rounding);
 

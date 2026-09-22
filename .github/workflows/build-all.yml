@@ -126,6 +126,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; Google removed the
+          # legacy "tools" package, so installing it fails the whole job.
+          packages: platform-tools
 
       # NDK matches the version AGP resolves to (build.gradle.kts pins none, so it
       # uses AGP's default 28.2.13676358); cmake 3.31.6 matches the pin in
@@ -172,11 +176,9 @@ jobs:
       - name: Install Rust iOS target
         run: rustup target add aarch64-apple-ios
 
-      # RetroAchievements grants hardcore on the client name and version in the HTTP user
-      # agent, and pcsx2/Host.cpp reads that version from a gitignored header. Only builds
-      # that reach players get it: a pull request artifact would be one more public copy of
-      # an identity that cannot be revoked without a release. Those keep the stock PCSX2
-      # agent and stay softcore, which is what a test build should be.
+      # RetroAchievements grants hardcore by the client name and version in the user agent,
+      # which pcsx2/Host.cpp reads from a gitignored header. Only master builds get it; pull
+      # request builds keep the stock PCSX2 agent and stay softcore.
       - name: Embed the RetroAchievements client identity
         if: >-
           github.repository == 'ARMSX2/ARMSX2' &&
@@ -225,9 +227,8 @@ jobs:
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
           ls -lh "$IPA_NAME"
 
-      # Nothing on the client reports a rejected agent, so a master build that lost the
-      # identity looks healthy until a player loses an unlock. Fail here instead. Carries
-      # the same guard as the write step, or every pull request would fail this check.
+      # The client doesn't report a rejected agent, so fail when the identity is missing.
+      # Same guard as the write step, so pull requests skip it.
       - name: Verify the client identity reached the binary
         if: >-
           github.repository == 'ARMSX2/ARMSX2' &&

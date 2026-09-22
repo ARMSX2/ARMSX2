@@ -326,13 +326,20 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		// disabled run. This field reclaims a zeroed reserved byte, so the
 		// recording-OFF sentinel is bit-identical to the pre-recording one.
 		u8  progCacheRecording;
+		// THREAD_VU1, not Speedhacks.vuThread, which is only half of it: the
+		// emitters pick a program end's interrupt raise, a D-bit check's FBRST
+		// address and VU0's VU1-register sync off the composite.
+		u8  threadVU1;
+		// XgKickHack, which swaps a VI store for a whole cycle-by-cycle
+		// XGKICK sync at each kick and at every program end.
+		u8  xgKickHack;
 		// Reserved tail so adding a future option byte doesn't shift downstream
 		// fields. Reclaim bytes with 0 == "feature off / old behavior" so the
 		// off-state sentinel stays bit-identical (no wholesale eviction for
 		// users who never enable the feature); a reclaimed byte whose zero
 		// state is NOT emission-identical needs a kMvuCompilerAbiVersion bump
 		// in the same commit.
-		u8  reserved[11];
+		u8  reserved[9];
 	};
 	static_assert(sizeof(Snapshot) == 64, "options sentinel layout drifted — bump kMvuCompilerAbiVersion");
 
@@ -375,6 +382,8 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.vu1Fpcr = EmuConfig.Cpu.VU1FPCR.bitmask;
 
 	s.progCacheRecording = mVUPersist::IsRecordingEnabled() ? 1 : 0;
+	s.threadVU1          = THREAD_VU1 ? 1 : 0;
+	s.xgKickHack         = EmuConfig.Gamefixes.XgKickHack ? 1 : 0;
 
 	mVU.optionsSentinel      = XXH3_128bits(&s, sizeof(s));
 	mVU.optionsSentinelValid = true;
@@ -633,6 +642,16 @@ static void mVUdispatcherAB(mV)
 	a64::Label exitLabel;
 	armAsm->Cbz(a64::x0, &exitLabel);
 	armAsm->Br(a64::x0);
+
+	// A VU1 program that ends on the E bit raises the MTVU interrupt and then
+	// leaves, so the raise sits here rather than at each end: the branch such
+	// an end already emitted to reach exitFunct carries it, in place of an
+	// absolute call. Nothing falls in -- the dispatch above ends in a Br.
+	if (isVU1)
+	{
+		mVU.exitFunctEBit = armGetCurrentCodePointer();
+		armEmitCall((void*)mVUEBit);
+	}
 
 	// === Exit path === (blocks jump here when done)
 	armAsm->Bind(&exitLabel);
@@ -913,42 +932,19 @@ static void mVUGenerateCopyPipelineState(mV)
 {
 	// x0 = source pointer to microRegInfo (96 bytes)
 	// Copy 96 bytes (6 x 16-byte loads) to mVU.prog.lpState
-	const auto emitCopy = [&mVU]() {
-		const a64::Register src = a64::x0;
-
-		armMoveAddressToReg(a64::x1, &mVU.prog.lpState);
-
-		// 96 bytes = 6 x LDR/STR Q or 3 x LDP/STP Q
-		armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(src, 0));
-		armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(src, 32));
-		armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(src, 64));
-
-		armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x1, 0));
-		armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x1, 32));
-		armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x1, 64));
-	};
+	const a64::Register src = a64::x0;
 
 	mVU.copyPLState = armStartBlock();
-	emitCopy();
-	armAsm->Ret();
-	armEndBlock();
+	armMoveAddressToReg(a64::x1, &mVU.prog.lpState);
 
-	// Resume-arming variant (VE-07), called ONLY from mVUtestCycles'
-	// budget-break exit. There x0 is &pBlock->pState of the block that
-	// failed its cycle test — i.e. the microBlock itself (pState sits at
-	// offset 0) — and that block is exactly what the next dispatch's
-	// lookup would re-resolve (the copy just made lpState == its pState,
-	// TPC gets its PC). Park its hostEntry so Execute can skip the lookup.
-	// Reaches resumeEntry via the x24 pin: testCycles only exists in
-	// micro-mode blocks, where gprMVUFlag is live. Clobbers x1/x2/q0-q5
-	// (x2 is free at the call site: block entry, before any emission).
-	static_assert(offsetof(microBlock, pState) == 0,
-		"copyPLStateResume derives the microBlock from &pState");
+	// 96 bytes = 6 x LDR/STR Q or 3 x LDP/STP Q
+	armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(src, 0));
+	armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(src, 32));
+	armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(src, 64));
 
-	mVU.copyPLStateResume = armStartBlock();
-	emitCopy();
-	armAsm->Ldr(a64::x2, a64::MemOperand(a64::x0, offsetof(microBlock, hostEntry)));
-	armAsm->Str(a64::x2, mVUfieldMem(mVU, &mVU.resumeEntry));
+	armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x1, 0));
+	armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x1, 32));
+	armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x1, 64));
 	armAsm->Ret();
 	armEndBlock();
 }
@@ -1046,6 +1042,107 @@ static void mVUGenerateEndProgramFlagsHelper(mV)
 	armEndBlock();
 }
 
+// The invariant tail of mVUtestCycles' budget-break exit. Every block carried
+// its own copy of these -- 22 instructions in a VU1 block, 18 in a VU0 one --
+// on a path taken only when the block's first cycle test fails. What varies
+// from block to block stays at the call site, in the four registers below, so
+// the emitter keeps picking the flag instances the way mVUendProgram does.
+//
+//   x0  = &pBlock->pState (== the microBlock)
+//   w1  = the block's start PC
+//   w9  = the MAC flag value to finalise    (mVUallocMFLAGa)
+//   w10 = the CLIP flag value to finalise   (mVUallocCFLAGa)
+//   w11 = the status value endProgramFlagsA denormalises (getFlagReg)
+//
+// Entered by B and left through mVUexitEBit, so it may clobber anything the
+// exit path may. It must not touch w9/w10/w11 before storing them.
+static void mVUGenerateCycleBreak(mV)
+{
+	mVU.cycleBreak = armStartBlock();
+
+	// The state this block entered with becomes lpState, and its hostEntry is
+	// parked so the next dispatch re-enters here without a lookup: the copy
+	// just made lpState == this block's pState and TPC below gets its PC, so
+	// a lookup could only resolve back to this block (VE-07).
+	static_assert(offsetof(microBlock, pState) == 0,
+		"the cycle break derives the microBlock from &pState");
+	armMoveAddressToReg(a64::x2, &mVU.prog.lpState);
+	armAsm->Ldp(a64::q0, a64::q1, a64::MemOperand(a64::x0, 0));
+	armAsm->Ldp(a64::q2, a64::q3, a64::MemOperand(a64::x0, 32));
+	armAsm->Ldp(a64::q4, a64::q5, a64::MemOperand(a64::x0, 64));
+	armAsm->Stp(a64::q0, a64::q1, a64::MemOperand(a64::x2, 0));
+	armAsm->Stp(a64::q2, a64::q3, a64::MemOperand(a64::x2, 32));
+	armAsm->Stp(a64::q4, a64::q5, a64::MemOperand(a64::x2, 64));
+	armAsm->Ldr(a64::x3, a64::MemOperand(a64::x0, offsetof(microBlock, hostEntry)));
+	armAsm->Str(a64::x3, mVUfieldMem(mVU, &mVU.resumeEntry));
+	armAsm->Str(a64::x0, mVUfieldMem(mVU, &mVU.resumeBlock));
+
+	// mVUendProgram's P/Q save at qInst == pInst == 0, which is what isEbit
+	// 0 gives every block: Ext-4 then Ext-12 leaves qmmPQ as it was.
+	armAsm->Str(a64::SRegister(qmmPQ.GetCode()),
+		mVUstateMem(offsetof(VURegs, VI) + REG_Q * sizeof(REG_VI)));
+	armAsm->Ext(qmmPQ.V16B(), qmmPQ.V16B(), qmmPQ.V16B(), 4);
+	armAsm->Str(a64::SRegister(qmmPQ.GetCode()), mVUstateMem(offsetof(VURegs, pending_q)));
+	armAsm->Ext(qmmPQ.V16B(), qmmPQ.V16B(), qmmPQ.V16B(), 12);
+	if (isVU1)
+	{
+		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_P * sizeof(REG_VI));
+		armAsm->St1(qmmPQ.V4S(), 2, a64::MemOperand(a64::x8));
+		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, pending_p));
+		armAsm->St1(qmmPQ.V4S(), 3, a64::MemOperand(a64::x8));
+	}
+
+	armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_MAC_FLAG * sizeof(REG_VI)));
+	armAsm->Str(gprT2, mVUstateMem(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI)));
+	armEmitCall(mVU.endProgramFlagsA);
+
+	// Save TPC. endProgramFlagsA leaves w1 alone.
+	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
+	armAsm->Str(a64::w1, a64::MemOperand(a64::x8));
+
+	armEmitJmp(mVUexitEBit(mVU));
+	armEndBlock();
+}
+
+EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex)
+{
+	using namespace EeFpuModelFrame;
+	switch (stub)
+	{
+		case mVUModelStubDivide:            return {reinterpret_cast<const void*>(&EeFpuModel::Divide), kVecNone};
+		case mVUModelStubSqrtBits:          return {reinterpret_cast<const void*>(&EeFpuModel::SqrtBits), kVecSqrt};
+		case mVUModelStubRecipSqrt:         return {reinterpret_cast<const void*>(&EeFpuModel::RecipSqrt), kVecSqrt};
+		case mVUModelStubMulShortTailBand:
+			return {reinterpret_cast<const void*>(
+				vuIndex ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0), kVecNone};
+		case mVUModelStubEfuSum:            return {reinterpret_cast<const void*>(&VuEfuModel::Sum), kVecPoly};
+		case mVUModelStubEfuSquareSum:      return {reinterpret_cast<const void*>(&VuEfuModel::SquareSum), kVecPoly};
+		case mVUModelStubEfuRecipSquareSum: return {reinterpret_cast<const void*>(&VuEfuModel::RecipSquareSum), kVecPoly};
+		case mVUModelStubEfuLength:         return {reinterpret_cast<const void*>(&VuEfuModel::Length), kVecPoly};
+		case mVUModelStubEfuRecipLength:    return {reinterpret_cast<const void*>(&VuEfuModel::RecipLength), kVecPoly};
+		case mVUModelStubEfuRecip:          return {reinterpret_cast<const void*>(&VuEfuModel::Recip), kVecNone};
+		case mVUModelStubEfuSqrt:           return {reinterpret_cast<const void*>(&VuEfuModel::Sqrt), kVecSqrt};
+		case mVUModelStubEfuRecipSqrt:      return {reinterpret_cast<const void*>(&VuEfuModel::RecipSqrt), kVecSqrt};
+		case mVUModelStubEfuSin:            return {reinterpret_cast<const void*>(&VuEfuModel::Sin), kVecPoly};
+		case mVUModelStubEfuExp:            return {reinterpret_cast<const void*>(&VuEfuModel::Exp), kVecPoly};
+		case mVUModelStubEfuAtan:           return {reinterpret_cast<const void*>(&VuEfuModel::Atan), kVecPoly};
+		case mVUModelStubEfuAtanRatio:      return {reinterpret_cast<const void*>(&VuEfuModel::AtanRatio), kVecPoly};
+		default: break;
+	}
+	pxFail("unknown model stub");
+	return {nullptr, 8};
+}
+
+void mVUGenerateModelStubs(mV)
+{
+	for (int i = 0; i < mVUModelStubCount; i++)
+	{
+		mVU.modelStubs[i] = armStartBlock();
+		armDynGenEeFpuModelStub(mVUModelStubTarget(i, mVU.index));
+		armEndBlock();
+	}
+}
+
 // Resets Rec Data
 void mVUreset(microVU& mVU, bool resetReserve)
 {
@@ -1106,6 +1203,8 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	mVUGenerateWaitMTVU(mVU);
 	mVUGenerateCopyPipelineState(mVU);
 	mVUGenerateEndProgramFlagsHelper(mVU);
+	mVUGenerateCycleBreak(mVU);
+	mVUGenerateModelStubs(mVU);
 
 	mVU.regs().nextBlockCycles = 0;
 	memset(&mVU.prog.lpState, 0, sizeof(mVU.prog.lpState));
@@ -1113,6 +1212,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	// mVUreset can run at dispatcher exit (mVUcleanUp's cache-exhaustion
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
+	mVU.resumeBlock = nullptr;
 	mVU.branchCondCarryGpr = -1;
 	mVU.profiler.Reset(mVU.index);
 
@@ -1970,25 +2070,120 @@ void recMicroVU0::SetStartPC(u32 startPC)
 	VU0.start_pc = startPC;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	bool g_spinBounceEnabled = true;
+	u64 g_spinBounces[2] = {};
+
+	void SetSpinBounceEnabled(bool enabled) { g_spinBounceEnabled = enabled; }
+	u64 GetSpinBounceCount(int vu_index) { return g_spinBounces[vu_index & 1]; }
+
+	// Writes a memo into the IR block the next compile is copied from — a
+	// memo that would bounce every dispatch — so a test can see whether a
+	// freshly installed block inherits one.
+	void PoisonIrBlockSpinMemo(int vu_index)
+	{
+		microVU& mVU = vu_index ? microVU1 : microVU0;
+		mVU.prog.IRinfo.block.spinState = mVUspinYes;
+		mVU.prog.IRinfo.block.spinExitOnEq = 0;
+		mVU.prog.IRinfo.block.spinViA = 0;
+		mVU.prog.IRinfo.block.spinViB = 0;
+	}
+} // namespace mvu_test_hooks
+#endif
+
+// A VU0 spin bounce, without entering the recompiler.
+//
+// mVUemitSpinFF zeroes the cycle budget at the head of a recognized spin
+// block while the spin holds, so the block breaks in front of its first
+// instruction and writes back exactly what the previous break wrote: the
+// same pState into lpState, the same hostEntry into resumeEntry, the same
+// flag instances, the same Q, the same TPC. Only the cycle counters move,
+// and reaching them costs the dispatch, the entry marshalling, the head,
+// the break stub and the exit stub.
+//
+// The parked resume is what makes the question answerable from here: the
+// break parks the block alongside its entry, and mVUclear disarms both on any
+// micro-memory write, so the block's encoding is still the one the compiler
+// read. The detector runs once per block and its answer is memoized there,
+// rather than re-derived, which would put a guest micro-memory read on every
+// bounce.
+//
+// Left to the recompiler under the VU sync gamefixes: their break site also
+// stores the block's own cycle count into nextBlockCycles, which the
+// encoding does not carry.
+static bool mVUspinBounce(microVU& mVU, u32 cycles)
+{
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (!mvu_test_hooks::g_spinBounceEnabled)
+		return false;
+#endif
+	microBlock* const blk = mVU.resumeBlock;
+	if (!mVU.resumeEntry || !blk || mVUPersist::IsRecordingEnabled())
+		return false;
+	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
+		return false;
+
+	if (blk->spinState == mVUspinUnknown)
+	{
+		const mVUSpinLoop spin = mVUdetectSpinLoop(mVU, mVU.regs().VI[REG_TPC].UL << 3);
+		blk->spinExitOnEq = spin.exitOnEq;
+		blk->spinViA = static_cast<u8>(spin.viA);
+		blk->spinViB = static_cast<u8>(spin.viB);
+		blk->spinState = spin.found ? mVUspinYes : mVUspinNo;
+	}
+	if (blk->spinState != mVUspinYes)
+		return false;
+
+	const u32 a = mVU.regs().VI[blk->spinViA].US[0];
+	const u32 b = blk->spinViB ? mVU.regs().VI[blk->spinViB].US[0] : 0u;
+	if (blk->spinExitOnEq ? (a == b) : (a != b))
+		return false; // the loop's exit condition holds — run it for real
+
+	// What the break's exit stub banks. The zeroed budget makes the whole
+	// grant the consumed count, which is what the EE skip is scaled from.
+	// mVU.cycles/totalCycles are not carried: both dispatch entries set them
+	// before anything reads them.
+	mVU.regs().cycle += cycles;
+
+	if (const u32 skip = EmuConfig.Speedhacks.EECycleSkip)
+	{
+		const u32 passed = (cycles < 3000u ? cycles : 3000u) * skip;
+		cpuRegs.cycle += passed;
+		VU0.cycle += passed;
+	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	mvu_test_hooks::g_spinBounces[mVU.index]++;
+#endif
+	return true;
+}
+
 void recMicroVU0::Execute(u32 cycles)
 {
 	VU0.flags &= ~VUFLAG_MFLAGSET;
 
 	if (!(VU0.VI[REG_VPU_STAT].UL & 1))
 		return;
-	VU0.VI[REG_TPC].UL <<= 3;
 
-	// Resume fast path (VE-07): a preceding cycle-budget break parked the
-	// breaking block's hostEntry (copyPLStateResume); re-enter it directly,
-	// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
-	// T/D/M-bit) leaves the slot empty and takes the full path. Recording
-	// gets the full path so observed.record keeps seeing resume TPCs.
-	void* const resume = std::exchange(microVU0.resumeEntry, nullptr);
-	if (resume && !mVUPersist::IsRecordingEnabled())
-		((mVUrecCallResume)microVU0.startFunctResume)(resume, cycles);
-	else
-		((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
-	VU0.VI[REG_TPC].UL >>= 3;
+	if (!mVUspinBounce(microVU0, cycles))
+	{
+		VU0.VI[REG_TPC].UL <<= 3;
+
+		// Resume fast path (VE-07): a preceding cycle-budget break parked the
+		// breaking block's hostEntry (mVU.cycleBreak); re-enter it directly,
+		// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
+		// T/D/M-bit) leaves the slot empty and takes the full path. Recording
+		// gets the full path so observed.record keeps seeing resume TPCs.
+		void* const resume = std::exchange(microVU0.resumeEntry, nullptr);
+		if (resume && !mVUPersist::IsRecordingEnabled())
+			((mVUrecCallResume)microVU0.startFunctResume)(resume, cycles);
+		else
+			((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
+		VU0.VI[REG_TPC].UL >>= 3;
+	}
+
 	if (microVU0.regs().flags & 0x4)
 	{
 		microVU0.regs().flags &= ~0x4;
@@ -2139,6 +2334,43 @@ bool mVUTestProbe_NeonPoolUsable(int hostreg, bool cop2mode)
 const u8* mVUTestProbe_WaitMTVUStub(int index)
 {
 	return (index ? microVU1 : microVU0).waitMTVU;
+}
+
+// The options sentinel the on-disk program cache keys its entries on, rebuilt
+// from the config as it stands now. Tests flip one setting and read it back to
+// see whether that setting reaches the key.
+void mVUTestProbe_OptionsSentinel(int index, u64& lo, u64& hi)
+{
+	microVU& mVU = index ? microVU1 : microVU0;
+	mVUbuildOptionsSentinel(mVU);
+	lo = mVU.optionsSentinel.low64;
+	hi = mVU.optionsSentinel.high64;
+}
+
+int mVUTestProbe_ModelStubCount()
+{
+	return mVUModelStubCount;
+}
+
+const u8* mVUTestProbe_ModelStub(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return nullptr;
+	return (index ? microVU1 : microVU0).modelStubs[stub];
+}
+
+const void* mVUTestProbe_ModelStubTarget(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return nullptr;
+	return mVUModelStubTarget(stub, index).fn;
+}
+
+int mVUTestProbe_ModelStubVecEnd(int index, int stub)
+{
+	if (stub < 0 || stub >= mVUModelStubCount)
+		return -1;
+	return mVUModelStubTarget(stub, index).vecEnd;
 }
 #endif
 

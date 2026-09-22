@@ -12,16 +12,23 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 /**
- * Boot splash: plays the bundled ARMSX2 intro video (res/raw/boot_intro.mp4) once per
- * process, then hands off to Main. Tapping, the Back button, a hard timeout, and any
- * playback error all fall through to the app so a bad codec or slow decode never
- * strands the user on a black screen. The splash is opt-out via the "ui.bootLogo"
- * preference (App settings, default on) — when disabled it launches Main immediately.
+ * Boot splash: plays the intro video once per process, then hands off to Main. That is
+ * the user's own intro when one has been chosen ([BootIntro]), else the bundled
+ * res/raw/boot_intro.mp4. Tapping, the Back button, a hard timeout, and any playback error
+ * all fall through to the app so a bad codec or slow decode never strands the user on a
+ * black screen. The splash is opt-out via the "ui.bootLogo" preference (App settings,
+ * default on) — when disabled it launches Main immediately.
+ *
+ * Started with [BootIntro.EXTRA_PREVIEW] it is the Preview button in App settings instead: it
+ * plays regardless of the toggle and the once-per-process rule, then just closes.
  */
 class BootSplashActivity : ComponentActivity() {
     private var launchedMain = false
+    private var preview = false
     private var rootView: View? = null
     private val timeoutRunnable = Runnable { launchMainAndFinish() }
+    // True while a user-chosen intro is the one playing. Cleared if it fails and we fall back.
+    private var playingCustom = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The manifest theme (Theme.ARMSX2.Boot) already paints the window black,
@@ -30,13 +37,14 @@ class BootSplashActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         applyImmersiveUi()
 
+        preview = intent?.getBooleanExtra(BootIntro.EXTRA_PREVIEW, false) == true
         val prefs = getSharedPreferences("ARMSX2", MODE_PRIVATE)
         val bootLogoEnabled = prefs.getBoolean("ui.bootLogo", true)
-        if (!bootLogoEnabled || playedThisProcess) {
+        if (!preview && (!bootLogoEnabled || playedThisProcess)) {
             launchMainAndFinish()
             return
         }
-        playedThisProcess = true
+        if (!preview) playedThisProcess = true
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = launchMainAndFinish()
@@ -50,15 +58,46 @@ class BootSplashActivity : ComponentActivity() {
             postDelayed(timeoutRunnable, HARD_TIMEOUT_MS)
         }
         if (videoView != null) {
+            val bundled = Uri.parse("android.resource://$packageName/${R.raw.boot_intro}")
             videoView.setOnClickListener { launchMainAndFinish() }
-            videoView.setVideoURI(Uri.parse("android.resource://$packageName/${R.raw.boot_intro}"))
+            // The user's own intro when one is on disk. Checked by file, not by preference:
+            // Main has not initialised its prefs yet, and the file is the ground truth anyway.
+            val custom = BootIntro.customFile(this).takeIf { it.length() > 0L }
+            if (custom != null) {
+                playingCustom = true
+                videoView.setVideoPath(custom.absolutePath)
+            } else {
+                videoView.setVideoURI(bundled)
+            }
             videoView.setOnPreparedListener { mp ->
                 mp.isLooping = false
+                if (playingCustom) {
+                    // A chosen intro may run longer than the bundled one, and the hard timeout
+                    // would cut it off mid-play. That timeout exists to catch a decode that never
+                    // starts; once prepared, playback is proven, so give the video its own length
+                    // (capped, in case a file misreports it) before the backstop fires. The
+                    // bundled path is left exactly as it was.
+                    rootView?.removeCallbacks(timeoutRunnable)
+                    val runFor = (mp.duration.toLong().coerceAtLeast(0L) + 2_000L)
+                        .coerceIn(HARD_TIMEOUT_MS, CUSTOM_MAX_MS)
+                    rootView?.postDelayed(timeoutRunnable, runFor)
+                }
                 videoView.start()
             }
             videoView.setOnCompletionListener { launchMainAndFinish() }
             videoView.setOnErrorListener { _, _, _ ->
-                launchMainAndFinish()
+                if (playingCustom) {
+                    // A chosen file the device cannot decode falls back to the stock intro
+                    // rather than skipping, so a bad pick is visible as "not my video" instead
+                    // of the intro silently vanishing. With a fresh hard timeout, since the
+                    // failed attempt may already have spent part of it.
+                    playingCustom = false
+                    rootView?.removeCallbacks(timeoutRunnable)
+                    rootView?.postDelayed(timeoutRunnable, HARD_TIMEOUT_MS)
+                    videoView.setVideoURI(bundled)
+                } else {
+                    launchMainAndFinish()
+                }
                 true
             }
         } else {
@@ -88,6 +127,11 @@ class BootSplashActivity : ComponentActivity() {
         if (launchedMain) return
         launchedMain = true
         rootView?.removeCallbacks(timeoutRunnable)
+        if (preview) {
+            // Main is already running underneath; closing returns to App settings.
+            finish()
+            return
+        }
         val launch = Intent(this, Main::class.java)
         intent?.let { source ->
             launch.action = source.action
@@ -121,5 +165,7 @@ class BootSplashActivity : ComponentActivity() {
     private companion object {
         var playedThisProcess = false
         const val HARD_TIMEOUT_MS = 6000L
+        // Longest a custom intro may hold the app. Tap and Back always skip sooner.
+        const val CUSTOM_MAX_MS = 60_000L
     }
 }

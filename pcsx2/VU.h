@@ -199,6 +199,21 @@ struct alignas(16) VURegs
 	}
 };
 
+// Which lane of a quadword an ILW or ILWR reads.
+//
+// The dest field of a load into VI does not name a set of lanes the way a
+// store's does. It drives a two-bit lane code: y drives bit 0, z drives bit 1,
+// x drives neither, and w is not wired to it at all -- so w and an empty field
+// both leave the code at 3 and read the w lane, and any field with x, y or z
+// in it reads lane (z << 1) | y whatever else is set alongside.
+static constexpr u32 VuIlwLaneOffset(u32 code)
+{
+	const u32 x = (code >> 24) & 1;
+	const u32 y = (code >> 23) & 1;
+	const u32 z = (code >> 22) & 1;
+	return (x | y | z) ? ((z << 3) | (y << 2)) : 12;
+}
+
 enum VUPipeState
 {
 	VUPIPE_NONE = 0,
@@ -210,7 +225,25 @@ enum VUPipeState
 	VUPIPE_XGKICK
 };
 
-extern VURegs vuRegs[2];
+// VU1's data memory is kept here rather than in the memory reservation, a
+// compile-time-fixed distance from vuRegs: the arm64 recompiler pins a pointer
+// to the register file for the length of a dispatch, and that distance puts
+// the data memory in reach of the same pointer.
+//
+// VU0's memory stays in the reservation. It is block-mapped into the EE's
+// address space (memMapVUmicro) and fastmem remaps such a block by its offset
+// within that reservation (vtlb_GetMainMemoryOffsetFromPtr); outside it the
+// block still works, through the slow path. VU1's is handler-mapped, so it is
+// never on that path.
+struct alignas(16) VuStateStore
+{
+	VURegs regs[2];
+	alignas(16) u8 vu1Mem[0x4000]; // VU1_MEMSIZE, which VUmicro.h defines below us
+};
+
+extern VuStateStore vuState;
+
+static VURegs (&vuRegs)[2] = vuState.regs;
 
 // Obsolete(?)  -- I think I'd rather use vu0Regs/vu1Regs or actually have these explicit to any
 // CPP file that needs them only. --air

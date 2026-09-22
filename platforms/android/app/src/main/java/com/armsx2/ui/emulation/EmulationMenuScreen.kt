@@ -644,6 +644,8 @@ private fun MenuHeader(
 
 @Composable
 private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val gsDumpQueued = str("gsdump.quick.queued")
     ActionGrid(
         actions = listOf(
             MenuAction(str("action.resume"), str("action.play"), "▶", Success, viewModel::resume),
@@ -655,6 +657,15 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
             MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, MainActivityRuntime::restart),
             MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, MainActivityRuntime::promptSwapDisc),
+            // Here and not only in Settings > Renderer, where it sat at the bottom of a long page:
+            // a GS dump is what gets asked for when someone reports a graphics bug, and this is
+            // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
+            // draws, and none is drawn while this menu holds the game paused.
+            MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null) {
+                runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
+                android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
+                viewModel.resume()
+            },
             MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
                 MainActivityRuntime.closeGame()
             },
@@ -684,6 +695,12 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             val size = osdModes.size
             val next = ((osdModeIndex + step) % size + size) % size
             com.armsx2.ui.InGameOverlay.setOsdMode(osdModes[next])
+        }
+        Spacer(Modifier.height(6.dp))
+        // The second-screen panel, one tap away. Docked to a monitor over USB-C it goes to the
+        // monitor, and turning it off meant unplugging or digging into App settings (SoraNo).
+        MenuSwitchRow(str("secondScreen.label"), com.armsx2.SecondScreen.enabled.value) { on ->
+            com.armsx2.SecondScreen.set(context.applicationContext, on)
         }
         Spacer(Modifier.height(6.dp))
         MenuSwitchRow(str("perf.frameLimit.label"), state.settings.frameLimitEnable) { value ->
@@ -858,16 +875,9 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     ) { on ->
         viewModel.updateSettings { it.copy(gsBackThreadMode = if (on) 3 else 0) }
     }
-    // Every phone GPU is a tiler, so this belongs in the in-game menu next to the other
-    // renderer levers, not just in full settings — it is the kind of thing you toggle while
-    // looking at the framerate.
-    MenuSwitchRow(
-        str("renderer.coalesceRenderPasses.label"),
-        settings.coalesceRenderPasses,
-        description = str("renderer.coalesceRenderPasses.description"),
-    ) { on ->
-        viewModel.updateSettings { it.copy(coalesceRenderPasses = on) }
-    }
+    // Coalesce Render Passes is deliberately NOT here. It only helps Dirge of Cerberus, and the
+    // game database already turns it on for Dirge, so it lives in All Settings > Renderer >
+    // advanced and nowhere a player tuning performance would reach for it.
     CompactAction(str("backend.applyRestart"), "↻", Modifier.fillMaxWidth(), MainActivityRuntime::restart)
     HorizontalOptions(
         title = str("renderer.upscale.label"),
@@ -939,6 +949,19 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
                 )
             }
         }
+    }
+    // Texture packs, straight after the resolution they are usually paired with. They used to be
+    // split between the bottom of this page (the switches) and the Options page (the manager),
+    // which for one of the most-used features on the device was two places too deep.
+    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
+    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.loadTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(loadTextureReplacements = it) }
+    }
+    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.loadTextureReplacementsAsync) {
+        viewModel.updateSettings { current -> current.copy(loadTextureReplacementsAsync = it) }
+    }
+    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.precacheTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(precacheTextureReplacements = it) }
     }
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
@@ -1058,15 +1081,6 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     }
     MenuSwitchRow(str("fixes.syncToHostRefresh.label"), settings.syncToHostRefresh) {
         viewModel.updateSettings { current -> current.copy(syncToHostRefresh = it) }
-    }
-    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.loadTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacements = it) }
-    }
-    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.loadTextureReplacementsAsync) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacementsAsync = it) }
-    }
-    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.precacheTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(precacheTextureReplacements = it) }
     }
     // RetroArch shaders, end-to-end in-game: toggle → pick a preset → download more.
     // Same composables the Settings renderer tab renders (single definition in ui/common);
@@ -1356,14 +1370,9 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         CompactAction(str("memcard.title"), "▤", Modifier.weight(1f), viewModel::openMemcard)
         CompactAction(str("patches.dialog.patchesAndCheats"), "✦", Modifier.weight(1f), viewModel::openPatches)
     }
-    Spacer(Modifier.height(6.dp))
-    // Texture packs belong here too: the pack folder has to match the RUNNING game's serial,
-    // so the screen only tells you anything useful with a game loaded — and buried in
-    // All Settings -> Renderer it was effectively unreachable mid-session.
-    // Glyph must be one already proven to render in the shipped font — "▩" (U+25A9) and
-    // "⏻" (U+23FB) come out as tofu boxes on device. "▣" is used by the BIOS/onboarding
-    // screens, so it is known good.
-    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
+    // The texture pack manager moved to the Renderer page, under the resolution. Its glyph,
+    // "▣", is one already proven to render in the shipped font -- "▩" (U+25A9) and "⏻" (U+23FB)
+    // come out as tofu boxes on device.
     Spacer(Modifier.height(6.dp))
     MenuSwitchRow(str("patches.enablePatches.label"), settings.enablePatches) {
         viewModel.updateSettings { current -> current.copy(enablePatches = it) }
@@ -1412,6 +1421,15 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
 
 @Composable
 private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    // RetroAchievements on or off, saved in the menu's scope: for this game when one is running,
+    // which is the point -- it can be off globally and on for the games you want it in. The core
+    // starts or stops it live (Achievements::UpdateSettings), no restart.
+    MenuSwitchRow(
+        str(if (com.armsx2.ui.InGameOverlay.settingsScope.value == com.armsx2.config.SettingsScope.Game)
+            "ra.enable.thisGame" else "ra.enable.label"),
+        state.settings.achievementsEnabled,
+    ) { on -> viewModel.updateSettings { it.copy(achievementsEnabled = on) } }
+    Spacer(Modifier.height(4.dp))
     // Gateway to the full RetroAchievements screen (unlock list + presentation options).
     CompactAction(str("ra.viewAchievements"), "★", Modifier.fillMaxWidth(), viewModel::openAchievements)
     Spacer(Modifier.height(4.dp))

@@ -5,7 +5,7 @@
 //
 // ~98% of VU0 dispatches under the run-ahead sync model are *resumes*: a
 // cycle-budget break at a block's mVUtestCycles saves that block's own
-// pState/TPC (copyPLStateResume) and the next Execute re-enters the very
+// pState/TPC (mVU.cycleBreak) and the next Execute re-enters the very
 // block that broke. The dispatch fast path exploits that structural
 // invariant: the break parks the block's hostEntry in mVU.resumeEntry,
 // Execute consumes it once and enters startFunctResume, skipping
@@ -29,6 +29,13 @@
 //   5. Equivalence — a run sliced across many starved dispatches (each
 //      after the first riding the resume path) ends bit-identical to one
 //      unsliced run.
+//   6. Write-back — the break is the only path that finalises VU registers
+//      mid-program, and everything it writes is architecturally visible: an
+//      EE-side CFC2 or a savestate taken between two starved dispatches
+//      reads it. None of it feeds back into the recompiler on resume (the
+//      dispatcher re-marshals the flag ring from micro_*flags and Q/P from
+//      VURegs), so a wrong flag instance or a mixed-up P lane is silent to
+//      the program itself and has to be read from VURegs directly.
 
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
@@ -170,6 +177,73 @@ TEST(MvuResumeDispatch, BudgetBreakArmsLookupResolutionAndEbitEndDisarms)
 	EXPECT_EQ(vuRegs[1].VI[vi::vi2].UL & 0xFFFFu, 0x55u);
 	EXPECT_EQ(mvu_test_hooks::GetResumeEntry(1), nullptr)
 		<< "the resume is consume-once; completion must leave the slot empty";
+}
+
+// (6): the flag halves. A zero budget fails the very first block's cycle
+// test, so the break happens before any of the program's instructions run
+// and the ring still holds what the dispatcher marshalled in. A fresh
+// program enters on the zeroed lpState, where getLastFlagInst names
+// instance 3 for all three flag types.
+TEST(MvuResumeDispatch, BudgetBreakFinalisesTheEntryFlagInstances)
+{
+	RecordingOffScope recording_off;
+	VuTestHarness h(1);
+	LoadLoopProgram(h);
+
+	// One distinguishable value per instance, so a break that finalises the
+	// wrong one stores a value this test can name. The status seeds keep
+	// their low half clear: SFLAGc's Z/S/ZS/SS bits then stay 0 and the
+	// stored value is just the high half moved down 14.
+	static const u32 kMac[4] = {0x0111, 0x0222, 0x0444, 0x0888};
+	static const u32 kClip[4] = {0x000111, 0x000222, 0x000444, 0x000888};
+	static const u32 kStatus[4] = {0x00010000, 0x00020000, 0x00040000, 0x00080000};
+	for (int i = 0; i < 4; i++)
+	{
+		vuRegs[1].micro_macflags[i] = kMac[i];
+		vuRegs[1].micro_clipflags[i] = kClip[i];
+		vuRegs[1].micro_statusflags[i] = kStatus[i];
+	}
+	vuRegs[1].VI[REG_MAC_FLAG].UL = 0;
+	vuRegs[1].VI[REG_CLIP_FLAG].UL = 0;
+	vuRegs[1].VI[REG_STATUS_FLAG].UL = 0;
+
+	SeedVu1Dispatch(0);
+	CpuMicroVU1.Execute(0);
+	ASSERT_TRUE(Vu1Busy()) << "precondition: a zero budget must break, not complete";
+	ASSERT_EQ(vuRegs[1].VI[REG_TPC].UL, 0u)
+		<< "precondition: the break must be the entry block's, before it runs";
+	ASSERT_NE(mvu_test_hooks::GetResumeEntry(1), nullptr);
+
+	EXPECT_EQ(vuRegs[1].VI[REG_MAC_FLAG].UL, kMac[3]);
+	EXPECT_EQ(vuRegs[1].VI[REG_CLIP_FLAG].UL, kClip[3]);
+	EXPECT_EQ(vuRegs[1].VI[REG_STATUS_FLAG].UL, kStatus[3] >> 14);
+}
+
+// (6): the P/Q halves. The dispatcher packs VI[Q], pending_q, VI[P] and
+// pending_p into qmmPQ and the break stores all four back out of it, so a
+// break that runs no instructions is a round trip. Four distinct values
+// catch a lane rotate that does not undo itself.
+TEST(MvuResumeDispatch, BudgetBreakRoundTripsTheQAndPPipelineSlots)
+{
+	RecordingOffScope recording_off;
+	VuTestHarness h(1);
+	LoadLoopProgram(h);
+
+	vuRegs[1].VI[REG_Q].UL = 0x11111111u;
+	vuRegs[1].pending_q = 0x22222222u;
+	vuRegs[1].VI[REG_P].UL = 0x33333333u;
+	vuRegs[1].pending_p = 0x44444444u;
+
+	SeedVu1Dispatch(0);
+	CpuMicroVU1.Execute(0);
+	ASSERT_TRUE(Vu1Busy()) << "precondition: a zero budget must break, not complete";
+	ASSERT_EQ(vuRegs[1].VI[REG_TPC].UL, 0u)
+		<< "precondition: the break must be the entry block's, before it runs";
+
+	EXPECT_EQ(vuRegs[1].VI[REG_Q].UL, 0x11111111u);
+	EXPECT_EQ(vuRegs[1].pending_q, 0x22222222u);
+	EXPECT_EQ(vuRegs[1].VI[REG_P].UL, 0x33333333u);
+	EXPECT_EQ(vuRegs[1].pending_p, 0x44444444u);
 }
 
 // (5): slicing a run across many starved dispatches — every dispatch after

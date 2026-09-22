@@ -11,7 +11,7 @@ import SwiftUI
 
 @MainActor
 @Observable
-final class PatchStore: @unchecked Sendable {
+final class PatchStore {
     static let shared = PatchStore()
 
     static let cheatsSection = "Cheats"
@@ -149,13 +149,7 @@ final class PatchStore: @unchecked Sendable {
         currentTitle = ""
     }
 
-    // MARK: - Identity
-
-    static func gameIdentityAvailable(forISO iso: String) -> Bool {
-        let info = ARMSX2Bridge.gameSettings(forISO: iso)
-        let crc = (info["crc"] as? String) ?? ""
-        return !PadLayoutGameIdentity.normalizedCRC(crc).isEmpty
-    }
+    // MARK: - Hardcore
 
     /// True when Hardcore Mode is actually in force, which is the only state the core refuses
     /// pnach content in. Every gate down there keys on IsHardcoreModeActive, so the preference
@@ -289,10 +283,8 @@ final class PatchStore: @unchecked Sendable {
     }
 
     private func managedPath(forISO iso: String, asCheat: Bool) -> String? {
-        if launchContext == .inGame && iso == isoName {
-            return ARMSX2Bridge.pnachPathForCurrentGame(asCheat: asCheat)
-        }
-        return ARMSX2Bridge.pnachPath(forISO: iso, asCheat: asCheat)
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        return ARMSX2Bridge.pnachPath(forISO: target, asCheat: asCheat)
     }
 
     private func hasManagedPath(forISO iso: String) -> Bool {
@@ -833,19 +825,14 @@ final class PatchStore: @unchecked Sendable {
 
     private func enableList(forISO iso: String, isCheat: Bool) -> [String] {
         let section = isCheat ? Self.cheatsSection : Self.patchesSection
-        if launchContext == .inGame && iso == isoName {
-            return ARMSX2Bridge.patchEnableListForCurrentGame(section: section, key: Self.enableKey)
-        }
-        return ARMSX2Bridge.patchEnableList(forISO: iso, section: section, key: Self.enableKey)
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        return ARMSX2Bridge.patchEnableList(forISO: target, section: section, key: Self.enableKey)
     }
 
     private func setEnableList(_ names: [String], forISO iso: String, isCheat: Bool) {
         let section = isCheat ? Self.cheatsSection : Self.patchesSection
-        if launchContext == .inGame && iso == isoName {
-            ARMSX2Bridge.setPatchEnableListForCurrentGame(names, section: section, key: Self.enableKey)
-        } else {
-            ARMSX2Bridge.setPatchEnableList(names, forISO: iso, section: section, key: Self.enableKey)
-        }
+        let target = (launchContext == .inGame && iso == isoName) ? nil : iso
+        ARMSX2Bridge.setPatchEnableList(names, forISO: target, section: section, key: Self.enableKey)
     }
 
     // MARK: - Sidecar (records only the origin of an installed file)

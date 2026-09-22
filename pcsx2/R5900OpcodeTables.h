@@ -794,7 +794,7 @@ namespace R5900
 			whether it did. Mode 4's multiply guards for that band and calls
 			this out of line; the interpreter reaches the same code inline.
 			FPU.cpp, next to the array it consults. */
-		bool eeMulOneUlpLow(u32 fs, u32 ft);
+		EEFPU_MODEL_CALL bool eeMulOneUlpLow(u32 fs, u32 ft);
 
 		/*	The EE's divide/square-root unit: a digit recurrence that no
 			rounding mode makes an Fdiv or an Fsqrt agree with. Mode 4's DIV.S,

@@ -5,12 +5,9 @@ import SwiftUI
 
 // MARK: - Overlay Theme
 
-/// In-game overlay design tokens. Scoped to overlays presented over gameplay (the pause menu and
-/// Per-Game Settings) — this is NOT a global app theme.
-///
-/// The clear glass shell uses lightly tinted section cards for grouping while allowing paused
-/// gameplay to remain visible. The gameplay scrim stays a plain tinted color and never uses
-/// Material. Blue is the accent only (never row titles); red is destructive only.
+/// Tokens for overlays presented over gameplay, the pause menu and Per-Game Settings. Not a
+/// global app theme. The scrim stays a plain tinted color and never uses Material; blue is the
+/// accent only, never a row title, and red is destructive only.
 enum OverlayTheme {
     // MARK: Surfaces — opaque graphite ladder (darkest -> lightest)
 
@@ -22,17 +19,14 @@ enum OverlayTheme {
     static let cardElevated = Color(red: 0.188, green: 0.208, blue: 0.247)   // #30353F
     /// Hairline separator / divider stroke between rows and above a footer.
     static let separator = Color(red: 0.227, green: 0.247, blue: 0.290)      // #3A3F4A
-    /// Top stop of the shell gradient — one graphite step lighter than the shell so a panel reads
-    /// as lit-from-above frosted glass even when the live blur has nothing game-derived to sample.
+    /// Top stop of the shell gradient, a step lighter so the panel reads as lit from above.
     static let shellGradientTop = Color(red: 0.149, green: 0.165, blue: 0.200) // #262A33
 
     // MARK: Gameplay scrim — lighter, controlled, decoupled from panel opacity
 
     /// Tinted near-black base for the gameplay dim (NOT pure `Color.black`). Apply at a controlled
-    /// opacity (see the scrim opacities below) so the dim only signals "paused" while the opaque
-    /// panel carries the premium feel. Phase C wires this into the overlay scrim.
+    /// opacity, see below, so the dim only signals paused while the panel carries the look.
     static let scrimBase = Color(red: 0.039, green: 0.047, blue: 0.063)      // #0A0C10
-    /// Lighter gameplay scrim opacities (Phase C replaces the current 0.46 / 0.54 / 0.52).
     static let scrimPad = 0.30
     static let scrimPhoneLandscape = 0.34
     static let scrimPhonePortrait = 0.32
@@ -196,59 +190,6 @@ struct OverlaySectionCard<Content: View>: View {
                 .opacity(accessible ? 0 : 1)
         }
         .shadow(color: OverlayTheme.cardShadow.opacity(accessible ? 0 : 1), radius: 4, x: 0, y: 2)
-    }
-}
-
-/// Pinned overlay footer: a full-width primary action (Resume / Save) as a `borderedProminent`
-/// button tinted with the overlay accent, plus an optional secondary action. It inherits the
-/// scaffold's single glass surface and adds only a top hairline. Apply via
-/// `.safeAreaInset(edge: .bottom)`.
-struct OverlayFooter: View {
-    private let primaryLabel: String
-    private let primarySystemImage: String
-    private let primaryAction: () -> Void
-    private let secondaryLabel: String?
-    private let secondaryAction: (() -> Void)?
-    private let compact: Bool
-
-    init(
-        primaryLabel: String,
-        primarySystemImage: String,
-        primaryAction: @escaping () -> Void,
-        secondaryLabel: String? = nil,
-        secondaryAction: (() -> Void)? = nil,
-        compact: Bool = false
-    ) {
-        self.primaryLabel = primaryLabel
-        self.primarySystemImage = primarySystemImage
-        self.primaryAction = primaryAction
-        self.secondaryLabel = secondaryLabel
-        self.secondaryAction = secondaryAction
-        self.compact = compact
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            OverlayTheme.separator
-                .frame(height: 0.5)
-            VStack(spacing: 8) {
-                Button(action: primaryAction) {
-                    Label(primaryLabel, systemImage: primarySystemImage)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(compact ? .regular : .large)
-                if let secondaryLabel, let secondaryAction {
-                    Button(secondaryLabel, action: secondaryAction)
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
-                }
-            }
-            .padding(.horizontal, compact ? 18 : 20)
-            .padding(.top, 8)
-            .padding(.bottom, compact ? 10 : 14)
-        }
-        .tint(OverlayTheme.accent)
     }
 }
 

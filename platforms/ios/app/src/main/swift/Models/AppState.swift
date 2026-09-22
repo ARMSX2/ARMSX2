@@ -60,6 +60,7 @@ final class AppState: @unchecked Sendable {
     var bootDisclaimerMessage: String?
     var pendingJITGameBoot: PendingJITGameBoot?
     var pendingRestartGame: String?
+    var pendingLibraryExport: String?
     var gameplayLaunchTransition: GameplayLaunchTransition?
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
@@ -177,7 +178,7 @@ final class AppState: @unchecked Sendable {
         Task { @MainActor in
             StikDebugLauncher.autoOpenIfNeeded(reason: "game boot")
         }
-        // Before, not after: the boot reads the per-game file, stale absolute and all.
+        // Before bootISO, which reads the per-game file and its absolute preset path.
         PerGameShaderSelection.repair(forISO: isoName)
         ARMSX2Bridge.bootISO(isoName)
         ARMSX2Bridge.prepareGameRenderViewForCurrentRenderer()
@@ -289,7 +290,7 @@ final class AppState: @unchecked Sendable {
                 launchTransition: launchTransition
             )
         }
-        ARMSX2Bridge.requestVMShutdown()
+        ARMSX2Bridge.requestVMStop()
     }
 
     func shutdownAndBootBIOS() {
@@ -297,7 +298,7 @@ final class AppState: @unchecked Sendable {
         pendingBootAction = { [weak self] in
             self?.bootBIOSOnly()
         }
-        ARMSX2Bridge.requestVMShutdown()
+        ARMSX2Bridge.requestVMStop()
     }
 
     func resetCurrentVM() {

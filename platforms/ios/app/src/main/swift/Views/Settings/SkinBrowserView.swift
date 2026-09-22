@@ -5,19 +5,14 @@ import SwiftUI
 
 struct SkinBrowserView: View {
     /// Ready means the skin ships a layout for iOS. The rest still install, they
-    /// just leave you to place the buttons.
-    private enum Filter: Hashable, CaseIterable {
-        case all, installed, ready
-
-        var title: String {
-            switch self {
-            case .all: return "All"
-            case .installed: return "Installed"
-            case .ready: return "Ready"
-            }
-        }
+    /// just leave you to place the buttons. The raw values are the catalog keys.
+    private enum Filter: String, Hashable, CaseIterable {
+        case all = "All"
+        case installed = "Installed"
+        case ready = "Ready"
     }
 
+    @State private var settings = SettingsStore.shared
     @StateObject private var catalog = SkinCatalog()
     @StateObject private var installer = SkinInstaller()
     // Held directly so the rows invalidate off the library itself rather than
@@ -31,15 +26,7 @@ struct SkinBrowserView: View {
 
     var body: some View {
         List {
-            if let updated = catalog.lastUpdated {
-                HStack(spacing: 4) {
-                    Text("Updated")
-                    Text(updated, style: .relative)
-                    Text("ago")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
+            lastUpdatedRow
 
             if catalog.isLoading {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -50,12 +37,12 @@ struct SkinBrowserView: View {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Retry") { Task { await catalog.fetch(force: true) } }
+                    Button(settings.localized("Retry")) { Task { await catalog.fetch(force: true) } }
                 }
             }
 
             if catalog.skins.isEmpty && !catalog.isLoading && catalog.lastError == nil {
-                Text("No skins are published yet.")
+                Text(settings.localized("No skins are published yet."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -63,7 +50,7 @@ struct SkinBrowserView: View {
             if !catalog.skins.isEmpty {
                 Picker("Show", selection: $filter) {
                     ForEach(Filter.allCases, id: \.self) { option in
-                        Text(option.title).tag(option)
+                        Text(settings.localized(option.rawValue)).tag(option)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -88,39 +75,70 @@ struct SkinBrowserView: View {
         .searchable(
             text: $searchText,
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search skins"
+            prompt: Text(settings.localized("Search skins"))
         )
-        .navigationTitle("Skins")
+        .navigationTitle(settings.localized("Skins"))
         .navigationBarTitleDisplayMode(.inline)
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
-        .alert("Skin Install", isPresented: Binding(
-            get: { detailAlert != nil },
-            set: { if !$0 { detailAlert = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
+        .alert(settings.localized("Skin Install"), isPresented: isDetailAlertPresented) {
+            Button(settings.localized("OK"), role: .cancel) {}
         } message: {
             Text(detailAlert ?? "")
         }
         .alert(
-            "Remove Skin?",
-            isPresented: Binding(
-                get: { skinPendingRemoval != nil },
-                set: { if !$0 { skinPendingRemoval = nil } }
-            ),
+            settings.localized("Remove Skin?"),
+            isPresented: isRemoveAlertPresented,
             presenting: skinPendingRemoval
         ) { skin in
-            Button("Remove \(skin.name)", role: .destructive) {
+            Button(String(format: settings.localized("Remove %@"), skin.name), role: .destructive) {
                 installer.uninstall(skin)
                 skinPendingRemoval = nil
             }
-            Button("Cancel", role: .cancel) { skinPendingRemoval = nil }
+            Button(settings.localized("Cancel"), role: .cancel) { skinPendingRemoval = nil }
         } message: { _ in
-            Text("This deletes the installed skin. Linked layout presets are kept.")
+            Text(settings.localized("This deletes the installed skin. Linked layout presets are kept."))
         }
         .sheet(item: $previewSkin) { skin in
             SkinPreviewSheet(skin: skin)
         }
+    }
+
+    /// Out of body, and in two steps. A format string wrapped around a
+    /// relative-date style wrapped around a locale built from a setting is one
+    /// expression, and the type checker charges the time it spends on it to
+    /// whatever it is nested in - which was the whole of body.
+    @ViewBuilder private var lastUpdatedRow: some View {
+        if let updated = catalog.lastUpdated {
+            Text(lastUpdatedText(updated))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func lastUpdatedText(_ updated: Date) -> String {
+        // appLanguage, and the same shape RootView gives the environment locale:
+        // .system means whatever the device is set to, and bcp47Code answers
+        // "en" for it, which would have pinned this one line to English.
+        let locale = settings.appLanguage == .system
+            ? Locale.autoupdatingCurrent
+            : Locale(identifier: settings.appLanguage.bcp47Code)
+        let relative: String = updated.formatted(.relative(presentation: .named).locale(locale))
+        return String(format: settings.localized("Last updated %@"), relative)
+    }
+
+    private var isDetailAlertPresented: Binding<Bool> {
+        Binding(
+            get: { detailAlert != nil },
+            set: { if !$0 { detailAlert = nil } }
+        )
+    }
+
+    private var isRemoveAlertPresented: Binding<Bool> {
+        Binding(
+            get: { skinPendingRemoval != nil },
+            set: { if !$0 { skinPendingRemoval = nil } }
+        )
     }
 
     /// Read here rather than inside a row closure so the library registers with
@@ -157,12 +175,12 @@ struct SkinBrowserView: View {
     private var emptyResultMessage: String {
         if filteredByCategory.isEmpty {
             switch filter {
-            case .all: return "No skins match that search."
-            case .installed: return "You haven't installed any skins yet."
-            case .ready: return "No skins ship a recommended layout yet."
+            case .all: return settings.localized("No skins match that search.")
+            case .installed: return settings.localized("You haven't installed any skins yet.")
+            case .ready: return settings.localized("No skins ship a recommended layout yet.")
             }
         }
-        return "No skins match that search."
+        return settings.localized("No skins match that search.")
     }
 
     private func subtitle(for skin: CatalogSkin) -> String? {
@@ -196,7 +214,7 @@ struct SkinBrowserView: View {
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Preview \(skin.name)")
+                .accessibilityLabel(String(format: settings.localized("Preview %@"), skin.name))
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -205,7 +223,7 @@ struct SkinBrowserView: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
                 if !skin.isIOSReady {
-                    Text("No recommended layout")
+                    Text(settings.localized("No recommended layout"))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -220,20 +238,20 @@ struct SkinBrowserView: View {
                     Button {
                         Task { await installer.reinstall(skin) }
                     } label: {
-                        Label("Reinstall", systemImage: "arrow.clockwise")
+                        Label(settings.localized("Reinstall"), systemImage: "arrow.clockwise")
                     }
                     Button(role: .destructive) {
                         skinPendingRemoval = skin
                     } label: {
-                        Label("Remove", systemImage: "trash")
+                        Label(settings.localized("Remove"), systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
-                .accessibilityLabel("\(skin.name) is installed. Reinstall or remove it.")
+                .accessibilityLabel(String(format: settings.localized("%@ is installed. Reinstall or remove it."), skin.name))
             } else {
-                Button("Get") {
+                Button(settings.localized("Get")) {
                     Task { await installer.install(skin) }
                 }
                 .buttonStyle(.bordered)
@@ -248,7 +266,7 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Show the error from \(skin.name)")
+                .accessibilityLabel(String(format: settings.localized("Show the error from %@"), skin.name))
             } else if let notice = installer.notices[skin.file] {
                 Button {
                     detailAlert = notice
@@ -257,7 +275,7 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.yellow)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Show what \(skin.name) reported during install")
+                .accessibilityLabel(String(format: settings.localized("Show what %@ reported during install"), skin.name))
             }
         }
         .swipeActions(edge: .trailing) {
@@ -265,7 +283,7 @@ struct SkinBrowserView: View {
                 Button(role: .destructive) {
                     skinPendingRemoval = skin
                 } label: {
-                    Label("Remove", systemImage: "trash")
+                    Label(settings.localized("Remove"), systemImage: "trash")
                 }
             }
         }
@@ -288,7 +306,7 @@ private struct SkinPreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button(SettingsStore.shared.localized("Done")) { dismiss() }
                 }
             }
         }

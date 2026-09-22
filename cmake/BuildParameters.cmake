@@ -26,6 +26,15 @@ set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git ch
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
 
+# iOS and tvOS are Apple but not macOS, and the difference decides a few things
+# here and in 3rdparty: no AppKit, no IOKit, no AudioHardware, no optical drive.
+# CMake tells them apart by system name - APPLE is true for all of them.
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	set(APPLE_EMBEDDED TRUE)
+else()
+	set(APPLE_EMBEDDED FALSE)
+endif()
+
 #-------------------------------------------------------------------------------
 # Graphical option
 #-------------------------------------------------------------------------------
@@ -33,6 +42,12 @@ if(NOT APPLE)
 	option(USE_OPENGL "Enable OpenGL GS renderer" ON)
 endif()
 option(USE_VULKAN "Enable Vulkan GS renderer" ON)
+# What the GL renderer asks the host for. Android is GL ES whether this is set
+# or not; it exists for the other platforms that have only ES - webOS, and the
+# embedded frontends - where a desktop GL request is refused and the core then
+# has no context at all. Off by default, because a desktop asking for ES gets a
+# renderer with fewer features than it could have had.
+option(USE_GLES "Ask the host for an OpenGL ES context rather than desktop GL" OFF)
 
 #-------------------------------------------------------------------------------
 # Path and lib option
@@ -333,6 +348,9 @@ endif()
 
 if(USE_OPENGL)
 	list(APPEND PCSX2_DEFS ENABLE_OPENGL)
+	if(USE_GLES)
+		list(APPEND PCSX2_DEFS USE_GLES)
+	endif()
 endif()
 
 if(NOT ENABLE_GS_DEBUG_LABELS)
@@ -450,7 +468,16 @@ if(NOT CMAKE_GENERATOR MATCHES "Xcode")
 	# Assume Xcode builds aren't being used for distribution
 	# Helpful because Xcode builds don't build multiple metallibs for different macOS versions
 	# Also helpful because Xcode's interactive shader debugger requires apps be built for the latest macOS
-	set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0)
+	#
+	# 11.0 is a macOS version number, and setting it on iOS or tvOS says
+	# "iOS 11", which is neither what the caller asked for nor what the
+	# dependencies were built against: everything then links with a deployment
+	# target older than the SDK calls it uses, which is a warning per object
+	# file and a real availability error on anything introduced since. So the
+	# embedded platforms keep whatever they were configured with.
+	if(NOT APPLE_EMBEDDED)
+		set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0)
+	endif()
 endif()
 
 # CMake defaults the suffix for modules to .so on macOS but wx tells us that the

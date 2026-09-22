@@ -38,11 +38,6 @@ final class ExternalGameLibrary: @unchecked Sendable {
     }
 
     @discardableResult
-    func addDirectory(_ url: URL) -> String {
-        addLocation(url)
-    }
-
-    @discardableResult
 	    func addLocation(_ url: URL) -> String {
 	        let accessing = url.startAccessingSecurityScopedResource()
 	        defer {
@@ -112,10 +107,6 @@ final class ExternalGameLibrary: @unchecked Sendable {
         UserDefaults.standard.set(records, forKey: Self.defaultsKey)
         reload()
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
-    }
-
-    static func shouldRefreshGameListAfterAdding(_ url: URL) -> Bool {
-        isSupportedGameFileURL(url.standardizedFileURL)
     }
 
 	    static func isSupportedGameFileURL(_ url: URL) -> Bool {

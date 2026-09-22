@@ -413,6 +413,25 @@ public class NativeApp {
 	public static native String getElfDiscOverride(String elfPath);
 	public static native void gameIniPut(String section, String key, String value);
 	public static native boolean gameIniCommitWrite();
+	/** Keep section/key in the INI being written even if nothing was put for it: the key's
+	 *  presence is what tells the core the player decided that setting for this game, so the
+	 *  game database leaves it alone. The value is filled in natively at commit. */
+	public static native void gameIniClaim(String section, String key);
+	/** Same stream as {@link #gameIniBeginWrite()}, but held until the core loads this game's
+	 *  settings at boot: at launch the file cannot be named yet (its name carries the disc CRC).
+	 *  Written once, just before the core reads it. */
+	public static native boolean gameIniBeginStage(String serial);
+	/** Drop anything staged by {@link #gameIniBeginStage(String)}. */
+	public static native void gameIniClearStage();
+	/** Re-read the running game's INI into the core's game layer after rewriting it, so the
+	 *  commit that follows applies what the file says now. Applies nothing itself. */
+	public static native void reloadGameSettingsLayer();
+	/** What the game database sets for a serial: one line per setting a per-game key can claim,
+	 *  "name TAB value TAB flags TAB section/key|section/key". See GameDbOverrides. */
+	public static native String getGameDbEntries(String serial);
+	/** Every "section/key" whose presence in a per-game INI claims a game database setting,
+	 *  one per line. */
+	public static native String gameDbClaimingKeys();
 
 	/** Pin a custom Vulkan driver (e.g. Mesa Turnip) for the next VM
 	 *  start. Must be called BEFORE MainActivityRuntime.start() — the first MTGS::Open
@@ -483,12 +502,14 @@ public class NativeApp {
 		// Player 1 alone may fall back to whatever last sent input -- Player 2 stays silent,
 		// because buzzing Player 1's controller for Player 2 is worse than not buzzing.
 		if (devId < 0 && pad == 0) devId = sRumbleDeviceId;
-		// devId may stay -1 for touch-only Player 1 (no gamepad); vibrateDevice still
-		// drives the device's own haptic for P1 (issue #241). P2 with no pad has no target.
-		if (devId < 0 && pad != 0) return;
+		// The phone's own haptic belongs to whoever plays on the touch screen: Player 1
+		// normally (issue #241), Player 2 when the touch controls are set to play as Player 2.
+		// A player with no controller and no touch controls has nothing to buzz.
+		final int touchPad = com.armsx2.ui.touch.TouchControls.playerPort;
+		if (devId < 0 && pad != touchPad) return;
 		float low = Math.max(0f, Math.min(1f, largeMotor / 255f));   // low-frequency / large
 		float high = Math.max(0f, Math.min(1f, smallMotor / 255f));  // high-frequency / small
-		vibrateDevice(devId, low, high, RUMBLE_MS, pad == 0);
+		vibrateDevice(devId, low, high, RUMBLE_MS, pad == touchPad);
 	}
 
 	// ---- Achievement / notification sound playback ----
@@ -789,19 +810,19 @@ public class NativeApp {
 
 		com.armsx2.input.PadRouter.RumbleMode mode =
 			com.armsx2.input.PadRouter.INSTANCE.rumbleModeForDevice(devId);
-		if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return head + " — rumble turned off for this pad";
-		if (mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE) return head + " — set to vibrate this device";
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.OFF) return head + ". Rumble turned off for this pad";
+		if (mode == com.armsx2.input.PadRouter.RumbleMode.DEVICE) return head + ". Set to vibrate this device";
 
 		// Reported through the SAME discovery the motors are actually driven from, so the
 		// diagnosis cannot disagree with the behaviour it is describing.
 		if (com.armsx2.input.UsbRumble.INSTANCE.padFor(d) != null) {
-			return head + " — rumble OK (driven directly over USB, 2 motors)";
+			return head + ". Rumble OK (driven directly over USB, 2 motors)";
 		}
 		int motors = motorsOf(d).size();
 		if (motors > 0) {
-			return head + " — rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")";
+			return head + ". Rumble OK (" + motors + " motor" + (motors == 1 ? "" : "s") + ")";
 		}
-		return head + " — NO rumble exposed by Android"
+		return head + ". NO rumble exposed by Android"
 			+ (sRumbleFallbackExternal ? " (vibrating this device instead)"
 				: " (turn on \"Vibrate this device instead\" to feel it here)");
 	}

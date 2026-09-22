@@ -2,7 +2,12 @@ package com.armsx2.ui.achievements
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.armsx2.EmuState
+import com.armsx2.config.ConfigStore
+import com.armsx2.config.Settings
+import com.armsx2.config.SettingsScope
 import com.armsx2.runtime.MainActivityRuntime
+import com.armsx2.ui.InGameOverlay
 import kr.co.iefriends.pcsx2.NativeApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +58,15 @@ data class AchievementsUiState(
     // RA subsets (base + any bonus subsets). >1 entry → the UI shows subset tabs.
     val subsets: List<Subset> = emptyList(),
     val richPresence: String = "",
+    // RetroAchievements on or off, and every option below, are STANDARD settings now: read for this
+    // screen's scope (the running game, or global from the library) and saved in it.
+    val enabled: Boolean = true,
+    // True when this screen edits a game's own settings rather than the global ones.
+    val perGame: Boolean = false,
+    // The game's title, for the scope line; empty in global scope.
+    val scopeTitle: String = "",
+    // True when the game has RetroAchievements settings of its own, i.e. "use global" would do something.
+    val hasGameOverrides: Boolean = false,
     // Presentation options (mirrored from getAchievementsJSON, set via setAchievementsOption).
     val notifications: Boolean = true,
     val leaderboardNotifications: Boolean = true,
@@ -67,6 +81,8 @@ data class AchievementsUiState(
     val leaderboardsDuration: Int = 10,
     val notificationPosition: Int = 1,
     val overlayPosition: Int = 8,
+    // Popup + indicator size, percent of the stock layout (50..250).
+    val notificationScale: Int = 100,
     // Achievement modes (default off). Encore = re-notify already-unlocked achievements;
     // Spectator = treat all as locked, send nothing to the server; Unofficial = list
     // unpromoted test sets (unlocks aren't saved). Native rc_client already supports them.
@@ -148,7 +164,7 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
 
     fun confirmToggleHardcore() {
         val target = state.value.pendingHardcore ?: return
-        NativeApp.setHardcoreMode(target)
+        saveRa { it.copy(achievementsHardcore = target) }
         state.value = state.value.copy(hardcore = target, pendingHardcore = null)
         // Enabling hardcore only takes hold on a system reset. Reboot the game now — so
         // "Enable & restart" actually restarts — but ONLY when a game is actually running.
@@ -168,7 +184,19 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun setOption(key: String, enabled: Boolean) {
-        NativeApp.setAchievementsOption(key, enabled)
+        saveRa {
+            when (key) {
+                "notifications" -> it.copy(achievementsNotifications = enabled)
+                "leaderboardNotifications" -> it.copy(achievementsLeaderboardNotifications = enabled)
+                "overlays" -> it.copy(achievementsOverlays = enabled)
+                "lbOverlays" -> it.copy(achievementsLbOverlays = enabled)
+                "soundEffects" -> it.copy(achievementsSoundEffects = enabled)
+                "encoreMode" -> it.copy(achievementsEncoreMode = enabled)
+                "spectatorMode" -> it.copy(achievementsSpectatorMode = enabled)
+                "unofficialTestMode" -> it.copy(achievementsUnofficialTestMode = enabled)
+                else -> it
+            }
+        }
         state.value = when (key) {
             "notifications" -> state.value.copy(notifications = enabled)
             "leaderboardNotifications" -> state.value.copy(leaderboardNotifications = enabled)
@@ -186,12 +214,22 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
      *  Persisted + live-applied natively; the local state is updated optimistically so the slider
      *  / position grid tracks the change immediately (the 3s poll would otherwise lag it). */
     fun setOptionInt(key: String, value: Int) {
-        NativeApp.setAchievementsOptionInt(key, value)
+        saveRa {
+            when (key) {
+                "notificationsDuration" -> it.copy(achievementsNotificationsDuration = value)
+                "leaderboardsDuration" -> it.copy(achievementsLeaderboardsDuration = value)
+                "notificationPosition" -> it.copy(achievementsNotificationPosition = value)
+                "overlayPosition" -> it.copy(achievementsOverlayPosition = value)
+                "notificationScale" -> it.copy(achievementsNotificationScale = value)
+                else -> it
+            }
+        }
         state.value = when (key) {
             "notificationsDuration" -> state.value.copy(notificationsDuration = value)
             "leaderboardsDuration" -> state.value.copy(leaderboardsDuration = value)
             "notificationPosition" -> state.value.copy(notificationPosition = value)
             "overlayPosition" -> state.value.copy(overlayPosition = value)
+            "notificationScale" -> state.value.copy(notificationScale = value)
             else -> state.value
         }
     }
@@ -200,9 +238,69 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
         state.value = state.value.copy(error = null)
     }
 
+    /** RetroAchievements on or off, in this screen's scope. The core starts or stops it live. */
+    fun setEnabled(enabled: Boolean) {
+        saveRa { it.copy(achievementsEnabled = enabled) }
+        state.value = state.value.copy(enabled = enabled, hasGameOverrides = state.value.perGame)
+    }
+
+    /** Drop this game's own RetroAchievements settings, so it follows the global ones again. */
+    fun useGlobalSettings() {
+        val serial = scopeSerial() ?: return
+        val overrides = ConfigStore.loadOverrides(serial) ?: return
+        Settings.ACHIEVEMENTS_KEYS.forEach(overrides::remove)
+        if (overrides.length() == 0) ConfigStore.clearOverrides(serial) else ConfigStore.saveOverrides(serial, overrides)
+        applySaved(serial)
+        refresh()
+    }
+
+    /**
+     * The game whose RetroAchievements settings this screen edits: the running one, or null for
+     * the global settings when it is opened from the library. What is chosen for a game applies to
+     * that game and outranks the global value, like any other per-game setting.
+     */
+    private fun scopeSerial(): String? =
+        if (MainActivityRuntime.eState.value != EmuState.STOPPED)
+            MainActivityRuntime.currentGame.value?.settingsKey?.takeIf { it.isNotBlank() }
+        else null
+
+    /** Save one change to the RetroAchievements settings in this screen's scope, and apply it. */
+    private fun saveRa(change: (Settings) -> Settings) {
+        val serial = scopeSerial()
+        val previous = ConfigStore.resolveForGame(serial)
+        val updated = change(previous)
+        if (updated == previous) return
+        ConfigStore.save(if (serial != null) SettingsScope.Game else SettingsScope.Global, serial, updated, previous)
+        applySaved(serial)
+    }
+
+    /**
+     * Put a stored change into effect. With this screen's game running, straight away, in the same
+     * order as a settings save in the in-game menu: the game's file, the core's copy of it, then
+     * the commit. With nothing running there is nothing to apply; the next launch picks it up.
+     */
+    private fun applySaved(serial: String?) {
+        if (serial == null || !MainActivityRuntime.nativeReady.value ||
+            MainActivityRuntime.eState.value == EmuState.STOPPED) return
+        val resolved = ConfigStore.resolveForGame(serial)
+        runCatching {
+            resolved.writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = serial)
+            NativeApp.reloadGameSettingsLayer()
+            resolved.applyTo()
+        }
+        // Keep the in-game menu's copy in step, or its next save would write the old value back.
+        if (InGameOverlay.currentSerial.value == serial) InGameOverlay.settingsState.value = resolved
+    }
+
     private fun parse(json: String): AchievementsUiState {
         if (json.isBlank()) return state.value
         val root = JSONObject(json)
+        // The options come from the settings for this screen's scope, not from the core: with a
+        // game running the core holds that game's values, and from the library it holds whatever
+        // the last game ran with, which is neither the global value nor any game's own.
+        val serial = scopeSerial()
+        val cfg = ConfigStore.resolveForGame(serial)
+        val gameOverrides = serial?.let { ConfigStore.loadOverrides(it) }
         return AchievementsUiState(
             loggedIn = root.optBoolean("loggedIn"),
             userName = root.optString("userName").also {
@@ -214,24 +312,29 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
             // the live rcheevos flag from the JSON — that's always off with no game running,
             // which would make the library RA tab's Hardcore toggle snap back off after you
             // enable it. isHardcorePersisted() is valid with or without a running game.
-            hardcore = runCatching { NativeApp.isHardcorePersisted() }.getOrDefault(root.optBoolean("hardcore")),
+            hardcore = cfg.achievementsHardcore,
             score = root.optLong("score").coerceAtLeast(0),
             softcoreScore = root.optLong("softcoreScore").coerceAtLeast(0),
             avatarUrl = root.optString("avatarUrl"),
             items = parseAchievementItems(json),
             subsets = parseSubsets(json),
-            notifications = root.optBoolean("notifications", true),
-            leaderboardNotifications = root.optBoolean("leaderboardNotifications", true),
-            overlays = root.optBoolean("overlays", true),
-            lbOverlays = root.optBoolean("lbOverlays", true),
-            soundEffects = root.optBoolean("soundEffects", true),
-            notificationsDuration = root.optInt("notificationsDuration", 5),
-            leaderboardsDuration = root.optInt("leaderboardsDuration", 10),
-            notificationPosition = root.optInt("notificationPosition", 1),
-            overlayPosition = root.optInt("overlayPosition", 8),
-            encoreMode = root.optBoolean("encoreMode", false),
-            spectatorMode = root.optBoolean("spectatorMode", false),
-            unofficialTestMode = root.optBoolean("unofficialTestMode", false),
+            enabled = cfg.achievementsEnabled,
+            perGame = serial != null,
+            scopeTitle = if (serial != null) MainActivityRuntime.currentGame.value?.title.orEmpty() else "",
+            hasGameOverrides = gameOverrides != null && Settings.ACHIEVEMENTS_KEYS.any(gameOverrides::has),
+            notifications = cfg.achievementsNotifications,
+            leaderboardNotifications = cfg.achievementsLeaderboardNotifications,
+            overlays = cfg.achievementsOverlays,
+            lbOverlays = cfg.achievementsLbOverlays,
+            soundEffects = cfg.achievementsSoundEffects,
+            notificationsDuration = cfg.achievementsNotificationsDuration,
+            leaderboardsDuration = cfg.achievementsLeaderboardsDuration,
+            notificationPosition = cfg.achievementsNotificationPosition,
+            overlayPosition = cfg.achievementsOverlayPosition,
+            notificationScale = cfg.achievementsNotificationScale,
+            encoreMode = cfg.achievementsEncoreMode,
+            spectatorMode = cfg.achievementsSpectatorMode,
+            unofficialTestMode = cfg.achievementsUnofficialTestMode,
             unlockSoundName = MainActivityRuntime.prefs.getString(UNLOCK_SOUND_PREF, null),
             soundVolume = MainActivityRuntime.prefs.getInt(SOUND_VOLUME_PREF, 100),
         )

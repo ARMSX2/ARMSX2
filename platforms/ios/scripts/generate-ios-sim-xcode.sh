@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generates a CMake Xcode project configured for the iOS Simulator (SDK
-# iphonesimulator, ARMSX2_REAL_DEVICE=OFF). This is the project XcodeBuildMCP
-# should target for simulator workflows (debug, test, UI automation). Device
-# IPAs continue to use generate-ios-xcode.sh + build-ios-ipa.sh.
+# Generates a CMake Xcode project for the iOS Simulator (SDK iphonesimulator,
+# ARMSX2_REAL_DEVICE=OFF). Device IPAs use generate-ios-xcode.sh and build-ios-ipa.sh.
 #
 # The sim project disables the -weak_framework MetalFX link flag (see
 # pcsx2/CMakeLists.txt) because MetalFX.framework is absent from the
@@ -37,8 +35,5 @@ Open in Xcode:
 
 Simulator build:
   xcodebuild -project "$BUILD_DIR/ARMSX2iOS.xcodeproj" -scheme ARMSX2iOS -configuration Debug -sdk iphonesimulator build
-
-XcodeBuildMCP defaults (set after first build):
-  projectPath: $BUILD_DIR/ARMSX2iOS.xcodeproj
 
 EOF
