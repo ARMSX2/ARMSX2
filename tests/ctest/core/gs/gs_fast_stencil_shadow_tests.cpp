@@ -76,6 +76,18 @@ namespace
 		return in;
 	}
 
+	constexpr GSSelfReadRoadInputs WithDriverFact(GSSelfReadRoadInputs in)
+	{
+		in.driver_orders_declared_loop = true;
+		return in;
+	}
+
+	constexpr GSSelfReadRoadInputs WithBarrierPreference(GSSelfReadRoadInputs in)
+	{
+		in.driver_prefers_declared_loop_with_barriers = true;
+		return in;
+	}
+
 	constexpr GSSelfReadRoadInputs WithBarrierOverride(GSSelfReadRoadInputs in, s8 override_texture_barriers)
 	{
 		in.override_texture_barriers = override_texture_barriers;
@@ -103,7 +115,7 @@ namespace
 		return {.api = api,
 			.dual_source_blend = dual_source_blend,
 			.road = road.road,
-			.loop_declared = road.arm_applied};
+			.loop_declared = road.loop_declared};
 	}
 } // namespace
 
@@ -139,6 +151,34 @@ TEST(GSFastStencilShadow, OnWhenTheFeedbackLoopIsDeclared)
 	ASSERT_EQ(keep_barriers.road, GSSelfReadRoad::InPassBarrier);
 	ASSERT_TRUE(keep_barriers.arm_applied);
 	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(arm2)));
+}
+
+// The same road with no key set, reached because the driver database recognised the driver build.
+// This is the case that matters for a user: E4e's +11.5..+42.0% was the counter's absence, and a
+// road that arrives by itself would have carried that cost by itself. arm_applied is FALSE here --
+// which is precisely why the rule reads loop_declared.
+TEST(GSFastStencilShadow, OnWhenTheDriverFactDeclaresTheLoopWithNoKeySet)
+{
+	constexpr GSSelfReadRoadInputs fact = WithDriverFact(AdrenoShipped());
+	const GSSelfReadRoadDecision road = DecideSelfReadRoad(fact);
+	ASSERT_EQ(road.road, GSSelfReadRoad::InPassOrdered);
+	ASSERT_TRUE(road.loop_declared);
+	ASSERT_FALSE(road.arm_applied) << "no key was set, so a rule keyed on the key would miss this road";
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(fact)));
+}
+
+// Turnip on an a740, which the driver database now puts on the declared loop with the barriers
+// kept. The road is InPassBarrier, so the counter would qualify on the barrier bullet alone; this
+// pins that it also qualifies as a declared loop, because the two bullets were measured on
+// different hardware and losing either one would cost a real number on this part.
+TEST(GSFastStencilShadow, OnWhenTheA7xxPreferenceDeclaresTheLoopWithNoKeySet)
+{
+	constexpr GSSelfReadRoadInputs pref = WithBarrierPreference(AdrenoShipped());
+	const GSSelfReadRoadDecision road = DecideSelfReadRoad(pref);
+	ASSERT_EQ(road.road, GSSelfReadRoad::InPassBarrier);
+	ASSERT_TRUE(road.loop_declared);
+	ASSERT_FALSE(road.arm_applied) << "no key was set";
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(pref)));
 }
 
 // The M2's own road, walked from its device facts rather than named: the layout extension present,

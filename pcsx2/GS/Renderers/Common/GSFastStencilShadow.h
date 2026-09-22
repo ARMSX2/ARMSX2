@@ -48,8 +48,9 @@ namespace GSFastStencilShadow
 		/// answers "what does a frame read cost here" rather than "is a frame read legal here".
 		GSSelfReadRoad road = GSSelfReadRoad::Copy;
 
-		/// The feedback loop is declared by configuration rather than chosen by the device --
-		/// GSSelfReadRoadDecision::arm_applied. True for both declaration arms; see below.
+		/// The road declares an attachment feedback loop rather than reaching the same spelling by
+		/// the device's own preference -- GSSelfReadRoadDecision::loop_declared. True for both
+		/// declaration arms and for the driver fact that selects the same road; see below.
 		bool loop_declared = false;
 	};
 
@@ -89,6 +90,11 @@ namespace GSFastStencilShadow
 	//    and keeps the per-draw barriers, and it exists so that arm-1-vs-arm-2 isolates the
 	//    ordering claim; if the counter switched off on one of them that comparison would move two
 	//    things again, which is the mistake this rule is fixing.
+	//
+	//    And so does the road the DRIVER selects, which is the case that actually ships: a driver
+	//    build the database recognises as one that orders declared loops takes the same road with
+	//    no setting touched. That is why the fact is loop_declared and not arm_applied -- a road
+	//    that arrives by itself would otherwise arrive with E4e's +11.5..+42.0% attached.
 	//
 	//  - The backend's own per-draw barriers, with the read in-pass and nothing declared
 	//    (GSSelfReadRoad::InPassBarrier). The read costs no copy, but auto-flush still cuts the

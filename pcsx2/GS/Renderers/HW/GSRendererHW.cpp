@@ -7231,12 +7231,13 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// primitive mode (campaign gs-adreno-inpass-read, GSSelfReadRoadPolicy.h). Only the first
 	// carries Metal's dual-source restriction above, which is why that stayed in its own block.
 	//
-	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM, and it is the thing the
-	// campaign is measuring. Keeping it would cost several times base -- an overlapping self-read
-	// draw gets require_full_barrier, i.e. one vkCmdPipelineBarrier per primitive group -- and,
-	// worse, it would SUPPLY the ordering the experiment is testing for, so a correct picture
-	// would prove nothing. DeclareAttachmentFeedbackLoop=2 keeps them deliberately, as the
-	// diagnostic arm.
+	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM. Keeping it would cost
+	// several times base -- an overlapping self-read draw gets require_full_barrier, i.e. one
+	// vkCmdPipelineBarrier per primitive group -- and, worse, it would SUPPLY the ordering the
+	// claim is about, so a correct picture would prove nothing. DeclareAttachmentFeedbackLoop=2
+	// keeps them deliberately, as the diagnostic arm. Which is still what that key is for: the
+	// road itself is no longer experiment-only, since a driver build measured to order reaches it
+	// through the driver database with no key set.
 	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only), campaign gs-adreno-inpass-read
 	// E4b. Which readers on the declared road actually declare. Off the road, and at the default
 	// scope, this is false for every draw and everything below is unchanged. The withheld draws

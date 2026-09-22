@@ -512,10 +512,14 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// version rather than re-blocking the whole vendor.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): asked for ONLY when the harness
-	// wants the per-draw spelling of the feedback-loop declaration. Requesting an extension
-	// changes the device this process creates, and every byte-identity gate in this programme is
-	// taken on a device created without it, so the request is gated rather than unconditional.
+	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
+	// declaration, and since E24 the DEFAULT spelling wherever the layout road above is live --
+	// on Turnip the create-flag spelling puts the driver's serialising primitive mode on every
+	// pipeline in a latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h.
+	// Requested alongside the layout extension rather than unconditionally, because without that
+	// road there is no declaration to spell; `-loop-create-flag` keeps the old device reachable
+	// for measuring the fallback. Whether it is USED is decided in CheckFeatures, which is where
+	// the road is known.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
 		GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw() &&
@@ -4044,6 +4048,16 @@ bool GSDeviceVK::CheckFeatures()
 	road_inputs.layout_road_available = m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 	road_inputs.roaa_available = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	road_inputs.rt_self_read_is_broken = rt_self_read_is_broken;
+	// The driver saying, in driverInfo, that it is a build measured to order overlapping self-reads
+	// inside a declared feedback loop. This is what puts a user who loads our Turnip pack on the
+	// declared road with no setting touched, and it is why the road below can be reached without
+	// the experiment key. Every other driver reports 0 here and is unaffected.
+	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop;
+	// The other driver fact: the database saying this PART belongs on the declared loop with our
+	// own per-draw barriers kept. Turnip on an Adreno 7xx, where the copy road is not merely slow
+	// but wrong, and where the barrier-less road races. Every other part reports false.
+	road_inputs.driver_prefers_declared_loop_with_barriers =
+		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
 	road_inputs.arm = GSConfig.DeclareAttachmentFeedbackLoop;
 	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
@@ -4052,22 +4066,23 @@ bool GSDeviceVK::CheckFeatures()
 	// of those bakes the spelling in permanently.
 	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
 
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): declare the loop per draw instead
-	// of per pipeline. Resolved here for the same reason as the line above -- a pipeline's
-	// dynamic-state list is fixed at creation, so this has to be final before the first one
-	// exists. False unless the harness asked, and the extension is not even requested then.
+	// Which spelling the loop is declared in: per draw (the default) or with the pipeline create
+	// flag. Resolved here for the same reason as the line above -- a pipeline's dynamic-state
+	// list is fixed at creation, so this has to be final before the first one exists.
 	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
 		GSDynamicFeedbackLoopPolicy::GetSpelling(), UseFeedbackLoopLayout(),
 		m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state};
 	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
-	if (GSDynamicLoopRequestedButUnavailable(dynamic_loop_inputs))
+	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
 	{
-		// A silently inert arm is a device round that measures the other arm twice.
-		Console.Error("VK: the per-draw feedback-loop declaration was requested and CANNOT be applied "
-					  "(VK_EXT_attachment_feedback_loop_dynamic_state %s, feedback-loop layout road %s). "
-					  "This build declares the loop with the pipeline create flag.",
-			m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state ? "present" : "ABSENT",
-			UseFeedbackLoopLayout() ? "live" : "NOT live");
+		// Not an inert arm -- the loop IS declared -- but declared the way that costs, and a
+		// device that takes the fallback silently is a device nobody knows is on it. A warning
+		// rather than an error: the price is a measurement on Turnip and nowhere else, and a
+		// desktop driver without the extension (the M2's is one) pays nothing for it.
+		Console.Warning("VK: no VK_EXT_attachment_feedback_loop_dynamic_state here, so the feedback "
+						"loop is declared with the PIPELINE CREATE FLAG rather than per draw. "
+						"Measured on Turnip only: that spelling costs up to 2.8x on a self-read-heavy "
+						"title (wrc3@1x, SD865).");
 	}
 
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
@@ -4215,8 +4230,10 @@ bool GSDeviceVK::CheckFeatures()
 	// keying on the bit switched the counter off on the declared road -- and campaign
 	// gs-adreno-inpass-read E4e measured that absence as the declared road's ENTIRE cost on Jak II
 	// and Jak 3 (+11.5..+42.0% without it, +0.13..+0.90% with it forced on, same draw counts as the
-	// copy road, bit-identical frames). road.arm_applied is what separates a declared loop from a
-	// device that simply orders its own reads.
+	// copy road, bit-identical frames). road.loop_declared is what separates a declared loop from a
+	// device that simply orders its own reads -- and it is loop_declared rather than arm_applied
+	// because the driver fact reaches the same road without the experiment key, and the counter has
+	// to come with it.
 	//
 	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-fast-stencil-shadow / -force-fast-stencil-shadow) sits
 	// above the device rule, so the harness can move the counter while leaving texture_barrier, the
@@ -4226,7 +4243,7 @@ bool GSDeviceVK::CheckFeatures()
 		{.api = GetRenderAPI(),
 			.dual_source_blend = m_features.dual_source_blend,
 			.road = road.road,
-			.loop_declared = road.arm_applied});
+			.loop_declared = road.loop_declared});
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
@@ -4257,19 +4274,24 @@ bool GSDeviceVK::CheckFeatures()
 	// and texture barriers on is what takes COLOUR self-reads off the copy road. One bit, three
 	// consumers. Splitting them would mean threading a per-draw-class "may read in pass" predicate
 	// through HandleTextureHazards and DoRenderHW, which is a shipping change, not a probe.
-	const bool declare_depth_loop = road.arm_applied && GSConfig.DeclareDepthFeedbackLoop;
+	//
+	// Keyed on road.loop_declared, not on the experiment key: the declared colour road is now
+	// reachable from the driver database too, and on that road the depth read must stay off for the
+	// same reason it does on the key's -- turning barriers on for colour must not hand a device the
+	// depth road nobody has measured on it.
+	const bool declare_depth_loop = road.loop_declared && GSConfig.DeclareDepthFeedbackLoop;
 	if (declare_depth_loop)
 		m_features.test_and_sample_depth = true;
-	else if (road.arm_applied)
+	else if (road.loop_declared)
 	{
-		// The colour arm alone must NOT acquire the depth road as a side effect of turning
+		// The colour road alone must NOT acquire the depth road as a side effect of turning
 		// barriers on, or the two probes are measured together and neither answers anything.
 		m_features.test_and_sample_depth = false;
 	}
-	if (GSConfig.DeclareDepthFeedbackLoop && !road.arm_applied)
+	if (GSConfig.DeclareDepthFeedbackLoop && !road.loop_declared)
 	{
-		Console.Error("VK: DeclareDepthFeedbackLoop needs DeclareAttachmentFeedbackLoop, which is "
-					  "not in effect. The depth probe is NOT running.");
+		Console.Error("VK: DeclareDepthFeedbackLoop needs a declared colour feedback loop, and this "
+					  "device is not on that road. The depth probe is NOT running.");
 	}
 
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
@@ -4410,24 +4432,53 @@ bool GSDeviceVK::CheckFeatures()
 	// BeginDSAsRT's depth-to-colour blit -- and on this build it is just feedback_loops(), i.e.
 	// texture_barrier, so turning barriers on for the colour arm would have flipped it on by
 	// itself. Forced back off there, and on only when the depth probe is asked for.
-	if (road.arm_applied)
+	if (road.loop_declared)
 		m_features.depth_feedback = declare_depth_loop;
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
 
-	// The self-read road, and -- on the declared road -- which Vulkan declarations this binary
-	// actually makes. A device record quotes this line, because "which declarations did the arm
-	// carry" is the question the July 2026 round could not answer about itself, and that is why
-	// its negative result stood unchallenged for two months. Emitted here rather than beside the
-	// GPU banner because depth_feedback is only final a few lines above.
+	// The self-read road, WHY it was chosen, and -- on the declared road -- which Vulkan
+	// declarations this binary actually makes. A device record quotes this line, because "which
+	// declarations did the arm carry" is the question the July 2026 round could not answer about
+	// itself, and that is why its negative result stood unchallenged for two months. The road name
+	// carries the reason (experiment key or driver fact), since the declared road now has three
+	// entrances and a record that does not say which one is as unusable as one that does not name
+	// its driver. Which driver fact is readable off the road: the ordering fact lands on
+	// driver-ordered and the a7xx preference on barrier-ordered. Emitted here rather than beside
+	// the GPU banner because depth_feedback is only final a few lines above.
 	Console.WriteLn("VK: self-read road = %s [texbarrier=%s intile=%s layout=%s ordersOverlap=%s]",
 		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
 		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
 		m_features.declared_feedback_loop_orders_overlap ? "claimed" : "no");
+	// The driver half of that answer, printed whenever a driver claims the fix at all -- including
+	// when the claim was refused. A user who installs the driver pack and sees no change needs to
+	// be told the tag was read and what disqualified the part, not left to infer it from a road
+	// name that looks exactly like the one they had before.
+	if (const u32 fix_generation = GetMobileDriverProfile().declared_loop_fix_generation;
+		fix_generation != 0)
+	{
+		Console.WriteLn("VK: driver claims feedback-loop fix generation %u (driverInfo '%s'); "
+						"declared-loop ordering %s.",
+			fix_generation, m_device_driver_properties.driverInfo,
+			GetMobileDriverProfile().orders_declared_feedback_loop ?
+				"TRUSTED" :
+				"NOT trusted on this part -- the fix covers Adreno 6xx on Turnip only");
+	}
+	// The other driver rule, named the same way and for the same reason. Printed whenever the
+	// profile carries it, in effect or not, so a log says which measurement put the machine here
+	// rather than leaving a road name to stand for it.
+	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
+	{
+		const bool in_effect = road.selected_by_driver_fact && road.road == GSSelfReadRoad::InPassBarrier;
+		Console.WriteLn("VK: driver rule: Turnip a7xx -- declared feedback loop with the per-draw "
+						"barriers KEPT; %s.",
+			in_effect ? "in effect" : "NOT in effect, overridden here");
+	}
 	if (UseFeedbackLoopLayout() && m_features.texture_barrier)
 	{
-		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP pipeline flag + "
+		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP %s + "
 						"ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout + pass-to-pass sampler ordering; "
 						"depth loop %s (test_and_sample_depth=%s depth_feedback=%s).",
+			m_declare_loop_per_draw ? "per draw" : "pipeline create flag",
 			declare_depth_loop ? "DECLARED" : "not declared",
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
@@ -4435,10 +4486,17 @@ bool GSDeviceVK::CheckFeatures()
 	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
+	//
+	// `loop-spelling` is no longer one of them: since E24 the per-draw spelling is the default,
+	// so it prints `(default; …)` on an ordinary run and `(forced; …)` only when somebody named
+	// it. That distinction is the whole reason the origin is printed -- E23 scored a whole
+	// scorecard on the create flag because every previous round had reached the other spelling
+	// through a harness flag and nothing in the log said so.
 	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
-					"loop-spelling=%s(%s) fast-stencil-shadow=%s",
+					"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s",
 		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
 		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
+		GSDynamicFeedbackLoopPolicy::Origin(),
 		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
 											 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"));
@@ -7596,9 +7654,10 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
 	if (UseFeedbackLoopLayout())
 	{
-		// ⚠️ MEASUREMENT OVERRIDE: the same declaration, spelled per draw. The dynamic state goes
-		// on exactly the pipelines the create flag would have gone on, so the population declared
-		// is the population declared before and only WHEN it is stated changes. The two spellings
+		// The same declaration, spelled per draw -- the default spelling since E24. The dynamic
+		// state goes on exactly the pipelines the create flag would have gone on, so the
+		// population declared is the population declared before and only WHEN it is stated
+		// changes; that is why the two are byte-identical. The two spellings
 		// are mutually exclusive by more than taste: the Vulkan runtime filters the create flags
 		// out of a pipeline that declares the state dynamic. See GSDynamicFeedbackLoopPolicy.h.
 		if (m_declare_loop_per_draw)

@@ -575,8 +575,8 @@ SLES-50121:
   gsHWFixes:
     hwDownloadMode: 4
 
-# Splashdown: Rides Gone Wild -- blending accuracy held at Minimum (0) on any device that has to
-# read the render target from a per-draw copy of it.
+# Splashdown: Rides Gone Wild -- blending accuracy held at Minimum (0) on any device that pays for
+# its destination read on every draw that takes one: a copy of the render target, or a barrier.
 # Source: bmdhacks, 2026-09-24. Campaign upscale-unify, lanes Q-native (the price), F1 (the flips)
 # and C24 (this entry). The owner judged the Minimum picture on 2026-09-24 and passed it.
 # The cost it saves: on an SD865 under Turnip at native scale, 1,169 of Splashdown's 2,690 draws a
@@ -587,11 +587,16 @@ SLES-50121:
 # What it costs: about 30% of the frame moves, by up to 40 levels out of 255, across the water
 # spray behind the boat. A tester should compare the wake against a barrier-capable device.
 # Verified on: ARMSX2 ee3bc443c9 + this change, Classic Vulkan. Cap taken on the SD865/Turnip road
-# and reproduced on an Apple M2 (Honeykrisp) with OverrideTextureBarriers=0; not taken on the M2's
-# default road, where all 47 corpus dumps stay byte-identical at 1x and 2x.
-# copyRoadMaximumBlendingLevel is deliberately NOT maximumBlendingLevel: the cost exists only on
-# the copy road, so on a Mali with in-tile fetch, on any desktop GPU, and on the Adreno declared-
-# read road when it ships, the entry is inert and the picture is the one it always was.
+# and reproduced on an Apple M2 (Honeykrisp) with OverrideTextureBarriers=0.
+# Widened 2026-09-22 (campaign gs-adreno-inpass-read, E21/E22) to every road that charges for the
+# destination read, which is the barrier road as well as the copy road. On an Adreno 740 the
+# barrier road turns these same draws into software blends and emits 59,023 barriers a run, +40%
+# on the frame; with the cap it is 1.01x the copy road with zero barriers. The M2's default road
+# is a barrier road too, so a development build that loads this overlay now takes the cap there --
+# E22 measured the result byte-identical to the copy road it was judged on.
+# copyRoadMaximumBlendingLevel is deliberately NOT maximumBlendingLevel: the cost exists only where
+# we pay for the read per draw, so on a Mali with in-tile fetch, and on the Adreno declared-loop
+# road the driver orders for us, the entry is inert and the picture is the one it always was.
 # gsHWFixes replaces upstream's block, so upstream's autoFlush is restated beside it.
 SLUS-20686:
   gsHWFixes:

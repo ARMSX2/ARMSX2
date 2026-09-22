@@ -230,8 +230,9 @@ static void GSClampUpscaleMultiplier(Pcsx2Config::GSOptions& config)
 	config.UpscaleMultiplier = static_cast<float>(max_upscale_multiplier);
 }
 
-// A title whose database entry caps its blending accuracy on the render-target-copy road gets that
-// cap applied here, where the device that decides whether the cap means anything finally exists.
+// A title whose database entry caps its blending accuracy on a road that charges for the
+// destination read gets that cap applied here, where the device that decides whether the cap means
+// anything finally exists.
 //
 // Applied to GSConfig rather than to EmuConfig on purpose. The cap is a property of this device,
 // not of the player's settings: writing it back would make the settings screen show a level the
@@ -251,8 +252,11 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 	const GSDevice::FeatureSupport& f = g_gs_device->Features();
 
 	GSCopyRoadBlendingInputs in;
-	in.framebuffer_fetch = f.framebuffer_fetch;
-	in.texture_barrier = f.texture_barrier;
+	// The road, not the texture-barrier bit. A barrier road on a tiler charges for the destination
+	// read on every draw that takes one, the same as a copy road does -- which is what the bit
+	// cannot say, being equally true of the roads where the driver hands us the read for nothing.
+	in.road = GSSelfReadRoadFromPublishedBits(
+		f.framebuffer_fetch, f.texture_barrier, f.declared_feedback_loop_orders_overlap);
 	in.multidraw_fb_copy = f.multidraw_fb_copy;
 	in.title_cap = config.CopyRoadMaximumBlendingLevel;
 	in.configured_level = static_cast<int>(config.AccurateBlendingUnit);
@@ -264,8 +268,9 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 	static constexpr const char* blend_level_names[] = {
 		"Minimum", "Basic", "Medium", "High", "Full", "Maximum"};
 
-	Console.WriteLn("GS: this device reads the render target from a per-draw copy, so the game "
-					"database's copy-road blending cap applies: blending accuracy %s -> %s.",
+	Console.WriteLn("GS: this device pays for each destination read (%s), so the game database's "
+					"copy-road blending cap applies: blending accuracy %s -> %s.",
+		in.road == GSSelfReadRoad::InPassBarrier ? "a barrier per draw" : "a copy of the target per draw",
 		blend_level_names[in.configured_level], blend_level_names[level]);
 	config.AccurateBlendingUnit = static_cast<AccBlendLevel>(level);
 }

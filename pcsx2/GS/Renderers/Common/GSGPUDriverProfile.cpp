@@ -283,6 +283,55 @@ static MobileDriverVersion ParseVulkanDriverVersion(const MobileDriverContext& c
 	return version;
 }
 
+// Our own Turnip builds identify themselves in driverInfo, and that is how a driver states a fact
+// the Vulkan API has no way to state.
+//
+// Mesa pastes MESA_GIT_SHA1_OVERRIDE onto the package version, so a build we tagged `axfl1-005`
+// reports "Mesa 26.1.2 (git-axfl1-005)". A tag beginning `axfl<G>-` means the build carries
+// generation <G> of the declared-feedback-loop ordering fix; <G> is a decimal counting from 1, so
+// 0 is not a generation and never matches. Builds from before the convention (`armsx2-001` and its
+// neighbours) do not match, which is the point -- they were measured, and some of them do not have
+// the fix.
+//
+// Not a rule-table entry, because the table matches substrings and version bounds and this needs a
+// digit parsed out of a string. Being loose here would license dropping the barriers that keep
+// every other driver correct, so the parse demands the whole shape: a token boundary before
+// `git-`, at least one digit, a nonzero value, and the hyphen the convention puts after the
+// generation. A stock distro driver is built from a release tarball and carries no git sha at all,
+// so it cannot reach this by accident either way.
+static u32 ParseFixGeneration(std::string_view driver_info)
+{
+	constexpr std::string_view TAG_PREFIX = "git-axfl";
+	// Four digits is far more generation than this convention will ever need, and it keeps the
+	// accumulator from overflowing on a string that is not a tag at all.
+	constexpr size_t MAX_DIGITS = 4;
+
+	const std::string lowered = ToLowerASCII(driver_info);
+	for (size_t at = lowered.find(TAG_PREFIX); at != std::string::npos;
+		at = lowered.find(TAG_PREFIX, at + 1))
+	{
+		if (at > 0 && std::isalnum(static_cast<unsigned char>(lowered[at - 1])))
+			continue;
+
+		size_t pos = at + TAG_PREFIX.size();
+		u32 generation = 0;
+		size_t digits = 0;
+		while (pos < lowered.size() && digits < MAX_DIGITS &&
+			   std::isdigit(static_cast<unsigned char>(lowered[pos])))
+		{
+			generation = generation * 10 + static_cast<u32>(lowered[pos++] - '0');
+			digits++;
+		}
+
+		if (digits == 0 || generation == 0 || pos >= lowered.size() || lowered[pos] != '-')
+			continue;
+
+		return generation;
+	}
+
+	return 0;
+}
+
 static MobileGpuDriver DetectDriver(const GpuProfileSelection& selection,
 	const MobileDriverContext& context, std::string_view lowered_hints)
 {
@@ -728,6 +777,32 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	if (profile.version.known)
 		profile.confidence = DriverProfileConfidence::DriverVersion;
 
+	// The two facts that do not come from the rule table. Both are still facts ABOUT THE DRIVER,
+	// and both are deliberately the same shape as UseRenderTargetCopyForFeedback: false unless
+	// this driver has been measured, so an unrecognised driver keeps the road it has.
+	//
+	// The ordering fact is restricted to a6xx because that is what the fix and the measurement
+	// cover -- the driver patch behind generation 1 changes emission for CHIP == A6XX only and
+	// a7xx comes out byte-identical to stock, so a tagged build on an a7xx part carries nothing to
+	// trust. The architecture comes from the device name ("Adreno (TM) 650"), the same parse every
+	// other model-bounded rule uses. Turnip only: a Qualcomm blob cannot carry a Mesa git tag, and
+	// if one ever appears to, it means the string is not what we think it is.
+	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
+	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
+		                                    (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx);
+
+	// The a7xx preference needs no tag, because it is not about a build. It is about the part: on
+	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and
+	// stable, the copy road the vk-turnip-attachment-self-read rule puts it on draws The Godfather
+	// a third wrong and NASCAR's sky wrong, and both the pack build and upstream main behave the
+	// same (campaign gs-adreno-inpass-read, E18). So every Turnip on a7xx earns it, tagged or not,
+	// and a tagged build earns it the same way any other Turnip does -- the tag buys the ordering
+	// claim, which a7xx does not get.
+	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&
+		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx);
+
 	for (const DriverRule& rule : s_driver_rules)
 	{
 		if (std::string_view(rule.id) == "vk-powervr-old-swapchain-width" &&
@@ -785,4 +860,9 @@ void GpuProfileDetector::SetForcedBugs(u64 mask)
 u64 GpuProfileDetector::GetForcedBugs()
 {
 	return s_forced_driver_bugs;
+}
+
+u32 GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view driver_info)
+{
+	return GpuProfileDetail::ParseFixGeneration(driver_info);
 }
