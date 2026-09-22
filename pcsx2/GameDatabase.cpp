@@ -840,8 +840,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
 
 		case GSHWFixId::CopyRoadMaximumBlendingLevel:
-			// The cap is a ceiling the GS applies later and only on one road, so a player already
-			// at or below it has nothing left for this fix to do, on any device.
+			// The cap is a ceiling the GS applies later, and only on the roads that charge for a
+			// destination read, so a player already at or below it has nothing left for this fix
+			// to do, on any device.
 			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
 
 		case GSHWFixId::RecommendedBlendingLevel:
