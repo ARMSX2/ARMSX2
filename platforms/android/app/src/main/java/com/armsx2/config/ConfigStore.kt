@@ -79,7 +79,7 @@ object ConfigStore {
             val legacyRes = MainActivityRuntime.prefs.getString("ui.screenResOverride", "auto") ?: "auto"
             if (legacyScaler != 0 || legacyRes != "auto")
             {
-                parsed = parsed.copy(hwScaler = legacyScaler, screenResOverride = legacyRes)
+                parsed = parsed.copy(output = parsed.output.copy(hwScaler = legacyScaler, screenResOverride = legacyRes))
                 dirty = true
             }
             MainActivityRuntime.prefs.edit { putBoolean(KEY_OUTPUT_SCALE_MIGRATED, true) }
@@ -87,8 +87,8 @@ object ConfigStore {
 
         // Legacy: "Basic" blending migration.
         if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_BLEND_BASIC_MIGRATED, false) &&
-            parsed.accurateBlendingUnit == 4) {
-            parsed = parsed.copy(accurateBlendingUnit = 1)
+            parsed.graphics.accurateBlendingUnit == 4) {
+            parsed = parsed.copy(graphics = parsed.graphics.copy(accurateBlendingUnit = 1))
             dirty = true
         }
         if (!MainActivityRuntime.prefs.getBoolean(KEY_BLEND_BASIC_MIGRATED, false)) {
@@ -100,11 +100,11 @@ object ConfigStore {
         // every other setting; the old prefs become vestigial.
         if (!MainActivityRuntime.prefs.getBoolean(KEY_RENDERER_MIGRATED, false)) {
             MainActivityRuntime.prefs.getString("renderer", null)?.takeIf { it.isNotBlank() }?.let {
-                parsed = parsed.copy(renderer = it)
+                parsed = parsed.copy(output = parsed.output.copy(renderer = it))
                 dirty = true
             }
             legacyUpscalePref()?.let {
-                parsed = parsed.copy(upscaleFloat = it)
+                parsed = parsed.copy(output = parsed.output.copy(upscaleFloat = it))
                 dirty = true
             }
             MainActivityRuntime.prefs.edit { putBoolean(KEY_RENDERER_MIGRATED, true) }
@@ -115,12 +115,12 @@ object ConfigStore {
         // scope-aware (global ∘ per-game) like renderer; the old prefs become vestigial.
         if (!MainActivityRuntime.prefs.getBoolean(KEY_ORIENTATION_DRIVER_MIGRATED, false)) {
             val legacyOrient = MainActivityRuntime.prefs.getInt("ui.orientation", 0)
-            if (legacyOrient != parsed.orientation) {
-                parsed = parsed.copy(orientation = legacyOrient)
+            if (legacyOrient != parsed.output.orientation) {
+                parsed = parsed.copy(output = parsed.output.copy(orientation = legacyOrient))
                 dirty = true
             }
             MainActivityRuntime.prefs.getString("customDriverId", null)?.takeIf { it.isNotBlank() }?.let {
-                parsed = parsed.copy(customDriverId = it)
+                parsed = parsed.copy(output = parsed.output.copy(customDriverId = it))
                 dirty = true
             }
             MainActivityRuntime.prefs.edit { putBoolean(KEY_ORIENTATION_DRIVER_MIGRATED, true) }
@@ -130,8 +130,8 @@ object ConfigStore {
         // still carry the old default-off ONCE, so updating users get the fast
         // accurate-blending path too (they can turn it back off in the Renderer tab).
         if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false) &&
-            !parsed.adrenoFbFetch) {
-            parsed = parsed.copy(adrenoFbFetch = true)
+            !parsed.display.adrenoFbFetch) {
+            parsed = parsed.copy(display = parsed.display.copy(adrenoFbFetch = true))
             dirty = true
         }
         if (!MainActivityRuntime.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false)) {
@@ -144,15 +144,23 @@ object ConfigStore {
         // "OSD" toggle re-enables everything. (The bottom-left/right summaries are
         // handled by their own absent-key default for pre-2.6 saves.)
         if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_OSD_OFF_MIGRATED, false) &&
-            parsed.osdShowFps && parsed.osdShowVps && parsed.osdShowSpeed &&
-            parsed.osdShowCpu && parsed.osdShowGpu && parsed.osdShowResolution &&
-            parsed.osdShowGsStats && parsed.osdShowFrameTimes &&
-            parsed.osdShowHardwareInfo && parsed.osdShowVersion) {
+            parsed.osd.osdShowFps && parsed.osd.osdShowVps && parsed.osd.osdShowSpeed &&
+            parsed.osd.osdShowCpu && parsed.osd.osdShowGpu && parsed.osd.osdShowResolution &&
+            parsed.osd.osdShowGsStats && parsed.osd.osdShowFrameTimes &&
+            parsed.osd.osdShowHardwareInfo && parsed.osd.osdShowVersion) {
             parsed = parsed.copy(
-                osdShowFps = false, osdShowVps = false, osdShowSpeed = false,
-                osdShowCpu = false, osdShowGpu = false, osdShowResolution = false,
-                osdShowGsStats = false, osdShowFrameTimes = false,
-                osdShowHardwareInfo = false, osdShowVersion = false,
+                osd = parsed.osd.copy(
+                    osdShowFps = false,
+                    osdShowVps = false,
+                    osdShowSpeed = false,
+                    osdShowCpu = false,
+                    osdShowGpu = false,
+                    osdShowResolution = false,
+                    osdShowGsStats = false,
+                    osdShowFrameTimes = false,
+                    osdShowHardwareInfo = false,
+                    osdShowVersion = false,
+                ),
             )
             dirty = true
         }
@@ -164,8 +172,8 @@ object ConfigStore {
         // a handheld screen. Only saves sitting on the exact old default are moved; anyone who
         // picked their own size keeps it.
         if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_OSD_SCALE_MIGRATED, false) &&
-            parsed.osdScale == 100) {
-            parsed = parsed.copy(osdScale = 65)
+            parsed.osd.osdScale == 100) {
+            parsed = parsed.copy(osd = parsed.osd.copy(osdScale = 65))
             dirty = true
         }
         if (!MainActivityRuntime.prefs.getBoolean(KEY_OSD_SCALE_MIGRATED, false)) {
@@ -232,7 +240,7 @@ object ConfigStore {
         // Fresh installs are handled by seedFreshInstallDefaults; only touch an existing global save.
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
         val g = loadGlobal()
-        if (g.vsyncQueueSize == 0) saveGlobal(g.copy(vsyncQueueSize = 2))
+        if (g.hwFixes.vsyncQueueSize == 0) saveGlobal(g.copy(hwFixes = g.hwFixes.copy(vsyncQueueSize = 2)))
     }
 
     private const val KEY_AFFINITY_PERF_CORES_MIGRATED = "config.migrated.affinityPerfCores"
@@ -251,7 +259,7 @@ object ConfigStore {
      */
     /**
      * One-time: carry the RetroAchievements options over from the native config into global
-     * settings, where they now live so a game can have its own (Settings.achievementsHardcore and
+     * settings, where they now live so a game can have its own (Settings.achievements.hardcore and
      * friends). They used to be written straight into PCSX2-Android.ini by the RetroAchievements
      * screen, so that file is the only record of anything a player already changed; without this
      * the new defaults would quietly undo it at the next launch. Only [Achievements] keys are read
@@ -278,7 +286,7 @@ object ConfigStore {
         // Fresh installs are handled by seedFreshInstallDefaults; only touch an existing global save.
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
         val g = loadGlobal()
-        if (g.affinityMode == 0) saveGlobal(g.copy(affinityMode = 7))
+        if (g.output.affinityMode == 0) saveGlobal(g.copy(output = g.output.copy(affinityMode = 7)))
     }
 
     /** Load the sparse per-game override blob, or null if there are none. */
@@ -348,8 +356,8 @@ object ConfigStore {
             // Promote just those fields, by copying them onto global rather than saving
             // `updated` wholesale -- `updated` is the game's resolved settings, and writing all
             // of it to global would leak every per-game value into the global layer.
-            if (updated.pineEnabled != global.pineEnabled || updated.pineSlot != global.pineSlot)
-                saveGlobal(global.copy(pineEnabled = updated.pineEnabled, pineSlot = updated.pineSlot))
+            if (updated.emuCore.pineEnabled != global.emuCore.pineEnabled || updated.emuCore.pineSlot != global.emuCore.pineSlot)
+                saveGlobal(global.copy(emuCore = global.emuCore.copy(pineEnabled = updated.emuCore.pineEnabled, pineSlot = updated.emuCore.pineSlot)))
             val overrides = Settings.diff(global, updated)
             // Every field, so a pinned key can be given its CURRENT value even when that
             // value equals global's (the diff above necessarily omits it).

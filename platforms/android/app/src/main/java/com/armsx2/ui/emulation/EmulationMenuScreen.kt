@@ -703,8 +703,8 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             com.armsx2.SecondScreen.set(context.applicationContext, on)
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("perf.frameLimit.label"), state.settings.frameLimitEnable) { value ->
-            viewModel.updateSettings { it.copy(frameLimitEnable = value) }
+        MenuSwitchRow(str("perf.frameLimit.label"), state.settings.frameLimit.frameLimitEnable) { value ->
+            viewModel.updateSettings { it.copy(frameLimit = it.frameLimit.copy(frameLimitEnable = value)) }
         }
         Spacer(Modifier.height(6.dp))
         // Fast-forward SPEED — how fast the FF hotkey/button runs: 2..10x, or Unlimited (the
@@ -731,27 +731,27 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         // registers its own id with the nav registry, so inserting a row cannot shift what any
         // other row does.
         val osdColorIndex = com.armsx2.ui.settings.OSD_COLORS
-            .indexOf(state.settings.osdColor).coerceAtLeast(0)
+            .indexOf(state.settings.osd.osdColor).coerceAtLeast(0)
         MenuCycleRow(
             title = str("overlay.osdColor.label"),
             valueLabel = str(com.armsx2.ui.settings.OSD_COLOR_LABEL_KEYS[osdColorIndex]),
         ) { step ->
             val size = com.armsx2.ui.settings.OSD_COLORS.size
             val next = ((osdColorIndex + step) % size + size) % size
-            viewModel.updateSettings { it.copy(osdColor = com.armsx2.ui.settings.OSD_COLORS[next]) }
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdColor = com.armsx2.ui.settings.OSD_COLORS[next])) }
         }
         // Where the stats block sits, cycled in place. In the quick menu and not only in All
         // Settings because the moment you want to move the OSD is the moment it is covering
         // something you are trying to read — which is mid-game, not in a settings screen.
         val osdPosIndex = com.armsx2.ui.settings.OSD_POSITIONS
-            .indexOf(state.settings.osdPosition).coerceAtLeast(0)
+            .indexOf(state.settings.osd.osdPosition).coerceAtLeast(0)
         MenuCycleRow(
             title = str("overlay.osdPosition.label"),
             valueLabel = str(com.armsx2.ui.settings.OSD_POSITION_LABEL_KEYS[osdPosIndex]),
         ) { step ->
             val size = com.armsx2.ui.settings.OSD_POSITIONS.size
             val next = ((osdPosIndex + step) % size + size) % size
-            viewModel.updateSettings { it.copy(osdPosition = com.armsx2.ui.settings.OSD_POSITIONS[next]) }
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdPosition = com.armsx2.ui.settings.OSD_POSITIONS[next])) }
         }
         // Which edge this very panel docks to. Cycling it while the panel is open moves the
         // panel under your thumb, which is the only way to judge the choice.
@@ -850,17 +850,17 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             "opengl" to "OpenGL",
             "software" to str("backend.renderer.software"),
         ),
-        selected = settings.renderer,
+        selected = settings.output.renderer,
         onSelect = viewModel::setRenderer,
     )
     // GPU driver manager (download/import/select) — Vulkan only — plus Apply &
     // Restart, since renderer + driver changes only take effect on renderer init.
     // For OpenGL the "custom driver" is ANGLE (GLES-on-Vulkan), same picker shape.
-    if (settings.renderer == "vulkan") {
+    if (settings.output.renderer == "vulkan") {
         com.armsx2.ui.common.DriverManagerSection()
-    } else if (settings.renderer == "opengl") {
-        com.armsx2.ui.common.AngleDriverSection(settings.useAngleOpenGL) { on ->
-            viewModel.updateSettings { it.copy(useAngleOpenGL = on) }
+    } else if (settings.output.renderer == "opengl") {
+        com.armsx2.ui.common.AngleDriverSection(settings.display.useAngleOpenGL) { on ->
+            viewModel.updateSettings { it.copy(display = it.display.copy(useAngleOpenGL = on)) }
         }
     }
     // GS Multi-threading (GV7 front/back split). Restart-required like the renderer /
@@ -870,10 +870,10 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // who never open full settings still understand what it does.
     MenuSwitchRow(
         str("renderer.gsBackThread.label"),
-        settings.gsBackThreadMode >= 3,
+        settings.display.gsBackThreadMode >= 3,
         description = str("renderer.gsBackThread.description"),
     ) { on ->
-        viewModel.updateSettings { it.copy(gsBackThreadMode = if (on) 3 else 0) }
+        viewModel.updateSettings { it.copy(display = it.display.copy(gsBackThreadMode = if (on) 3 else 0)) }
     }
     // Coalesce Render Passes is deliberately NOT here. It only helps Dirge of Cerberus, and the
     // game database already turns it on for Dirge, so it lives in All Settings > Renderer >
@@ -884,7 +884,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         // Share the full settings-tab list so the sub-native 0.25/0.5/0.75/Native
         // options aren't dropped in the in-game quick menu.
         options = com.armsx2.ui.settings.UPSCALE_OPTIONS.map { it.value to it.label },
-        selected = settings.upscaleFloat,
+        selected = settings.output.upscaleFloat,
         onSelect = viewModel::setUpscale,
     )
     // Custom internal resolution, same control as the settings tab — the quick menu only offered
@@ -892,7 +892,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // changed from in-game. Percentage of native: 107% is roughly true 480p height.
     com.armsx2.ui.settings.IntSliderRow(
         label = str("renderer.upscale.customScale"),
-        value = (settings.upscaleFloat * 100f).roundToInt().coerceIn(25, 800),
+        value = (settings.output.upscaleFloat * 100f).roundToInt().coerceIn(25, 800),
         min = 25,
         max = 800,
         description = str("renderer.upscale.customScale.description"),
@@ -907,15 +907,15 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // "auto" is the DEFAULT and resolves to Vulkan on Android, so gating on the literal string
     // "vulkan" hid this row from almost everyone — which is exactly what happened. Only OpenGL
     // and software genuinely cannot run it.
-    if (settings.renderer != "opengl" && settings.renderer != "software") {
+    if (settings.output.renderer != "opengl" && settings.output.renderer != "software") {
         // A picker, matching the Renderer tab. This was a switch while FSR1 was the only
         // upscaler; with SGSR beside it there are three mutually exclusive choices, and this
         // screen is the SECOND place that has to learn about a new one -- the settings tab has
         // its own copy of the same control, and updating only that one leaves the in-game menu
         // silently unable to reach the new option.
-        val sgsrOn = settings.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR ||
-            settings.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR_EDGE
-        val fsr1On = settings.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1 || sgsrOn
+        val sgsrOn = settings.graphics.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR ||
+            settings.graphics.upscaler == com.armsx2.config.Settings.UPSCALER_SGSR_EDGE
+        val fsr1On = settings.graphics.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1 || sgsrOn
         HorizontalOptions(
             title = str("renderer.upscaler.label"),
             options = listOf(
@@ -924,28 +924,28 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
                 com.armsx2.config.Settings.UPSCALER_SGSR to "SGSR",
                 com.armsx2.config.Settings.UPSCALER_SGSR_EDGE to "SGSR Edge",
             ),
-            selected = if (fsr1On) settings.upscaler else com.armsx2.config.Settings.UPSCALER_OFF,
-            onSelect = { v -> viewModel.updateSettings { it.copy(upscaler = v) } },
+            selected = if (fsr1On) settings.graphics.upscaler else com.armsx2.config.Settings.UPSCALER_OFF,
+            onSelect = { v -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(upscaler = v)) } },
         )
         if (fsr1On) {
             // Separate settings, separate ranges — see the note in RendererTab.
             if (sgsrOn) {
                 com.armsx2.ui.settings.IntSliderRow(
                     label = str("renderer.sgsr.sharpness.label"),
-                    value = settings.sgsrSharpness.coerceIn(0, 200),
+                    value = settings.graphics.sgsrSharpness.coerceIn(0, 200),
                     min = 0,
                     max = 200,
                     valueFormatter = { "$it%" },
-                    onChange = { pct -> viewModel.updateSettings { it.copy(sgsrSharpness = pct) } },
+                    onChange = { pct -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(sgsrSharpness = pct)) } },
                 )
             } else {
                 com.armsx2.ui.settings.IntSliderRow(
                     label = str("renderer.fsr1.sharpness.label"),
-                    value = settings.fsrSharpness.coerceIn(0, 100),
+                    value = settings.graphics.fsrSharpness.coerceIn(0, 100),
                     min = 0,
                     max = 100,
                     valueFormatter = { "$it%" },
-                    onChange = { pct -> viewModel.updateSettings { it.copy(fsrSharpness = pct) } },
+                    onChange = { pct -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(fsrSharpness = pct)) } },
                 )
             }
         }
@@ -954,14 +954,14 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // split between the bottom of this page (the switches) and the Options page (the manager),
     // which for one of the most-used features on the device was two places too deep.
     CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
-    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.loadTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacements = it) }
+    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.graphics.loadTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacements = it)) }
     }
-    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.loadTextureReplacementsAsync) {
-        viewModel.updateSettings { current -> current.copy(loadTextureReplacementsAsync = it) }
+    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.graphics.loadTextureReplacementsAsync) {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacementsAsync = it)) }
     }
-    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.precacheTextureReplacements) {
-        viewModel.updateSettings { current -> current.copy(precacheTextureReplacements = it) }
+    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.graphics.precacheTextureReplacements) {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(precacheTextureReplacements = it)) }
     }
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
@@ -976,7 +976,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             7 to "19.5:9",
             8 to "Custom",
         ),
-        selected = settings.aspectRatio,
+        selected = settings.output.aspectRatio,
         onSelect = viewModel::setAspectRatio,
     )
     // Overlay artwork, switchable from in-game — trying bezels means seeing them ON the game, and
@@ -1007,19 +1007,19 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     HorizontalOptions(
         title = str("renderer.blendingAccuracy.label"),
         options = listOf("Minimum", "Basic", "Medium", "High", str("fixes.opt.full"), str("fixes.opt.max")).mapIndexed { index, label -> index to label },
-        selected = settings.accurateBlendingUnit,
+        selected = settings.graphics.accurateBlendingUnit,
         onSelect = viewModel::setBlending,
     )
     HorizontalOptions(
         title = str("renderer.textureFiltering.label"),
         options = listOf("Nearest", str("fixes.opt.forced"), "PS2", str("fixes.opt.sprite")).mapIndexed { index, label -> index to label },
-        selected = settings.textureFiltering,
+        selected = settings.graphics.textureFiltering,
         onSelect = viewModel::setTextureFiltering,
     )
     HorizontalOptions(
         title = str("renderer.texturePreloading.label"),
         options = listOf(str("fixes.opt.off"), "Partial", str("fixes.opt.full")).mapIndexed { index, label -> index to label },
-        selected = settings.texturePreloading,
+        selected = settings.graphics.texturePreloading,
         onSelect = viewModel::setTexturePreloading,
     )
     HorizontalOptions(
@@ -1028,59 +1028,59 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         // last; it is experimental (non-blocking readback) and is not the default.
         options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled", "Async")
             .mapIndexed { index, label -> index to label },
-        selected = settings.hardwareDownloadMode,
+        selected = settings.graphics.hardwareDownloadMode,
         onSelect = viewModel::setHardwareDownloadMode,
     )
     HorizontalOptions(
         title = str("renderer.deinterlacing.label"),
         options = listOf("Auto", "Off", "Weave TFF", "Weave BFF", "Bob TFF", "Bob BFF", "Blend TFF", "Blend BFF", "Adapt TFF", "Adapt BFF")
             .mapIndexed { index, label -> index to label },
-        selected = settings.deinterlaceMode,
-        onSelect = { value -> viewModel.updateSettings { it.copy(deinterlaceMode = value) } },
+        selected = settings.output.deinterlaceMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(output = it.output.copy(deinterlaceMode = value)) } },
     )
     HorizontalOptions(
         title = str("renderer.displayFilter.label"),
         options = listOf("Nearest", "Smooth", "Sharp").mapIndexed { index, label -> index to label },
-        selected = settings.displayBilinear,
-        onSelect = { value -> viewModel.updateSettings { it.copy(displayBilinear = value) } },
+        selected = settings.graphics.displayBilinear,
+        onSelect = { value -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(displayBilinear = value)) } },
     )
     HorizontalOptions(
         title = str("renderer.tvShader.label"),
         options = listOf("Off", "Scanline", "Diagonal", "Tri", "Wave", "Lottes", "4xRGSS", "NxAGSS")
             .mapIndexed { index, label -> index to label },
-        selected = settings.tvShader,
-        onSelect = { value -> viewModel.updateSettings { it.copy(tvShader = value) } },
+        selected = settings.graphics.tvShader,
+        onSelect = { value -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(tvShader = value)) } },
     )
     HorizontalOptions(
         title = str("fixes.dithering.label"),
         options = listOf(str("fixes.opt.off"), str("fixes.opt.scaled"), str("fixes.opt.unscaled"), str("fixes.opt.force32"))
             .mapIndexed { index, label -> index to label },
-        selected = settings.dithering,
-        onSelect = { value -> viewModel.updateSettings { it.copy(dithering = value) } },
+        selected = settings.hwFixes.dithering,
+        onSelect = { value -> viewModel.updateSettings { it.copy(hwFixes = it.hwFixes.copy(dithering = value)) } },
     )
-    MenuSwitchRow(str("renderer.hwMipmapping.label"), settings.hwMipmap) {
-        viewModel.updateSettings { current -> current.copy(hwMipmap = it) }
+    MenuSwitchRow(str("renderer.hwMipmapping.label"), settings.graphics.hwMipmap) {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(hwMipmap = it)) }
     }
-    MenuSwitchRow(str("fixes.integerScaling.label"), settings.integerScaling) {
-        viewModel.updateSettings { current -> current.copy(integerScaling = it) }
+    MenuSwitchRow(str("fixes.integerScaling.label"), settings.hwFixes.integerScaling) {
+        viewModel.updateSettings { current -> current.copy(hwFixes = current.hwFixes.copy(integerScaling = it)) }
     }
-    MenuSwitchRow("VSync", settings.vsyncEnable) {
-        viewModel.updateSettings { current -> current.copy(vsyncEnable = it) }
+    MenuSwitchRow("VSync", settings.display.vsyncEnable) {
+        viewModel.updateSettings { current -> current.copy(display = current.display.copy(vsyncEnable = it)) }
     }
-    MenuSwitchRow(str("renderer.shadeboost.label"), settings.shadeBoost) {
-        viewModel.updateSettings { current -> current.copy(shadeBoost = it) }
+    MenuSwitchRow(str("renderer.shadeboost.label"), settings.graphics.shadeBoost) {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(shadeBoost = it)) }
     }
-    MenuSwitchRow(str("fixes.antiBlur.label"), settings.antiBlur) {
-        viewModel.updateSettings { current -> current.copy(antiBlur = it) }
+    MenuSwitchRow(str("fixes.antiBlur.label"), settings.display.antiBlur) {
+        viewModel.updateSettings { current -> current.copy(display = current.display.copy(antiBlur = it)) }
     }
-    MenuSwitchRow(str("fixes.screenOffsets.label"), settings.screenOffsets) {
-        viewModel.updateSettings { current -> current.copy(screenOffsets = it) }
+    MenuSwitchRow(str("fixes.screenOffsets.label"), settings.display.screenOffsets) {
+        viewModel.updateSettings { current -> current.copy(display = current.display.copy(screenOffsets = it)) }
     }
-    MenuSwitchRow(str("fixes.showOverscan.label"), settings.showOverscan) {
-        viewModel.updateSettings { current -> current.copy(showOverscan = it) }
+    MenuSwitchRow(str("fixes.showOverscan.label"), settings.display.showOverscan) {
+        viewModel.updateSettings { current -> current.copy(display = current.display.copy(showOverscan = it)) }
     }
-    MenuSwitchRow(str("fixes.syncToHostRefresh.label"), settings.syncToHostRefresh) {
-        viewModel.updateSettings { current -> current.copy(syncToHostRefresh = it) }
+    MenuSwitchRow(str("fixes.syncToHostRefresh.label"), settings.display.syncToHostRefresh) {
+        viewModel.updateSettings { current -> current.copy(display = current.display.copy(syncToHostRefresh = it)) }
     }
     // RetroArch shaders, end-to-end in-game: toggle → pick a preset → download more.
     // Same composables the Settings renderer tab renders (single definition in ui/common);
@@ -1091,12 +1091,12 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // writeGsToNative(), and the device rebuilds the chain on the next frame, so a preset
     // change is live with no restart.
     com.armsx2.ui.common.ShaderChainSection(
-        enabled = settings.shaderChainEnabled,
-        preset = settings.shaderChainPreset,
-        params = settings.shaderChainParams,
-        onEnabledChange = { on -> viewModel.updateSettings { it.copy(shaderChainEnabled = on) } },
-        onPresetChange = { path -> viewModel.updateSettings { it.copy(shaderChainPreset = path) } },
-        onParamsChange = { next -> viewModel.updateSettings { it.copy(shaderChainParams = next) } },
+        enabled = settings.graphics.shaderChainEnabled,
+        preset = settings.graphics.shaderChainPreset,
+        params = settings.graphics.shaderChainParams,
+        onEnabledChange = { on -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainEnabled = on)) } },
+        onPresetChange = { path -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainPreset = path)) } },
+        onParamsChange = { next -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainParams = next)) } },
     )
     com.armsx2.ui.common.ShaderManagerSection()
 }
@@ -1107,23 +1107,23 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     SectionCard(str("perf.speedLimit.label")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (settings.frameLimitEnable) "${settings.nominalSpeedPercent}%" else str("setup.toggle.off"),
+                if (settings.frameLimit.frameLimitEnable) "${settings.frameLimit.nominalSpeedPercent}%" else str("setup.toggle.off"),
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
             Switch(
-                checked = settings.frameLimitEnable,
+                checked = settings.frameLimit.frameLimitEnable,
                 onCheckedChange = { enabled ->
-                    viewModel.updateSettings { it.copy(frameLimitEnable = enabled) }
+                    viewModel.updateSettings { it.copy(frameLimit = it.frameLimit.copy(frameLimitEnable = enabled)) }
                 },
             )
         }
         Spacer(Modifier.height(8.dp))
         HorizontalOptionRow(
             options = listOf(50, 75, 90, 100, 110, 125, 150, 200).map { it to "$it%" },
-            selected = settings.nominalSpeedPercent,
+            selected = settings.frameLimit.nominalSpeedPercent,
             keyPrefix = str("perf.speedLimit.label"),
             onSelect = viewModel::setSpeed,
         )
@@ -1133,142 +1133,144 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
         options = listOf(0, 20, 30, 45, 60, 90, 120).map {
             it to if (it == 0) str("setup.toggle.off") else "$it FPS"
         },
-        selected = settings.fpsLimit,
+        selected = settings.frameLimit.fpsLimit,
         onSelect = viewModel::setFpsLimit,
     )
     HorizontalOptions(
         title = str("perf.frameSkip.label"),
         options = (0..5).map { it to if (it == 0) str("setup.toggle.off") else "$it" },
-        selected = settings.frameSkip,
+        selected = settings.frameLimit.frameSkip,
         onSelect = viewModel::setFrameSkip,
     )
     FramerateSlider(
         title = str("perf.ntscFramerate.label"),
-        value = settings.framerateNtsc,
-        onValue = { value -> viewModel.updateSettings { it.copy(framerateNtsc = value) } },
+        value = settings.output.framerateNtsc,
+        onValue = { value -> viewModel.updateSettings { it.copy(output = it.output.copy(framerateNtsc = value)) } },
     )
     FramerateSlider(
         title = str("perf.palFramerate.label"),
-        value = settings.frameratePal,
-        onValue = { value -> viewModel.updateSettings { it.copy(frameratePal = value) } },
+        value = settings.output.frameratePal,
+        onValue = { value -> viewModel.updateSettings { it.copy(output = it.output.copy(frameratePal = value)) } },
     )
     HorizontalOptions(
         title = str("perf.eeCycleRate.label"),
         options = (-3..3).map { it to if (it > 0) "+$it" else "$it" },
-        selected = settings.eeCycleRate,
+        selected = settings.cpu.eeCycleRate,
         onSelect = viewModel::setEeCycleRate,
     )
     HorizontalOptions(
         title = str("perf.eeCycleSkip.label"),
         options = (0..3).map { it to "$it" },
-        selected = settings.eeCycleSkip,
+        selected = settings.cpu.eeCycleSkip,
         onSelect = viewModel::setEeCycleSkip,
     )
     HorizontalOptions(
         title = str("perf.eeFpuClamping.label"),
         options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"), str("perf.clamp.exact"))
             .mapIndexed { index, label -> index to label },
-        selected = settings.eeClampMode,
-        onSelect = { value -> viewModel.updateSettings { it.copy(eeClampMode = value) } },
+        selected = settings.cpu.eeClampMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(eeClampMode = value)) } },
     )
     HorizontalOptions(
         title = str("perf.vuClamping.label"),
         options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact"))
             .mapIndexed { index, label -> index to label },
-        selected = settings.vuClampMode,
-        onSelect = { value -> viewModel.updateSettings { it.copy(vuClampMode = value) } },
+        selected = settings.cpu.vuClampMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(vuClampMode = value)) } },
     )
     HorizontalOptions(
         title = str("perf.vu1Clamping.label"),
         options = listOf(str("perf.clamp.followVu0"), str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.extraSign"), str("perf.clamp.exact"))
             .mapIndexed { index, label -> index - 1 to label },
-        selected = settings.vu1ClampMode,
-        onSelect = { value -> viewModel.updateSettings { it.copy(vu1ClampMode = value) } },
+        selected = settings.cpu.vu1ClampMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(vu1ClampMode = value)) } },
     )
     HorizontalOptions(
         title = str("perf.eeFpuRoundMode.label"),
         options = listOf(str("perf.round.nearest"), str("perf.round.negative"), str("perf.round.positive"), str("perf.round.chop"))
             .mapIndexed { index, label -> index to label },
-        selected = settings.eeFpuRoundMode,
-        onSelect = { value -> viewModel.updateSettings { it.copy(eeFpuRoundMode = value) } },
+        selected = settings.emuCore.eeFpuRoundMode,
+        onSelect = { value -> viewModel.updateSettings { it.copy(emuCore = it.emuCore.copy(eeFpuRoundMode = value)) } },
     )
-    MenuSwitchRow(str("perf.hack.mtvu"), settings.mtvu) {
-        viewModel.updateSettings { current -> current.copy(mtvu = it) }
+    MenuSwitchRow(str("perf.hack.mtvu"), settings.cpu.mtvu) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(mtvu = it)) }
     }
-    MenuSwitchRow(str("perf.hack.instantVu1"), settings.vu1Instant) {
-        viewModel.updateSettings { current -> current.copy(vu1Instant = it) }
+    MenuSwitchRow(str("perf.hack.instantVu1"), settings.cpu.vu1Instant) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(vu1Instant = it)) }
     }
-    MenuSwitchRow(str("perf.hack.fastCdvd"), settings.fastCDVD) {
-        viewModel.updateSettings { current -> current.copy(fastCDVD = it) }
+    MenuSwitchRow(str("perf.hack.fastCdvd"), settings.cpu.fastCDVD) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(fastCDVD = it)) }
     }
-    MenuSwitchRow(str("perf.hack.skipDupeFrames"), settings.skipDuplicateFrames) {
-        viewModel.updateSettings { current -> current.copy(skipDuplicateFrames = it) }
+    MenuSwitchRow(str("perf.hack.skipDupeFrames"), settings.emuCore.skipDuplicateFrames) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(skipDuplicateFrames = it)) }
     }
-    MenuSwitchRow(str("perf.hack.vuFlagHack"), settings.vuFlagHack) {
-        viewModel.updateSettings { current -> current.copy(vuFlagHack = it) }
+    MenuSwitchRow(str("perf.hack.vuFlagHack"), settings.cpu.vuFlagHack) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(vuFlagHack = it)) }
     }
-    MenuSwitchRow(str("perf.hack.intcStat"), settings.intcStat) {
-        viewModel.updateSettings { current -> current.copy(intcStat = it) }
+    MenuSwitchRow(str("perf.hack.intcStat"), settings.cpu.intcStat) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(intcStat = it)) }
     }
-    MenuSwitchRow(str("perf.hack.waitLoop"), settings.waitLoop) {
-        viewModel.updateSettings { current -> current.copy(waitLoop = it) }
+    MenuSwitchRow(str("perf.hack.waitLoop"), settings.cpu.waitLoop) {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(waitLoop = it)) }
     }
     // Frame generation, in its own card: it changes what is PRESENTED rather than what is
     // emulated, so it does not belong among the speedhacks above. Github flavour only — the
     // card is a no-op stub in the Play build, which contains no frame generation at all.
     com.armsx2.ui.common.LsfgEmulationCard(
-        enabled = settings.lsfgEnabled,
-        multiplier = settings.lsfgMultiplier,
-        dllPath = settings.lsfgDllPath,
-        performance = settings.lsfgPerformance,
-        flowScale = settings.lsfgFlowScale,
-        targetRate = settings.lsfgTargetRate,
+        enabled = settings.graphics.lsfgEnabled,
+        multiplier = settings.graphics.lsfgMultiplier,
+        dllPath = settings.graphics.lsfgDllPath,
+        performance = settings.graphics.lsfgPerformance,
+        flowScale = settings.graphics.lsfgFlowScale,
+        targetRate = settings.graphics.lsfgTargetRate,
     ) { on, mult, dll, perf, flow, target ->
         viewModel.updateSettings {
             it.copy(
-                lsfgEnabled = on,
-                lsfgMultiplier = mult,
-                lsfgDllPath = dll,
-                lsfgPerformance = perf,
-                lsfgFlowScale = flow,
-                lsfgTargetRate = target,
+                graphics = it.graphics.copy(
+                    lsfgEnabled = on,
+                    lsfgMultiplier = mult,
+                    lsfgDllPath = dll,
+                    lsfgPerformance = perf,
+                    lsfgFlowScale = flow,
+                    lsfgTargetRate = target,
+                ),
             )
         }
     }
     SectionCard(str("tab.recompiler")) {
-        MenuSwitchRow("EE (R5900)", settings.recEE) { value -> viewModel.updateSettings { it.copy(recEE = value) } }
+        MenuSwitchRow("EE (R5900)", settings.cpu.recEE) { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(recEE = value)) } }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow("IOP (R3000)", settings.recIOP) { value -> viewModel.updateSettings { it.copy(recIOP = value) } }
+        MenuSwitchRow("IOP (R3000)", settings.cpu.recIOP) { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(recIOP = value)) } }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow("VU0", settings.recVU0) { value -> viewModel.updateSettings { it.copy(recVU0 = value) } }
+        MenuSwitchRow("VU0", settings.cpu.recVU0) { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(recVU0 = value)) } }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow("VU1", settings.recVU1) { value -> viewModel.updateSettings { it.copy(recVU1 = value) } }
+        MenuSwitchRow("VU1", settings.cpu.recVU1) { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(recVU1 = value)) } }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow("Fastmem", settings.enableFastmem) { value -> viewModel.updateSettings { it.copy(enableFastmem = value) } }
+        MenuSwitchRow("Fastmem", settings.cpu.enableFastmem) { value -> viewModel.updateSettings { it.copy(cpu = it.cpu.copy(enableFastmem = value)) } }
     }
     SectionCard(str("tab.overlay")) {
-        MenuSwitchRow(str("overlay.toggle.fps"), settings.osdShowFps) { value ->
-            viewModel.updateSettings { it.copy(osdShowFps = value) }
+        MenuSwitchRow(str("overlay.toggle.fps"), settings.osd.osdShowFps) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowFps = value)) }
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("overlay.toggle.emulationSpeed"), settings.osdShowSpeed) { value ->
-            viewModel.updateSettings { it.copy(osdShowSpeed = value) }
+        MenuSwitchRow(str("overlay.toggle.emulationSpeed"), settings.osd.osdShowSpeed) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowSpeed = value)) }
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("overlay.toggle.cpuUsage"), settings.osdShowCpu) { value ->
-            viewModel.updateSettings { it.copy(osdShowCpu = value) }
+        MenuSwitchRow(str("overlay.toggle.cpuUsage"), settings.osd.osdShowCpu) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowCpu = value)) }
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("overlay.toggle.gpuUsage"), settings.osdShowGpu) { value ->
-            viewModel.updateSettings { it.copy(osdShowGpu = value) }
+        MenuSwitchRow(str("overlay.toggle.gpuUsage"), settings.osd.osdShowGpu) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowGpu = value)) }
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("overlay.toggle.internalResolution"), settings.osdShowResolution) { value ->
-            viewModel.updateSettings { it.copy(osdShowResolution = value) }
+        MenuSwitchRow(str("overlay.toggle.internalResolution"), settings.osd.osdShowResolution) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowResolution = value)) }
         }
         Spacer(Modifier.height(6.dp))
-        MenuSwitchRow(str("overlay.toggle.onScreenNotifications"), settings.osdShowMessages) { value ->
-            viewModel.updateSettings { it.copy(osdShowMessages = value) }
+        MenuSwitchRow(str("overlay.toggle.onScreenNotifications"), settings.osd.osdShowMessages) { value ->
+            viewModel.updateSettings { it.copy(osd = it.osd.copy(osdShowMessages = value)) }
         }
     }
 }
@@ -1297,8 +1299,8 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onChange = { haptic = it; com.armsx2.input.ControllerMappings.setHapticIntensity(it) },
     )
     MenuSwitchRow(str("pad.multitap.label"), state.multitapEnabled, onCheckedChange = viewModel::setMultitap)
-    MenuSwitchRow(str("network.emulateUsbKeyboard"), state.settings.usbKeyboard) {
-        viewModel.updateSettings { current -> current.copy(usbKeyboard = it) }
+    MenuSwitchRow(str("network.emulateUsbKeyboard"), state.settings.system.usbKeyboard) {
+        viewModel.updateSettings { current -> current.copy(system = current.system.copy(usbKeyboard = it)) }
     }
 
     // Gesture control, in-game. Worth having here rather than only in All Settings: the swipe
@@ -1374,48 +1376,48 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     // "▣", is one already proven to render in the shipped font -- "▩" (U+25A9) and "⏻" (U+23FB)
     // come out as tofu boxes on device.
     Spacer(Modifier.height(6.dp))
-    MenuSwitchRow(str("patches.enablePatches.label"), settings.enablePatches) {
-        viewModel.updateSettings { current -> current.copy(enablePatches = it) }
+    MenuSwitchRow(str("patches.enablePatches.label"), settings.emuCore.enablePatches) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enablePatches = it)) }
     }
     MenuSwitchRow(
         if (state.hardcore) str("patches.cheats.labelHardcore") else str("patches.cheats.label"),
-        settings.enableCheats && !state.hardcore,
+        settings.emuCore.enableCheats && !state.hardcore,
         enabled = !state.hardcore,
     ) {
-        viewModel.updateSettings { current -> current.copy(enableCheats = it) }
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableCheats = it)) }
     }
-    MenuSwitchRow(str("patches.widescreen.label"), settings.enableWideScreenPatches) {
-        viewModel.updateSettings { current -> current.copy(enableWideScreenPatches = it) }
+    MenuSwitchRow(str("patches.widescreen.label"), settings.emuCore.enableWideScreenPatches) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableWideScreenPatches = it)) }
     }
-    MenuSwitchRow(str("patches.noInterlacing.label"), settings.enableNoInterlacingPatches) {
-        viewModel.updateSettings { current -> current.copy(enableNoInterlacingPatches = it) }
+    MenuSwitchRow(str("patches.noInterlacing.label"), settings.emuCore.enableNoInterlacingPatches) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableNoInterlacingPatches = it)) }
     }
-    MenuSwitchRow(str("perf.fix.skipBios"), settings.enableFastBoot) {
-        viewModel.updateSettings { current -> current.copy(enableFastBoot = it) }
+    MenuSwitchRow(str("perf.fix.skipBios"), settings.emuCore.enableFastBoot) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableFastBoot = it)) }
     }
-    MenuSwitchRow(str("perf.fix.gamedbFixes"), settings.enableGameFixes) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = it) }
+    MenuSwitchRow(str("perf.fix.gamedbFixes"), settings.emuCore.enableGameFixes) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = it)) }
     }
-    MenuSwitchRow(str("perf.fix.skipMpeg"), settings.gamefixSkipMpeg) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixSkipMpeg = it) }
+    MenuSwitchRow(str("perf.fix.skipMpeg"), settings.emuCore.gamefixSkipMpeg) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
     }
-    MenuSwitchRow(str("perf.fix.fmvSoftware"), settings.gamefixSoftwareRendererFmv) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it) }
+    MenuSwitchRow(str("perf.fix.fmvSoftware"), settings.emuCore.gamefixSoftwareRendererFmv) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
     }
-    MenuSwitchRow(str("perf.fix.eeTiming"), settings.gamefixEETiming) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixEETiming = it) }
+    MenuSwitchRow(str("perf.fix.eeTiming"), settings.emuCore.gamefixEETiming) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixEETiming = it)) }
     }
-    MenuSwitchRow(str("perf.fix.instantDma"), settings.gamefixInstantDma) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixInstantDma = it) }
+    MenuSwitchRow(str("perf.fix.instantDma"), settings.emuCore.gamefixInstantDma) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixInstantDma = it)) }
     }
-    MenuSwitchRow(str("perf.fix.blitFps"), settings.gamefixBlitInternalFps) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixBlitInternalFps = it) }
+    MenuSwitchRow(str("perf.fix.blitFps"), settings.emuCore.gamefixBlitInternalFps) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
     }
-    MenuSwitchRow(str("perf.fix.vuAddSub"), settings.gamefixVuAddSub) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixVuAddSub = it) }
+    MenuSwitchRow(str("perf.fix.vuAddSub"), settings.emuCore.gamefixVuAddSub) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
     }
-    MenuSwitchRow(str("perf.fix.vuSync"), settings.gamefixVuSync) {
-        viewModel.updateSettings { current -> current.copy(enableGameFixes = true, gamefixVuSync = it) }
+    MenuSwitchRow(str("perf.fix.vuSync"), settings.emuCore.gamefixVuSync) {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuSync = it)) }
     }
 }
 
@@ -1427,8 +1429,8 @@ private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMe
     MenuSwitchRow(
         str(if (com.armsx2.ui.InGameOverlay.settingsScope.value == com.armsx2.config.SettingsScope.Game)
             "ra.enable.thisGame" else "ra.enable.label"),
-        state.settings.achievementsEnabled,
-    ) { on -> viewModel.updateSettings { it.copy(achievementsEnabled = on) } }
+        state.settings.emuCore.achievements.enabled,
+    ) { on -> viewModel.updateSettings { it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(enabled = on))) } }
     Spacer(Modifier.height(4.dp))
     // Gateway to the full RetroAchievements screen (unlock list + presentation options).
     CompactAction(str("ra.viewAchievements"), "★", Modifier.fillMaxWidth(), viewModel::openAchievements)

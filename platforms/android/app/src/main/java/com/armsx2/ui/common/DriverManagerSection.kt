@@ -116,7 +116,7 @@ fun DriverManagerSection() {
             controllerId = "driver.system",
             title = str("backend.driver.systemVulkan"),
             subtitle = str("renderer.orientation.device"),
-            selected = InGameOverlay.settingsState.value.customDriverId.isBlank(),
+            selected = InGameOverlay.settingsState.value.output.customDriverId.isBlank(),
             onClick = { selectDriver(null) },
         )
         installed.forEach { driver ->
@@ -125,10 +125,10 @@ fun DriverManagerSection() {
                 title = driver.name,
                 subtitle = listOf(driver.vendor, driver.version).filter(String::isNotBlank).joinToString(" · ")
                     .ifBlank { str("backend.driver.installed") },
-                selected = InGameOverlay.settingsState.value.customDriverId == driver.id,
+                selected = InGameOverlay.settingsState.value.output.customDriverId == driver.id,
                 onClick = { selectDriver(driver.id) },
                 onDelete = {
-                    val wasSelected = InGameOverlay.settingsState.value.customDriverId == driver.id
+                    val wasSelected = InGameOverlay.settingsState.value.output.customDriverId == driver.id
                     CustomDriver.delete(driver)
                     if (wasSelected) selectDriver(null)
                     refreshInstalled()
@@ -335,5 +335,5 @@ private fun selectDriver(id: String?) {
     // renderer (re)start via applyRendererPrefs. Persist scope-aware (per-game when the
     // settings scope is Game) so a title can pin the driver it needs.
     MainActivityRuntime.customDriverId.value = id
-    InGameOverlay.saveSettings(InGameOverlay.settingsState.value.copy(customDriverId = id ?: ""))
+    InGameOverlay.saveSettings(InGameOverlay.settingsState.value.copy(output = InGameOverlay.settingsState.value.output.copy(customDriverId = id ?: "")))
 }

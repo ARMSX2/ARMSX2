@@ -262,8 +262,8 @@ object MemoryCardBackup {
             .getOrElse { runCatching { ConfigStore.loadGlobal() }.getOrNull() ?: return "no config" }
 
         val active = buildList {
-            if (cfg.memoryCardSlot1Enabled) add(cfg.memoryCardSlot1Filename)
-            if (cfg.memoryCardSlot2Enabled) add(cfg.memoryCardSlot2Filename)
+            if (cfg.system.memoryCardSlot1Enabled) add(cfg.system.memoryCardSlot1Filename)
+            if (cfg.system.memoryCardSlot2Enabled) add(cfg.system.memoryCardSlot2Filename)
         }.filter { it.isNotBlank() }.distinct()
 
         if (active.isEmpty()) return "no active cards"
@@ -308,8 +308,8 @@ object MemoryCardBackup {
         val cfg = runCatching { ConfigStore.resolveForGame(serial) }
             .getOrElse { runCatching { ConfigStore.loadGlobal() }.getOrNull() ?: return emptyList() }
         return buildList {
-            if (cfg.memoryCardSlot1Enabled) add(cfg.memoryCardSlot1Filename)
-            if (cfg.memoryCardSlot2Enabled) add(cfg.memoryCardSlot2Filename)
+            if (cfg.system.memoryCardSlot1Enabled) add(cfg.system.memoryCardSlot1Filename)
+            if (cfg.system.memoryCardSlot2Enabled) add(cfg.system.memoryCardSlot2Filename)
         }.filter { it.isNotBlank() }.distinct()
             .filter { verify(File(cardsDir(context), it)) == Health.UNREADABLE }
             .filter { list(context, it).any { s -> s.healthy } }

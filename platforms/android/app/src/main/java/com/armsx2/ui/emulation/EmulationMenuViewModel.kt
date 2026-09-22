@@ -152,7 +152,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun setRenderer(renderer: String) {
-        updateSettings { it.copy(renderer = renderer) }
+        updateSettings { it.copy(output = it.output.copy(renderer = renderer)) }
         MainActivityRuntime.renderer.value = renderer
         when (renderer) {
             "vulkan" -> MainActivityRuntime.renderVulkan()
@@ -167,37 +167,37 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         // UPSCALE_OPTIONS, so don't clamp them up to Native like the old 1f floor did (that
         // made every below-Native pick silently apply as Native). Matches the settings tab.
         val normalized = value.coerceIn(0.25f, 8f)
-        updateSettings { it.copy(upscaleFloat = normalized) }
+        updateSettings { it.copy(output = it.output.copy(upscaleFloat = normalized)) }
         MainActivityRuntime.upscale.value = normalized
         NativeApp.renderUpscalemultiplier(normalized)
     }
 
-    fun setAspectRatio(value: Int) = updateSettings { it.copy(aspectRatio = value.coerceIn(0, 8)) }
+    fun setAspectRatio(value: Int) = updateSettings { it.copy(output = it.output.copy(aspectRatio = value.coerceIn(0, 8))) }
 
-    fun setTextureFiltering(value: Int) = updateSettings { it.copy(textureFiltering = value.coerceIn(0, 3)) }
+    fun setTextureFiltering(value: Int) = updateSettings { it.copy(graphics = it.graphics.copy(textureFiltering = value.coerceIn(0, 3))) }
 
-    fun setBlending(value: Int) = updateSettings { it.copy(accurateBlendingUnit = value.coerceIn(0, 5)) }
+    fun setBlending(value: Int) = updateSettings { it.copy(graphics = it.graphics.copy(accurateBlendingUnit = value.coerceIn(0, 5))) }
 
-    fun setTexturePreloading(value: Int) = updateSettings { it.copy(texturePreloading = value.coerceIn(0, 2)) }
+    fun setTexturePreloading(value: Int) = updateSettings { it.copy(graphics = it.graphics.copy(texturePreloading = value.coerceIn(0, 2))) }
 
     // Upper bound MUST track the highest GSHardwareDownloadMode (5 = Asynchronous). At 4 this
     // silently clamped a tap on "Async" down to Disabled, so the option could never be selected
     // and quietly picked a different mode instead.
-    fun setHardwareDownloadMode(value: Int) = updateSettings { it.copy(hardwareDownloadMode = value.coerceIn(0, 5)) }
+    fun setHardwareDownloadMode(value: Int) = updateSettings { it.copy(graphics = it.graphics.copy(hardwareDownloadMode = value.coerceIn(0, 5))) }
 
-    fun setEeCycleRate(value: Int) = updateSettings { it.copy(eeCycleRate = value.coerceIn(-3, 3)) }
+    fun setEeCycleRate(value: Int) = updateSettings { it.copy(cpu = it.cpu.copy(eeCycleRate = value.coerceIn(-3, 3))) }
 
-    fun setEeCycleSkip(value: Int) = updateSettings { it.copy(eeCycleSkip = value.coerceIn(0, 3)) }
+    fun setEeCycleSkip(value: Int) = updateSettings { it.copy(cpu = it.cpu.copy(eeCycleSkip = value.coerceIn(0, 3))) }
 
-    fun setSpeed(it: Int) = updateSettings { settings -> settings.copy(nominalSpeedPercent = it.coerceIn(50, 200)) }
+    fun setSpeed(it: Int) = updateSettings { settings -> settings.copy(frameLimit = settings.frameLimit.copy(nominalSpeedPercent = it.coerceIn(50, 200))) }
 
-    fun setFpsLimit(value: Int) = updateSettings { it.copy(fpsLimit = value.coerceIn(0, 240)) }
+    fun setFpsLimit(value: Int) = updateSettings { it.copy(frameLimit = it.frameLimit.copy(fpsLimit = value.coerceIn(0, 240))) }
 
-    fun setFrameSkip(value: Int) = updateSettings { it.copy(frameSkip = value.coerceIn(0, 5)) }
+    fun setFrameSkip(value: Int) = updateSettings { it.copy(frameLimit = it.frameLimit.copy(frameSkip = value.coerceIn(0, 5))) }
 
-    fun setVolume(value: Int) = updateSettings { it.copy(audioVolume = value.coerceIn(0, 200)) }
+    fun setVolume(value: Int) = updateSettings { it.copy(audio = it.audio.copy(audioVolume = value.coerceIn(0, 200))) }
 
-    fun setAudioBuffer(value: Int) = updateSettings { it.copy(audioBufferMs = value.coerceIn(10, 200)) }
+    fun setAudioBuffer(value: Int) = updateSettings { it.copy(audio = it.audio.copy(audioBufferMs = value.coerceIn(10, 200))) }
 
     /** Universal on-screen-display toggle (old-UI style): flips the perf stats as a
      *  group; the granular per-stat toggles stay in All Settings. Notifications are
@@ -209,17 +209,19 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     // left out so this can't force those debug strips on.
     fun setOsdMaster(enabled: Boolean) = updateSettings {
         it.copy(
-            osdShowFps = enabled,
-            osdShowVps = enabled,
-            osdShowSpeed = enabled,
-            osdShowCpu = enabled,
-            osdShowGpu = enabled,
-            osdShowResolution = enabled,
-            osdShowGsStats = enabled,
-            osdShowFrameTimes = enabled,
-            osdShowHardwareInfo = enabled,
-            osdShowGpuStats = enabled,
-            osdShowVersion = enabled,
+            osd = it.osd.copy(
+                osdShowFps = enabled,
+                osdShowVps = enabled,
+                osdShowSpeed = enabled,
+                osdShowCpu = enabled,
+                osdShowGpu = enabled,
+                osdShowResolution = enabled,
+                osdShowGsStats = enabled,
+                osdShowFrameTimes = enabled,
+                osdShowHardwareInfo = enabled,
+                osdShowGpuStats = enabled,
+                osdShowVersion = enabled,
+            ),
         )
     }
 
@@ -228,17 +230,19 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
      *  fields — the menu reads "FPS on + everything-else off" as the simple state. */
     fun setOsdSimple(enabled: Boolean) = updateSettings {
         it.copy(
-            osdShowFps = enabled,
-            osdShowVps = false,
-            osdShowSpeed = false,
-            osdShowCpu = false,
-            osdShowGpu = false,
-            osdShowResolution = false,
-            osdShowGsStats = false,
-            osdShowFrameTimes = false,
-            osdShowHardwareInfo = false,
-            osdShowGpuStats = false,
-            osdShowVersion = false,
+            osd = it.osd.copy(
+                osdShowFps = enabled,
+                osdShowVps = false,
+                osdShowSpeed = false,
+                osdShowCpu = false,
+                osdShowGpu = false,
+                osdShowResolution = false,
+                osdShowGsStats = false,
+                osdShowFrameTimes = false,
+                osdShowHardwareInfo = false,
+                osdShowGpuStats = false,
+                osdShowVersion = false,
+            ),
         )
     }
 
@@ -273,8 +277,8 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     fun confirmToggleHardcore() {
         val target = state.value.pendingHardcore ?: return
         // A standard setting, saved in this menu's scope -- this game, with one running -- like
-        // every other RetroAchievements option (Settings.achievementsHardcore).
-        updateSettings { it.copy(achievementsHardcore = target) }
+        // every other RetroAchievements option (Settings.achievements.hardcore).
+        updateSettings { it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(hardcore = target))) }
         state.value = state.value.copy(hardcore = target, pendingHardcore = null)
         // Enabling hardcore only takes hold on a system reset, and the VM is paused
         // behind this menu — so the native "will be enabled on system reset" toast
