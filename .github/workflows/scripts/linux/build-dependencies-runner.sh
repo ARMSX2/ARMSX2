@@ -294,4 +294,4 @@ fi
 
 echo "Cleaning up..."
 cd ..
-rm -r deps-build
+rm -rf deps-build
