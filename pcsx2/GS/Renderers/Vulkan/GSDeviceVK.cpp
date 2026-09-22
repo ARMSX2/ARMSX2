@@ -512,10 +512,14 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// version rather than re-blocking the whole vendor.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): asked for ONLY when the harness
-	// wants the per-draw spelling of the feedback-loop declaration. Requesting an extension
-	// changes the device this process creates, and every byte-identity gate in this programme is
-	// taken on a device created without it, so the request is gated rather than unconditional.
+	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
+	// declaration, and since E24 the DEFAULT spelling wherever the layout road above is live --
+	// on Turnip the create-flag spelling puts the driver's serialising primitive mode on every
+	// pipeline in a latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h.
+	// Requested alongside the layout extension rather than unconditionally, because without that
+	// road there is no declaration to spell; `-loop-create-flag` keeps the old device reachable
+	// for measuring the fallback. Whether it is USED is decided in CheckFeatures, which is where
+	// the road is known.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
 		GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw() &&
@@ -4062,22 +4066,23 @@ bool GSDeviceVK::CheckFeatures()
 	// of those bakes the spelling in permanently.
 	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
 
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -dynamic-loop-enable): declare the loop per draw instead
-	// of per pipeline. Resolved here for the same reason as the line above -- a pipeline's
-	// dynamic-state list is fixed at creation, so this has to be final before the first one
-	// exists. False unless the harness asked, and the extension is not even requested then.
+	// Which spelling the loop is declared in: per draw (the default) or with the pipeline create
+	// flag. Resolved here for the same reason as the line above -- a pipeline's dynamic-state
+	// list is fixed at creation, so this has to be final before the first one exists.
 	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
 		GSDynamicFeedbackLoopPolicy::GetSpelling(), UseFeedbackLoopLayout(),
 		m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state};
 	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
-	if (GSDynamicLoopRequestedButUnavailable(dynamic_loop_inputs))
+	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
 	{
-		// A silently inert arm is a device round that measures the other arm twice.
-		Console.Error("VK: the per-draw feedback-loop declaration was requested and CANNOT be applied "
-					  "(VK_EXT_attachment_feedback_loop_dynamic_state %s, feedback-loop layout road %s). "
-					  "This build declares the loop with the pipeline create flag.",
-			m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state ? "present" : "ABSENT",
-			UseFeedbackLoopLayout() ? "live" : "NOT live");
+		// Not an inert arm -- the loop IS declared -- but declared the way that costs, and a
+		// device that takes the fallback silently is a device nobody knows is on it. A warning
+		// rather than an error: the price is a measurement on Turnip and nowhere else, and a
+		// desktop driver without the extension (the M2's is one) pays nothing for it.
+		Console.Warning("VK: no VK_EXT_attachment_feedback_loop_dynamic_state here, so the feedback "
+						"loop is declared with the PIPELINE CREATE FLAG rather than per draw. "
+						"Measured on Turnip only: that spelling costs up to 2.8x on a self-read-heavy "
+						"title (wrc3@1x, SD865).");
 	}
 
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
@@ -4470,9 +4475,10 @@ bool GSDeviceVK::CheckFeatures()
 	}
 	if (UseFeedbackLoopLayout() && m_features.texture_barrier)
 	{
-		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP pipeline flag + "
+		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP %s + "
 						"ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout + pass-to-pass sampler ordering; "
 						"depth loop %s (test_and_sample_depth=%s depth_feedback=%s).",
+			m_declare_loop_per_draw ? "per draw" : "pipeline create flag",
 			declare_depth_loop ? "DECLARED" : "not declared",
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
@@ -4480,10 +4486,17 @@ bool GSDeviceVK::CheckFeatures()
 	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
 	// run, including the ones that pass no flag, so a log from a device round says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
+	//
+	// `loop-spelling` is no longer one of them: since E24 the per-draw spelling is the default,
+	// so it prints `(default; …)` on an ordinary run and `(forced; …)` only when somebody named
+	// it. That distinction is the whole reason the origin is printed -- E23 scored a whole
+	// scorecard on the create flag because every previous round had reached the other spelling
+	// through a harness flag and nothing in the log said so.
 	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
-					"loop-spelling=%s(%s) fast-stencil-shadow=%s",
+					"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s",
 		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
 		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
+		GSDynamicFeedbackLoopPolicy::Origin(),
 		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
 											 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"));
@@ -7641,9 +7654,10 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
 	if (UseFeedbackLoopLayout())
 	{
-		// ⚠️ MEASUREMENT OVERRIDE: the same declaration, spelled per draw. The dynamic state goes
-		// on exactly the pipelines the create flag would have gone on, so the population declared
-		// is the population declared before and only WHEN it is stated changes. The two spellings
+		// The same declaration, spelled per draw -- the default spelling since E24. The dynamic
+		// state goes on exactly the pipelines the create flag would have gone on, so the
+		// population declared is the population declared before and only WHEN it is stated
+		// changes; that is why the two are byte-identical. The two spellings
 		// are mutually exclusive by more than taste: the Vulkan runtime filters the create flags
 		// out of a pipeline that declares the state dynamic. See GSDynamicFeedbackLoopPolicy.h.
 		if (m_declare_loop_per_draw)

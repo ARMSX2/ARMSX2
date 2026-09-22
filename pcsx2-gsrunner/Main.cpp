@@ -1134,14 +1134,16 @@ static void PrintCommandLineHelp(const char* progname)
 						 "serve; the rest it serves exactly. Measurement instrument: the driver's coherent primitive "
 						 "mode is what the declaration buys and what it costs, so this confines the cost to the draws "
 						 "that need the ordering. Inert on a build that declares nothing. Vulkan only.\n");
-	std::fprintf(stderr, "  -dynamic-loop-enable: Declare the attachment feedback loop per draw with "
-						 "vkCmdSetAttachmentFeedbackLoopEnableEXT instead of with the pipeline create flag, enabled on "
-						 "the draws that read the render target and disabled on the ones that do not. Same draws "
-						 "declared, same passes, same image layout -- only when it is stated changes. Measurement "
-						 "instrument: a driver that programs a serialising primitive mode from the declaration then "
-						 "applies it to readers instead of to every pipeline in the pass. Needs "
-						 "VK_EXT_attachment_feedback_loop_dynamic_state and the feedback-loop layout road; says so "
-						 "loudly if either is missing. Vulkan only.\n");
+	std::fprintf(stderr, "  -loop-create-flag: Declare the attachment feedback loop with the pipeline create flag "
+						 "instead of per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT. The per-draw spelling is "
+						 "the DEFAULT wherever the feedback-loop layout road is live and the dynamic-state extension "
+						 "is there, so this forces the fallback. Same draws declared, same passes, same image layout "
+						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
+						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
+						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
+	std::fprintf(stderr, "  -dynamic-loop-enable: No longer needed -- the per-draw spelling it used to select is now "
+						 "the default. Accepted and reported so briefs and scripts written before E24 still run; it "
+						 "changes nothing. Use -loop-create-flag for the other spelling.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1723,13 +1725,26 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				GSFastStencilShadow::SetForcedOn(true);
 				continue;
 			}
-			else if (CHECK_ARG("-dynamic-loop-enable"))
+			else if (CHECK_ARG("-loop-create-flag"))
 			{
-				Console.WriteLn("Declaring the attachment feedback loop per draw, not per pipeline");
+				Console.WriteLn("Declaring the attachment feedback loop with the pipeline create flag, "
+								"not per draw");
 				// Not a setting: which spelling a driver charges less for is a measurement result
 				// on one device. It must be set before the VM starts, because a pipeline's
-				// dynamic-state list is fixed at creation.
-				GSDynamicFeedbackLoopPolicy::SetSpelling(GSLoopDeclarationSpelling::DynamicPerDraw);
+				// dynamic-state list is fixed at creation. This direction is the fallback, kept
+				// reachable so the slow spelling can be priced on purpose rather than by accident
+				// -- which is what E23 did, before per draw became the default.
+				GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
+				continue;
+			}
+			else if (CHECK_ARG("-dynamic-loop-enable"))
+			{
+				// Retired in E24, when the spelling it selected became the default. Accepted as a
+				// no-op rather than rejected, so every brief, script and device round written
+				// before then still runs -- and says out loud that it is not doing anything, so
+				// nobody reads its presence in a command line as the thing that chose the arm.
+				Console.WriteLn("-dynamic-loop-enable is a no-op: the per-draw feedback-loop declaration "
+								"is the default. Use -loop-create-flag for the other spelling.");
 				continue;
 			}
 			else if (CHECK_ARG("-declare-overlap-only"))

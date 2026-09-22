@@ -6,26 +6,43 @@
 #include "common/Pcsx2Defs.h"
 
 // ---------------------------------------------------------------------------------------------
-// ⚠️ MEASUREMENT OVERRIDE — how a draw says it reads the attachment it writes.
-//
-// Not a setting, and it does nothing unless a harness asks for it. Campaign
-// gs-adreno-inpass-read E4b, lane C25.
+// How a draw says it reads the attachment it writes -- and which of the two ways of saying it we
+// use by default. Campaign gs-adreno-inpass-read: E4b and lane C25 built it, E23 and E24 priced
+// it. Not a user setting: which spelling a driver charges less for is a measurement result.
 //
 // There are two spellings of the same declaration, and on Turnip they are charged differently.
 //
-//   PIPELINE CREATE FLAG (today). Every pipeline bound in the pass carries
-//   VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT. Turnip reads that flag when the
-//   pipeline is bound and refuses to tile the pass; it also programs the coherent primitive mode
-//   from it, per pipeline. Since the feedback-loop carry keeps the flag word set across the
-//   non-readers that follow a reader in a latched pass, every one of those pipelines carries the
-//   flag too -- so the serialising mode applies to draws that never read anything.
-//
-//   DYNAMIC PER DRAW (this override). The pipeline carries
+//   DYNAMIC PER DRAW (the default). The pipeline carries
 //   VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT and no create flag, and the declaration
 //   is made per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT: the colour aspect on the draws
 //   that read the target, nothing on the draws that do not.
 //
-// Why that separates the two costs, from Turnip 26.1.2 source (not measured):
+//   PIPELINE CREATE FLAG (the fallback). Every pipeline bound in the pass carries
+//   VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT. Turnip reads that flag when the
+//   pipeline is bound and refuses to tile the pass; it also programs the coherent primitive mode
+//   from it, per pipeline. Since the feedback-loop carry keeps the flag word set across the
+//   non-readers that follow a reader in a latched pass, every one of those pipelines carries the
+//   flag too -- so the serialising mode applies to draws that never read anything, and on our
+//   patched Turnip its per-draw flush (which waits for idle) fires on every draw in the pass.
+//
+// ⚠️ What the create-flag spelling costs, measured. SD865, Turnip axfl1-005, gsrunner
+// `-perf -loop 10`, p50 frame time in ms, same binary, same driver, same dump (E24 brief's probe
+// over E23's `/storage/armsx2-suite`):
+//
+//   cell        create flag   per draw
+//   wrc3@1x         51.8        18.5      <- 2.8x, one title over its whole budget
+//   indy@1x          9.86        9.48     <- 4%, and it is the title the road is bought for
+//
+// The cost lands wherever a latched pass carries many non-readers behind one reader, so it is a
+// per-title cliff rather than a uniform tax: E23 ran the whole 20-dump scorecard on the create
+// flag by accident -- the runner flag that selected per-draw was an opt-in, and the user's path
+// has no flags -- and WRC3 read +170.9% at p95 against the campaign's start while eighteen of
+// twenty titles got faster. Every other declared-road number in the campaign (E12, E13, E16 §1,
+// E19, E22) was taken through a harness that passed that flag, so the spelling was part of the
+// road being priced and was never part of the road being shipped. E24 closes that gap by making
+// the measured spelling the default one.
+//
+// Why the two costs separate, from Turnip 26.1.2 source (not measured):
 //
 //   * the untiling stays. tu_cmd_buffer.cc ~8271-8281: when the dynamic feedback-loop state is
 //     dirty and non-zero, Turnip sets cmd->state.rp.disable_gmem, reason
@@ -58,9 +75,26 @@
 // must be re-set AFTER binding the pipeline and before the draw, every draw. It cannot be set
 // once per pass.
 //
-// This override changes the spelling only. Which draws are declared, which passes are opened, and
-// what the attachment layout is are all unchanged -- so the pass collapse the carry buys is
-// preserved, and the population declared is the population declared before.
+// The spelling changes nothing a pixel can see. Which draws are declared, which passes are
+// opened, and what the attachment layout is are all unchanged -- so the pass collapse the carry
+// buys is preserved, and the population declared is the population declared before. Measured
+// identity-neutral three times: E4b and lane C25 on the M2, and E16 §3 on the SD865, where the
+// binary with the per-draw flag matched the binary with no override at all on 20 of 20 cells.
+//
+// Where each spelling comes from:
+//
+//   * per draw -- the default, taken whenever the feedback-loop LAYOUT road is live and
+//     VK_EXT_attachment_feedback_loop_dynamic_state is present with its feature bit on.
+//   * create flag, by fallback -- the layout road is live and that extension is NOT there. The
+//     declaration still has to be made, and the create flag is the only spelling left. Said out
+//     loud, because on Turnip it is the expensive one and a silent fallback is a device that
+//     quietly runs the 2.8x arm.
+//   * create flag, by force -- `pcsx2-gsrunner -loop-create-flag`, to measure the fallback on
+//     purpose. Nothing else sets it.
+//
+// Off the layout road (the copy road, and the in-tile road that states the loop with an input
+// attachment) there is no declaration to spell at all, and neither spelling applies. That is the
+// ordinary case on most devices and it is not reported.
 // ---------------------------------------------------------------------------------------------
 
 /// How the backend states a feedback loop.
@@ -70,9 +104,14 @@ enum class GSLoopDeclarationSpelling : u8
 	DynamicPerDraw,
 };
 
+/// The spelling taken unless something forces the other one. One place, so the process global,
+/// the input struct and the asserts below cannot drift apart.
+inline constexpr GSLoopDeclarationSpelling kDefaultLoopDeclarationSpelling =
+	GSLoopDeclarationSpelling::DynamicPerDraw;
+
 struct GSDynamicFeedbackLoopInputs
 {
-	GSLoopDeclarationSpelling spelling = GSLoopDeclarationSpelling::PipelineCreateFlag;
+	GSLoopDeclarationSpelling spelling = kDefaultLoopDeclarationSpelling;
 
 	/// The backend reaches the attachment through the feedback-loop image layout. Off that road
 	/// there is no declaration to respell: the in-tile road states the loop with an input
@@ -90,33 +129,51 @@ constexpr bool GSDeclaresLoopPerDraw(const GSDynamicFeedbackLoopInputs& in)
 	       in.dynamic_state_available;
 }
 
-/// True when the per-draw spelling was asked for and cannot be given. Reported so the caller can
-/// say so once: a silently inert arm is a device round that measures the other arm twice.
-constexpr bool GSDynamicLoopRequestedButUnavailable(const GSDynamicFeedbackLoopInputs& in)
+/// True when there is a loop to declare and the per-draw spelling cannot be given, so the
+/// declaration falls back to the create flag. Reported so the caller can say so once: on Turnip
+/// the fallback is the 2.8x arm, and a device that takes it silently is a device nobody knows is
+/// on it. It is a warning and not an error, because that price is a Turnip measurement and a
+/// driver without the extension may well pay nothing -- the M2's does not. A FORCED create flag
+/// is not a fallback and does not report -- somebody asked for it.
+constexpr bool GSLoopSpellingFallsBackToCreateFlag(const GSDynamicFeedbackLoopInputs& in)
 {
-	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && !GSDeclaresLoopPerDraw(in);
+	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.layout_road_live &&
+	       !in.dynamic_state_available;
 }
 
-// The default spelling is the create flag, whatever else is true.
-static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true, .dynamic_state_available = true}));
-static_assert(!GSDynamicLoopRequestedButUnavailable({.layout_road_live = true, .dynamic_state_available = true}));
+// ⚠️ These pin the DEFAULT, and it changed in E24 (2026-09-22). It used to be the create flag,
+// because the spelling was an instrument nothing but a harness reached; it is now per draw,
+// because the create flag is what the user's flagless path was taking and it reads 51.8 ms
+// against 18.5 on wrc3@1x (SD865, axfl1-005, p50). Any one of these failing means the shipped
+// road changed spelling by accident, which is a silent 2.8x on one title in twenty.
 
-// Asked for, with the road and the extension, it applies.
+// The default spelling is per draw wherever there is a loop to declare and the extension to
+// declare it with -- no flag, no key, no setting.
+static_assert(GSDeclaresLoopPerDraw({.layout_road_live = true, .dynamic_state_available = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true, .dynamic_state_available = true}));
+
+// Asked for explicitly, it is the same thing. `spelling` carries no third state.
 static_assert(GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
 	.layout_road_live = true, .dynamic_state_available = true}));
-static_assert(!GSDynamicLoopRequestedButUnavailable({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
+
+// Forced back to the create flag on a device that could have done either: deliberate, so not a
+// fallback and not reported.
+static_assert(!GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::PipelineCreateFlag,
+	.layout_road_live = true, .dynamic_state_available = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({.spelling = GSLoopDeclarationSpelling::PipelineCreateFlag,
 	.layout_road_live = true, .dynamic_state_available = true}));
 
-// Without the layout road there is no declaration to respell, and without the extension there is
-// no way to respell it. Both are reported rather than silently ignored.
-static_assert(!GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
-	.dynamic_state_available = true}));
-static_assert(GSDynamicLoopRequestedButUnavailable({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
-	.dynamic_state_available = true}));
-static_assert(!GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
-	.layout_road_live = true}));
-static_assert(GSDynamicLoopRequestedButUnavailable({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
-	.layout_road_live = true}));
+// On the layout road without the extension the loop still has to be declared, so the create flag
+// is what is left -- and that IS the fallback, which is the one case worth a line in the log.
+static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true}));
+static_assert(GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true}));
+
+// Off the layout road nothing is declared either way, whatever the device advertises. This is the
+// ordinary case -- every copy-road device is here -- so it is silent.
+static_assert(!GSDeclaresLoopPerDraw({.dynamic_state_available = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({.dynamic_state_available = true}));
+static_assert(!GSDeclaresLoopPerDraw({}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({}));
 
 namespace GSDynamicFeedbackLoopPolicy
 {
@@ -126,15 +183,36 @@ namespace GSDynamicFeedbackLoopPolicy
 	/// in this directory is one: which spelling a driver charges less for is a measurement result
 	/// on one device. Set once before the VM starts, because the answer has to be final before
 	/// the first pipeline exists -- a pipeline's dynamic-state list cannot be changed afterwards.
-	inline GSLoopDeclarationSpelling s_spelling = GSLoopDeclarationSpelling::PipelineCreateFlag;
+	inline GSLoopDeclarationSpelling s_spelling = kDefaultLoopDeclarationSpelling;
 
-	inline void SetSpelling(GSLoopDeclarationSpelling value) { s_spelling = value; }
+	/// Whether somebody named the spelling, as opposed to taking the default. Only changes what
+	/// the banner says and whether a fallback is worth reporting; never what is emitted.
+	inline bool s_forced = false;
+
+	inline void ForceSpelling(GSLoopDeclarationSpelling value)
+	{
+		s_spelling = value;
+		s_forced = true;
+	}
+
+	/// Back to the shipped default. For tests, which run both spellings in one process.
+	inline void ResetToDefault()
+	{
+		s_spelling = kDefaultLoopDeclarationSpelling;
+		s_forced = false;
+	}
+
 	inline GSLoopDeclarationSpelling GetSpelling() { return s_spelling; }
 	inline bool WantsDynamicPerDraw() { return s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw; }
+	inline bool IsForced() { return s_forced; }
 
 	/// For the banner. A device round quotes this, so it says what was declared and how.
 	inline const char* Name()
 	{
 		return (s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw) ? "dynamic per draw" : "pipeline create flag";
 	}
+
+	/// For the banner, beside Name(). A round that reads "forced" took a flag from somebody's
+	/// command line; a round that reads "default" is the road a user is on.
+	inline const char* Origin() { return s_forced ? "forced" : "default"; }
 } // namespace GSDynamicFeedbackLoopPolicy

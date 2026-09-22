@@ -6,13 +6,17 @@
 // The same declaration can be made once per pipeline, with a create flag, or once per draw, with
 // vkCmdSetAttachmentFeedbackLoopEnableEXT. On Turnip they are charged differently: the create
 // flag is read per pipeline, and the feedback-loop carry puts it on every pipeline in a latched
-// pass, so the driver's serialising primitive mode reaches draws that never read anything.
+// pass, so the driver's serialising primitive mode reaches draws that never read anything. On the
+// SD865 that is 51.8 ms against 18.5 on wrc3@1x -- one title straight over its frame budget.
 //
-// What needs pinning is the pair of preconditions. The per-draw spelling needs the extension AND
-// the feedback-loop layout road -- off that road the in-tile spelling states the loop with an
-// input attachment and the copy road states nothing, so there is no declaration to respell. Both
-// misses have to be REPORTED rather than silently ignored, because an arm that quietly does
-// nothing is a device round that measures the other arm twice.
+// ⚠️ E24 (2026-09-22) made the per-draw spelling the DEFAULT. What these tests now pin is that a
+// run with no flag, no key and no setting gets per draw wherever there is a loop to declare and
+// an extension to declare it with; that forcing the create flag still works, for pricing the
+// fallback; and that the one case worth a line in the log -- the layout road live with no
+// dynamic-state extension, so the declaration falls back to the expensive spelling -- is reported
+// while the ordinary copy-road case stays silent. The old shape of that report fired whenever the
+// per-draw spelling was asked for and refused, which as a default would have printed on every
+// copy-road device on earth.
 //
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
@@ -22,8 +26,8 @@
 
 namespace
 {
-	// A device on the layout road with the extension: the one configuration the override can be
-	// applied on.
+	// A device on the layout road with the extension: the one configuration the per-draw spelling
+	// can be applied on.
 	constexpr GSDynamicFeedbackLoopInputs Capable()
 	{
 		GSDynamicFeedbackLoopInputs in;
@@ -32,53 +36,61 @@ namespace
 		return in;
 	}
 
-	constexpr GSDynamicFeedbackLoopInputs Asked(GSDynamicFeedbackLoopInputs in)
+	constexpr GSDynamicFeedbackLoopInputs Forced(GSDynamicFeedbackLoopInputs in)
 	{
-		in.spelling = GSLoopDeclarationSpelling::DynamicPerDraw;
+		in.spelling = GSLoopDeclarationSpelling::PipelineCreateFlag;
 		return in;
 	}
 } // namespace
 
-// The default is the create flag, and nothing about the device changes that. This is the row that
-// makes the byte-identity gate a statement about the binary rather than about one road.
-TEST(GSDynamicFeedbackLoop, TheDefaultIsThePipelineCreateFlag)
+// The default is per draw, and it takes no flag to get there. This is the row that says the road
+// a user is on is the road the campaign measured.
+TEST(GSDynamicFeedbackLoop, TheDefaultIsPerDraw)
 {
-	EXPECT_FALSE(GSDeclaresLoopPerDraw(Capable()));
-	EXPECT_FALSE(GSDynamicLoopRequestedButUnavailable(Capable()));
-	EXPECT_FALSE(GSDeclaresLoopPerDraw({}));
-	EXPECT_FALSE(GSDynamicLoopRequestedButUnavailable({}));
+	EXPECT_EQ(GSDynamicFeedbackLoopInputs{}.spelling, GSLoopDeclarationSpelling::DynamicPerDraw);
+	EXPECT_TRUE(GSDeclaresLoopPerDraw(Capable()));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(Capable()));
 }
 
-// Asked for, with the road and the extension, it applies and nothing is reported.
-TEST(GSDynamicFeedbackLoop, AskedForOnACapableDeviceItApplies)
+// Forced back to the create flag on a device that could have done either: deliberate, so it is
+// not a fallback and nothing is reported.
+TEST(GSDynamicFeedbackLoop, ForcedToTheCreateFlagItIsNotAFallback)
 {
-	EXPECT_TRUE(GSDeclaresLoopPerDraw(Asked(Capable())));
-	EXPECT_FALSE(GSDynamicLoopRequestedButUnavailable(Asked(Capable())));
+	EXPECT_FALSE(GSDeclaresLoopPerDraw(Forced(Capable())));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(Forced(Capable())));
 }
 
-// Without the extension there is no per-draw spelling to use. The request is refused and said
-// out loud.
-TEST(GSDynamicFeedbackLoop, WithoutTheExtensionItIsRefusedAndReported)
+// On the layout road without the extension the loop still has to be declared, and the create flag
+// is the only spelling left. That IS the fallback, and it is said out loud.
+TEST(GSDynamicFeedbackLoop, WithoutTheExtensionItFallsBackAndIsReported)
 {
-	GSDynamicFeedbackLoopInputs in = Asked(Capable());
+	GSDynamicFeedbackLoopInputs in = Capable();
 	in.dynamic_state_available = false;
 	EXPECT_FALSE(GSDeclaresLoopPerDraw(in));
-	EXPECT_TRUE(GSDynamicLoopRequestedButUnavailable(in));
+	EXPECT_TRUE(GSLoopSpellingFallsBackToCreateFlag(in));
+
+	// Forcing the create flag on the same device is the same emission and a different report.
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(Forced(in)));
 }
 
-// Off the layout road there is no declaration to respell: the in-tile road states the loop with
-// an input attachment and the copy road states nothing at all. Also refused, also reported.
-TEST(GSDynamicFeedbackLoop, OffTheLayoutRoadItIsRefusedAndReported)
+// Off the layout road there is no declaration to spell: the in-tile road states the loop with an
+// input attachment and the copy road states nothing at all. Neither spelling applies, and it is
+// silent -- this is the ordinary case on most devices, so a report here would be noise in every
+// log rather than a warning in a few.
+TEST(GSDynamicFeedbackLoop, OffTheLayoutRoadNothingIsDeclaredAndNothingIsReported)
 {
-	GSDynamicFeedbackLoopInputs in = Asked(Capable());
+	GSDynamicFeedbackLoopInputs in = Capable();
 	in.layout_road_live = false;
 	EXPECT_FALSE(GSDeclaresLoopPerDraw(in));
-	EXPECT_TRUE(GSDynamicLoopRequestedButUnavailable(in));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(in));
+
+	EXPECT_FALSE(GSDeclaresLoopPerDraw({}));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag({}));
 }
 
-// Swept: applying is the conjunction, and "requested but unavailable" is exactly the requests
-// that did not apply -- the two are never both true and never both false under a request.
-TEST(GSDynamicFeedbackLoop, AppliedAndUnavailablePartitionTheRequests)
+// Swept: applying is the conjunction, the fallback is exactly the layout-road cases that wanted
+// per draw and did not get it, and the two are never both true.
+TEST(GSDynamicFeedbackLoop, AppliedAndFallbackPartitionTheLayoutRoad)
 {
 	for (int bits = 0; bits < 8; bits++)
 	{
@@ -88,26 +100,39 @@ TEST(GSDynamicFeedbackLoop, AppliedAndUnavailablePartitionTheRequests)
 		in.layout_road_live = (bits & 2) != 0;
 		in.dynamic_state_available = (bits & 4) != 0;
 
-		const bool asked = in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw;
-		const bool applied = asked && in.layout_road_live && in.dynamic_state_available;
+		const bool wants = in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw;
+		const bool applied = wants && in.layout_road_live && in.dynamic_state_available;
+		const bool fell_back = wants && in.layout_road_live && !in.dynamic_state_available;
 		EXPECT_EQ(GSDeclaresLoopPerDraw(in), applied) << "bits=" << bits;
-		EXPECT_EQ(GSDynamicLoopRequestedButUnavailable(in), asked && !applied) << "bits=" << bits;
-		EXPECT_FALSE(GSDeclaresLoopPerDraw(in) && GSDynamicLoopRequestedButUnavailable(in)) << "bits=" << bits;
+		EXPECT_EQ(GSLoopSpellingFallsBackToCreateFlag(in), fell_back) << "bits=" << bits;
+		EXPECT_FALSE(GSDeclaresLoopPerDraw(in) && GSLoopSpellingFallsBackToCreateFlag(in)) << "bits=" << bits;
 	}
 }
 
-// The process-wide switch: default the create flag, settable, and its banner name says which arm
-// a log is.
-TEST(GSDynamicFeedbackLoop, TheProcessSpellingDefaultsToTheCreateFlag)
+// The process-wide switch: per draw by default and unforced, forceable either way, and its banner
+// pair says both which spelling a log is and whether anybody asked for it. The origin is what
+// E23 did not have -- it ran a whole scorecard on the create flag because the spelling came from
+// a harness flag and the log said only the spelling, not where it came from.
+TEST(GSDynamicFeedbackLoop, TheProcessSpellingDefaultsToPerDrawAndSaysWhere)
 {
-	EXPECT_EQ(GSDynamicFeedbackLoopPolicy::GetSpelling(), GSLoopDeclarationSpelling::PipelineCreateFlag);
-	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Name(), "pipeline create flag");
-
-	GSDynamicFeedbackLoopPolicy::SetSpelling(GSLoopDeclarationSpelling::DynamicPerDraw);
+	EXPECT_EQ(GSDynamicFeedbackLoopPolicy::GetSpelling(), GSLoopDeclarationSpelling::DynamicPerDraw);
 	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
+	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::IsForced());
 	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Name(), "dynamic per draw");
+	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "default");
 
-	GSDynamicFeedbackLoopPolicy::SetSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
+	GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
 	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
+	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::IsForced());
+	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Name(), "pipeline create flag");
+	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "forced");
+
+	// Naming the default is still a forcing -- the banner should say somebody typed it.
+	GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::DynamicPerDraw);
+	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
+	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "forced");
+
+	GSDynamicFeedbackLoopPolicy::ResetToDefault();
+	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
+	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::IsForced());
 }
