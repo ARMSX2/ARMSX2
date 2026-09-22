@@ -875,8 +875,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setCustomVulkanDriver(
     const std::string name  = GetJavaString(env, driverName);
     const std::string redir = GetJavaString(env, redirectDir);
     const std::string hook  = GetJavaString(env, hookLibDir);
+    // required=false: the app keeps its existing behaviour of falling through to the
+    // system loader when the pack will not open, so a bad pack cannot leave the user
+    // with an emulator that refuses to boot.
     Vulkan::SetCustomDriverPath(
-        dir.c_str(), name.c_str(), redir.c_str(), hook.c_str());
+        dir.c_str(), name.c_str(), redir.c_str(), hook.c_str(), /*required=*/false);
 }
 
 extern "C"

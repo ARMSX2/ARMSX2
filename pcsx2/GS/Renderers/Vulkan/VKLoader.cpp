@@ -47,35 +47,48 @@ static DynamicLibrary s_vulkan_library;
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 namespace
 {
+	/// What SetCustomDriverPath was last told, read out under the lock in one go so no
+	/// caller ever sees half of one configuration and half of another.
+	struct CustomDriverRequest
+	{
+		std::string dir;
+		std::string name;
+		std::string redirect_dir;
+		std::string hook_lib_dir;
+		/// When true, failing to open this driver fails LoadVulkanLibrary instead of
+		/// falling through to the system loader. See SetCustomDriverPath.
+		bool required = false;
+
+		bool IsSet() const { return !dir.empty() && !name.empty() && !hook_lib_dir.empty(); }
+	};
+
 	std::mutex s_custom_driver_mutex;
-	std::string s_custom_driver_dir;
-	std::string s_custom_driver_name;
-	std::string s_custom_redirect_dir;
-	std::string s_custom_hook_lib_dir;
+	CustomDriverRequest s_custom_driver;
 } // namespace
 
 void Vulkan::SetCustomDriverPath(const char* driver_dir, const char* driver_name,
-	const char* redirect_dir, const char* hook_lib_dir)
+	const char* redirect_dir, const char* hook_lib_dir, bool required)
 {
 	std::lock_guard lock(s_custom_driver_mutex);
-	s_custom_driver_dir   = driver_dir   ? driver_dir   : "";
-	s_custom_driver_name  = driver_name  ? driver_name  : "";
-	s_custom_redirect_dir = redirect_dir ? redirect_dir : "";
-	s_custom_hook_lib_dir = hook_lib_dir ? hook_lib_dir : "";
+	s_custom_driver.dir          = driver_dir   ? driver_dir   : "";
+	s_custom_driver.name         = driver_name  ? driver_name  : "";
+	s_custom_driver.redirect_dir = redirect_dir ? redirect_dir : "";
+	s_custom_driver.hook_lib_dir = hook_lib_dir ? hook_lib_dir : "";
+	s_custom_driver.required     = required;
 }
 
-static bool TryOpenAdrenotoolsDriver(DynamicLibrary& library, Error* error)
+static CustomDriverRequest GetCustomDriverRequest()
 {
-	std::string driver_dir, driver_name, redirect_dir, hook_lib_dir;
-	{
-		std::lock_guard lock(s_custom_driver_mutex);
-		if (s_custom_driver_dir.empty() || s_custom_driver_name.empty() || s_custom_hook_lib_dir.empty())
-			return false;
-		driver_dir   = s_custom_driver_dir;
-		driver_name  = s_custom_driver_name;
-		redirect_dir = s_custom_redirect_dir;
-		hook_lib_dir = s_custom_hook_lib_dir;
-	}
+	std::lock_guard lock(s_custom_driver_mutex);
+	return s_custom_driver;
+}
+
+static bool TryOpenAdrenotoolsDriver(DynamicLibrary& library, const CustomDriverRequest& request, Error* error)
+{
+	const std::string& driver_dir = request.dir;
+	const std::string& driver_name = request.name;
+	const std::string& redirect_dir = request.redirect_dir;
+	const std::string& hook_lib_dir = request.hook_lib_dir;
 
 	int feature_flags = ADRENOTOOLS_DRIVER_CUSTOM;
 	if (!redirect_dir.empty())
@@ -106,7 +119,11 @@ static bool TryOpenAdrenotoolsDriver(DynamicLibrary& library, Error* error)
 		Error::SetStringFmt(error,
 			"adrenotools_open_libvulkan failed for {} ({}): {}",
 			driver_name, driver_dir, err ? err : "<no dlerror>");
-		Console.Warning("VKLoader: %s — falling back to system loader.", error ? error->GetDescription().c_str() : "custom driver load failed");
+		const std::string description = error ? error->GetDescription() : std::string("custom driver load failed");
+		if (request.required)
+			Console.Error("VKLoader: %s", description.c_str());
+		else
+			Console.Warning("VKLoader: %s — falling back to system loader.", description.c_str());
 		return false;
 	}
 
@@ -138,11 +155,21 @@ bool Vulkan::LoadVulkanLibrary(Error* error)
 #else
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 	// User-picked custom driver (e.g. Mesa Turnip from K11MCH1/AdrenoToolsDrivers)
-	// takes priority. Falls back to the system loader on any failure so the boot
-	// still proceeds — the Console.Warning above already logged the cause.
-	if (TryOpenAdrenotoolsDriver(s_vulkan_library, error))
+	// takes priority.
+	const CustomDriverRequest custom_driver = GetCustomDriverRequest();
+	if (custom_driver.IsSet() && TryOpenAdrenotoolsDriver(s_vulkan_library, custom_driver, error))
 	{
 		Error::Clear(error);
+	}
+	// A driver that was asked for and not obtained has two reasonable answers and the
+	// caller picks. Interactively, falling through to the system loader means the boot
+	// still proceeds and the user sees a picture. For a measurement run it means the
+	// numbers describe the vendor driver while the command line says otherwise, and
+	// nothing in the emulator log says so — so a required driver stops the load here
+	// instead, with the adrenotools failure still in `error`.
+	else if (custom_driver.IsSet() && custom_driver.required)
+	{
+		return false;
 	}
 	else
 #endif

@@ -112,7 +112,11 @@ namespace Vulkan
 	/// LoadVulkanLibrary — the first MTGS::Open triggers enumerate which
 	/// is the first load, so the setter has to run before VM start.
 	/// Pass empty strings to revert to the system loader on next load.
+	/// `required` decides what happens when the driver cannot be opened: false falls
+	/// through to the system loader so the boot proceeds (what the app wants — the user
+	/// gets a picture), true fails LoadVulkanLibrary (what a measurement run wants — a
+	/// run on the vendor driver that claims to be on a pack is worse than no run).
 	void SetCustomDriverPath(const char* driver_dir, const char* driver_name,
-		const char* redirect_dir, const char* hook_lib_dir);
+		const char* redirect_dir, const char* hook_lib_dir, bool required);
 #endif
 } // namespace Vulkan
