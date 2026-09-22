@@ -4049,6 +4049,11 @@ bool GSDeviceVK::CheckFeatures()
 	// declared road with no setting touched, and it is why the road below can be reached without
 	// the experiment key. Every other driver reports 0 here and is unaffected.
 	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop;
+	// The other driver fact: the database saying this PART belongs on the declared loop with our
+	// own per-draw barriers kept. Turnip on an Adreno 7xx, where the copy road is not merely slow
+	// but wrong, and where the barrier-less road races. Every other part reports false.
+	road_inputs.driver_prefers_declared_loop_with_barriers =
+		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
 	road_inputs.arm = GSConfig.DeclareAttachmentFeedbackLoop;
 	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
@@ -4430,10 +4435,11 @@ bool GSDeviceVK::CheckFeatures()
 	// declarations this binary actually makes. A device record quotes this line, because "which
 	// declarations did the arm carry" is the question the July 2026 round could not answer about
 	// itself, and that is why its negative result stood unchallenged for two months. The road name
-	// carries the reason (experiment key or driver fact), since the declared road now has two
+	// carries the reason (experiment key or driver fact), since the declared road now has three
 	// entrances and a record that does not say which one is as unusable as one that does not name
-	// its driver. Emitted here rather than beside the GPU banner because depth_feedback is only
-	// final a few lines above.
+	// its driver. Which driver fact is readable off the road: the ordering fact lands on
+	// driver-ordered and the a7xx preference on barrier-ordered. Emitted here rather than beside
+	// the GPU banner because depth_feedback is only final a few lines above.
 	Console.WriteLn("VK: self-read road = %s [texbarrier=%s intile=%s layout=%s ordersOverlap=%s]",
 		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
 		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
@@ -4451,6 +4457,16 @@ bool GSDeviceVK::CheckFeatures()
 			GetMobileDriverProfile().orders_declared_feedback_loop ?
 				"TRUSTED" :
 				"NOT trusted on this part -- the fix covers Adreno 6xx on Turnip only");
+	}
+	// The other driver rule, named the same way and for the same reason. Printed whenever the
+	// profile carries it, in effect or not, so a log says which measurement put the machine here
+	// rather than leaving a road name to stand for it.
+	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
+	{
+		const bool in_effect = road.selected_by_driver_fact && road.road == GSSelfReadRoad::InPassBarrier;
+		Console.WriteLn("VK: driver rule: Turnip a7xx -- declared feedback loop with the per-draw "
+						"barriers KEPT; %s.",
+			in_effect ? "in effect" : "NOT in effect, overridden here");
 	}
 	if (UseFeedbackLoopLayout() && m_features.texture_barrier)
 	{
