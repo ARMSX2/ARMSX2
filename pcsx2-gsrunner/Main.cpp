@@ -56,6 +56,12 @@
 #include "pcsx2/GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSFastStencilShadow.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
+#if defined(ARMSX2_USE_ADRENOTOOLS)
+// Only under the adrenotools flag, i.e. Android arm64. VKLoader.h drags in the Vulkan
+// headers and, on an X11 desktop, all of Xlib's macros with them -- see the note in
+// ImGuiOverlays.cpp. Android has neither problem and nothing else needs the header.
+#include "pcsx2/GS/Renderers/Vulkan/VKLoader.h"
+#endif
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
@@ -181,6 +187,15 @@ extern int g_android_affinity_mode;
 // then "unsupported" -- there is no mode in effect to report.
 static int s_affinity_mode = 0;
 static const char* s_affinity_source = "runner-default";
+
+// -custom-driver / -custom-driver-redirect. An empty directory means the run takes the
+// system Vulkan loader, which on Android is the vendor blob. When it is set, the driver
+// is REQUIRED: the runner refuses to start rather than silently measure a different
+// driver than the command line names.
+static std::string s_custom_driver_dir;
+static std::string s_custom_driver_name;
+static std::string s_custom_driver_hook_lib_dir;
+static std::string s_custom_driver_redirect_dir;
 
 // -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
 static std::string s_renderdoc_path;
@@ -1026,6 +1041,16 @@ static void PrintCommandLineHelp(const char* progname)
 						 "run cannot even create an instance under it.\n");
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
+	std::fprintf(stderr, "  -custom-driver <dir> <libname> <hooklibdir>: Android only. Load the Vulkan driver <libname> "
+						 "out of <dir> through libadrenotools instead of the system loader, e.g. a Mesa Turnip pack in "
+						 "/data/local/tmp. <hooklibdir> holds libhook_impl.so, libmain_hook.so and "
+						 "libfile_redirect_hook.so. All three paths are mandatory and directories need no trailing "
+						 "slash. If the driver cannot be opened the runner exits instead of falling back, so a run "
+						 "never reports numbers from a driver other than the one named here.\n");
+	std::fprintf(stderr, "  -custom-driver-redirect <dir>: Android only. Turn on libadrenotools' file-redirect hook "
+						 "against <dir> (texture packs). Its own flag rather than a fourth optional word after "
+						 "-custom-driver, because an optional trailing directory is indistinguishable from the dump "
+						 "filename. Only used if -custom-driver is used.\n");
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto. 'nullhw' runs "
 						 "GSRendererHW on the deviceless Null device -- a per-frame CPU-only cost of the hardware "
 						 "renderer path (GIF decode, vertex kick, texture cache, everything Draw() does to build a "
@@ -1895,6 +1920,38 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("-custom-driver"))
+			{
+				// Three mandatory words. The brief for this flag had a fourth optional
+				// one for the redirect directory, which cannot be parsed unambiguously:
+				// a trailing directory name and the dump filename look identical to the
+				// parser, so a run that omitted the redirect would have eaten its own
+				// dump. That word is -custom-driver-redirect instead.
+				if ((i + 3) >= argc)
+				{
+					ArgError("-custom-driver: wants three parameters, <driver dir> <library name> <hook lib dir>.");
+					return false;
+				}
+				s_custom_driver_dir = StringUtil::StripWhitespace(argv[++i]);
+				s_custom_driver_name = StringUtil::StripWhitespace(argv[++i]);
+				s_custom_driver_hook_lib_dir = StringUtil::StripWhitespace(argv[++i]);
+				if (s_custom_driver_dir.empty() || s_custom_driver_name.empty() || s_custom_driver_hook_lib_dir.empty())
+				{
+					ArgError("-custom-driver: none of <driver dir>, <library name> and <hook lib dir> may be empty.");
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-custom-driver-redirect"))
+			{
+				s_custom_driver_redirect_dir = StringUtil::StripWhitespace(argv[++i]);
+				if (s_custom_driver_redirect_dir.empty())
+				{
+					ArgError("-custom-driver-redirect: the directory name is empty.");
+					return false;
+				}
+				continue;
+			}
 			else if (CHECK_ARG("-debugdevice"))
 			{
 				Console.WriteLn("Enable debug device");
@@ -2586,6 +2643,29 @@ int main(int argc, char* argv[])
 	// the file. Do it here and leave, before anything expensive is stood up.
 	if (s_emit_payload)
 		return GSReplayPayload::Emit(params.filename, s_payload_opts) ? EXIT_SUCCESS : EXIT_FAILURE;
+
+	// Must happen before the GS device is created on the CPU thread, which is where
+	// Vulkan::LoadVulkanLibrary runs. Failing to open the pack is fatal here by
+	// construction -- see the `required` argument -- so there is no case where the run
+	// proceeds on a driver other than the one this flag names.
+	if (!s_custom_driver_dir.empty())
+	{
+#if defined(ARMSX2_USE_ADRENOTOOLS)
+		Vulkan::SetCustomDriverPath(s_custom_driver_dir.c_str(), s_custom_driver_name.c_str(),
+			s_custom_driver_redirect_dir.empty() ? nullptr : s_custom_driver_redirect_dir.c_str(),
+			s_custom_driver_hook_lib_dir.c_str(), /*required=*/true);
+#else
+		EarlyError("-custom-driver: this build has no libadrenotools, so it cannot load a driver pack. "
+				   "That support is Android arm64 only.");
+		return EXIT_FAILURE;
+#endif
+	}
+	else if (!s_custom_driver_redirect_dir.empty())
+	{
+		EarlyError("-custom-driver-redirect was given without -custom-driver; the redirect hook only exists "
+				   "alongside a custom driver.");
+		return EXIT_FAILURE;
+	}
 
 	// Must happen before the GS device is created on the CPU thread: RenderDoc
 	// installs its graphics-API hooks when its library loads, so a standalone run
