@@ -100,7 +100,13 @@ namespace Vulkan
 	void UnloadVulkanLibrary();
 	void ResetVulkanLibraryFunctionPointers();
 
-#if defined(__ANDROID__)
+	// The definition in VKLoader.cpp is guarded on ARMSX2_USE_ADRENOTOOLS, so the
+	// declaration has to be too. It used to say __ANDROID__, which is a wider set:
+	// every Android build that does not link adrenotools saw a declaration with no
+	// definition behind it, and only the fact that the single caller lived in the one
+	// CMake tree that force-sets ARMSX2_USE_ADRENOTOOLS kept that from being a link
+	// error. Adding a second caller (pcsx2-gsrunner) is what makes it matter.
+#if defined(ARMSX2_USE_ADRENOTOOLS)
 	/// Configures a custom Vulkan driver (e.g. Mesa Turnip) to load via
 	/// libadrenotools instead of the system loader. Must be called BEFORE
 	/// LoadVulkanLibrary — the first MTGS::Open triggers enumerate which
