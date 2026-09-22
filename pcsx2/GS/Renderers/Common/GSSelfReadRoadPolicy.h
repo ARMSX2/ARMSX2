@@ -72,12 +72,18 @@
 // draw wrote is not covered -- exactly the limit the in-tile read has. GSSelfReadCopyPolicy.h is
 // where that is handled, and it takes `declared_feedback_loop_orders_overlap` for the purpose.
 //
-// TWO ENTRANCES TO THE DECLARED ROAD, and they are not the same kind of thing.
+// THREE ENTRANCES TO THE DECLARED ROAD, and they are not the same kind of thing.
 //
-// `driver_orders_declared_loop` is the shipping one: the driver database recognising a driver build
-// that has been measured to order overlapping self-reads inside a declared loop. A user who loads
-// our Turnip pack gets the road with no setting touched; a user on any other driver gets exactly
-// what they got before, because no other driver has been measured.
+// `driver_orders_declared_loop` and `driver_prefers_declared_loop_with_barriers` are the shipping
+// two: the driver database recognising, respectively, a driver build measured to order overlapping
+// self-reads inside a declared loop (Turnip on a6xx carrying the fix) and a part whose best
+// in-pass road is that loop with our own barriers left in place (Turnip on a7xx). Both put a user
+// on the road with no setting touched. A user on any other driver gets exactly what they got
+// before, because no other driver has been measured.
+//
+// They differ only in the barriers, and that is not a detail -- it is the whole of what was
+// measured. The a7xx part takes the same declaration and keeps the barriers because Turnip never
+// emits the ordering state there, so dropping them races.
 //
 // `arm` is EmuCore/GS/DeclareAttachmentFeedbackLoop -- experiment scaffolding, so one binary can
 // run base against the candidate on a device. It is not a user setting and has no UI row: a user
@@ -148,6 +154,23 @@ struct GSSelfReadRoadInputs
 	/// measured on the in-pass read Turnip had in July 2026, and this is a different driver build.
 	/// A driver that carries the fix is not the driver the rule is about.
 	bool driver_orders_declared_loop = false;
+
+	/// MobileDriverProfile::prefers_declared_loop_with_barriers -- the driver database says THIS
+	/// part's best in-pass road is the declared loop with our own per-draw barriers still doing
+	/// the ordering. True for Turnip on Adreno 7xx and nothing else.
+	///
+	/// It outranks rt_self_read_is_broken on auto for the same reason the ordering fact does, and
+	/// a stronger one: on the a740 the copy road that rule selects is not merely slow, it is
+	/// WRONG. The Godfather comes out a third wrong against software and NASCAR's sky wrong, and
+	/// the declared road with barriers is correct on every scored cell over seven reps (campaign
+	/// gs-adreno-inpass-read, E18).
+	///
+	/// ⚠️ It claims NOTHING about ordering, and that is the whole difference from
+	/// driver_orders_declared_loop. Turnip never emits the sysmem ordering state on a7xx, so the
+	/// barrier-less declared road races there -- up to seven distinct pictures from seven runs on
+	/// ten of sixteen cells. Where a driver somehow carried both facts the ordering one is
+	/// strictly more and answers.
+	bool driver_prefers_declared_loop_with_barriers = false;
 
 	/// GSConfig.OverrideTextureBarriers: -1 auto, 0 force off, 1 force on. An explicit 0 is the
 	/// documented way back to the copy road and outranks the arm.
@@ -231,9 +254,14 @@ struct GSSelfReadRoadDecision
 	/// true. It is not true any more.
 	bool loop_declared = false;
 
-	/// The declared road came from the driver fact rather than from the experiment key. Reported
-	/// so the banner can say which, because a device round quotes that line and "why is this
-	/// machine on the declared road" has exactly two answers.
+	/// The declared road came from a driver fact rather than from the experiment key. Reported so
+	/// the banner can say which, because a device round quotes that line and "why is this machine
+	/// on the declared road" has exactly two answers.
+	///
+	/// WHICH driver fact is readable off the road: the ordering fact lands on InPassOrdered and
+	/// the a7xx preference on InPassBarrier, so the pair (road, this bit) names the entrance. The
+	/// backend still prints the rule by name, because a road name does not say what measurement
+	/// stands behind it.
 	bool selected_by_driver_fact = false;
 
 	/// The arm was asked for and applied -- the EXPERIMENT KEY specifically, which is what the
@@ -262,21 +290,30 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	d.arm_applied = arm_applies;
 	d.arm_unavailable = arm_requested && !arm_applies;
 
-	// The driver fact takes the same road the arm does, under the same two preconditions, and only
+	// Two driver facts take the same road the arm does, under the same two preconditions, and only
 	// when no arm was asked for. The key still wins where it is set: arm 2 on our own driver is the
 	// reference picture the ordering claim is measured against, so it has to stay reachable there.
-	const bool fact_applies =
+	//
+	// The ordering fact is strictly more than the barrier one -- same road, barriers dropped --
+	// so where a driver somehow carried both, it is the one that answers. No part carries both
+	// today: one is a6xx and the other a7xx.
+	const bool ordering_fact_applies =
 		!arm_requested && in.driver_orders_declared_loop && in.layout_road_available && barriers_allowed;
+	const bool barrier_fact_applies = !arm_requested && !in.driver_orders_declared_loop &&
+	                                  in.driver_prefers_declared_loop_with_barriers &&
+	                                  in.layout_road_available && barriers_allowed;
+	const bool fact_applies = ordering_fact_applies || barrier_fact_applies;
 
 	if (arm_applies || fact_applies)
 	{
-		// The fact IS the ordering claim -- a driver gets it by being measured to order -- so it
-		// lands on arm 1's decision exactly. Arm 1 asserts the same thing on request; arm 2
-		// declares the identical loop and KEEPS the barriers, which is the only way to tell the
-		// declaration from the ordering on a device. Nothing else may assert it: see the field's
-		// note, and the never-claims assertions below, which hold whatever the device advertises.
+		// The ordering fact IS the ordering claim -- a driver gets it by being measured to order
+		// -- so it lands on arm 1's decision exactly. Arm 1 asserts the same thing on request; arm
+		// 2 declares the identical loop and KEEPS the barriers, which is the only way to tell the
+		// declaration from the ordering on a device, and it is also what the barrier fact lands
+		// on. Nothing else may assert it: see the field's note, and the never-claims assertions
+		// below, which hold whatever the device advertises.
 		const bool claims_ordering =
-			fact_applies || (in.arm == static_cast<u8>(GSSelfReadArm::Declared));
+			ordering_fact_applies || (in.arm == static_cast<u8>(GSSelfReadArm::Declared));
 		d.road = claims_ordering ? GSSelfReadRoad::InPassOrdered : GSSelfReadRoad::InPassBarrier;
 		d.spelling = GSSelfReadSpelling::FeedbackLoopLayout;
 		d.texture_barrier = true;
@@ -326,8 +363,13 @@ constexpr const char* GSSelfReadRoadName(const GSSelfReadRoadDecision& d)
 			// Desktop and Honeykrisp land here WITHOUT declaring anything -- the layout spelling is
 			// simply what UseFeedbackLoopLayout() picks for them -- so only say the loop was
 			// declared when it actually was.
-			return d.loop_declared ? "in-pass, barrier-ordered, declared feedback loop (experiment key)" :
-			                         "in-pass, barrier-ordered, declared feedback loop";
+			if (!d.loop_declared)
+				return "in-pass, barrier-ordered, declared feedback loop";
+			// The a7xx preference lands here: same declaration as the experiment key's arm 2, same
+			// barriers, chosen by the driver database instead of by a setting.
+			return d.selected_by_driver_fact ?
+			           "in-pass, barrier-ordered, declared feedback loop (driver fact)" :
+			           "in-pass, barrier-ordered, declared feedback loop (experiment key)";
 		case GSSelfReadRoad::InPassOrdered:
 		default:
 			if (d.spelling != GSSelfReadSpelling::FeedbackLoopLayout)
@@ -552,3 +594,91 @@ static_assert(DecideSelfReadRoad({.layout_road_available = true,
 static_assert(!DecideSelfReadRoad({.layout_road_available = true}).loop_declared);
 static_assert(DecideSelfReadRoad({.layout_road_available = true}).spelling ==
 			  GSSelfReadSpelling::FeedbackLoopLayout);
+
+// --- The a7xx preference. -------------------------------------------------------------------
+//
+// The second driver fact, on the same Turnip shape: every extension advertised and the RT-copy
+// workaround claimed. With no key set it must land on ARM 2's decision, bit for bit -- the
+// declared loop with the per-draw barriers kept, and no ordering claimed. That is what E18 and
+// E19 measured on the a740, and the barrier-less road on that part races.
+
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+				  .road == GSSelfReadRoad::InPassBarrier);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+				  .spelling == GSSelfReadSpelling::FeedbackLoopLayout);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.texture_barrier);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.in_tile_read);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.force_feedback_loop_layout);
+// ⚠️ The one bit that separates this fact from E17's. Turnip never emits the sysmem ordering state
+// on a7xx, so a claim here would be a claim about a race.
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.orders_overlapping_prims);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.loop_declared);
+// Nobody asked for an arm, so neither arm diagnostic fires and the banner says the driver chose.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.selected_by_driver_fact);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.arm_applied);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.arm_unavailable);
+
+// OverrideTextureBarriers=0 is still the copy road. Neither fact takes that lever away.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 0})
+				  .road == GSSelfReadRoad::Copy);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 0})
+		.loop_declared);
+
+// OverrideTextureBarriers=1 means "force the in-pass road", and on this part the in-pass road we
+// measured IS the declared one. Off the fact the same value takes the in-tile road instead (the
+// assert near the top of this file), which on an a740 is correct but 1.5-3.7x slower on three
+// titles -- so the lever keeps its documented meaning and gets the better of the two in-pass
+// roads rather than the one the extension list happens to prefer.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
+				  .road == GSSelfReadRoad::InPassBarrier);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
+		.loop_declared);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
+		.in_tile_read);
+
+// A part that prefers the road without the layout extension gets today's answer and nothing else,
+// exactly as the tag does: the layout spelling is the only one the declaration exists in.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+				  .road == GSSelfReadRoad::Copy);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.loop_declared);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
+		.arm_unavailable);
+
+// The experiment key still wins, both ways. Arm 1 drops the barriers on request -- that is how the
+// racing road got measured on the a740 in the first place -- and arm 2 is the road the fact
+// already selects, asked for by name.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::Declared)})
+				  .road == GSSelfReadRoad::InPassOrdered);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::Declared)})
+		.orders_overlapping_prims);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::Declared)})
+		.arm_applied);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::Declared)})
+		.selected_by_driver_fact);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)})
+				  .road == GSSelfReadRoad::InPassBarrier);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)})
+		.selected_by_driver_fact);
+
+// No part carries both facts today -- one is a6xx and the other a7xx -- but if one ever did, the
+// ordering fact is strictly more and answers. Same road, barriers dropped.
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true, .driver_prefers_declared_loop_with_barriers = true})
+				  .road == GSSelfReadRoad::InPassOrdered);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true, .driver_prefers_declared_loop_with_barriers = true})
+		.orders_overlapping_prims);
+
+// And the other direction, which is the one that has to hold for every device we ship to: without
+// the preference, nothing about the a7xx road exists. Every assert above this section still reads
+// the same function, because the new input defaults to false.
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true})
+		.loop_declared);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true}).selected_by_driver_fact);
