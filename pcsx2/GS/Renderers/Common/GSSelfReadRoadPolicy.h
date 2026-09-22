@@ -346,6 +346,67 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	return d;
 }
 
+// The road a backend is on, read back from the three bits it publishes in
+// GSDevice::FeatureSupport -- the in-tile read, the texture barrier, and the declared loop's
+// ordering claim.
+//
+// It exists because the road matters to code that runs a long way from the backend that chose it.
+// GSApplyCopyRoadBlendingCap in GS.cpp is the caller: it needs to know what a destination read
+// costs on this device, every backend has already published the answer, and only Vulkan holds a
+// GSSelfReadRoadDecision. Reading `texture_barrier` alone instead is exactly the bug that lane E22
+// fixed -- that bit is true on the barrier road AND on both driver-ordered roads, so it cannot
+// tell a per-draw barrier from a free read.
+//
+// Pinned against DecideSelfReadRoad below over every input it accepts, so the two cannot drift.
+constexpr GSSelfReadRoad GSSelfReadRoadFromPublishedBits(
+	bool in_tile_read, bool texture_barrier, bool declared_loop_orders_overlap)
+{
+	// No in-pass read is legal at all: the target is cloned per feedback draw.
+	if (!texture_barrier)
+		return GSSelfReadRoad::Copy;
+
+	// The driver orders the read and no barrier is emitted -- either in tile memory, or inside a
+	// declared feedback loop on a driver build measured to order one.
+	if (in_tile_read || declared_loop_orders_overlap)
+		return GSSelfReadRoad::InPassOrdered;
+
+	// The live attachment, ordered by our own barriers, one per draw or per primitive group.
+	return GSSelfReadRoad::InPassBarrier;
+}
+
+// The proof that the read-back names the road the decision chose, over every input shape
+// DecideSelfReadRoad accepts: five booleans, the override tri-state, and the three arms. If this
+// ever fails the two have drifted, and every caller that asks the device for its road -- the
+// blending cap among them -- is answering about a road the device is not on.
+constexpr bool PublishedBitsNameTheSameRoad()
+{
+	for (int bits = 0; bits < (1 << 6); bits++)
+	{
+		for (s8 override_barriers = -1; override_barriers <= 1; override_barriers++)
+		{
+			for (u8 arm = 0; arm <= static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers); arm++)
+			{
+				GSSelfReadRoadInputs in;
+				in.in_tile_read_available = (bits & 1) != 0;
+				in.layout_road_available = (bits & 2) != 0;
+				in.roaa_available = (bits & 4) != 0;
+				in.rt_self_read_is_broken = (bits & 8) != 0;
+				in.driver_orders_declared_loop = (bits & 16) != 0;
+				in.driver_prefers_declared_loop_with_barriers = (bits & 32) != 0;
+				in.override_texture_barriers = override_barriers;
+				in.arm = arm;
+
+				const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
+				if (GSSelfReadRoadFromPublishedBits(d.in_tile_read, d.texture_barrier,
+						d.orders_overlapping_prims) != d.road)
+					return false;
+			}
+		}
+	}
+	return true;
+}
+static_assert(PublishedBitsNameTheSameRoad());
+
 /// One phrase naming both axes and, on the declared road, what put the machine there. The device
 /// round quotes this line, so it says what was declared rather than what was configured -- and
 /// since the declared road now has two entrances, it says which one was used. "experiment key" is
