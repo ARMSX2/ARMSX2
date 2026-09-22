@@ -461,7 +461,7 @@ TEST(GSSelfReadRoad, TheBannerSaysWhichEntranceWasUsed)
 // The second driver fact, and the one that fixes wrong pixels rather than slow ones. On an Adreno
 // 740 the copy road the database puts every Turnip part on draws The Godfather a third wrong
 // against software and NASCAR's sky wrong; the declared loop with the barriers kept is correct on
-// every scored cell and stable over seven reps, and costs at most +15% (campaign
+// every scored cell and stable over seven reps, and pays for it only on Splashdown (campaign
 // gs-adreno-inpass-read, E18 and E19). The barrier-LESS declared road races there, so this fact
 // must never reach the ordering claim.
 
