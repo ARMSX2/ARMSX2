@@ -823,3 +823,105 @@ TEST(GSGpuDriverProfile, TheOrderingClaimDoesNotReachTheOpenGLPath)
 	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
 	EXPECT_FALSE(OrdersDeclaredLoop(sel));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The a7xx preference: Turnip on an Adreno 7xx belongs on the declared feedback loop with the
+// per-draw barriers KEPT.
+//
+// Unlike the ordering fact above, this one needs no build tag. It is a fact about the PART, not
+// about a build: on an a740 both our pack build and upstream main draw the declared-with-barriers
+// road correct on every scored cell and stable over 7 reps, while the copy road the driver
+// database puts them on draws The Godfather a third wrong and NASCAR's sky wrong (campaign
+// gs-adreno-inpass-read, E18). The barrier-less road races there, so the two facts are genuinely
+// different claims and only one of them applies per part.
+namespace
+{
+	bool PrefersDeclaredLoopWithBarriers(const GpuProfileSelection& sel)
+	{
+		return sel.driver.prefers_declared_loop_with_barriers;
+	}
+
+	GpuProfileSelection ResolveTurnipVK(const char* device_name, const char* driver_info)
+	{
+		return ResolveAdrenoVKWithInfo(
+			device_name, kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2), driver_info);
+	}
+} // namespace
+
+// The device E18 and E19 ran on, and its bigger sibling. Stock Turnip, no tag, and it still earns
+// the preference -- that is the whole point of this fact being about the part.
+TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarriers)
+{
+	for (const char* device_name : {"Adreno (TM) 740", "Adreno (TM) 750", "Adreno (TM) 730"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kStockTurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip) << device_name;
+		EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		// And no tag, so no ordering claim. Being on the declared road is not being ordered.
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+	}
+}
+
+// a6xx is the ordering fact's part, not this one's. Turnip on an a650 keeps the copy road unless
+// it carries the tag, which is exactly where E17 left it.
+TEST(GSGpuDriverProfile, TurnipOnAdreno6xxDoesNotGetTheA7xxPreference)
+{
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 650", kStockTurnipDriverInfo)));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 650", kFixedTurnipDriverInfo)));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 630", kStockTurnipDriverInfo)));
+}
+
+// The two facts are measured on different drivers on different parts, so no part may hold both.
+// A tagged build on an a740 gets the preference like any other Turnip and the ordering claim from
+// nobody -- the tag buys ordering, and ordering is what a7xx does not have.
+TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxGetsThePreferenceAndNotTheOrderingClaim)
+{
+	const GpuProfileSelection sel = ResolveTurnipVK("Adreno (TM) 740", kFixedTurnipDriverInfo);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel));
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// The Qualcomm blob on the same a740. Its only in-pass road is the input attachment with barriers,
+// which E14 measured right on The Godfather and wrong on Splashdown; nothing here was measured on
+// it and the declared road is not its road.
+TEST(GSGpuDriverProfile, TheQualcommBlobOnAdreno7xxGetsNoPreference)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 740",
+		kQualcommProprietaryDriverId, "Qualcomm", PackVulkanVersion(512, 780, 0), kStockTurnipDriverInfo);
+
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx);
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+}
+
+// The OpenGL path cannot declare anything -- the declaration is a Vulkan pipeline create flag and
+// an image layout -- so freedreno on an a740 is refused for the same reason the tag is.
+TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotReachTheOpenGLPath)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::OpenGL;
+	context.driver_name = "Turnip Adreno (TM) 740";
+	context.api_version_string = "OpenGL ES 3.2 Mesa 26.1.2";
+
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", "freedreno", "Adreno (TM) 740", context);
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx);
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+}
+
+// Mali is not an Adreno however its strings read.
+TEST(GSGpuDriverProfile, MaliGetsNoA7xxPreference)
+{
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+}
+
+// The a740 still carries the RT-copy workaround in the table. The database is not where that gets
+// resolved -- the road policy is, and it is where the fact outranks the workaround. Keeping the
+// bit is what lets a device that loses the layout extension fall back to the copy road.
+TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotClearTheRtCopyWorkaround)
+{
+	EXPECT_TRUE(ResolveTurnipVK("Adreno (TM) 740", kStockTurnipDriverInfo)
+			.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback));
+}

@@ -777,20 +777,31 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	if (profile.version.known)
 		profile.confidence = DriverProfileConfidence::DriverVersion;
 
-	// The one fact that does not come from the rule table. It is still a fact ABOUT THE DRIVER, and
-	// it is deliberately the same shape as UseRenderTargetCopyForFeedback: false unless this exact
-	// driver build has been measured, so an unrecognised driver keeps its barriers.
+	// The two facts that do not come from the rule table. Both are still facts ABOUT THE DRIVER,
+	// and both are deliberately the same shape as UseRenderTargetCopyForFeedback: false unless
+	// this driver has been measured, so an unrecognised driver keeps the road it has.
 	//
-	// Restricted to a6xx for now because that is what the fix and the measurement cover -- the
-	// driver patch behind generation 1 changes emission for CHIP == A6XX only and a7xx comes out
-	// byte-identical to stock, so a tagged build on an a7xx part carries nothing to trust. The
-	// architecture comes from the device name ("Adreno (TM) 650"), the same parse every other
-	// model-bounded rule uses. Turnip only: a Qualcomm blob cannot carry a Mesa git tag, and if one
-	// ever appears to, it means the string is not what we think it is.
+	// The ordering fact is restricted to a6xx because that is what the fix and the measurement
+	// cover -- the driver patch behind generation 1 changes emission for CHIP == A6XX only and
+	// a7xx comes out byte-identical to stock, so a tagged build on an a7xx part carries nothing to
+	// trust. The architecture comes from the device name ("Adreno (TM) 650"), the same parse every
+	// other model-bounded rule uses. Turnip only: a Qualcomm blob cannot carry a Mesa git tag, and
+	// if one ever appears to, it means the string is not what we think it is.
 	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
 	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
 		                                    (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
 		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx);
+
+	// The a7xx preference needs no tag, because it is not about a build. It is about the part: on
+	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and
+	// stable, the copy road the vk-turnip-attachment-self-read rule puts it on draws The Godfather
+	// a third wrong and NASCAR's sky wrong, and both the pack build and upstream main behave the
+	// same (campaign gs-adreno-inpass-read, E18). So every Turnip on a7xx earns it, tagged or not,
+	// and a tagged build earns it the same way any other Turnip does -- the tag buys the ordering
+	// claim, which a7xx does not get.
+	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&
+		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx);
 
 	for (const DriverRule& rule : s_driver_rules)
 	{

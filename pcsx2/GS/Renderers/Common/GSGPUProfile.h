@@ -260,6 +260,23 @@ struct MobileDriverProfile
 	/// driverInfo. Every other driver keeps its barriers and comes out correct-and-slower.
 	bool orders_declared_feedback_loop = false;
 
+	/// This driver's best in-pass self-read road is a declared attachment feedback loop with the
+	/// per-draw barriers KEPT -- the declaration for the layout and the coherent destination read,
+	/// our own barriers for the ordering.
+	///
+	/// ⚠️ A weaker claim than orders_declared_feedback_loop, and a different one. That fact says
+	/// the driver orders overlapping self-reads so the barriers can go; this one says only that the
+	/// declared road is where this part belongs, and the barriers stay. Where a driver somehow
+	/// carried both, the ordering fact is strictly more and answers.
+	///
+	/// True today for Turnip on Adreno 7xx, measured (campaign gs-adreno-inpass-read, E18 and E19):
+	/// on an a740 that road is correct on every scored cell and stable across 7 reps, where the
+	/// copy road the driver database puts it on draws The Godfather a third wrong and NASCAR's sky
+	/// wrong. It costs at most +15% over the copy road and is 17-21% faster on Stuntman and WRC3.
+	/// The barrier-LESS declared road races on a7xx -- Turnip never emits the ordering state there
+	/// -- which is why this fact and not the other one.
+	bool prefers_declared_loop_with_barriers = false;
+
 	std::string driver_name;
 
 	constexpr bool HasBug(DriverBug bug) const
