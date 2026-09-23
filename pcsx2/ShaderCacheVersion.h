@@ -26,17 +26,11 @@
 // 116: upstream PR 14824, the PrimID DATE init shaders take PRIMID_MIN/MAX defines.
 // 117: upstream PR 14743, ps_fbmask reads the destination alpha in the RTA-scaled domain and
 // ROV channel masking goes through FBMASK.
-// 118: the four deinterlace shaders and the TFX scan-mask test reduce a device row to its native
-// line before testing field parity, so interlace.* gains a constant-buffer field and tfx.* changes.
-// 119: the TFX dither test (ps_dither, PS_DITHER == 1) gets the same device-row/column-to-native
-// fix as 118's scan mask, on both axes, so tfx.* changes again.
-// 120: 118's native-line deinterlace is reverted -- interlace.* is back to testing field parity on
-// the device row -- and the constant buffer's second vector now carries the undrawn top band.
-// 121: the dither index change of 119 is reverted after a visual comparison; tfx.* changes back.
-// 122: scaled dither indexes the native pixel again, and the matrix is rotated under that index by
-// a per-axis phase the CPU picks, so tfx.* changes and the PS constant buffer's last pad is named.
-// 123: a sprite that minifies a GS-memory texture under a nearest sampler reads the texel its
-// native pixel read, so tfx.* gains PS_NATIVE_TEXEL_GRID and the PS constant buffer gains a vector.
+// 118-123: tfx.* tests scan-mask field parity on the native line, indexes the dither matrix by the
+// native pixel under a per-axis phase the CPU picks (the PS constant buffer's last pad is named for
+// it), and gains PS_NATIVE_TEXEL_GRID so a nearest sprite minifying a GS-memory texture reads its
+// native pixel's texel (one more PS constant-buffer vector). interlace.* still tests field parity
+// on the device row; its constant buffer's second vector carries the undrawn top band.
 // 124: the TFX dither index and scan-mask test divide by the render target's scale, carried in the
 // PS constant buffer's former pad after RcpScaleFactor, instead of the texture's.
 // 125: the weave and MAD buffering passes fill the undrawn field band where the display rect
