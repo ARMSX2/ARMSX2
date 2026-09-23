@@ -15,6 +15,11 @@
 
 // On iOS dual-map JIT, write through the RW alias (rx + g_code_rw_offset).
 // Identity no-op elsewhere. Mirrors armGetWritableCodePtr in pcsx2/arm64/AsmHelpers.cpp.
+// TargetConditionals.h defines TARGET_OS_IPHONE; without it the gate below reads
+// as false on iOS and the RW-alias write path silently never engages.
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #include "common/Darwin/DarwinMisc.h"
 static void* gsGetWritableCodePtr(void* rx_ptr)

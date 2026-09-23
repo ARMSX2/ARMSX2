@@ -9,6 +9,12 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+// TargetConditionals.h (which defines TARGET_OS_IPHONE) is an Apple-only header.
+// Without it iOS would fall into the BSD-socket branch below, where TARGET_OS_IPHONE
+// is undefined and therefore reads as 0, and net/route.h does not exist.
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #if (defined(__FreeBSD__) || (__APPLE__)) && !TARGET_OS_IPHONE
 #include <sys/param.h>
 #include <sys/sysctl.h>
