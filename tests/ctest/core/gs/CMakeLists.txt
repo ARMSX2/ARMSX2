@@ -68,6 +68,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sprite_cover_tests.cpp
 	gs_sprite_edge_snap_tests.cpp
 	gs_sprite_pass_order_tests.cpp
+	gs_pass_scheduler_tests.cpp
 	gs_null_device_profile_tests.cpp
 	gs_sw_texture_dirty_tests.cpp
 	gs_blend_constant_policy_tests.cpp
